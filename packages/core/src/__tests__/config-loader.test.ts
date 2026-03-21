@@ -1,15 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeFileSync, mkdirSync } from "fs";
-import { randomBytes } from "node:crypto";
-import {
-	loadConfigFile,
-	loadRequiredConfigs,
-	expandEnvVars,
-	type ConfigError,
-} from "../config-loader";
 import { allowlistSchema, modelBackendsSchema } from "@bound/shared";
+import { expandEnvVars, loadConfigFile, loadRequiredConfigs } from "../config-loader";
 
 describe("Config Loader", () => {
 	let configDir: string;
@@ -21,7 +16,7 @@ describe("Config Loader", () => {
 
 	afterEach(() => {
 		try {
-			require("fs").rmSync(configDir, { recursive: true });
+			require("node:fs").rmSync(configDir, { recursive: true });
 		} catch {
 			// ignore
 		}
@@ -35,13 +30,13 @@ describe("Config Loader", () => {
 		});
 
 		it("uses default values when env var not set", () => {
-			delete process.env.MISSING_VAR;
+			process.env.MISSING_VAR = undefined;
 			const result = expandEnvVars("prefix-${MISSING_VAR:-default}-suffix");
 			expect(result).toBe("prefix-default-suffix");
 		});
 
 		it("throws when env var missing and no default", () => {
-			delete process.env.MISSING_VAR;
+			process.env.MISSING_VAR = undefined;
 			expect(() => expandEnvVars("${MISSING_VAR}")).toThrow();
 		});
 
@@ -65,10 +60,7 @@ describe("Config Loader", () => {
 				},
 			};
 
-			writeFileSync(
-				join(configDir, "allowlist.json"),
-				JSON.stringify(validAllowlist)
-			);
+			writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(validAllowlist));
 
 			const result = loadConfigFile(configDir, "allowlist.json", allowlistSchema);
 
@@ -105,10 +97,7 @@ describe("Config Loader", () => {
 				users: {}, // Invalid: must have at least one user
 			};
 
-			writeFileSync(
-				join(configDir, "allowlist.json"),
-				JSON.stringify(invalidAllowlist)
-			);
+			writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(invalidAllowlist));
 
 			const result = loadConfigFile(configDir, "allowlist.json", allowlistSchema);
 
@@ -128,10 +117,7 @@ describe("Config Loader", () => {
 				},
 			};
 
-			writeFileSync(
-				join(configDir, "allowlist.json"),
-				JSON.stringify(configContent)
-			);
+			writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(configContent));
 
 			const result = loadConfigFile(configDir, "allowlist.json", allowlistSchema);
 
@@ -156,10 +142,7 @@ describe("Config Loader", () => {
 				default: "ollama-local",
 			};
 
-			writeFileSync(
-				join(configDir, "model_backends.json"),
-				JSON.stringify(validBackends)
-			);
+			writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(validBackends));
 
 			const result = loadConfigFile(configDir, "model_backends.json", modelBackendsSchema);
 
@@ -185,10 +168,7 @@ describe("Config Loader", () => {
 				default: "ollama-local",
 			};
 
-			writeFileSync(
-				join(configDir, "model_backends.json"),
-				JSON.stringify(invalidBackends)
-			);
+			writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(invalidBackends));
 
 			const result = loadConfigFile(configDir, "model_backends.json", modelBackendsSchema);
 
@@ -223,14 +203,8 @@ describe("Config Loader", () => {
 				default: "ollama-local",
 			};
 
-			writeFileSync(
-				join(configDir, "allowlist.json"),
-				JSON.stringify(allowlist)
-			);
-			writeFileSync(
-				join(configDir, "model_backends.json"),
-				JSON.stringify(backends)
-			);
+			writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(allowlist));
+			writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(backends));
 
 			const result = loadRequiredConfigs(configDir, allowlistSchema, modelBackendsSchema);
 
@@ -252,14 +226,8 @@ describe("Config Loader", () => {
 				default: "none",
 			};
 
-			writeFileSync(
-				join(configDir, "allowlist.json"),
-				JSON.stringify(invalidAllowlist)
-			);
-			writeFileSync(
-				join(configDir, "model_backends.json"),
-				JSON.stringify(invalidBackends)
-			);
+			writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(invalidAllowlist));
+			writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(invalidBackends));
 
 			const result = loadRequiredConfigs(configDir, allowlistSchema, modelBackendsSchema);
 
@@ -286,10 +254,7 @@ describe("Config Loader", () => {
 				default: "ollama-local",
 			};
 
-			writeFileSync(
-				join(configDir, "model_backends.json"),
-				JSON.stringify(backends)
-			);
+			writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(backends));
 
 			const result = loadRequiredConfigs(configDir, allowlistSchema, modelBackendsSchema);
 
@@ -308,10 +273,7 @@ describe("Config Loader", () => {
 				},
 			};
 
-			writeFileSync(
-				join(configDir, "allowlist.json"),
-				JSON.stringify(allowlist)
-			);
+			writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(allowlist));
 
 			const result = loadRequiredConfigs(configDir, allowlistSchema, modelBackendsSchema);
 
@@ -344,14 +306,8 @@ describe("Config Loader", () => {
 				default: "ollama-local",
 			};
 
-			writeFileSync(
-				join(configDir, "allowlist.json"),
-				JSON.stringify(invalidAllowlist)
-			);
-			writeFileSync(
-				join(configDir, "model_backends.json"),
-				JSON.stringify(backends)
-			);
+			writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(invalidAllowlist));
+			writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(backends));
 
 			const result = loadRequiredConfigs(configDir, allowlistSchema, modelBackendsSchema);
 
@@ -383,14 +339,8 @@ describe("Config Loader", () => {
 				default: "nonexistent",
 			};
 
-			writeFileSync(
-				join(configDir, "allowlist.json"),
-				JSON.stringify(allowlist)
-			);
-			writeFileSync(
-				join(configDir, "model_backends.json"),
-				JSON.stringify(invalidBackends)
-			);
+			writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(allowlist));
+			writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(invalidBackends));
 
 			const result = loadRequiredConfigs(configDir, allowlistSchema, modelBackendsSchema);
 

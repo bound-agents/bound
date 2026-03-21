@@ -1,12 +1,12 @@
 import "reflect-metadata";
-import { container, injectable, singleton } from "tsyringe";
 import type { Database } from "bun:sqlite";
-import { createDatabase } from "./database";
-import { applySchema } from "./schema";
-import { loadRequiredConfigs } from "./config-loader";
 import { TypedEventEmitter, createLogger } from "@bound/shared";
 import { allowlistSchema, modelBackendsSchema } from "@bound/shared";
+import { container, injectable, singleton } from "tsyringe";
+import { loadRequiredConfigs } from "./config-loader";
 import type { RequiredConfig } from "./config-loader";
+import { createDatabase } from "./database";
+import { applySchema } from "./schema";
 
 @injectable()
 @singleton()

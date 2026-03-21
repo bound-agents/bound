@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeFileSync, mkdirSync } from "fs";
-import { randomBytes } from "node:crypto";
-import { bootstrapContainer, DatabaseService, ConfigService, EventBusService } from "../container";
+import type { Message } from "@bound/shared";
 import { createAppContext } from "../app-context";
+import { ConfigService, DatabaseService, EventBusService, bootstrapContainer } from "../container";
 
 describe("DI Container", () => {
 	let configDir: string;
@@ -37,24 +38,18 @@ describe("DI Container", () => {
 			default: "ollama-local",
 		};
 
-		writeFileSync(
-			join(configDir, "allowlist.json"),
-			JSON.stringify(allowlist)
-		);
-		writeFileSync(
-			join(configDir, "model_backends.json"),
-			JSON.stringify(backends)
-		);
+		writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(allowlist));
+		writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(backends));
 	});
 
 	afterEach(() => {
 		try {
-			require("fs").rmSync(configDir, { recursive: true });
+			require("node:fs").rmSync(configDir, { recursive: true });
 		} catch {
 			// ignore
 		}
 		try {
-			require("fs").unlinkSync(dbPath);
+			require("node:fs").unlinkSync(dbPath);
 		} catch {
 			// ignore
 		}
@@ -92,7 +87,7 @@ describe("DI Container", () => {
 
 	it("throws error when config files are missing", () => {
 		// Remove config files
-		require("fs").unlinkSync(join(configDir, "allowlist.json"));
+		require("node:fs").unlinkSync(join(configDir, "allowlist.json"));
 
 		expect(() => {
 			bootstrapContainer(configDir, dbPath);
@@ -106,10 +101,7 @@ describe("DI Container", () => {
 			users: {}, // Invalid: must have at least one user
 		};
 
-		writeFileSync(
-			join(configDir, "allowlist.json"),
-			JSON.stringify(invalidAllowlist)
-		);
+		writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(invalidAllowlist));
 
 		expect(() => {
 			bootstrapContainer(configDir, dbPath);
@@ -161,24 +153,18 @@ describe("AppContext", () => {
 			default: "ollama-local",
 		};
 
-		writeFileSync(
-			join(configDir, "allowlist.json"),
-			JSON.stringify(allowlist)
-		);
-		writeFileSync(
-			join(configDir, "model_backends.json"),
-			JSON.stringify(backends)
-		);
+		writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(allowlist));
+		writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(backends));
 	});
 
 	afterEach(() => {
 		try {
-			require("fs").rmSync(configDir, { recursive: true });
+			require("node:fs").rmSync(configDir, { recursive: true });
 		} catch {
 			// ignore
 		}
 		try {
-			require("fs").unlinkSync(dbPath);
+			require("node:fs").unlinkSync(dbPath);
 		} catch {
 			// ignore
 		}
@@ -202,9 +188,9 @@ describe("AppContext", () => {
 		expect(ctx.siteId.length).toBeGreaterThan(0);
 
 		// Verify site_id is stored in host_meta
-		const hostMeta = ctx.db
-			.query("SELECT value FROM host_meta WHERE key = 'site_id'")
-			.get() as { value: string };
+		const hostMeta = ctx.db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as {
+			value: string;
+		};
 
 		expect(hostMeta.value).toBe(ctx.siteId);
 	});
@@ -238,8 +224,20 @@ describe("AppContext", () => {
 			received = data;
 		});
 
+		const mockMessage: Message = {
+			id: "msg-1",
+			thread_id: "thread-123",
+			role: "user",
+			content: "test",
+			model_id: null,
+			tool_name: null,
+			created_at: new Date().toISOString(),
+			modified_at: new Date().toISOString(),
+			host_origin: "test",
+		};
+
 		ctx.eventBus.emit("message:created", {
-			message: {} as any,
+			message: mockMessage,
 			thread_id: "thread-123",
 		});
 

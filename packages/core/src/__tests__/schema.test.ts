@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
 import { createDatabase } from "../database";
 import { applySchema } from "../schema";
 
@@ -14,7 +14,7 @@ describe("Database Schema", () => {
 
 	afterEach(() => {
 		try {
-			require("fs").unlinkSync(dbPath);
+			require("node:fs").unlinkSync(dbPath);
 		} catch {
 			// ignore
 		}
@@ -37,7 +37,9 @@ describe("Database Schema", () => {
 		applySchema(db);
 
 		const tables = db
-			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+			.query(
+				"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+			)
 			.all() as Array<{ name: string }>;
 
 		const tableNames = tables.map((t) => t.name);
@@ -127,9 +129,7 @@ describe("Database Schema", () => {
 		const db = createDatabase(dbPath);
 		applySchema(db);
 
-		const columns = db
-			.query("PRAGMA table_info(messages)")
-			.all() as Array<{ name: string }>;
+		const columns = db.query("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
 
 		const columnNames = columns.map((c) => c.name);
 
@@ -150,9 +150,7 @@ describe("Database Schema", () => {
 		const db = createDatabase(dbPath);
 		applySchema(db);
 
-		const columns = db
-			.query("PRAGMA table_info(tasks)")
-			.all() as Array<{ name: string }>;
+		const columns = db.query("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
 
 		const columnNames = columns.map((c) => c.name);
 
@@ -206,7 +204,7 @@ describe("Database Schema", () => {
 		db.run(
 			`INSERT INTO users (id, display_name, first_seen_at, modified_at)
 			VALUES (?, ?, ?, ?)`,
-			["user-123", "Alice", now, now]
+			["user-123", "Alice", now, now],
 		);
 
 		const user = db.query("SELECT * FROM users WHERE id = ?").get("user-123") as {

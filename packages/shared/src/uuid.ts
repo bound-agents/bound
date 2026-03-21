@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+export const BOUND_NAMESPACE = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+
 export function randomUUID(): string {
 	return crypto.randomUUID();
 }

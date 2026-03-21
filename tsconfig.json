@@ -11,10 +11,10 @@
 		"declaration": true,
 		"declarationMap": true,
 		"sourceMap": true,
-		"composite": true,
 		"experimentalDecorators": true,
 		"emitDecoratorMetadata": true,
-		"types": ["bun-types"]
+		"types": ["@types/bun"]
 	},
-	"references": [{ "path": "packages/shared" }, { "path": "packages/core" }]
+	"references": [{ "path": "packages/shared" }, { "path": "packages/core" }],
+	"exclude": ["node_modules", "dist", "**/*.test.ts"]
 }

@@ -1,11 +1,14 @@
 import type { Database } from "bun:sqlite";
 import type { SyncedTableName } from "@bound/shared";
-import { randomUUID } from "crypto";
 
-export interface ConfigError {
-	filename: string;
-	message: string;
-	fieldErrors: Record<string, string[]>;
+// Validate column names to prevent SQL injection
+// Only allow lowercase letters, numbers, and underscores
+const VALID_COLUMN_NAME = /^[a-z_]+$/;
+
+function validateColumnName(name: string): void {
+	if (!VALID_COLUMN_NAME.test(name)) {
+		throw new Error(`Invalid column name: ${name}`);
+	}
 }
 
 export function createChangeLogEntry(
@@ -13,7 +16,7 @@ export function createChangeLogEntry(
 	tableName: SyncedTableName,
 	rowId: string,
 	siteId: string,
-	rowData: Record<string, unknown>
+	rowData: Record<string, unknown>,
 ): void {
 	const now = new Date().toISOString();
 	const rowDataJson = JSON.stringify(rowData);
@@ -21,7 +24,7 @@ export function createChangeLogEntry(
 	db.run(
 		`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
 		VALUES (?, ?, ?, ?, ?)`,
-		[tableName, rowId, siteId, now, rowDataJson]
+		[tableName, rowId, siteId, now, rowDataJson],
 	);
 }
 
@@ -33,7 +36,7 @@ export function withChangeLog<T>(
 		rowId: string;
 		rowData: Record<string, unknown>;
 		result: T;
-	}
+	},
 ): T {
 	const transaction = db.transaction((innerDb: Database) => {
 		const { tableName, rowId, rowData, result } = fn(innerDb);
@@ -48,10 +51,12 @@ export function insertRow(
 	db: Database,
 	table: SyncedTableName,
 	row: Record<string, unknown>,
-	siteId: string
+	siteId: string,
 ): void {
 	const rowId = row.id as string;
 	const columns = Object.keys(row);
+	// Validate all column names to prevent SQL injection
+	columns.forEach(validateColumnName);
 	const placeholders = columns.map(() => "?").join(", ");
 	const values = columns.map((c) => row[c]);
 
@@ -59,7 +64,7 @@ export function insertRow(
 		db.run(
 			`INSERT INTO ${table} (${columns.join(", ")})
 			VALUES (${placeholders})`,
-			values
+			values,
 		);
 
 		createChangeLogEntry(db, table, rowId, siteId, row);
@@ -73,15 +78,17 @@ export function updateRow(
 	table: SyncedTableName,
 	id: string,
 	updates: Record<string, unknown>,
-	siteId: string
+	siteId: string,
 ): void {
 	const txFn = db.transaction(() => {
 		const now = new Date().toISOString();
 		const updatesWithModified = { ...updates, modified_at: now };
 
-		const setClause = Object.keys(updatesWithModified)
-			.map((k) => `${k} = ?`)
-			.join(", ");
+		const updateKeys = Object.keys(updatesWithModified);
+		// Validate all column names to prevent SQL injection
+		updateKeys.forEach(validateColumnName);
+
+		const setClause = updateKeys.map((k) => `${k} = ?`).join(", ");
 
 		const values = [...Object.values(updatesWithModified), id];
 
@@ -99,21 +106,17 @@ export function updateRow(
 	txFn();
 }
 
-export function softDelete(
-	db: Database,
-	table: SyncedTableName,
-	id: string,
-	siteId: string
-): void {
+export function softDelete(db: Database, table: SyncedTableName, id: string, siteId: string): void {
 	const txFn = db.transaction(() => {
 		const now = new Date().toISOString();
 
 		db.run(`UPDATE ${table} SET deleted = 1, modified_at = ? WHERE id = ?`, [now, id]);
 
 		// Fetch the deleted row to get the full snapshot
-		const deletedRow = db
-			.query(`SELECT * FROM ${table} WHERE id = ?`)
-			.get(id) as Record<string, unknown>;
+		const deletedRow = db.query(`SELECT * FROM ${table} WHERE id = ?`).get(id) as Record<
+			string,
+			unknown
+		>;
 
 		createChangeLogEntry(db, table, id, siteId, deletedRow);
 	});

@@ -45,7 +45,7 @@ export interface Thread {
 	user_id: string;
 	interface: "web" | "discord";
 	host_origin: string;
-	color: string;
+	color: number;
 	title: string;
 	summary: string | null;
 	summary_through: string | null;
@@ -99,7 +99,7 @@ export interface Task {
 	inject_mode: InjectMode;
 	depends_on: string | null;
 	require_success: number;
-	alert_threshold: string | null;
+	alert_threshold: number;
 	consecutive_failures: number;
 	event_depth: number;
 	no_quiescence: number;
@@ -168,7 +168,7 @@ export interface SyncState {
 	last_received: number;
 	last_sent: number;
 	last_sync_at: string;
-	sync_errors: string | null;
+	sync_errors: number;
 }
 
 export interface HostMeta {

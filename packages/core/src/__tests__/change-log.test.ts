@@ -1,11 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
-import { randomUUID } from "crypto";
+import { createChangeLogEntry, insertRow, softDelete, updateRow } from "../change-log";
 import { createDatabase } from "../database";
 import { applySchema } from "../schema";
-import { insertRow, updateRow, softDelete, createChangeLogEntry } from "../change-log";
 
 describe("Change Log Producer", () => {
 	let dbPath: string;
@@ -25,7 +25,7 @@ describe("Change Log Producer", () => {
 			// ignore
 		}
 		try {
-			require("fs").unlinkSync(dbPath);
+			require("node:fs").unlinkSync(dbPath);
 		} catch {
 			// ignore
 		}
@@ -45,9 +45,10 @@ describe("Change Log Producer", () => {
 
 		createChangeLogEntry(db, "users", userId, siteId, rowData);
 
-		const entry = db
-			.query("SELECT * FROM change_log WHERE row_id = ?")
-			.get(userId) as Record<string, unknown>;
+		const entry = db.query("SELECT * FROM change_log WHERE row_id = ?").get(userId) as Record<
+			string,
+			unknown
+		>;
 
 		expect(entry).toBeDefined();
 		expect(entry.table_name).toBe("users");
@@ -78,9 +79,10 @@ describe("Change Log Producer", () => {
 		>;
 		expect(user.display_name).toBe("Bob");
 
-		const entry = db
-			.query("SELECT * FROM change_log WHERE row_id = ?")
-			.get(userId) as Record<string, unknown>;
+		const entry = db.query("SELECT * FROM change_log WHERE row_id = ?").get(userId) as Record<
+			string,
+			unknown
+		>;
 
 		expect(entry).toBeDefined();
 		expect(entry.table_name).toBe("users");
@@ -185,9 +187,9 @@ describe("Change Log Producer", () => {
 		insertRow(db, "users", user1, siteId);
 		insertRow(db, "users", user2, siteId);
 
-		const entries = db
-			.query("SELECT seq FROM change_log ORDER BY seq")
-			.all() as Array<{ seq: number }>;
+		const entries = db.query("SELECT seq FROM change_log ORDER BY seq").all() as Array<{
+			seq: number;
+		}>;
 
 		expect(entries.length).toBe(2);
 		expect(entries[0].seq).toBe(1);
@@ -209,9 +211,10 @@ describe("Change Log Producer", () => {
 
 		insertRow(db, "users", userData, originatingSiteId);
 
-		const entry = db
-			.query("SELECT * FROM change_log WHERE row_id = ?")
-			.get(userId) as Record<string, unknown>;
+		const entry = db.query("SELECT * FROM change_log WHERE row_id = ?").get(userId) as Record<
+			string,
+			unknown
+		>;
 
 		expect(entry.site_id).toBe(originatingSiteId);
 	});
@@ -231,9 +234,9 @@ describe("Change Log Producer", () => {
 
 		insertRow(db, "users", userData, siteId);
 
-		const entry = db
-			.query("SELECT row_data FROM change_log WHERE row_id = ?")
-			.get(userId) as { row_data: string };
+		const entry = db.query("SELECT row_data FROM change_log WHERE row_id = ?").get(userId) as {
+			row_data: string;
+		};
 
 		const rowData = JSON.parse(entry.row_data);
 		expect(rowData.id).toBe(userId);
@@ -281,9 +284,9 @@ describe("Change Log Producer", () => {
 
 		insertRow(db, "tasks", taskData, siteId);
 
-		const entry = db
-			.query("SELECT row_data FROM change_log WHERE row_id = ?")
-			.get(taskId) as { row_data: string };
+		const entry = db.query("SELECT row_data FROM change_log WHERE row_id = ?").get(taskId) as {
+			row_data: string;
+		};
 
 		const rowData = JSON.parse(entry.row_data);
 		expect(rowData.id).toBe(taskId);

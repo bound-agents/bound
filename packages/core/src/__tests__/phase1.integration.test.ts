@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeFileSync, mkdirSync } from "fs";
-import { randomBytes } from "node:crypto";
-import { randomUUID } from "crypto";
+import type { Message } from "@bound/shared";
 import { createAppContext } from "../app-context";
 import { insertRow } from "../change-log";
 
@@ -47,24 +48,21 @@ describe("Phase 1 Integration", () => {
 			default: "ollama-local",
 		};
 
-		writeFileSync(
-			join(configDir, "allowlist.json"),
-			JSON.stringify(allowlist)
-		);
-		writeFileSync(
-			join(configDir, "model_backends.json"),
-			JSON.stringify(backends)
-		);
+		writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(allowlist));
+		writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(backends));
 	});
 
 	afterEach(() => {
 		try {
-			require("fs").rmSync(configDir, { recursive: true });
+			// Dynamic require for cleanup since import is at top level
+			const fs = require("node:fs");
+			fs.rmSync(configDir, { recursive: true });
 		} catch {
 			// ignore
 		}
 		try {
-			require("fs").unlinkSync(dbPath);
+			const fs = require("node:fs");
+			fs.unlinkSync(dbPath);
 		} catch {
 			// ignore
 		}
@@ -83,7 +81,9 @@ describe("Phase 1 Integration", () => {
 
 		// Step 2: Verify database has all 13 tables
 		const tables = ctx.db
-			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+			.query(
+				"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+			)
 			.all() as Array<{ name: string }>;
 
 		expect(tables.length).toBe(13);
@@ -165,19 +165,19 @@ describe("Phase 1 Integration", () => {
 			model_id: null,
 			tool_name: null,
 			created_at: now,
-			modified_at: null,
+			modified_at: now,
 			host_origin: ctx.siteId,
 		};
 
 		ctx.eventBus.emit("message:created", {
-			message: message as any,
+			message: message as Message,
 			thread_id: threadId,
 		});
 
 		// Verify event was received with correct typing
 		expect(messageCreatedEvent).toBeDefined();
 		if (messageCreatedEvent && typeof messageCreatedEvent === "object") {
-			expect((messageCreatedEvent as any).thread_id).toBe(threadId);
+			expect((messageCreatedEvent as { thread_id: string }).thread_id).toBe(threadId);
 		}
 
 		// Step 7: Verify config was loaded correctly
@@ -269,7 +269,7 @@ describe("Phase 1 Integration", () => {
 			model_id: null,
 			tool_name: null,
 			created_at: now,
-			modified_at: null,
+			modified_at: now,
 			host_origin: ctx.siteId,
 		};
 
@@ -281,7 +281,7 @@ describe("Phase 1 Integration", () => {
 			model_id: "ollama/llama3",
 			tool_name: null,
 			created_at: new Date(new Date(now).getTime() + 1000).toISOString(),
-			modified_at: null,
+			modified_at: now,
 			host_origin: ctx.siteId,
 		};
 
