@@ -1,0 +1,9 @@
+[test]
+coverage = true
+coverageThreshold = { line = 0.6, function = 0.6 }
+
+# Note: Per AC4.6, differentiated thresholds are needed:
+# core/agent/sync: 80% (line and function)
+# web/discord/cli: 60% (line and function)
+# bunfig.toml global threshold is the floor (60%).
+# Per-package thresholds enforced via CI scripts or package-level bunfig.toml overrides.

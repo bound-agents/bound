@@ -1,0 +1,20 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ES2022",
+		"moduleResolution": "bundler",
+		"strict": true,
+		"skipLibCheck": true,
+		"esModuleInterop": true,
+		"forceConsistentCasingInFileNames": true,
+		"resolveJsonModule": true,
+		"declaration": true,
+		"declarationMap": true,
+		"sourceMap": true,
+		"composite": true,
+		"experimentalDecorators": true,
+		"emitDecoratorMetadata": true,
+		"types": ["bun-types"]
+	},
+	"references": [{ "path": "packages/shared" }, { "path": "packages/core" }]
+}

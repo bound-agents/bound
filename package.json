@@ -1,0 +1,16 @@
+{
+	"name": "bound",
+	"private": true,
+	"workspaces": ["packages/*"],
+	"scripts": {
+		"test": "bun test --recursive",
+		"lint": "bunx @biomejs/biome check .",
+		"lint:fix": "bunx @biomejs/biome check --write .",
+		"typecheck": "tsc --noEmit"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^1.9.0",
+		"@types/bun": "latest",
+		"typescript": "^5.7.0"
+	}
+}
