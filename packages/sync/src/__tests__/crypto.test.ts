@@ -1,15 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { readFileSync, rmSync, existsSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-	generateKeypair,
-	exportPublicKey,
-	exportPrivateKey,
-	importPublicKey,
-	importPrivateKey,
 	deriveSiteId,
 	ensureKeypair,
+	exportPrivateKey,
+	exportPublicKey,
+	generateKeypair,
+	importPrivateKey,
+	importPublicKey,
 } from "../crypto";
 
 describe("crypto module", () => {
@@ -53,9 +53,7 @@ describe("crypto module", () => {
 		});
 
 		it("rejects public key without prefix", async () => {
-			await expect(importPublicKey("no-prefix")).rejects.toThrow(
-				"Invalid public key format",
-			);
+			await expect(importPublicKey("no-prefix")).rejects.toThrow("Invalid public key format");
 		});
 	});
 
@@ -119,8 +117,8 @@ describe("crypto module", () => {
 			await ensureKeypair(testDataDir);
 			const keyPath = join(testDataDir, "host.key");
 			const stat = require("node:fs").statSync(keyPath);
-			const mode = stat.mode & parseInt("777", 8);
-			expect(mode).toBe(parseInt("600", 8));
+			const mode = stat.mode & 0o777;
+			expect(mode).toBe(0o600);
 		});
 
 		it("reuses existing keypair on second call", async () => {
@@ -145,7 +143,7 @@ describe("crypto module", () => {
 			const privBytes = await exportPrivateKey(privateKey);
 
 			const reimportedPub = await importPublicKey(pubEncoded);
-			const reimportedPriv = await importPrivateKey(privBytes);
+			await importPrivateKey(privBytes);
 
 			const reimportedSiteId = await deriveSiteId(reimportedPub);
 			expect(originalSiteId).toBe(reimportedSiteId);
