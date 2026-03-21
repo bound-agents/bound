@@ -6,13 +6,13 @@ export {
 	insertRow,
 	updateRow,
 	softDelete,
-	type ConfigError,
 } from "./change-log";
 export {
 	loadConfigFile,
 	loadRequiredConfigs,
 	loadOptionalConfigs,
 	expandEnvVars,
+	type ConfigError,
 	type RequiredConfig,
 	type OptionalConfigs,
 } from "./config-loader";

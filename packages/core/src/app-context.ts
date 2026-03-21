@@ -2,8 +2,8 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
-import type { RequiredConfig } from "./config-loader";
-import type { OptionalConfigs } from "./config-loader";
+import type { RequiredConfig, OptionalConfigs } from "./config-loader";
+import { loadOptionalConfigs } from "./config-loader";
 import { bootstrapContainer } from "./container";
 import { ConfigService, DatabaseService, EventBusService, LoggerService } from "./container";
 
@@ -50,7 +50,8 @@ export function createAppContext(configDir: string, dbPath: string): AppContext 
 	// Get host name from OS
 	const hostName = hostname() || "localhost";
 
-	const optionalConfigs: OptionalConfigs = {};
+	// Load optional configs
+	const optionalConfigs = loadOptionalConfigs(configDir);
 
 	return {
 		db,

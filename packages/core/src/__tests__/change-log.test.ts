@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createChangeLogEntry, insertRow, softDelete, updateRow } from "../change-log";
+import { createChangeLogEntry, insertRow, softDelete, updateRow, withChangeLog } from "../change-log";
 import { createDatabase } from "../database";
 import { applySchema } from "../schema";
 
@@ -292,5 +292,86 @@ describe("Change Log Producer", () => {
 		expect(rowData.id).toBe(taskId);
 		expect(rowData.payload).toBe(JSON.stringify({ action: "check_status" }));
 		expect(rowData.requires).toBe(JSON.stringify(["github"]));
+	});
+
+	it("atomically inserts into business table and change_log with withChangeLog", () => {
+		const userId = randomUUID();
+		const now = new Date().toISOString();
+
+		const result = withChangeLog(db, siteId, () => {
+			const userData = {
+				id: userId,
+				display_name: "Grace",
+				first_seen_at: now,
+				modified_at: now,
+				deleted: 0,
+			};
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[userId, userData.display_name, userData.first_seen_at, userData.modified_at, userData.deleted],
+			);
+
+			return {
+				tableName: "users",
+				rowId: userId,
+				rowData: userData,
+				result: "success",
+			};
+		});
+
+		expect(result).toBe("success");
+
+		// Verify user was inserted
+		const user = db.query("SELECT * FROM users WHERE id = ?").get(userId) as Record<string, unknown>;
+		expect(user.display_name).toBe("Grace");
+
+		// Verify change_log entry was created
+		const entry = db.query("SELECT * FROM change_log WHERE row_id = ?").get(userId) as Record<
+			string,
+			unknown
+		>;
+		expect(entry).toBeDefined();
+		expect(entry.table_name).toBe("users");
+	});
+
+	it("rolls back both table and change_log on withChangeLog callback error", () => {
+		const userId = randomUUID();
+		const now = new Date().toISOString();
+
+		let errorThrown = false;
+
+		try {
+			withChangeLog(db, siteId, () => {
+				const userData = {
+					id: userId,
+					display_name: "Hank",
+					first_seen_at: now,
+					modified_at: now,
+					deleted: 0,
+				};
+
+				db.run(
+					"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+					[userId, userData.display_name, userData.first_seen_at, userData.modified_at, userData.deleted],
+				);
+
+				throw new Error("Simulated transaction failure");
+			});
+		} catch (error) {
+			if (error instanceof Error && error.message === "Simulated transaction failure") {
+				errorThrown = true;
+			}
+		}
+
+		expect(errorThrown).toBe(true);
+
+		// Verify user was NOT inserted (rollback worked)
+		const user = db.query("SELECT * FROM users WHERE id = ?").get(userId);
+		expect(user).toBeNull();
+
+		// Verify change_log entry was NOT created (rollback worked)
+		const entry = db.query("SELECT * FROM change_log WHERE row_id = ?").get(userId);
+		expect(entry).toBeUndefined();
 	});
 });

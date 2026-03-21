@@ -65,7 +65,7 @@ export const networkSchema = z.object({
 		.array(
 			z.object({
 				url: z.string(),
-				headers: z.record(z.string()),
+				headers: z.record(z.string(), z.string()),
 			}),
 		)
 		.optional(),

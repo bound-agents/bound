@@ -31,16 +31,16 @@ export function createChangeLogEntry(
 export function withChangeLog<T>(
 	db: Database,
 	siteId: string,
-	fn: (tx: Database) => {
+	fn: () => {
 		tableName: SyncedTableName;
 		rowId: string;
 		rowData: Record<string, unknown>;
 		result: T;
 	},
 ): T {
-	const transaction = db.transaction((innerDb: Database) => {
-		const { tableName, rowId, rowData, result } = fn(innerDb);
-		createChangeLogEntry(innerDb, tableName, rowId, siteId, rowData);
+	const transaction = db.transaction(() => {
+		const { tableName, rowId, rowData, result } = fn();
+		createChangeLogEntry(db, tableName, rowId, siteId, rowData);
 		return result;
 	});
 
@@ -58,7 +58,7 @@ export function insertRow(
 	// Validate all column names to prevent SQL injection
 	columns.forEach(validateColumnName);
 	const placeholders = columns.map(() => "?").join(", ");
-	const values = columns.map((c) => row[c]);
+	const values = columns.map((c) => row[c] ?? null) as Array<string | number | null | boolean>;
 
 	const txFn = db.transaction(() => {
 		db.run(

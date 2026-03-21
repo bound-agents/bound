@@ -12,12 +12,27 @@ import {
 	overlaySchema,
 	syncSchema,
 } from "@bound/shared";
-import type { z } from "zod";
 
 export interface ConfigError {
 	filename: string;
 	message: string;
 	fieldErrors: Record<string, string[]>;
+}
+
+// Duck-typed ZodSchema interface to avoid importing zod directly
+interface ZodSchema<T> {
+	safeParse(data: unknown): ZodSafeParseResult<T>;
+}
+
+interface ZodSafeParseResult<T> {
+	success: boolean;
+	data?: T;
+	error?: {
+		message: string;
+		flatten(): {
+			fieldErrors?: Record<string, (string | undefined)[] | undefined>;
+		};
+	};
 }
 
 export type RequiredConfig = {
@@ -60,7 +75,7 @@ function expandEnvVarsInObject(obj: unknown): unknown {
 export function loadConfigFile<T>(
 	configDir: string,
 	filename: string,
-	schema: z.ZodSchema<T>,
+	schema: ZodSchema<T>,
 ): Result<T, ConfigError> {
 	try {
 		const path = `${configDir}/${filename}`;
@@ -73,7 +88,7 @@ export function loadConfigFile<T>(
 		// Validate with Zod
 		const result = schema.safeParse(expanded);
 
-		if (!result.success) {
+		if (!result.success && result.error) {
 			const fieldErrors: Record<string, string[]> = {};
 
 			// Extract field errors from Zod error format
@@ -91,7 +106,15 @@ export function loadConfigFile<T>(
 			});
 		}
 
-		return ok(result.data);
+		if (result.success && result.data !== undefined) {
+			return ok(result.data);
+		}
+
+		return err({
+			filename,
+			message: "Validation failed: unknown error",
+			fieldErrors: {},
+		});
 	} catch (error) {
 		if (error instanceof SyntaxError) {
 			return err({
@@ -131,8 +154,8 @@ export function loadConfigFile<T>(
 
 export function loadRequiredConfigs(
 	configDir: string,
-	allowlistSchema: z.ZodSchema<AllowlistConfig>,
-	modelBackendsSchema: z.ZodSchema<ModelBackendsConfig>,
+	allowlistSchema: ZodSchema<AllowlistConfig>,
+	modelBackendsSchema: ZodSchema<ModelBackendsConfig>,
 ): Result<RequiredConfig, ConfigError[]> {
 	const errors: ConfigError[] = [];
 
@@ -150,6 +173,11 @@ export function loadRequiredConfigs(
 		return err(errors);
 	}
 
+	if (!allowlistResult.ok || !modelBackendsResult.ok) {
+		// This should never happen at this point due to the check above
+		return err(errors);
+	}
+
 	return ok({
 		allowlist: allowlistResult.value,
 		modelBackends: modelBackendsResult.value,
@@ -162,24 +190,24 @@ export function loadOptionalConfigs(configDir: string): OptionalConfigs {
 	// Define optional config files and their schemas
 	const optionalConfigs: Array<{
 		filename: string;
-		schema: z.ZodSchema<unknown>;
+		schema: ZodSchema<unknown>;
 		key: string;
 	}> = [
-		{ filename: "network.json", schema: networkSchema, key: "network" },
-		{ filename: "discord.json", schema: discordSchema, key: "discord" },
-		{ filename: "sync.json", schema: syncSchema, key: "sync" },
-		{ filename: "keyring.json", schema: keyringSchema, key: "keyring" },
-		{ filename: "mcp.json", schema: mcpSchema, key: "mcp" },
-		{ filename: "overlay.json", schema: overlaySchema, key: "overlay" },
-		{ filename: "cron_schedules.json", schema: cronSchedulesSchema, key: "cronSchedules" },
+		{ filename: "network.json", schema: networkSchema as ZodSchema<unknown>, key: "network" },
+		{ filename: "discord.json", schema: discordSchema as ZodSchema<unknown>, key: "discord" },
+		{ filename: "sync.json", schema: syncSchema as ZodSchema<unknown>, key: "sync" },
+		{ filename: "keyring.json", schema: keyringSchema as ZodSchema<unknown>, key: "keyring" },
+		{ filename: "mcp.json", schema: mcpSchema as ZodSchema<unknown>, key: "mcp" },
+		{ filename: "overlay.json", schema: overlaySchema as ZodSchema<unknown>, key: "overlay" },
+		{ filename: "cron_schedules.json", schema: cronSchedulesSchema as ZodSchema<unknown>, key: "cronSchedules" },
 	];
 
 	for (const { filename, schema, key } of optionalConfigs) {
 		const result = loadConfigFile(configDir, filename, schema);
-		if (result.ok || !result.error.message.includes("File not found")) {
+		if (result.ok || !result.error?.message.includes("File not found")) {
 			// Include both successful loads and actual validation errors
 			// Exclude only "file not found" errors (missing optional files are OK)
-			configs[key] = result;
+			configs[key] = result as Result<Record<string, unknown>, ConfigError>;
 		}
 	}
 
