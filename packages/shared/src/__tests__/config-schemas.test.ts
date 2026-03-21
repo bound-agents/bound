@@ -1,0 +1,346 @@
+import { describe, expect, it } from "bun:test";
+import {
+	allowlistSchema,
+	cronSchedulesSchema,
+	discordSchema,
+	keyringSchema,
+	mcpSchema,
+	modelBackendsSchema,
+	networkSchema,
+	overlaySchema,
+	syncSchema,
+} from "../config-schemas.js";
+
+describe("Config schemas", () => {
+	describe("allowlistSchema", () => {
+		it("validates correct allowlist config", () => {
+			const config = {
+				default_web_user: "alice",
+				users: {
+					alice: { display_name: "Alice", discord_id: "123456" },
+					bob: { display_name: "Bob" },
+				},
+			};
+			const result = allowlistSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("rejects empty users object", () => {
+			const config = {
+				default_web_user: "alice",
+				users: {},
+			};
+			const result = allowlistSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
+		it("rejects when default_web_user references undefined user", () => {
+			const config = {
+				default_web_user: "nonexistent",
+				users: {
+					alice: { display_name: "Alice" },
+				},
+			};
+			const result = allowlistSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
+		it("requires display_name for users", () => {
+			const config = {
+				default_web_user: "alice",
+				users: {
+					alice: { discord_id: "123456" },
+				},
+			};
+			const result = allowlistSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+	});
+
+	describe("modelBackendsSchema", () => {
+		it("validates correct model backends config", () => {
+			const config = {
+				backends: [
+					{
+						id: "ollama-local",
+						provider: "ollama",
+						model: "llama2",
+						base_url: "http://localhost:11434",
+						context_window: 4096,
+						tier: 1,
+					},
+				],
+				default: "ollama-local",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("rejects empty backends array", () => {
+			const config = {
+				backends: [],
+				default: "some-backend",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
+		it("rejects when default references undefined backend", () => {
+			const config = {
+				backends: [
+					{
+						id: "backend1",
+						provider: "ollama",
+						model: "llama2",
+						base_url: "http://localhost:11434",
+						context_window: 4096,
+						tier: 1,
+					},
+				],
+				default: "nonexistent-backend",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
+		it("requires base_url for ollama provider", () => {
+			const config = {
+				backends: [
+					{
+						id: "ollama-local",
+						provider: "ollama",
+						model: "llama2",
+						context_window: 4096,
+						tier: 1,
+					},
+				],
+				default: "ollama-local",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
+		it("requires base_url for openai-compatible provider", () => {
+			const config = {
+				backends: [
+					{
+						id: "openai-compat",
+						provider: "openai-compatible",
+						model: "gpt-4",
+						context_window: 8192,
+						tier: 3,
+					},
+				],
+				default: "openai-compat",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
+		it("rejects negative context_window", () => {
+			const config = {
+				backends: [
+					{
+						id: "bad-backend",
+						provider: "anthropic",
+						model: "claude-3",
+						context_window: -1,
+						tier: 3,
+					},
+				],
+				default: "bad-backend",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
+		it("rejects tier outside 1-5 range", () => {
+			const config = {
+				backends: [
+					{
+						id: "bad-tier",
+						provider: "anthropic",
+						model: "claude-3",
+						context_window: 200000,
+						tier: 6,
+					},
+				],
+				default: "bad-tier",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+	});
+
+	describe("networkSchema", () => {
+		it("validates correct network config", () => {
+			const config = {
+				allowedUrlPrefixes: ["https://api.example.com", "https://data.example.com"],
+				allowedMethods: ["GET", "POST"],
+			};
+			const result = networkSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+	});
+
+	describe("discordSchema", () => {
+		it("validates correct discord config", () => {
+			const config = {
+				bot_token: "some-token-123",
+				host: "http://localhost:3000",
+			};
+			const result = discordSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("requires non-empty bot_token", () => {
+			const config = {
+				bot_token: "",
+				host: "http://localhost:3000",
+			};
+			const result = discordSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+	});
+
+	describe("syncSchema", () => {
+		it("validates correct sync config", () => {
+			const config = {
+				hub: "https://hub.example.com",
+				sync_interval_seconds: 60,
+			};
+			const result = syncSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("uses default sync_interval_seconds if not provided", () => {
+			const config = {
+				hub: "https://hub.example.com",
+			};
+			const result = syncSchema.safeParse(config);
+			expect(result.success).toBe(true);
+			if (result.success) {
+				expect(result.data.sync_interval_seconds).toBe(30);
+			}
+		});
+
+		it("rejects non-positive sync_interval_seconds", () => {
+			const config = {
+				hub: "https://hub.example.com",
+				sync_interval_seconds: 0,
+			};
+			const result = syncSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+	});
+
+	describe("keyringSchema", () => {
+		it("validates correct keyring config", () => {
+			const config = {
+				hosts: {
+					host1: {
+						public_key: "key123",
+						url: "https://host1.example.com",
+					},
+					host2: {
+						public_key: "key456",
+						url: "https://host2.example.com",
+					},
+				},
+			};
+			const result = keyringSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("requires valid URLs", () => {
+			const config = {
+				hosts: {
+					host1: {
+						public_key: "key123",
+						url: "not-a-url",
+					},
+				},
+			};
+			const result = keyringSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+	});
+
+	describe("mcpSchema", () => {
+		it("validates correct mcp config", () => {
+			const config = {
+				servers: [
+					{
+						name: "filesystem",
+						command: "node",
+						args: ["mcp-server.js"],
+						transport: "stdio",
+					},
+					{
+						name: "web",
+						url: "https://mcp.example.com",
+						transport: "sse",
+						allow_tools: ["fetch", "search"],
+					},
+				],
+			};
+			const result = mcpSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("requires valid transport enum", () => {
+			const config = {
+				servers: [
+					{
+						name: "test",
+						transport: "invalid",
+					},
+				],
+			};
+			const result = mcpSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+	});
+
+	describe("overlaySchema", () => {
+		it("validates correct overlay config", () => {
+			const config = {
+				mounts: {
+					"/real/path": "/mount/path",
+					"/another/real": "/another/mount",
+				},
+			};
+			const result = overlaySchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+	});
+
+	describe("cronSchedulesSchema", () => {
+		it("validates correct cron schedules config", () => {
+			const config = {
+				daily_summary: {
+					schedule: "0 9 * * *",
+					thread: "summary-thread",
+					payload: "daily",
+				},
+				hourly_check: {
+					schedule: "0 * * * *",
+					requires: ["initialize"],
+					model_hint: "fast",
+				},
+			};
+			const result = cronSchedulesSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("requires schedule field", () => {
+			const config = {
+				task: {
+					thread: "some-thread",
+				},
+			};
+			const result = cronSchedulesSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+	});
+});
