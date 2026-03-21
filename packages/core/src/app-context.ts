@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
-import type { RequiredConfig, OptionalConfigs } from "./config-loader";
+import type { OptionalConfigs, RequiredConfig } from "./config-loader";
 import { loadOptionalConfigs } from "./config-loader";
 import { bootstrapContainer } from "./container";
 import { ConfigService, DatabaseService, EventBusService, LoggerService } from "./container";

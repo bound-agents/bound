@@ -3,7 +3,13 @@ import { randomUUID } from "node:crypto";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createChangeLogEntry, insertRow, softDelete, updateRow, withChangeLog } from "../change-log";
+import {
+	createChangeLogEntry,
+	insertRow,
+	softDelete,
+	updateRow,
+	withChangeLog,
+} from "../change-log";
 import { createDatabase } from "../database";
 import { applySchema } from "../schema";
 
@@ -309,7 +315,13 @@ describe("Change Log Producer", () => {
 
 			db.run(
 				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[userId, userData.display_name, userData.first_seen_at, userData.modified_at, userData.deleted],
+				[
+					userId,
+					userData.display_name,
+					userData.first_seen_at,
+					userData.modified_at,
+					userData.deleted,
+				],
 			);
 
 			return {
@@ -323,7 +335,10 @@ describe("Change Log Producer", () => {
 		expect(result).toBe("success");
 
 		// Verify user was inserted
-		const user = db.query("SELECT * FROM users WHERE id = ?").get(userId) as Record<string, unknown>;
+		const user = db.query("SELECT * FROM users WHERE id = ?").get(userId) as Record<
+			string,
+			unknown
+		>;
 		expect(user.display_name).toBe("Grace");
 
 		// Verify change_log entry was created
@@ -353,7 +368,13 @@ describe("Change Log Producer", () => {
 
 				db.run(
 					"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-					[userId, userData.display_name, userData.first_seen_at, userData.modified_at, userData.deleted],
+					[
+						userId,
+						userData.display_name,
+						userData.first_seen_at,
+						userData.modified_at,
+						userData.deleted,
+					],
 				);
 
 				throw new Error("Simulated transaction failure");
@@ -372,6 +393,6 @@ describe("Change Log Producer", () => {
 
 		// Verify change_log entry was NOT created (rollback worked)
 		const entry = db.query("SELECT * FROM change_log WHERE row_id = ?").get(userId);
-		expect(entry).toBeUndefined();
+		expect(entry).toBeNull();
 	});
 });

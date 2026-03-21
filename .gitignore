@@ -142,3 +142,9 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Compiled test artifacts (TypeScript output in src/__tests__/)
+packages/*/src/__tests__/**/*.js
+packages/*/src/__tests__/**/*.d.ts
+packages/*/src/__tests__/**/*.js.map
+packages/*/src/__tests__/**/*.d.ts.map

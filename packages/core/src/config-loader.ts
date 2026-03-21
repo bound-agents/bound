@@ -199,7 +199,11 @@ export function loadOptionalConfigs(configDir: string): OptionalConfigs {
 		{ filename: "keyring.json", schema: keyringSchema as ZodSchema<unknown>, key: "keyring" },
 		{ filename: "mcp.json", schema: mcpSchema as ZodSchema<unknown>, key: "mcp" },
 		{ filename: "overlay.json", schema: overlaySchema as ZodSchema<unknown>, key: "overlay" },
-		{ filename: "cron_schedules.json", schema: cronSchedulesSchema as ZodSchema<unknown>, key: "cronSchedules" },
+		{
+			filename: "cron_schedules.json",
+			schema: cronSchedulesSchema as ZodSchema<unknown>,
+			key: "cronSchedules",
+		},
 	];
 
 	for (const { filename, schema, key } of optionalConfigs) {
