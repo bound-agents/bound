@@ -6,7 +6,7 @@
 		"test": "bun test --recursive",
 		"lint": "bunx @biomejs/biome check .",
 		"lint:fix": "bunx @biomejs/biome check --write .",
-		"typecheck": "tsc -p packages/shared --noEmit && tsc -p packages/core --noEmit"
+		"typecheck": "tsc -p packages/shared --noEmit && tsc -p packages/core --noEmit && tsc -p packages/sync --noEmit"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.0",

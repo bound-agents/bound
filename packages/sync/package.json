@@ -1,0 +1,13 @@
+{
+	"name": "@bound/sync",
+	"version": "0.0.1",
+	"description": "Event-sourced sync protocol with Ed25519 authentication, LWW/append-only reducers, and HTTP push/pull/ack endpoints for distributed Bound instances",
+	"type": "module",
+	"main": "src/index.ts",
+	"types": "src/index.ts",
+	"dependencies": {
+		"@bound/shared": "workspace:*",
+		"@bound/core": "workspace:*",
+		"hono": "^4.0.0"
+	}
+}
