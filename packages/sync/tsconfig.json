@@ -2,13 +2,8 @@
 	"extends": "../../tsconfig.json",
 	"compilerOptions": {
 		"outDir": "dist",
-		"rootDir": "src",
-		"composite": true
+		"rootDir": "src"
 	},
 	"include": ["src"],
-	"exclude": ["src/**/*.test.ts", "src/**/*.integration.test.ts"],
-	"references": [
-		{ "path": "../shared" },
-		{ "path": "../core" }
-	]
+	"exclude": ["src/**/*.test.ts", "src/**/*.integration.test.ts"]
 }
