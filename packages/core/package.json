@@ -1,0 +1,13 @@
+{
+	"name": "@bound/core",
+	"version": "0.0.1",
+	"description": "SQLite database schema, migration runner, DI container bootstrap, and config file loading for the Bound agent system",
+	"type": "module",
+	"main": "src/index.ts",
+	"types": "src/index.ts",
+	"dependencies": {
+		"@bound/shared": "workspace:*",
+		"tsyringe": "^4.8.0",
+		"reflect-metadata": "^0.2.0"
+	}
+}
