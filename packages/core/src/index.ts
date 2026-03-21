@@ -16,3 +16,12 @@ export {
 	type RequiredConfig,
 	type OptionalConfigs,
 } from "./config-loader";
+export {
+	bootstrapContainer,
+	DatabaseService,
+	ConfigService,
+	EventBusService,
+	LoggerService,
+	container,
+} from "./container";
+export { createAppContext, type AppContext } from "./app-context";
