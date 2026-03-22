@@ -2,11 +2,15 @@
 // Main entry for `bound` command
 // Handles: bound init, bound start
 
-const args = process.argv.slice(2);
-const command = args[0];
+import { runInit } from "./commands/init.js";
+import { runStart } from "./commands/start.js";
 
-if (!command || command === "--help" || command === "-h") {
-	console.log(`
+async function main() {
+	const args = process.argv.slice(2);
+	const command = args[0];
+
+	if (!command || command === "--help" || command === "-h") {
+		console.log(`
 bound - Bound agent system CLI
 
 USAGE:
@@ -34,21 +38,54 @@ EXAMPLES:
   bound start
   bound init --anthropic --with-sync --with-mcp
 `);
-	process.exit(0);
-}
+		process.exit(0);
+	}
 
-if (command === "init") {
-	// Placeholder: will be implemented in Task 2
-	console.error("bound init not yet implemented");
+	if (command === "init") {
+		// Parse init args
+		const initArgs = {
+			ollama: args.includes("--ollama"),
+			anthropic: args.includes("--anthropic"),
+			bedrock: args.includes("--bedrock"),
+			region: args[args.indexOf("--region") + 1],
+			name: args[args.indexOf("--name") + 1],
+			withSync: args.includes("--with-sync"),
+			withMcp: args.includes("--with-mcp"),
+			withOverlay: args.includes("--with-overlay"),
+			force: args.includes("--force"),
+			configDir: args[args.indexOf("--config-dir") + 1] || "config",
+		};
+
+		try {
+			await runInit(initArgs);
+		} catch (error) {
+			console.error("Init failed:", error);
+			process.exit(1);
+		}
+		process.exit(0);
+	}
+
+	if (command === "start") {
+		// Parse start args
+		const startArgs = {
+			configDir: args[args.indexOf("--config-dir") + 1] || "config",
+		};
+
+		try {
+			await runStart(startArgs);
+		} catch (error) {
+			console.error("Start failed:", error);
+			process.exit(1);
+		}
+		process.exit(0);
+	}
+
+	console.error(`Unknown command: ${command}`);
+	console.error('Run "bound --help" for usage information');
 	process.exit(1);
 }
 
-if (command === "start") {
-	// Placeholder: will be implemented in Task 3
-	console.error("bound start not yet implemented");
+main().catch((error) => {
+	console.error("Fatal error:", error);
 	process.exit(1);
-}
-
-console.error(`Unknown command: ${command}`);
-console.error('Run "bound --help" for usage information');
-process.exit(1);
+});
