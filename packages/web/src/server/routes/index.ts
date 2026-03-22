@@ -14,7 +14,7 @@ export function registerRoutes(
 	modelsConfig?: ModelsConfig,
 ) {
 	return {
-		threads: createThreadsRoutes(db),
+		threads: createThreadsRoutes(db, modelsConfig?.default),
 		messages: createMessagesRoutes(db, eventBus),
 		files: createFilesRoutes(db),
 		status: createStatusRoutes(db, eventBus, modelsConfig),

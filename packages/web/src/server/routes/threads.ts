@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Thread } from "@bound/shared";
 import { Hono } from "hono";
 
-export function createThreadsRoutes(db: Database): Hono {
+export function createThreadsRoutes(db: Database, defaultModel?: string): Hono {
 	const app = new Hono();
 
 	app.get("/", (c) => {
@@ -35,6 +35,8 @@ export function createThreadsRoutes(db: Database): Hono {
 		try {
 			const threadId = randomUUID();
 			const now = new Date().toISOString();
+
+			console.log(`[web] POST /api/threads - creating thread ${threadId}`);
 
 			db.run(
 				`
@@ -121,7 +123,7 @@ export function createThreadsRoutes(db: Database): Hono {
 			const status = {
 				active: false,
 				state: null,
-				model: "gpt-4",
+				model: defaultModel ?? null,
 			};
 
 			return c.json(status);

@@ -86,6 +86,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 			},
 		});
 		await webServer.start();
+
+		// Wire message:created events to the agent loop
+		appContext.eventBus.on("message:created", async ({ thread_id }) => {
+			// TODO: spawn agent loop for this thread
+			console.log(`[agent] Message received in thread ${thread_id}, agent loop would start here`);
+		});
 	} catch (error) {
 		console.warn(
 			"Web server failed to start:",

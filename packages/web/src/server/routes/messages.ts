@@ -47,6 +47,7 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 	app.post("/:threadId/messages", async (c) => {
 		try {
 			const { threadId } = c.req.param();
+			console.log(`[web] POST /api/threads/${threadId}/messages - message received`);
 			const body = await c.req.json();
 
 			if (typeof body.content !== "string") {
@@ -85,10 +86,14 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 
 			const message = db.query("SELECT * FROM messages WHERE id = ?").get(messageId) as Message;
 
+			console.log(`[web] POST /api/threads/${threadId}/messages - message persisted (id=${messageId})`);
+
 			eventBus.emit("message:created", {
 				message,
 				thread_id: threadId,
 			});
+
+			console.log(`[web] POST /api/threads/${threadId}/messages - event emitted`);
 
 			return c.json(message, 201);
 		} catch (error) {

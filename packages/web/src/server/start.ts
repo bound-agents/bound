@@ -31,6 +31,14 @@ export async function createWebServer(
 	// Create the Hono app with all routes (loads embedded assets if available)
 	const app = await createApp(db, eventBus, config.models);
 
+	// Request logging middleware
+	app.use("*", async (c, next) => {
+		const method = c.req.method;
+		const path = new URL(c.req.url).pathname;
+		console.log(`[web] ${method} ${path}`);
+		return next();
+	});
+
 	// Create WebSocket handler
 	const wsHandler = createWebSocketHandler(eventBus);
 
