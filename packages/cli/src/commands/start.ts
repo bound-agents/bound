@@ -4,6 +4,7 @@
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { createAppContext } from "@bound/core";
+import { createWebServer } from "@bound/web";
 
 export interface StartArgs {
 	configDir?: string;
@@ -73,7 +74,20 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 	// 12. Web server
 	console.log("Starting web server...");
-	// TODO: Start Hono + WebSocket via @bound/web
+	let webServer: Awaited<ReturnType<typeof createWebServer>> | null = null;
+	try {
+		webServer = await createWebServer(appContext.db, appContext.eventBus, {
+			port: 3000,
+			host: "localhost",
+		});
+		await webServer.start();
+	} catch (error) {
+		console.warn(
+			"Web server failed to start:",
+			error instanceof Error ? error.message : String(error),
+		);
+		console.warn("Continuing without web UI. API will not be available.");
+	}
 
 	// 13. Discord (if configured)
 	console.log("Initializing Discord...");
@@ -104,17 +118,17 @@ Press Ctrl+C to stop.
 	const keepAlive = setInterval(() => {}, 1 << 30); // ~12 day interval, just keeps event loop alive
 
 	await new Promise<void>((resolve) => {
-		process.on("SIGINT", () => {
+		process.on("SIGINT", async () => {
 			console.log("\nShutting down gracefully...");
 			clearInterval(keepAlive);
-			// TODO: Stop all services in reverse order
+			if (webServer) await webServer.stop();
 			resolve();
 		});
 
-		process.on("SIGTERM", () => {
+		process.on("SIGTERM", async () => {
 			console.log("\nTerminating...");
 			clearInterval(keepAlive);
-			// TODO: Stop all services in reverse order
+			if (webServer) await webServer.stop();
 			resolve();
 		});
 	});

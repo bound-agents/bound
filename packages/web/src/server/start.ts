@@ -30,9 +30,12 @@ export async function createWebServer(
 	const { existsSync } = await import("node:fs");
 
 	const distPath = join(import.meta.dir, "../../../dist/client");
-	if (!existsSync(join(distPath, "index.html"))) {
-		throw new Error(
-			`Svelte SPA not built. Run 'cd packages/web && bun run build' to build the client.`,
+	const spaAvailable = existsSync(join(distPath, "index.html"));
+	if (!spaAvailable) {
+		console.warn(
+			"Svelte SPA not found at",
+			distPath,
+			"— web UI will not be available. API endpoints will still work.",
 		);
 	}
 
