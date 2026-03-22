@@ -11,35 +11,34 @@ describe("multi-instance sync", () => {
 
 	beforeEach(async () => {
 		// Generate keypairs for both instances upfront
-		const keypairA = await ensureKeypair("/tmp/bound-test-a/keys");
-		const keypairB = await ensureKeypair("/tmp/bound-test-b/keys");
+		const keypairA = await ensureKeypair("/tmp/bound-test-keys-a");
+		const keypairB = await ensureKeypair("/tmp/bound-test-keys-b");
 
 		const pubKeyA = await exportPublicKey(keypairA.publicKey);
 		const pubKeyB = await exportPublicKey(keypairB.publicKey);
 
-		// Create keyring shared by both
+		// Create keyring shared by both - hosts is a Record with site_id as key
 		keyring = {
-			hosts: [
-				{
-					site_id: keypairA.siteId,
-					host_name: "laptop",
+			hosts: {
+				[keypairA.siteId]: {
 					public_key: pubKeyA,
+					url: "http://localhost:3100",
 				},
-				{
-					site_id: keypairB.siteId,
-					host_name: "cloud-vm",
+				[keypairB.siteId]: {
 					public_key: pubKeyB,
+					url: "http://localhost:3200",
 				},
-			],
+			},
 		};
 
-		// Create instances
+		// Create instances using the pre-generated keypairs
 		instanceA = await createTestInstance({
 			name: "a",
 			port: 3100,
 			dbPath: "/tmp/bound-test-a/bound.db",
 			role: "hub",
 			keyring,
+			keypairPath: "/tmp/bound-test-keys-a",
 		});
 
 		instanceB = await createTestInstance({
@@ -49,6 +48,7 @@ describe("multi-instance sync", () => {
 			role: "spoke",
 			hubPort: 3100,
 			keyring,
+			keypairPath: "/tmp/bound-test-keys-b",
 		});
 	});
 
@@ -431,7 +431,7 @@ describe("multi-instance sync", () => {
 		}
 
 		// Now B reconnects and syncs
-		const result = await instanceB.syncCycle();
+		const result = await instanceB.syncClient.syncCycle();
 		expect(result.ok).toBe(true);
 
 		// Verify B caught up and has all changes

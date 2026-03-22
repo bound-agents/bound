@@ -14,7 +14,7 @@ export interface TestInstance {
 	siteId: string;
 	port: number;
 	server: ReturnType<typeof Bun.serve>;
-	syncClient: SyncClient;
+	syncClient: SyncClient | null;
 	cleanup: () => Promise<void>;
 }
 
@@ -52,6 +52,7 @@ const FULL_SCHEMA = `
 		summary_model_id TEXT,
 		extracted_through TEXT,
 		created_at TEXT NOT NULL,
+		modified_at TEXT NOT NULL,
 		last_message_at TEXT NOT NULL,
 		deleted INTEGER NOT NULL DEFAULT 0
 	);
@@ -195,8 +196,9 @@ export async function createTestInstance(config: {
 	role: "hub" | "spoke";
 	hubPort?: number;
 	keyring: KeyringConfig;
+	keypairPath?: string;
 }): Promise<TestInstance> {
-	const { name, port, dbPath, role, hubPort, keyring } = config;
+	const { name, port, dbPath, role, hubPort, keyring, keypairPath } = config;
 
 	// Ensure directory exists
 	const dir = dbPath.substring(0, dbPath.lastIndexOf("/"));
@@ -204,8 +206,9 @@ export async function createTestInstance(config: {
 		await mkdir(dir, { recursive: true });
 	}
 
-	// Generate keypair for this instance
-	const keypair = await ensureKeypair(`${dir}/host-${name}`);
+	// Generate or load keypair for this instance
+	const effectiveKeypairPath = keypairPath ?? `${dir}/host-${name}`;
+	const keypair = await ensureKeypair(effectiveKeypairPath);
 	const siteId = keypair.siteId;
 
 	// Create SQLite database with full schema
@@ -251,6 +254,7 @@ export async function createTestInstance(config: {
 			hubUrl,
 			createMockLogger(),
 			createMockEventBus(),
+			keyring,
 		);
 	}
 
@@ -259,7 +263,7 @@ export async function createTestInstance(config: {
 		siteId,
 		port,
 		server,
-		syncClient: syncClient as SyncClient,
+		syncClient,
 		cleanup: async () => {
 			server.stop();
 			db.close();

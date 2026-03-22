@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import type { Logger } from "@bound/shared";
 import { getMinConfirmedSeq } from "./peer-cursor.js";
 
 export function determinePruningMode(db: Database): "multi-host" | "single-host" {
@@ -16,18 +17,21 @@ export function determinePruningMode(db: Database): "multi-host" | "single-host"
 export function pruneChangeLog(
 	db: Database,
 	mode: "multi-host" | "single-host",
+	logger?: Logger,
 ): { deleted: number } {
 	if (mode === "single-host") {
 		// In single-host mode, no peers consume the change_log, so we can safely delete everything
-		const result = db.query("DELETE FROM change_log");
-		result.run();
+		db.query("DELETE FROM change_log").run();
 
 		// Get the count of deleted rows from the changes count
-		const countBefore = db.query("SELECT changes() as count").get() as
-			| { count: number }
-			| undefined;
+		const countResult = db.query("SELECT changes() as count").get() as { count: number } | undefined;
+		const deleted = countResult?.count ?? 0;
 
-		return { deleted: countBefore?.count ?? 0 };
+		if (deleted > 0) {
+			logger?.info(`Pruned ${deleted} change_log entries in single-host mode`);
+		}
+
+		return { deleted };
 	}
 
 	// Multi-host mode: only delete confirmed events
@@ -40,12 +44,17 @@ export function pruneChangeLog(
 	// Delete all events up to and including minSeq
 	db.query("DELETE FROM change_log WHERE seq <= ?").run(minSeq);
 
-	const countBefore = db.query("SELECT changes() as count").get() as { count: number } | undefined;
+	const countResult = db.query("SELECT changes() as count").get() as { count: number } | undefined;
+	const deleted = countResult?.count ?? 0;
 
-	return { deleted: countBefore?.count ?? 0 };
+	if (deleted > 0) {
+		logger?.info(`Pruned ${deleted} change_log entries through seq ${minSeq} in multi-host mode`);
+	}
+
+	return { deleted };
 }
 
-export function startPruningLoop(db: Database, intervalMs: number): { stop: () => void } {
+export function startPruningLoop(db: Database, intervalMs: number, logger?: Logger): { stop: () => void } {
 	let timerId: Timer | null = null;
 	let stopped = false;
 
@@ -56,11 +65,7 @@ export function startPruningLoop(db: Database, intervalMs: number): { stop: () =
 			if (stopped) return;
 
 			const mode = determinePruningMode(db);
-			const result = pruneChangeLog(db, mode);
-
-			if (result.deleted > 0) {
-				// Pruning occurred, could log this or emit event
-			}
+			pruneChangeLog(db, mode, logger);
 		}, intervalMs);
 	};
 

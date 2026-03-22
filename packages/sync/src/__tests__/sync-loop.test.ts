@@ -4,12 +4,9 @@ import type { KeyringConfig, Logger, SyncConfig, TypedEventEmitter } from "@boun
 import { SyncClient, type SyncError, type SyncResult, resolveHubUrl } from "../sync-loop.js";
 
 // Mock TypedEventEmitter for testing
-const createMockEventBus = (): TypedEventEmitter => ({
-	emit: mock(() => {}) as never,
-	on: mock(() => {}) as never,
-	off: mock(() => {}) as never,
-	once: mock(() => {}) as never,
-});
+const createMockEventBus = (): TypedEventEmitter => {
+	return new (require("@bound/shared").TypedEventEmitter)();
+};
 
 const createMockLogger = (): Logger => ({
 	info: mock(() => {}),
@@ -68,9 +65,8 @@ describe("sync-loop", () => {
 			);
 
 			const syncConfig: SyncConfig = {
-				enabled: true,
 				hub: "http://fallback:3100",
-				retry_interval_seconds: 60,
+				sync_interval_seconds: 60,
 			};
 			const keyring: KeyringConfig = { hosts: {} };
 
@@ -81,9 +77,8 @@ describe("sync-loop", () => {
 
 		it("falls back to sync.json.hub if cluster_config not present", () => {
 			const syncConfig: SyncConfig = {
-				enabled: true,
 				hub: "http://sync-config-hub:3100",
-				retry_interval_seconds: 60,
+				sync_interval_seconds: 60,
 			};
 			const keyring: KeyringConfig = { hosts: {} };
 
@@ -103,6 +98,7 @@ describe("sync-loop", () => {
 
 			const eventBus = createMockEventBus();
 			const logger = createMockLogger();
+			const keyring: KeyringConfig = { hosts: {} };
 
 			const client = new SyncClient(
 				db,
@@ -111,6 +107,7 @@ describe("sync-loop", () => {
 				"http://localhost:3100",
 				logger,
 				eventBus,
+				keyring,
 			);
 
 			expect(client).toBeDefined();
@@ -152,6 +149,7 @@ describe("sync-loop", () => {
 
 			const eventBus = createMockEventBus();
 			const logger = createMockLogger();
+			const keyring: KeyringConfig = { hosts: {} };
 
 			const client = new SyncClient(
 				db,
@@ -160,6 +158,7 @@ describe("sync-loop", () => {
 				"http://localhost:3100",
 				logger,
 				eventBus,
+				keyring,
 			);
 
 			const result = await client.syncCycle();
@@ -188,6 +187,7 @@ describe("sync-loop", () => {
 
 			const eventBus = createMockEventBus();
 			const logger = createMockLogger();
+			const keyring: KeyringConfig = { hosts: {} };
 
 			const client = new SyncClient(
 				db,
@@ -196,13 +196,14 @@ describe("sync-loop", () => {
 				"http://localhost:3100",
 				logger,
 				eventBus,
+				keyring,
 			);
 
 			const result = await client.syncCycle();
 
 			expect(result.ok).toBe(false);
 			if (!result.ok) {
-				expect((result.error as SyncError).message).toContain("Network error");
+				expect(result.error.message).toContain("Network error");
 			}
 
 			globalThis.fetch = originalFetch;

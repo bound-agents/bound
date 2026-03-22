@@ -23,6 +23,8 @@ export interface SyncError {
 }
 
 export class SyncClient {
+	private hubSiteId: string | null = null;
+
 	constructor(
 		private db: Database,
 		private siteId: string,
@@ -30,29 +32,48 @@ export class SyncClient {
 		private hubUrl: string,
 		private logger: Logger,
 		private eventBus: TypedEventEmitter,
-	) {}
+		private keyring: KeyringConfig,
+	) {
+		// Resolve hub's site_id from keyring
+		this.hubSiteId = this.resolveHubSiteId();
+	}
+
+	private resolveHubSiteId(): string | null {
+		// Find the site_id in keyring that matches our hubUrl
+		for (const [siteId, hostConfig] of Object.entries(
+			this.keyring.hosts as Record<string, { public_key: string; url: string }>,
+		)) {
+			if (hostConfig.url === this.hubUrl) {
+				return siteId;
+			}
+		}
+		return null;
+	}
 
 	async syncCycle(): Promise<Result<SyncResult, SyncError>> {
 		const startTime = Date.now();
 		let pushed = 0;
 		let pulled = 0;
 
+		// Use hub's site_id for peer cursor tracking
+		const peerSiteId = this.hubSiteId ?? this.siteId;
+
 		try {
 			// PUSH: send outbound events to hub
-			const outbound = fetchOutboundChangeset(this.db, this.siteId, this.siteId);
+			const outbound = fetchOutboundChangeset(this.db, peerSiteId, this.siteId);
 			if (outbound.events.length > 0) {
 				const pushResult = await this.push(outbound);
 				if (!pushResult.ok) {
 					return pushResult;
 				}
 				pushed = outbound.events.length;
-				updatePeerCursor(this.db, this.siteId, { last_sent: outbound.source_seq_end });
+				updatePeerCursor(this.db, peerSiteId, { last_sent: outbound.source_seq_end });
 			}
 
 			// PULL: fetch inbound events from hub
 			const syncState = this.db
 				.query("SELECT last_received FROM sync_state WHERE peer_site_id = ?")
-				.get(this.siteId) as { last_received: number } | undefined;
+				.get(peerSiteId) as { last_received: number } | undefined;
 			const sinceSeq = syncState?.last_received ?? 0;
 
 			const pullResult = await this.pull(sinceSeq);
@@ -71,8 +92,8 @@ export class SyncClient {
 			}
 
 			// Update cursor and reset errors
-			updatePeerCursor(this.db, this.siteId, { last_received: newLastReceived });
-			resetSyncErrors(this.db, this.siteId);
+			updatePeerCursor(this.db, peerSiteId, { last_received: newLastReceived });
+			resetSyncErrors(this.db, peerSiteId);
 
 			const duration = Date.now() - startTime;
 
@@ -84,7 +105,7 @@ export class SyncClient {
 
 			return ok({ pushed, pulled, duration_ms: duration });
 		} catch (error) {
-			incrementSyncErrors(this.db, this.siteId);
+			incrementSyncErrors(this.db, peerSiteId);
 			const message = error instanceof Error ? error.message : "Unknown error";
 			this.logger.error(`Sync error: ${message}`);
 			return err({
@@ -206,14 +227,33 @@ export class SyncClient {
 export function startSyncLoop(client: SyncClient, intervalSeconds: number): { stop: () => void } {
 	let timerId: Timer | null = null;
 	let stopped = false;
+	let consecutiveFailures = 0;
+	const maxIntervalMs = 5 * 60 * 1000; // 5 minutes per spec §8.6
 
 	const startLoop = () => {
 		if (stopped) return;
 
-		timerId = setInterval(async () => {
+		const runSync = async () => {
 			if (stopped) return;
-			await client.syncCycle();
-		}, intervalSeconds * 1000);
+
+			const result = await client.syncCycle();
+
+			if (!result.ok) {
+				consecutiveFailures++;
+			} else {
+				consecutiveFailures = 0;
+			}
+
+			// Calculate backoff: min(initialInterval * 2^failures, 300000ms)
+			const baseIntervalMs = intervalSeconds * 1000;
+			const backoffMultiplier = Math.pow(2, consecutiveFailures);
+			const nextIntervalMs = Math.min(baseIntervalMs * backoffMultiplier, maxIntervalMs);
+
+			// Use setTimeout recursion instead of setInterval to support dynamic intervals
+			timerId = setTimeout(runSync, nextIntervalMs);
+		};
+
+		runSync();
 	};
 
 	startLoop();
@@ -221,7 +261,7 @@ export function startSyncLoop(client: SyncClient, intervalSeconds: number): { st
 	return {
 		stop: () => {
 			stopped = true;
-			if (timerId) clearInterval(timerId);
+			if (timerId) clearTimeout(timerId as unknown as number);
 		},
 	};
 }
@@ -229,7 +269,7 @@ export function startSyncLoop(client: SyncClient, intervalSeconds: number): { st
 export function resolveHubUrl(
 	db: Database,
 	syncConfig: SyncConfig,
-	_keyring: KeyringConfig,
+	keyring: KeyringConfig,
 ): string {
 	// Check cluster_config.cluster_hub first
 	const clusterHub = db.query('SELECT value FROM cluster_config WHERE key = "cluster_hub"').get() as
@@ -241,5 +281,18 @@ export function resolveHubUrl(
 	}
 
 	// Fall back to sync.json
-	return syncConfig.hub;
+	if (syncConfig.hub) {
+		return syncConfig.hub;
+	}
+
+	// Last resort: try to find first host URL in keyring
+	for (const hostConfig of Object.values(
+		keyring.hosts as Record<string, { public_key: string; url: string }>,
+	)) {
+		if (hostConfig.url) {
+			return hostConfig.url;
+		}
+	}
+
+	throw new Error("Unable to resolve hub URL from config, sync.json, or keyring");
 }

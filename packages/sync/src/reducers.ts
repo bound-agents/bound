@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createChangeLogEntry } from "@bound/core";
-import type { ChangeLogEntry } from "@bound/shared";
+import type { ChangeLogEntry, SyncedTableName } from "@bound/shared";
 import { TABLE_REDUCER_MAP } from "@bound/shared";
 
 const columnCache: Record<string, string[]> = {};
@@ -13,7 +13,22 @@ interface TableInfo {
 	pk: number;
 }
 
+// Validate table name - must be a known synced table
+function validateTableName(tableName: unknown): tableName is SyncedTableName {
+	const validTables = Object.keys(TABLE_REDUCER_MAP);
+	return typeof tableName === "string" && validTables.includes(tableName);
+}
+
+// Validate column name - must match /^[a-z_]+$/ pattern
+function validateColumnName(colName: string): boolean {
+	return /^[a-z_]+$/.test(colName);
+}
+
 export function getTableColumns(db: Database, tableName: string): string[] {
+	if (!validateTableName(tableName)) {
+		throw new Error(`Invalid table name: ${tableName}`);
+	}
+
 	if (columnCache[tableName]) {
 		return columnCache[tableName];
 	}
@@ -26,11 +41,29 @@ export function getTableColumns(db: Database, tableName: string): string[] {
 	return columnNames;
 }
 
+// Export for testing - clears the column cache to avoid state leakage between tests
+export function clearColumnCache(): void {
+	Object.keys(columnCache).forEach((key) => {
+		delete columnCache[key];
+	});
+}
+
 export function applyAppendOnlyReducer(db: Database, event: ChangeLogEntry): { applied: boolean } {
+	// Validate table name
+	if (!validateTableName(event.table_name)) {
+		return { applied: false };
+	}
+
 	const rowData = JSON.parse(event.row_data);
 	const hasModifiedAt = rowData.modified_at !== null && rowData.modified_at !== undefined;
 
 	const columns = Object.keys(rowData);
+
+	// Validate all column names
+	if (!columns.every((col) => validateColumnName(col))) {
+		return { applied: false };
+	}
+
 	const placeholders = columns.map(() => "?").join(", ");
 	const values = columns.map((k) => rowData[k]);
 
@@ -74,6 +107,11 @@ export function applyAppendOnlyReducer(db: Database, event: ChangeLogEntry): { a
 }
 
 export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied: boolean } {
+	// Validate table name
+	if (!validateTableName(event.table_name)) {
+		return { applied: false };
+	}
+
 	const rowData = JSON.parse(event.row_data);
 	const schemaColumns = getTableColumns(db, event.table_name);
 

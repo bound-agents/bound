@@ -15,6 +15,9 @@ export function createSyncAuthMiddleware(keyring: KeyringConfig): MiddlewareHand
 		const path = c.req.path;
 		const body = await c.req.text();
 
+		// Cache body in context so route handlers don't need to read it again
+		c.set("rawBody", body);
+
 		const headers: Record<string, string> = {};
 		c.req.raw.headers.forEach((value, key) => {
 			headers[key.toLowerCase()] = value;

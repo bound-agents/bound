@@ -28,7 +28,7 @@ export function createSyncRoutes(
 	// POST /sync/push - Receive events from a spoke
 	app.post("/sync/push", async (c) => {
 		try {
-			const body = await c.req.text();
+			const body = c.get("rawBody") as string;
 			const changeset = JSON.parse(body);
 
 			const events = changeset.events || [];
@@ -55,9 +55,9 @@ export function createSyncRoutes(
 	// POST /sync/pull - Return events to a spoke
 	app.post("/sync/pull", async (c) => {
 		try {
-			const body = await c.req.text();
-			const request = JSON.parse(body) as { since_seq: number };
-			const sinceSeq = request.since_seq || 0;
+			const body = c.get("rawBody") as string;
+			const request = JSON.parse(body) as { since_seq?: number };
+			const sinceSeq = request.since_seq ?? 0;
 
 			const requesterSiteId = c.get("siteId") as string;
 
@@ -78,7 +78,7 @@ export function createSyncRoutes(
 	// POST /sync/ack - Spoke confirms receipt
 	app.post("/sync/ack", async (c) => {
 		try {
-			const body = await c.req.text();
+			const body = c.get("rawBody") as string;
 			const request = JSON.parse(body) as { last_received: number };
 			const lastReceived = request.last_received;
 
