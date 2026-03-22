@@ -152,4 +152,4 @@ Every write to a synced table also writes to `change_log` via the transactional 
 - [Sandbox and LLM](sandbox-and-llm.md) -- virtual filesystem, command framework, LLM drivers
 - [Agent System](agent-system.md) -- agent loop, scheduler, commands, MCP bridge
 - [Web and Discord](web-and-discord.md) -- HTTP API, WebSocket, Svelte UI, Discord bot
-- [CLI and Operations](cli-operations.md) -- init, start, management commands, binary build
+- [CLI and Operations](../cli-operations.md) -- init, start, management commands, binary build
