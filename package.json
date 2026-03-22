@@ -8,7 +8,8 @@
 		"test:e2e": "bunx playwright test e2e/",
 		"lint": "bunx @biomejs/biome check .",
 		"lint:fix": "bunx @biomejs/biome check --write .",
-		"typecheck": "tsc -p packages/shared --noEmit && tsc -p packages/core --noEmit && tsc -p packages/sync --noEmit && tsc -p packages/sandbox --noEmit && tsc -p packages/llm --noEmit && tsc -p packages/agent --noEmit && tsc -p packages/discord --noEmit && tsc -p packages/web --noEmit"
+		"typecheck": "tsc -p packages/shared --noEmit && tsc -p packages/core --noEmit && tsc -p packages/sync --noEmit && tsc -p packages/sandbox --noEmit && tsc -p packages/llm --noEmit && tsc -p packages/agent --noEmit && tsc -p packages/discord --noEmit && tsc -p packages/web --noEmit && tsc -p packages/cli --noEmit",
+		"build": "bun run scripts/build.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.0",
