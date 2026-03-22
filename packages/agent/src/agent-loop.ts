@@ -8,7 +8,10 @@ import type { AgentLoopConfig, AgentLoopResult, AgentLoopState } from "./types";
 // Bash type - see comment in phase_04.md: just-bash may not be available on npm
 // This interface allows for a stubbed implementation
 interface BashLike {
-	exec?: (cmd: string, options?: Record<string, unknown>) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+	exec?: (
+		cmd: string,
+		options?: Record<string, unknown>,
+	) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 }
 
 export class AgentLoop {
@@ -70,17 +73,22 @@ export class AgentLoop {
 
 				// Persist error as alert message
 				const alertId = randomUUID();
-				insertRow(this.ctx.db, "messages", {
-					id: alertId,
-					thread_id: this.config.threadId,
-					role: "alert",
-					content: `Error: ${errorMsg}`,
-					model_id: null,
-					tool_name: null,
-					created_at: new Date().toISOString(),
-					modified_at: new Date().toISOString(),
-					host_origin: this.ctx.hostName,
-				}, this.ctx.siteId);
+				insertRow(
+					this.ctx.db,
+					"messages",
+					{
+						id: alertId,
+						thread_id: this.config.threadId,
+						role: "alert",
+						content: `Error: ${errorMsg}`,
+						model_id: null,
+						tool_name: null,
+						created_at: new Date().toISOString(),
+						modified_at: new Date().toISOString(),
+						host_origin: this.ctx.hostName,
+					},
+					this.ctx.siteId,
+				);
 
 				return {
 					messagesCreated: this.messagesCreated,
@@ -105,17 +113,22 @@ export class AgentLoop {
 			const assistantContent = parsedChunks.textContent || "";
 
 			if (assistantContent) {
-				insertRow(this.ctx.db, "messages", {
-					id: assistantMessageId,
-					thread_id: this.config.threadId,
-					role: "assistant",
-					content: assistantContent,
-					model_id: this.config.modelId || null,
-					tool_name: null,
-					created_at: new Date().toISOString(),
-					modified_at: new Date().toISOString(),
-					host_origin: this.ctx.hostName,
-				}, this.ctx.siteId);
+				insertRow(
+					this.ctx.db,
+					"messages",
+					{
+						id: assistantMessageId,
+						thread_id: this.config.threadId,
+						role: "assistant",
+						content: assistantContent,
+						model_id: this.config.modelId || null,
+						tool_name: null,
+						created_at: new Date().toISOString(),
+						modified_at: new Date().toISOString(),
+						host_origin: this.ctx.hostName,
+					},
+					this.ctx.siteId,
+				);
 				this.messagesCreated++;
 			}
 
