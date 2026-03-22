@@ -100,16 +100,20 @@ Open http://localhost:3000 in your browser to start chatting.
 Press Ctrl+C to stop.
 `);
 
-	// Keep process alive and handle graceful shutdown
+	// Keep process alive with an interval timer and handle graceful shutdown
+	const keepAlive = setInterval(() => {}, 1 << 30); // ~12 day interval, just keeps event loop alive
+
 	await new Promise<void>((resolve) => {
 		process.on("SIGINT", () => {
 			console.log("\nShutting down gracefully...");
+			clearInterval(keepAlive);
 			// TODO: Stop all services in reverse order
 			resolve();
 		});
 
 		process.on("SIGTERM", () => {
 			console.log("\nTerminating...");
+			clearInterval(keepAlive);
 			// TODO: Stop all services in reverse order
 			resolve();
 		});
