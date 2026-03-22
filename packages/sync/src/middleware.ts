@@ -6,6 +6,7 @@ type AppContext = {
 	Variables: {
 		siteId: string;
 		hostName: string;
+		rawBody: string;
 	};
 };
 
