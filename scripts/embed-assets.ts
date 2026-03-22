@@ -6,10 +6,13 @@
  */
 
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, extname } from "node:path";
+import { join, extname, resolve, dirname } from "node:path";
 
-const DIST_DIR = "packages/web/dist/client";
-const OUTPUT = "packages/web/src/server/embedded-assets.ts";
+// Resolve paths relative to this script, not cwd
+const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname);
+const ROOT = resolve(SCRIPT_DIR, "..");
+const DIST_DIR = join(ROOT, "packages/web/dist/client");
+const OUTPUT = join(ROOT, "packages/web/src/server/embedded-assets.ts");
 
 interface Asset {
 	path: string; // URL path like "/index.html" or "/assets/index-abc.js"
