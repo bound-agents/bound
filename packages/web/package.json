@@ -7,7 +7,7 @@
 	"types": "src/index.ts",
 	"scripts": {
 		"dev": "vite",
-		"build": "vite build",
+		"build": "vite build && bun run ../../scripts/embed-assets.ts",
 		"preview": "vite preview"
 	},
 	"dependencies": {

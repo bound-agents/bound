@@ -151,3 +151,5 @@ packages/*/src/__tests__/**/*.d.ts.map
 bound-test-*
 bound-e2e-*
 data/
+packages/web/src/server/embedded-assets.ts
+packages/web/dist/

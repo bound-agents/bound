@@ -10,11 +10,11 @@ describe("API Routes", () => {
 	let eventBus: TypedEventEmitter;
 	let app: Hono;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		db = createDatabase(":memory:");
 		applySchema(db);
 		eventBus = new TypedEventEmitter();
-		app = createApp(db, eventBus);
+		app = await createApp(db, eventBus);
 	});
 
 	describe("GET /api/threads", () => {

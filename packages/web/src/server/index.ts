@@ -2,8 +2,18 @@ import type { Database } from "bun:sqlite";
 import type { TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
-import { embeddedAssets } from "./embedded-assets";
 import { registerRoutes } from "./routes/index";
+
+type AssetMap = Map<string, { content: string; contentType: string }>;
+
+async function loadEmbeddedAssets(): Promise<AssetMap> {
+	try {
+		const mod = await import("./embedded-assets");
+		return mod.embeddedAssets ?? new Map();
+	} catch {
+		return new Map();
+	}
+}
 
 export async function createApp(
 	db: Database,
@@ -33,20 +43,19 @@ export async function createApp(
 	app.route("/api/tasks", routes.tasks);
 
 	// Serve static Svelte SPA assets
-	if (embeddedAssets.size > 0) {
-		// Explicit routes for each embedded asset
-		for (const [path, asset] of embeddedAssets) {
+	const assets = await loadEmbeddedAssets();
+	if (assets.size > 0) {
+		for (const [path, asset] of assets) {
 			app.get(path, () => {
 				return new Response(asset.content, {
 					headers: { "content-type": asset.contentType },
 				});
 			});
 		}
-		// SPA fallback — serve index.html for unknown paths (client-side routing)
 		app.get("/", () => {
-			const index = embeddedAssets.get("/index.html");
-			return new Response(index!.content, {
-				headers: { "content-type": index!.contentType },
+			const index = assets.get("/index.html")!;
+			return new Response(index.content, {
+				headers: { "content-type": index.contentType },
 			});
 		});
 	} else {
