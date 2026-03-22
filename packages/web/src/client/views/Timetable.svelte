@@ -1,5 +1,5 @@
 <script lang="ts">
-import { onMount } from "svelte";
+import { onDestroy, onMount } from "svelte";
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let tasks = [];
@@ -16,8 +16,15 @@ async function loadTasks(): Promise<void> {
 	loading = false;
 }
 
+let pollInterval: ReturnType<typeof setInterval> | null = null;
+
 onMount(() => {
 	loadTasks();
+	pollInterval = setInterval(loadTasks, 5000);
+});
+
+onDestroy(() => {
+	if (pollInterval !== null) clearInterval(pollInterval);
 });
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template

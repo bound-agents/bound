@@ -55,11 +55,13 @@ export const api = {
 		return fetchJson(`/api/threads/${threadId}/messages`);
 	},
 
-	async sendMessage(threadId: string, content: string): Promise<Message> {
+	async sendMessage(threadId: string, content: string, modelId?: string): Promise<Message> {
+		const body: Record<string, string> = { content };
+		if (modelId) body.model_id = modelId;
 		return fetchJson(`/api/threads/${threadId}/messages`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ content }),
+			body: JSON.stringify(body),
 		});
 	},
 };

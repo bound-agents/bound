@@ -1,5 +1,5 @@
 <script lang="ts">
-import { onMount } from "svelte";
+import { onDestroy, onMount } from "svelte";
 import { api } from "../lib/api";
 import type { Thread } from "../lib/api";
 // biome-ignore lint/correctness/noUnusedImports: used in template handlers
@@ -20,12 +20,23 @@ async function createThread(): Promise<void> {
 	}
 }
 
-onMount(async () => {
+let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+async function loadThreads(): Promise<void> {
 	try {
 		threads = await api.listThreads();
 	} catch (error) {
 		console.error("Failed to load threads:", error);
 	}
+}
+
+onMount(async () => {
+	await loadThreads();
+	pollInterval = setInterval(loadThreads, 5000);
+});
+
+onDestroy(() => {
+	if (pollInterval !== null) clearInterval(pollInterval);
 });
 
 // Metro line colors (10-color palette)

@@ -1,3 +1,8 @@
+<script module lang="ts">
+// Module-level selected model so message-sending code can reference it
+export let activeModel = "";
+</script>
+
 <script lang="ts">
 import { onMount } from "svelte";
 
@@ -16,6 +21,7 @@ onMount(async () => {
 			const data = (await res.json()) as { models: ModelInfo[]; default: string };
 			models = data.models;
 			selectedModel = data.default;
+			activeModel = data.default;
 		}
 	} catch (error) {
 		console.error("Failed to load models:", error);
@@ -23,7 +29,7 @@ onMount(async () => {
 });
 
 function handleChange(): void {
-	// Model change handler
+	activeModel = selectedModel;
 }
 </script>
 
