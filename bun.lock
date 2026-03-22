@@ -10,6 +10,16 @@
         "typescript": "^5.7.0",
       },
     },
+    "packages/agent": {
+      "name": "@bound/agent",
+      "version": "0.0.1",
+      "dependencies": {
+        "@bound/core": "workspace:*",
+        "@bound/llm": "workspace:*",
+        "@bound/sandbox": "workspace:*",
+        "@bound/shared": "workspace:*",
+      },
+    },
     "packages/core": {
       "name": "@bound/core",
       "version": "0.0.1",
@@ -72,6 +82,8 @@
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@1.9.4", "", { "os": "win32", "cpu": "x64" }, "sha512-8Y5wMhVIPaWe6jw2H+KlEm4wP/f7EW3810ZLmDlrEEy5KvBsb9ECEfu/kMWD484ijfQ8+nIi0giMgu9g1UAuuA=="],
 
     "@borewit/text-codec": ["@borewit/text-codec@0.2.2", "", {}, "sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ=="],
+
+    "@bound/agent": ["@bound/agent@workspace:packages/agent"],
 
     "@bound/core": ["@bound/core@workspace:packages/core"],
 

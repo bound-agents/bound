@@ -7,3 +7,16 @@ export { AgentLoop } from "./agent-loop";
 
 // Export context assembly
 export { assembleContext } from "./context-assembly";
+
+// Export commands
+export { getAllCommands } from "./commands/index";
+export {
+	query,
+	memorize,
+	forget,
+	schedule,
+	cancel,
+	emit,
+	purge,
+	awaitCmd,
+} from "./commands/index";
