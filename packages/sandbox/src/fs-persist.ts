@@ -78,6 +78,8 @@ export async function persistWorkspaceChanges(
 
 	db.exec("BEGIN IMMEDIATE");
 
+	const pendingEvents: Array<{ path: string; operation: "created" | "modified" | "deleted" }> = [];
+
 	try {
 		for (const change of changes) {
 			// Read current DB state for OCC check
@@ -89,9 +91,11 @@ export async function persistWorkspaceChanges(
 
 			// OCC conflict detection: DB state differs from pre-snapshot
 			if (dbRow && preSnapshotHash) {
-				// A file exists in DB that we thought we knew about
-				// If DB differs from our pre-snapshot, resolve via LWW
-				const isConflict = preSnapshotHash !== dbRow.content;
+				// Hash the DB content for apples-to-apples comparison with pre-snapshot hash
+				const hasher = new Bun.CryptoHasher("sha256");
+				hasher.update(dbRow.content);
+				const dbContentHash = hasher.digest("hex");
+				const isConflict = preSnapshotHash !== dbContentHash;
 				if (isConflict) {
 					conflictPaths.push(change.path);
 					conflictCount++;
@@ -148,8 +152,8 @@ export async function persistWorkspaceChanges(
 				}
 			}
 
-			// Emit event
-			eventBus.emit("file:changed", {
+			// Collect events to emit after commit
+			pendingEvents.push({
 				path: change.path,
 				operation: change.operation,
 			});
@@ -159,6 +163,11 @@ export async function persistWorkspaceChanges(
 	} catch (error) {
 		db.exec("ROLLBACK");
 		throw error;
+	}
+
+	// Emit events AFTER successful commit
+	for (const event of pendingEvents) {
+		eventBus.emit("file:changed", event);
 	}
 
 	return ok({

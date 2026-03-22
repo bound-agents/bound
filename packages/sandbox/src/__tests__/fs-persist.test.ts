@@ -201,7 +201,8 @@ describe("Filesystem Persistence with OCC", () => {
 
 		expect(result.ok).toBe(true);
 		if (result.ok) {
-			expect(result.value.conflicts).toBeGreaterThanOrEqual(0);
+			expect(result.value.conflicts).toBeGreaterThan(0);
+			expect(result.value.conflictPaths).toContain("/home/user/contested.txt");
 		}
 	});
 });
