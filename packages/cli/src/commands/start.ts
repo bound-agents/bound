@@ -100,16 +100,18 @@ Open http://localhost:3000 in your browser to start chatting.
 Press Ctrl+C to stop.
 `);
 
-	// Graceful shutdown
-	process.on("SIGINT", async () => {
-		console.log("\nShutting down gracefully...");
-		// TODO: Stop all services in reverse order
-		process.exit(0);
-	});
+	// Keep process alive and handle graceful shutdown
+	await new Promise<void>((resolve) => {
+		process.on("SIGINT", () => {
+			console.log("\nShutting down gracefully...");
+			// TODO: Stop all services in reverse order
+			resolve();
+		});
 
-	process.on("SIGTERM", async () => {
-		console.log("\nTerminating...");
-		// TODO: Stop all services in reverse order
-		process.exit(0);
+		process.on("SIGTERM", () => {
+			console.log("\nTerminating...");
+			// TODO: Stop all services in reverse order
+			resolve();
+		});
 	});
 }

@@ -77,11 +77,11 @@ EXAMPLES:
 
 		try {
 			await runStart(startArgs);
+			process.exit(0);
 		} catch (error) {
 			console.error("Start failed:", error);
 			process.exit(1);
 		}
-		process.exit(0);
 	}
 
 	console.error(`Unknown command: ${command}`);
