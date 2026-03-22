@@ -48,9 +48,10 @@ export async function verifyRequest(
 	headers: Record<string, string>,
 	body: string,
 ): Promise<Result<{ siteId: string; hostName: string }, SignatureError>> {
-	const siteId = headers["X-Site-Id"];
-	const timestamp = headers["X-Timestamp"];
-	const signature = headers["X-Signature"];
+	// Headers are case-insensitive; check both variants
+	const siteId = headers["X-Site-Id"] || headers["x-site-id"];
+	const timestamp = headers["X-Timestamp"] || headers["x-timestamp"];
+	const signature = headers["X-Signature"] || headers["x-signature"];
 
 	if (!siteId || !timestamp || !signature) {
 		return err({

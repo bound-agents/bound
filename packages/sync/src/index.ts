@@ -5,3 +5,6 @@ export * from "./reducers.js";
 export * from "./changeset.js";
 export * from "./peer-cursor.js";
 export * from "./sync-loop.js";
+export * from "./middleware.js";
+export * from "./routes.js";
+export * from "./pruning.js";
