@@ -18,7 +18,7 @@ export {
 } from "./task-resolution";
 
 // Export commands
-export { getAllCommands } from "./commands/index";
+export { getAllCommands, addMCPCommands } from "./commands/index";
 export {
 	query,
 	memorize,
@@ -29,3 +29,16 @@ export {
 	purge,
 	awaitCmd,
 } from "./commands/index";
+
+// Export MCP client and bridge
+export { MCPClient } from "./mcp-client";
+export type {
+	MCPServerConfig,
+	ToolDefinition,
+	ResourceDefinition,
+	PromptDefinition,
+	ToolResult,
+	ResourceContent,
+	PromptResult,
+} from "./mcp-client";
+export { generateMCPCommands, updateHostMCPInfo } from "./mcp-bridge";

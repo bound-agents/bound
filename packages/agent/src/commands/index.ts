@@ -14,6 +14,10 @@ import { purge } from "./purge";
 import { query } from "./query";
 import { schedule } from "./schedule";
 
+/**
+ * Get all built-in commands
+ * MCP-generated commands are added separately via addMCPCommands()
+ */
 export function getAllCommands(): CommandDefinition[] {
 	return [
 		query,
@@ -31,6 +35,17 @@ export function getAllCommands(): CommandDefinition[] {
 		modelHint,
 		archive,
 	];
+}
+
+/**
+ * Add MCP-generated commands to the command list
+ * Import generateMCPCommands from mcp-bridge where needed to avoid circular dependencies
+ */
+export function addMCPCommands(
+	commands: CommandDefinition[],
+	mcpCommands: CommandDefinition[],
+): CommandDefinition[] {
+	return [...commands, ...mcpCommands];
 }
 
 export {
