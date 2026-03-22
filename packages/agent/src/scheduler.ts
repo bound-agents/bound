@@ -119,7 +119,7 @@ export class Scheduler {
 
 	private phase0Eviction(): void {
 		const now = new Date();
-		const nowStr = now.toISOString();
+		const _nowStr = now.toISOString();
 		const leaseExpiry = new Date(now.getTime() - LEASE_DURATION).toISOString();
 
 		// (a) Expire stale claimed tasks
@@ -247,7 +247,7 @@ export class Scheduler {
 	}
 
 	// Event handler to be called when an event is emitted
-	onEvent(eventType: string, payload: unknown): void {
+	onEvent(eventType: string, _payload: unknown): void {
 		if (this.eventDepth >= MAX_EVENT_DEPTH) {
 			this.ctx.logger.warn("Max event depth exceeded");
 			return;
@@ -256,7 +256,7 @@ export class Scheduler {
 		this.eventDepth++;
 
 		try {
-			const now = new Date().toISOString();
+			const _now = new Date().toISOString();
 			const eventTasks = this.ctx.db
 				.query(
 					"SELECT * FROM tasks WHERE type = 'event' AND status = 'pending' AND trigger_spec = ?",

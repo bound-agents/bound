@@ -1,12 +1,11 @@
-// biome-ignore lint/suspicious/noExplicitAny: mocks require any casts in tests
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, type createAppContext, createDatabase } from "@bound/core";
 import type { AgentLoopResult } from "@bound/agent";
+import { applySchema, type createAppContext, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { Scheduler } from "../scheduler";
 
@@ -97,6 +96,7 @@ describe("Scheduler Integration", () => {
 			};
 		};
 
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100); // Fast poll for testing
 
@@ -148,6 +148,7 @@ describe("Scheduler Integration", () => {
 			}),
 		});
 
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100);
 
@@ -233,6 +234,7 @@ describe("Scheduler Integration", () => {
 			}),
 		});
 
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100);
 
@@ -280,6 +282,7 @@ describe("Scheduler Integration", () => {
 			}),
 		});
 
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100);
 

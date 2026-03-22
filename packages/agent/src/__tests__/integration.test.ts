@@ -1,4 +1,3 @@
-// biome-ignore lint/suspicious/noExplicitAny: mocks require any casts in tests
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
@@ -154,6 +153,7 @@ describe("Agent Loop End-to-End Integration", () => {
 		};
 
 		// Run agent loop
+		// biome-ignore lint/suspicious/noExplicitAny: test mocks require any casts
 		const agentLoop = new AgentLoop(mockAppContext as any, mockSandbox as any, mockLLMBackend, {
 			threadId,
 			userId,
@@ -281,6 +281,7 @@ describe("Agent Loop End-to-End Integration", () => {
 			exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
 		};
 
+		// biome-ignore lint/suspicious/noExplicitAny: test mocks require any casts
 		const agentLoop = new AgentLoop(mockAppContext as any, mockSandbox as any, mockLLMBackend, {
 			threadId,
 			userId,
@@ -364,10 +365,9 @@ describe("Agent Loop End-to-End Integration", () => {
 
 		// LLM that throws error
 		const mockLLMBackend: LLMBackend = {
+			// biome-ignore lint/correctness/useYield: generator throws before yield
 			async *chat() {
 				throw new Error("LLM service unavailable");
-				// biome-ignore lint/correctness/useYield: Intentionally unreachable to satisfy generator type
-				yield undefined as never;
 			},
 		};
 
@@ -395,6 +395,7 @@ describe("Agent Loop End-to-End Integration", () => {
 			exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
 		};
 
+		// biome-ignore lint/suspicious/noExplicitAny: test mocks require any casts
 		const agentLoop = new AgentLoop(mockAppContext as any, mockSandbox as any, mockLLMBackend, {
 			threadId,
 			userId,

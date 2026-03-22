@@ -102,7 +102,7 @@ function createResourcesCommand(clients: Map<string, MCPClient>): CommandDefinit
 	return {
 		name: "resources",
 		args: [{ name: "server", required: false, description: "Optional server name to filter by" }],
-		handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
+		handler: async (args: Record<string, string>, _ctx: CommandContext): Promise<CommandResult> => {
 			try {
 				const targetServer = args.server;
 				const resources: string[] = [];
@@ -127,7 +127,7 @@ function createResourcesCommand(clients: Map<string, MCPClient>): CommandDefinit
 				}
 
 				return {
-					stdout: resources.length > 0 ? resources.join("\n") + "\n" : "",
+					stdout: resources.length > 0 ? `${resources.join("\n")}\n` : "",
 					stderr: "",
 					exitCode: 0,
 				};
@@ -153,7 +153,7 @@ function createResourceCommand(clients: Map<string, MCPClient>): CommandDefiniti
 			{ name: "uri", required: true, description: "Resource URI to read" },
 			{ name: "server", required: false, description: "Server name (optional)" },
 		],
-		handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
+		handler: async (args: Record<string, string>, _ctx: CommandContext): Promise<CommandResult> => {
 			try {
 				const uri = args.uri;
 				const targetServer = args.server;
@@ -170,7 +170,7 @@ function createResourceCommand(clients: Map<string, MCPClient>): CommandDefiniti
 					try {
 						const content = await client.readResource(uri);
 						return {
-							stdout: content.content + "\n",
+							stdout: `${content.content}\n`,
 							stderr: "",
 							exitCode: 0,
 						};
@@ -203,7 +203,7 @@ function createPromptsCommand(clients: Map<string, MCPClient>): CommandDefinitio
 	return {
 		name: "prompts",
 		args: [{ name: "server", required: false, description: "Optional server name to filter by" }],
-		handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
+		handler: async (args: Record<string, string>, _ctx: CommandContext): Promise<CommandResult> => {
 			try {
 				const targetServer = args.server;
 				const prompts: string[] = [];
@@ -228,7 +228,7 @@ function createPromptsCommand(clients: Map<string, MCPClient>): CommandDefinitio
 				}
 
 				return {
-					stdout: prompts.length > 0 ? prompts.join("\n") + "\n" : "",
+					stdout: prompts.length > 0 ? `${prompts.join("\n")}\n` : "",
 					stderr: "",
 					exitCode: 0,
 				};
@@ -251,7 +251,7 @@ function createPromptCommand(clients: Map<string, MCPClient>): CommandDefinition
 	return {
 		name: "prompt",
 		args: [{ name: "name", required: true, description: "Prompt name (format: server/name)" }],
-		handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
+		handler: async (args: Record<string, string>, _ctx: CommandContext): Promise<CommandResult> => {
 			try {
 				const nameArg = args.name;
 				const [serverName, promptName] = nameArg.includes("/")
@@ -287,7 +287,7 @@ function createPromptCommand(clients: Map<string, MCPClient>): CommandDefinition
 				const output = result.messages.map((m) => m.content).join("\n");
 
 				return {
-					stdout: output + "\n",
+					stdout: `${output}\n`,
 					stderr: "",
 					exitCode: 0,
 				};
@@ -342,7 +342,7 @@ export function updateHostMCPInfo(
 		);
 	} catch (error) {
 		// Log but don't fail
-		const errorMsg = error instanceof Error ? error.message : String(error);
+		const _errorMsg = error instanceof Error ? error.message : String(error);
 		// Note: logger not available in this function signature, so we skip logging for now
 		// This will be fixed in a future phase when logger is available in the context
 	}
