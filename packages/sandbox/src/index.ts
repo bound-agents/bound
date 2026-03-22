@@ -24,3 +24,6 @@ export {
 } from "./commands";
 
 export { createSandbox, type SandboxConfig, type ExecutionLimits } from "./sandbox-factory";
+
+export type { ScanResult } from "./overlay-scanner";
+export { scanOverlayIndex, startOverlayScanLoop } from "./overlay-scanner";

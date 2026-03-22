@@ -42,3 +42,23 @@ export type {
 	PromptResult,
 } from "./mcp-client";
 export { generateMCPCommands, updateHostMCPInfo } from "./mcp-bridge";
+
+// Export advisories
+export {
+	createAdvisory,
+	approveAdvisory,
+	dismissAdvisory,
+	deferAdvisory,
+	applyAdvisory,
+	getPendingAdvisories,
+} from "./advisories";
+
+// Export redaction
+export { redactMessage, redactThread, type RedactionResult } from "./redaction";
+
+// Export title generation
+export { generateThreadTitle } from "./title-generation";
+
+// Export summary extraction
+export type { ExtractionResult } from "./summary-extraction";
+export { extractSummaryAndMemories, buildCrossThreadDigest } from "./summary-extraction";
