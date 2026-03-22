@@ -1,12 +1,7 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import type { KeyringConfig } from "@bound/shared";
-import { generateKeypair, exportPublicKey, deriveSiteId } from "../crypto";
-import {
-	signRequest,
-	verifyRequest,
-	detectClockSkew,
-	type SignatureError,
-} from "../signing";
+import { deriveSiteId, exportPublicKey, generateKeypair } from "../crypto";
+import { type SignatureError, detectClockSkew, signRequest, verifyRequest } from "../signing";
 
 describe("signing module", () => {
 	let siteId: string;
@@ -72,13 +67,7 @@ describe("signing module", () => {
 		it("rejects unknown site", async () => {
 			const headers = await signRequest(privateKey, siteId, "POST", "/sync/push", "{}");
 			headers["X-Site-Id"] = "unknown-site-id";
-			const result = await verifyRequest(
-				keyring,
-				"POST",
-				"/sync/push",
-				headers,
-				"{}",
-			);
+			const result = await verifyRequest(keyring, "POST", "/sync/push", headers, "{}");
 			expect(result.ok).toBe(false);
 			if (!result.ok) {
 				const error = result.error as SignatureError;
@@ -89,13 +78,7 @@ describe("signing module", () => {
 		it("rejects invalid signature", async () => {
 			const headers = await signRequest(privateKey, siteId, "POST", "/sync/push", "{}");
 			headers["X-Signature"] = "0".repeat(128);
-			const result = await verifyRequest(
-				keyring,
-				"POST",
-				"/sync/push",
-				headers,
-				"{}",
-			);
+			const result = await verifyRequest(keyring, "POST", "/sync/push", headers, "{}");
 			expect(result.ok).toBe(false);
 			if (!result.ok) {
 				const error = result.error as SignatureError;
@@ -112,11 +95,7 @@ describe("signing module", () => {
 
 			const signingBase = `POST\n/sync/push\n${oldTimestamp}\n${bodyHashHex}`;
 			const signingBaseBytes = new TextEncoder().encode(signingBase);
-			const signatureBytes = await crypto.subtle.sign(
-				"Ed25519",
-				privateKey,
-				signingBaseBytes,
-			);
+			const signatureBytes = await crypto.subtle.sign("Ed25519", privateKey, signingBaseBytes);
 			const signatureHex = Buffer.from(signatureBytes).toString("hex");
 
 			const headers = {
@@ -125,13 +104,7 @@ describe("signing module", () => {
 				"X-Signature": signatureHex,
 			};
 
-			const result = await verifyRequest(
-				keyring,
-				"POST",
-				"/sync/push",
-				headers,
-				body,
-			);
+			const result = await verifyRequest(keyring, "POST", "/sync/push", headers, body);
 			expect(result.ok).toBe(false);
 			if (!result.ok) {
 				const error = result.error as SignatureError;
@@ -156,13 +129,7 @@ describe("signing module", () => {
 		});
 
 		it("rejects missing headers", async () => {
-			const result = await verifyRequest(
-				keyring,
-				"POST",
-				"/sync/push",
-				{},
-				"{}",
-			);
+			const result = await verifyRequest(keyring, "POST", "/sync/push", {}, "{}");
 			expect(result.ok).toBe(false);
 			if (!result.ok) {
 				const error = result.error as SignatureError;
@@ -222,20 +189,8 @@ describe("signing module", () => {
 			];
 
 			for (const req of requests) {
-				const headers = await signRequest(
-					privateKey,
-					siteId,
-					req.method,
-					req.path,
-					req.body,
-				);
-				const result = await verifyRequest(
-					keyring,
-					req.method,
-					req.path,
-					headers,
-					req.body,
-				);
+				const headers = await signRequest(privateKey, siteId, req.method, req.path, req.body);
+				const result = await verifyRequest(keyring, req.method, req.path, headers, req.body);
 				expect(result.ok).toBe(true);
 			}
 		});

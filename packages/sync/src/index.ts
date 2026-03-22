@@ -4,3 +4,4 @@ export * from "./signing.js";
 export * from "./reducers.js";
 export * from "./changeset.js";
 export * from "./peer-cursor.js";
+export * from "./sync-loop.js";

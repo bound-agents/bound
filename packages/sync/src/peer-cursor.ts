@@ -22,15 +22,25 @@ export function updatePeerCursor(
 
 	// Build UPDATE clause for conflicts
 	const updateKeys = Object.keys(updates);
-	const setClauses = updateKeys.map((key) => `${key} = ?`).concat(["last_sync_at = ?"]);
-	const setValues = updateKeys.map((key) => updates[key as keyof typeof updates]).concat([now]);
+	const setClauses = [...updateKeys.map((key) => `${key} = ?`), "last_sync_at = ?"];
+	const setValues: (number | string)[] = [
+		...updateKeys.map((key) => (updates[key as keyof typeof updates] ?? 0) as number | string),
+		now,
+	];
 
 	db.run(
 		`INSERT INTO sync_state (peer_site_id, last_received, last_sent, sync_errors, last_sync_at)
 		VALUES (?, COALESCE(?, 0), COALESCE(?, 0), COALESCE(?, 0), ?)
 		ON CONFLICT(peer_site_id) DO UPDATE SET
 		${setClauses.join(", ")}`,
-		[peerSiteId, updates.last_received, updates.last_sent, updates.sync_errors, now, ...setValues],
+		[
+			peerSiteId,
+			updates.last_received ?? 0,
+			updates.last_sent ?? 0,
+			updates.sync_errors ?? 0,
+			now,
+			...setValues,
+		] as const,
 	);
 }
 

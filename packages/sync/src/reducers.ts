@@ -18,13 +18,12 @@ export function getTableColumns(db: Database, tableName: string): string[] {
 		return columnCache[tableName];
 	}
 
-	const columns = db
-		.query(`PRAGMA table_info(${tableName})`)
-		.all()
-		.map((row: TableInfo) => row.name);
+	const columns = db.query(`PRAGMA table_info(${tableName})`).all() as TableInfo[];
 
-	columnCache[tableName] = columns;
-	return columns;
+	const columnNames = columns.map((row) => row.name);
+
+	columnCache[tableName] = columnNames;
+	return columnNames;
 }
 
 export function applyAppendOnlyReducer(db: Database, event: ChangeLogEntry): { applied: boolean } {

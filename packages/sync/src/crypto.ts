@@ -1,16 +1,12 @@
-import { CryptoHasher } from "bun";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { CryptoHasher } from "bun";
 
 export async function generateKeypair(): Promise<{
 	publicKey: CryptoKey;
 	privateKey: CryptoKey;
 }> {
-	const keyPair = await crypto.subtle.generateKey(
-		{ name: "Ed25519" },
-		true,
-		["sign", "verify"],
-	);
+	const keyPair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
 	return {
 		publicKey: keyPair.publicKey,
 		privateKey: keyPair.privateKey,
@@ -34,9 +30,7 @@ export async function importPublicKey(encoded: string): Promise<CryptoKey> {
 	}
 	const base64 = encoded.slice("ed25519:".length);
 	const spkiBuffer = Buffer.from(base64, "base64");
-	return crypto.subtle.importKey("spki", spkiBuffer, "Ed25519", true, [
-		"verify",
-	]);
+	return crypto.subtle.importKey("spki", spkiBuffer, "Ed25519", true, ["verify"]);
 }
 
 export async function importPrivateKey(bytes: Uint8Array): Promise<CryptoKey> {
@@ -65,9 +59,7 @@ export async function ensureKeypair(dataDir: string): Promise<{
 		const privateKeyBytes = readFileSync(privateKeyPath);
 		const publicKeyEncoded = readFileSync(publicKeyPath, "utf-8");
 
-		const privateKey = await importPrivateKey(
-			new Uint8Array(privateKeyBytes),
-		);
+		const privateKey = await importPrivateKey(new Uint8Array(privateKeyBytes));
 		const publicKey = await importPublicKey(publicKeyEncoded);
 		const siteId = await deriveSiteId(publicKey);
 

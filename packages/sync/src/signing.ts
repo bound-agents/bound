@@ -1,6 +1,6 @@
-import { CryptoHasher } from "bun";
 import type { KeyringConfig, Result } from "@bound/shared";
 import { err, ok } from "@bound/shared";
+import { CryptoHasher } from "bun";
 
 export interface SignatureError {
 	code: "unknown_site" | "invalid_signature" | "stale_timestamp";
@@ -30,11 +30,7 @@ export async function signRequest(
 
 	const signingBase = `${method}\n${path}\n${timestamp}\n${bodyHashHex}`;
 	const signingBaseBytes = new TextEncoder().encode(signingBase);
-	const signatureBytes = await crypto.subtle.sign(
-		"Ed25519",
-		privateKey,
-		signingBaseBytes,
-	);
+	const signatureBytes = await crypto.subtle.sign("Ed25519", privateKey, signingBaseBytes);
 	const signatureHex = Buffer.from(signatureBytes).toString("hex");
 
 	return {
@@ -67,10 +63,7 @@ export async function verifyRequest(
 	let hostName: string | null = null;
 	let publicKeyEncoded: string | null = null;
 	for (const [name, hostConfig] of Object.entries(
-		keyring.hosts as Record<
-			string,
-			{ public_key: string; url: string }
-		>,
+		keyring.hosts as Record<string, { public_key: string; url: string }>,
 	)) {
 		if (name === siteId) {
 			hostName = name;
@@ -138,10 +131,7 @@ export async function verifyRequest(
 	}
 }
 
-export function detectClockSkew(
-	localTimestamp: string,
-	remoteTimestamp: string,
-): number | null {
+export function detectClockSkew(localTimestamp: string, remoteTimestamp: string): number | null {
 	const localTime = new Date(localTimestamp).getTime();
 	const remoteTime = new Date(remoteTimestamp).getTime();
 	const skewMs = Math.abs(localTime - remoteTime);
