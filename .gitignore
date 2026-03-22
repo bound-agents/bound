@@ -148,3 +148,5 @@ packages/*/src/__tests__/**/*.js
 packages/*/src/__tests__/**/*.d.ts
 packages/*/src/__tests__/**/*.js.map
 packages/*/src/__tests__/**/*.d.ts.map
+bound-test-*
+bound-e2e-*

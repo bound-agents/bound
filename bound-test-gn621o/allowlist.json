@@ -1,8 +1,0 @@
-{
-	"default_web_user": "user",
-	"users": {
-		"user": {
-			"display_name": "user"
-		}
-	}
-}
