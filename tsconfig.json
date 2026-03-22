@@ -19,6 +19,7 @@
 		{ "path": "packages/shared" },
 		{ "path": "packages/core" },
 		{ "path": "packages/sync" },
-		{ "path": "packages/sandbox" }
+		{ "path": "packages/sandbox" },
+		{ "path": "packages/llm" }
 	]
 }

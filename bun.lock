@@ -19,6 +19,13 @@
         "tsyringe": "^4.8.0",
       },
     },
+    "packages/llm": {
+      "name": "@bound/llm",
+      "version": "0.0.1",
+      "dependencies": {
+        "@bound/shared": "workspace:*",
+      },
+    },
     "packages/sandbox": {
       "name": "@bound/sandbox",
       "version": "0.0.1",
@@ -67,6 +74,8 @@
     "@borewit/text-codec": ["@borewit/text-codec@0.2.2", "", {}, "sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ=="],
 
     "@bound/core": ["@bound/core@workspace:packages/core"],
+
+    "@bound/llm": ["@bound/llm@workspace:packages/llm"],
 
     "@bound/sandbox": ["@bound/sandbox@workspace:packages/sandbox"],
 

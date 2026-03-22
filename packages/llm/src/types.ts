@@ -1,0 +1,82 @@
+export interface LLMBackend {
+	chat(params: ChatParams): AsyncIterable<StreamChunk>;
+	capabilities(): BackendCapabilities;
+}
+
+export interface ChatParams {
+	model: string;
+	messages: LLMMessage[];
+	tools?: ToolDefinition[];
+	max_tokens?: number;
+	temperature?: number;
+	system?: string;
+	cache_breakpoints?: number[];
+}
+
+export type LLMMessage = {
+	role: "user" | "assistant" | "system" | "tool_call" | "tool_result";
+	content: string | ContentBlock[];
+	tool_use_id?: string;
+	model_id?: string;
+	host_origin?: string;
+};
+
+export type ContentBlock = {
+	type: "text" | "tool_use";
+	text?: string;
+	id?: string;
+	name?: string;
+	input?: Record<string, unknown>;
+};
+
+export type StreamChunk =
+	| { type: "text"; content: string }
+	| { type: "tool_use_start"; id: string; name: string }
+	| { type: "tool_use_args"; id: string; partial_json: string }
+	| { type: "tool_use_end"; id: string }
+	| { type: "done"; usage: { input_tokens: number; output_tokens: number } }
+	| { type: "error"; error: string };
+
+export interface BackendCapabilities {
+	streaming: boolean;
+	tool_use: boolean;
+	system_prompt: boolean;
+	prompt_caching: boolean;
+	vision: boolean;
+	max_context: number;
+}
+
+export interface ToolDefinition {
+	type: "function";
+	function: {
+		name: string;
+		description: string;
+		parameters: Record<string, unknown>;
+	};
+}
+
+export interface BackendConfig {
+	id: string;
+	provider: string;
+	model: string;
+	baseUrl?: string;
+	contextWindow?: number;
+	[key: string]: unknown;
+}
+
+export interface ModelBackendsConfig {
+	backends: BackendConfig[];
+	default: string;
+}
+
+export class LLMError extends Error {
+	constructor(
+		message: string,
+		public provider: string,
+		public statusCode?: number,
+		public originalError?: Error
+	) {
+		super(message);
+		this.name = "LLMError";
+	}
+}

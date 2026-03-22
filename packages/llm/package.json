@@ -1,0 +1,11 @@
+{
+	"name": "@bound/llm",
+	"version": "0.0.1",
+	"description": "LLM backend drivers, model router, and streaming response parser for the Bound agent system",
+	"type": "module",
+	"main": "src/index.ts",
+	"types": "src/index.ts",
+	"dependencies": {
+		"@bound/shared": "workspace:*"
+	}
+}
