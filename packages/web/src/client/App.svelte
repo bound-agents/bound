@@ -2,7 +2,6 @@
 import { onMount } from "svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import TopBar from "./components/TopBar.svelte";
-import { currentRoute } from "./lib/router";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import LineView from "./views/LineView.svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
@@ -13,20 +12,12 @@ import SystemMap from "./views/SystemMap.svelte";
 import Timetable from "./views/Timetable.svelte";
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
-let route = "/";
+let route = $state(window.location.hash.slice(1) || "/");
 
 onMount(() => {
 	window.addEventListener("hashchange", () => {
-		const newRoute = window.location.hash.slice(1) || "/";
-		currentRoute.set(newRoute);
+		route = window.location.hash.slice(1) || "/";
 	});
-
-	const initialRoute = window.location.hash.slice(1) || "/";
-	currentRoute.set(initialRoute);
-});
-
-currentRoute.subscribe((value) => {
-	route = value;
 });
 </script>
 

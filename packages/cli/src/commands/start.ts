@@ -114,20 +114,16 @@ Open http://localhost:3000 in your browser to start chatting.
 Press Ctrl+C to stop.
 `);
 
-	// Keep process alive with an interval timer and handle graceful shutdown
-	const keepAlive = setInterval(() => {}, 1 << 30); // ~12 day interval, just keeps event loop alive
-
+	// Keep process alive until shutdown signal (web server keeps event loop active)
 	await new Promise<void>((resolve) => {
 		process.on("SIGINT", async () => {
 			console.log("\nShutting down gracefully...");
-			clearInterval(keepAlive);
 			if (webServer) await webServer.stop();
 			resolve();
 		});
 
 		process.on("SIGTERM", async () => {
 			console.log("\nTerminating...");
-			clearInterval(keepAlive);
 			if (webServer) await webServer.stop();
 			resolve();
 		});
