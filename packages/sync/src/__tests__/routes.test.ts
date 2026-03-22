@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import type { KeyringConfig, Logger, TypedEventEmitter } from "@bound/shared";
+import type { KeyringConfig, Logger } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import { ensureKeypair, exportPublicKey } from "../crypto.js";
 import { createSyncRoutes } from "../routes.js";
@@ -20,7 +20,6 @@ const createMockEventBus = (): TypedEventEmitter => {
 describe("routes", () => {
 	let db: Database;
 	let hubSiteId: string;
-	let hubPrivateKey: CryptoKey;
 	let spokeSiteId: string;
 	let spokePrivateKey: CryptoKey;
 	let spokePublicKey: string;
@@ -83,7 +82,6 @@ describe("routes", () => {
 		// Generate keypairs for hub and spoke
 		const hubKeypair = await ensureKeypair("/tmp/bound-test-hub-routes");
 		hubSiteId = hubKeypair.siteId;
-		hubPrivateKey = hubKeypair.privateKey;
 
 		const spokeKeypair = await ensureKeypair("/tmp/bound-test-spoke-routes");
 		spokeSiteId = spokeKeypair.siteId;
@@ -106,7 +104,13 @@ describe("routes", () => {
 
 	describe("POST /sync/push", () => {
 		it("receives events and applies them", async () => {
-			const app = createSyncRoutes(db, hubSiteId, keyring, createMockEventBus(), createMockLogger());
+			const app = createSyncRoutes(
+				db,
+				hubSiteId,
+				keyring,
+				createMockEventBus(),
+				createMockLogger(),
+			);
 
 			// Create a changeset
 			const changeset = {
@@ -135,13 +139,7 @@ describe("routes", () => {
 			};
 
 			const body = JSON.stringify(changeset);
-			const headers = await signRequest(
-				spokePrivateKey,
-				spokeSiteId,
-				"POST",
-				"/sync/push",
-				body,
-			);
+			const headers = await signRequest(spokePrivateKey, spokeSiteId, "POST", "/sync/push", body);
 
 			const response = await app.request("/sync/push", {
 				method: "POST",
@@ -169,7 +167,13 @@ describe("routes", () => {
 
 	describe("POST /sync/pull", () => {
 		it("returns events excluding requester's own events", async () => {
-			const app = createSyncRoutes(db, hubSiteId, keyring, createMockEventBus(), createMockLogger());
+			const app = createSyncRoutes(
+				db,
+				hubSiteId,
+				keyring,
+				createMockEventBus(),
+				createMockLogger(),
+			);
 
 			// Insert some events in the change log
 			db.query(
@@ -181,13 +185,7 @@ describe("routes", () => {
 			).run("semantic_memory", "mem-2", "other-site", "2026-03-22T10:01:00Z", "{}");
 
 			const body = JSON.stringify({ since_seq: 0 });
-			const headers = await signRequest(
-				spokePrivateKey,
-				spokeSiteId,
-				"POST",
-				"/sync/pull",
-				body,
-			);
+			const headers = await signRequest(spokePrivateKey, spokeSiteId, "POST", "/sync/pull", body);
 
 			const response = await app.request("/sync/pull", {
 				method: "POST",
@@ -212,16 +210,16 @@ describe("routes", () => {
 
 	describe("POST /sync/ack", () => {
 		it("updates peer cursor after acknowledgment", async () => {
-			const app = createSyncRoutes(db, hubSiteId, keyring, createMockEventBus(), createMockLogger());
+			const app = createSyncRoutes(
+				db,
+				hubSiteId,
+				keyring,
+				createMockEventBus(),
+				createMockLogger(),
+			);
 
 			const body = JSON.stringify({ last_received: 10 });
-			const headers = await signRequest(
-				spokePrivateKey,
-				spokeSiteId,
-				"POST",
-				"/sync/ack",
-				body,
-			);
+			const headers = await signRequest(spokePrivateKey, spokeSiteId, "POST", "/sync/ack", body);
 
 			const response = await app.request("/sync/ack", {
 				method: "POST",
