@@ -1,6 +1,6 @@
 // Export bot
-export { DiscordBot } from "./bot";
-export { shouldActivate } from "./bot";
+export { DiscordBot, shouldActivate } from "./bot";
+export type { AgentLoopFactory } from "./bot";
 
 // Export allowlist
 export { isAllowlisted } from "./allowlist";
