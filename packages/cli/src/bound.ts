@@ -43,17 +43,20 @@ EXAMPLES:
 
 	if (command === "init") {
 		// Parse init args
+		const configDirIdx = args.indexOf("--config-dir");
+		const regionIdx = args.indexOf("--region");
+		const nameIdx = args.indexOf("--name");
 		const initArgs = {
 			ollama: args.includes("--ollama"),
 			anthropic: args.includes("--anthropic"),
 			bedrock: args.includes("--bedrock"),
-			region: args[args.indexOf("--region") + 1],
-			name: args[args.indexOf("--name") + 1],
+			region: regionIdx !== -1 ? args[regionIdx + 1] : undefined,
+			name: nameIdx !== -1 ? args[nameIdx + 1] : undefined,
 			withSync: args.includes("--with-sync"),
 			withMcp: args.includes("--with-mcp"),
 			withOverlay: args.includes("--with-overlay"),
 			force: args.includes("--force"),
-			configDir: args[args.indexOf("--config-dir") + 1] || "config",
+			configDir: configDirIdx !== -1 ? args[configDirIdx + 1] : "config",
 		};
 
 		try {
@@ -67,8 +70,9 @@ EXAMPLES:
 
 	if (command === "start") {
 		// Parse start args
+		const startConfigIdx = args.indexOf("--config-dir");
 		const startArgs = {
-			configDir: args[args.indexOf("--config-dir") + 1] || "config",
+			configDir: startConfigIdx !== -1 ? args[startConfigIdx + 1] : "config",
 		};
 
 		try {

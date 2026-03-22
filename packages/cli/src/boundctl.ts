@@ -6,6 +6,11 @@ import { runRestore } from "./commands/restore.js";
 import { runSetHub } from "./commands/set-hub.js";
 import { runResume, runStop } from "./commands/stop-resume.js";
 
+function getArgValue(args: string[], flag: string): string | undefined {
+	const idx = args.indexOf(flag);
+	return idx !== -1 ? args[idx + 1] : undefined;
+}
+
 async function main() {
 	const args = process.argv.slice(2);
 	const command = args[0];
@@ -57,7 +62,7 @@ EXAMPLES:
 		const setHubArgs = {
 			hostName,
 			wait: args.includes("--wait"),
-			configDir: args[args.indexOf("--config-dir") + 1] || "config",
+			configDir: getArgValue(args, "--config-dir") || "config",
 		};
 
 		try {
@@ -71,7 +76,7 @@ EXAMPLES:
 
 	if (command === "stop") {
 		const stopArgs = {
-			configDir: args[args.indexOf("--config-dir") + 1] || "config",
+			configDir: getArgValue(args, "--config-dir") || "config",
 		};
 
 		try {
@@ -85,7 +90,7 @@ EXAMPLES:
 
 	if (command === "resume") {
 		const resumeArgs = {
-			configDir: args[args.indexOf("--config-dir") + 1] || "config",
+			configDir: getArgValue(args, "--config-dir") || "config",
 		};
 
 		try {
@@ -108,7 +113,7 @@ EXAMPLES:
 			before: args[beforeIndex + 1],
 			preview: args.includes("--preview"),
 			tables: [],
-			configDir: args[args.indexOf("--config-dir") + 1] || "config",
+			configDir: getArgValue(args, "--config-dir") || "config",
 		};
 
 		// Parse --tables if provided
