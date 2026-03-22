@@ -74,7 +74,7 @@ export class LLMError extends Error {
 		message: string,
 		public provider: string,
 		public statusCode?: number,
-		public originalError?: Error
+		public originalError?: Error,
 	) {
 		super(message);
 		this.name = "LLMError";

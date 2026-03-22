@@ -11,3 +11,5 @@ export type {
 } from "./types";
 
 export { LLMError } from "./types";
+
+export { OllamaDriver } from "./ollama-driver";
