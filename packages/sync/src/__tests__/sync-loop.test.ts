@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { KeyringConfig, Logger, SyncConfig, TypedEventEmitter } from "@bound/shared";
-import { SyncClient, type SyncError, type SyncResult, resolveHubUrl } from "../sync-loop.js";
+import { SyncClient, type SyncResult, resolveHubUrl } from "../sync-loop.js";
 
 // Mock TypedEventEmitter for testing
 const createMockEventBus = (): TypedEventEmitter => {

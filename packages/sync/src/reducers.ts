@@ -43,9 +43,9 @@ export function getTableColumns(db: Database, tableName: string): string[] {
 
 // Export for testing - clears the column cache to avoid state leakage between tests
 export function clearColumnCache(): void {
-	Object.keys(columnCache).forEach((key) => {
+	for (const key of Object.keys(columnCache)) {
 		delete columnCache[key];
-	});
+	}
 }
 
 export function applyAppendOnlyReducer(db: Database, event: ChangeLogEntry): { applied: boolean } {
@@ -122,7 +122,9 @@ export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied:
 
 	// If row doesn't exist, do a simple insert with all provided columns
 	if (!existing) {
-		const columnsToInsert = Object.keys(rowData).filter((col) => schemaColumns.includes(col));
+		const columnsToInsert = Object.keys(rowData).filter(
+			(col) => validateColumnName(col) && schemaColumns.includes(col),
+		);
 		const valuesToInsert = columnsToInsert.map((col) => rowData[col]);
 		db.run(
 			`INSERT INTO ${event.table_name} (${columnsToInsert.join(", ")})
@@ -145,7 +147,7 @@ export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied:
 
 	// Update only columns that are in both the event and the schema (except id)
 	const columnsToUpdate = Object.keys(rowData).filter(
-		(col) => schemaColumns.includes(col) && col !== "id",
+		(col) => validateColumnName(col) && schemaColumns.includes(col) && col !== "id",
 	);
 
 	if (columnsToUpdate.length === 0) {

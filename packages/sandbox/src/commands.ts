@@ -12,10 +12,10 @@ export interface CommandResult {
 }
 
 export interface CommandContext {
-	db?: Database;
-	siteId?: string;
-	eventBus?: TypedEventEmitter;
-	logger?: Logger;
+	db: Database;
+	siteId: string;
+	eventBus: TypedEventEmitter;
+	logger: Logger;
 	threadId?: string;
 	taskId?: string;
 }
@@ -26,9 +26,12 @@ export interface CommandDefinition {
 	handler: (args: Record<string, string>, ctx: CommandContext) => Promise<CommandResult>;
 }
 
-export function createDefineCommands(definitions: CommandDefinition[]): CustomCommand[] {
+export function createDefineCommands(
+	definitions: CommandDefinition[],
+	context: CommandContext,
+): (CustomCommand & { handler: (argv: string[]) => Promise<CommandResult> })[] {
 	return definitions.map((def) => {
-		return defineCommand(def.name, async (argv) => {
+		const handler = async (argv: string[]) => {
 			const args: Record<string, string> = {};
 
 			// Parse arguments from argv
@@ -47,7 +50,7 @@ export function createDefineCommands(definitions: CommandDefinition[]): CustomCo
 			}
 
 			try {
-				return await def.handler(args, {});
+				return await def.handler(args, context);
 			} catch (error) {
 				const errorMsg = error instanceof Error ? error.message : String(error);
 				return {
@@ -56,6 +59,12 @@ export function createDefineCommands(definitions: CommandDefinition[]): CustomCo
 					exitCode: 1,
 				};
 			}
-		});
+		};
+
+		const customCommand = defineCommand(def.name, handler) as CustomCommand & {
+			handler?: (argv: string[]) => Promise<CommandResult>;
+		};
+		customCommand.handler = handler;
+		return customCommand as CustomCommand & { handler: (argv: string[]) => Promise<CommandResult> };
 	});
 }

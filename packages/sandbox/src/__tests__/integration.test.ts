@@ -1,8 +1,6 @@
-import { Database } from "bun:sqlite";
-import { beforeEach, describe, expect, it } from "bun:test";
-import { randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import Database from "bun:sqlite";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { applySchema } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import {
 	createClusterFs,
@@ -11,59 +9,26 @@ import {
 	diffWorkspace,
 	hydrateWorkspace,
 	persistWorkspaceChanges,
-	snapshotWorkspaceSync,
+	snapshotWorkspace,
 } from "../index";
 
 describe("Sandbox integration", () => {
 	let db: Database;
-	let dbPath: string;
 	let siteId: string;
 
 	beforeEach(() => {
-		siteId = randomUUID();
-		dbPath = join(tmpdir(), `test-${randomUUID()}.db`);
-		db = new Database(dbPath);
-
-		// Initialize minimal schema
-		db.run(`
-			CREATE TABLE IF NOT EXISTS files (
-				id TEXT PRIMARY KEY,
-				site_id TEXT NOT NULL,
-				path TEXT NOT NULL,
-				content TEXT NOT NULL,
-				content_hash TEXT NOT NULL,
-				size_bytes INTEGER NOT NULL,
-				modified_at INTEGER NOT NULL,
-				deleted INTEGER NOT NULL DEFAULT 0,
-				UNIQUE(site_id, path)
-			)
-		`);
-
-		db.run(`
-			CREATE TABLE IF NOT EXISTS change_log (
-				id TEXT PRIMARY KEY,
-				site_id TEXT NOT NULL,
-				table_name TEXT NOT NULL,
-				operation TEXT NOT NULL,
-				row_id TEXT NOT NULL,
-				changes TEXT NOT NULL,
-				created_at INTEGER NOT NULL
-			)
-		`);
+		siteId = "test-site-id";
+		db = new Database(":memory:");
+		applySchema(db);
 	});
 
-	it("should hydrate workspace from database", () => {
+	test("hydrates workspace from database", async () => {
 		// Seed files in database
-		const now = Date.now();
-		db.run("INSERT INTO files VALUES (?, ?, ?, ?, ?, ?, ?, 0)", [
-			randomUUID(),
-			siteId,
-			"/home/user/test.txt",
-			"Hello, world!",
-			"abc123",
-			13,
-			now,
-		]);
+		const now = new Date().toISOString();
+		db.run(
+			"INSERT INTO files (id, path, content, deleted, created_at, modified_at, size_bytes) VALUES (?, ?, ?, 0, ?, ?, ?)",
+			["/home/user/test.txt", "/home/user/test.txt", "Hello, world!", now, now, 13],
+		);
 
 		// Create and hydrate ClusterFs
 		const config = {
@@ -71,13 +36,14 @@ describe("Sandbox integration", () => {
 			syncEnabled: true,
 		};
 		const fs = createClusterFs(config);
-		hydrateWorkspace(fs, db);
+		await hydrateWorkspace(fs, db);
 
-		// Verify hydration occurred (no errors thrown)
-		expect(fs).toBeDefined();
+		// Verify hydration occurred by reading file
+		const content = await fs.readFile("/home/user/test.txt");
+		expect(content).toBe("Hello, world!");
 	});
 
-	it("should snapshot workspace before and after changes", () => {
+	test("snapshots workspace before and after changes", async () => {
 		const config = {
 			hostName: "localhost",
 			syncEnabled: true,
@@ -85,15 +51,18 @@ describe("Sandbox integration", () => {
 		const fs = createClusterFs(config);
 
 		// Create initial snapshot
-		const before = snapshotWorkspaceSync(fs);
+		const before = await snapshotWorkspace(fs);
 		expect(before).toBeDefined();
 		expect(before instanceof Map).toBe(true);
 
-		// Should be empty initially
-		expect(before.size).toBe(0);
+		// Write a file and snapshot again
+		await fs.writeFile("/home/user/test.txt", "content");
+		const after = await snapshotWorkspace(fs);
+
+		expect(after.size).toBeGreaterThan(before.size);
 	});
 
-	it("should diff workspace snapshots", () => {
+	test("diffs workspace snapshots", () => {
 		const before = new Map<string, string>();
 		const after = new Map<string, string>();
 
@@ -104,10 +73,14 @@ describe("Sandbox integration", () => {
 		const changes = diffWorkspace(before, after);
 		expect(changes).toBeDefined();
 		expect(Array.isArray(changes)).toBe(true);
+		expect(changes.length).toBe(1);
+		expect(changes[0].operation).toBe("created");
 	});
 
-	it("should register defineCommands", () => {
-		// Register a simple echo command
+	test("registers defineCommands with context", async () => {
+		const mockLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
+		const mockEventBus = new TypedEventEmitter();
+
 		const definitions = [
 			{
 				name: "echo-test",
@@ -122,13 +95,24 @@ describe("Sandbox integration", () => {
 			},
 		];
 
-		const commands = createDefineCommands(definitions);
+		const context = {
+			db,
+			siteId,
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
 		expect(commands).toBeDefined();
 		expect(Array.isArray(commands)).toBe(true);
 		expect(commands.length).toBe(1);
+
+		// Actually execute the command
+		const result = await commands[0].handler(["hello"]);
+		expect(result.stdout).toBe("hello");
 	});
 
-	it("should create sandbox with factory", async () => {
+	test("creates sandbox with factory and executes commands", async () => {
 		const config = {
 			hostName: "localhost",
 			syncEnabled: true,
@@ -142,69 +126,100 @@ describe("Sandbox integration", () => {
 
 		const sandbox = await createSandbox(sandboxConfig);
 		expect(sandbox).toBeDefined();
+
+		// Execute a command
+		const result = await sandbox.exec("echo 'hello from sandbox'");
+		expect(result.stdout).toContain("hello from sandbox");
+		expect(result.exitCode).toBe(0);
 	});
 
-	it("should persist workspace changes to database", async () => {
+	test("persists workspace changes to database", async () => {
 		const eventBus = new TypedEventEmitter();
+		const fs = createClusterFs({ hostName: "localhost", syncEnabled: true });
 
-		// Create before and after snapshots
+		// Write file and get snapshots
+		await fs.writeFile("/home/user/document.txt", "content");
 		const before = new Map<string, string>();
-		const after = new Map<string, string>();
-
-		// Add a file
-		after.set("/home/user/document.txt", "document_hash_123");
+		const after = await snapshotWorkspace(fs);
 
 		// Persist changes
-		const result = await persistWorkspaceChanges(db, siteId, before, after, eventBus);
+		const result = await persistWorkspaceChanges(
+			db,
+			siteId,
+			before,
+			after,
+			eventBus,
+			undefined,
+			fs,
+		);
 
-		// Verify result is a Result type
-		expect(result).toBeDefined();
-		expect(typeof result.ok).toBe("boolean");
-
-		// Check if persistence was successful
+		expect(result.ok).toBe(true);
 		if (result.ok) {
-			expect(result.value.changes).toBeGreaterThanOrEqual(0);
+			expect(result.value.changes).toBeGreaterThan(0);
 		}
+
+		// Verify file is in database
+		const files = db
+			.query("SELECT * FROM files WHERE path = ?")
+			.all("/home/user/document.txt") as Array<{
+			content: string;
+		}>;
+		expect(files.length).toBeGreaterThan(0);
+		expect(files[0].content).toBe("content");
 	});
 
-	it("should lifecycle complete hydrate-snapshot-persist flow", async () => {
+	test("completes full hydrate-exec-persist lifecycle", async () => {
 		const eventBus = new TypedEventEmitter();
 
-		// 1. Seed database with file
-		const now = Date.now();
-		db.run("INSERT INTO files VALUES (?, ?, ?, ?, ?, ?, ?, 0)", [
-			randomUUID(),
-			siteId,
-			"/home/user/seed.txt",
-			"Seeded content",
-			"seed_hash",
-			14,
-			now,
-		]);
+		// 1. Seed database with initial file
+		const now = new Date().toISOString();
+		db.run(
+			"INSERT INTO files (id, path, content, deleted, created_at, modified_at, size_bytes) VALUES (?, ?, ?, 0, ?, ?, ?)",
+			["/home/user/initial.txt", "/home/user/initial.txt", "initial content", now, now, 15],
+		);
 
 		// 2. Create and hydrate ClusterFs
-		const config = { hostName: "localhost", syncEnabled: true };
-		const fs = createClusterFs(config);
-		hydrateWorkspace(fs, db);
+		const fs = createClusterFs({ hostName: "localhost", syncEnabled: true });
+		await hydrateWorkspace(fs, db);
 
-		// 3. Take snapshot
-		const before = snapshotWorkspaceSync(fs);
-		expect(before.size).toBeGreaterThanOrEqual(0);
+		// Verify file was hydrated
+		const content = await fs.readFile("/home/user/initial.txt");
+		expect(content).toBe("initial content");
 
-		// 4. Create another snapshot (representing workspace after some ops)
-		const after = new Map(before);
-		after.set("/home/user/new.txt", "new_hash");
+		// 3. Take snapshot before modifications
+		const before = await snapshotWorkspace(fs);
 
-		// 5. Persist changes
-		const result = await persistWorkspaceChanges(db, siteId, before, after, eventBus);
-		expect(result).toBeDefined();
+		// 4. Modify file
+		await fs.writeFile("/home/user/initial.txt", "modified content");
 
-		// 6. Verify result structure
+		// 5. Take snapshot after modifications
+		const after = await snapshotWorkspace(fs);
+
+		// 6. Persist changes
+		const result = await persistWorkspaceChanges(
+			db,
+			siteId,
+			before,
+			after,
+			eventBus,
+			undefined,
+			fs,
+		);
+
+		expect(result.ok).toBe(true);
 		if (result.ok) {
 			const value = result.value;
 			expect(typeof value.changes).toBe("number");
 			expect(typeof value.conflicts).toBe("number");
 			expect(Array.isArray(value.conflictPaths)).toBe(true);
+
+			// Verify database was updated
+			const updated = db
+				.query("SELECT * FROM files WHERE path = ?")
+				.get("/home/user/initial.txt") as {
+				content: string;
+			};
+			expect(updated.content).toBe("modified content");
 		}
 	});
 });

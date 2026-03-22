@@ -14,6 +14,32 @@ describe("Sandbox Factory", () => {
 		expect(sandbox).toBeDefined();
 	});
 
+	test("executes simple echo command and returns output", async () => {
+		const config: SandboxConfig = {
+			clusterFs: createClusterFs({ hostName: "localhost", syncEnabled: true }),
+			commands: [],
+		};
+
+		const sandbox = await createSandbox(config);
+		const result = await sandbox.exec("echo hello");
+
+		expect(result.stdout).toContain("hello");
+		expect(result.exitCode).toBe(0);
+	});
+
+	test("executes command with pipes correctly", async () => {
+		const config: SandboxConfig = {
+			clusterFs: createClusterFs({ hostName: "localhost", syncEnabled: true }),
+			commands: [],
+		};
+
+		const sandbox = await createSandbox(config);
+		const result = await sandbox.exec("echo 'hello world' | grep world");
+
+		expect(result.stdout).toContain("world");
+		expect(result.exitCode).toBe(0);
+	});
+
 	test("accepts network configuration", async () => {
 		const config: SandboxConfig = {
 			clusterFs: createClusterFs({ hostName: "localhost", syncEnabled: true }),

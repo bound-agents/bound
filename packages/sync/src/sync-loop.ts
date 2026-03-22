@@ -8,6 +8,7 @@ import {
 	serializeChangeset,
 } from "./changeset.js";
 import { incrementSyncErrors, resetSyncErrors, updatePeerCursor } from "./peer-cursor.js";
+import { replayEvents } from "./reducers.js";
 import { signRequest } from "./signing.js";
 
 export interface SyncResult {
@@ -84,6 +85,11 @@ export class SyncClient {
 			const inbound = pullResult.value;
 			pulled = inbound.events.length;
 			const newLastReceived = inbound.events.length > 0 ? inbound.source_seq_end : sinceSeq;
+
+			// REPLAY: apply inbound events to local database
+			if (inbound.events.length > 0) {
+				replayEvents(this.db, inbound.events);
+			}
 
 			// ACK: confirm receipt
 			const ackResult = await this.ack(newLastReceived);
@@ -246,7 +252,7 @@ export function startSyncLoop(client: SyncClient, intervalSeconds: number): { st
 
 			// Calculate backoff: min(initialInterval * 2^failures, 300000ms)
 			const baseIntervalMs = intervalSeconds * 1000;
-			const backoffMultiplier = Math.pow(2, consecutiveFailures);
+			const backoffMultiplier = 2 ** consecutiveFailures;
 			const nextIntervalMs = Math.min(baseIntervalMs * backoffMultiplier, maxIntervalMs);
 
 			// Use setTimeout recursion instead of setInterval to support dynamic intervals

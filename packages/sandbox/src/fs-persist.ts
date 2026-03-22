@@ -1,6 +1,8 @@
 import type Database from "bun:sqlite";
+import { insertRow, softDelete, updateRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import { type Result, err, ok } from "@bound/shared";
+import type { IFileSystem } from "just-bash";
 import { diffWorkspaceAsync } from "./cluster-fs";
 
 export interface PersistResult {
@@ -20,17 +22,18 @@ export interface PersistOptions {
 
 export async function persistWorkspaceChanges(
 	db: Database,
-	_siteId: string,
+	siteId: string,
 	preSnapshot: Map<string, string>,
 	postSnapshot: Map<string, string>,
 	eventBus: TypedEventEmitter,
 	options?: PersistOptions,
+	fs?: IFileSystem,
 ): Promise<Result<PersistResult, PersistError>> {
 	const maxFileSize = options?.maxFileSizeBytes ?? 1024 * 1024; // 1MB default
 	const maxTotalSize = options?.maxTotalSizeBytes ?? 50 * 1024 * 1024; // 50MB default
 
 	// Compute diff
-	const changes = await diffWorkspaceAsync(preSnapshot, postSnapshot);
+	const changes = await diffWorkspaceAsync(preSnapshot, postSnapshot, fs);
 
 	if (changes.length === 0) {
 		return ok({
@@ -40,42 +43,112 @@ export async function persistWorkspaceChanges(
 		});
 	}
 
-	// Check size limits
-	let totalSize = 0;
+	// Check individual file size limits
 	const failedPaths: string[] = [];
-
 	for (const change of changes) {
-		if (change.sizeBytes !== undefined) {
-			if (change.sizeBytes > maxFileSize) {
-				failedPaths.push(change.path);
-				continue;
-			}
-			totalSize += change.sizeBytes;
+		const sizeBytes = change.sizeBytes ?? 0;
+		if (sizeBytes > maxFileSize) {
+			failedPaths.push(change.path);
 		}
 	}
 
 	if (failedPaths.length > 0) {
-		const error = new Error("Files exceed size limit") as PersistError;
+		const error = new Error("Files exceed individual size limit") as PersistError;
 		error.failedPaths = failedPaths;
 		return err(error);
 	}
 
+	// Check total size limit across workspace
+	let totalSize = 0;
+	for (const change of changes) {
+		const sizeBytes = change.sizeBytes ?? 0;
+		totalSize += sizeBytes;
+	}
+
 	if (totalSize > maxTotalSize) {
-		const error = new Error("Total size exceeds limit") as PersistError;
+		const error = new Error("Total workspace size exceeds limit") as PersistError;
 		error.failedPaths = changes.map((c) => c.path);
 		return err(error);
 	}
 
-	// Persist changes
+	// Persist changes via database
 	const conflictPaths: string[] = [];
-	const conflictCount = 0;
+	let conflictCount = 0;
 	let changeCount = 0;
 
 	db.exec("BEGIN IMMEDIATE");
 
 	try {
 		for (const change of changes) {
-			changeCount++;
+			// Read current DB state for OCC check
+			const dbRow = db.query("SELECT * FROM files WHERE path = ?").get(change.path) as
+				| { path: string; content: string; modified_at: string }
+				| undefined;
+
+			const preSnapshotHash = preSnapshot.get(change.path);
+
+			// OCC conflict detection: DB state differs from pre-snapshot
+			if (dbRow && preSnapshotHash) {
+				// A file exists in DB that we thought we knew about
+				// If DB differs from our pre-snapshot, resolve via LWW
+				const isConflict = preSnapshotHash !== dbRow.content;
+				if (isConflict) {
+					conflictPaths.push(change.path);
+					conflictCount++;
+					// LWW: use newer modified_at timestamp
+					const dbModifiedAt = new Date(dbRow.modified_at).getTime();
+					const now = Date.now();
+					if (dbModifiedAt > now) {
+						// DB is newer, skip update
+						continue;
+					}
+				}
+			}
+
+			// Apply the change
+			if (change.operation === "created" || change.operation === "modified") {
+				if (change.content !== undefined) {
+					const now = new Date().toISOString();
+					if (dbRow) {
+						// Update existing file
+						updateRow(
+							db,
+							"files",
+							change.path,
+							{
+								content: change.content,
+								modified_at: now,
+								size_bytes: change.sizeBytes ?? 0,
+							},
+							siteId,
+						);
+					} else {
+						// Insert new file
+						insertRow(
+							db,
+							"files",
+							{
+								id: change.path,
+								path: change.path,
+								content: change.content,
+								deleted: 0,
+								size_bytes: change.sizeBytes ?? 0,
+								created_at: now,
+								modified_at: now,
+							},
+							siteId,
+						);
+					}
+					changeCount++;
+				}
+			} else if (change.operation === "deleted") {
+				if (dbRow) {
+					softDelete(db, "files", change.path, siteId);
+					changeCount++;
+				}
+			}
+
+			// Emit event
 			eventBus.emit("file:changed", {
 				path: change.path,
 				operation: change.operation,

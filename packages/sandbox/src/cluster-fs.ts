@@ -38,21 +38,6 @@ export function createClusterFs(config: ClusterFsConfig): MountableFs {
 	return fs;
 }
 
-export function snapshotWorkspaceSync(fs: IFileSystem): Map<string, string> {
-	const snapshot = new Map<string, string>();
-	const paths = fs.getAllPaths();
-
-	for (const path of paths) {
-		if (path.startsWith("/home/user/")) {
-			// This is a synchronous snapshot - we'll use getAllPaths which returns file paths
-			// We need to hash based on path existence in the filesystem
-			snapshot.set(path, "placeholder");
-		}
-	}
-
-	return snapshot;
-}
-
 export async function snapshotWorkspace(fs: IFileSystem): Promise<Map<string, string>> {
 	const snapshot = new Map<string, string>();
 	const paths = fs.getAllPaths();

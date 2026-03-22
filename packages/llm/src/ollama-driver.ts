@@ -21,6 +21,14 @@ interface OllamaRequest {
 	system?: string;
 	temperature?: number;
 	num_predict?: number;
+	tools?: Array<{
+		type: string;
+		function: {
+			name: string;
+			description?: string;
+			parameters?: Record<string, unknown>;
+		};
+	}>;
 }
 
 interface OllamaStreamResponse {
@@ -107,6 +115,49 @@ function toOllamaMessages(messages: LLMMessage[]): OllamaMessage[] {
 	});
 }
 
+function* emitChunkEvents(chunk: OllamaStreamResponse): IterableIterator<StreamChunk> {
+	// Emit text content if present (check for undefined/empty, but keep whitespace)
+	if (chunk.message.content !== undefined && chunk.message.content !== "") {
+		yield {
+			type: "text",
+			content: chunk.message.content,
+		};
+	}
+
+	// Emit tool calls
+	if (chunk.message.tool_calls && chunk.message.tool_calls.length > 0) {
+		for (const toolCall of chunk.message.tool_calls) {
+			yield {
+				type: "tool_use_start",
+				id: toolCall.function.name,
+				name: toolCall.function.name,
+			};
+
+			yield {
+				type: "tool_use_args",
+				id: toolCall.function.name,
+				partial_json: toolCall.function.arguments,
+			};
+
+			yield {
+				type: "tool_use_end",
+				id: toolCall.function.name,
+			};
+		}
+	}
+
+	// Emit done when stream finishes
+	if (chunk.done) {
+		yield {
+			type: "done",
+			usage: {
+				input_tokens: chunk.prompt_eval_count || 0,
+				output_tokens: chunk.eval_count || 0,
+			},
+		};
+	}
+}
+
 async function* parseOllamaStream(response: Response): AsyncIterable<StreamChunk> {
 	const reader = response.body?.getReader();
 	if (!reader) {
@@ -139,46 +190,7 @@ async function* parseOllamaStream(response: Response): AsyncIterable<StreamChunk
 					continue;
 				}
 
-				// Emit text content if present
-				if (chunk.message.content?.trim?.()) {
-					yield {
-						type: "text",
-						content: chunk.message.content,
-					};
-				}
-
-				// Emit tool calls
-				if (chunk.message.tool_calls && chunk.message.tool_calls.length > 0) {
-					for (const toolCall of chunk.message.tool_calls) {
-						yield {
-							type: "tool_use_start",
-							id: toolCall.function.name,
-							name: toolCall.function.name,
-						};
-
-						yield {
-							type: "tool_use_args",
-							id: toolCall.function.name,
-							partial_json: toolCall.function.arguments,
-						};
-
-						yield {
-							type: "tool_use_end",
-							id: toolCall.function.name,
-						};
-					}
-				}
-
-				// Emit done when stream finishes
-				if (chunk.done) {
-					yield {
-						type: "done",
-						usage: {
-							input_tokens: chunk.prompt_eval_count || 0,
-							output_tokens: chunk.eval_count || 0,
-						},
-					};
-				}
+				yield* emitChunkEvents(chunk);
 			}
 		}
 
@@ -187,41 +199,7 @@ async function* parseOllamaStream(response: Response): AsyncIterable<StreamChunk
 			let chunk: OllamaStreamResponse;
 			try {
 				chunk = JSON.parse(buffer);
-				if (chunk.message.content?.trim?.()) {
-					yield {
-						type: "text",
-						content: chunk.message.content,
-					};
-				}
-				if (chunk.message.tool_calls && chunk.message.tool_calls.length > 0) {
-					for (const toolCall of chunk.message.tool_calls) {
-						yield {
-							type: "tool_use_start",
-							id: toolCall.function.name,
-							name: toolCall.function.name,
-						};
-
-						yield {
-							type: "tool_use_args",
-							id: toolCall.function.name,
-							partial_json: toolCall.function.arguments,
-						};
-
-						yield {
-							type: "tool_use_end",
-							id: toolCall.function.name,
-						};
-					}
-				}
-				if (chunk.done) {
-					yield {
-						type: "done",
-						usage: {
-							input_tokens: chunk.prompt_eval_count || 0,
-							output_tokens: chunk.eval_count || 0,
-						},
-					};
-				}
+				yield* emitChunkEvents(chunk);
 			} catch {
 				yield {
 					type: "error",
@@ -259,6 +237,7 @@ export class OllamaDriver implements LLMBackend {
 			system: params.system,
 			temperature: params.temperature,
 			num_predict: params.max_tokens,
+			tools: params.tools,
 		};
 
 		let response: Response;

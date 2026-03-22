@@ -1,7 +1,6 @@
 export {
 	createClusterFs,
 	snapshotWorkspace,
-	snapshotWorkspaceSync,
 	diffWorkspace,
 	diffWorkspaceAsync,
 	hydrateWorkspace,

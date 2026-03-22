@@ -24,7 +24,9 @@ export function pruneChangeLog(
 		db.query("DELETE FROM change_log").run();
 
 		// Get the count of deleted rows from the changes count
-		const countResult = db.query("SELECT changes() as count").get() as { count: number } | undefined;
+		const countResult = db.query("SELECT changes() as count").get() as
+			| { count: number }
+			| undefined;
 		const deleted = countResult?.count ?? 0;
 
 		if (deleted > 0) {
@@ -54,7 +56,11 @@ export function pruneChangeLog(
 	return { deleted };
 }
 
-export function startPruningLoop(db: Database, intervalMs: number, logger?: Logger): { stop: () => void } {
+export function startPruningLoop(
+	db: Database,
+	intervalMs: number,
+	logger?: Logger,
+): { stop: () => void } {
 	let timerId: Timer | null = null;
 	let stopped = false;
 
