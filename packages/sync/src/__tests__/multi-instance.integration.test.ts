@@ -8,11 +8,19 @@ describe("multi-instance sync", () => {
 	let instanceA: TestInstance;
 	let instanceB: TestInstance;
 	let keyring: KeyringConfig;
+	let testRunId: string;
 
 	beforeEach(async () => {
+		// Generate unique ID for this test run to avoid port/file conflicts
+		testRunId = Math.random().toString(36).substring(7);
+
+		// Generate unique ports for this test run
+		const portA = 10000 + Math.floor(Math.random() * 50000);
+		const portB = portA + 1;
+
 		// Generate keypairs for both instances upfront
-		const keypairA = await ensureKeypair("/tmp/bound-test-keys-a");
-		const keypairB = await ensureKeypair("/tmp/bound-test-keys-b");
+		const keypairA = await ensureKeypair(`/tmp/bound-test-keys-a-${testRunId}`);
+		const keypairB = await ensureKeypair(`/tmp/bound-test-keys-b-${testRunId}`);
 
 		const pubKeyA = await exportPublicKey(keypairA.publicKey);
 		const pubKeyB = await exportPublicKey(keypairB.publicKey);
@@ -22,11 +30,11 @@ describe("multi-instance sync", () => {
 			hosts: {
 				[keypairA.siteId]: {
 					public_key: pubKeyA,
-					url: "http://localhost:3100",
+					url: `http://localhost:${portA}`,
 				},
 				[keypairB.siteId]: {
 					public_key: pubKeyB,
-					url: "http://localhost:3200",
+					url: `http://localhost:${portB}`,
 				},
 			},
 		};
@@ -34,21 +42,21 @@ describe("multi-instance sync", () => {
 		// Create instances using the pre-generated keypairs
 		instanceA = await createTestInstance({
 			name: "a",
-			port: 3100,
-			dbPath: "/tmp/bound-test-a/bound.db",
+			port: portA,
+			dbPath: `/tmp/bound-test-a-${testRunId}/bound.db`,
 			role: "hub",
 			keyring,
-			keypairPath: "/tmp/bound-test-keys-a",
+			keypairPath: `/tmp/bound-test-keys-a-${testRunId}`,
 		});
 
 		instanceB = await createTestInstance({
 			name: "b",
-			port: 3200,
-			dbPath: "/tmp/bound-test-b/bound.db",
+			port: portB,
+			dbPath: `/tmp/bound-test-b-${testRunId}/bound.db`,
 			role: "spoke",
-			hubPort: 3100,
+			hubPort: portA,
 			keyring,
-			keypairPath: "/tmp/bound-test-keys-b",
+			keypairPath: `/tmp/bound-test-keys-b-${testRunId}`,
 		});
 	});
 
@@ -506,7 +514,7 @@ describe("multi-instance sync", () => {
 			instanceA.db,
 			{ hub: "" },
 			{
-				hosts: [],
+				hosts: {},
 			},
 		);
 

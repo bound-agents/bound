@@ -1,8 +1,13 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import { OllamaDriver } from "../ollama-driver";
 import type { LLMMessage, StreamChunk } from "../types";
 
 describe("OllamaDriver", () => {
+	const originalFetch = global.fetch;
+
+	afterAll(() => {
+		global.fetch = originalFetch;
+	});
 	it("should create a driver with capabilities", () => {
 		const driver = new OllamaDriver({
 			baseUrl: "http://localhost:11434",

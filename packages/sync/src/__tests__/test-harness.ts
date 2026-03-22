@@ -267,6 +267,8 @@ export async function createTestInstance(config: {
 		cleanup: async () => {
 			server.stop();
 			db.close();
+			// Give the port time to be released
+			await new Promise((resolve) => setTimeout(resolve, 100));
 			if (dir && existsSync(dir)) {
 				await rm(dir, { recursive: true, force: true });
 			}
