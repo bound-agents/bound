@@ -1,0 +1,13 @@
+{
+	"name": "@bound/sandbox",
+	"version": "0.0.1",
+	"description": "just-bash wrapper with ClusterFs, defineCommand registration, and OCC filesystem persistence for the Bound agent sandbox",
+	"type": "module",
+	"main": "src/index.ts",
+	"types": "src/index.ts",
+	"dependencies": {
+		"@bound/shared": "workspace:*",
+		"@bound/core": "workspace:*",
+		"just-bash": "^2.14.0"
+	}
+}

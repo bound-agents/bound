@@ -14,5 +14,11 @@
 		"experimentalDecorators": true,
 		"emitDecoratorMetadata": true,
 		"types": ["@types/bun"]
-	}
+	},
+	"references": [
+		{ "path": "packages/shared" },
+		{ "path": "packages/core" },
+		{ "path": "packages/sync" },
+		{ "path": "packages/sandbox" }
+	]
 }
