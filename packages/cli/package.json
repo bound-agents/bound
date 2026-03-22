@@ -1,0 +1,22 @@
+{
+	"name": "@bound/cli",
+	"version": "0.0.1",
+	"description": "CLI tools for initializing, running, and managing the Bound agent system — bound init/start and boundctl management commands",
+	"type": "module",
+	"main": "src/index.ts",
+	"types": "src/index.ts",
+	"bin": {
+		"bound": "src/bound.ts",
+		"boundctl": "src/boundctl.ts"
+	},
+	"dependencies": {
+		"@bound/shared": "workspace:*",
+		"@bound/core": "workspace:*",
+		"@bound/agent": "workspace:*",
+		"@bound/sync": "workspace:*",
+		"@bound/web": "workspace:*",
+		"@bound/discord": "workspace:*",
+		"@bound/llm": "workspace:*",
+		"@bound/sandbox": "workspace:*"
+	}
+}
