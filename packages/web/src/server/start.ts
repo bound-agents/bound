@@ -56,7 +56,7 @@ export async function createWebServer(
 						new URL(request.url).pathname === "/ws" &&
 						request.headers.get("upgrade") === "websocket"
 					) {
-						if (server.upgrade(request)) {
+						if (server.upgrade(request, { data: undefined })) {
 							return; // Bun handles the upgrade
 						}
 						return new Response("WebSocket upgrade failed", { status: 500 });
