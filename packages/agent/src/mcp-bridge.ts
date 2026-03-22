@@ -3,7 +3,7 @@
  * Implements MCP tool discovery and command generation per spec §7.3.
  */
 
-import type Database from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 import type { MCPClient, ToolDefinition } from "./mcp-client";
 
@@ -320,7 +320,7 @@ export function updateHostMCPInfo(
 		for (const [serverName, client] of clients) {
 			if (client.isConnected()) {
 				try {
-					const tools = client.listTools().catch(() => []);
+					const tools = client.listTools();
 					for (const tool of tools) {
 						mcp_tools.push(`${serverName}-${tool.name}`);
 					}
@@ -342,6 +342,8 @@ export function updateHostMCPInfo(
 		);
 	} catch (error) {
 		// Log but don't fail
-		console.error("Failed to update host MCP info:", error);
+		const errorMsg = error instanceof Error ? error.message : String(error);
+		// Note: logger not available in this function signature, so we skip logging for now
+		// This will be fixed in a future phase when logger is available in the context
 	}
 }

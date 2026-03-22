@@ -176,7 +176,7 @@ export function isDependencySatisfied(db: Database, task: Task): boolean {
 	return true;
 }
 
-export function canRunHere(db: Database, task: Task, hostName: string, siteId: string): boolean {
+export function canRunHere(db: Database, task: Task, hostName: string, _siteId: string): boolean {
 	// Check dependency satisfaction
 	if (!isDependencySatisfied(db, task)) {
 		return false;
@@ -204,7 +204,7 @@ export function canRunHere(db: Database, task: Task, hostName: string, siteId: s
 export function seedCronTasks(
 	db: Database,
 	cronConfigs: Array<{ name: string; cron: string; payload?: string }>,
-	siteId: string,
+	_siteId: string,
 ): void {
 	const insert = db.prepare(`
 		INSERT OR IGNORE INTO tasks (

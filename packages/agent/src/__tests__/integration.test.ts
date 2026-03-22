@@ -1,3 +1,4 @@
+// biome-ignore lint/suspicious/noExplicitAny: mocks require any casts in tests
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
@@ -94,7 +95,7 @@ describe("Agent Loop End-to-End Integration", () => {
 		// Create mock LLMBackend that returns a tool_use for memorize
 		let callCount = 0;
 		const mockLLMBackend: LLMBackend = {
-			async *chat({ model, messages }) {
+			async *chat() {
 				callCount++;
 
 				if (callCount === 1) {
@@ -145,7 +146,7 @@ describe("Agent Loop End-to-End Integration", () => {
 
 		// Create mock Sandbox
 		const mockSandbox = {
-			exec: async (cmd: string) => ({
+			exec: async (_cmd: string) => ({
 				stdout: "Memory saved",
 				stderr: "",
 				exitCode: 0,
@@ -248,7 +249,7 @@ describe("Agent Loop End-to-End Integration", () => {
 
 		// Mock LLM that returns simple text
 		const mockLLMBackend: LLMBackend = {
-			async *chat({ messages }) {
+			async *chat() {
 				yield {
 					type: "text",
 					content: "Hello! How can I help?",
@@ -365,6 +366,8 @@ describe("Agent Loop End-to-End Integration", () => {
 		const mockLLMBackend: LLMBackend = {
 			async *chat() {
 				throw new Error("LLM service unavailable");
+				// biome-ignore lint/correctness/useYield: Intentionally unreachable to satisfy generator type
+				yield undefined as never;
 			},
 		};
 

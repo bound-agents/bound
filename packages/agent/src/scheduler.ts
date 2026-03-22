@@ -148,7 +148,7 @@ export class Scheduler {
 				`SELECT * FROM tasks WHERE status = 'pending' AND next_run_at IS NOT NULL AND next_run_at <= ?
 			 ORDER BY next_run_at ASC LIMIT 100`,
 			)
-			.all() as Task[];
+			.all(now) as Task[];
 
 		for (const task of pendingTasks) {
 			if (canRunHere(this.ctx.db, task, this.ctx.hostName, this.ctx.siteId)) {

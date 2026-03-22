@@ -46,8 +46,16 @@ export const purge: CommandDefinition = {
 
 			// Create a purge message referencing the target IDs
 			const purgeMessageId = randomUUID();
-			const summary = args["create-summary"] ? "Messages purged from conversation" : null;
+			const summary = args["create-summary"]
+				? "Messages purged from conversation"
+				: "Summary of purged messages";
 			const threadId = args["thread-id"] || ctx.threadId || "";
+
+			// Store content as JSON with target_ids for context-assembly.ts to parse
+			const content = JSON.stringify({
+				target_ids: targetIds,
+				summary,
+			});
 
 			insertRow(
 				ctx.db,
@@ -56,18 +64,16 @@ export const purge: CommandDefinition = {
 					id: purgeMessageId,
 					thread_id: threadId,
 					role: "purge",
-					content: summary || "",
+					content,
 					model_id: null,
 					tool_name: null,
 					created_at: now,
-					modified_at: null,
-					host_origin: "",
+					modified_at: now,
+					host_origin: ctx.siteId,
 				},
 				ctx.siteId,
 			);
 
-			// Store the target IDs in change_log or as metadata
-			// For now, we just create the purge message
 			return {
 				stdout: `Purge message created: ${purgeMessageId}\nTargeted ${targetIds.length} messages\n`,
 				stderr: "",

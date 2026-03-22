@@ -23,7 +23,7 @@ export const emit: CommandDefinition = {
 			}
 
 			// Emit event via EventBus
-			// @ts-ignore - custom events require runtime type casting
+			// @ts-expect-error - custom events require runtime type casting for dynamic event types
 			ctx.eventBus.emit(event, payload);
 
 			return {

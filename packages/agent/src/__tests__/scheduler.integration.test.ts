@@ -1,3 +1,4 @@
+// biome-ignore lint/suspicious/noExplicitAny: mocks require any casts in tests
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
@@ -5,6 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, type createAppContext, createDatabase } from "@bound/core";
+import type { AgentLoopResult } from "@bound/agent";
 import { TypedEventEmitter } from "@bound/shared";
 import { Scheduler } from "../scheduler";
 
@@ -85,16 +87,14 @@ describe("Scheduler Integration", () => {
 			)
 		`);
 
-		let agentLoopCreated = false;
-		const agentLoopFactory = (config: any) => {
-			agentLoopCreated = true;
+		const agentLoopFactory = (): { run: () => Promise<AgentLoopResult> } => {
 			return {
-				run: async () => ({
+				run: async (): Promise<AgentLoopResult> => ({
 					messagesCreated: 1,
 					toolCallsMade: 0,
 					filesChanged: 0,
 				}),
-			} as any;
+			};
 		};
 
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
@@ -140,14 +140,13 @@ describe("Scheduler Integration", () => {
 			)
 		`);
 
-		const agentLoopFactory = () =>
-			({
-				run: async () => ({
-					messagesCreated: 0,
-					toolCallsMade: 0,
-					filesChanged: 0,
-				}),
-			}) as any;
+		const agentLoopFactory = (): { run: () => Promise<AgentLoopResult> } => ({
+			run: async (): Promise<AgentLoopResult> => ({
+				messagesCreated: 0,
+				toolCallsMade: 0,
+				filesChanged: 0,
+			}),
+		});
 
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100);
@@ -226,14 +225,13 @@ describe("Scheduler Integration", () => {
 			)
 		`);
 
-		const agentLoopFactory = () =>
-			({
-				run: async () => ({
-					messagesCreated: 0,
-					toolCallsMade: 0,
-					filesChanged: 0,
-				}),
-			}) as any;
+		const agentLoopFactory = (): { run: () => Promise<AgentLoopResult> } => ({
+			run: async (): Promise<AgentLoopResult> => ({
+				messagesCreated: 0,
+				toolCallsMade: 0,
+				filesChanged: 0,
+			}),
+		});
 
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100);
@@ -274,14 +272,13 @@ describe("Scheduler Integration", () => {
 			)
 		`);
 
-		const agentLoopFactory = () =>
-			({
-				run: async () => ({
-					messagesCreated: 0,
-					toolCallsMade: 0,
-					filesChanged: 0,
-				}),
-			}) as any;
+		const agentLoopFactory = (): { run: () => Promise<AgentLoopResult> } => ({
+			run: async (): Promise<AgentLoopResult> => ({
+				messagesCreated: 0,
+				toolCallsMade: 0,
+				filesChanged: 0,
+			}),
+		});
 
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100);

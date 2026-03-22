@@ -161,12 +161,9 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	const annotated: LLMMessage[] = sanitized
 		.filter((m) => !replacedIds.has(m.id))
 		.map((m) => {
-			const content =
-				m.role === "tool_call" ? m.content : m.role === "tool_result" ? m.content : m.content;
-
 			const msg: LLMMessage = {
 				role: m.role as LLMMessage["role"],
-				content,
+				content: m.content,
 				model_id: m.model_id || undefined,
 				host_origin: m.host_origin,
 			};

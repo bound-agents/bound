@@ -1,8 +1,28 @@
 import type Database from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import type { CommandContext } from "@bound/sandbox";
+import type { Logger } from "@bound/shared";
+import { TypedEventEmitter } from "@bound/shared";
 import { generateMCPCommands } from "../mcp-bridge";
 import { MCPClient } from "../mcp-client";
+
+// Helper to create mock CommandContext
+function createMockCommandContext(overrides?: Partial<CommandContext>): CommandContext {
+	const eventBus = new TypedEventEmitter();
+	const logger: Logger = {
+		info: () => {},
+		warn: () => {},
+		error: () => {},
+	};
+
+	return {
+		db: {} as Database,
+		siteId: "test",
+		eventBus,
+		logger,
+		...overrides,
+	};
+}
 
 describe("MCP Bridge", () => {
 	it("generates commands from MCP tools", async () => {
@@ -93,13 +113,7 @@ describe("MCP Bridge", () => {
 
 		if (dangerousCmd) {
 			// Call in autonomous mode
-			const mockCtx: CommandContext = {
-				db: {} as Database,
-				siteId: "test",
-				eventBus: {} as any,
-				logger: {} as any,
-				taskId: "some-task-id", // Not interactive
-			};
+			const mockCtx = createMockCommandContext({ taskId: "some-task-id" });
 
 			const result = await dangerousCmd.handler({}, mockCtx);
 			expect(result.exitCode).toBe(1);
@@ -146,12 +160,7 @@ describe("MCP Bridge", () => {
 		expect(resourcesCmd).toBeDefined();
 
 		if (resourcesCmd) {
-			const mockCtx: CommandContext = {
-				db: {} as Database,
-				siteId: "test",
-				eventBus: {} as any,
-				logger: {} as any,
-			};
+			const mockCtx = createMockCommandContext();
 
 			const result = await resourcesCmd.handler({}, mockCtx);
 			expect(result.exitCode).toBe(0);
@@ -183,12 +192,7 @@ describe("MCP Bridge", () => {
 		expect(resourceCmd).toBeDefined();
 
 		if (resourceCmd) {
-			const mockCtx: CommandContext = {
-				db: {} as Database,
-				siteId: "test",
-				eventBus: {} as any,
-				logger: {} as any,
-			};
+			const mockCtx = createMockCommandContext();
 
 			const result = await resourceCmd.handler({ uri: "resource://test" }, mockCtx);
 			expect(result.exitCode).toBe(0);
@@ -217,12 +221,7 @@ describe("MCP Bridge", () => {
 		expect(promptsCmd).toBeDefined();
 
 		if (promptsCmd) {
-			const mockCtx: CommandContext = {
-				db: {} as Database,
-				siteId: "test",
-				eventBus: {} as any,
-				logger: {} as any,
-			};
+			const mockCtx = createMockCommandContext();
 
 			const result = await promptsCmd.handler({}, mockCtx);
 			expect(result.exitCode).toBe(0);
@@ -252,12 +251,7 @@ describe("MCP Bridge", () => {
 		expect(promptCmd).toBeDefined();
 
 		if (promptCmd) {
-			const mockCtx: CommandContext = {
-				db: {} as Database,
-				siteId: "test",
-				eventBus: {} as any,
-				logger: {} as any,
-			};
+			const mockCtx = createMockCommandContext();
 
 			const result = await promptCmd.handler(
 				{ name: "test-server/greet", person: "Alice" },
