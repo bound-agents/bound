@@ -1,11 +1,14 @@
 import type { Database } from "bun:sqlite";
 import type { TypedEventEmitter } from "@bound/shared";
-import { createApp } from "./index";
+import { type ModelsConfig, createApp } from "./index";
 import { createWebSocketHandler } from "./websocket";
+
+export type { ModelsConfig };
 
 export interface WebServerConfig {
 	port?: number;
 	host?: string;
+	models?: ModelsConfig;
 }
 
 export interface WebServer {
@@ -26,7 +29,7 @@ export async function createWebServer(
 	const host = config.host ?? "localhost";
 
 	// Create the Hono app with all routes (loads embedded assets if available)
-	const app = await createApp(db, eventBus);
+	const app = await createApp(db, eventBus, config.models);
 
 	// Create WebSocket handler
 	const wsHandler = createWebSocketHandler(eventBus);

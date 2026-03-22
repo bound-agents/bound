@@ -2,7 +2,21 @@ import type { Database } from "bun:sqlite";
 import type { TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
 
-export function createStatusRoutes(db: Database, eventBus: TypedEventEmitter): Hono {
+export interface ModelInfo {
+	id: string;
+	provider: string;
+}
+
+export interface ModelsConfig {
+	models: ModelInfo[];
+	default: string;
+}
+
+export function createStatusRoutes(
+	db: Database,
+	eventBus: TypedEventEmitter,
+	modelsConfig?: ModelsConfig,
+): Hono {
 	const app = new Hono();
 
 	app.get("/", (c) => {
@@ -33,9 +47,12 @@ export function createStatusRoutes(db: Database, eventBus: TypedEventEmitter): H
 	});
 
 	app.get("/models", (c) => {
+		if (modelsConfig && modelsConfig.models.length > 0) {
+			return c.json(modelsConfig);
+		}
 		return c.json({
-			models: [{ id: "ollama-llama3", provider: "ollama" }],
-			default: "ollama-llama3",
+			models: [] as ModelInfo[],
+			default: "",
 		});
 	});
 

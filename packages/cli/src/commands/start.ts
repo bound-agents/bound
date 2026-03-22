@@ -76,9 +76,14 @@ export async function runStart(args: StartArgs): Promise<void> {
 	console.log("Starting web server...");
 	let webServer: Awaited<ReturnType<typeof createWebServer>> | null = null;
 	try {
+		const modelBackends = appContext.config.modelBackends;
 		webServer = await createWebServer(appContext.db, appContext.eventBus, {
 			port: 3000,
 			host: "localhost",
+			models: {
+				models: modelBackends.backends.map((b) => ({ id: b.id, provider: b.provider })),
+				default: modelBackends.default,
+			},
 		});
 		await webServer.start();
 	} catch (error) {

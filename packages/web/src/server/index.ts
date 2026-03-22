@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
-import { registerRoutes } from "./routes/index";
+import { type ModelsConfig, registerRoutes } from "./routes/index";
 
 type AssetMap = Map<string, { content: string; contentType: string }>;
 
@@ -15,12 +15,15 @@ async function loadEmbeddedAssets(): Promise<AssetMap> {
 	}
 }
 
+export { type ModelsConfig };
+
 export async function createApp(
 	db: Database,
 	eventBus: TypedEventEmitter,
+	modelsConfig?: ModelsConfig,
 ): Promise<Hono> {
 	const app = new Hono();
-	const routes = registerRoutes(db, eventBus);
+	const routes = registerRoutes(db, eventBus, modelsConfig);
 
 	// Host header validation middleware - only allow localhost/loopback
 	app.use("*", (c, next) => {

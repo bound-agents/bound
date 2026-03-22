@@ -53,6 +53,15 @@ const colors = [
 	"#FF6600", // Dark Orange
 	"#0099FF", // Light Blue
 ];
+
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+function threadLabel(thread: Thread, idx: number): string {
+	if (thread.title && thread.title.trim().length > 0) {
+		const t = thread.title.trim();
+		return t.length > 20 ? `${t.substring(0, 18)}…` : t;
+	}
+	return `Thread ${idx + 1}`;
+}
 </script>
 
 <div class="system-map">
@@ -65,53 +74,56 @@ const colors = [
 	{#if threads.length === 0}
 		<p>No threads yet. Start a conversation to create one.</p>
 	{:else}
-		<svg viewBox="0 0 1200 600" class="metro-diagram">
-			{#each threads as thread, idx}
-				{@const color = colors[thread.color % colors.length]}
-				{@const yPos = 100 + idx * 50}
+		{@const svgHeight = Math.max(80, threads.length * 50 + 40)}
+		<div class="metro-container">
+			<svg viewBox="0 0 1200 {svgHeight}" class="metro-diagram">
+				{#each threads as thread, idx}
+					{@const color = colors[thread.color % colors.length]}
+					{@const yPos = 30 + idx * 50}
 
-				<!-- Line -->
-				<line
-					x1="50"
-					y1={yPos}
-					x2="1150"
-					y2={yPos}
-					stroke={color}
-					stroke-width="8"
-					class="metro-line"
-				/>
+					<!-- Line -->
+					<line
+						x1="150"
+						y1={yPos}
+						x2="1150"
+						y2={yPos}
+						stroke={color}
+						stroke-width="8"
+						class="metro-line"
+					/>
 
-				<!-- Thread label -->
-				<text x="30" y={yPos + 15} font-size="12" fill="#e0e0e0" text-anchor="end">
-					{thread.id.substring(0, 8)}
-				</text>
+					<!-- Thread label -->
+					<text x="140" y={yPos + 5} font-size="13" fill="#e0e0e0" text-anchor="end" dominant-baseline="middle">
+						{threadLabel(thread, idx)}
+					</text>
 
-				<!-- Station dots for recent messages -->
-				<circle cx="100" cy={yPos} r="8" fill={color} class="station" />
-				<circle cx="300" cy={yPos} r="8" fill={color} class="station" />
-				<circle cx="500" cy={yPos} r="8" fill={color} class="station" />
-				<circle cx="700" cy={yPos} r="8" fill={color} class="station" />
-				<circle cx="900" cy={yPos} r="8" fill={color} class="station" />
+					<!-- Station dots -->
+					<circle cx="200" cy={yPos} r="8" fill={color} class="station" />
+					<circle cx="400" cy={yPos} r="8" fill={color} class="station" />
+					<circle cx="600" cy={yPos} r="8" fill={color} class="station" />
+					<circle cx="800" cy={yPos} r="8" fill={color} class="station" />
+					<circle cx="1000" cy={yPos} r="8" fill={color} class="station" />
 
-				<!-- Clickable area -->
-				<rect
-					x="50"
-					y={yPos - 25}
-					width="1100"
-					height="50"
-					fill="transparent"
-					class="line-clickable"
-					onclick={() => navigateTo(`/line/${thread.id}`)}
-					onkeydown={(e) => {
-						if (e.key === "Enter" || e.key === " ") {
-							navigateTo(`/line/${thread.id}`);
-						}
-					}}
-					role="button"
-					tabindex={idx}
-				/>
-			{/each}
-		</svg>
+					<!-- Clickable area -->
+					<rect
+						x="150"
+						y={yPos - 22}
+						width="1000"
+						height="44"
+						fill="transparent"
+						class="line-clickable"
+						onclick={() => navigateTo(`/line/${thread.id}`)}
+						onkeydown={(e) => {
+							if (e.key === "Enter" || e.key === " ") {
+								navigateTo(`/line/${thread.id}`);
+							}
+						}}
+						role="button"
+						tabindex={idx}
+					/>
+				{/each}
+			</svg>
+		</div>
 	{/if}
 </div>
 
@@ -149,10 +161,17 @@ const colors = [
 		cursor: not-allowed;
 	}
 
-	.metro-diagram {
-		width: 100%;
+	.metro-container {
+		display: block;
 		max-width: 1200px;
-		height: 600px;
+		max-height: 300px;
+		overflow: hidden;
+	}
+
+	.metro-diagram {
+		display: block;
+		width: 100%;
+		height: auto;
 		background: #0a0a14;
 		border: 1px solid #0f3460;
 		border-radius: 8px;

@@ -3,6 +3,7 @@ import { onDestroy, onMount } from "svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import MessageBubble from "../components/MessageBubble.svelte";
 import { api } from "../lib/api";
+import type { Thread } from "../lib/api";
 import { navigateTo } from "../lib/router";
 import { activeModel } from "../components/ModelSelector.svelte";
 import { connectWebSocket, disconnectWebSocket, subscribeToThread, wsEvents } from "../lib/websocket";
@@ -16,6 +17,7 @@ let agentActive = $state(false);
 let agentState = $state<string | null>(null);
 let fileInput: HTMLInputElement | null = null;
 let uploadStatus = $state<string | null>(null);
+let thread = $state<Thread | null>(null);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let statusPollInterval: ReturnType<typeof setInterval> | null = null;
@@ -65,7 +67,7 @@ async function pollStatus(): Promise<void> {
 
 onMount(async () => {
 	try {
-		await api.getThread(threadId);
+		thread = await api.getThread(threadId);
 		messages = await api.listMessages(threadId);
 		connectWebSocket();
 		subscribeToThread(threadId);
@@ -136,12 +138,23 @@ async function handleFileChange(e: Event): Promise<void> {
 function handleBackClick(): void {
 	navigateTo("/");
 }
+
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+function viewTitle(): string {
+	if (thread && thread.title && thread.title.trim().length > 0) {
+		return thread.title.trim();
+	}
+	if (messages.length === 0) {
+		return "New Conversation";
+	}
+	return "Conversation";
+}
 </script>
 
 <div class="line-view">
 	<div class="header">
 		<button onclick={handleBackClick} class="back-button">← Back</button>
-		<h1>Conversation</h1>
+		<h1>{viewTitle()}</h1>
 		{#if agentActive}
 			<span class="thinking-indicator">
 				{agentState === "tool_call" ? "Using tool..." : "Thinking..."}
@@ -156,35 +169,37 @@ function handleBackClick(): void {
 		{/each}
 	</div>
 
-	<div class="file-upload-area">
-		<label class="file-label" for="file-input">
-			Attach file
-			<input
-				id="file-input"
-				type="file"
-				class="file-input"
-				onchange={handleFileChange}
-				bind:this={fileInput}
-			/>
-		</label>
-		{#if uploadStatus}
-			<span class="upload-status">{uploadStatus}</span>
-		{/if}
-	</div>
+	<div class="bottom-area">
+		<div class="file-upload-area">
+			<label class="file-label" for="file-input">
+				Attach file
+				<input
+					id="file-input"
+					type="file"
+					class="file-input"
+					onchange={handleFileChange}
+					bind:this={fileInput}
+				/>
+			</label>
+			{#if uploadStatus}
+				<span class="upload-status">{uploadStatus}</span>
+			{/if}
+		</div>
 
-	<div class="input-area">
-		<textarea
-			bind:value={inputText}
-			placeholder="Type your message..."
-			disabled={sending}
-		></textarea>
-		<button
-			onclick={handleSendMessage}
-			disabled={sending || !inputText.trim()}
-			class="send-button"
-		>
-			{sending ? "Sending..." : "Send"}
-		</button>
+		<div class="input-area">
+			<textarea
+				bind:value={inputText}
+				placeholder="Type your message..."
+				disabled={sending}
+			></textarea>
+			<button
+				onclick={handleSendMessage}
+				disabled={sending || !inputText.trim()}
+				class="send-button"
+			>
+				{sending ? "Sending..." : "Send"}
+			</button>
+		</div>
 	</div>
 </div>
 
@@ -196,6 +211,7 @@ function handleBackClick(): void {
 		max-width: 48rem;
 		margin: 0 auto;
 		padding: 20px;
+		overflow: hidden;
 	}
 
 	.header {
@@ -203,12 +219,17 @@ function handleBackClick(): void {
 		gap: 20px;
 		align-items: center;
 		margin-bottom: 20px;
+		flex-shrink: 0;
 	}
 
 	h1 {
 		flex: 1;
 		margin: 0;
 		color: #e0e0e0;
+		font-size: 1.2rem;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 
 	.back-button {
@@ -219,6 +240,7 @@ function handleBackClick(): void {
 		border-radius: 4px;
 		cursor: pointer;
 		transition: background 200ms;
+		flex-shrink: 0;
 	}
 
 	.back-button:hover {
@@ -230,6 +252,7 @@ function handleBackClick(): void {
 		color: #69f0ae;
 		font-style: italic;
 		animation: pulse 1.5s ease-in-out infinite;
+		flex-shrink: 0;
 	}
 
 	@keyframes pulse {
@@ -246,6 +269,7 @@ function handleBackClick(): void {
 		cursor: pointer;
 		font-size: 13px;
 		transition: background 200ms;
+		flex-shrink: 0;
 	}
 
 	.cancel-button:hover {
@@ -256,7 +280,13 @@ function handleBackClick(): void {
 		flex: 1;
 		overflow-y: auto;
 		padding-right: 10px;
-		margin-bottom: 10px;
+		min-height: 0;
+	}
+
+	.bottom-area {
+		flex-shrink: 0;
+		padding-top: 10px;
+		border-top: 1px solid #0f3460;
 	}
 
 	.file-upload-area {
@@ -267,20 +297,21 @@ function handleBackClick(): void {
 	}
 
 	.file-label {
-		display: inline-block;
+		display: inline-flex;
+		align-items: center;
 		padding: 6px 14px;
-		background: #16213e;
-		border: 1px dashed #0f3460;
-		color: #a0a0b0;
+		background: #0f3460;
+		border: 1px solid #1a4a8a;
+		color: #e0e0e0;
 		border-radius: 4px;
 		cursor: pointer;
 		font-size: 13px;
-		transition: border-color 200ms;
+		transition: background 200ms;
+		user-select: none;
 	}
 
 	.file-label:hover {
-		border-color: #1a4a8a;
-		color: #e0e0e0;
+		background: #1a4a8a;
 	}
 
 	.file-input {
@@ -295,6 +326,7 @@ function handleBackClick(): void {
 	.input-area {
 		display: flex;
 		gap: 10px;
+		align-items: flex-end;
 	}
 
 	textarea {
@@ -307,6 +339,7 @@ function handleBackClick(): void {
 		font-family: inherit;
 		resize: vertical;
 		min-height: 60px;
+		max-height: 180px;
 	}
 
 	textarea:disabled {
@@ -321,7 +354,8 @@ function handleBackClick(): void {
 		border-radius: 4px;
 		cursor: pointer;
 		transition: background 200ms;
-		align-self: flex-end;
+		flex-shrink: 0;
+		height: 42px;
 	}
 
 	.send-button:hover:not(:disabled) {
