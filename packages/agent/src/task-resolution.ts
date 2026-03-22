@@ -162,13 +162,13 @@ export function isDependencySatisfied(db: Database, task: Task): boolean {
 			return false;
 		}
 
-		if (depTask.status !== "completed") {
-			// Dependency not yet complete
+		// Check if dependency failed and require_success is set
+		if (task.require_success && depTask.status === "failed") {
 			return false;
 		}
 
-		// If require_success is set and dependency failed, auto-fail this task
-		if (task.require_success && depTask.status === "failed") {
+		if (depTask.status !== "completed") {
+			// Dependency not yet complete
 			return false;
 		}
 	}

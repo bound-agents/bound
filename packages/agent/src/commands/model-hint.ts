@@ -11,6 +11,14 @@ export const modelHint: CommandDefinition = {
 		try {
 			const now = new Date().toISOString();
 
+			if (!ctx.taskId) {
+				return {
+					stdout: "",
+					stderr: "Error: taskId not available in context\n",
+					exitCode: 1,
+				};
+			}
+
 			// Check if a hint already exists for this task
 			const existing = ctx.db
 				.prepare("SELECT id FROM tasks WHERE id = ? AND deleted = 0")
