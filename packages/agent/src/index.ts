@@ -8,6 +8,15 @@ export { AgentLoop } from "./agent-loop";
 // Export context assembly
 export { assembleContext } from "./context-assembly";
 
+// Export scheduler and task resolution
+export { Scheduler } from "./scheduler";
+export {
+	canRunHere,
+	computeNextRunAt,
+	isDependencySatisfied,
+	seedCronTasks,
+} from "./task-resolution";
+
 // Export commands
 export { getAllCommands } from "./commands/index";
 export {
