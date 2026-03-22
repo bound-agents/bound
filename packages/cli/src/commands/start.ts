@@ -1,6 +1,7 @@
 // Task 3: bound start command
 // Full orchestrator bootstrap sequence
 
+import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { createAppContext } from "@bound/core";
 
@@ -16,14 +17,19 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// Bootstrap sequence per spec:
 	// 1. Load and validate all config files
 	console.log("Loading configuration...");
-	const ctx = createAppContext(resolve(configDir));
+	mkdirSync("data", { recursive: true });
+	const dbPath = resolve("data", "bound.db");
 
-	if (!ctx.ok) {
-		console.error("Configuration error:", ctx.value.message);
+	let appContext: Awaited<ReturnType<typeof createAppContext>>;
+	try {
+		appContext = createAppContext(resolve(configDir), dbPath);
+	} catch (error) {
+		console.error(
+			"Configuration error:",
+			error instanceof Error ? error.message : String(error),
+		);
 		process.exit(1);
 	}
-
-	const appContext = ctx.value;
 
 	// 2. Ensure Ed25519 keypair via @bound/sync
 	console.log("Initializing cryptography...");
@@ -87,7 +93,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 	console.log(`
 Bound is running!
-Operator: ${appContext.requiredConfig.allowlist.default_web_user}
+Operator: ${appContext.config.allowlist.default_web_user}
 
 Open http://localhost:3000 in your browser to start chatting.
 
