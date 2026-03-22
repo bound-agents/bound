@@ -1,0 +1,14 @@
+{
+	"name": "@bound/agent",
+	"version": "0.0.1",
+	"description": "Agent loop state machine, context assembly pipeline, defineCommand implementations, scheduler, and task DAG resolution for the Bound agent system",
+	"type": "module",
+	"main": "src/index.ts",
+	"types": "src/index.ts",
+	"dependencies": {
+		"@bound/shared": "workspace:*",
+		"@bound/core": "workspace:*",
+		"@bound/sandbox": "workspace:*",
+		"@bound/llm": "workspace:*"
+	}
+}
