@@ -1,1 +1,11 @@
-// Sandbox package index - exports will be added as modules are implemented
+export {
+	createClusterFs,
+	snapshotWorkspace,
+	snapshotWorkspaceSync,
+	diffWorkspace,
+	diffWorkspaceAsync,
+	hydrateWorkspace,
+	hydrateRemoteCache,
+	type ClusterFsConfig,
+	type FileChange,
+} from "./cluster-fs";
