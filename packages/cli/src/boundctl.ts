@@ -2,11 +2,16 @@
 // Main entry for `boundctl` command
 // Handles: boundctl set-hub, boundctl stop, boundctl resume, boundctl restore
 
-const args = process.argv.slice(2);
-const command = args[0];
+import { runRestore } from "./commands/restore.js";
+import { runSetHub } from "./commands/set-hub.js";
+import { runResume, runStop } from "./commands/stop-resume.js";
 
-if (!command || command === "--help" || command === "-h") {
-	console.log(`
+async function main() {
+	const args = process.argv.slice(2);
+	const command = args[0];
+
+	if (!command || command === "--help" || command === "-h") {
+		console.log(`
 boundctl - Bound orchestrator management CLI
 
 USAGE:
@@ -39,15 +44,94 @@ EXAMPLES:
   boundctl resume
   boundctl restore --before "2024-01-01T12:00:00Z" --preview
 `);
-	process.exit(0);
-}
+		process.exit(0);
+	}
 
-if (command === "set-hub" || command === "stop" || command === "resume" || command === "restore") {
-	// Placeholder: will be implemented in Task 4
-	console.error(`boundctl ${command} not yet implemented`);
+	if (command === "set-hub") {
+		const hostName = args[1];
+		if (!hostName) {
+			console.error("Error: host-name is required");
+			process.exit(1);
+		}
+
+		const setHubArgs = {
+			hostName,
+			wait: args.includes("--wait"),
+			configDir: args[args.indexOf("--config-dir") + 1] || "config",
+		};
+
+		try {
+			await runSetHub(setHubArgs);
+		} catch (error) {
+			console.error("set-hub failed:", error);
+			process.exit(1);
+		}
+		process.exit(0);
+	}
+
+	if (command === "stop") {
+		const stopArgs = {
+			configDir: args[args.indexOf("--config-dir") + 1] || "config",
+		};
+
+		try {
+			await runStop(stopArgs);
+		} catch (error) {
+			console.error("stop failed:", error);
+			process.exit(1);
+		}
+		process.exit(0);
+	}
+
+	if (command === "resume") {
+		const resumeArgs = {
+			configDir: args[args.indexOf("--config-dir") + 1] || "config",
+		};
+
+		try {
+			await runResume(resumeArgs);
+		} catch (error) {
+			console.error("resume failed:", error);
+			process.exit(1);
+		}
+		process.exit(0);
+	}
+
+	if (command === "restore") {
+		const beforeIndex = args.indexOf("--before");
+		if (beforeIndex === -1) {
+			console.error("Error: --before <timestamp> is required");
+			process.exit(1);
+		}
+
+		const restoreArgs = {
+			before: args[beforeIndex + 1],
+			preview: args.includes("--preview"),
+			tables: [],
+			configDir: args[args.indexOf("--config-dir") + 1] || "config",
+		};
+
+		// Parse --tables if provided
+		const tablesIndex = args.indexOf("--tables");
+		if (tablesIndex !== -1) {
+			restoreArgs.tables = args.slice(tablesIndex + 1).filter((a) => !a.startsWith("--"));
+		}
+
+		try {
+			await runRestore(restoreArgs);
+		} catch (error) {
+			console.error("restore failed:", error);
+			process.exit(1);
+		}
+		process.exit(0);
+	}
+
+	console.error(`Unknown command: ${command}`);
+	console.error('Run "boundctl --help" for usage information');
 	process.exit(1);
 }
 
-console.error(`Unknown command: ${command}`);
-console.error('Run "boundctl --help" for usage information');
-process.exit(1);
+main().catch((error) => {
+	console.error("Fatal error:", error);
+	process.exit(1);
+});

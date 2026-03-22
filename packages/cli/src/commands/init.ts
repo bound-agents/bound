@@ -103,8 +103,8 @@ export async function runInit(args: InitArgs): Promise<void> {
 	};
 
 	// Write config files
-	writeFileSync(allowlistPath, JSON.stringify(allowlistConfig, null, 2) + "\n");
-	writeFileSync(modelBackendsPath, JSON.stringify(modelBackendsConfig, null, 2) + "\n");
+	writeFileSync(allowlistPath, `${JSON.stringify(allowlistConfig, null, 2)}\n`);
+	writeFileSync(modelBackendsPath, `${JSON.stringify(modelBackendsConfig, null, 2)}\n`);
 
 	console.log(`
 Config initialized successfully!
@@ -130,7 +130,7 @@ Next steps:
 			hub: "primary-host",
 			sync_interval_seconds: 30,
 		};
-		writeFileSync(syncPath, JSON.stringify(syncConfig, null, 2) + "\n");
+		writeFileSync(syncPath, `${JSON.stringify(syncConfig, null, 2)}\n`);
 		console.log(`  - ${configDir}/sync.json (template)`);
 	}
 
@@ -139,7 +139,7 @@ Next steps:
 		const mcpConfig = {
 			servers: [],
 		};
-		writeFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n");
+		writeFileSync(mcpPath, `${JSON.stringify(mcpConfig, null, 2)}\n`);
 		console.log(`  - ${configDir}/mcp.json (template)`);
 	}
 
@@ -148,7 +148,7 @@ Next steps:
 		const overlayConfig = {
 			mounts: {},
 		};
-		writeFileSync(overlayPath, JSON.stringify(overlayConfig, null, 2) + "\n");
+		writeFileSync(overlayPath, `${JSON.stringify(overlayConfig, null, 2)}\n`);
 		console.log(`  - ${configDir}/overlay.json (template)`);
 	}
 }
