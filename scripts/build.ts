@@ -18,8 +18,18 @@ async function build() {
 		process.exit(1);
 	}
 
-	// Step 2: Build CLI binary
-	console.log("\n2. Compiling single binary...");
+	// Step 2: Embed web assets into TypeScript module
+	console.log("\n2. Embedding web assets for single binary...");
+	try {
+		execSync("bun run scripts/embed-assets.ts", { stdio: "inherit" });
+		console.log("Web assets embedded successfully");
+	} catch (error) {
+		console.error("Failed to embed web assets");
+		process.exit(1);
+	}
+
+	// Step 3: Build CLI binary
+	console.log("\n3. Compiling single binary...");
 	try {
 		execSync("bun build --compile packages/cli/src/bound.ts --outfile dist/bound", {
 			stdio: "inherit",

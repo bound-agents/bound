@@ -25,22 +25,8 @@ export async function createWebServer(
 	const port = config.port ?? 3000;
 	const host = config.host ?? "localhost";
 
-	// Ensure the Svelte SPA is built
-	const { join } = await import("node:path");
-	const { existsSync } = await import("node:fs");
-
-	const distPath = join(import.meta.dir, "../../../dist/client");
-	const spaAvailable = existsSync(join(distPath, "index.html"));
-	if (!spaAvailable) {
-		console.warn(
-			"Svelte SPA not found at",
-			distPath,
-			"— web UI will not be available. API endpoints will still work.",
-		);
-	}
-
-	// Create the Hono app with all routes
-	const app = createApp(db, eventBus);
+	// Create the Hono app with all routes (loads embedded assets if available)
+	const app = await createApp(db, eventBus);
 
 	// Create WebSocket handler
 	const wsHandler = createWebSocketHandler(eventBus);
@@ -55,16 +41,17 @@ export async function createWebServer(
 				hostname: host,
 				fetch(request: Request, server) {
 					// Check for WebSocket upgrade on /ws path
+					const url = new URL(request.url);
 					if (
-						new URL(request.url).pathname === "/ws" &&
+						url.pathname === "/ws" &&
 						request.headers.get("upgrade") === "websocket"
 					) {
 						if (server.upgrade(request, { data: undefined })) {
-							return; // Bun handles the upgrade
+							return;
 						}
 						return new Response("WebSocket upgrade failed", { status: 500 });
 					}
-					// All other requests go to the Hono app
+					// Pass to Hono (no extra args — Bun server object confuses Hono's Env)
 					return app.fetch(request);
 				},
 				websocket: wsHandler,
