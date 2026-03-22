@@ -16,3 +16,12 @@ export {
 	type PersistError,
 	type PersistOptions,
 } from "./fs-persist";
+
+export {
+	createDefineCommands,
+	type CommandDefinition,
+	type CommandResult,
+	type CommandContext,
+} from "./commands";
+
+export { createSandbox, type SandboxConfig, type ExecutionLimits } from "./sandbox-factory";
