@@ -1,12 +1,27 @@
 <script lang="ts">
-// biome-ignore lint/correctness/noUnusedVariables: used with bind:value
-// biome-ignore lint/style/useConst: reactive variable
-let selectedModel = "gpt-4";
+import { onMount } from "svelte";
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
-const models = ["gpt-4", "gpt-3.5-turbo", "claude-3-opus"];
+interface ModelInfo {
+	id: string;
+	provider: string;
+}
 
-// biome-ignore lint/correctness/noUnusedVariables: event handler
+let selectedModel = $state("");
+let models = $state<ModelInfo[]>([]);
+
+onMount(async () => {
+	try {
+		const res = await fetch("/api/status/models");
+		if (res.ok) {
+			const data = (await res.json()) as { models: ModelInfo[]; default: string };
+			models = data.models;
+			selectedModel = data.default;
+		}
+	} catch (error) {
+		console.error("Failed to load models:", error);
+	}
+});
+
 function handleChange(): void {
 	// Model change handler
 }
@@ -16,7 +31,7 @@ function handleChange(): void {
 	<label for="model">Model:</label>
 	<select id="model" bind:value={selectedModel} onchange={handleChange}>
 		{#each models as model}
-			<option value={model}>{model}</option>
+			<option value={model.id}>{model.id}</option>
 		{/each}
 	</select>
 </div>

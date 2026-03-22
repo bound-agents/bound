@@ -1,11 +1,24 @@
 <script lang="ts">
 import { onMount } from "svelte";
 import { api } from "../lib/api";
+import type { Thread } from "../lib/api";
 // biome-ignore lint/correctness/noUnusedImports: used in template handlers
 import { navigateTo } from "../lib/router";
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
-let threads = [];
+let threads: Thread[] = $state([]);
+let creating = $state(false);
+
+async function createThread(): Promise<void> {
+	creating = true;
+	try {
+		const thread = await api.createThread();
+		window.location.hash = `#/line/${thread.id}`;
+	} catch (error) {
+		console.error("Failed to create thread:", error);
+		creating = false;
+	}
+}
 
 onMount(async () => {
 	try {
@@ -33,6 +46,10 @@ const colors = [
 
 <div class="system-map">
 	<h1>System Map</h1>
+
+	<button class="new-thread-btn" onclick={createThread} disabled={creating}>
+		{creating ? "Creating..." : "New Thread"}
+	</button>
 
 	{#if threads.length === 0}
 		<p>No threads yet. Start a conversation to create one.</p>
@@ -73,8 +90,8 @@ const colors = [
 					height="50"
 					fill="transparent"
 					class="line-clickable"
-					on:click={() => navigateTo(`/line/${thread.id}`)}
-					on:keydown={(e) => {
+					onclick={() => navigateTo(`/line/${thread.id}`)}
+					onkeydown={(e) => {
 						if (e.key === "Enter" || e.key === " ") {
 							navigateTo(`/line/${thread.id}`);
 						}
@@ -99,6 +116,26 @@ const colors = [
 
 	p {
 		color: #888;
+	}
+
+	.new-thread-btn {
+		margin-bottom: 20px;
+		padding: 8px 16px;
+		background: #0f3460;
+		color: #e0e0e0;
+		border: 1px solid #1a4a8a;
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 14px;
+	}
+
+	.new-thread-btn:hover:not(:disabled) {
+		background: #1a4a8a;
+	}
+
+	.new-thread-btn:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 
 	.metro-diagram {

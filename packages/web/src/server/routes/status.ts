@@ -32,6 +32,13 @@ export function createStatusRoutes(db: Database, eventBus: TypedEventEmitter): H
 		}
 	});
 
+	app.get("/models", (c) => {
+		return c.json({
+			models: [{ id: "ollama-llama3", provider: "ollama" }],
+			default: "ollama-llama3",
+		});
+	});
+
 	app.post("/cancel/:threadId", (c) => {
 		try {
 			const { threadId } = c.req.param();
