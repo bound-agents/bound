@@ -1,11 +1,4 @@
-import type {
-	BackendCapabilities,
-	ChatParams,
-	ContentBlock,
-	LLMBackend,
-	LLMMessage,
-	StreamChunk,
-} from "./types";
+import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
 import { LLMError } from "./types";
 
 interface AnthropicMessage {
@@ -200,10 +193,7 @@ async function* parseAnthropicStream(response: Response): AsyncIterable<StreamCh
 				}
 
 				// Handle tool_use input_json_delta
-				if (
-					event.type === "content_block_delta" &&
-					event.delta?.type === "input_json_delta"
-				) {
+				if (event.type === "content_block_delta" && event.delta?.type === "input_json_delta") {
 					// biome-ignore lint/suspicious/noExplicitAny: <explanation>
 					const delta = event.delta as any;
 					const toolIndex = event.index || 0;

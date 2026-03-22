@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import Database from "bun:sqlite";
-import { redactMessage, redactThread } from "../redaction";
-import { applySchema } from "@bound/core";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { applySchema } from "@bound/core";
+import { redactMessage, redactThread } from "../redaction";
 
 describe("Redaction", () => {
 	let db: Database.Database;
@@ -80,7 +80,9 @@ describe("Redaction", () => {
 		expect(result.value?.messagesRedacted).toBe(2);
 
 		// Check that all messages are redacted
-		const messages = db.prepare("SELECT content FROM messages WHERE thread_id = ?").all(threadId) as Array<{ content: string }>;
+		const messages = db
+			.prepare("SELECT content FROM messages WHERE thread_id = ?")
+			.all(threadId) as Array<{ content: string }>;
 		expect(messages.length).toBe(2);
 		expect(messages[0].content).toBe("[redacted]");
 		expect(messages[1].content).toBe("[redacted]");
@@ -119,7 +121,9 @@ describe("Redaction", () => {
 		expect(result.value?.memoriesAffected).toBe(1);
 
 		// Check that memory is soft-deleted
-		const memory = db.prepare("SELECT deleted FROM semantic_memory WHERE id = ?").get(memoryId) as { deleted: number };
+		const memory = db.prepare("SELECT deleted FROM semantic_memory WHERE id = ?").get(memoryId) as {
+			deleted: number;
+		};
 		expect(memory.deleted).toBe(1);
 	});
 
@@ -156,11 +160,15 @@ describe("Redaction", () => {
 		redactThread(db, threadId1, siteId);
 
 		// Check memory 1 is deleted
-		const memory1 = db.prepare("SELECT deleted FROM semantic_memory WHERE id = ?").get(memoryId1) as { deleted: number };
+		const memory1 = db
+			.prepare("SELECT deleted FROM semantic_memory WHERE id = ?")
+			.get(memoryId1) as { deleted: number };
 		expect(memory1.deleted).toBe(1);
 
 		// Check memory 2 is NOT deleted
-		const memory2 = db.prepare("SELECT deleted FROM semantic_memory WHERE id = ?").get(memoryId2) as { deleted: number };
+		const memory2 = db
+			.prepare("SELECT deleted FROM semantic_memory WHERE id = ?")
+			.get(memoryId2) as { deleted: number };
 		expect(memory2.deleted).toBe(0);
 	});
 });

@@ -6,8 +6,9 @@
 	"main": "src/index.ts",
 	"types": "src/index.ts",
 	"dependencies": {
-		"@bound/shared": "workspace:*",
 		"@bound/core": "workspace:*",
-		"just-bash": "^2.14.0"
+		"@bound/shared": "workspace:*",
+		"just-bash": "^2.14.0",
+		"uuid": "^13.0.0"
 	}
 }

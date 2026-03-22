@@ -10,9 +10,9 @@ export async function generateThreadTitle(
 ): Promise<Result<string, Error>> {
 	try {
 		// Check if thread already has a title (at-most-once guarantee)
-		const thread = db
-			.prepare("SELECT title FROM threads WHERE id = ?")
-			.get(threadId) as Pick<Thread, "title"> | undefined;
+		const thread = db.prepare("SELECT title FROM threads WHERE id = ?").get(threadId) as
+			| Pick<Thread, "title">
+			| undefined;
 
 		if (thread?.title) {
 			// Title already exists, return early
@@ -66,10 +66,7 @@ ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
 		const title = chunks.join("").trim();
 
 		// Store the generated title
-		db.prepare("UPDATE threads SET title = ? WHERE id = ?").run(
-			title,
-			threadId,
-		);
+		db.prepare("UPDATE threads SET title = ? WHERE id = ?").run(title, threadId);
 
 		return { ok: true, value: title };
 	} catch (error) {

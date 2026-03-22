@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
-import type { LLMBackend, Result } from "@bound/llm";
 import { randomUUID } from "node:crypto";
+import type { LLMBackend, Result } from "@bound/llm";
 
 export interface ExtractionResult {
 	summaryGenerated: boolean;
@@ -15,9 +15,9 @@ export async function extractSummaryAndMemories(
 ): Promise<Result<ExtractionResult, Error>> {
 	try {
 		// Get thread state
-		const thread = db
-			.prepare("SELECT summary_through FROM threads WHERE id = ?")
-			.get(threadId) as { summary_through: string | null } | undefined;
+		const thread = db.prepare("SELECT summary_through FROM threads WHERE id = ?").get(threadId) as
+			| { summary_through: string | null }
+			| undefined;
 
 		if (!thread) {
 			return {
@@ -116,7 +116,9 @@ export function buildCrossThreadDigest(db: Database, userId: string): string {
 				.prepare("SELECT COUNT(*) as count FROM messages WHERE thread_id = ?")
 				.get(thread.id) as { count: number };
 
-			lines.push(`- ${title}: ${messageCount.count} messages (last updated ${thread.last_message_at})`);
+			lines.push(
+				`- ${title}: ${messageCount.count} messages (last updated ${thread.last_message_at})`,
+			);
 		}
 
 		return lines.join("\n");

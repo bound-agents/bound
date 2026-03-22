@@ -6,7 +6,11 @@ export interface RedactionResult {
 	memoriesAffected: number;
 }
 
-export function redactMessage(db: Database, messageId: string, siteId: string): Result<void, Error> {
+export function redactMessage(
+	db: Database,
+	messageId: string,
+	siteId: string,
+): Result<void, Error> {
 	try {
 		const now = new Date().toISOString();
 		db.prepare("UPDATE messages SET content = ?, modified_at = ? WHERE id = ?").run(
@@ -47,9 +51,7 @@ export function redactThread(
 
 		// Tombstone semantic_memory entries whose source matches the thread_id
 		const memoryResult = db
-			.prepare(
-				`SELECT COUNT(*) as count FROM semantic_memory WHERE source = ? AND deleted = 0`,
-			)
+			.prepare(`SELECT COUNT(*) as count FROM semantic_memory WHERE source = ? AND deleted = 0`)
 			.get(threadId) as { count: number };
 
 		const memoryCount = memoryResult.count;

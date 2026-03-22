@@ -1,10 +1,4 @@
-import type {
-	BackendCapabilities,
-	ChatParams,
-	LLMBackend,
-	LLMMessage,
-	StreamChunk,
-} from "./types";
+import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
 import { LLMError } from "./types";
 
 interface BedrockMessage {
@@ -181,10 +175,7 @@ async function* parseBedrockStream(response: Response): AsyncIterable<StreamChun
 						};
 					}
 
-					if (
-						event.type === "content_block_delta" &&
-						event.delta?.type === "input_json_delta"
-					) {
+					if (event.type === "content_block_delta" && event.delta?.type === "input_json_delta") {
 						yield {
 							type: "tool_use_args",
 							id: event.index || "",
@@ -273,9 +264,7 @@ export class BedrockDriver implements LLMBackend {
 			});
 		} catch (error) {
 			throw new LLMError(
-				`Failed to connect to Bedrock: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
+				`Failed to connect to Bedrock: ${error instanceof Error ? error.message : String(error)}`,
 				"bedrock",
 				undefined,
 				error instanceof Error ? error : new Error(String(error)),

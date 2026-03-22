@@ -62,3 +62,10 @@ export { generateThreadTitle } from "./title-generation";
 // Export summary extraction
 export type { ExtractionResult } from "./summary-extraction";
 export { extractSummaryAndMemories, buildCrossThreadDigest } from "./summary-extraction";
+
+// Export file-thread tracking
+export {
+	trackFilePath,
+	getLastThreadForFile,
+	getFileThreadNotificationMessage,
+} from "./file-thread-tracker";

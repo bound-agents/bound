@@ -1,0 +1,8 @@
+{
+	"default_web_user": "operator-1",
+	"users": {
+		"operator-1": {
+			"display_name": "operator-1"
+		}
+	}
+}

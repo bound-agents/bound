@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { readdirSync, statSync, readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { v5 as uuidv5 } from "uuid";
 
@@ -25,7 +25,7 @@ function generateDeterministicId(siteId: string, path: string): string {
 	return uuidv5(path, BOUND_NAMESPACE);
 }
 
-function walkDirectory(dir: string, prefix: string = ""): Array<{ path: string; fullPath: string }> {
+function walkDirectory(dir: string, prefix = ""): Array<{ path: string; fullPath: string }> {
 	const entries: Array<{ path: string; fullPath: string }> = [];
 
 	try {

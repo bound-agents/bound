@@ -50,19 +50,22 @@ describe("OpenAICompatibleDriver", () => {
 		global.fetch = (async (url: string, options: RequestInit) => {
 			if (url.includes("/chat/completions")) {
 				requestBody = options.body as string;
-				const mockResponse = "data: " + JSON.stringify({
-					id: "chatcmpl-123",
-					object: "text_completion",
-					created: 1234567890,
-					model: "gpt-4",
-					choices: [
-						{
-							index: 0,
-							delta: { content: "Hello!" },
-							finish_reason: null,
-						},
-					],
-				}) + "\n";
+				const mockResponse =
+					"data: " +
+					JSON.stringify({
+						id: "chatcmpl-123",
+						object: "text_completion",
+						created: 1234567890,
+						model: "gpt-4",
+						choices: [
+							{
+								index: 0,
+								delta: { content: "Hello!" },
+								finish_reason: null,
+							},
+						],
+					}) +
+					"\n";
 
 				return new Response(mockResponse, {
 					status: 200,

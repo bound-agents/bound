@@ -1,7 +1,7 @@
 import { AnthropicDriver } from "./anthropic-driver";
 import { BedrockDriver } from "./bedrock-driver";
-import { OpenAICompatibleDriver } from "./openai-driver";
 import { OllamaDriver } from "./ollama-driver";
+import { OpenAICompatibleDriver } from "./openai-driver";
 import type { BackendCapabilities, BackendConfig, LLMBackend, ModelBackendsConfig } from "./types";
 import { LLMError } from "./types";
 

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, it, expect } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { runInit } from "../commands/init.js";

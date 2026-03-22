@@ -1,10 +1,13 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import type { Advisory, AdvisoryStatus, AdvisoryType, Result } from "@bound/shared";
+import type { Advisory, Result } from "@bound/shared";
 
 export function createAdvisory(
 	db: Database,
-	advisory: Omit<Advisory, "id" | "proposed_at" | "modified_at" | "created_by" | "defer_until" | "resolved_at">,
+	advisory: Omit<
+		Advisory,
+		"id" | "proposed_at" | "modified_at" | "created_by" | "defer_until" | "resolved_at"
+	>,
 	siteId: string,
 ): string {
 	const id = randomUUID();
@@ -13,15 +16,33 @@ export function createAdvisory(
 	db.prepare(
 		`INSERT INTO advisories (id, type, status, title, detail, action, impact, evidence, proposed_at, modified_at, created_by)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-	).run(id, advisory.type, "proposed", advisory.title, advisory.detail, advisory.action, advisory.impact, advisory.evidence, now, now, siteId);
+	).run(
+		id,
+		advisory.type,
+		"proposed",
+		advisory.title,
+		advisory.detail,
+		advisory.action,
+		advisory.impact,
+		advisory.evidence,
+		now,
+		now,
+		siteId,
+	);
 
 	return id;
 }
 
-export function approveAdvisory(db: Database, advisoryId: string, siteId: string): Result<void, Error> {
+export function approveAdvisory(
+	db: Database,
+	advisoryId: string,
+	siteId: string,
+): Result<void, Error> {
 	try {
 		const now = new Date().toISOString();
-		db.prepare("UPDATE advisories SET status = ?, resolved_at = ?, modified_at = ? WHERE id = ?").run("approved", now, now, advisoryId);
+		db.prepare(
+			"UPDATE advisories SET status = ?, resolved_at = ?, modified_at = ? WHERE id = ?",
+		).run("approved", now, now, advisoryId);
 		return { ok: true };
 	} catch (error) {
 		return {
@@ -31,10 +52,16 @@ export function approveAdvisory(db: Database, advisoryId: string, siteId: string
 	}
 }
 
-export function dismissAdvisory(db: Database, advisoryId: string, siteId: string): Result<void, Error> {
+export function dismissAdvisory(
+	db: Database,
+	advisoryId: string,
+	siteId: string,
+): Result<void, Error> {
 	try {
 		const now = new Date().toISOString();
-		db.prepare("UPDATE advisories SET status = ?, resolved_at = ?, modified_at = ? WHERE id = ?").run("dismissed", now, now, advisoryId);
+		db.prepare(
+			"UPDATE advisories SET status = ?, resolved_at = ?, modified_at = ? WHERE id = ?",
+		).run("dismissed", now, now, advisoryId);
 		return { ok: true };
 	} catch (error) {
 		return {
@@ -52,7 +79,9 @@ export function deferAdvisory(
 ): Result<void, Error> {
 	try {
 		const now = new Date().toISOString();
-		db.prepare("UPDATE advisories SET status = ?, defer_until = ?, modified_at = ? WHERE id = ?").run("deferred", deferUntil, now, advisoryId);
+		db.prepare(
+			"UPDATE advisories SET status = ?, defer_until = ?, modified_at = ? WHERE id = ?",
+		).run("deferred", deferUntil, now, advisoryId);
 		return { ok: true };
 	} catch (error) {
 		return {
@@ -62,10 +91,16 @@ export function deferAdvisory(
 	}
 }
 
-export function applyAdvisory(db: Database, advisoryId: string, siteId: string): Result<void, Error> {
+export function applyAdvisory(
+	db: Database,
+	advisoryId: string,
+	siteId: string,
+): Result<void, Error> {
 	try {
 		const now = new Date().toISOString();
-		db.prepare("UPDATE advisories SET status = ?, resolved_at = ?, modified_at = ? WHERE id = ?").run("applied", now, now, advisoryId);
+		db.prepare(
+			"UPDATE advisories SET status = ?, resolved_at = ?, modified_at = ? WHERE id = ?",
+		).run("applied", now, now, advisoryId);
 		return { ok: true };
 	} catch (error) {
 		return {

@@ -1,15 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import Database from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { applySchema } from "@bound/core";
+import type { Advisory } from "@bound/shared";
 import {
+	applyAdvisory,
 	approveAdvisory,
 	createAdvisory,
 	deferAdvisory,
 	dismissAdvisory,
 	getPendingAdvisories,
-	applyAdvisory,
 } from "../advisories";
-import { applySchema } from "@bound/core";
-import type { Advisory } from "@bound/shared";
 
 describe("Advisories", () => {
 	let db: Database.Database;
@@ -40,7 +40,9 @@ describe("Advisories", () => {
 		expect(typeof advisoryId).toBe("string");
 		expect(advisoryId.length).toBeGreaterThan(0);
 
-		const advisory = db.prepare("SELECT * FROM advisories WHERE id = ?").get(advisoryId) as Advisory;
+		const advisory = db
+			.prepare("SELECT * FROM advisories WHERE id = ?")
+			.get(advisoryId) as Advisory;
 		expect(advisory).toBeDefined();
 		expect(advisory.type).toBe("cost");
 		expect(advisory.title).toBe("High spending detected");

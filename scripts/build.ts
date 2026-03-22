@@ -27,9 +27,7 @@ async function build() {
 		console.log("✓ Binary compiled successfully");
 	} catch (error) {
 		console.error("✗ Failed to compile binary");
-		console.error(
-			"Note: bun build --compile may not work in dev environment. This is expected.",
-		);
+		console.error("Note: bun build --compile may not work in dev environment. This is expected.");
 		// Don't exit with error code - this is optional for dev
 	}
 

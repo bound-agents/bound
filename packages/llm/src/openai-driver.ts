@@ -1,10 +1,4 @@
-import type {
-	BackendCapabilities,
-	ChatParams,
-	LLMBackend,
-	LLMMessage,
-	StreamChunk,
-} from "./types";
+import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
 import { LLMError } from "./types";
 
 interface OpenAIMessage {
@@ -229,10 +223,8 @@ async function* parseOpenAIStream(response: Response): AsyncIterable<StreamChunk
 							// Emit tool_use_end if stream is finishing this tool
 							if (choice.finish_reason === "tool_calls" || choice.finish_reason === "stop") {
 								// Check if all tool calls are done
-								const allDone = Array.from(toolStates.values()).every(
-									(s) => s.args !== "",
-								);
-								if (allDone && toolIndex === (toolStates.size - 1)) {
+								const allDone = Array.from(toolStates.values()).every((s) => s.args !== "");
+								if (allDone && toolIndex === toolStates.size - 1) {
 									for (const [, state] of toolStates) {
 										yield {
 											type: "tool_use_end",

@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import Database from "bun:sqlite";
-import { generateThreadTitle } from "../title-generation";
-import { applySchema } from "@bound/core";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { applySchema } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
+import { generateThreadTitle } from "../title-generation";
 
 describe("Title Generation", () => {
 	let db: Database.Database;
