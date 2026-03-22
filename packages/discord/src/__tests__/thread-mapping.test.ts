@@ -102,7 +102,7 @@ describe("Thread Mapping", () => {
 			[userId, "Alice", "alice-discord-123", now, now],
 		);
 
-		const thread = findOrCreateThread(ctx.db, userId, "discord", ctx.siteId);
+		const thread = findOrCreateThread(ctx.db, userId, ctx.siteId);
 
 		expect(thread).toBeDefined();
 		expect(thread.user_id).toBe(userId);

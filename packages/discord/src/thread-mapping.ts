@@ -25,12 +25,7 @@ export function mapDiscordUser(db: Database, discordId: string): User | null {
  * Queries for an existing non-deleted thread with this user_id and interface='discord'.
  * If found, returns it. If not, creates a new thread.
  */
-export function findOrCreateThread(
-	db: Database,
-	userId: string,
-	_interface: string,
-	siteId: string,
-): Thread {
+export function findOrCreateThread(db: Database, userId: string, siteId: string): Thread {
 	// Look for existing thread
 	const existing = db
 		.query(
