@@ -2,8 +2,10 @@
 // Full orchestrator bootstrap sequence
 
 import { mkdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { createAppContext } from "@bound/core";
+import { OllamaDriver } from "@bound/llm";
 import { createWebServer } from "@bound/web";
 
 export interface StartArgs {
@@ -70,7 +72,21 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 	// 11. LLM setup
 	console.log("Initializing LLM...");
-	// TODO: Create model router from config
+	const defaultBackend = appContext.config.modelBackends.backends.find(
+		(b) => b.id === appContext.config.modelBackends.default,
+	) || appContext.config.modelBackends.backends[0];
+
+	let llmDriver: OllamaDriver | null = null;
+	if (defaultBackend?.provider === "ollama" && defaultBackend.base_url) {
+		llmDriver = new OllamaDriver({
+			baseUrl: defaultBackend.base_url,
+			model: defaultBackend.model,
+			contextWindow: defaultBackend.context_window,
+		});
+		console.log(`[llm] Initialized Ollama driver: ${defaultBackend.model} at ${defaultBackend.base_url}`);
+	} else {
+		console.warn("[llm] No supported LLM backend configured");
+	}
 
 	// 12. Web server
 	console.log("Starting web server...");
@@ -88,9 +104,79 @@ export async function runStart(args: StartArgs): Promise<void> {
 		await webServer.start();
 
 		// Wire message:created events to the agent loop
-		appContext.eventBus.on("message:created", async ({ thread_id }) => {
-			// TODO: spawn agent loop for this thread
-			console.log(`[agent] Message received in thread ${thread_id}, agent loop would start here`);
+		const activeLoops = new Set<string>();
+		appContext.eventBus.on("message:created", async ({ message, thread_id }) => {
+			// Only process user messages, skip our own assistant messages
+			if (message.role !== "user") return;
+			if (!llmDriver) {
+				console.warn("[agent] No LLM driver configured, cannot process message");
+				return;
+			}
+			if (activeLoops.has(thread_id)) {
+				console.log(`[agent] Loop already active for thread ${thread_id}, skipping`);
+				return;
+			}
+
+			console.log(`[agent] Processing message in thread ${thread_id}`);
+			activeLoops.add(thread_id);
+
+			try {
+				// Fetch thread history
+				const messages = appContext.db
+					.query("SELECT role, content FROM messages WHERE thread_id = ? ORDER BY created_at ASC")
+					.all(thread_id) as Array<{ role: string; content: string }>;
+
+				// Build LLM messages
+				const llmMessages = messages.map((m) => ({
+					role: m.role as "user" | "assistant",
+					content: m.content,
+				}));
+
+				console.log(`[agent] Calling LLM with ${llmMessages.length} messages`);
+
+				// Stream response from LLM
+				let responseText = "";
+				const stream = llmDriver.chat({
+					model: defaultBackend.model,
+					messages: llmMessages,
+				});
+
+				for await (const chunk of stream) {
+					if (chunk.type === "text") {
+						responseText += chunk.content;
+					} else if (chunk.type === "error") {
+						console.error(`[agent] LLM error: ${chunk.error}`);
+						responseText = `Error from LLM: ${chunk.error}`;
+						break;
+					} else if (chunk.type === "done") {
+						console.log(`[agent] LLM done: ${chunk.usage.input_tokens} in, ${chunk.usage.output_tokens} out`);
+					}
+				}
+
+				if (responseText) {
+					// Persist assistant response
+					const msgId = randomUUID();
+					const now = new Date().toISOString();
+					appContext.db.run(
+						`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+						[msgId, thread_id, "assistant", responseText, defaultBackend.id, null, now, now, appContext.hostName],
+					);
+
+					console.log(`[agent] Response persisted (${responseText.length} chars)`);
+
+					// Emit so WebSocket pushes to client
+					const savedMsg = appContext.db.query("SELECT * FROM messages WHERE id = ?").get(msgId);
+					appContext.eventBus.emit("message:created", {
+						message: savedMsg as any,
+						thread_id,
+					});
+				}
+			} catch (error) {
+				console.error(`[agent] Error: ${error instanceof Error ? error.message : String(error)}`);
+			} finally {
+				activeLoops.delete(thread_id);
+			}
 		});
 	} catch (error) {
 		console.warn(
