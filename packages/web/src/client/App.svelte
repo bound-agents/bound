@@ -1,18 +1,30 @@
 <script lang="ts">
 import { onMount } from "svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
+import TopBar from "./components/TopBar.svelte";
 import { currentRoute } from "./lib/router";
+// biome-ignore lint/correctness/noUnusedImports: used in template
+import LineView from "./views/LineView.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
+import NetworkStatus from "./views/NetworkStatus.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
+import SystemMap from "./views/SystemMap.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
+import Timetable from "./views/Timetable.svelte";
+
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let route = "/";
 
 onMount(() => {
 	window.addEventListener("hashchange", () => {
-		const route = window.location.hash.slice(1) || "/";
-		currentRoute.set(route);
+		const newRoute = window.location.hash.slice(1) || "/";
+		currentRoute.set(newRoute);
 	});
 
-	const route = window.location.hash.slice(1) || "/";
-	currentRoute.set(route);
+	const initialRoute = window.location.hash.slice(1) || "/";
+	currentRoute.set(initialRoute);
 });
 
-let route = "/";
 currentRoute.subscribe((value) => {
 	route = value;
 });
