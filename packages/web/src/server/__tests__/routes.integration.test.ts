@@ -108,4 +108,158 @@ describe("API Routes", () => {
 			expect(Array.isArray(data)).toBe(true);
 		});
 	});
+
+	describe("POST /api/threads/:id/messages", () => {
+		it("creates a message for a thread", async () => {
+			// First create a thread
+			const createThreadRequest = new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({}),
+			});
+			const threadResponse = await app.fetch(createThreadRequest);
+			const thread = await threadResponse.json();
+
+			// Then create a message
+			const messageRequest = new Request(
+				`http://localhost:3000/api/threads/${thread.id}/messages`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ content: "Hello, world!" }),
+				},
+			);
+			const messageResponse = await app.fetch(messageRequest);
+
+			expect(messageResponse.status).toBe(201);
+			const message = await messageResponse.json();
+			expect(message.id).toBeDefined();
+			expect(message.content).toBe("Hello, world!");
+			expect(message.role).toBe("user");
+			expect(message.thread_id).toBe(thread.id);
+		});
+
+		it("returns 404 for message on non-existent thread", async () => {
+			const request = new Request("http://localhost:3000/api/threads/invalid-id/messages", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ content: "test" }),
+			});
+			const response = await app.fetch(request);
+
+			expect(response.status).toBe(404);
+		});
+
+		it("returns 400 for invalid message body", async () => {
+			// Create a thread first
+			const createThreadRequest = new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({}),
+			});
+			const threadResponse = await app.fetch(createThreadRequest);
+			const thread = await threadResponse.json();
+
+			// Try to create a message with invalid body
+			const messageRequest = new Request(
+				`http://localhost:3000/api/threads/${thread.id}/messages`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ invalid: "body" }),
+				},
+			);
+			const response = await app.fetch(messageRequest);
+
+			expect(response.status).toBe(400);
+		});
+	});
+
+	describe("GET /api/threads/:id/messages", () => {
+		it("returns messages for a thread", async () => {
+			// Create a thread and message
+			const createThreadRequest = new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({}),
+			});
+			const threadResponse = await app.fetch(createThreadRequest);
+			const thread = await threadResponse.json();
+
+			const messageRequest = new Request(
+				`http://localhost:3000/api/threads/${thread.id}/messages`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ content: "Test message" }),
+				},
+			);
+			await app.fetch(messageRequest);
+
+			// Get messages
+			const getRequest = new Request(`http://localhost:3000/api/threads/${thread.id}/messages`);
+			const getResponse = await app.fetch(getRequest);
+
+			expect(getResponse.status).toBe(200);
+			const messages = await getResponse.json();
+			expect(Array.isArray(messages)).toBe(true);
+			expect(messages.length).toBe(1);
+			expect(messages[0].content).toBe("Test message");
+		});
+	});
+
+	describe("POST /api/status/cancel/:threadId", () => {
+		it("cancels an agent loop for a thread", async () => {
+			// Create a thread first
+			const createThreadRequest = new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({}),
+			});
+			const threadResponse = await app.fetch(createThreadRequest);
+			const thread = await threadResponse.json();
+
+			// Cancel the agent loop
+			const cancelRequest = new Request(`http://localhost:3000/api/status/cancel/${thread.id}`, {
+				method: "POST",
+			});
+			const cancelResponse = await app.fetch(cancelRequest);
+
+			expect(cancelResponse.status).toBe(200);
+			const result = await cancelResponse.json();
+			expect(result.cancelled).toBe(true);
+			expect(result.thread_id).toBe(thread.id);
+		});
+
+		it("returns 404 for cancel on non-existent thread", async () => {
+			const request = new Request("http://localhost:3000/api/status/cancel/invalid-id", {
+				method: "POST",
+			});
+			const response = await app.fetch(request);
+
+			expect(response.status).toBe(404);
+		});
+	});
+
+	describe("Host header validation", () => {
+		it("rejects non-localhost Host headers", async () => {
+			const request = new Request("http://example.com:3000/api/threads", {
+				headers: { Host: "example.com" },
+			});
+			const response = await app.fetch(request);
+
+			expect(response.status).toBe(400);
+			const error = await response.json();
+			expect(error.error).toBe("Invalid Host header");
+		});
+
+		it("allows localhost Host headers", async () => {
+			const request = new Request("http://localhost:3000/api/threads", {
+				headers: { Host: "localhost:3000" },
+			});
+			const response = await app.fetch(request);
+
+			expect(response.status).toBe(200);
+		});
+	});
 });

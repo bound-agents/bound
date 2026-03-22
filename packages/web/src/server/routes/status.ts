@@ -1,7 +1,8 @@
 import type { Database } from "bun:sqlite";
+import type { TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
 
-export function createStatusRoutes(db: Database): Hono {
+export function createStatusRoutes(db: Database, eventBus: TypedEventEmitter): Hono {
 	const app = new Hono();
 
 	app.get("/", (c) => {
@@ -45,6 +46,9 @@ export function createStatusRoutes(db: Database): Hono {
 					404,
 				);
 			}
+
+			// Emit cancel event on eventBus to signal agent loop to stop
+			eventBus.emit("agent:cancel", { thread_id: threadId });
 
 			return c.json({
 				cancelled: true,

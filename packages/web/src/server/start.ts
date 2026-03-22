@@ -27,7 +27,7 @@ export async function createWebServer(
 
 	// Ensure the Svelte SPA is built
 	const { join } = await import("node:path");
-	const { existsSync, readdirSync } = await import("node:fs");
+	const { existsSync } = await import("node:fs");
 
 	const distPath = join(import.meta.dir, "../../../dist/client");
 	if (!existsSync(join(distPath, "index.html"))) {
@@ -50,7 +50,19 @@ export async function createWebServer(
 			server = Bun.serve({
 				port,
 				hostname: host,
-				fetch: app.fetch,
+				fetch(request: Request) {
+					// Check for WebSocket upgrade on /ws path
+					if (
+						new URL(request.url).pathname === "/ws" &&
+						request.headers.get("upgrade") === "websocket"
+					) {
+						// Bun.serve will call the websocket handler for this upgrade
+						// biome-ignore lint/suspicious/noExplicitAny: Bun handles upgrade
+						return undefined as any;
+					}
+					// All other requests go to the Hono app
+					return app.fetch(request);
+				},
 				websocket: wsHandler,
 			});
 

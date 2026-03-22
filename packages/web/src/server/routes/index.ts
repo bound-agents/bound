@@ -11,7 +11,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter) {
 		threads: createThreadsRoutes(db),
 		messages: createMessagesRoutes(db, eventBus),
 		files: createFilesRoutes(db),
-		status: createStatusRoutes(db),
+		status: createStatusRoutes(db, eventBus),
 		tasks: createTasksRoutes(db),
 	};
 }

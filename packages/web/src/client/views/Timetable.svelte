@@ -1,7 +1,9 @@
 <script lang="ts">
 import { onMount } from "svelte";
 
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 let tasks = [];
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 let loading = true;
 
 async function loadTasks(): Promise<void> {
@@ -18,6 +20,7 @@ onMount(() => {
 	loadTasks();
 });
 
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 function getStatusBadgeClass(status: string): string {
 	switch (status) {
 		case "completed":

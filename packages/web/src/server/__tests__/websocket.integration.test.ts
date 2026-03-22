@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { TypedEventEmitter } from "@bound/shared";
-import { createWebSocketHandler } from "../websocket";
+import { type WebSocketConfig, createWebSocketHandler } from "../websocket";
 
 describe("WebSocket Handler", () => {
 	let eventBus: TypedEventEmitter;
-	let handler;
+	let handler: WebSocketConfig;
 
 	beforeEach(() => {
 		eventBus = new TypedEventEmitter();
@@ -12,9 +12,9 @@ describe("WebSocket Handler", () => {
 	});
 
 	it("creates handler with required methods", () => {
-		expect(handler.open).toBeDefined();
-		expect(handler.message).toBeDefined();
-		expect(handler.close).toBeDefined();
+		expect(typeof handler.open).toBe("function");
+		expect(typeof handler.message).toBe("function");
+		expect(typeof handler.close).toBe("function");
 	});
 
 	it("tracks client subscriptions on message", () => {
@@ -29,9 +29,9 @@ describe("WebSocket Handler", () => {
 			subscribe: ["thread-1", "thread-2"],
 		});
 
-		handler.message(mockWs, subscribeMessage);
-
-		expect(handler).toBeDefined();
+		expect(() => {
+			handler.message(mockWs, subscribeMessage);
+		}).not.toThrow();
 	});
 
 	it("broadcasts message:created events to subscribed clients", async () => {
@@ -104,9 +104,9 @@ describe("WebSocket Handler", () => {
 		} as unknown as WebSocket;
 
 		handler.open(mockWs);
-		handler.close(mockWs);
-
-		expect(handler).toBeDefined();
+		expect(() => {
+			handler.close(mockWs);
+		}).not.toThrow();
 	});
 
 	it("ignores invalid message format", () => {

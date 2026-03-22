@@ -1,12 +1,21 @@
 import type { Database } from "bun:sqlite";
 import type { TypedEventEmitter } from "@bound/shared";
-import { serveStatic } from "hono/bun";
 import { Hono } from "hono";
+import { serveStatic } from "hono/bun";
 import { registerRoutes } from "./routes/index";
 
 export function createApp(db: Database, eventBus: TypedEventEmitter): Hono {
 	const app = new Hono();
 	const routes = registerRoutes(db, eventBus);
+
+	// Host header validation middleware - only allow localhost
+	app.use("*", (c, next) => {
+		const host = c.req.header("host");
+		if (host && !host.startsWith("localhost:") && host !== "localhost") {
+			return c.json({ error: "Invalid Host header" }, 400);
+		}
+		return next();
+	});
 
 	app.route("/api/threads", routes.threads);
 	app.route("/api/threads", routes.messages);

@@ -1,19 +1,23 @@
 <script lang="ts">
 import { onMount } from "svelte";
 
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 let hosts = [];
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 let loading = true;
 
 onMount(async () => {
 	try {
 		const response = await fetch("/api/status");
 		const status = await response.json();
+		// Build host info from the fetched status
+		const hostUptime = status.host_info?.uptime_seconds ?? 0;
 		hosts = [
 			{
 				name: "localhost",
 				online: true,
 				syncStatus: "synced",
-				lastSync: new Date().toISOString(),
+				lastSync: new Date(Date.now() - hostUptime * 1000).toISOString(),
 			},
 		];
 	} catch (error) {
@@ -33,7 +37,7 @@ onMount(async () => {
 			{#each hosts as host}
 				<div class="host-card">
 					<h2>{host.name}</h2>
-					<div class="status-indicator" class:online={host.online} />
+					<div class="status-indicator" class:online={host.online}></div>
 					<p class="status-text">
 						{host.online ? "Online" : "Offline"}
 					</p>

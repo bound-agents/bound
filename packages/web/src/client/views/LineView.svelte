@@ -1,29 +1,29 @@
 <script lang="ts">
 import { onMount } from "svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
+import MessageBubble from "../components/MessageBubble.svelte";
 import { api } from "../lib/api";
-import { navigateTo } from "../lib/router";
 import { connectWebSocket, subscribeToThread } from "../lib/websocket";
 
 export let threadId: string;
 
-let thread = null;
 let messages = [];
 let inputText = "";
-let loading = true;
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 let sending = false;
 
 onMount(async () => {
 	try {
-		thread = await api.getThread(threadId);
+		await api.getThread(threadId);
 		messages = await api.listMessages(threadId);
 		connectWebSocket();
 		subscribeToThread(threadId);
 	} catch (error) {
 		console.error("Failed to load thread:", error);
 	}
-	loading = false;
 });
 
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 async function handleSendMessage(): Promise<void> {
 	if (!inputText.trim()) return;
 
@@ -38,6 +38,7 @@ async function handleSendMessage(): Promise<void> {
 	sending = false;
 }
 
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 function handleBackClick(): void {
 	navigateTo("/");
 }
@@ -49,10 +50,7 @@ function handleBackClick(): void {
 		<h1>Conversation</h1>
 	</div>
 
-	{#if loading}
-		<p>Loading conversation...</p>
-	{:else}
-		<div class="messages">
+	<div class="messages">
 			{#each messages as msg}
 				<MessageBubble role={msg.role} content={msg.content} />
 			{/each}
@@ -72,7 +70,6 @@ function handleBackClick(): void {
 				{sending ? "Sending..." : "Send"}
 			</button>
 		</div>
-	{/if}
 </div>
 
 <style>

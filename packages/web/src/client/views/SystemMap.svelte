@@ -1,10 +1,11 @@
 <script lang="ts">
 import { onMount } from "svelte";
 import { api } from "../lib/api";
+// biome-ignore lint/correctness/noUnusedImports: used in template handlers
 import { navigateTo } from "../lib/router";
 
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 let threads = [];
-let loading = true;
 
 onMount(async () => {
 	try {
@@ -12,14 +13,10 @@ onMount(async () => {
 	} catch (error) {
 		console.error("Failed to load threads:", error);
 	}
-	loading = false;
 });
 
-function handleLineClick(threadId: string): void {
-	navigateTo(`/line/${threadId}`);
-}
-
 // Metro line colors (10-color palette)
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 const colors = [
 	"#FF0000", // Red
 	"#0066CC", // Blue
@@ -78,7 +75,12 @@ const colors = [
 					height="50"
 					fill="transparent"
 					class="line-clickable"
-					on:click={() => handleLineClick(thread.id)}
+					on:click={() => navigateTo(`/line/${thread.id}`)}
+					on:keydown={(e) => {
+						if (e.key === "Enter" || e.key === " ") {
+							navigateTo(`/line/${thread.id}`);
+						}
+					}}
 					role="button"
 					tabindex={idx}
 				/>

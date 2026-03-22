@@ -1,6 +1,12 @@
+<script lang="ts">
+// biome-ignore lint/correctness/noUnusedImports: used in template
+import ModelSelector from "./ModelSelector.svelte";
+</script>
+
 <div class="top-bar">
 	<div class="app-name">Bound</div>
 	<div class="spacer"></div>
+	<ModelSelector />
 	<div class="indicators">Advisory Count: 0</div>
 </div>
 
