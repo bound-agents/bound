@@ -50,15 +50,16 @@ export async function createWebServer(
 			server = Bun.serve({
 				port,
 				hostname: host,
-				fetch(request: Request) {
+				fetch(request: Request, server) {
 					// Check for WebSocket upgrade on /ws path
 					if (
 						new URL(request.url).pathname === "/ws" &&
 						request.headers.get("upgrade") === "websocket"
 					) {
-						// Bun.serve will call the websocket handler for this upgrade
-						// biome-ignore lint/suspicious/noExplicitAny: Bun handles upgrade
-						return undefined as any;
+						if (server.upgrade(request)) {
+							return; // Bun handles the upgrade
+						}
+						return new Response("WebSocket upgrade failed", { status: 500 });
 					}
 					// All other requests go to the Hono app
 					return app.fetch(request);

@@ -8,11 +8,15 @@ export function createApp(db: Database, eventBus: TypedEventEmitter): Hono {
 	const app = new Hono();
 	const routes = registerRoutes(db, eventBus);
 
-	// Host header validation middleware - only allow localhost
+	// Host header validation middleware - only allow localhost/loopback
 	app.use("*", (c, next) => {
 		const host = c.req.header("host");
-		if (host && !host.startsWith("localhost:") && host !== "localhost") {
-			return c.json({ error: "Invalid Host header" }, 400);
+		if (host) {
+			const hostName = host.split(":")[0];
+			const allowedHosts = ["localhost", "127.0.0.1", "[::1]"];
+			if (!allowedHosts.includes(hostName)) {
+				return c.json({ error: "Invalid Host header" }, 400);
+			}
 		}
 		return next();
 	});

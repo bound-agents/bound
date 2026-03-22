@@ -3,6 +3,7 @@ import { onMount } from "svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import MessageBubble from "../components/MessageBubble.svelte";
 import { api } from "../lib/api";
+import { navigateTo } from "../lib/router";
 import { connectWebSocket, subscribeToThread } from "../lib/websocket";
 
 export let threadId: string;
@@ -61,7 +62,7 @@ function handleBackClick(): void {
 				bind:value={inputText}
 				placeholder="Type your message..."
 				disabled={sending}
-			/>
+			></textarea>
 			<button
 				on:click={handleSendMessage}
 				disabled={sending || !inputText.trim()}

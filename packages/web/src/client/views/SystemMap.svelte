@@ -34,9 +34,7 @@ const colors = [
 <div class="system-map">
 	<h1>System Map</h1>
 
-	{#if loading}
-		<p>Loading threads...</p>
-	{:else if threads.length === 0}
+	{#if threads.length === 0}
 		<p>No threads yet. Start a conversation to create one.</p>
 	{:else}
 		<svg viewBox="0 0 1200 600" class="metro-diagram">
