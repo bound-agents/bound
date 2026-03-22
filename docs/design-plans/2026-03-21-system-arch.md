@@ -264,7 +264,7 @@ User types in Web UI
 
 ## Existing Patterns
 
-This is a greenfield project — no existing codebase patterns to follow. The spec (`docs/design/spec.md`) serves as the canonical reference for all domain concepts, database schemas, and interface contracts.
+This is a greenfield project — no existing codebase patterns to follow. The spec (`docs/design/specs/2026-03-20-base.md`) serves as the canonical reference for all domain concepts, database schemas, and interface contracts.
 
 The design introduces these patterns for the codebase:
 - **Functional core, imperative shell** — Pure logic in shared/core, side effects at the edges (LLM calls, DB writes, sandbox exec)
@@ -384,6 +384,6 @@ These patterns are prescribed by the spec, not arbitrary choices.
 
 **Implementation scoping:** This design has exactly 8 phases, fitting within the implementation plan limit.
 
-**Spec as source of truth:** The functional spec (`docs/design/spec.md`) contains complete database schemas, interface contracts, and behavioral requirements. This design document covers the implementation architecture — how the code is organized, what tools are used, and in what order things get built. The spec should be referenced directly during implementation for detailed behavioral requirements.
+**Spec as source of truth:** The functional spec (`docs/design/specs/2026-03-20-base.md`) contains complete database schemas, interface contracts, and behavioral requirements. This design document covers the implementation architecture — how the code is organized, what tools are used, and in what order things get built. The spec should be referenced directly during implementation for detailed behavioral requirements.
 
 **Logging:** Structured JSON to stderr via `createLogger(pkg, component)` in `@bound/shared`. Log levels: debug, info, warn, error. Every entry includes timestamp, level, package, component, and contextual fields (thread_id, task_id, host_name). No logging framework for v1.

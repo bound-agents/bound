@@ -203,7 +203,7 @@ git commit -m "chore: initialize bun monorepo with workspaces"
 }
 ```
 
-`packages/shared/src/types.ts` — Define TypeScript interfaces that mirror the database schema from `docs/design/spec.md` section 5. The following types must be defined:
+`packages/shared/src/types.ts` — Define TypeScript interfaces that mirror the database schema from `docs/design/specs/2026-03-20-base.md` section 5. The following types must be defined:
 
 - `User` — maps to `users` table (id, display_name, discord_id, first_seen_at, modified_at, deleted)
 - `Thread` — maps to `threads` table (id, user_id, interface: 'web' | 'discord', host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, deleted)
@@ -548,7 +548,7 @@ export function createDatabase(path: string): Database {
 }
 ```
 
-`packages/core/src/schema.ts` — All 13 table CREATE statements. Reference `docs/design/spec.md` section 5 for exact schemas. The function `applySchema(db: Database): void` runs all CREATE TABLE and CREATE INDEX statements.
+`packages/core/src/schema.ts` — All 13 table CREATE statements. Reference `docs/design/specs/2026-03-20-base.md` section 5 for exact schemas. The function `applySchema(db: Database): void` runs all CREATE TABLE and CREATE INDEX statements.
 
 Tables to create (all with STRICT mode):
 1. `users` — with idx_users_discord index
@@ -565,7 +565,7 @@ Tables to create (all with STRICT mode):
 12. `sync_state` — no additional indexes
 13. `host_meta` — no additional indexes
 
-Copy the exact SQL from `docs/design/spec.md` sections 5.2-5.13 and the advisories table from section 9.7. Each CREATE TABLE must end with `) STRICT;`.
+Copy the exact SQL from `docs/design/specs/2026-03-20-base.md` sections 5.2-5.13 and the advisories table from section 9.7. Each CREATE TABLE must end with `) STRICT;`.
 
 **Testing:**
 Tests must verify AC2.3:
