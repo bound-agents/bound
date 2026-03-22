@@ -13,3 +13,5 @@ export type {
 export { LLMError } from "./types";
 
 export { OllamaDriver } from "./ollama-driver";
+
+export { createModelRouter, ModelRouter, type BackendInfo } from "./model-router";
