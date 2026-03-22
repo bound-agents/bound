@@ -1,3 +1,6 @@
+import { AnthropicDriver } from "./anthropic-driver";
+import { BedrockDriver } from "./bedrock-driver";
+import { OpenAICompatibleDriver } from "./openai-driver";
 import { OllamaDriver } from "./ollama-driver";
 import type { BackendCapabilities, BackendConfig, LLMBackend, ModelBackendsConfig } from "./types";
 import { LLMError } from "./types";
@@ -45,6 +48,47 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 	const provider = config.provider.toLowerCase();
 
 	switch (provider) {
+		case "anthropic": {
+			const apiKey = (config as any).apiKey;
+			if (!apiKey) {
+				throw new Error("Anthropic driver requires apiKey in config");
+			}
+			const contextWindow = config.contextWindow ?? 200000;
+			return new AnthropicDriver({
+				apiKey,
+				model: config.model,
+				contextWindow,
+			});
+		}
+
+		case "bedrock": {
+			const region = (config as any).region;
+			if (!region) {
+				throw new Error("Bedrock driver requires region in config");
+			}
+			const contextWindow = config.contextWindow ?? 200000;
+			return new BedrockDriver({
+				region,
+				model: config.model,
+				contextWindow,
+			});
+		}
+
+		case "openai-compatible": {
+			const baseUrl = config.baseUrl ?? "http://localhost:8000";
+			const apiKey = (config as any).apiKey;
+			if (!apiKey) {
+				throw new Error("OpenAI-compatible driver requires apiKey in config");
+			}
+			const contextWindow = config.contextWindow ?? 8192;
+			return new OpenAICompatibleDriver({
+				baseUrl,
+				apiKey,
+				model: config.model,
+				contextWindow,
+			});
+		}
+
 		case "ollama": {
 			const baseUrl = config.baseUrl ?? "http://localhost:11434";
 			const contextWindow = config.contextWindow ?? 4096;
