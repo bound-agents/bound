@@ -119,7 +119,6 @@ export class Scheduler {
 
 	private phase0Eviction(): void {
 		const now = new Date();
-		const _nowStr = now.toISOString();
 		const leaseExpiry = new Date(now.getTime() - LEASE_DURATION).toISOString();
 
 		// (a) Expire stale claimed tasks
@@ -256,7 +255,6 @@ export class Scheduler {
 		this.eventDepth++;
 
 		try {
-			const _now = new Date().toISOString();
 			const eventTasks = this.ctx.db
 				.query(
 					"SELECT * FROM tasks WHERE type = 'event' AND status = 'pending' AND trigger_spec = ?",

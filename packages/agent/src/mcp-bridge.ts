@@ -340,10 +340,7 @@ export function updateHostMCPInfo(
 			new Date().toISOString(),
 			siteId,
 		);
-	} catch (error) {
-		// Log but don't fail
-		const _errorMsg = error instanceof Error ? error.message : String(error);
-		// Note: logger not available in this function signature, so we skip logging for now
-		// This will be fixed in a future phase when logger is available in the context
+	} catch {
+		// Silently ignore — logger not available in this function signature
 	}
 }
