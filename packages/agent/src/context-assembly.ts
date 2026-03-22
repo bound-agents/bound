@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { LLMMessage } from "@bound/llm";
 import type { Message } from "@bound/shared";
 
@@ -9,6 +11,38 @@ export interface ContextParams {
 	userId: string;
 	currentModel?: string;
 	noHistory?: boolean;
+	configDir?: string;
+}
+
+// Cache for persona content - loaded once at startup
+let personaCache: string | null = null;
+let personaCachePath: string | null = null;
+
+/**
+ * Load persona from config directory
+ * Loads config/persona.md if it exists
+ */
+function loadPersona(configDir: string): string | null {
+	// Check if we already have this cached
+	if (personaCachePath === configDir && personaCache !== undefined) {
+		return personaCache;
+	}
+
+	const personaPath = join(configDir, "persona.md");
+	if (existsSync(personaPath)) {
+		try {
+			const content = readFileSync(personaPath, "utf-8");
+			personaCachePath = configDir;
+			personaCache = content;
+			return content;
+		} catch {
+			return null;
+		}
+	}
+
+	personaCachePath = configDir;
+	personaCache = null;
+	return null;
 }
 
 /**
@@ -23,7 +57,7 @@ export interface ContextParams {
  * 8. METRIC_RECORDING - Record tokens (deferred to Phase 8)
  */
 export function assembleContext(params: ContextParams): LLMMessage[] {
-	const { db, threadId, userId, noHistory = false } = params;
+	const { db, threadId, userId, noHistory = false, configDir = "config" } = params;
 
 	// Stage 1: MESSAGE_RETRIEVAL
 	const messages: Message[] = [];
@@ -150,6 +184,15 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 				"Be concise and direct in your responses.",
 		},
 	];
+
+	// Load and inject persona if it exists
+	const persona = loadPersona(configDir);
+	if (persona) {
+		assembled.push({
+			role: "system",
+			content: persona,
+		});
+	}
 
 	// Add message history
 	assembled.push(...annotated);
