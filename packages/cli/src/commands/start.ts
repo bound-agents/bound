@@ -1,13 +1,18 @@
 // Task 3: bound start command
 // Full orchestrator bootstrap sequence
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { createAppContext } from "@bound/core";
+import { AgentLoop, Scheduler } from "@bound/agent";
+import type { AgentLoopConfig } from "@bound/agent";
+import { MCPClient } from "@bound/agent";
 import { OllamaDriver } from "@bound/llm";
+import type { LLMBackend } from "@bound/llm";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import { ensureKeypair } from "@bound/sync";
+import { createClusterFs, createSandbox } from "@bound/sandbox";
 import { createWebServer } from "@bound/web";
 
 export interface StartArgs {
@@ -79,19 +84,105 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 	// 7. Crash recovery scan
 	console.log("Scanning for crash recovery...");
-	// TODO: Scan for interrupted loops and insert recovery messages
+	{
+		const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+		const staleRunning = appContext.db
+			.query(
+				`SELECT id FROM tasks
+				 WHERE status = 'running'
+				   AND (heartbeat_at IS NULL OR heartbeat_at < ?)`,
+			)
+			.all(staleThreshold) as Array<{ id: string }>;
+
+		if (staleRunning.length > 0) {
+			appContext.db
+				.query(
+					`UPDATE tasks SET status = 'pending', lease_id = NULL, claimed_by = NULL, claimed_at = NULL
+					 WHERE status = 'running'
+					   AND (heartbeat_at IS NULL OR heartbeat_at < ?)`,
+				)
+				.run(staleThreshold);
+			console.log(`[recovery] Reset ${staleRunning.length} stale running task(s) to pending`);
+		} else {
+			console.log("[recovery] No crashed tasks found");
+		}
+	}
 
 	// 8. MCP connections
 	console.log("Initializing MCP servers...");
-	// TODO: Connect to MCP servers if configured
+	const mcpClients: MCPClient[] = [];
+	{
+		const mcpResult = appContext.optionalConfig["mcp"];
+		if (mcpResult && mcpResult.ok) {
+			const mcpConfig = mcpResult.value as { servers: Array<{
+				name: string;
+				command?: string;
+				args?: string[];
+				url?: string;
+				transport: "stdio" | "sse";
+				allow_tools?: string[];
+				confirm?: string[];
+			}> };
+
+			console.log(`[mcp] Found ${mcpConfig.servers.length} server(s) in config`);
+
+			for (const serverCfg of mcpConfig.servers) {
+				try {
+					const client = new MCPClient(serverCfg);
+					await client.connect();
+					mcpClients.push(client);
+					console.log(`[mcp] Connected to server: ${serverCfg.name} (${serverCfg.transport})`);
+				} catch (error) {
+					console.warn(
+						`[mcp] Failed to connect to ${serverCfg.name}:`,
+						error instanceof Error ? error.message : String(error),
+					);
+				}
+			}
+		} else {
+			console.log("[mcp] No MCP servers configured");
+		}
+	}
 
 	// 9. Sandbox setup
 	console.log("Setting up sandbox...");
-	// TODO: Create ClusterFs and define commands
+	let sandbox: Awaited<ReturnType<typeof createSandbox>> | null = null;
+	try {
+		const clusterFs = createClusterFs({
+			hostName: appContext.hostName,
+			syncEnabled: false,
+		});
+		sandbox = await createSandbox({
+			clusterFs,
+			commands: [],
+		});
+		console.log("[sandbox] Sandbox ready");
+	} catch (error) {
+		console.warn(
+			"[sandbox] Failed to create sandbox:",
+			error instanceof Error ? error.message : String(error),
+		);
+	}
 
 	// 10. Persona loading
 	console.log("Loading persona...");
-	// TODO: Load config/persona.md if exists
+	let personaText: string | null = null;
+	{
+		const personaPath = resolve(configDir, "persona.md");
+		if (existsSync(personaPath)) {
+			try {
+				personaText = readFileSync(personaPath, "utf-8");
+				console.log(`[persona] Loaded persona (${personaText.length} chars)`);
+			} catch (error) {
+				console.warn(
+					"[persona] Failed to read persona.md:",
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+		} else {
+			console.log("[persona] No persona configured");
+		}
+	}
 
 	// 11. LLM setup
 	console.log("Initializing LLM...");
@@ -223,7 +314,28 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 	// 16. Scheduler
 	console.log("Starting scheduler...");
-	// TODO: Start scheduler loop via @bound/agent
+	let schedulerHandle: { stop: () => void } | null = null;
+	try {
+		const agentLoopFactory = (config: AgentLoopConfig): AgentLoop => {
+			const llmBackend: LLMBackend = llmDriver ?? {
+				chat: async function* () {
+					// No-op backend when no LLM is configured
+				},
+				capabilities: () => ({ streaming: false, tools: false, vision: false }),
+			};
+
+			return new AgentLoop(appContext, sandbox ?? ({} as any), llmBackend, config);
+		};
+
+		const scheduler = new Scheduler(appContext, agentLoopFactory);
+		schedulerHandle = scheduler.start(30_000);
+		console.log("[scheduler] Scheduler started (30s poll interval)");
+	} catch (error) {
+		console.warn(
+			"[scheduler] Failed to start scheduler:",
+			error instanceof Error ? error.message : String(error),
+		);
+	}
 
 	console.log(`
 Bound is running!
@@ -238,12 +350,29 @@ Press Ctrl+C to stop.
 	await new Promise<void>((resolve) => {
 		process.on("SIGINT", async () => {
 			console.log("\nShutting down gracefully...");
+			if (schedulerHandle) schedulerHandle.stop();
+			// Disconnect MCP clients
+			for (const client of mcpClients) {
+				try {
+					await client.disconnect();
+				} catch (_err) {
+					// Ignore disconnect errors during shutdown
+				}
+			}
 			if (webServer) await webServer.stop();
 			resolve();
 		});
 
 		process.on("SIGTERM", async () => {
 			console.log("\nTerminating...");
+			if (schedulerHandle) schedulerHandle.stop();
+			for (const client of mcpClients) {
+				try {
+					await client.disconnect();
+				} catch (_err) {
+					// Ignore disconnect errors during shutdown
+				}
+			}
 			if (webServer) await webServer.stop();
 			resolve();
 		});
