@@ -65,7 +65,7 @@ export async function extractSummaryAndMemories(
 		if (summary) {
 			db.prepare(
 				"UPDATE threads SET summary = ?, summary_through = ?, summary_model_id = ? WHERE id = ?",
-			).run(summary, now, llmBackend.capabilities().max_context, threadId);
+			).run(summary, now, "default", threadId);
 		}
 
 		// Extract key facts as memories (simplified)

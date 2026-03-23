@@ -9,7 +9,7 @@ import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
 import { generateMCPCommands } from "@bound/agent";
 import { generateThreadTitle } from "@bound/agent";
-import { createAppContext, insertRow } from "@bound/core";
+import { createAppContext, insertRow, updateRow, withChangeLog } from "@bound/core";
 import { createModelRouter } from "@bound/llm";
 import type {
 	BackendConfig,
@@ -95,19 +95,51 @@ export async function runStart(args: StartArgs): Promise<void> {
 		}
 	}
 
-	// 6. Host registration
+	// 6. Host registration (via outbox for sync compliance)
 	console.log("Registering host...");
 	{
 		const now = new Date().toISOString();
-		appContext.db.run(
-			`INSERT INTO hosts (site_id, host_name, online_at, modified_at)
-			VALUES (?, ?, ?, ?)
-			ON CONFLICT(site_id) DO UPDATE SET
-				host_name = excluded.host_name,
-				online_at = excluded.online_at,
-				modified_at = excluded.modified_at`,
-			[appContext.siteId, appContext.hostName, now, now],
-		);
+		const existingHost = appContext.db
+			.query("SELECT site_id FROM hosts WHERE site_id = ?")
+			.get(appContext.siteId) as { site_id: string } | null;
+
+		if (existingHost) {
+			withChangeLog(appContext.db, appContext.siteId, () => {
+				appContext.db.run(
+					"UPDATE hosts SET host_name = ?, online_at = ?, modified_at = ? WHERE site_id = ?",
+					[appContext.hostName, now, now, appContext.siteId],
+				);
+				const updatedRow = appContext.db
+					.query("SELECT * FROM hosts WHERE site_id = ?")
+					.get(appContext.siteId) as Record<string, unknown>;
+				return {
+					tableName: "hosts" as const,
+					rowId: appContext.siteId,
+					rowData: updatedRow,
+					result: undefined,
+				};
+			});
+		} else {
+			const hostRow = {
+				site_id: appContext.siteId,
+				host_name: appContext.hostName,
+				online_at: now,
+				modified_at: now,
+				deleted: 0,
+			};
+			withChangeLog(appContext.db, appContext.siteId, () => {
+				appContext.db.run(
+					"INSERT INTO hosts (site_id, host_name, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, 0)",
+					[appContext.siteId, appContext.hostName, now, now],
+				);
+				return {
+					tableName: "hosts" as const,
+					rowId: appContext.siteId,
+					rowData: hostRow,
+					result: undefined,
+				};
+			});
+		}
 	}
 
 	// 7. Crash recovery scan

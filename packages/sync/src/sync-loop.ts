@@ -121,10 +121,24 @@ export class SyncClient {
 			// Check if we've reached the alert threshold per spec R-E16
 			const syncState = getPeerCursor(this.db, peerSiteId);
 			if (syncState && syncState.sync_errors >= 5) {
-				// TODO: Persist alert to system thread once system thread concept is implemented
 				this.logger.warn(
 					`Sync failures have reached threshold (${syncState.sync_errors} errors) for peer ${peerSiteId}`,
 				);
+				// Persist alert to database for visibility
+				try {
+					const { randomUUID } = await import("node:crypto");
+					const { deterministicUUID, BOUND_NAMESPACE } = await import("@bound/shared");
+					const systemThreadId = deterministicUUID(BOUND_NAMESPACE, "system-alerts");
+					const now = new Date().toISOString();
+					this.db.query(
+						`INSERT OR IGNORE INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted) VALUES (?, 'system', 'web', ?, 0, 'System Alerts', NULL, ?, ?, ?, 0)`,
+					).run(systemThreadId, this.siteId, now, now, now);
+					this.db.query(
+						`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, 'alert', ?, NULL, NULL, ?, ?, ?, 0)`,
+					).run(randomUUID(), systemThreadId, `Sync to peer ${peerSiteId} has failed ${syncState.sync_errors} consecutive times`, now, now, this.siteId);
+				} catch {
+					// Non-fatal
+				}
 			}
 
 			const message = error instanceof Error ? error.message : "Unknown error";

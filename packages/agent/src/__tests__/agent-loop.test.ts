@@ -138,6 +138,10 @@ describe("AgentLoop", () => {
 				warn: () => {},
 				error: () => {},
 			},
+			eventBus: {
+				on: () => {},
+				emit: () => {},
+			},
 			hostName: "test-host",
 			siteId: "test-site-id",
 		} as unknown as AppContext;

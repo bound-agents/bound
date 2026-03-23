@@ -17,7 +17,6 @@
 		"@bound/web": "workspace:*",
 		"@bound/discord": "workspace:*",
 		"@bound/llm": "workspace:*",
-		"@bound/sandbox": "workspace:*",
-		"better-sqlite3": "^11.0.0"
+		"@bound/sandbox": "workspace:*"
 	}
 }

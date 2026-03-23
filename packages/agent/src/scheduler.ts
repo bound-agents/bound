@@ -393,7 +393,7 @@ export class Scheduler {
 		}
 
 		// Look up in cron_schedules config if available
-		const cronConfig = this.ctx.optionalConfig["cron_schedules.json"];
+		const cronConfig = this.ctx.optionalConfig["cronSchedules"];
 		if (!cronConfig) {
 			return null;
 		}

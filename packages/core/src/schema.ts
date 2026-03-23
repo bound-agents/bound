@@ -54,7 +54,8 @@ export function applySchema(db: Database): void {
 			tool_name   TEXT,
 			created_at  TEXT NOT NULL,
 			modified_at TEXT,
-			host_origin TEXT NOT NULL
+			host_origin TEXT NOT NULL,
+			deleted     INTEGER DEFAULT 0
 		) STRICT
 	`);
 
@@ -150,7 +151,8 @@ export function applySchema(db: Database): void {
 			models       TEXT,
 			overlay_root TEXT,
 			online_at    TEXT,
-			modified_at  TEXT NOT NULL
+			modified_at  TEXT NOT NULL,
+			deleted      INTEGER DEFAULT 0
 		) STRICT
 	`);
 

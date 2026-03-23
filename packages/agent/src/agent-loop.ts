@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
-import { insertRow } from "@bound/core";
+import { insertRow, recordTurn } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { assembleContext } from "./context-assembly";
+import { extractSummaryAndMemories } from "./summary-extraction";
 import type { AgentLoopConfig, AgentLoopResult, AgentLoopState } from "./types";
 
 interface BashLike {
@@ -25,6 +26,7 @@ interface ParsedToolCall {
 interface ParsedResponse {
 	textContent: string;
 	toolCalls: ParsedToolCall[];
+	usage: { inputTokens: number; outputTokens: number };
 }
 
 export class AgentLoop {
@@ -45,6 +47,12 @@ export class AgentLoop {
 				this.aborted = true;
 			});
 		}
+
+		this.ctx.eventBus.on("agent:cancel", ({ thread_id }) => {
+			if (thread_id === this.config.threadId) {
+				this.aborted = true;
+			}
+		});
 	}
 
 	async run(): Promise<AgentLoopResult> {
@@ -124,6 +132,22 @@ export class AgentLoop {
 
 				this.state = "PARSE_RESPONSE";
 				const parsed = this.parseResponseChunks(chunks);
+
+				// Record turn metrics for budget tracking
+				try {
+					recordTurn(this.ctx.db, {
+						thread_id: this.config.threadId,
+						task_id: this.config.taskId || null,
+						dag_root_id: null,
+						model_id: this.config.modelId || "unknown",
+						tokens_in: parsed.usage.inputTokens,
+						tokens_out: parsed.usage.outputTokens,
+						cost_usd: 0, // Cost calculation requires model pricing config
+						created_at: new Date().toISOString(),
+					});
+				} catch {
+					// Non-fatal — don't break the loop over metrics
+				}
 
 				if (parsed.toolCalls.length > 0) {
 					// --- TOOL_EXECUTE ---
@@ -286,6 +310,14 @@ export class AgentLoop {
 
 			this.state = "IDLE";
 
+			// Fire-and-forget: extract summaries and memories from the thread
+			extractSummaryAndMemories(
+				this.ctx.db,
+				this.config.threadId,
+				this.llmBackend,
+				this.ctx.siteId,
+			).catch(() => {});
+
 			return {
 				messagesCreated: this.messagesCreated,
 				toolCallsMade: this.toolCallsMade,
@@ -358,6 +390,8 @@ export class AgentLoop {
 		const toolCalls: ParsedToolCall[] = [];
 		const argsAccumulator = new Map<string, string>();
 		const nameMap = new Map<string, string>();
+		let inputTokens = 0;
+		let outputTokens = 0;
 
 		for (const chunk of chunks) {
 			if (chunk.type === "text") {
@@ -383,10 +417,13 @@ export class AgentLoop {
 					input,
 					argsJson: fullArgsJson,
 				});
+			} else if (chunk.type === "done") {
+				inputTokens = chunk.usage.input_tokens;
+				outputTokens = chunk.usage.output_tokens;
 			}
 		}
 
-		return { textContent, toolCalls };
+		return { textContent, toolCalls, usage: { inputTokens, outputTokens } };
 	}
 
 	cancel(): void {

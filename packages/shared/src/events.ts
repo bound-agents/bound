@@ -7,4 +7,5 @@ export interface EventMap {
 	"sync:completed": { pushed: number; pulled: number; duration_ms: number };
 	"file:changed": { path: string; operation: "created" | "modified" | "deleted" };
 	"alert:created": { message: Message; thread_id: string };
+	"agent:cancel": { thread_id: string };
 }
