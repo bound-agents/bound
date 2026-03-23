@@ -254,6 +254,14 @@ export async function runStart(args: StartArgs): Promise<void> {
 	let webServer: Awaited<ReturnType<typeof createWebServer>> | null = null;
 	try {
 		const modelBackends = appContext.config.modelBackends;
+
+		// Extract keyring if configured — needed by the MCP proxy endpoint for request verification
+		const keyringResult = appContext.optionalConfig["keyring"];
+		const keyring =
+			keyringResult && keyringResult.ok
+				? (keyringResult.value as import("@bound/shared").KeyringConfig)
+				: undefined;
+
 		webServer = await createWebServer(appContext.db, appContext.eventBus, {
 			port: 3000,
 			host: "localhost",
@@ -261,6 +269,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 				models: modelBackends.backends.map((b) => ({ id: b.id, provider: b.provider })),
 				default: modelBackends.default,
 			},
+			mcpClients: mcpClientsMap,
+			keyring,
 		});
 		await webServer.start();
 

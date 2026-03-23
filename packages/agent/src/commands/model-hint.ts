@@ -1,4 +1,4 @@
-import { insertRow, updateRow } from "@bound/core";
+import { updateRow } from "@bound/core";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 
 export const modelHint: CommandDefinition = {
@@ -6,11 +6,10 @@ export const modelHint: CommandDefinition = {
 	args: [
 		{ name: "model", required: false, description: "Model ID or tier to switch to" },
 		{ name: "reset", required: false, description: "Clear the hint" },
+		{ name: "for-turns", required: false, description: "Turn count limit for the hint" },
 	],
 	handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
 		try {
-			const now = new Date().toISOString();
-
 			if (!ctx.taskId) {
 				return {
 					stdout: "",
@@ -26,7 +25,7 @@ export const modelHint: CommandDefinition = {
 
 			if (args.reset === "true") {
 				// Clear the hint by setting model_hint to null
-				if (existing && ctx.taskId) {
+				if (existing) {
 					updateRow(ctx.db, "tasks", ctx.taskId, { model_hint: null }, ctx.siteId);
 				}
 
@@ -45,50 +44,26 @@ export const modelHint: CommandDefinition = {
 				};
 			}
 
-			// Store the model hint for the agent loop to read
-			// This is typically used during a task run to suggest model switching
-			if (existing && ctx.taskId) {
-				updateRow(ctx.db, "tasks", ctx.taskId, { model_hint: args.model }, ctx.siteId);
-			} else if (ctx.taskId) {
-				// Create a temporary task entry to store the hint
-				insertRow(
-					ctx.db,
-					"tasks",
-					{
-						id: ctx.taskId,
-						type: "hint",
-						status: "pending",
-						trigger_spec: JSON.stringify({ type: "hint" }),
-						payload: null,
-						created_at: now,
-						created_by: ctx.siteId,
-						thread_id: ctx.threadId || null,
-						claimed_by: null,
-						claimed_at: null,
-						lease_id: null,
-						next_run_at: null,
-						last_run_at: null,
-						run_count: 0,
-						max_runs: null,
-						requires: null,
-						model_hint: args.model,
-						no_history: 0,
-						inject_mode: "results",
-						depends_on: null,
-						require_success: 0,
-						alert_threshold: 1,
-						consecutive_failures: 0,
-						event_depth: 0,
-						no_quiescence: 0,
-						heartbeat_at: null,
-						result: null,
-						error: null,
-						modified_at: now,
-						deleted: 0,
-					},
-					ctx.siteId,
-				);
+			if (!existing) {
+				return {
+					stdout: "",
+					stderr: `Error: task not found: ${ctx.taskId}\n`,
+					exitCode: 1,
+				};
 			}
+
+			// Build the update payload
+			const updates: Record<string, unknown> = { model_hint: args.model };
+
+			if (args["for-turns"]) {
+				const turns = Number.parseInt(args["for-turns"], 10);
+				if (!Number.isNaN(turns) && turns > 0) {
+					updates.model_hint_turns = turns;
+				}
+			}
+
+			// Store the model hint for the agent loop to read
+			updateRow(ctx.db, "tasks", ctx.taskId, updates, ctx.siteId);
 
 			return {
 				stdout: `Model hint set to: ${args.model}\n`,

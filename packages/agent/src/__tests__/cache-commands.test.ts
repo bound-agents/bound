@@ -29,6 +29,10 @@ describe("Cache and runtime command implementations", () => {
 
 		const siteId = randomUUID();
 
+		const threadId = randomUUID();
+		const taskId = randomUUID();
+		const now = new Date().toISOString();
+
 		ctx = {
 			db,
 			siteId,
@@ -38,9 +42,29 @@ describe("Cache and runtime command implementations", () => {
 				warn: () => {},
 				error: () => {},
 			},
-			threadId: randomUUID(),
-			taskId: randomUUID(),
+			threadId,
+			taskId,
 		};
+
+		// Insert a task row so model-hint can find it
+		db.run(
+			`INSERT INTO tasks (
+				id, type, status, trigger_spec, payload, thread_id,
+				claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+				run_count, max_runs, requires, model_hint, no_history,
+				inject_mode, depends_on, require_success, alert_threshold,
+				consecutive_failures, event_depth, no_quiescence,
+				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+			) VALUES (
+				?, 'deferred', 'running', '{}', NULL, ?,
+				NULL, NULL, NULL, NULL, NULL,
+				0, NULL, NULL, NULL, 0,
+				'results', NULL, 0, 1,
+				0, 0, 0,
+				NULL, NULL, NULL, ?, ?, ?, 0
+			)`,
+			[taskId, threadId, now, siteId, now],
+		);
 	});
 
 	afterAll(() => {

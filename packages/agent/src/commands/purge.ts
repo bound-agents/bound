@@ -8,7 +8,7 @@ export const purge: CommandDefinition = {
 		{ name: "last", required: false, description: "Number of last messages to purge" },
 		{ name: "ids", required: false, description: "Comma-separated message IDs to purge" },
 		{ name: "thread-id", required: false, description: "Thread ID for last N messages" },
-		{ name: "create-summary", required: false, description: "Create a summary of purged messages" },
+		{ name: "summary", required: false, description: "Create a summary of purged messages" },
 	],
 	handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
 		try {
@@ -44,11 +44,45 @@ export const purge: CommandDefinition = {
 				};
 			}
 
+			// Tool-pair integrity: when a tool_call is targeted, auto-include its paired tool_result
+			if (targetIds.length > 0) {
+				const targetSet = new Set(targetIds);
+				const placeholders = targetIds.map(() => "?").join(", ");
+				const targeted = ctx.db
+					.prepare(
+						`SELECT id, role FROM messages WHERE id IN (${placeholders})`,
+					)
+					.all(...targetIds) as Array<{ id: string; role: string }>;
+
+				const additionalIds: string[] = [];
+				for (const msg of targeted) {
+					if (msg.role === "tool_call") {
+						// Find the paired tool_result that immediately follows this tool_call
+						const paired = ctx.db
+							.prepare(
+								`SELECT id FROM messages
+								 WHERE thread_id = (SELECT thread_id FROM messages WHERE id = ?)
+								   AND role = 'tool_result'
+								   AND created_at > (SELECT created_at FROM messages WHERE id = ?)
+								 ORDER BY created_at ASC LIMIT 1`,
+							)
+							.get(msg.id, msg.id) as { id: string } | undefined;
+
+						if (paired && !targetSet.has(paired.id)) {
+							additionalIds.push(paired.id);
+							targetSet.add(paired.id);
+						}
+					}
+				}
+
+				if (additionalIds.length > 0) {
+					targetIds = [...targetIds, ...additionalIds];
+				}
+			}
+
 			// Create a purge message referencing the target IDs
 			const purgeMessageId = randomUUID();
-			const summary = args["create-summary"]
-				? "Messages purged from conversation"
-				: "Summary of purged messages";
+			const summary = args.summary ? "Messages purged from conversation" : "Summary of purged messages";
 			const threadId = args["thread-id"] || ctx.threadId || "";
 
 			// Store content as JSON with target_ids for context-assembly.ts to parse

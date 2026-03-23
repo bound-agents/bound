@@ -1,8 +1,9 @@
 import type { Database } from "bun:sqlite";
-import type { TypedEventEmitter } from "@bound/shared";
+import type { TypedEventEmitter, KeyringConfig } from "@bound/shared";
+import type { MCPClient } from "@bound/agent";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
-import { type ModelsConfig, registerRoutes } from "./routes/index";
+import { type ModelsConfig, type RoutesConfig, registerRoutes } from "./routes/index";
 
 type AssetMap = Map<string, { content: string; contentType: string }>;
 
@@ -17,13 +18,31 @@ async function loadEmbeddedAssets(): Promise<AssetMap> {
 
 export { type ModelsConfig };
 
+export interface AppConfig {
+	modelsConfig?: ModelsConfig;
+	mcpClients?: Map<string, MCPClient>;
+	keyring?: KeyringConfig;
+}
+
 export async function createApp(
 	db: Database,
 	eventBus: TypedEventEmitter,
-	modelsConfig?: ModelsConfig,
+	appConfig?: AppConfig | ModelsConfig,
 ): Promise<Hono> {
+	// Accept either the new AppConfig shape or the legacy ModelsConfig shape for backwards compat
+	let routesConfig: RoutesConfig;
+	if (appConfig && "mcpClients" in appConfig) {
+		routesConfig = {
+			modelsConfig: appConfig.modelsConfig,
+			mcpClients: appConfig.mcpClients,
+			keyring: appConfig.keyring,
+		};
+	} else {
+		routesConfig = { modelsConfig: appConfig as ModelsConfig | undefined };
+	}
+
 	const app = new Hono();
-	const routes = registerRoutes(db, eventBus, modelsConfig);
+	const routes = registerRoutes(db, eventBus, routesConfig);
 
 	// Host header validation middleware - only allow localhost/loopback
 	app.use("*", (c, next) => {
@@ -44,6 +63,10 @@ export async function createApp(
 	app.route("/api/files", routes.files);
 	app.route("/api/status", routes.status);
 	app.route("/api/tasks", routes.tasks);
+	if (routes.mcpProxy) {
+		// Mount at root — the route itself registers /api/mcp-proxy including auth middleware
+		app.route("/", routes.mcpProxy);
+	}
 
 	// Serve static Svelte SPA assets
 	const assets = await loadEmbeddedAssets();

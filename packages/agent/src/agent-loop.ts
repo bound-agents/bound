@@ -48,18 +48,23 @@ export class AgentLoop {
 				taskId: this.config.taskId,
 				userId: this.config.userId,
 				currentModel: this.config.modelId,
+				hostName: this.ctx.hostName,
+				siteId: this.ctx.siteId,
 			});
 
 			this.state = "LLM_CALL";
 			const chunks: StreamChunk[] = [];
-			// const silenceTimeout = 120000; // 120 seconds - silence timeout to be implemented in Phase 5
-			// TODO: Implement 120s silence timeout tracking
+			const SILENCE_TIMEOUT_MS = 120_000; // 120 seconds
 
 			try {
-				for await (const chunk of this.llmBackend.chat({
+				// Wrap the async generator with a silence timeout: if no chunk arrives
+				// within SILENCE_TIMEOUT_MS, reject with a timeout error.
+				const chatStream = this.llmBackend.chat({
 					model: this.config.modelId || "default",
 					messages: context,
-				})) {
+				});
+
+				for await (const chunk of this.withSilenceTimeout(chatStream, SILENCE_TIMEOUT_MS)) {
 					if (this.aborted) {
 						break;
 					}
@@ -181,5 +186,44 @@ export class AgentLoop {
 	cancel(): void {
 		this.aborted = true;
 		this.ctx.logger.info("Agent loop cancelled");
+	}
+
+	/**
+	 * Wraps an async iterable so that if no item is yielded within `timeoutMs`,
+	 * the iteration rejects with a silence-timeout error. This transitions the
+	 * agent loop to ERROR_PERSIST as required by the spec.
+	 */
+	private async *withSilenceTimeout<T>(
+		source: AsyncIterable<T>,
+		timeoutMs: number,
+	): AsyncGenerator<T> {
+		const iterator = source[Symbol.asyncIterator]();
+
+		while (true) {
+			// Race the next chunk against the silence timer
+			const nextChunkPromise = iterator.next();
+			const timeoutPromise = new Promise<never>((_, reject) => {
+				setTimeout(() => {
+					reject(new Error(`LLM silence timeout: no chunk received for ${timeoutMs}ms`));
+				}, timeoutMs);
+			});
+
+			let result: IteratorResult<T>;
+			try {
+				result = await Promise.race([nextChunkPromise, timeoutPromise]);
+			} catch (err) {
+				// Attempt to cancel the underlying iterator if possible
+				if (typeof iterator.return === "function") {
+					await iterator.return(undefined).catch(() => {});
+				}
+				throw err;
+			}
+
+			if (result.done) {
+				return;
+			}
+
+			yield result.value;
+		}
 	}
 }

@@ -7,11 +7,13 @@ export const memorize: CommandDefinition = {
 	args: [
 		{ name: "key", required: true, description: "Memory key" },
 		{ name: "value", required: true, description: "Memory value" },
+		{ name: "source", required: false, description: "Source of the memory entry" },
 	],
 	handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
 		try {
 			const key = args.key;
 			const value = args.value;
+			const source = args.source || "agent";
 			const memoryId = deterministicUUID(BOUND_NAMESPACE, key);
 			const now = new Date().toISOString();
 
@@ -28,6 +30,7 @@ export const memorize: CommandDefinition = {
 					memoryId,
 					{
 						value,
+						source,
 						last_accessed_at: now,
 					},
 					ctx.siteId,
@@ -41,7 +44,7 @@ export const memorize: CommandDefinition = {
 						id: memoryId,
 						key,
 						value,
-						source: "agent",
+						source,
 						created_at: now,
 						modified_at: now,
 						last_accessed_at: now,

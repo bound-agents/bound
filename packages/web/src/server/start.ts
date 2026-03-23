@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
-import type { TypedEventEmitter } from "@bound/shared";
-import { type ModelsConfig, createApp } from "./index";
+import type { TypedEventEmitter, KeyringConfig } from "@bound/shared";
+import type { MCPClient } from "@bound/agent";
+import { type ModelsConfig, type AppConfig, createApp } from "./index";
 import { createWebSocketHandler } from "./websocket";
 
 export type { ModelsConfig };
@@ -9,6 +10,8 @@ export interface WebServerConfig {
 	port?: number;
 	host?: string;
 	models?: ModelsConfig;
+	mcpClients?: Map<string, MCPClient>;
+	keyring?: KeyringConfig;
 }
 
 export interface WebServer {
@@ -28,8 +31,14 @@ export async function createWebServer(
 	const port = config.port ?? 3000;
 	const host = config.host ?? "localhost";
 
+	const appConfig: AppConfig = {
+		modelsConfig: config.models,
+		mcpClients: config.mcpClients,
+		keyring: config.keyring,
+	};
+
 	// Create the Hono app with all routes (loads embedded assets if available)
-	const app = await createApp(db, eventBus, config.models);
+	const app = await createApp(db, eventBus, appConfig);
 
 	// Request logging middleware
 	app.use("*", async (c, next) => {

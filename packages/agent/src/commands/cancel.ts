@@ -3,10 +3,49 @@ import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sa
 
 export const cancel: CommandDefinition = {
 	name: "cancel",
-	args: [{ name: "task-id", required: true, description: "Task ID to cancel" }],
+	args: [
+		{ name: "task-id", required: false, description: "Task ID to cancel" },
+		{ name: "payload-match", required: false, description: "Cancel tasks whose payload contains this string" },
+	],
 	handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
 		try {
+			if (args["payload-match"]) {
+				const match = args["payload-match"];
+
+				// Find all pending/claimed tasks whose payload contains the match string
+				const tasks = ctx.db
+					.prepare(
+						"SELECT id FROM tasks WHERE payload LIKE ? AND status IN ('pending', 'claimed') AND deleted = 0",
+					)
+					.all(`%${match}%`) as Array<{ id: string }>;
+
+				if (tasks.length === 0) {
+					return {
+						stdout: `No tasks found matching payload: ${match}\n`,
+						stderr: "",
+						exitCode: 0,
+					};
+				}
+
+				for (const task of tasks) {
+					updateRow(ctx.db, "tasks", task.id, { status: "cancelled" }, ctx.siteId);
+				}
+
+				return {
+					stdout: `Cancelled ${tasks.length} tasks matching payload: ${match}\n`,
+					stderr: "",
+					exitCode: 0,
+				};
+			}
+
 			const taskId = args["task-id"];
+			if (!taskId) {
+				return {
+					stdout: "",
+					stderr: "Error: must specify task-id or --payload-match\n",
+					exitCode: 1,
+				};
+			}
 
 			// Check if task exists
 			const existing = ctx.db

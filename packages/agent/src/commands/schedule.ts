@@ -43,7 +43,8 @@ export const schedule: CommandDefinition = {
 		{ name: "after", required: false, description: "Task ID to depend on" },
 		{ name: "require-success", required: false, description: "Require dependency success" },
 		{ name: "quiet", required: false, description: "Quiet mode" },
-		{ name: "inject", required: false, description: "Inject mode (results or all)" },
+		{ name: "inject", required: false, description: "Inject mode (results, all, or file)" },
+		{ name: "alert-after", required: false, description: "Set alert_threshold on the task" },
 	],
 	handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
 		try {
@@ -82,6 +83,15 @@ export const schedule: CommandDefinition = {
 			const requireSuccess = args["require-success"] ? 1 : 0;
 			const injectMode = args.inject ? args.inject : "results";
 
+			// Parse alert_threshold from --alert-after flag
+			let alertThreshold = 1;
+			if (args["alert-after"]) {
+				const parsed = Number.parseInt(args["alert-after"], 10);
+				if (!Number.isNaN(parsed) && parsed > 0) {
+					alertThreshold = parsed;
+				}
+			}
+
 			insertRow(
 				ctx.db,
 				"tasks",
@@ -107,7 +117,7 @@ export const schedule: CommandDefinition = {
 					inject_mode: injectMode,
 					depends_on: dependsOn,
 					require_success: requireSuccess,
-					alert_threshold: 1,
+					alert_threshold: alertThreshold,
 					consecutive_failures: 0,
 					event_depth: 0,
 					no_quiescence: 0,

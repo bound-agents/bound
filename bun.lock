@@ -18,6 +18,7 @@
         "@bound/llm": "workspace:*",
         "@bound/sandbox": "workspace:*",
         "@bound/shared": "workspace:*",
+        "@bound/sync": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.27.1",
       },
     },
@@ -99,6 +100,7 @@
         "@bound/agent": "workspace:*",
         "@bound/core": "workspace:*",
         "@bound/shared": "workspace:*",
+        "@bound/sync": "workspace:*",
         "hono": "^4.0.0",
       },
       "devDependencies": {

@@ -5,6 +5,7 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool, Resource, Prompt } from "@modelcontextprotocol/sdk/types.js";
 
 export interface MCPServerConfig {
@@ -12,7 +13,7 @@ export interface MCPServerConfig {
 	command?: string;
 	args?: string[];
 	url?: string;
-	transport: "stdio" | "sse";
+	transport: "stdio" | "sse" | "streamable-http";
 	allow_tools?: string[];
 	confirm?: string[];
 }
@@ -48,24 +49,48 @@ export class MCPClient {
 	}
 
 	/**
-	 * Connect to the MCP server via stdio transport.
+	 * Connect to the MCP server using the configured transport.
+	 * Supports stdio and Streamable HTTP transports.
+	 * The legacy "sse" transport value is mapped to Streamable HTTP per the MCP spec update.
 	 */
 	async connect(): Promise<void> {
-		if (this.serverConfig.transport !== "stdio") {
-			throw new Error(`Transport "${this.serverConfig.transport}" is not yet supported`);
+		const { transport } = this.serverConfig;
+
+		if (transport === "stdio") {
+			if (!this.serverConfig.command) {
+				throw new Error(`Server "${this.serverConfig.name}" requires a command for stdio transport`);
+			}
+
+			const stdioTransport = new StdioClientTransport({
+				command: this.serverConfig.command,
+				args: this.serverConfig.args,
+			});
+
+			await this.client.connect(stdioTransport);
+			this.connected = true;
+			return;
 		}
 
-		if (!this.serverConfig.command) {
-			throw new Error(`Server "${this.serverConfig.name}" requires a command for stdio transport`);
+		if (transport === "sse" || transport === "streamable-http") {
+			if (transport === "sse") {
+				console.warn(
+					`[mcp] Server "${this.serverConfig.name}": transport "sse" is deprecated — using Streamable HTTP instead`,
+				);
+			}
+
+			if (!this.serverConfig.url) {
+				throw new Error(
+					`Server "${this.serverConfig.name}" requires a url for ${transport} transport`,
+				);
+			}
+
+			const httpTransport = new StreamableHTTPClientTransport(new URL(this.serverConfig.url));
+			await this.client.connect(httpTransport);
+			this.connected = true;
+			return;
 		}
 
-		const transport = new StdioClientTransport({
-			command: this.serverConfig.command,
-			args: this.serverConfig.args,
-		});
-
-		await this.client.connect(transport);
-		this.connected = true;
+		throw new Error(`Server "${this.serverConfig.name}": unknown transport "${transport}"`);
 	}
 
 	/**

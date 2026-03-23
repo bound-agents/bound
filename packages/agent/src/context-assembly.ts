@@ -12,6 +12,8 @@ export interface ContextParams {
 	currentModel?: string;
 	noHistory?: boolean;
 	configDir?: string;
+	hostName?: string;
+	siteId?: string;
 }
 
 // Cache for persona content - loaded once at startup
@@ -56,8 +58,27 @@ function loadPersona(configDir: string): string | null {
  * 7. BUDGET_VALIDATION - Check token count, truncate if needed
  * 8. METRIC_RECORDING - Record tokens (deferred to Phase 8)
  */
+// Static list of available built-in commands with brief descriptions
+const AVAILABLE_COMMANDS = [
+	{ name: "query", description: "Execute a SELECT query against the database" },
+	{ name: "memorize", description: "Store a key-value memory entry" },
+	{ name: "forget", description: "Soft-delete a memory entry (supports --prefix)" },
+	{ name: "schedule", description: "Schedule a deferred, cron, or event-driven task" },
+	{ name: "cancel", description: "Cancel a scheduled task (supports --payload-match)" },
+	{ name: "emit", description: "Emit a custom event on the event bus" },
+	{ name: "purge", description: "Create a purge record targeting message IDs" },
+	{ name: "await", description: "Poll until tasks reach a terminal state" },
+	{ name: "cache-warm", description: "Pre-warm the prompt cache for a thread" },
+	{ name: "cache-pin", description: "Pin a cache entry to prevent eviction" },
+	{ name: "cache-unpin", description: "Unpin a previously pinned cache entry" },
+	{ name: "cache-evict", description: "Evict a specific cache entry" },
+	{ name: "model-hint", description: "Set or clear the model hint for the current task" },
+	{ name: "archive", description: "Archive a thread to long-term storage" },
+	{ name: "hostinfo", description: "Display registered host information" },
+] as const;
+
 export function assembleContext(params: ContextParams): LLMMessage[] {
-	const { db, threadId, userId, noHistory = false, configDir = "config" } = params;
+	const { db, threadId, userId, noHistory = false, configDir = "config", currentModel, hostName, siteId } = params;
 
 	// Stage 1: MESSAGE_RETRIEVAL
 	const messages: Message[] = [];
@@ -190,6 +211,23 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			content: persona,
 		});
 	}
+
+	// Stable orientation section: available commands, current model, host identity
+	const commandList = AVAILABLE_COMMANDS.map((c) => `  ${c.name} — ${c.description}`).join("\n");
+	const orientationLines: string[] = [
+		"## Orientation",
+		"",
+		"### Available Commands",
+		commandList,
+		"",
+		`### Current Model\n${currentModel || "default"}`,
+		"",
+		`### Host Identity\nHost: ${hostName || "unknown"}\nSite ID: ${siteId || "unknown"}`,
+	];
+	assembled.push({
+		role: "system",
+		content: orientationLines.join("\n"),
+	});
 
 	// Add message history
 	assembled.push(...annotated);

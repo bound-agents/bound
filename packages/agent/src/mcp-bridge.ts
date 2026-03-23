@@ -1,22 +1,142 @@
 /**
  * MCP Bridge for auto-generating defineCommands from MCP tools.
  * Implements MCP tool discovery and command generation per spec §7.3.
+ * Implements cross-host MCP tool proxying per spec §7.5.
  */
 
 import type { Database } from "bun:sqlite";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
+import type { KeyringConfig } from "@bound/shared";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { MCPClient } from "./mcp-client";
+import { signRequest } from "@bound/sync";
+import type { MCPClient, ToolResult } from "./mcp-client";
+
+/**
+ * Configuration for cross-host proxy routing.
+ */
+export interface MCPProxyConfig {
+	db: Database;
+	siteId: string;
+	keyring: KeyringConfig;
+	privateKey: CryptoKey;
+}
+
+/**
+ * Proxy a tool call to a remote host.
+ * Looks up the remote host's sync_url, signs the request, and POSTs to /api/mcp-proxy.
+ * Implements the routing logic from spec §7.5.
+ */
+async function proxyToolCall(
+	toolCommandName: string,
+	serverName: string,
+	toolName: string,
+	args: Record<string, unknown>,
+	proxyConfig: MCPProxyConfig,
+): Promise<ToolResult> {
+	const { db, siteId, keyring, privateKey } = proxyConfig;
+
+	// Find a remote host that advertises this tool in its mcp_tools column
+	// Prefer hosts with a sync_url set; skip our own row
+	const remoteHosts = db
+		.query(
+			`SELECT site_id, host_name, sync_url, mcp_tools
+			 FROM hosts
+			 WHERE site_id != ? AND sync_url IS NOT NULL AND mcp_tools IS NOT NULL`,
+		)
+		.all(siteId) as Array<{
+		site_id: string;
+		host_name: string;
+		sync_url: string;
+		mcp_tools: string;
+	}>;
+
+	// Find eligible hosts that list the tool
+	const eligible = remoteHosts.filter((row) => {
+		try {
+			const tools = JSON.parse(row.mcp_tools) as string[];
+			return tools.includes(toolCommandName);
+		} catch {
+			return false;
+		}
+	});
+
+	if (eligible.length === 0) {
+		return {
+			content: `Error: Tool "${toolCommandName}" is not available on any reachable remote host`,
+			isError: true,
+		};
+	}
+
+	const body = JSON.stringify({ server: serverName, tool: toolName, arguments: args });
+	const path = "/api/mcp-proxy";
+
+	// Try each eligible host in order; failover on error
+	const errors: string[] = [];
+	for (const remoteHost of eligible) {
+		// Resolve base URL: hosts table sync_url first, keyring fallback
+		let baseUrl = remoteHost.sync_url;
+		const keyringEntry = (keyring.hosts as Record<string, { url: string } | undefined>)[
+			remoteHost.site_id
+		];
+		if (!baseUrl && keyringEntry?.url) {
+			baseUrl = keyringEntry.url;
+		}
+		if (!baseUrl) {
+			errors.push(`${remoteHost.host_name}: no URL available`);
+			continue;
+		}
+
+		const targetUrl = `${baseUrl.replace(/\/$/, "")}${path}`;
+
+		try {
+			const signedHeaders = await signRequest(privateKey, siteId, "POST", path, body);
+			const response = await fetch(targetUrl, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...signedHeaders,
+				},
+				body,
+			});
+
+			if (!response.ok) {
+				const errText = await response.text().catch(() => `HTTP ${response.status}`);
+				errors.push(`${remoteHost.host_name}: ${response.status} ${errText}`);
+				continue;
+			}
+
+			const data = (await response.json()) as { result?: ToolResult; error?: string };
+			if (data.error) {
+				return { content: `Remote error: ${data.error}`, isError: true };
+			}
+			if (data.result) {
+				return data.result;
+			}
+			return { content: "", isError: false };
+		} catch (fetchError) {
+			const message = fetchError instanceof Error ? fetchError.message : String(fetchError);
+			errors.push(`${remoteHost.host_name}: ${message}`);
+		}
+	}
+
+	return {
+		content: `Error: All remote hosts failed for tool "${toolCommandName}":\n${errors.join("\n")}`,
+		isError: true,
+	};
+}
 
 /**
  * Generate defineCommands from MCP tools discovered on connected servers.
  * Returns an array of CommandDefinition for each tool with name format: {server-name}-{tool-name}
  *
  * Calls listTools() on each connected client to enumerate tools.
+ * When proxyConfig is provided, also generates commands for tools advertised by remote hosts
+ * that are not available locally.
  */
 export async function generateMCPCommands(
 	clients: Map<string, MCPClient>,
 	confirmGates: Map<string, string[]> = new Map(),
+	proxyConfig?: MCPProxyConfig,
 ): Promise<CommandDefinition[]> {
 	const commands: CommandDefinition[] = [];
 
@@ -86,11 +206,99 @@ export async function generateMCPCommands(
 		}
 	}
 
+	// Generate proxy commands for remote tools not available locally
+	if (proxyConfig) {
+		const localToolNames = new Set(commands.map((c) => c.name));
+		const remoteCommands = generateRemoteMCPCommands(localToolNames, proxyConfig);
+		for (const cmd of remoteCommands) {
+			commands.push(cmd);
+		}
+	}
+
 	// Add MCP access commands
 	commands.push(createResourcesCommand(clients));
 	commands.push(createResourceCommand(clients));
 	commands.push(createPromptsCommand(clients));
 	commands.push(createPromptCommand(clients));
+
+	return commands;
+}
+
+/**
+ * Generate proxy CommandDefinitions for tools available on remote hosts but not locally.
+ * Only creates commands for tool names not already present in localToolNames.
+ */
+function generateRemoteMCPCommands(
+	localToolNames: Set<string>,
+	proxyConfig: MCPProxyConfig,
+): CommandDefinition[] {
+	const { db, siteId } = proxyConfig;
+
+	// Collect all remote tool names from the hosts table, excluding our own row
+	const remoteHosts = db
+		.query(
+			`SELECT site_id, mcp_tools
+			 FROM hosts
+			 WHERE site_id != ? AND mcp_tools IS NOT NULL`,
+		)
+		.all(siteId) as Array<{ site_id: string; mcp_tools: string }>;
+
+	// Build a deduplicated set of remote tool command names
+	const remoteToolNames = new Set<string>();
+	for (const row of remoteHosts) {
+		try {
+			const tools = JSON.parse(row.mcp_tools) as string[];
+			for (const toolCommandName of tools) {
+				if (!localToolNames.has(toolCommandName)) {
+					remoteToolNames.add(toolCommandName);
+				}
+			}
+		} catch {
+			// Skip malformed rows
+		}
+	}
+
+	const commands: CommandDefinition[] = [];
+
+	for (const toolCommandName of remoteToolNames) {
+		// Decompose "{serverName}-{toolName}" — split on first dash
+		const dashIdx = toolCommandName.indexOf("-");
+		const serverName = dashIdx >= 0 ? toolCommandName.slice(0, dashIdx) : toolCommandName;
+		const toolName = dashIdx >= 0 ? toolCommandName.slice(dashIdx + 1) : toolCommandName;
+
+		const command: CommandDefinition = {
+			name: toolCommandName,
+			args: [],
+			handler: async (
+				args: Record<string, string>,
+				_ctx: CommandContext,
+			): Promise<CommandResult> => {
+				try {
+					const result = await proxyToolCall(
+						toolCommandName,
+						serverName,
+						toolName,
+						args,
+						proxyConfig,
+					);
+					return {
+						stdout: result.content,
+						stderr: result.isError ? result.content : "",
+						exitCode: result.isError ? 1 : 0,
+					};
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					return {
+						stdout: "",
+						stderr: `Failed to proxy tool ${toolCommandName}: ${message}\n`,
+						exitCode: 1,
+					};
+				}
+			},
+		};
+
+		commands.push(command);
+	}
 
 	return commands;
 }

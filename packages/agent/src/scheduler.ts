@@ -8,10 +8,17 @@ import type { AgentLoopConfig } from "./types";
 const LEASE_DURATION = 300000; // 5 minutes
 const EVICTION_TIMEOUT = 120_000; // 2 minutes
 const POLL_INTERVAL = 5000; // 5 seconds
-const MAX_INACTIVITY_SCALE = 5; // 5x poll interval when quiet
-const INACTIVITY_THRESHOLD = 3600000; // 1 hour
 const MAX_EVENT_DEPTH = 5;
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
+
+// Graduated quiescence tiers (idle duration in ms → multiplier)
+// Thresholds are the lower bound of each idle band
+const QUIESCENCE_TIERS: Array<{ threshold: number; multiplier: number }> = [
+	{ threshold: 0, multiplier: 2 },           // 0-1h idle: ×2
+	{ threshold: 3_600_000, multiplier: 3 },   // 1-4h idle: ×3
+	{ threshold: 14_400_000, multiplier: 5 },  // 4-12h idle: ×5
+	{ threshold: 43_200_000, multiplier: 10 }, // 12-24h idle: ×10
+];
 
 interface SchedulerConfig {
 	pollInterval?: number;
@@ -286,22 +293,21 @@ export class Scheduler {
 		}
 	}
 
-	// Get current quiescence-adjusted poll interval
+	// Get current quiescence-adjusted poll interval using 4-tier graduated table
 	getEffectivePollInterval(): number {
 		const now = new Date();
 		const inactivityMs = now.getTime() - this.lastUserInteractionAt.getTime();
 
-		if (inactivityMs > INACTIVITY_THRESHOLD) {
-			// Scale from normal to 5x over 1 hour period
-			const scale =
-				1 +
-				((inactivityMs - INACTIVITY_THRESHOLD) / INACTIVITY_THRESHOLD) * (MAX_INACTIVITY_SCALE - 1);
-			return Math.min(
-				POLL_INTERVAL * Math.min(scale, MAX_INACTIVITY_SCALE),
-				POLL_INTERVAL * MAX_INACTIVITY_SCALE,
-			);
+		// Walk tiers from highest threshold down, pick the first that applies
+		let multiplier = 1;
+		for (let i = QUIESCENCE_TIERS.length - 1; i >= 0; i--) {
+			const tier = QUIESCENCE_TIERS[i];
+			if (inactivityMs >= tier.threshold) {
+				multiplier = tier.multiplier;
+				break;
+			}
 		}
 
-		return POLL_INTERVAL;
+		return POLL_INTERVAL * multiplier;
 	}
 }

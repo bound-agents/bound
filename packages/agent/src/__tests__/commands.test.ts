@@ -306,7 +306,7 @@ describe("defineCommand implementations", () => {
 			const result = await purge.handler(
 				{
 					ids: `${msgId1},${msgId2}`,
-					"create-summary": "true",
+					"summary": "true",
 				},
 				ctx,
 			);

@@ -106,7 +106,7 @@ export const mcpSchema = z.object({
 			command: z.string().optional(),
 			args: z.array(z.string()).optional(),
 			url: z.string().optional(),
-			transport: z.enum(["stdio", "sse"]),
+			transport: z.enum(["stdio", "sse", "streamable-http"]),
 			allow_tools: z.array(z.string()).optional(),
 			confirm: z.array(z.string()).optional(),
 		}),
