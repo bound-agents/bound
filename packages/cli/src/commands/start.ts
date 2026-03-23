@@ -789,7 +789,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	console.log("Starting scheduler...");
 	let schedulerHandle: { stop: () => void } | null = null;
 	try {
-		const scheduler = new Scheduler(appContext, agentLoopFactory);
+		const scheduler = new Scheduler(appContext, agentLoopFactory, {}, sandbox?.bash);
 		schedulerHandle = scheduler.start(30_000);
 		console.log("[scheduler] Scheduler started (30s poll interval)");
 	} catch (error) {

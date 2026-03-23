@@ -38,6 +38,7 @@ export class Scheduler {
 		private ctx: AppContext,
 		private agentLoopFactory: (config: AgentLoopConfig) => AgentLoop,
 		private config: SchedulerConfig = {},
+		private sandbox?: { exec?: (cmd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }> },
 	) {
 		// Register event handler for all event types
 		ctx.eventBus.on("message:created", () => this.onUserInteraction());
@@ -413,13 +414,24 @@ export class Scheduler {
 				// Execute template commands directly (no LLM call)
 				const outputs: string[] = [];
 
-				// We need a minimal sandbox to execute commands, but the scheduler
-				// doesn't have direct access to it. For now, log that template execution
-				// is not yet implemented and mark as failed.
-				this.ctx.logger.warn("[scheduler] Template execution not yet fully implemented", {
-					taskId: task.id,
-					template,
-				});
+				if (this.sandbox?.exec) {
+					for (const cmd of template) {
+						const result = await this.sandbox.exec(cmd);
+						outputs.push(result.stdout || result.stderr);
+						if (result.exitCode !== 0) {
+							this.ctx.logger.warn("[scheduler] Template command failed", {
+								taskId: task.id,
+								cmd,
+								exitCode: result.exitCode,
+								stderr: result.stderr,
+							});
+						}
+					}
+				} else {
+					this.ctx.logger.warn("[scheduler] No sandbox available for template execution", {
+						taskId: task.id,
+					});
+				}
 
 				// Verify lease_id still matches
 				const currentTask = this.ctx.db
