@@ -33,6 +33,7 @@ export function applySchema(db: Database): void {
 			extracted_through TEXT,
 			created_at       TEXT NOT NULL,
 			last_message_at  TEXT NOT NULL,
+			modified_at      TEXT NOT NULL,
 			deleted          INTEGER DEFAULT 0
 		) STRICT
 	`);

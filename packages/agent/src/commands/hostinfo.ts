@@ -18,9 +18,7 @@ export const hostinfo: CommandDefinition = {
 	args: [],
 	handler: async (_args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
 		try {
-			const hosts = ctx.db
-				.prepare("SELECT * FROM hosts ORDER BY host_name ASC")
-				.all() as HostRow[];
+			const hosts = ctx.db.prepare("SELECT * FROM hosts ORDER BY host_name ASC").all() as HostRow[];
 
 			if (hosts.length === 0) {
 				return {

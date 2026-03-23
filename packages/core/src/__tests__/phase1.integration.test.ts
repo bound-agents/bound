@@ -86,13 +86,14 @@ describe("Phase 1 Integration", () => {
 			)
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(13);
+		expect(tables.length).toBe(15); // 13 main tables + 2 metrics tables
 
 		const tableNames = tables.map((t) => t.name);
 		const expectedTables = [
 			"advisories",
 			"change_log",
 			"cluster_config",
+			"daily_summary",
 			"files",
 			"host_meta",
 			"hosts",
@@ -102,6 +103,7 @@ describe("Phase 1 Integration", () => {
 			"sync_state",
 			"tasks",
 			"threads",
+			"turns",
 			"users",
 		];
 
@@ -247,6 +249,7 @@ describe("Phase 1 Integration", () => {
 			extracted_through: null,
 			created_at: now,
 			last_message_at: now,
+			modified_at: now,
 			deleted: 0,
 		};
 

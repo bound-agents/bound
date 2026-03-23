@@ -144,9 +144,7 @@ describe("BedrockDriver", () => {
 	it.skipIf(shouldSkip)("translates messages, system, and toolConfig correctly", async () => {
 		sendSpy.mockImplementation(() =>
 			Promise.resolve(
-				createMockStream([
-					{ metadata: { usage: { inputTokens: 1, outputTokens: 1 } } },
-				]),
+				createMockStream([{ metadata: { usage: { inputTokens: 1, outputTokens: 1 } } }]),
 			),
 		);
 
@@ -249,9 +247,7 @@ describe("BedrockDriver", () => {
 	it.skipIf(shouldSkip)("works when profile is configured", async () => {
 		sendSpy.mockImplementation(() =>
 			Promise.resolve(
-				createMockStream([
-					{ metadata: { usage: { inputTokens: 1, outputTokens: 1 } } },
-				]),
+				createMockStream([{ metadata: { usage: { inputTokens: 1, outputTokens: 1 } } }]),
 			),
 		);
 

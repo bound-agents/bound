@@ -46,9 +46,9 @@ export function findOrCreateThread(db: Database, userId: string, siteId: string)
 	const now = new Date().toISOString();
 
 	db.run(
-		`INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, deleted)
-		 VALUES (?, ?, ?, ?, ?, ?, 0)`,
-		[threadId, userId, "discord", siteId, now, now],
+		`INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+		[threadId, userId, "discord", siteId, now, now, now],
 	);
 
 	const thread = db.query("SELECT * FROM threads WHERE id = ?").get(threadId) as Thread;

@@ -1,5 +1,5 @@
-import { resolve } from "node:path";
 import { Database } from "bun:sqlite";
+import { resolve } from "node:path";
 
 const APPEND_ONLY_TABLES = new Set(["messages"]);
 
@@ -77,9 +77,9 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 		console.log(`Found ${candidates.length} affected row(s) across tables.\n`);
 
 		// Read the site_id from host_meta for change_log entries
-		const siteIdRow = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as
-			| { value: string }
-			| null;
+		const siteIdRow = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as {
+			value: string;
+		} | null;
 		const siteId = siteIdRow?.value ?? "restore-cli";
 
 		let restoredCount = 0;
@@ -143,9 +143,9 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 						);
 
 						// Fetch updated row for change_log snapshot
-						const deletedRow = db.query(`SELECT * FROM ${table_name} WHERE id = ?`).get(row_id) as
-							| Record<string, unknown>
-							| null;
+						const deletedRow = db
+							.query(`SELECT * FROM ${table_name} WHERE id = ?`)
+							.get(row_id) as Record<string, unknown> | null;
 
 						if (deletedRow) {
 							db.query(

@@ -30,8 +30,8 @@ describe("Title Generation", () => {
 
 		// Create thread (without title)
 		db.prepare(
-			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at) VALUES (?, ?, ?, ?, ?, ?)",
-		).run(threadId, userId, "web", "localhost", now, now);
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(threadId, userId, "web", "localhost", now, now, now);
 
 		// Create messages
 		db.prepare(
@@ -87,8 +87,8 @@ describe("Title Generation", () => {
 
 		// Create thread with existing title
 		db.prepare(
-			"INSERT INTO threads (id, user_id, interface, host_origin, title, created_at, last_message_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		).run(threadId, userId, "web", "localhost", "Existing Title", now, now);
+			"INSERT INTO threads (id, user_id, interface, host_origin, title, created_at, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		).run(threadId, userId, "web", "localhost", "Existing Title", now, now, now);
 
 		// Create messages
 		db.prepare(
@@ -135,8 +135,8 @@ describe("Title Generation", () => {
 
 		// Create thread without messages
 		db.prepare(
-			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at) VALUES (?, ?, ?, ?, ?, ?)",
-		).run(threadId, userId, "web", "localhost", now, now);
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(threadId, userId, "web", "localhost", now, now, now);
 
 		const mockBackend: LLMBackend = {
 			chat: async function* () {

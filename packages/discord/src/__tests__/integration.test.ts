@@ -166,9 +166,9 @@ describe("Discord Integration", () => {
 		// Create thread for alice
 		const threadId = randomUUID();
 		ctx.db.run(
-			`INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, 0)`,
-			[threadId, userId, "discord", ctx.hostName, now, now],
+			`INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+			[threadId, userId, "discord", ctx.hostName, now, now, now],
 		);
 
 		const mockFactory = (_config: AgentLoopConfig): AgentLoop => {

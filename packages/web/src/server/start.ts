@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
-import type { TypedEventEmitter, KeyringConfig } from "@bound/shared";
 import type { MCPClient } from "@bound/agent";
-import { type ModelsConfig, type AppConfig, createApp } from "./index";
+import type { KeyringConfig, Logger, TypedEventEmitter } from "@bound/shared";
+import { type AppConfig, type ModelsConfig, createApp } from "./index";
 import { createWebSocketHandler } from "./websocket";
 
 export type { ModelsConfig };
@@ -12,6 +12,8 @@ export interface WebServerConfig {
 	models?: ModelsConfig;
 	mcpClients?: Map<string, MCPClient>;
 	keyring?: KeyringConfig;
+	siteId?: string;
+	logger?: Logger;
 }
 
 export interface WebServer {
@@ -35,6 +37,8 @@ export async function createWebServer(
 		modelsConfig: config.models,
 		mcpClients: config.mcpClients,
 		keyring: config.keyring,
+		siteId: config.siteId,
+		logger: config.logger,
 	};
 
 	// Create the Hono app with all routes (loads embedded assets if available)
@@ -62,10 +66,7 @@ export async function createWebServer(
 				fetch(request: Request, server) {
 					// Check for WebSocket upgrade on /ws path
 					const url = new URL(request.url);
-					if (
-						url.pathname === "/ws" &&
-						request.headers.get("upgrade") === "websocket"
-					) {
+					if (url.pathname === "/ws" && request.headers.get("upgrade") === "websocket") {
 						if (server.upgrade(request, { data: undefined })) {
 							return;
 						}

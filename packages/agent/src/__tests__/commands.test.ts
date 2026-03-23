@@ -252,8 +252,8 @@ describe("defineCommand implementations", () => {
 
 			db.run(
 				`INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through,
-					summary_model_id, extracted_through, created_at, last_message_at, deleted)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					threadId,
 					userId,
@@ -265,6 +265,7 @@ describe("defineCommand implementations", () => {
 					null,
 					null,
 					null,
+					new Date().toISOString(),
 					new Date().toISOString(),
 					new Date().toISOString(),
 					0,
@@ -306,7 +307,7 @@ describe("defineCommand implementations", () => {
 			const result = await purge.handler(
 				{
 					ids: `${msgId1},${msgId2}`,
-					"summary": "true",
+					summary: "true",
 				},
 				ctx,
 			);
@@ -326,8 +327,8 @@ describe("defineCommand implementations", () => {
 
 			db.run(
 				`INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through,
-					summary_model_id, extracted_through, created_at, last_message_at, deleted)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					threadId,
 					userId,
@@ -339,6 +340,7 @@ describe("defineCommand implementations", () => {
 					null,
 					null,
 					null,
+					new Date().toISOString(),
 					new Date().toISOString(),
 					new Date().toISOString(),
 					0,

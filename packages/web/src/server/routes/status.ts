@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
+import { insertRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
 
@@ -70,6 +72,37 @@ export function createStatusRoutes(
 					404,
 				);
 			}
+
+			// Get siteId and hostName for message persistence
+			const siteIdRow = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as
+				| { value: string }
+				| undefined;
+			const siteId = siteIdRow?.value ?? "unknown";
+
+			const hostNameRow = db.query("SELECT value FROM host_meta WHERE key = 'host_name'").get() as
+				| { value: string }
+				| undefined;
+			const hostName = hostNameRow?.value ?? "unknown";
+
+			// Persist cancellation message per spec R-E14
+			const cancelMsgId = randomUUID();
+			const now = new Date().toISOString();
+			insertRow(
+				db,
+				"messages",
+				{
+					id: cancelMsgId,
+					thread_id: threadId,
+					role: "system",
+					content: `Agent cancelled by user on host ${hostName}`,
+					model_id: null,
+					tool_name: null,
+					created_at: now,
+					modified_at: now,
+					host_origin: hostName,
+				},
+				siteId,
+			);
 
 			// Emit cancel event on eventBus to signal agent loop to stop
 			eventBus.emit("agent:cancel", { thread_id: threadId });

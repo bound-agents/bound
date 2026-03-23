@@ -7,7 +7,12 @@ import {
 	fetchOutboundChangeset,
 	serializeChangeset,
 } from "./changeset.js";
-import { incrementSyncErrors, resetSyncErrors, updatePeerCursor } from "./peer-cursor.js";
+import {
+	getPeerCursor,
+	incrementSyncErrors,
+	resetSyncErrors,
+	updatePeerCursor,
+} from "./peer-cursor.js";
 import { replayEvents } from "./reducers.js";
 import { signRequest } from "./signing.js";
 
@@ -112,6 +117,16 @@ export class SyncClient {
 			return ok({ pushed, pulled, duration_ms: duration });
 		} catch (error) {
 			incrementSyncErrors(this.db, peerSiteId);
+
+			// Check if we've reached the alert threshold per spec R-E16
+			const syncState = getPeerCursor(this.db, peerSiteId);
+			if (syncState && syncState.sync_errors >= 5) {
+				// TODO: Persist alert to system thread once system thread concept is implemented
+				this.logger.warn(
+					`Sync failures have reached threshold (${syncState.sync_errors} errors) for peer ${peerSiteId}`,
+				);
+			}
+
 			const message = error instanceof Error ? error.message : "Unknown error";
 			this.logger.error(`Sync error: ${message}`);
 			return err({

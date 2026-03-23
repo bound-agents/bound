@@ -5,8 +5,8 @@
  * can include them in the single binary.
  */
 
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, extname, resolve, dirname } from "node:path";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, extname, join, resolve } from "node:path";
 
 // Resolve paths relative to this script, not cwd
 const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname);
@@ -68,7 +68,9 @@ const lines = [
 
 for (const asset of assets) {
 	const escaped = JSON.stringify(asset.content);
-	lines.push(`\t[${JSON.stringify(asset.path)}, { content: ${escaped}, contentType: ${JSON.stringify(asset.contentType)} }],`);
+	lines.push(
+		`\t[${JSON.stringify(asset.path)}, { content: ${escaped}, contentType: ${JSON.stringify(asset.contentType)} }],`,
+	);
 }
 
 lines.push("]);");

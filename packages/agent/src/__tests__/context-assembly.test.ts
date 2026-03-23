@@ -32,7 +32,7 @@ describe("Context Assembly Pipeline", () => {
 		);
 
 		db.run(
-			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			[
 				threadId,
 				userId,
@@ -44,6 +44,7 @@ describe("Context Assembly Pipeline", () => {
 				null,
 				null,
 				null,
+				new Date().toISOString(),
 				new Date().toISOString(),
 				new Date().toISOString(),
 				0,
@@ -190,7 +191,7 @@ describe("Context Assembly Pipeline", () => {
 
 			// Create a new thread for this test
 			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				[
 					testThreadId,
 					testUserId,
@@ -204,6 +205,7 @@ describe("Context Assembly Pipeline", () => {
 					null,
 					new Date().toISOString(),
 					new Date().toISOString(),
+					new Date().toISOString(),
 					0,
 				],
 			);
@@ -215,15 +217,45 @@ describe("Context Assembly Pipeline", () => {
 
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[msg1Id, testThreadId, "user", "Message 1", null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+				[
+					msg1Id,
+					testThreadId,
+					"user",
+					"Message 1",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[msg2Id, testThreadId, "assistant", "Message 2", null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+				[
+					msg2Id,
+					testThreadId,
+					"assistant",
+					"Message 2",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[msg3Id, testThreadId, "user", "Message 3", null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+				[
+					msg3Id,
+					testThreadId,
+					"user",
+					"Message 3",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
 			);
 
 			// Create a purge message targeting msg1 and msg2
@@ -235,7 +267,17 @@ describe("Context Assembly Pipeline", () => {
 
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[purgeId, testThreadId, "purge", purgeContent, null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+				[
+					purgeId,
+					testThreadId,
+					"purge",
+					purgeContent,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
 			);
 
 			const messages = assembleContext({
@@ -263,7 +305,7 @@ describe("Context Assembly Pipeline", () => {
 			const testUserId = randomUUID();
 
 			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				[
 					testThreadId,
 					testUserId,
@@ -275,6 +317,7 @@ describe("Context Assembly Pipeline", () => {
 					null,
 					null,
 					null,
+					new Date().toISOString(),
 					new Date().toISOString(),
 					new Date().toISOString(),
 					0,
@@ -316,7 +359,17 @@ describe("Context Assembly Pipeline", () => {
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[userMsgId, testThreadId, "user", "Keep this message", null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+				[
+					userMsgId,
+					testThreadId,
+					"user",
+					"Keep this message",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
 			);
 
 			// Purge only the tool_call - the tool_result should be automatically included
@@ -328,7 +381,17 @@ describe("Context Assembly Pipeline", () => {
 
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[purgeId, testThreadId, "purge", purgeContent, null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+				[
+					purgeId,
+					testThreadId,
+					"purge",
+					purgeContent,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
 			);
 
 			const messages = assembleContext({
@@ -338,7 +401,9 @@ describe("Context Assembly Pipeline", () => {
 			});
 
 			// Neither tool_call nor tool_result should be in the output
-			const toolMessages = messages.filter((m) => m.role === "tool_call" || m.role === "tool_result");
+			const toolMessages = messages.filter(
+				(m) => m.role === "tool_call" || m.role === "tool_result",
+			);
 			expect(toolMessages.length).toBe(0);
 
 			// User message should remain
@@ -357,7 +422,7 @@ describe("Context Assembly Pipeline", () => {
 			const testUserId = randomUUID();
 
 			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				[
 					testThreadId,
 					testUserId,
@@ -369,6 +434,7 @@ describe("Context Assembly Pipeline", () => {
 					null,
 					null,
 					null,
+					new Date().toISOString(),
 					new Date().toISOString(),
 					new Date().toISOString(),
 					0,
@@ -383,19 +449,59 @@ describe("Context Assembly Pipeline", () => {
 
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[msg1Id, testThreadId, "user", "Message 1", null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+				[
+					msg1Id,
+					testThreadId,
+					"user",
+					"Message 1",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[msg2Id, testThreadId, "assistant", "Message 2", null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+				[
+					msg2Id,
+					testThreadId,
+					"assistant",
+					"Message 2",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[msg3Id, testThreadId, "user", "Message 3", null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+				[
+					msg3Id,
+					testThreadId,
+					"user",
+					"Message 3",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[msg4Id, testThreadId, "assistant", "Message 4", null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+				[
+					msg4Id,
+					testThreadId,
+					"assistant",
+					"Message 4",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
 			);
 
 			// Create two separate purge messages
@@ -413,11 +519,31 @@ describe("Context Assembly Pipeline", () => {
 
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[purge1Id, testThreadId, "purge", purge1Content, null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+				[
+					purge1Id,
+					testThreadId,
+					"purge",
+					purge1Content,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[purge2Id, testThreadId, "purge", purge2Content, null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+				[
+					purge2Id,
+					testThreadId,
+					"purge",
+					purge2Content,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
 			);
 
 			const messages = assembleContext({
@@ -443,7 +569,7 @@ describe("Context Assembly Pipeline", () => {
 			const testUserId = randomUUID();
 
 			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				[
 					testThreadId,
 					testUserId,
@@ -457,6 +583,7 @@ describe("Context Assembly Pipeline", () => {
 					null,
 					new Date().toISOString(),
 					new Date().toISOString(),
+					new Date().toISOString(),
 					0,
 				],
 			);
@@ -464,14 +591,34 @@ describe("Context Assembly Pipeline", () => {
 			const msgId = randomUUID();
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[msgId, testThreadId, "user", "Keep this", null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+				[
+					msgId,
+					testThreadId,
+					"user",
+					"Keep this",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
 			);
 
 			// Create a purge message with invalid JSON
 			const purgeId = randomUUID();
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[purgeId, testThreadId, "purge", "not valid json", null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+				[
+					purgeId,
+					testThreadId,
+					"purge",
+					"not valid json",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
 			);
 
 			// Should not throw and should keep the user message

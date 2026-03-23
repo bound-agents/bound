@@ -85,10 +85,7 @@ ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
 
 			if (fallbackMsg) {
 				const fallbackTitle = fallbackMsg.content.substring(0, 50).trim();
-				db.prepare("UPDATE threads SET title = ? WHERE id = ?").run(
-					fallbackTitle,
-					threadId,
-				);
+				db.prepare("UPDATE threads SET title = ? WHERE id = ?").run(fallbackTitle, threadId);
 				return { ok: true, value: fallbackTitle };
 			}
 		} catch {

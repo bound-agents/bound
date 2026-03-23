@@ -63,8 +63,8 @@ describe("Scheduler Integration", () => {
 		// Insert thread
 		const threadId = randomUUID();
 		db.exec(`
-			INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, deleted)
-			VALUES ('${threadId}', '${userId}', 'web', 'test', 0, 'Test Thread', NULL, NULL, NULL, NULL, '${nowStr}', '${nowStr}', 0)
+			INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted)
+			VALUES ('${threadId}', '${userId}', 'web', 'test', 0, 'Test Thread', NULL, NULL, NULL, NULL, '${nowStr}', '${nowStr}', '${nowStr}', 0)
 		`);
 
 		// Insert deferred task

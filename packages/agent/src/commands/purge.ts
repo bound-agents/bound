@@ -49,9 +49,7 @@ export const purge: CommandDefinition = {
 				const targetSet = new Set(targetIds);
 				const placeholders = targetIds.map(() => "?").join(", ");
 				const targeted = ctx.db
-					.prepare(
-						`SELECT id, role FROM messages WHERE id IN (${placeholders})`,
-					)
+					.prepare(`SELECT id, role FROM messages WHERE id IN (${placeholders})`)
 					.all(...targetIds) as Array<{ id: string; role: string }>;
 
 				const additionalIds: string[] = [];
@@ -82,7 +80,9 @@ export const purge: CommandDefinition = {
 
 			// Create a purge message referencing the target IDs
 			const purgeMessageId = randomUUID();
-			const summary = args.summary ? "Messages purged from conversation" : "Summary of purged messages";
+			const summary = args.summary
+				? "Messages purged from conversation"
+				: "Summary of purged messages";
 			const threadId = args["thread-id"] || ctx.threadId || "";
 
 			// Store content as JSON with target_ids for context-assembly.ts to parse

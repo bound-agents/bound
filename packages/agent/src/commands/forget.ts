@@ -6,7 +6,11 @@ export const forget: CommandDefinition = {
 	name: "forget",
 	args: [
 		{ name: "key", required: false, description: "Memory key to delete" },
-		{ name: "prefix", required: false, description: "Delete all entries whose key starts with this prefix" },
+		{
+			name: "prefix",
+			required: false,
+			description: "Delete all entries whose key starts with this prefix",
+		},
 	],
 	handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
 		try {

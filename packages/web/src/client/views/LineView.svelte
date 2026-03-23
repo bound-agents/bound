@@ -2,11 +2,16 @@
 import { onDestroy, onMount } from "svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import MessageBubble from "../components/MessageBubble.svelte";
+import { activeModel } from "../components/ModelSelector.svelte";
 import { api } from "../lib/api";
 import type { Thread } from "../lib/api";
 import { navigateTo } from "../lib/router";
-import { activeModel } from "../components/ModelSelector.svelte";
-import { connectWebSocket, disconnectWebSocket, subscribeToThread, wsEvents } from "../lib/websocket";
+import {
+	connectWebSocket,
+	disconnectWebSocket,
+	subscribeToThread,
+	wsEvents,
+} from "../lib/websocket";
 
 const { threadId } = $props<{ threadId: string }>();
 
@@ -17,7 +22,7 @@ let waiting = $state(false);
 let waitingSinceMessageCount = $state(0);
 let agentActive = $state(false);
 let agentState = $state<string | null>(null);
-let fileInput: HTMLInputElement | null = null;
+const fileInput: HTMLInputElement | null = null;
 let uploadStatus = $state<string | null>(null);
 let thread = $state<Thread | null>(null);
 
@@ -54,8 +59,11 @@ async function pollMessages(): Promise<void> {
 		const latest = await api.listMessages(threadId);
 		messages = latest;
 		// Clear waiting indicator if a new assistant message arrived after we started waiting
-		if (waiting && latest.length > waitingSinceMessageCount &&
-			latest.slice(waitingSinceMessageCount).some((m: { role: string }) => m.role === "assistant")) {
+		if (
+			waiting &&
+			latest.length > waitingSinceMessageCount &&
+			latest.slice(waitingSinceMessageCount).some((m: { role: string }) => m.role === "assistant")
+		) {
 			waiting = false;
 		}
 	} catch (error) {

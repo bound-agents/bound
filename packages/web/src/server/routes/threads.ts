@@ -51,18 +51,24 @@ export function createThreadsRoutes(db: Database, defaultModel?: string): Hono {
 				.get() as { color: number } | null;
 			const nextColor = lastThread !== null ? (lastThread.color + 1) % 10 : 0;
 
-			insertRow(db, "threads", {
-				id: threadId,
-				user_id: "default_web_user",
-				interface: "web",
-				host_origin: "localhost:3000",
-				color: nextColor,
-				title: "",
-				summary: null,
-				created_at: now,
-				last_message_at: now,
-				deleted: 0,
-			}, siteId);
+			insertRow(
+				db,
+				"threads",
+				{
+					id: threadId,
+					user_id: "default_web_user",
+					interface: "web",
+					host_origin: "localhost:3000",
+					color: nextColor,
+					title: "",
+					summary: null,
+					created_at: now,
+					last_message_at: now,
+					modified_at: now,
+					deleted: 0,
+				},
+				siteId,
+			);
 
 			const thread = db.query("SELECT * FROM threads WHERE id = ?").get(threadId) as Thread;
 

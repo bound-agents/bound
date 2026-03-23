@@ -1,20 +1,26 @@
 // Task 3: bound start command
 // Full orchestrator bootstrap sequence
 
-import { mkdirSync, existsSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createAppContext } from "@bound/core";
 import { AgentLoop, Scheduler } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
 import { generateMCPCommands } from "@bound/agent";
 import { generateThreadTitle } from "@bound/agent";
+import { createAppContext, insertRow } from "@bound/core";
 import { createModelRouter } from "@bound/llm";
-import type { LLMBackend, LLMMessage, ModelBackendsConfig, BackendConfig, ToolDefinition } from "@bound/llm";
+import type {
+	BackendConfig,
+	LLMBackend,
+	LLMMessage,
+	ModelBackendsConfig,
+	ToolDefinition,
+} from "@bound/llm";
+import { createClusterFs, createSandbox } from "@bound/sandbox";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import { ensureKeypair } from "@bound/sync";
-import { createClusterFs, createSandbox } from "@bound/sandbox";
 import { createWebServer } from "@bound/web";
 
 export interface StartArgs {
@@ -36,10 +42,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	try {
 		appContext = createAppContext(resolve(configDir), dbPath);
 	} catch (error) {
-		console.error(
-			"Configuration error:",
-			error instanceof Error ? error.message : String(error),
-		);
+		console.error("Configuration error:", error instanceof Error ? error.message : String(error));
 		process.exit(1);
 	}
 
@@ -69,11 +72,26 @@ export async function runStart(args: StartArgs): Promise<void> {
 		const now = new Date().toISOString();
 		for (const [username, entry] of Object.entries(appContext.config.allowlist.users)) {
 			const userId = deterministicUUID(BOUND_NAMESPACE, username);
-			appContext.db.run(
-				`INSERT OR IGNORE INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted)
-				VALUES (?, ?, ?, ?, ?, 0)`,
-				[userId, entry.display_name, entry.discord_id ?? null, now, now],
-			);
+			// Check if user already exists before inserting (per R-U5)
+			const existingUser = appContext.db.query("SELECT id FROM users WHERE id = ?").get(userId) as {
+				id: string;
+			} | null;
+
+			if (!existingUser) {
+				insertRow(
+					appContext.db,
+					"users",
+					{
+						id: userId,
+						display_name: entry.display_name,
+						discord_id: entry.discord_id ?? null,
+						first_seen_at: now,
+						modified_at: now,
+						deleted: 0,
+					},
+					appContext.siteId,
+				);
+			}
 		}
 	}
 
@@ -115,6 +133,53 @@ export async function runStart(args: StartArgs): Promise<void> {
 			console.log(`[recovery] Reset ${staleRunning.length} stale running task(s) to pending`);
 		} else {
 			console.log("[recovery] No crashed tasks found");
+		}
+
+		// Scan for interrupted tool-use per R-E13
+		const interruptedThreads = appContext.db
+			.query(
+				`SELECT DISTINCT m.thread_id FROM messages m
+				 WHERE m.role IN ('tool_call', 'tool_result')
+				 AND NOT EXISTS (
+					SELECT 1 FROM messages m2
+					WHERE m2.thread_id = m.thread_id
+					AND m2.created_at > m.created_at
+					AND m2.role = 'assistant'
+				 )`,
+			)
+			.all() as Array<{ thread_id: string }>;
+
+		if (interruptedThreads.length > 0) {
+			const now = new Date().toISOString();
+			for (const { thread_id } of interruptedThreads) {
+				try {
+					insertRow(
+						appContext.db,
+						"messages",
+						{
+							id: randomUUID(),
+							thread_id: thread_id,
+							role: "system",
+							content: `Agent response was interrupted on host ${appContext.hostName}. The previous tool interaction may be incomplete.`,
+							model_id: null,
+							tool_name: null,
+							created_at: now,
+							modified_at: now,
+							host_origin: appContext.hostName,
+							deleted: 0,
+						},
+						appContext.siteId,
+					);
+				} catch (error) {
+					console.warn(
+						`[recovery] Failed to insert interrupted tool message for thread ${thread_id}:`,
+						error instanceof Error ? error.message : String(error),
+					);
+				}
+			}
+			console.log(
+				`[recovery] Inserted interruption notices for ${interruptedThreads.length} thread(s)`,
+			);
 		}
 	}
 
@@ -236,16 +301,18 @@ export async function runStart(args: StartArgs): Promise<void> {
 	console.log("Initializing LLM...");
 	const rawBackends = appContext.config.modelBackends;
 	const routerConfig: ModelBackendsConfig = {
-		backends: rawBackends.backends.map((b): BackendConfig => ({
-			id: b.id,
-			provider: b.provider,
-			model: b.model,
-			baseUrl: b.base_url,
-			contextWindow: b.context_window,
-			apiKey: b.api_key,
-			region: b.region,
-			profile: b.profile,
-		})),
+		backends: rawBackends.backends.map(
+			(b): BackendConfig => ({
+				id: b.id,
+				provider: b.provider,
+				model: b.model,
+				baseUrl: b.base_url,
+				contextWindow: b.context_window,
+				apiKey: b.api_key,
+				region: b.region,
+				profile: b.profile,
+			}),
+		),
 		default: rawBackends.default,
 	};
 
@@ -261,7 +328,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 		const ids = routerConfig.backends.map((b) => b.id).join(", ");
 		console.log(`[llm] Model router ready — backends: ${ids} (default: ${routerConfig.default})`);
 	} catch (error) {
-		console.warn(`[llm] Failed to create model router: ${error instanceof Error ? error.message : String(error)}`);
+		console.warn(
+			`[llm] Failed to create model router: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 
 	// 12. Web server
@@ -286,6 +355,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 			},
 			mcpClients: mcpClientsMap,
 			keyring,
+			siteId: appContext.siteId,
+			logger: appContext.logger,
 		});
 		await webServer.start();
 
@@ -309,7 +380,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 			try {
 				// Fetch thread history
 				const dbMessages = appContext.db
-					.query("SELECT role, content, tool_name FROM messages WHERE thread_id = ? ORDER BY created_at ASC")
+					.query(
+						"SELECT role, content, tool_name FROM messages WHERE thread_id = ? ORDER BY created_at ASC",
+					)
 					.all(thread_id) as Array<{ role: string; content: string; tool_name: string | null }>;
 
 				// Build LLM messages — tool_call and tool_result rows store JSON content
@@ -336,7 +409,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 					llmBackend = modelRouter.getDefault();
 				}
 				const activeModelId = selectedModelId || routerConfig.default;
-				console.log(`[agent] Calling LLM (backend=${activeModelId}) with ${llmMessages.length} messages`);
+				console.log(
+					`[agent] Calling LLM (backend=${activeModelId}) with ${llmMessages.length} messages`,
+				);
 
 				// Tool execution loop — runs until the LLM produces a text-only response
 				let responseText = "";
@@ -407,10 +482,21 @@ export async function runStart(args: StartArgs): Promise<void> {
 						// Persist the tool_call message
 						const toolCallMsgId = randomUUID();
 						const now = new Date().toISOString();
-						appContext.db.run(
-							`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin)
-							 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-							[toolCallMsgId, thread_id, "tool_call", toolCallContent, activeModelId, null, now, now, appContext.hostName],
+						insertRow(
+							appContext.db,
+							"messages",
+							{
+								id: toolCallMsgId,
+								thread_id: thread_id,
+								role: "tool_call",
+								content: toolCallContent,
+								model_id: activeModelId,
+								tool_name: null,
+								created_at: now,
+								modified_at: now,
+								host_origin: appContext.hostName,
+							},
+							appContext.siteId,
 						);
 
 						// Add to in-memory context for next LLM call
@@ -443,7 +529,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 									}
 									const result = await client.callTool(toolName, toolArgs);
 									toolResultContent = result.content;
-									console.log(`[agent] Tool result: ${toolResultContent.slice(0, 200)}${toolResultContent.length > 200 ? "..." : ""}`);
+									console.log(
+										`[agent] Tool result: ${toolResultContent.slice(0, 200)}${toolResultContent.length > 200 ? "..." : ""}`,
+									);
 								} catch (error) {
 									toolResultContent = `Error: ${error instanceof Error ? error.message : String(error)}`;
 									console.error(`[agent] Tool call failed: ${toolResultContent}`);
@@ -453,10 +541,21 @@ export async function runStart(args: StartArgs): Promise<void> {
 							// Persist the tool_result message
 							const toolResultMsgId = randomUUID();
 							const resultNow = new Date().toISOString();
-							appContext.db.run(
-								`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin)
-								 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-								[toolResultMsgId, thread_id, "tool_result", toolResultContent, activeModelId, tc.id, resultNow, resultNow, appContext.hostName],
+							insertRow(
+								appContext.db,
+								"messages",
+								{
+									id: toolResultMsgId,
+									thread_id: thread_id,
+									role: "tool_result",
+									content: toolResultContent,
+									model_id: activeModelId,
+									tool_name: tc.id,
+									created_at: resultNow,
+									modified_at: resultNow,
+									host_origin: appContext.hostName,
+								},
+								appContext.siteId,
 							);
 
 							// Add to in-memory context for next LLM call
@@ -468,7 +567,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 						}
 
 						// Loop again — feed results back to LLM
-						console.log(`[agent] Executed ${pendingToolCalls.length} tool call(s), continuing loop`);
+						console.log(
+							`[agent] Executed ${pendingToolCalls.length} tool call(s), continuing loop`,
+						);
 					}
 				}
 
@@ -476,10 +577,21 @@ export async function runStart(args: StartArgs): Promise<void> {
 					// Persist assistant response
 					const msgId = randomUUID();
 					const now = new Date().toISOString();
-					appContext.db.run(
-						`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-						[msgId, thread_id, "assistant", responseText, activeModelId, null, now, now, appContext.hostName],
+					insertRow(
+						appContext.db,
+						"messages",
+						{
+							id: msgId,
+							thread_id: thread_id,
+							role: "assistant",
+							content: responseText,
+							model_id: activeModelId,
+							tool_name: null,
+							created_at: now,
+							modified_at: now,
+							host_origin: appContext.hostName,
+						},
+						appContext.siteId,
 					);
 
 					console.log(`[agent] Response persisted (${responseText.length} chars)`);
@@ -510,10 +622,21 @@ export async function runStart(args: StartArgs): Promise<void> {
 				try {
 					const alertId = randomUUID();
 					const now = new Date().toISOString();
-					appContext.db.run(
-						`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-						[alertId, thread_id, "assistant", `Error: ${errorMsg}`, message.model_id || null, null, now, now, appContext.hostName],
+					insertRow(
+						appContext.db,
+						"messages",
+						{
+							id: alertId,
+							thread_id: thread_id,
+							role: "assistant",
+							content: `Error: ${errorMsg}`,
+							model_id: message.model_id || null,
+							tool_name: null,
+							created_at: now,
+							modified_at: now,
+							host_origin: appContext.hostName,
+						},
+						appContext.siteId,
 					);
 					const alertMsg = appContext.db.query("SELECT * FROM messages WHERE id = ?").get(alertId);
 					appContext.eventBus.emit("message:created", {
@@ -539,14 +662,30 @@ export async function runStart(args: StartArgs): Promise<void> {
 	const agentLoopFactory = (config: AgentLoopConfig): AgentLoop => {
 		let backend: LLMBackend;
 		try {
-			backend = modelRouter ? modelRouter.getBackend(config.modelId) : {
-				chat: async function* () {},
-				capabilities: () => ({ streaming: false, tool_use: false, system_prompt: false, prompt_caching: false, vision: false, max_context: 0 }),
-			};
+			backend = modelRouter
+				? modelRouter.getBackend(config.modelId)
+				: {
+						chat: async function* () {},
+						capabilities: () => ({
+							streaming: false,
+							tool_use: false,
+							system_prompt: false,
+							prompt_caching: false,
+							vision: false,
+							max_context: 0,
+						}),
+					};
 		} catch {
 			backend = modelRouter?.getDefault() ?? {
 				chat: async function* () {},
-				capabilities: () => ({ streaming: false, tool_use: false, system_prompt: false, prompt_caching: false, vision: false, max_context: 0 }),
+				capabilities: () => ({
+					streaming: false,
+					tool_use: false,
+					system_prompt: false,
+					prompt_caching: false,
+					vision: false,
+					max_context: 0,
+				}),
 			};
 		}
 
@@ -555,7 +694,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 	// 13. Discord (if configured)
 	console.log("Initializing Discord...");
-	let discordBot: Awaited<ReturnType<InstanceType<(typeof import("@bound/discord"))["DiscordBot"]>["start"]>> | null = null;
+	let discordBot: Awaited<
+		ReturnType<InstanceType<typeof import("@bound/discord")["DiscordBot"]>["start"]>
+	> | null = null;
 	const discordResult = appContext.optionalConfig.discord;
 	if (discordResult?.ok) {
 		const { shouldActivate, DiscordBot } = await import("@bound/discord");
@@ -596,7 +737,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 			syncLoopHandle = startSyncLoop(syncClient, syncConfig.sync_interval_seconds || 30);
 			console.log(`[sync] Sync loop started (${syncConfig.sync_interval_seconds}s interval)`);
 		} catch (error) {
-			console.warn(`[sync] Failed to start: ${error instanceof Error ? error.message : String(error)}`);
+			console.warn(
+				`[sync] Failed to start: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 	} else {
 		console.log("[sync] Not configured");
@@ -611,9 +754,13 @@ export async function runStart(args: StartArgs): Promise<void> {
 		try {
 			const { startOverlayScanLoop } = await import("@bound/sandbox");
 			overlayHandle = startOverlayScanLoop(appContext.db, appContext.siteId, overlayConfig.mounts);
-			console.log(`[overlay] Scanner started (${Object.keys(overlayConfig.mounts).length} mount(s))`);
+			console.log(
+				`[overlay] Scanner started (${Object.keys(overlayConfig.mounts).length} mount(s))`,
+			);
 		} catch (error) {
-			console.warn(`[overlay] Failed to start: ${error instanceof Error ? error.message : String(error)}`);
+			console.warn(
+				`[overlay] Failed to start: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 	} else {
 		console.log("[overlay] Not configured");

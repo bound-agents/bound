@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LLMMessage } from "@bound/llm";
 import type { Message } from "@bound/shared";
+import { buildCrossThreadDigest } from "./summary-extraction.js";
 
 export interface ContextParams {
 	db: Database;
@@ -10,6 +11,7 @@ export interface ContextParams {
 	taskId?: string;
 	userId: string;
 	currentModel?: string;
+	contextWindow?: number;
 	noHistory?: boolean;
 	configDir?: string;
 	hostName?: string;
@@ -78,7 +80,17 @@ const AVAILABLE_COMMANDS = [
 ] as const;
 
 export function assembleContext(params: ContextParams): LLMMessage[] {
-	const { db, threadId, userId, noHistory = false, configDir = "config", currentModel, hostName, siteId } = params;
+	const {
+		db,
+		threadId,
+		userId,
+		noHistory = false,
+		configDir = "config",
+		currentModel,
+		contextWindow = 8000,
+		hostName,
+		siteId,
+	} = params;
 
 	// Stage 1: MESSAGE_RETRIEVAL
 	const messages: Message[] = [];
@@ -269,16 +281,34 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 
 	// Stage 5: ANNOTATION
 	// Convert Message to LLMMessage format with annotations
-	const annotated: LLMMessage[] = sanitized.map((m) => {
-			const msg: LLMMessage = {
-				role: m.role as LLMMessage["role"],
-				content: m.content,
-				model_id: m.model_id || undefined,
-				host_origin: m.host_origin,
-			};
+	// Also detect model switches between consecutive assistant messages per spec R-U11
+	const annotated: LLMMessage[] = [];
+	let lastAssistantModel: string | null = null;
 
-			return msg;
-		});
+	for (let i = 0; i < sanitized.length; i++) {
+		const m = sanitized[i];
+
+		// Check for model switch on assistant messages
+		if (m.role === "assistant" && m.model_id) {
+			if (lastAssistantModel && lastAssistantModel !== m.model_id) {
+				// Inject model switch notification
+				annotated.push({
+					role: "system",
+					content: `Model switched from ${lastAssistantModel} to ${m.model_id}`,
+				});
+			}
+			lastAssistantModel = m.model_id;
+		}
+
+		const msg: LLMMessage = {
+			role: m.role as LLMMessage["role"],
+			content: m.content,
+			model_id: m.model_id || undefined,
+			host_origin: m.host_origin,
+		};
+
+		annotated.push(msg);
+	}
 
 	// Stage 6: ASSEMBLY
 	// Start with system prompt
@@ -320,11 +350,41 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	// Add message history
 	assembled.push(...annotated);
 
-	// Add volatile context at the end
+	// Add volatile context at the end per spec R-U30
 	if (!noHistory) {
+		const volatileLines: string[] = [];
+		volatileLines.push(`User ID: ${userId}, Thread ID: ${threadId}`);
+
+		// Include current model name
+		if (currentModel) {
+			volatileLines.push(`Current Model: ${currentModel}`);
+		}
+
+		// Include semantic memory entries
+		const semanticMemories = db
+			.query(
+				"SELECT key, value FROM semantic_memory WHERE deleted = 0 ORDER BY modified_at DESC LIMIT 10",
+			)
+			.all() as Array<{ key: string; value: string }>;
+
+		if (semanticMemories.length > 0) {
+			volatileLines.push("");
+			volatileLines.push("Semantic Memory:");
+			for (const mem of semanticMemories) {
+				volatileLines.push(`  ${mem.key}: ${mem.value}`);
+			}
+		}
+
+		// Include cross-thread digest
+		const crossThreadDigest = buildCrossThreadDigest(db, userId);
+		if (crossThreadDigest) {
+			volatileLines.push("");
+			volatileLines.push(crossThreadDigest);
+		}
+
 		assembled.push({
 			role: "system",
-			content: `User ID: ${userId}, Thread ID: ${threadId}`,
+			content: volatileLines.join("\n"),
 		});
 	}
 
@@ -335,7 +395,6 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		return sum + Math.ceil(contentLength / 4);
 	}, 0);
 
-	const contextWindow = 8000;
 	if (totalTokens > contextWindow) {
 		// Truncate history from front
 		const systemMessages = assembled.filter((m) => m.role === "system");

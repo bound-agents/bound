@@ -4,8 +4,8 @@
  */
 
 import type { Database } from "bun:sqlite";
-import type { KeyringConfig } from "@bound/shared";
 import type { MCPClient } from "@bound/agent";
+import type { KeyringConfig } from "@bound/shared";
 import { createSyncAuthMiddleware } from "@bound/sync";
 import { Hono } from "hono";
 

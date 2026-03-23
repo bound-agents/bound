@@ -54,12 +54,17 @@ export class AgentLoop {
 			// the AgentLoop. The sandbox's ClusterFs is already populated.
 
 			this.state = "ASSEMBLE_CONTEXT";
+			// Get context window from LLM backend capabilities
+			const capabilities = this.llmBackend.capabilities();
+			const contextWindow = capabilities.max_context || 8000;
+
 			const contextMessages = assembleContext({
 				db: this.ctx.db,
 				threadId: this.config.threadId,
 				taskId: this.config.taskId,
 				userId: this.config.userId,
 				currentModel: this.config.modelId,
+				contextWindow: contextWindow,
 				hostName: this.ctx.hostName,
 				siteId: this.ctx.siteId,
 			});

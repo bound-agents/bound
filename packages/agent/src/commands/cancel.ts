@@ -5,7 +5,11 @@ export const cancel: CommandDefinition = {
 	name: "cancel",
 	args: [
 		{ name: "task-id", required: false, description: "Task ID to cancel" },
-		{ name: "payload-match", required: false, description: "Cancel tasks whose payload contains this string" },
+		{
+			name: "payload-match",
+			required: false,
+			description: "Cancel tasks whose payload contains this string",
+		},
 	],
 	handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
 		try {

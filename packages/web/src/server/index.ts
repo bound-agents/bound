@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
-import type { TypedEventEmitter, KeyringConfig } from "@bound/shared";
 import type { MCPClient } from "@bound/agent";
+import type { KeyringConfig, Logger, TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { type ModelsConfig, type RoutesConfig, registerRoutes } from "./routes/index";
@@ -16,12 +16,14 @@ async function loadEmbeddedAssets(): Promise<AssetMap> {
 	}
 }
 
-export { type ModelsConfig };
+export type { ModelsConfig };
 
 export interface AppConfig {
 	modelsConfig?: ModelsConfig;
 	mcpClients?: Map<string, MCPClient>;
 	keyring?: KeyringConfig;
+	siteId?: string;
+	logger?: Logger;
 }
 
 export async function createApp(
@@ -68,6 +70,32 @@ export async function createApp(
 		app.route("/", routes.mcpProxy);
 	}
 
+	// Mount sync routes if siteId, keyring, and logger are available
+	if (
+		appConfig &&
+		"siteId" in appConfig &&
+		appConfig.siteId &&
+		appConfig.keyring &&
+		appConfig.logger
+	) {
+		try {
+			const { createSyncRoutes } = await import("@bound/sync");
+			const syncRoutes = createSyncRoutes(
+				db,
+				appConfig.siteId,
+				appConfig.keyring,
+				eventBus,
+				appConfig.logger,
+			);
+			app.route("/", syncRoutes);
+		} catch (error) {
+			console.warn(
+				"[web] Sync routes unavailable:",
+				error instanceof Error ? error.message : String(error),
+			);
+		}
+	}
+
 	// Serve static Svelte SPA assets
 	const assets = await loadEmbeddedAssets();
 	if (assets.size > 0) {
@@ -85,10 +113,7 @@ export async function createApp(
 			});
 		});
 	} else {
-		app.use(
-			"/*",
-			serveStatic({ root: "./dist/client", rewritePathRegex: /(?:\/)?index\.html/ }),
-		);
+		app.use("/*", serveStatic({ root: "./dist/client", rewritePathRegex: /(?:\/)?index\.html/ }));
 	}
 
 	return app;

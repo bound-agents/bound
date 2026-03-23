@@ -7,8 +7,8 @@
 import type { Database } from "bun:sqlite";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 import type { KeyringConfig } from "@bound/shared";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { signRequest } from "@bound/sync";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { MCPClient, ToolResult } from "./mcp-client";
 
 /**

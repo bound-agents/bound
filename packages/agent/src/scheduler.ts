@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
+import { insertRow } from "@bound/core";
 import type { Task } from "@bound/shared";
 import type { AgentLoop } from "./agent-loop";
 import { canRunHere, computeNextRunAt } from "./task-resolution";
@@ -14,9 +15,9 @@ const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 // Graduated quiescence tiers (idle duration in ms → multiplier)
 // Thresholds are the lower bound of each idle band
 const QUIESCENCE_TIERS: Array<{ threshold: number; multiplier: number }> = [
-	{ threshold: 0, multiplier: 2 },           // 0-1h idle: ×2
-	{ threshold: 3_600_000, multiplier: 3 },   // 1-4h idle: ×3
-	{ threshold: 14_400_000, multiplier: 5 },  // 4-12h idle: ×5
+	{ threshold: 0, multiplier: 2 }, // 0-1h idle: ×2
+	{ threshold: 3_600_000, multiplier: 3 }, // 1-4h idle: ×3
+	{ threshold: 14_400_000, multiplier: 5 }, // 4-12h idle: ×5
 	{ threshold: 43_200_000, multiplier: 10 }, // 12-24h idle: ×10
 ];
 
@@ -27,7 +28,7 @@ interface SchedulerConfig {
 
 export class Scheduler {
 	private running = false;
-	private intervalId: ReturnType<typeof setInterval> | null = null;
+	private intervalId: ReturnType<typeof setTimeout> | null = null;
 	private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 	private lastUserInteractionAt = new Date();
 	private eventDepth = 0;
@@ -55,10 +56,18 @@ export class Scheduler {
 			this.updateHeartbeats();
 		}, HEARTBEAT_INTERVAL);
 
-		// Start main scheduler loop
-		this.intervalId = setInterval(() => {
+		// Start main scheduler loop with dynamic quiescence-based interval
+		const scheduleTick = () => {
+			if (!this.running) return;
+
 			this.tick();
-		}, pollInterval);
+
+			// Recalculate interval based on quiescence and reset timer
+			const effectiveInterval = this.getEffectivePollInterval();
+			this.intervalId = setTimeout(scheduleTick, effectiveInterval);
+		};
+
+		this.intervalId = setTimeout(scheduleTick, pollInterval);
 
 		this.ctx.logger.info("Scheduler started");
 
@@ -75,7 +84,7 @@ export class Scheduler {
 		this.running = false;
 
 		if (this.intervalId) {
-			clearInterval(this.intervalId);
+			clearTimeout(this.intervalId);
 			this.intervalId = null;
 		}
 
@@ -255,6 +264,34 @@ export class Scheduler {
 					this.ctx.db
 						.query("UPDATE tasks SET status = 'failed', error = ? WHERE id = ?")
 						.run(errorMsg, task.id);
+
+					// Persist alert message per R-E15
+					if (task.thread_id) {
+						try {
+							const now = new Date().toISOString();
+							insertRow(
+								this.ctx.db,
+								"messages",
+								{
+									id: randomUUID(),
+									thread_id: task.thread_id,
+									role: "alert",
+									content: `Task ${task.id} failed: ${errorMsg}`,
+									model_id: null,
+									tool_name: null,
+									created_at: now,
+									modified_at: now,
+									host_origin: this.ctx.hostName,
+									deleted: 0,
+								},
+								this.ctx.siteId,
+							);
+						} catch (alertError) {
+							this.ctx.logger.error("Failed to persist task failure alert", {
+								error: alertError instanceof Error ? alertError.message : String(alertError),
+							});
+						}
+					}
 				}
 			} finally {
 				this.runningTasks.delete(task.id);
@@ -297,6 +334,16 @@ export class Scheduler {
 	getEffectivePollInterval(): number {
 		const now = new Date();
 		const inactivityMs = now.getTime() - this.lastUserInteractionAt.getTime();
+
+		// Check if any pending tasks have no_quiescence set
+		const noQuiescenceTasks = this.ctx.db
+			.query("SELECT COUNT(*) as count FROM tasks WHERE status = 'pending' AND no_quiescence = 1")
+			.get() as { count: number } | null;
+
+		// If any task requires immediate attention, use base interval
+		if (noQuiescenceTasks && noQuiescenceTasks.count > 0) {
+			return POLL_INTERVAL;
+		}
 
 		// Walk tiers from highest threshold down, pick the first that applies
 		let multiplier = 1;

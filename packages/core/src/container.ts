@@ -6,6 +6,7 @@ import { container, injectable, singleton } from "tsyringe";
 import { loadRequiredConfigs } from "./config-loader";
 import type { RequiredConfig } from "./config-loader";
 import { createDatabase } from "./database";
+import { applyMetricsSchema } from "./metrics-schema";
 import { applySchema } from "./schema";
 
 @injectable()
@@ -68,6 +69,7 @@ export function bootstrapContainer(configDir: string, dbPath: string) {
 	// Create and initialize database
 	const db = createDatabase(dbPath);
 	applySchema(db);
+	applyMetricsSchema(db);
 
 	// Register services
 	container.registerSingleton(DatabaseService);

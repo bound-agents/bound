@@ -6,7 +6,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Tool, Resource, Prompt } from "@modelcontextprotocol/sdk/types.js";
+import type { Prompt, Resource, Tool } from "@modelcontextprotocol/sdk/types.js";
 
 export interface MCPServerConfig {
 	name: string;
@@ -51,7 +51,9 @@ export class MCPClient {
 	async connect(): Promise<void> {
 		if (this.serverConfig.transport === "stdio") {
 			if (!this.serverConfig.command) {
-				throw new Error(`Server "${this.serverConfig.name}" requires a command for stdio transport`);
+				throw new Error(
+					`Server "${this.serverConfig.name}" requires a command for stdio transport`,
+				);
 			}
 			const transport = new StdioClientTransport({
 				command: this.serverConfig.command,

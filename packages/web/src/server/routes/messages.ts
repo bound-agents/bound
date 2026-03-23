@@ -80,21 +80,28 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 				| undefined;
 			const siteId = siteIdRow?.value ?? "unknown";
 
-			insertRow(db, "messages", {
-				id: messageId,
-				thread_id: threadId,
-				role: "user",
-				content: body.content,
-				model_id: body.model_id || null,
-				tool_name: null,
-				created_at: now,
-				modified_at: now,
-				host_origin: "localhost:3000",
-			}, siteId);
+			insertRow(
+				db,
+				"messages",
+				{
+					id: messageId,
+					thread_id: threadId,
+					role: "user",
+					content: body.content,
+					model_id: body.model_id || null,
+					tool_name: null,
+					created_at: now,
+					modified_at: now,
+					host_origin: "localhost:3000",
+				},
+				siteId,
+			);
 
 			const message = db.query("SELECT * FROM messages WHERE id = ?").get(messageId) as Message;
 
-			console.log(`[web] POST /api/threads/${threadId}/messages - message persisted (id=${messageId})`);
+			console.log(
+				`[web] POST /api/threads/${threadId}/messages - message persisted (id=${messageId})`,
+			);
 
 			eventBus.emit("message:created", {
 				message,

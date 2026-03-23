@@ -68,6 +68,7 @@ describe("Agent Loop End-to-End Integration", () => {
 				extracted_through: null,
 				created_at: now,
 				last_message_at: now,
+				modified_at: now,
 				deleted: 0,
 			},
 			siteId,
@@ -94,6 +95,7 @@ describe("Agent Loop End-to-End Integration", () => {
 		// Create mock LLMBackend that returns a tool_use for memorize
 		let callCount = 0;
 		const mockLLMBackend: LLMBackend = {
+			capabilities: () => ({ streaming: true, tool_use: true, system_prompt: true, prompt_caching: false, vision: false, max_context: 200000 }),
 			async *chat() {
 				callCount++;
 
@@ -223,6 +225,7 @@ describe("Agent Loop End-to-End Integration", () => {
 				extracted_through: null,
 				created_at: now,
 				last_message_at: now,
+				modified_at: now,
 				deleted: 0,
 			},
 			siteId,
@@ -249,6 +252,7 @@ describe("Agent Loop End-to-End Integration", () => {
 
 		// Mock LLM that returns simple text
 		const mockLLMBackend: LLMBackend = {
+			capabilities: () => ({ streaming: true, tool_use: true, system_prompt: true, prompt_caching: false, vision: false, max_context: 200000 }),
 			async *chat() {
 				yield {
 					type: "text",
@@ -340,6 +344,7 @@ describe("Agent Loop End-to-End Integration", () => {
 				extracted_through: null,
 				created_at: now,
 				last_message_at: now,
+				modified_at: now,
 				deleted: 0,
 			},
 			siteId,
@@ -365,6 +370,7 @@ describe("Agent Loop End-to-End Integration", () => {
 
 		// LLM that throws error
 		const mockLLMBackend: LLMBackend = {
+			capabilities: () => ({ streaming: true, tool_use: true, system_prompt: true, prompt_caching: false, vision: false, max_context: 200000 }),
 			// biome-ignore lint/correctness/useYield: generator throws before yield
 			async *chat() {
 				throw new Error("LLM service unavailable");

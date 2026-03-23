@@ -4,7 +4,7 @@ import type { CommandContext } from "@bound/sandbox";
 import type { Logger } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import { generateMCPCommands } from "../mcp-bridge";
-import type { MCPClient, MCPServerConfig, Tool, Resource, Prompt } from "../mcp-client";
+import type { MCPClient, MCPServerConfig, Prompt, Resource, Tool } from "../mcp-client";
 
 // Helper to create mock CommandContext
 function createMockCommandContext(overrides?: Partial<CommandContext>): CommandContext {
@@ -28,7 +28,12 @@ function createMockCommandContext(overrides?: Partial<CommandContext>): CommandC
  * Build a minimal MCPClient stand-in for bridge tests.
  * Avoids spawning real processes while still exercising the bridge logic.
  */
-function makeMockClient(config: MCPServerConfig, tools: Tool[], resources: Resource[], prompts: Prompt[]): MCPClient {
+function makeMockClient(
+	config: MCPServerConfig,
+	tools: Tool[],
+	resources: Resource[],
+	prompts: Prompt[],
+): MCPClient {
 	return {
 		getConfig: () => config,
 		isConnected: () => true,
@@ -44,7 +49,9 @@ function makeMockClient(config: MCPServerConfig, tools: Tool[], resources: Resou
 			content: `Content of ${uri}`,
 		}),
 		invokePrompt: async (name: string, args: Record<string, string>) => ({
-			messages: [{ role: "system", content: `Prompt ${name} invoked with args: ${JSON.stringify(args)}` }],
+			messages: [
+				{ role: "system", content: `Prompt ${name} invoked with args: ${JSON.stringify(args)}` },
+			],
 		}),
 		connect: async () => {},
 		disconnect: async () => {},
@@ -56,8 +63,16 @@ describe("MCP Bridge", () => {
 		const client = makeMockClient(
 			{ name: "test-server", transport: "stdio", command: "test" },
 			[
-				{ name: "greet", description: "Greet someone", inputSchema: { type: "object", properties: { name: { type: "string" } } } },
-				{ name: "calculate", description: "Calculate something", inputSchema: { type: "object", properties: { expr: { type: "string" } } } },
+				{
+					name: "greet",
+					description: "Greet someone",
+					inputSchema: { type: "object", properties: { name: { type: "string" } } },
+				},
+				{
+					name: "calculate",
+					description: "Calculate something",
+					inputSchema: { type: "object", properties: { expr: { type: "string" } } },
+				},
 			],
 			[],
 			[],
@@ -151,7 +166,14 @@ describe("MCP Bridge", () => {
 		const client = makeMockClient(
 			{ name: "test-server", transport: "stdio", command: "test" },
 			[],
-			[{ uri: "resource://test", name: "Test", description: "Test resource", mimeType: "text/plain" }],
+			[
+				{
+					uri: "resource://test",
+					name: "Test",
+					description: "Test resource",
+					mimeType: "text/plain",
+				},
+			],
 			[],
 		);
 
@@ -196,7 +218,13 @@ describe("MCP Bridge", () => {
 			{ name: "test-server", transport: "stdio", command: "test" },
 			[],
 			[],
-			[{ name: "greet", description: "Greet someone", arguments: [{ name: "name", description: "Person to greet" }] }],
+			[
+				{
+					name: "greet",
+					description: "Greet someone",
+					arguments: [{ name: "name", description: "Person to greet" }],
+				},
+			],
 		);
 
 		const clients = new Map([["test-server", client]]);
@@ -207,7 +235,10 @@ describe("MCP Bridge", () => {
 
 		if (promptCmd) {
 			const mockCtx = createMockCommandContext();
-			const result = await promptCmd.handler({ name: "test-server/greet", person: "Alice" }, mockCtx);
+			const result = await promptCmd.handler(
+				{ name: "test-server/greet", person: "Alice" },
+				mockCtx,
+			);
 			expect(result.exitCode).toBe(0);
 		}
 	});

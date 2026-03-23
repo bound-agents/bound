@@ -9,7 +9,7 @@ import { navigateTo } from "../lib/router";
 let threads: Thread[] = $state([]);
 let creating = $state(false);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
-let hoveredIdx = $state(-1);
+const hoveredIdx = $state(-1);
 
 async function createThread(): Promise<void> {
 	creating = true;

@@ -30,8 +30,8 @@ describe("Redaction", () => {
 
 		// Create thread
 		db.prepare(
-			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at) VALUES (?, ?, ?, ?, ?, ?)",
-		).run(threadId, userId, "web", "localhost", now, now);
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(threadId, userId, "web", "localhost", now, now, now);
 
 		// Create message
 		db.prepare(
@@ -61,8 +61,8 @@ describe("Redaction", () => {
 
 		// Create thread
 		db.prepare(
-			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at) VALUES (?, ?, ?, ?, ?, ?)",
-		).run(threadId, userId, "web", "localhost", now, now);
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(threadId, userId, "web", "localhost", now, now, now);
 
 		// Create multiple messages
 		const message1Id = randomUUID();
@@ -101,8 +101,8 @@ describe("Redaction", () => {
 
 		// Create thread
 		db.prepare(
-			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at) VALUES (?, ?, ?, ?, ?, ?)",
-		).run(threadId, userId, "web", "localhost", now, now);
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(threadId, userId, "web", "localhost", now, now, now);
 
 		// Create message
 		const messageId = randomUUID();
@@ -142,11 +142,11 @@ describe("Redaction", () => {
 
 		// Create threads
 		db.prepare(
-			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at) VALUES (?, ?, ?, ?, ?, ?)",
-		).run(threadId1, userId, "web", "localhost", now, now);
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(threadId1, userId, "web", "localhost", now, now, now);
 		db.prepare(
-			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at) VALUES (?, ?, ?, ?, ?, ?)",
-		).run(threadId2, userId, "web", "localhost", now, now);
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(threadId2, userId, "web", "localhost", now, now, now);
 
 		// Create memories
 		db.prepare(
