@@ -44,12 +44,19 @@ export function createThreadsRoutes(db: Database, defaultModel?: string): Hono {
 				| undefined;
 			const siteId = siteIdRow?.value ?? "unknown";
 
+			// Assign next palette color by cycling (0-9) per spec R-U18
+			// Pick up from the last thread's color so colors always advance
+			const lastThread = db
+				.query("SELECT color FROM threads ORDER BY created_at DESC LIMIT 1")
+				.get() as { color: number } | null;
+			const nextColor = lastThread !== null ? (lastThread.color + 1) % 10 : 0;
+
 			insertRow(db, "threads", {
 				id: threadId,
 				user_id: "default_web_user",
 				interface: "web",
 				host_origin: "localhost:3000",
-				color: Math.floor(Math.random() * 10),
+				color: nextColor,
 				title: "",
 				summary: null,
 				created_at: now,
