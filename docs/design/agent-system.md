@@ -223,7 +223,7 @@ config/
 
 ## Built-in Commands
 
-Commands are defined as `CommandDefinition` objects from `@bound/sandbox` and dispatched by the sandbox during tool execution. All 14 built-in commands are registered via `getAllCommands()` in `packages/agent/src/commands/index.ts`.
+Commands are defined as `CommandDefinition` objects from `@bound/sandbox` and dispatched by the sandbox during tool execution. All 15 built-in commands are registered via `getAllCommands()` in `packages/agent/src/commands/index.ts`.
 
 Each command returns a `CommandResult`:
 
@@ -261,11 +261,12 @@ Upsert a key-value pair in `semantic_memory`.
 |---|---|---|
 | `key` | yes | Memory key |
 | `value` | yes | Memory value |
+| `source` | no | Source of the memory entry (default: `"agent"`) |
 
-The row ID is computed as a deterministic UUID derived from the key using `BOUND_NAMESPACE`. If a non-deleted entry with the same key already exists, its `value` and `last_accessed_at` are updated; otherwise a new row is inserted.
+The row ID is computed as a deterministic UUID derived from the key using `BOUND_NAMESPACE`. If a non-deleted entry with the same key already exists, its `value`, `source`, and `last_accessed_at` are updated; otherwise a new row is inserted.
 
 ```
-memorize --key "project.language" --value "TypeScript"
+memorize --key "project.language" --value "TypeScript" --source "user:conversation-id"
 ```
 
 ---
@@ -276,12 +277,14 @@ Soft-delete a key from `semantic_memory`.
 
 | Argument | Required | Description |
 |---|---|---|
-| `key` | yes | Memory key to remove |
+| `key` | no | Memory key to remove |
+| `prefix` | no | Delete all entries whose key starts with this prefix |
 
-Looks up the entry by key. If found and not already deleted, calls `softDelete` (sets `deleted = 1`). Returns an error if the key does not exist.
+One of `key` or `prefix` must be provided. When `key` is supplied, looks up the entry by key and soft-deletes it if found. When `prefix` is supplied, all non-deleted entries whose key starts with that prefix are soft-deleted. Returns an error if neither is provided or if the key does not exist.
 
 ```
 forget --key "project.language"
+forget --prefix "config."
 ```
 
 ---
@@ -301,7 +304,8 @@ Create a new task in the `tasks` table. Exactly one of `--in`, `--every`, or `--
 | `no-history` | no | Flag to suppress message history during run |
 | `after` | no | Task ID this task depends on |
 | `require-success` | no | Block if the dependency failed |
-| `inject` | no | `results` or `all` (default: `results`) |
+| `inject` | no | `results`, `status`, or `file` (default: `results`) |
+| `alert-after` | no | Number of consecutive failures before an alert message is created |
 | `quiet` | no | Suppress default output |
 
 Returns the new task UUID on stdout.
@@ -325,12 +329,14 @@ Cancel a pending or running task.
 
 | Argument | Required | Description |
 |---|---|---|
-| `task-id` | yes | UUID of the task to cancel |
+| `task-id` | no | UUID of the task to cancel |
+| `payload-match` | no | Cancel all pending/claimed tasks whose payload contains this string |
 
-Sets `status = 'cancelled'` via `updateRow`. Returns an error if the task does not exist.
+One of `task-id` or `payload-match` must be provided. When `task-id` is supplied, that specific task is cancelled. When `payload-match` is supplied, all tasks in `pending` or `claimed` status whose `payload` field contains the match string are cancelled. Returns an error if neither is provided or if no matching task is found.
 
 ```
 cancel --task-id "550e8400-e29b-41d4-a716-446655440000"
+cancel --payload-match "cleanup:urgent"
 ```
 
 ---
