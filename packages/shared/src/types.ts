@@ -46,7 +46,7 @@ export interface Thread {
 	interface: "web" | "discord";
 	host_origin: string;
 	color: number;
-	title: string;
+	title: string | null;
 	summary: string | null;
 	summary_through: string | null;
 	summary_model_id: string | null;
@@ -64,7 +64,7 @@ export interface Message {
 	model_id: string | null;
 	tool_name: string | null;
 	created_at: string;
-	modified_at: string;
+	modified_at: string | null;
 	host_origin: string;
 }
 
@@ -72,10 +72,10 @@ export interface SemanticMemory {
 	id: string;
 	key: string;
 	value: string;
-	source: string;
+	source: string | null;
 	created_at: string;
 	modified_at: string;
-	last_accessed_at: string;
+	last_accessed_at: string | null;
 	deleted: number;
 }
 
@@ -83,7 +83,7 @@ export interface Task {
 	id: string;
 	type: TaskType;
 	status: TaskStatus;
-	trigger_spec: string | null;
+	trigger_spec: string;
 	payload: string | null;
 	thread_id: string | null;
 	claimed_by: string | null;
@@ -107,7 +107,7 @@ export interface Task {
 	result: string | null;
 	error: string | null;
 	created_at: string;
-	created_by: string;
+	created_by: string | null;
 	modified_at: string;
 	deleted: number;
 }
@@ -115,26 +115,26 @@ export interface Task {
 export interface AgentFile {
 	id: string;
 	path: string;
-	content: string;
+	content: string | null;
 	is_binary: number;
 	size_bytes: number;
 	created_at: string;
 	modified_at: string;
 	deleted: number;
-	created_by: string;
-	host_origin: string;
+	created_by: string | null;
+	host_origin: string | null;
 }
 
 export interface Host {
 	site_id: string;
 	host_name: string;
-	version: string;
+	version: string | null;
 	sync_url: string | null;
 	mcp_servers: string | null;
 	mcp_tools: string | null;
 	models: string | null;
 	overlay_root: string | null;
-	online_at: string;
+	online_at: string | null;
 	modified_at: string;
 }
 
@@ -143,7 +143,7 @@ export interface OverlayIndexEntry {
 	site_id: string;
 	path: string;
 	size_bytes: number;
-	content_hash: string;
+	content_hash: string | null;
 	indexed_at: string;
 	deleted: number;
 }
@@ -167,7 +167,7 @@ export interface SyncState {
 	peer_site_id: string;
 	last_received: number;
 	last_sent: number;
-	last_sync_at: string;
+	last_sync_at: string | null;
 	sync_errors: number;
 }
 
@@ -182,13 +182,13 @@ export interface Advisory {
 	status: AdvisoryStatus;
 	title: string;
 	detail: string;
-	action: string;
-	impact: string;
-	evidence: string;
+	action: string | null;
+	impact: string | null;
+	evidence: string | null;
 	proposed_at: string;
 	defer_until: string | null;
 	resolved_at: string | null;
-	created_by: string;
+	created_by: string | null;
 	modified_at: string;
 }
 

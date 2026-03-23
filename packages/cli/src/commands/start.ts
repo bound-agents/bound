@@ -44,7 +44,15 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 	// 2. Ensure Ed25519 keypair via @bound/sync
 	console.log("Initializing cryptography...");
-	await ensureKeypair(resolve("data"));
+	const keypair = await ensureKeypair(resolve("data"));
+	// Update site_id in host_meta to the value derived from the Ed25519 public key.
+	// On first startup, createAppContext generated a randomUUID placeholder because
+	// the keypair did not yet exist. Now that the keypair is available, replace it.
+	if (appContext.siteId !== keypair.siteId) {
+		appContext.db.run("UPDATE host_meta SET value = ? WHERE key = 'site_id'", [keypair.siteId]);
+		appContext.siteId = keypair.siteId;
+		appContext.logger.info("Updated site_id from Ed25519 public key", { siteId: keypair.siteId });
+	}
 
 	// 3. Create/open SQLite database and run migrations
 	console.log("Initializing database...");
