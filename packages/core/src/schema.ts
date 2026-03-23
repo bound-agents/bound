@@ -195,7 +195,8 @@ export function applySchema(db: Database): void {
 			defer_until TEXT,
 			resolved_at TEXT,
 			created_by  TEXT,
-			modified_at TEXT NOT NULL
+			modified_at TEXT NOT NULL,
+			deleted     INTEGER DEFAULT 0
 		) STRICT
 	`);
 

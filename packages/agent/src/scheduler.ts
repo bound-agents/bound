@@ -6,7 +6,7 @@ import { canRunHere, computeNextRunAt } from "./task-resolution";
 import type { AgentLoopConfig } from "./types";
 
 const LEASE_DURATION = 300000; // 5 minutes
-const EVICTION_TIMEOUT = 600000; // 10 minutes
+const EVICTION_TIMEOUT = 120_000; // 2 minutes
 const POLL_INTERVAL = 5000; // 5 seconds
 const MAX_INACTIVITY_SCALE = 5; // 5x poll interval when quiet
 const INACTIVITY_THRESHOLD = 3600000; // 1 hour
@@ -100,6 +100,16 @@ export class Scheduler {
 		if (!this.running) return;
 
 		try {
+			// Check for emergency stop
+			const emergencyStop = this.ctx.db
+				.query("SELECT value FROM cluster_config WHERE key = 'emergency_stop'")
+				.get() as { value: string } | undefined;
+
+			if (emergencyStop) {
+				this.ctx.logger.info("[scheduler] Emergency stop active, skipping tick");
+				return;
+			}
+
 			// Phase 0: Eviction
 			this.phase0Eviction();
 

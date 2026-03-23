@@ -8,6 +8,7 @@ import { cacheWarm } from "./cache-warm";
 import { cancel } from "./cancel";
 import { emit } from "./emit";
 import { forget } from "./forget";
+import { hostinfo } from "./hostinfo";
 import { memorize } from "./memorize";
 import { modelHint } from "./model-hint";
 import { purge } from "./purge";
@@ -34,6 +35,7 @@ export function getAllCommands(): CommandDefinition[] {
 		cacheEvict,
 		modelHint,
 		archive,
+		hostinfo,
 	];
 }
 
@@ -63,4 +65,5 @@ export {
 	cacheEvict,
 	modelHint,
 	archive,
+	hostinfo,
 };

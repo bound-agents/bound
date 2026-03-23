@@ -19,11 +19,13 @@ export const awaitCmd: CommandDefinition = {
 			const results: Record<string, Record<string, unknown>> = {};
 
 			// Poll until all tasks reach terminal state
-			let allTerminal = false;
-			let attempts = 0;
-			const maxAttempts = 60; // 1 minute with 1s sleep (not actually sleeping, just polling)
+			const POLL_INTERVAL_MS = 2000;
+			const MAX_TIMEOUT_MS = 300000; // 300 seconds
+			const startTime = Date.now();
 
-			while (!allTerminal && attempts < maxAttempts) {
+			let allTerminal = false;
+
+			while (!allTerminal) {
 				allTerminal = true;
 
 				for (const taskId of taskIds) {
@@ -47,10 +49,10 @@ export const awaitCmd: CommandDefinition = {
 				}
 
 				if (!allTerminal) {
-					attempts++;
-					// In real implementation, would sleep here
-					// For tests, we just do one iteration
-					break;
+					if (Date.now() - startTime >= MAX_TIMEOUT_MS) {
+						break;
+					}
+					await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
 				}
 			}
 

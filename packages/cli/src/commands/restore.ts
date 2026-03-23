@@ -12,7 +12,7 @@ export interface RestoreArgs {
 }
 
 export async function runRestore(args: RestoreArgs): Promise<void> {
-	const configDir = args.configDir || "config";
+	const configDir = args.configDir || "data";
 	const dbPath = resolve(configDir, "bound.db");
 
 	console.log(`Point-in-time recovery before: ${args.before}`);

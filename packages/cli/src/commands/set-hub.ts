@@ -11,7 +11,7 @@ export interface SetHubArgs {
 }
 
 export async function runSetHub(args: SetHubArgs): Promise<void> {
-	const configDir = args.configDir || "config";
+	const configDir = args.configDir || "data";
 	const dbPath = resolve(configDir, "bound.db");
 
 	console.log(`Setting cluster hub to: ${args.hostName}`);

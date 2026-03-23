@@ -9,7 +9,7 @@ export interface StopResumeArgs {
 }
 
 export async function runStop(args: StopResumeArgs): Promise<void> {
-	const configDir = args.configDir || "config";
+	const configDir = args.configDir || "data";
 	const dbPath = resolve(configDir, "bound.db");
 
 	console.log("Setting emergency stop flag...");
@@ -40,7 +40,7 @@ export async function runStop(args: StopResumeArgs): Promise<void> {
 }
 
 export async function runResume(args: StopResumeArgs): Promise<void> {
-	const configDir = args.configDir || "config";
+	const configDir = args.configDir || "data";
 	const dbPath = resolve(configDir, "bound.db");
 
 	console.log("Clearing emergency stop flag...");

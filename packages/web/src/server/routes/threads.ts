@@ -118,11 +118,21 @@ export function createThreadsRoutes(db: Database, defaultModel?: string): Hono {
 				);
 			}
 
-			const status = {
-				active: false,
-				state: null,
-				model: defaultModel ?? null,
-			};
+			const runningTask = db
+				.query("SELECT * FROM tasks WHERE thread_id = ? AND status = 'running' LIMIT 1")
+				.get(id) as Record<string, unknown> | undefined;
+
+			const status = runningTask
+				? {
+						active: true,
+						state: "running",
+						model: defaultModel ?? null,
+					}
+				: {
+						active: false,
+						state: null,
+						model: defaultModel ?? null,
+					};
 
 			return c.json(status);
 		} catch (error) {
