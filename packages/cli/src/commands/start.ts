@@ -8,8 +8,9 @@ import { createAppContext } from "@bound/core";
 import { AgentLoop, Scheduler } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
+import { generateMCPCommands } from "@bound/agent";
 import { OllamaDriver } from "@bound/llm";
-import type { LLMBackend } from "@bound/llm";
+import type { LLMBackend, LLMMessage, ToolDefinition } from "@bound/llm";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import { ensureKeypair } from "@bound/sync";
 import { createClusterFs, createSandbox } from "@bound/sandbox";
@@ -108,21 +109,23 @@ export async function runStart(args: StartArgs): Promise<void> {
 		}
 	}
 
-	// 8. MCP connections
+	// 8. MCP connections — build a named Map so the agent loop can look up clients by server name
 	console.log("Initializing MCP servers...");
-	const mcpClients: MCPClient[] = [];
+	const mcpClientsMap = new Map<string, MCPClient>();
 	{
 		const mcpResult = appContext.optionalConfig["mcp"];
 		if (mcpResult && mcpResult.ok) {
-			const mcpConfig = mcpResult.value as { servers: Array<{
-				name: string;
-				command?: string;
-				args?: string[];
-				url?: string;
-				transport: "stdio" | "sse";
-				allow_tools?: string[];
-				confirm?: string[];
-			}> };
+			const mcpConfig = mcpResult.value as {
+				servers: Array<{
+					name: string;
+					command?: string;
+					args?: string[];
+					url?: string;
+					transport: "stdio" | "sse";
+					allow_tools?: string[];
+					confirm?: string[];
+				}>;
+			};
 
 			console.log(`[mcp] Found ${mcpConfig.servers.length} server(s) in config`);
 
@@ -130,7 +133,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				try {
 					const client = new MCPClient(serverCfg);
 					await client.connect();
-					mcpClients.push(client);
+					mcpClientsMap.set(serverCfg.name, client);
 					const tools = await client.listTools();
 					console.log(
 						`[mcp] Connected to server: ${serverCfg.name} (${serverCfg.transport}), tools: ${tools.map((t) => t.name).join(", ") || "(none)"}`,
@@ -147,6 +150,39 @@ export async function runStart(args: StartArgs): Promise<void> {
 		}
 	}
 
+	// Generate MCP command definitions (for sandbox/scheduler use)
+	const mcpCommands = await generateMCPCommands(mcpClientsMap);
+	console.log(`[mcp] Generated ${mcpCommands.length} MCP command definition(s)`);
+
+	// Build LLM ToolDefinitions from discovered MCP tools
+	const mcpToolDefinitions: ToolDefinition[] = [];
+	for (const [serverName, client] of mcpClientsMap) {
+		if (!client.isConnected()) continue;
+		try {
+			const tools = await client.listTools();
+			for (const tool of tools) {
+				mcpToolDefinitions.push({
+					type: "function",
+					function: {
+						name: `${serverName}-${tool.name}`,
+						description: tool.description ?? "",
+						parameters: tool.inputSchema as Record<string, unknown>,
+					},
+				});
+			}
+		} catch (error) {
+			console.warn(
+				`[mcp] Failed to list tools for ${serverName}:`,
+				error instanceof Error ? error.message : String(error),
+			);
+		}
+	}
+	if (mcpToolDefinitions.length > 0) {
+		console.log(
+			`[mcp] Registered ${mcpToolDefinitions.length} tool(s) for LLM: ${mcpToolDefinitions.map((t) => t.function.name).join(", ")}`,
+		);
+	}
+
 	// 9. Sandbox setup
 	console.log("Setting up sandbox...");
 	let sandbox: Awaited<ReturnType<typeof createSandbox>> | null = null;
@@ -157,7 +193,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		});
 		sandbox = await createSandbox({
 			clusterFs,
-			commands: [],
+			commands: mcpCommands,
 		});
 		console.log("[sandbox] Sandbox ready");
 	} catch (error) {
@@ -239,34 +275,157 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 			try {
 				// Fetch thread history
-				const messages = appContext.db
-					.query("SELECT role, content FROM messages WHERE thread_id = ? ORDER BY created_at ASC")
-					.all(thread_id) as Array<{ role: string; content: string }>;
+				const dbMessages = appContext.db
+					.query("SELECT role, content, tool_name FROM messages WHERE thread_id = ? ORDER BY created_at ASC")
+					.all(thread_id) as Array<{ role: string; content: string; tool_name: string | null }>;
 
-				// Build LLM messages
-				const llmMessages = messages.map((m) => ({
-					role: m.role as "user" | "assistant",
-					content: m.content,
-				}));
+				// Build LLM messages — tool_call and tool_result rows store JSON content
+				const llmMessages: LLMMessage[] = dbMessages.map((m) => {
+					if (m.role === "tool_call" || m.role === "tool_result") {
+						return {
+							role: m.role as "tool_call" | "tool_result",
+							content: m.content,
+							tool_use_id: m.tool_name ?? undefined,
+						};
+					}
+					return {
+						role: m.role as "user" | "assistant" | "system",
+						content: m.content,
+					};
+				});
 
 				console.log(`[agent] Calling LLM with ${llmMessages.length} messages`);
 
-				// Stream response from LLM
+				// Tool execution loop — runs until the LLM produces a text-only response
 				let responseText = "";
-				const stream = llmDriver.chat({
-					model: defaultBackend.model,
-					messages: llmMessages,
-				});
+				let continueLoop = true;
 
-				for await (const chunk of stream) {
-					if (chunk.type === "text") {
-						responseText += chunk.content;
-					} else if (chunk.type === "error") {
-						console.error(`[agent] LLM error: ${chunk.error}`);
-						responseText = `Error from LLM: ${chunk.error}`;
-						break;
-					} else if (chunk.type === "done") {
-						console.log(`[agent] LLM done: ${chunk.usage.input_tokens} in, ${chunk.usage.output_tokens} out`);
+				while (continueLoop) {
+					// Accumulate tool call data across stream chunks
+					const pendingToolCalls: Array<{ id: string; name: string; argsJson: string }> = [];
+					// Map from id -> accumulated partial_json
+					const argsAccumulator = new Map<string, string>();
+					let currentText = "";
+
+					const stream = llmDriver.chat({
+						model: defaultBackend.model,
+						messages: llmMessages,
+						tools: mcpToolDefinitions.length > 0 ? mcpToolDefinitions : undefined,
+					});
+
+					for await (const chunk of stream) {
+						if (chunk.type === "text") {
+							currentText += chunk.content;
+						} else if (chunk.type === "tool_use_start") {
+							// Register new tool call being built
+							argsAccumulator.set(chunk.id, "");
+						} else if (chunk.type === "tool_use_args") {
+							// Accumulate partial JSON for this tool call
+							const existing = argsAccumulator.get(chunk.id) ?? "";
+							argsAccumulator.set(chunk.id, existing + chunk.partial_json);
+						} else if (chunk.type === "tool_use_end") {
+							// Finalise the tool call entry
+							const fullArgs = argsAccumulator.get(chunk.id) ?? "{}";
+							// The id emitted by OllamaDriver is the tool function name; name is also available
+							// from tool_use_start. We stored it as the id, so use chunk.id as both.
+							pendingToolCalls.push({ id: chunk.id, name: chunk.id, argsJson: fullArgs });
+						} else if (chunk.type === "error") {
+							console.error(`[agent] LLM error: ${chunk.error}`);
+							currentText = `Error from LLM: ${chunk.error}`;
+							break;
+						} else if (chunk.type === "done") {
+							console.log(
+								`[agent] LLM done: ${chunk.usage.input_tokens} in, ${chunk.usage.output_tokens} out`,
+							);
+						}
+					}
+
+					if (pendingToolCalls.length === 0) {
+						// No tool calls — the LLM is done
+						responseText = currentText;
+						continueLoop = false;
+					} else {
+						// The assistant turn that requested tool calls
+						const toolCallContent = JSON.stringify(
+							pendingToolCalls.map((tc) => ({
+								type: "tool_use",
+								id: tc.id,
+								name: tc.name,
+								input: (() => {
+									try {
+										return JSON.parse(tc.argsJson);
+									} catch {
+										return {};
+									}
+								})(),
+							})),
+						);
+
+						// Persist the tool_call message
+						const toolCallMsgId = randomUUID();
+						const now = new Date().toISOString();
+						appContext.db.run(
+							`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin)
+							 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+							[toolCallMsgId, thread_id, "tool_call", toolCallContent, defaultBackend.id, null, now, now, appContext.hostName],
+						);
+
+						// Add to in-memory context for next LLM call
+						llmMessages.push({
+							role: "tool_call",
+							content: toolCallContent,
+						});
+
+						// Execute each tool call
+						for (const tc of pendingToolCalls) {
+							// Name format is "{serverName}-{toolName}" (e.g. "metacog-become")
+							const dashIdx = tc.name.indexOf("-");
+							const serverName = dashIdx >= 0 ? tc.name.slice(0, dashIdx) : tc.name;
+							const toolName = dashIdx >= 0 ? tc.name.slice(dashIdx + 1) : tc.name;
+
+							console.log(`[agent] Calling MCP tool: ${tc.name}`);
+
+							let toolResultContent: string;
+							const client = mcpClientsMap.get(serverName);
+							if (!client) {
+								toolResultContent = `Error: No MCP server named "${serverName}"`;
+								console.warn(`[agent] Unknown MCP server: ${serverName}`);
+							} else {
+								try {
+									let toolArgs: Record<string, unknown> = {};
+									try {
+										toolArgs = JSON.parse(tc.argsJson);
+									} catch {
+										// leave as empty object
+									}
+									const result = await client.callTool(toolName, toolArgs);
+									toolResultContent = result.content;
+									console.log(`[agent] Tool result: ${toolResultContent.slice(0, 200)}${toolResultContent.length > 200 ? "..." : ""}`);
+								} catch (error) {
+									toolResultContent = `Error: ${error instanceof Error ? error.message : String(error)}`;
+									console.error(`[agent] Tool call failed: ${toolResultContent}`);
+								}
+							}
+
+							// Persist the tool_result message
+							const toolResultMsgId = randomUUID();
+							const resultNow = new Date().toISOString();
+							appContext.db.run(
+								`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin)
+								 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+								[toolResultMsgId, thread_id, "tool_result", toolResultContent, defaultBackend.id, tc.id, resultNow, resultNow, appContext.hostName],
+							);
+
+							// Add to in-memory context for next LLM call
+							llmMessages.push({
+								role: "tool_result",
+								content: toolResultContent,
+								tool_use_id: tc.id,
+							});
+						}
+
+						// Loop again — feed results back to LLM
+						console.log(`[agent] Executed ${pendingToolCalls.length} tool call(s), continuing loop`);
 					}
 				}
 
@@ -355,7 +514,7 @@ Press Ctrl+C to stop.
 			console.log("\nShutting down gracefully...");
 			if (schedulerHandle) schedulerHandle.stop();
 			// Disconnect MCP clients
-			for (const client of mcpClients) {
+			for (const [, client] of mcpClientsMap) {
 				try {
 					await client.disconnect();
 				} catch (_err) {
@@ -369,7 +528,7 @@ Press Ctrl+C to stop.
 		process.on("SIGTERM", async () => {
 			console.log("\nTerminating...");
 			if (schedulerHandle) schedulerHandle.stop();
-			for (const client of mcpClients) {
+			for (const [, client] of mcpClientsMap) {
 				try {
 					await client.disconnect();
 				} catch (_err) {
