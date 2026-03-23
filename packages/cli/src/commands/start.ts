@@ -6,6 +6,8 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { createAppContext } from "@bound/core";
 import { OllamaDriver } from "@bound/llm";
+import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import { ensureKeypair } from "@bound/sync";
 import { createWebServer } from "@bound/web";
 
 export interface StartArgs {
@@ -36,7 +38,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 	// 2. Ensure Ed25519 keypair via @bound/sync
 	console.log("Initializing cryptography...");
-	// TODO: ensureKeypair() from @bound/sync
+	await ensureKeypair(resolve("data"));
 
 	// 3. Create/open SQLite database and run migrations
 	console.log("Initializing database...");
@@ -48,11 +50,32 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 	// 5. User seeding
 	console.log("Seeding users from allowlist...");
-	// TODO: Seed users with deterministic UUIDs
+	{
+		const now = new Date().toISOString();
+		for (const [username, entry] of Object.entries(appContext.config.allowlist.users)) {
+			const userId = deterministicUUID(BOUND_NAMESPACE, username);
+			appContext.db.run(
+				`INSERT OR IGNORE INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted)
+				VALUES (?, ?, ?, ?, ?, 0)`,
+				[userId, entry.display_name, entry.discord_id ?? null, now, now],
+			);
+		}
+	}
 
 	// 6. Host registration
 	console.log("Registering host...");
-	// TODO: Upsert host entry in hosts table
+	{
+		const now = new Date().toISOString();
+		appContext.db.run(
+			`INSERT INTO hosts (site_id, host_name, online_at, modified_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT(site_id) DO UPDATE SET
+				host_name = excluded.host_name,
+				online_at = excluded.online_at,
+				modified_at = excluded.modified_at`,
+			[appContext.siteId, appContext.hostName, now, now],
+		);
+	}
 
 	// 7. Crash recovery scan
 	console.log("Scanning for crash recovery...");

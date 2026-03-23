@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import { insertRow } from "@bound/core";
 import type { Message, TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
 
@@ -74,15 +75,22 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 			const messageId = randomUUID();
 			const now = new Date().toISOString();
 
-			db.run(
-				`
-				INSERT INTO messages (
-					id, thread_id, role, content, model_id, tool_name,
-					created_at, modified_at, host_origin
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`,
-				[messageId, threadId, "user", body.content, null, null, now, now, "localhost:3000"],
-			);
+			const siteIdRow = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as
+				| { value: string }
+				| undefined;
+			const siteId = siteIdRow?.value ?? "unknown";
+
+			insertRow(db, "messages", {
+				id: messageId,
+				thread_id: threadId,
+				role: "user",
+				content: body.content,
+				model_id: null,
+				tool_name: null,
+				created_at: now,
+				modified_at: now,
+				host_origin: "localhost:3000",
+			}, siteId);
 
 			const message = db.query("SELECT * FROM messages WHERE id = ?").get(messageId) as Message;
 

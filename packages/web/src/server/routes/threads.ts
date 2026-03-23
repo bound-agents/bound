@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import { insertRow } from "@bound/core";
 import type { Thread } from "@bound/shared";
 import { Hono } from "hono";
 
@@ -38,26 +39,23 @@ export function createThreadsRoutes(db: Database, defaultModel?: string): Hono {
 
 			console.log(`[web] POST /api/threads - creating thread ${threadId}`);
 
-			db.run(
-				`
-				INSERT INTO threads (
-					id, user_id, interface, host_origin, color, title,
-					summary, created_at, last_message_at, deleted
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`,
-				[
-					threadId,
-					"default_web_user",
-					"web",
-					"localhost:3000",
-					Math.floor(Math.random() * 10),
-					"New Thread",
-					null,
-					now,
-					now,
-					0,
-				],
-			);
+			const siteIdRow = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as
+				| { value: string }
+				| undefined;
+			const siteId = siteIdRow?.value ?? "unknown";
+
+			insertRow(db, "threads", {
+				id: threadId,
+				user_id: "default_web_user",
+				interface: "web",
+				host_origin: "localhost:3000",
+				color: Math.floor(Math.random() * 10),
+				title: "New Thread",
+				summary: null,
+				created_at: now,
+				last_message_at: now,
+				deleted: 0,
+			}, siteId);
 
 			const thread = db.query("SELECT * FROM threads WHERE id = ?").get(threadId) as Thread;
 
