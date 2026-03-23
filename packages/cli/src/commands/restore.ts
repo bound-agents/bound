@@ -1,14 +1,25 @@
-// Task 4: boundctl restore command
-// Point-in-time recovery
-
 import { resolve } from "node:path";
-import Database from "better-sqlite3";
+import { Database } from "bun:sqlite";
+
+const APPEND_ONLY_TABLES = new Set(["messages"]);
 
 export interface RestoreArgs {
 	before: string;
 	preview?: boolean;
 	tables?: string[];
 	configDir?: string;
+}
+
+interface ChangeLogRow {
+	table_name: string;
+	row_id: string;
+	timestamp: string;
+	row_data: string;
+}
+
+interface AffectedRow {
+	table_name: string;
+	row_id: string;
 }
 
 export async function runRestore(args: RestoreArgs): Promise<void> {
@@ -22,29 +33,148 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 	}
 
 	try {
-		// Open database
 		const db = new Database(dbPath);
 
-		// Parse timestamp
-		const timestamp = new Date(args.before);
-		if (Number.isNaN(timestamp.getTime())) {
+		const safeTimestamp = new Date(args.before);
+		if (Number.isNaN(safeTimestamp.getTime())) {
 			console.error("Invalid timestamp format. Use ISO 8601 (e.g., 2024-01-01T12:00:00Z)");
 			process.exit(1);
 		}
 
-		console.log(`Restoring to state before: ${timestamp.toISOString()}`);
+		const safeIso = safeTimestamp.toISOString();
+		console.log(`Restoring to state before: ${safeIso}\n`);
 
-		// TODO: Implement restore logic per spec §12.8
-		// - Scan changelog for affected rows
-		// - Revert synced rows to state before timestamp
-		// - Handle both local and synced rows
+		// Step 1: Find all unique (table_name, row_id) pairs that have ANY
+		// change_log entry AFTER the safe timestamp.
+		const affectedRows = db
+			.query(
+				`SELECT DISTINCT table_name, row_id
+				FROM change_log
+				WHERE timestamp > ?
+				ORDER BY table_name, row_id`,
+			)
+			.all(safeIso) as AffectedRow[];
 
-		if (!args.preview) {
-			// TODO: Execute restore
+		// Filter by --tables if provided, and skip append-only tables
+		const tableFilter = args.tables && args.tables.length > 0 ? new Set(args.tables) : null;
 
-			console.log("Restore completed successfully.");
+		const candidates = affectedRows.filter((r) => {
+			if (APPEND_ONLY_TABLES.has(r.table_name)) {
+				return false;
+			}
+			if (tableFilter && !tableFilter.has(r.table_name)) {
+				return false;
+			}
+			return true;
+		});
+
+		if (candidates.length === 0) {
+			console.log("No restorable rows affected after the given timestamp.");
+			db.close();
+			return;
+		}
+
+		console.log(`Found ${candidates.length} affected row(s) across tables.\n`);
+
+		// Read the site_id from host_meta for change_log entries
+		const siteIdRow = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as
+			| { value: string }
+			| null;
+		const siteId = siteIdRow?.value ?? "restore-cli";
+
+		let restoredCount = 0;
+		let tombstonedCount = 0;
+
+		const processRows = () => {
+			for (const { table_name, row_id } of candidates) {
+				// Step 2a: Find the latest change_log entry at or before the safe timestamp
+				const priorEntry = db
+					.query(
+						`SELECT table_name, row_id, timestamp, row_data
+						FROM change_log
+						WHERE table_name = ? AND row_id = ? AND timestamp <= ?
+						ORDER BY seq DESC
+						LIMIT 1`,
+					)
+					.get(table_name, row_id, safeIso) as ChangeLogRow | null;
+
+				if (priorEntry) {
+					// Row existed before safe timestamp — restore to that state
+					const rowData = JSON.parse(priorEntry.row_data) as Record<string, unknown>;
+
+					if (args.preview) {
+						console.log(`  RESTORE ${table_name}.${row_id} -> snapshot at ${priorEntry.timestamp}`);
+					} else {
+						const columns = Object.keys(rowData);
+						const placeholders = columns.map(() => "?").join(", ");
+						const updateClause = columns
+							.filter((c) => c !== "id")
+							.map((c) => `${c} = excluded.${c}`)
+							.join(", ");
+
+						const values = columns.map((c) => {
+							const v = rowData[c];
+							return v === null || v === undefined ? null : v;
+						});
+
+						db.query(
+							`INSERT INTO ${table_name} (${columns.join(", ")})
+							VALUES (${placeholders})
+							ON CONFLICT(id) DO UPDATE SET ${updateClause}`,
+						).run(...(values as Array<string | number | null>));
+
+						// Write change_log entry for outbox compliance
+						const now = new Date().toISOString();
+						db.query(
+							`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
+							VALUES (?, ?, ?, ?, ?)`,
+						).run(table_name, row_id, siteId, now, JSON.stringify(rowData));
+					}
+					restoredCount++;
+				} else {
+					// Row was created after the safe timestamp — tombstone it
+					if (args.preview) {
+						console.log(`  TOMBSTONE ${table_name}.${row_id} (created after safe timestamp)`);
+					} else {
+						const now = new Date().toISOString();
+						db.query(`UPDATE ${table_name} SET deleted = 1, modified_at = ? WHERE id = ?`).run(
+							now,
+							row_id,
+						);
+
+						// Fetch updated row for change_log snapshot
+						const deletedRow = db.query(`SELECT * FROM ${table_name} WHERE id = ?`).get(row_id) as
+							| Record<string, unknown>
+							| null;
+
+						if (deletedRow) {
+							db.query(
+								`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
+								VALUES (?, ?, ?, ?, ?)`,
+							).run(table_name, row_id, siteId, now, JSON.stringify(deletedRow));
+						}
+					}
+					tombstonedCount++;
+				}
+			}
+		};
+
+		if (args.preview) {
+			processRows();
+			console.log(
+				`\nPreview summary: ${restoredCount} would restore, ${tombstonedCount} would tombstone.`,
+			);
+			console.log("Run without --preview to execute.");
 		} else {
-			console.log("Preview complete. Run without --preview to execute.");
+			db.exec("BEGIN IMMEDIATE");
+			try {
+				processRows();
+				db.exec("COMMIT");
+			} catch (txError) {
+				db.exec("ROLLBACK");
+				throw txError;
+			}
+			console.log(`Restore completed: ${restoredCount} restored, ${tombstonedCount} tombstoned.`);
 		}
 
 		db.close();

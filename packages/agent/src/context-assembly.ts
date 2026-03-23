@@ -93,20 +93,110 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	// Stage 2: PURGE_SUBSTITUTION
 	// Find any purge messages and replace targeted IDs with summaries
 	const purgeMessages = messages.filter((m) => m.role === "purge");
-	// For now, just track that we have them - actual implementation in Phase 5
-	const replacedIds = new Set<string>();
+	const purgeIdToSummary = new Map<string, string>();
+	const purgeGroups: Array<{ ids: Set<string>; summary: string }> = [];
+
 	for (const purgeMsg of purgeMessages) {
-		// Parse content as JSON to get target IDs
 		try {
 			const purgeData = JSON.parse(purgeMsg.content);
-			if (purgeData.target_ids) {
-				for (const id of purgeData.target_ids) {
-					replacedIds.add(id);
+			const targetIds: string[] = purgeData.target_ids || [];
+			const summary: string = purgeData.summary || "Messages purged from conversation";
+
+			if (targetIds.length > 0) {
+				const group = { ids: new Set(targetIds), summary };
+				purgeGroups.push(group);
+
+				for (const id of targetIds) {
+					purgeIdToSummary.set(id, summary);
 				}
 			}
 		} catch {
 			// Ignore parse errors
 		}
+	}
+
+	// Build a map of tool_call IDs to their paired tool_result IDs
+	const toolCallToPair = new Map<string, string>();
+	const toolResultToPair = new Map<string, string>();
+
+	for (let i = 0; i < messages.length; i++) {
+		const msg = messages[i];
+		if (msg.role === "tool_call") {
+			// Find the next tool_result
+			for (let j = i + 1; j < messages.length; j++) {
+				if (messages[j].role === "tool_result") {
+					toolCallToPair.set(msg.id, messages[j].id);
+					toolResultToPair.set(messages[j].id, msg.id);
+					break;
+				}
+			}
+		}
+	}
+
+	// Expand purge groups to include paired tool messages
+	for (const group of purgeGroups) {
+		const additionalIds = new Set<string>();
+		for (const id of Array.from(group.ids)) {
+			// If this is a tool_call, include its paired tool_result
+			const pairedResult = toolCallToPair.get(id);
+			if (pairedResult && !group.ids.has(pairedResult)) {
+				additionalIds.add(pairedResult);
+			}
+			// If this is a tool_result, include its paired tool_call
+			const pairedCall = toolResultToPair.get(id);
+			if (pairedCall && !group.ids.has(pairedCall)) {
+				additionalIds.add(pairedCall);
+			}
+		}
+		// Add the additional IDs to the group
+		for (const id of Array.from(additionalIds)) {
+			group.ids.add(id);
+			purgeIdToSummary.set(id, group.summary);
+		}
+	}
+
+	// Build the list of messages to process, replacing purge groups with summaries
+	const messagesAfterPurge: Message[] = [];
+	const processedPurgeGroups = new Set<number>();
+	const purgeMessageIds = new Set(purgeMessages.map((m) => m.id));
+
+	for (let i = 0; i < messages.length; i++) {
+		const msg = messages[i];
+
+		// Skip purge messages themselves
+		if (purgeMessageIds.has(msg.id)) {
+			continue;
+		}
+
+		// Check if this message is part of a purge group
+		const purgedSummary = purgeIdToSummary.get(msg.id);
+		if (purgedSummary) {
+			// Find which purge group this belongs to
+			const groupIndex = purgeGroups.findIndex((g) => g.ids.has(msg.id));
+			if (groupIndex !== -1 && !processedPurgeGroups.has(groupIndex)) {
+				// This is the first message in this purge group - replace it with a summary
+				const group = purgeGroups[groupIndex];
+				processedPurgeGroups.add(groupIndex);
+
+				// Create a system message with the purge summary
+				messagesAfterPurge.push({
+					id: `purge-summary-${groupIndex}`,
+					thread_id: threadId,
+					role: "system",
+					content: `(purged ${group.ids.size} messages) ${group.summary}`,
+					model_id: null,
+					tool_name: null,
+					created_at: msg.created_at,
+					modified_at: msg.modified_at,
+					host_origin: "local",
+				});
+			}
+			// Skip this message (and all subsequent messages in the same purge group)
+			continue;
+		}
+
+		// Not purged - include it
+		messagesAfterPurge.push(msg);
 	}
 
 	// Stage 3: TOOL_PAIR_SANITIZATION
@@ -115,7 +205,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	let inActiveTool = false;
 	let lastToolId = "";
 
-	for (const msg of messages) {
+	for (const msg of messagesAfterPurge) {
 		if (msg.role === "tool_call") {
 			inActiveTool = true;
 			lastToolId = msg.id;
@@ -179,9 +269,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 
 	// Stage 5: ANNOTATION
 	// Convert Message to LLMMessage format with annotations
-	const annotated: LLMMessage[] = sanitized
-		.filter((m) => !replacedIds.has(m.id))
-		.map((m) => {
+	const annotated: LLMMessage[] = sanitized.map((m) => {
 			const msg: LLMMessage = {
 				role: m.role as LLMMessage["role"],
 				content: m.content,

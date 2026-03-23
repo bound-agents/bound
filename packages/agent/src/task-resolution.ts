@@ -176,7 +176,7 @@ export function isDependencySatisfied(db: Database, task: Task): boolean {
 	return true;
 }
 
-export function canRunHere(db: Database, task: Task, hostName: string, _siteId: string): boolean {
+export function canRunHere(db: Database, task: Task, hostName: string, siteId: string): boolean {
 	// Check dependency satisfaction
 	if (!isDependencySatisfied(db, task)) {
 		return false;
@@ -188,8 +188,32 @@ export function canRunHere(db: Database, task: Task, hostName: string, _siteId: 
 			const requires = JSON.parse(task.requires);
 			if (typeof requires === "object" && requires !== null) {
 				// Check if this host matches the requirements
-				// For Phase 4, we do a simple string match on host_name
-				if (typeof requires.host === "string" && requires.host !== hostName) {
+				if (requires.host !== undefined) {
+					const hostReq = requires.host;
+					if (typeof hostReq === "string") {
+						// Simple string match or glob pattern
+						if (hostReq.includes("*")) {
+							// Convert glob to regex: * becomes .*
+							const pattern = new RegExp(`^${hostReq.replace(/\*/g, ".*")}$`);
+							if (!pattern.test(hostName)) {
+								return false;
+							}
+						} else {
+							// Exact match
+							if (hostReq !== hostName) {
+								return false;
+							}
+						}
+					} else if (Array.isArray(hostReq)) {
+						// Array of hosts — match if hostName is in the array
+						if (!hostReq.includes(hostName)) {
+							return false;
+						}
+					}
+				}
+
+				// Check site_id requirement
+				if (typeof requires.site_id === "string" && requires.site_id !== siteId) {
 					return false;
 				}
 			}

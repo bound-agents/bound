@@ -123,6 +123,9 @@ export function startOverlayScanLoop(
 ): { stop: () => void } {
 	let stopped = false;
 
+	// Run initial scan immediately at startup
+	scanOverlayIndex(db, siteId, overlayMounts);
+
 	const interval = setInterval(() => {
 		if (!stopped) {
 			scanOverlayIndex(db, siteId, overlayMounts);

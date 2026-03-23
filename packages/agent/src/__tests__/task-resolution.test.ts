@@ -283,6 +283,143 @@ describe("task-resolution", () => {
 			// Should succeed on matching host
 			expect(canRunHere(db, task, "specific-host", randomUUID())).toBe(true);
 		});
+
+		it("supports array of hosts", () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+
+			const task: Task = {
+				id: taskId,
+				type: "deferred",
+				status: "pending",
+				trigger_spec: null,
+				payload: null,
+				thread_id: null,
+				claimed_by: null,
+				claimed_at: null,
+				lease_id: null,
+				next_run_at: null,
+				last_run_at: null,
+				run_count: 0,
+				max_runs: null,
+				requires: JSON.stringify({ host: ["host-a", "host-b", "host-c"] }),
+				model_hint: null,
+				no_history: 0,
+				inject_mode: "status",
+				depends_on: null,
+				require_success: 0,
+				alert_threshold: 5,
+				consecutive_failures: 0,
+				event_depth: 0,
+				no_quiescence: 0,
+				heartbeat_at: null,
+				result: null,
+				error: null,
+				created_at: now,
+				created_by: "test",
+				modified_at: now,
+				deleted: 0,
+			};
+
+			// Should succeed on any host in the array
+			expect(canRunHere(db, task, "host-a", randomUUID())).toBe(true);
+			expect(canRunHere(db, task, "host-b", randomUUID())).toBe(true);
+			expect(canRunHere(db, task, "host-c", randomUUID())).toBe(true);
+
+			// Should fail on host not in array
+			expect(canRunHere(db, task, "host-d", randomUUID())).toBe(false);
+		});
+
+		it("supports glob patterns", () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+
+			const task: Task = {
+				id: taskId,
+				type: "deferred",
+				status: "pending",
+				trigger_spec: null,
+				payload: null,
+				thread_id: null,
+				claimed_by: null,
+				claimed_at: null,
+				lease_id: null,
+				next_run_at: null,
+				last_run_at: null,
+				run_count: 0,
+				max_runs: null,
+				requires: JSON.stringify({ host: "prod-*" }),
+				model_hint: null,
+				no_history: 0,
+				inject_mode: "status",
+				depends_on: null,
+				require_success: 0,
+				alert_threshold: 5,
+				consecutive_failures: 0,
+				event_depth: 0,
+				no_quiescence: 0,
+				heartbeat_at: null,
+				result: null,
+				error: null,
+				created_at: now,
+				created_by: "test",
+				modified_at: now,
+				deleted: 0,
+			};
+
+			// Should match hosts starting with "prod-"
+			expect(canRunHere(db, task, "prod-server1", randomUUID())).toBe(true);
+			expect(canRunHere(db, task, "prod-web", randomUUID())).toBe(true);
+
+			// Should not match other hosts
+			expect(canRunHere(db, task, "staging-server", randomUUID())).toBe(false);
+			expect(canRunHere(db, task, "dev-machine", randomUUID())).toBe(false);
+		});
+
+		it("supports site_id requirements", () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			const expectedSiteId = randomUUID();
+
+			const task: Task = {
+				id: taskId,
+				type: "deferred",
+				status: "pending",
+				trigger_spec: null,
+				payload: null,
+				thread_id: null,
+				claimed_by: null,
+				claimed_at: null,
+				lease_id: null,
+				next_run_at: null,
+				last_run_at: null,
+				run_count: 0,
+				max_runs: null,
+				requires: JSON.stringify({ site_id: expectedSiteId }),
+				model_hint: null,
+				no_history: 0,
+				inject_mode: "status",
+				depends_on: null,
+				require_success: 0,
+				alert_threshold: 5,
+				consecutive_failures: 0,
+				event_depth: 0,
+				no_quiescence: 0,
+				heartbeat_at: null,
+				result: null,
+				error: null,
+				created_at: now,
+				created_by: "test",
+				modified_at: now,
+				deleted: 0,
+			};
+
+			// Should succeed on matching site_id
+			expect(canRunHere(db, task, "any-host", expectedSiteId)).toBe(true);
+
+			// Should fail on different site_id
+			expect(canRunHere(db, task, "any-host", randomUUID())).toBe(false);
+		});
 	});
 
 	describe("seedCronTasks", () => {

@@ -30,7 +30,7 @@ COMMANDS:
   --help                   Show this help message
 
 OPTIONS:
-  boundctl set-hub <host-name> [--wait]
+  boundctl set-hub <host-name> [--wait] [--timeout <seconds>]
     Set the cluster hub and optionally wait for all peers to confirm
 
   boundctl stop
@@ -59,9 +59,11 @@ EXAMPLES:
 			process.exit(1);
 		}
 
+		const timeoutStr = getArgValue(args, "--timeout");
 		const setHubArgs = {
 			hostName,
 			wait: args.includes("--wait"),
+			timeout: timeoutStr ? Number.parseInt(timeoutStr, 10) : undefined,
 			configDir: getArgValue(args, "--config-dir") || "config",
 		};
 
@@ -109,7 +111,12 @@ EXAMPLES:
 			process.exit(1);
 		}
 
-		const restoreArgs = {
+		const restoreArgs: {
+			before: string;
+			preview: boolean;
+			tables: string[];
+			configDir: string;
+		} = {
 			before: args[beforeIndex + 1],
 			preview: args.includes("--preview"),
 			tables: [],

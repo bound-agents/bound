@@ -1,13 +1,20 @@
-// Task 4: boundctl set-hub command
-// Cluster hub configuration
-
 import { resolve } from "node:path";
-import Database from "better-sqlite3";
+import { Database } from "bun:sqlite";
 
 export interface SetHubArgs {
 	hostName: string;
 	wait?: boolean;
+	timeout?: number;
 	configDir?: string;
+}
+
+interface SyncStateRow {
+	peer_site_id: string;
+	last_sync_at: string | null;
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function runSetHub(args: SetHubArgs): Promise<void> {
@@ -16,31 +23,72 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 
 	console.log(`Setting cluster hub to: ${args.hostName}`);
 
-	// TODO: Implement database connection and write cluster_hub to cluster_config table
-	// For now, provide a structure that can be tested
-
 	try {
-		// Open database
 		const db = new Database(dbPath);
 
 		// Ensure cluster_config table exists
 		db.exec(`
 			CREATE TABLE IF NOT EXISTS cluster_config (
 				key TEXT PRIMARY KEY,
-				value TEXT
+				value TEXT NOT NULL,
+				modified_at TEXT NOT NULL
 			)
 		`);
 
-		// Set hub
-		const stmt = db.prepare("INSERT OR REPLACE INTO cluster_config (key, value) VALUES (?, ?)");
-		stmt.run("cluster_hub", args.hostName);
+		// Record the timestamp when hub is set (used for polling)
+		const hubChangeTimestamp = new Date().toISOString();
 
-		if (args.wait) {
-			console.log("Waiting for all peers to confirm...");
-			// TODO: Poll sync_status until all peers confirm
-		}
+		// Set hub
+		db.query(
+			"INSERT OR REPLACE INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)",
+		).run("cluster_hub", args.hostName, hubChangeTimestamp);
 
 		console.log("Cluster hub set successfully.");
+
+		if (args.wait) {
+			const timeoutMs = (args.timeout ?? 60) * 1000;
+			const pollIntervalMs = 2000;
+			const deadline = Date.now() + timeoutMs;
+
+			console.log("Waiting for all peers to confirm...");
+
+			let confirmed = false;
+			while (Date.now() < deadline) {
+				const peers = db
+					.query("SELECT peer_site_id, last_sync_at FROM sync_state")
+					.all() as SyncStateRow[];
+
+				if (peers.length === 0) {
+					console.log("No peers found in sync_state. Nothing to wait for.");
+					confirmed = true;
+					break;
+				}
+
+				const confirmedPeers = peers.filter(
+					(p) => p.last_sync_at !== null && p.last_sync_at > hubChangeTimestamp,
+				);
+
+				console.log(
+					`Waiting for ${peers.length} peers... (${confirmedPeers.length}/${peers.length} confirmed)`,
+				);
+
+				if (confirmedPeers.length === peers.length) {
+					confirmed = true;
+					break;
+				}
+
+				await sleep(pollIntervalMs);
+			}
+
+			if (confirmed) {
+				console.log("All peers confirmed the hub change.");
+			} else {
+				console.warn(
+					"Timeout: not all peers confirmed. The hub IS set, but some peers have not synced yet.",
+				);
+			}
+		}
+
 		db.close();
 	} catch (error) {
 		console.error("Failed to set hub:", error);

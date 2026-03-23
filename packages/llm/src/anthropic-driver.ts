@@ -146,6 +146,8 @@ async function* parseAnthropicStream(response: Response): AsyncIterable<StreamCh
 	let buffer = "";
 	let currentToolId = "";
 	let currentToolArgs = "";
+	let inputTokens = 0;
+	let outputTokens = 0;
 
 	try {
 		while (true) {
@@ -175,6 +177,11 @@ async function* parseAnthropicStream(response: Response): AsyncIterable<StreamCh
 						error: `Failed to parse SSE event: ${eventData}`,
 					};
 					continue;
+				}
+
+				// Handle message_start with input tokens
+				if (event.type === "message_start" && event.message?.usage?.input_tokens) {
+					inputTokens = event.message.usage.input_tokens;
 				}
 
 				// Handle content_block_start for tool_use
@@ -240,21 +247,18 @@ async function* parseAnthropicStream(response: Response): AsyncIterable<StreamCh
 					currentToolArgs = "";
 				}
 
-				// Handle message_delta with usage
-				if (event.type === "message_delta" && event.usage) {
-					// Don't emit here, wait for message_stop
+				// Handle message_delta with output tokens
+				if (event.type === "message_delta" && event.usage?.output_tokens) {
+					outputTokens = event.usage.output_tokens;
 				}
 
 				// Handle message_stop with final usage
 				if (event.type === "message_stop") {
-					// The usage info should come from message_delta
-					// For now, we'll emit a done event with placeholder tokens
-					// In a real implementation, we'd accumulate tokens from message_delta
 					yield {
 						type: "done",
 						usage: {
-							input_tokens: 0,
-							output_tokens: 0,
+							input_tokens: inputTokens,
+							output_tokens: outputTokens,
 						},
 					};
 				}
@@ -271,8 +275,8 @@ async function* parseAnthropicStream(response: Response): AsyncIterable<StreamCh
 						yield {
 							type: "done",
 							usage: {
-								input_tokens: 0,
-								output_tokens: 0,
+								input_tokens: inputTokens,
+								output_tokens: outputTokens,
 							},
 						};
 					}

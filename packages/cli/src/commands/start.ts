@@ -57,11 +57,11 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 	// 3. Create/open SQLite database and run migrations
 	console.log("Initializing database...");
-	// TODO: Database setup and schema migrations
+	// Database initialized by createAppContext above
 
 	// 4. Create DI container
 	console.log("Setting up services...");
-	// TODO: Bootstrap tsyringe container
+	// DI container bootstrapped by createAppContext above
 
 	// 5. User seeding
 	console.log("Seeding users from allowlist...");
@@ -535,39 +535,94 @@ export async function runStart(args: StartArgs): Promise<void> {
 		console.warn("Continuing without web UI. API will not be available.");
 	}
 
+	// Define agent loop factory (used by Discord, scheduler)
+	const agentLoopFactory = (config: AgentLoopConfig): AgentLoop => {
+		let backend: LLMBackend;
+		try {
+			backend = modelRouter ? modelRouter.getBackend(config.modelId) : {
+				chat: async function* () {},
+				capabilities: () => ({ streaming: false, tool_use: false, system_prompt: false, prompt_caching: false, vision: false, max_context: 0 }),
+			};
+		} catch {
+			backend = modelRouter?.getDefault() ?? {
+				chat: async function* () {},
+				capabilities: () => ({ streaming: false, tool_use: false, system_prompt: false, prompt_caching: false, vision: false, max_context: 0 }),
+			};
+		}
+
+		return new AgentLoop(appContext, sandbox ?? ({} as any), backend, config);
+	};
+
 	// 13. Discord (if configured)
 	console.log("Initializing Discord...");
-	// TODO: Start Discord bot if discord.json exists and host matches
+	let discordBot: Awaited<ReturnType<InstanceType<(typeof import("@bound/discord"))["DiscordBot"]>["start"]>> | null = null;
+	const discordResult = appContext.optionalConfig.discord;
+	if (discordResult?.ok) {
+		const { shouldActivate, DiscordBot } = await import("@bound/discord");
+		if (shouldActivate(appContext)) {
+			const discordConfig = discordResult.value as { bot_token: string; host: string };
+			const bot = new DiscordBot(appContext, agentLoopFactory, discordConfig.bot_token);
+			await bot.start();
+			discordBot = bot as any;
+			console.log("[discord] Bot started");
+		} else {
+			console.log("[discord] Config present but host does not match, skipping");
+		}
+	} else {
+		console.log("[discord] Not configured");
+	}
 
 	// 14. Sync (if configured)
 	console.log("Initializing sync loop...");
-	// TODO: Start sync loop if sync.json exists
+	let syncLoopHandle: { stop: () => void } | null = null;
+	const syncResult = appContext.optionalConfig.sync;
+	if (syncResult?.ok) {
+		const syncConfig = syncResult.value as { hub: string; sync_interval_seconds: number };
+		try {
+			const { SyncClient, startSyncLoop } = await import("@bound/sync");
+			const keyringResult = appContext.optionalConfig.keyring;
+			const keyring = keyringResult?.ok
+				? (keyringResult.value as import("@bound/shared").KeyringConfig)
+				: { hosts: {} };
+			const syncClient = new SyncClient(
+				appContext.db,
+				appContext.siteId,
+				keypair.privateKey,
+				syncConfig.hub,
+				appContext.logger,
+				appContext.eventBus,
+				keyring,
+			);
+			syncLoopHandle = startSyncLoop(syncClient, syncConfig.sync_interval_seconds || 30);
+			console.log(`[sync] Sync loop started (${syncConfig.sync_interval_seconds}s interval)`);
+		} catch (error) {
+			console.warn(`[sync] Failed to start: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	} else {
+		console.log("[sync] Not configured");
+	}
 
 	// 15. Overlay scanning (if configured)
 	console.log("Initializing overlay scanner...");
-	// TODO: Start overlay index scan if overlay.json exists
+	let overlayHandle: { stop: () => void } | null = null;
+	const overlayResult = appContext.optionalConfig.overlay;
+	if (overlayResult?.ok) {
+		const overlayConfig = overlayResult.value as { mounts: Record<string, string> };
+		try {
+			const { startOverlayScanLoop } = await import("@bound/sandbox");
+			overlayHandle = startOverlayScanLoop(appContext.db, appContext.siteId, overlayConfig.mounts);
+			console.log(`[overlay] Scanner started (${Object.keys(overlayConfig.mounts).length} mount(s))`);
+		} catch (error) {
+			console.warn(`[overlay] Failed to start: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	} else {
+		console.log("[overlay] Not configured");
+	}
 
 	// 16. Scheduler
 	console.log("Starting scheduler...");
 	let schedulerHandle: { stop: () => void } | null = null;
 	try {
-		const agentLoopFactory = (config: AgentLoopConfig): AgentLoop => {
-			let backend: LLMBackend;
-			try {
-				backend = modelRouter ? modelRouter.getBackend(config.modelId) : {
-					chat: async function* () {},
-					capabilities: () => ({ streaming: false, tool_use: false, system_prompt: false, prompt_caching: false, vision: false, max_context: 0 }),
-				};
-			} catch {
-				backend = modelRouter?.getDefault() ?? {
-					chat: async function* () {},
-					capabilities: () => ({ streaming: false, tool_use: false, system_prompt: false, prompt_caching: false, vision: false, max_context: 0 }),
-				};
-			}
-
-			return new AgentLoop(appContext, sandbox ?? ({} as any), backend, config);
-		};
-
 		const scheduler = new Scheduler(appContext, agentLoopFactory);
 		schedulerHandle = scheduler.start(30_000);
 		console.log("[scheduler] Scheduler started (30s poll interval)");
@@ -592,6 +647,15 @@ Press Ctrl+C to stop.
 		process.on("SIGINT", async () => {
 			console.log("\nShutting down gracefully...");
 			if (schedulerHandle) schedulerHandle.stop();
+			if (syncLoopHandle) syncLoopHandle.stop();
+			if (overlayHandle) overlayHandle.stop();
+			if (discordBot) {
+				try {
+					await (discordBot as any).stop();
+				} catch (_err) {
+					// Ignore Discord shutdown errors
+				}
+			}
 			// Disconnect MCP clients
 			for (const [, client] of mcpClientsMap) {
 				try {
@@ -607,6 +671,15 @@ Press Ctrl+C to stop.
 		process.on("SIGTERM", async () => {
 			console.log("\nTerminating...");
 			if (schedulerHandle) schedulerHandle.stop();
+			if (syncLoopHandle) syncLoopHandle.stop();
+			if (overlayHandle) overlayHandle.stop();
+			if (discordBot) {
+				try {
+					await (discordBot as any).stop();
+				} catch (_err) {
+					// Ignore Discord shutdown errors
+				}
+			}
 			for (const [, client] of mcpClientsMap) {
 				try {
 					await client.disconnect();
