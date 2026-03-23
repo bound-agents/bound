@@ -1,6 +1,17 @@
 # Web and Discord Interfaces
 
-This document covers the `@bound/web` and `@bound/discord` packages. The web package provides a local HTTP/WebSocket API server and a Svelte single-page application. The Discord package connects the agent system to a Discord bot that accepts direct messages from allowlisted users.
+This document covers the `@bound/web` and `@bound/discord` packages. The web package provides a local HTTP/WebSocket API server and a Svelte single-page application with a Tokyo Metro-inspired visual design (Nunito Sans + IBM Plex Mono typography, 10-line color palette). The Discord package connects the agent system to a Discord bot that accepts direct messages from allowlisted users.
+
+### Recent changes
+
+- **Tokyo Metro visual design** with authentic 10-line color palette, station-style navigation, and Beck-inspired transit map
+- **`POST /api/mcp-proxy`** endpoint for cross-host MCP tool proxying with Ed25519 signed request auth
+- **`GET /api/status/models`** returns real model backends from config (not hardcoded)
+- **`GET /api/threads/:id/status`** queries actual running tasks instead of returning hardcoded `active: false`
+- **Host validation** accepts `localhost`, `127.0.0.1`, and `[::1]`
+- **Thinking indicator** (bouncing dots) while the LLM generates a response
+- **Viewport-pinned layout** — messages scroll independently, input fixed at bottom
+- **Embedded SPA** — web assets are embedded into the compiled binary via `embedded-assets.ts`
 
 ---
 

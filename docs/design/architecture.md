@@ -143,7 +143,11 @@ Every write to a synced table also writes to `change_log` via the transactional 
 
 **OCC for filesystem persistence.** Pre-execution and post-execution snapshots are compared. If another writer modified a file between snapshot and persist, LWW timestamp resolution applies.
 
-**Context assembly pipeline.** 8 stages transform raw message history into an optimized LLM prompt, handling purge substitution, tool pair sanitization, budget validation, and persona injection.
+**Context assembly pipeline.** 8 stages transform raw message history into an optimized LLM prompt, handling purge substitution, tool pair sanitization, budget validation, persona injection, and stable orientation (available commands, model info, host identity).
+
+**MCP integration via @modelcontextprotocol/sdk.** Supports stdio and Streamable HTTP transports. Tools from connected servers are auto-generated as agent commands. Cross-host tool proxying via signed HTTP at `POST /api/mcp-proxy`.
+
+**Ed25519 cryptographic identity.** Each host's site_id is derived from its Ed25519 public key (first 16 bytes of SHA-256, hex). Keypair stored at `data/host.key` (mode 0600) and `data/host.pub`.
 
 ## Further Reading
 
