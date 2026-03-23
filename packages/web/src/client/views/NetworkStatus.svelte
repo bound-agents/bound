@@ -28,21 +28,61 @@ onMount(async () => {
 </script>
 
 <div class="network-status">
-	<h1>Network Status</h1>
+	<div class="network-header">
+		<h1>Network Status</h1>
+		<span class="subtitle">Cluster Topology</span>
+	</div>
 
 	{#if loading}
-		<p>Loading network status...</p>
+		<div class="loading-state">
+			<div class="loading-ring"></div>
+			<p>Scanning network...</p>
+		</div>
 	{:else}
 		<div class="hosts-grid">
-			{#each hosts as host}
-				<div class="host-card">
-					<h2>{host.name}</h2>
-					<div class="status-indicator" class:online={host.online}></div>
-					<p class="status-text">
-						{host.online ? "Online" : "Offline"}
-					</p>
-					<p class="sync-status">{host.syncStatus}</p>
-					<p class="last-sync">Last sync: {new Date(host.lastSync).toLocaleString()}</p>
+			{#each hosts as host, idx}
+				<div class="host-card" class:host-online={host.online} class:host-offline={!host.online}>
+					<div class="card-header">
+						<div class="host-badge">
+							<svg width="32" height="32" viewBox="0 0 32 32">
+								<circle cx="16" cy="16" r="14" fill="none" stroke={host.online ? "var(--line-4)" : "var(--alert-disruption)"} stroke-width="2.5" />
+								<text
+									x="16"
+									y="16"
+									font-size="14"
+									font-weight="700"
+									fill={host.online ? "var(--line-4)" : "var(--alert-disruption)"}
+									text-anchor="middle"
+									dominant-baseline="central"
+									font-family="'Nunito Sans', sans-serif"
+								>{idx === 0 ? "H" : String.fromCharCode(65 + idx)}</text>
+							</svg>
+						</div>
+						<div class="host-info">
+							<h2>{host.name}</h2>
+							<div class="status-line">
+								<span class="status-dot" class:online={host.online}></span>
+								<span class="status-text" class:text-online={host.online} class:text-offline={!host.online}>
+									{host.online ? "Online" : "Offline"}
+								</span>
+							</div>
+						</div>
+					</div>
+
+					<div class="card-details">
+						<div class="detail-row">
+							<span class="detail-label">Sync</span>
+							<span class="detail-value sync-value" class:sync-ok={host.syncStatus === "synced"}>
+								{host.syncStatus}
+							</span>
+						</div>
+						<div class="detail-row">
+							<span class="detail-label">Last seen</span>
+							<span class="detail-value time-value">
+								{new Date(host.lastSync).toLocaleString()}
+							</span>
+						</div>
+					</div>
 				</div>
 			{/each}
 		</div>
@@ -51,63 +91,183 @@ onMount(async () => {
 
 <style>
 	.network-status {
-		padding: 20px;
+		padding: 32px 40px;
+	}
+
+	.network-header {
+		display: flex;
+		align-items: baseline;
+		gap: 16px;
+		margin-bottom: 32px;
 	}
 
 	h1 {
-		margin-bottom: 30px;
-		color: #e0e0e0;
+		margin: 0;
+		color: var(--text-primary);
+		font-family: var(--font-display);
+		font-size: var(--text-xl);
+		font-weight: 700;
+	}
+
+	.subtitle {
+		font-family: var(--font-display);
+		font-size: var(--text-sm);
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+	}
+
+	.loading-state {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 16px;
+		padding: 64px 0;
+	}
+
+	.loading-ring {
+		width: 32px;
+		height: 32px;
+		border: 3px solid var(--bg-surface);
+		border-top-color: var(--line-4);
+		border-radius: 50%;
+		animation: spin 1s linear infinite;
+	}
+
+	@keyframes spin {
+		to { transform: rotate(360deg); }
+	}
+
+	.loading-state p {
+		color: var(--text-muted);
+		font-size: var(--text-sm);
+		margin: 0;
 	}
 
 	.hosts-grid {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-		gap: 20px;
+		grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+		gap: 24px;
 	}
 
 	.host-card {
-		background: #16213e;
-		border: 1px solid #0f3460;
+		background: var(--bg-secondary);
+		border: 1px solid var(--bg-surface);
 		border-radius: 8px;
-		padding: 20px;
+		padding: 24px;
+		transition: all 0.2s ease;
+	}
+
+	.host-card:hover {
+		border-color: var(--line-4);
+		box-shadow: 0 0 16px rgba(0, 153, 68, 0.08);
+	}
+
+	.host-card.host-online {
+		border-top: 3px solid var(--line-4);
+	}
+
+	.host-card.host-offline {
+		border-top: 3px solid var(--alert-disruption);
+	}
+
+	.card-header {
+		display: flex;
+		align-items: center;
+		gap: 16px;
+		margin-bottom: 20px;
+	}
+
+	.host-badge {
+		flex-shrink: 0;
+	}
+
+	.host-info {
+		flex: 1;
 	}
 
 	h2 {
-		margin: 0 0 15px 0;
-		color: #e0e0e0;
-		font-size: 18px;
+		margin: 0 0 6px 0;
+		color: var(--text-primary);
+		font-family: var(--font-display);
+		font-size: var(--text-lg);
+		font-weight: 700;
 	}
 
-	.status-indicator {
-		width: 12px;
-		height: 12px;
+	.status-line {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.status-dot {
+		width: 8px;
+		height: 8px;
 		border-radius: 50%;
-		display: inline-block;
-		margin-right: 8px;
-		background: #ff6b6b;
-		transition: background 200ms;
+		background: var(--alert-disruption);
+		transition: background 0.2s ease;
 	}
 
-	.status-indicator.online {
-		background: #00c994;
+	.status-dot.online {
+		background: var(--status-active);
+		box-shadow: 0 0 6px rgba(105, 240, 174, 0.4);
 	}
 
 	.status-text {
-		display: inline;
-		color: #e0e0e0;
-		font-weight: 500;
-		margin: 0 0 10px 0;
+		font-family: var(--font-display);
+		font-size: var(--text-sm);
+		font-weight: 600;
 	}
 
-	.sync-status {
-		color: #888;
-		font-size: 14px;
-		margin: 10px 0 5px 0;
+	.text-online {
+		color: var(--status-active);
 	}
 
-	.last-sync {
-		color: #666;
+	.text-offline {
+		color: var(--alert-disruption);
+	}
+
+	.card-details {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		padding-top: 16px;
+		border-top: 1px solid rgba(15, 52, 96, 0.5);
+	}
+
+	.detail-row {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+	}
+
+	.detail-label {
+		font-family: var(--font-display);
+		font-size: var(--text-xs);
+		font-weight: 600;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+
+	.detail-value {
+		font-size: var(--text-sm);
+		color: var(--text-secondary);
+	}
+
+	.sync-value.sync-ok {
+		color: var(--status-active);
+		font-weight: 600;
+	}
+
+	.time-value {
+		font-family: var(--font-mono);
 		font-size: 12px;
-		margin: 5px 0 0 0;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.loading-ring {
+			animation: none;
+		}
 	}
 </style>

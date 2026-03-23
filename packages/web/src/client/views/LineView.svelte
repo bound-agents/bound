@@ -153,10 +153,16 @@ function viewTitle(): string {
 
 <div class="line-view">
 	<div class="header">
-		<button onclick={handleBackClick} class="back-button">← Back</button>
+		<button onclick={handleBackClick} class="back-button">
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+				<path d="M10 3L5 8L10 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+			</svg>
+			Map
+		</button>
 		<h1>{viewTitle()}</h1>
 		{#if agentActive}
 			<span class="thinking-indicator">
+				<span class="thinking-dot"></span>
 				{agentState === "tool_call" ? "Using tool..." : "Thinking..."}
 			</span>
 			<button onclick={handleCancel} class="cancel-button">Cancel</button>
@@ -172,7 +178,10 @@ function viewTitle(): string {
 	<div class="bottom-area">
 		<div class="file-upload-area">
 			<label class="file-label" for="file-input">
-				Attach file
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+					<path d="M7 1V13M1 7H13" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+				</svg>
+				Attach
 				<input
 					id="file-input"
 					type="file"
@@ -197,7 +206,14 @@ function viewTitle(): string {
 				disabled={sending || !inputText.trim()}
 				class="send-button"
 			>
-				{sending ? "Sending..." : "Send"}
+				{#if sending}
+					<span class="sending-indicator"></span>
+				{:else}
+					<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+						<path d="M2 9L16 2L9 16L7.5 10.5L2 9Z" fill="currentColor" />
+					</svg>
+				{/if}
+				<span class="send-label">{sending ? "Sending" : "Send"}</span>
 			</button>
 		</div>
 	</div>
@@ -210,108 +226,133 @@ function viewTitle(): string {
 		height: 100%;
 		max-width: 48rem;
 		margin: 0 auto;
-		padding: 20px;
+		padding: 24px;
 		overflow: hidden;
 	}
 
 	.header {
 		display: flex;
-		gap: 20px;
+		gap: 16px;
 		align-items: center;
-		margin-bottom: 20px;
+		margin-bottom: 24px;
 		flex-shrink: 0;
 	}
 
 	h1 {
 		flex: 1;
 		margin: 0;
-		color: #e0e0e0;
-		font-size: 1.2rem;
+		color: var(--text-primary);
+		font-family: var(--font-display);
+		font-size: var(--text-lg);
+		font-weight: 700;
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
 
 	.back-button {
+		display: flex;
+		align-items: center;
+		gap: 6px;
 		padding: 8px 16px;
-		background: #16213e;
-		border: 1px solid #0f3460;
-		color: #e0e0e0;
-		border-radius: 4px;
+		background: var(--bg-secondary);
+		border: 1px solid var(--bg-surface);
+		color: var(--text-secondary);
+		border-radius: 6px;
 		cursor: pointer;
-		transition: background 200ms;
+		font-family: var(--font-display);
+		font-size: var(--text-sm);
+		font-weight: 600;
+		transition: all 0.2s ease;
 		flex-shrink: 0;
 	}
 
 	.back-button:hover {
-		background: #1e2d50;
+		background: var(--bg-surface);
+		color: var(--text-primary);
 	}
 
 	.thinking-indicator {
-		font-size: 13px;
-		color: #69f0ae;
-		font-style: italic;
-		animation: pulse 1.5s ease-in-out infinite;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-family: var(--font-display);
+		font-size: var(--text-sm);
+		color: var(--status-active);
 		flex-shrink: 0;
 	}
 
+	.thinking-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--status-active);
+		animation: pulse 1.5s ease-in-out infinite;
+	}
+
 	@keyframes pulse {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.4; }
+		0%, 100% { opacity: 1; transform: scale(1); }
+		50% { opacity: 0.4; transform: scale(0.8); }
 	}
 
 	.cancel-button {
-		padding: 6px 14px;
-		background: #4a1a1a;
-		border: 1px solid #ff1744;
-		color: #ff1744;
-		border-radius: 4px;
+		padding: 8px 16px;
+		background: rgba(255, 23, 68, 0.1);
+		border: 1px solid var(--alert-disruption);
+		color: var(--alert-disruption);
+		border-radius: 6px;
 		cursor: pointer;
-		font-size: 13px;
-		transition: background 200ms;
+		font-family: var(--font-display);
+		font-size: var(--text-sm);
+		font-weight: 600;
+		transition: all 0.2s ease;
 		flex-shrink: 0;
 	}
 
 	.cancel-button:hover {
-		background: #6a1a1a;
+		background: rgba(255, 23, 68, 0.2);
 	}
 
 	.messages {
 		flex: 1;
 		overflow-y: auto;
-		padding-right: 10px;
+		padding-right: 8px;
 		min-height: 0;
 	}
 
 	.bottom-area {
 		flex-shrink: 0;
-		padding-top: 10px;
-		border-top: 1px solid #0f3460;
+		padding-top: 16px;
+		border-top: 1px solid var(--bg-surface);
 	}
 
 	.file-upload-area {
 		display: flex;
 		align-items: center;
 		gap: 12px;
-		margin-bottom: 10px;
+		margin-bottom: 12px;
 	}
 
 	.file-label {
 		display: inline-flex;
 		align-items: center;
+		gap: 6px;
 		padding: 6px 14px;
-		background: #0f3460;
-		border: 1px solid #1a4a8a;
-		color: #e0e0e0;
-		border-radius: 4px;
+		background: var(--bg-surface);
+		border: 1px solid rgba(156, 174, 183, 0.2);
+		color: var(--text-secondary);
+		border-radius: 6px;
 		cursor: pointer;
-		font-size: 13px;
-		transition: background 200ms;
+		font-family: var(--font-display);
+		font-size: var(--text-xs);
+		font-weight: 600;
+		transition: all 0.2s ease;
 		user-select: none;
 	}
 
 	.file-label:hover {
 		background: #1a4a8a;
+		color: var(--text-primary);
 	}
 
 	.file-input {
@@ -319,51 +360,95 @@ function viewTitle(): string {
 	}
 
 	.upload-status {
+		font-family: var(--font-mono);
 		font-size: 12px;
-		color: #69f0ae;
+		color: var(--status-active);
 	}
 
 	.input-area {
 		display: flex;
-		gap: 10px;
+		gap: 12px;
 		align-items: flex-end;
 	}
 
 	textarea {
 		flex: 1;
-		padding: 10px;
-		background: #16213e;
-		border: 1px solid #0f3460;
-		color: #e0e0e0;
-		border-radius: 4px;
-		font-family: inherit;
+		padding: 12px 16px;
+		background: var(--bg-secondary);
+		border: 1px solid var(--bg-surface);
+		color: var(--text-primary);
+		border-radius: 8px;
+		font-family: var(--font-body);
+		font-size: var(--text-base);
 		resize: vertical;
-		min-height: 60px;
+		min-height: 56px;
 		max-height: 180px;
+		transition: border-color 0.2s ease;
+		line-height: 1.5;
+	}
+
+	textarea:focus {
+		outline: none;
+		border-color: var(--line-7);
+	}
+
+	textarea::placeholder {
+		color: var(--text-muted);
 	}
 
 	textarea:disabled {
-		opacity: 0.5;
+		opacity: 0.4;
 	}
 
 	.send-button {
-		padding: 10px 20px;
-		background: #00a884;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+		padding: 12px 24px;
+		background: var(--line-7);
 		border: none;
-		color: white;
-		border-radius: 4px;
+		color: #fff;
+		border-radius: 8px;
 		cursor: pointer;
-		transition: background 200ms;
+		font-family: var(--font-display);
+		font-size: var(--text-sm);
+		font-weight: 600;
+		transition: all 0.2s ease;
 		flex-shrink: 0;
-		height: 42px;
+		height: 48px;
 	}
 
 	.send-button:hover:not(:disabled) {
-		background: #00c994;
+		background: #00c9b0;
+		box-shadow: 0 0 16px rgba(0, 172, 155, 0.25);
 	}
 
 	.send-button:disabled {
-		opacity: 0.5;
+		opacity: 0.35;
 		cursor: not-allowed;
+	}
+
+	.send-label {
+		font-size: var(--text-sm);
+	}
+
+	.sending-indicator {
+		width: 14px;
+		height: 14px;
+		border: 2px solid rgba(255, 255, 255, 0.3);
+		border-top-color: #fff;
+		border-radius: 50%;
+		animation: spin 0.8s linear infinite;
+	}
+
+	@keyframes spin {
+		to { transform: rotate(360deg); }
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.thinking-dot, .sending-indicator {
+			animation: none;
+		}
 	}
 </style>

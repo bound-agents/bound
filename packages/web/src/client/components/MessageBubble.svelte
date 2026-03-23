@@ -33,9 +33,9 @@ function toggleToolCall(): void {
 {#if role === "tool_call"}
 	<div class="message-bubble tool_call">
 		<div class="tool-call-header" onclick={toggleToolCall} onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") toggleToolCall(); }} role="button" tabindex={0}>
-			<span class="tool-icon">⚙</span>
+			<span class="tool-icon">&#9881;</span>
 			<span class="tool-name">{getToolName()}</span>
-			<span class="tool-toggle">{toolCallExpanded ? "▲" : "▼"}</span>
+			<span class="tool-toggle">{toolCallExpanded ? "&#9650;" : "&#9660;"}</span>
 		</div>
 		{#if toolCallExpanded}
 			<pre class="tool-content">{content}</pre>
@@ -43,12 +43,12 @@ function toggleToolCall(): void {
 	</div>
 {:else if role === "tool_result"}
 	<div class="message-bubble tool_result">
-		<div class="role-badge">result</div>
+		<div class="role-badge result-badge">result</div>
 		<pre class="tool-output">{content}</pre>
 	</div>
 {:else if role === "alert"}
 	<div class="message-bubble alert">
-		<div class="role-badge alert-badge">⚠ alert</div>
+		<div class="role-badge alert-badge">! alert</div>
 		<div class="content">{content}</div>
 	</div>
 {:else if role === "system"}
@@ -59,7 +59,7 @@ function toggleToolCall(): void {
 	<div class="message-bubble {role}">
 		<div class="role-badge">
 			{#if role === "assistant" && modelId}
-				{modelId}
+				<span class="model-pill">{modelId}</span>
 			{:else}
 				{role}
 			{/if}
@@ -70,114 +70,161 @@ function toggleToolCall(): void {
 
 <style>
 	.message-bubble {
-		padding: 12px 16px;
-		margin: 8px 0;
+		padding: 14px 18px;
+		margin: 10px 0;
 		border-radius: 8px;
-		background: #16213e;
-		border-left: 3px solid #0f3460;
+		background: var(--bg-secondary);
+		border-left: 3px solid var(--bg-surface);
+		transition: background 0.15s ease;
+		line-height: 1.55;
 	}
 
+	/* User messages: teal/green tint, Namboku emerald accent */
 	.user {
-		background: #1e5a5a;
-		border-left-color: #00a884;
+		background: rgba(0, 172, 155, 0.1);
+		border-left-color: var(--line-7);
 	}
 
+	/* Assistant messages: warm tone, Ginza orange accent */
 	.assistant {
-		background: #3d2a2a;
-		border-left-color: #ff6b6b;
+		background: rgba(243, 151, 0, 0.08);
+		border-left-color: var(--line-0);
 	}
 
+	/* Tool calls: technical blue/purple, Hanzomon purple accent */
 	.tool_call {
-		background: #1a1a30;
-		border-left-color: #8f76d6;
+		background: rgba(143, 118, 214, 0.08);
+		border-left-color: var(--line-6);
+		border-left-style: dashed;
 	}
 
+	/* Tool results: Chiyoda green accent */
 	.tool_result {
-		background: #0d1a0d;
-		border-left-color: #009944;
+		background: rgba(0, 153, 68, 0.06);
+		border-left-color: var(--line-4);
 	}
 
+	/* Alerts: disruption red */
 	.alert {
-		background: #2a1010;
-		border-left-color: #ff1744;
+		background: rgba(255, 23, 68, 0.08);
+		border-left-color: var(--alert-disruption);
+		box-shadow: 0 0 12px rgba(255, 23, 68, 0.08);
 	}
 
+	/* System: subtle, centered */
 	.system {
 		background: transparent;
 		border-left: none;
 		text-align: center;
-		padding: 4px 16px;
+		padding: 6px 18px;
 	}
 
 	.role-badge {
-		font-size: 12px;
-		color: #888;
-		margin-bottom: 4px;
+		font-family: var(--font-display);
+		font-size: var(--text-xs);
+		font-weight: 600;
+		color: var(--text-muted);
+		margin-bottom: 6px;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.model-pill {
+		display: inline-block;
+		padding: 2px 8px;
+		background: rgba(243, 151, 0, 0.12);
+		border: 1px solid rgba(243, 151, 0, 0.25);
+		border-radius: 10px;
+		font-family: var(--font-mono);
+		font-size: 11px;
+		font-weight: 500;
+		color: var(--line-0);
+		text-transform: none;
+		letter-spacing: 0;
+	}
+
+	.result-badge {
+		color: var(--line-4);
 	}
 
 	.alert-badge {
-		color: #ff9100;
-		font-weight: 600;
+		color: var(--alert-warning);
+		font-weight: 700;
 	}
 
 	.content {
 		word-wrap: break-word;
+		font-size: var(--text-base);
+		color: var(--text-primary);
 	}
 
 	.system-text {
 		font-style: italic;
-		color: #6b6b80;
-		font-size: 13px;
+		color: var(--text-muted);
+		font-size: var(--text-sm);
 	}
 
 	.tool-call-header {
 		display: flex;
 		align-items: center;
-		gap: 8px;
+		gap: 10px;
 		cursor: pointer;
 		user-select: none;
+		padding: 2px 0;
+	}
+
+	.tool-call-header:focus-visible {
+		outline: 2px solid var(--line-6);
+		outline-offset: 2px;
+		border-radius: 4px;
 	}
 
 	.tool-icon {
-		color: #8f76d6;
-		font-size: 14px;
+		color: var(--line-6);
+		font-size: 15px;
 	}
 
 	.tool-name {
+		font-family: var(--font-mono);
 		font-weight: 600;
 		color: #c4b5f4;
-		font-size: 13px;
+		font-size: var(--text-sm);
 		flex: 1;
 	}
 
 	.tool-toggle {
-		color: #6b6b80;
-		font-size: 11px;
+		color: var(--text-muted);
+		font-size: 10px;
+		transition: transform 0.2s ease;
 	}
 
 	.tool-content {
-		margin-top: 8px;
-		padding: 8px;
-		background: #0d0d1a;
-		border-radius: 4px;
-		font-family: "JetBrains Mono", "Fira Code", monospace;
+		margin-top: 10px;
+		padding: 12px;
+		background: rgba(10, 10, 20, 0.6);
+		border: 1px solid rgba(143, 118, 214, 0.15);
+		border-radius: 6px;
+		font-family: var(--font-mono);
 		font-size: 12px;
 		color: #c4b5f4;
 		white-space: pre-wrap;
 		word-break: break-all;
 		overflow-x: auto;
+		line-height: 1.5;
 	}
 
 	.tool-output {
-		margin: 4px 0 0;
-		padding: 8px;
-		background: #0a150a;
-		border-radius: 4px;
-		font-family: "JetBrains Mono", "Fira Code", monospace;
+		margin: 6px 0 0;
+		padding: 12px;
+		background: rgba(0, 153, 68, 0.05);
+		border: 1px solid rgba(0, 153, 68, 0.12);
+		border-radius: 6px;
+		font-family: var(--font-mono);
 		font-size: 12px;
-		color: #69f0ae;
+		color: var(--status-active);
 		white-space: pre-wrap;
 		word-break: break-all;
 		overflow-x: auto;
+		line-height: 1.5;
 	}
 </style>

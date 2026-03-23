@@ -34,7 +34,12 @@ function handleChange(): void {
 </script>
 
 <div class="model-selector">
-	<label for="model">Model:</label>
+	<label for="model">
+		<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+			<rect x="1" y="1" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5" fill="none" />
+			<circle cx="7" cy="7" r="2.5" stroke="currentColor" stroke-width="1.5" fill="none" />
+		</svg>
+	</label>
 	<select id="model" bind:value={selectedModel} onchange={handleChange}>
 		{#each models as model}
 			<option value={model.id}>{model.id}</option>
@@ -50,14 +55,30 @@ function handleChange(): void {
 	}
 
 	label {
-		font-size: 14px;
+		display: flex;
+		align-items: center;
+		color: var(--text-muted);
 	}
 
 	select {
 		padding: 6px 12px;
-		border-radius: 4px;
-		border: 1px solid #0f3460;
-		background: #16213e;
-		color: #e0e0e0;
+		border-radius: 6px;
+		border: 1px solid var(--bg-surface);
+		background: var(--bg-primary);
+		color: var(--text-secondary);
+		font-family: var(--font-mono);
+		font-size: 12px;
+		cursor: pointer;
+		transition: border-color 0.2s ease;
+		appearance: auto;
+	}
+
+	select:hover {
+		border-color: var(--line-3);
+	}
+
+	select:focus {
+		outline: none;
+		border-color: var(--line-3);
 	}
 </style>
