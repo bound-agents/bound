@@ -70,6 +70,10 @@ async function pollStatus(): Promise<void> {
 			const data = (await res.json()) as { active: boolean; state: string | null };
 			agentActive = data.active;
 			agentState = data.state;
+			// Clear stale waiting indicator if agent is no longer active
+			if (waiting && !data.active) {
+				waiting = false;
+			}
 		}
 	} catch (error) {
 		console.error("Failed to poll status:", error);
@@ -104,7 +108,7 @@ async function handleSendMessage(): Promise<void> {
 
 	sending = true;
 	try {
-		const newMessage = await api.sendMessage(threadId, inputText, activeModel || undefined);
+		const newMessage = await api.sendMessage(threadId, inputText.trim(), activeModel || undefined);
 		messages = [...messages, newMessage];
 		inputText = "";
 		waitingSinceMessageCount = messages.length;
@@ -150,6 +154,14 @@ async function handleFileChange(e: Event): Promise<void> {
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 function handleBackClick(): void {
 	navigateTo("/");
+}
+
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+function handleKeydown(e: KeyboardEvent): void {
+	if (e.key === "Enter" && !e.shiftKey) {
+		e.preventDefault();
+		handleSendMessage();
+	}
 }
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
@@ -221,6 +233,7 @@ function viewTitle(): string {
 				bind:value={inputText}
 				placeholder="Type your message..."
 				disabled={sending}
+				onkeydown={handleKeydown}
 			></textarea>
 			<button
 				onclick={handleSendMessage}

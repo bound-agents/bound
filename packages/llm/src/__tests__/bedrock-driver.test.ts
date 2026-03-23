@@ -1,27 +1,62 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
 import { BedrockDriver } from "../bedrock-driver";
-import type { LLMMessage, StreamChunk } from "../types";
+import { LLMError } from "../types";
+import type { StreamChunk } from "../types";
 
 const shouldSkip = process.env.SKIP_BEDROCK === "1";
 
+function createMockStream(events: Record<string, unknown>[]) {
+	return {
+		stream: (async function* () {
+			for (const event of events) {
+				yield event;
+			}
+		})(),
+	};
+}
+
+function createErrorStream(events: Record<string, unknown>[], errorMsg: string) {
+	return {
+		stream: (async function* () {
+			for (const event of events) {
+				yield event;
+			}
+			throw new Error(errorMsg);
+		})(),
+	};
+}
+
+async function collectChunks(iter: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
+	const chunks: StreamChunk[] = [];
+	for await (const c of iter) {
+		chunks.push(c);
+	}
+	return chunks;
+}
+
+function makeDriver(overrides?: { profile?: string }) {
+	return new BedrockDriver({
+		region: "us-east-1",
+		model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		contextWindow: 200000,
+		...overrides,
+	});
+}
+
 describe("BedrockDriver", () => {
-	const originalFetch = global.fetch;
+	let sendSpy: ReturnType<typeof spyOn<BedrockRuntimeClient, "send">>;
 
 	beforeEach(() => {
-		global.fetch = originalFetch;
+		sendSpy = spyOn(BedrockRuntimeClient.prototype, "send");
 	});
 
-	afterAll(() => {
-		global.fetch = originalFetch;
+	afterEach(() => {
+		sendSpy.mockRestore();
 	});
 
-	it.skipIf(shouldSkip)("should create a driver with capabilities", () => {
-		const driver = new BedrockDriver({
-			region: "us-east-1",
-			model: "anthropic.claude-3-sonnet-20240229-v1:0",
-			contextWindow: 200000,
-		});
-
+	it.skipIf(shouldSkip)("capabilities returns correct fields", () => {
+		const driver = makeDriver();
 		const caps = driver.capabilities();
 		expect(caps.streaming).toBe(true);
 		expect(caps.tool_use).toBe(true);
@@ -31,83 +66,271 @@ describe("BedrockDriver", () => {
 		expect(caps.max_context).toBe(200000);
 	});
 
-	it.skipIf(shouldSkip)("should translate user message correctly", async () => {
-		const driver = new BedrockDriver({
-			region: "us-east-1",
-			model: "anthropic.claude-3-sonnet-20240229-v1:0",
-			contextWindow: 200000,
+	it.skipIf(shouldSkip)("streams text chunks and done chunk", async () => {
+		sendSpy.mockImplementation(() =>
+			Promise.resolve(
+				createMockStream([
+					{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "Hello " } } },
+					{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "world" } } },
+					{ metadata: { usage: { inputTokens: 10, outputTokens: 5 } } },
+				]),
+			),
+		);
+
+		const driver = makeDriver();
+		const chunks = await collectChunks(
+			driver.chat({
+				model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+				messages: [{ role: "user", content: "Hi" }],
+			}),
+		);
+
+		expect(chunks).toHaveLength(3);
+		expect(chunks[0]).toEqual({ type: "text", content: "Hello " });
+		expect(chunks[1]).toEqual({ type: "text", content: "world" });
+		expect(chunks[2]).toEqual({
+			type: "done",
+			usage: { input_tokens: 10, output_tokens: 5 },
 		});
-
-		const messages: LLMMessage[] = [
-			{
-				role: "user",
-				content: "Hello, world!",
-			},
-		];
-
-		let capturedRequest: any = null;
-
-		// Mock fetch to capture the request
-		global.fetch = (async (url: string, options: RequestInit) => {
-			if (url.includes("bedrock")) {
-				capturedRequest = JSON.parse(options.body as string);
-			}
-			return new Response(JSON.stringify({}), {
-				status: 200,
-				headers: { "Content-Type": "application/x-amzn-sagemaker-custom-attributes" },
-			});
-		}) as typeof fetch;
-
-		const chunks: StreamChunk[] = [];
-		try {
-			for await (const chunk of driver.chat({
-				model: "anthropic.claude-3-sonnet-20240229-v1:0",
-				messages,
-			})) {
-				chunks.push(chunk);
-			}
-		} catch {
-			// Expected to fail with mock, but we can still check the request
-		}
-
-		// BedrockDriver should construct proper message format for Converse API
-		// The exact format depends on AWS SDK usage
 	});
 
-	it.skipIf(shouldSkip)("should handle tool_call message correctly", async () => {
-		const driver = new BedrockDriver({
-			region: "us-east-1",
-			model: "anthropic.claude-3-sonnet-20240229-v1:0",
-			contextWindow: 200000,
+	it.skipIf(shouldSkip)("streams tool use events", async () => {
+		sendSpy.mockImplementation(() =>
+			Promise.resolve(
+				createMockStream([
+					{
+						contentBlockStart: {
+							contentBlockIndex: 0,
+							start: { toolUse: { toolUseId: "tool-1", name: "add" } },
+						},
+					},
+					{
+						contentBlockDelta: {
+							contentBlockIndex: 0,
+							delta: { toolUse: { input: '{"a":1,' } },
+						},
+					},
+					{
+						contentBlockDelta: {
+							contentBlockIndex: 0,
+							delta: { toolUse: { input: '"b":2}' } },
+						},
+					},
+					{ contentBlockStop: { contentBlockIndex: 0 } },
+					{ metadata: { usage: { inputTokens: 20, outputTokens: 15 } } },
+				]),
+			),
+		);
+
+		const driver = makeDriver();
+		const chunks = await collectChunks(
+			driver.chat({
+				model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+				messages: [{ role: "user", content: "add 1 and 2" }],
+			}),
+		);
+
+		expect(chunks).toHaveLength(5);
+		expect(chunks[0]).toEqual({ type: "tool_use_start", id: "tool-1", name: "add" });
+		expect(chunks[1]).toEqual({ type: "tool_use_args", id: "tool-1", partial_json: '{"a":1,' });
+		expect(chunks[2]).toEqual({ type: "tool_use_args", id: "tool-1", partial_json: '"b":2}' });
+		expect(chunks[3]).toEqual({ type: "tool_use_end", id: "tool-1" });
+		expect(chunks[4]).toEqual({
+			type: "done",
+			usage: { input_tokens: 20, output_tokens: 15 },
+		});
+	});
+
+	it.skipIf(shouldSkip)("translates messages, system, and toolConfig correctly", async () => {
+		sendSpy.mockImplementation(() =>
+			Promise.resolve(
+				createMockStream([
+					{ metadata: { usage: { inputTokens: 1, outputTokens: 1 } } },
+				]),
+			),
+		);
+
+		const driver = makeDriver();
+		await collectChunks(
+			driver.chat({
+				model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+				system: "You are a helpful assistant.",
+				messages: [
+					{ role: "user", content: "Use the add tool" },
+					{
+						role: "tool_call",
+						content: [
+							{
+								type: "tool_use",
+								id: "tool-1",
+								name: "add",
+								input: { a: 1, b: 2 },
+							},
+						],
+					},
+					{
+						role: "tool_result",
+						content: [{ type: "text", text: "3" }],
+						tool_use_id: "tool-1",
+					},
+				],
+				tools: [
+					{
+						type: "function",
+						function: {
+							name: "add",
+							description: "Adds two numbers",
+							parameters: {
+								type: "object",
+								properties: { a: { type: "number" }, b: { type: "number" } },
+							},
+						},
+					},
+				],
+			}),
+		);
+
+		expect(sendSpy.mock.calls).toHaveLength(1);
+		const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
+
+		expect(commandInput.modelId).toBe("anthropic.claude-3-5-sonnet-20241022-v2:0");
+		expect(commandInput.system).toEqual([{ text: "You are a helpful assistant." }]);
+
+		const messages = commandInput.messages as Array<Record<string, unknown>>;
+		expect(messages).toHaveLength(3);
+
+		expect(messages[0]).toEqual({
+			role: "user",
+			content: [{ text: "Use the add tool" }],
 		});
 
-		const messages: LLMMessage[] = [
-			{
-				role: "tool_call",
-				content: [
-					{
-						type: "tool_use",
-						id: "tool-1",
+		expect(messages[1]).toEqual({
+			role: "assistant",
+			content: [
+				{
+					toolUse: {
+						toolUseId: "tool-1",
 						name: "add",
 						input: { a: 1, b: 2 },
 					},
-				],
+				},
+			],
+		});
+
+		expect(messages[2]).toEqual({
+			role: "user",
+			content: [
+				{
+					toolResult: {
+						toolUseId: "tool-1",
+						content: [{ text: "3" }],
+					},
+				},
+			],
+		});
+
+		const toolConfig = commandInput.toolConfig as Record<string, unknown>;
+		const tools = toolConfig.tools as Array<Record<string, unknown>>;
+		expect(tools).toHaveLength(1);
+		expect(tools[0]).toEqual({
+			toolSpec: {
+				name: "add",
+				description: "Adds two numbers",
+				inputSchema: {
+					json: {
+						type: "object",
+						properties: { a: { type: "number" }, b: { type: "number" } },
+					},
+				},
 			},
-		];
+		});
+	});
 
-		const chunks: StreamChunk[] = [];
+	it.skipIf(shouldSkip)("works when profile is configured", async () => {
+		sendSpy.mockImplementation(() =>
+			Promise.resolve(
+				createMockStream([
+					{ metadata: { usage: { inputTokens: 1, outputTokens: 1 } } },
+				]),
+			),
+		);
+
+		const driver = makeDriver({ profile: "my-aws-profile" });
+		const chunks = await collectChunks(
+			driver.chat({
+				model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+				messages: [{ role: "user", content: "hello" }],
+			}),
+		);
+
+		expect(chunks).toHaveLength(1);
+		expect(chunks[0].type).toBe("done");
+	});
+
+	it.skipIf(shouldSkip)("throws LLMError when send throws", async () => {
+		sendSpy.mockImplementation(() => Promise.reject(new Error("network failure")));
+
+		const driver = makeDriver();
+		let caught: unknown;
 		try {
-			for await (const chunk of driver.chat({
-				model: "anthropic.claude-3-sonnet-20240229-v1:0",
-				messages,
-			})) {
-				chunks.push(chunk);
-			}
-		} catch {
-			// Expected to fail with mock
+			await collectChunks(
+				driver.chat({
+					model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+					messages: [{ role: "user", content: "hello" }],
+				}),
+			);
+		} catch (err) {
+			caught = err;
 		}
+		expect(caught).toBeInstanceOf(LLMError);
+		expect((caught as LLMError).provider).toBe("bedrock");
+		expect((caught as LLMError).message).toContain("network failure");
+	});
 
-		// Test passes if no error during construction
-		expect(driver).toBeDefined();
+	it.skipIf(shouldSkip)("throws LLMError when stream throws mid-iteration", async () => {
+		sendSpy.mockImplementation(() =>
+			Promise.resolve(
+				createErrorStream(
+					[{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "partial" } } }],
+					"stream interrupted",
+				),
+			),
+		);
+
+		const driver = makeDriver();
+		let caught: unknown;
+		try {
+			await collectChunks(
+				driver.chat({
+					model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+					messages: [{ role: "user", content: "hello" }],
+				}),
+			);
+		} catch (err) {
+			caught = err;
+		}
+		expect(caught).toBeInstanceOf(LLMError);
+		expect((caught as LLMError).provider).toBe("bedrock");
+		expect((caught as LLMError).message).toContain("stream interrupted");
+	});
+
+	it.skipIf(shouldSkip)("throws LLMError when response has no stream", async () => {
+		sendSpy.mockImplementation(() => Promise.resolve({}));
+
+		const driver = makeDriver();
+		let caught: unknown;
+		try {
+			await collectChunks(
+				driver.chat({
+					model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+					messages: [{ role: "user", content: "hello" }],
+				}),
+			);
+		} catch (err) {
+			caught = err;
+		}
+		expect(caught).toBeInstanceOf(LLMError);
+		expect((caught as LLMError).provider).toBe("bedrock");
+		expect((caught as LLMError).message.toLowerCase()).toContain("no stream");
 	});
 });

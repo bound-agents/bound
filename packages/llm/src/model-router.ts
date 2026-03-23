@@ -66,11 +66,13 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 			if (!region) {
 				throw new Error("Bedrock driver requires region in config");
 			}
+			const profile = (config as any).profile as string | undefined;
 			const contextWindow = config.contextWindow ?? 200000;
 			return new BedrockDriver({
 				region,
 				model: config.model,
 				contextWindow,
+				profile,
 			});
 		}
 

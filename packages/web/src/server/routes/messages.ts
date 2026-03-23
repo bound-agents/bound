@@ -85,7 +85,7 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 				thread_id: threadId,
 				role: "user",
 				content: body.content,
-				model_id: null,
+				model_id: body.model_id || null,
 				tool_name: null,
 				created_at: now,
 				modified_at: now,

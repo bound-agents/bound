@@ -27,6 +27,7 @@ const modelBackendSchema = z.object({
 	base_url: z.string().url().optional(),
 	api_key: z.string().optional(),
 	region: z.string().optional(),
+	profile: z.string().optional(),
 	context_window: z.number().int().positive(),
 	tier: z.number().int().min(1).max(5),
 	price_per_m_input: z.number().min(0).default(0),

@@ -6,6 +6,8 @@
 	"main": "src/index.ts",
 	"types": "src/index.ts",
 	"dependencies": {
-		"@bound/shared": "workspace:*"
+		"@aws-sdk/client-bedrock-runtime": "^3.1014.0",
+		"@bound/shared": "workspace:*",
+		"@smithy/types": "^4.13.1"
 	}
 }

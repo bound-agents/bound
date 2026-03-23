@@ -10,8 +10,8 @@ import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
 import { generateMCPCommands } from "@bound/agent";
 import { generateThreadTitle } from "@bound/agent";
-import { OllamaDriver } from "@bound/llm";
-import type { LLMBackend, LLMMessage, ToolDefinition } from "@bound/llm";
+import { createModelRouter } from "@bound/llm";
+import type { LLMBackend, LLMMessage, ModelBackendsConfig, BackendConfig, ToolDefinition } from "@bound/llm";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import { ensureKeypair } from "@bound/sync";
 import { createClusterFs, createSandbox } from "@bound/sandbox";
@@ -232,22 +232,36 @@ export async function runStart(args: StartArgs): Promise<void> {
 		}
 	}
 
-	// 11. LLM setup
+	// 11. LLM setup — use ModelRouter to support all configured backends
 	console.log("Initializing LLM...");
-	const defaultBackend = appContext.config.modelBackends.backends.find(
-		(b) => b.id === appContext.config.modelBackends.default,
-	) || appContext.config.modelBackends.backends[0];
+	const rawBackends = appContext.config.modelBackends;
+	const routerConfig: ModelBackendsConfig = {
+		backends: rawBackends.backends.map((b): BackendConfig => ({
+			id: b.id,
+			provider: b.provider,
+			model: b.model,
+			baseUrl: b.base_url,
+			contextWindow: b.context_window,
+			apiKey: b.api_key,
+			region: b.region,
+			profile: b.profile,
+		})),
+		default: rawBackends.default,
+	};
 
-	let llmDriver: OllamaDriver | null = null;
-	if (defaultBackend?.provider === "ollama" && defaultBackend.base_url) {
-		llmDriver = new OllamaDriver({
-			baseUrl: defaultBackend.base_url,
-			model: defaultBackend.model,
-			contextWindow: defaultBackend.context_window,
-		});
-		console.log(`[llm] Initialized Ollama driver: ${defaultBackend.model} at ${defaultBackend.base_url}`);
-	} else {
-		console.warn("[llm] No supported LLM backend configured");
+	// Map backend IDs to their provider-specific model names for chat() calls
+	const backendModelMap = new Map<string, string>();
+	for (const b of routerConfig.backends) {
+		backendModelMap.set(b.id, b.model);
+	}
+
+	let modelRouter: ReturnType<typeof createModelRouter> | null = null;
+	try {
+		modelRouter = createModelRouter(routerConfig);
+		const ids = routerConfig.backends.map((b) => b.id).join(", ");
+		console.log(`[llm] Model router ready — backends: ${ids} (default: ${routerConfig.default})`);
+	} catch (error) {
+		console.warn(`[llm] Failed to create model router: ${error instanceof Error ? error.message : String(error)}`);
 	}
 
 	// 12. Web server
@@ -280,8 +294,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 		appContext.eventBus.on("message:created", async ({ message, thread_id }) => {
 			// Only process user messages, skip our own assistant messages
 			if (message.role !== "user") return;
-			if (!llmDriver) {
-				console.warn("[agent] No LLM driver configured, cannot process message");
+			if (!modelRouter) {
+				console.warn("[agent] No model router configured, cannot process message");
 				return;
 			}
 			if (activeLoops.has(thread_id)) {
@@ -313,7 +327,16 @@ export async function runStart(args: StartArgs): Promise<void> {
 					};
 				});
 
-				console.log(`[agent] Calling LLM with ${llmMessages.length} messages`);
+				// Resolve which backend to use — prefer the model the user selected, fall back to default
+				const selectedModelId = message.model_id || undefined;
+				let llmBackend: LLMBackend;
+				try {
+					llmBackend = modelRouter.getBackend(selectedModelId);
+				} catch {
+					llmBackend = modelRouter.getDefault();
+				}
+				const activeModelId = selectedModelId || routerConfig.default;
+				console.log(`[agent] Calling LLM (backend=${activeModelId}) with ${llmMessages.length} messages`);
 
 				// Tool execution loop — runs until the LLM produces a text-only response
 				let responseText = "";
@@ -326,8 +349,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 					const argsAccumulator = new Map<string, string>();
 					let currentText = "";
 
-					const stream = llmDriver.chat({
-						model: defaultBackend.model,
+					const providerModel = backendModelMap.get(activeModelId) || activeModelId;
+					const stream = llmBackend.chat({
+						model: providerModel,
 						messages: llmMessages,
 						tools: mcpToolDefinitions.length > 0 ? mcpToolDefinitions : undefined,
 					});
@@ -386,7 +410,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 						appContext.db.run(
 							`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin)
 							 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-							[toolCallMsgId, thread_id, "tool_call", toolCallContent, defaultBackend.id, null, now, now, appContext.hostName],
+							[toolCallMsgId, thread_id, "tool_call", toolCallContent, activeModelId, null, now, now, appContext.hostName],
 						);
 
 						// Add to in-memory context for next LLM call
@@ -432,7 +456,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 							appContext.db.run(
 								`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin)
 								 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-								[toolResultMsgId, thread_id, "tool_result", toolResultContent, defaultBackend.id, tc.id, resultNow, resultNow, appContext.hostName],
+								[toolResultMsgId, thread_id, "tool_result", toolResultContent, activeModelId, tc.id, resultNow, resultNow, appContext.hostName],
 							);
 
 							// Add to in-memory context for next LLM call
@@ -455,7 +479,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 					appContext.db.run(
 						`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin)
 						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-						[msgId, thread_id, "assistant", responseText, defaultBackend.id, null, now, now, appContext.hostName],
+						[msgId, thread_id, "assistant", responseText, activeModelId, null, now, now, appContext.hostName],
 					);
 
 					console.log(`[agent] Response persisted (${responseText.length} chars)`);
@@ -469,7 +493,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 					// Fire-and-forget: generate thread title per spec R-E17
 					// The at-most-once guard inside generateThreadTitle handles dedup
-					generateThreadTitle(appContext.db, thread_id, llmDriver, appContext.siteId).then(
+					generateThreadTitle(appContext.db, thread_id, llmBackend, appContext.siteId).then(
 						(result) => {
 							if (result.ok) {
 								console.log(`[agent] Thread title: ${result.value}`);
@@ -480,7 +504,25 @@ export async function runStart(args: StartArgs): Promise<void> {
 					);
 				}
 			} catch (error) {
-				console.error(`[agent] Error: ${error instanceof Error ? error.message : String(error)}`);
+				const errorMsg = error instanceof Error ? error.message : String(error);
+				console.error(`[agent] Error: ${errorMsg}`);
+				// Persist an error message so the UI can show it
+				try {
+					const alertId = randomUUID();
+					const now = new Date().toISOString();
+					appContext.db.run(
+						`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+						[alertId, thread_id, "assistant", `Error: ${errorMsg}`, message.model_id || null, null, now, now, appContext.hostName],
+					);
+					const alertMsg = appContext.db.query("SELECT * FROM messages WHERE id = ?").get(alertId);
+					appContext.eventBus.emit("message:created", {
+						message: alertMsg as any,
+						thread_id,
+					});
+				} catch (persistError) {
+					console.error(`[agent] Failed to persist error message: ${persistError}`);
+				}
 			} finally {
 				activeLoops.delete(thread_id);
 			}
@@ -510,14 +552,20 @@ export async function runStart(args: StartArgs): Promise<void> {
 	let schedulerHandle: { stop: () => void } | null = null;
 	try {
 		const agentLoopFactory = (config: AgentLoopConfig): AgentLoop => {
-			const llmBackend: LLMBackend = llmDriver ?? {
-				chat: async function* () {
-					// No-op backend when no LLM is configured
-				},
-				capabilities: () => ({ streaming: false, tools: false, vision: false }),
-			};
+			let backend: LLMBackend;
+			try {
+				backend = modelRouter ? modelRouter.getBackend(config.modelId) : {
+					chat: async function* () {},
+					capabilities: () => ({ streaming: false, tool_use: false, system_prompt: false, prompt_caching: false, vision: false, max_context: 0 }),
+				};
+			} catch {
+				backend = modelRouter?.getDefault() ?? {
+					chat: async function* () {},
+					capabilities: () => ({ streaming: false, tool_use: false, system_prompt: false, prompt_caching: false, vision: false, max_context: 0 }),
+				};
+			}
 
-			return new AgentLoop(appContext, sandbox ?? ({} as any), llmBackend, config);
+			return new AgentLoop(appContext, sandbox ?? ({} as any), backend, config);
 		};
 
 		const scheduler = new Scheduler(appContext, agentLoopFactory);

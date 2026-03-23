@@ -40,7 +40,7 @@ function handleChange(): void {
 			<circle cx="7" cy="7" r="2.5" stroke="currentColor" stroke-width="1.5" fill="none" />
 		</svg>
 	</label>
-	<select id="model" bind:value={selectedModel} onchange={handleChange}>
+	<select id="model" aria-label="Model" bind:value={selectedModel} onchange={handleChange}>
 		{#each models as model}
 			<option value={model.id}>{model.id}</option>
 		{/each}
