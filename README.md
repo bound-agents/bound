@@ -23,7 +23,7 @@ A persistent, model-agnostic personal agent that runs on your own infrastructure
 
 ```bash
 # Clone and install
-git clone https://github.com/user/bound.git
+git clone https://github.com/karashiiro/bound.git
 cd bound
 bun install
 
