@@ -1,5 +1,10 @@
 import { Bash, type CustomCommand, type NetworkConfig } from "just-bash";
 import type { MountableFs } from "just-bash";
+import {
+	type MemoryThresholdResult,
+	MemoryTracker,
+	wrapWithMemoryTracking,
+} from "./memory-tracker";
 
 export interface ExecutionLimits {
 	maxCallDepth?: number;
@@ -12,9 +17,23 @@ export interface SandboxConfig {
 	commands: CustomCommand[];
 	networkConfig?: NetworkConfig;
 	executionLimits?: ExecutionLimits;
+	/** Memory threshold in bytes for the in-memory filesystem. Defaults to 50MB. */
+	memoryThresholdBytes?: number;
 }
 
-export async function createSandbox(config: SandboxConfig): Promise<Bash> {
+export interface Sandbox {
+	bash: Bash;
+	/** Check current memory usage against the configured threshold. */
+	checkMemoryThreshold: () => MemoryThresholdResult;
+	/** Get the memory tracker instance for direct access. */
+	memoryTracker: MemoryTracker;
+}
+
+export async function createSandbox(config: SandboxConfig): Promise<Sandbox> {
+	// Set up memory tracking on the filesystem
+	const memoryTracker = new MemoryTracker(config.memoryThresholdBytes);
+	wrapWithMemoryTracking(config.clusterFs, memoryTracker);
+
 	const bashOptions: ConstructorParameters<typeof Bash>[0] = {
 		fs: config.clusterFs,
 		customCommands: config.commands,
@@ -41,5 +60,11 @@ export async function createSandbox(config: SandboxConfig): Promise<Bash> {
 		};
 	}
 
-	return new Bash(bashOptions);
+	const bash = new Bash(bashOptions);
+
+	return {
+		bash,
+		checkMemoryThreshold: () => memoryTracker.checkMemoryThreshold(),
+		memoryTracker,
+	};
 }

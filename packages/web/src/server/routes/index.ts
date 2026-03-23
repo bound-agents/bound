@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { MCPClient } from "@bound/agent";
 import type { KeyringConfig, TypedEventEmitter } from "@bound/shared";
+import { createAdvisoriesRoutes } from "./advisories";
 import { createFilesRoutes } from "./files";
 import { createMCPProxyRoutes } from "./mcp-proxy";
 import { createMessagesRoutes } from "./messages";
@@ -29,6 +30,7 @@ export function registerRoutes(
 		files: createFilesRoutes(db),
 		status: createStatusRoutes(db, eventBus, modelsConfig),
 		tasks: createTasksRoutes(db),
+		advisories: createAdvisoriesRoutes(db),
 		mcpProxy: mcpClients && keyring ? createMCPProxyRoutes(db, mcpClients, keyring) : null,
 	};
 }

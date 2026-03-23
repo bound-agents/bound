@@ -48,6 +48,38 @@ export function createStatusRoutes(
 		}
 	});
 
+	app.get("/network", (c) => {
+		try {
+			const hosts = db.query("SELECT * FROM hosts ORDER BY host_name ASC").all() as Array<
+				Record<string, unknown>
+			>;
+
+			const hubRow = db.query("SELECT value FROM cluster_config WHERE key = 'hub'").get() as {
+				value: string;
+			} | null;
+			const hub = hubRow?.value ?? null;
+
+			const syncState = db.query("SELECT * FROM sync_state").all() as Array<
+				Record<string, unknown>
+			>;
+
+			return c.json({
+				hosts,
+				hub,
+				syncState,
+			});
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json(
+				{
+					error: "Failed to get network status",
+					details: message,
+				},
+				500,
+			);
+		}
+	});
+
 	app.get("/models", (c) => {
 		if (modelsConfig && modelsConfig.models.length > 0) {
 			return c.json(modelsConfig);

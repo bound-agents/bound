@@ -1,4 +1,5 @@
 <script lang="ts">
+import { onDestroy, onMount } from "svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import ModelSelector from "./ModelSelector.svelte";
 
@@ -7,8 +8,11 @@ function navigate(hash: string): void {
 }
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
+let currentHash = $state(window.location.hash);
+
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 function isActive(hash: string): boolean {
-	const current = window.location.hash.slice(1) || "/";
+	const current = currentHash.slice(1) || "/";
 	if (hash === "#/") return current === "/" || current === "";
 	return current.startsWith(hash.slice(1));
 }
@@ -19,7 +23,39 @@ const navItems = [
 	{ hash: "#/", label: "System Map", color: "var(--line-0)" },
 	{ hash: "#/timetable", label: "Timetable", color: "var(--line-3)" },
 	{ hash: "#/network", label: "Network", color: "var(--line-4)" },
+	{ hash: "#/advisories", label: "Advisories", color: "var(--line-5)" },
 ];
+
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let advisoryCount = $state(0);
+let advisoryPollInterval: ReturnType<typeof setInterval> | null = null;
+
+async function loadAdvisoryCount(): Promise<void> {
+	try {
+		const response = await fetch("/api/advisories/count");
+		if (response.ok) {
+			const data = (await response.json()) as { count: number };
+			advisoryCount = data.count;
+		}
+	} catch {
+		// Ignore fetch errors for count
+	}
+}
+
+function onHashChange(): void {
+	currentHash = window.location.hash;
+}
+
+onMount(() => {
+	window.addEventListener("hashchange", onHashChange);
+	loadAdvisoryCount();
+	advisoryPollInterval = setInterval(loadAdvisoryCount, 10000);
+});
+
+onDestroy(() => {
+	window.removeEventListener("hashchange", onHashChange);
+	if (advisoryPollInterval !== null) clearInterval(advisoryPollInterval);
+});
 </script>
 
 <div class="top-bar">
@@ -43,16 +79,19 @@ const navItems = [
 			>
 				<span class="nav-dot" style="background: {item.color}"></span>
 				{item.label}
+				{#if item.hash === "#/advisories" && advisoryCount > 0}
+					<span class="nav-count">{advisoryCount}</span>
+				{/if}
 			</button>
 		{/each}
 	</nav>
 
 	<div class="spacer"></div>
 	<ModelSelector />
-	<div class="indicators">
-		<span class="indicator-dot"></span>
-		<span class="indicator-label">0 advisories</span>
-	</div>
+	<button class="indicators" onclick={() => navigate("#/advisories")} class:has-advisories={advisoryCount > 0}>
+		<span class="indicator-dot" class:indicator-alert={advisoryCount > 0}></span>
+		<span class="indicator-label">{advisoryCount} advisor{advisoryCount !== 1 ? "ies" : "y"}</span>
+	</button>
 </div>
 
 <style>
@@ -148,6 +187,18 @@ const navItems = [
 		flex: 1;
 	}
 
+	.nav-count {
+		font-family: var(--font-mono);
+		font-size: 10px;
+		font-weight: 700;
+		color: var(--alert-warning);
+		background: rgba(255, 145, 0, 0.15);
+		padding: 1px 6px;
+		border-radius: 8px;
+		min-width: 16px;
+		text-align: center;
+	}
+
 	.indicators {
 		display: flex;
 		align-items: center;
@@ -155,6 +206,21 @@ const navItems = [
 		font-family: var(--font-display);
 		font-size: var(--text-sm);
 		color: var(--text-muted);
+		background: transparent;
+		border: 1px solid transparent;
+		border-radius: 6px;
+		padding: 6px 12px;
+		cursor: pointer;
+		transition: all 0.2s ease;
+	}
+
+	.indicators:hover {
+		background: rgba(15, 52, 96, 0.5);
+		color: var(--text-primary);
+	}
+
+	.indicators.has-advisories {
+		border-color: rgba(255, 145, 0, 0.3);
 	}
 
 	.indicator-dot {
@@ -162,11 +228,29 @@ const navItems = [
 		height: 6px;
 		border-radius: 50%;
 		background: var(--status-active);
+		transition: background 0.2s ease;
+	}
+
+	.indicator-dot.indicator-alert {
+		background: var(--alert-warning);
+		box-shadow: 0 0 6px rgba(255, 145, 0, 0.4);
+		animation: indicator-pulse 2s ease-in-out infinite;
+	}
+
+	@keyframes indicator-pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.5; }
 	}
 
 	.indicator-label {
 		font-size: var(--text-xs);
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.indicator-dot.indicator-alert {
+			animation: none;
+		}
 	}
 </style>

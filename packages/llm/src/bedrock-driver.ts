@@ -1,6 +1,11 @@
-import { BedrockRuntimeClient, ConverseStreamCommand } from "@aws-sdk/client-bedrock-runtime";
+import {
+	BedrockRuntimeClient,
+	ConverseStreamCommand,
+	type ConverseStreamCommandOutput,
+} from "@aws-sdk/client-bedrock-runtime";
 import type { Message, SystemContentBlock, Tool } from "@aws-sdk/client-bedrock-runtime";
 import type { DocumentType } from "@smithy/types";
+import { withRetry } from "./retry";
 import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
 import { LLMError } from "./types";
 
@@ -137,28 +142,33 @@ export class BedrockDriver implements LLMBackend {
 			...(inferenceConfig && { inferenceConfig }),
 		});
 
-		let response;
-		try {
-			response = await this.client.send(command);
-		} catch (error) {
-			throw new LLMError(
-				`Bedrock request failed: ${error instanceof Error ? error.message : String(error)}`,
-				"bedrock",
-				undefined,
-				error instanceof Error ? error : new Error(String(error)),
-			);
-		}
+		const response = await withRetry(async () => {
+			let res: ConverseStreamCommandOutput;
+			try {
+				res = await this.client.send(command);
+			} catch (error) {
+				throw new LLMError(
+					`Bedrock request failed: ${error instanceof Error ? error.message : String(error)}`,
+					"bedrock",
+					undefined,
+					error instanceof Error ? error : new Error(String(error)),
+				);
+			}
 
-		if (!response.stream) {
-			throw new LLMError("Bedrock response contained no stream", "bedrock");
-		}
+			if (!res.stream) {
+				throw new LLMError("Bedrock response contained no stream", "bedrock");
+			}
+
+			return res;
+		});
 
 		// Track which content block index is a tool use so we can emit tool_use_end
 		// when the corresponding contentBlockStop arrives.
 		const toolUseIndexToId = new Map<number, string>();
 
 		try {
-			for await (const event of response.stream) {
+			// biome-ignore lint/style/noNonNullAssertion: stream existence already checked above
+			for await (const event of response.stream!) {
 				if (event.contentBlockStart) {
 					const { contentBlockIndex, start } = event.contentBlockStart;
 					if (start?.toolUse) {

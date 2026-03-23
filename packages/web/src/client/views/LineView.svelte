@@ -22,7 +22,7 @@ let waiting = $state(false);
 let waitingSinceMessageCount = $state(0);
 let agentActive = $state(false);
 let agentState = $state<string | null>(null);
-const fileInput: HTMLInputElement | null = null;
+let fileInput: HTMLInputElement | null = $state(null);
 let uploadStatus = $state<string | null>(null);
 let thread = $state<Thread | null>(null);
 

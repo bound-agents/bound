@@ -1,3 +1,4 @@
+import { withRetry } from "./retry";
 import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
 import { LLMError } from "./types";
 
@@ -203,7 +204,6 @@ async function* parseAnthropicStream(response: Response): AsyncIterable<StreamCh
 				if (event.type === "content_block_delta" && event.delta?.type === "input_json_delta") {
 					// biome-ignore lint/suspicious/noExplicitAny: <explanation>
 					const delta = event.delta as any;
-					const toolIndex = event.index || 0;
 
 					if (!currentToolId) {
 						// Tool use starts (we need to emit start event)
@@ -333,39 +333,43 @@ export class AnthropicDriver implements LLMBackend {
 			}));
 		}
 
-		let response: Response;
-		try {
-			response = await fetch("https://api.anthropic.com/v1/messages", {
-				method: "POST",
-				headers: {
-					"x-api-key": this.apiKey,
-					"anthropic-version": "2023-06-01",
-					"content-type": "application/json",
-				},
-				body: JSON.stringify({
-					...request,
-					stream: true,
-				}),
-			});
-		} catch (error) {
-			throw new LLMError(
-				`Failed to connect to Anthropic API: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-				"anthropic",
-				undefined,
-				error instanceof Error ? error : new Error(String(error)),
-			);
-		}
+		const response = await withRetry(async () => {
+			let res: Response;
+			try {
+				res = await fetch("https://api.anthropic.com/v1/messages", {
+					method: "POST",
+					headers: {
+						"x-api-key": this.apiKey,
+						"anthropic-version": "2023-06-01",
+						"content-type": "application/json",
+					},
+					body: JSON.stringify({
+						...request,
+						stream: true,
+					}),
+				});
+			} catch (error) {
+				throw new LLMError(
+					`Failed to connect to Anthropic API: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+					"anthropic",
+					undefined,
+					error instanceof Error ? error : new Error(String(error)),
+				);
+			}
 
-		if (!response.ok) {
-			const body = await response.text();
-			throw new LLMError(
-				`Anthropic request failed with status ${response.status}: ${body}`,
-				"anthropic",
-				response.status,
-			);
-		}
+			if (!res.ok) {
+				const body = await res.text();
+				throw new LLMError(
+					`Anthropic request failed with status ${res.status}: ${body}`,
+					"anthropic",
+					res.status,
+				);
+			}
+
+			return res;
+		});
 
 		yield* parseAnthropicStream(response);
 	}

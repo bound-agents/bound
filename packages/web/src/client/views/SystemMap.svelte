@@ -5,11 +5,20 @@ import type { Thread } from "../lib/api";
 // biome-ignore lint/correctness/noUnusedImports: used in template handlers
 import { navigateTo } from "../lib/router";
 
+interface ThreadStatus {
+	active: boolean;
+	state: string | null;
+}
+
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let threads: Thread[] = $state([]);
 let creating = $state(false);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
-const hoveredIdx = $state(-1);
+let hoveredIdx = $state(-1);
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let threadStatuses: Map<string, ThreadStatus> = $state(new Map());
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let alertThreads: Set<string> = $state(new Set());
 
 async function createThread(): Promise<void> {
 	creating = true;
@@ -27,6 +36,34 @@ let pollInterval: ReturnType<typeof setInterval> | null = null;
 async function loadThreads(): Promise<void> {
 	try {
 		threads = await api.listThreads();
+		// Fetch status for each thread to detect active agent loops
+		const statusMap = new Map<string, ThreadStatus>();
+		const alerts = new Set<string>();
+		await Promise.all(
+			threads.map(async (t) => {
+				try {
+					const res = await fetch(`/api/threads/${t.id}/status`);
+					if (res.ok) {
+						const data = (await res.json()) as ThreadStatus;
+						statusMap.set(t.id, data);
+					}
+				} catch {
+					// Ignore individual status fetch failures
+				}
+				// Check for unread alerts in this thread
+				try {
+					const msgs = await api.listMessages(t.id);
+					const hasAlert = msgs.some(
+						(m: { role: string }) => m.role === "alert",
+					);
+					if (hasAlert) alerts.add(t.id);
+				} catch {
+					// Ignore
+				}
+			}),
+		);
+		threadStatuses = statusMap;
+		alertThreads = alerts;
 	} catch (error) {
 		console.error("Failed to load threads:", error);
 	}
@@ -80,6 +117,17 @@ function relativeTime(iso: string): string {
 	const days = Math.floor(hours / 24);
 	return `${days}d ago`;
 }
+
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+function isAgentActive(threadId: string): boolean {
+	const status = threadStatuses.get(threadId);
+	return status?.active ?? false;
+}
+
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+function hasAlert(threadId: string): boolean {
+	return alertThreads.has(threadId);
+}
 </script>
 
 <div class="system-map">
@@ -87,7 +135,7 @@ function relativeTime(iso: string): string {
 		<h1>System Map</h1>
 		<button class="new-thread-btn" onclick={createThread} disabled={creating}>
 			<span class="btn-icon">+</span>
-			{creating ? "Creating…" : "New Line"}
+			{creating ? "Creating..." : "New Line"}
 		</button>
 	</div>
 
@@ -106,6 +154,8 @@ function relativeTime(iso: string): string {
 			{#each threads as thread, idx}
 				{@const color = colors[thread.color % colors.length]}
 				{@const code = lineCodes[thread.color % lineCodes.length]}
+				{@const active = isAgentActive(thread.id)}
+				{@const alert = hasAlert(thread.id)}
 				<button
 					class="thread-row"
 					class:hovered={hoveredIdx === idx}
@@ -123,18 +173,35 @@ function relativeTime(iso: string): string {
 
 					<!-- Thread info -->
 					<div class="thread-info">
-						<span class="thread-name">{threadLabel(thread, idx)}</span>
+						<div class="thread-name-row">
+							<span class="thread-name">{threadLabel(thread, idx)}</span>
+							{#if active}
+								<span class="active-badge">LIVE</span>
+							{/if}
+							{#if alert}
+								<span class="alert-badge-sm">!</span>
+							{/if}
+						</div>
 						<span class="thread-meta">{relativeTime(thread.last_message_at)}</span>
 					</div>
 
 					<!-- Metro line decoration (pure CSS — no SVG stretching) -->
 					<div class="line-track" style="--line-color: {color}">
 						<div class="track-rail" class:thick={hoveredIdx === idx}></div>
+						{#if alert}
+							<div class="track-station alert-station"></div>
+						{:else}
+							<div class="track-station"></div>
+						{/if}
 						<div class="track-station"></div>
 						<div class="track-station"></div>
 						<div class="track-station"></div>
-						<div class="track-station"></div>
-						<div class="track-terminus"></div>
+						{#if active}
+							<div class="train-indicator" style="--line-color: {color}">
+								<div class="train-body"></div>
+							</div>
+						{/if}
+						<div class="track-terminus" class:terminus-active={active}></div>
 					</div>
 				</button>
 			{/each}
@@ -295,12 +362,18 @@ function relativeTime(iso: string): string {
 	.thread-info {
 		flex-shrink: 0;
 		min-width: 180px;
-		max-width: 260px;
+		max-width: 280px;
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
 		position: relative;
 		z-index: 1;
+	}
+
+	.thread-name-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 	}
 
 	.thread-name {
@@ -311,6 +384,46 @@ function relativeTime(iso: string): string {
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
+	}
+
+	.active-badge {
+		flex-shrink: 0;
+		font-family: var(--font-mono);
+		font-size: 10px;
+		font-weight: 700;
+		color: var(--status-active);
+		background: rgba(105, 240, 174, 0.12);
+		border: 1px solid rgba(105, 240, 174, 0.3);
+		padding: 1px 6px;
+		border-radius: 3px;
+		letter-spacing: 0.06em;
+		animation: badge-pulse 2s ease-in-out infinite;
+	}
+
+	@keyframes badge-pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.6; }
+	}
+
+	.alert-badge-sm {
+		flex-shrink: 0;
+		width: 18px;
+		height: 18px;
+		border-radius: 50%;
+		background: var(--alert-disruption);
+		color: #fff;
+		font-family: var(--font-display);
+		font-size: 11px;
+		font-weight: 700;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		animation: alert-pulse 1.5s ease-in-out infinite;
+	}
+
+	@keyframes alert-pulse {
+		0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 23, 68, 0.4); }
+		50% { transform: scale(1.1); box-shadow: 0 0 8px 2px rgba(255, 23, 68, 0.3); }
 	}
 
 	.thread-meta {
@@ -361,6 +474,54 @@ function relativeTime(iso: string): string {
 		flex-shrink: 0;
 	}
 
+	/* Pulsing red alert station */
+	.track-station.alert-station {
+		background: var(--alert-disruption);
+		border-color: var(--alert-disruption);
+		box-shadow: 0 0 6px rgba(255, 23, 68, 0.5);
+		animation: station-alert 1.5s ease-in-out infinite;
+	}
+
+	@keyframes station-alert {
+		0%, 100% { box-shadow: 0 0 4px rgba(255, 23, 68, 0.4); transform: scale(1); }
+		50% { box-shadow: 0 0 10px rgba(255, 23, 68, 0.7); transform: scale(1.2); }
+	}
+
+	/* Animated train indicator sliding along the track */
+	.train-indicator {
+		position: relative;
+		z-index: 2;
+		flex-shrink: 0;
+		animation: train-slide 3s ease-in-out infinite;
+	}
+
+	.train-body {
+		width: 20px;
+		height: 8px;
+		background: var(--line-color);
+		border-radius: 4px;
+		box-shadow: 0 0 8px color-mix(in srgb, var(--line-color) 60%, transparent);
+		position: relative;
+	}
+
+	.train-body::before {
+		content: "";
+		position: absolute;
+		right: -2px;
+		top: 1px;
+		width: 4px;
+		height: 6px;
+		background: #fff;
+		border-radius: 0 2px 2px 0;
+		opacity: 0.9;
+	}
+
+	@keyframes train-slide {
+		0% { transform: translateX(-8px); }
+		50% { transform: translateX(8px); }
+		100% { transform: translateX(-8px); }
+	}
+
 	/* Terminus — filled circle with pulse */
 	.track-terminus {
 		width: 12px;
@@ -373,13 +534,28 @@ function relativeTime(iso: string): string {
 		animation: train-pulse 2.5s ease-in-out infinite;
 	}
 
+	.track-terminus.terminus-active {
+		box-shadow: 0 0 10px color-mix(in srgb, var(--line-color) 50%, transparent);
+		animation: terminus-active-pulse 1.5s ease-in-out infinite;
+	}
+
 	@keyframes train-pulse {
 		0%, 100% { opacity: 1; }
 		50% { opacity: 0.6; }
 	}
 
+	@keyframes terminus-active-pulse {
+		0%, 100% { transform: scale(1); box-shadow: 0 0 6px color-mix(in srgb, var(--line-color) 40%, transparent); }
+		50% { transform: scale(1.3); box-shadow: 0 0 14px color-mix(in srgb, var(--line-color) 60%, transparent); }
+	}
+
 	@media (prefers-reduced-motion: reduce) {
-		.terminus {
+		.track-terminus,
+		.track-terminus.terminus-active,
+		.train-indicator,
+		.active-badge,
+		.alert-badge-sm,
+		.track-station.alert-station {
 			animation: none;
 		}
 

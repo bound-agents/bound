@@ -126,9 +126,10 @@ describe("Sandbox integration", () => {
 
 		const sandbox = await createSandbox(sandboxConfig);
 		expect(sandbox).toBeDefined();
+		expect(sandbox.bash).toBeDefined();
 
 		// Execute a command
-		const result = await sandbox.exec("echo 'hello from sandbox'");
+		const result = await sandbox.bash.exec("echo 'hello from sandbox'");
 		expect(result.stdout).toContain("hello from sandbox");
 		expect(result.exitCode).toBe(0);
 	});

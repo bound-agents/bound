@@ -40,6 +40,7 @@ export const modelBackendsSchema = z
 	.object({
 		backends: z.array(modelBackendSchema).min(1, "At least one backend must be configured"),
 		default: z.string().min(1),
+		daily_budget_usd: z.number().min(0).optional(),
 	})
 	.refine((data) => data.backends.some((b) => b.id === data.default), {
 		message: "default must reference a backend ID defined in backends",

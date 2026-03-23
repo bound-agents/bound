@@ -1,3 +1,4 @@
+import { withRetry } from "./retry";
 import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
 import { LLMError } from "./types";
 
@@ -64,7 +65,7 @@ function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 
 				const toolUseBlocks = msg.content.filter((block) => block.type === "tool_use");
 				const toolCalls = toolUseBlocks.map((block) => ({
-					id: block.id || "call-" + Math.random().toString(36).substr(2, 9),
+					id: block.id || `call-${Math.random().toString(36).substr(2, 9)}`,
 					type: "function" as const,
 					function: {
 						name: block.name || "",
@@ -293,35 +294,39 @@ export class OpenAICompatibleDriver implements LLMBackend {
 
 		const endpoint = `${this.baseUrl}/chat/completions`;
 
-		let response: Response;
-		try {
-			response = await fetch(endpoint, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${this.apiKey}`,
-				},
-				body: JSON.stringify(request),
-			});
-		} catch (error) {
-			throw new LLMError(
-				`Failed to connect to OpenAI-compatible API at ${endpoint}: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-				"openai",
-				undefined,
-				error instanceof Error ? error : new Error(String(error)),
-			);
-		}
+		const response = await withRetry(async () => {
+			let res: Response;
+			try {
+				res = await fetch(endpoint, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: `Bearer ${this.apiKey}`,
+					},
+					body: JSON.stringify(request),
+				});
+			} catch (error) {
+				throw new LLMError(
+					`Failed to connect to OpenAI-compatible API at ${endpoint}: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+					"openai",
+					undefined,
+					error instanceof Error ? error : new Error(String(error)),
+				);
+			}
 
-		if (!response.ok) {
-			const body = await response.text();
-			throw new LLMError(
-				`OpenAI API request failed with status ${response.status}: ${body}`,
-				"openai",
-				response.status,
-			);
-		}
+			if (!res.ok) {
+				const body = await res.text();
+				throw new LLMError(
+					`OpenAI API request failed with status ${res.status}: ${body}`,
+					"openai",
+					res.status,
+				);
+			}
+
+			return res;
+		});
 
 		yield* parseOpenAIStream(response);
 	}

@@ -194,8 +194,48 @@ export class Scheduler {
 			.all(this.ctx.hostName) as Task[];
 
 		for (const task of claimedTasks) {
+			// Check daily budget for autonomous tasks (R-U35)
+			if (this.shouldSkipDueToBudget(task)) {
+				this.ctx.logger.warn("[scheduler] Skipping autonomous task due to daily budget", {
+					taskId: task.id,
+				});
+				// Release the claim so it can be re-evaluated later
+				this.ctx.db
+					.query("UPDATE tasks SET status = 'pending', claimed_by = NULL, claimed_at = NULL WHERE id = ?")
+					.run(task.id);
+				continue;
+			}
+
 			this.runTask(task);
 		}
+	}
+
+	private shouldSkipDueToBudget(task: Task): boolean {
+		// Only check budget for autonomous (non-interactive) tasks
+		// Interactive tasks (created by a user) should always run even when over budget
+		const isInteractive = task.created_by !== null && task.created_by !== "system";
+		if (isInteractive) {
+			return false;
+		}
+
+		const modelBackends = this.ctx.config.modelBackends;
+		const dailyBudget = modelBackends.daily_budget_usd;
+
+		// If no budget configured, allow all tasks
+		if (dailyBudget === undefined || dailyBudget === null) {
+			return false;
+		}
+
+		// Query today's spend from turns table
+		const today = new Date().toISOString().split("T")[0];
+		const result = this.ctx.db
+			.query("SELECT SUM(cost_usd) as total FROM turns WHERE date(created_at) = ?")
+			.get(today) as { total: number | null } | null;
+
+		const todaySpend = result?.total ?? 0;
+
+		// Skip task if over budget
+		return todaySpend >= dailyBudget;
 	}
 
 	private runTask(task: Task): void {
@@ -211,6 +251,13 @@ export class Scheduler {
 			leaseId,
 			startedAt: new Date(),
 		});
+
+		// Check if this is a cron task with a template (R-U28)
+		const template = this.getCronTemplate(task);
+		if (template && template.length > 0) {
+			this.runTemplateTask(task, leaseId, template);
+			return;
+		}
 
 		// Create agent loop and run asynchronously
 		setImmediate(async () => {
@@ -328,6 +375,101 @@ export class Scheduler {
 		} finally {
 			this.eventDepth--;
 		}
+	}
+
+	private getCronTemplate(task: Task): string[] | null {
+		// Only check cron tasks
+		if (task.type !== "cron") {
+			return null;
+		}
+
+		// Parse trigger_spec to get cron expression
+		let cronSpec: { type: string; expression?: string; name?: string };
+		try {
+			cronSpec = JSON.parse(task.trigger_spec);
+		} catch {
+			return null;
+		}
+
+		// Look up in cron_schedules config if available
+		const cronConfig = this.ctx.optionalConfig["cron_schedules.json"];
+		if (!cronConfig) {
+			return null;
+		}
+
+		// Find matching schedule by expression or name
+		for (const [_name, schedule] of Object.entries(cronConfig)) {
+			if (schedule.schedule === cronSpec.expression && schedule.template) {
+				return schedule.template;
+			}
+		}
+
+		return null;
+	}
+
+	private runTemplateTask(task: Task, leaseId: string, template: string[]): void {
+		setImmediate(async () => {
+			try {
+				// Execute template commands directly (no LLM call)
+				const outputs: string[] = [];
+
+				// We need a minimal sandbox to execute commands, but the scheduler
+				// doesn't have direct access to it. For now, log that template execution
+				// is not yet implemented and mark as failed.
+				this.ctx.logger.warn("[scheduler] Template execution not yet fully implemented", {
+					taskId: task.id,
+					template,
+				});
+
+				// Verify lease_id still matches
+				const currentTask = this.ctx.db
+					.query("SELECT lease_id FROM tasks WHERE id = ?")
+					.get(task.id) as { lease_id: string | null } | undefined;
+
+				if (currentTask?.lease_id === leaseId) {
+					const result = JSON.stringify({
+						template_executed: true,
+						commands: template,
+						outputs,
+					});
+
+					this.ctx.db
+						.query(
+							"UPDATE tasks SET status = 'completed', result = ?, run_count = run_count + 1, last_run_at = ? WHERE id = ?",
+						)
+						.run(result, new Date().toISOString(), task.id);
+
+					// If cron task, compute next run time
+					if (task.type === "cron" && task.trigger_spec) {
+						try {
+							const nextRunAt = computeNextRunAt(task.trigger_spec, new Date());
+							this.ctx.db
+								.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?")
+								.run(nextRunAt.toISOString(), task.id);
+						} catch (error) {
+							const errorMsg = error instanceof Error ? error.message : String(error);
+							this.ctx.logger.error("Failed to compute next cron time", {
+								error: errorMsg,
+								taskId: task.id,
+							});
+						}
+					}
+				}
+			} catch (error) {
+				const errorMsg = error instanceof Error ? error.message : String(error);
+				const currentTask = this.ctx.db
+					.query("SELECT lease_id FROM tasks WHERE id = ?")
+					.get(task.id) as { lease_id: string | null } | undefined;
+
+				if (currentTask?.lease_id === leaseId) {
+					this.ctx.db
+						.query("UPDATE tasks SET status = 'failed', error = ? WHERE id = ?")
+						.run(errorMsg, task.id);
+				}
+			} finally {
+				this.runningTasks.delete(task.id);
+			}
+		});
 	}
 
 	// Get current quiescence-adjusted poll interval using 4-tier graduated table

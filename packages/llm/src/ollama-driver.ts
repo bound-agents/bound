@@ -1,3 +1,4 @@
+import { withRetry } from "./retry";
 import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
 import { LLMError } from "./types";
 
@@ -240,34 +241,38 @@ export class OllamaDriver implements LLMBackend {
 			tools: params.tools,
 		};
 
-		let response: Response;
-		try {
-			response = await fetch(`${this.baseUrl}/api/chat`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify(request),
-			});
-		} catch (error) {
-			throw new LLMError(
-				`Failed to connect to Ollama at ${this.baseUrl}: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-				"ollama",
-				undefined,
-				error instanceof Error ? error : new Error(String(error)),
-			);
-		}
+		const response = await withRetry(async () => {
+			let res: Response;
+			try {
+				res = await fetch(`${this.baseUrl}/api/chat`, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify(request),
+				});
+			} catch (error) {
+				throw new LLMError(
+					`Failed to connect to Ollama at ${this.baseUrl}: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+					"ollama",
+					undefined,
+					error instanceof Error ? error : new Error(String(error)),
+				);
+			}
 
-		if (!response.ok) {
-			const body = await response.text();
-			throw new LLMError(
-				`Ollama request failed with status ${response.status}: ${body}`,
-				"ollama",
-				response.status,
-			);
-		}
+			if (!res.ok) {
+				const body = await res.text();
+				throw new LLMError(
+					`Ollama request failed with status ${res.status}: ${body}`,
+					"ollama",
+					res.status,
+				);
+			}
+
+			return res;
+		});
 
 		yield* parseOllamaStream(response);
 	}

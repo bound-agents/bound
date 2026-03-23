@@ -57,11 +57,13 @@ export const awaitCmd: CommandDefinition = {
 			}
 
 			const output = JSON.stringify(results);
+			const MAX_OUTPUT_SIZE = 50 * 1024; // 50KB
 
-			// Check size for buffering to file (spec mentions >50KB threshold)
-			if (output.length > 50 * 1024) {
+			// Spec 6.2: Truncate if aggregate results exceed 50KB
+			if (output.length > MAX_OUTPUT_SIZE) {
+				const truncated = output.substring(0, MAX_OUTPUT_SIZE);
 				return {
-					stdout: `Results too large (${output.length} bytes), would buffer to file in production\n`,
+					stdout: `${truncated}\n(output truncated, ${output.length} bytes total)\n`,
 					stderr: "",
 					exitCode: 0,
 				};

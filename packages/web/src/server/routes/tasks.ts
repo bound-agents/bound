@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { updateRow } from "@bound/core";
 import type { Task } from "@bound/shared";
 import { Hono } from "hono";
 
@@ -27,6 +28,47 @@ export function createTasksRoutes(db: Database): Hono {
 			return c.json(
 				{
 					error: "Failed to list tasks",
+					details: message,
+				},
+				500,
+			);
+		}
+	});
+
+	app.post("/:id/cancel", (c) => {
+		try {
+			const { id } = c.req.param();
+			const task = db
+				.query("SELECT * FROM tasks WHERE id = ? AND deleted = 0")
+				.get(id) as Task | null;
+
+			if (!task) {
+				return c.json({ error: "Task not found" }, 404);
+			}
+
+			if (task.status !== "pending" && task.status !== "running" && task.status !== "claimed") {
+				return c.json(
+					{
+						error: `Cannot cancel task in '${task.status}' status`,
+					},
+					400,
+				);
+			}
+
+			const siteIdRow = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as
+				| { value: string }
+				| undefined;
+			const siteId = siteIdRow?.value ?? "unknown";
+
+			updateRow(db, "tasks", id, { status: "cancelled" }, siteId);
+
+			const updated = db.query("SELECT * FROM tasks WHERE id = ?").get(id) as Task;
+			return c.json(updated);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json(
+				{
+					error: "Failed to cancel task",
 					details: message,
 				},
 				500,

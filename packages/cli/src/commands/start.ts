@@ -225,7 +225,26 @@ export async function runStart(args: StartArgs): Promise<void> {
 	}
 
 	// Generate MCP command definitions (for sandbox/scheduler use)
-	const mcpCommands = await generateMCPCommands(mcpClientsMap);
+	// Build confirm gates map from MCP config (R-U32)
+	const confirmGates = new Map<string, string[]>();
+	{
+		const mcpResult = appContext.optionalConfig["mcp"];
+		if (mcpResult && mcpResult.ok) {
+			const mcpConfig = mcpResult.value as {
+				servers: Array<{
+					name: string;
+					confirm?: string[];
+				}>;
+			};
+			for (const serverCfg of mcpConfig.servers) {
+				if (serverCfg.confirm && serverCfg.confirm.length > 0) {
+					confirmGates.set(serverCfg.name, serverCfg.confirm);
+				}
+			}
+		}
+	}
+
+	const mcpCommands = await generateMCPCommands(mcpClientsMap, confirmGates);
 	console.log(`[mcp] Generated ${mcpCommands.length} MCP command definition(s)`);
 
 	// Build LLM ToolDefinitions from discovered MCP tools
@@ -689,7 +708,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			};
 		}
 
-		return new AgentLoop(appContext, sandbox ?? ({} as any), backend, config);
+		return new AgentLoop(appContext, sandbox?.bash ?? ({} as any), backend, config);
 	};
 
 	// 13. Discord (if configured)

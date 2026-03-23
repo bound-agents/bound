@@ -65,6 +65,7 @@ export async function createApp(
 	app.route("/api/files", routes.files);
 	app.route("/api/status", routes.status);
 	app.route("/api/tasks", routes.tasks);
+	app.route("/api/advisories", routes.advisories);
 	if (routes.mcpProxy) {
 		// Mount at root — the route itself registers /api/mcp-proxy including auth middleware
 		app.route("/", routes.mcpProxy);

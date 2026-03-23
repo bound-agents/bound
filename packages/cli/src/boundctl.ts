@@ -1,10 +1,13 @@
 #!/usr/bin/env bun
 // Main entry for `boundctl` command
-// Handles: boundctl set-hub, boundctl stop, boundctl resume, boundctl restore
+// Handles: boundctl set-hub, boundctl stop, boundctl resume, boundctl restore, boundctl config, boundctl sync-status, boundctl drain
 
+import { runConfigReload } from "./commands/config-reload.js";
+import { runDrain } from "./commands/drain.js";
 import { runRestore } from "./commands/restore.js";
 import { runSetHub } from "./commands/set-hub.js";
 import { runResume, runStop } from "./commands/stop-resume.js";
+import { runSyncStatus } from "./commands/sync-status.js";
 
 function getArgValue(args: string[], flag: string): string | undefined {
 	const idx = args.indexOf(flag);
@@ -23,11 +26,14 @@ USAGE:
   boundctl <command> [options]
 
 COMMANDS:
-  set-hub <host-name>     Set the cluster hub host
-  stop                     Emergency stop all hosts
-  resume                   Resume operations after emergency stop
-  restore                  Point-in-time recovery
-  --help                   Show this help message
+  set-hub <host-name>       Set the cluster hub host
+  stop                       Emergency stop all hosts
+  resume                     Resume operations after emergency stop
+  restore                    Point-in-time recovery
+  config reload <target>     Hot-reload configuration
+  sync-status                Show sync status for all peers
+  drain <new-hub>            Graceful hub decommissioning
+  --help                     Show this help message
 
 OPTIONS:
   boundctl set-hub <host-name> [--wait] [--timeout <seconds>]
@@ -42,12 +48,24 @@ OPTIONS:
   boundctl restore --before <timestamp> [--preview] [--tables ...]
     Restore to point-in-time state. Use --preview to see changes without executing.
 
+  boundctl config reload <target>
+    Hot-reload configuration. Supported targets: mcp
+
+  boundctl sync-status
+    Display write propagation status for all peers
+
+  boundctl drain <new-hub> [--timeout <seconds>]
+    Gracefully drain current hub and switch to new hub (default timeout: 120s)
+
 EXAMPLES:
   boundctl set-hub primary-host
   boundctl set-hub primary-host --wait
   boundctl stop
   boundctl resume
   boundctl restore --before "2024-01-01T12:00:00Z" --preview
+  boundctl config reload mcp
+  boundctl sync-status
+  boundctl drain new-hub --timeout 180
 `);
 		process.exit(0);
 	}
@@ -133,6 +151,70 @@ EXAMPLES:
 			await runRestore(restoreArgs);
 		} catch (error) {
 			console.error("restore failed:", error);
+			process.exit(1);
+		}
+		process.exit(0);
+	}
+
+	if (command === "config") {
+		const subCommand = args[1];
+		if (subCommand !== "reload") {
+			console.error("Error: unknown config subcommand. Use 'config reload <target>'");
+			process.exit(1);
+		}
+
+		const target = args[2];
+		if (!target) {
+			console.error("Error: target is required. Example: boundctl config reload mcp");
+			process.exit(1);
+		}
+
+		const configReloadArgs = {
+			target,
+			configDir: getArgValue(args, "--config-dir") || "config",
+		};
+
+		try {
+			await runConfigReload(configReloadArgs);
+		} catch (error) {
+			console.error("config reload failed:", error);
+			process.exit(1);
+		}
+		process.exit(0);
+	}
+
+	if (command === "sync-status") {
+		const syncStatusArgs = {
+			configDir: getArgValue(args, "--config-dir") || "data",
+		};
+
+		try {
+			await runSyncStatus(syncStatusArgs);
+		} catch (error) {
+			console.error("sync-status failed:", error);
+			process.exit(1);
+		}
+		process.exit(0);
+	}
+
+	if (command === "drain") {
+		const newHub = args[1];
+		if (!newHub) {
+			console.error("Error: new-hub is required");
+			process.exit(1);
+		}
+
+		const timeoutStr = getArgValue(args, "--timeout");
+		const drainArgs = {
+			newHub,
+			timeout: timeoutStr ? Number.parseInt(timeoutStr, 10) : undefined,
+			configDir: getArgValue(args, "--config-dir") || "data",
+		};
+
+		try {
+			await runDrain(drainArgs);
+		} catch (error) {
+			console.error("drain failed:", error);
 			process.exit(1);
 		}
 		process.exit(0);

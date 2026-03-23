@@ -1,11 +1,29 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
+import { insertRow, updateRow } from "@bound/core";
 import { type IFileSystem, InMemoryFs, MountableFs, OverlayFs } from "just-bash";
 
 export interface ClusterFsConfig {
 	hostName: string;
 	overlayMounts?: Record<string, string>;
 	syncEnabled: boolean;
+	db?: Database;
+	siteId?: string;
+}
+
+export interface ClusterFsResult {
+	fs: MountableFs;
+	/**
+	 * Check staleness of a cached file against the overlay index.
+	 * Returns null if the path is not found in either the files table or overlay index.
+	 */
+	checkStaleness: (path: string) => StalenessResult | null;
+}
+
+export interface StalenessResult {
+	stale: boolean;
+	cachedHash: string;
+	indexHash: string;
 }
 
 export interface FileChange {
@@ -15,7 +33,17 @@ export interface FileChange {
 	sizeBytes?: number;
 }
 
-export function createClusterFs(config: ClusterFsConfig): MountableFs {
+/**
+ * Create a ClusterFs with optional auto-caching of overlay reads.
+ *
+ * When syncEnabled is true and db/siteId are provided, files read from
+ * overlay mounts are automatically cached to the files table for sync.
+ */
+export function createClusterFs(config: ClusterFsConfig): MountableFs;
+export function createClusterFs(
+	config: ClusterFsConfig & { db: Database; siteId: string },
+): ClusterFsResult;
+export function createClusterFs(config: ClusterFsConfig): MountableFs | ClusterFsResult {
 	const baseFs = new InMemoryFs();
 	const fs = new MountableFs({ base: baseFs });
 
@@ -23,19 +51,147 @@ export function createClusterFs(config: ClusterFsConfig): MountableFs {
 	const homeUserFs = new InMemoryFs();
 	fs.mount("/home/user", homeUserFs);
 
-	// Mount overlay filesystems if provided
+	// Track overlay mount points for auto-cache path detection
+	const overlayMountPoints = new Set<string>();
+
+	// Mount overlay filesystems if provided.
+	// MountableFs strips the mount prefix and passes relative paths to the
+	// sub-filesystem, so the OverlayFs mountPoint must be "/" to match.
 	if (config.overlayMounts) {
 		for (const [realPath, mountPath] of Object.entries(config.overlayMounts)) {
 			const overlayFs = new OverlayFs({
 				root: realPath,
-				mountPoint: mountPath,
+				mountPoint: "/",
 				readOnly: false,
 			});
 			fs.mount(mountPath, overlayFs);
+			overlayMountPoints.add(mountPath);
 		}
 	}
 
+	// If db and siteId are provided, enable auto-cache and staleness checking
+	if (config.db && config.siteId) {
+		const db = config.db;
+		const siteId = config.siteId;
+
+		// Wrap readFile to auto-cache overlay reads when sync is enabled
+		if (config.syncEnabled && overlayMountPoints.size > 0) {
+			const originalReadFile = fs.readFile.bind(fs);
+			fs.readFile = async (path: string, options?: unknown): Promise<string> => {
+				const content = await originalReadFile(path, options as undefined);
+
+				// Check if this path belongs to an overlay mount
+				const isOverlayPath = isUnderOverlayMount(path, overlayMountPoints);
+				if (isOverlayPath) {
+					autoCacheFile(db, siteId, path, content);
+				}
+
+				return content;
+			};
+		}
+
+		const checkStaleness = (path: string): StalenessResult | null => {
+			return checkFileStaleness(db, path);
+		};
+
+		return { fs, checkStaleness };
+	}
+
 	return fs;
+}
+
+/**
+ * Check if a virtual path falls under any overlay mount point.
+ */
+function isUnderOverlayMount(path: string, overlayMountPoints: Set<string>): boolean {
+	for (const mount of overlayMountPoints) {
+		if (path === mount || path.startsWith(`${mount}/`)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Auto-cache a file read from an overlay into the files table.
+ * Uses insertRow/updateRow from @bound/core to maintain the change-log outbox.
+ */
+function autoCacheFile(db: Database, siteId: string, path: string, content: string): void {
+	const contentHash = createHash("sha256").update(content).digest("hex");
+	const sizeBytes = Buffer.byteLength(content);
+	const now = new Date().toISOString();
+
+	// Check if already cached with the same hash
+	const existing = db
+		.query("SELECT id, content FROM files WHERE path = ? AND deleted = 0")
+		.get(path) as { id: string; content: string } | null;
+
+	if (existing) {
+		const existingHash = createHash("sha256").update(existing.content).digest("hex");
+		if (existingHash === contentHash) {
+			// Content unchanged, skip update
+			return;
+		}
+		updateRow(
+			db,
+			"files",
+			existing.id,
+			{
+				content,
+				size_bytes: sizeBytes,
+			},
+			siteId,
+		);
+	} else {
+		insertRow(
+			db,
+			"files",
+			{
+				id: path,
+				path,
+				content,
+				deleted: 0,
+				size_bytes: sizeBytes,
+				created_at: now,
+				modified_at: now,
+			},
+			siteId,
+		);
+	}
+}
+
+/**
+ * Check staleness of a cached file by comparing its content hash
+ * against the overlay_index entry's content_hash.
+ *
+ * Returns null if the path is not found in both the files table and overlay index.
+ */
+function checkFileStaleness(db: Database, path: string): StalenessResult | null {
+	const cachedFile = db
+		.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
+		.get(path) as { content: string } | null;
+
+	if (!cachedFile) {
+		return null;
+	}
+
+	// Look up overlay index entry by path
+	const indexEntry = db
+		.query("SELECT content_hash FROM overlay_index WHERE path = ? AND deleted = 0")
+		.get(path) as { content_hash: string } | null;
+
+	if (!indexEntry || !indexEntry.content_hash) {
+		return null;
+	}
+
+	const cachedHash = createHash("sha256").update(cachedFile.content).digest("hex");
+	const indexHash = indexEntry.content_hash;
+
+	return {
+		stale: cachedHash !== indexHash,
+		cachedHash,
+		indexHash,
+	};
 }
 
 export async function snapshotWorkspace(fs: IFileSystem): Promise<Map<string, string>> {
