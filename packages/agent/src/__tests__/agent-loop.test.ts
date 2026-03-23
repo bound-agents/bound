@@ -1,37 +1,72 @@
 import type { Database } from "bun:sqlite";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
-import type { LLMBackend } from "@bound/llm";
+import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { AgentLoop } from "../agent-loop";
 
-// Mock LLM Backend that returns a text response
+// Mock LLM Backend that returns configurable responses
 class MockLLMBackend implements LLMBackend {
-	private responseType: "text" | "tool_use" = "text";
-	private toolUseId = "tool-123";
-	private toolName = "memorize";
+	private responses: Array<() => AsyncGenerator<StreamChunk>> = [];
+	private callCount = 0;
 
-	setResponseType(type: "text" | "tool_use") {
-		this.responseType = type;
+	/** Push a response generator that will be used on the next chat() call */
+	pushResponse(gen: () => AsyncGenerator<StreamChunk>) {
+		this.responses.push(gen);
+	}
+
+	/** Set a single text response (convenience) */
+	setTextResponse(text: string) {
+		this.responses = [];
+		this.pushResponse(async function* () {
+			yield { type: "text" as const, content: text };
+			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5 } };
+		});
+	}
+
+	/** Set a single tool_use response followed by a text response (convenience) */
+	setToolThenTextResponse(
+		toolId: string,
+		toolName: string,
+		toolInput: Record<string, unknown>,
+		finalText: string,
+	) {
+		this.responses = [];
+		// First call: LLM requests a tool call
+		this.pushResponse(async function* () {
+			yield { type: "tool_use_start" as const, id: toolId, name: toolName };
+			yield {
+				type: "tool_use_args" as const,
+				id: toolId,
+				partial_json: JSON.stringify(toolInput),
+			};
+			yield { type: "tool_use_end" as const, id: toolId };
+			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 15 } };
+		});
+		// Second call: LLM produces final text after seeing tool result
+		this.pushResponse(async function* () {
+			yield { type: "text" as const, content: finalText };
+			yield { type: "done" as const, usage: { input_tokens: 20, output_tokens: 10 } };
+		});
+	}
+
+	getCallCount() {
+		return this.callCount;
 	}
 
 	async *chat() {
-		if (this.responseType === "text") {
-			yield { type: "text" as const, content: "Hello, I understand." };
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5 } };
-		} else if (this.responseType === "tool_use") {
-			yield { type: "tool_use_start" as const, id: this.toolUseId, name: this.toolName };
-			yield {
-				type: "tool_use_args" as const,
-				id: this.toolUseId,
-				partial_json: '{"key":"test","value":"hello"}',
-			};
-			yield { type: "tool_use_end" as const, id: this.toolUseId };
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 15 } };
+		const gen = this.responses[this.callCount];
+		this.callCount++;
+		if (gen) {
+			yield* gen();
+		} else {
+			// Default: empty text response
+			yield { type: "text" as const, content: "" };
+			yield { type: "done" as const, usage: { input_tokens: 0, output_tokens: 0 } };
 		}
 	}
 
@@ -47,26 +82,45 @@ class MockLLMBackend implements LLMBackend {
 	}
 }
 
+// Mock sandbox with exec tracking
+function createMockSandbox(
+	handler?: (cmd: string) => { stdout: string; stderr: string; exitCode: number },
+) {
+	const calls: string[] = [];
+	return {
+		calls,
+		exec: async (cmd: string) => {
+			calls.push(cmd);
+			if (handler) {
+				return handler(cmd);
+			}
+			return { stdout: "mock output", stderr: "", exitCode: 0 };
+		},
+	};
+}
+
 describe("AgentLoop", () => {
 	let tmpDir: string;
 	let dbPath: string;
 	let db: Database;
+	let threadId: string;
 
 	beforeAll(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "agent-test-"));
 		dbPath = join(tmpDir, "test.db");
-
-		// Create database and apply schema
 		db = createDatabase(dbPath);
 		applySchema(db);
 
-		// Create a test user and thread
+		// Create a test user
 		const userId = randomUUID();
-
 		db.run(
 			"INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
 			[userId, "Test User", null, new Date().toISOString(), new Date().toISOString(), 0],
 		);
+	});
+
+	beforeEach(() => {
+		threadId = randomUUID();
 	});
 
 	afterAll(() => {
@@ -76,14 +130,8 @@ describe("AgentLoop", () => {
 		}
 	});
 
-	it("should return a valid result from running the agent loop", async () => {
-		const mockBackend = new MockLLMBackend();
-		mockBackend.setResponseType("text");
-
-		// Create a minimal mock for Bash-like interface
-		const mockBash = {};
-
-		const mockCtx = {
+	function makeCtx(): AppContext {
+		return {
 			db,
 			logger: {
 				info: () => {},
@@ -91,10 +139,19 @@ describe("AgentLoop", () => {
 				error: () => {},
 			},
 			hostName: "test-host",
+			siteId: "test-site-id",
 		} as unknown as AppContext;
+	}
 
-		const agentLoop = new AgentLoop(mockCtx, mockBash, mockBackend, {
-			threadId: "test-thread",
+	it("should return a valid result from running the agent loop with text response", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("Hello, I understand.");
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, mockBackend, {
+			threadId,
 			userId: "test-user",
 		});
 
@@ -106,5 +163,367 @@ describe("AgentLoop", () => {
 		expect(typeof result.messagesCreated).toBe("number");
 		expect(typeof result.toolCallsMade).toBe("number");
 		expect(typeof result.filesChanged).toBe("number");
+		expect(result.error).toBeUndefined();
+	});
+
+	it("should persist assistant text message to database", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("The answer is 42.");
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, mockBackend, {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await agentLoop.run();
+
+		expect(result.messagesCreated).toBe(1);
+		expect(result.toolCallsMade).toBe(0);
+
+		// Verify the message was persisted in the database
+		const msgs = db
+			.query("SELECT role, content FROM messages WHERE thread_id = ? ORDER BY created_at ASC")
+			.all(threadId) as Array<{ role: string; content: string }>;
+
+		expect(msgs.length).toBe(1);
+		expect(msgs[0].role).toBe("assistant");
+		expect(msgs[0].content).toBe("The answer is 42.");
+	});
+
+	it("should execute tool calls via sandbox.exec()", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setToolThenTextResponse(
+			"tool-123",
+			"bash",
+			{ command: "ls -la" },
+			"I listed the files for you.",
+		);
+
+		const mockBash = createMockSandbox((_cmd) => ({
+			stdout: "file1.txt\nfile2.txt\n",
+			stderr: "",
+			exitCode: 0,
+		}));
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, mockBackend, {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await agentLoop.run();
+
+		// One tool call was made
+		expect(result.toolCallsMade).toBe(1);
+		// The sandbox was called with the bash command
+		expect(mockBash.calls.length).toBe(1);
+		expect(mockBash.calls[0]).toBe("ls -la");
+		// Two LLM calls: first returned tool_use, second returned text
+		expect(mockBackend.getCallCount()).toBe(2);
+		expect(result.error).toBeUndefined();
+	});
+
+	it("should persist tool_call and tool_result messages in database", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setToolThenTextResponse(
+			"tool-456",
+			"memorize",
+			{ key: "color", value: "blue" },
+			"Done!",
+		);
+
+		const mockBash = createMockSandbox(() => ({
+			stdout: "Memory saved: color\n",
+			stderr: "",
+			exitCode: 0,
+		}));
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, mockBackend, {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await agentLoop.run();
+
+		expect(result.toolCallsMade).toBe(1);
+
+		// Verify messages were persisted: tool_call, tool_result, then final assistant text
+		const msgs = db
+			.query(
+				"SELECT role, content, tool_name FROM messages WHERE thread_id = ? ORDER BY created_at ASC",
+			)
+			.all(threadId) as Array<{ role: string; content: string; tool_name: string | null }>;
+
+		expect(msgs.length).toBe(3);
+		expect(msgs[0].role).toBe("tool_call");
+		expect(msgs[1].role).toBe("tool_result");
+		expect(msgs[1].content).toBe("Memory saved: color\n");
+		expect(msgs[2].role).toBe("assistant");
+		expect(msgs[2].content).toBe("Done!");
+	});
+
+	it("should feed tool errors back to the LLM instead of terminating", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setToolThenTextResponse(
+			"tool-err",
+			"bash",
+			{ command: "bad-command" },
+			"The command failed, let me try something else.",
+		);
+
+		const mockBash = createMockSandbox(() => ({
+			stdout: "",
+			stderr: "command not found: bad-command",
+			exitCode: 127,
+		}));
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, mockBackend, {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await agentLoop.run();
+
+		// The loop did not terminate on the error
+		expect(result.error).toBeUndefined();
+		expect(result.toolCallsMade).toBe(1);
+		expect(mockBackend.getCallCount()).toBe(2);
+
+		// The error was fed back as a tool_result
+		const msgs = db
+			.query("SELECT role, content FROM messages WHERE thread_id = ? AND role = 'tool_result'")
+			.all(threadId) as Array<{ role: string; content: string }>;
+
+		expect(msgs.length).toBe(1);
+		expect(msgs[0].content).toContain("command not found");
+	});
+
+	it("should handle non-bash tool calls by constructing command string from input", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setToolThenTextResponse(
+			"tool-mem",
+			"memorize",
+			{ key: "project", value: "bound" },
+			"Memorized.",
+		);
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, mockBackend, {
+			threadId,
+			userId: "test-user",
+		});
+
+		await agentLoop.run();
+
+		// For non-bash commands, the command string is "name arg1 arg2 ..."
+		expect(mockBash.calls.length).toBe(1);
+		expect(mockBash.calls[0]).toBe("memorize project bound");
+	});
+
+	it("should handle sandbox without exec gracefully", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setToolThenTextResponse(
+			"tool-no-exec",
+			"bash",
+			{ command: "echo hi" },
+			"Could not execute.",
+		);
+
+		// Sandbox with no exec method
+		const noExecSandbox = {};
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, noExecSandbox, mockBackend, {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await agentLoop.run();
+
+		// Should not crash — the error is captured and fed back to the LLM
+		expect(result.error).toBeUndefined();
+		expect(result.toolCallsMade).toBe(1);
+
+		// Check the tool_result contains the "not available" error
+		const msgs = db
+			.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'tool_result'")
+			.all(threadId) as Array<{ content: string }>;
+
+		expect(msgs.length).toBe(1);
+		expect(msgs[0].content).toContain("sandbox execution not available");
+	});
+
+	it("should abort when abort signal is triggered", async () => {
+		const controller = new AbortController();
+		const mockBackend = new MockLLMBackend();
+		// Response that yields slowly so we can abort mid-stream
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "Starting..." };
+			// Simulate delay (abort will happen before next yield)
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			yield { type: "text" as const, content: " still going" };
+			yield { type: "done" as const, usage: { input_tokens: 5, output_tokens: 3 } };
+		});
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, mockBackend, {
+			threadId,
+			userId: "test-user",
+			abortSignal: controller.signal,
+		});
+
+		// Abort after a small delay
+		setTimeout(() => controller.abort(), 10);
+
+		const result = await agentLoop.run();
+
+		// Should exit without error — just incomplete
+		expect(result.error).toBeUndefined();
+	});
+
+	it("should persist LLM error as alert message", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.pushResponse(async function* () {
+			yield { type: "error" as const, error: "Rate limited" };
+			throw new Error("API rate limit exceeded");
+		});
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, mockBackend, {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await agentLoop.run();
+
+		expect(result.error).toBe("API rate limit exceeded");
+
+		// Check that alert message was persisted
+		const alerts = db
+			.query("SELECT role, content FROM messages WHERE thread_id = ? AND role = 'alert'")
+			.all(threadId) as Array<{ role: string; content: string }>;
+
+		expect(alerts.length).toBe(1);
+		expect(alerts[0].content).toContain("API rate limit exceeded");
+	});
+
+	it("should handle multiple tool calls in sequence", async () => {
+		const mockBackend = new MockLLMBackend();
+
+		// First LLM call: two tool uses
+		mockBackend.pushResponse(async function* () {
+			yield { type: "tool_use_start" as const, id: "t1", name: "bash" };
+			yield { type: "tool_use_args" as const, id: "t1", partial_json: '{"command":"echo hello"}' };
+			yield { type: "tool_use_end" as const, id: "t1" };
+			yield { type: "tool_use_start" as const, id: "t2", name: "bash" };
+			yield { type: "tool_use_args" as const, id: "t2", partial_json: '{"command":"echo world"}' };
+			yield { type: "tool_use_end" as const, id: "t2" };
+			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 20 } };
+		});
+
+		// Second LLM call: text response
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "Both commands executed." };
+			yield { type: "done" as const, usage: { input_tokens: 30, output_tokens: 8 } };
+		});
+
+		const mockBash = createMockSandbox((cmd) => ({
+			stdout: `ran: ${cmd}`,
+			stderr: "",
+			exitCode: 0,
+		}));
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, mockBackend, {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await agentLoop.run();
+
+		expect(result.toolCallsMade).toBe(2);
+		expect(mockBash.calls).toEqual(["echo hello", "echo world"]);
+
+		// Verify persisted messages: tool_call, tool_result x2, assistant
+		const msgs = db
+			.query("SELECT role FROM messages WHERE thread_id = ? ORDER BY created_at ASC")
+			.all(threadId) as Array<{ role: string }>;
+
+		// tool_call (1 msg for both calls), tool_result, tool_result, assistant
+		expect(msgs.length).toBe(4);
+		expect(msgs[0].role).toBe("tool_call");
+		expect(msgs[1].role).toBe("tool_result");
+		expect(msgs[2].role).toBe("tool_result");
+		expect(msgs[3].role).toBe("assistant");
+	});
+
+	it("should call persistFs when sandbox supports it", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("Done.");
+
+		let persistCalled = false;
+		const mockBash = {
+			exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+			persistFs: async () => {
+				persistCalled = true;
+				return { changes: 3 };
+			},
+		};
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, mockBackend, {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await agentLoop.run();
+
+		expect(persistCalled).toBe(true);
+		expect(result.filesChanged).toBe(3);
+	});
+
+	it("should handle partial JSON accumulation across multiple tool_use_args chunks", async () => {
+		const mockBackend = new MockLLMBackend();
+
+		// First call: tool use with partial JSON spread across multiple chunks
+		mockBackend.pushResponse(async function* () {
+			yield { type: "tool_use_start" as const, id: "t-partial", name: "bash" };
+			yield { type: "tool_use_args" as const, id: "t-partial", partial_json: '{"comma' };
+			yield { type: "tool_use_args" as const, id: "t-partial", partial_json: 'nd":"cat ' };
+			yield { type: "tool_use_args" as const, id: "t-partial", partial_json: 'file.txt"}' };
+			yield { type: "tool_use_end" as const, id: "t-partial" };
+			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 15 } };
+		});
+
+		// Second call: final text
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "Here is the file content." };
+			yield { type: "done" as const, usage: { input_tokens: 20, output_tokens: 10 } };
+		});
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, mockBackend, {
+			threadId,
+			userId: "test-user",
+		});
+
+		await agentLoop.run();
+
+		// The partial JSON should have been reassembled correctly
+		expect(mockBash.calls.length).toBe(1);
+		expect(mockBash.calls[0]).toBe("cat file.txt");
 	});
 });
