@@ -131,7 +131,10 @@ export async function runStart(args: StartArgs): Promise<void> {
 					const client = new MCPClient(serverCfg);
 					await client.connect();
 					mcpClients.push(client);
-					console.log(`[mcp] Connected to server: ${serverCfg.name} (${serverCfg.transport})`);
+					const tools = await client.listTools();
+					console.log(
+						`[mcp] Connected to server: ${serverCfg.name} (${serverCfg.transport}), tools: ${tools.map((t) => t.name).join(", ") || "(none)"}`,
+					);
 				} catch (error) {
 					console.warn(
 						`[mcp] Failed to connect to ${serverCfg.name}:`,

@@ -34,9 +34,9 @@ export {
 export { MCPClient } from "./mcp-client";
 export type {
 	MCPServerConfig,
-	ToolDefinition,
-	ResourceDefinition,
-	PromptDefinition,
+	Tool,
+	Resource,
+	Prompt,
 	ToolResult,
 	ResourceContent,
 	PromptResult,

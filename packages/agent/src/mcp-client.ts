@@ -3,6 +3,10 @@
  * Implements lifecycle management per spec §7.2.
  */
 
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import type { Tool, Resource, Prompt } from "@modelcontextprotocol/sdk/types.js";
+
 export interface MCPServerConfig {
 	name: string;
 	command?: string;
@@ -13,24 +17,7 @@ export interface MCPServerConfig {
 	confirm?: string[];
 }
 
-export interface ToolDefinition {
-	name: string;
-	description: string;
-	inputSchema: Record<string, unknown>;
-}
-
-export interface ResourceDefinition {
-	uri: string;
-	name: string;
-	description: string;
-	mimeType?: string;
-}
-
-export interface PromptDefinition {
-	name: string;
-	description: string;
-	arguments?: Array<{ name: string; description?: string }>;
-}
+export type { Tool, Resource, Prompt };
 
 export interface ToolResult {
 	content: string;
@@ -48,174 +35,173 @@ export interface PromptResult {
 }
 
 /**
- * MCPClient manages connections to external MCP servers.
- * For Phase 4, this is a simplified version with mock support.
+ * MCPClient manages connections to external MCP servers using the real MCP SDK.
  */
 export class MCPClient {
 	private serverConfig: MCPServerConfig;
+	private client: Client;
 	private connected = false;
-	private tools: Map<string, ToolDefinition> = new Map();
-	private resources: Map<string, ResourceDefinition> = new Map();
-	private prompts: Map<string, PromptDefinition> = new Map();
 
 	constructor(serverConfig: MCPServerConfig) {
 		this.serverConfig = serverConfig;
+		this.client = new Client({ name: "bound", version: "0.0.1" });
 	}
 
 	/**
-	 * Connect to the MCP server
-	 * For Phase 4: stub implementation - mock servers only
+	 * Connect to the MCP server via stdio transport.
 	 */
 	async connect(): Promise<void> {
-		// Phase 4: Simplified - no real connections
-		// Real implementation would:
-		// 1. Spawn process for stdio transport
-		// 2. Connect to SSE URL for sse transport
-		// 3. Exchange initialization handshake
+		if (this.serverConfig.transport !== "stdio") {
+			throw new Error(`Transport "${this.serverConfig.transport}" is not yet supported`);
+		}
+
+		if (!this.serverConfig.command) {
+			throw new Error(`Server "${this.serverConfig.name}" requires a command for stdio transport`);
+		}
+
+		const transport = new StdioClientTransport({
+			command: this.serverConfig.command,
+			args: this.serverConfig.args,
+		});
+
+		await this.client.connect(transport);
 		this.connected = true;
 	}
 
 	/**
-	 * Disconnect from the MCP server
+	 * Disconnect from the MCP server.
 	 */
 	async disconnect(): Promise<void> {
-		this.connected = false;
-		this.tools.clear();
-		this.resources.clear();
-		this.prompts.clear();
+		if (this.connected) {
+			await this.client.close();
+			this.connected = false;
+		}
 	}
 
 	/**
-	 * Discover available tools from the server
-	 * Returns synchronously if already connected and loaded, otherwise throws
+	 * Discover available tools from the server.
 	 */
-	listTools(): ToolDefinition[] {
+	async listTools(): Promise<Tool[]> {
 		if (!this.connected) {
 			throw new Error(`MCP client not connected to ${this.serverConfig.name}`);
 		}
-		return Array.from(this.tools.values());
+		const result = await this.client.listTools();
+		return result.tools;
 	}
 
 	/**
-	 * Discover available resources from the server
-	 * Returns synchronously if already connected and loaded, otherwise throws
+	 * Discover available resources from the server.
 	 */
-	listResources(): ResourceDefinition[] {
+	async listResources(): Promise<Resource[]> {
 		if (!this.connected) {
 			throw new Error(`MCP client not connected to ${this.serverConfig.name}`);
 		}
-		return Array.from(this.resources.values());
+		const result = await this.client.listResources();
+		return result.resources;
 	}
 
 	/**
-	 * Discover available prompts from the server
-	 * Returns synchronously if already connected and loaded, otherwise throws
+	 * Discover available prompts from the server.
 	 */
-	listPrompts(): PromptDefinition[] {
+	async listPrompts(): Promise<Prompt[]> {
 		if (!this.connected) {
 			throw new Error(`MCP client not connected to ${this.serverConfig.name}`);
 		}
-		return Array.from(this.prompts.values());
+		const result = await this.client.listPrompts();
+		return result.prompts;
 	}
 
 	/**
-	 * Execute a tool on the MCP server
+	 * Execute a tool on the MCP server.
 	 */
 	async callTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
 		if (!this.connected) {
 			throw new Error(`MCP client not connected to ${this.serverConfig.name}`);
 		}
 
-		const tool = this.tools.get(name);
-		if (!tool) {
-			return {
-				content: `Tool not found: ${name}`,
-				isError: true,
-			};
+		const result = await this.client.callTool({ name, arguments: args });
+
+		// Extract text content from the result's content array
+		const parts: string[] = [];
+		if (Array.isArray(result.content)) {
+			for (const item of result.content) {
+				if (item.type === "text") {
+					parts.push(item.text);
+				} else if (item.type === "image") {
+					parts.push(`[image: ${item.mimeType}]`);
+				} else if (item.type === "audio") {
+					parts.push(`[audio: ${item.mimeType}]`);
+				} else if (item.type === "resource") {
+					const r = item.resource;
+					parts.push("text" in r ? r.text : `[blob: ${r.mimeType ?? "unknown"}]`);
+				}
+			}
 		}
 
-		// Phase 4: Stub - real implementation would RPC to the server
 		return {
-			content: `Tool ${name} called with args: ${JSON.stringify(args)}`,
-			isError: false,
+			content: parts.join("\n"),
+			isError: result.isError === true,
 		};
 	}
 
 	/**
-	 * Read a resource from the MCP server
+	 * Read a resource from the MCP server.
 	 */
 	async readResource(uri: string): Promise<ResourceContent> {
 		if (!this.connected) {
 			throw new Error(`MCP client not connected to ${this.serverConfig.name}`);
 		}
 
-		const resource = this.resources.get(uri);
-		if (!resource) {
-			throw new Error(`Resource not found: ${uri}`);
+		const result = await this.client.readResource({ uri });
+
+		// Use the first content item
+		const first = result.contents[0];
+		if (!first) {
+			throw new Error(`No content returned for resource: ${uri}`);
 		}
 
-		// Phase 4: Stub - real implementation would RPC to the server
 		return {
-			uri,
-			content: `Content of ${uri}`,
-			mimeType: resource.mimeType,
+			uri: first.uri,
+			mimeType: first.mimeType,
+			content: "text" in first ? first.text : first.blob,
 		};
 	}
 
 	/**
-	 * Invoke a prompt on the MCP server
+	 * Invoke a prompt on the MCP server.
 	 */
 	async invokePrompt(name: string, args: Record<string, string>): Promise<PromptResult> {
 		if (!this.connected) {
 			throw new Error(`MCP client not connected to ${this.serverConfig.name}`);
 		}
 
-		const prompt = this.prompts.get(name);
-		if (!prompt) {
-			throw new Error(`Prompt not found: ${name}`);
-		}
+		const result = await this.client.getPrompt({ name, arguments: args });
 
-		// Phase 4: Stub - real implementation would RPC to the server
 		return {
-			messages: [
-				{
-					role: "system",
-					content: `Prompt ${name} invoked with args: ${JSON.stringify(args)}`,
-				},
-			],
+			messages: result.messages.map((m) => {
+				let content: string;
+				if (m.content.type === "text") {
+					content = m.content.text;
+				} else if (m.content.type === "resource") {
+					const r = m.content.resource;
+					content = "text" in r ? r.text : `[blob: ${r.mimeType ?? "unknown"}]`;
+				} else {
+					content = `[${m.content.type}]`;
+				}
+				return { role: m.role, content };
+			}),
 		};
 	}
 
 	/**
-	 * Register a tool (for testing/mocking)
-	 */
-	registerTool(tool: ToolDefinition): void {
-		this.tools.set(tool.name, tool);
-	}
-
-	/**
-	 * Register a resource (for testing/mocking)
-	 */
-	registerResource(resource: ResourceDefinition): void {
-		this.resources.set(resource.uri, resource);
-	}
-
-	/**
-	 * Register a prompt (for testing/mocking)
-	 */
-	registerPrompt(prompt: PromptDefinition): void {
-		this.prompts.set(prompt.name, prompt);
-	}
-
-	/**
-	 * Get the server configuration
+	 * Get the server configuration.
 	 */
 	getConfig(): MCPServerConfig {
 		return this.serverConfig;
 	}
 
 	/**
-	 * Check if connected
+	 * Check if connected.
 	 */
 	isConnected(): boolean {
 		return this.connected;

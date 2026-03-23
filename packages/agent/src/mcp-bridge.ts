@@ -5,18 +5,19 @@
 
 import type { Database } from "bun:sqlite";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
-import type { MCPClient, ToolDefinition } from "./mcp-client";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { MCPClient } from "./mcp-client";
 
 /**
- * Generate defineCommands from MCP tools discovered on connected servers
+ * Generate defineCommands from MCP tools discovered on connected servers.
  * Returns an array of CommandDefinition for each tool with name format: {server-name}-{tool-name}
  *
- * Tools are enumerated synchronously from the client's internal state after connect() is called.
+ * Calls listTools() on each connected client to enumerate tools.
  */
-export function generateMCPCommands(
+export async function generateMCPCommands(
 	clients: Map<string, MCPClient>,
 	confirmGates: Map<string, string[]> = new Map(),
-): CommandDefinition[] {
+): Promise<CommandDefinition[]> {
 	const commands: CommandDefinition[] = [];
 
 	for (const [serverName, client] of clients) {
@@ -28,16 +29,15 @@ export function generateMCPCommands(
 		const config = client.getConfig();
 		const allowTools = config.allow_tools;
 
-		// Get tools synchronously from the client
-		let toolsList: ToolDefinition[] = [];
+		let toolsList: Tool[] = [];
 		try {
-			toolsList = client.listTools(); // Sync access to already-loaded tools
+			toolsList = await client.listTools();
 		} catch {
 			// If listTools throws, skip this server
 			continue;
 		}
 
-		const serverConfirms = confirmGates.get(serverName) || [];
+		const serverConfirms = confirmGates.get(serverName) ?? [];
 
 		for (const tool of toolsList) {
 			// Apply allow_tools filter
@@ -117,7 +117,7 @@ function createResourcesCommand(clients: Map<string, MCPClient>): CommandDefinit
 					}
 
 					try {
-						const serverResources = client.listResources(); // Sync access
+						const serverResources = await client.listResources();
 						for (const resource of serverResources) {
 							resources.push(`${serverName}: ${resource.uri} (${resource.name})`);
 						}
@@ -181,7 +181,7 @@ function createResourceCommand(clients: Map<string, MCPClient>): CommandDefiniti
 
 				return {
 					stdout: "",
-					stderr: `Resource not found: ${uri}\n`,
+					stderr: `Resource not found: ${args.uri}\n`,
 					exitCode: 1,
 				};
 			} catch (error) {
@@ -218,9 +218,9 @@ function createPromptsCommand(clients: Map<string, MCPClient>): CommandDefinitio
 					}
 
 					try {
-						const serverPrompts = client.listPrompts(); // Sync access
+						const serverPrompts = await client.listPrompts();
 						for (const prompt of serverPrompts) {
-							prompts.push(`${serverName}: ${prompt.name} (${prompt.description})`);
+							prompts.push(`${serverName}: ${prompt.name} (${prompt.description ?? ""})`);
 						}
 					} catch {
 						// Skip servers that fail to list prompts
@@ -304,14 +304,14 @@ function createPromptCommand(clients: Map<string, MCPClient>): CommandDefinition
 }
 
 /**
- * Update host's MCP info in database
- * Records the connected servers and their tools in the hosts table
+ * Update host's MCP info in database.
+ * Records the connected servers and their tools in the hosts table.
  */
-export function updateHostMCPInfo(
+export async function updateHostMCPInfo(
 	db: Database,
 	siteId: string,
 	clients: Map<string, MCPClient>,
-): void {
+): Promise<void> {
 	try {
 		const mcp_servers = Array.from(clients.keys());
 
@@ -320,7 +320,7 @@ export function updateHostMCPInfo(
 		for (const [serverName, client] of clients) {
 			if (client.isConnected()) {
 				try {
-					const tools = client.listTools();
+					const tools = await client.listTools();
 					for (const tool of tools) {
 						mcp_tools.push(`${serverName}-${tool.name}`);
 					}
