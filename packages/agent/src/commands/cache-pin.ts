@@ -1,4 +1,30 @@
+import { createChangeLogEntry } from "@bound/core";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
+
+/**
+ * Helper to update cluster_config with proper change-log entry.
+ * cluster_config uses 'key' as primary key (not 'id'), so we handle it specially.
+ */
+function updateClusterConfig(ctx: CommandContext, key: string, value: string): void {
+	const now = new Date().toISOString();
+	const txFn = ctx.db.transaction(() => {
+		ctx.db.run(
+			"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, modified_at = excluded.modified_at",
+			[key, value, now],
+		);
+
+		// Fetch the full row for change_log
+		const row = ctx.db.query("SELECT * FROM cluster_config WHERE key = ?").get(key) as Record<
+			string,
+			unknown
+		>;
+
+		// Create change_log entry using key as row_id
+		createChangeLogEntry(ctx.db, "cluster_config", key, ctx.siteId, row);
+	});
+
+	txFn();
+}
 
 export const cachePin: CommandDefinition = {
 	name: "cache-pin",
@@ -10,7 +36,7 @@ export const cachePin: CommandDefinition = {
 			// Find the file by path
 			const file = ctx.db
 				.prepare("SELECT id FROM files WHERE path = ? AND deleted = 0")
-				.get(path) as { id: string } | undefined;
+				.get(path) as { id: string } | null;
 
 			if (!file) {
 				return {
@@ -20,11 +46,29 @@ export const cachePin: CommandDefinition = {
 				};
 			}
 
-			// Update file metadata to mark as pinned
-			// For now, we store pinned status in a simple way
-			// In production, this might be stored in a separate pins table or metadata column
-			// Note: We would need to extend the files table or use a separate table for pins
-			// For Phase 4, we'll just update the content/metadata as a stub
+			// Read current pinned_files from cluster_config
+			const configRow = ctx.db
+				.query("SELECT value FROM cluster_config WHERE key = ?")
+				.get("pinned_files") as { value: string } | null;
+
+			let pinnedFiles: string[] = [];
+			if (configRow) {
+				try {
+					pinnedFiles = JSON.parse(configRow.value);
+					if (!Array.isArray(pinnedFiles)) {
+						pinnedFiles = [];
+					}
+				} catch {
+					pinnedFiles = [];
+				}
+			}
+
+			// Add the path if not already pinned
+			if (!pinnedFiles.includes(path)) {
+				pinnedFiles.push(path);
+				updateClusterConfig(ctx, "pinned_files", JSON.stringify(pinnedFiles));
+			}
+
 			return {
 				stdout: `File pinned: ${path}\n`,
 				stderr: "",

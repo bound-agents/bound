@@ -119,6 +119,10 @@ describe("Cache and runtime command implementations", () => {
 				[fileId, "/test/pinned.txt", "content", 0, 7, now, now, 0, ctx.siteId, "http://localhost"],
 			);
 
+			// Pin the file first
+			await cachePin.handler({ path: "/test/pinned.txt" }, ctx);
+
+			// Then unpin it
 			const result = await cacheUnpin.handler({ path: "/test/pinned.txt" }, ctx);
 
 			expect(result.exitCode).toBe(0);
