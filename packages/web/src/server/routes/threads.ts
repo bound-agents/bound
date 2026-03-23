@@ -50,7 +50,7 @@ export function createThreadsRoutes(db: Database, defaultModel?: string): Hono {
 				interface: "web",
 				host_origin: "localhost:3000",
 				color: Math.floor(Math.random() * 10),
-				title: "New Thread",
+				title: "",
 				summary: null,
 				created_at: now,
 				last_message_at: now,

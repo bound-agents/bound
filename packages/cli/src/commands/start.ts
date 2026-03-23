@@ -9,6 +9,7 @@ import { AgentLoop, Scheduler } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
 import { generateMCPCommands } from "@bound/agent";
+import { generateThreadTitle } from "@bound/agent";
 import { OllamaDriver } from "@bound/llm";
 import type { LLMBackend, LLMMessage, ToolDefinition } from "@bound/llm";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
@@ -465,6 +466,18 @@ export async function runStart(args: StartArgs): Promise<void> {
 						message: savedMsg as any,
 						thread_id,
 					});
+
+					// Fire-and-forget: generate thread title per spec R-E17
+					// The at-most-once guard inside generateThreadTitle handles dedup
+					generateThreadTitle(appContext.db, thread_id, llmDriver, appContext.siteId).then(
+						(result) => {
+							if (result.ok) {
+								console.log(`[agent] Thread title: ${result.value}`);
+							} else {
+								console.warn(`[agent] Title generation failed: ${result.error.message}`);
+							}
+						},
+					);
 				}
 			} catch (error) {
 				console.error(`[agent] Error: ${error instanceof Error ? error.message : String(error)}`);

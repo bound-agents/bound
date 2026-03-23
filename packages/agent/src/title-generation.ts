@@ -63,13 +63,38 @@ ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
 			}
 		}
 
-		const title = chunks.join("").trim();
+		let title = chunks.join("").trim();
+
+		// Fallback per spec R-E17: use first 50 chars of user message if LLM returned empty
+		if (!title) {
+			title = firstUserMessage.content.substring(0, 50).trim();
+		}
 
 		// Store the generated title
 		db.prepare("UPDATE threads SET title = ? WHERE id = ?").run(title, threadId);
 
 		return { ok: true, value: title };
 	} catch (error) {
+		// Fallback per spec R-E17: on failure, use first 50 chars of user's first message
+		try {
+			const fallbackMsg = db
+				.prepare(
+					"SELECT content FROM messages WHERE thread_id = ? AND role = 'user' ORDER BY created_at LIMIT 1",
+				)
+				.get(threadId) as Pick<Message, "content"> | null;
+
+			if (fallbackMsg) {
+				const fallbackTitle = fallbackMsg.content.substring(0, 50).trim();
+				db.prepare("UPDATE threads SET title = ? WHERE id = ?").run(
+					fallbackTitle,
+					threadId,
+				);
+				return { ok: true, value: fallbackTitle };
+			}
+		} catch {
+			// If even the fallback fails, just return the original error
+		}
+
 		return {
 			ok: false,
 			error: error instanceof Error ? error : new Error("Unknown error"),
