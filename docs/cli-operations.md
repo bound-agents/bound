@@ -441,8 +441,9 @@ The `bound start` command executes a strictly ordered bootstrap sequence. All st
 
 2. **Initialize cryptography**
    - Ensures Ed25519 keypair exists (via `@bound/sync`)
-   - Generates keypair if needed, stored in secure location
-   - Used for cluster synchronization signing
+   - Generates keypair if needed, stored in `data/host.key` (private) and `data/host.pub` (public)
+   - Used for cluster synchronization signing and host identity
+   - Public key must be registered in `keyring.json` for multi-host setups
 
 3. **Initialize database**
    - Creates or opens `bound.db` (SQLite)
@@ -470,8 +471,9 @@ The `bound start` command executes a strictly ordered bootstrap sequence. All st
 
 8. **Initialize MCP servers**
    - Reads `mcp.json` if present
-   - Spawns MCP server subprocesses
-   - Establishes stdio communication channels
+   - Spawns MCP server subprocesses or connects to HTTP endpoints
+   - Establishes stdio or HTTP communication channels
+   - Discovers tools from each server and registers them as agent commands
 
 9. **Set up sandbox**
    - Creates ClusterFs (sandboxed filesystem)
@@ -492,38 +494,41 @@ The `bound start` command executes a strictly ordered bootstrap sequence. All st
     - Initializes Hono web framework
     - Sets up WebSocket for real-time communication
     - Listens on `http://localhost:3000` (customizable)
+    - Exposes MCP proxy at `POST /api/mcp-proxy` for cross-host tool access
+    - Serves embedded Svelte SPA web UI
 
 13. **Initialize Discord bot**
     - Reads `discord.json` if present
-    - Checks if host matches current hostname
-    - Connects to Discord API and joins specified server
+    - Checks if host matches current hostname (only active host runs the bot)
+    - Connects to Discord API and registers DM listener for allowlisted users
 
 14. **Initialize sync loop**
     - Reads `sync.json` if present
-    - Starts periodic synchronization with hub
-    - Establishes cluster membership
+    - Starts periodic synchronization with hub (30s interval by default, adaptive scaling)
+    - Establishes cluster membership and state replication
 
 15. **Initialize overlay scanner**
     - Reads `overlay.json` if present
     - Scans mounted directories for file changes
-    - Indexes files for agent access
+    - Indexes files for agent access with automatic cache management
 
 16. **Start scheduler**
-    - Initializes agent scheduler loop
-    - Begins processing incoming messages and tasks
-    - Starts autonomous agent execution if enabled
+    - Initializes scheduler loop with MCP client registry
+    - Begins processing incoming messages and tasks from agent event loop
+    - Starts autonomous agent execution with tool integration
+    - Publishes completion events to WebSocket clients
 
 ### Bootstrap Configuration
 
 Bootstrap is driven by file presence and configuration:
 
 - If `sync.json` is absent, steps 6 and 14 are skipped (single-host mode)
-- If `mcp.json` is absent, step 8 is skipped
+- If `mcp.json` is absent, step 8 is skipped (no external tool integrations)
 - If `persona.md` is absent, step 10 uses default system prompt
 - If `discord.json` is absent or host doesn't match, step 13 is skipped
 - If `overlay.json` is absent, step 15 is skipped
 
-All other steps execute unconditionally.
+All other steps execute unconditionally. MCP tools discovered in step 8 are automatically wired into the agent loop (step 16) and available during chat interactions.
 
 ### Graceful Shutdown
 
@@ -535,6 +540,29 @@ The orchestrator responds to SIGINT (Ctrl+C) and SIGTERM signals. Shutdown perfo
 5. Close database
 6. Clear cryptographic material
 7. Exit with code 0
+
+---
+
+## Web Server and API
+
+When the orchestrator starts, it initializes an HTTP server on `http://localhost:3000` with the following endpoints:
+
+### WebSocket
+- `GET /ws` — Real-time bidirectional communication for chat and event streaming
+
+### API Endpoints
+- `POST /api/threads` — Create or list conversation threads
+- `POST /api/threads/:id/messages` — Post a message to a thread
+- `POST /api/mcp-proxy` — Cross-host MCP tool execution (when sync is enabled)
+
+### Web UI
+The server serves a Svelte SPA embedded directly in the compiled binary. The UI provides:
+- Real-time chat interface
+- Thread management
+- Task scheduler visualization
+- Model and backend selection
+
+No external dependencies are needed to serve the UI; it is fully self-contained in the binary.
 
 ---
 
@@ -564,9 +592,10 @@ bun build --compile packages/cli/src/bound.ts --outfile dist/bound
 
 Compiles the CLI entry point and all dependencies into a standalone executable. The executable contains:
 - Bound CLI code (bound.ts, boundctl.ts, and all commands)
-- Web assets (embedded)
+- Web assets including Svelte SPA (embedded)
 - All Node.js and Bun runtime dependencies
 - No external runtime required
+- No external web server or static file hosting needed
 
 ### Running the Build
 
@@ -1009,12 +1038,12 @@ Private key material (`data/host.key`) is auto-generated by the orchestrator on 
 | `servers` | array | List of MCP server configuration objects. |
 | `servers[].name` | string | Server identifier. Tools from this server are namespaced as `{name}-{tool}`. |
 | `servers[].instance` | string | Optional. When set, the effective server name becomes `{name}-{instance}`. Use to distinguish two servers of the same type with different credentials (e.g. personal vs work GitHub). |
-| `servers[].transport` | string | `stdio` or `sse`. |
+| `servers[].transport` | string | `stdio` or `http`. |
 | `servers[].command` | string | For `stdio` transport: the executable to spawn (e.g. `npx`). |
 | `servers[].args` | array | For `stdio` transport: arguments to the command. |
-| `servers[].url` | string | For `sse` transport: the SSE endpoint URL. |
+| `servers[].url` | string | For `http` transport: the HTTP endpoint URL. |
 | `servers[].env` | object | Environment variables to set for the server process. Values are expanded from the operator's environment (`${VAR}`). |
-| `servers[].headers` | object | For `sse` transport: HTTP headers to include. Values are expanded from the environment. |
+| `servers[].headers` | object | For `http` transport: HTTP headers to include. Values are expanded from the environment. |
 | `servers[].allow_tools` | array | Optional. If present, only the listed tool names (without the server prefix) are registered as sandbox commands. Unlisted tools are silently dropped after discovery. |
 | `servers[].confirm` | array | Optional. Tool names that require interactive user confirmation before execution. Confirmed tools are blocked during autonomous tasks. |
 
@@ -1034,8 +1063,8 @@ Private key material (`data/host.key`) is auto-generated by the orchestrator on 
     },
     {
       "name": "slack",
-      "transport": "sse",
-      "url": "https://mcp.slack.example.com/sse",
+      "transport": "http",
+      "url": "https://mcp.slack.example.com/api",
       "headers": { "Authorization": "Bearer ${SLACK_TOKEN}" },
       "confirm": ["post-message", "upload-file"]
     }

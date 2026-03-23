@@ -114,10 +114,31 @@ After `bound init`, the `config/` directory contains:
 | `model_backends.json` | Yes | LLM backend configuration |
 | `discord.json` | No | Discord bot token and host assignment |
 | `sync.json` | No | Hub URL and sync interval for multi-host |
-| `mcp.json` | No | MCP server connections |
+| `mcp.json` | No | MCP server connections (stdio or http transport) |
 | `overlay.json` | No | Codebase mount points |
 | `cron_schedules.json` | No | Recurring task definitions |
 | `persona.md` | No | Custom system prompt personality |
+
+### MCP Server Configuration
+
+MCP servers are configured in `mcp.json` with either `stdio` or `http` transport. Tools from connected servers are automatically registered as commands available to the agent during chat.
+
+Example with stdio transport:
+```json
+{
+  "servers": [
+    {
+      "name": "github",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" }
+    }
+  ]
+}
+```
+
+The web server also exposes a cross-host MCP proxy at `POST /api/mcp-proxy` for accessing tools from connected servers in a distributed setup.
 
 ## Architecture
 
@@ -125,9 +146,10 @@ The system uses an event-sourced architecture with SQLite as the storage layer:
 
 - **Agent loop** processes messages through a state machine: hydrate filesystem, assemble context, call LLM, execute tools, persist results
 - **Scheduler** fires cron, deferred, and event-driven tasks with DAG dependency resolution
-- **Sync protocol** replicates state between hosts via a three-phase push/pull/ack cycle with Ed25519 authentication
+- **Sync protocol** replicates state between hosts via a three-phase push/pull/ack cycle with Ed25519 authentication. Keypair is auto-generated and stored in `data/host.key` and `data/host.pub`
 - **14 built-in commands** available to the agent: `query`, `memorize`, `forget`, `schedule`, `await`, `cancel`, `emit`, `purge`, `cache-warm`, `cache-pin`, `cache-unpin`, `cache-evict`, `model-hint`, `archive`
-- **MCP bridge** auto-generates additional commands from connected MCP servers
+- **MCP integration** auto-generates commands from connected MCP servers (stdio or http transport). Tools are available to the agent during chat and accessible via the MCP proxy for cross-host scenarios
+- **Web UI** is built as a Svelte SPA and embedded into the compiled binary for zero external dependencies
 
 ## License
 
