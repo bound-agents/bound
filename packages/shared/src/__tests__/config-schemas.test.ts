@@ -279,7 +279,7 @@ describe("Config schemas", () => {
 					{
 						name: "web",
 						url: "https://mcp.example.com",
-						transport: "sse",
+						transport: "http",
 						allow_tools: ["fetch", "search"],
 					},
 				],

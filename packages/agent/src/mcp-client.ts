@@ -13,7 +13,7 @@ export interface MCPServerConfig {
 	command?: string;
 	args?: string[];
 	url?: string;
-	transport: "stdio" | "sse" | "streamable-http";
+	transport: "stdio" | "http";
 	allow_tools?: string[];
 	confirm?: string[];
 }
@@ -48,49 +48,24 @@ export class MCPClient {
 		this.client = new Client({ name: "bound", version: "0.0.1" });
 	}
 
-	/**
-	 * Connect to the MCP server using the configured transport.
-	 * Supports stdio and Streamable HTTP transports.
-	 * The legacy "sse" transport value is mapped to Streamable HTTP per the MCP spec update.
-	 */
 	async connect(): Promise<void> {
-		const { transport } = this.serverConfig;
-
-		if (transport === "stdio") {
+		if (this.serverConfig.transport === "stdio") {
 			if (!this.serverConfig.command) {
 				throw new Error(`Server "${this.serverConfig.name}" requires a command for stdio transport`);
 			}
-
-			const stdioTransport = new StdioClientTransport({
+			const transport = new StdioClientTransport({
 				command: this.serverConfig.command,
 				args: this.serverConfig.args,
 			});
-
-			await this.client.connect(stdioTransport);
-			this.connected = true;
-			return;
-		}
-
-		if (transport === "sse" || transport === "streamable-http") {
-			if (transport === "sse") {
-				console.warn(
-					`[mcp] Server "${this.serverConfig.name}": transport "sse" is deprecated — using Streamable HTTP instead`,
-				);
-			}
-
+			await this.client.connect(transport);
+		} else {
 			if (!this.serverConfig.url) {
-				throw new Error(
-					`Server "${this.serverConfig.name}" requires a url for ${transport} transport`,
-				);
+				throw new Error(`Server "${this.serverConfig.name}" requires a url for http transport`);
 			}
-
-			const httpTransport = new StreamableHTTPClientTransport(new URL(this.serverConfig.url));
-			await this.client.connect(httpTransport);
-			this.connected = true;
-			return;
+			const transport = new StreamableHTTPClientTransport(new URL(this.serverConfig.url));
+			await this.client.connect(transport);
 		}
-
-		throw new Error(`Server "${this.serverConfig.name}": unknown transport "${transport}"`);
+		this.connected = true;
 	}
 
 	/**
