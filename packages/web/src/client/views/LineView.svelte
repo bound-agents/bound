@@ -13,6 +13,8 @@ const { threadId } = $props<{ threadId: string }>();
 let messages = $state([]);
 let inputText = $state("");
 let sending = $state(false);
+let waiting = $state(false);
+let waitingSinceMessageCount = $state(0);
 let agentActive = $state(false);
 let agentState = $state<string | null>(null);
 let fileInput: HTMLInputElement | null = null;
@@ -32,12 +34,16 @@ const unsubscribeWs = wsEvents.subscribe((events) => {
 		typeof last.data === "object" &&
 		last.data !== null
 	) {
-		const msg = last.data as { thread_id?: string; id?: string };
+		const msg = last.data as { thread_id?: string; id?: string; role?: string };
 		if (msg.thread_id === threadId) {
 			// Avoid duplicates by id
 			const exists = messages.some((m: { id: string }) => m.id === msg.id);
 			if (!exists) {
 				messages = [...messages, last.data];
+			}
+			// Clear waiting indicator when an assistant message arrives
+			if (msg.role === "assistant") {
+				waiting = false;
 			}
 		}
 	}
@@ -47,6 +53,11 @@ async function pollMessages(): Promise<void> {
 	try {
 		const latest = await api.listMessages(threadId);
 		messages = latest;
+		// Clear waiting indicator if a new assistant message arrived after we started waiting
+		if (waiting && latest.length > waitingSinceMessageCount &&
+			latest.slice(waitingSinceMessageCount).some((m: { role: string }) => m.role === "assistant")) {
+			waiting = false;
+		}
 	} catch (error) {
 		console.error("Failed to poll messages:", error);
 	}
@@ -96,6 +107,8 @@ async function handleSendMessage(): Promise<void> {
 		const newMessage = await api.sendMessage(threadId, inputText, activeModel || undefined);
 		messages = [...messages, newMessage];
 		inputText = "";
+		waitingSinceMessageCount = messages.length;
+		waiting = true;
 	} catch (error) {
 		console.error("Failed to send message:", error);
 	}
@@ -173,6 +186,14 @@ function viewTitle(): string {
 		{#each messages as msg}
 			<MessageBubble role={msg.role} content={msg.content} toolName={msg.tool_name} modelId={msg.model_id} />
 		{/each}
+		{#if waiting}
+			<div class="waiting-indicator">
+				<span class="waiting-dot"></span>
+				<span class="waiting-dot"></span>
+				<span class="waiting-dot"></span>
+				<span class="waiting-label">Thinking...</span>
+			</div>
+		{/if}
 	</div>
 
 	<div class="bottom-area">
@@ -223,11 +244,14 @@ function viewTitle(): string {
 	.line-view {
 		display: flex;
 		flex-direction: column;
-		height: 100%;
+		flex: 1;
+		min-height: 0;
 		max-width: 48rem;
+		width: 100%;
 		margin: 0 auto;
 		padding: 24px;
 		overflow: hidden;
+		box-sizing: border-box;
 	}
 
 	.header {
@@ -446,8 +470,44 @@ function viewTitle(): string {
 		to { transform: rotate(360deg); }
 	}
 
+	.waiting-indicator {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 12px 16px;
+		margin-top: 8px;
+	}
+
+	.waiting-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--status-active);
+		animation: waiting-bounce 1.2s ease-in-out infinite;
+	}
+
+	.waiting-dot:nth-child(2) {
+		animation-delay: 0.2s;
+	}
+
+	.waiting-dot:nth-child(3) {
+		animation-delay: 0.4s;
+	}
+
+	@keyframes waiting-bounce {
+		0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+		40% { opacity: 1; transform: scale(1); }
+	}
+
+	.waiting-label {
+		font-family: var(--font-display);
+		font-size: var(--text-sm);
+		color: var(--text-muted);
+		margin-left: 4px;
+	}
+
 	@media (prefers-reduced-motion: reduce) {
-		.thinking-dot, .sending-indicator {
+		.thinking-dot, .sending-indicator, .waiting-dot {
 			animation: none;
 		}
 	}

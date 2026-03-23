@@ -129,12 +129,17 @@ onMount(() => {
 
 	main {
 		flex: 1;
-		overflow-y: auto;
+		overflow: hidden;
+		display: flex;
+		flex-direction: column;
 	}
 
 	.view-transition {
 		animation: viewFadeIn 0.25s ease-out;
-		height: 100%;
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
 	}
 
 	@keyframes viewFadeIn {
