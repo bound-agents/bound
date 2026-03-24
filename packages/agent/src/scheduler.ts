@@ -394,13 +394,14 @@ export class Scheduler {
 		}
 
 		// Look up in cron_schedules config if available
-		const cronConfig = this.ctx.optionalConfig["cronSchedules"];
-		if (!cronConfig) {
+		const cronResult = this.ctx.optionalConfig["cronSchedules"];
+		if (!cronResult || !cronResult.ok) {
 			return null;
 		}
 
 		// Find matching schedule by expression or name
-		for (const [_name, schedule] of Object.entries(cronConfig)) {
+		const schedules = cronResult.value as Record<string, { schedule: string; template?: string[] }>;
+		for (const [_name, schedule] of Object.entries(schedules)) {
 			if (schedule.schedule === cronSpec.expression && schedule.template) {
 				return schedule.template;
 			}
