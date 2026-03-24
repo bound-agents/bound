@@ -68,14 +68,21 @@ export function applyAppendOnlyReducer(db: Database, event: ChangeLogEntry): { a
 	const values = columns.map((k) => rowData[k]);
 
 	if (hasModifiedAt) {
-		// Hybrid reducer for redaction: check if row exists and update if modified_at is newer
+		// Hybrid reducer: if row exists, apply LWW update (for redaction). If not, insert normally.
 		const existing = db.query(`SELECT * FROM ${event.table_name} WHERE id = ?`).get(rowData.id) as
 			| Record<string, unknown>
-			| undefined;
+			| null;
 
 		if (!existing) {
-			// If row doesn't exist, we can't apply a redaction (missing required fields)
-			return { applied: false };
+			// Row doesn't exist — insert it (standard append-only behavior)
+			db.run(
+				`INSERT INTO ${event.table_name} (${columns.join(", ")})
+				VALUES (${placeholders})
+				ON CONFLICT(id) DO NOTHING`,
+				values,
+			);
+			const changes = db.query("SELECT changes() as count").get() as Record<string, number>;
+			return { applied: changes.count > 0 };
 		}
 
 		const existingModifiedAt = existing.modified_at;
@@ -115,10 +122,14 @@ export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied:
 	const rowData = JSON.parse(event.row_data);
 	const schemaColumns = getTableColumns(db, event.table_name);
 
+	// Determine primary key column — hosts uses site_id, everything else uses id
+	const pkColumn = event.table_name === "hosts" ? "site_id" : "id";
+	const pkValue = rowData[pkColumn] ?? event.row_id;
+
 	// Check if row already exists
-	const existing = db.query(`SELECT * FROM ${event.table_name} WHERE id = ?`).get(rowData.id) as
+	const existing = db.query(`SELECT * FROM ${event.table_name} WHERE ${pkColumn} = ?`).get(pkValue) as
 		| Record<string, unknown>
-		| undefined;
+		| null;
 
 	// If row doesn't exist, do a simple insert with all provided columns
 	if (!existing) {
@@ -145,9 +156,9 @@ export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied:
 		}
 	}
 
-	// Update only columns that are in both the event and the schema (except id)
+	// Update only columns that are in both the event and the schema (except the PK)
 	const columnsToUpdate = Object.keys(rowData).filter(
-		(col) => validateColumnName(col) && schemaColumns.includes(col) && col !== "id",
+		(col) => validateColumnName(col) && schemaColumns.includes(col) && col !== pkColumn,
 	);
 
 	if (columnsToUpdate.length === 0) {
@@ -156,10 +167,10 @@ export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied:
 
 	const updateSetClauses = columnsToUpdate.map((col) => `${col} = ?`);
 	const valuesToUpdate = columnsToUpdate.map((col) => rowData[col]);
-	valuesToUpdate.push(rowData.id);
+	valuesToUpdate.push(pkValue);
 
 	db.run(
-		`UPDATE ${event.table_name} SET ${updateSetClauses.join(", ")} WHERE id = ?`,
+		`UPDATE ${event.table_name} SET ${updateSetClauses.join(", ")} WHERE ${pkColumn} = ?`,
 		valuesToUpdate,
 	);
 

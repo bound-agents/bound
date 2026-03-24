@@ -396,8 +396,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 				? (keyringResult.value as import("@bound/shared").KeyringConfig)
 				: undefined;
 
+		const webPort = Number.parseInt(process.env.PORT || "3000", 10);
 		webServer = await createWebServer(appContext.db, appContext.eventBus, {
-			port: 3000,
+			port: webPort,
 			host: "localhost",
 			models: {
 				models: modelBackends.backends.map((b) => ({ id: b.id, provider: b.provider })),
