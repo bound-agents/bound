@@ -35,18 +35,44 @@ export function createDefineCommands(
 		const handler = async (argv: string[]) => {
 			const args: Record<string, string> = {};
 
-			// Parse arguments from argv
-			let argIndex = 0;
-			for (const argDef of def.args) {
-				if (argIndex < argv.length) {
-					args[argDef.name] = argv[argIndex];
-					argIndex++;
-				} else if (argDef.required) {
-					return {
-						stdout: "",
-						stderr: `Missing required argument: ${argDef.name}\n`,
-						exitCode: 1,
-					};
+			if (def.args.length > 0) {
+				// Named positional args: match argv to declared arg definitions
+				let argIndex = 0;
+				for (const argDef of def.args) {
+					if (argIndex < argv.length) {
+						args[argDef.name] = argv[argIndex];
+						argIndex++;
+					} else if (argDef.required) {
+						return {
+							stdout: "",
+							stderr: `Missing required argument: ${argDef.name}\n`,
+							exitCode: 1,
+						};
+					}
+				}
+			} else if (argv.length > 0) {
+				// No declared args (e.g., MCP tools) — parse key=value pairs and --key value flags
+				for (let i = 0; i < argv.length; i++) {
+					const arg = argv[i];
+					if (arg.startsWith("--") && i + 1 < argv.length) {
+						args[arg.slice(2)] = argv[++i];
+					} else if (arg.includes("=")) {
+						const eqIdx = arg.indexOf("=");
+						args[arg.slice(0, eqIdx)] = arg.slice(eqIdx + 1);
+					} else {
+						// Try parsing entire remaining argv as JSON
+						try {
+							const jsonArgs = JSON.parse(argv.slice(i).join(" "));
+							if (typeof jsonArgs === "object" && jsonArgs !== null) {
+								for (const [k, v] of Object.entries(jsonArgs)) {
+									args[k] = String(v);
+								}
+							}
+							break;
+						} catch {
+							args[`arg${i}`] = arg;
+						}
+					}
 				}
 			}
 
