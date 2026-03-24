@@ -223,7 +223,7 @@ config/
 
 ## Built-in Commands
 
-Commands are defined as `CommandDefinition` objects from `@bound/sandbox` and dispatched by the sandbox during tool execution. All 15 built-in commands are registered via `getAllCommands()` in `packages/agent/src/commands/index.ts`.
+Commands are defined as `CommandDefinition` objects from `@bound/sandbox` and dispatched by the sandbox during tool execution. All 16 built-in commands are registered via `getAllCommands()` in `packages/agent/src/commands/index.ts`.
 
 Each command returns a `CommandResult`:
 
