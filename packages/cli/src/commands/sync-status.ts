@@ -1,5 +1,5 @@
-import { Database } from "bun:sqlite";
-import { resolve } from "node:path";
+import { getSiteId } from "@bound/core";
+import { openBoundDB } from "../lib/db";
 
 export interface SyncStatusArgs {
 	configDir?: string;
@@ -25,26 +25,18 @@ interface HostRow {
 }
 
 export async function runSyncStatus(args: SyncStatusArgs): Promise<void> {
-	const dataDir = args.configDir || "data";
-	const dbPath = resolve(dataDir, "bound.db");
-
 	console.log("Checking sync status...\n");
 
 	try {
-		const db = new Database(dbPath);
+		const db = openBoundDB(args.configDir);
 
 		// Get local site_id
-		const hostMeta = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as {
-			value: string;
-		} | null;
-
-		if (!hostMeta) {
+		const localSiteId = getSiteId(db);
+		if (localSiteId === "unknown") {
 			console.error("Failed to read site_id from database. Database may not be initialized.");
 			db.close();
 			process.exit(1);
 		}
-
-		const localSiteId = hostMeta.value;
 		console.log(`Local site_id: ${localSiteId}\n`);
 
 		// Query change_log for total entries

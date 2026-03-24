@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { MCPClient } from "@bound/agent";
+import { formatError } from "@bound/shared";
 import type { KeyringConfig, Logger, TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
@@ -92,7 +93,7 @@ export async function createApp(
 		} catch (error) {
 			console.warn(
 				"[web] Sync routes unavailable:",
-				error instanceof Error ? error.message : String(error),
+				formatError(error),
 			);
 		}
 	}

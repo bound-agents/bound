@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import { insertRow } from "@bound/core";
+import { formatError } from "@bound/shared";
 import type { Client } from "discord.js";
 import { ChannelType, GatewayIntentBits } from "discord.js";
 import { isAllowlisted } from "./allowlist";
@@ -123,7 +124,7 @@ export class DiscordBot {
 					});
 				}
 			} catch (error) {
-				const errorMsg = error instanceof Error ? error.message : String(error);
+				const errorMsg = formatError(error);
 				this.ctx.logger.error("Agent loop failed", {
 					threadId: thread.id,
 					error: errorMsg,

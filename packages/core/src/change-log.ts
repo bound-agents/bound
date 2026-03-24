@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import type { SyncedTableName } from "@bound/shared";
 
@@ -5,7 +6,7 @@ import type { SyncedTableName } from "@bound/shared";
 // Only allow lowercase letters, numbers, and underscores
 const VALID_COLUMN_NAME = /^[a-z_]+$/;
 
-function validateColumnName(name: string): void {
+export function validateColumnName(name: string): void {
 	if (!VALID_COLUMN_NAME.test(name)) {
 		throw new Error(`Invalid column name: ${name}`);
 	}
@@ -122,4 +123,38 @@ export function softDelete(db: Database, table: SyncedTableName, id: string, sit
 	});
 
 	txFn();
+}
+
+export function insertMessage(
+	db: Database,
+	params: {
+		threadId: string;
+		role: string;
+		content: string;
+		modelId?: string | null;
+		toolName?: string | null;
+		hostOrigin: string;
+	},
+	siteId: string,
+): string {
+	const id = randomUUID();
+	const now = new Date().toISOString();
+	insertRow(
+		db,
+		"messages",
+		{
+			id,
+			thread_id: params.threadId,
+			role: params.role,
+			content: params.content,
+			model_id: params.modelId ?? null,
+			tool_name: params.toolName ?? null,
+			created_at: now,
+			modified_at: now,
+			host_origin: params.hostOrigin,
+			deleted: 0,
+		},
+		siteId,
+	);
+	return id;
 }

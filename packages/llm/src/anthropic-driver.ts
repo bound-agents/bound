@@ -1,6 +1,12 @@
+import { checkHttpError, wrapFetchError } from "./error-utils";
 import { withRetry } from "./retry";
+import {
+	SSE_DATA_PREFIX,
+	SSE_DONE_SENTINEL,
+	extractTextFromBlocks,
+	parseStreamLines,
+} from "./stream-utils";
 import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
-import { LLMError } from "./types";
 
 interface AnthropicMessage {
 	role: "user" | "assistant";
@@ -80,10 +86,7 @@ function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] {
 				});
 			} else if (msg.role === "tool_result") {
 				// Convert tool_result to user message with tool_result block
-				const textContent = msg.content
-					.filter((block) => block.type === "text")
-					.map((block) => block.text || "")
-					.join("\n");
+				const textContent = extractTextFromBlocks(msg.content);
 
 				result.push({
 					role: "user",
@@ -97,10 +100,7 @@ function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] {
 				});
 			} else {
 				// Regular message with text content
-				const textContent = msg.content
-					.filter((block) => block.type === "text")
-					.map((block) => block.text || "")
-					.join("\n");
+				const textContent = extractTextFromBlocks(msg.content);
 
 				result.push({
 					role: msg.role as "user" | "assistant",
@@ -138,155 +138,109 @@ function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] {
 }
 
 async function* parseAnthropicStream(response: Response): AsyncIterable<StreamChunk> {
-	const reader = response.body?.getReader();
-	if (!reader) {
-		throw new LLMError("Response body not available", "anthropic");
-	}
-
-	const decoder = new TextDecoder();
-	let buffer = "";
 	let currentToolId = "";
 	let currentToolArgs = "";
 	let inputTokens = 0;
 	let outputTokens = 0;
 
-	try {
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
+	for await (const line of parseStreamLines(response, "anthropic")) {
+		if (!line.startsWith(SSE_DATA_PREFIX)) {
+			continue;
+		}
 
-			buffer += decoder.decode(value, { stream: true });
-			const lines = buffer.split("\n");
-			buffer = lines.pop() || "";
+		const eventData = line.slice(SSE_DATA_PREFIX.length);
+		if (eventData === SSE_DONE_SENTINEL) {
+			continue;
+		}
 
-			for (const line of lines) {
-				if (!line.trim() || !line.startsWith("data: ")) {
-					continue;
-				}
+		let event: AnthropicStreamEvent;
+		try {
+			event = JSON.parse(eventData);
+		} catch {
+			yield {
+				type: "error",
+				error: `Failed to parse SSE event: ${eventData}`,
+			};
+			continue;
+		}
 
-				const eventData = line.slice(6); // Remove "data: " prefix
-				if (eventData === "[DONE]") {
-					continue;
-				}
+		// Handle message_start with input tokens
+		if (event.type === "message_start" && event.message?.usage?.input_tokens) {
+			inputTokens = event.message.usage.input_tokens;
+		}
 
-				let event: AnthropicStreamEvent;
-				try {
-					event = JSON.parse(eventData);
-				} catch {
-					yield {
-						type: "error",
-						error: `Failed to parse SSE event: ${eventData}`,
-					};
-					continue;
-				}
+		// Handle content_block_start for tool_use
+		if (event.type === "content_block_start" && event.content_block?.type === "tool_use") {
+			// Prepare for tool_use streaming
+			currentToolId = "";
+			currentToolArgs = "";
+		}
 
-				// Handle message_start with input tokens
-				if (event.type === "message_start" && event.message?.usage?.input_tokens) {
-					inputTokens = event.message.usage.input_tokens;
-				}
+		// Handle text deltas
+		if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
+			yield {
+				type: "text",
+				content: event.delta.text || "",
+			};
+		}
 
-				// Handle content_block_start for tool_use
-				if (event.type === "content_block_start" && event.content_block?.type === "tool_use") {
-					// Prepare for tool_use streaming
-					currentToolId = "";
-					currentToolArgs = "";
-				}
+		// Handle tool_use input_json_delta
+		if (event.type === "content_block_delta" && event.delta?.type === "input_json_delta") {
+			// biome-ignore lint/suspicious/noExplicitAny: Anthropic API returns untyped delta with partial_json property
+			const delta = event.delta as any;
 
-				// Handle text deltas
-				if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
-					yield {
-						type: "text",
-						content: event.delta.text || "",
-					};
-				}
-
-				// Handle tool_use input_json_delta
-				if (event.type === "content_block_delta" && event.delta?.type === "input_json_delta") {
-					// biome-ignore lint/suspicious/noExplicitAny: <explanation>
-					const delta = event.delta as any;
-
-					if (!currentToolId) {
-						// Tool use starts (we need to emit start event)
-						// We'll handle this when we get the tool_use_start
-					}
-
-					if (delta.partial_json) {
-						currentToolArgs += delta.partial_json;
-					}
-				}
-
-				// Handle tool_use block start
-				if (event.type === "content_block_start" && event.content_block?.type === "tool_use") {
-					// biome-ignore lint/suspicious/noExplicitAny: <explanation>
-					const block = event.content_block as any;
-					if (block.id) {
-						currentToolId = block.id;
-						currentToolArgs = "";
-						yield {
-							type: "tool_use_start",
-							id: block.id,
-							name: block.name || "",
-						};
-					}
-				}
-
-				// Handle tool_use block stop
-				if (event.type === "content_block_stop" && currentToolId) {
-					if (currentToolArgs) {
-						yield {
-							type: "tool_use_args",
-							id: currentToolId,
-							partial_json: currentToolArgs,
-						};
-					}
-					yield {
-						type: "tool_use_end",
-						id: currentToolId,
-					};
-					currentToolId = "";
-					currentToolArgs = "";
-				}
-
-				// Handle message_delta with output tokens
-				if (event.type === "message_delta" && event.usage?.output_tokens) {
-					outputTokens = event.usage.output_tokens;
-				}
-
-				// Handle message_stop with final usage
-				if (event.type === "message_stop") {
-					yield {
-						type: "done",
-						usage: {
-							input_tokens: inputTokens,
-							output_tokens: outputTokens,
-						},
-					};
-				}
+			if (delta.partial_json) {
+				currentToolArgs += delta.partial_json;
 			}
 		}
 
-		// Handle any remaining buffer
-		if (buffer.trim() && buffer.startsWith("data: ")) {
-			const eventData = buffer.slice(6);
-			if (eventData !== "[DONE]") {
-				try {
-					const event = JSON.parse(eventData);
-					if (event.type === "message_stop") {
-						yield {
-							type: "done",
-							usage: {
-								input_tokens: inputTokens,
-								output_tokens: outputTokens,
-							},
-						};
-					}
-				} catch {
-					// Ignore parse errors in final buffer
-				}
+		// Handle tool_use block start
+		if (event.type === "content_block_start" && event.content_block?.type === "tool_use") {
+			// biome-ignore lint/suspicious/noExplicitAny: Anthropic API returns untyped content_block with id and name properties
+			const block = event.content_block as any;
+			if (block.id) {
+				currentToolId = block.id;
+				currentToolArgs = "";
+				yield {
+					type: "tool_use_start",
+					id: block.id,
+					name: block.name || "",
+				};
 			}
 		}
-	} finally {
-		reader.releaseLock();
+
+		// Handle tool_use block stop
+		if (event.type === "content_block_stop" && currentToolId) {
+			if (currentToolArgs) {
+				yield {
+					type: "tool_use_args",
+					id: currentToolId,
+					partial_json: currentToolArgs,
+				};
+			}
+			yield {
+				type: "tool_use_end",
+				id: currentToolId,
+			};
+			currentToolId = "";
+			currentToolArgs = "";
+		}
+
+		// Handle message_delta with output tokens
+		if (event.type === "message_delta" && event.usage?.output_tokens) {
+			outputTokens = event.usage.output_tokens;
+		}
+
+		// Handle message_stop with final usage
+		if (event.type === "message_stop") {
+			yield {
+				type: "done",
+				usage: {
+					input_tokens: inputTokens,
+					output_tokens: outputTokens,
+				},
+			};
+		}
 	}
 }
 
@@ -333,10 +287,12 @@ export class AnthropicDriver implements LLMBackend {
 			}));
 		}
 
+		const endpoint = "https://api.anthropic.com/v1/messages";
+
 		const response = await withRetry(async () => {
 			let res: Response;
 			try {
-				res = await fetch("https://api.anthropic.com/v1/messages", {
+				res = await fetch(endpoint, {
 					method: "POST",
 					headers: {
 						"x-api-key": this.apiKey,
@@ -349,24 +305,10 @@ export class AnthropicDriver implements LLMBackend {
 					}),
 				});
 			} catch (error) {
-				throw new LLMError(
-					`Failed to connect to Anthropic API: ${
-						error instanceof Error ? error.message : String(error)
-					}`,
-					"anthropic",
-					undefined,
-					error instanceof Error ? error : new Error(String(error)),
-				);
+				throw wrapFetchError(error, "anthropic", endpoint);
 			}
 
-			if (!res.ok) {
-				const body = await res.text();
-				throw new LLMError(
-					`Anthropic request failed with status ${res.status}: ${body}`,
-					"anthropic",
-					res.status,
-				);
-			}
+			await checkHttpError(res, "anthropic");
 
 			return res;
 		});

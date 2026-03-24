@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
 import { insertRow } from "@bound/core";
+import { formatError } from "@bound/shared";
 import type { Task } from "@bound/shared";
 import type { AgentLoop } from "./agent-loop";
 import { canRunHere, computeNextRunAt } from "./task-resolution";
@@ -139,7 +140,7 @@ export class Scheduler {
 			// Phase 3: Run
 			this.phase3Run();
 		} catch (error) {
-			const errorMsg = error instanceof Error ? error.message : String(error);
+			const errorMsg = formatError(error);
 			this.ctx.logger.error("Scheduler tick failed", { error: errorMsg });
 		}
 	}
@@ -294,7 +295,7 @@ export class Scheduler {
 								.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?")
 								.run(nextRunAt.toISOString(), task.id);
 						} catch (error) {
-							const errorMsg = error instanceof Error ? error.message : String(error);
+							const errorMsg = formatError(error);
 							this.ctx.logger.error("Failed to compute next cron time", {
 								error: errorMsg,
 								taskId: task.id,
@@ -303,7 +304,7 @@ export class Scheduler {
 					}
 				}
 			} catch (error) {
-				const errorMsg = error instanceof Error ? error.message : String(error);
+				const errorMsg = formatError(error);
 				const currentTask = this.ctx.db
 					.query("SELECT lease_id FROM tasks WHERE id = ?")
 					.get(task.id) as { lease_id: string | null } | undefined;
@@ -459,7 +460,7 @@ export class Scheduler {
 								.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?")
 								.run(nextRunAt.toISOString(), task.id);
 						} catch (error) {
-							const errorMsg = error instanceof Error ? error.message : String(error);
+							const errorMsg = formatError(error);
 							this.ctx.logger.error("Failed to compute next cron time", {
 								error: errorMsg,
 								taskId: task.id,
@@ -468,7 +469,7 @@ export class Scheduler {
 					}
 				}
 			} catch (error) {
-				const errorMsg = error instanceof Error ? error.message : String(error);
+				const errorMsg = formatError(error);
 				const currentTask = this.ctx.db
 					.query("SELECT lease_id FROM tasks WHERE id = ?")
 					.get(task.id) as { lease_id: string | null } | undefined;

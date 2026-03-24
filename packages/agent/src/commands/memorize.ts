@@ -1,6 +1,7 @@
 import { insertRow, updateRow } from "@bound/core";
-import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
+import type { CommandContext, CommandDefinition } from "@bound/sandbox";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import { commandSuccess, handleCommandError } from "./helpers";
 
 export const memorize: CommandDefinition = {
 	name: "memorize",
@@ -9,7 +10,7 @@ export const memorize: CommandDefinition = {
 		{ name: "value", required: true, description: "Memory value" },
 		{ name: "source", required: false, description: "Source of the memory entry" },
 	],
-	handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
+	handler: async (args: Record<string, string>, ctx: CommandContext) => {
 		try {
 			const key = args.key;
 			const value = args.value;
@@ -54,18 +55,9 @@ export const memorize: CommandDefinition = {
 				);
 			}
 
-			return {
-				stdout: `Memory saved: ${key}\n`,
-				stderr: "",
-				exitCode: 0,
-			};
+			return commandSuccess(`Memory saved: ${key}\n`);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			return {
-				stdout: "",
-				stderr: `Error: ${message}\n`,
-				exitCode: 1,
-			};
+			return handleCommandError(error);
 		}
 	},
 };

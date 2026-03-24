@@ -1,6 +1,12 @@
+import { checkHttpError, wrapFetchError } from "./error-utils";
 import { withRetry } from "./retry";
+import {
+	SSE_DATA_PREFIX,
+	SSE_DONE_SENTINEL,
+	extractTextFromBlocks,
+	parseStreamLines,
+} from "./stream-utils";
 import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
-import { LLMError } from "./types";
 
 interface OpenAIMessage {
 	role: "user" | "assistant" | "tool" | "system";
@@ -58,10 +64,7 @@ function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 		if (Array.isArray(msg.content)) {
 			if (msg.role === "tool_call") {
 				// Convert tool_call to assistant message with tool_calls
-				const textContent = msg.content
-					.filter((block) => block.type === "text")
-					.map((block) => block.text || "")
-					.join("\n");
+				const textContent = extractTextFromBlocks(msg.content);
 
 				const toolUseBlocks = msg.content.filter((block) => block.type === "tool_use");
 				const toolCalls = toolUseBlocks.map((block) => ({
@@ -80,10 +83,7 @@ function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 				});
 			} else if (msg.role === "tool_result") {
 				// Convert tool_result to tool message
-				const textContent = msg.content
-					.filter((block) => block.type === "text")
-					.map((block) => block.text || "")
-					.join("\n");
+				const textContent = extractTextFromBlocks(msg.content);
 
 				result.push({
 					role: "tool",
@@ -92,10 +92,7 @@ function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 				});
 			} else {
 				// Regular message with text content
-				const textContent = msg.content
-					.filter((block) => block.type === "text")
-					.map((block) => block.text || "")
-					.join("\n");
+				const textContent = extractTextFromBlocks(msg.content);
 
 				result.push({
 					role: msg.role as "user" | "assistant" | "system",
@@ -128,134 +125,100 @@ function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 }
 
 async function* parseOpenAIStream(response: Response): AsyncIterable<StreamChunk> {
-	const reader = response.body?.getReader();
-	if (!reader) {
-		throw new LLMError("Response body not available", "openai");
-	}
-
-	const decoder = new TextDecoder();
-	let buffer = "";
 	const toolStates = new Map<number, { id: string; name: string; args: string }>();
 
-	try {
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
+	for await (const line of parseStreamLines(response, "openai")) {
+		if (!line.startsWith(SSE_DATA_PREFIX)) {
+			continue;
+		}
 
-			buffer += decoder.decode(value, { stream: true });
-			const lines = buffer.split("\n");
-			buffer = lines.pop() || "";
+		const eventData = line.slice(SSE_DATA_PREFIX.length);
+		if (eventData === SSE_DONE_SENTINEL) {
+			// Emit done event when stream finishes
+			yield {
+				type: "done",
+				usage: {
+					input_tokens: 0,
+					output_tokens: 0,
+				},
+			};
+			continue;
+		}
 
-			for (const line of lines) {
-				if (!line.trim() || !line.startsWith("data: ")) {
-					continue;
-				}
+		let event: OpenAIStreamEvent;
+		try {
+			event = JSON.parse(eventData);
+		} catch {
+			yield {
+				type: "error",
+				error: `Failed to parse SSE event: ${eventData}`,
+			};
+			continue;
+		}
 
-				const eventData = line.slice(6); // Remove "data: " prefix
-				if (eventData === "[DONE]") {
-					// Emit done event when stream finishes
-					yield {
-						type: "done",
-						usage: {
-							input_tokens: 0,
-							output_tokens: 0,
-						},
+		if (event.choices && event.choices.length > 0) {
+			const choice = event.choices[0];
+			const delta = choice.delta;
+
+			// Handle text content
+			if (delta?.content) {
+				yield {
+					type: "text",
+					content: delta.content,
+				};
+			}
+
+			// Handle tool calls
+			if (delta?.tool_calls) {
+				for (const toolCall of delta.tool_calls) {
+					const toolIndex = toolCall.index;
+					const state = toolStates.get(toolIndex) || {
+						id: toolCall.id,
+						name: "",
+						args: "",
 					};
-					continue;
-				}
 
-				let event: OpenAIStreamEvent;
-				try {
-					event = JSON.parse(eventData);
-				} catch {
-					yield {
-						type: "error",
-						error: `Failed to parse SSE event: ${eventData}`,
-					};
-					continue;
-				}
+					// Emit tool_use_start if this is the first chunk for this tool
+					if (!toolStates.has(toolIndex)) {
+						if (toolCall.function?.name) {
+							state.name = toolCall.function.name;
+							yield {
+								type: "tool_use_start",
+								id: toolCall.id,
+								name: toolCall.function.name,
+							};
+						}
+					}
 
-				if (event.choices && event.choices.length > 0) {
-					const choice = event.choices[0];
-					const delta = choice.delta;
-
-					// Handle text content
-					if (delta?.content) {
+					// Accumulate arguments
+					if (toolCall.function?.arguments) {
+						state.args += toolCall.function.arguments;
 						yield {
-							type: "text",
-							content: delta.content,
+							type: "tool_use_args",
+							id: toolCall.id,
+							partial_json: toolCall.function.arguments,
 						};
 					}
 
-					// Handle tool calls
-					if (delta?.tool_calls) {
-						for (const toolCall of delta.tool_calls) {
-							const toolIndex = toolCall.index;
-							const state = toolStates.get(toolIndex) || {
-								id: toolCall.id,
-								name: "",
-								args: "",
-							};
+					toolStates.set(toolIndex, state);
 
-							// Emit tool_use_start if this is the first chunk for this tool
-							if (!toolStates.has(toolIndex)) {
-								if (toolCall.function?.name) {
-									state.name = toolCall.function.name;
-									yield {
-										type: "tool_use_start",
-										id: toolCall.id,
-										name: toolCall.function.name,
-									};
-								}
-							}
-
-							// Accumulate arguments
-							if (toolCall.function?.arguments) {
-								state.args += toolCall.function.arguments;
+					// Emit tool_use_end if stream is finishing this tool
+					if (choice.finish_reason === "tool_calls" || choice.finish_reason === "stop") {
+						// Check if all tool calls are done
+						const allDone = Array.from(toolStates.values()).every((s) => s.args !== "");
+						if (allDone && toolIndex === toolStates.size - 1) {
+							for (const [, state] of toolStates) {
 								yield {
-									type: "tool_use_args",
-									id: toolCall.id,
-									partial_json: toolCall.function.arguments,
+									type: "tool_use_end",
+									id: state.id,
 								};
 							}
-
-							toolStates.set(toolIndex, state);
-
-							// Emit tool_use_end if stream is finishing this tool
-							if (choice.finish_reason === "tool_calls" || choice.finish_reason === "stop") {
-								// Check if all tool calls are done
-								const allDone = Array.from(toolStates.values()).every((s) => s.args !== "");
-								if (allDone && toolIndex === toolStates.size - 1) {
-									for (const [, state] of toolStates) {
-										yield {
-											type: "tool_use_end",
-											id: state.id,
-										};
-									}
-									toolStates.clear();
-								}
-							}
+							toolStates.clear();
 						}
 					}
 				}
 			}
 		}
-
-		// Handle any remaining buffer
-		if (buffer.trim() && buffer.startsWith("data: ")) {
-			const eventData = buffer.slice(6);
-			if (eventData === "[DONE]") {
-				yield {
-					type: "done",
-					usage: {
-						input_tokens: 0,
-						output_tokens: 0,
-					},
-				};
-			}
-		}
-	} finally {
-		reader.releaseLock();
 	}
 }
 
@@ -306,24 +269,10 @@ export class OpenAICompatibleDriver implements LLMBackend {
 					body: JSON.stringify(request),
 				});
 			} catch (error) {
-				throw new LLMError(
-					`Failed to connect to OpenAI-compatible API at ${endpoint}: ${
-						error instanceof Error ? error.message : String(error)
-					}`,
-					"openai",
-					undefined,
-					error instanceof Error ? error : new Error(String(error)),
-				);
+				throw wrapFetchError(error, "openai", endpoint);
 			}
 
-			if (!res.ok) {
-				const body = await res.text();
-				throw new LLMError(
-					`OpenAI API request failed with status ${res.status}: ${body}`,
-					"openai",
-					res.status,
-				);
-			}
+			await checkHttpError(res, "openai");
 
 			return res;
 		});

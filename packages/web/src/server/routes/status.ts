@@ -1,3 +1,5 @@
+import { getSiteId } from "@bound/core";
+
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertRow } from "@bound/core";
@@ -106,10 +108,7 @@ export function createStatusRoutes(
 			}
 
 			// Get siteId and hostName for message persistence
-			const siteIdRow = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as
-				| { value: string }
-				| undefined;
-			const siteId = siteIdRow?.value ?? "unknown";
+	const siteId = getSiteId(db);
 
 			const hostNameRow = db.query("SELECT value FROM host_meta WHERE key = 'host_name'").get() as
 				| { value: string }

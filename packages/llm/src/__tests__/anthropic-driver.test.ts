@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { AnthropicDriver } from "../anthropic-driver";
 import type { LLMMessage, StreamChunk } from "../types";
 
-const shouldSkip = process.env.SKIP_ANTHROPIC === "1";
+const _shouldSkip = process.env.SKIP_ANTHROPIC === "1";
 
 describe("AnthropicDriver", () => {
 	const originalFetch = global.fetch;
@@ -51,19 +51,16 @@ describe("AnthropicDriver", () => {
 		global.fetch = (async (url: string, options: RequestInit) => {
 			if (url.includes("anthropic.com")) {
 				requestBody = options.body as string;
-				const mockResponse =
-					"data: " +
-					JSON.stringify({
-						type: "message_start",
-						message: {
-							id: "msg-123",
-							type: "message",
-							role: "assistant",
-							content: [],
-							usage: { input_tokens: 10, output_tokens: 0 },
-						},
-					}) +
-					"\n";
+				const mockResponse = `data: ${JSON.stringify({
+					type: "message_start",
+					message: {
+						id: "msg-123",
+						type: "message",
+						role: "assistant",
+						content: [],
+						usage: { input_tokens: 10, output_tokens: 0 },
+					},
+				})}\n`;
 
 				return new Response(mockResponse, {
 					status: 200,

@@ -2,12 +2,9 @@ export {
 	createClusterFs,
 	snapshotWorkspace,
 	diffWorkspace,
-	diffWorkspaceAsync,
 	hydrateWorkspace,
-	hydrateRemoteCache,
 	type ClusterFsConfig,
 	type ClusterFsResult,
-	type StalenessResult,
 	type FileChange,
 } from "./cluster-fs";
 
@@ -32,11 +29,4 @@ export {
 	type Sandbox,
 } from "./sandbox-factory";
 
-export {
-	MemoryTracker,
-	wrapWithMemoryTracking,
-	type MemoryThresholdResult,
-} from "./memory-tracker";
-
-export type { ScanResult } from "./overlay-scanner";
-export { scanOverlayIndex, startOverlayScanLoop } from "./overlay-scanner";
+export { startOverlayScanLoop } from "./overlay-scanner";

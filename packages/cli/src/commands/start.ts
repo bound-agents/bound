@@ -1,9 +1,9 @@
 // Task 3: bound start command
 // Full orchestrator bootstrap sequence
 
-import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import { AgentLoop, Scheduler } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
@@ -14,12 +14,11 @@ import { createModelRouter } from "@bound/llm";
 import type {
 	BackendConfig,
 	LLMBackend,
-	LLMMessage,
 	ModelBackendsConfig,
 	ToolDefinition,
 } from "@bound/llm";
 import { createClusterFs, createSandbox } from "@bound/sandbox";
-import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import { ensureKeypair } from "@bound/sync";
 import { createWebServer } from "@bound/web";
 
@@ -42,7 +41,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	try {
 		appContext = createAppContext(resolve(configDir), dbPath);
 	} catch (error) {
-		console.error("Configuration error:", error instanceof Error ? error.message : String(error));
+		console.error("Configuration error:", formatError(error));
 		process.exit(1);
 	}
 
@@ -205,7 +204,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				} catch (error) {
 					console.warn(
 						`[recovery] Failed to insert interrupted tool message for thread ${thread_id}:`,
-						error instanceof Error ? error.message : String(error),
+						formatError(error),
 					);
 				}
 			}
@@ -247,7 +246,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				} catch (error) {
 					console.warn(
 						`[mcp] Failed to connect to ${serverCfg.name}:`,
-						error instanceof Error ? error.message : String(error),
+						formatError(error),
 					);
 				}
 			}
@@ -298,7 +297,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		} catch (error) {
 			console.warn(
 				`[mcp] Failed to list tools for ${serverName}:`,
-				error instanceof Error ? error.message : String(error),
+				formatError(error),
 			);
 		}
 	}
@@ -324,7 +323,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	} catch (error) {
 		console.warn(
 			"[sandbox] Failed to create sandbox:",
-			error instanceof Error ? error.message : String(error),
+			formatError(error),
 		);
 	}
 
@@ -340,7 +339,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			} catch (error) {
 				console.warn(
 					"[persona] Failed to read persona.md:",
-					error instanceof Error ? error.message : String(error),
+					formatError(error),
 				);
 			}
 		} else {
@@ -380,7 +379,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		console.log(`[llm] Model router ready — backends: ${ids} (default: ${routerConfig.default})`);
 	} catch (error) {
 		console.warn(
-			`[llm] Failed to create model router: ${error instanceof Error ? error.message : String(error)}`,
+			`[llm] Failed to create model router: ${formatError(error)}`,
 		);
 	}
 
@@ -414,7 +413,6 @@ export async function runStart(args: StartArgs): Promise<void> {
 		// Wire message:created events to the agent loop
 		const activeLoops = new Set<string>();
 		appContext.eventBus.on("message:created", async ({ message, thread_id }) => {
-			// Only process user messages, skip our own assistant messages
 			if (message.role !== "user") return;
 			if (!modelRouter) {
 				console.warn("[agent] No model router configured, cannot process message");
@@ -429,29 +427,6 @@ export async function runStart(args: StartArgs): Promise<void> {
 			activeLoops.add(thread_id);
 
 			try {
-				// Fetch thread history
-				const dbMessages = appContext.db
-					.query(
-						"SELECT role, content, tool_name FROM messages WHERE thread_id = ? ORDER BY created_at ASC",
-					)
-					.all(thread_id) as Array<{ role: string; content: string; tool_name: string | null }>;
-
-				// Build LLM messages — tool_call and tool_result rows store JSON content
-				const llmMessages: LLMMessage[] = dbMessages.map((m) => {
-					if (m.role === "tool_call" || m.role === "tool_result") {
-						return {
-							role: m.role as "tool_call" | "tool_result",
-							content: m.content,
-							tool_use_id: m.tool_name ?? undefined,
-						};
-					}
-					return {
-						role: m.role as "user" | "assistant" | "system",
-						content: m.content,
-					};
-				});
-
-				// Resolve which backend to use — prefer the model the user selected, fall back to default
 				const selectedModelId = message.model_id || undefined;
 				let llmBackend: LLMBackend;
 				try {
@@ -460,243 +435,47 @@ export async function runStart(args: StartArgs): Promise<void> {
 					llmBackend = modelRouter.getDefault();
 				}
 				const activeModelId = selectedModelId || routerConfig.default;
-				console.log(
-					`[agent] Calling LLM (backend=${activeModelId}) with ${llmMessages.length} messages`,
+
+				const agentLoop = new AgentLoop(
+					appContext,
+					sandbox?.bash ?? ({} as any),
+					llmBackend,
+					{
+						threadId: thread_id,
+						userId: message.user_id || appContext.config.allowlist.default_web_user,
+						modelId: activeModelId,
+					},
 				);
 
-				// Tool execution loop — runs until the LLM produces a text-only response
-				let responseText = "";
-				let continueLoop = true;
+				const result = await agentLoop.run();
 
-				while (continueLoop) {
-					// Accumulate tool call data across stream chunks
-					const pendingToolCalls: Array<{ id: string; name: string; argsJson: string }> = [];
-					// Map from id -> accumulated partial_json
-					const argsAccumulator = new Map<string, string>();
-					let currentText = "";
-
-					const providerModel = backendModelMap.get(activeModelId) || activeModelId;
-					const stream = llmBackend.chat({
-						model: providerModel,
-						messages: llmMessages,
-						tools: mcpToolDefinitions.length > 0 ? mcpToolDefinitions : undefined,
-					});
-
-					for await (const chunk of stream) {
-						if (chunk.type === "text") {
-							currentText += chunk.content;
-						} else if (chunk.type === "tool_use_start") {
-							// Register new tool call being built
-							argsAccumulator.set(chunk.id, "");
-						} else if (chunk.type === "tool_use_args") {
-							// Accumulate partial JSON for this tool call
-							const existing = argsAccumulator.get(chunk.id) ?? "";
-							argsAccumulator.set(chunk.id, existing + chunk.partial_json);
-						} else if (chunk.type === "tool_use_end") {
-							// Finalise the tool call entry
-							const fullArgs = argsAccumulator.get(chunk.id) ?? "{}";
-							// The id emitted by OllamaDriver is the tool function name; name is also available
-							// from tool_use_start. We stored it as the id, so use chunk.id as both.
-							pendingToolCalls.push({ id: chunk.id, name: chunk.id, argsJson: fullArgs });
-						} else if (chunk.type === "error") {
-							console.error(`[agent] LLM error: ${chunk.error}`);
-							currentText = `Error from LLM: ${chunk.error}`;
-							break;
-						} else if (chunk.type === "done") {
-							console.log(
-								`[agent] LLM done: ${chunk.usage.input_tokens} in, ${chunk.usage.output_tokens} out`,
-							);
-						}
-					}
-
-					if (pendingToolCalls.length === 0) {
-						// No tool calls — the LLM is done
-						responseText = currentText;
-						continueLoop = false;
-					} else {
-						// The assistant turn that requested tool calls
-						const toolCallContent = JSON.stringify(
-							pendingToolCalls.map((tc) => ({
-								type: "tool_use",
-								id: tc.id,
-								name: tc.name,
-								input: (() => {
-									try {
-										return JSON.parse(tc.argsJson);
-									} catch {
-										return {};
-									}
-								})(),
-							})),
-						);
-
-						// Persist the tool_call message
-						const toolCallMsgId = randomUUID();
-						const now = new Date().toISOString();
-						insertRow(
-							appContext.db,
-							"messages",
-							{
-								id: toolCallMsgId,
-								thread_id: thread_id,
-								role: "tool_call",
-								content: toolCallContent,
-								model_id: activeModelId,
-								tool_name: null,
-								created_at: now,
-								modified_at: now,
-								host_origin: appContext.hostName,
-							},
-							appContext.siteId,
-						);
-
-						// Add to in-memory context for next LLM call
-						llmMessages.push({
-							role: "tool_call",
-							content: toolCallContent,
-						});
-
-						// Execute each tool call
-						for (const tc of pendingToolCalls) {
-							// Name format is "{serverName}-{toolName}" (e.g. "metacog-become")
-							const dashIdx = tc.name.indexOf("-");
-							const serverName = dashIdx >= 0 ? tc.name.slice(0, dashIdx) : tc.name;
-							const toolName = dashIdx >= 0 ? tc.name.slice(dashIdx + 1) : tc.name;
-
-							console.log(`[agent] Calling MCP tool: ${tc.name}`);
-
-							let toolResultContent: string;
-							const client = mcpClientsMap.get(serverName);
-							if (!client) {
-								toolResultContent = `Error: No MCP server named "${serverName}"`;
-								console.warn(`[agent] Unknown MCP server: ${serverName}`);
-							} else {
-								try {
-									let toolArgs: Record<string, unknown> = {};
-									try {
-										toolArgs = JSON.parse(tc.argsJson);
-									} catch {
-										// leave as empty object
-									}
-									const result = await client.callTool(toolName, toolArgs);
-									toolResultContent = result.content;
-									console.log(
-										`[agent] Tool result: ${toolResultContent.slice(0, 200)}${toolResultContent.length > 200 ? "..." : ""}`,
-									);
-								} catch (error) {
-									toolResultContent = `Error: ${error instanceof Error ? error.message : String(error)}`;
-									console.error(`[agent] Tool call failed: ${toolResultContent}`);
-								}
-							}
-
-							// Persist the tool_result message
-							const toolResultMsgId = randomUUID();
-							const resultNow = new Date().toISOString();
-							insertRow(
-								appContext.db,
-								"messages",
-								{
-									id: toolResultMsgId,
-									thread_id: thread_id,
-									role: "tool_result",
-									content: toolResultContent,
-									model_id: activeModelId,
-									tool_name: tc.id,
-									created_at: resultNow,
-									modified_at: resultNow,
-									host_origin: appContext.hostName,
-								},
-								appContext.siteId,
-							);
-
-							// Add to in-memory context for next LLM call
-							llmMessages.push({
-								role: "tool_result",
-								content: toolResultContent,
-								tool_use_id: tc.id,
-							});
-						}
-
-						// Loop again — feed results back to LLM
-						console.log(
-							`[agent] Executed ${pendingToolCalls.length} tool call(s), continuing loop`,
-						);
-					}
+				if (result.error) {
+					console.error(`[agent] Error: ${result.error}`);
+				} else {
+					console.log(`[agent] Done: ${result.messagesCreated} messages, ${result.toolCallsMade} tool calls`);
 				}
 
-				if (responseText) {
-					// Persist assistant response
-					const msgId = randomUUID();
-					const now = new Date().toISOString();
-					insertRow(
-						appContext.db,
-						"messages",
-						{
-							id: msgId,
-							thread_id: thread_id,
-							role: "assistant",
-							content: responseText,
-							model_id: activeModelId,
-							tool_name: null,
-							created_at: now,
-							modified_at: now,
-							host_origin: appContext.hostName,
-						},
-						appContext.siteId,
-					);
-
-					console.log(`[agent] Response persisted (${responseText.length} chars)`);
-
-					// Emit so WebSocket pushes to client
-					const savedMsg = appContext.db.query("SELECT * FROM messages WHERE id = ?").get(msgId);
+				// Emit the last message for WebSocket push
+				const lastMsg = appContext.db.query(
+					"SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1"
+				).get(thread_id);
+				if (lastMsg) {
 					appContext.eventBus.emit("message:created", {
-						message: savedMsg as any,
+						message: lastMsg as any,
 						thread_id,
 					});
-
-					// Fire-and-forget: generate thread title per spec R-E17
-					// The at-most-once guard inside generateThreadTitle handles dedup
-					generateThreadTitle(appContext.db, thread_id, llmBackend, appContext.siteId).then(
-						(result) => {
-							if (result.ok) {
-								console.log(`[agent] Thread title: ${result.value}`);
-							} else {
-								console.warn(`[agent] Title generation failed: ${result.error.message}`);
-							}
-						},
-					);
 				}
+
+				// Fire-and-forget: generate thread title
+				generateThreadTitle(appContext.db, thread_id, llmBackend, appContext.siteId).then(
+					(titleResult) => {
+						if (titleResult.ok) {
+							console.log(`[agent] Thread title: ${titleResult.value}`);
+						}
+					},
+				);
 			} catch (error) {
-				const errorMsg = error instanceof Error ? error.message : String(error);
-				console.error(`[agent] Error: ${errorMsg}`);
-				// Persist an error message so the UI can show it
-				try {
-					const alertId = randomUUID();
-					const now = new Date().toISOString();
-					insertRow(
-						appContext.db,
-						"messages",
-						{
-							id: alertId,
-							thread_id: thread_id,
-							role: "assistant",
-							content: `Error: ${errorMsg}`,
-							model_id: message.model_id || null,
-							tool_name: null,
-							created_at: now,
-							modified_at: now,
-							host_origin: appContext.hostName,
-						},
-						appContext.siteId,
-					);
-					const alertMsg = appContext.db.query("SELECT * FROM messages WHERE id = ?").get(alertId);
-					appContext.eventBus.emit("message:created", {
-						message: alertMsg as any,
-						thread_id,
-					});
-				} catch (persistError) {
-					console.error(`[agent] Failed to persist error message: ${persistError}`);
-				}
+				console.error(`[agent] Error: ${formatError(error)}`);
 			} finally {
 				activeLoops.delete(thread_id);
 			}
@@ -704,7 +483,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	} catch (error) {
 		console.warn(
 			"Web server failed to start:",
-			error instanceof Error ? error.message : String(error),
+			formatError(error),
 		);
 		console.warn("Continuing without web UI. API will not be available.");
 	}
@@ -789,7 +568,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			console.log(`[sync] Sync loop started (${syncConfig.sync_interval_seconds}s interval)`);
 		} catch (error) {
 			console.warn(
-				`[sync] Failed to start: ${error instanceof Error ? error.message : String(error)}`,
+				`[sync] Failed to start: ${formatError(error)}`,
 			);
 		}
 	} else {
@@ -810,7 +589,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			);
 		} catch (error) {
 			console.warn(
-				`[overlay] Failed to start: ${error instanceof Error ? error.message : String(error)}`,
+				`[overlay] Failed to start: ${formatError(error)}`,
 			);
 		}
 	} else {
@@ -827,7 +606,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	} catch (error) {
 		console.warn(
 			"[scheduler] Failed to start scheduler:",
-			error instanceof Error ? error.message : String(error),
+			formatError(error),
 		);
 	}
 

@@ -1,5 +1,11 @@
 import type { Database } from "bun:sqlite";
-import { updateRow } from "@bound/core";
+import {
+	approveAdvisory,
+	dismissAdvisory,
+	deferAdvisory,
+	applyAdvisory,
+	getPendingAdvisories,
+} from "@bound/agent";
 import type { Advisory } from "@bound/shared";
 import { Hono } from "hono";
 
@@ -81,7 +87,17 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 			}
 
 			const siteId = getSiteId();
-			updateRow(db, "advisories", id, { status: "approved" }, siteId);
+			const result = approveAdvisory(db, id, siteId);
+
+			if (!result.ok) {
+				return c.json(
+					{
+						error: "Failed to approve advisory",
+						details: result.error.message,
+					},
+					500,
+				);
+			}
 
 			const updated = db.query("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
 			return c.json(updated);
@@ -118,8 +134,17 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 			}
 
 			const siteId = getSiteId();
-			const now = new Date().toISOString();
-			updateRow(db, "advisories", id, { status: "dismissed", resolved_at: now }, siteId);
+			const result = dismissAdvisory(db, id, siteId);
+
+			if (!result.ok) {
+				return c.json(
+					{
+						error: "Failed to dismiss advisory",
+						details: result.error.message,
+					},
+					500,
+				);
+			}
 
 			const updated = db.query("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
 			return c.json(updated);
@@ -158,7 +183,17 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 			const siteId = getSiteId();
 			// Default defer by 24 hours
 			const deferUntil = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-			updateRow(db, "advisories", id, { status: "deferred", defer_until: deferUntil }, siteId);
+			const result = deferAdvisory(db, id, deferUntil, siteId);
+
+			if (!result.ok) {
+				return c.json(
+					{
+						error: "Failed to defer advisory",
+						details: result.error.message,
+					},
+					500,
+				);
+			}
 
 			const updated = db.query("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
 			return c.json(updated);
@@ -195,8 +230,17 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 			}
 
 			const siteId = getSiteId();
-			const now = new Date().toISOString();
-			updateRow(db, "advisories", id, { status: "applied", resolved_at: now }, siteId);
+			const result = applyAdvisory(db, id, siteId);
+
+			if (!result.ok) {
+				return c.json(
+					{
+						error: "Failed to apply advisory",
+						details: result.error.message,
+					},
+					500,
+				);
+			}
 
 			const updated = db.query("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
 			return c.json(updated);

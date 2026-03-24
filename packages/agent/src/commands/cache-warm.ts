@@ -1,3 +1,5 @@
+import { formatError } from "@bound/shared";
+
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 
 export const cacheWarm: CommandDefinition = {
@@ -14,7 +16,7 @@ export const cacheWarm: CommandDefinition = {
 				exitCode: 0,
 			};
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const message = formatError(error);
 			return {
 				stdout: "",
 				stderr: `Error: ${message}\n`,

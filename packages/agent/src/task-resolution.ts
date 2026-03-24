@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { Task } from "@bound/shared";
-import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 
 // Cron expression parser - supports basic 5-field cron: minute hour day month weekday
 // Returns the next execution time
@@ -128,7 +128,7 @@ export function computeNextRunAt(cronExpr: string, from: Date = new Date()): Dat
 		return parseCron(cronExpr, from);
 	} catch (error) {
 		throw new Error(
-			`Failed to parse cron expression "${cronExpr}": ${error instanceof Error ? error.message : String(error)}`,
+			`Failed to parse cron expression "${cronExpr}": ${formatError(error)}`,
 		);
 	}
 }

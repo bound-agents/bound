@@ -5,6 +5,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { MCPClient } from "@bound/agent";
+import { formatError } from "@bound/shared";
 import type { KeyringConfig } from "@bound/shared";
 import { createSyncAuthMiddleware } from "@bound/sync";
 import { Hono } from "hono";
@@ -68,7 +69,7 @@ export function createMCPProxyRoutes(
 			const result = await client.callTool(tool, toolArgs);
 			return c.json({ result });
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const message = formatError(error);
 			return c.json({ error: `Tool call failed: ${message}` }, 500);
 		}
 	});

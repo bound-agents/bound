@@ -1,3 +1,5 @@
+import { getSiteId } from "@bound/core";
+
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertRow } from "@bound/core";
@@ -75,10 +77,7 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 			const messageId = randomUUID();
 			const now = new Date().toISOString();
 
-			const siteIdRow = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as
-				| { value: string }
-				| undefined;
-			const siteId = siteIdRow?.value ?? "unknown";
+	const siteId = getSiteId(db);
 
 			insertRow(
 				db,

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
 import { insertRow, recordTurn } from "@bound/core";
+import { formatError } from "@bound/shared";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { assembleContext } from "./context-assembly";
 import { extractSummaryAndMemories } from "./summary-extraction";
@@ -101,7 +102,7 @@ export class AgentLoop {
 					}
 				} catch (error) {
 					this.state = "ERROR_PERSIST";
-					const errorMsg = error instanceof Error ? error.message : String(error);
+					const errorMsg = formatError(error);
 					this.ctx.logger.error("LLM call failed", { error: errorMsg });
 
 					const alertId = randomUUID();
@@ -161,7 +162,7 @@ export class AgentLoop {
 						try {
 							resultContent = await this.executeToolCall(toolCall);
 						} catch (error) {
-							const errorMsg = error instanceof Error ? error.message : String(error);
+							const errorMsg = formatError(error);
 							resultContent = `Error: ${errorMsg}`;
 						}
 
@@ -325,7 +326,7 @@ export class AgentLoop {
 			};
 		} catch (error) {
 			this.state = "ERROR_PERSIST";
-			const errorMsg = error instanceof Error ? error.message : String(error);
+			const errorMsg = formatError(error);
 			return {
 				messagesCreated: this.messagesCreated,
 				toolCallsMade: this.toolCallsMade,

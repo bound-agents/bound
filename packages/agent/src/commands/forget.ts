@@ -1,6 +1,7 @@
 import { softDelete } from "@bound/core";
-import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
+import type { CommandContext, CommandDefinition } from "@bound/sandbox";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
 export const forget: CommandDefinition = {
 	name: "forget",
@@ -12,7 +13,7 @@ export const forget: CommandDefinition = {
 			description: "Delete all entries whose key starts with this prefix",
 		},
 	],
-	handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
+	handler: async (args: Record<string, string>, ctx: CommandContext) => {
 		try {
 			if (args.prefix) {
 				// Soft-delete all semantic_memory entries where key starts with prefix
@@ -22,31 +23,19 @@ export const forget: CommandDefinition = {
 					.all(`${prefix}%`) as Array<{ id: string; key: string }>;
 
 				if (entries.length === 0) {
-					return {
-						stdout: `No memories found with prefix: ${prefix}\n`,
-						stderr: "",
-						exitCode: 0,
-					};
+					return commandSuccess(`No memories found with prefix: ${prefix}\n`);
 				}
 
 				for (const entry of entries) {
 					softDelete(ctx.db, "semantic_memory", entry.id, ctx.siteId);
 				}
 
-				return {
-					stdout: `Deleted ${entries.length} memories with prefix: ${prefix}\n`,
-					stderr: "",
-					exitCode: 0,
-				};
+				return commandSuccess(`Deleted ${entries.length} memories with prefix: ${prefix}\n`);
 			}
 
 			const key = args.key;
 			if (!key) {
-				return {
-					stdout: "",
-					stderr: "Error: must specify key or --prefix\n",
-					exitCode: 1,
-				};
+				return commandError("must specify key or --prefix");
 			}
 
 			const memoryId = deterministicUUID(BOUND_NAMESPACE, key);
@@ -57,28 +46,15 @@ export const forget: CommandDefinition = {
 				.get(key) as { id: string } | undefined;
 
 			if (!existing) {
-				return {
-					stdout: "",
-					stderr: `Memory not found: ${key}\n`,
-					exitCode: 1,
-				};
+				return commandError(`Memory not found: ${key}`);
 			}
 
 			// Soft-delete the entry
 			softDelete(ctx.db, "semantic_memory", memoryId, ctx.siteId);
 
-			return {
-				stdout: `Memory deleted: ${key}\n`,
-				stderr: "",
-				exitCode: 0,
-			};
+			return commandSuccess(`Memory deleted: ${key}\n`);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			return {
-				stdout: "",
-				stderr: `Error: ${message}\n`,
-				exitCode: 1,
-			};
+			return handleCommandError(error);
 		}
 	},
 };

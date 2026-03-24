@@ -4,8 +4,10 @@ import {
 	type ConverseStreamCommandOutput,
 } from "@aws-sdk/client-bedrock-runtime";
 import type { Message, SystemContentBlock, Tool } from "@aws-sdk/client-bedrock-runtime";
+import { formatError } from "@bound/shared";
 import type { DocumentType } from "@smithy/types";
 import { withRetry } from "./retry";
+import { extractTextFromBlocks } from "./stream-utils";
 import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
 import { LLMError } from "./types";
 
@@ -47,10 +49,7 @@ function toBedrockMessages(messages: LLMMessage[]): Message[] {
 
 		if (msg.role === "tool_result") {
 			const textContent = Array.isArray(msg.content)
-				? msg.content
-						.filter((b) => b.type === "text")
-						.map((b) => b.text ?? "")
-						.join("\n")
+				? extractTextFromBlocks(msg.content)
 				: msg.content;
 			result.push({
 				role: "user",
@@ -69,10 +68,7 @@ function toBedrockMessages(messages: LLMMessage[]): Message[] {
 		// user / assistant with plain text or content blocks
 		const role = msg.role as "user" | "assistant";
 		if (Array.isArray(msg.content)) {
-			const text = msg.content
-				.filter((b) => b.type === "text")
-				.map((b) => b.text ?? "")
-				.join("\n");
+			const text = extractTextFromBlocks(msg.content);
 			result.push({ role, content: [{ text }] });
 		} else {
 			result.push({ role, content: [{ text: msg.content }] });
@@ -148,7 +144,7 @@ export class BedrockDriver implements LLMBackend {
 				res = await this.client.send(command);
 			} catch (error) {
 				throw new LLMError(
-					`Bedrock request failed: ${error instanceof Error ? error.message : String(error)}`,
+					`Bedrock request failed: ${formatError(error)}`,
 					"bedrock",
 					undefined,
 					error instanceof Error ? error : new Error(String(error)),
@@ -205,7 +201,7 @@ export class BedrockDriver implements LLMBackend {
 			}
 		} catch (error) {
 			throw new LLMError(
-				`Bedrock stream error: ${error instanceof Error ? error.message : String(error)}`,
+				`Bedrock stream error: ${formatError(error)}`,
 				"bedrock",
 				undefined,
 				error instanceof Error ? error : new Error(String(error)),

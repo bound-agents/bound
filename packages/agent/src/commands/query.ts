@@ -1,3 +1,5 @@
+import { formatError } from "@bound/shared";
+
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 
 const MAX_ROWS = 1000;
@@ -62,7 +64,7 @@ export const query: CommandDefinition = {
 				exitCode: 0,
 			};
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const message = formatError(error);
 			return {
 				stdout: "",
 				stderr: `Query error: ${message}\n`,

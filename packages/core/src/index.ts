@@ -1,4 +1,4 @@
-export { createDatabase } from "./database";
+export { createDatabase, getSiteId } from "./database";
 export { applySchema } from "./schema";
 export {
 	createChangeLogEntry,
@@ -6,6 +6,8 @@ export {
 	insertRow,
 	updateRow,
 	softDelete,
+	insertMessage,
+	validateColumnName,
 } from "./change-log";
 export {
 	loadConfigFile,

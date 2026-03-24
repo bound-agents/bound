@@ -1,6 +1,7 @@
+import { checkHttpError, wrapFetchError } from "./error-utils";
 import { withRetry } from "./retry";
+import { extractTextFromBlocks, parseStreamLines } from "./stream-utils";
 import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
-import { LLMError } from "./types";
 
 interface OllamaMessage {
 	role: "system" | "user" | "assistant" | "tool";
@@ -59,10 +60,7 @@ function toOllamaMessages(messages: LLMMessage[]): OllamaMessage[] {
 	return messages.map((msg) => {
 		// Handle array content blocks
 		if (Array.isArray(msg.content)) {
-			const textContent = msg.content
-				.filter((block) => block.type === "text")
-				.map((block) => block.text || "")
-				.join("\n");
+			const textContent = extractTextFromBlocks(msg.content);
 
 			if (msg.role === "tool_call") {
 				const toolBlocks = msg.content.filter((block) => block.type === "tool_use");
@@ -160,56 +158,19 @@ function* emitChunkEvents(chunk: OllamaStreamResponse): IterableIterator<StreamC
 }
 
 async function* parseOllamaStream(response: Response): AsyncIterable<StreamChunk> {
-	const reader = response.body?.getReader();
-	if (!reader) {
-		throw new LLMError("Response body not available", "ollama");
-	}
-
-	const decoder = new TextDecoder();
-	let buffer = "";
-
-	try {
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-
-			buffer += decoder.decode(value, { stream: true });
-			const lines = buffer.split("\n");
-			buffer = lines.pop() || "";
-
-			for (const line of lines) {
-				if (!line.trim()) continue;
-
-				let chunk: OllamaStreamResponse;
-				try {
-					chunk = JSON.parse(line);
-				} catch {
-					yield {
-						type: "error",
-						error: `Failed to parse NDJSON: ${line}`,
-					};
-					continue;
-				}
-
-				yield* emitChunkEvents(chunk);
-			}
+	for await (const line of parseStreamLines(response, "ollama")) {
+		let chunk: OllamaStreamResponse;
+		try {
+			chunk = JSON.parse(line);
+		} catch {
+			yield {
+				type: "error",
+				error: `Failed to parse NDJSON: ${line}`,
+			};
+			continue;
 		}
 
-		// Handle any remaining buffer
-		if (buffer.trim()) {
-			let chunk: OllamaStreamResponse;
-			try {
-				chunk = JSON.parse(buffer);
-				yield* emitChunkEvents(chunk);
-			} catch {
-				yield {
-					type: "error",
-					error: `Failed to parse final NDJSON chunk: ${buffer}`,
-				};
-			}
-		}
-	} finally {
-		reader.releaseLock();
+		yield* emitChunkEvents(chunk);
 	}
 }
 
@@ -241,10 +202,12 @@ export class OllamaDriver implements LLMBackend {
 			tools: params.tools,
 		};
 
+		const endpoint = `${this.baseUrl}/api/chat`;
+
 		const response = await withRetry(async () => {
 			let res: Response;
 			try {
-				res = await fetch(`${this.baseUrl}/api/chat`, {
+				res = await fetch(endpoint, {
 					method: "POST",
 					headers: {
 						"Content-Type": "application/json",
@@ -252,24 +215,10 @@ export class OllamaDriver implements LLMBackend {
 					body: JSON.stringify(request),
 				});
 			} catch (error) {
-				throw new LLMError(
-					`Failed to connect to Ollama at ${this.baseUrl}: ${
-						error instanceof Error ? error.message : String(error)
-					}`,
-					"ollama",
-					undefined,
-					error instanceof Error ? error : new Error(String(error)),
-				);
+				throw wrapFetchError(error, "ollama", endpoint);
 			}
 
-			if (!res.ok) {
-				const body = await res.text();
-				throw new LLMError(
-					`Ollama request failed with status ${res.status}: ${body}`,
-					"ollama",
-					res.status,
-				);
-			}
+			await checkHttpError(res, "ollama");
 
 			return res;
 		});

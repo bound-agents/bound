@@ -6,6 +6,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
+import { formatError } from "@bound/shared";
 import type { KeyringConfig } from "@bound/shared";
 import { signRequest } from "@bound/sync";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -192,7 +193,7 @@ export async function generateMCPCommands(
 							exitCode: result.isError ? 1 : 0,
 						};
 					} catch (error) {
-						const message = error instanceof Error ? error.message : String(error);
+						const message = formatError(error);
 						return {
 							stdout: "",
 							stderr: `Failed to call tool ${commandName}: ${message}\n`,
@@ -287,7 +288,7 @@ function generateRemoteMCPCommands(
 						exitCode: result.isError ? 1 : 0,
 					};
 				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
+					const message = formatError(error);
 					return {
 						stdout: "",
 						stderr: `Failed to proxy tool ${toolCommandName}: ${message}\n`,
@@ -340,7 +341,7 @@ function createResourcesCommand(clients: Map<string, MCPClient>): CommandDefinit
 					exitCode: 0,
 				};
 			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
+				const message = formatError(error);
 				return {
 					stdout: "",
 					stderr: `Failed to list resources: ${message}\n`,
@@ -393,7 +394,7 @@ function createResourceCommand(clients: Map<string, MCPClient>): CommandDefiniti
 					exitCode: 1,
 				};
 			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
+				const message = formatError(error);
 				return {
 					stdout: "",
 					stderr: `Failed to read resource: ${message}\n`,
@@ -441,7 +442,7 @@ function createPromptsCommand(clients: Map<string, MCPClient>): CommandDefinitio
 					exitCode: 0,
 				};
 			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
+				const message = formatError(error);
 				return {
 					stdout: "",
 					stderr: `Failed to list prompts: ${message}\n`,
@@ -500,7 +501,7 @@ function createPromptCommand(clients: Map<string, MCPClient>): CommandDefinition
 					exitCode: 0,
 				};
 			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
+				const message = formatError(error);
 				return {
 					stdout: "",
 					stderr: `Failed to invoke prompt: ${message}\n`,

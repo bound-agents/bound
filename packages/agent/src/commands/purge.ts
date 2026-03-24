@@ -1,6 +1,7 @@
 import { insertRow } from "@bound/core";
-import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
+import type { CommandContext, CommandDefinition } from "@bound/sandbox";
 import { randomUUID } from "@bound/shared";
+import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
 export const purge: CommandDefinition = {
 	name: "purge",
@@ -10,7 +11,7 @@ export const purge: CommandDefinition = {
 		{ name: "thread-id", required: false, description: "Thread ID for last N messages" },
 		{ name: "summary", required: false, description: "Create a summary of purged messages" },
 	],
-	handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
+	handler: async (args: Record<string, string>, ctx: CommandContext) => {
 		try {
 			const now = new Date().toISOString();
 			let targetIds: string[] = [];
@@ -24,11 +25,7 @@ export const purge: CommandDefinition = {
 				const threadId = args["thread-id"];
 
 				if (Number.isNaN(n) || n <= 0) {
-					return {
-						stdout: "",
-						stderr: "Error: --last must be a positive integer\n",
-						exitCode: 1,
-					};
+					return commandError("--last must be a positive integer");
 				}
 
 				const messages = ctx.db
@@ -37,11 +34,7 @@ export const purge: CommandDefinition = {
 
 				targetIds = messages.map((m) => m.id);
 			} else {
-				return {
-					stdout: "",
-					stderr: "Error: must specify --ids or (--last and --thread-id)\n",
-					exitCode: 1,
-				};
+				return commandError("must specify --ids or (--last and --thread-id)");
 			}
 
 			// Tool-pair integrity: when a tool_call is targeted, auto-include its paired tool_result
@@ -108,18 +101,11 @@ export const purge: CommandDefinition = {
 				ctx.siteId,
 			);
 
-			return {
-				stdout: `Purge message created: ${purgeMessageId}\nTargeted ${targetIds.length} messages\n`,
-				stderr: "",
-				exitCode: 0,
-			};
+			return commandSuccess(
+				`Purge message created: ${purgeMessageId}\nTargeted ${targetIds.length} messages\n`,
+			);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			return {
-				stdout: "",
-				stderr: `Error: ${message}\n`,
-				exitCode: 1,
-			};
+			return handleCommandError(error);
 		}
 	},
 };

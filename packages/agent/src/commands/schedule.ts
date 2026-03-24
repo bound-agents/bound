@@ -1,6 +1,7 @@
 import { insertRow } from "@bound/core";
-import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
+import type { CommandContext, CommandDefinition } from "@bound/sandbox";
 import { randomUUID } from "@bound/shared";
+import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
 function parseTimeOffset(offset: string): Date {
 	const now = new Date();
@@ -46,7 +47,7 @@ export const schedule: CommandDefinition = {
 		{ name: "inject", required: false, description: "Inject mode (results, all, or file)" },
 		{ name: "alert-after", required: false, description: "Set alert_threshold on the task" },
 	],
-	handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
+	handler: async (args: Record<string, string>, ctx: CommandContext) => {
 		try {
 			const taskId = randomUUID();
 			const now = new Date().toISOString();
@@ -68,11 +69,7 @@ export const schedule: CommandDefinition = {
 				type = "event";
 				triggerSpec = JSON.stringify({ type: "event", event: args.on });
 			} else {
-				return {
-					stdout: "",
-					stderr: "Error: must specify --in, --every, or --on\n",
-					exitCode: 1,
-				};
+				return commandError("must specify --in, --every, or --on");
 			}
 
 			const payload = args.payload ? args.payload : null;
@@ -130,18 +127,9 @@ export const schedule: CommandDefinition = {
 				ctx.siteId,
 			);
 
-			return {
-				stdout: `${taskId}\n`,
-				stderr: "",
-				exitCode: 0,
-			};
+			return commandSuccess(`${taskId}\n`);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			return {
-				stdout: "",
-				stderr: `Error: ${message}\n`,
-				exitCode: 1,
-			};
+			return handleCommandError(error);
 		}
 	},
 };

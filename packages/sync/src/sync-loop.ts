@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { KeyringConfig, Logger, Result, SyncConfig, TypedEventEmitter } from "@bound/shared";
-import { err, ok } from "@bound/shared";
+import { err, formatError, ok } from "@bound/shared";
 import {
 	type Changeset,
 	deserializeChangeset,
@@ -141,7 +141,7 @@ export class SyncClient {
 				}
 			}
 
-			const message = error instanceof Error ? error.message : "Unknown error";
+			const message = formatError(error);
 			this.logger.error(`Sync error: ${message}`);
 			return err({
 				phase: "push",
@@ -176,7 +176,7 @@ export class SyncClient {
 
 			return ok(undefined);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
+			const message = formatError(error);
 			return err({
 				phase: "push",
 				message,
@@ -218,7 +218,7 @@ export class SyncClient {
 
 			return ok(changesetResult.value);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
+			const message = formatError(error);
 			return err({
 				phase: "pull",
 				message,
@@ -250,7 +250,7 @@ export class SyncClient {
 
 			return ok(undefined);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
+			const message = formatError(error);
 			return err({
 				phase: "ack",
 				message,

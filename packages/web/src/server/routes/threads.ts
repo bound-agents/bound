@@ -1,3 +1,5 @@
+import { getSiteId } from "@bound/core";
+
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertRow } from "@bound/core";
@@ -39,10 +41,7 @@ export function createThreadsRoutes(db: Database, defaultModel?: string): Hono {
 
 			console.log(`[web] POST /api/threads - creating thread ${threadId}`);
 
-			const siteIdRow = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as
-				| { value: string }
-				| undefined;
-			const siteId = siteIdRow?.value ?? "unknown";
+	const siteId = getSiteId(db);
 
 			// Assign next palette color by cycling (0-9) per spec R-U18
 			// Pick up from the last thread's color so colors always advance

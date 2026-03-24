@@ -1,3 +1,5 @@
+import { getSiteId } from "@bound/core";
+
 import type { Database } from "bun:sqlite";
 import { updateRow } from "@bound/core";
 import type { Task } from "@bound/shared";
@@ -55,10 +57,7 @@ export function createTasksRoutes(db: Database): Hono {
 				);
 			}
 
-			const siteIdRow = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as
-				| { value: string }
-				| undefined;
-			const siteId = siteIdRow?.value ?? "unknown";
+	const siteId = getSiteId(db);
 
 			updateRow(db, "tasks", id, { status: "cancelled" }, siteId);
 

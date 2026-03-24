@@ -11,6 +11,7 @@ export * from "./events.js";
 export * from "./uuid.js";
 export * from "./event-emitter.js";
 export * from "./logger.js";
+export * from "./errors.js";
 
 // Config schemas
 export * from "./config-schemas.js";

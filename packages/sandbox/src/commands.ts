@@ -1,5 +1,6 @@
 import type Database from "bun:sqlite";
 
+import { formatError } from "@bound/shared";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
 
 import type { CustomCommand } from "just-bash";
@@ -52,7 +53,7 @@ export function createDefineCommands(
 			try {
 				return await def.handler(args, context);
 			} catch (error) {
-				const errorMsg = error instanceof Error ? error.message : String(error);
+				const errorMsg = formatError(error);
 				return {
 					stdout: "",
 					stderr: `${errorMsg}\n`,

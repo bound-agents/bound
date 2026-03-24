@@ -1,5 +1,6 @@
 import { updateRow } from "@bound/core";
-import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
+import type { CommandContext, CommandDefinition } from "@bound/sandbox";
+import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
 export const cancel: CommandDefinition = {
 	name: "cancel",
@@ -11,7 +12,7 @@ export const cancel: CommandDefinition = {
 			description: "Cancel tasks whose payload contains this string",
 		},
 	],
-	handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
+	handler: async (args: Record<string, string>, ctx: CommandContext) => {
 		try {
 			if (args["payload-match"]) {
 				const match = args["payload-match"];
@@ -24,31 +25,19 @@ export const cancel: CommandDefinition = {
 					.all(`%${match}%`) as Array<{ id: string }>;
 
 				if (tasks.length === 0) {
-					return {
-						stdout: `No tasks found matching payload: ${match}\n`,
-						stderr: "",
-						exitCode: 0,
-					};
+					return commandSuccess(`No tasks found matching payload: ${match}\n`);
 				}
 
 				for (const task of tasks) {
 					updateRow(ctx.db, "tasks", task.id, { status: "cancelled" }, ctx.siteId);
 				}
 
-				return {
-					stdout: `Cancelled ${tasks.length} tasks matching payload: ${match}\n`,
-					stderr: "",
-					exitCode: 0,
-				};
+				return commandSuccess(`Cancelled ${tasks.length} tasks matching payload: ${match}\n`);
 			}
 
 			const taskId = args["task-id"];
 			if (!taskId) {
-				return {
-					stdout: "",
-					stderr: "Error: must specify task-id or --payload-match\n",
-					exitCode: 1,
-				};
+				return commandError("must specify task-id or --payload-match");
 			}
 
 			// Check if task exists
@@ -57,11 +46,7 @@ export const cancel: CommandDefinition = {
 				.get(taskId) as { id: string } | undefined;
 
 			if (!existing) {
-				return {
-					stdout: "",
-					stderr: `Task not found: ${taskId}\n`,
-					exitCode: 1,
-				};
+				return commandError(`Task not found: ${taskId}`);
 			}
 
 			// Update task status to cancelled
@@ -75,18 +60,9 @@ export const cancel: CommandDefinition = {
 				ctx.siteId,
 			);
 
-			return {
-				stdout: `Task cancelled: ${taskId}\n`,
-				stderr: "",
-				exitCode: 0,
-			};
+			return commandSuccess(`Task cancelled: ${taskId}\n`);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			return {
-				stdout: "",
-				stderr: `Error: ${message}\n`,
-				exitCode: 1,
-			};
+			return handleCommandError(error);
 		}
 	},
 };
