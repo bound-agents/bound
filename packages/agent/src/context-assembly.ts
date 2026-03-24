@@ -3,8 +3,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LLMMessage } from "@bound/llm";
 import type { Message } from "@bound/shared";
+import { getFileThreadNotificationMessage, getLastThreadForFile } from "./file-thread-tracker";
 import { buildCrossThreadDigest } from "./summary-extraction.js";
-import { getLastThreadForFile, getFileThreadNotificationMessage } from "./file-thread-tracker";
 
 export interface ContextParams {
 	db: Database;
@@ -283,11 +283,41 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	// Stage 5: ANNOTATION
 	// Convert Message to LLMMessage format with annotations
 	// Also detect model switches between consecutive assistant messages per spec R-U11
+	// Filter out non-LLM roles (e.g. alert, purge) that drivers cannot handle
+	const LLM_COMPATIBLE_ROLES = new Set(["user", "assistant", "system", "tool_call", "tool_result"]);
+
+	// Build a map from tool_call message ID to the tool_use IDs contained within,
+	// so we can propagate tool_use_id to the subsequent tool_result messages.
+	const toolCallIdToToolUseId = new Map<string, string>();
+	for (const m of sanitized) {
+		if (m.role === "tool_call") {
+			try {
+				const blocks = JSON.parse(m.content);
+				if (Array.isArray(blocks) && blocks.length > 0 && blocks[0].id) {
+					toolCallIdToToolUseId.set(m.id, blocks[0].id);
+				}
+			} catch {
+				// Content may not be JSON (e.g. synthetic tool_call)
+			}
+		}
+	}
+
 	const annotated: LLMMessage[] = [];
 	let lastAssistantModel: string | null = null;
+	let lastToolCallMsgId: string | null = null;
 
 	for (let i = 0; i < sanitized.length; i++) {
 		const m = sanitized[i];
+
+		// Skip non-LLM roles (alert, purge, etc.)
+		if (!LLM_COMPATIBLE_ROLES.has(m.role)) {
+			continue;
+		}
+
+		// Track the last tool_call message ID for tool_use_id propagation
+		if (m.role === "tool_call") {
+			lastToolCallMsgId = m.id;
+		}
 
 		// Check for model switch on assistant messages
 		if (m.role === "assistant" && m.model_id) {
@@ -307,6 +337,16 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			model_id: m.model_id || undefined,
 			host_origin: m.host_origin,
 		};
+
+		// Propagate tool_use_id for tool_result messages
+		// In the DB, tool_name stores the tool_use_id for tool_result messages
+		if (m.role === "tool_result") {
+			const toolUseId =
+				m.tool_name ||
+				(lastToolCallMsgId ? toolCallIdToToolUseId.get(lastToolCallMsgId) : null) ||
+				`synthetic-${m.id}`;
+			msg.tool_use_id = toolUseId;
+		}
 
 		annotated.push(msg);
 	}
@@ -395,9 +435,9 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 				const filePath = key.replace("_internal.file_thread.", "");
 				const lastThread = getLastThreadForFile(db, filePath);
 				if (lastThread && lastThread !== threadId) {
-					const threadRow = db
-						.query("SELECT title FROM threads WHERE id = ?")
-						.get(lastThread) as { title: string | null } | null;
+					const threadRow = db.query("SELECT title FROM threads WHERE id = ?").get(lastThread) as {
+						title: string | null;
+					} | null;
 					const threadTitle = threadRow?.title || lastThread;
 					volatileLines.push("");
 					volatileLines.push(getFileThreadNotificationMessage(filePath, threadTitle));

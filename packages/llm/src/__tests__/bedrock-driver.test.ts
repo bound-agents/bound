@@ -329,4 +329,94 @@ describe("BedrockDriver", () => {
 		expect((caught as LLMError).provider).toBe("bedrock");
 		expect((caught as LLMError).message.toLowerCase()).toContain("no stream");
 	});
+
+	describe("Bedrock message conversion compatibility", () => {
+		it.skipIf(shouldSkip)("skips messages with non-standard roles (alert, purge)", async () => {
+			sendSpy.mockImplementation(() =>
+				Promise.resolve(
+					createMockStream([{ metadata: { usage: { inputTokens: 1, outputTokens: 1 } } }]),
+				),
+			);
+
+			const driver = makeDriver();
+			await collectChunks(
+				driver.chat({
+					model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+					messages: [
+						{ role: "user", content: "Hello" },
+						// These would be cast from non-standard roles if context assembly leaked them
+						{ role: "alert" as "user", content: "Internal error" },
+						{ role: "purge" as "user", content: "Purge data" },
+						{ role: "assistant", content: "Response" },
+					],
+				}),
+			);
+
+			expect(sendSpy.mock.calls).toHaveLength(1);
+			const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
+			const messages = commandInput.messages as Array<{ role: string }>;
+
+			// Only user and assistant roles should appear — no alert or purge
+			for (const msg of messages) {
+				expect(["user", "assistant"]).toContain(msg.role);
+			}
+
+			// Should have exactly 2 messages: user + assistant (alert and purge filtered)
+			expect(messages).toHaveLength(2);
+		});
+
+		it.skipIf(shouldSkip)("handles tool_result with empty tool_use_id gracefully", async () => {
+			sendSpy.mockImplementation(() =>
+				Promise.resolve(
+					createMockStream([{ metadata: { usage: { inputTokens: 1, outputTokens: 1 } } }]),
+				),
+			);
+
+			const driver = makeDriver();
+			await collectChunks(
+				driver.chat({
+					model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+					messages: [
+						{ role: "user", content: "Run query" },
+						{
+							role: "tool_call",
+							content: [
+								{
+									type: "tool_use",
+									id: "tu-abc",
+									name: "query",
+									input: { sql: "SELECT 1" },
+								},
+							],
+						},
+						{
+							role: "tool_result",
+							content: "Result: 1",
+							tool_use_id: "", // empty — simulates the bug
+						},
+						{
+							role: "tool_result",
+							content: "Result: 2",
+							// tool_use_id is undefined — simulates the bug
+						},
+					],
+				}),
+			);
+
+			expect(sendSpy.mock.calls).toHaveLength(1);
+			const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
+			const messages = commandInput.messages as Array<{
+				role: string;
+				content: Array<{ toolResult?: { toolUseId: string } }>;
+			}>;
+
+			// Find all toolResult blocks
+			const toolResults = messages.flatMap((m) => (m.content || []).filter((b) => b.toolResult));
+
+			// Every toolResult must have a non-empty toolUseId
+			for (const tr of toolResults) {
+				expect(tr.toolResult?.toolUseId.length).toBeGreaterThan(0);
+			}
+		});
+	});
 });

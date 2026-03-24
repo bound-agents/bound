@@ -20,6 +20,17 @@ function toBedrockMessages(messages: LLMMessage[]): Message[] {
 			continue;
 		}
 
+		// Skip non-standard roles that Bedrock cannot handle (e.g. alert, purge)
+		// These should be filtered upstream in context assembly, but guard here defensively
+		if (
+			msg.role !== "user" &&
+			msg.role !== "assistant" &&
+			msg.role !== "tool_call" &&
+			msg.role !== "tool_result"
+		) {
+			continue;
+		}
+
 		if (msg.role === "tool_call") {
 			// assistant message carrying tool_use blocks
 			const content: Message["content"] = [];
@@ -48,6 +59,7 @@ function toBedrockMessages(messages: LLMMessage[]): Message[] {
 		}
 
 		if (msg.role === "tool_result") {
+			const toolUseId = msg.tool_use_id || `synthetic-${Date.now()}-${result.length}`;
 			const textContent = Array.isArray(msg.content)
 				? extractTextFromBlocks(msg.content)
 				: msg.content;
@@ -56,7 +68,7 @@ function toBedrockMessages(messages: LLMMessage[]): Message[] {
 				content: [
 					{
 						toolResult: {
-							toolUseId: msg.tool_use_id ?? "",
+							toolUseId,
 							content: [{ text: textContent }],
 						},
 					},
