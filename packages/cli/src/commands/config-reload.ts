@@ -21,7 +21,7 @@ export async function runConfigReload(args: ConfigReloadArgs): Promise<void> {
 	}
 	console.log(`Reloading ${args.target} configuration...`);
 	try {
-		const db = openBoundDB(args.configDir);
+		const db = openBoundDB(dataDir);
 		// Get site_id from host_meta for change-log
 		const siteId = getSiteId(db);
 		if (siteId === "unknown") {
@@ -36,10 +36,20 @@ export async function runConfigReload(args: ConfigReloadArgs): Promise<void> {
 			mcpContent = readFileSync(mcpPath, "utf-8");
 		} catch (error) {
 			console.error(`Failed to read ${mcpPath}:`, error);
+			db.close();
+			process.exit(1);
+			return; // unreachable but satisfies TS
+		}
 		// Parse JSON
 		let mcpData: unknown;
+		try {
 			mcpData = JSON.parse(mcpContent);
+		} catch (error) {
 			console.error("Failed to parse mcp.json:", error);
+			db.close();
+			process.exit(1);
+			return; // unreachable but satisfies TS
+		}
 		// Validate schema
 		const validationResult = mcpSchema.safeParse(mcpData);
 		if (!validationResult.success) {
@@ -47,6 +57,9 @@ export async function runConfigReload(args: ConfigReloadArgs): Promise<void> {
 			for (const issue of validationResult.error.issues) {
 				console.error(`  - ${issue.path.join(".")}: ${issue.message}`);
 			}
+			db.close();
+			process.exit(1);
+		}
 		const mcpConfig = validationResult.data;
 		// Check for name collisions (duplicate server names)
 		const serverNames = new Set<string>();
@@ -55,7 +68,9 @@ export async function runConfigReload(args: ConfigReloadArgs): Promise<void> {
 				console.error(`Error: duplicate server name: ${server.name}`);
 				db.close();
 				process.exit(1);
+			}
 			serverNames.add(server.name);
+		}
 		// Write config_reload_requested entry to cluster_config
 		const now = new Date().toISOString();
 		const key = "config_reload_requested";
@@ -65,10 +80,16 @@ export async function runConfigReload(args: ConfigReloadArgs): Promise<void> {
 			if (existing) {
 				db.query("UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?").run(
 					now,
+					now,
 					key,
 				);
 			} else {
 				db.query("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)").run(
+					key,
+					now,
+					now,
+				);
+			}
 			// Write change_log entry
 			const rowData = { key, value: now, modified_at: now };
 			db.query(
@@ -82,3 +103,6 @@ export async function runConfigReload(args: ConfigReloadArgs): Promise<void> {
 		db.close();
 	} catch (error) {
 		console.error("Failed to reload configuration:", error);
+		process.exit(1);
+	}
+}

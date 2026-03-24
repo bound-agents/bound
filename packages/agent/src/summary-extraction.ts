@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import type { LLMBackend, Result } from "@bound/llm";
+import type { LLMBackend } from "@bound/llm";
+import type { Result } from "@bound/shared";
 
 export interface ExtractionResult {
 	summaryGenerated: boolean;

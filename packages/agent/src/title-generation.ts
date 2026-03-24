@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
-import type { LLMBackend, Result } from "@bound/llm";
+import type { LLMBackend } from "@bound/llm";
+import type { Result } from "@bound/shared";
 import type { Message, Thread } from "@bound/shared";
 
 export async function generateThreadTitle(

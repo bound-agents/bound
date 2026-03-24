@@ -11,8 +11,10 @@ export interface DrainArgs {
 interface TaskRow {
 	id: string;
 	status: string;
+}
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
 export async function runDrain(args: DrainArgs): Promise<void> {
 	const dataDir = args.configDir || "data";
 	const dbPath = resolve(dataDir, "bound.db");
@@ -45,6 +47,10 @@ export async function runDrain(args: DrainArgs): Promise<void> {
 				);
 			} else {
 				db.query("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)").run(
+					emergencyStopKey,
+					"drain",
+					now,
+				);
 			}
 			// Write change_log entry
 			const rowData = { key: emergencyStopKey, value: "drain", modified_at: now };
@@ -68,10 +74,13 @@ export async function runDrain(args: DrainArgs): Promise<void> {
 				console.log("All tasks complete.\n");
 				tasksComplete = true;
 				break;
+			}
 			console.log(`Waiting for ${runningTasks.length} task(s) to complete...`);
 			await sleep(pollIntervalMs);
+		}
 		if (!tasksComplete) {
 			console.warn("Timeout: some tasks are still running. Proceeding anyway...\n");
+		}
 		// Step 3: Set cluster_hub to new hub
 		console.log(`Step 3: Setting cluster_hub to ${args.newHub}...`);
 		const hubTimestamp = new Date().toISOString();
@@ -79,11 +88,25 @@ export async function runDrain(args: DrainArgs): Promise<void> {
 		const existingHub = db.query("SELECT key FROM cluster_config WHERE key = ?").get(hubKey);
 		const setHubTx = db.transaction(() => {
 			if (existingHub) {
+				db.query("UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?").run(
 					args.newHub,
 					hubTimestamp,
 					hubKey,
+				);
+			} else {
+				db.query("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)").run(
+					hubKey,
+					args.newHub,
+					hubTimestamp,
+				);
+			}
+			// Write change_log entry
 			const rowData = { key: hubKey, value: args.newHub, modified_at: hubTimestamp };
+			db.query(
+				`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
+				 VALUES (?, ?, ?, ?, ?)`,
 			).run("cluster_config", hubKey, siteId, hubTimestamp, JSON.stringify(rowData));
+		});
 		setHubTx();
 		console.log("Hub updated.\n");
 		// Step 4: Clear emergency_stop
@@ -93,7 +116,11 @@ export async function runDrain(args: DrainArgs): Promise<void> {
 			db.query("DELETE FROM cluster_config WHERE key = ?").run(emergencyStopKey);
 			// Write change_log entry with empty value to signal deletion
 			const rowData = { key: emergencyStopKey, value: "", modified_at: clearTimestamp };
+			db.query(
+				`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
+				 VALUES (?, ?, ?, ?, ?)`,
 			).run("cluster_config", emergencyStopKey, siteId, clearTimestamp, JSON.stringify(rowData));
+		});
 		clearTx();
 		console.log("Emergency stop cleared.\n");
 		console.log(`Drain complete. Cluster hub is now: ${args.newHub}`);
@@ -102,3 +129,4 @@ export async function runDrain(args: DrainArgs): Promise<void> {
 		console.error("Failed to drain:", error);
 		process.exit(1);
 	}
+}

@@ -43,7 +43,7 @@ export function approveAdvisory(
 		db.prepare(
 			"UPDATE advisories SET status = ?, resolved_at = ?, modified_at = ? WHERE id = ?",
 		).run("approved", now, now, advisoryId);
-		return { ok: true };
+		return { ok: true, value: undefined };
 	} catch (error) {
 		return {
 			ok: false,
@@ -62,7 +62,7 @@ export function dismissAdvisory(
 		db.prepare(
 			"UPDATE advisories SET status = ?, resolved_at = ?, modified_at = ? WHERE id = ?",
 		).run("dismissed", now, now, advisoryId);
-		return { ok: true };
+		return { ok: true, value: undefined };
 	} catch (error) {
 		return {
 			ok: false,
@@ -82,7 +82,7 @@ export function deferAdvisory(
 		db.prepare(
 			"UPDATE advisories SET status = ?, defer_until = ?, modified_at = ? WHERE id = ?",
 		).run("deferred", deferUntil, now, advisoryId);
-		return { ok: true };
+		return { ok: true, value: undefined };
 	} catch (error) {
 		return {
 			ok: false,
@@ -101,7 +101,7 @@ export function applyAdvisory(
 		db.prepare(
 			"UPDATE advisories SET status = ?, resolved_at = ?, modified_at = ? WHERE id = ?",
 		).run("applied", now, now, advisoryId);
-		return { ok: true };
+		return { ok: true, value: undefined };
 	} catch (error) {
 		return {
 			ok: false,

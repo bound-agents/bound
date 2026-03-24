@@ -11,8 +11,10 @@ export interface SetHubArgs {
 interface SyncStateRow {
 	peer_site_id: string;
 	last_sync_at: string | null;
+}
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
 export async function runSetHub(args: SetHubArgs): Promise<void> {
 	const configDir = args.configDir || "data";
 	const dbPath = resolve(configDir, "bound.db");
@@ -54,7 +56,11 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 				);
 				console.log(
 					`Waiting for ${peers.length} peers... (${confirmedPeers.length}/${peers.length} confirmed)`,
+				);
 				if (confirmedPeers.length === peers.length) {
+					confirmed = true;
+					break;
+				}
 				await sleep(pollIntervalMs);
 			}
 			if (confirmed) {
@@ -62,9 +68,12 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 			} else {
 				console.warn(
 					"Timeout: not all peers confirmed. The hub IS set, but some peers have not synced yet.",
+				);
+			}
 		}
 		db.close();
 	} catch (error) {
 		console.error("Failed to set hub:", error);
 		process.exit(1);
 	}
+}

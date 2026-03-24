@@ -15,7 +15,11 @@ interface ChangeLogRow {
 	row_id: string;
 	timestamp: string;
 	row_data: string;
+}
 interface AffectedRow {
+	table_name: string;
+	row_id: string;
+}
 export async function runRestore(args: RestoreArgs): Promise<void> {
 	const configDir = args.configDir || "data";
 	const dbPath = resolve(configDir, "bound.db");
@@ -49,17 +53,21 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 				return false;
 			}
 			if (tableFilter && !tableFilter.has(r.table_name)) {
+				return false;
+			}
 			return true;
 		});
 		if (candidates.length === 0) {
 			console.log("No restorable rows affected after the given timestamp.");
 			db.close();
 			return;
+		}
 		console.log(`Found ${candidates.length} affected row(s) across tables.\n`);
 		// Read the site_id from host_meta for change_log entries
 		const siteId = getSiteId(db);
 		if (siteId === "unknown") {
 			console.log("Warning: unable to read site_id, using fallback.");
+		}
 		let restoredCount = 0;
 		let tombstonedCount = 0;
 		const processRows = () => {
@@ -97,6 +105,7 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 						).run(...(values as Array<string | number | null>));
 						// Write change_log entry for outbox compliance
 						const now = new Date().toISOString();
+						db.query(
 							`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
 							VALUES (?, ?, ?, ?, ?)`,
 						).run(table_name, row_id, siteId, now, JSON.stringify(rowData));
@@ -104,7 +113,10 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 					restoredCount++;
 				} else {
 					// Row was created after the safe timestamp — tombstone it
+					if (args.preview) {
 						console.log(`  TOMBSTONE ${table_name}.${row_id} (created after safe timestamp)`);
+					} else {
+						const now = new Date().toISOString();
 						db.query(`UPDATE ${table_name} SET deleted = 1, modified_at = ? WHERE id = ?`).run(
 							now,
 							row_id,
@@ -119,8 +131,10 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 								VALUES (?, ?, ?, ?, ?)`,
 							).run(table_name, row_id, siteId, now, JSON.stringify(deletedRow));
 						}
+					}
 					tombstonedCount++;
 				}
+			}
 		};
 		if (args.preview) {
 			processRows();
@@ -136,8 +150,12 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 			} catch (txError) {
 				db.exec("ROLLBACK");
 				throw txError;
+			}
 			console.log(`Restore completed: ${restoredCount} restored, ${tombstonedCount} tombstoned.`);
+		}
 		db.close();
 	} catch (error) {
 		console.error("Restore failed:", error);
 		process.exit(1);
+	}
+}

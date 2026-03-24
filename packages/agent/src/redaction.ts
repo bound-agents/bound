@@ -18,7 +18,7 @@ export function redactMessage(
 			now,
 			messageId,
 		);
-		return { ok: true };
+		return { ok: true, value: undefined };
 	} catch (error) {
 		return {
 			ok: false,
