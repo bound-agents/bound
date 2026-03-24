@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import { insertRow } from "@bound/core";
 import type { Thread, User } from "@bound/shared";
 
 /**
@@ -23,7 +24,7 @@ export function mapDiscordUser(db: Database, discordId: string): User | null {
 /**
  * Find or create a thread for a Discord user.
  * Queries for an existing non-deleted thread with this user_id and interface='discord'.
- * If found, returns it. If not, creates a new thread.
+ * If found, returns it. If not, creates a new thread via insertRow for sync compliance.
  */
 export function findOrCreateThread(db: Database, userId: string, siteId: string): Thread {
 	// Look for existing thread
@@ -41,14 +42,27 @@ export function findOrCreateThread(db: Database, userId: string, siteId: string)
 		return existing;
 	}
 
-	// Create new thread
+	// Create new thread via insertRow for change-log outbox compliance
 	const threadId = randomUUID();
 	const now = new Date().toISOString();
 
-	db.run(
-		`INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
-		[threadId, userId, "discord", siteId, now, now, now],
+	insertRow(
+		db,
+		"threads",
+		{
+			id: threadId,
+			user_id: userId,
+			interface: "discord",
+			host_origin: siteId,
+			color: 0,
+			title: null,
+			summary: null,
+			created_at: now,
+			last_message_at: now,
+			modified_at: now,
+			deleted: 0,
+		},
+		siteId,
 	);
 
 	const thread = db.query("SELECT * FROM threads WHERE id = ?").get(threadId) as Thread;
