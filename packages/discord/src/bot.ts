@@ -4,7 +4,7 @@ import type { AppContext } from "@bound/core";
 import { insertRow } from "@bound/core";
 import { formatError } from "@bound/shared";
 import type { Client } from "discord.js";
-import { ChannelType, GatewayIntentBits } from "discord.js";
+import { ChannelType, GatewayIntentBits, Partials } from "discord.js";
 import { isAllowlisted } from "./allowlist";
 import { findOrCreateThread, mapDiscordUser } from "./thread-mapping";
 
@@ -26,7 +26,13 @@ export class DiscordBot {
 		const { Client } = await import("discord.js");
 
 		this.client = new Client({
-			intents: [GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent],
+			intents: [
+				GatewayIntentBits.Guilds,
+				GatewayIntentBits.DirectMessages,
+				GatewayIntentBits.DirectMessageReactions,
+				GatewayIntentBits.MessageContent,
+			],
+			partials: [Partials.Channel, Partials.Message, Partials.Reaction],
 		});
 
 		this.client.on("messageCreate", async (msg) => {
