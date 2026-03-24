@@ -15,6 +15,7 @@ function computeContentHash(filePath: string): string {
 		const content = readFileSync(filePath);
 		return createHash("sha256").update(content).digest("hex");
 	} catch {
+		// Return empty hash if file cannot be read (permissions, deletion race, etc.)
 		return "";
 	}
 }
@@ -42,11 +43,11 @@ function walkDirectory(dir: string, prefix = ""): Array<{ path: string; fullPath
 					entries.push({ path: relativePath, fullPath });
 				}
 			} catch {
-				// Skip files we can't stat
+				// Skip files we can't stat (permissions, symlink loops, etc.)
 			}
 		}
 	} catch {
-		// Skip directories we can't read
+		// Skip directories we can't read (permissions, deleted during scan, etc.)
 	}
 
 	return entries;

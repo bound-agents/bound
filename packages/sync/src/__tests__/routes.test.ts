@@ -1,5 +1,8 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { KeyringConfig, Logger } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import { ensureKeypair, exportPublicKey } from "../crypto.js";
@@ -79,11 +82,14 @@ describe("routes", () => {
 			)
 		`);
 
-		// Generate keypairs for hub and spoke
-		const hubKeypair = await ensureKeypair("/tmp/bound-test-hub-routes");
+		// Generate keypairs for hub and spoke with random paths
+		const hubDir = join(tmpdir(), `bound-test-hub-routes-${randomBytes(4).toString("hex")}`);
+		const spokeDir = join(tmpdir(), `bound-test-spoke-routes-${randomBytes(4).toString("hex")}`);
+
+		const hubKeypair = await ensureKeypair(hubDir);
 		hubSiteId = hubKeypair.siteId;
 
-		const spokeKeypair = await ensureKeypair("/tmp/bound-test-spoke-routes");
+		const spokeKeypair = await ensureKeypair(spokeDir);
 		spokeSiteId = spokeKeypair.siteId;
 		spokePrivateKey = spokeKeypair.privateKey;
 		spokePublicKey = await exportPublicKey(spokeKeypair.publicKey);

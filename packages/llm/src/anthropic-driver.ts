@@ -35,8 +35,10 @@ interface AnthropicRequest {
 	temperature?: number;
 }
 
+type AnthropicEventType = "message_start" | "content_block_start" | "content_block_delta" | "content_block_stop" | "message_delta" | "message_stop" | "ping" | "error";
+
 interface AnthropicStreamEvent {
-	type: string;
+	type: AnthropicEventType;
 	index?: number;
 	content_block?: { type: string };
 	delta?: {

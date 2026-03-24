@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { LLMMessage } from "@bound/llm";
 import type { Message } from "@bound/shared";
 import { buildCrossThreadDigest } from "./summary-extraction.js";
+import { getLastThreadForFile, getFileThreadNotificationMessage } from "./file-thread-tracker";
 
 export interface ContextParams {
 	db: Database;
@@ -380,6 +381,30 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		if (crossThreadDigest) {
 			volatileLines.push("");
 			volatileLines.push(crossThreadDigest);
+		}
+
+		// R-E20: Inject cross-thread file modification notifications
+		try {
+			const threadFiles = db
+				.query(
+					"SELECT DISTINCT key FROM semantic_memory WHERE key LIKE '_internal.file_thread.%' AND deleted = 0",
+				)
+				.all() as Array<{ key: string }>;
+
+			for (const { key } of threadFiles) {
+				const filePath = key.replace("_internal.file_thread.", "");
+				const lastThread = getLastThreadForFile(db, filePath);
+				if (lastThread && lastThread !== threadId) {
+					const threadRow = db
+						.query("SELECT title FROM threads WHERE id = ?")
+						.get(lastThread) as { title: string | null } | null;
+					const threadTitle = threadRow?.title || lastThread;
+					volatileLines.push("");
+					volatileLines.push(getFileThreadNotificationMessage(filePath, threadTitle));
+				}
+			}
+		} catch {
+			// Non-fatal
 		}
 
 		assembled.push({

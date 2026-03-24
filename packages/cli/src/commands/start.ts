@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { AgentLoop, Scheduler } from "@bound/agent";
+import { AgentLoop, Scheduler, seedCronTasks } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
 import { generateMCPCommands } from "@bound/agent";
@@ -473,7 +473,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 							console.log(`[agent] Thread title: ${titleResult.value}`);
 						}
 					},
-				);
+				).catch((err) => console.warn("[agent] Title generation failed:", formatError(err)));
 			} catch (error) {
 				console.error(`[agent] Error: ${formatError(error)}`);
 			} finally {
@@ -524,9 +524,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 	// 13. Discord (if configured)
 	console.log("Initializing Discord...");
-	let discordBot: Awaited<
-		ReturnType<InstanceType<typeof import("@bound/discord")["DiscordBot"]>["start"]>
-	> | null = null;
+	let discordBot: { stop(): Promise<void> } | null = null;
 	const discordResult = appContext.optionalConfig.discord;
 	if (discordResult?.ok) {
 		const { shouldActivate, DiscordBot } = await import("@bound/discord");
@@ -534,7 +532,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			const discordConfig = discordResult.value as { bot_token: string; host: string };
 			const bot = new DiscordBot(appContext, agentLoopFactory, discordConfig.bot_token);
 			await bot.start();
-			discordBot = bot as any;
+			discordBot = bot;
 			console.log("[discord] Bot started");
 		} else {
 			console.log("[discord] Config present but host does not match, skipping");
@@ -596,7 +594,32 @@ export async function runStart(args: StartArgs): Promise<void> {
 		console.log("[overlay] Not configured");
 	}
 
-	// 16. Scheduler
+	// 16. Seed cron tasks from config
+	console.log("Seeding cron tasks...");
+	{
+		const cronResult = appContext.optionalConfig["cronSchedules"];
+		if (cronResult?.ok) {
+			const cronSchedules = cronResult.value as Record<
+				string,
+				{ schedule: string; payload?: string }
+			>;
+			const cronConfigs = Object.entries(cronSchedules).map(([name, cfg]) => ({
+				name,
+				cron: cfg.schedule,
+				payload: cfg.payload,
+			}));
+			try {
+				seedCronTasks(appContext.db, cronConfigs, appContext.siteId);
+				console.log(`[scheduler] Seeded ${cronConfigs.length} cron task(s)`);
+			} catch (error) {
+				console.warn("[scheduler] Failed to seed cron tasks:", formatError(error));
+			}
+		} else {
+			console.log("[scheduler] No cron schedules configured");
+		}
+	}
+
+	// 17. Scheduler
 	console.log("Starting scheduler...");
 	let schedulerHandle: { stop: () => void } | null = null;
 	try {
@@ -628,7 +651,7 @@ Press Ctrl+C to stop.
 			if (overlayHandle) overlayHandle.stop();
 			if (discordBot) {
 				try {
-					await (discordBot as any).stop();
+					await discordBot.stop();
 				} catch (_err) {
 					// Ignore Discord shutdown errors
 				}
@@ -652,7 +675,7 @@ Press Ctrl+C to stop.
 			if (overlayHandle) overlayHandle.stop();
 			if (discordBot) {
 				try {
-					await (discordBot as any).stop();
+					await discordBot.stop();
 				} catch (_err) {
 					// Ignore Discord shutdown errors
 				}

@@ -59,10 +59,9 @@ describe("Discord Integration", () => {
 		}
 	});
 
-	it("complete DM flow: allowlisted user creates thread, message persisted, agent loop spawned", async () => {
-		if (process.env.SKIP_DISCORD === "1") {
-			return;
-		}
+	it.skipIf(process.env.SKIP_DISCORD === "1")(
+		"complete DM flow: allowlisted user creates thread, message persisted, agent loop spawned",
+		async () => {
 
 		const ctx = createAppContext(configDir, dbPath);
 		const now = new Date().toISOString();
@@ -106,15 +105,15 @@ describe("Discord Integration", () => {
 			[messageId, "thread-123", "user", "Hello agent", null, null, now, now, ctx.hostName],
 		);
 
-		// Verify message was persisted
-		const messages = ctx.db.query("SELECT * FROM messages").all();
-		expect(messages.length).toBeGreaterThan(0);
-	});
+			// Verify message was persisted
+			const messages = ctx.db.query("SELECT * FROM messages").all();
+			expect(messages.length).toBeGreaterThan(0);
+		},
+	);
 
-	it("non-allowlisted user DM is silently ignored", async () => {
-		if (process.env.SKIP_DISCORD === "1") {
-			return;
-		}
+	it.skipIf(process.env.SKIP_DISCORD === "1")(
+		"non-allowlisted user DM is silently ignored",
+		async () => {
 
 		const ctx = createAppContext(configDir, dbPath);
 
@@ -142,15 +141,15 @@ describe("Discord Integration", () => {
 		const threads = ctx.db.query("SELECT * FROM threads").all();
 		expect(threads.length).toBe(0);
 
-		// Verify that querying for a non-allowlisted user returns no users
-		const users = ctx.db.query("SELECT * FROM users WHERE discord_id = ?").all("unknown-user");
-		expect(users.length).toBe(0);
-	});
+			// Verify that querying for a non-allowlisted user returns no users
+			const users = ctx.db.query("SELECT * FROM users WHERE discord_id = ?").all("unknown-user");
+			expect(users.length).toBe(0);
+		},
+	);
 
-	it("agent loop receives correct thread and user IDs", async () => {
-		if (process.env.SKIP_DISCORD === "1") {
-			return;
-		}
+	it.skipIf(process.env.SKIP_DISCORD === "1")(
+		"agent loop receives correct thread and user IDs",
+		async () => {
 
 		const ctx = createAppContext(configDir, dbPath);
 		const now = new Date().toISOString();
@@ -184,8 +183,9 @@ describe("Discord Integration", () => {
 		const bot = new DiscordBot(ctx, mockFactory, "test-token");
 		expect(bot).toBeDefined();
 
-		// Verify thread exists
-		const threads = ctx.db.query("SELECT * FROM threads WHERE user_id = ?").all(userId);
-		expect(threads.length).toBe(1);
-	});
+			// Verify thread exists
+			const threads = ctx.db.query("SELECT * FROM threads WHERE user_id = ?").all(userId);
+			expect(threads.length).toBe(1);
+		},
+	);
 });

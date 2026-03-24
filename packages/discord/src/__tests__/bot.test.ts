@@ -59,10 +59,9 @@ describe("DiscordBot", () => {
 		}
 	});
 
-	it("DiscordBot instantiates with context, factory, and token", () => {
-		if (process.env.SKIP_DISCORD === "1") {
-			return;
-		}
+	it.skipIf(process.env.SKIP_DISCORD === "1")(
+		"DiscordBot instantiates with context, factory, and token",
+		() => {
 
 		const ctx = createAppContext(configDir, dbPath);
 		const now = new Date().toISOString();
@@ -80,10 +79,11 @@ describe("DiscordBot", () => {
 				run: () => Promise.resolve({ messagesCreated: 0, toolCallsMade: 0, filesChanged: 0 }),
 			}) as AgentLoop;
 
-		const bot = new DiscordBot(ctx, mockFactory, "test-token");
+			const bot = new DiscordBot(ctx, mockFactory, "test-token");
 
-		expect(bot).toBeDefined();
-	});
+			expect(bot).toBeDefined();
+		},
+	);
 
 	it("shouldActivate returns false when discord.json not found", () => {
 		const ctx = createAppContext(configDir, dbPath);
@@ -96,22 +96,26 @@ describe("DiscordBot", () => {
 
 	it("shouldActivate returns true when discord.json exists and host matches", () => {
 		// Create discord.json BEFORE context (so it's loaded during initialization)
+		// Mock the hostname by passing it directly in the config
+		const ctx = createAppContext(configDir, dbPath);
+
+		// Override the hostname to match what we'll put in the config
+		const testHostName = "test-host-match";
+		Object.defineProperty(ctx, "hostName", { value: testHostName, writable: false });
+
 		const discordConfig = {
 			bot_token: "test-token",
-			host: "localhost", // Will be the hostname
+			host: testHostName,
 		};
 		writeFileSync(join(configDir, "discord.json"), JSON.stringify(discordConfig));
 
-		const ctx = createAppContext(configDir, dbPath);
+		// Reload context with the new config
+		const ctxWithConfig = createAppContext(configDir, dbPath);
+		Object.defineProperty(ctxWithConfig, "hostName", { value: testHostName, writable: false });
 
-		const result = shouldActivate(ctx);
+		const result = shouldActivate(ctxWithConfig);
 
-		// Note: this will only pass if ctx.hostName === "localhost"
-		// In most test environments, hostname is not "localhost"
-		// Skip this test if hostname doesn't match
-		if (ctx.hostName === "localhost") {
-			expect(result).toBe(true);
-		}
+		expect(result).toBe(true);
 	});
 
 	it("shouldActivate returns false when host does not match", () => {

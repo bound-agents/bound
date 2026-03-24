@@ -101,7 +101,7 @@ describe("Scheduler Integration", () => {
 		const { stop } = scheduler.start(100); // Fast poll for testing
 
 		// Wait for scheduler to run the task
-		await new Promise((resolve) => setTimeout(resolve, 600));
+		await new Promise((resolve) => setTimeout(resolve, 1000));
 
 		stop();
 
@@ -111,15 +111,15 @@ describe("Scheduler Integration", () => {
 			| undefined;
 
 		expect(updatedTask).toBeDefined();
-		// Task should be at least claimed, or higher status
-		const possibleStatuses = ["pending", "claimed", "running", "completed", "failed"];
-		expect(possibleStatuses).toContain(updatedTask?.status);
+		// Task should be running or completed
+		expect(["running", "completed"]).toContain(updatedTask?.status);
 	});
 
-	it("computes next_run_at for cron tasks", () => {
+	it("computes next_run_at for cron tasks", async () => {
 		const taskId = randomUUID();
 		const now = new Date();
 		const nowStr = now.toISOString();
+		const initialNextRun = nowStr;
 
 		// Insert cron task
 		db.exec(`
@@ -132,7 +132,7 @@ describe("Scheduler Integration", () => {
 				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
 			) VALUES (
 				'${taskId}', 'cron', 'pending', '0 * * * *', NULL, NULL,
-				NULL, NULL, NULL, '${nowStr}', NULL,
+				NULL, NULL, NULL, '${initialNextRun}', NULL,
 				0, NULL, NULL, NULL, 0,
 				'status', NULL, 0, 5,
 				0, 0, 0,
@@ -152,15 +152,18 @@ describe("Scheduler Integration", () => {
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100);
 
-		setTimeout(() => stop(), 200);
+		await new Promise((resolve) => setTimeout(resolve, 1000));
+		stop();
 
-		// After running, the task should have next_run_at set for the next hour
+		// After running, the task should have next_run_at updated to the next hour
 		const updatedTask = db
 			.query("SELECT status, next_run_at FROM tasks WHERE id = ?")
 			.get(taskId) as { status: string; next_run_at: string | null } | undefined;
 
-		// Task may be pending, claimed, or completed depending on timing
 		expect(updatedTask).toBeDefined();
+		// Verify that next_run_at was actually changed (not the same as initial)
+		expect(updatedTask!.next_run_at).not.toBe(initialNextRun);
+		expect(updatedTask!.next_run_at).not.toBeNull();
 	});
 
 	it("respects task dependencies", async () => {
@@ -238,16 +241,16 @@ describe("Scheduler Integration", () => {
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100);
 
-		await new Promise((resolve) => setTimeout(resolve, 600));
+		await new Promise((resolve) => setTimeout(resolve, 1000));
 		stop();
 
 		const task = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
 			| { status: string }
 			| undefined;
 
-		// Task should be at minimum pending or higher
-		const possibleStatuses = ["pending", "claimed", "running", "completed", "failed"];
-		expect(possibleStatuses).toContain(task?.status);
+		// Task should have progressed beyond pending (dependencies were satisfied)
+		expect(task).toBeDefined();
+		expect(task!.status).not.toBe("pending");
 	});
 
 	it("handles host affinity constraints", async () => {
@@ -286,7 +289,7 @@ describe("Scheduler Integration", () => {
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100);
 
-		await new Promise((resolve) => setTimeout(resolve, 300));
+		await new Promise((resolve) => setTimeout(resolve, 1000));
 		stop();
 
 		const task = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as

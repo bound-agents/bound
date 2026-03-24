@@ -5,6 +5,7 @@ import { formatError } from "@bound/shared";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { assembleContext } from "./context-assembly";
 import { extractSummaryAndMemories } from "./summary-extraction";
+import { trackFilePath } from "./file-thread-tracker";
 import type { AgentLoopConfig, AgentLoopResult, AgentLoopState } from "./types";
 
 interface BashLike {
@@ -12,7 +13,12 @@ interface BashLike {
 		cmd: string,
 		options?: Record<string, unknown>,
 	) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
-	persistFs?: () => Promise<{ changes: number }>;
+	persistFs?: () => Promise<{ changes: number; changedPaths?: string[] }>;
+	checkMemoryThreshold?: () => {
+		overThreshold: boolean;
+		usageBytes: number;
+		thresholdBytes: number;
+	};
 }
 
 /** Parsed tool call accumulated from stream chunks */
@@ -261,6 +267,18 @@ export class AgentLoop {
 						this.messagesCreated++;
 					}
 
+					// R-W2: Check memory threshold after tool execution
+					if (this.sandbox.checkMemoryThreshold) {
+						const memCheck = this.sandbox.checkMemoryThreshold();
+						if (memCheck.overThreshold) {
+							this.ctx.logger.warn("Memory threshold exceeded, terminating loop", {
+								usage: memCheck.usageBytes,
+								threshold: memCheck.thresholdBytes,
+							});
+							break;
+						}
+					}
+
 					// Continue the loop to feed tool results back to the LLM
 					continue;
 				}
@@ -301,6 +319,17 @@ export class AgentLoop {
 				const persistResult = await this.sandbox.persistFs();
 				if (persistResult && typeof persistResult.changes === "number") {
 					this.filesChanged += persistResult.changes;
+
+					// R-E20: Track file-thread associations for cross-thread notification
+					if (persistResult.changedPaths) {
+						for (const filePath of persistResult.changedPaths) {
+							try {
+								trackFilePath(this.ctx.db, filePath, this.config.threadId);
+							} catch {
+								// Non-fatal — don't break the loop over tracking
+							}
+						}
+					}
 				}
 			}
 
@@ -444,8 +473,9 @@ export class AgentLoop {
 
 		while (true) {
 			const nextChunkPromise = iterator.next();
+			let timerId: ReturnType<typeof setTimeout> | null = null;
 			const timeoutPromise = new Promise<never>((_, reject) => {
-				setTimeout(() => {
+				timerId = setTimeout(() => {
 					reject(new Error(`LLM silence timeout: no chunk received for ${timeoutMs}ms`));
 				}, timeoutMs);
 			});
@@ -453,7 +483,9 @@ export class AgentLoop {
 			let result: IteratorResult<T>;
 			try {
 				result = await Promise.race([nextChunkPromise, timeoutPromise]);
+				if (timerId) clearTimeout(timerId);
 			} catch (err) {
+				if (timerId) clearTimeout(timerId);
 				if (typeof iterator.return === "function") {
 					await iterator.return(undefined).catch(() => {});
 				}

@@ -28,12 +28,12 @@ function toBedrockMessages(messages: LLMMessage[]): Message[] {
 					if (block.type === "tool_use") {
 						content.push({
 							toolUse: {
-								toolUseId: block.id ?? "",
-								name: block.name ?? "",
-								input: (block.input ?? {}) as DocumentType,
+								toolUseId: block.id,
+								name: block.name,
+								input: block.input as DocumentType,
 							},
 						});
-					} else if (block.type === "text" && block.text) {
+					} else if (block.type === "text") {
 						content.push({ text: block.text });
 					}
 				}

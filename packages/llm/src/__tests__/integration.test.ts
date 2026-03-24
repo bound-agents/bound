@@ -28,17 +28,7 @@ describe("LLM integration tests (Optional Ollama)", () => {
 		}
 	});
 
-	it("should skip Ollama tests gracefully when server unavailable", () => {
-		// This test always passes - it documents the skip behavior
-		expect(true).toBe(true);
-	});
-
-	it("should connect to Ollama and send simple message", async () => {
-		if (!ollamaAvailable) {
-			// Test skipped
-			expect(true).toBe(true);
-			return;
-		}
+	it.skipIf(!ollamaAvailable)("should connect to Ollama and send simple message", async () => {
 
 		const driver = new OllamaDriver({
 			baseUrl: "http://localhost:11434",
@@ -48,37 +38,26 @@ describe("LLM integration tests (Optional Ollama)", () => {
 
 		const chunks: StreamChunk[] = [];
 
-		try {
-			for await (const chunk of driver.chat({
-				model: "llama2",
-				messages: [{ role: "user", content: "Say hello briefly" }],
-			})) {
-				chunks.push(chunk);
-			}
-
-			// Verify we got some response
-			expect(chunks.length).toBeGreaterThan(0);
-
-			// Verify we got at least one text chunk
-			const hasText = chunks.some((c) => c.type === "text");
-			expect(hasText).toBe(true);
-
-			// Verify we got a done chunk
-			const hasDone = chunks.some((c) => c.type === "done");
-			expect(hasDone).toBe(true);
-		} catch {
-			// If Ollama is still unavailable, that's okay for this integration test
-			expect(true).toBe(true);
-			return;
+		for await (const chunk of driver.chat({
+			model: "llama2",
+			messages: [{ role: "user", content: "Say hello briefly" }],
+		})) {
+			chunks.push(chunk);
 		}
+
+		// Verify we got some response
+		expect(chunks.length).toBeGreaterThan(0);
+
+		// Verify we got at least one text chunk
+		const hasText = chunks.some((c) => c.type === "text");
+		expect(hasText).toBe(true);
+
+		// Verify we got a done chunk
+		const hasDone = chunks.some((c) => c.type === "done");
+		expect(hasDone).toBe(true);
 	});
 
-	it("should handle tool_use requests with Ollama", async () => {
-		if (!ollamaAvailable) {
-			// Test skipped
-			expect(true).toBe(true);
-			return;
-		}
+	it.skipIf(!ollamaAvailable)("should handle tool_use requests with Ollama", async () => {
 
 		const driver = new OllamaDriver({
 			baseUrl: "http://localhost:11434",
@@ -88,55 +67,44 @@ describe("LLM integration tests (Optional Ollama)", () => {
 
 		const chunks: StreamChunk[] = [];
 
-		try {
-			for await (const chunk of driver.chat({
-				model: "llama2",
-				messages: [
-					{
-						role: "user",
-						content: "Add numbers 5 and 3",
-					},
-				],
-				tools: [
-					{
-						type: "function",
-						function: {
-							name: "add",
-							description: "Add two numbers",
-							parameters: {
-								type: "object",
-								properties: {
-									a: { type: "number" },
-									b: { type: "number" },
-								},
-								required: ["a", "b"],
+		for await (const chunk of driver.chat({
+			model: "llama2",
+			messages: [
+				{
+					role: "user",
+					content: "Add numbers 5 and 3",
+				},
+			],
+			tools: [
+				{
+					type: "function",
+					function: {
+						name: "add",
+						description: "Add two numbers",
+						parameters: {
+							type: "object",
+							properties: {
+								a: { type: "number" },
+								b: { type: "number" },
 							},
+							required: ["a", "b"],
 						},
 					},
-				],
-			})) {
-				chunks.push(chunk);
-			}
-
-			// Verify we got some response
-			expect(chunks.length).toBeGreaterThan(0);
-
-			// Verify we got a done chunk
-			const hasDone = chunks.some((c) => c.type === "done");
-			expect(hasDone).toBe(true);
-		} catch {
-			// If Ollama is unavailable, that's okay
-			expect(true).toBe(true);
-			return;
+				},
+			],
+		})) {
+			chunks.push(chunk);
 		}
+
+		// Verify we got some response
+		expect(chunks.length).toBeGreaterThan(0);
+
+		// Verify we got a done chunk
+		const hasDone = chunks.some((c) => c.type === "done");
+		expect(hasDone).toBe(true);
 	});
 
-	it("should stream responses from Ollama correctly", async () => {
-		if (!ollamaAvailable) {
-			// Test skipped
-			expect(true).toBe(true);
-			return;
-		}
+	it.skipIf(!ollamaAvailable)("should stream responses from Ollama correctly", async () => {
 
 		const driver = new OllamaDriver({
 			baseUrl: "http://localhost:11434",
@@ -147,26 +115,20 @@ describe("LLM integration tests (Optional Ollama)", () => {
 		let textChunkCount = 0;
 		let totalChunks = 0;
 
-		try {
-			for await (const chunk of driver.chat({
-				model: "llama2",
-				messages: [{ role: "user", content: "Count to three" }],
-			})) {
-				totalChunks++;
-				if (chunk.type === "text") {
-					textChunkCount++;
-				}
+		for await (const chunk of driver.chat({
+			model: "llama2",
+			messages: [{ role: "user", content: "Count to three" }],
+		})) {
+			totalChunks++;
+			if (chunk.type === "text") {
+				textChunkCount++;
 			}
-
-			// Verify we got multiple chunks streamed
-			expect(totalChunks).toBeGreaterThan(1);
-
-			// Verify we got text chunks
-			expect(textChunkCount).toBeGreaterThan(0);
-		} catch {
-			// If Ollama is unavailable, that's okay
-			expect(true).toBe(true);
-			return;
 		}
+
+		// Verify we got multiple chunks streamed
+		expect(totalChunks).toBeGreaterThan(1);
+
+		// Verify we got text chunks
+		expect(textChunkCount).toBeGreaterThan(0);
 	});
 });

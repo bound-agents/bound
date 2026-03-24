@@ -15,7 +15,7 @@ describe("Bound CLI E2E Integration Test", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	it("full init → start → stop lifecycle", async () => {
+	it("initializes config files correctly", async () => {
 		// Step 1: Initialize with Ollama preset
 		await runInit({
 			ollama: true,
@@ -36,22 +36,6 @@ describe("Bound CLI E2E Integration Test", () => {
 			// ignore
 		}
 
-		expect(fileExists).toBe(true);
-
-		// Step 2: Start orchestrator
-		// Note: This is a simplified test - full start would require database setup
-		// For now, verify the bootstrap config loading works
-		try {
-			// We would call runStart here, but it requires database setup
-			// await runStart({ configDir: tempDir });
-			// So we'll verify config is loadable instead
-			expect(true).toBe(true);
-		} catch (error) {
-			// Expected - start requires database
-			expect(error).toBeTruthy();
-		}
-
-		// Step 3: Verify E2E expectation: files were created successfully
 		expect(fileExists).toBe(true);
 	});
 

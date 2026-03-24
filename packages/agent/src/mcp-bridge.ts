@@ -57,6 +57,7 @@ async function proxyToolCall(
 			const tools = JSON.parse(row.mcp_tools) as string[];
 			return tools.includes(toolCommandName);
 		} catch {
+			// Skip hosts with malformed mcp_tools JSON
 			return false;
 		}
 	});
@@ -154,7 +155,7 @@ export async function generateMCPCommands(
 		try {
 			toolsList = await client.listTools();
 		} catch {
-			// If listTools throws, skip this server
+			// If listTools throws (e.g., server disconnected), skip this server
 			continue;
 		}
 
@@ -255,7 +256,7 @@ function generateRemoteMCPCommands(
 				}
 			}
 		} catch {
-			// Skip malformed rows
+			// Skip hosts with malformed mcp_tools JSON
 		}
 	}
 
@@ -331,7 +332,7 @@ function createResourcesCommand(clients: Map<string, MCPClient>): CommandDefinit
 							resources.push(`${serverName}: ${resource.uri} (${resource.name})`);
 						}
 					} catch {
-						// Skip servers that fail to list resources
+						// Skip servers that fail to list resources (e.g., disconnected)
 					}
 				}
 
@@ -384,7 +385,7 @@ function createResourceCommand(clients: Map<string, MCPClient>): CommandDefiniti
 							exitCode: 0,
 						};
 					} catch {
-						// Try next server
+						// Resource not found on this server, try next
 					}
 				}
 
@@ -432,7 +433,7 @@ function createPromptsCommand(clients: Map<string, MCPClient>): CommandDefinitio
 							prompts.push(`${serverName}: ${prompt.name} (${prompt.description ?? ""})`);
 						}
 					} catch {
-						// Skip servers that fail to list prompts
+						// Skip servers that fail to list prompts (e.g., disconnected)
 					}
 				}
 
@@ -534,7 +535,7 @@ export async function updateHostMCPInfo(
 						mcp_tools.push(`${serverName}-${tool.name}`);
 					}
 				} catch {
-					// Skip servers that fail
+					// Skip servers that fail to list tools (e.g., temporary disconnect)
 				}
 			}
 		}
@@ -550,6 +551,6 @@ export async function updateHostMCPInfo(
 			siteId,
 		);
 	} catch {
-		// Silently ignore — logger not available in this function signature
+		// Silently ignore DB errors — this is a best-effort metadata update, logger not available in this function signature
 	}
 }

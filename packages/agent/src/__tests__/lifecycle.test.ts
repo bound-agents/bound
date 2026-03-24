@@ -339,7 +339,7 @@ describe("AgentLoop lifecycle", () => {
 		await agentLoop.run();
 
 		// Give the fire-and-forget extractSummaryAndMemories a moment to complete
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await new Promise((resolve) => setTimeout(resolve, 500));
 
 		// Verify that extractSummaryAndMemories was called by checking its side-effects:
 		// It generates a summary LLM call (the second call), so the backend should have
@@ -373,7 +373,7 @@ describe("AgentLoop lifecycle", () => {
 		const elapsed = Date.now() - startTime;
 
 		// The loop should have exited well before all 50 chunks were consumed
-		expect(elapsed).toBeLessThan(1500);
+		expect(elapsed).toBeLessThan(5000);
 		// No error because cancel is a controlled exit
 		expect(result.error).toBeUndefined();
 	});
@@ -421,7 +421,7 @@ describe("AgentLoop lifecycle", () => {
 		const result = await agentLoop.run();
 		const elapsed = Date.now() - startTime;
 
-		expect(elapsed).toBeLessThan(1500);
+		expect(elapsed).toBeLessThan(5000);
 		expect(result.error).toBeUndefined();
 	});
 

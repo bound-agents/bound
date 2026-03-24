@@ -21,13 +21,9 @@ export type LLMMessage = {
 	host_origin?: string;
 };
 
-export type ContentBlock = {
-	type: "text" | "tool_use";
-	text?: string;
-	id?: string;
-	name?: string;
-	input?: Record<string, unknown>;
-};
+export type ContentBlock =
+	| { type: "text"; text: string }
+	| { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
 
 export type StreamChunk =
 	| { type: "text"; content: string }
