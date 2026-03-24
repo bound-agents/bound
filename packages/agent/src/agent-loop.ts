@@ -98,7 +98,7 @@ export class AgentLoop {
 
 				try {
 					const chatStream = this.llmBackend.chat({
-						model: this.config.modelId || "default",
+						model: "",
 						messages: llmMessages,
 					});
 
