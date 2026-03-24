@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // Main entry for `bound` command
 // Handles: bound init, bound start
+import "reflect-metadata";
 
 import { runInit } from "./commands/init.js";
 import { runStart } from "./commands/start.js";

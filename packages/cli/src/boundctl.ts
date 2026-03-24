@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // Main entry for `boundctl` command
 // Handles: boundctl set-hub, boundctl stop, boundctl resume, boundctl restore, boundctl config, boundctl sync-status, boundctl drain
+import "reflect-metadata";
 
 import { runConfigReload } from "./commands/config-reload.js";
 import { runDrain } from "./commands/drain.js";
