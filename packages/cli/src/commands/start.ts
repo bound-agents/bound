@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { AgentLoop, Scheduler, seedCronTasks } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
-import { generateMCPCommands } from "@bound/agent";
+import { generateMCPCommands, getAllCommands } from "@bound/agent";
 import { generateThreadTitle } from "@bound/agent";
 import { createAppContext, insertRow, updateRow, withChangeLog } from "@bound/core";
 import { createModelRouter } from "@bound/llm";
@@ -17,7 +17,7 @@ import type {
 	ModelBackendsConfig,
 	ToolDefinition,
 } from "@bound/llm";
-import { createClusterFs, createSandbox } from "@bound/sandbox";
+import { createClusterFs, createSandbox, createDefineCommands } from "@bound/sandbox";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import { ensureKeypair } from "@bound/sync";
 import { createWebServer } from "@bound/web";
@@ -328,10 +328,20 @@ export async function runStart(args: StartArgs): Promise<void> {
 			hostName: appContext.hostName,
 			syncEnabled: false,
 		});
+		const commandContext = {
+			db: appContext.db,
+			siteId: appContext.siteId,
+			eventBus: appContext.eventBus,
+			logger: appContext.logger,
+		};
+		const builtinCommands = getAllCommands();
+		const allDefinitions = [...builtinCommands, ...mcpCommands];
+		const registeredCommands = createDefineCommands(allDefinitions, commandContext);
 		sandbox = await createSandbox({
 			clusterFs,
-			commands: mcpCommands,
+			commands: registeredCommands,
 		});
+		console.log(`[sandbox] ${builtinCommands.length} built-in + ${mcpCommands.length} MCP commands registered`);
 		console.log("[sandbox] Sandbox ready");
 	} catch (error) {
 		console.warn(
