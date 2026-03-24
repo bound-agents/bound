@@ -35,42 +35,42 @@ export class DiscordBot {
 			partials: [Partials.Channel, Partials.Message, Partials.Reaction],
 		});
 
+		this.client.on("ready", () => {
+			console.log(`[discord] Bot ready as ${this.client?.user?.tag ?? "unknown"}`);
+			console.log(`[discord] Listening for DMs from allowlisted users`);
+		});
+
 		this.client.on("messageCreate", async (msg) => {
 			// Ignore bot messages
 			if (msg.author.bot) {
 				return;
 			}
 
+			console.log(`[discord] Message received: channel=${msg.channel.type} author=${msg.author.tag} (${msg.author.id}) content="${msg.content.slice(0, 50)}"`);
+
 			// Ignore non-DM messages
 			if (msg.channel.type !== ChannelType.DM) {
+				console.log("[discord] Ignoring non-DM message");
 				return;
 			}
 
 			// Check if user is allowlisted
 			if (!isAllowlisted(msg.author.id, this.ctx.db)) {
-				this.ctx.logger.debug("Non-allowlisted user attempted DM", {
-					authorId: msg.author.id,
-				});
+				console.log(`[discord] User ${msg.author.id} not in allowlist, ignoring`);
 				return;
 			}
 
 			// Map Discord user to database user
 			const user = mapDiscordUser(this.ctx.db, msg.author.id);
 			if (!user) {
-				this.ctx.logger.debug("User mapping failed", {
-					authorId: msg.author.id,
-				});
+				console.log(`[discord] User mapping failed for Discord ID ${msg.author.id} — is discord_id set in allowlist.json?`);
 				return;
 			}
 
 			// Find or create thread for this user
 			const thread = findOrCreateThread(this.ctx.db, user.id, this.ctx.siteId);
 
-			this.ctx.logger.debug("Processing DM for user", {
-				userId: user.id,
-				threadId: thread.id,
-				content: msg.content,
-			});
+			console.log(`[discord] Processing DM: user=${user.id} thread=${thread.id}`);
 
 			// Persist user message to DB
 			const messageId = randomUUID();
