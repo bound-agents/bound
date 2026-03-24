@@ -144,8 +144,8 @@ export class AgentLoop {
 				try {
 					recordTurn(this.ctx.db, {
 						thread_id: this.config.threadId,
-						task_id: this.config.taskId || null,
-						dag_root_id: null,
+						task_id: this.config.taskId || undefined,
+						dag_root_id: undefined,
 						model_id: this.config.modelId || "unknown",
 						tokens_in: parsed.usage.inputTokens,
 						tokens_out: parsed.usage.outputTokens,
