@@ -213,12 +213,66 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	}
 
 	// Stage 3: TOOL_PAIR_SANITIZATION
-	// Ensure tool_call/tool_result pairs are correctly interleaved
+	// Ensure tool_call/tool_result pairs are adjacent (no messages between them).
+	//
+	// Pass 1: For each tool_call, look ahead for its matching tool_result.
+	// If there are non-tool messages between them, move those messages before the tool_call.
+	// This preserves the real tool_call -> tool_result adjacency that Bedrock requires.
+	const reordered: Message[] = [];
+	const consumed = new Set<number>();
+
+	for (let i = 0; i < messagesAfterPurge.length; i++) {
+		if (consumed.has(i)) continue;
+
+		const msg = messagesAfterPurge[i];
+		if (msg.role === "tool_call") {
+			// Look ahead for the matching tool_result
+			let matchIdx = -1;
+			const interleaved: Message[] = [];
+			const interleavedIndices: number[] = [];
+
+			for (let j = i + 1; j < messagesAfterPurge.length; j++) {
+				if (consumed.has(j)) continue;
+				if (messagesAfterPurge[j].role === "tool_result") {
+					matchIdx = j;
+					break;
+				}
+				if (messagesAfterPurge[j].role === "tool_call") {
+					// Another tool_call before finding tool_result - stop looking
+					break;
+				}
+				// Non-tool message between tool_call and tool_result
+				interleaved.push(messagesAfterPurge[j]);
+				interleavedIndices.push(j);
+			}
+
+			if (matchIdx !== -1) {
+				// Move interleaved messages before the tool_call
+				for (const m of interleaved) {
+					reordered.push(m);
+				}
+				for (const idx of interleavedIndices) {
+					consumed.add(idx);
+				}
+				consumed.add(matchIdx);
+				// Push tool_call immediately followed by tool_result
+				reordered.push(msg);
+				reordered.push(messagesAfterPurge[matchIdx]);
+			} else {
+				// No matching tool_result found - push tool_call as-is (handled in pass 2)
+				reordered.push(msg);
+			}
+		} else {
+			reordered.push(msg);
+		}
+	}
+
+	// Pass 2: Handle any remaining structural issues (orphaned tool_results, unclosed tool_calls)
 	const sanitized: Message[] = [];
 	let inActiveTool = false;
 	let lastToolId = "";
 
-	for (const msg of messagesAfterPurge) {
+	for (const msg of reordered) {
 		if (msg.role === "tool_call") {
 			inActiveTool = true;
 			lastToolId = msg.id;
@@ -244,7 +298,8 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			}
 		} else {
 			if (inActiveTool) {
-				// Non-tool message during active tool-use - synthesize tool_result first
+				// Non-tool message during active tool-use with no real tool_result ahead
+				// (pass 1 already moved interleaved messages for real pairs)
 				sanitized.push({
 					id: `synthetic-${lastToolId}`,
 					thread_id: threadId,

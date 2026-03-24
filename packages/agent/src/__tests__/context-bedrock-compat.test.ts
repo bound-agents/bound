@@ -169,6 +169,134 @@ describe("Context assembly Bedrock compatibility", () => {
 		}
 	});
 
+	it("fixes assistant message between tool_call and tool_result", () => {
+		const threadId = randomUUID();
+		insertThread(db, threadId, userId);
+
+		// Insert the EXACT sequence from the production bug:
+		// user, assistant, user, assistant, user, tool_call, assistant, tool_result, system, user
+		insertMessage(db, threadId, "user", "testing - tell me about yourself", { offset: 0 });
+		insertMessage(db, threadId, "assistant", "I am an AI assistant.", {
+			offset: 1000,
+			model_id: "anthropic.claude-sonnet",
+		});
+		insertMessage(db, threadId, "user", "Asking for debugging purposes...", { offset: 2000 });
+		insertMessage(db, threadId, "assistant", "Here is some debug info.", {
+			offset: 3000,
+			model_id: "anthropic.claude-sonnet",
+		});
+		insertMessage(db, threadId, "user", "Updated - check again?", { offset: 4000 });
+		insertMessage(
+			db,
+			threadId,
+			"tool_call",
+			JSON.stringify([
+				{
+					type: "tool_use",
+					id: "tooluse_xxx",
+					name: "bash",
+					input: { command: "hostinfo" },
+				},
+			]),
+			{ tool_name: "bash", offset: 5000 },
+		);
+		insertMessage(
+			db,
+			threadId,
+			"assistant",
+			"Let me look at what's actually loaded now...",
+			{ offset: 6000, model_id: "anthropic.claude-sonnet" },
+		);
+		insertMessage(db, threadId, "tool_result", "bash: hostinfo: command not found", {
+			tool_name: "bash",
+			offset: 7000,
+		});
+		insertMessage(
+			db,
+			threadId,
+			"system",
+			"Agent response was interrupted due to an error.",
+			{ offset: 8000 },
+		);
+		insertMessage(db, threadId, "user", "Just fixed another bug...", { offset: 9000 });
+
+		const messages = assembleContext({ db, threadId, userId });
+
+		// Extract only the history portion (skip system prompt / orientation / volatile)
+		const history = messages.filter(
+			(m) =>
+				m.role !== "system" ||
+				(typeof m.content === "string" &&
+					!m.content.startsWith("You are a helpful") &&
+					!m.content.startsWith("## Orientation") &&
+					!m.content.startsWith("User ID:") &&
+					!m.content.startsWith("Model switched")),
+		);
+
+		// Find tool_call and tool_result in the output
+		const toolCallIdx = history.findIndex((m) => m.role === "tool_call");
+		const toolResultIdx = history.findIndex((m) => m.role === "tool_result");
+
+		expect(toolCallIdx).not.toBe(-1);
+		expect(toolResultIdx).not.toBe(-1);
+
+		// CRITICAL: tool_result must immediately follow tool_call (no assistant between them)
+		expect(toolResultIdx).toBe(toolCallIdx + 1);
+
+		// The interleaved assistant message should appear BEFORE the tool_call, not between
+		const assistantBeforeToolCall = history
+			.slice(0, toolCallIdx)
+			.filter((m) => m.role === "assistant");
+		const hasMovedAssistant = assistantBeforeToolCall.some(
+			(m) =>
+				typeof m.content === "string" &&
+				m.content.includes("Let me look at what's actually loaded now"),
+		);
+		expect(hasMovedAssistant).toBe(true);
+	});
+
+	it("handles conversation with multiple alert messages in history", () => {
+		const threadId = randomUUID();
+		insertThread(db, threadId, userId);
+
+		// Insert: user, assistant, alert, alert, system, user
+		insertMessage(db, threadId, "user", "Hello there", { offset: 0 });
+		insertMessage(db, threadId, "assistant", "Hi! How can I help?", {
+			offset: 1000,
+			model_id: "anthropic.claude-sonnet",
+		});
+		insertMessage(db, threadId, "alert", "Internal error: timeout exceeded", {
+			offset: 2000,
+		});
+		insertMessage(db, threadId, "alert", "Internal error: retry failed", {
+			offset: 3000,
+		});
+		insertMessage(
+			db,
+			threadId,
+			"system",
+			"Agent response was interrupted due to an error.",
+			{ offset: 4000 },
+		);
+		insertMessage(db, threadId, "user", "Are you still there?", { offset: 5000 });
+
+		const messages = assembleContext({ db, threadId, userId });
+
+		// Alerts should be completely filtered out
+		const alertMessages = messages.filter((m) => m.role === "alert");
+		expect(alertMessages).toHaveLength(0);
+
+		// User and assistant messages should remain
+		const userMessages = messages.filter((m) => m.role === "user");
+		expect(userMessages).toHaveLength(2);
+		expect(userMessages[0].content).toBe("Hello there");
+		expect(userMessages[1].content).toBe("Are you still there?");
+
+		const assistantMessages = messages.filter((m) => m.role === "assistant");
+		expect(assistantMessages).toHaveLength(1);
+		expect(assistantMessages[0].content).toBe("Hi! How can I help?");
+	});
+
 	it("removes orphaned tool_results without matching tool_call or pairs them", () => {
 		const threadId = randomUUID();
 		insertThread(db, threadId, userId);
