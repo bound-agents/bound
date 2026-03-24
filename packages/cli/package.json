@@ -10,13 +10,14 @@
 		"boundctl": "src/boundctl.ts"
 	},
 	"dependencies": {
-		"@bound/shared": "workspace:*",
-		"@bound/core": "workspace:*",
 		"@bound/agent": "workspace:*",
-		"@bound/sync": "workspace:*",
-		"@bound/web": "workspace:*",
+		"@bound/core": "workspace:*",
 		"@bound/discord": "workspace:*",
 		"@bound/llm": "workspace:*",
-		"@bound/sandbox": "workspace:*"
+		"@bound/sandbox": "workspace:*",
+		"@bound/shared": "workspace:*",
+		"@bound/sync": "workspace:*",
+		"@bound/web": "workspace:*",
+		"reflect-metadata": "^0.2.2"
 	}
 }
