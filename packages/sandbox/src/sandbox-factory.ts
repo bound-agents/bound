@@ -5,6 +5,7 @@ import {
 	MemoryTracker,
 	wrapWithMemoryTracking,
 } from "./memory-tracker";
+import { UrlFilter } from "./url-filter";
 
 export interface ExecutionLimits {
 	maxCallDepth?: number;
@@ -19,6 +20,8 @@ export interface SandboxConfig {
 	executionLimits?: ExecutionLimits;
 	/** Memory threshold in bytes for the in-memory filesystem. Defaults to 50MB. */
 	memoryThresholdBytes?: number;
+	/** Allowed URL prefixes for outbound requests. Empty array allows all. */
+	allowedUrlPrefixes?: string[];
 }
 
 export interface Sandbox {
@@ -27,12 +30,17 @@ export interface Sandbox {
 	checkMemoryThreshold: () => MemoryThresholdResult;
 	/** Get the memory tracker instance for direct access. */
 	memoryTracker: MemoryTracker;
+	/** URL filter for enforcing outbound request allowlist. */
+	urlFilter: UrlFilter;
 }
 
 export async function createSandbox(config: SandboxConfig): Promise<Sandbox> {
 	// Set up memory tracking on the filesystem
 	const memoryTracker = new MemoryTracker(config.memoryThresholdBytes);
 	wrapWithMemoryTracking(config.clusterFs, memoryTracker);
+
+	// Create URL filter
+	const urlFilter = new UrlFilter(config.allowedUrlPrefixes ?? []);
 
 	const bashOptions: ConstructorParameters<typeof Bash>[0] = {
 		fs: config.clusterFs,
@@ -66,5 +74,6 @@ export async function createSandbox(config: SandboxConfig): Promise<Sandbox> {
 		bash,
 		checkMemoryThreshold: () => memoryTracker.checkMemoryThreshold(),
 		memoryTracker,
+		urlFilter,
 	};
 }

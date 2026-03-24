@@ -23,7 +23,8 @@ export class ModelRouter {
 		const id = modelId ?? this.defaultId;
 		const backend = this.backends.get(id);
 		if (!backend) {
-			throw new Error(`Unknown backend ID: ${id}`);
+			const available = Array.from(this.backends.keys()).join(", ");
+			throw new Error(`Unknown backend ID: ${id}. Available backends: ${available}`);
 		}
 		return backend;
 	}

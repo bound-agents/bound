@@ -30,3 +30,5 @@ export {
 } from "./sandbox-factory";
 
 export { startOverlayScanLoop } from "./overlay-scanner";
+
+export { UrlFilter, createUrlFilter } from "./url-filter";

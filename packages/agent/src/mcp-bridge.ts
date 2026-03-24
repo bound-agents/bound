@@ -2,6 +2,11 @@
  * MCP Bridge for auto-generating defineCommands from MCP tools.
  * Implements MCP tool discovery and command generation per spec §7.3.
  * Implements cross-host MCP tool proxying per spec §7.5.
+ *
+ * NOTE: URL filtering for outbound requests should be enforced at the tool handler level.
+ * The sandbox's urlFilter (from createSandbox) should be checked before making any
+ * outbound HTTP requests from MCP tools. This is currently the responsibility of
+ * the caller (e.g., agent loop or MCP tool implementations).
  */
 
 import type { Database } from "bun:sqlite";
@@ -26,6 +31,9 @@ export interface MCPProxyConfig {
  * Proxy a tool call to a remote host.
  * Looks up the remote host's sync_url, signs the request, and POSTs to /api/mcp-proxy.
  * Implements the routing logic from spec §7.5.
+ *
+ * TODO: Integrate URL filtering (sandbox.urlFilter.enforce(targetUrl)) before fetch
+ * to enforce the allowlist from network.json per spec R-S1.
  */
 async function proxyToolCall(
 	toolCommandName: string,

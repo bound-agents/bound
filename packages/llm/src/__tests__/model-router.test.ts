@@ -73,6 +73,18 @@ describe("ModelRouter", () => {
 		expect(() => router.getBackend("unknown")).toThrow("Unknown backend ID");
 	});
 
+	it("should suggest available alternatives when backend unavailable", () => {
+		const backend1 = new MockBackend("backend1");
+		const backend2 = new MockBackend("backend2");
+		const backends = new Map<string, LLMBackend>([
+			["backend1", backend1],
+			["backend2", backend2],
+		]);
+
+		const router = new ModelRouter(backends, "backend1");
+		expect(() => router.getBackend("unknown")).toThrow("Available backends: backend1, backend2");
+	});
+
 	it("should list all backends with capabilities", () => {
 		const backend1 = new MockBackend("backend1");
 		const backend2 = new MockBackend("backend2");
