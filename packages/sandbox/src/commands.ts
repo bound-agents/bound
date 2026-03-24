@@ -35,8 +35,22 @@ export function createDefineCommands(
 		const handler = async (argv: string[]) => {
 			const args: Record<string, string> = {};
 
-			if (def.args.length > 0) {
-				// Named positional args: match argv to declared arg definitions
+			// Detect if argv uses --key value or key=value format
+			const hasFlags = argv.some((a) => a.startsWith("--") || a.includes("="));
+
+			if (hasFlags) {
+				// Parse --key value pairs and key=value pairs
+				for (let i = 0; i < argv.length; i++) {
+					const arg = argv[i];
+					if (arg.startsWith("--") && i + 1 < argv.length) {
+						args[arg.slice(2)] = argv[++i];
+					} else if (arg.includes("=")) {
+						const eqIdx = arg.indexOf("=");
+						args[arg.slice(0, eqIdx)] = arg.slice(eqIdx + 1);
+					}
+				}
+			} else if (def.args.length > 0) {
+				// Positional args: match argv to declared arg definitions
 				let argIndex = 0;
 				for (const argDef of def.args) {
 					if (argIndex < argv.length) {
@@ -51,27 +65,17 @@ export function createDefineCommands(
 					}
 				}
 			} else if (argv.length > 0) {
-				// No declared args (e.g., MCP tools) — parse key=value pairs and --key value flags
-				for (let i = 0; i < argv.length; i++) {
-					const arg = argv[i];
-					if (arg.startsWith("--") && i + 1 < argv.length) {
-						args[arg.slice(2)] = argv[++i];
-					} else if (arg.includes("=")) {
-						const eqIdx = arg.indexOf("=");
-						args[arg.slice(0, eqIdx)] = arg.slice(eqIdx + 1);
-					} else {
-						// Try parsing entire remaining argv as JSON
-						try {
-							const jsonArgs = JSON.parse(argv.slice(i).join(" "));
-							if (typeof jsonArgs === "object" && jsonArgs !== null) {
-								for (const [k, v] of Object.entries(jsonArgs)) {
-									args[k] = String(v);
-								}
-							}
-							break;
-						} catch {
-							args[`arg${i}`] = arg;
+				// No flags, no arg defs — try JSON parsing
+				try {
+					const jsonArgs = JSON.parse(argv.join(" "));
+					if (typeof jsonArgs === "object" && jsonArgs !== null) {
+						for (const [k, v] of Object.entries(jsonArgs)) {
+							args[k] = String(v);
 						}
+					}
+				} catch {
+					for (let i = 0; i < argv.length; i++) {
+						args[`arg${i}`] = argv[i];
 					}
 				}
 			}

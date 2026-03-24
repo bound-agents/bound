@@ -50,11 +50,11 @@ export const help: CommandDefinition = {
 				}
 			}
 
-			// For MCP tools (no declared args), note the key=value syntax
-			if (cmd.args.length === 0) {
-				output += "\nThis is an MCP tool. Pass arguments as:\n";
-				output += `  ${cmd.name} --key value --key2 value2\n`;
-				output += `  ${cmd.name} key=value key2=value2\n`;
+			// For MCP tools, show the --key value syntax
+			const isMCP = cmd.name.includes("-") && !cmd.name.startsWith("cache-") && !cmd.name.startsWith("model-") && cmd.name !== "commands";
+			if (isMCP) {
+				const exampleArgs = cmd.args.filter((a) => a.required).map((a) => `--${a.name} <value>`).join(" ");
+				output += `\nUsage: ${cmd.name} ${exampleArgs || "--key value"}\n`;
 			}
 
 			return { stdout: output, stderr: "", exitCode: 0 };

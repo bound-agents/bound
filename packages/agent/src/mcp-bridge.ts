@@ -178,9 +178,24 @@ export async function generateMCPCommands(
 			const commandName = `${serverName}-${tool.name}`;
 			const isConfirmed = serverConfirms.includes(tool.name);
 
+			// Extract parameter names from tool's inputSchema for help/discovery
+			const toolArgs: CommandDefinition["args"] = [];
+			const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] } | undefined;
+			if (schema?.properties) {
+				const required = new Set(schema.required ?? []);
+				for (const paramName of Object.keys(schema.properties)) {
+					const prop = schema.properties[paramName] as { description?: string } | undefined;
+					toolArgs.push({
+						name: paramName,
+						required: required.has(paramName),
+						description: prop?.description,
+					});
+				}
+			}
+
 			const command: CommandDefinition = {
 				name: commandName,
-				args: [],
+				args: toolArgs,
 				handler: async (
 					args: Record<string, string>,
 					ctx: CommandContext,
