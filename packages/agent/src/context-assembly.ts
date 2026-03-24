@@ -447,7 +447,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		"### Available Commands",
 		commandList,
 		"",
-		"Run `help` to list all commands (including MCP tools), or `help <command>` for detailed syntax.",
+		"Run `commands` to list all commands (including MCP tools), or `commands <name>` for detailed syntax.",
 		"",
 		`### Current Model\n${currentModel || "default"}`,
 		"",

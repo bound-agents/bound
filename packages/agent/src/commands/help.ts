@@ -11,7 +11,7 @@ export function setCommandRegistry(commands: CommandDefinition[]): void {
 }
 
 export const help: CommandDefinition = {
-	name: "help",
+	name: "commands",
 	args: [
 		{ name: "command", required: false, description: "Command name to get detailed help for" },
 	],
@@ -24,7 +24,7 @@ export const help: CommandDefinition = {
 			if (!cmd) {
 				return {
 					stdout: "",
-					stderr: `Unknown command: ${target}\nRun 'help' to see all available commands.\n`,
+					stderr: `Unknown command: ${target}\nRun 'commands' to see all available commands.\n`,
 					exitCode: 1,
 				};
 			}
@@ -64,7 +64,7 @@ export const help: CommandDefinition = {
 		let output = "Available commands:\n\n";
 
 		const builtins = commandRegistry.filter((c) => !c.name.includes("-") || c.name.startsWith("cache-") || c.name.startsWith("model-"));
-		const mcpTools = commandRegistry.filter((c) => c.name.includes("-") && !c.name.startsWith("cache-") && !c.name.startsWith("model-") && c.name !== "help");
+		const mcpTools = commandRegistry.filter((c) => c.name.includes("-") && !c.name.startsWith("cache-") && !c.name.startsWith("model-") && c.name !== "commands");
 
 		if (builtins.length > 0) {
 			output += "Built-in:\n";
