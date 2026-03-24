@@ -90,6 +90,19 @@ export async function runStart(args: StartArgs): Promise<void> {
 					},
 					appContext.siteId,
 				);
+			} else {
+				// Update display_name and discord_id if changed in allowlist
+				updateRow(
+					appContext.db,
+					"users",
+					userId,
+					{
+						display_name: entry.display_name,
+						discord_id: entry.discord_id ?? null,
+						modified_at: now,
+					},
+					appContext.siteId,
+				);
 			}
 		}
 	}
