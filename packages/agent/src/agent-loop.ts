@@ -220,9 +220,16 @@ export class AgentLoop {
 					this.messagesCreated++;
 
 					// Add tool_call to in-memory context for next LLM call
+					// Must use ContentBlock array (not JSON string) so drivers
+					// can generate proper toolUse blocks
 					llmMessages.push({
 						role: "tool_call",
-						content: toolCallContent,
+						content: parsed.toolCalls.map((tc) => ({
+							type: "tool_use" as const,
+							id: tc.id,
+							name: tc.name,
+							input: tc.input,
+						})),
 					});
 
 					// Persist each tool_result and add to context
