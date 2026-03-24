@@ -12,7 +12,7 @@ export { assembleContext } from "./context-assembly";
 export { Scheduler } from "./scheduler";
 
 // Export commands
-export { getAllCommands } from "./commands/index";
+export { getAllCommands, setCommandRegistry } from "./commands/index";
 
 // Export MCP client and bridge
 export { MCPClient } from "./mcp-client";

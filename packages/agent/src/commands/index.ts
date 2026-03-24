@@ -8,6 +8,7 @@ import { cacheWarm } from "./cache-warm";
 import { cancel } from "./cancel";
 import { emit } from "./emit";
 import { forget } from "./forget";
+import { help, setCommandRegistry } from "./help";
 import { hostinfo } from "./hostinfo";
 import { memorize } from "./memorize";
 import { modelHint } from "./model-hint";
@@ -21,6 +22,7 @@ import { schedule } from "./schedule";
  */
 export function getAllCommands(): CommandDefinition[] {
 	return [
+		help,
 		query,
 		memorize,
 		forget,
@@ -38,6 +40,8 @@ export function getAllCommands(): CommandDefinition[] {
 		hostinfo,
 	];
 }
+
+export { setCommandRegistry };
 
 /**
  * Add MCP-generated commands to the command list

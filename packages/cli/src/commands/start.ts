@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { AgentLoop, Scheduler, seedCronTasks } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
-import { generateMCPCommands, getAllCommands } from "@bound/agent";
+import { generateMCPCommands, getAllCommands, setCommandRegistry } from "@bound/agent";
 import { generateThreadTitle } from "@bound/agent";
 import { createAppContext, insertRow, updateRow, withChangeLog } from "@bound/core";
 import { createModelRouter } from "@bound/llm";
@@ -336,6 +336,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		};
 		const builtinCommands = getAllCommands();
 		const allDefinitions = [...builtinCommands, ...mcpCommands];
+		setCommandRegistry(allDefinitions);
 		const registeredCommands = createDefineCommands(allDefinitions, commandContext);
 		sandbox = await createSandbox({
 			clusterFs,
