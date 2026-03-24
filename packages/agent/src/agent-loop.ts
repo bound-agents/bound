@@ -108,6 +108,7 @@ export class AgentLoop {
 						model: "",
 						messages: nonSystemMessages,
 						system: systemPrompt || undefined,
+						tools: this.config.tools,
 					});
 
 					for await (const chunk of this.withSilenceTimeout(chatStream, SILENCE_TIMEOUT_MS)) {

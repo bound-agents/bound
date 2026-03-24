@@ -503,6 +503,26 @@ export async function runStart(args: StartArgs): Promise<void> {
 	}
 
 	// Define agent loop factory (used by Discord, scheduler)
+	// Single bash tool for sandbox interaction — all commands (built-in + MCP) are
+	// registered inside the sandbox via defineCommand, so the LLM only needs bash.
+	const sandboxTool: ToolDefinition = {
+		type: "function",
+		function: {
+			name: "bash",
+			description: "Execute a command in the sandboxed shell. Built-in commands: query, memorize, forget, schedule, cancel, emit, purge, await, cache-warm, cache-pin, cache-unpin, cache-evict, model-hint, archive, hostinfo. MCP tools are also available as commands. Run standard shell commands too.",
+			parameters: {
+				type: "object",
+				properties: {
+					command: {
+						type: "string",
+						description: "The shell command to execute",
+					},
+				},
+				required: ["command"],
+			},
+		},
+	};
+
 	const agentLoopFactory = (config: AgentLoopConfig): AgentLoop => {
 		let backend: LLMBackend;
 		try {
@@ -533,7 +553,10 @@ export async function runStart(args: StartArgs): Promise<void> {
 			};
 		}
 
-		return new AgentLoop(appContext, sandbox?.bash ?? ({} as any), backend, config);
+		return new AgentLoop(appContext, sandbox?.bash ?? ({} as any), backend, {
+			...config,
+			tools: config.tools ?? [sandboxTool],
+		});
 	};
 
 	// 13. Discord (if configured)

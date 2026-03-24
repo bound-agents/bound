@@ -18,6 +18,14 @@ export interface AgentLoopConfig {
 	userId: string;
 	modelId?: string;
 	abortSignal?: AbortSignal;
+	tools?: Array<{
+		type: "function";
+		function: {
+			name: string;
+			description: string;
+			parameters: Record<string, unknown>;
+		};
+	}>;
 }
 
 export interface AgentLoopResult {
