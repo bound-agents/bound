@@ -122,8 +122,9 @@ export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied:
 	const rowData = JSON.parse(event.row_data);
 	const schemaColumns = getTableColumns(db, event.table_name);
 
-	// Determine primary key column — hosts uses site_id, everything else uses id
-	const pkColumn = event.table_name === "hosts" ? "site_id" : "id";
+	// Determine primary key column from schema (most tables use 'id', but some don't)
+	const pkMap: Record<string, string> = { hosts: "site_id", cluster_config: "key" };
+	const pkColumn = pkMap[event.table_name] || "id";
 	const pkValue = rowData[pkColumn] ?? event.row_id;
 
 	// Check if row already exists
