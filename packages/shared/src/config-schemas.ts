@@ -109,6 +109,7 @@ export const mcpSchema = z.object({
 			args: z.array(z.string()).optional(),
 			url: z.string().optional(),
 			transport: z.enum(["stdio", "http"]),
+			headers: z.record(z.string(), z.string()).optional(),
 			allow_tools: z.array(z.string()).optional(),
 			confirm: z.array(z.string()).optional(),
 		}),

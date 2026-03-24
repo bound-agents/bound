@@ -14,6 +14,7 @@ export interface MCPServerConfig {
 	args?: string[];
 	url?: string;
 	transport: "stdio" | "http";
+	headers?: Record<string, string>;
 	allow_tools?: string[];
 	confirm?: string[];
 }
@@ -64,7 +65,11 @@ export class MCPClient {
 			if (!this.serverConfig.url) {
 				throw new Error(`Server "${this.serverConfig.name}" requires a url for http transport`);
 			}
-			const transport = new StreamableHTTPClientTransport(new URL(this.serverConfig.url));
+			const transport = new StreamableHTTPClientTransport(new URL(this.serverConfig.url), {
+				requestInit: this.serverConfig.headers
+					? { headers: this.serverConfig.headers }
+					: undefined,
+			});
 			await this.client.connect(transport);
 		}
 		this.connected = true;
