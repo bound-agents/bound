@@ -41,11 +41,10 @@ function insertMessage(
 	threadId: string,
 	role: string,
 	content: string,
-	opts?: { id?: string; model_id?: string; tool_name?: string; offset?: number },
+	opts?: { id?: string; model_id?: string; tool_name?: string; offset?: number; timestamp?: string },
 ) {
 	const id = opts?.id ?? randomUUID();
-	const baseTime = new Date();
-	const ts = new Date(baseTime.getTime() + (opts?.offset ?? 0)).toISOString();
+	const ts = opts?.timestamp ?? new Date(new Date().getTime() + (opts?.offset ?? 0)).toISOString();
 	db.run(
 		"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		[id, threadId, role, content, opts?.model_id ?? null, opts?.tool_name ?? null, ts, ts, "local"],
@@ -323,5 +322,164 @@ describe("Context assembly Bedrock compatibility", () => {
 			expect(tr.tool_use_id).toBeDefined();
 			expect(tr.tool_use_id).not.toBe("");
 		}
+	});
+
+	it("production 17-message sequence: alerts and system messages filtered before sanitizer", () => {
+		const threadId = randomUUID();
+		insertThread(db, threadId, userId);
+
+		// EXACT 17-message sequence from the production database, ORDER BY created_at ASC.
+		// Messages 6 and 7 share the same timestamp (tool_call emitted alongside assistant).
+		// alert and system messages appear between tool_result and subsequent user messages.
+
+		// 1. user
+		insertMessage(db, threadId, "user", "testing - tell me about yourself", {
+			timestamp: "2026-03-23T14:34:53.000Z",
+		});
+		// 2. assistant
+		insertMessage(db, threadId, "assistant", "About Me...", {
+			timestamp: "2026-03-23T14:35:01.322Z",
+			model_id: "anthropic.claude-sonnet",
+		});
+		// 3. user
+		insertMessage(db, threadId, "user", "Asking for debugging...", {
+			timestamp: "2026-03-23T14:35:50.049Z",
+		});
+		// 4. assistant
+		insertMessage(db, threadId, "assistant", "What's in My Context...", {
+			timestamp: "2026-03-23T14:35:58.937Z",
+			model_id: "anthropic.claude-sonnet",
+		});
+		// 5. user
+		insertMessage(db, threadId, "user", "Updated - check again?", {
+			timestamp: "2026-03-23T14:52:52.468Z",
+		});
+		// 6. tool_call — SAME TIMESTAMP as message 7
+		insertMessage(
+			db,
+			threadId,
+			"tool_call",
+			JSON.stringify([
+				{
+					type: "tool_use",
+					id: "tooluse_xxx",
+					name: "bash",
+					input: { command: "hostinfo" },
+				},
+			]),
+			{ tool_name: "bash", timestamp: "2026-03-23T14:52:56.204Z" },
+		);
+		// 7. assistant — SAME TIMESTAMP as tool_call
+		insertMessage(db, threadId, "assistant", "Let me look...", {
+			timestamp: "2026-03-23T14:52:56.204Z",
+			model_id: "anthropic.claude-sonnet",
+		});
+		// 8. tool_result
+		insertMessage(db, threadId, "tool_result", "bash: hostinfo: command not found", {
+			tool_name: "tooluse_xxx",
+			timestamp: "2026-03-23T14:52:56.205Z",
+		});
+		// 9. alert
+		insertMessage(db, threadId, "alert", "Error: Bedrock...", {
+			timestamp: "2026-03-23T14:52:58.583Z",
+		});
+		// 10. user
+		insertMessage(db, threadId, "user", "Continue", {
+			timestamp: "2026-03-23T14:53:32.191Z",
+		});
+		// 11. alert
+		insertMessage(db, threadId, "alert", "Error: Bedrock...", {
+			timestamp: "2026-03-23T14:53:34.774Z",
+		});
+		// 12. system
+		insertMessage(db, threadId, "system", "Agent response interrupted...", {
+			timestamp: "2026-03-23T15:10:42.488Z",
+		});
+		// 13. user
+		insertMessage(db, threadId, "user", "Just fixed...", {
+			timestamp: "2026-03-23T15:11:30.662Z",
+		});
+		// 14. alert
+		insertMessage(db, threadId, "alert", "Error: Bedrock...", {
+			timestamp: "2026-03-23T15:11:33.459Z",
+		});
+		// 15. system
+		insertMessage(db, threadId, "system", "Agent response interrupted...", {
+			timestamp: "2026-03-23T16:41:52.377Z",
+		});
+		// 16. user
+		insertMessage(db, threadId, "user", "again", {
+			timestamp: "2026-03-23T16:42:07.435Z",
+		});
+		// 17. alert
+		insertMessage(db, threadId, "alert", "Error: Bedrock...", {
+			timestamp: "2026-03-23T16:42:10.114Z",
+		});
+
+		const messages = assembleContext({ db, threadId, userId });
+
+		// Helper: extract the history portion (skip assembly-injected system messages)
+		const isAssemblySystem = (m: { role: string; content: string | unknown }) =>
+			m.role === "system" &&
+			typeof m.content === "string" &&
+			(m.content.startsWith("You are a helpful") ||
+				m.content.startsWith("## Orientation") ||
+				m.content.startsWith("User ID:") ||
+				m.content.startsWith("Model switched"));
+
+		const history = messages.filter((m) => !isAssemblySystem(m));
+
+		// 1. NO alert-role messages in the output
+		const alerts = history.filter((m) => m.role === "alert");
+		expect(alerts).toHaveLength(0);
+
+		// 2. NO DB-originated system-role messages in the history
+		//    (assembly-injected system messages are already filtered above)
+		const dbSystems = history.filter(
+			(m) =>
+				m.role === "system" &&
+				typeof m.content === "string" &&
+				m.content.includes("Agent response interrupted"),
+		);
+		expect(dbSystems).toHaveLength(0);
+
+		// 3. tool_call is immediately followed by tool_result (Bedrock requires adjacency)
+		const toolCallIdx = history.findIndex((m) => m.role === "tool_call");
+		const toolResultIdx = history.findIndex((m) => m.role === "tool_result");
+		expect(toolCallIdx).not.toBe(-1);
+		expect(toolResultIdx).not.toBe(-1);
+		expect(toolResultIdx).toBe(toolCallIdx + 1);
+
+		// 4. The assistant that shared tool_call's timestamp was moved BEFORE tool_call
+		const assistantsBefore = history.slice(0, toolCallIdx).filter((m) => m.role === "assistant");
+		const movedAssistant = assistantsBefore.some(
+			(m) => typeof m.content === "string" && m.content === "Let me look...",
+		);
+		expect(movedAssistant).toBe(true);
+
+		// 5. Only LLM-compatible roles remain in the entire output
+		const validRoles = new Set(["user", "assistant", "system", "tool_call", "tool_result"]);
+		for (const msg of messages) {
+			expect(validRoles.has(msg.role)).toBe(true);
+		}
+
+		// 6. Expected history role sequence after filtering 4 alerts + 2 systems
+		//    and moving the assistant (msg 7) before tool_call:
+		//    user, assistant, user, assistant, user, assistant, tool_call, tool_result, user, user, user
+		const expectedRoles = [
+			"user",
+			"assistant",
+			"user",
+			"assistant",
+			"user",
+			"assistant",
+			"tool_call",
+			"tool_result",
+			"user",
+			"user",
+			"user",
+		];
+		const historyRoles = history.map((m) => m.role);
+		expect(historyRoles).toEqual(expectedRoles);
 	});
 });

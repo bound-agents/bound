@@ -212,6 +212,19 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		messagesAfterPurge.push(msg);
 	}
 
+	// Stage 2.5: NON-LLM ROLE FILTERING
+	// Remove alert and DB-originated system messages BEFORE the tool pair sanitizer runs.
+	// These non-LLM roles confuse the sanitizer's reordering logic when they appear
+	// between tool_call/tool_result pairs. Purge-summary system messages (created in
+	// Stage 2 with id prefix "purge-summary-") are preserved as meaningful context.
+	const NON_LLM_ROLES = new Set(["alert", "purge"]);
+	const messagesFiltered = messagesAfterPurge.filter((m) => {
+		if (NON_LLM_ROLES.has(m.role)) return false;
+		// Filter DB-originated system messages but keep purge summaries
+		if (m.role === "system" && !m.id.startsWith("purge-summary-")) return false;
+		return true;
+	});
+
 	// Stage 3: TOOL_PAIR_SANITIZATION
 	// Ensure tool_call/tool_result pairs are adjacent (no messages between them).
 	//
@@ -221,28 +234,28 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	const reordered: Message[] = [];
 	const consumed = new Set<number>();
 
-	for (let i = 0; i < messagesAfterPurge.length; i++) {
+	for (let i = 0; i < messagesFiltered.length; i++) {
 		if (consumed.has(i)) continue;
 
-		const msg = messagesAfterPurge[i];
+		const msg = messagesFiltered[i];
 		if (msg.role === "tool_call") {
 			// Look ahead for the matching tool_result
 			let matchIdx = -1;
 			const interleaved: Message[] = [];
 			const interleavedIndices: number[] = [];
 
-			for (let j = i + 1; j < messagesAfterPurge.length; j++) {
+			for (let j = i + 1; j < messagesFiltered.length; j++) {
 				if (consumed.has(j)) continue;
-				if (messagesAfterPurge[j].role === "tool_result") {
+				if (messagesFiltered[j].role === "tool_result") {
 					matchIdx = j;
 					break;
 				}
-				if (messagesAfterPurge[j].role === "tool_call") {
+				if (messagesFiltered[j].role === "tool_call") {
 					// Another tool_call before finding tool_result - stop looking
 					break;
 				}
 				// Non-tool message between tool_call and tool_result
-				interleaved.push(messagesAfterPurge[j]);
+				interleaved.push(messagesFiltered[j]);
 				interleavedIndices.push(j);
 			}
 
@@ -257,7 +270,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 				consumed.add(matchIdx);
 				// Push tool_call immediately followed by tool_result
 				reordered.push(msg);
-				reordered.push(messagesAfterPurge[matchIdx]);
+				reordered.push(messagesFiltered[matchIdx]);
 			} else {
 				// No matching tool_result found - push tool_call as-is (handled in pass 2)
 				reordered.push(msg);
@@ -338,7 +351,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	// Stage 5: ANNOTATION
 	// Convert Message to LLMMessage format with annotations
 	// Also detect model switches between consecutive assistant messages per spec R-U11
-	// Filter out non-LLM roles (e.g. alert, purge) that drivers cannot handle
+	// Defense-in-depth: filter non-LLM roles in case any survived Stage 2.5
 	const LLM_COMPATIBLE_ROLES = new Set(["user", "assistant", "system", "tool_call", "tool_result"]);
 
 	// Build a map from tool_call message ID to the tool_use IDs contained within,
