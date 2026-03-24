@@ -49,7 +49,25 @@ function toBedrockMessages(messages: LLMMessage[]): Message[] {
 					}
 				}
 			} else {
-				content.push({ text: msg.content });
+				// DB stores tool_call content as JSON string — try parsing it
+				try {
+					const parsed = JSON.parse(msg.content);
+					if (Array.isArray(parsed)) {
+						for (const block of parsed) {
+							if (block.type === "tool_use") {
+								content.push({
+									toolUse: {
+										toolUseId: block.id ?? "",
+										name: block.name ?? "",
+										input: (block.input ?? {}) as DocumentType,
+									},
+								});
+							}
+						}
+					}
+				} catch {
+					content.push({ text: msg.content });
+				}
 			}
 			result.push({
 				role: "assistant",

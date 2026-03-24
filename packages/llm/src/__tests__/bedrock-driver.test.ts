@@ -418,5 +418,107 @@ describe("BedrockDriver", () => {
 				expect(tr.toolResult?.toolUseId.length).toBeGreaterThan(0);
 			}
 		});
+
+		it.skipIf(shouldSkip)("converts tool_call with ContentBlock array to assistant with toolUse blocks", async () => {
+			sendSpy.mockImplementation(() =>
+				Promise.resolve(
+					createMockStream([{ metadata: { usage: { inputTokens: 1, outputTokens: 1 } } }]),
+				),
+			);
+
+			const driver = makeDriver();
+			await collectChunks(
+				driver.chat({
+					model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+					messages: [
+						{ role: "user", content: "List files" },
+						{
+							role: "tool_call",
+							content: [
+								{
+									type: "tool_use",
+									id: "tool-123",
+									name: "bash",
+									input: { command: "ls -la" },
+								},
+								{
+									type: "tool_use",
+									id: "tool-456",
+									name: "memorize",
+									input: { key: "project", value: "bound" },
+								},
+							],
+						},
+					],
+				}),
+			);
+
+			expect(sendSpy.mock.calls).toHaveLength(1);
+			const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
+			const messages = commandInput.messages as Array<{
+				role: string;
+				content: Array<{ toolUse?: { toolUseId: string; name: string; input: unknown } }>;
+			}>;
+
+			// Find the assistant message with toolUse blocks
+			const assistantMsg = messages.find((m) => m.role === "assistant");
+			expect(assistantMsg).toBeDefined();
+
+			const toolUseBlocks = assistantMsg?.content.filter((b) => b.toolUse) || [];
+			expect(toolUseBlocks.length).toBe(2);
+
+			expect(toolUseBlocks[0].toolUse?.toolUseId).toBe("tool-123");
+			expect(toolUseBlocks[0].toolUse?.name).toBe("bash");
+			expect(toolUseBlocks[0].toolUse?.input).toEqual({ command: "ls -la" });
+
+			expect(toolUseBlocks[1].toolUse?.toolUseId).toBe("tool-456");
+			expect(toolUseBlocks[1].toolUse?.name).toBe("memorize");
+			expect(toolUseBlocks[1].toolUse?.input).toEqual({ key: "project", value: "bound" });
+		});
+
+		it.skipIf(shouldSkip)("handles tool_call with JSON string content by parsing it", async () => {
+			sendSpy.mockImplementation(() =>
+				Promise.resolve(
+					createMockStream([{ metadata: { usage: { inputTokens: 1, outputTokens: 1 } } }]),
+				),
+			);
+
+			const driver = makeDriver();
+			// This simulates messages loaded from DB where tool_call content is a JSON string
+			const jsonString = JSON.stringify([
+				{ type: "tool_use", id: "t1", name: "bash", input: { command: "echo hi" } },
+			]);
+
+			await collectChunks(
+				driver.chat({
+					model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+					messages: [
+						{ role: "user", content: "Run command" },
+						{
+							role: "tool_call",
+							content: jsonString, // String instead of array (from DB)
+						},
+					],
+				}),
+			);
+
+			expect(sendSpy.mock.calls).toHaveLength(1);
+			const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
+			const messages = commandInput.messages as Array<{
+				role: string;
+				content: Array<{ text?: string; toolUse?: { toolUseId: string; name: string; input: unknown } }>;
+			}>;
+
+			// The driver should parse the JSON string and convert to toolUse blocks
+			const assistantMsg = messages.find((m) => m.role === "assistant");
+			expect(assistantMsg).toBeDefined();
+
+			// Should have toolUse block (driver parses JSON string from DB)
+			const toolUseBlocks = assistantMsg?.content.filter((b) => b.toolUse) || [];
+			expect(toolUseBlocks.length).toBe(1);
+			expect(toolUseBlocks[0].toolUse?.toolUseId).toBe("t1");
+			expect(toolUseBlocks[0].toolUse?.name).toBe("bash");
+			expect(toolUseBlocks[0].toolUse?.input).toEqual({ command: "echo hi" });
+		});
 	});
 });

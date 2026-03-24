@@ -652,4 +652,85 @@ describe("AgentLoop", () => {
 		expect(msgs.length).toBe(1);
 		expect(msgs[0].content).toBe("Chunk 1 Chunk 2 Chunk 3");
 	});
+
+	it("should pass tool_call content as ContentBlock array to LLM on retry", async () => {
+		// This test verifies the fix for a bug where tool_call content was pushed
+		// as a JSON string instead of ContentBlock array, causing Bedrock to see
+		// zero toolUse blocks on subsequent calls.
+		const capturedMessages: Array<{
+			role: string;
+			content: string | Array<{ type: string; id?: string; name?: string; input?: unknown }>;
+		}> = [];
+
+		// Create a custom backend that captures what it receives
+		const capturingBackend: LLMBackend = {
+			async *chat(params: { messages: Array<{ role: string; content: unknown }> }) {
+				// Capture the messages passed to the LLM
+				for (const msg of params.messages) {
+					capturedMessages.push({
+						role: msg.role,
+						content: msg.content as string | Array<{ type: string }>,
+					});
+				}
+
+				// First call: return a tool_use
+				if (capturedMessages.length === 0 || !capturedMessages.some((m) => m.role === "tool_call")) {
+					yield { type: "tool_use_start" as const, id: "tc-1", name: "bash" };
+					yield {
+						type: "tool_use_args" as const,
+						id: "tc-1",
+						partial_json: '{"command":"echo test"}',
+					};
+					yield { type: "tool_use_end" as const, id: "tc-1" };
+					yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 15 } };
+				} else {
+					// Second call: return text response
+					yield { type: "text" as const, content: "Command executed successfully." };
+					yield { type: "done" as const, usage: { input_tokens: 25, output_tokens: 8 } };
+				}
+			},
+			capabilities() {
+				return {
+					streaming: true,
+					tool_use: true,
+					system_prompt: true,
+					prompt_caching: false,
+					vision: false,
+					max_context: 8000,
+				};
+			},
+		};
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, capturingBackend, {
+			threadId,
+			userId: "test-user",
+		});
+
+		await agentLoop.run();
+
+		// Find the tool_call message passed to the second LLM call
+		const toolCallMessages = capturedMessages.filter((m) => m.role === "tool_call");
+		expect(toolCallMessages.length).toBeGreaterThan(0);
+
+		const toolCallMsg = toolCallMessages[0];
+
+		// Verify content is an array, not a string
+		expect(Array.isArray(toolCallMsg.content)).toBe(true);
+
+		// Verify the array contains proper ContentBlock objects with tool_use type
+		const blocks = toolCallMsg.content as Array<{
+			type: string;
+			id?: string;
+			name?: string;
+			input?: unknown;
+		}>;
+		expect(blocks.length).toBeGreaterThan(0);
+		expect(blocks[0].type).toBe("tool_use");
+		expect(blocks[0].id).toBe("tc-1");
+		expect(blocks[0].name).toBe("bash");
+		expect(blocks[0].input).toEqual({ command: "echo test" });
+	});
 });

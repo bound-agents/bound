@@ -112,10 +112,28 @@ function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] {
 		} else {
 			// Handle string content
 			if (msg.role === "tool_call") {
-				result.push({
-					role: "assistant",
-					content: [{ type: "text", text: msg.content }],
-				});
+				// DB stores tool_call content as JSON string — try parsing it
+				try {
+					const parsed = JSON.parse(msg.content);
+					if (Array.isArray(parsed)) {
+						const content: AnthropicMessage["content"] = [];
+						for (const block of parsed) {
+							if (block.type === "tool_use") {
+								content.push({
+									type: "tool_use",
+									id: block.id,
+									name: block.name,
+									input: block.input,
+								});
+							}
+						}
+						result.push({ role: "assistant", content });
+					} else {
+						result.push({ role: "assistant", content: [{ type: "text", text: msg.content }] });
+					}
+				} catch {
+					result.push({ role: "assistant", content: [{ type: "text", text: msg.content }] });
+				}
 			} else if (msg.role === "tool_result") {
 				result.push({
 					role: "user",
