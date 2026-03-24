@@ -98,6 +98,12 @@ export class DiscordBot {
 			activeLoops.set(thread.id, abortController);
 
 			try {
+				// Show typing indicator during generation
+				await msg.channel.sendTyping();
+				const typingInterval = setInterval(() => {
+					msg.channel.sendTyping().catch(() => {});
+				}, 8000); // Discord typing indicator lasts ~10s, refresh every 8s
+
 				// Trigger agent loop
 				const agentLoop = this.agentLoopFactory({
 					threadId: thread.id,
@@ -106,17 +112,14 @@ export class DiscordBot {
 				});
 
 				const result = await agentLoop.run();
+				clearInterval(typingInterval);
 
-				this.ctx.logger.debug("Agent loop completed", {
-					threadId: thread.id,
-					messagesCreated: result.messagesCreated,
-					error: result.error,
-				});
+				console.log(`[discord] Agent loop completed: ${result.messagesCreated} messages, ${result.toolCallsMade} tools${result.error ? `, error: ${result.error}` : ""}`);
 
 				// Fetch the last assistant message from the thread
 				const lastMessage = this.ctx.db
 					.query(
-						`SELECT * FROM messages
+						`SELECT content FROM messages
 					WHERE thread_id = ? AND role = 'assistant'
 					ORDER BY created_at DESC
 					LIMIT 1`,
@@ -124,25 +127,21 @@ export class DiscordBot {
 					.get(thread.id) as { content: string } | null;
 
 				if (lastMessage?.content) {
-					// Send response to Discord
-					await msg.reply({
-						content: lastMessage.content,
-					});
+					// Send as regular messages (not replies) — in DMs, reply targets are redundant
+					// Split long messages at 2000 char Discord limit
+					const text = lastMessage.content;
+					for (let i = 0; i < text.length; i += 2000) {
+						await msg.channel.send(text.slice(i, i + 2000));
+					}
 				}
 			} catch (error) {
 				const errorMsg = formatError(error);
-				this.ctx.logger.error("Agent loop failed", {
-					threadId: thread.id,
-					error: errorMsg,
-				});
+				console.error(`[discord] Agent loop failed: ${errorMsg}`);
 
-				// Optionally notify user of error
 				try {
-					await msg.reply({
-						content: `Error: ${errorMsg}`,
-					});
+					await msg.channel.send(`Error: ${errorMsg}`);
 				} catch {
-					// Ignore reply errors
+					// Ignore send errors
 				}
 			} finally {
 				// Clean up active loop tracker

@@ -97,9 +97,17 @@ export class AgentLoop {
 				const SILENCE_TIMEOUT_MS = 120_000;
 
 				try {
+					// Extract system messages for drivers that handle them separately (e.g., Bedrock, Anthropic)
+					const systemMessages = llmMessages.filter((m) => m.role === "system");
+					const nonSystemMessages = llmMessages.filter((m) => m.role !== "system");
+					const systemPrompt = systemMessages.map((m) =>
+						typeof m.content === "string" ? m.content : ""
+					).join("\n\n");
+
 					const chatStream = this.llmBackend.chat({
 						model: "",
-						messages: llmMessages,
+						messages: nonSystemMessages,
+						system: systemPrompt || undefined,
 					});
 
 					for await (const chunk of this.withSilenceTimeout(chatStream, SILENCE_TIMEOUT_MS)) {
