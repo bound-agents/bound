@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { openBoundDB } from "../lib/db";
 export interface SetHubArgs {
@@ -13,9 +14,24 @@ interface SyncStateRow {
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
+function loadRelayConfig(configDir: string): { drain_timeout_seconds: number } {
+	try {
+		const syncConfigPath = resolve(configDir, "sync.json");
+		if (!existsSync(syncConfigPath)) {
+			return { drain_timeout_seconds: 120 };
+		}
+		const content = readFileSync(syncConfigPath, "utf-8");
+		const parsed = JSON.parse(content);
+		return {
+			drain_timeout_seconds: parsed.relay?.drain_timeout_seconds ?? 120,
+		};
+	} catch {
+		// Default if config can't be loaded
+		return { drain_timeout_seconds: 120 };
+	}
+}
 export async function runSetHub(args: SetHubArgs): Promise<void> {
 	const configDir = args.configDir || "data";
-	const dbPath = resolve(configDir, "bound.db");
 	console.log(`Setting cluster hub to: ${args.hostName}`);
 	try {
 		const db = openBoundDB(args.configDir);
@@ -27,13 +43,83 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 				modified_at TEXT NOT NULL
 			)
 		`);
+
+		// Ensure host_meta table exists
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS host_meta (
+				key TEXT PRIMARY KEY,
+				value TEXT NOT NULL
+			)
+		`);
+
+		// Ensure relay_outbox table exists
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS relay_outbox (
+				id TEXT PRIMARY KEY,
+				source_site_id TEXT,
+				target_site_id TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				ref_id TEXT,
+				idempotency_key TEXT,
+				payload TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				delivered INTEGER DEFAULT 0
+			)
+		`);
+
+		// Step 1: Set drain flag
+		db.query("INSERT OR REPLACE INTO host_meta (key, value) VALUES (?, ?)").run(
+			"relay_draining",
+			"true",
+		);
+		console.log("Relay drain mode enabled.");
+
+		// Step 2: Wait for relay outbox to drain
+		const relayConfig = loadRelayConfig(configDir);
+		const drainTimeoutMs = relayConfig.drain_timeout_seconds * 1000;
+		const drainStart = Date.now();
+		let drained = false;
+
+		console.log(
+			`Waiting for relay outbox to drain (timeout: ${relayConfig.drain_timeout_seconds}s)...`,
+		);
+
+		while (Date.now() - drainStart < drainTimeoutMs) {
+			const pending = db
+				.query("SELECT COUNT(*) as count FROM relay_outbox WHERE delivered = 0")
+				.get() as { count: number };
+
+			if (pending.count === 0) {
+				drained = true;
+				console.log("Relay outbox drained successfully.");
+				break;
+			}
+
+			console.log(`Draining relay outbox: ${pending.count} entries remaining...`);
+			await sleep(1000);
+		}
+
+		if (!drained) {
+			const remaining = db
+				.query("SELECT COUNT(*) as count FROM relay_outbox WHERE delivered = 0")
+				.get() as { count: number };
+			console.warn(
+				`Drain timeout reached with ${remaining.count} entries remaining. Proceeding with hub switch.`,
+			);
+		}
+
 		// Record the timestamp when hub is set (used for polling)
 		const hubChangeTimestamp = new Date().toISOString();
-		// Set hub
+		// Step 3: Set hub
 		db.query(
 			"INSERT OR REPLACE INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)",
 		).run("cluster_hub", args.hostName, hubChangeTimestamp);
 		console.log("Cluster hub set successfully.");
+
+		// Step 4: Clear drain flag
+		db.query("DELETE FROM host_meta WHERE key = 'relay_draining'").run();
+		console.log("Relay drain mode disabled.");
 		if (args.wait) {
 			const timeoutMs = (args.timeout ?? 60) * 1000;
 			const pollIntervalMs = 2000;
