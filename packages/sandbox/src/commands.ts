@@ -19,6 +19,7 @@ export interface CommandContext {
 	logger: Logger;
 	threadId?: string;
 	taskId?: string;
+	mcpClients?: Map<string, unknown>;
 }
 
 export interface CommandDefinition {

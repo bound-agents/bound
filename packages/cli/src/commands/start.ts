@@ -366,6 +366,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			siteId: appContext.siteId,
 			eventBus: appContext.eventBus,
 			logger: appContext.logger,
+			mcpClients: mcpClientsMap,
 		};
 		const builtinCommands = getAllCommands();
 		const allDefinitions = [...builtinCommands, ...mcpCommands];

@@ -3,14 +3,14 @@ import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDatabase } from "../database";
-import { applySchema } from "../schema";
 import { applyMetricsSchema } from "../metrics-schema";
 import {
+	type RelayCycleEntry,
+	pruneRelayCycles,
 	recordRelayCycle,
 	recordTurnRelayMetrics,
-	pruneRelayCycles,
-	type RelayCycleEntry,
 } from "../relay-metrics";
+import { applySchema } from "../schema";
 
 describe("Relay Metrics", () => {
 	let dbPath: string;
@@ -128,9 +128,9 @@ describe("Relay Metrics", () => {
 			// Record relay metrics
 			recordTurnRelayMetrics(db, turnId, "spoke-a", 150);
 
-			const turn = db.query("SELECT relay_target, relay_latency_ms FROM turns WHERE id = ?").get(
-				turnId,
-			) as {
+			const turn = db
+				.query("SELECT relay_target, relay_latency_ms FROM turns WHERE id = ?")
+				.get(turnId) as {
 				relay_target: string;
 				relay_latency_ms: number;
 			};
@@ -153,9 +153,7 @@ describe("Relay Metrics", () => {
 				["claude-3-5-sonnet", 100, 50, new Date().toISOString()],
 			);
 
-			const turn = db.query(
-				"SELECT relay_target, relay_latency_ms FROM turns LIMIT 1",
-			).get() as {
+			const turn = db.query("SELECT relay_target, relay_latency_ms FROM turns LIMIT 1").get() as {
 				relay_target: string | null;
 				relay_latency_ms: number | null;
 			};
@@ -322,15 +320,7 @@ describe("Relay Metrics", () => {
 			db.run(
 				`INSERT INTO relay_cycles (direction, peer_site_id, kind, delivery_method, expired, success, created_at)
 				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				[
-					"outbound",
-					"peer-1",
-					"tool_call",
-					"sync",
-					0,
-					1,
-					thirtyTwoDaysAgo.toISOString(),
-				],
+				["outbound", "peer-1", "tool_call", "sync", 0, 1, thirtyTwoDaysAgo.toISOString()],
 			);
 
 			// Insert recent entry (should NOT be pruned - 28 days old)
@@ -347,9 +337,11 @@ describe("Relay Metrics", () => {
 				["outbound", "peer-1", "tool_call", "sync", 0, 1, now.toISOString()],
 			);
 
-			const beforeCount = (db.query("SELECT COUNT(*) as count FROM relay_cycles").get() as {
-				count: number;
-			}).count;
+			const beforeCount = (
+				db.query("SELECT COUNT(*) as count FROM relay_cycles").get() as {
+					count: number;
+				}
+			).count;
 			expect(beforeCount).toBe(3);
 
 			// Prune
@@ -357,16 +349,16 @@ describe("Relay Metrics", () => {
 
 			expect(deleted).toBe(1);
 
-			const afterCount = (db.query("SELECT COUNT(*) as count FROM relay_cycles").get() as {
-				count: number;
-			}).count;
+			const afterCount = (
+				db.query("SELECT COUNT(*) as count FROM relay_cycles").get() as {
+					count: number;
+				}
+			).count;
 			expect(afterCount).toBe(2);
 
 			// Verify old entry was deleted
 			const oldEntries = db
-				.query(
-					`SELECT COUNT(*) as count FROM relay_cycles WHERE created_at = ?`,
-				)
+				.query(`SELECT COUNT(*) as count FROM relay_cycles WHERE created_at = ?`)
 				.get(thirtyTwoDaysAgo.toISOString()) as { count: number };
 
 			expect(oldEntries.count).toBe(0);
@@ -378,9 +370,7 @@ describe("Relay Metrics", () => {
 			const db = createDatabase(dbPath);
 			applySchema(db);
 
-			const thirtyTwoDaysAgo = new Date(
-				Date.now() - 32 * 24 * 60 * 60 * 1000,
-			).toISOString();
+			const thirtyTwoDaysAgo = new Date(Date.now() - 32 * 24 * 60 * 60 * 1000).toISOString();
 
 			// Insert 3 old entries
 			for (let i = 0; i < 3; i++) {
@@ -424,9 +414,11 @@ describe("Relay Metrics", () => {
 			expect(deleted30).toBe(1); // Only 60-day-old entry
 
 			// Verify 15-day-old entry still exists
-			const remaining = (db.query("SELECT COUNT(*) as count FROM relay_cycles").get() as {
-				count: number;
-			}).count;
+			const remaining = (
+				db.query("SELECT COUNT(*) as count FROM relay_cycles").get() as {
+					count: number;
+				}
+			).count;
 			expect(remaining).toBe(1);
 
 			db.close();
