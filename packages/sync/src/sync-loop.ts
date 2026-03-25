@@ -1,8 +1,11 @@
 import type { Database } from "bun:sqlite";
+import { insertInbox, markDelivered, readUndelivered } from "@bound/core";
 import type { KeyringConfig, Logger, Result, SyncConfig, TypedEventEmitter } from "@bound/shared";
 import { err, formatError, ok } from "@bound/shared";
 import {
 	type Changeset,
+	type RelayRequest,
+	type RelayResponse,
 	deserializeChangeset,
 	fetchOutboundChangeset,
 	serializeChangeset,
@@ -16,14 +19,21 @@ import {
 import { replayEvents } from "./reducers.js";
 import { signRequest } from "./signing.js";
 
+export interface RelayResult {
+	sent: number;
+	received: number;
+	draining: boolean;
+}
+
 export interface SyncResult {
 	pushed: number;
 	pulled: number;
+	relay?: RelayResult;
 	duration_ms: number;
 }
 
 export interface SyncError {
-	phase: "push" | "pull" | "ack";
+	phase: "push" | "pull" | "ack" | "relay";
 	status?: number;
 	message: string;
 }
@@ -60,6 +70,7 @@ export class SyncClient {
 		const startTime = Date.now();
 		let pushed = 0;
 		let pulled = 0;
+		let relayResult: RelayResult | undefined;
 
 		// Use hub's site_id for peer cursor tracking
 		const peerSiteId = this.hubSiteId ?? this.siteId;
@@ -102,6 +113,15 @@ export class SyncClient {
 				return ackResult;
 			}
 
+			// RELAY: exchange relay messages with hub
+			const relayPhaseResult = await this.relay();
+			if (!relayPhaseResult.ok) {
+				this.logger.warn("Relay phase failed", { error: relayPhaseResult.error });
+				// Relay failure is non-fatal — sync still succeeds
+			} else {
+				relayResult = relayPhaseResult.value;
+			}
+
 			// Update cursor and reset errors
 			updatePeerCursor(this.db, peerSiteId, { last_received: newLastReceived });
 			resetSyncErrors(this.db, peerSiteId);
@@ -114,7 +134,7 @@ export class SyncClient {
 				duration_ms: duration,
 			});
 
-			return ok({ pushed, pulled, duration_ms: duration });
+			return ok({ pushed, pulled, relay: relayResult, duration_ms: duration });
 		} catch (error) {
 			incrementSyncErrors(this.db, peerSiteId);
 
@@ -130,12 +150,23 @@ export class SyncClient {
 					const { deterministicUUID, BOUND_NAMESPACE } = await import("@bound/shared");
 					const systemThreadId = deterministicUUID(BOUND_NAMESPACE, "system-alerts");
 					const now = new Date().toISOString();
-					this.db.query(
-						`INSERT OR IGNORE INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted) VALUES (?, 'system', 'web', ?, 0, 'System Alerts', NULL, ?, ?, ?, 0)`,
-					).run(systemThreadId, this.siteId, now, now, now);
-					this.db.query(
-						`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, 'alert', ?, NULL, NULL, ?, ?, ?, 0)`,
-					).run(randomUUID(), systemThreadId, `Sync to peer ${peerSiteId} has failed ${syncState.sync_errors} consecutive times`, now, now, this.siteId);
+					this.db
+						.query(
+							`INSERT OR IGNORE INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted) VALUES (?, 'system', 'web', ?, 0, 'System Alerts', NULL, ?, ?, ?, 0)`,
+						)
+						.run(systemThreadId, this.siteId, now, now, now);
+					this.db
+						.query(
+							`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, 'alert', ?, NULL, NULL, ?, ?, ?, 0)`,
+						)
+						.run(
+							randomUUID(),
+							systemThreadId,
+							`Sync to peer ${peerSiteId} has failed ${syncState.sync_errors} consecutive times`,
+							now,
+							now,
+							this.siteId,
+						);
 				} catch {
 					// Non-fatal
 				}
@@ -253,6 +284,59 @@ export class SyncClient {
 			const message = formatError(error);
 			return err({
 				phase: "ack",
+				message,
+			});
+		}
+	}
+
+	async relay(): Promise<Result<RelayResult, SyncError>> {
+		try {
+			const outbox = readUndelivered(this.db);
+
+			const relayRequest: RelayRequest = {
+				relay_outbox: outbox,
+			};
+
+			const body = JSON.stringify(relayRequest);
+			const headers = await signRequest(this.privateKey, this.siteId, "POST", "/sync/relay", body);
+
+			const response = await fetch(`${this.hubUrl}/sync/relay`, {
+				method: "POST",
+				headers: { ...headers, "Content-Type": "application/json" },
+				body,
+			});
+
+			if (!response.ok) {
+				return err({
+					phase: "relay",
+					status: response.status,
+					message: `Relay failed: ${response.statusText}`,
+				});
+			}
+
+			const relayResponse = (await response.json()) as RelayResponse;
+
+			// Mark delivered
+			if (relayResponse.relay_delivered.length > 0) {
+				markDelivered(this.db, relayResponse.relay_delivered);
+			}
+
+			// Insert inbox entries (INSERT OR IGNORE for dedup)
+			let received = 0;
+			for (const entry of relayResponse.relay_inbox) {
+				const inserted = insertInbox(this.db, entry);
+				if (inserted) received++;
+			}
+
+			return ok({
+				sent: outbox.length,
+				received,
+				draining: relayResponse.relay_draining,
+			});
+		} catch (error) {
+			const message = formatError(error);
+			return err({
+				phase: "relay",
 				message,
 			});
 		}
