@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
 
 import type { AppContext } from "@bound/core";
-import { insertRow, markProcessed, readInboxByRefId, recordTurn, writeOutbox } from "@bound/core";
+import {
+	insertRow,
+	markProcessed,
+	readInboxByRefId,
+	recordTurn,
+	recordTurnRelayMetrics,
+	writeOutbox,
+} from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { formatError } from "@bound/shared";
 
@@ -154,8 +161,9 @@ export class AgentLoop {
 				const parsed = this.parseResponseChunks(chunks);
 
 				// Record turn metrics for budget tracking
+				let currentTurnId: number | null = null;
 				try {
-					recordTurn(this.ctx.db, {
+					currentTurnId = recordTurn(this.ctx.db, {
 						thread_id: this.config.threadId,
 						task_id: this.config.taskId || undefined,
 						dag_root_id: undefined,
@@ -184,7 +192,7 @@ export class AgentLoop {
 							// Check for relay request
 							if (typeof result !== "string") {
 								// It's a RelayToolCallRequest - enter RELAY_WAIT
-								resultContent = await this.relayWait(result, toolCall);
+								resultContent = await this.relayWait(result, toolCall, currentTurnId);
 							} else {
 								resultContent = result;
 							}
@@ -401,12 +409,13 @@ export class AgentLoop {
 	private async relayWait(
 		relayRequest: RelayToolCallRequest,
 		toolCall: ParsedToolCall,
+		currentTurnId: number | null,
 	): Promise<string> {
 		const previousState = this.state;
 		this.state = "RELAY_WAIT";
 
 		try {
-			return await this._relayWaitImpl(relayRequest, toolCall);
+			return await this._relayWaitImpl(relayRequest, toolCall, currentTurnId);
 		} finally {
 			this.state = previousState;
 		}
@@ -415,12 +424,14 @@ export class AgentLoop {
 	private async _relayWaitImpl(
 		relayRequest: RelayToolCallRequest,
 		toolCall: ParsedToolCall,
+		currentTurnId: number | null,
 	): Promise<string> {
 		const { outboxEntryId, toolName, eligibleHosts } = relayRequest;
 		const pollIntervalMs = 500;
 		const timeoutMs = 30_000; // 30 second timeout per host
 		let currentHostIndex = relayRequest.currentHostIndex;
 		let hostStartTime = Date.now();
+		const relayStartTime = Date.now();
 
 		// AC6.5: Trigger immediate sync
 		this.ctx.eventBus.emit("sync:trigger", { reason: "relay-wait" });
@@ -459,7 +470,17 @@ export class AgentLoop {
 			// Poll for response
 			const response = readInboxByRefId(this.ctx.db, outboxEntryId);
 			if (response) {
-				// Got a response
+				// Got a response - record relay metrics
+				const latencyMs = Date.now() - relayStartTime;
+				const currentHost = eligibleHosts[currentHostIndex];
+				if (currentTurnId !== null) {
+					try {
+						recordTurnRelayMetrics(this.ctx.db, currentTurnId, currentHost.host_name, latencyMs);
+					} catch {
+						// Non-fatal if metrics recording fails
+					}
+				}
+
 				if (response.kind === "error") {
 					try {
 						const payload = JSON.parse(response.payload) as { error?: string };

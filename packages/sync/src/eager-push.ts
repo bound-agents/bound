@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { recordRelayCycle } from "@bound/core";
 import type { KeyringConfig, Logger, RelayInboxEntry } from "@bound/shared";
 import type { ReachabilityTracker } from "./reachability.js";
 import { signRequest } from "./signing.js";
@@ -33,6 +34,7 @@ export async function eagerPushToSpoke(
 	}
 
 	try {
+		const pushStartTime = Date.now();
 		const body = JSON.stringify({ entries });
 		const headers = await signRequest(
 			config.privateKey,
@@ -48,6 +50,26 @@ export async function eagerPushToSpoke(
 			body,
 			signal: AbortSignal.timeout(5000),
 		});
+
+		const pushLatencyMs = Date.now() - pushStartTime;
+		const pushSucceeded = response.ok;
+
+		// Record relay cycles for each entry
+		if (entries.length > 0) {
+			try {
+				recordRelayCycle(config.db, {
+					direction: "outbound",
+					peer_site_id: targetSiteId,
+					kind: entries[0].kind,
+					delivery_method: "eager_push",
+					latency_ms: pushLatencyMs,
+					expired: false,
+					success: pushSucceeded,
+				});
+			} catch {
+				// Non-fatal if metrics recording fails
+			}
+		}
 
 		if (response.ok) {
 			config.reachabilityTracker.recordSuccess(targetSiteId);

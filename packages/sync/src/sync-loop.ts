@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { insertInbox, markDelivered, readUndelivered } from "@bound/core";
+import { insertInbox, markDelivered, readUndelivered, recordRelayCycle } from "@bound/core";
 import type { KeyringConfig, Logger, Result, SyncConfig, TypedEventEmitter } from "@bound/shared";
 import { RELAY_RESPONSE_KINDS, err, formatError, ok } from "@bound/shared";
 import {
@@ -341,11 +341,42 @@ export class SyncClient {
 				markDelivered(this.db, relayResponse.relay_delivered);
 			}
 
+			// Record outbound relay cycles
+			for (const entry of entriesToSend) {
+				try {
+					recordRelayCycle(this.db, {
+						direction: "outbound",
+						peer_site_id: entry.target_site_id,
+						kind: entry.kind,
+						delivery_method: "sync",
+						latency_ms: null,
+						expired: false,
+						success: true,
+					});
+				} catch {
+					// Non-fatal if metrics recording fails
+				}
+			}
+
 			// Insert inbox entries (INSERT OR IGNORE for dedup)
 			let received = 0;
 			for (const entry of relayResponse.relay_inbox) {
 				const inserted = insertInbox(this.db, entry);
 				if (inserted) received++;
+				// Record inbound relay cycle
+				try {
+					recordRelayCycle(this.db, {
+						direction: "inbound",
+						peer_site_id: entry.source_site_id,
+						kind: entry.kind,
+						delivery_method: "sync",
+						latency_ms: null,
+						expired: false,
+						success: true,
+					});
+				} catch {
+					// Non-fatal if metrics recording fails
+				}
 			}
 
 			return ok({

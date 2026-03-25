@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { markProcessed, readUnprocessed, writeOutbox } from "@bound/core";
+import { markProcessed, readUnprocessed, recordRelayCycle, writeOutbox } from "@bound/core";
 import type {
 	CacheWarmPayload,
 	ErrorPayload,
@@ -127,6 +127,7 @@ export class RelayProcessor {
 			}
 
 			// Step 5: Execute based on kind
+			const executionStartTime = Date.now();
 			let response: string | null;
 			try {
 				switch (entry.kind) {
@@ -162,6 +163,21 @@ export class RelayProcessor {
 				response = JSON.stringify(errorResponse);
 				this.writeResponse(entry, "error", response);
 				markProcessed(this.db, [entry.id]);
+				// Record relay cycle for error
+				const executionMs = Date.now() - executionStartTime;
+				try {
+					recordRelayCycle(this.db, {
+						direction: "inbound",
+						peer_site_id: entry.source_site_id,
+						kind: entry.kind,
+						delivery_method: "sync",
+						latency_ms: executionMs,
+						expired: false,
+						success: false,
+					});
+				} catch {
+					// Non-fatal if metrics recording fails
+				}
 				return;
 			}
 
@@ -180,6 +196,22 @@ export class RelayProcessor {
 
 			// Step 8: Mark processed
 			markProcessed(this.db, [entry.id]);
+
+			// Step 9: Record relay cycle metrics
+			const executionMs = Date.now() - executionStartTime;
+			try {
+				recordRelayCycle(this.db, {
+					direction: "inbound",
+					peer_site_id: entry.source_site_id,
+					kind: entry.kind,
+					delivery_method: "sync",
+					latency_ms: executionMs,
+					expired: false,
+					success: true,
+				});
+			} catch {
+				// Non-fatal if metrics recording fails
+			}
 		} catch (error) {
 			this.logger.error("Error processing relay entry", { error, entryId: entry.id });
 			markProcessed(this.db, [entry.id]);

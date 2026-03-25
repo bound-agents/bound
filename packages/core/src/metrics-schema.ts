@@ -49,8 +49,8 @@ export function applyMetricsSchema(db: Database): void {
 	`);
 }
 
-export function recordTurn(db: Database, turn: TurnRecord): void {
-	db.prepare(
+export function recordTurn(db: Database, turn: TurnRecord): number {
+	const result = db.prepare(
 		`INSERT INTO turns (thread_id, task_id, dag_root_id, model_id, tokens_in, tokens_out, cost_usd, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 	).run(
@@ -83,6 +83,8 @@ export function recordTurn(db: Database, turn: TurnRecord): void {
 			 VALUES (?, ?, ?, ?, 1)`,
 		).run(date, turn.tokens_in, turn.tokens_out, turn.cost_usd || 0);
 	}
+
+	return Number(result.lastInsertRowid);
 }
 
 export function getDailySpend(db: Database, date: string): number {
