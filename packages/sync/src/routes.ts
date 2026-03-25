@@ -197,19 +197,19 @@ export function createSyncRoutes(
 				);
 			}
 
-		// Read relay_draining flag from host_meta (non-synced, local-only)
-		const drainState = db
-			.query("SELECT value FROM host_meta WHERE key = ?")
-			.get("relay_draining") as { value: string } | null;
+			// Read relay_draining flag from host_meta (non-synced, local-only)
+			const drainState = db
+				.query("SELECT value FROM host_meta WHERE key = ?")
+				.get("relay_draining") as { value: string } | null;
 
-		const response: RelayResponse = {
-			relay_inbox: inboxForRequester,
-			relay_delivered: deliveredIds,
-			relay_draining: drainState?.value === "true",
-		};
+			const response: RelayResponse = {
+				relay_inbox: inboxForRequester,
+				relay_delivered: deliveredIds,
+				relay_draining: drainState?.value === "true",
+			};
 
-		return c.json(response);
-	} catch (error) {
+			return c.json(response);
+		} catch (error) {
 			logger.error(`Relay error: ${error instanceof Error ? error.message : "Unknown error"}`);
 			return c.json({ error: "Failed to process relay" }, 400);
 		}

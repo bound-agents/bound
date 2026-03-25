@@ -58,6 +58,7 @@ export class SyncClient {
 	updateHubUrl(newHubUrl: string): void {
 		this.hubUrl = newHubUrl;
 		this.hubSiteId = this.resolveHubSiteId();
+		this.relayDraining = false;
 	}
 
 	private resolveHubSiteId(): string | null {
@@ -303,7 +304,9 @@ export class SyncClient {
 			let entriesToSend = outbox;
 			if (this.relayDraining) {
 				entriesToSend = outbox.filter(
-					(entry) => RELAY_RESPONSE_KINDS.includes(entry.kind as any) || entry.kind === "cancel",
+					(entry) =>
+						(RELAY_RESPONSE_KINDS as readonly string[]).includes(entry.kind) ||
+						entry.kind === "cancel",
 				);
 			}
 

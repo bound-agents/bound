@@ -272,21 +272,12 @@ describe("relay drain integration tests", () => {
 		// Clear drain flag on old hub
 		instanceA.db.query("DELETE FROM host_meta WHERE key = 'relay_draining'").run();
 
-		// Spoke syncs with new hub - this learns that drain is no longer active
+		// Spoke syncs with new hub - hub URL changed and relayDraining was reset to false,
+		// so held request-kind entry should deliver on FIRST sync after switch
 		syncResult = await instanceB.syncClient?.syncCycle();
 		expect(syncResult?.ok).toBe(true);
 
-		// Verify entry is still held (relayDraining was still true during this sync)
-		const stillHeld = instanceB.db
-			.query("SELECT * FROM relay_outbox WHERE id = ?")
-			.get(toolCallId) as { delivered: number } | undefined;
-		expect(stillHeld?.delivered).toBe(0);
-
-		// Spoke syncs again - now relayDraining is false (learned from last sync), so held entry delivers
-		syncResult = await instanceB.syncClient?.syncCycle();
-		expect(syncResult?.ok).toBe(true);
-
-		// Verify entry is now delivered
+		// Verify entry is now delivered (on first sync with new hub)
 		const deliveredEntry = instanceB.db
 			.query("SELECT * FROM relay_outbox WHERE id = ?")
 			.get(toolCallId) as { delivered: number } | undefined;

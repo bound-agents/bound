@@ -259,7 +259,15 @@ describe("sync-loop", () => {
 				},
 			};
 
-			const client = new SyncClient(db, "spoke1", privateKey, "http://hub:3100", logger, eventBus, keyring);
+			const client = new SyncClient(
+				db,
+				"spoke1",
+				privateKey,
+				"http://hub:3100",
+				logger,
+				eventBus,
+				keyring,
+			);
 
 			// Manually insert relay outbox entries (some request-kind, some response-kind)
 			const now = new Date().toISOString();
@@ -278,16 +286,27 @@ describe("sync-loop", () => {
 			db.run(
 				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, payload, created_at, expires_at, delivered)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-				["req2", "spoke1", "remote", "resource_read", '{"resource_uri":"test"}', now, oneHourLater, 0],
+				[
+					"req2",
+					"spoke1",
+					"remote",
+					"resource_read",
+					'{"resource_uri":"test"}',
+					now,
+					oneHourLater,
+					0,
+				],
 			);
 
 			// Set relayDraining to true manually
+			// biome-ignore lint/suspicious/noExplicitAny: testing private field
 			(client as any).relayDraining = true;
 
 			// Mock fetch to capture the relay request
+			// biome-ignore lint/suspicious/noExplicitAny: mock validation uses dynamic object
 			let capturedRequest: any;
 			const originalFetch = globalThis.fetch;
-			globalThis.fetch = mock((url: string, options: any) => {
+			globalThis.fetch = mock((url: string, options: { body: string }) => {
 				if (url.includes("/sync/relay")) {
 					capturedRequest = JSON.parse(options.body);
 					return Promise.resolve(
@@ -336,7 +355,15 @@ describe("sync-loop", () => {
 				},
 			};
 
-			const client = new SyncClient(db, "spoke1", privateKey, "http://hub:3100", logger, eventBus, keyring);
+			const client = new SyncClient(
+				db,
+				"spoke1",
+				privateKey,
+				"http://hub:3100",
+				logger,
+				eventBus,
+				keyring,
+			);
 
 			// Insert relay outbox entries (response-kind and cancel)
 			const now = new Date().toISOString();
@@ -359,12 +386,14 @@ describe("sync-loop", () => {
 			);
 
 			// Set relayDraining to true manually
+			// biome-ignore lint/suspicious/noExplicitAny: testing private field
 			(client as any).relayDraining = true;
 
 			// Mock fetch to capture the relay request
+			// biome-ignore lint/suspicious/noExplicitAny: mock validation uses dynamic object
 			let capturedRequest: any;
 			const originalFetch = globalThis.fetch;
-			globalThis.fetch = mock((url: string, options: any) => {
+			globalThis.fetch = mock((url: string, options: { body: string }) => {
 				if (url.includes("/sync/relay")) {
 					capturedRequest = JSON.parse(options.body);
 					return Promise.resolve(
@@ -387,6 +416,7 @@ describe("sync-loop", () => {
 			if (result.ok) {
 				// All response-kind and cancel entries should be sent
 				expect(capturedRequest.relay_outbox.length).toBe(3);
+				// biome-ignore lint/suspicious/noExplicitAny: RelayOutboxEntry array property access in mock
 				const ids = capturedRequest.relay_outbox.map((e: any) => e.id).sort();
 				expect(ids).toEqual(["cancel1", "resp1", "resp2"]);
 			}
