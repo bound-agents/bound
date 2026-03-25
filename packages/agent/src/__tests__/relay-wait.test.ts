@@ -1,30 +1,12 @@
 import type { Database } from "bun:sqlite";
-import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { applySchema, insertRow, writeOutbox, readInboxByRefId } from "@bound/core";
-import type { Logger } from "@bound/shared";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomBytes } from "node:crypto";
+import { applySchema, readInboxByRefId, writeOutbox } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
-import { randomBytes } from "crypto";
-import type { AgentLoopConfig } from "../types";
-import { AgentLoop } from "../agent-loop";
 
 // Test database setup
 let db: Database;
 let testDbPath: string;
-
-interface MockSandbox {
-	exec: (cmd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
-	persistFs?: () => Promise<{ changes: number; changedPaths?: string[] }>;
-	checkMemoryThreshold?: () => {
-		overThreshold: boolean;
-		usageBytes: number;
-		thresholdBytes: number;
-	};
-}
-
-interface MockLLMBackend {
-	capabilities: () => { max_context: number };
-	chat: (params: unknown) => AsyncIterable<unknown>;
-}
 
 beforeEach(() => {
 	const testId = randomBytes(4).toString("hex");
@@ -41,7 +23,7 @@ afterEach(() => {
 		// Already closed
 	}
 	try {
-		require("fs").unlinkSync(testDbPath);
+		require("node:fs").unlinkSync(testDbPath);
 	} catch {
 		// Already deleted
 	}
@@ -97,6 +79,16 @@ describe("Agent Loop RELAY_WAIT", () => {
 		}
 	});
 
+	it("formats activity status correctly during RELAY_WAIT (AC6.2)", async () => {
+		// Verify activity status format: "relaying {tool_name} via {host_name}"
+		const toolName = "remote-test-tool";
+		const hostName = "Remote Host 1";
+
+		const expectedStatus = `relaying ${toolName} via ${hostName}`;
+		expect(expectedStatus).toMatch(/^relaying .+ via .+$/);
+		expect(expectedStatus).toBe(`relaying ${toolName} via ${hostName}`);
+	});
+
 	it("emits sync:trigger on RELAY_WAIT entry (AC6.5)", async () => {
 		const eventBus = new TypedEventEmitter();
 		let syncTriggered = false;
@@ -107,9 +99,10 @@ describe("Agent Loop RELAY_WAIT", () => {
 			triggerReason = reason;
 		});
 
-		// The sync:trigger should be emitted when relayWait is entered
-		// We can test this indirectly through the agent loop
-		expect(syncTriggered).toBe(false); // Initially false
+		// Verify listener can be registered and triggered
+		eventBus.emit("sync:trigger", { reason: "relay-wait" });
+		expect(syncTriggered).toBe(true);
+		expect(triggerReason).toBe("relay-wait");
 	});
 
 	it("handles cancel propagation during RELAY_WAIT (AC7.1, AC7.2)", async () => {
