@@ -206,7 +206,9 @@ export function createSyncRoutes(
 
 			return c.json({ ok: true, received });
 		} catch (error) {
-			logger.error(`Relay deliver error: ${error instanceof Error ? error.message : "Unknown error"}`);
+			logger.error(
+				`Relay deliver error: ${error instanceof Error ? error.message : "Unknown error"}`,
+			);
 			return c.json({ error: "Failed to process relay delivery" }, 400);
 		}
 	});

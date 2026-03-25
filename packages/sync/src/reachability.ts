@@ -7,7 +7,7 @@ export class ReachabilityTracker {
 	private states = new Map<string, ReachabilityState>();
 	private readonly maxFailures: number;
 
-	constructor(maxFailures: number = 3) {
+	constructor(maxFailures = 3) {
 		this.maxFailures = maxFailures;
 	}
 
