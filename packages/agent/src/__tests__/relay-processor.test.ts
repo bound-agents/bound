@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { applySchema, readUnprocessed } from "@bound/core";
+import { applySchema, markProcessed, readUnprocessed } from "@bound/core";
 import type {
 	CacheWarmPayload,
 	Logger,

@@ -127,7 +127,7 @@ export class RelayProcessor {
 			}
 
 			// Step 5: Execute based on kind
-			let response: string;
+			let response: string | null;
 			try {
 				switch (entry.kind) {
 					case "tool_call": {
@@ -165,11 +165,13 @@ export class RelayProcessor {
 				return;
 			}
 
-			// Step 6: Write response
-			this.writeResponse(entry, "result", response);
+			// Step 6: Write response (null means handler already wrote chunks)
+			if (response !== null) {
+				this.writeResponse(entry, "result", response);
+			}
 
 			// Step 7: Cache result if idempotency key is set (AC5.1)
-			if (entry.idempotency_key) {
+			if (entry.idempotency_key && response !== null) {
 				this.idempotencyCache.set(entry.idempotency_key, {
 					response,
 					expiresAt: Date.now() + IDEMPOTENCY_TTL_MS,
@@ -270,7 +272,7 @@ export class RelayProcessor {
 	private async executeCacheWarm(
 		entry: RelayInboxEntry | RelayOutboxEntry,
 		payload: CacheWarmPayload,
-	): Promise<string> {
+	): Promise<string | null> {
 		// Read files from paths and return content
 		// If combined response exceeds max_payload_bytes, split into per-file results
 		const maxPayloadBytes = this.relayConfig?.max_payload_bytes ?? 1024 * 1024;
@@ -286,7 +288,7 @@ export class RelayProcessor {
 		}
 
 		// Check if we need to split based on payload size
-		let combinedContent = fileContents.map((fc) => fc.content).join("\n---FILE_SEPARATOR---\n");
+		const combinedContent = fileContents.map((fc) => fc.content).join("\n---FILE_SEPARATOR---\n");
 		const combinedPayload: ResultPayload = {
 			stdout: combinedContent,
 			stderr: "",
@@ -318,14 +320,8 @@ export class RelayProcessor {
 			this.writeResponse(entry, "result", responseStr);
 		}
 
-		// Return the first chunk (writeResponse already wrote all of them to outbox)
-		const firstChunkPayload: ResultPayload = {
-			stdout: fileContents[0]?.content ?? "",
-			stderr: "",
-			exit_code: 0,
-			execution_ms: 0,
-		};
-		return JSON.stringify(firstChunkPayload);
+		// All chunks already written to outbox — signal caller to skip writeResponse
+		return null;
 	}
 
 	private writeResponse(
@@ -411,7 +407,7 @@ export class RelayProcessor {
 			}
 
 			// Step 5: Execute based on kind
-			let response: string;
+			let response: string | null;
 			try {
 				switch (request.kind) {
 					case "tool_call": {
@@ -448,11 +444,13 @@ export class RelayProcessor {
 				return results;
 			}
 
-			// Step 6: Return result
-			results.push(this.createResultEntry(request, "result", response));
+			// Step 6: Return result (null means chunks were written directly to outbox)
+			if (response !== null) {
+				results.push(this.createResultEntry(request, "result", response));
+			}
 
 			// Step 7: Cache result if idempotency key is set (AC5.1)
-			if (request.idempotency_key) {
+			if (request.idempotency_key && response !== null) {
 				this.idempotencyCache.set(request.idempotency_key, {
 					response,
 					expiresAt: Date.now() + IDEMPOTENCY_TTL_MS,
