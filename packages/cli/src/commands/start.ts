@@ -21,7 +21,7 @@ import type { BackendConfig, LLMBackend, ModelBackendsConfig, ToolDefinition } f
 import { createClusterFs, createDefineCommands, createSandbox } from "@bound/sandbox";
 import type { SyncConfig } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
-import { ensureKeypair, ReachabilityTracker } from "@bound/sync";
+import { ReachabilityTracker, ensureKeypair } from "@bound/sync";
 import type { RelayExecutor } from "@bound/sync";
 import { createWebServer } from "@bound/web";
 
@@ -465,16 +465,17 @@ export async function runStart(args: StartArgs): Promise<void> {
 				? (keyringResult.value as import("@bound/shared").KeyringConfig)
 				: undefined;
 
-		const eagerPushConfig = keyring && appContext.siteId
-			? {
-					privateKey: keypair.privateKey,
-					siteId: appContext.siteId,
-					db: appContext.db,
-					keyring,
-					reachabilityTracker,
-					logger: appContext.logger,
-				}
-			: undefined;
+		const eagerPushConfig =
+			keyring && appContext.siteId
+				? {
+						privateKey: keypair.privateKey,
+						siteId: appContext.siteId,
+						db: appContext.db,
+						keyring,
+						reachabilityTracker,
+						logger: appContext.logger,
+					}
+				: undefined;
 
 		const webPort = Number.parseInt(process.env.PORT || "3000", 10);
 		webServer = await createWebServer(appContext.db, appContext.eventBus, {

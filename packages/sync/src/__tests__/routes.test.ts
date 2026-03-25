@@ -298,7 +298,13 @@ describe("routes", () => {
 			};
 
 			const body = JSON.stringify({ entries: [entry] });
-			const headers = await signRequest(hubPrivateKey, hubSiteId, "POST", "/api/relay-deliver", body);
+			const headers = await signRequest(
+				hubPrivateKey,
+				hubSiteId,
+				"POST",
+				"/api/relay-deliver",
+				body,
+			);
 
 			const response = await app.request("/api/relay-deliver", {
 				method: "POST",
@@ -414,7 +420,13 @@ describe("routes", () => {
 			};
 
 			const body = JSON.stringify({ entries: [entry] });
-			const headers1 = await signRequest(hubPrivateKey, hubSiteId, "POST", "/api/relay-deliver", body);
+			const headers1 = await signRequest(
+				hubPrivateKey,
+				hubSiteId,
+				"POST",
+				"/api/relay-deliver",
+				body,
+			);
 
 			// First push succeeds
 			const response1 = await app.request("/api/relay-deliver", {
@@ -431,7 +443,13 @@ describe("routes", () => {
 			expect(result1.received).toBe(1);
 
 			// Second push with same entry - should dedupe
-			const headers2 = await signRequest(hubPrivateKey, hubSiteId, "POST", "/api/relay-deliver", body);
+			const headers2 = await signRequest(
+				hubPrivateKey,
+				hubSiteId,
+				"POST",
+				"/api/relay-deliver",
+				body,
+			);
 			const response2 = await app.request("/api/relay-deliver", {
 				method: "POST",
 				headers: {

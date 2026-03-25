@@ -137,7 +137,8 @@ const FULL_SCHEMA = `
 		models TEXT,
 		overlay_root TEXT,
 		online_at TEXT NOT NULL,
-		modified_at TEXT NOT NULL
+		modified_at TEXT NOT NULL,
+		deleted INTEGER NOT NULL DEFAULT 0
 	);
 
 	CREATE TABLE overlay_index (
