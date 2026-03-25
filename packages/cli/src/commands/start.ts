@@ -4,17 +4,18 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { AgentLoop, Scheduler, seedCronTasks } from "@bound/agent";
+import { AgentLoop, RelayProcessor, Scheduler, seedCronTasks } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
 import { generateMCPCommands, getAllCommands, setCommandRegistry } from "@bound/agent";
 import { generateThreadTitle } from "@bound/agent";
-import { createAppContext, insertRow, updateRow, withChangeLog } from "@bound/core";
+import { createAppContext, insertRow, resolveRelayConfig, updateRow, withChangeLog } from "@bound/core";
 import { createModelRouter } from "@bound/llm";
 import type { BackendConfig, LLMBackend, ModelBackendsConfig, ToolDefinition } from "@bound/llm";
 import { createClusterFs, createDefineCommands, createSandbox } from "@bound/sandbox";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import { ensureKeypair } from "@bound/sync";
+import type { RelayExecutor } from "@bound/sync";
 import { createWebServer } from "@bound/web";
 
 export interface StartArgs {
@@ -309,6 +310,41 @@ export async function runStart(args: StartArgs): Promise<void> {
 		);
 	}
 
+	// 8b. Relay processor setup
+	console.log("Initializing relay processor...");
+	let relayProcessorHandle: { stop: () => void } | null = null;
+	let relayExecutor: RelayExecutor | undefined;
+	{
+		const keyringResult = appContext.optionalConfig["keyring"];
+		const keyring = keyringResult && keyringResult.ok
+			? (keyringResult.value as import("@bound/shared").KeyringConfig)
+			: undefined;
+
+		if (keyring) {
+			const syncConfigResult = appContext.optionalConfig.sync;
+			const relayConfig = resolveRelayConfig(
+				syncConfigResult?.ok ? (syncConfigResult.value as any) : undefined,
+			);
+			const relayProcessor = new RelayProcessor(
+				appContext.db,
+				appContext.siteId,
+				mcpClientsMap,
+				new Set(Object.keys(keyring.hosts)),
+				appContext.logger,
+				relayConfig,
+			);
+			relayProcessorHandle = relayProcessor.start();
+			console.log("[relay] Relay processor started");
+
+			// Create the RelayExecutor callback for hub-local execution
+			relayExecutor = async (request, hubSiteId) => {
+				return relayProcessor.executeImmediate(request, hubSiteId);
+			};
+		} else {
+			console.log("[relay] No keyring configured, relay processor disabled");
+		}
+	}
+
 	// 9. Sandbox setup
 	console.log("Setting up sandbox...");
 	let sandbox: Awaited<ReturnType<typeof createSandbox>> | null = null;
@@ -415,6 +451,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			keyring,
 			siteId: appContext.siteId,
 			logger: appContext.logger,
+			relayExecutor,
 		});
 		await webServer.start();
 
@@ -668,6 +705,7 @@ Press Ctrl+C to stop.
 			if (schedulerHandle) schedulerHandle.stop();
 			if (syncLoopHandle) syncLoopHandle.stop();
 			if (overlayHandle) overlayHandle.stop();
+			if (relayProcessorHandle) relayProcessorHandle.stop();
 			if (discordBot) {
 				try {
 					await discordBot.stop();
@@ -692,6 +730,7 @@ Press Ctrl+C to stop.
 			if (schedulerHandle) schedulerHandle.stop();
 			if (syncLoopHandle) syncLoopHandle.stop();
 			if (overlayHandle) overlayHandle.stop();
+			if (relayProcessorHandle) relayProcessorHandle.stop();
 			if (discordBot) {
 				try {
 					await discordBot.stop();

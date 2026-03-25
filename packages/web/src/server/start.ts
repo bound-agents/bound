@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { MCPClient } from "@bound/agent";
 import type { KeyringConfig, Logger, TypedEventEmitter } from "@bound/shared";
+import type { RelayExecutor } from "@bound/sync";
 import { type AppConfig, type ModelsConfig, createApp } from "./index";
 import { createWebSocketHandler } from "./websocket";
 
@@ -14,6 +15,7 @@ export interface WebServerConfig {
 	keyring?: KeyringConfig;
 	siteId?: string;
 	logger?: Logger;
+	relayExecutor?: RelayExecutor;
 }
 
 export interface WebServer {
@@ -39,6 +41,7 @@ export async function createWebServer(
 		keyring: config.keyring,
 		siteId: config.siteId,
 		logger: config.logger,
+		relayExecutor: config.relayExecutor,
 	};
 
 	// Create the Hono app with all routes (loads embedded assets if available)

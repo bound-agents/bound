@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { MCPClient } from "@bound/agent";
 import { formatError } from "@bound/shared";
 import type { KeyringConfig, Logger, TypedEventEmitter } from "@bound/shared";
+import type { RelayExecutor } from "@bound/sync";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { type ModelsConfig, type RoutesConfig, registerRoutes } from "./routes/index";
@@ -25,6 +26,7 @@ export interface AppConfig {
 	keyring?: KeyringConfig;
 	siteId?: string;
 	logger?: Logger;
+	relayExecutor?: RelayExecutor;
 }
 
 export async function createApp(
@@ -88,6 +90,7 @@ export async function createApp(
 				appConfig.keyring,
 				eventBus,
 				appConfig.logger,
+				appConfig.relayExecutor,
 			);
 			app.route("/", syncRoutes);
 		} catch (error) {
