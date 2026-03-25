@@ -673,4 +673,7 @@ describe("relay transport E2E integration tests", () => {
 			}
 		});
 	});
+
+	// Scenario 5 (Hub migration with active relay): Covered by relay-drain.integration.test.ts
+	// AC4.4 test verifies that held request-kind entries deliver to new hub after hub switch with drain.
 });

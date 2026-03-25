@@ -1,5 +1,4 @@
 import type { Database } from "bun:sqlite";
-import type { MCPClient } from "@bound/agent";
 import type { KeyringConfig, Logger, TypedEventEmitter } from "@bound/shared";
 import type { EagerPushConfig, RelayExecutor } from "@bound/sync";
 import { type AppConfig, type ModelsConfig, createApp } from "./index";
@@ -11,7 +10,6 @@ export interface WebServerConfig {
 	port?: number;
 	host?: string;
 	models?: ModelsConfig;
-	mcpClients?: Map<string, MCPClient>;
 	keyring?: KeyringConfig;
 	siteId?: string;
 	logger?: Logger;
@@ -39,7 +37,6 @@ export async function createWebServer(
 
 	const appConfig: AppConfig = {
 		modelsConfig: config.models,
-		mcpClients: config.mcpClients,
 		keyring: config.keyring,
 		siteId: config.siteId,
 		logger: config.logger,

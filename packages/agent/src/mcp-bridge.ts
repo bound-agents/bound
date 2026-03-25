@@ -15,12 +15,7 @@ import { formatError } from "@bound/shared";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 import type { MCPClient } from "./mcp-client";
-import {
-	type EligibleHost,
-	createRelayOutboxEntry,
-	findEligibleHosts,
-	isHostStale,
-} from "./relay-router";
+import type { EligibleHost } from "./relay-router";
 
 /**
  * Signal from a remote MCP command handler that indicates a relay request

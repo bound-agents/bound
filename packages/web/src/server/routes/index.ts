@@ -1,5 +1,4 @@
 import type { Database } from "bun:sqlite";
-import type { MCPClient } from "@bound/agent";
 import type { TypedEventEmitter } from "@bound/shared";
 import { createAdvisoriesRoutes } from "./advisories";
 import { createFilesRoutes } from "./files";
@@ -12,7 +11,6 @@ export type { ModelsConfig };
 
 export interface RoutesConfig {
 	modelsConfig?: ModelsConfig;
-	mcpClients?: Map<string, MCPClient>;
 }
 
 export function registerRoutes(
@@ -20,7 +18,7 @@ export function registerRoutes(
 	eventBus: TypedEventEmitter,
 	config: RoutesConfig = {},
 ) {
-	const { modelsConfig, mcpClients } = config;
+	const { modelsConfig } = config;
 
 	return {
 		threads: createThreadsRoutes(db, modelsConfig?.default),

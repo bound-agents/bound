@@ -1,5 +1,4 @@
 import type { Database } from "bun:sqlite";
-import type { MCPClient } from "@bound/agent";
 import { formatError } from "@bound/shared";
 import type { KeyringConfig, Logger, TypedEventEmitter } from "@bound/shared";
 import type { EagerPushConfig, RelayExecutor } from "@bound/sync";
@@ -22,7 +21,6 @@ export type { ModelsConfig };
 
 export interface AppConfig {
 	modelsConfig?: ModelsConfig;
-	mcpClients?: Map<string, MCPClient>;
 	keyring?: KeyringConfig;
 	siteId?: string;
 	logger?: Logger;
@@ -36,16 +34,9 @@ export async function createApp(
 	eventBus: TypedEventEmitter,
 	appConfig?: AppConfig | ModelsConfig,
 ): Promise<Hono> {
-	// Accept either the new AppConfig shape or the legacy ModelsConfig shape for backwards compat
-	let routesConfig: RoutesConfig;
-	if (appConfig && "mcpClients" in appConfig) {
-		routesConfig = {
-			modelsConfig: appConfig.modelsConfig,
-			mcpClients: appConfig.mcpClients,
-		};
-	} else {
-		routesConfig = { modelsConfig: appConfig as ModelsConfig | undefined };
-	}
+	const routesConfig: RoutesConfig = {
+		modelsConfig: appConfig as ModelsConfig | undefined,
+	};
 
 	const app = new Hono();
 	const routes = registerRoutes(db, eventBus, routesConfig);
