@@ -3,8 +3,8 @@ import { insertInbox, markDelivered, readUndelivered, writeOutbox } from "@bound
 import type { KeyringConfig, Logger, RelayInboxEntry, TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
 import { type RelayRequest, type RelayResponse, fetchInboundChangeset } from "./changeset.js";
-import { createSyncAuthMiddleware } from "./middleware.js";
 import { type EagerPushConfig, eagerPushToSpoke } from "./eager-push.js";
+import { createSyncAuthMiddleware } from "./middleware.js";
 import { updatePeerCursor } from "./peer-cursor.js";
 import { replayEvents } from "./reducers.js";
 import { type RelayExecutor, noopRelayExecutor } from "./relay-executor.js";

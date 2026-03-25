@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { KeyringConfig, Logger, RelayInboxEntry } from "@bound/shared";
+import type { ReachabilityTracker } from "./reachability.js";
 import { signRequest } from "./signing.js";
-import { ReachabilityTracker } from "./reachability.js";
 
 export interface EagerPushConfig {
 	privateKey: CryptoKey;
