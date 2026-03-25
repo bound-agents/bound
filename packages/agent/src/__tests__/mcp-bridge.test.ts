@@ -242,4 +242,47 @@ describe("MCP Bridge", () => {
 			expect(result.exitCode).toBe(0);
 		}
 	});
+
+	it("generates relay commands for remote tools not available locally", async () => {
+		const localClient = makeMockClient(
+			{ name: "local-server", transport: "stdio", command: "test" },
+			[{ name: "local_tool", description: "Local tool", inputSchema: {} }],
+			[],
+			[],
+		);
+
+		const clients = new Map([["local-server", localClient]]);
+
+		// Mock a database with a remote host advertising a remote tool
+		const mockDb = {
+			query: (sql: string) => {
+				if (sql.includes("FROM hosts")) {
+					return {
+						all: (siteId: string) => [
+							{
+								site_id: "remote-site-1",
+								mcp_tools: JSON.stringify(["remote-server-remote_tool"]),
+							},
+						],
+					};
+				}
+				return { all: () => [] };
+			},
+		} as unknown as Database;
+
+		const proxyConfig = {
+			db: mockDb,
+			siteId: "local-site",
+			keyring: { hosts: {} },
+			privateKey: {} as CryptoKey,
+		};
+
+		// Without proxyConfig, should only have local tools
+		const commandsLocal = await generateMCPCommands(clients);
+		expect(commandsLocal.map((c) => c.name)).toContain("local-server-local_tool");
+
+		// With proxyConfig, should add remote tool command
+		const commandsWithProxy = await generateMCPCommands(clients, new Map(), proxyConfig);
+		expect(commandsWithProxy.map((c) => c.name)).toContain("remote-server-remote_tool");
+	});
 });

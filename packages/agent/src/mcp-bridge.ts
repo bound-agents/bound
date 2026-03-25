@@ -13,8 +13,9 @@ import type { Database } from "bun:sqlite";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 import { formatError } from "@bound/shared";
 import type { KeyringConfig } from "@bound/shared";
-import { signRequest } from "@bound/sync";
+import { writeOutbox } from "@bound/core";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { findEligibleHosts, isHostStale, createRelayOutboxEntry, type EligibleHost } from "./relay-router";
 import type { MCPClient, ToolResult } from "./mcp-client";
 
 /**
@@ -28,110 +29,106 @@ export interface MCPProxyConfig {
 }
 
 /**
- * Proxy a tool call to a remote host.
- * Looks up the remote host's sync_url, signs the request, and POSTs to /api/mcp-proxy.
- * Implements the routing logic from spec §7.5.
- *
- * TODO: Integrate URL filtering (sandbox.urlFilter.enforce(targetUrl)) before fetch
- * to enforce the allowlist from network.json per spec R-S1.
+ * Signal from a remote MCP command handler that indicates a relay request
+ * should be sent via the outbox, and the agent loop should enter RELAY_WAIT.
+ * Also includes CommandResult fields for type compatibility with handlers.
  */
-async function proxyToolCall(
+export interface RelayToolCallRequest {
+	outboxEntryId: string;
+	targetSiteId: string;
+	targetHostName: string;
+	toolName: string;
+	eligibleHosts: EligibleHost[];
+	currentHostIndex: number;
+	// CommandResult fields (required for handler return type compatibility)
+	stdout: string;
+	stderr: string;
+	exitCode: number;
+}
+
+/**
+ * Type guard to check if a command result is actually a relay request.
+ */
+export function isRelayRequest(
+	result: CommandResult | RelayToolCallRequest,
+): result is RelayToolCallRequest {
+	return "outboxEntryId" in result;
+}
+
+/**
+ * Initiate a relay request for a remote tool call.
+ * Uses findEligibleHosts to discover which hosts have the tool,
+ * checks host staleness, and writes a relay outbox entry.
+ * Returns a RelayToolCallRequest for the agent loop to enter RELAY_WAIT.
+ */
+function initializeRelayToolCall(
 	toolCommandName: string,
-	serverName: string,
-	toolName: string,
 	args: Record<string, unknown>,
 	proxyConfig: MCPProxyConfig,
-): Promise<ToolResult> {
-	const { db, siteId, keyring, privateKey } = proxyConfig;
+): RelayToolCallRequest | { error: string; isError: boolean } {
+	const { db, siteId } = proxyConfig;
 
-	// Find a remote host that advertises this tool in its mcp_tools column
-	// Prefer hosts with a sync_url set; skip our own row
-	const remoteHosts = db
-		.query(
-			`SELECT site_id, host_name, sync_url, mcp_tools
-			 FROM hosts
-			 WHERE site_id != ? AND sync_url IS NOT NULL AND mcp_tools IS NOT NULL`,
-		)
-		.all(siteId) as Array<{
-		site_id: string;
-		host_name: string;
-		sync_url: string;
-		mcp_tools: string;
-	}>;
-
-	// Find eligible hosts that list the tool
-	const eligible = remoteHosts.filter((row) => {
-		try {
-			const tools = JSON.parse(row.mcp_tools) as string[];
-			return tools.includes(toolCommandName);
-		} catch {
-			// Skip hosts with malformed mcp_tools JSON
-			return false;
-		}
-	});
-
-	if (eligible.length === 0) {
+	// Find eligible hosts using relay routing
+	const routingResult = findEligibleHosts(db, toolCommandName, siteId);
+	if (!routingResult.ok) {
+		// AC1.6: Tool not available on any remote host
 		return {
-			content: `Error: Tool "${toolCommandName}" is not available on any reachable remote host`,
+			error: routingResult.error,
 			isError: true,
 		};
 	}
 
-	const body = JSON.stringify({ server: serverName, tool: toolName, arguments: args });
-	const path = "/api/mcp-proxy";
+	const hosts = routingResult.hosts;
 
-	// Try each eligible host in order; failover on error
-	const errors: string[] = [];
-	for (const remoteHost of eligible) {
-		// Resolve base URL: hosts table sync_url first, keyring fallback
-		let baseUrl = remoteHost.sync_url;
-		const keyringEntry = (keyring.hosts as Record<string, { url: string } | undefined>)[
-			remoteHost.site_id
-		];
-		if (!baseUrl && keyringEntry?.url) {
-			baseUrl = keyringEntry.url;
-		}
-		if (!baseUrl) {
-			errors.push(`${remoteHost.host_name}: no URL available`);
-			continue;
-		}
+	// Check if the best host (first in sorted list) is stale
+	// AC1.7: All hosts are stale — return descriptive error with staleness info
+	if (hosts.length > 0 && isHostStale(hosts[0])) {
+		const bestHost = hosts[0];
+		const stalenessMs = bestHost.online_at
+			? Date.now() - new Date(bestHost.online_at).getTime()
+			: Number.POSITIVE_INFINITY;
+		const stalenessMinutes = Math.ceil(stalenessMs / 60_000);
+		return {
+			error: `Tool "${toolCommandName}" not reachable: ${bestHost.host_name} last seen ${stalenessMinutes} minute(s) ago`,
+			isError: true,
+		};
+	}
 
-		const targetUrl = `${baseUrl.replace(/\/$/, "")}${path}`;
+	// Build relay outbox entry
+	const targetHost = hosts[0];
+	const payload = JSON.stringify({
+		kind: "tool_call",
+		toolName: toolCommandName,
+		args,
+	});
 
-		try {
-			const signedHeaders = await signRequest(privateKey, siteId, "POST", path, body);
-			const response = await fetch(targetUrl, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					...signedHeaders,
-				},
-				body,
-			});
+	const outboxEntry = createRelayOutboxEntry(
+		targetHost.site_id,
+		"tool_call",
+		payload,
+		30_000, // 30 second timeout per host attempt
+	);
 
-			if (!response.ok) {
-				const errText = await response.text().catch(() => `HTTP ${response.status}`);
-				errors.push(`${remoteHost.host_name}: ${response.status} ${errText}`);
-				continue;
-			}
-
-			const data = (await response.json()) as { result?: ToolResult; error?: string };
-			if (data.error) {
-				return { content: `Remote error: ${data.error}`, isError: true };
-			}
-			if (data.result) {
-				return data.result;
-			}
-			return { content: "", isError: false };
-		} catch (fetchError) {
-			const message = fetchError instanceof Error ? fetchError.message : String(fetchError);
-			errors.push(`${remoteHost.host_name}: ${message}`);
-		}
+	// Write to outbox
+	try {
+		writeOutbox(db, outboxEntry);
+	} catch (error) {
+		return {
+			error: `Failed to write relay outbox entry: ${error instanceof Error ? error.message : String(error)}`,
+			isError: true,
+		};
 	}
 
 	return {
-		content: `Error: All remote hosts failed for tool "${toolCommandName}":\n${errors.join("\n")}`,
-		isError: true,
+		outboxEntryId: outboxEntry.id,
+		targetSiteId: targetHost.site_id,
+		targetHostName: targetHost.host_name,
+		toolName: toolCommandName,
+		eligibleHosts: hosts,
+		currentHostIndex: 0,
+		stdout: "",
+		stderr: "",
+		exitCode: 0,
 	};
 }
 
@@ -254,6 +251,8 @@ export async function generateMCPCommands(
 /**
  * Generate proxy CommandDefinitions for tools available on remote hosts but not locally.
  * Only creates commands for tool names not already present in localToolNames.
+ * Uses relay-based routing: writes outbox entry and returns RelayToolCallRequest
+ * for the agent loop to handle via RELAY_WAIT.
  */
 function generateRemoteMCPCommands(
 	localToolNames: Set<string>,
@@ -301,23 +300,34 @@ function generateRemoteMCPCommands(
 				_ctx: CommandContext,
 			): Promise<CommandResult> => {
 				try {
-					const result = await proxyToolCall(
-						toolCommandName,
-						serverName,
-						toolName,
-						args,
-						proxyConfig,
-					);
+					const result = initializeRelayToolCall(toolCommandName, args, proxyConfig);
+
+					// Check if this is a relay request or an error
+					if ("outboxEntryId" in result) {
+						// Return relay request (also satisfies CommandResult interface)
+						// for agent loop to detect and handle via RELAY_WAIT
+						return result as CommandResult;
+					}
+
+					// It's an error response
+					if ("isError" in result && result.isError) {
+						return {
+							stdout: "",
+							stderr: `${result.error}\n`,
+							exitCode: 1,
+						};
+					}
+
 					return {
-						stdout: result.content,
-						stderr: result.isError ? result.content : "",
-						exitCode: result.isError ? 1 : 0,
+						stdout: "",
+						stderr: "Unknown error in relay initialization\n",
+						exitCode: 1,
 					};
 				} catch (error) {
 					const message = formatError(error);
 					return {
 						stdout: "",
-						stderr: `Failed to proxy tool ${toolCommandName}: ${message}\n`,
+						stderr: `Failed to initialize relay for tool ${toolCommandName}: ${message}\n`,
 						exitCode: 1,
 					};
 				}

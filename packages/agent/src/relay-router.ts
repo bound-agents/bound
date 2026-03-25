@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "crypto";
 import type { RelayOutboxEntry } from "@bound/shared";
 
-interface EligibleHost {
+export interface EligibleHost {
 	site_id: string;
 	host_name: string;
 	sync_url: string | null;
