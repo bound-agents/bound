@@ -8,6 +8,7 @@ import type {
 	PromptInvokePayload,
 	RelayConfig,
 	RelayInboxEntry,
+	RelayOutboxEntry,
 	ResourceReadPayload,
 	ResultPayload,
 	ToolCallPayload,
@@ -266,7 +267,7 @@ export class RelayProcessor {
 	}
 
 	private async executeCacheWarm(
-		_entry: RelayInboxEntry,
+		_entry: RelayInboxEntry | RelayOutboxEntry,
 		payload: CacheWarmPayload,
 	): Promise<string> {
 		// Read files from paths and return content
@@ -326,14 +327,14 @@ export class RelayProcessor {
 	 * Applies the same validation and execution pipeline as processEntry().
 	 */
 	public async executeImmediate(
-		request: RelayInboxEntry,
+		request: RelayOutboxEntry,
 		_hubSiteId: string,
 	): Promise<RelayInboxEntry[]> {
 		const results: RelayInboxEntry[] = [];
 
 		try {
 			// Step 1: Validate requester (keyring check)
-			if (!this.keyringSiteIds.has(request.source_site_id)) {
+			if (request.source_site_id && !this.keyringSiteIds.has(request.source_site_id)) {
 				const errorResponse: ErrorPayload = {
 					error: `Unknown source site: ${request.source_site_id}`,
 					retriable: false,
@@ -432,7 +433,7 @@ export class RelayProcessor {
 	}
 
 	private createResultEntry(
-		requestEntry: RelayInboxEntry,
+		requestEntry: RelayInboxEntry | RelayOutboxEntry,
 		kind: "result" | "error",
 		payload: string,
 	): RelayInboxEntry {
