@@ -42,7 +42,6 @@ export async function createApp(
 		routesConfig = {
 			modelsConfig: appConfig.modelsConfig,
 			mcpClients: appConfig.mcpClients,
-			keyring: appConfig.keyring,
 		};
 	} else {
 		routesConfig = { modelsConfig: appConfig as ModelsConfig | undefined };
@@ -71,10 +70,6 @@ export async function createApp(
 	app.route("/api/status", routes.status);
 	app.route("/api/tasks", routes.tasks);
 	app.route("/api/advisories", routes.advisories);
-	if (routes.mcpProxy) {
-		// Mount at root — the route itself registers /api/mcp-proxy including auth middleware
-		app.route("/", routes.mcpProxy);
-	}
 
 	// Mount sync routes if siteId, keyring, and logger are available
 	if (
