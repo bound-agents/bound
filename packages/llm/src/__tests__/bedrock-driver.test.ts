@@ -419,62 +419,65 @@ describe("BedrockDriver", () => {
 			}
 		});
 
-		it.skipIf(shouldSkip)("converts tool_call with ContentBlock array to assistant with toolUse blocks", async () => {
-			sendSpy.mockImplementation(() =>
-				Promise.resolve(
-					createMockStream([{ metadata: { usage: { inputTokens: 1, outputTokens: 1 } } }]),
-				),
-			);
+		it.skipIf(shouldSkip)(
+			"converts tool_call with ContentBlock array to assistant with toolUse blocks",
+			async () => {
+				sendSpy.mockImplementation(() =>
+					Promise.resolve(
+						createMockStream([{ metadata: { usage: { inputTokens: 1, outputTokens: 1 } } }]),
+					),
+				);
 
-			const driver = makeDriver();
-			await collectChunks(
-				driver.chat({
-					model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
-					messages: [
-						{ role: "user", content: "List files" },
-						{
-							role: "tool_call",
-							content: [
-								{
-									type: "tool_use",
-									id: "tool-123",
-									name: "bash",
-									input: { command: "ls -la" },
-								},
-								{
-									type: "tool_use",
-									id: "tool-456",
-									name: "memorize",
-									input: { key: "project", value: "bound" },
-								},
-							],
-						},
-					],
-				}),
-			);
+				const driver = makeDriver();
+				await collectChunks(
+					driver.chat({
+						model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+						messages: [
+							{ role: "user", content: "List files" },
+							{
+								role: "tool_call",
+								content: [
+									{
+										type: "tool_use",
+										id: "tool-123",
+										name: "bash",
+										input: { command: "ls -la" },
+									},
+									{
+										type: "tool_use",
+										id: "tool-456",
+										name: "memorize",
+										input: { key: "project", value: "bound" },
+									},
+								],
+							},
+						],
+					}),
+				);
 
-			expect(sendSpy.mock.calls).toHaveLength(1);
-			const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
-			const messages = commandInput.messages as Array<{
-				role: string;
-				content: Array<{ toolUse?: { toolUseId: string; name: string; input: unknown } }>;
-			}>;
+				expect(sendSpy.mock.calls).toHaveLength(1);
+				const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
+				const messages = commandInput.messages as Array<{
+					role: string;
+					content: Array<{ toolUse?: { toolUseId: string; name: string; input: unknown } }>;
+				}>;
 
-			// Find the assistant message with toolUse blocks
-			const assistantMsg = messages.find((m) => m.role === "assistant");
-			expect(assistantMsg).toBeDefined();
+				// Find the assistant message with toolUse blocks
+				const assistantMsg = messages.find((m) => m.role === "assistant");
+				expect(assistantMsg).toBeDefined();
 
-			const toolUseBlocks = assistantMsg?.content.filter((b) => b.toolUse) || [];
-			expect(toolUseBlocks.length).toBe(2);
+				const toolUseBlocks = assistantMsg?.content.filter((b) => b.toolUse) || [];
+				expect(toolUseBlocks.length).toBe(2);
 
-			expect(toolUseBlocks[0].toolUse?.toolUseId).toBe("tool-123");
-			expect(toolUseBlocks[0].toolUse?.name).toBe("bash");
-			expect(toolUseBlocks[0].toolUse?.input).toEqual({ command: "ls -la" });
+				expect(toolUseBlocks[0].toolUse?.toolUseId).toBe("tool-123");
+				expect(toolUseBlocks[0].toolUse?.name).toBe("bash");
+				expect(toolUseBlocks[0].toolUse?.input).toEqual({ command: "ls -la" });
 
-			expect(toolUseBlocks[1].toolUse?.toolUseId).toBe("tool-456");
-			expect(toolUseBlocks[1].toolUse?.name).toBe("memorize");
-			expect(toolUseBlocks[1].toolUse?.input).toEqual({ key: "project", value: "bound" });
-		});
+				expect(toolUseBlocks[1].toolUse?.toolUseId).toBe("tool-456");
+				expect(toolUseBlocks[1].toolUse?.name).toBe("memorize");
+				expect(toolUseBlocks[1].toolUse?.input).toEqual({ key: "project", value: "bound" });
+			},
+		);
 
 		it.skipIf(shouldSkip)("handles tool_call with JSON string content by parsing it", async () => {
 			sendSpy.mockImplementation(() =>
@@ -506,7 +509,10 @@ describe("BedrockDriver", () => {
 			const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
 			const messages = commandInput.messages as Array<{
 				role: string;
-				content: Array<{ text?: string; toolUse?: { toolUseId: string; name: string; input: unknown } }>;
+				content: Array<{
+					text?: string;
+					toolUse?: { toolUseId: string; name: string; input: unknown };
+				}>;
 			}>;
 
 			// The driver should parse the JSON string and convert to toolUse blocks

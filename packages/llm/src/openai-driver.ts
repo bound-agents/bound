@@ -66,7 +66,10 @@ function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 				// Convert tool_call to assistant message with tool_calls
 				const textContent = extractTextFromBlocks(msg.content);
 
-				const toolUseBlocks = msg.content.filter((block): block is Extract<typeof block, { type: "tool_use" }> => block.type === "tool_use");
+				const toolUseBlocks = msg.content.filter(
+					(block): block is Extract<typeof block, { type: "tool_use" }> =>
+						block.type === "tool_use",
+				);
 				const toolCalls = toolUseBlocks.map((block) => ({
 					id: block.id,
 					type: "function" as const,

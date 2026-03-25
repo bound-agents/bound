@@ -69,9 +69,9 @@ export function applyAppendOnlyReducer(db: Database, event: ChangeLogEntry): { a
 
 	if (hasModifiedAt) {
 		// Hybrid reducer: if row exists, apply LWW update (for redaction). If not, insert normally.
-		const existing = db.query(`SELECT * FROM ${event.table_name} WHERE id = ?`).get(rowData.id) as
-			| Record<string, unknown>
-			| null;
+		const existing = db
+			.query(`SELECT * FROM ${event.table_name} WHERE id = ?`)
+			.get(rowData.id) as Record<string, unknown> | null;
 
 		if (!existing) {
 			// Row doesn't exist — insert it (standard append-only behavior)
@@ -128,9 +128,9 @@ export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied:
 	const pkValue = rowData[pkColumn] ?? event.row_id;
 
 	// Check if row already exists
-	const existing = db.query(`SELECT * FROM ${event.table_name} WHERE ${pkColumn} = ?`).get(pkValue) as
-		| Record<string, unknown>
-		| null;
+	const existing = db
+		.query(`SELECT * FROM ${event.table_name} WHERE ${pkColumn} = ?`)
+		.get(pkValue) as Record<string, unknown> | null;
 
 	// If row doesn't exist, do a simple insert with all provided columns
 	if (!existing) {

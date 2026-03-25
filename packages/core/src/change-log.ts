@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import type { SyncedTableName } from "@bound/shared";
 
 // Validate column names to prevent SQL injection

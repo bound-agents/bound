@@ -41,7 +41,7 @@ export function createThreadsRoutes(db: Database, defaultModel?: string): Hono {
 
 			console.log(`[web] POST /api/threads - creating thread ${threadId}`);
 
-	const siteId = getSiteId(db);
+			const siteId = getSiteId(db);
 
 			// Assign next palette color by cycling (0-9) per spec R-U18
 			// Pick up from the last thread's color so colors always advance

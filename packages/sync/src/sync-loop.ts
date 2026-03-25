@@ -343,39 +343,50 @@ export class SyncClient {
 	}
 }
 
-export function startSyncLoop(client: SyncClient, intervalSeconds: number): { stop: () => void } {
+export function startSyncLoop(
+	client: SyncClient,
+	intervalSeconds: number,
+	eventBus?: TypedEventEmitter,
+): { stop: () => void } {
 	let timerId: Timer | null = null;
 	let stopped = false;
 	let consecutiveFailures = 0;
 	const maxIntervalMs = 5 * 60 * 1000; // 5 minutes per spec §8.6
 
-	const startLoop = () => {
+	const scheduleNext = async () => {
 		if (stopped) return;
 
-		const runSync = async () => {
-			if (stopped) return;
+		const result = await client.syncCycle();
 
-			const result = await client.syncCycle();
+		if (!result.ok) {
+			consecutiveFailures++;
+		} else {
+			consecutiveFailures = 0;
+		}
 
-			if (!result.ok) {
-				consecutiveFailures++;
-			} else {
-				consecutiveFailures = 0;
-			}
+		// Calculate backoff: min(initialInterval * 2^failures, 300000ms)
+		const baseIntervalMs = intervalSeconds * 1000;
+		const backoffMultiplier = 2 ** consecutiveFailures;
+		const nextIntervalMs = Math.min(baseIntervalMs * backoffMultiplier, maxIntervalMs);
 
-			// Calculate backoff: min(initialInterval * 2^failures, 300000ms)
-			const baseIntervalMs = intervalSeconds * 1000;
-			const backoffMultiplier = 2 ** consecutiveFailures;
-			const nextIntervalMs = Math.min(baseIntervalMs * backoffMultiplier, maxIntervalMs);
-
-			// Use setTimeout recursion instead of setInterval to support dynamic intervals
-			timerId = setTimeout(runSync, nextIntervalMs);
-		};
-
-		runSync();
+		// Use setTimeout recursion instead of setInterval to support dynamic intervals
+		timerId = setTimeout(scheduleNext, nextIntervalMs);
 	};
 
-	startLoop();
+	// Listen for immediate sync trigger event
+	if (eventBus) {
+		eventBus.on("sync:trigger", async ({ reason }) => {
+			if (stopped) return;
+			if (timerId) {
+				clearTimeout(timerId as unknown as number);
+				timerId = null;
+			}
+			await client.syncCycle();
+			await scheduleNext();
+		});
+	}
+
+	scheduleNext();
 
 	return {
 		stop: () => {

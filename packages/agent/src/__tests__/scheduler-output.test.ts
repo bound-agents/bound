@@ -1,13 +1,13 @@
+import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
-import { TypedEventEmitter } from "@bound/shared";
-import type { Database } from "bun:sqlite";
 import type { AppContext } from "@bound/core";
-import { Scheduler } from "../scheduler";
+import { TypedEventEmitter } from "@bound/shared";
 import type { AgentLoop } from "../agent-loop";
+import { Scheduler } from "../scheduler";
 
 describe("R-O3: Task output delivered to original scheduling thread", () => {
 	let dbPath: string;
@@ -171,9 +171,7 @@ describe("R-O3: Task output delivered to original scheduling thread", () => {
 		expect(capturedTaskId).toBe(taskId);
 
 		// Verify messages were persisted to the ORIGINAL thread
-		const messages = db
-			.query("SELECT * FROM messages WHERE thread_id = ?")
-			.all(threadId) as Array<{
+		const messages = db.query("SELECT * FROM messages WHERE thread_id = ?").all(threadId) as Array<{
 			id: string;
 			thread_id: string;
 			role: string;
@@ -249,10 +247,11 @@ describe("R-O3: Task output delivered to original scheduling thread", () => {
 	it("persists task failure alert to the original thread", async () => {
 		// Update task to be claimed
 		const now = new Date().toISOString();
-		db.run(
-			"UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ?",
-			["test-host", now, taskId],
-		);
+		db.run("UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ?", [
+			"test-host",
+			now,
+			taskId,
+		]);
 
 		// Mock agent loop that throws an error
 		const mockAgentLoopFactory = (config: {

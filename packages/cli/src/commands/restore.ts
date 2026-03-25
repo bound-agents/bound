@@ -1,8 +1,7 @@
 import { openBoundDB } from "../lib/db";
 
-import { getSiteId } from "@bound/core";
-import { Database } from "bun:sqlite";
 import { resolve } from "node:path";
+import { getSiteId } from "@bound/core";
 const APPEND_ONLY_TABLES = new Set(["messages"]);
 export interface RestoreArgs {
 	before: string;

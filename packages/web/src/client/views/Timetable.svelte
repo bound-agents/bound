@@ -23,7 +23,7 @@ let tasks: Task[] = $state([]);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let loading = $state(true);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
-let filterStatus = $state("");
+const filterStatus = $state("");
 
 async function loadTasks(): Promise<void> {
 	try {

@@ -108,7 +108,7 @@ export function createStatusRoutes(
 			}
 
 			// Get siteId and hostName for message persistence
-	const siteId = getSiteId(db);
+			const siteId = getSiteId(db);
 
 			const hostNameRow = db.query("SELECT value FROM host_meta WHERE key = 'host_name'").get() as
 				| { value: string }

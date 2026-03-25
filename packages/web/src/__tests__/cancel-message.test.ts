@@ -1,10 +1,10 @@
+import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
-import type { Database } from "bun:sqlite";
 import { createApp } from "../server/index";
 
 describe("R-E14: Cancel persists system cancellation message with host name", () => {

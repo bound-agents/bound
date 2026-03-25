@@ -91,10 +91,7 @@ export async function createApp(
 			);
 			app.route("/", syncRoutes);
 		} catch (error) {
-			console.warn(
-				"[web] Sync routes unavailable:",
-				formatError(error),
-			);
+			console.warn("[web] Sync routes unavailable:", formatError(error));
 		}
 	}
 

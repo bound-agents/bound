@@ -48,7 +48,9 @@ export class DiscordBot {
 
 			const user = mapDiscordUser(this.ctx.db, msg.author.id);
 			if (!user) {
-				console.log(`[discord] User mapping failed for ${msg.author.id} — check discord_id in allowlist.json`);
+				console.log(
+					`[discord] User mapping failed for ${msg.author.id} — check discord_id in allowlist.json`,
+				);
 				return;
 			}
 
@@ -95,7 +97,9 @@ export class DiscordBot {
 				}
 
 				const lastMessage = this.ctx.db
-					.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1")
+					.query(
+						"SELECT content FROM messages WHERE thread_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1",
+					)
 					.get(thread.id) as { content: string } | null;
 
 				if (lastMessage?.content) {
@@ -126,7 +130,9 @@ export class DiscordBot {
 			if (!dbUser) return;
 
 			const thread = this.ctx.db
-				.query("SELECT id FROM threads WHERE user_id = ? AND interface = 'discord' AND deleted = 0 ORDER BY created_at DESC LIMIT 1")
+				.query(
+					"SELECT id FROM threads WHERE user_id = ? AND interface = 'discord' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+				)
 				.get(dbUser.id) as { id: string } | null;
 
 			if (!thread) return;

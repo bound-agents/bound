@@ -29,7 +29,6 @@ describe("LLM integration tests (Optional Ollama)", () => {
 	});
 
 	it.skipIf(!ollamaAvailable)("should connect to Ollama and send simple message", async () => {
-
 		const driver = new OllamaDriver({
 			baseUrl: "http://localhost:11434",
 			model: "llama2",
@@ -58,7 +57,6 @@ describe("LLM integration tests (Optional Ollama)", () => {
 	});
 
 	it.skipIf(!ollamaAvailable)("should handle tool_use requests with Ollama", async () => {
-
 		const driver = new OllamaDriver({
 			baseUrl: "http://localhost:11434",
 			model: "llama2",
@@ -105,7 +103,6 @@ describe("LLM integration tests (Optional Ollama)", () => {
 	});
 
 	it.skipIf(!ollamaAvailable)("should stream responses from Ollama correctly", async () => {
-
 		const driver = new OllamaDriver({
 			baseUrl: "http://localhost:11434",
 			model: "llama2",

@@ -62,22 +62,21 @@ describe("DiscordBot", () => {
 	it.skipIf(process.env.SKIP_DISCORD === "1")(
 		"DiscordBot instantiates with context, factory, and token",
 		() => {
+			const ctx = createAppContext(configDir, dbPath);
+			const now = new Date().toISOString();
+			const userId = randomUUID();
 
-		const ctx = createAppContext(configDir, dbPath);
-		const now = new Date().toISOString();
-		const userId = randomUUID();
-
-		// Insert alice
-		ctx.db.run(
-			`INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted)
+			// Insert alice
+			ctx.db.run(
+				`INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, 0)`,
-			[userId, "Alice", "alice-discord-123", now, now],
-		);
+				[userId, "Alice", "alice-discord-123", now, now],
+			);
 
-		const mockFactory = (_config: unknown) =>
-			({
-				run: () => Promise.resolve({ messagesCreated: 0, toolCallsMade: 0, filesChanged: 0 }),
-			}) as AgentLoop;
+			const mockFactory = (_config: unknown) =>
+				({
+					run: () => Promise.resolve({ messagesCreated: 0, toolCallsMade: 0, filesChanged: 0 }),
+				}) as AgentLoop;
 
 			const bot = new DiscordBot(ctx, mockFactory, "test-token");
 

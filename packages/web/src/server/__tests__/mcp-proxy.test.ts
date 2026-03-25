@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
-import { applySchema, createDatabase } from "@bound/core";
 import type { MCPClient } from "@bound/agent";
+import { applySchema, createDatabase } from "@bound/core";
 import type { KeyringConfig } from "@bound/shared";
 import { createMCPProxyRoutes } from "../routes/mcp-proxy";
 

@@ -51,9 +51,16 @@ export const help: CommandDefinition = {
 			}
 
 			// For MCP tools, show the --key value syntax
-			const isMCP = cmd.name.includes("-") && !cmd.name.startsWith("cache-") && !cmd.name.startsWith("model-") && cmd.name !== "commands";
+			const isMCP =
+				cmd.name.includes("-") &&
+				!cmd.name.startsWith("cache-") &&
+				!cmd.name.startsWith("model-") &&
+				cmd.name !== "commands";
 			if (isMCP) {
-				const exampleArgs = cmd.args.filter((a) => a.required).map((a) => `--${a.name} <value>`).join(" ");
+				const exampleArgs = cmd.args
+					.filter((a) => a.required)
+					.map((a) => `--${a.name} <value>`)
+					.join(" ");
 				output += `\nUsage: ${cmd.name} ${exampleArgs || "--key value"}\n`;
 			}
 
@@ -63,15 +70,24 @@ export const help: CommandDefinition = {
 		// List all commands
 		let output = "Available commands:\n\n";
 
-		const builtins = commandRegistry.filter((c) => !c.name.includes("-") || c.name.startsWith("cache-") || c.name.startsWith("model-"));
-		const mcpTools = commandRegistry.filter((c) => c.name.includes("-") && !c.name.startsWith("cache-") && !c.name.startsWith("model-") && c.name !== "commands");
+		const builtins = commandRegistry.filter(
+			(c) => !c.name.includes("-") || c.name.startsWith("cache-") || c.name.startsWith("model-"),
+		);
+		const mcpTools = commandRegistry.filter(
+			(c) =>
+				c.name.includes("-") &&
+				!c.name.startsWith("cache-") &&
+				!c.name.startsWith("model-") &&
+				c.name !== "commands",
+		);
 
 		if (builtins.length > 0) {
 			output += "Built-in:\n";
 			for (const cmd of builtins) {
-				const argHint = cmd.args.length > 0
-					? ` ${cmd.args.map((a) => (a.required ? `<${a.name}>` : `[${a.name}]`)).join(" ")}`
-					: "";
+				const argHint =
+					cmd.args.length > 0
+						? ` ${cmd.args.map((a) => (a.required ? `<${a.name}>` : `[${a.name}]`)).join(" ")}`
+						: "";
 				output += `  ${cmd.name}${argHint}\n`;
 			}
 		}

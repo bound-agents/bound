@@ -1,11 +1,10 @@
+import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
-import type { Database } from "bun:sqlite";
-import { SyncClient } from "../sync-loop";
 import { incrementSyncErrors } from "../peer-cursor";
 
 describe("R-E16: Sync failure alert persistence at 5-failure threshold", () => {
@@ -62,13 +61,18 @@ describe("R-E16: Sync failure alert persistence at 5-failure threshold", () => {
 
 		db.run(
 			`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, 'alert', ?, NULL, NULL, ?, ?, ?, 0)`,
-			[randomUUID(), systemThreadId, `Sync to peer ${peerSiteId} has failed 5 consecutive times`, now, now, "test-site-123"],
+			[
+				randomUUID(),
+				systemThreadId,
+				`Sync to peer ${peerSiteId} has failed 5 consecutive times`,
+				now,
+				now,
+				"test-site-123",
+			],
 		);
 
 		// Query for alert messages
-		const alerts = db
-			.query("SELECT * FROM messages WHERE role = 'alert'")
-			.all() as Array<{
+		const alerts = db.query("SELECT * FROM messages WHERE role = 'alert'").all() as Array<{
 			id: string;
 			thread_id: string;
 			role: string;

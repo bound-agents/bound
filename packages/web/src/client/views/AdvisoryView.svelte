@@ -24,7 +24,7 @@ let loading = $state(true);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let expandedId = $state<string | null>(null);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
-let filterStatus = $state("");
+const filterStatus = $state("");
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let actionInProgress = $state<string | null>(null);
 
@@ -32,9 +32,7 @@ let pollInterval: ReturnType<typeof setInterval> | null = null;
 
 async function loadAdvisories(): Promise<void> {
 	try {
-		const url = filterStatus
-			? `/api/advisories?status=${filterStatus}`
-			: "/api/advisories";
+		const url = filterStatus ? `/api/advisories?status=${filterStatus}` : "/api/advisories";
 		const response = await fetch(url);
 		if (response.ok) {
 			advisories = await response.json();
@@ -157,7 +155,7 @@ function canApply(status: string): boolean {
 }
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
-let proposedCount = $derived(advisories.filter((a) => a.status === "proposed").length);
+const proposedCount = $derived(advisories.filter((a) => a.status === "proposed").length);
 </script>
 
 <div class="advisory-view">

@@ -1,6 +1,6 @@
 <script module lang="ts">
 // Module-level selected model so message-sending code can reference it
-export let activeModel = "";
+export const activeModel = "";
 </script>
 
 <script lang="ts">

@@ -1,8 +1,7 @@
 import { openBoundDB } from "../lib/db";
 
-import { getSiteId } from "@bound/core";
-import { Database } from "bun:sqlite";
 import { resolve } from "node:path";
+import { getSiteId } from "@bound/core";
 export interface DrainArgs {
 	newHub: string;
 	timeout?: number;

@@ -180,7 +180,9 @@ export async function generateMCPCommands(
 
 			// Extract parameter names from tool's inputSchema for help/discovery
 			const toolArgs: CommandDefinition["args"] = [];
-			const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] } | undefined;
+			const schema = tool.inputSchema as
+				| { properties?: Record<string, unknown>; required?: string[] }
+				| undefined;
 			if (schema?.properties) {
 				const required = new Set(schema.required ?? []);
 				for (const paramName of Object.keys(schema.properties)) {

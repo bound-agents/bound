@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
 import { insertRow, recordTurn } from "@bound/core";
-import { formatError } from "@bound/shared";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
+import { formatError } from "@bound/shared";
 import { assembleContext } from "./context-assembly";
-import { extractSummaryAndMemories } from "./summary-extraction";
 import { trackFilePath } from "./file-thread-tracker";
+import { extractSummaryAndMemories } from "./summary-extraction";
 import type { AgentLoopConfig, AgentLoopResult, AgentLoopState } from "./types";
 
 interface BashLike {
@@ -100,9 +100,9 @@ export class AgentLoop {
 					// Extract system messages for drivers that handle them separately (e.g., Bedrock, Anthropic)
 					const systemMessages = llmMessages.filter((m) => m.role === "system");
 					const nonSystemMessages = llmMessages.filter((m) => m.role !== "system");
-					const systemPrompt = systemMessages.map((m) =>
-						typeof m.content === "string" ? m.content : ""
-					).join("\n\n");
+					const systemPrompt = systemMessages
+						.map((m) => (typeof m.content === "string" ? m.content : ""))
+						.join("\n\n");
 
 					const chatStream = this.llmBackend.chat({
 						model: "",

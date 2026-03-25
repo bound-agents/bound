@@ -46,7 +46,7 @@ describe("R-U18: Thread colors cycle sequentially 0-9", () => {
 			threads.push(thread);
 
 			// Add small delay to ensure created_at timestamps differ
-			await new Promise(resolve => setTimeout(resolve, 5));
+			await new Promise((resolve) => setTimeout(resolve, 5));
 		}
 
 		// Verify colors cycle: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1
@@ -73,7 +73,7 @@ describe("R-U18: Thread colors cycle sequentially 0-9", () => {
 				body: JSON.stringify({}),
 			});
 			await app.fetch(request);
-			await new Promise(resolve => setTimeout(resolve, 5));
+			await new Promise((resolve) => setTimeout(resolve, 5));
 		}
 
 		// Last thread should have color 2 (0, 1, 2)
@@ -96,7 +96,7 @@ describe("R-U18: Thread colors cycle sequentially 0-9", () => {
 			body: JSON.stringify({}),
 		});
 		await app.fetch(request1);
-		await new Promise(resolve => setTimeout(resolve, 5));
+		await new Promise((resolve) => setTimeout(resolve, 5));
 
 		const request2 = new Request("http://localhost:3000/api/threads", {
 			method: "POST",
@@ -105,7 +105,7 @@ describe("R-U18: Thread colors cycle sequentially 0-9", () => {
 		});
 		const response2 = await app.fetch(request2);
 		const thread2 = await response2.json();
-		await new Promise(resolve => setTimeout(resolve, 5));
+		await new Promise((resolve) => setTimeout(resolve, 5));
 
 		// Soft delete the second thread
 		db.run("UPDATE threads SET deleted = 1 WHERE id = ?", [thread2.id]);

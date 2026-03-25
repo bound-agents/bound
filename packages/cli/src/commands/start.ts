@@ -1,9 +1,9 @@
 // Task 3: bound start command
 // Full orchestrator bootstrap sequence
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { randomUUID } from "node:crypto";
 import { AgentLoop, Scheduler, seedCronTasks } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
@@ -11,13 +11,8 @@ import { generateMCPCommands, getAllCommands, setCommandRegistry } from "@bound/
 import { generateThreadTitle } from "@bound/agent";
 import { createAppContext, insertRow, updateRow, withChangeLog } from "@bound/core";
 import { createModelRouter } from "@bound/llm";
-import type {
-	BackendConfig,
-	LLMBackend,
-	ModelBackendsConfig,
-	ToolDefinition,
-} from "@bound/llm";
-import { createClusterFs, createSandbox, createDefineCommands } from "@bound/sandbox";
+import type { BackendConfig, LLMBackend, ModelBackendsConfig, ToolDefinition } from "@bound/llm";
+import { createClusterFs, createDefineCommands, createSandbox } from "@bound/sandbox";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import { ensureKeypair } from "@bound/sync";
 import { createWebServer } from "@bound/web";
@@ -257,10 +252,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 						`[mcp] Connected to server: ${serverCfg.name} (${serverCfg.transport}), tools: ${tools.map((t) => t.name).join(", ") || "(none)"}`,
 					);
 				} catch (error) {
-					console.warn(
-						`[mcp] Failed to connect to ${serverCfg.name}:`,
-						formatError(error),
-					);
+					console.warn(`[mcp] Failed to connect to ${serverCfg.name}:`, formatError(error));
 				}
 			}
 		} else {
@@ -308,10 +300,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				});
 			}
 		} catch (error) {
-			console.warn(
-				`[mcp] Failed to list tools for ${serverName}:`,
-				formatError(error),
-			);
+			console.warn(`[mcp] Failed to list tools for ${serverName}:`, formatError(error));
 		}
 	}
 	if (mcpToolDefinitions.length > 0) {
@@ -342,13 +331,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 			clusterFs,
 			commands: registeredCommands,
 		});
-		console.log(`[sandbox] ${builtinCommands.length} built-in + ${mcpCommands.length} MCP commands registered`);
+		console.log(
+			`[sandbox] ${builtinCommands.length} built-in + ${mcpCommands.length} MCP commands registered`,
+		);
 		console.log("[sandbox] Sandbox ready");
 	} catch (error) {
-		console.warn(
-			"[sandbox] Failed to create sandbox:",
-			formatError(error),
-		);
+		console.warn("[sandbox] Failed to create sandbox:", formatError(error));
 	}
 
 	// 10. Persona loading
@@ -361,10 +349,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				personaText = readFileSync(personaPath, "utf-8");
 				console.log(`[persona] Loaded persona (${personaText.length} chars)`);
 			} catch (error) {
-				console.warn(
-					"[persona] Failed to read persona.md:",
-					formatError(error),
-				);
+				console.warn("[persona] Failed to read persona.md:", formatError(error));
 			}
 		} else {
 			console.log("[persona] No persona configured");
@@ -402,9 +387,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		const ids = routerConfig.backends.map((b) => b.id).join(", ");
 		console.log(`[llm] Model router ready — backends: ${ids} (default: ${routerConfig.default})`);
 	} catch (error) {
-		console.warn(
-			`[llm] Failed to create model router: ${formatError(error)}`,
-		);
+		console.warn(`[llm] Failed to create model router: ${formatError(error)}`);
 	}
 
 	// 12. Web server
@@ -461,29 +444,26 @@ export async function runStart(args: StartArgs): Promise<void> {
 				}
 				const activeModelId = selectedModelId || routerConfig.default;
 
-				const agentLoop = new AgentLoop(
-					appContext,
-					sandbox?.bash ?? ({} as any),
-					llmBackend,
-					{
-						threadId: thread_id,
-						userId: message.user_id || appContext.config.allowlist.default_web_user,
-						modelId: activeModelId,
-					},
-				);
+				const agentLoop = new AgentLoop(appContext, sandbox?.bash ?? ({} as any), llmBackend, {
+					threadId: thread_id,
+					userId: message.user_id || appContext.config.allowlist.default_web_user,
+					modelId: activeModelId,
+				});
 
 				const result = await agentLoop.run();
 
 				if (result.error) {
 					console.error(`[agent] Error: ${result.error}`);
 				} else {
-					console.log(`[agent] Done: ${result.messagesCreated} messages, ${result.toolCallsMade} tool calls`);
+					console.log(
+						`[agent] Done: ${result.messagesCreated} messages, ${result.toolCallsMade} tool calls`,
+					);
 				}
 
 				// Emit the last message for WebSocket push
-				const lastMsg = appContext.db.query(
-					"SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1"
-				).get(thread_id);
+				const lastMsg = appContext.db
+					.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
+					.get(thread_id);
 				if (lastMsg) {
 					appContext.eventBus.emit("message:created", {
 						message: lastMsg as any,
@@ -492,13 +472,13 @@ export async function runStart(args: StartArgs): Promise<void> {
 				}
 
 				// Fire-and-forget: generate thread title
-				generateThreadTitle(appContext.db, thread_id, llmBackend, appContext.siteId).then(
-					(titleResult) => {
+				generateThreadTitle(appContext.db, thread_id, llmBackend, appContext.siteId)
+					.then((titleResult) => {
 						if (titleResult.ok) {
 							console.log(`[agent] Thread title: ${titleResult.value}`);
 						}
-					},
-				).catch((err) => console.warn("[agent] Title generation failed:", formatError(err)));
+					})
+					.catch((err) => console.warn("[agent] Title generation failed:", formatError(err)));
 			} catch (error) {
 				console.error(`[agent] Error: ${formatError(error)}`);
 			} finally {
@@ -506,10 +486,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			}
 		});
 	} catch (error) {
-		console.warn(
-			"Web server failed to start:",
-			formatError(error),
-		);
+		console.warn("Web server failed to start:", formatError(error));
 		console.warn("Continuing without web UI. API will not be available.");
 	}
 
@@ -520,7 +497,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 		type: "function",
 		function: {
 			name: "bash",
-			description: "Execute a command in the sandboxed shell. Built-in commands: query, memorize, forget, schedule, cancel, emit, purge, await, cache-warm, cache-pin, cache-unpin, cache-evict, model-hint, archive, hostinfo. MCP tools are also available as commands. Run standard shell commands too.",
+			description:
+				"Execute a command in the sandboxed shell. Built-in commands: query, memorize, forget, schedule, cancel, emit, purge, await, cache-warm, cache-pin, cache-unpin, cache-evict, model-hint, archive, hostinfo. MCP tools are also available as commands. Run standard shell commands too.",
 			parameters: {
 				type: "object",
 				properties: {
@@ -610,12 +588,10 @@ export async function runStart(args: StartArgs): Promise<void> {
 				appContext.eventBus,
 				keyring,
 			);
-			syncLoopHandle = startSyncLoop(syncClient, syncConfig.sync_interval_seconds || 30);
+			syncLoopHandle = startSyncLoop(syncClient, syncConfig.sync_interval_seconds || 30, appContext.eventBus);
 			console.log(`[sync] Sync loop started (${syncConfig.sync_interval_seconds}s interval)`);
 		} catch (error) {
-			console.warn(
-				`[sync] Failed to start: ${formatError(error)}`,
-			);
+			console.warn(`[sync] Failed to start: ${formatError(error)}`);
 		}
 	} else {
 		console.log("[sync] Not configured");
@@ -634,9 +610,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				`[overlay] Scanner started (${Object.keys(overlayConfig.mounts).length} mount(s))`,
 			);
 		} catch (error) {
-			console.warn(
-				`[overlay] Failed to start: ${formatError(error)}`,
-			);
+			console.warn(`[overlay] Failed to start: ${formatError(error)}`);
 		}
 	} else {
 		console.log("[overlay] Not configured");
@@ -675,10 +649,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		schedulerHandle = scheduler.start(30_000);
 		console.log("[scheduler] Scheduler started (30s poll interval)");
 	} catch (error) {
-		console.warn(
-			"[scheduler] Failed to start scheduler:",
-			formatError(error),
-		);
+		console.warn("[scheduler] Failed to start scheduler:", formatError(error));
 	}
 
 	console.log(`

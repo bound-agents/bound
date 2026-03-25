@@ -1,7 +1,5 @@
-import { openBoundDB } from "../lib/db";
-
-import { Database } from "bun:sqlite";
 import { resolve } from "node:path";
+import { openBoundDB } from "../lib/db";
 export interface SetHubArgs {
 	hostName: string;
 	wait?: boolean;

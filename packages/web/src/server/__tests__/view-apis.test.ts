@@ -1,10 +1,10 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
-import { applySchema, createDatabase, insertRow, getSiteId } from "@bound/core";
+import { randomUUID } from "node:crypto";
+import { applySchema, createDatabase, getSiteId, insertRow } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Hono } from "hono";
 import { createApp } from "../index";
-import { randomUUID } from "node:crypto";
 
 describe("R-U23/25/26: View APIs", () => {
 	let db: Database;
