@@ -4,6 +4,7 @@ import type { KeyringConfig, Logger, RelayInboxEntry, TypedEventEmitter } from "
 import { Hono } from "hono";
 import { type RelayRequest, type RelayResponse, fetchInboundChangeset } from "./changeset.js";
 import { createSyncAuthMiddleware } from "./middleware.js";
+import { type EagerPushConfig, eagerPushToSpoke } from "./eager-push.js";
 import { updatePeerCursor } from "./peer-cursor.js";
 import { replayEvents } from "./reducers.js";
 import { type RelayExecutor, noopRelayExecutor } from "./relay-executor.js";
@@ -24,6 +25,7 @@ export function createSyncRoutes(
 	logger: Logger,
 	relayExecutor?: RelayExecutor,
 	hubSiteId?: string,
+	eagerPushConfig?: EagerPushConfig,
 ): Hono<AppContext> {
 	const app = new Hono<AppContext>();
 
@@ -49,6 +51,11 @@ export function createSyncRoutes(
 			if (events.length > 0) {
 				const lastSeq = events[events.length - 1].seq;
 				updatePeerCursor(db, pusherSiteId, { last_received: lastSeq });
+			}
+
+			// Reset reachability tracking on successful sync
+			if (eagerPushConfig) {
+				eagerPushConfig.reachabilityTracker.recordSuccess(pusherSiteId);
 			}
 
 			logger.info(`Received ${events.length} events from ${pusherSiteId}`);
@@ -135,8 +142,19 @@ export function createSyncRoutes(
 				} else {
 					// Store for target spoke — write to hub's own outbox for delivery
 					// Preserve source_site_id so target knows who sent the request
-					writeOutbox(db, {
+					const inboxEntry: RelayInboxEntry = {
 						id: crypto.randomUUID(),
+						source_site_id: requesterSiteId,
+						kind: entry.kind,
+						ref_id: entry.ref_id ?? entry.id,
+						idempotency_key: entry.idempotency_key,
+						payload: entry.payload,
+						expires_at: entry.expires_at,
+						received_at: new Date().toISOString(),
+						processed: 0,
+					};
+					writeOutbox(db, {
+						id: inboxEntry.id,
 						source_site_id: requesterSiteId,
 						target_site_id: entry.target_site_id,
 						kind: entry.kind,
@@ -146,6 +164,11 @@ export function createSyncRoutes(
 						created_at: new Date().toISOString(),
 						expires_at: entry.expires_at,
 					});
+
+					// Fire-and-forget eager push — push failure is invisible to requester (AC2.3)
+					if (eagerPushConfig) {
+						void eagerPushToSpoke(eagerPushConfig, entry.target_site_id, [inboxEntry]);
+					}
 				}
 				deliveredIds.push(entry.id);
 			}

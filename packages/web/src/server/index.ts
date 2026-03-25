@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { MCPClient } from "@bound/agent";
 import { formatError } from "@bound/shared";
 import type { KeyringConfig, Logger, TypedEventEmitter } from "@bound/shared";
-import type { RelayExecutor } from "@bound/sync";
+import type { EagerPushConfig, RelayExecutor } from "@bound/sync";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { type ModelsConfig, type RoutesConfig, registerRoutes } from "./routes/index";
@@ -27,6 +27,8 @@ export interface AppConfig {
 	siteId?: string;
 	logger?: Logger;
 	relayExecutor?: RelayExecutor;
+	hubSiteId?: string;
+	eagerPushConfig?: EagerPushConfig;
 }
 
 export async function createApp(
@@ -91,6 +93,8 @@ export async function createApp(
 				eventBus,
 				appConfig.logger,
 				appConfig.relayExecutor,
+				appConfig.hubSiteId,
+				appConfig.eagerPushConfig,
 			);
 			app.route("/", syncRoutes);
 		} catch (error) {

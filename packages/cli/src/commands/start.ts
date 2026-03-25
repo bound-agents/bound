@@ -21,7 +21,7 @@ import type { BackendConfig, LLMBackend, ModelBackendsConfig, ToolDefinition } f
 import { createClusterFs, createDefineCommands, createSandbox } from "@bound/sandbox";
 import type { SyncConfig } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
-import { ensureKeypair } from "@bound/sync";
+import { ensureKeypair, ReachabilityTracker } from "@bound/sync";
 import type { RelayExecutor } from "@bound/sync";
 import { createWebServer } from "@bound/web";
 
@@ -434,6 +434,24 @@ export async function runStart(args: StartArgs): Promise<void> {
 		console.warn(`[llm] Failed to create model router: ${formatError(error)}`);
 	}
 
+	// 11b. Initialize reachability tracker for eager push (hub-side)
+	const reachabilityTracker = new ReachabilityTracker();
+
+	// Determine hub siteId from keyring (for spoke-side validation)
+	let hubSiteId: string | undefined;
+	{
+		const keyringResult = appContext.optionalConfig.keyring;
+		const syncConfigResult = appContext.optionalConfig.sync;
+		if (keyringResult?.ok && syncConfigResult?.ok) {
+			const keyring = keyringResult.value as import("@bound/shared").KeyringConfig;
+			const syncConfig = syncConfigResult.value as import("@bound/shared").SyncConfig;
+			const hubEntry = Object.entries(keyring.hosts).find(([_, v]) => v.url === syncConfig.hub);
+			if (hubEntry) {
+				hubSiteId = hubEntry[0];
+			}
+		}
+	}
+
 	// 12. Web server
 	console.log("Starting web server...");
 	let webServer: Awaited<ReturnType<typeof createWebServer>> | null = null;
@@ -446,6 +464,17 @@ export async function runStart(args: StartArgs): Promise<void> {
 			keyringResult && keyringResult.ok
 				? (keyringResult.value as import("@bound/shared").KeyringConfig)
 				: undefined;
+
+		const eagerPushConfig = keyring && appContext.siteId
+			? {
+					privateKey: keypair.privateKey,
+					siteId: appContext.siteId,
+					db: appContext.db,
+					keyring,
+					reachabilityTracker,
+					logger: appContext.logger,
+				}
+			: undefined;
 
 		const webPort = Number.parseInt(process.env.PORT || "3000", 10);
 		webServer = await createWebServer(appContext.db, appContext.eventBus, {
@@ -460,6 +489,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 			siteId: appContext.siteId,
 			logger: appContext.logger,
 			relayExecutor,
+			hubSiteId,
+			eagerPushConfig,
 		});
 		await webServer.start();
 
