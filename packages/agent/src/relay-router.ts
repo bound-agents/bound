@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { createHash } from "crypto";
+import { createHash } from "node:crypto";
 import type { RelayOutboxEntry } from "@bound/shared";
 
 export interface EligibleHost {

@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
+
 import type { AppContext } from "@bound/core";
-import { insertRow, recordTurn, readInboxByRefId, markProcessed, writeOutbox } from "@bound/core";
+import { insertRow, markProcessed, readInboxByRefId, recordTurn, writeOutbox } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { formatError } from "@bound/shared";
+
 import { assembleContext } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
-import { extractSummaryAndMemories } from "./summary-extraction";
-import { isRelayRequest, type RelayToolCallRequest } from "./mcp-bridge";
+import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
 import { createRelayOutboxEntry } from "./relay-router";
+import { extractSummaryAndMemories } from "./summary-extraction";
 import type { AgentLoopConfig, AgentLoopResult, AgentLoopState } from "./types";
 
 interface BashLike {
@@ -400,12 +402,21 @@ export class AgentLoop {
 		relayRequest: RelayToolCallRequest,
 		toolCall: ParsedToolCall,
 	): Promise<string> {
-		const {
-			outboxEntryId,
-			targetSiteId,
-			toolName,
-			eligibleHosts,
-		} = relayRequest;
+		const previousState = this.state;
+		this.state = "RELAY_WAIT";
+
+		try {
+			return await this._relayWaitImpl(relayRequest, toolCall);
+		} finally {
+			this.state = previousState;
+		}
+	}
+
+	private async _relayWaitImpl(
+		relayRequest: RelayToolCallRequest,
+		toolCall: ParsedToolCall,
+	): Promise<string> {
+		const { outboxEntryId, toolName, eligibleHosts } = relayRequest;
 		const pollIntervalMs = 500;
 		const timeoutMs = 30_000; // 30 second timeout per host
 		let currentHostIndex = relayRequest.currentHostIndex;
@@ -417,8 +428,10 @@ export class AgentLoop {
 		while (true) {
 			if (this.aborted) {
 				// AC7.1, AC7.2: User canceled - send cancel message with ref_id pointing to original
+				// Use current host's site_id (may have changed due to failover)
+				const currentHost = eligibleHosts[currentHostIndex];
 				const cancelEntry = createRelayOutboxEntry(
-					targetSiteId,
+					currentHost.site_id,
 					"cancel",
 					JSON.stringify({}),
 					30_000,
@@ -436,9 +449,12 @@ export class AgentLoop {
 			// AC6.2: Update activity status showing what we're waiting for
 			const currentHost = eligibleHosts[currentHostIndex];
 			const activityStatus = `relaying ${toolName} via ${currentHost.host_name}`;
-			// Note: Activity status update would go to task heartbeat if taskId exists
-			// This is deferred to caller or task management system
-			this.ctx.logger.info("Relay wait", { tool: toolName, host: currentHost.host_name });
+			// Activity status update goes to logger for visibility during relay wait
+			this.ctx.logger.info("Relay wait", {
+				activityStatus,
+				tool: toolName,
+				host: currentHost.host_name,
+			});
 
 			// Poll for response
 			const response = readInboxByRefId(this.ctx.db, outboxEntryId);
@@ -534,9 +550,7 @@ export class AgentLoop {
 	 * For built-in or MCP tools the input is serialized as a command string that
 	 * the sandbox's registered custom commands can dispatch.
 	 */
-	private async executeToolCall(
-		toolCall: ParsedToolCall,
-	): Promise<string | RelayToolCallRequest> {
+	private async executeToolCall(toolCall: ParsedToolCall): Promise<string | RelayToolCallRequest> {
 		if (!this.sandbox.exec) {
 			return "Error: sandbox execution not available";
 		}

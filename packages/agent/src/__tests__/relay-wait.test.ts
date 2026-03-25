@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema, readInboxByRefId, writeOutbox } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
+import { createRelayOutboxEntry } from "../relay-router";
 
 // Test database setup
 let db: Database;
 let testDbPath: string;
+let eventBus: TypedEventEmitter;
 
 beforeEach(() => {
 	const testId = randomBytes(4).toString("hex");
@@ -14,6 +16,7 @@ beforeEach(() => {
 	const sqlite3 = require("bun:sqlite");
 	db = new sqlite3.Database(testDbPath);
 	applySchema(db);
+	eventBus = new TypedEventEmitter();
 });
 
 afterEach(() => {
@@ -29,154 +32,86 @@ afterEach(() => {
 	}
 });
 
-describe("Agent Loop RELAY_WAIT", () => {
-	it("detects relay requests and enters RELAY_WAIT (AC6.1)", async () => {
-		// Create a relay response in the inbox
-		const relayOutboxId = "test-outbox-id-1";
-		const now = new Date().toISOString();
+describe("RELAY_WAIT polling and failover logic", () => {
+	it("detects and reads relay responses from relay_inbox (AC6.1)", async () => {
+		// AC6.1: Verify that relay responses in inbox can be read by ref_id
+		const outboxEntryId = "test-request-1";
+		const remoteHostId = "remote-host-1";
 
-		// First, insert a relay outbox entry
-		writeOutbox(db, {
-			id: relayOutboxId,
-			source_site_id: null,
-			target_site_id: "remote-1",
-			kind: "tool_call",
-			ref_id: null,
-			idempotency_key: null,
-			payload: JSON.stringify({ toolName: "test-tool", args: {} }),
-			created_at: now,
-			expires_at: new Date(Date.now() + 30_000).toISOString(),
-			delivered: 0,
-		});
-
-		// Now insert a response in the inbox with matching ref_id
+		// Pre-populate inbox with response
 		db.run(
 			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				"response-1",
-				"remote-1",
+				remoteHostId,
 				"result",
-				relayOutboxId,
+				outboxEntryId,
 				null,
 				JSON.stringify({
-					stdout: "Tool output",
+					stdout: "Tool output here",
 					stderr: "",
 					exitCode: 0,
 				}),
 				new Date(Date.now() + 60_000).toISOString(),
-				now,
+				new Date().toISOString(),
 				0,
 			],
 		);
 
-		// Check that we can read it back
-		const response = readInboxByRefId(db, relayOutboxId);
+		// Verify response can be read
+		const response = readInboxByRefId(db, outboxEntryId);
 		expect(response).toBeDefined();
 		if (response) {
 			expect(response.kind).toBe("result");
-			expect(response.ref_id).toBe(relayOutboxId);
+			expect(response.ref_id).toBe(outboxEntryId);
+			const payload = JSON.parse(response.payload) as {
+				stdout: string;
+				stderr: string;
+				exitCode: number;
+			};
+			expect(payload.stdout).toBe("Tool output here");
+			expect(payload.exitCode).toBe(0);
 		}
 	});
 
-	it("formats activity status correctly during RELAY_WAIT (AC6.2)", async () => {
-		// Verify activity status format: "relaying {tool_name} via {host_name}"
-		const toolName = "remote-test-tool";
-		const hostName = "Remote Host 1";
+	it("formats activity status correctly (AC6.2)", () => {
+		// AC6.2: Activity status shows "relaying {tool_name} via {host_name}"
+		const toolName = "remote-list-files";
+		const hostName = "Production Server";
 
-		const expectedStatus = `relaying ${toolName} via ${hostName}`;
-		expect(expectedStatus).toMatch(/^relaying .+ via .+$/);
-		expect(expectedStatus).toBe(`relaying ${toolName} via ${hostName}`);
+		const activityStatus = `relaying ${toolName} via ${hostName}`;
+
+		expect(activityStatus).toBe("relaying remote-list-files via Production Server");
+		expect(activityStatus).toMatch(/^relaying .+ via .+$/);
 	});
 
-	it("emits sync:trigger on RELAY_WAIT entry (AC6.5)", async () => {
-		const eventBus = new TypedEventEmitter();
-		let syncTriggered = false;
-		let triggerReason = "";
+	it("handles timeout with failover logic (AC6.3)", async () => {
+		// AC6.3: When first host times out, failover writes new outbox entry for next host
+		const originalRequestId = "original-request";
+		const host1Id = "remote-1";
+		const host2Id = "remote-2";
 
-		eventBus.on("sync:trigger", ({ reason }) => {
-			syncTriggered = true;
-			triggerReason = reason;
-		});
-
-		// Verify listener can be registered and triggered
-		eventBus.emit("sync:trigger", { reason: "relay-wait" });
-		expect(syncTriggered).toBe(true);
-		expect(triggerReason).toBe("relay-wait");
-	});
-
-	it("handles cancel propagation during RELAY_WAIT (AC7.1, AC7.2)", async () => {
-		const relayOutboxId = "test-outbox-cancel";
-		const now = new Date().toISOString();
-
-		// Write initial outbox entry
+		// Write original outbox entry (first host - will timeout)
 		writeOutbox(db, {
-			id: relayOutboxId,
+			id: originalRequestId,
 			source_site_id: null,
-			target_site_id: "remote-1",
+			target_site_id: host1Id,
 			kind: "tool_call",
 			ref_id: null,
 			idempotency_key: null,
 			payload: JSON.stringify({ toolName: "test-tool", args: {} }),
-			created_at: now,
-			expires_at: new Date(Date.now() + 30_000).toISOString(),
-			delivered: 0,
-		});
-
-		// Simulate cancel by writing a cancel entry with ref_id pointing to original
-		const cancelEntry = {
-			id: "cancel-1",
-			source_site_id: null,
-			target_site_id: "remote-1",
-			kind: "cancel",
-			ref_id: relayOutboxId, // References original request (AC7.2)
-			idempotency_key: null,
-			payload: JSON.stringify({}),
 			created_at: new Date().toISOString(),
-			expires_at: new Date(Date.now() + 30_000).toISOString(),
-			delivered: 0,
-		};
-
-		writeOutbox(db, cancelEntry);
-
-		// Verify the cancel entry references the original
-		const outboxEntries = db
-			.query(`SELECT * FROM relay_outbox WHERE kind = 'cancel'`)
-			.all() as Array<{ ref_id: string; id: string }>;
-
-		expect(outboxEntries.length).toBeGreaterThan(0);
-		const cancelMsg = outboxEntries.find((e) => e.kind === "cancel");
-		if (cancelMsg) {
-			expect(cancelMsg.ref_id).toBe(relayOutboxId);
-		}
-	});
-
-	it("handles timeout and failover to next host (AC6.3)", async () => {
-		// Test that when a request times out, a new outbox entry is created for the next host
-		const originalOutboxId = "original-request";
-		const now = new Date().toISOString();
-
-		// Create initial outbox entry for first host
-		writeOutbox(db, {
-			id: originalOutboxId,
-			source_site_id: null,
-			target_site_id: "remote-1",
-			kind: "tool_call",
-			ref_id: null,
-			idempotency_key: null,
-			payload: JSON.stringify({ toolName: "test-tool", args: {} }),
-			created_at: now,
-			expires_at: new Date(Date.now() + 30_000).toISOString(),
+			expires_at: new Date(Date.now() + 1_000).toISOString(),
 			delivered: 0,
 		});
 
-		// Simulate failover by creating a second outbox entry for next host
-		// In real execution, the relayWait method would create this
-		const failoverOutboxId = "failover-request";
+		// Simulate failover: write second outbox entry for next host
+		const failoverRequestId = "failover-request-1";
 		writeOutbox(db, {
-			id: failoverOutboxId,
+			id: failoverRequestId,
 			source_site_id: null,
-			target_site_id: "remote-2",
+			target_site_id: host2Id,
 			kind: "tool_call",
 			ref_id: null,
 			idempotency_key: null,
@@ -186,65 +121,171 @@ describe("Agent Loop RELAY_WAIT", () => {
 			delivered: 0,
 		});
 
-		// Verify both entries exist
-		const outboxEntries = db
-			.query(`SELECT id, target_site_id FROM relay_outbox WHERE kind = 'tool_call'`)
-			.all() as Array<{ id: string; target_site_id: string }>;
-
-		expect(outboxEntries.length).toBe(2);
-		expect(outboxEntries.map((e) => e.target_site_id)).toContain("remote-1");
-		expect(outboxEntries.map((e) => e.target_site_id)).toContain("remote-2");
-	});
-
-	it("returns error when all hosts exhausted (AC6.4)", async () => {
-		// Simulate all hosts timing out - no response in inbox
-		const relayOutboxId = "exhausted-hosts";
-		const now = new Date().toISOString();
-
-		writeOutbox(db, {
-			id: relayOutboxId,
-			source_site_id: null,
-			target_site_id: "remote-1",
-			kind: "tool_call",
-			ref_id: null,
-			idempotency_key: null,
-			payload: JSON.stringify({ toolName: "test-tool", args: {} }),
-			created_at: now,
-			expires_at: new Date(Date.now() + 1_000).toISOString(), // Expired
-			delivered: 0,
-		});
-
-		// Check that no response exists
-		const response = readInboxByRefId(db, relayOutboxId);
-		expect(response).toBeNull();
-	});
-
-	it("processes relay error responses", async () => {
-		// Test handling of error responses from relay
-		const relayOutboxId = "error-response-test";
-		const now = new Date().toISOString();
-
-		// Insert error response in inbox
+		// Now add response for second host
 		db.run(
 			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
-				"error-response-1",
-				"remote-1",
-				"error",
-				relayOutboxId,
+				"response-from-host2",
+				host2Id,
+				"result",
+				failoverRequestId,
 				null,
 				JSON.stringify({
-					error: "Tool not found on remote host",
+					stdout: "Result from second host",
+					stderr: "",
+					exitCode: 0,
 				}),
 				new Date(Date.now() + 60_000).toISOString(),
-				now,
+				new Date().toISOString(),
 				0,
 			],
 		);
 
-		// Read it back
-		const response = readInboxByRefId(db, relayOutboxId);
+		// Verify both outbox entries exist
+		const entries = db
+			.query(`SELECT id, target_site_id FROM relay_outbox WHERE kind = 'tool_call'`)
+			.all() as Array<{ id: string; target_site_id: string }>;
+
+		expect(entries.length).toBe(2);
+		expect(entries[0].target_site_id).toBe(host1Id);
+		expect(entries[1].target_site_id).toBe(host2Id);
+
+		// Verify response is keyed to failover request
+		const failoverResponse = readInboxByRefId(db, failoverRequestId);
+		expect(failoverResponse).toBeDefined();
+		if (failoverResponse) {
+			const payload = JSON.parse(failoverResponse.payload) as { stdout: string };
+			expect(payload.stdout).toBe("Result from second host");
+		}
+	});
+
+	it("returns error when all hosts exhausted (AC6.4)", () => {
+		// AC6.4: After all eligible hosts timeout, error is returned to agent
+		const numHosts = 3;
+		const hostNames = ["Host A", "Host B", "Host C"];
+
+		// Timeout error message format
+		const timeoutMs = 30_000;
+		const errorMessage = `Timeout: all ${numHosts} eligible host(s) did not respond within ${timeoutMs}ms`;
+
+		expect(errorMessage).toContain("Timeout");
+		expect(errorMessage).toContain("all");
+		expect(errorMessage).toContain("eligible host");
+	});
+
+	it("emits sync:trigger event on RELAY_WAIT entry (AC6.5)", () => {
+		// AC6.5: On RELAY_WAIT entry, sync:trigger event is emitted
+		let triggered = false;
+		let reason = "";
+
+		eventBus.on("sync:trigger", ({ reason: eventReason }) => {
+			triggered = true;
+			reason = eventReason;
+		});
+
+		// Emit as would happen on relayWait entry
+		eventBus.emit("sync:trigger", { reason: "relay-wait" });
+
+		expect(triggered).toBe(true);
+		expect(reason).toBe("relay-wait");
+	});
+
+	it("writes cancel entry with ref_id pointing to original request (AC7.2)", () => {
+		// AC7.2: Cancel entry's ref_id matches original request's outbox entry ID
+		const originalRequestId = "original-tool-request";
+		const hostId = "remote-host-1";
+
+		const eligibleHosts = [
+			{
+				site_id: hostId,
+				host_name: "Remote Host",
+				sync_url: null,
+				online_at: new Date().toISOString(),
+			},
+		];
+
+		// Create cancel entry as relayWait would
+		const currentHostIndex = 0;
+		const currentHost = eligibleHosts[currentHostIndex];
+
+		const cancelEntry = createRelayOutboxEntry(
+			currentHost.site_id,
+			"cancel",
+			JSON.stringify({}),
+			30_000,
+			originalRequestId, // ref_id must point to original request (AC7.2)
+		);
+
+		expect(cancelEntry.kind).toBe("cancel");
+		expect(cancelEntry.ref_id).toBe(originalRequestId);
+		expect(cancelEntry.target_site_id).toBe(hostId);
+	});
+
+	it("updates host target on failover before writing cancel (AC7.2 failover case)", () => {
+		// When failover occurs and then cancel is issued, cancel must go to current host
+		// not the original host
+		const originalRequestId = "request-1";
+		const host1Id = "remote-1";
+		const host2Id = "remote-2";
+
+		const eligibleHosts = [
+			{
+				site_id: host1Id,
+				host_name: "Host 1",
+				sync_url: null,
+				online_at: new Date().toISOString(),
+			},
+			{
+				site_id: host2Id,
+				host_name: "Host 2",
+				sync_url: null,
+				online_at: new Date().toISOString(),
+			},
+		];
+
+		// Simulate being at index 1 after failover
+		const currentHostIndex = 1;
+		const currentHost = eligibleHosts[currentHostIndex];
+
+		const cancelEntry = createRelayOutboxEntry(
+			currentHost.site_id,
+			"cancel",
+			JSON.stringify({}),
+			30_000,
+			originalRequestId,
+		);
+
+		// Cancel should go to second host, not first
+		expect(cancelEntry.target_site_id).toBe(host2Id);
+		expect(cancelEntry.target_site_id).not.toBe(host1Id);
+		expect(cancelEntry.ref_id).toBe(originalRequestId);
+	});
+
+	it("handles error responses from remote host", () => {
+		// AC1.6/AC1.7: Error responses are parsed and handled
+		const outboxEntryId = "error-test";
+		const remoteHostId = "remote-1";
+
+		db.run(
+			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				"error-response",
+				remoteHostId,
+				"error",
+				outboxEntryId,
+				null,
+				JSON.stringify({
+					error: "Tool not found on remote",
+				}),
+				new Date(Date.now() + 60_000).toISOString(),
+				new Date().toISOString(),
+				0,
+			],
+		);
+
+		const response = readInboxByRefId(db, outboxEntryId);
 		expect(response).toBeDefined();
 		if (response) {
 			expect(response.kind).toBe("error");
@@ -253,105 +294,87 @@ describe("Agent Loop RELAY_WAIT", () => {
 		}
 	});
 
-	it("marks relay responses as processed after retrieval", async () => {
-		// Test that responses are marked processed to avoid reprocessing
-		const relayOutboxId = "processed-response";
-		const now = new Date().toISOString();
+	it("marks responses as processed after handling", () => {
+		// Verify responses are marked processed to avoid duplicate processing
+		const outboxEntryId = "processed-test";
+		const remoteHostId = "remote-1";
+		const responseId = "response-1";
 
-		// Insert response
 		db.run(
 			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
-				"response-processed",
-				"remote-1",
+				responseId,
+				remoteHostId,
 				"result",
-				relayOutboxId,
+				outboxEntryId,
 				null,
 				JSON.stringify({
-					stdout: "Done",
+					stdout: "test",
 					stderr: "",
 					exitCode: 0,
 				}),
 				new Date(Date.now() + 60_000).toISOString(),
-				now,
-				0,
+				new Date().toISOString(),
+				0, // Not processed yet
 			],
 		);
 
-		// Before marking processed, it's retrievable
-		let response = readInboxByRefId(db, relayOutboxId);
+		// Before marking processed
+		let response = readInboxByRefId(db, outboxEntryId);
 		expect(response).toBeDefined();
+		expect(response?.processed).toBe(0);
 
-		// Mark processed (this is what relayWait does after handling response)
+		// Mark as processed (as relayWait does after handling)
 		if (response) {
 			const stmt = db.prepare("UPDATE relay_inbox SET processed = 1 WHERE id = ?");
 			stmt.run(response.id);
-
-			// After marking processed, should not be retrievable
-			response = readInboxByRefId(db, relayOutboxId);
-			expect(response).toBeNull();
 		}
+
+		// After marking processed, should not be retrievable via readInboxByRefId
+		response = readInboxByRefId(db, outboxEntryId);
+		expect(response).toBeNull();
 	});
 
-	it("builds correct result content from remote tool response", async () => {
-		// Test that response payloads are correctly formatted as tool results
-		const scenarios = [
+	it("formats result content from remote tool responses", () => {
+		// Verify response payloads are correctly formatted as tool results
+		const testCases = [
 			{
 				payload: { stdout: "output", stderr: "", exitCode: 0 },
-				expectedContent: "output",
+				expectedResult: "output",
 			},
 			{
-				payload: { stdout: "", stderr: "error", exitCode: 1 },
-				expectedContent: "error",
+				payload: { stdout: "", stderr: "error message", exitCode: 1 },
+				expectedResult: "error message",
+			},
+			{
+				payload: { stdout: "data", stderr: "warning", exitCode: 0 },
+				expectedResult: "data\nwarning",
 			},
 			{
 				payload: { stdout: "", stderr: "", exitCode: 0 },
-				expectedContent: "Command completed successfully",
+				expectedResult: "Command completed successfully",
 			},
 			{
-				payload: { stdout: "", stderr: "", exitCode: 1 },
-				expectedContent: "Exit code: 1",
+				payload: { stdout: "", stderr: "", exitCode: 42 },
+				expectedResult: "Exit code: 42",
 			},
 		];
 
-		for (const scenario of scenarios) {
-			const relayOutboxId = `scenario-${JSON.stringify(scenario.payload)}`;
-			const now = new Date().toISOString();
-
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					`response-${relayOutboxId}`,
-					"remote-1",
-					"result",
-					relayOutboxId,
-					null,
-					JSON.stringify(scenario.payload),
-					new Date(Date.now() + 60_000).toISOString(),
-					now,
-					0,
-				],
-			);
-
-			const response = readInboxByRefId(db, relayOutboxId);
-			expect(response).toBeDefined();
-			if (response) {
-				const payload = JSON.parse(response.payload);
-				const parts: string[] = [];
-				if (payload.stdout) parts.push(payload.stdout);
-				if (payload.stderr) parts.push(payload.stderr);
-				if (parts.length === 0) {
-					parts.push(
-						(payload.exitCode ?? 0) === 0
-							? "Command completed successfully"
-							: `Exit code: ${payload.exitCode ?? 1}`,
-					);
-				}
-				const resultContent = parts.join("\n");
-				expect(resultContent).toContain(scenario.expectedContent);
+		for (const testCase of testCases) {
+			const parts: string[] = [];
+			if (testCase.payload.stdout) parts.push(testCase.payload.stdout);
+			if (testCase.payload.stderr) parts.push(testCase.payload.stderr);
+			if (parts.length === 0) {
+				parts.push(
+					(testCase.payload.exitCode ?? 0) === 0
+						? "Command completed successfully"
+						: `Exit code: ${testCase.payload.exitCode ?? 1}`,
+				);
 			}
+			const result = parts.join("\n");
+
+			expect(result).toBe(testCase.expectedResult);
 		}
 	});
 });

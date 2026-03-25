@@ -10,13 +10,20 @@
  */
 
 import type { Database } from "bun:sqlite";
+
+import { writeOutbox } from "@bound/core";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 import { formatError } from "@bound/shared";
 import type { KeyringConfig } from "@bound/shared";
-import { writeOutbox } from "@bound/core";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { findEligibleHosts, isHostStale, createRelayOutboxEntry, type EligibleHost } from "./relay-router";
-import type { MCPClient, ToolResult } from "./mcp-client";
+
+import type { MCPClient } from "./mcp-client";
+import {
+	type EligibleHost,
+	createRelayOutboxEntry,
+	findEligibleHosts,
+	isHostStale,
+} from "./relay-router";
 
 /**
  * Configuration for cross-host proxy routing.
@@ -265,7 +272,7 @@ function generateRemoteMCPCommands(
 		.query(
 			`SELECT site_id, mcp_tools
 			 FROM hosts
-			 WHERE site_id != ? AND mcp_tools IS NOT NULL`,
+			 WHERE site_id != ? AND deleted = 0 AND mcp_tools IS NOT NULL`,
 		)
 		.all(siteId) as Array<{ site_id: string; mcp_tools: string }>;
 
@@ -287,11 +294,6 @@ function generateRemoteMCPCommands(
 	const commands: CommandDefinition[] = [];
 
 	for (const toolCommandName of remoteToolNames) {
-		// Decompose "{serverName}-{toolName}" — split on first dash
-		const dashIdx = toolCommandName.indexOf("-");
-		const serverName = dashIdx >= 0 ? toolCommandName.slice(0, dashIdx) : toolCommandName;
-		const toolName = dashIdx >= 0 ? toolCommandName.slice(dashIdx + 1) : toolCommandName;
-
 		const command: CommandDefinition = {
 			name: toolCommandName,
 			args: [],

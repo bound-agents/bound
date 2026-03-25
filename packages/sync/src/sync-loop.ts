@@ -375,13 +375,12 @@ export function startSyncLoop(
 
 	// Listen for immediate sync trigger event
 	if (eventBus) {
-		eventBus.on("sync:trigger", async ({ reason }) => {
+		eventBus.on("sync:trigger", async () => {
 			if (stopped) return;
 			if (timerId) {
 				clearTimeout(timerId as unknown as number);
 				timerId = null;
 			}
-			await client.syncCycle();
 			await scheduleNext();
 		});
 	}

@@ -258,7 +258,7 @@ describe("MCP Bridge", () => {
 			query: (sql: string) => {
 				if (sql.includes("FROM hosts")) {
 					return {
-						all: (siteId: string) => [
+						all: (_siteId: string) => [
 							{
 								site_id: "remote-site-1",
 								mcp_tools: JSON.stringify(["remote-server-remote_tool"]),
