@@ -163,7 +163,6 @@ describe("RELAY_WAIT polling and failover logic", () => {
 	it("returns error when all hosts exhausted (AC6.4)", () => {
 		// AC6.4: After all eligible hosts timeout, error is returned to agent
 		const numHosts = 3;
-		const hostNames = ["Host A", "Host B", "Host C"];
 
 		// Timeout error message format
 		const timeoutMs = 30_000;
