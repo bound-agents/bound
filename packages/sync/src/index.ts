@@ -16,3 +16,5 @@ export { createSyncRoutes } from "./routes.js";
 
 // Relay wire format
 export type { RelayRequest, RelayResponse } from "./changeset.js";
+export type { RelayExecutor } from "./relay-executor.js";
+export { noopRelayExecutor } from "./relay-executor.js";
