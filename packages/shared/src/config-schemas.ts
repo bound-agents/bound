@@ -82,9 +82,22 @@ export const discordSchema = z.object({
 
 export type DiscordConfig = z.infer<typeof discordSchema>;
 
+export const relaySchema = z.object({
+	enabled: z.boolean().default(true),
+	max_payload_bytes: z.number().int().positive().default(2 * 1024 * 1024),
+	request_timeout_ms: z.number().int().positive().default(30_000),
+	prune_interval_seconds: z.number().int().positive().default(60),
+	prune_retention_seconds: z.number().int().positive().default(300),
+	eager_push: z.boolean().default(true),
+	drain_timeout_seconds: z.number().int().positive().default(120),
+});
+
+export type RelayConfig = z.infer<typeof relaySchema>;
+
 export const syncSchema = z.object({
 	hub: z.string().min(1),
 	sync_interval_seconds: z.number().int().positive().default(30),
+	relay: relaySchema.optional(),
 });
 
 export type SyncConfig = z.infer<typeof syncSchema>;

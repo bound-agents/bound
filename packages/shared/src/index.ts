@@ -33,4 +33,5 @@ export * from "./logger.js";
 export * from "./errors.js";
 
 // Config schemas
+export type { RelayConfig } from "./config-schemas.js";
 export * from "./config-schemas.js";
