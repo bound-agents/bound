@@ -1,25 +1,28 @@
 // Task 3: bound start command
 // Full orchestrator bootstrap sequence
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { randomUUID } from "node:crypto";
-import { AgentLoop, Scheduler, seedCronTasks } from "@bound/agent";
+import { AgentLoop, RelayProcessor, Scheduler, seedCronTasks } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
 import { generateMCPCommands, getAllCommands, setCommandRegistry } from "@bound/agent";
 import { generateThreadTitle } from "@bound/agent";
-import { createAppContext, insertRow, updateRow, withChangeLog } from "@bound/core";
+import {
+	createAppContext,
+	insertRow,
+	resolveRelayConfig,
+	updateRow,
+	withChangeLog,
+} from "@bound/core";
 import { createModelRouter } from "@bound/llm";
-import type {
-	BackendConfig,
-	LLMBackend,
-	ModelBackendsConfig,
-	ToolDefinition,
-} from "@bound/llm";
-import { createClusterFs, createSandbox, createDefineCommands } from "@bound/sandbox";
+import type { BackendConfig, LLMBackend, ModelBackendsConfig, ToolDefinition } from "@bound/llm";
+import { createClusterFs, createDefineCommands, createSandbox } from "@bound/sandbox";
+import type { SyncConfig } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
-import { ensureKeypair } from "@bound/sync";
+import { ReachabilityTracker, ensureKeypair } from "@bound/sync";
+import type { RelayExecutor } from "@bound/sync";
 import { createWebServer } from "@bound/web";
 
 export interface StartArgs {
@@ -257,10 +260,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 						`[mcp] Connected to server: ${serverCfg.name} (${serverCfg.transport}), tools: ${tools.map((t) => t.name).join(", ") || "(none)"}`,
 					);
 				} catch (error) {
-					console.warn(
-						`[mcp] Failed to connect to ${serverCfg.name}:`,
-						formatError(error),
-					);
+					console.warn(`[mcp] Failed to connect to ${serverCfg.name}:`, formatError(error));
 				}
 			}
 		} else {
@@ -308,16 +308,49 @@ export async function runStart(args: StartArgs): Promise<void> {
 				});
 			}
 		} catch (error) {
-			console.warn(
-				`[mcp] Failed to list tools for ${serverName}:`,
-				formatError(error),
-			);
+			console.warn(`[mcp] Failed to list tools for ${serverName}:`, formatError(error));
 		}
 	}
 	if (mcpToolDefinitions.length > 0) {
 		console.log(
 			`[mcp] Registered ${mcpToolDefinitions.length} tool(s) for LLM: ${mcpToolDefinitions.map((t) => t.function.name).join(", ")}`,
 		);
+	}
+
+	// 8b. Relay processor setup
+	console.log("Initializing relay processor...");
+	let relayProcessorHandle: { stop: () => void } | null = null;
+	let relayExecutor: RelayExecutor | undefined;
+	{
+		const keyringResult = appContext.optionalConfig["keyring"];
+		const keyring =
+			keyringResult && keyringResult.ok
+				? (keyringResult.value as import("@bound/shared").KeyringConfig)
+				: undefined;
+
+		if (keyring) {
+			const syncConfigResult = appContext.optionalConfig.sync;
+			const relayConfig = resolveRelayConfig(
+				syncConfigResult?.ok ? (syncConfigResult.value as SyncConfig) : undefined,
+			);
+			const relayProcessor = new RelayProcessor(
+				appContext.db,
+				appContext.siteId,
+				mcpClientsMap,
+				new Set(Object.keys(keyring.hosts)),
+				appContext.logger,
+				relayConfig,
+			);
+			relayProcessorHandle = relayProcessor.start();
+			console.log("[relay] Relay processor started");
+
+			// Create the RelayExecutor callback for hub-local execution
+			relayExecutor = async (request, hubSiteId) => {
+				return relayProcessor.executeImmediate(request, hubSiteId);
+			};
+		} else {
+			console.log("[relay] No keyring configured, relay processor disabled");
+		}
 	}
 
 	// 9. Sandbox setup
@@ -333,6 +366,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			siteId: appContext.siteId,
 			eventBus: appContext.eventBus,
 			logger: appContext.logger,
+			mcpClients: mcpClientsMap,
 		};
 		const builtinCommands = getAllCommands();
 		const allDefinitions = [...builtinCommands, ...mcpCommands];
@@ -342,13 +376,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 			clusterFs,
 			commands: registeredCommands,
 		});
-		console.log(`[sandbox] ${builtinCommands.length} built-in + ${mcpCommands.length} MCP commands registered`);
+		console.log(
+			`[sandbox] ${builtinCommands.length} built-in + ${mcpCommands.length} MCP commands registered`,
+		);
 		console.log("[sandbox] Sandbox ready");
 	} catch (error) {
-		console.warn(
-			"[sandbox] Failed to create sandbox:",
-			formatError(error),
-		);
+		console.warn("[sandbox] Failed to create sandbox:", formatError(error));
 	}
 
 	// 10. Persona loading
@@ -361,10 +394,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				personaText = readFileSync(personaPath, "utf-8");
 				console.log(`[persona] Loaded persona (${personaText.length} chars)`);
 			} catch (error) {
-				console.warn(
-					"[persona] Failed to read persona.md:",
-					formatError(error),
-				);
+				console.warn("[persona] Failed to read persona.md:", formatError(error));
 			}
 		} else {
 			console.log("[persona] No persona configured");
@@ -402,9 +432,25 @@ export async function runStart(args: StartArgs): Promise<void> {
 		const ids = routerConfig.backends.map((b) => b.id).join(", ");
 		console.log(`[llm] Model router ready — backends: ${ids} (default: ${routerConfig.default})`);
 	} catch (error) {
-		console.warn(
-			`[llm] Failed to create model router: ${formatError(error)}`,
-		);
+		console.warn(`[llm] Failed to create model router: ${formatError(error)}`);
+	}
+
+	// 11b. Initialize reachability tracker for eager push (hub-side)
+	const reachabilityTracker = new ReachabilityTracker();
+
+	// Determine hub siteId from keyring (for spoke-side validation)
+	let hubSiteId: string | undefined;
+	{
+		const keyringResult = appContext.optionalConfig.keyring;
+		const syncConfigResult = appContext.optionalConfig.sync;
+		if (keyringResult?.ok && syncConfigResult?.ok) {
+			const keyring = keyringResult.value as import("@bound/shared").KeyringConfig;
+			const syncConfig = syncConfigResult.value as import("@bound/shared").SyncConfig;
+			const hubEntry = Object.entries(keyring.hosts).find(([_, v]) => v.url === syncConfig.hub);
+			if (hubEntry) {
+				hubSiteId = hubEntry[0];
+			}
+		}
 	}
 
 	// 12. Web server
@@ -420,6 +466,18 @@ export async function runStart(args: StartArgs): Promise<void> {
 				? (keyringResult.value as import("@bound/shared").KeyringConfig)
 				: undefined;
 
+		const eagerPushConfig =
+			keyring && appContext.siteId
+				? {
+						privateKey: keypair.privateKey,
+						siteId: appContext.siteId,
+						db: appContext.db,
+						keyring,
+						reachabilityTracker,
+						logger: appContext.logger,
+					}
+				: undefined;
+
 		const webPort = Number.parseInt(process.env.PORT || "3000", 10);
 		webServer = await createWebServer(appContext.db, appContext.eventBus, {
 			port: webPort,
@@ -432,6 +490,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 			keyring,
 			siteId: appContext.siteId,
 			logger: appContext.logger,
+			relayExecutor,
+			hubSiteId,
+			eagerPushConfig,
 		});
 		await webServer.start();
 
@@ -461,29 +522,26 @@ export async function runStart(args: StartArgs): Promise<void> {
 				}
 				const activeModelId = selectedModelId || routerConfig.default;
 
-				const agentLoop = new AgentLoop(
-					appContext,
-					sandbox?.bash ?? ({} as any),
-					llmBackend,
-					{
-						threadId: thread_id,
-						userId: message.user_id || appContext.config.allowlist.default_web_user,
-						modelId: activeModelId,
-					},
-				);
+				const agentLoop = new AgentLoop(appContext, sandbox?.bash ?? ({} as any), llmBackend, {
+					threadId: thread_id,
+					userId: message.user_id || appContext.config.allowlist.default_web_user,
+					modelId: activeModelId,
+				});
 
 				const result = await agentLoop.run();
 
 				if (result.error) {
 					console.error(`[agent] Error: ${result.error}`);
 				} else {
-					console.log(`[agent] Done: ${result.messagesCreated} messages, ${result.toolCallsMade} tool calls`);
+					console.log(
+						`[agent] Done: ${result.messagesCreated} messages, ${result.toolCallsMade} tool calls`,
+					);
 				}
 
 				// Emit the last message for WebSocket push
-				const lastMsg = appContext.db.query(
-					"SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1"
-				).get(thread_id);
+				const lastMsg = appContext.db
+					.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
+					.get(thread_id);
 				if (lastMsg) {
 					appContext.eventBus.emit("message:created", {
 						message: lastMsg as any,
@@ -492,13 +550,13 @@ export async function runStart(args: StartArgs): Promise<void> {
 				}
 
 				// Fire-and-forget: generate thread title
-				generateThreadTitle(appContext.db, thread_id, llmBackend, appContext.siteId).then(
-					(titleResult) => {
+				generateThreadTitle(appContext.db, thread_id, llmBackend, appContext.siteId)
+					.then((titleResult) => {
 						if (titleResult.ok) {
 							console.log(`[agent] Thread title: ${titleResult.value}`);
 						}
-					},
-				).catch((err) => console.warn("[agent] Title generation failed:", formatError(err)));
+					})
+					.catch((err) => console.warn("[agent] Title generation failed:", formatError(err)));
 			} catch (error) {
 				console.error(`[agent] Error: ${formatError(error)}`);
 			} finally {
@@ -506,10 +564,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			}
 		});
 	} catch (error) {
-		console.warn(
-			"Web server failed to start:",
-			formatError(error),
-		);
+		console.warn("Web server failed to start:", formatError(error));
 		console.warn("Continuing without web UI. API will not be available.");
 	}
 
@@ -520,7 +575,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 		type: "function",
 		function: {
 			name: "bash",
-			description: "Execute a command in the sandboxed shell. Built-in commands: query, memorize, forget, schedule, cancel, emit, purge, await, cache-warm, cache-pin, cache-unpin, cache-evict, model-hint, archive, hostinfo. MCP tools are also available as commands. Run standard shell commands too.",
+			description:
+				"Execute a command in the sandboxed shell. Built-in commands: query, memorize, forget, schedule, cancel, emit, purge, await, cache-warm, cache-pin, cache-unpin, cache-evict, model-hint, archive, hostinfo. MCP tools are also available as commands. Run standard shell commands too.",
 			parameters: {
 				type: "object",
 				properties: {
@@ -610,12 +666,14 @@ export async function runStart(args: StartArgs): Promise<void> {
 				appContext.eventBus,
 				keyring,
 			);
-			syncLoopHandle = startSyncLoop(syncClient, syncConfig.sync_interval_seconds || 30);
+			syncLoopHandle = startSyncLoop(
+				syncClient,
+				syncConfig.sync_interval_seconds || 30,
+				appContext.eventBus,
+			);
 			console.log(`[sync] Sync loop started (${syncConfig.sync_interval_seconds}s interval)`);
 		} catch (error) {
-			console.warn(
-				`[sync] Failed to start: ${formatError(error)}`,
-			);
+			console.warn(`[sync] Failed to start: ${formatError(error)}`);
 		}
 	} else {
 		console.log("[sync] Not configured");
@@ -634,9 +692,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				`[overlay] Scanner started (${Object.keys(overlayConfig.mounts).length} mount(s))`,
 			);
 		} catch (error) {
-			console.warn(
-				`[overlay] Failed to start: ${formatError(error)}`,
-			);
+			console.warn(`[overlay] Failed to start: ${formatError(error)}`);
 		}
 	} else {
 		console.log("[overlay] Not configured");
@@ -675,10 +731,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		schedulerHandle = scheduler.start(30_000);
 		console.log("[scheduler] Scheduler started (30s poll interval)");
 	} catch (error) {
-		console.warn(
-			"[scheduler] Failed to start scheduler:",
-			formatError(error),
-		);
+		console.warn("[scheduler] Failed to start scheduler:", formatError(error));
 	}
 
 	console.log(`
@@ -697,6 +750,7 @@ Press Ctrl+C to stop.
 			if (schedulerHandle) schedulerHandle.stop();
 			if (syncLoopHandle) syncLoopHandle.stop();
 			if (overlayHandle) overlayHandle.stop();
+			if (relayProcessorHandle) relayProcessorHandle.stop();
 			if (discordBot) {
 				try {
 					await discordBot.stop();
@@ -721,6 +775,7 @@ Press Ctrl+C to stop.
 			if (schedulerHandle) schedulerHandle.stop();
 			if (syncLoopHandle) syncLoopHandle.stop();
 			if (overlayHandle) overlayHandle.stop();
+			if (relayProcessorHandle) relayProcessorHandle.stop();
 			if (discordBot) {
 				try {
 					await discordBot.stop();

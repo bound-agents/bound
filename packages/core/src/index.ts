@@ -14,6 +14,7 @@ export {
 	loadRequiredConfigs,
 	loadOptionalConfigs,
 	expandEnvVars,
+	resolveRelayConfig,
 	type ConfigError,
 	type RequiredConfig,
 	type OptionalConfigs,
@@ -27,4 +28,26 @@ export {
 	container,
 } from "./container";
 export { createAppContext, type AppContext } from "./app-context";
-export { applyMetricsSchema, recordTurn, getDailySpend, type TurnRecord } from "./metrics-schema";
+export {
+	applyMetricsSchema,
+	recordTurn,
+	getDailySpend,
+	type TurnRecord,
+} from "./metrics-schema";
+export {
+	recordRelayCycle,
+	recordTurnRelayMetrics,
+	pruneRelayCycles,
+	type RelayCycleEntry,
+} from "./relay-metrics";
+export {
+	writeOutbox,
+	readUndelivered,
+	markDelivered,
+	readUnprocessed,
+	insertInbox,
+	markProcessed,
+	pruneRelayTables,
+	readInboxByRefId,
+	PayloadTooLargeError,
+} from "./relay";

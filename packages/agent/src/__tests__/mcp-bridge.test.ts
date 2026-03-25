@@ -242,4 +242,5 @@ describe("MCP Bridge", () => {
 			expect(result.exitCode).toBe(0);
 		}
 	});
+
 });

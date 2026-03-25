@@ -193,8 +193,7 @@ describe("API endpoint completeness", () => {
 				// Hono's default 404 contains "404 Not Found"
 				// Our app-level 404s contain JSON like {"error": "Thread not found"}
 				// which still means the route IS registered -- the resource just doesn't exist.
-				const isRouteMissing =
-					body.includes("404 Not Found") && !body.includes('"error"');
+				const isRouteMissing = body.includes("404 Not Found") && !body.includes('"error"');
 				expect(isRouteMissing).toBe(false);
 			}
 			// If status is not 404, the route is definitely registered -- test passes

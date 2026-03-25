@@ -133,9 +133,7 @@ describe("AgentLoop lifecycle", () => {
 	let siteId: string;
 
 	beforeAll(() => {
-		tmpDir = mkdtempSync(
-			join(tmpdir(), `lifecycle-test-${randomBytes(4).toString("hex")}-`),
-		);
+		tmpDir = mkdtempSync(join(tmpdir(), `lifecycle-test-${randomBytes(4).toString("hex")}-`));
 		const dbPath = join(tmpDir, "test.db");
 		db = createDatabase(dbPath);
 		applySchema(db);
@@ -248,12 +246,7 @@ describe("AgentLoop lifecycle", () => {
 
 	it("records multiple turns when tool calls produce multiple LLM round-trips", async () => {
 		const mockBackend = new MockLLMBackend();
-		mockBackend.setToolThenTextResponse(
-			"tc-1",
-			"bash",
-			{ command: "echo hi" },
-			"Done.",
-		);
+		mockBackend.setToolThenTextResponse("tc-1", "bash", { command: "echo hi" }, "Done.");
 
 		const ctx = makeCtx();
 		const agentLoop = new AgentLoop(ctx, createMockSandbox(), mockBackend, {
@@ -430,12 +423,7 @@ describe("AgentLoop lifecycle", () => {
 	// -----------------------------------------------------------------------
 	it("persists tool_call and tool_result messages before the next LLM call", async () => {
 		const mockBackend = new MockLLMBackend();
-		mockBackend.setToolThenTextResponse(
-			"tc-persist",
-			"bash",
-			{ command: "echo test" },
-			"Final.",
-		);
+		mockBackend.setToolThenTextResponse("tc-persist", "bash", { command: "echo test" }, "Final.");
 
 		const ctx = makeCtx();
 		const agentLoop = new AgentLoop(ctx, createMockSandbox(), mockBackend, {
@@ -447,9 +435,7 @@ describe("AgentLoop lifecycle", () => {
 		await agentLoop.run();
 
 		const msgs = db
-			.query(
-				"SELECT role, created_at FROM messages WHERE thread_id = ? ORDER BY created_at ASC",
-			)
+			.query("SELECT role, created_at FROM messages WHERE thread_id = ? ORDER BY created_at ASC")
 			.all(threadId) as Array<{ role: string; created_at: string }>;
 
 		// tool_call comes first, then tool_result, then assistant

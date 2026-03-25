@@ -12,7 +12,6 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { loadOptionalConfigs } from "../config-loader";
 
 const PROJECT_ROOT = join(import.meta.dir, "..", "..", "..", "..");
 
@@ -105,9 +104,7 @@ describe("Config key consistency", () => {
 		}
 
 		if (unknownKeys.length > 0) {
-			const details = unknownKeys
-				.map((u) => `  ${u.key} in ${u.file}`)
-				.join("\n");
+			const details = unknownKeys.map((u) => `  ${u.key} in ${u.file}`).join("\n");
 			console.error(
 				`Found optionalConfig lookups with keys not stored by the config loader:\n${details}`,
 			);
@@ -122,10 +119,7 @@ describe("Config key consistency", () => {
 		expect(LOADER_KEYS).toContain("cronSchedules");
 
 		// Verify the scheduler uses the correct key
-		const schedulerPath = join(
-			PROJECT_ROOT,
-			"packages/agent/src/scheduler.ts",
-		);
+		const schedulerPath = join(PROJECT_ROOT, "packages/agent/src/scheduler.ts");
 		const schedulerSource = readFileSync(schedulerPath, "utf-8");
 		expect(schedulerSource).toContain('optionalConfig["cronSchedules"]');
 	});

@@ -237,4 +237,67 @@ export function applySchema(db: Database): void {
 			value TEXT NOT NULL
 		) STRICT
 	`);
+
+	// 14. relay_outbox (non-replicated, local-only)
+	db.run(`
+		CREATE TABLE IF NOT EXISTS relay_outbox (
+			id              TEXT PRIMARY KEY,
+			source_site_id  TEXT,
+			target_site_id  TEXT NOT NULL,
+			kind            TEXT NOT NULL,
+			ref_id          TEXT,
+			idempotency_key TEXT,
+			payload         TEXT NOT NULL,
+			created_at      TEXT NOT NULL,
+			expires_at      TEXT NOT NULL,
+			delivered       INTEGER DEFAULT 0
+		) STRICT
+	`);
+
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_relay_outbox_target
+		ON relay_outbox(target_site_id, delivered)
+		WHERE delivered = 0
+	`);
+
+	// 15. relay_inbox (non-replicated, local-only)
+	db.run(`
+		CREATE TABLE IF NOT EXISTS relay_inbox (
+			id              TEXT PRIMARY KEY,
+			source_site_id  TEXT NOT NULL,
+			kind            TEXT NOT NULL,
+			ref_id          TEXT,
+			idempotency_key TEXT,
+			payload         TEXT NOT NULL,
+			expires_at      TEXT NOT NULL,
+			received_at     TEXT NOT NULL,
+			processed       INTEGER DEFAULT 0
+		) STRICT
+	`);
+
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_relay_inbox_unprocessed
+		ON relay_inbox(processed)
+		WHERE processed = 0
+	`);
+
+	// 16. relay_cycles (non-replicated, local-only)
+	db.run(`
+		CREATE TABLE IF NOT EXISTS relay_cycles (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			direction TEXT NOT NULL,
+			peer_site_id TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			delivery_method TEXT NOT NULL,
+			latency_ms INTEGER,
+			expired INTEGER NOT NULL DEFAULT 0,
+			success INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL
+		) STRICT
+	`);
+
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_relay_cycles_created
+		ON relay_cycles(created_at)
+	`);
 }

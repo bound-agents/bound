@@ -1,12 +1,12 @@
 import type { Database } from "bun:sqlite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
-import type { LLMBackend, StreamChunk } from "@bound/llm";
+import type { LLMBackend } from "@bound/llm";
 import { AgentLoop } from "../agent-loop";
 
 // Mock LLM Backend that returns text responses

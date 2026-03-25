@@ -674,7 +674,10 @@ describe("AgentLoop", () => {
 				}
 
 				// First call: return a tool_use
-				if (capturedMessages.length === 0 || !capturedMessages.some((m) => m.role === "tool_call")) {
+				if (
+					capturedMessages.length === 0 ||
+					!capturedMessages.some((m) => m.role === "tool_call")
+				) {
 					yield { type: "tool_use_start" as const, id: "tc-1", name: "bash" };
 					yield {
 						type: "tool_use_args" as const,

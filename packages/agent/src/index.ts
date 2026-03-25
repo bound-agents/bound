@@ -11,6 +11,9 @@ export { assembleContext } from "./context-assembly";
 // Export scheduler
 export { Scheduler } from "./scheduler";
 
+// Export relay processor
+export { RelayProcessor } from "./relay-processor";
+
 // Export commands
 export { getAllCommands, setCommandRegistry } from "./commands/index";
 
@@ -26,7 +29,6 @@ export type {
 	PromptResult,
 } from "./mcp-client";
 export { generateMCPCommands, updateHostMCPInfo } from "./mcp-bridge";
-export type { MCPProxyConfig } from "./mcp-bridge";
 
 // Export advisories
 export {
@@ -56,4 +58,9 @@ export {
 } from "./file-thread-tracker";
 
 // Export task resolution
-export { seedCronTasks, computeNextRunAt, canRunHere, isDependencySatisfied } from "./task-resolution";
+export {
+	seedCronTasks,
+	computeNextRunAt,
+	canRunHere,
+	isDependencySatisfied,
+} from "./task-resolution";

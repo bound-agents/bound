@@ -26,6 +26,18 @@ export function applyMetricsSchema(db: Database): void {
 		) STRICT
 	`);
 
+	// Add relay columns to turns (idempotent — no-op if already exists)
+	try {
+		db.run("ALTER TABLE turns ADD COLUMN relay_target TEXT");
+	} catch {
+		// Column already exists
+	}
+	try {
+		db.run("ALTER TABLE turns ADD COLUMN relay_latency_ms INTEGER");
+	} catch {
+		// Column already exists
+	}
+
 	db.run(`
 		CREATE TABLE IF NOT EXISTS daily_summary (
 			date TEXT PRIMARY KEY,
@@ -37,20 +49,22 @@ export function applyMetricsSchema(db: Database): void {
 	`);
 }
 
-export function recordTurn(db: Database, turn: TurnRecord): void {
-	db.prepare(
-		`INSERT INTO turns (thread_id, task_id, dag_root_id, model_id, tokens_in, tokens_out, cost_usd, created_at)
+export function recordTurn(db: Database, turn: TurnRecord): number {
+	const result = db
+		.prepare(
+			`INSERT INTO turns (thread_id, task_id, dag_root_id, model_id, tokens_in, tokens_out, cost_usd, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-	).run(
-		turn.thread_id || null,
-		turn.task_id || null,
-		turn.dag_root_id || null,
-		turn.model_id,
-		turn.tokens_in,
-		turn.tokens_out,
-		turn.cost_usd || 0,
-		turn.created_at,
-	);
+		)
+		.run(
+			turn.thread_id || null,
+			turn.task_id || null,
+			turn.dag_root_id || null,
+			turn.model_id,
+			turn.tokens_in,
+			turn.tokens_out,
+			turn.cost_usd || 0,
+			turn.created_at,
+		);
 
 	// Update daily_summary
 	const date = turn.created_at.split("T")[0];
@@ -71,6 +85,8 @@ export function recordTurn(db: Database, turn: TurnRecord): void {
 			 VALUES (?, ?, ?, ?, 1)`,
 		).run(date, turn.tokens_in, turn.tokens_out, turn.cost_usd || 0);
 	}
+
+	return Number(result.lastInsertRowid);
 }
 
 export function getDailySpend(db: Database, date: string): number {

@@ -9,8 +9,8 @@ export function createDatabase(path: string): Database {
 }
 
 export function getSiteId(db: Database): string {
-	const row = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as
-		| { value: string }
-		| null;
+	const row = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as {
+		value: string;
+	} | null;
 	return row?.value ?? "unknown";
 }

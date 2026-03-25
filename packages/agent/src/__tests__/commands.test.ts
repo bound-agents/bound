@@ -12,6 +12,7 @@ import { awaitCmd } from "../commands/await-cmd";
 import { cancel } from "../commands/cancel";
 import { emit } from "../commands/emit";
 import { forget } from "../commands/forget";
+import { help, setCommandRegistry } from "../commands/help";
 import { memorize } from "../commands/memorize";
 import { purge } from "../commands/purge";
 import { query } from "../commands/query";
@@ -401,6 +402,106 @@ describe("defineCommand implementations", () => {
 			const output = JSON.parse(result.stdout);
 			expect(output).toHaveProperty(taskId);
 			expect(output[taskId].status).toBe("completed");
+		});
+	});
+
+	describe("commands command", () => {
+		it("should show LOCAL and REMOTE tiers with LOCAL MCP tools (mcp-relay.AC8.5)", async () => {
+			// Set up command registry with a builtin and an MCP tool
+			setCommandRegistry([
+				help,
+				{ name: "query", args: [], handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }) },
+				{
+					name: "test-server-tool1",
+					args: [],
+					handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+				},
+				{
+					name: "remote-server-tool2",
+					args: [],
+					handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+				},
+			]);
+
+			// Mock MCPClient with listTools method
+			const mockMcpClient = {
+				listTools: async () => [{ name: "tool1" }],
+			};
+
+			// Set up context with MCPClients map
+			const ctxWithMcp = {
+				...ctx,
+				mcpClients: new Map([["test-server", mockMcpClient]]),
+			};
+
+			// Insert a remote host with MCP tools
+			db.run(
+				`INSERT INTO hosts (site_id, host_name, mcp_tools, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[
+					"remote-site-id",
+					"remote-host",
+					JSON.stringify([{ server: "remote-server", name: "tool2" }]),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const result = await help.handler({}, ctxWithMcp);
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain("Built-in:");
+			expect(result.stdout).toContain("query");
+			expect(result.stdout).toContain("LOCAL (MCP):");
+			expect(result.stdout).toContain("test-server-tool1");
+			expect(result.stdout).toContain("REMOTE (via relay):");
+			expect(result.stdout).toContain("remote-server-tool2");
+			expect(result.stdout).toContain("[host: remote-host]");
+		});
+
+		it("should only show LOCAL (MCP) when no remote tools (mcp-relay.AC8.5)", async () => {
+			// Set up command registry
+			setCommandRegistry([
+				help,
+				{ name: "query", args: [], handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }) },
+				{
+					name: "local-server-tool",
+					args: [],
+					handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+				},
+			]);
+
+			// Mock MCPClient
+			const mockMcpClient = {
+				listTools: async () => [{ name: "tool" }],
+			};
+
+			const ctxWithMcp = {
+				...ctx,
+				mcpClients: new Map([["local-server", mockMcpClient]]),
+			};
+
+			const result = await help.handler({}, ctxWithMcp);
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain("Built-in:");
+			expect(result.stdout).toContain("LOCAL (MCP):");
+			expect(result.stdout).toContain("local-server-tool");
+			expect(result.stdout).not.toContain("REMOTE (via relay):");
+		});
+
+		it("should work without mcpClients map (backwards compatibility)", async () => {
+			// Set up command registry
+			setCommandRegistry([
+				help,
+				{ name: "query", args: [], handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }) },
+			]);
+
+			const result = await help.handler({}, ctx);
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain("Built-in:");
+			expect(result.stdout).toContain("query");
 		});
 	});
 });

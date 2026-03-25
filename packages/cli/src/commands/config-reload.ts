@@ -1,10 +1,8 @@
-import { openBoundDB } from "../lib/db";
-
-import { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { getSiteId } from "@bound/core";
 import { mcpSchema } from "@bound/shared";
+import { openBoundDB } from "../lib/db";
 export interface ConfigReloadArgs {
 	target: string;
 	configDir?: string;

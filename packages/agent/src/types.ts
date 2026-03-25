@@ -10,7 +10,8 @@ export type AgentLoopState =
 	| "FS_PERSIST"
 	| "QUEUE_CHECK"
 	| "ERROR_PERSIST"
-	| "AWAIT_POLL";
+	| "AWAIT_POLL"
+	| "RELAY_WAIT";
 
 export interface AgentLoopConfig {
 	threadId: string;

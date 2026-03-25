@@ -13,3 +13,15 @@ export { startSyncLoop } from "./sync-loop.js";
 
 // Routes
 export { createSyncRoutes } from "./routes.js";
+
+// Relay wire format
+export type { RelayRequest, RelayResponse } from "./changeset.js";
+export type { RelayExecutor } from "./relay-executor.js";
+export { noopRelayExecutor } from "./relay-executor.js";
+
+// Reachability tracking
+export { ReachabilityTracker } from "./reachability.js";
+
+// Eager push
+export type { EagerPushConfig } from "./eager-push.js";
+export { eagerPushToSpoke } from "./eager-push.js";

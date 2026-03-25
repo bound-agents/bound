@@ -1,11 +1,5 @@
 import type { Database } from "bun:sqlite";
-import {
-	approveAdvisory,
-	dismissAdvisory,
-	deferAdvisory,
-	applyAdvisory,
-	getPendingAdvisories,
-} from "@bound/agent";
+import { applyAdvisory, approveAdvisory, deferAdvisory, dismissAdvisory } from "@bound/agent";
 import type { Advisory } from "@bound/shared";
 import { Hono } from "hono";
 

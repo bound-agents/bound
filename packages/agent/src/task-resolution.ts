@@ -127,9 +127,7 @@ export function computeNextRunAt(cronExpr: string, from: Date = new Date()): Dat
 	try {
 		return parseCron(cronExpr, from);
 	} catch (error) {
-		throw new Error(
-			`Failed to parse cron expression "${cronExpr}": ${formatError(error)}`,
-		);
+		throw new Error(`Failed to parse cron expression "${cronExpr}": ${formatError(error)}`);
 	}
 }
 

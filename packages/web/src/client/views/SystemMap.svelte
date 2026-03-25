@@ -14,7 +14,7 @@ interface ThreadStatus {
 let threads: Thread[] = $state([]);
 let creating = $state(false);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
-let hoveredIdx = $state(-1);
+const hoveredIdx = $state(-1);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let threadStatuses: Map<string, ThreadStatus> = $state(new Map());
 // biome-ignore lint/correctness/noUnusedVariables: used in template
@@ -53,9 +53,7 @@ async function loadThreads(): Promise<void> {
 				// Check for unread alerts in this thread
 				try {
 					const msgs = await api.listMessages(t.id);
-					const hasAlert = msgs.some(
-						(m: { role: string }) => m.role === "alert",
-					);
+					const hasAlert = msgs.some((m: { role: string }) => m.role === "alert");
 					if (hasAlert) alerts.add(t.id);
 				} catch {
 					// Ignore

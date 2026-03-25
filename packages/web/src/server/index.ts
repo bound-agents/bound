@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
-import type { MCPClient } from "@bound/agent";
 import { formatError } from "@bound/shared";
 import type { KeyringConfig, Logger, TypedEventEmitter } from "@bound/shared";
+import type { EagerPushConfig, RelayExecutor } from "@bound/sync";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { type ModelsConfig, type RoutesConfig, registerRoutes } from "./routes/index";
@@ -21,10 +21,12 @@ export type { ModelsConfig };
 
 export interface AppConfig {
 	modelsConfig?: ModelsConfig;
-	mcpClients?: Map<string, MCPClient>;
 	keyring?: KeyringConfig;
 	siteId?: string;
 	logger?: Logger;
+	relayExecutor?: RelayExecutor;
+	hubSiteId?: string;
+	eagerPushConfig?: EagerPushConfig;
 }
 
 export async function createApp(
@@ -32,17 +34,9 @@ export async function createApp(
 	eventBus: TypedEventEmitter,
 	appConfig?: AppConfig | ModelsConfig,
 ): Promise<Hono> {
-	// Accept either the new AppConfig shape or the legacy ModelsConfig shape for backwards compat
-	let routesConfig: RoutesConfig;
-	if (appConfig && "mcpClients" in appConfig) {
-		routesConfig = {
-			modelsConfig: appConfig.modelsConfig,
-			mcpClients: appConfig.mcpClients,
-			keyring: appConfig.keyring,
-		};
-	} else {
-		routesConfig = { modelsConfig: appConfig as ModelsConfig | undefined };
-	}
+	const routesConfig: RoutesConfig = {
+		modelsConfig: appConfig as ModelsConfig | undefined,
+	};
 
 	const app = new Hono();
 	const routes = registerRoutes(db, eventBus, routesConfig);
@@ -67,10 +61,6 @@ export async function createApp(
 	app.route("/api/status", routes.status);
 	app.route("/api/tasks", routes.tasks);
 	app.route("/api/advisories", routes.advisories);
-	if (routes.mcpProxy) {
-		// Mount at root — the route itself registers /api/mcp-proxy including auth middleware
-		app.route("/", routes.mcpProxy);
-	}
 
 	// Mount sync routes if siteId, keyring, and logger are available
 	if (
@@ -88,13 +78,13 @@ export async function createApp(
 				appConfig.keyring,
 				eventBus,
 				appConfig.logger,
+				appConfig.relayExecutor,
+				appConfig.hubSiteId,
+				appConfig.eagerPushConfig,
 			);
 			app.route("/", syncRoutes);
 		} catch (error) {
-			console.warn(
-				"[web] Sync routes unavailable:",
-				formatError(error),
-			);
+			console.warn("[web] Sync routes unavailable:", formatError(error));
 		}
 	}
 

@@ -1,8 +1,8 @@
+import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Database } from "bun:sqlite";
 import { createDatabase } from "../database";
 import { applySchema } from "../schema";
 
@@ -90,7 +90,9 @@ describe("R-W3: Database lock timeout returns error (no deadlock)", () => {
 		}).not.toThrow();
 
 		// Verify both writes succeeded
-		const rows = db2.query("SELECT key, value FROM host_meta WHERE key LIKE 'key%'").all() as Array<{
+		const rows = db2
+			.query("SELECT key, value FROM host_meta WHERE key LIKE 'key%'")
+			.all() as Array<{
 			key: string;
 			value: string;
 		}>;

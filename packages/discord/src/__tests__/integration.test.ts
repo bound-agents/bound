@@ -62,48 +62,47 @@ describe("Discord Integration", () => {
 	it.skipIf(process.env.SKIP_DISCORD === "1")(
 		"complete DM flow: allowlisted user creates thread, message persisted, agent loop spawned",
 		async () => {
+			const ctx = createAppContext(configDir, dbPath);
+			const now = new Date().toISOString();
+			const userId = randomUUID();
 
-		const ctx = createAppContext(configDir, dbPath);
-		const now = new Date().toISOString();
-		const userId = randomUUID();
-
-		// Insert alice
-		ctx.db.run(
-			`INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted)
+			// Insert alice
+			ctx.db.run(
+				`INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, 0)`,
-			[userId, "Alice", "alice-discord-123", now, now],
-		);
+				[userId, "Alice", "alice-discord-123", now, now],
+			);
 
-		// Track agent loop calls and config
-		let agentLoopCreated = false;
+			// Track agent loop calls and config
+			let agentLoopCreated = false;
 
-		const mockFactory = (_config: AgentLoopConfig): AgentLoop => {
-			agentLoopCreated = true;
-			return {
-				run: async () => ({
-					messagesCreated: 1,
-					toolCallsMade: 0,
-					filesChanged: 0,
-				}),
-			} as unknown as AgentLoop;
-		};
+			const mockFactory = (_config: AgentLoopConfig): AgentLoop => {
+				agentLoopCreated = true;
+				return {
+					run: async () => ({
+						messagesCreated: 1,
+						toolCallsMade: 0,
+						filesChanged: 0,
+					}),
+				} as unknown as AgentLoop;
+			};
 
-		const bot = new DiscordBot(ctx, mockFactory, "test-token");
+			const bot = new DiscordBot(ctx, mockFactory, "test-token");
 
-		expect(bot).toBeDefined();
-		expect(agentLoopCreated).toBe(false); // Agent loop not created until message received
+			expect(bot).toBeDefined();
+			expect(agentLoopCreated).toBe(false); // Agent loop not created until message received
 
-		// Now simulate incoming DM from allowlisted user
-		// We need to manually trigger the handler since we can't use discord.js client
-		// Instead, we'll verify the database state after message persistence
+			// Now simulate incoming DM from allowlisted user
+			// We need to manually trigger the handler since we can't use discord.js client
+			// Instead, we'll verify the database state after message persistence
 
-		// Insert a message as if it came from Discord
-		const messageId = randomUUID();
-		ctx.db.run(
-			`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin)
+			// Insert a message as if it came from Discord
+			const messageId = randomUUID();
+			ctx.db.run(
+				`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			[messageId, "thread-123", "user", "Hello agent", null, null, now, now, ctx.hostName],
-		);
+				[messageId, "thread-123", "user", "Hello agent", null, null, now, now, ctx.hostName],
+			);
 
 			// Verify message was persisted
 			const messages = ctx.db.query("SELECT * FROM messages").all();
@@ -114,32 +113,31 @@ describe("Discord Integration", () => {
 	it.skipIf(process.env.SKIP_DISCORD === "1")(
 		"non-allowlisted user DM is silently ignored",
 		async () => {
+			const ctx = createAppContext(configDir, dbPath);
 
-		const ctx = createAppContext(configDir, dbPath);
+			// Don't insert any users - empty allowlist
 
-		// Don't insert any users - empty allowlist
+			let agentLoopCreated = false;
 
-		let agentLoopCreated = false;
+			const mockFactory = (): AgentLoop => {
+				agentLoopCreated = true;
+				return {
+					run: async () => ({
+						messagesCreated: 0,
+						toolCallsMade: 0,
+						filesChanged: 0,
+					}),
+				} as unknown as AgentLoop;
+			};
 
-		const mockFactory = (): AgentLoop => {
-			agentLoopCreated = true;
-			return {
-				run: async () => ({
-					messagesCreated: 0,
-					toolCallsMade: 0,
-					filesChanged: 0,
-				}),
-			} as unknown as AgentLoop;
-		};
+			const bot = new DiscordBot(ctx, mockFactory, "test-token");
 
-		const bot = new DiscordBot(ctx, mockFactory, "test-token");
+			expect(bot).toBeDefined();
+			expect(agentLoopCreated).toBe(false);
 
-		expect(bot).toBeDefined();
-		expect(agentLoopCreated).toBe(false);
-
-		// Verify no threads created initially
-		const threads = ctx.db.query("SELECT * FROM threads").all();
-		expect(threads.length).toBe(0);
+			// Verify no threads created initially
+			const threads = ctx.db.query("SELECT * FROM threads").all();
+			expect(threads.length).toBe(0);
 
 			// Verify that querying for a non-allowlisted user returns no users
 			const users = ctx.db.query("SELECT * FROM users WHERE discord_id = ?").all("unknown-user");
@@ -150,38 +148,37 @@ describe("Discord Integration", () => {
 	it.skipIf(process.env.SKIP_DISCORD === "1")(
 		"agent loop receives correct thread and user IDs",
 		async () => {
+			const ctx = createAppContext(configDir, dbPath);
+			const now = new Date().toISOString();
+			const userId = randomUUID();
 
-		const ctx = createAppContext(configDir, dbPath);
-		const now = new Date().toISOString();
-		const userId = randomUUID();
-
-		// Insert alice
-		ctx.db.run(
-			`INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted)
+			// Insert alice
+			ctx.db.run(
+				`INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, 0)`,
-			[userId, "Alice", "alice-discord-123", now, now],
-		);
+				[userId, "Alice", "alice-discord-123", now, now],
+			);
 
-		// Create thread for alice
-		const threadId = randomUUID();
-		ctx.db.run(
-			`INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted)
+			// Create thread for alice
+			const threadId = randomUUID();
+			ctx.db.run(
+				`INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
-			[threadId, userId, "discord", ctx.hostName, now, now, now],
-		);
+				[threadId, userId, "discord", ctx.hostName, now, now, now],
+			);
 
-		const mockFactory = (_config: AgentLoopConfig): AgentLoop => {
-			return {
-				run: async () => ({
-					messagesCreated: 1,
-					toolCallsMade: 0,
-					filesChanged: 0,
-				}),
-			} as unknown as AgentLoop;
-		};
+			const mockFactory = (_config: AgentLoopConfig): AgentLoop => {
+				return {
+					run: async () => ({
+						messagesCreated: 1,
+						toolCallsMade: 0,
+						filesChanged: 0,
+					}),
+				} as unknown as AgentLoop;
+			};
 
-		const bot = new DiscordBot(ctx, mockFactory, "test-token");
-		expect(bot).toBeDefined();
+			const bot = new DiscordBot(ctx, mockFactory, "test-token");
+			expect(bot).toBeDefined();
 
 			// Verify thread exists
 			const threads = ctx.db.query("SELECT * FROM threads WHERE user_id = ?").all(userId);

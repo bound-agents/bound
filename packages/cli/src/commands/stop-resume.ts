@@ -1,10 +1,7 @@
 import { openBoundDB } from "../lib/db";
 
-import { getSiteId } from "@bound/core";
-// Task 4: boundctl stop/resume commands
-// Emergency stop and resume operations
-import { Database } from "bun:sqlite";
 import { resolve } from "node:path";
+import { getSiteId } from "@bound/core";
 export interface StopResumeArgs {
 	configDir?: string;
 }

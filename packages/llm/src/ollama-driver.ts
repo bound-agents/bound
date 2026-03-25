@@ -63,7 +63,10 @@ function toOllamaMessages(messages: LLMMessage[]): OllamaMessage[] {
 			const textContent = extractTextFromBlocks(msg.content);
 
 			if (msg.role === "tool_call") {
-				const toolBlocks = msg.content.filter((block): block is Extract<typeof block, { type: "tool_use" }> => block.type === "tool_use");
+				const toolBlocks = msg.content.filter(
+					(block): block is Extract<typeof block, { type: "tool_use" }> =>
+						block.type === "tool_use",
+				);
 				if (toolBlocks.length > 0) {
 					const toolCalls = toolBlocks.map((block) => ({
 						function: {

@@ -12,7 +12,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,7 +24,6 @@ import {
 	insertRow,
 	withChangeLog,
 } from "@bound/core";
-import type { AppContext } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 
 describe("Startup Wiring", () => {
@@ -66,16 +65,17 @@ describe("Startup Wiring", () => {
 
 			// Clear any previous test data
 			db.run("DELETE FROM hosts WHERE site_id = ?", [siteId]);
-			const seqBefore = (
-				db.query("SELECT MAX(seq) as maxSeq FROM change_log").get() as {
-					maxSeq: number | null;
-				}
-			).maxSeq ?? 0;
+			const seqBefore =
+				(
+					db.query("SELECT MAX(seq) as maxSeq FROM change_log").get() as {
+						maxSeq: number | null;
+					}
+				).maxSeq ?? 0;
 
 			// Replicate the exact logic from start.ts step 7
-			const existingHost = db
-				.query("SELECT site_id FROM hosts WHERE site_id = ?")
-				.get(siteId) as { site_id: string } | null;
+			const existingHost = db.query("SELECT site_id FROM hosts WHERE site_id = ?").get(siteId) as {
+				site_id: string;
+			} | null;
 
 			if (existingHost) {
 				withChangeLog(db, siteId, () => {
@@ -116,24 +116,24 @@ describe("Startup Wiring", () => {
 			}
 
 			// Verify host row was created
-			const host = db
-				.query("SELECT * FROM hosts WHERE site_id = ?")
-				.get(siteId) as Record<string, unknown> | null;
+			const host = db.query("SELECT * FROM hosts WHERE site_id = ?").get(siteId) as Record<
+				string,
+				unknown
+			> | null;
 			expect(host).not.toBeNull();
 			expect(host!.host_name).toBe(hostName);
 
 			// Verify change_log entry was created (outbox pattern)
-			const seqAfter = (
-				db.query("SELECT MAX(seq) as maxSeq FROM change_log").get() as {
-					maxSeq: number | null;
-				}
-			).maxSeq ?? 0;
+			const seqAfter =
+				(
+					db.query("SELECT MAX(seq) as maxSeq FROM change_log").get() as {
+						maxSeq: number | null;
+					}
+				).maxSeq ?? 0;
 			expect(seqAfter).toBeGreaterThan(seqBefore);
 
 			const changeLogEntry = db
-				.query(
-					"SELECT * FROM change_log WHERE table_name = 'hosts' AND row_id = ? AND seq > ?",
-				)
+				.query("SELECT * FROM change_log WHERE table_name = 'hosts' AND row_id = ? AND seq > ?")
 				.get(siteId, seqBefore) as Record<string, unknown> | null;
 			expect(changeLogEntry).not.toBeNull();
 			expect(changeLogEntry!.site_id).toBe(siteId);
@@ -150,21 +150,25 @@ describe("Startup Wiring", () => {
 				[siteId, "old-name", now, now],
 			);
 
-			const seqBefore = (
-				db.query("SELECT MAX(seq) as maxSeq FROM change_log").get() as {
-					maxSeq: number | null;
-				}
-			).maxSeq ?? 0;
+			const seqBefore =
+				(
+					db.query("SELECT MAX(seq) as maxSeq FROM change_log").get() as {
+						maxSeq: number | null;
+					}
+				).maxSeq ?? 0;
 
 			// Run update path (same as start.ts when host already exists)
 			withChangeLog(db, siteId, () => {
-				db.run(
-					"UPDATE hosts SET host_name = ?, online_at = ?, modified_at = ? WHERE site_id = ?",
-					[hostName, now, now, siteId],
-				);
-				const updatedRow = db
-					.query("SELECT * FROM hosts WHERE site_id = ?")
-					.get(siteId) as Record<string, unknown>;
+				db.run("UPDATE hosts SET host_name = ?, online_at = ?, modified_at = ? WHERE site_id = ?", [
+					hostName,
+					now,
+					now,
+					siteId,
+				]);
+				const updatedRow = db.query("SELECT * FROM hosts WHERE site_id = ?").get(siteId) as Record<
+					string,
+					unknown
+				>;
 				return {
 					tableName: "hosts" as const,
 					rowId: siteId,
@@ -173,16 +177,17 @@ describe("Startup Wiring", () => {
 				};
 			});
 
-			const host = db
-				.query("SELECT host_name FROM hosts WHERE site_id = ?")
-				.get(siteId) as { host_name: string } | null;
+			const host = db.query("SELECT host_name FROM hosts WHERE site_id = ?").get(siteId) as {
+				host_name: string;
+			} | null;
 			expect(host!.host_name).toBe(hostName);
 
-			const seqAfter = (
-				db.query("SELECT MAX(seq) as maxSeq FROM change_log").get() as {
-					maxSeq: number | null;
-				}
-			).maxSeq ?? 0;
+			const seqAfter =
+				(
+					db.query("SELECT MAX(seq) as maxSeq FROM change_log").get() as {
+						maxSeq: number | null;
+					}
+				).maxSeq ?? 0;
 			expect(seqAfter).toBeGreaterThan(seqBefore);
 		});
 	});
@@ -420,7 +425,9 @@ describe("Startup Wiring", () => {
 				   AND (heartbeat_at IS NULL OR heartbeat_at < ?)`,
 			).run(staleThreshold);
 
-			const task = db.query("SELECT status, lease_id, claimed_by FROM tasks WHERE id = ?").get(taskId) as {
+			const task = db
+				.query("SELECT status, lease_id, claimed_by FROM tasks WHERE id = ?")
+				.get(taskId) as {
 				status: string;
 				lease_id: string | null;
 				claimed_by: string | null;
@@ -477,11 +484,12 @@ describe("Startup Wiring", () => {
 			const userId = randomUUID();
 			const now = new Date().toISOString();
 
-			const seqBefore = (
-				db.query("SELECT MAX(seq) as maxSeq FROM change_log").get() as {
-					maxSeq: number | null;
-				}
-			).maxSeq ?? 0;
+			const seqBefore =
+				(
+					db.query("SELECT MAX(seq) as maxSeq FROM change_log").get() as {
+						maxSeq: number | null;
+					}
+				).maxSeq ?? 0;
 
 			insertRow(
 				db,
@@ -498,24 +506,24 @@ describe("Startup Wiring", () => {
 			);
 
 			// Verify user exists
-			const user = db
-				.query("SELECT * FROM users WHERE id = ?")
-				.get(userId) as Record<string, unknown> | null;
+			const user = db.query("SELECT * FROM users WHERE id = ?").get(userId) as Record<
+				string,
+				unknown
+			> | null;
 			expect(user).not.toBeNull();
 			expect(user!.display_name).toBe("Seeded User");
 
 			// Verify change_log entry exists
-			const seqAfter = (
-				db.query("SELECT MAX(seq) as maxSeq FROM change_log").get() as {
-					maxSeq: number | null;
-				}
-			).maxSeq ?? 0;
+			const seqAfter =
+				(
+					db.query("SELECT MAX(seq) as maxSeq FROM change_log").get() as {
+						maxSeq: number | null;
+					}
+				).maxSeq ?? 0;
 			expect(seqAfter).toBeGreaterThan(seqBefore);
 
 			const clEntry = db
-				.query(
-					"SELECT * FROM change_log WHERE table_name = 'users' AND row_id = ? AND seq > ?",
-				)
+				.query("SELECT * FROM change_log WHERE table_name = 'users' AND row_id = ? AND seq > ?")
 				.get(userId, seqBefore) as Record<string, unknown> | null;
 			expect(clEntry).not.toBeNull();
 		});

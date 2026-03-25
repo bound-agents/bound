@@ -52,7 +52,9 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 		const chatCalls: Array<{ purpose: string }> = [];
 
 		class MockLLMBackend implements LLMBackend {
-			async *chat(params: { messages: Array<{ role: string; content: string }> }): AsyncGenerator<StreamChunk> {
+			async *chat(params: {
+				messages: Array<{ role: string; content: string }>;
+			}): AsyncGenerator<StreamChunk> {
 				// Check if this is a summary extraction call (single user message with "Summarize")
 				const lastMsg = params.messages[params.messages.length - 1];
 				if (lastMsg?.content?.includes("Summarize")) {

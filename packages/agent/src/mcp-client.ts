@@ -66,9 +66,7 @@ export class MCPClient {
 				throw new Error(`Server "${this.serverConfig.name}" requires a url for http transport`);
 			}
 			const transport = new StreamableHTTPClientTransport(new URL(this.serverConfig.url), {
-				requestInit: this.serverConfig.headers
-					? { headers: this.serverConfig.headers }
-					: undefined,
+				requestInit: this.serverConfig.headers ? { headers: this.serverConfig.headers } : undefined,
 			});
 			await this.client.connect(transport);
 		}

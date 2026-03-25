@@ -39,7 +39,9 @@ export class Scheduler {
 		private ctx: AppContext,
 		private agentLoopFactory: (config: AgentLoopConfig) => AgentLoop,
 		private config: SchedulerConfig = {},
-		private sandbox?: { exec?: (cmd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }> },
+		private sandbox?: {
+			exec?: (cmd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+		},
 	) {
 		// Register event handler for all event types
 		ctx.eventBus.on("message:created", () => this.onUserInteraction());
@@ -203,7 +205,9 @@ export class Scheduler {
 				});
 				// Release the claim so it can be re-evaluated later
 				this.ctx.db
-					.query("UPDATE tasks SET status = 'pending', claimed_by = NULL, claimed_at = NULL WHERE id = ?")
+					.query(
+						"UPDATE tasks SET status = 'pending', claimed_by = NULL, claimed_at = NULL WHERE id = ?",
+					)
 					.run(task.id);
 				continue;
 			}

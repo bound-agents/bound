@@ -32,7 +32,7 @@ describe("Database Schema", () => {
 		db.close();
 	});
 
-	it("applies schema successfully creating all 13 tables", () => {
+	it("applies schema successfully creating all 16 tables", () => {
 		const db = createDatabase(dbPath);
 		applySchema(db);
 
@@ -44,7 +44,7 @@ describe("Database Schema", () => {
 
 		const tableNames = tables.map((t) => t.name);
 
-		// Verify all 13 tables exist
+		// Verify all 16 tables exist
 		expect(tableNames).toContain("users");
 		expect(tableNames).toContain("threads");
 		expect(tableNames).toContain("messages");
@@ -58,8 +58,11 @@ describe("Database Schema", () => {
 		expect(tableNames).toContain("change_log");
 		expect(tableNames).toContain("sync_state");
 		expect(tableNames).toContain("host_meta");
+		expect(tableNames).toContain("relay_outbox");
+		expect(tableNames).toContain("relay_inbox");
+		expect(tableNames).toContain("relay_cycles");
 
-		expect(tableNames.length).toBe(13);
+		expect(tableNames.length).toBe(16);
 
 		db.close();
 	});
@@ -119,8 +122,8 @@ describe("Database Schema", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		// Still exactly 13 tables
-		expect(tables.length).toBe(13);
+		// Still exactly 16 tables
+		expect(tables.length).toBe(16);
 
 		db.close();
 	});

@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runConfigReload } from "../commands/config-reload.js";
 import { runDrain } from "../commands/drain.js";
+import { runSetHub } from "../commands/set-hub.js";
 import { runSyncStatus } from "../commands/sync-status.js";
 
 describe("boundctl commands", () => {
@@ -254,6 +255,130 @@ describe("boundctl commands", () => {
 
 			expect(hubEntry).not.toBeNull();
 			expect(hubEntry?.value).toBe("new-hub-host");
+
+			db2.close();
+		});
+	});
+
+	describe("set-hub with relay drain", () => {
+		it("AC4.1: sets relay_draining flag before polling outbox", async () => {
+			const dataDir = join(tempDir, "data");
+			const configDir = join(tempDir, "config");
+			mkdirSync(configDir);
+
+			// Add relay_outbox to this test's database
+			const db = new Database(dbPath);
+			db.exec(`
+				CREATE TABLE IF NOT EXISTS relay_outbox (
+					id TEXT PRIMARY KEY,
+					source_site_id TEXT,
+					target_site_id TEXT NOT NULL,
+					kind TEXT NOT NULL,
+					ref_id TEXT,
+					idempotency_key TEXT,
+					payload TEXT NOT NULL,
+					created_at TEXT NOT NULL,
+					expires_at TEXT NOT NULL,
+					delivered INTEGER DEFAULT 0
+				)
+			`);
+
+			db.close();
+
+			// Set hub
+			await runSetHub({
+				hostName: "new-hub-host",
+				configDir: dataDir,
+			});
+
+			// Verify hub was switched
+			const db2 = new Database(dbPath);
+			const hubEntry = db2
+				.query("SELECT * FROM cluster_config WHERE key = 'cluster_hub'")
+				.get() as { key: string; value: string } | null;
+
+			expect(hubEntry).not.toBeNull();
+			expect(hubEntry?.value).toBe("new-hub-host");
+
+			// Verify drain flag was cleared (it should have been set then cleared)
+			const drainFlag = db2
+				.query("SELECT value FROM host_meta WHERE key = 'relay_draining'")
+				.get() as { value: string } | null;
+
+			expect(drainFlag).toBeNull();
+
+			db2.close();
+		});
+
+		it("AC4.5: proceeds with hub switch on drain timeout", async () => {
+			const dataDir = join(tempDir, "data");
+
+			// Create sync.json with short drain timeout for testing (2 seconds)
+			const syncConfig = {
+				relay: {
+					drain_timeout_seconds: 2,
+				},
+			};
+			writeFileSync(join(dataDir, "sync.json"), JSON.stringify(syncConfig));
+
+			// Add relay_outbox to this test's database
+			const db = new Database(dbPath);
+			db.exec(`
+				CREATE TABLE IF NOT EXISTS relay_outbox (
+					id TEXT PRIMARY KEY,
+					source_site_id TEXT,
+					target_site_id TEXT NOT NULL,
+					kind TEXT NOT NULL,
+					ref_id TEXT,
+					idempotency_key TEXT,
+					payload TEXT NOT NULL,
+					created_at TEXT NOT NULL,
+					expires_at TEXT NOT NULL,
+					delivered INTEGER DEFAULT 0
+				)
+			`);
+
+			// Insert an undelivered outbox entry (will not be delivered, causing timeout)
+			db.query(`
+				INSERT INTO relay_outbox (
+					id, source_site_id, target_site_id, kind, ref_id,
+					payload, created_at, expires_at, delivered
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`).run(
+				"outbox-1",
+				"hub-site-id",
+				"spoke-site-id",
+				"tool_call",
+				"ref-1",
+				JSON.stringify({ tool: "test" }),
+				new Date().toISOString(),
+				new Date(Date.now() + 60000).toISOString(),
+				0, // NOT delivered - will cause timeout
+			);
+
+			db.close();
+
+			// Set hub with relay drain - should timeout but still proceed
+			await runSetHub({
+				hostName: "new-hub-host",
+				configDir: dataDir,
+			});
+
+			// Verify hub was switched even though drain timed out
+			const db2 = new Database(dbPath);
+			const hubEntry = db2
+				.query("SELECT * FROM cluster_config WHERE key = 'cluster_hub'")
+				.get() as { key: string; value: string } | null;
+
+			expect(hubEntry).not.toBeNull();
+			expect(hubEntry?.value).toBe("new-hub-host");
+
+			// Verify drain flag was cleared
+			const drainFlag = db2
+				.query("SELECT value FROM host_meta WHERE key = 'relay_draining'")
+				.get() as { value: string } | null;
+
+			expect(drainFlag).toBeNull();
 
 			db2.close();
 		});

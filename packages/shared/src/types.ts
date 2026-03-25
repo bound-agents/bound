@@ -204,3 +204,94 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	cluster_config: "lww",
 	advisories: "lww",
 };
+
+// --- Relay transport types (local-only, not synced) ---
+
+export const RELAY_REQUEST_KINDS = [
+	"tool_call",
+	"resource_read",
+	"prompt_invoke",
+	"cache_warm",
+	"cancel",
+] as const;
+
+export const RELAY_RESPONSE_KINDS = ["result", "error"] as const;
+
+export const RELAY_KINDS = [...RELAY_REQUEST_KINDS, ...RELAY_RESPONSE_KINDS] as const;
+
+export type RelayRequestKind = (typeof RELAY_REQUEST_KINDS)[number];
+export type RelayResponseKind = (typeof RELAY_RESPONSE_KINDS)[number];
+export type RelayKind = (typeof RELAY_KINDS)[number];
+
+export interface RelayOutboxEntry {
+	id: string;
+	source_site_id: string | null;
+	target_site_id: string;
+	kind: string;
+	ref_id: string | null;
+	idempotency_key: string | null;
+	payload: string;
+	created_at: string;
+	expires_at: string;
+	delivered: number;
+}
+
+export interface RelayInboxEntry {
+	id: string;
+	source_site_id: string;
+	kind: string;
+	ref_id: string | null;
+	idempotency_key: string | null;
+	payload: string;
+	expires_at: string;
+	received_at: string;
+	processed: number;
+}
+
+export interface RelayMessage {
+	id: string;
+	target_site_id: string;
+	source_site_id: string;
+	kind: string;
+	ref_id: string | null;
+	idempotency_key: string | null;
+	payload: string;
+	created_at: string;
+	expires_at: string;
+}
+
+// Request payloads (requester -> target)
+export interface ToolCallPayload {
+	tool: string;
+	args: Record<string, unknown>;
+	timeout_ms: number;
+}
+
+export interface ResourceReadPayload {
+	resource_uri: string;
+	timeout_ms: number;
+}
+
+export interface PromptInvokePayload {
+	prompt_name: string;
+	prompt_args: Record<string, unknown>;
+	timeout_ms: number;
+}
+
+export interface CacheWarmPayload {
+	paths: string[];
+	timeout_ms: number;
+}
+
+// Response payloads (target -> requester)
+export interface ResultPayload {
+	stdout: string;
+	stderr: string;
+	exit_code: number;
+	execution_ms: number;
+}
+
+export interface ErrorPayload {
+	error: string;
+	retriable: boolean;
+}

@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
-import { describe, expect, it, beforeEach } from "bun:test";
-import { applyLWWReducer, applyAppendOnlyReducer, clearColumnCache } from "../reducers";
+import { beforeEach, describe, expect, it } from "bun:test";
 import type { ChangeLogEntry } from "../changeset";
+import { applyAppendOnlyReducer, applyLWWReducer, clearColumnCache } from "../reducers";
 
 /**
  * TDD tests for reducer primary key handling.
@@ -85,15 +85,20 @@ describe("Reducer primary key handling", () => {
 			const result = applyLWWReducer(db, event);
 			expect(result.applied).toBe(true);
 
-			const row = db.query("SELECT * FROM hosts WHERE site_id = ?").get("abc123") as Record<string, unknown> | null;
+			const row = db.query("SELECT * FROM hosts WHERE site_id = ?").get("abc123") as Record<
+				string,
+				unknown
+			> | null;
 			expect(row).not.toBeNull();
 			expect(row!.host_name).toBe("remote-host");
 		});
 
 		it("updates an existing host row using LWW on modified_at", () => {
 			// Insert initial
-			db.run("INSERT INTO hosts (site_id, host_name, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, 0)",
-				["abc123", "old-name", "2026-03-24T00:00:00Z", "2026-03-24T00:00:00Z"]);
+			db.run(
+				"INSERT INTO hosts (site_id, host_name, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, 0)",
+				["abc123", "old-name", "2026-03-24T00:00:00Z", "2026-03-24T00:00:00Z"],
+			);
 
 			const event: ChangeLogEntry = {
 				seq: 2,
@@ -113,7 +118,10 @@ describe("Reducer primary key handling", () => {
 			const result = applyLWWReducer(db, event);
 			expect(result.applied).toBe(true);
 
-			const row = db.query("SELECT host_name FROM hosts WHERE site_id = ?").get("abc123") as Record<string, unknown> | null;
+			const row = db.query("SELECT host_name FROM hosts WHERE site_id = ?").get("abc123") as Record<
+				string,
+				unknown
+			> | null;
 			expect(row!.host_name).toBe("new-name");
 		});
 	});
@@ -136,14 +144,19 @@ describe("Reducer primary key handling", () => {
 			const result = applyLWWReducer(db, event);
 			expect(result.applied).toBe(true);
 
-			const row = db.query("SELECT * FROM cluster_config WHERE key = ?").get("cluster_hub") as Record<string, unknown> | null;
+			const row = db
+				.query("SELECT * FROM cluster_config WHERE key = ?")
+				.get("cluster_hub") as Record<string, unknown> | null;
 			expect(row).not.toBeNull();
 			expect(row!.value).toBe("hub.example.com");
 		});
 
 		it("updates existing cluster_config using LWW on modified_at", () => {
-			db.run("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)",
-				["cluster_hub", "old-hub.com", "2026-03-24T00:00:00Z"]);
+			db.run("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)", [
+				"cluster_hub",
+				"old-hub.com",
+				"2026-03-24T00:00:00Z",
+			]);
 
 			const event: ChangeLogEntry = {
 				seq: 2,
@@ -161,13 +174,18 @@ describe("Reducer primary key handling", () => {
 			const result = applyLWWReducer(db, event);
 			expect(result.applied).toBe(true);
 
-			const row = db.query("SELECT value FROM cluster_config WHERE key = ?").get("cluster_hub") as Record<string, unknown> | null;
+			const row = db
+				.query("SELECT value FROM cluster_config WHERE key = ?")
+				.get("cluster_hub") as Record<string, unknown> | null;
 			expect(row!.value).toBe("new-hub.com");
 		});
 
 		it("rejects stale cluster_config update (older modified_at)", () => {
-			db.run("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)",
-				["cluster_hub", "current-hub.com", "2026-03-24T02:00:00Z"]);
+			db.run("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)", [
+				"cluster_hub",
+				"current-hub.com",
+				"2026-03-24T02:00:00Z",
+			]);
 
 			const event: ChangeLogEntry = {
 				seq: 3,
@@ -185,7 +203,9 @@ describe("Reducer primary key handling", () => {
 			const result = applyLWWReducer(db, event);
 			expect(result.applied).toBe(false);
 
-			const row = db.query("SELECT value FROM cluster_config WHERE key = ?").get("cluster_hub") as Record<string, unknown> | null;
+			const row = db
+				.query("SELECT value FROM cluster_config WHERE key = ?")
+				.get("cluster_hub") as Record<string, unknown> | null;
 			expect(row!.value).toBe("current-hub.com");
 		});
 	});
@@ -215,15 +235,28 @@ describe("Reducer primary key handling", () => {
 			const result = applyAppendOnlyReducer(db, event);
 			expect(result.applied).toBe(true);
 
-			const row = db.query("SELECT * FROM messages WHERE id = ?").get("msg-001") as Record<string, unknown> | null;
+			const row = db.query("SELECT * FROM messages WHERE id = ?").get("msg-001") as Record<
+				string,
+				unknown
+			> | null;
 			expect(row).not.toBeNull();
 			expect(row!.content).toBe("Hello from remote host!");
 		});
 
 		it("does not duplicate messages on re-sync (ON CONFLICT DO NOTHING)", () => {
 			// Insert first (with modified_at, like insertRow does)
-			db.run("INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
-				["msg-001", "thread-001", "user", "Original", "2026-03-24T00:00:00Z", "2026-03-24T00:00:00Z", "host-a"]);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+				[
+					"msg-001",
+					"thread-001",
+					"user",
+					"Original",
+					"2026-03-24T00:00:00Z",
+					"2026-03-24T00:00:00Z",
+					"host-a",
+				],
+			);
 
 			const event: ChangeLogEntry = {
 				seq: 2,
@@ -247,7 +280,9 @@ describe("Reducer primary key handling", () => {
 			// Should not duplicate — conflict resolution
 			expect(result.applied).toBe(false);
 
-			const count = db.query("SELECT COUNT(*) as c FROM messages WHERE id = ?").get("msg-001") as { c: number };
+			const count = db.query("SELECT COUNT(*) as c FROM messages WHERE id = ?").get("msg-001") as {
+				c: number;
+			};
 			expect(count.c).toBe(1);
 		});
 	});

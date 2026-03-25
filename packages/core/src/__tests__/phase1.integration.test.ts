@@ -79,14 +79,14 @@ describe("Phase 1 Integration", () => {
 		expect(ctx.logger).toBeDefined();
 		expect(ctx.siteId).toBeDefined();
 
-		// Step 2: Verify database has all 13 tables
+		// Step 2: Verify database has all 17 tables
 		const tables = ctx.db
 			.query(
 				"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
 			)
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(15); // 13 main tables + 2 metrics tables
+		expect(tables.length).toBe(18); // 13 main tables + 3 relay tables + 2 metrics tables
 
 		const tableNames = tables.map((t) => t.name);
 		const expectedTables = [
@@ -99,6 +99,9 @@ describe("Phase 1 Integration", () => {
 			"hosts",
 			"messages",
 			"overlay_index",
+			"relay_cycles",
+			"relay_inbox",
+			"relay_outbox",
 			"semantic_memory",
 			"sync_state",
 			"tasks",

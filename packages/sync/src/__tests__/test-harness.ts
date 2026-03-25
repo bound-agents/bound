@@ -6,6 +6,7 @@ import { TypedEventEmitter } from "@bound/shared";
 import type { KeyringConfig } from "@bound/shared";
 import { Hono } from "hono";
 import { ensureKeypair } from "../crypto.js";
+import type { RelayExecutor } from "../relay-executor.js";
 import { createSyncRoutes } from "../routes.js";
 import { SyncClient } from "../sync-loop.js";
 
@@ -136,7 +137,8 @@ const FULL_SCHEMA = `
 		models TEXT,
 		overlay_root TEXT,
 		online_at TEXT NOT NULL,
-		modified_at TEXT NOT NULL
+		modified_at TEXT NOT NULL,
+		deleted INTEGER NOT NULL DEFAULT 0
 	);
 
 	CREATE TABLE overlay_index (
@@ -153,6 +155,11 @@ const FULL_SCHEMA = `
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL,
 		modified_at TEXT NOT NULL
+	);
+
+	CREATE TABLE host_meta (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL
 	);
 
 	CREATE TABLE advisories (
@@ -187,6 +194,31 @@ const FULL_SCHEMA = `
 		last_sync_at TEXT,
 		sync_errors INTEGER NOT NULL DEFAULT 0
 	);
+
+	CREATE TABLE relay_outbox (
+		id TEXT PRIMARY KEY,
+		source_site_id TEXT,
+		target_site_id TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		ref_id TEXT,
+		idempotency_key TEXT,
+		payload TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		expires_at TEXT NOT NULL,
+		delivered INTEGER DEFAULT 0
+	);
+
+	CREATE TABLE relay_inbox (
+		id TEXT PRIMARY KEY,
+		source_site_id TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		ref_id TEXT,
+		idempotency_key TEXT,
+		payload TEXT NOT NULL,
+		expires_at TEXT NOT NULL,
+		received_at TEXT NOT NULL,
+		processed INTEGER DEFAULT 0
+	);
 `;
 
 export async function createTestInstance(config: {
@@ -195,10 +227,13 @@ export async function createTestInstance(config: {
 	dbPath: string;
 	role: "hub" | "spoke";
 	hubPort?: number;
+	hubSiteId?: string;
 	keyring: KeyringConfig;
 	keypairPath?: string;
+	relayExecutor?: RelayExecutor;
 }): Promise<TestInstance> {
-	const { name, port, dbPath, role, hubPort, keyring, keypairPath } = config;
+	const { name, port, dbPath, role, hubPort, hubSiteId, keyring, keypairPath, relayExecutor } =
+		config;
 
 	// Ensure directory exists
 	const dir = dbPath.substring(0, dbPath.lastIndexOf("/"));
@@ -232,6 +267,8 @@ export async function createTestInstance(config: {
 		keyring,
 		createMockEventBus(),
 		createMockLogger(),
+		relayExecutor,
+		hubSiteId,
 	);
 
 	// Mount sync routes

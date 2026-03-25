@@ -41,7 +41,13 @@ function insertMessage(
 	threadId: string,
 	role: string,
 	content: string,
-	opts?: { id?: string; model_id?: string; tool_name?: string; offset?: number; timestamp?: string },
+	opts?: {
+		id?: string;
+		model_id?: string;
+		tool_name?: string;
+		offset?: number;
+		timestamp?: string;
+	},
 ) {
 	const id = opts?.id ?? randomUUID();
 	const ts = opts?.timestamp ?? new Date(new Date().getTime() + (opts?.offset ?? 0)).toISOString();
@@ -199,24 +205,17 @@ describe("Context assembly Bedrock compatibility", () => {
 			]),
 			{ tool_name: "bash", offset: 5000 },
 		);
-		insertMessage(
-			db,
-			threadId,
-			"assistant",
-			"Let me look at what's actually loaded now...",
-			{ offset: 6000, model_id: "anthropic.claude-sonnet" },
-		);
+		insertMessage(db, threadId, "assistant", "Let me look at what's actually loaded now...", {
+			offset: 6000,
+			model_id: "anthropic.claude-sonnet",
+		});
 		insertMessage(db, threadId, "tool_result", "bash: hostinfo: command not found", {
 			tool_name: "bash",
 			offset: 7000,
 		});
-		insertMessage(
-			db,
-			threadId,
-			"system",
-			"Agent response was interrupted due to an error.",
-			{ offset: 8000 },
-		);
+		insertMessage(db, threadId, "system", "Agent response was interrupted due to an error.", {
+			offset: 8000,
+		});
 		insertMessage(db, threadId, "user", "Just fixed another bug...", { offset: 9000 });
 
 		const messages = assembleContext({ db, threadId, userId });
@@ -270,13 +269,9 @@ describe("Context assembly Bedrock compatibility", () => {
 		insertMessage(db, threadId, "alert", "Internal error: retry failed", {
 			offset: 3000,
 		});
-		insertMessage(
-			db,
-			threadId,
-			"system",
-			"Agent response was interrupted due to an error.",
-			{ offset: 4000 },
-		);
+		insertMessage(db, threadId, "system", "Agent response was interrupted due to an error.", {
+			offset: 4000,
+		});
 		insertMessage(db, threadId, "user", "Are you still there?", { offset: 5000 });
 
 		const messages = assembleContext({ db, threadId, userId });

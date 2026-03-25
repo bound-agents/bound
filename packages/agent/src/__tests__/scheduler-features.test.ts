@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentLoopResult } from "@bound/agent";
-import { applyMetricsSchema, applySchema, createDatabase, insertRow, recordTurn } from "@bound/core";
+import { applyMetricsSchema, applySchema, createDatabase, recordTurn } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { Scheduler } from "../scheduler";
@@ -29,9 +29,7 @@ describe("Scheduler features", () => {
 	let eventBus: TypedEventEmitter;
 
 	beforeAll(() => {
-		tmpDir = mkdtempSync(
-			join(tmpdir(), `scheduler-feat-${randomBytes(4).toString("hex")}-`),
-		);
+		tmpDir = mkdtempSync(join(tmpdir(), `scheduler-feat-${randomBytes(4).toString("hex")}-`));
 		const dbPath = join(tmpDir, "test.db");
 		db = createDatabase(dbPath);
 		applySchema(db);
@@ -449,7 +447,9 @@ describe("Scheduler features", () => {
 
 			// Verify the tasks were created with correct fields
 			const tasks = db
-				.query("SELECT * FROM tasks WHERE type = 'cron' AND created_by = 'system' ORDER BY trigger_spec")
+				.query(
+					"SELECT * FROM tasks WHERE type = 'cron' AND created_by = 'system' ORDER BY trigger_spec",
+				)
 				.all() as Array<{
 				id: string;
 				type: string;
@@ -472,9 +472,7 @@ describe("Scheduler features", () => {
 		});
 
 		it("does not duplicate cron tasks on re-seed (uses INSERT OR IGNORE)", () => {
-			const cronConfigs = [
-				{ name: "unique-task", cron: "30 3 * * *" },
-			];
+			const cronConfigs = [{ name: "unique-task", cron: "30 3 * * *" }];
 
 			seedCronTasks(db, cronConfigs, siteId);
 			const countAfterFirst = (

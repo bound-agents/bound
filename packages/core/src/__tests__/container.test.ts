@@ -118,7 +118,7 @@ describe("DI Container", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(15); // 13 main tables + 2 metrics tables (turns, daily_summary)
+		expect(tables.length).toBe(18); // 13 main tables + 3 relay tables (relay_outbox, relay_inbox, relay_cycles) + 2 metrics tables (turns, daily_summary)
 		testDb.close();
 	});
 });

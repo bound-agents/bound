@@ -9,8 +9,8 @@ import type { KeyringConfig, Logger } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
 import { ensureKeypair, exportPublicKey } from "../crypto.js";
-import { createSyncRoutes } from "../routes.js";
 import { clearColumnCache } from "../reducers.js";
+import { createSyncRoutes } from "../routes.js";
 import { signRequest } from "../signing.js";
 import { SyncClient } from "../sync-loop.js";
 
@@ -44,11 +44,7 @@ const servers: ReturnType<typeof Bun.serve>[] = [];
  * Create a fully-wired host with real Ed25519 identity, real DB schema,
  * and a live Hono server listening on a random port.
  */
-async function createHost(
-	name: string,
-	keyring: KeyringConfig,
-	keypairDir: string,
-): Promise<Host> {
+async function createHost(name: string, keyring: KeyringConfig, keypairDir: string): Promise<Host> {
 	const db = new Database(":memory:");
 	db.run("PRAGMA journal_mode = WAL");
 	db.run("PRAGMA foreign_keys = ON");
@@ -79,11 +75,7 @@ async function createHost(
 }
 
 /** Build a SyncClient that speaks from `from` to `to`. */
-function makeSyncClient(
-	from: Host,
-	to: Host,
-	keyring: KeyringConfig,
-): SyncClient {
+function makeSyncClient(from: Host, to: Host, keyring: KeyringConfig): SyncClient {
 	return new SyncClient(
 		from.db,
 		from.siteId,
@@ -99,10 +91,7 @@ function makeSyncClient(
  * Create a unique temp directory for keypairs and register it for cleanup.
  */
 function tempKeypairDir(label: string): string {
-	const dir = join(
-		tmpdir(),
-		`bound-e2e-${label}-${randomBytes(4).toString("hex")}`,
-	);
+	const dir = join(tmpdir(), `bound-e2e-${label}-${randomBytes(4).toString("hex")}`);
 	tempDirs.push(dir);
 	return dir;
 }
@@ -225,10 +214,7 @@ describe("sync E2E", () => {
 		hostC = await createHost("c", keyring, dirC);
 
 		// Patch keyring with real ports
-		const hosts = keyring.hosts as Record<
-			string,
-			{ public_key: string; url: string }
-		>;
+		const hosts = keyring.hosts as Record<string, { public_key: string; url: string }>;
 		hosts[hostA.siteId].url = `http://localhost:${hostA.port}`;
 		hosts[hostB.siteId].url = `http://localhost:${hostB.port}`;
 		hosts[hostC.siteId].url = `http://localhost:${hostC.port}`;
@@ -286,15 +272,17 @@ describe("sync E2E", () => {
 		const result = await clientBtoA.syncCycle();
 		expect(result.ok).toBe(true);
 
-		const thread = hostB.db
-			.query("SELECT * FROM threads WHERE id = ?")
-			.get(threadId) as Record<string, unknown> | null;
+		const thread = hostB.db.query("SELECT * FROM threads WHERE id = ?").get(threadId) as Record<
+			string,
+			unknown
+		> | null;
 		expect(thread).not.toBeNull();
 		expect(thread!.title).toBe("Hello thread");
 
-		const msg = hostB.db
-			.query("SELECT * FROM messages WHERE id = ?")
-			.get(msgId) as Record<string, unknown> | null;
+		const msg = hostB.db.query("SELECT * FROM messages WHERE id = ?").get(msgId) as Record<
+			string,
+			unknown
+		> | null;
 		expect(msg).not.toBeNull();
 		expect(msg!.content).toBe("First message");
 	});
@@ -348,15 +336,17 @@ describe("sync E2E", () => {
 		const result = await clientAtoB.syncCycle();
 		expect(result.ok).toBe(true);
 
-		const thread = hostA.db
-			.query("SELECT * FROM threads WHERE id = ?")
-			.get(threadId) as Record<string, unknown> | null;
+		const thread = hostA.db.query("SELECT * FROM threads WHERE id = ?").get(threadId) as Record<
+			string,
+			unknown
+		> | null;
 		expect(thread).not.toBeNull();
 		expect(thread!.title).toBe("From B");
 
-		const msg = hostA.db
-			.query("SELECT * FROM messages WHERE id = ?")
-			.get(msgId) as Record<string, unknown> | null;
+		const msg = hostA.db.query("SELECT * FROM messages WHERE id = ?").get(msgId) as Record<
+			string,
+			unknown
+		> | null;
 		expect(msg).not.toBeNull();
 		expect(msg!.content).toBe("Response from B");
 	});
@@ -415,12 +405,8 @@ describe("sync E2E", () => {
 		expect(r2.ok).toBe(true);
 
 		// Both hosts should now have both threads
-		expect(
-			hostA.db.query("SELECT * FROM threads WHERE id = ?").get(threadB),
-		).not.toBeNull();
-		expect(
-			hostB.db.query("SELECT * FROM threads WHERE id = ?").get(threadA),
-		).not.toBeNull();
+		expect(hostA.db.query("SELECT * FROM threads WHERE id = ?").get(threadB)).not.toBeNull();
+		expect(hostB.db.query("SELECT * FROM threads WHERE id = ?").get(threadA)).not.toBeNull();
 	});
 
 	// -----------------------------------------------------------------------
@@ -449,9 +435,10 @@ describe("sync E2E", () => {
 		const r1 = await clientBtoA.syncCycle();
 		expect(r1.ok).toBe(true);
 
-		const userOnB = hostB.db
-			.query("SELECT * FROM users WHERE id = ?")
-			.get(userId) as Record<string, unknown> | null;
+		const userOnB = hostB.db.query("SELECT * FROM users WHERE id = ?").get(userId) as Record<
+			string,
+			unknown
+		> | null;
 		expect(userOnB).not.toBeNull();
 		expect(userOnB!.display_name).toBe("Alice");
 
@@ -462,9 +449,10 @@ describe("sync E2E", () => {
 		const r2 = await clientAtoB.syncCycle();
 		expect(r2.ok).toBe(true);
 
-		const userOnA = hostA.db
-			.query("SELECT * FROM users WHERE id = ?")
-			.get(userId) as Record<string, unknown> | null;
+		const userOnA = hostA.db.query("SELECT * FROM users WHERE id = ?").get(userId) as Record<
+			string,
+			unknown
+		> | null;
 		expect(userOnA).not.toBeNull();
 		expect(userOnA!.display_name).toBe("Alice B.");
 	});
@@ -608,14 +596,14 @@ describe("sync E2E", () => {
 		await clientAtoB.syncCycle();
 
 		const countA = (
-			hostA.db
-				.query("SELECT COUNT(*) as c FROM messages WHERE thread_id = ?")
-				.get(threadId) as { c: number }
+			hostA.db.query("SELECT COUNT(*) as c FROM messages WHERE thread_id = ?").get(threadId) as {
+				c: number;
+			}
 		).c;
 		const countB = (
-			hostB.db
-				.query("SELECT COUNT(*) as c FROM messages WHERE thread_id = ?")
-				.get(threadId) as { c: number }
+			hostB.db.query("SELECT COUNT(*) as c FROM messages WHERE thread_id = ?").get(threadId) as {
+				c: number;
+			}
 		).c;
 
 		expect(countA).toBe(2);
@@ -716,9 +704,10 @@ describe("sync E2E", () => {
 
 		await clientBtoA.syncCycle();
 
-		const taskOnB = hostB.db
-			.query("SELECT * FROM tasks WHERE id = ?")
-			.get(taskId) as Record<string, unknown> | null;
+		const taskOnB = hostB.db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as Record<
+			string,
+			unknown
+		> | null;
 		expect(taskOnB).not.toBeNull();
 		expect(taskOnB!.type).toBe("cron");
 		expect(taskOnB!.trigger_spec).toBe("0 * * * *");
@@ -752,9 +741,10 @@ describe("sync E2E", () => {
 
 		await clientBtoA.syncCycle();
 
-		const fileOnB = hostB.db
-			.query("SELECT * FROM files WHERE id = ?")
-			.get(fileId) as Record<string, unknown> | null;
+		const fileOnB = hostB.db.query("SELECT * FROM files WHERE id = ?").get(fileId) as Record<
+			string,
+			unknown
+		> | null;
 		expect(fileOnB).not.toBeNull();
 		expect(fileOnB!.path).toBe("/docs/README.md");
 		expect(fileOnB!.content).toBe("# Hello World");
@@ -793,9 +783,10 @@ describe("sync E2E", () => {
 		// B pulls advisory
 		await clientBtoA.syncCycle();
 
-		const advOnB = hostB.db
-			.query("SELECT * FROM advisories WHERE id = ?")
-			.get(advId) as Record<string, unknown> | null;
+		const advOnB = hostB.db.query("SELECT * FROM advisories WHERE id = ?").get(advId) as Record<
+			string,
+			unknown
+		> | null;
 		expect(advOnB).not.toBeNull();
 		expect(advOnB!.status).toBe("proposed");
 
@@ -811,9 +802,10 @@ describe("sync E2E", () => {
 		// A pulls from B
 		await clientAtoB.syncCycle();
 
-		const advBackOnA = hostA.db
-			.query("SELECT * FROM advisories WHERE id = ?")
-			.get(advId) as Record<string, unknown> | null;
+		const advBackOnA = hostA.db.query("SELECT * FROM advisories WHERE id = ?").get(advId) as Record<
+			string,
+			unknown
+		> | null;
 		expect(advBackOnA).not.toBeNull();
 		expect(advBackOnA!.status).toBe("approved");
 	});
@@ -843,9 +835,10 @@ describe("sync E2E", () => {
 
 		await clientBtoA.syncCycle();
 
-		const ovOnB = hostB.db
-			.query("SELECT * FROM overlay_index WHERE id = ?")
-			.get(ovId) as Record<string, unknown> | null;
+		const ovOnB = hostB.db.query("SELECT * FROM overlay_index WHERE id = ?").get(ovId) as Record<
+			string,
+			unknown
+		> | null;
 		expect(ovOnB).not.toBeNull();
 		expect(ovOnB!.path).toBe("/data/overlay/file.txt");
 		expect(ovOnB!.size_bytes).toBe(256);
@@ -978,14 +971,14 @@ describe("sync E2E", () => {
 
 		// Each host must have exactly 1 copy
 		const countA = (
-			hostA.db
-				.query("SELECT COUNT(*) as c FROM messages WHERE id = ?")
-				.get(sharedMsgId) as { c: number }
+			hostA.db.query("SELECT COUNT(*) as c FROM messages WHERE id = ?").get(sharedMsgId) as {
+				c: number;
+			}
 		).c;
 		const countB = (
-			hostB.db
-				.query("SELECT COUNT(*) as c FROM messages WHERE id = ?")
-				.get(sharedMsgId) as { c: number }
+			hostB.db.query("SELECT COUNT(*) as c FROM messages WHERE id = ?").get(sharedMsgId) as {
+				c: number;
+			}
 		).c;
 
 		expect(countA).toBe(1);
@@ -1018,9 +1011,7 @@ describe("sync E2E", () => {
 
 		// Sync to B first
 		await clientBtoA.syncCycle();
-		expect(
-			hostB.db.query("SELECT * FROM semantic_memory WHERE id = ?").get(memId),
-		).not.toBeNull();
+		expect(hostB.db.query("SELECT * FROM semantic_memory WHERE id = ?").get(memId)).not.toBeNull();
 
 		// Soft-delete on A
 		softDelete(hostA.db, "semantic_memory", memId, hostA.siteId);
@@ -1078,9 +1069,7 @@ describe("sync E2E", () => {
 
 		const countB = (
 			hostB.db
-				.query(
-					"SELECT COUNT(*) as c FROM semantic_memory WHERE source = 'bulk-import'",
-				)
+				.query("SELECT COUNT(*) as c FROM semantic_memory WHERE source = 'bulk-import'")
 				.get() as { c: number }
 		).c;
 		expect(countB).toBe(120);
@@ -1122,11 +1111,9 @@ describe("sync E2E", () => {
 
 		// Ensure only one row with that key
 		const count = (
-			hostB.db
-				.query(
-					"SELECT COUNT(*) as c FROM semantic_memory WHERE key = 'idem-key'",
-				)
-				.get() as { c: number }
+			hostB.db.query("SELECT COUNT(*) as c FROM semantic_memory WHERE key = 'idem-key'").get() as {
+				c: number;
+			}
 		).c;
 		expect(count).toBe(1);
 	});
@@ -1164,9 +1151,7 @@ describe("sync E2E", () => {
 			expect(result.value.pulled).toBeGreaterThan(0);
 		}
 
-		expect(
-			hostB.db.query("SELECT * FROM semantic_memory WHERE id = ?").get(memId),
-		).not.toBeNull();
+		expect(hostB.db.query("SELECT * FROM semantic_memory WHERE id = ?").get(memId)).not.toBeNull();
 	});
 
 	// -----------------------------------------------------------------------
@@ -1267,17 +1252,14 @@ describe("sync E2E", () => {
 			body,
 		);
 
-		const response = await fetch(
-			`http://localhost:${hostA.port}/sync/pull`,
-			{
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					...headers,
-				},
-				body,
+		const response = await fetch(`http://localhost:${hostA.port}/sync/pull`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				...headers,
 			},
-		);
+			body,
+		});
 
 		expect(response.status).toBe(403);
 	});
@@ -1302,17 +1284,14 @@ describe("sync E2E", () => {
 			body,
 		);
 
-		const response = await fetch(
-			`http://localhost:${hostB.port}/sync/pull`,
-			{
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					...headers,
-				},
-				body,
+		const response = await fetch(`http://localhost:${hostB.port}/sync/pull`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				...headers,
 			},
-		);
+			body,
+		});
 
 		expect(response.status).toBe(401);
 	});
@@ -1415,11 +1394,7 @@ describe("sync E2E", () => {
 
 		// Both rows should exist on B
 		expect(
-			(
-				hostB.db
-					.query("SELECT COUNT(*) as c FROM semantic_memory")
-					.get() as { c: number }
-			).c,
+			(hostB.db.query("SELECT COUNT(*) as c FROM semantic_memory").get() as { c: number }).c,
 		).toBeGreaterThanOrEqual(2);
 	});
 
@@ -1544,24 +1519,12 @@ describe("sync E2E", () => {
 
 		await clientBtoA.syncCycle();
 
+		expect(hostB.db.query("SELECT * FROM users WHERE id = ?").get(userId)).not.toBeNull();
+		expect(hostB.db.query("SELECT * FROM threads WHERE id = ?").get(threadId)).not.toBeNull();
+		expect(hostB.db.query("SELECT * FROM messages WHERE id = ?").get(msgId)).not.toBeNull();
+		expect(hostB.db.query("SELECT * FROM semantic_memory WHERE id = ?").get(memId)).not.toBeNull();
 		expect(
-			hostB.db.query("SELECT * FROM users WHERE id = ?").get(userId),
-		).not.toBeNull();
-		expect(
-			hostB.db.query("SELECT * FROM threads WHERE id = ?").get(threadId),
-		).not.toBeNull();
-		expect(
-			hostB.db.query("SELECT * FROM messages WHERE id = ?").get(msgId),
-		).not.toBeNull();
-		expect(
-			hostB.db
-				.query("SELECT * FROM semantic_memory WHERE id = ?")
-				.get(memId),
-		).not.toBeNull();
-		expect(
-			hostB.db
-				.query("SELECT * FROM cluster_config WHERE key = ?")
-				.get("mixed-cfg"),
+			hostB.db.query("SELECT * FROM cluster_config WHERE key = ?").get("mixed-cfg"),
 		).not.toBeNull();
 	});
 });

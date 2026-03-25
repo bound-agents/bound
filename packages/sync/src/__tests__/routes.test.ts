@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { KeyringConfig, Logger } from "@bound/shared";
+import type { KeyringConfig, Logger, RelayInboxEntry } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import { ensureKeypair, exportPublicKey } from "../crypto.js";
 import { createSyncRoutes } from "../routes.js";
@@ -23,6 +23,8 @@ const createMockEventBus = (): TypedEventEmitter => {
 describe("routes", () => {
 	let db: Database;
 	let hubSiteId: string;
+	let hubPrivateKey: CryptoKey;
+	let hubPublicKey: string;
 	let spokeSiteId: string;
 	let spokePrivateKey: CryptoKey;
 	let spokePublicKey: string;
@@ -82,12 +84,28 @@ describe("routes", () => {
 			)
 		`);
 
+		db.run(`
+			CREATE TABLE relay_inbox (
+				id TEXT PRIMARY KEY,
+				source_site_id TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				ref_id TEXT,
+				idempotency_key TEXT,
+				payload TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				received_at TEXT NOT NULL,
+				processed INTEGER NOT NULL DEFAULT 0
+			)
+		`);
+
 		// Generate keypairs for hub and spoke with random paths
 		const hubDir = join(tmpdir(), `bound-test-hub-routes-${randomBytes(4).toString("hex")}`);
 		const spokeDir = join(tmpdir(), `bound-test-spoke-routes-${randomBytes(4).toString("hex")}`);
 
 		const hubKeypair = await ensureKeypair(hubDir);
 		hubSiteId = hubKeypair.siteId;
+		hubPrivateKey = hubKeypair.privateKey;
+		hubPublicKey = await exportPublicKey(hubKeypair.publicKey);
 
 		const spokeKeypair = await ensureKeypair(spokeDir);
 		spokeSiteId = spokeKeypair.siteId;
@@ -99,6 +117,10 @@ describe("routes", () => {
 				[spokeSiteId]: {
 					public_key: spokePublicKey,
 					url: "http://localhost:3200",
+				},
+				[hubSiteId]: {
+					public_key: hubPublicKey,
+					url: "http://localhost:3100",
 				},
 			},
 		};
@@ -247,6 +269,199 @@ describe("routes", () => {
 				| undefined;
 			expect(state).toBeDefined();
 			expect(state?.last_sent).toBe(10);
+		});
+	});
+
+	describe("POST /api/relay-deliver", () => {
+		it("accepts relay messages from hub and inserts them into relay_inbox", async () => {
+			// Setup: hub is the spoke pushing relay messages
+			const app = createSyncRoutes(
+				db,
+				spokeSiteId,
+				keyring,
+				createMockEventBus(),
+				createMockLogger(),
+				undefined,
+				hubSiteId, // hubSiteId passed as parameter
+			);
+
+			const entry: RelayInboxEntry = {
+				id: "relay-1",
+				source_site_id: "some-origin",
+				kind: "tool_result",
+				ref_id: "ref-1",
+				idempotency_key: "idem-1",
+				payload: '{"data": "test"}',
+				expires_at: "2026-03-26T12:00:00Z",
+				received_at: "2026-03-26T11:00:00Z",
+				processed: 0,
+			};
+
+			const body = JSON.stringify({ entries: [entry] });
+			const headers = await signRequest(
+				hubPrivateKey,
+				hubSiteId,
+				"POST",
+				"/api/relay-deliver",
+				body,
+			);
+
+			const response = await app.request("/api/relay-deliver", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...headers,
+				},
+				body,
+			});
+
+			expect(response.status).toBe(200);
+
+			const result = await response.json();
+			expect(result.ok).toBe(true);
+			expect(result.received).toBe(1);
+
+			// Verify entry was inserted into relay_inbox
+			const inserted = db
+				.query("SELECT * FROM relay_inbox WHERE id = ?")
+				.get("relay-1") as RelayInboxEntry | null;
+			expect(inserted).toBeDefined();
+			expect(inserted?.source_site_id).toBe("some-origin");
+			expect(inserted?.payload).toBe('{"data": "test"}');
+		});
+
+		it("rejects relay messages from non-hub siteId with 403", async () => {
+			// Generate another keypair for a third party
+			const thirdPartyDir = join(
+				tmpdir(),
+				`bound-test-third-party-${randomBytes(4).toString("hex")}`,
+			);
+			const thirdPartyKeypair = await ensureKeypair(thirdPartyDir);
+			const thirdPartySiteId = thirdPartyKeypair.siteId;
+			const thirdPartyPrivateKey = thirdPartyKeypair.privateKey;
+
+			// Add third party to keyring
+			const extendedKeyring: KeyringConfig = {
+				hosts: {
+					...keyring.hosts,
+					[thirdPartySiteId]: {
+						public_key: await exportPublicKey(thirdPartyKeypair.publicKey),
+						url: "http://localhost:3300",
+					},
+				},
+			};
+
+			const app = createSyncRoutes(
+				db,
+				spokeSiteId,
+				extendedKeyring,
+				createMockEventBus(),
+				createMockLogger(),
+				undefined,
+				hubSiteId, // hubSiteId is different from thirdPartySiteId
+			);
+
+			const entry: RelayInboxEntry = {
+				id: "relay-2",
+				source_site_id: "some-origin",
+				kind: "tool_result",
+				ref_id: "ref-2",
+				idempotency_key: "idem-2",
+				payload: '{"data": "test"}',
+				expires_at: "2026-03-26T12:00:00Z",
+				received_at: "2026-03-26T11:00:00Z",
+				processed: 0,
+			};
+
+			const body = JSON.stringify({ entries: [entry] });
+			const headers = await signRequest(
+				thirdPartyPrivateKey,
+				thirdPartySiteId,
+				"POST",
+				"/api/relay-deliver",
+				body,
+			);
+
+			const response = await app.request("/api/relay-deliver", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...headers,
+				},
+				body,
+			});
+
+			expect(response.status).toBe(403);
+			const result = await response.json();
+			expect(result.error).toContain("Not from current hub");
+		});
+
+		it("deduplicates relay messages via INSERT OR IGNORE on second push", async () => {
+			const app = createSyncRoutes(
+				db,
+				spokeSiteId,
+				keyring,
+				createMockEventBus(),
+				createMockLogger(),
+				undefined,
+				hubSiteId,
+			);
+
+			const entry: RelayInboxEntry = {
+				id: "relay-dedup-1",
+				source_site_id: "some-origin",
+				kind: "tool_result",
+				ref_id: "ref-3",
+				idempotency_key: "idem-3",
+				payload: '{"data": "dedup"}',
+				expires_at: "2026-03-26T12:00:00Z",
+				received_at: "2026-03-26T11:00:00Z",
+				processed: 0,
+			};
+
+			const body = JSON.stringify({ entries: [entry] });
+			const headers1 = await signRequest(
+				hubPrivateKey,
+				hubSiteId,
+				"POST",
+				"/api/relay-deliver",
+				body,
+			);
+
+			// First push succeeds
+			const response1 = await app.request("/api/relay-deliver", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...headers1,
+				},
+				body,
+			});
+
+			expect(response1.status).toBe(200);
+			const result1 = await response1.json();
+			expect(result1.received).toBe(1);
+
+			// Second push with same entry - should dedupe
+			const headers2 = await signRequest(
+				hubPrivateKey,
+				hubSiteId,
+				"POST",
+				"/api/relay-deliver",
+				body,
+			);
+			const response2 = await app.request("/api/relay-deliver", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...headers2,
+				},
+				body,
+			});
+
+			expect(response2.status).toBe(200);
+			const result2 = await response2.json();
+			expect(result2.received).toBe(0); // No new insertions
 		});
 	});
 });

@@ -57,7 +57,7 @@ export function createTasksRoutes(db: Database): Hono {
 				);
 			}
 
-	const siteId = getSiteId(db);
+			const siteId = getSiteId(db);
 
 			updateRow(db, "tasks", id, { status: "cancelled" }, siteId);
 

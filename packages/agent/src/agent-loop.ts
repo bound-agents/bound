@@ -1,11 +1,22 @@
 import { randomUUID } from "node:crypto";
+
 import type { AppContext } from "@bound/core";
-import { insertRow, recordTurn } from "@bound/core";
-import { formatError } from "@bound/shared";
+import {
+	insertRow,
+	markProcessed,
+	readInboxByRefId,
+	recordTurn,
+	recordTurnRelayMetrics,
+	writeOutbox,
+} from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
+import { formatError } from "@bound/shared";
+
 import { assembleContext } from "./context-assembly";
-import { extractSummaryAndMemories } from "./summary-extraction";
 import { trackFilePath } from "./file-thread-tracker";
+import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
+import { createRelayOutboxEntry } from "./relay-router";
+import { extractSummaryAndMemories } from "./summary-extraction";
 import type { AgentLoopConfig, AgentLoopResult, AgentLoopState } from "./types";
 
 interface BashLike {
@@ -100,9 +111,9 @@ export class AgentLoop {
 					// Extract system messages for drivers that handle them separately (e.g., Bedrock, Anthropic)
 					const systemMessages = llmMessages.filter((m) => m.role === "system");
 					const nonSystemMessages = llmMessages.filter((m) => m.role !== "system");
-					const systemPrompt = systemMessages.map((m) =>
-						typeof m.content === "string" ? m.content : ""
-					).join("\n\n");
+					const systemPrompt = systemMessages
+						.map((m) => (typeof m.content === "string" ? m.content : ""))
+						.join("\n\n");
 
 					const chatStream = this.llmBackend.chat({
 						model: "",
@@ -150,8 +161,9 @@ export class AgentLoop {
 				const parsed = this.parseResponseChunks(chunks);
 
 				// Record turn metrics for budget tracking
+				let currentTurnId: number | null = null;
 				try {
-					recordTurn(this.ctx.db, {
+					currentTurnId = recordTurn(this.ctx.db, {
 						thread_id: this.config.threadId,
 						task_id: this.config.taskId || undefined,
 						dag_root_id: undefined,
@@ -175,7 +187,15 @@ export class AgentLoop {
 						let resultContent: string;
 
 						try {
-							resultContent = await this.executeToolCall(toolCall);
+							const result = await this.executeToolCall(toolCall);
+
+							// Check for relay request
+							if (typeof result !== "string") {
+								// It's a RelayToolCallRequest - enter RELAY_WAIT
+								resultContent = await this.relayWait(result, toolCall, currentTurnId);
+							} else {
+								resultContent = result;
+							}
 						} catch (error) {
 							const errorMsg = formatError(error);
 							resultContent = `Error: ${errorMsg}`;
@@ -382,13 +402,176 @@ export class AgentLoop {
 	}
 
 	/**
+	 * Poll the relay inbox for a response to a remote tool call.
+	 * Implements AC6.1-AC6.5 and AC7.1-AC7.2 for relay-based tool execution with
+	 * failover, cancel propagation, and activity status updates.
+	 */
+	private async relayWait(
+		relayRequest: RelayToolCallRequest,
+		toolCall: ParsedToolCall,
+		currentTurnId: number | null,
+	): Promise<string> {
+		const previousState = this.state;
+		this.state = "RELAY_WAIT";
+
+		try {
+			return await this._relayWaitImpl(relayRequest, toolCall, currentTurnId);
+		} finally {
+			this.state = previousState;
+		}
+	}
+
+	private async _relayWaitImpl(
+		relayRequest: RelayToolCallRequest,
+		toolCall: ParsedToolCall,
+		currentTurnId: number | null,
+	): Promise<string> {
+		const { outboxEntryId, toolName, eligibleHosts } = relayRequest;
+		const pollIntervalMs = 500;
+		const timeoutMs = 30_000; // 30 second timeout per host
+		let currentHostIndex = relayRequest.currentHostIndex;
+		let hostStartTime = Date.now();
+		const relayStartTime = Date.now();
+
+		// AC6.5: Trigger immediate sync
+		this.ctx.eventBus.emit("sync:trigger", { reason: "relay-wait" });
+
+		while (true) {
+			if (this.aborted) {
+				// AC7.1, AC7.2: User canceled - send cancel message with ref_id pointing to original
+				// Use current host's site_id (may have changed due to failover)
+				const currentHost = eligibleHosts[currentHostIndex];
+				const cancelEntry = createRelayOutboxEntry(
+					currentHost.site_id,
+					"cancel",
+					JSON.stringify({}),
+					30_000,
+					outboxEntryId,
+				);
+				try {
+					writeOutbox(this.ctx.db, cancelEntry);
+					this.ctx.eventBus.emit("sync:trigger", { reason: "relay-cancel" });
+				} catch {
+					// Non-fatal if cancel write fails
+				}
+				return "Cancelled: relay request was cancelled by user";
+			}
+
+			// AC6.2: Update activity status showing what we're waiting for
+			const currentHost = eligibleHosts[currentHostIndex];
+			const activityStatus = `relaying ${toolName} via ${currentHost.host_name}`;
+			// Activity status update goes to logger for visibility during relay wait
+			this.ctx.logger.info("Relay wait", {
+				activityStatus,
+				tool: toolName,
+				host: currentHost.host_name,
+			});
+
+			// Poll for response
+			const response = readInboxByRefId(this.ctx.db, outboxEntryId);
+			if (response) {
+				// Got a response - record relay metrics
+				const latencyMs = Date.now() - relayStartTime;
+				const currentHost = eligibleHosts[currentHostIndex];
+				if (currentTurnId !== null) {
+					try {
+						recordTurnRelayMetrics(this.ctx.db, currentTurnId, currentHost.host_name, latencyMs);
+					} catch {
+						// Non-fatal if metrics recording fails
+					}
+				}
+
+				if (response.kind === "error") {
+					try {
+						const payload = JSON.parse(response.payload) as { error?: string };
+						markProcessed(this.ctx.db, [response.id]);
+						return `Remote error: ${payload.error || response.payload}`;
+					} catch {
+						markProcessed(this.ctx.db, [response.id]);
+						return `Remote error: ${response.payload}`;
+					}
+				}
+
+				if (response.kind === "result") {
+					try {
+						const payload = JSON.parse(response.payload) as {
+							stdout?: string;
+							stderr?: string;
+							exitCode?: number;
+							complete?: boolean;
+						};
+						markProcessed(this.ctx.db, [response.id]);
+
+						// Build result content similar to local tool execution
+						const parts: string[] = [];
+						if (payload.stdout) parts.push(payload.stdout);
+						if (payload.stderr) parts.push(payload.stderr);
+						if (parts.length === 0) {
+							parts.push(
+								(payload.exitCode ?? 0) === 0
+									? "Command completed successfully"
+									: `Exit code: ${payload.exitCode ?? 1}`,
+							);
+						}
+						return parts.join("\n");
+					} catch {
+						markProcessed(this.ctx.db, [response.id]);
+						return `Remote result: ${response.payload}`;
+					}
+				}
+
+				// Unknown response kind - treat as error
+				markProcessed(this.ctx.db, [response.id]);
+				return `Unknown response kind: ${response.kind}`;
+			}
+
+			// Check timeout
+			const elapsedMs = Date.now() - hostStartTime;
+
+			if (elapsedMs > timeoutMs) {
+				// AC6.3: Timeout - try next eligible host if available
+				currentHostIndex++;
+				if (currentHostIndex >= eligibleHosts.length) {
+					// AC6.4: All hosts exhausted
+					return `Timeout: all ${eligibleHosts.length} eligible host(s) did not respond within ${timeoutMs}ms`;
+				}
+
+				// Write new outbox entry for next host
+				const nextHost = eligibleHosts[currentHostIndex];
+				const nextPayload = JSON.stringify({
+					kind: "tool_call",
+					toolName,
+					args: toolCall.input,
+				});
+				const nextEntry = createRelayOutboxEntry(
+					nextHost.site_id,
+					"tool_call",
+					nextPayload,
+					timeoutMs,
+				);
+				try {
+					writeOutbox(this.ctx.db, nextEntry);
+					this.ctx.eventBus.emit("sync:trigger", { reason: "relay-failover" });
+					hostStartTime = Date.now(); // Reset timeout for next host
+				} catch {
+					return `Failover failed: could not write outbox entry for host ${nextHost.host_name}`;
+				}
+				continue;
+			}
+
+			// Wait before next poll
+			await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+		}
+	}
+
+	/**
 	 * Execute a single tool call via the sandbox.
 	 *
 	 * For "bash" tool calls the command string is passed directly to sandbox.exec().
 	 * For built-in or MCP tools the input is serialized as a command string that
 	 * the sandbox's registered custom commands can dispatch.
 	 */
-	private async executeToolCall(toolCall: ParsedToolCall): Promise<string> {
+	private async executeToolCall(toolCall: ParsedToolCall): Promise<string | RelayToolCallRequest> {
 		if (!this.sandbox.exec) {
 			return "Error: sandbox execution not available";
 		}
@@ -409,6 +592,11 @@ export class AgentLoop {
 		}
 
 		const result = await this.sandbox.exec(commandString);
+
+		// Check if this is a relay request (has outboxEntryId field)
+		if (isRelayRequest(result)) {
+			return result;
+		}
 
 		// Build result content from stdout/stderr
 		const parts: string[] = [];

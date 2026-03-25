@@ -48,10 +48,9 @@ describe("Redaction API Endpoints (R-E18)", () => {
 			const messageId = await createMessage(threadId, "Secret content here");
 
 			const res = await app.fetch(
-				new Request(
-					`http://localhost:3000/api/threads/${threadId}/messages/${messageId}/redact`,
-					{ method: "POST" },
-				),
+				new Request(`http://localhost:3000/api/threads/${threadId}/messages/${messageId}/redact`, {
+					method: "POST",
+				}),
 			);
 
 			expect(res.status).toBe(200);

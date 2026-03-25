@@ -2,8 +2,8 @@ import { getSiteId } from "@bound/core";
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertRow } from "@bound/core";
 import { redactMessage, redactThread } from "@bound/agent";
+import { insertRow } from "@bound/core";
 import type { Message, TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
 
@@ -78,7 +78,7 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 			const messageId = randomUUID();
 			const now = new Date().toISOString();
 
-	const siteId = getSiteId(db);
+			const siteId = getSiteId(db);
 
 			insertRow(
 				db,
@@ -127,9 +127,7 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 		try {
 			const { threadId, messageId } = c.req.param();
 
-			const thread = db
-				.query("SELECT * FROM threads WHERE id = ? AND deleted = 0")
-				.get(threadId);
+			const thread = db.query("SELECT * FROM threads WHERE id = ? AND deleted = 0").get(threadId);
 
 			if (!thread) {
 				return c.json({ error: "Thread not found" }, 404);
@@ -147,19 +145,13 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 			const result = redactMessage(db, messageId, siteId);
 
 			if (!result.ok) {
-				return c.json(
-					{ error: "Failed to redact message", details: result.error.message },
-					500,
-				);
+				return c.json({ error: "Failed to redact message", details: result.error.message }, 500);
 			}
 
 			return c.json({ redacted: true, messageId });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{ error: "Failed to redact message", details: message },
-				500,
-			);
+			return c.json({ error: "Failed to redact message", details: message }, 500);
 		}
 	});
 
@@ -167,9 +159,7 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 		try {
 			const { threadId } = c.req.param();
 
-			const thread = db
-				.query("SELECT * FROM threads WHERE id = ? AND deleted = 0")
-				.get(threadId);
+			const thread = db.query("SELECT * FROM threads WHERE id = ? AND deleted = 0").get(threadId);
 
 			if (!thread) {
 				return c.json({ error: "Thread not found" }, 404);
@@ -179,10 +169,7 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 			const result = redactThread(db, threadId, siteId);
 
 			if (!result.ok) {
-				return c.json(
-					{ error: "Failed to redact thread", details: result.error.message },
-					500,
-				);
+				return c.json({ error: "Failed to redact thread", details: result.error.message }, 500);
 			}
 
 			return c.json({
@@ -193,10 +180,7 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{ error: "Failed to redact thread", details: message },
-				500,
-			);
+			return c.json({ error: "Failed to redact thread", details: message }, 500);
 		}
 	});
 

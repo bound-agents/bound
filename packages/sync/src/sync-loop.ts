@@ -1,8 +1,11 @@
 import type { Database } from "bun:sqlite";
+import { insertInbox, markDelivered, readUndelivered, recordRelayCycle } from "@bound/core";
 import type { KeyringConfig, Logger, Result, SyncConfig, TypedEventEmitter } from "@bound/shared";
-import { err, formatError, ok } from "@bound/shared";
+import { RELAY_RESPONSE_KINDS, err, formatError, ok } from "@bound/shared";
 import {
 	type Changeset,
+	type RelayRequest,
+	type RelayResponse,
 	deserializeChangeset,
 	fetchOutboundChangeset,
 	serializeChangeset,
@@ -16,20 +19,28 @@ import {
 import { replayEvents } from "./reducers.js";
 import { signRequest } from "./signing.js";
 
+export interface RelayResult {
+	sent: number;
+	received: number;
+	draining: boolean;
+}
+
 export interface SyncResult {
 	pushed: number;
 	pulled: number;
+	relay?: RelayResult;
 	duration_ms: number;
 }
 
 export interface SyncError {
-	phase: "push" | "pull" | "ack";
+	phase: "push" | "pull" | "ack" | "relay";
 	status?: number;
 	message: string;
 }
 
 export class SyncClient {
 	private hubSiteId: string | null = null;
+	private relayDraining = false;
 
 	constructor(
 		private db: Database,
@@ -42,6 +53,12 @@ export class SyncClient {
 	) {
 		// Resolve hub's site_id from keyring
 		this.hubSiteId = this.resolveHubSiteId();
+	}
+
+	updateHubUrl(newHubUrl: string): void {
+		this.hubUrl = newHubUrl;
+		this.hubSiteId = this.resolveHubSiteId();
+		this.relayDraining = false;
 	}
 
 	private resolveHubSiteId(): string | null {
@@ -60,6 +77,7 @@ export class SyncClient {
 		const startTime = Date.now();
 		let pushed = 0;
 		let pulled = 0;
+		let relayResult: RelayResult | undefined;
 
 		// Use hub's site_id for peer cursor tracking
 		const peerSiteId = this.hubSiteId ?? this.siteId;
@@ -102,6 +120,15 @@ export class SyncClient {
 				return ackResult;
 			}
 
+			// RELAY: exchange relay messages with hub
+			const relayPhaseResult = await this.relay();
+			if (!relayPhaseResult.ok) {
+				this.logger.warn("Relay phase failed", { error: relayPhaseResult.error });
+				// Relay failure is non-fatal — sync still succeeds
+			} else {
+				relayResult = relayPhaseResult.value;
+			}
+
 			// Update cursor and reset errors
 			updatePeerCursor(this.db, peerSiteId, { last_received: newLastReceived });
 			resetSyncErrors(this.db, peerSiteId);
@@ -114,7 +141,7 @@ export class SyncClient {
 				duration_ms: duration,
 			});
 
-			return ok({ pushed, pulled, duration_ms: duration });
+			return ok({ pushed, pulled, relay: relayResult, duration_ms: duration });
 		} catch (error) {
 			incrementSyncErrors(this.db, peerSiteId);
 
@@ -130,12 +157,23 @@ export class SyncClient {
 					const { deterministicUUID, BOUND_NAMESPACE } = await import("@bound/shared");
 					const systemThreadId = deterministicUUID(BOUND_NAMESPACE, "system-alerts");
 					const now = new Date().toISOString();
-					this.db.query(
-						`INSERT OR IGNORE INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted) VALUES (?, 'system', 'web', ?, 0, 'System Alerts', NULL, ?, ?, ?, 0)`,
-					).run(systemThreadId, this.siteId, now, now, now);
-					this.db.query(
-						`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, 'alert', ?, NULL, NULL, ?, ?, ?, 0)`,
-					).run(randomUUID(), systemThreadId, `Sync to peer ${peerSiteId} has failed ${syncState.sync_errors} consecutive times`, now, now, this.siteId);
+					this.db
+						.query(
+							`INSERT OR IGNORE INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted) VALUES (?, 'system', 'web', ?, 0, 'System Alerts', NULL, ?, ?, ?, 0)`,
+						)
+						.run(systemThreadId, this.siteId, now, now, now);
+					this.db
+						.query(
+							`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, 'alert', ?, NULL, NULL, ?, ?, ?, 0)`,
+						)
+						.run(
+							randomUUID(),
+							systemThreadId,
+							`Sync to peer ${peerSiteId} has failed ${syncState.sync_errors} consecutive times`,
+							now,
+							now,
+							this.siteId,
+						);
 				} catch {
 					// Non-fatal
 				}
@@ -257,41 +295,148 @@ export class SyncClient {
 			});
 		}
 	}
+
+	async relay(): Promise<Result<RelayResult, SyncError>> {
+		try {
+			const outbox = readUndelivered(this.db);
+
+			// Filter outbox entries based on relay_draining flag (AC4.2, AC4.3)
+			let entriesToSend = outbox;
+			if (this.relayDraining) {
+				entriesToSend = outbox.filter(
+					(entry) =>
+						(RELAY_RESPONSE_KINDS as readonly string[]).includes(entry.kind) ||
+						entry.kind === "cancel",
+				);
+			}
+
+			const relayRequest: RelayRequest = {
+				relay_outbox: entriesToSend,
+			};
+
+			const body = JSON.stringify(relayRequest);
+			const headers = await signRequest(this.privateKey, this.siteId, "POST", "/sync/relay", body);
+
+			const response = await fetch(`${this.hubUrl}/sync/relay`, {
+				method: "POST",
+				headers: { ...headers, "Content-Type": "application/json" },
+				body,
+			});
+
+			if (!response.ok) {
+				return err({
+					phase: "relay",
+					status: response.status,
+					message: `Relay failed: ${response.statusText}`,
+				});
+			}
+
+			const relayResponse = (await response.json()) as RelayResponse;
+
+			// Update local drain state from hub response
+			this.relayDraining = relayResponse.relay_draining;
+
+			// Mark delivered
+			if (relayResponse.relay_delivered.length > 0) {
+				markDelivered(this.db, relayResponse.relay_delivered);
+			}
+
+			// Record outbound relay cycles
+			for (const entry of entriesToSend) {
+				try {
+					recordRelayCycle(this.db, {
+						direction: "outbound",
+						peer_site_id: entry.target_site_id,
+						kind: entry.kind,
+						delivery_method: "sync",
+						latency_ms: null,
+						expired: false,
+						success: true,
+					});
+				} catch {
+					// Non-fatal if metrics recording fails
+				}
+			}
+
+			// Insert inbox entries (INSERT OR IGNORE for dedup)
+			let received = 0;
+			for (const entry of relayResponse.relay_inbox) {
+				const inserted = insertInbox(this.db, entry);
+				if (inserted) received++;
+				// Record inbound relay cycle
+				try {
+					recordRelayCycle(this.db, {
+						direction: "inbound",
+						peer_site_id: entry.source_site_id,
+						kind: entry.kind,
+						delivery_method: "sync",
+						latency_ms: null,
+						expired: false,
+						success: true,
+					});
+				} catch {
+					// Non-fatal if metrics recording fails
+				}
+			}
+
+			return ok({
+				sent: entriesToSend.length,
+				received,
+				draining: relayResponse.relay_draining,
+			});
+		} catch (error) {
+			const message = formatError(error);
+			return err({
+				phase: "relay",
+				message,
+			});
+		}
+	}
 }
 
-export function startSyncLoop(client: SyncClient, intervalSeconds: number): { stop: () => void } {
+export function startSyncLoop(
+	client: SyncClient,
+	intervalSeconds: number,
+	eventBus?: TypedEventEmitter,
+): { stop: () => void } {
 	let timerId: Timer | null = null;
 	let stopped = false;
 	let consecutiveFailures = 0;
 	const maxIntervalMs = 5 * 60 * 1000; // 5 minutes per spec §8.6
 
-	const startLoop = () => {
+	const scheduleNext = async () => {
 		if (stopped) return;
 
-		const runSync = async () => {
-			if (stopped) return;
+		const result = await client.syncCycle();
 
-			const result = await client.syncCycle();
+		if (!result.ok) {
+			consecutiveFailures++;
+		} else {
+			consecutiveFailures = 0;
+		}
 
-			if (!result.ok) {
-				consecutiveFailures++;
-			} else {
-				consecutiveFailures = 0;
-			}
+		// Calculate backoff: min(initialInterval * 2^failures, 300000ms)
+		const baseIntervalMs = intervalSeconds * 1000;
+		const backoffMultiplier = 2 ** consecutiveFailures;
+		const nextIntervalMs = Math.min(baseIntervalMs * backoffMultiplier, maxIntervalMs);
 
-			// Calculate backoff: min(initialInterval * 2^failures, 300000ms)
-			const baseIntervalMs = intervalSeconds * 1000;
-			const backoffMultiplier = 2 ** consecutiveFailures;
-			const nextIntervalMs = Math.min(baseIntervalMs * backoffMultiplier, maxIntervalMs);
-
-			// Use setTimeout recursion instead of setInterval to support dynamic intervals
-			timerId = setTimeout(runSync, nextIntervalMs);
-		};
-
-		runSync();
+		// Use setTimeout recursion instead of setInterval to support dynamic intervals
+		timerId = setTimeout(scheduleNext, nextIntervalMs);
 	};
 
-	startLoop();
+	// Listen for immediate sync trigger event
+	if (eventBus) {
+		eventBus.on("sync:trigger", async () => {
+			if (stopped) return;
+			if (timerId) {
+				clearTimeout(timerId as unknown as number);
+				timerId = null;
+			}
+			await scheduleNext();
+		});
+	}
+
+	scheduleNext();
 
 	return {
 		stop: () => {
