@@ -157,6 +157,11 @@ const FULL_SCHEMA = `
 		modified_at TEXT NOT NULL
 	);
 
+	CREATE TABLE host_meta (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	);
+
 	CREATE TABLE advisories (
 		id TEXT PRIMARY KEY,
 		type TEXT NOT NULL,

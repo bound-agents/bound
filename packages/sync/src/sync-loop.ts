@@ -40,7 +40,7 @@ export interface SyncError {
 
 export class SyncClient {
 	private hubSiteId: string | null = null;
-	private relayDraining: boolean = false;
+	private relayDraining = false;
 
 	constructor(
 		private db: Database,
@@ -52,6 +52,11 @@ export class SyncClient {
 		private keyring: KeyringConfig,
 	) {
 		// Resolve hub's site_id from keyring
+		this.hubSiteId = this.resolveHubSiteId();
+	}
+
+	updateHubUrl(newHubUrl: string): void {
+		this.hubUrl = newHubUrl;
 		this.hubSiteId = this.resolveHubSiteId();
 	}
 
@@ -298,9 +303,7 @@ export class SyncClient {
 			let entriesToSend = outbox;
 			if (this.relayDraining) {
 				entriesToSend = outbox.filter(
-					(entry) =>
-						RELAY_RESPONSE_KINDS.includes(entry.kind as any) ||
-						entry.kind === "cancel",
+					(entry) => RELAY_RESPONSE_KINDS.includes(entry.kind as any) || entry.kind === "cancel",
 				);
 			}
 
