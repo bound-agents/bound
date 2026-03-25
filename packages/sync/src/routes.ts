@@ -1,10 +1,12 @@
 import type { Database } from "bun:sqlite";
-import type { KeyringConfig, Logger, TypedEventEmitter } from "@bound/shared";
+import { markDelivered, readUndelivered, writeOutbox } from "@bound/core";
+import type { KeyringConfig, Logger, RelayInboxEntry, TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
-import { fetchInboundChangeset } from "./changeset.js";
+import { type RelayRequest, type RelayResponse, fetchInboundChangeset } from "./changeset.js";
 import { createSyncAuthMiddleware } from "./middleware.js";
 import { updatePeerCursor } from "./peer-cursor.js";
 import { replayEvents } from "./reducers.js";
+import { type RelayExecutor, noopRelayExecutor } from "./relay-executor.js";
 
 type AppContext = {
 	Variables: {
@@ -16,10 +18,11 @@ type AppContext = {
 
 export function createSyncRoutes(
 	db: Database,
-	_siteId: string,
+	siteId: string,
 	keyring: KeyringConfig,
 	_eventBus: TypedEventEmitter,
 	logger: Logger,
+	relayExecutor?: RelayExecutor,
 ): Hono<AppContext> {
 	const app = new Hono<AppContext>();
 
@@ -94,6 +97,89 @@ export function createSyncRoutes(
 		} catch (error) {
 			logger.error(`Ack error: ${error instanceof Error ? error.message : "Unknown error"}`);
 			return c.json({ error: "Failed to process ack" }, 400);
+		}
+	});
+
+	// POST /sync/relay - Process relay messages
+	app.post("/sync/relay", async (c) => {
+		try {
+			const body = JSON.parse(c.get("rawBody")) as RelayRequest;
+			const requesterSiteId = c.get("siteId") as string;
+			const executor = relayExecutor ?? noopRelayExecutor;
+
+			const deliveredIds: string[] = [];
+			const inboxForRequester: RelayInboxEntry[] = [];
+
+			for (const entry of body.relay_outbox) {
+				// Idempotency check on hub side
+				if (entry.idempotency_key) {
+					const existing = db
+						.query("SELECT id FROM relay_outbox WHERE idempotency_key = ? AND target_site_id = ?")
+						.get(entry.idempotency_key, entry.target_site_id) as { id: string } | null;
+					if (existing) {
+						deliveredIds.push(entry.id);
+						continue;
+					}
+				}
+
+				if (entry.target_site_id === siteId) {
+					// Hub-local execution
+					const results = await executor(entry, siteId);
+					for (const result of results) {
+						inboxForRequester.push(result);
+					}
+				} else {
+					// Store for target spoke — write to hub's own outbox for delivery
+					// Preserve source_site_id so target knows who sent the request
+					writeOutbox(db, {
+						id: crypto.randomUUID(),
+						source_site_id: requesterSiteId,
+						target_site_id: entry.target_site_id,
+						kind: entry.kind,
+						ref_id: entry.ref_id ?? entry.id,
+						idempotency_key: entry.idempotency_key,
+						payload: entry.payload,
+						created_at: new Date().toISOString(),
+						expires_at: entry.expires_at,
+					});
+				}
+				deliveredIds.push(entry.id);
+			}
+
+			// Fetch pending inbox entries for this requester from hub's outbox
+			// (messages routed to requester from other spokes)
+			const pendingForRequester = readUndelivered(db, requesterSiteId);
+			for (const pending of pendingForRequester) {
+				inboxForRequester.push({
+					id: pending.id,
+					source_site_id: pending.source_site_id ?? requesterSiteId,
+					kind: pending.kind,
+					ref_id: pending.ref_id,
+					idempotency_key: pending.idempotency_key,
+					payload: pending.payload,
+					expires_at: pending.expires_at,
+					received_at: new Date().toISOString(),
+					processed: 0,
+				});
+			}
+			// Mark those as delivered on hub
+			if (pendingForRequester.length > 0) {
+				markDelivered(
+					db,
+					pendingForRequester.map((p) => p.id),
+				);
+			}
+
+			const response: RelayResponse = {
+				relay_inbox: inboxForRequester,
+				relay_delivered: deliveredIds,
+				relay_draining: false, // Phase 6 implements drain logic
+			};
+
+			return c.json(response);
+		} catch (error) {
+			logger.error(`Relay error: ${error instanceof Error ? error.message : "Unknown error"}`);
+			return c.json({ error: "Failed to process relay" }, 400);
 		}
 	});
 

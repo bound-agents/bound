@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import { ensureKeypair } from "../crypto.js";
 import { createSyncRoutes } from "../routes.js";
 import { SyncClient } from "../sync-loop.js";
+import type { RelayExecutor } from "../relay-executor.js";
 
 export interface TestInstance {
 	db: Database;
@@ -197,8 +198,9 @@ export async function createTestInstance(config: {
 	hubPort?: number;
 	keyring: KeyringConfig;
 	keypairPath?: string;
+	relayExecutor?: RelayExecutor;
 }): Promise<TestInstance> {
-	const { name, port, dbPath, role, hubPort, keyring, keypairPath } = config;
+	const { name, port, dbPath, role, hubPort, keyring, keypairPath, relayExecutor } = config;
 
 	// Ensure directory exists
 	const dir = dbPath.substring(0, dbPath.lastIndexOf("/"));
@@ -232,6 +234,7 @@ export async function createTestInstance(config: {
 		keyring,
 		createMockEventBus(),
 		createMockLogger(),
+		relayExecutor,
 	);
 
 	// Mount sync routes
