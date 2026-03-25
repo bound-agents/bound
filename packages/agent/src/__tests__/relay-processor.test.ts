@@ -39,7 +39,7 @@ class MockMCPClient implements Partial<MCPClient> {
 		};
 	}
 
-	async invokePrompt(name: string, args: Record<string, unknown>) {
+	async invokePrompt(name: string, _args: Record<string, unknown>) {
 		return {
 			messages: [{ role: "user", content: `Prompt ${name} result` }],
 		};
@@ -298,9 +298,9 @@ describe("RelayProcessor", () => {
 			expect(entries.length).toBe(0);
 
 			// No outbox entry should be created for expired request
-			const outboxEntries = db
-				.query("SELECT COUNT(*) as count FROM relay_outbox")
-				.get() as { count: number };
+			const outboxEntries = db.query("SELECT COUNT(*) as count FROM relay_outbox").get() as {
+				count: number;
+			};
 			expect(outboxEntries.count).toBe(0);
 		});
 	});
@@ -510,6 +510,9 @@ describe("RelayProcessor", () => {
 	describe("idempotency", () => {
 		it("returns cached response on duplicate idempotency_key (AC5.1)", async () => {
 			const mockClient = new MockMCPClient("test-server");
+			mockClient.tools = new Map([
+				["test-server-test", { name: "test-server-test", description: "Test tool" }],
+			]);
 			let callCount = 0;
 			const originalCallTool = mockClient.callTool.bind(mockClient);
 			mockClient.callTool = async (name: string, args: Record<string, unknown>) => {
@@ -540,7 +543,7 @@ describe("RelayProcessor", () => {
 				ref_id: null,
 				idempotency_key: idempotencyKey,
 				payload: JSON.stringify({
-					tool: "test",
+					tool: "test-server-test",
 					args: {},
 					timeout_ms: 5000,
 				} as ToolCallPayload),
@@ -570,6 +573,7 @@ describe("RelayProcessor", () => {
 			await new Promise((resolve) => setTimeout(resolve, 200));
 
 			const callCountAfterFirst = callCount;
+			expect(callCountAfterFirst).toBeGreaterThan(0);
 
 			// Insert second request with same idempotency_key
 			const entry2: RelayInboxEntry = {
@@ -579,7 +583,7 @@ describe("RelayProcessor", () => {
 				ref_id: null,
 				idempotency_key: idempotencyKey,
 				payload: JSON.stringify({
-					tool: "test",
+					tool: "test-server-test",
 					args: {},
 					timeout_ms: 5000,
 				} as ToolCallPayload),
@@ -611,6 +615,12 @@ describe("RelayProcessor", () => {
 
 			// callCount should not increase (cached response used)
 			expect(callCount).toBe(callCountAfterFirst);
+
+			// Verify both requests have results in the outbox
+			const results = db
+				.query("SELECT * FROM relay_outbox WHERE kind = ? ORDER BY created_at")
+				.all("result") as RelayOutboxEntry[];
+			expect(results.length).toBeGreaterThanOrEqual(2);
 		});
 
 		it("expires cache entries after 5 minutes (AC5.3)", async () => {
@@ -637,7 +647,7 @@ describe("RelayProcessor", () => {
 				createMockLogger(),
 			);
 
-			const now = new Date();
+			const baseTime = Date.now();
 			const idempotencyKey = "test-idem-key-expiry";
 
 			// Insert first request with idempotency_key
@@ -652,8 +662,8 @@ describe("RelayProcessor", () => {
 					args: {},
 					timeout_ms: 5000,
 				} as ToolCallPayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
+				expires_at: new Date(baseTime + 600000).toISOString(),
+				received_at: new Date(baseTime).toISOString(),
 				processed: 0,
 			};
 
@@ -678,11 +688,9 @@ describe("RelayProcessor", () => {
 			await new Promise((resolve) => setTimeout(resolve, 200));
 
 			const callCountAfterFirst = callCount;
-			expect(callCount).toBeGreaterThan(0);
+			expect(callCountAfterFirst).toBeGreaterThan(0);
 
-			// Manually expire the cache by inserting an expired cache entry
-			// We'll use executeImmediate with a manually aged request to verify TTL behavior
-			// First, verify cache is used for valid TTL
+			// Insert second request with same idempotency_key before cache expiry
 			const entry2: RelayInboxEntry = {
 				id: "req-2-expiry",
 				source_site_id: "requester-site",
@@ -694,8 +702,8 @@ describe("RelayProcessor", () => {
 					args: {},
 					timeout_ms: 5000,
 				} as ToolCallPayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
+				expires_at: new Date(baseTime + 600000).toISOString(),
+				received_at: new Date(baseTime).toISOString(),
 				processed: 0,
 			};
 
@@ -718,30 +726,26 @@ describe("RelayProcessor", () => {
 			await new Promise((resolve) => setTimeout(resolve, 200));
 
 			const callCountAfterSecond = callCount;
-			// Should still be cached
+			// Should still be cached (no new call)
 			expect(callCountAfterSecond).toBe(callCountAfterFirst);
 
-			// Now manually advance cache expiration by creating a request after cache expiry
-			// Delete the cached entry to simulate expiration, then verify re-execution occurs
 			handle.stop();
 
-			// Create a new processor instance with same cache strategy to verify TTL
-			const processor2 = new RelayProcessor(
-				db,
-				"target-site",
-				mcpClients,
-				keyringSiteIds,
-				createMockLogger(),
-			);
+			// Mock Date.now() to advance past 5 minutes (5 min TTL + 1 second)
+			const originalDateNow = Date.now;
+			Date.now = () => baseTime + 5 * 60 * 1000 + 1000;
 
-			// Clear unprocessed entries to isolate test
-			const entries = readUnprocessed(db);
-			if (entries.length > 0) {
-				markProcessed(db, entries.map((e) => e.id));
+			// Clear unprocessed entries and reset for next phase
+			const unprocessedBefore = readUnprocessed(db);
+			if (unprocessedBefore.length > 0) {
+				markProcessed(
+					db,
+					unprocessedBefore.map((e) => e.id),
+				);
 			}
 
-			// Insert third request with same key after time passage
-			// This simulates the 5-minute TTL expiration
+			// Insert third request with same idempotency_key after TTL expiry
+			// This should trigger re-execution since cache is expired
 			const entry3: RelayInboxEntry = {
 				id: "req-3-expiry",
 				source_site_id: "requester-site",
@@ -753,8 +757,8 @@ describe("RelayProcessor", () => {
 					args: {},
 					timeout_ms: 5000,
 				} as ToolCallPayload),
-				expires_at: new Date(now.getTime() + 600000).toISOString(), // 10 minutes
-				received_at: now.toISOString(),
+				expires_at: new Date(baseTime + 600000).toISOString(),
+				received_at: new Date(baseTime).toISOString(),
 				processed: 0,
 			};
 
@@ -774,16 +778,15 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle2 = processor2.start(50);
+			const handle2 = processor.start(50);
 			await new Promise((resolve) => setTimeout(resolve, 200));
 			handle2.stop();
 
-			// Since processor2 has a fresh cache, it should execute
-			// Verify that result exists in outbox for this new request
-			const results = db
-				.query("SELECT * FROM relay_outbox WHERE ref_id = ?")
-				.all(entry3.id) as RelayOutboxEntry[];
-			expect(results.length).toBeGreaterThan(0);
+			// Restore Date.now()
+			Date.now = originalDateNow;
+
+			// callCount should have increased (cache was expired, re-execution happened)
+			expect(callCount).toBeGreaterThan(callCountAfterFirst);
 		});
 	});
 
@@ -1032,7 +1035,10 @@ describe("RelayProcessor", () => {
 		it("returns error response with retriable flag when MCP client call fails", async () => {
 			const failingClient = new MockMCPClient("failing-server");
 			failingClient.tools = new Map([
-				["failing-server-test-tool", { name: "failing-server-test-tool", description: "Test tool" }],
+				[
+					"failing-server-test-tool",
+					{ name: "failing-server-test-tool", description: "Test tool" },
+				],
 			]);
 			// Override callTool to throw an error
 			failingClient.callTool = async () => {

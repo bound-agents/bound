@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { markProcessed, readUnprocessed, writeOutbox } from "@bound/core";
 import type {
 	CacheWarmPayload,
@@ -267,42 +268,80 @@ export class RelayProcessor {
 	}
 
 	private async executeCacheWarm(
-		_entry: RelayInboxEntry | RelayOutboxEntry,
+		entry: RelayInboxEntry | RelayOutboxEntry,
 		payload: CacheWarmPayload,
 	): Promise<string> {
 		// Read files from paths and return content
-		// For now, return a simple response
-		const fs = require("node:fs");
-		const contents: string[] = [];
+		// If combined response exceeds max_payload_bytes, split into per-file results
+		const maxPayloadBytes = this.relayConfig?.max_payload_bytes ?? 1024 * 1024;
+		const fileContents: Array<{ path: string; content: string }> = [];
 
 		for (const path of payload.paths) {
 			try {
-				const content = fs.readFileSync(path, "utf-8");
-				contents.push(content);
+				const content = readFileSync(path, "utf-8");
+				fileContents.push({ path, content });
 			} catch (error) {
-				contents.push(`[Error reading ${path}: ${String(error)}]`);
+				fileContents.push({ path, content: `[Error reading ${path}: ${String(error)}]` });
 			}
 		}
 
-		const resultPayload: ResultPayload = {
-			stdout: contents.join("\n---FILE_SEPARATOR---\n"),
+		// Check if we need to split based on payload size
+		let combinedContent = fileContents.map((fc) => fc.content).join("\n---FILE_SEPARATOR---\n");
+		const combinedPayload: ResultPayload = {
+			stdout: combinedContent,
 			stderr: "",
 			exit_code: 0,
 			execution_ms: 0,
 		};
-		return JSON.stringify(resultPayload);
+		const combinedSize = JSON.stringify(combinedPayload).length;
+
+		// If combined response is within limit, return as single response
+		if (combinedSize <= maxPayloadBytes) {
+			return JSON.stringify(combinedPayload);
+		}
+
+		// Otherwise, split into per-file responses and write them separately
+		// Each response has the same ref_id, final chunk marked with complete:true
+		for (let i = 0; i < fileContents.length; i++) {
+			const fc = fileContents[i];
+			const isLastChunk = i === fileContents.length - 1;
+			const resultPayload: ResultPayload & { complete?: boolean } = {
+				stdout: fc.content,
+				stderr: "",
+				exit_code: 0,
+				execution_ms: 0,
+				complete: isLastChunk,
+			};
+			const responseStr = JSON.stringify(resultPayload);
+
+			// Write each chunk to outbox
+			this.writeResponse(entry, "result", responseStr);
+		}
+
+		// Return the first chunk (writeResponse already wrote all of them to outbox)
+		const firstChunkPayload: ResultPayload = {
+			stdout: fileContents[0]?.content ?? "",
+			stderr: "",
+			exit_code: 0,
+			execution_ms: 0,
+		};
+		return JSON.stringify(firstChunkPayload);
 	}
 
 	private writeResponse(
-		requestEntry: RelayInboxEntry,
+		requestEntry: RelayInboxEntry | RelayOutboxEntry,
 		kind: "result" | "error",
 		payload: string,
 	): void {
 		const now = new Date();
+		const targetSiteId = requestEntry.source_site_id;
+		if (!targetSiteId) {
+			throw new Error("Request entry has no source_site_id");
+		}
 		writeOutbox(this.db, {
 			id: randomUUID(),
 			source_site_id: this.siteId,
-			target_site_id: requestEntry.source_site_id,
+			target_site_id: targetSiteId,
 			kind,
 			ref_id: requestEntry.id,
 			idempotency_key: null,

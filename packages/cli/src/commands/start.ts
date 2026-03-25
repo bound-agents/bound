@@ -9,10 +9,17 @@ import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
 import { generateMCPCommands, getAllCommands, setCommandRegistry } from "@bound/agent";
 import { generateThreadTitle } from "@bound/agent";
-import { createAppContext, insertRow, resolveRelayConfig, updateRow, withChangeLog } from "@bound/core";
+import {
+	createAppContext,
+	insertRow,
+	resolveRelayConfig,
+	updateRow,
+	withChangeLog,
+} from "@bound/core";
 import { createModelRouter } from "@bound/llm";
 import type { BackendConfig, LLMBackend, ModelBackendsConfig, ToolDefinition } from "@bound/llm";
 import { createClusterFs, createDefineCommands, createSandbox } from "@bound/sandbox";
+import type { SyncConfig } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import { ensureKeypair } from "@bound/sync";
 import type { RelayExecutor } from "@bound/sync";
@@ -316,14 +323,15 @@ export async function runStart(args: StartArgs): Promise<void> {
 	let relayExecutor: RelayExecutor | undefined;
 	{
 		const keyringResult = appContext.optionalConfig["keyring"];
-		const keyring = keyringResult && keyringResult.ok
-			? (keyringResult.value as import("@bound/shared").KeyringConfig)
-			: undefined;
+		const keyring =
+			keyringResult && keyringResult.ok
+				? (keyringResult.value as import("@bound/shared").KeyringConfig)
+				: undefined;
 
 		if (keyring) {
 			const syncConfigResult = appContext.optionalConfig.sync;
 			const relayConfig = resolveRelayConfig(
-				syncConfigResult?.ok ? (syncConfigResult.value as any) : undefined,
+				syncConfigResult?.ok ? (syncConfigResult.value as SyncConfig) : undefined,
 			);
 			const relayProcessor = new RelayProcessor(
 				appContext.db,
@@ -625,7 +633,11 @@ export async function runStart(args: StartArgs): Promise<void> {
 				appContext.eventBus,
 				keyring,
 			);
-			syncLoopHandle = startSyncLoop(syncClient, syncConfig.sync_interval_seconds || 30, appContext.eventBus);
+			syncLoopHandle = startSyncLoop(
+				syncClient,
+				syncConfig.sync_interval_seconds || 30,
+				appContext.eventBus,
+			);
 			console.log(`[sync] Sync loop started (${syncConfig.sync_interval_seconds}s interval)`);
 		} catch (error) {
 			console.warn(`[sync] Failed to start: ${formatError(error)}`);
