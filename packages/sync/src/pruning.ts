@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { pruneRelayCycles } from "@bound/core";
 import type { Logger } from "@bound/shared";
 import { getMinConfirmedSeq } from "./peer-cursor.js";
 
@@ -72,6 +73,12 @@ export function startPruningLoop(
 
 			const mode = determinePruningMode(db);
 			pruneChangeLog(db, mode, logger);
+
+			// Prune relay cycles (30-day retention)
+			const relayCyclesPruned = pruneRelayCycles(db, 30);
+			if (relayCyclesPruned > 0) {
+				logger?.debug("Pruned relay cycles", { count: relayCyclesPruned });
+			}
 		}, intervalMs);
 	};
 
