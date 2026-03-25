@@ -54,7 +54,7 @@ export async function eagerPushToSpoke(
 		const pushLatencyMs = Date.now() - pushStartTime;
 		const pushSucceeded = response.ok;
 
-		// Record relay cycles for each entry
+		// Record relay cycle for this push batch
 		if (entries.length > 0) {
 			try {
 				recordRelayCycle(config.db, {

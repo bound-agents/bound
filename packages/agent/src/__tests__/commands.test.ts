@@ -411,8 +411,16 @@ describe("defineCommand implementations", () => {
 			setCommandRegistry([
 				help,
 				{ name: "query", args: [], handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }) },
-				{ name: "test-server-tool1", args: [], handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }) },
-				{ name: "remote-server-tool2", args: [], handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }) },
+				{
+					name: "test-server-tool1",
+					args: [],
+					handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+				},
+				{
+					name: "remote-server-tool2",
+					args: [],
+					handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+				},
 			]);
 
 			// Mock MCPClient with listTools method
@@ -456,7 +464,11 @@ describe("defineCommand implementations", () => {
 			setCommandRegistry([
 				help,
 				{ name: "query", args: [], handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }) },
-				{ name: "local-server-tool", args: [], handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }) },
+				{
+					name: "local-server-tool",
+					args: [],
+					handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+				},
 			]);
 
 			// Mock MCPClient

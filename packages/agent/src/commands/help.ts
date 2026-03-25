@@ -97,8 +97,9 @@ export const help: CommandDefinition = {
 			}
 		}
 
-		// Get remote MCP tool names from hosts table
+		// Get remote MCP tool names from hosts table and build tool-to-host map
 		const remoteMcpToolNames = new Set<string>();
+		const toolToHostName = new Map<string, string>();
 		try {
 			const hosts = ctx.db
 				.prepare(
@@ -112,6 +113,7 @@ export const help: CommandDefinition = {
 						const toolName = `${tool.server}-${tool.name}`;
 						if (!localMcpToolNames.has(toolName)) {
 							remoteMcpToolNames.add(toolName);
+							toolToHostName.set(toolName, host.host_name);
 						}
 					}
 				} catch {
@@ -147,35 +149,8 @@ export const help: CommandDefinition = {
 		if (remoteMcp.length > 0) {
 			output += "\nREMOTE (via relay):\n";
 			for (const cmd of remoteMcp) {
-				// Try to find which host this tool comes from
-				let hostInfo = "";
-				try {
-					const hosts = ctx.db
-						.prepare(
-							"SELECT site_id, host_name, mcp_tools FROM hosts WHERE deleted = 0 AND mcp_tools IS NOT NULL",
-						)
-						.all() as Array<{ site_id: string; host_name: string; mcp_tools: string }>;
-					for (const host of hosts) {
-						try {
-							const tools = JSON.parse(host.mcp_tools) as Array<{
-								server: string;
-								name: string;
-							}>;
-							for (const tool of tools) {
-								const toolName = `${tool.server}-${tool.name}`;
-								if (toolName === cmd.name) {
-									hostInfo = ` [host: ${host.host_name}]`;
-									break;
-								}
-							}
-							if (hostInfo) break;
-						} catch {
-							// Continue to next host
-						}
-					}
-				} catch {
-					// If query fails, don't add host info
-				}
+				const hostName = toolToHostName.get(cmd.name);
+				const hostInfo = hostName ? ` [host: ${hostName}]` : "";
 				output += `  ${cmd.name}${hostInfo}\n`;
 			}
 		}

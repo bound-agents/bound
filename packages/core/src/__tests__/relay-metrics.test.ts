@@ -358,7 +358,7 @@ describe("Relay Metrics", () => {
 
 			// Verify old entry was deleted
 			const oldEntries = db
-				.query(`SELECT COUNT(*) as count FROM relay_cycles WHERE created_at = ?`)
+				.query("SELECT COUNT(*) as count FROM relay_cycles WHERE created_at = ?")
 				.get(thirtyTwoDaysAgo.toISOString()) as { count: number };
 
 			expect(oldEntries.count).toBe(0);
