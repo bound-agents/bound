@@ -10,7 +10,10 @@ import {
 	networkSchema,
 	ok,
 	overlaySchema,
+	relaySchema,
 	syncSchema,
+	type RelayConfig,
+	type SyncConfig,
 } from "@bound/shared";
 
 export interface ConfigError {
@@ -41,6 +44,15 @@ export type RequiredConfig = {
 };
 
 export type OptionalConfigs = Record<string, Result<Record<string, unknown>, ConfigError>>;
+
+export function resolveRelayConfig(
+	syncConfig: SyncConfig | undefined,
+): RelayConfig {
+	if (!syncConfig?.relay) {
+		return relaySchema.parse({});
+	}
+	return syncConfig.relay;
+}
 
 export function expandEnvVars(value: string): string {
 	return value.replace(/\$\{([^:}]+)(?::-([^}]*))?\}/g, (_match, varName, defaultVal) => {

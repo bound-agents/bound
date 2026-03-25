@@ -14,6 +14,7 @@ export {
 	loadRequiredConfigs,
 	loadOptionalConfigs,
 	expandEnvVars,
+	resolveRelayConfig,
 	type ConfigError,
 	type RequiredConfig,
 	type OptionalConfigs,
