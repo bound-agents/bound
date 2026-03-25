@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { markDelivered, readUndelivered, writeOutbox } from "@bound/core";
+import { insertInbox, markDelivered, readUndelivered, writeOutbox } from "@bound/core";
 import type { KeyringConfig, Logger, RelayInboxEntry, TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
 import { type RelayRequest, type RelayResponse, fetchInboundChangeset } from "./changeset.js";
@@ -23,11 +23,15 @@ export function createSyncRoutes(
 	_eventBus: TypedEventEmitter,
 	logger: Logger,
 	relayExecutor?: RelayExecutor,
+	hubSiteId?: string,
 ): Hono<AppContext> {
 	const app = new Hono<AppContext>();
 
 	// Apply auth middleware to all sync routes
 	app.use("/sync/*", createSyncAuthMiddleware(keyring));
+
+	// Apply auth middleware to relay-deliver endpoint
+	app.use("/api/relay-deliver", createSyncAuthMiddleware(keyring));
 
 	// POST /sync/push - Receive events from a spoke
 	app.post("/sync/push", async (c) => {
@@ -180,6 +184,30 @@ export function createSyncRoutes(
 		} catch (error) {
 			logger.error(`Relay error: ${error instanceof Error ? error.message : "Unknown error"}`);
 			return c.json({ error: "Failed to process relay" }, 400);
+		}
+	});
+
+	// POST /api/relay-deliver - Receive relay messages pushed from hub
+	app.post("/api/relay-deliver", async (c) => {
+		try {
+			const senderSiteId = c.get("siteId") as string;
+
+			// Only accept messages from the current hub
+			if (hubSiteId && senderSiteId !== hubSiteId) {
+				return c.json({ ok: false, error: "Not from current hub" }, 403);
+			}
+
+			const body = JSON.parse(c.get("rawBody")) as { entries: RelayInboxEntry[] };
+			let received = 0;
+			for (const entry of body.entries) {
+				const inserted = insertInbox(db, entry);
+				if (inserted) received++;
+			}
+
+			return c.json({ ok: true, received });
+		} catch (error) {
+			logger.error(`Relay deliver error: ${error instanceof Error ? error.message : "Unknown error"}`);
+			return c.json({ error: "Failed to process relay delivery" }, 400);
 		}
 	});
 
