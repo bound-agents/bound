@@ -11,6 +11,9 @@ export { assembleContext } from "./context-assembly";
 // Export scheduler
 export { Scheduler } from "./scheduler";
 
+// Export relay processor
+export { RelayProcessor } from "./relay-processor";
+
 // Export commands
 export { getAllCommands, setCommandRegistry } from "./commands/index";
 
