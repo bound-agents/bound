@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { ChangeLogEntry, Result } from "@bound/shared";
+import type { ChangeLogEntry, RelayInboxEntry, RelayOutboxEntry, Result } from "@bound/shared";
 import { err, ok } from "@bound/shared";
 
 export interface Changeset {
@@ -7,6 +7,16 @@ export interface Changeset {
 	source_site_id: string;
 	source_seq_start: number;
 	source_seq_end: number;
+}
+
+export interface RelayRequest {
+	relay_outbox: RelayOutboxEntry[];
+}
+
+export interface RelayResponse {
+	relay_inbox: RelayInboxEntry[];
+	relay_delivered: string[];
+	relay_draining: boolean;
 }
 
 export function fetchOutboundChangeset(

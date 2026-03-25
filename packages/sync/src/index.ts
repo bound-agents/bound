@@ -13,3 +13,6 @@ export { startSyncLoop } from "./sync-loop.js";
 
 // Routes
 export { createSyncRoutes } from "./routes.js";
+
+// Relay wire format
+export type { RelayRequest, RelayResponse } from "./changeset.js";
