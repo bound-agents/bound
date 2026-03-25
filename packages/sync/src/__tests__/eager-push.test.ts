@@ -487,13 +487,76 @@ describe("eagerPushToSpoke", () => {
 		// Test that non-200 responses are treated as failures
 		const tracker = new ReachabilityTracker();
 
-		// Create a spoke entry that will receive a 500 error
-		// We do this by having hub call eager push with bad spoke that we can control response for
-		// For this unit test, we verify tracker records failures for any error
-		tracker.recordFailure("error-spoke");
+		// Create a mock spoke server that returns 500 on relay-deliver
+		const errorSpokePort = 10000 + Math.floor(Math.random() * 50000);
+		const errorSpokeApp = new (await import("hono")).Hono();
 
-		expect(tracker.isReachable("error-spoke")).toBe(true);
-		const state = tracker.getState("error-spoke");
-		expect(state?.failureCount).toBe(1);
+		// Add a handler that returns 500 for relay-deliver
+		errorSpokeApp.post("/api/relay-deliver", async (c) => {
+			return c.json({ ok: false, error: "Internal server error" }, 500);
+		});
+
+		const errorSpokeServer = Bun.serve({
+			port: errorSpokePort,
+			fetch: errorSpokeApp.fetch,
+		});
+
+		try {
+			// Create a spoke entry for the error spoke
+			const errorSpokeId = crypto.randomUUID();
+
+			// Add error spoke to hub's hosts table
+			hub.db.run(
+				`INSERT OR REPLACE INTO hosts (site_id, host_name, version, sync_url, modified_at, online_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, 0)`,
+				errorSpokeId,
+				"error-spoke",
+				"1.0.0",
+				`http://localhost:${errorSpokePort}`,
+				new Date().toISOString(),
+				new Date().toISOString(),
+			);
+
+			const now = new Date().toISOString();
+			const expiresAt = new Date(Date.now() + 60000).toISOString();
+			const entry: RelayInboxEntry = {
+				id: crypto.randomUUID(),
+				source_site_id: hub.siteId,
+				kind: "result",
+				ref_id: "ref-error",
+				idempotency_key: null,
+				payload: JSON.stringify({ status: "error" }),
+				expires_at: expiresAt,
+				received_at: now,
+				processed: 0,
+			};
+
+			const eagerPushConfig = {
+				privateKey: (await ensureKeypair(`/tmp/bound-test-hub-eager-${testRunId}`)).privateKey,
+				siteId: hub.siteId,
+				db: hub.db,
+				keyring,
+				reachabilityTracker: tracker,
+				logger: {
+					info: () => {},
+					warn: () => {},
+					error: () => {},
+					debug: () => {},
+				},
+			};
+
+			// Call eagerPushToSpoke against the error spoke
+			const result = await eagerPushToSpoke(eagerPushConfig, errorSpokeId, [entry]);
+
+			// Push should fail due to 500 response
+			expect(result).toBe(false);
+
+			// Verify tracker recorded the failure
+			expect(tracker.isReachable(errorSpokeId)).toBe(true); // One failure, not yet unreachable
+			const state = tracker.getState(errorSpokeId);
+			expect(state?.failureCount).toBe(1);
+		} finally {
+			errorSpokeServer.stop();
+		}
 	});
 });
