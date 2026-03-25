@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { RelayOutboxEntry, RelayInboxEntry } from "@bound/shared";
+import type { RelayInboxEntry, RelayOutboxEntry } from "@bound/shared";
 
 const MAX_PAYLOAD_BYTES_DEFAULT = 2 * 1024 * 1024;
 
@@ -40,36 +40,28 @@ export function writeOutbox(
 	);
 }
 
-export function readUndelivered(
-	db: Database,
-	targetSiteId?: string,
-): RelayOutboxEntry[] {
+export function readUndelivered(db: Database, targetSiteId?: string): RelayOutboxEntry[] {
 	if (targetSiteId) {
 		return db
 			.query(
-				`SELECT * FROM relay_outbox WHERE delivered = 0 AND target_site_id = ? ORDER BY created_at ASC`,
+				"SELECT * FROM relay_outbox WHERE delivered = 0 AND target_site_id = ? ORDER BY created_at ASC",
 			)
 			.all(targetSiteId) as RelayOutboxEntry[];
 	}
 	return db
-		.query(`SELECT * FROM relay_outbox WHERE delivered = 0 ORDER BY created_at ASC`)
+		.query("SELECT * FROM relay_outbox WHERE delivered = 0 ORDER BY created_at ASC")
 		.all() as RelayOutboxEntry[];
 }
 
 export function markDelivered(db: Database, ids: string[]): void {
 	if (ids.length === 0) return;
 	const placeholders = ids.map(() => "?").join(", ");
-	db.run(
-		`UPDATE relay_outbox SET delivered = 1 WHERE id IN (${placeholders})`,
-		ids,
-	);
+	db.run(`UPDATE relay_outbox SET delivered = 1 WHERE id IN (${placeholders})`, ids);
 }
 
 export function readUnprocessed(db: Database): RelayInboxEntry[] {
 	return db
-		.query(
-			`SELECT * FROM relay_inbox WHERE processed = 0 ORDER BY received_at ASC`,
-		)
+		.query("SELECT * FROM relay_inbox WHERE processed = 0 ORDER BY received_at ASC")
 		.all() as RelayInboxEntry[];
 }
 
@@ -99,28 +91,21 @@ export function insertInbox(
 export function markProcessed(db: Database, ids: string[]): void {
 	if (ids.length === 0) return;
 	const placeholders = ids.map(() => "?").join(", ");
-	db.run(
-		`UPDATE relay_inbox SET processed = 1 WHERE id IN (${placeholders})`,
-		ids,
-	);
+	db.run(`UPDATE relay_inbox SET processed = 1 WHERE id IN (${placeholders})`, ids);
 }
 
 export function pruneRelayTables(
 	db: Database,
-	retentionSeconds: number = 300,
+	retentionSeconds = 300,
 ): { outboxPruned: number; inboxPruned: number } {
-	const cutoff = new Date(
-		Date.now() - retentionSeconds * 1000,
-	).toISOString();
+	const cutoff = new Date(Date.now() - retentionSeconds * 1000).toISOString();
 
-	const outboxResult = db.run(
-		`DELETE FROM relay_outbox WHERE delivered = 1 AND created_at < ?`,
-		[cutoff],
-	);
-	const inboxResult = db.run(
-		`DELETE FROM relay_inbox WHERE processed = 1 AND received_at < ?`,
-		[cutoff],
-	);
+	const outboxResult = db.run("DELETE FROM relay_outbox WHERE delivered = 1 AND created_at < ?", [
+		cutoff,
+	]);
+	const inboxResult = db.run("DELETE FROM relay_inbox WHERE processed = 1 AND received_at < ?", [
+		cutoff,
+	]);
 
 	return {
 		outboxPruned: outboxResult.changes,
@@ -128,15 +113,10 @@ export function pruneRelayTables(
 	};
 }
 
-export function readInboxByRefId(
-	db: Database,
-	refId: string,
-): RelayInboxEntry | null {
-	return (
-		db
-			.query(
-				`SELECT * FROM relay_inbox WHERE ref_id = ? AND processed = 0 ORDER BY received_at ASC LIMIT 1`,
-			)
-			.get(refId) as RelayInboxEntry | null
-	);
+export function readInboxByRefId(db: Database, refId: string): RelayInboxEntry | null {
+	return db
+		.query(
+			"SELECT * FROM relay_inbox WHERE ref_id = ? AND processed = 0 ORDER BY received_at ASC LIMIT 1",
+		)
+		.get(refId) as RelayInboxEntry | null;
 }
