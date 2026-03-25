@@ -6,9 +6,9 @@ import { TypedEventEmitter } from "@bound/shared";
 import type { KeyringConfig } from "@bound/shared";
 import { Hono } from "hono";
 import { ensureKeypair } from "../crypto.js";
+import type { RelayExecutor } from "../relay-executor.js";
 import { createSyncRoutes } from "../routes.js";
 import { SyncClient } from "../sync-loop.js";
-import type { RelayExecutor } from "../relay-executor.js";
 
 export interface TestInstance {
 	db: Database;
@@ -187,6 +187,31 @@ const FULL_SCHEMA = `
 		last_sent INTEGER NOT NULL DEFAULT 0,
 		last_sync_at TEXT,
 		sync_errors INTEGER NOT NULL DEFAULT 0
+	);
+
+	CREATE TABLE relay_outbox (
+		id TEXT PRIMARY KEY,
+		source_site_id TEXT,
+		target_site_id TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		ref_id TEXT,
+		idempotency_key TEXT,
+		payload TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		expires_at TEXT NOT NULL,
+		delivered INTEGER DEFAULT 0
+	);
+
+	CREATE TABLE relay_inbox (
+		id TEXT PRIMARY KEY,
+		source_site_id TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		ref_id TEXT,
+		idempotency_key TEXT,
+		payload TEXT NOT NULL,
+		expires_at TEXT NOT NULL,
+		received_at TEXT NOT NULL,
+		processed INTEGER DEFAULT 0
 	);
 `;
 
