@@ -1,7 +1,6 @@
 /**
  * MCP Bridge for auto-generating defineCommands from MCP tools.
  * Implements MCP tool discovery and command generation per spec §7.3.
- * Implements cross-host MCP tool proxying per spec §7.5.
  *
  * NOTE: URL filtering for outbound requests should be enforced at the tool handler level.
  * The sandbox's urlFilter (from createSandbox) should be checked before making any
@@ -11,10 +10,8 @@
 
 import type { Database } from "bun:sqlite";
 
-import { writeOutbox } from "@bound/core";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 import { formatError } from "@bound/shared";
-import type { KeyringConfig } from "@bound/shared";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 import type { MCPClient } from "./mcp-client";
@@ -24,16 +21,6 @@ import {
 	findEligibleHosts,
 	isHostStale,
 } from "./relay-router";
-
-/**
- * Configuration for cross-host proxy routing.
- */
-export interface MCPProxyConfig {
-	db: Database;
-	siteId: string;
-	keyring: KeyringConfig;
-	privateKey: CryptoKey;
-}
 
 /**
  * Signal from a remote MCP command handler that indicates a relay request
@@ -63,94 +50,14 @@ export function isRelayRequest(
 }
 
 /**
- * Initiate a relay request for a remote tool call.
- * Uses findEligibleHosts to discover which hosts have the tool,
- * checks host staleness, and writes a relay outbox entry.
- * Returns a RelayToolCallRequest for the agent loop to enter RELAY_WAIT.
- */
-function initializeRelayToolCall(
-	toolCommandName: string,
-	args: Record<string, unknown>,
-	proxyConfig: MCPProxyConfig,
-): RelayToolCallRequest | { error: string; isError: boolean } {
-	const { db, siteId } = proxyConfig;
-
-	// Find eligible hosts using relay routing
-	const routingResult = findEligibleHosts(db, toolCommandName, siteId);
-	if (!routingResult.ok) {
-		// AC1.6: Tool not available on any remote host
-		return {
-			error: routingResult.error,
-			isError: true,
-		};
-	}
-
-	const hosts = routingResult.hosts;
-
-	// Check if the best host (first in sorted list) is stale
-	// AC1.7: All hosts are stale — return descriptive error with staleness info
-	if (hosts.length > 0 && isHostStale(hosts[0])) {
-		const bestHost = hosts[0];
-		const stalenessMs = bestHost.online_at
-			? Date.now() - new Date(bestHost.online_at).getTime()
-			: Number.POSITIVE_INFINITY;
-		const stalenessMinutes = Math.ceil(stalenessMs / 60_000);
-		return {
-			error: `Tool "${toolCommandName}" not reachable: ${bestHost.host_name} last seen ${stalenessMinutes} minute(s) ago`,
-			isError: true,
-		};
-	}
-
-	// Build relay outbox entry
-	const targetHost = hosts[0];
-	const payload = JSON.stringify({
-		kind: "tool_call",
-		toolName: toolCommandName,
-		args,
-	});
-
-	const outboxEntry = createRelayOutboxEntry(
-		targetHost.site_id,
-		"tool_call",
-		payload,
-		30_000, // 30 second timeout per host attempt
-	);
-
-	// Write to outbox
-	try {
-		writeOutbox(db, outboxEntry);
-	} catch (error) {
-		return {
-			error: `Failed to write relay outbox entry: ${error instanceof Error ? error.message : String(error)}`,
-			isError: true,
-		};
-	}
-
-	return {
-		outboxEntryId: outboxEntry.id,
-		targetSiteId: targetHost.site_id,
-		targetHostName: targetHost.host_name,
-		toolName: toolCommandName,
-		eligibleHosts: hosts,
-		currentHostIndex: 0,
-		stdout: "",
-		stderr: "",
-		exitCode: 0,
-	};
-}
-
-/**
  * Generate defineCommands from MCP tools discovered on connected servers.
  * Returns an array of CommandDefinition for each tool with name format: {server-name}-{tool-name}
  *
  * Calls listTools() on each connected client to enumerate tools.
- * When proxyConfig is provided, also generates commands for tools advertised by remote hosts
- * that are not available locally.
  */
 export async function generateMCPCommands(
 	clients: Map<string, MCPClient>,
 	confirmGates: Map<string, string[]> = new Map(),
-	proxyConfig?: MCPProxyConfig,
 ): Promise<CommandDefinition[]> {
 	const commands: CommandDefinition[] = [];
 
@@ -237,107 +144,11 @@ export async function generateMCPCommands(
 		}
 	}
 
-	// Generate proxy commands for remote tools not available locally
-	if (proxyConfig) {
-		const localToolNames = new Set(commands.map((c) => c.name));
-		const remoteCommands = generateRemoteMCPCommands(localToolNames, proxyConfig);
-		for (const cmd of remoteCommands) {
-			commands.push(cmd);
-		}
-	}
-
 	// Add MCP access commands
 	commands.push(createResourcesCommand(clients));
 	commands.push(createResourceCommand(clients));
 	commands.push(createPromptsCommand(clients));
 	commands.push(createPromptCommand(clients));
-
-	return commands;
-}
-
-/**
- * Generate proxy CommandDefinitions for tools available on remote hosts but not locally.
- * Only creates commands for tool names not already present in localToolNames.
- * Uses relay-based routing: writes outbox entry and returns RelayToolCallRequest
- * for the agent loop to handle via RELAY_WAIT.
- */
-function generateRemoteMCPCommands(
-	localToolNames: Set<string>,
-	proxyConfig: MCPProxyConfig,
-): CommandDefinition[] {
-	const { db, siteId } = proxyConfig;
-
-	// Collect all remote tool names from the hosts table, excluding our own row
-	const remoteHosts = db
-		.query(
-			`SELECT site_id, mcp_tools
-			 FROM hosts
-			 WHERE site_id != ? AND deleted = 0 AND mcp_tools IS NOT NULL`,
-		)
-		.all(siteId) as Array<{ site_id: string; mcp_tools: string }>;
-
-	// Build a deduplicated set of remote tool command names
-	const remoteToolNames = new Set<string>();
-	for (const row of remoteHosts) {
-		try {
-			const tools = JSON.parse(row.mcp_tools) as string[];
-			for (const toolCommandName of tools) {
-				if (!localToolNames.has(toolCommandName)) {
-					remoteToolNames.add(toolCommandName);
-				}
-			}
-		} catch {
-			// Skip hosts with malformed mcp_tools JSON
-		}
-	}
-
-	const commands: CommandDefinition[] = [];
-
-	for (const toolCommandName of remoteToolNames) {
-		const command: CommandDefinition = {
-			name: toolCommandName,
-			args: [],
-			handler: async (
-				args: Record<string, string>,
-				_ctx: CommandContext,
-			): Promise<CommandResult> => {
-				try {
-					const result = initializeRelayToolCall(toolCommandName, args, proxyConfig);
-
-					// Check if this is a relay request or an error
-					if ("outboxEntryId" in result) {
-						// Return relay request (also satisfies CommandResult interface)
-						// for agent loop to detect and handle via RELAY_WAIT
-						return result as CommandResult;
-					}
-
-					// It's an error response
-					if ("isError" in result && result.isError) {
-						return {
-							stdout: "",
-							stderr: `${result.error}\n`,
-							exitCode: 1,
-						};
-					}
-
-					return {
-						stdout: "",
-						stderr: "Unknown error in relay initialization\n",
-						exitCode: 1,
-					};
-				} catch (error) {
-					const message = formatError(error);
-					return {
-						stdout: "",
-						stderr: `Failed to initialize relay for tool ${toolCommandName}: ${message}\n`,
-						exitCode: 1,
-					};
-				}
-			},
-		};
-
-		commands.push(command);
-	}
 
 	return commands;
 }

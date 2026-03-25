@@ -29,7 +29,6 @@ export type {
 	PromptResult,
 } from "./mcp-client";
 export { generateMCPCommands, updateHostMCPInfo } from "./mcp-bridge";
-export type { MCPProxyConfig } from "./mcp-bridge";
 
 // Export advisories
 export {
