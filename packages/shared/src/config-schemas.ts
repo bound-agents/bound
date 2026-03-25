@@ -84,7 +84,11 @@ export type DiscordConfig = z.infer<typeof discordSchema>;
 
 export const relaySchema = z.object({
 	enabled: z.boolean().default(true),
-	max_payload_bytes: z.number().int().positive().default(2 * 1024 * 1024),
+	max_payload_bytes: z
+		.number()
+		.int()
+		.positive()
+		.default(2 * 1024 * 1024),
 	request_timeout_ms: z.number().int().positive().default(30_000),
 	prune_interval_seconds: z.number().int().positive().default(60),
 	prune_retention_seconds: z.number().int().positive().default(300),

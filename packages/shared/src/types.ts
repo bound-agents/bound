@@ -217,10 +217,7 @@ export const RELAY_REQUEST_KINDS = [
 
 export const RELAY_RESPONSE_KINDS = ["result", "error"] as const;
 
-export const RELAY_KINDS = [
-	...RELAY_REQUEST_KINDS,
-	...RELAY_RESPONSE_KINDS,
-] as const;
+export const RELAY_KINDS = [...RELAY_REQUEST_KINDS, ...RELAY_RESPONSE_KINDS] as const;
 
 export type RelayRequestKind = (typeof RELAY_REQUEST_KINDS)[number];
 export type RelayResponseKind = (typeof RELAY_RESPONSE_KINDS)[number];

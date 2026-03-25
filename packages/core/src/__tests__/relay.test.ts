@@ -34,10 +34,28 @@ describe("Relay CRUD Helpers", () => {
 	});
 
 	describe("Outbox Operations", () => {
-		it("writeOutbox inserts a valid entry and readUndelivered returns it", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
+		let db: ReturnType<typeof createDatabase>;
 
+		beforeEach(() => {
+			dbPath = join(tmpdir(), `bound-relay-test-${randomBytes(4).toString("hex")}.db`);
+			db = createDatabase(dbPath);
+			applySchema(db);
+		});
+
+		afterEach(() => {
+			try {
+				db.close();
+			} catch {
+				// ignore
+			}
+			try {
+				unlinkSync(dbPath);
+			} catch {
+				// ignore
+			}
+		});
+
+		it("writeOutbox inserts a valid entry and readUndelivered returns it", () => {
 			const now = new Date().toISOString();
 			const entry: Omit<RelayOutboxEntry, "delivered"> = {
 				id: "msg-1",
@@ -57,14 +75,9 @@ describe("Relay CRUD Helpers", () => {
 			expect(undelivered).toHaveLength(1);
 			expect(undelivered[0].id).toBe("msg-1");
 			expect(undelivered[0].delivered).toBe(0);
-
-			db.close();
 		});
 
 		it("readUndelivered with targetSiteId filter returns only matching entries", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const now = new Date().toISOString();
 			const expiry = new Date(Date.now() + 60000).toISOString();
 
@@ -103,14 +116,9 @@ describe("Relay CRUD Helpers", () => {
 
 			expect(undeliveredSite3).toHaveLength(1);
 			expect(undeliveredSite3[0].target_site_id).toBe("site-3");
-
-			db.close();
 		});
 
 		it("markDelivered marks entries as delivered, readUndelivered no longer returns them", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const now = new Date().toISOString();
 			const entry: Omit<RelayOutboxEntry, "delivered"> = {
 				id: "msg-1",
@@ -131,14 +139,9 @@ describe("Relay CRUD Helpers", () => {
 			markDelivered(db, ["msg-1"]);
 			undelivered = readUndelivered(db);
 			expect(undelivered).toHaveLength(0);
-
-			db.close();
 		});
 
 		it("markDelivered with empty array does nothing", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const now = new Date().toISOString();
 			const entry: Omit<RelayOutboxEntry, "delivered"> = {
 				id: "msg-1",
@@ -157,16 +160,32 @@ describe("Relay CRUD Helpers", () => {
 			const undelivered = readUndelivered(db);
 
 			expect(undelivered).toHaveLength(1);
-
-			db.close();
 		});
 	});
 
 	describe("Inbox Operations", () => {
-		it("insertInbox inserts a valid entry and readUnprocessed returns it", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
+		let db: ReturnType<typeof createDatabase>;
 
+		beforeEach(() => {
+			dbPath = join(tmpdir(), `bound-relay-test-${randomBytes(4).toString("hex")}.db`);
+			db = createDatabase(dbPath);
+			applySchema(db);
+		});
+
+		afterEach(() => {
+			try {
+				db.close();
+			} catch {
+				// ignore
+			}
+			try {
+				unlinkSync(dbPath);
+			} catch {
+				// ignore
+			}
+		});
+
+		it("insertInbox inserts a valid entry and readUnprocessed returns it", () => {
 			const now = new Date().toISOString();
 			const entry: RelayInboxEntry = {
 				id: "msg-1",
@@ -187,14 +206,9 @@ describe("Relay CRUD Helpers", () => {
 			expect(unprocessed).toHaveLength(1);
 			expect(unprocessed[0].id).toBe("msg-1");
 			expect(unprocessed[0].processed).toBe(0);
-
-			db.close();
 		});
 
 		it("insertInbox with duplicate ID returns false (INSERT OR IGNORE dedup)", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const now = new Date().toISOString();
 			const entry: RelayInboxEntry = {
 				id: "msg-1",
@@ -216,14 +230,9 @@ describe("Relay CRUD Helpers", () => {
 
 			const unprocessed = readUnprocessed(db);
 			expect(unprocessed).toHaveLength(1);
-
-			db.close();
 		});
 
 		it("markProcessed marks entries as processed, readUnprocessed no longer returns them", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const now = new Date().toISOString();
 			const entry: RelayInboxEntry = {
 				id: "msg-1",
@@ -244,14 +253,9 @@ describe("Relay CRUD Helpers", () => {
 			markProcessed(db, ["msg-1"]);
 			unprocessed = readUnprocessed(db);
 			expect(unprocessed).toHaveLength(0);
-
-			db.close();
 		});
 
 		it("markProcessed with empty array does nothing", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const now = new Date().toISOString();
 			const entry: RelayInboxEntry = {
 				id: "msg-1",
@@ -270,14 +274,9 @@ describe("Relay CRUD Helpers", () => {
 			const unprocessed = readUnprocessed(db);
 
 			expect(unprocessed).toHaveLength(1);
-
-			db.close();
 		});
 
 		it("readInboxByRefId returns matching unprocessed entry", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const now = new Date().toISOString();
 			const entry: RelayInboxEntry = {
 				id: "msg-1",
@@ -297,25 +296,15 @@ describe("Relay CRUD Helpers", () => {
 			expect(found).not.toBeNull();
 			expect(found?.id).toBe("msg-1");
 			expect(found?.ref_id).toBe("ref-123");
-
-			db.close();
 		});
 
 		it("readInboxByRefId returns null when no match found", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const found = readInboxByRefId(db, "non-existent");
 
 			expect(found).toBeNull();
-
-			db.close();
 		});
 
 		it("readInboxByRefId ignores processed entries", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const now = new Date().toISOString();
 			const entry: RelayInboxEntry = {
 				id: "msg-1",
@@ -334,16 +323,32 @@ describe("Relay CRUD Helpers", () => {
 
 			const found = readInboxByRefId(db, "ref-123");
 			expect(found).toBeNull();
-
-			db.close();
 		});
 	});
 
 	describe("Payload Size Enforcement (AC9.1)", () => {
-		it("writeOutbox throws PayloadTooLargeError when payload exceeds 2MB", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
+		let db: ReturnType<typeof createDatabase>;
 
+		beforeEach(() => {
+			dbPath = join(tmpdir(), `bound-relay-test-${randomBytes(4).toString("hex")}.db`);
+			db = createDatabase(dbPath);
+			applySchema(db);
+		});
+
+		afterEach(() => {
+			try {
+				db.close();
+			} catch {
+				// ignore
+			}
+			try {
+				unlinkSync(dbPath);
+			} catch {
+				// ignore
+			}
+		});
+
+		it("writeOutbox throws PayloadTooLargeError when payload exceeds 2MB", () => {
 			const now = new Date().toISOString();
 			const largePayload = "x".repeat(2 * 1024 * 1024 + 1);
 
@@ -362,14 +367,9 @@ describe("Relay CRUD Helpers", () => {
 			expect(() => {
 				writeOutbox(db, entry);
 			}).toThrow(PayloadTooLargeError);
-
-			db.close();
 		});
 
 		it("writeOutbox succeeds with payload under 2MB", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const now = new Date().toISOString();
 			const validPayload = "x".repeat(1024 * 1024);
 
@@ -389,14 +389,9 @@ describe("Relay CRUD Helpers", () => {
 			const undelivered = readUndelivered(db);
 
 			expect(undelivered).toHaveLength(1);
-
-			db.close();
 		});
 
 		it("insertInbox throws PayloadTooLargeError when payload exceeds 2MB", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const now = new Date().toISOString();
 			const largePayload = "x".repeat(2 * 1024 * 1024 + 1);
 
@@ -415,14 +410,9 @@ describe("Relay CRUD Helpers", () => {
 			expect(() => {
 				insertInbox(db, entry);
 			}).toThrow(PayloadTooLargeError);
-
-			db.close();
 		});
 
 		it("insertInbox succeeds with payload under 2MB", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const now = new Date().toISOString();
 			const validPayload = "x".repeat(1024 * 1024);
 
@@ -440,16 +430,32 @@ describe("Relay CRUD Helpers", () => {
 
 			const inserted = insertInbox(db, entry);
 			expect(inserted).toBe(true);
-
-			db.close();
 		});
 	});
 
 	describe("Pruning (AC9.3)", () => {
-		it("pruneRelayTables deletes delivered outbox entries older than retention period", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
+		let db: ReturnType<typeof createDatabase>;
 
+		beforeEach(() => {
+			dbPath = join(tmpdir(), `bound-relay-test-${randomBytes(4).toString("hex")}.db`);
+			db = createDatabase(dbPath);
+			applySchema(db);
+		});
+
+		afterEach(() => {
+			try {
+				db.close();
+			} catch {
+				// ignore
+			}
+			try {
+				unlinkSync(dbPath);
+			} catch {
+				// ignore
+			}
+		});
+
+		it("pruneRelayTables deletes delivered outbox entries older than retention period", () => {
 			const now = new Date();
 			const oldTime = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
 			const recentTime = now.toISOString();
@@ -492,14 +498,9 @@ describe("Relay CRUD Helpers", () => {
 				.all() as RelayOutboxEntry[];
 			expect(allRows).toHaveLength(1);
 			expect(allRows[0].id).toBe("msg-recent");
-
-			db.close();
 		});
 
 		it("pruneRelayTables deletes processed inbox entries older than retention period", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const now = new Date();
 			const oldTime = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
 			const recentTime = now.toISOString();
@@ -542,14 +543,9 @@ describe("Relay CRUD Helpers", () => {
 				.all() as RelayInboxEntry[];
 			expect(allRows).toHaveLength(1);
 			expect(allRows[0].id).toBe("msg-recent");
-
-			db.close();
 		});
 
 		it("pruneRelayTables does not prune non-delivered outbox entries", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const now = new Date();
 			const oldTime = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
 
@@ -573,14 +569,9 @@ describe("Relay CRUD Helpers", () => {
 
 			const remaining = readUndelivered(db);
 			expect(remaining).toHaveLength(1);
-
-			db.close();
 		});
 
 		it("pruneRelayTables does not prune non-processed inbox entries", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const now = new Date();
 			const oldTime = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
 
@@ -604,14 +595,9 @@ describe("Relay CRUD Helpers", () => {
 
 			const remaining = readUnprocessed(db);
 			expect(remaining).toHaveLength(1);
-
-			db.close();
 		});
 
 		it("pruneRelayTables does not prune recently delivered/processed entries", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const now = new Date().toISOString();
 
 			const outboxEntry: Omit<RelayOutboxEntry, "delivered"> = {
@@ -648,16 +634,32 @@ describe("Relay CRUD Helpers", () => {
 
 			expect(result.outboxPruned).toBe(0);
 			expect(result.inboxPruned).toBe(0);
-
-			db.close();
 		});
 	});
 
 	describe("Custom Max Payload Bytes", () => {
-		it("writeOutbox respects custom maxPayloadBytes limit", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
+		let db: ReturnType<typeof createDatabase>;
 
+		beforeEach(() => {
+			dbPath = join(tmpdir(), `bound-relay-test-${randomBytes(4).toString("hex")}.db`);
+			db = createDatabase(dbPath);
+			applySchema(db);
+		});
+
+		afterEach(() => {
+			try {
+				db.close();
+			} catch {
+				// ignore
+			}
+			try {
+				unlinkSync(dbPath);
+			} catch {
+				// ignore
+			}
+		});
+
+		it("writeOutbox respects custom maxPayloadBytes limit", () => {
 			const now = new Date().toISOString();
 			const payload = "x".repeat(1001);
 
@@ -676,14 +678,9 @@ describe("Relay CRUD Helpers", () => {
 			expect(() => {
 				writeOutbox(db, entry, 1000);
 			}).toThrow(PayloadTooLargeError);
-
-			db.close();
 		});
 
 		it("insertInbox respects custom maxPayloadBytes limit", () => {
-			const db = createDatabase(dbPath);
-			applySchema(db);
-
 			const now = new Date().toISOString();
 			const payload = "x".repeat(1001);
 
@@ -702,8 +699,6 @@ describe("Relay CRUD Helpers", () => {
 			expect(() => {
 				insertInbox(db, entry, 1000);
 			}).toThrow(PayloadTooLargeError);
-
-			db.close();
 		});
 	});
 });

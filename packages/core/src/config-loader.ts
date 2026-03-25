@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
 import type { AllowlistConfig, ModelBackendsConfig } from "@bound/shared";
 import {
+	type RelayConfig,
 	type Result,
+	type SyncConfig,
 	cronSchedulesSchema,
 	discordSchema,
 	err,
@@ -12,8 +14,6 @@ import {
 	overlaySchema,
 	relaySchema,
 	syncSchema,
-	type RelayConfig,
-	type SyncConfig,
 } from "@bound/shared";
 
 export interface ConfigError {
@@ -45,9 +45,7 @@ export type RequiredConfig = {
 
 export type OptionalConfigs = Record<string, Result<Record<string, unknown>, ConfigError>>;
 
-export function resolveRelayConfig(
-	syncConfig: SyncConfig | undefined,
-): RelayConfig {
+export function resolveRelayConfig(syncConfig: SyncConfig | undefined): RelayConfig {
 	if (!syncConfig?.relay) {
 		return relaySchema.parse({});
 	}
