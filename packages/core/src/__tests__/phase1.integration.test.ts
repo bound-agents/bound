@@ -86,7 +86,7 @@ describe("Phase 1 Integration", () => {
 			)
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(17); // 13 main tables + 2 relay tables + 2 metrics tables
+		expect(tables.length).toBe(18); // 13 main tables + 3 relay tables + 2 metrics tables
 
 		const tableNames = tables.map((t) => t.name);
 		const expectedTables = [
@@ -99,6 +99,7 @@ describe("Phase 1 Integration", () => {
 			"hosts",
 			"messages",
 			"overlay_index",
+			"relay_cycles",
 			"relay_inbox",
 			"relay_outbox",
 			"semantic_memory",

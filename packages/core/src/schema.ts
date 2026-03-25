@@ -280,4 +280,24 @@ export function applySchema(db: Database): void {
 		ON relay_inbox(processed)
 		WHERE processed = 0
 	`);
+
+	// 16. relay_cycles (non-replicated, local-only)
+	db.run(`
+		CREATE TABLE IF NOT EXISTS relay_cycles (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			direction TEXT NOT NULL,
+			peer_site_id TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			delivery_method TEXT NOT NULL,
+			latency_ms INTEGER,
+			expired INTEGER NOT NULL DEFAULT 0,
+			success INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL
+		) STRICT
+	`);
+
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_relay_cycles_created
+		ON relay_cycles(created_at)
+	`);
 }

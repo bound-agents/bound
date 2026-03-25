@@ -26,6 +26,18 @@ export function applyMetricsSchema(db: Database): void {
 		) STRICT
 	`);
 
+	// Add relay columns to turns (idempotent — no-op if already exists)
+	try {
+		db.run("ALTER TABLE turns ADD COLUMN relay_target TEXT");
+	} catch {
+		// Column already exists
+	}
+	try {
+		db.run("ALTER TABLE turns ADD COLUMN relay_latency_ms INTEGER");
+	} catch {
+		// Column already exists
+	}
+
 	db.run(`
 		CREATE TABLE IF NOT EXISTS daily_summary (
 			date TEXT PRIMARY KEY,
