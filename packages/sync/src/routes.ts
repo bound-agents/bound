@@ -209,7 +209,7 @@ export function createSyncRoutes(
 		};
 
 		return c.json(response);
-		} catch (error) {
+	} catch (error) {
 			logger.error(`Relay error: ${error instanceof Error ? error.message : "Unknown error"}`);
 			return c.json({ error: "Failed to process relay" }, 400);
 		}
