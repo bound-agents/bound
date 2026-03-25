@@ -197,13 +197,18 @@ export function createSyncRoutes(
 				);
 			}
 
-			const response: RelayResponse = {
-				relay_inbox: inboxForRequester,
-				relay_delivered: deliveredIds,
-				relay_draining: false, // Phase 6 implements drain logic
-			};
+		// Read relay_draining flag from host_meta (non-synced, local-only)
+		const drainState = db
+			.query("SELECT value FROM host_meta WHERE key = ?")
+			.get("relay_draining") as { value: string } | null;
 
-			return c.json(response);
+		const response: RelayResponse = {
+			relay_inbox: inboxForRequester,
+			relay_delivered: deliveredIds,
+			relay_draining: drainState?.value === "true",
+		};
+
+		return c.json(response);
 		} catch (error) {
 			logger.error(`Relay error: ${error instanceof Error ? error.message : "Unknown error"}`);
 			return c.json({ error: "Failed to process relay" }, 400);

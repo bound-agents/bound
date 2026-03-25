@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { insertInbox, markDelivered, readUndelivered } from "@bound/core";
 import type { KeyringConfig, Logger, Result, SyncConfig, TypedEventEmitter } from "@bound/shared";
-import { err, formatError, ok } from "@bound/shared";
+import { RELAY_RESPONSE_KINDS, err, formatError, ok } from "@bound/shared";
 import {
 	type Changeset,
 	type RelayRequest,
@@ -40,6 +40,7 @@ export interface SyncError {
 
 export class SyncClient {
 	private hubSiteId: string | null = null;
+	private relayDraining: boolean = false;
 
 	constructor(
 		private db: Database,
@@ -293,8 +294,18 @@ export class SyncClient {
 		try {
 			const outbox = readUndelivered(this.db);
 
+			// Filter outbox entries based on relay_draining flag (AC4.2, AC4.3)
+			let entriesToSend = outbox;
+			if (this.relayDraining) {
+				entriesToSend = outbox.filter(
+					(entry) =>
+						RELAY_RESPONSE_KINDS.includes(entry.kind as any) ||
+						entry.kind === "cancel",
+				);
+			}
+
 			const relayRequest: RelayRequest = {
-				relay_outbox: outbox,
+				relay_outbox: entriesToSend,
 			};
 
 			const body = JSON.stringify(relayRequest);
@@ -316,6 +327,9 @@ export class SyncClient {
 
 			const relayResponse = (await response.json()) as RelayResponse;
 
+			// Update local drain state from hub response
+			this.relayDraining = relayResponse.relay_draining;
+
 			// Mark delivered
 			if (relayResponse.relay_delivered.length > 0) {
 				markDelivered(this.db, relayResponse.relay_delivered);
@@ -329,7 +343,7 @@ export class SyncClient {
 			}
 
 			return ok({
-				sent: outbox.length,
+				sent: entriesToSend.length,
 				received,
 				draining: relayResponse.relay_draining,
 			});
