@@ -14,8 +14,8 @@ import { AgentLoop } from "../agent-loop";
 
 function createMockRouter(backend: LLMBackend): ModelRouter {
 	const backends = new Map<string, LLMBackend>();
-	backends.set('claude-opus', backend);
-	return new ModelRouter(backends, 'claude-opus');
+	backends.set('default', backend);
+	return new ModelRouter(backends, 'default');
 }
 
 describe("Agent Loop End-to-End Integration", () => {
@@ -435,6 +435,7 @@ describe("Agent Loop End-to-End Integration", () => {
 		const agentLoop = new AgentLoop(mockAppContext as any, mockSandbox as any, createMockRouter(mockLLMBackend), {
 			threadId,
 			userId,
+			modelId: "default",
 		});
 
 		const result = await agentLoop.run();

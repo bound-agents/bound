@@ -129,8 +129,8 @@ function createMockSandbox() {
 
 function createMockRouter(backend: LLMBackend): ModelRouter {
 	const backends = new Map<string, LLMBackend>();
-	backends.set('claude-opus', backend);
-	return new ModelRouter(backends, 'claude-opus');
+	backends.set('mock', backend);
+	return new ModelRouter(backends, 'mock');
 }
 
 describe("AgentLoop lifecycle", () => {
