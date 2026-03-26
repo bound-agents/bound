@@ -41,7 +41,6 @@ export async function createWebServer(
 	const appConfig: AppConfig = {
 		modelsConfig: config.models,
 		hostName: config.hostName,
-		hostSiteId: config.siteId,
 		keyring: config.keyring,
 		siteId: config.siteId,
 		logger: config.logger,
