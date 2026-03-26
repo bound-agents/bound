@@ -80,7 +80,11 @@ afterEach(() => {
 describe("RelayProcessor - executeInference", () => {
 	it("AC3.1: executes inference, writes stream_chunk and stream_end with monotonic seq", async () => {
 		const mockBackend = new MockBackend();
-		mockBackend.setTextResponse("Hello, world!");
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "x".repeat(5000) };
+			yield { type: "text" as const, content: "final response" };
+			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5 } };
+		});
 
 		const backends = new Map<string, LLMBackend>();
 		backends.set("test-model", mockBackend);
@@ -550,13 +554,25 @@ describe("RelayProcessor - executeInference", () => {
 
 	it("AC3.6: concurrent inference streams execute simultaneously", async () => {
 		const mockBackend1 = new MockBackend();
-		mockBackend1.setTextResponse("Response 1");
+		mockBackend1.pushResponse(async function* () {
+			yield { type: "text" as const, content: "A".repeat(5000) };
+			yield { type: "text" as const, content: "Response 1" };
+			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5 } };
+		});
 
 		const mockBackend2 = new MockBackend();
-		mockBackend2.setTextResponse("Response 2");
+		mockBackend2.pushResponse(async function* () {
+			yield { type: "text" as const, content: "B".repeat(5000) };
+			yield { type: "text" as const, content: "Response 2" };
+			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5 } };
+		});
 
 		const mockBackend3 = new MockBackend();
-		mockBackend3.setTextResponse("Response 3");
+		mockBackend3.pushResponse(async function* () {
+			yield { type: "text" as const, content: "C".repeat(5000) };
+			yield { type: "text" as const, content: "Response 3" };
+			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5 } };
+		});
 
 		const backends = new Map<string, LLMBackend>();
 		backends.set("model-1", mockBackend1);
