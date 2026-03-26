@@ -305,3 +305,18 @@ export interface ErrorPayload {
 	error: string;
 	retriable: boolean;
 }
+
+// Loop delegation payloads (Phase 7)
+export interface ProcessPayload {
+	thread_id: string;
+	message_id: string;
+	user_id: string;
+	platform: string | null; // null = web UI delegation
+}
+
+export interface StatusForwardPayload {
+	thread_id: string;
+	status: string; // "idle" | "thinking" | "tool_call" | etc.
+	detail: string | null; // e.g. tool name
+	tokens: number;
+}
