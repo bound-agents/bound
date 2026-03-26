@@ -17,7 +17,7 @@ import { formatError } from "@bound/shared";
 import { assembleContext } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
-import { resolveModel } from "./model-resolution";
+import { resolveModel, type ModelResolution } from "./model-resolution";
 import { type EligibleHost, createRelayOutboxEntry } from "./relay-router";
 import { extractSummaryAndMemories } from "./summary-extraction";
 import type { AgentLoopConfig, AgentLoopResult, AgentLoopState } from "./types";
@@ -56,6 +56,7 @@ export class AgentLoop {
 	private toolCallsMade = 0;
 	private filesChanged = 0;
 	private aborted = false;
+	private lastModelResolution: ModelResolution | null = null;
 
 	constructor(
 		private ctx: AppContext,
@@ -87,6 +88,26 @@ export class AgentLoop {
 			const capabilities = this.modelRouter.getDefault().capabilities();
 			const contextWindow = capabilities.max_context || 8000;
 
+			// Resolve model before context assembly so relayInfo can be included in volatile context
+			this.lastModelResolution = resolveModel(
+				this.config.modelId,
+				this.modelRouter,
+				this.ctx.db,
+				this.ctx.siteId,
+			);
+
+			// Build relayInfo if resolution is remote
+			let relayInfo: { remoteHost: string; localHost: string; model: string; provider: string } | undefined;
+			if (this.lastModelResolution.kind === "remote" && this.lastModelResolution.hosts.length > 0) {
+				const firstHost = this.lastModelResolution.hosts[0];
+				relayInfo = {
+					remoteHost: firstHost.host_name,
+					localHost: this.ctx.hostName,
+					model: this.lastModelResolution.modelId,
+					provider: "remote",
+				};
+			}
+
 			const contextMessages = assembleContext({
 				db: this.ctx.db,
 				threadId: this.config.threadId,
@@ -96,6 +117,7 @@ export class AgentLoop {
 				contextWindow: contextWindow,
 				hostName: this.ctx.hostName,
 				siteId: this.ctx.siteId,
+				relayInfo,
 			});
 
 			// Agentic loop: keep calling the LLM until it produces a text-only
@@ -122,12 +144,11 @@ export class AgentLoop {
 						.map((m) => (typeof m.content === "string" ? m.content : ""))
 						.join("\n\n");
 
-					const resolution = resolveModel(
-						this.config.modelId,
-						this.modelRouter,
-						this.ctx.db,
-						this.ctx.siteId,
-					);
+					// Use cached resolution from ASSEMBLE_CONTEXT state
+					const resolution = this.lastModelResolution;
+					if (!resolution) {
+						throw new Error("Model resolution not available");
+					}
 
 					if (resolution.kind === "error") {
 						throw new Error(resolution.error);

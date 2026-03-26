@@ -1087,4 +1087,44 @@ describe("Context Assembly Pipeline", () => {
 			expect(nonSystemBetween.length).toBe(0);
 		});
 	});
+
+	describe("Relay Info Injection (AC5.4)", () => {
+		it("should inject relay location line when relayInfo is provided", () => {
+			const messages = assembleContext({
+				db,
+				threadId,
+				userId,
+				relayInfo: {
+					remoteHost: "remote-host-1",
+					localHost: "local-host",
+					model: "claude-3-5-sonnet",
+					provider: "remote",
+				},
+			});
+
+			// Find volatile context system message (should contain relay info)
+			const volatileMsg = messages.find(
+				(m) => m.role === "system" && m.content.includes("You are:"),
+			);
+			expect(volatileMsg).toBeDefined();
+			expect(volatileMsg?.content).toContain("claude-3-5-sonnet");
+			expect(volatileMsg?.content).toContain("remote-host-1");
+			expect(volatileMsg?.content).toContain("via remote on host");
+			expect(volatileMsg?.content).toContain("relayed from local-host");
+		});
+
+		it("should not inject relay location line when relayInfo is not provided", () => {
+			const messages = assembleContext({
+				db,
+				threadId,
+				userId,
+			});
+
+			// Find volatile context system message and ensure no relay info
+			const volatileMsg = messages.find(
+				(m) => m.role === "system" && m.content.includes("via remote on host"),
+			);
+			expect(volatileMsg).toBeUndefined();
+		});
+	});
 });

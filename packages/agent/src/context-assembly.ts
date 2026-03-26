@@ -17,6 +17,12 @@ export interface ContextParams {
 	configDir?: string;
 	hostName?: string;
 	siteId?: string;
+	relayInfo?: {
+		remoteHost: string;
+		localHost: string;
+		model: string;
+		provider: string;
+	};
 }
 
 // Cache for persona content - loaded once at startup
@@ -91,6 +97,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		contextWindow = 8000,
 		hostName,
 		siteId,
+		relayInfo,
 	} = params;
 
 	// Stage 1: MESSAGE_RETRIEVAL
@@ -465,6 +472,13 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	if (!noHistory) {
 		const volatileLines: string[] = [];
 		volatileLines.push(`User ID: ${userId}, Thread ID: ${threadId}`);
+
+		// AC5.4: Model location when inference is relayed
+		if (relayInfo) {
+			volatileLines.push(
+				`You are: ${relayInfo.model} (via remote on host ${relayInfo.remoteHost}, relayed from ${relayInfo.localHost})`,
+			);
+		}
 
 		// Include current model name
 		if (currentModel) {
