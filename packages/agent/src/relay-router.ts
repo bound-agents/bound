@@ -90,6 +90,7 @@ export function createRelayOutboxEntry(
 	timeoutMs: number,
 	refId?: string,
 	idempotencyKey?: string,
+	streamId?: string,
 ): Omit<RelayOutboxEntry, "delivered"> {
 	const now = new Date();
 	return {
@@ -99,6 +100,7 @@ export function createRelayOutboxEntry(
 		kind,
 		ref_id: refId ?? null,
 		idempotency_key: idempotencyKey ?? null,
+		stream_id: streamId ?? null,
 		payload,
 		created_at: now.toISOString(),
 		expires_at: new Date(now.getTime() + timeoutMs).toISOString(),
