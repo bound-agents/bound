@@ -99,6 +99,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
+				null,
 				keyringSiteIds,
 				createMockLogger(),
 			);
@@ -118,6 +119,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
+				null,
 				keyringSiteIds,
 				createMockLogger(),
 			);
@@ -176,6 +178,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
+				null,
 				keyringSiteIds,
 				createMockLogger(),
 			);
@@ -197,6 +200,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
+				null,
 				keyringSiteIds,
 				createMockLogger(),
 			);
@@ -252,6 +256,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
+				null,
 				keyringSiteIds,
 				createMockLogger(),
 			);
@@ -316,6 +321,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
+				null,
 				keyringSiteIds,
 				createMockLogger(),
 			);
@@ -376,6 +382,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
+				null,
 				keyringSiteIds,
 				createMockLogger(),
 			);
@@ -433,6 +440,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
+				null,
 				keyringSiteIds,
 				createMockLogger(),
 			);
@@ -528,6 +536,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
+				null,
 				keyringSiteIds,
 				createMockLogger(),
 			);
@@ -643,6 +652,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
+				null,
 				keyringSiteIds,
 				createMockLogger(),
 			);
@@ -798,6 +808,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
+				null,
 				keyringSiteIds,
 				createMockLogger(),
 			);
@@ -889,6 +900,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
+				null,
 				keyringSiteIds,
 				createMockLogger(),
 			);
@@ -983,6 +995,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
+				null,
 				keyringSiteIds,
 				createMockLogger(),
 			);
@@ -1053,6 +1066,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
+				null,
 				keyringSiteIds,
 				createMockLogger(),
 			);
