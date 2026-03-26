@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, createDatabase } from "@bound/core";
+import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
@@ -117,6 +117,7 @@ describe("AgentLoop", () => {
 		dbPath = join(tmpDir, "test.db");
 		db = createDatabase(dbPath);
 		applySchema(db);
+		applyMetricsSchema(db);
 
 		// Create a test user
 		const userId = randomUUID();
@@ -742,5 +743,44 @@ describe("AgentLoop", () => {
 		expect(blocks[0].id).toBe("tc-1");
 		expect(blocks[0].name).toBe("bash");
 		expect(blocks[0].input).toEqual({ command: "echo test" });
+	});
+
+	it("AC4.2: local inference leaves relay_target and relay_latency_ms NULL", async () => {
+		// Verify that when using local inference (not relayed), the relay metrics
+		// columns remain NULL on the turn record (no regression from relay implementation)
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("Local inference response");
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await agentLoop.run();
+
+		expect(result.error).toBeUndefined();
+		expect(result.messagesCreated).toBe(1);
+
+		// Query the turns table to check relay metrics columns
+		const turns = db
+			.query(
+				"SELECT id, relay_target, relay_latency_ms FROM turns WHERE thread_id = ?",
+			)
+			.all(threadId) as Array<{
+				id: number;
+				relay_target: string | null;
+				relay_latency_ms: number | null;
+			}>;
+
+		expect(turns.length).toBeGreaterThan(0);
+
+		// Verify both relay metrics columns are NULL for local inference
+		for (const turn of turns) {
+			expect(turn.relay_target).toBeNull();
+			expect(turn.relay_latency_ms).toBeNull();
+		}
 	});
 });

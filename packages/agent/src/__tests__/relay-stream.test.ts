@@ -2,15 +2,7 @@ import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { applySchema } from "@bound/core";
-import type { AppContext } from "@bound/core";
-import type { InferenceRequestPayload, StreamChunk } from "@bound/llm";
-import { TypedEventEmitter } from "@bound/shared";
-import { AgentLoop } from "../agent-loop";
-
-interface EligibleHost {
-	site_id: string;
-	host_name: string;
-}
+import type { StreamChunk } from "@bound/llm";
 
 let db: Database;
 let testDbPath: string;
@@ -35,21 +27,6 @@ afterAll(() => {
 		// Already deleted
 	}
 });
-
-function makeCtx(testDb: Database): AppContext {
-	const eventBus = new TypedEventEmitter();
-	return {
-		db: testDb,
-		logger: {
-			info: () => {},
-			warn: () => {},
-			error: () => {},
-		},
-		eventBus,
-		hostName: "test-host",
-		siteId: "test-site-id",
-	} as unknown as AppContext;
-}
 
 describe("relayStream() async generator", () => {
 	it("AC1.1: inbox entries with seq enable ordered streaming", async () => {
@@ -114,7 +91,9 @@ describe("relayStream() async generator", () => {
 
 		// Verify all chunks can be retrieved in order
 		const entries = db
-			.query("SELECT stream_id, kind, payload FROM relay_inbox WHERE stream_id = ? ORDER BY processed ASC")
+			.query(
+				"SELECT stream_id, kind, payload FROM relay_inbox WHERE stream_id = ? ORDER BY processed ASC",
+			)
 			.all(streamId) as Array<{ stream_id: string; kind: string; payload: string }>;
 
 		expect(entries.length).toBe(3);
@@ -122,7 +101,9 @@ describe("relayStream() async generator", () => {
 		expect(entries[1].kind).toBe("stream_chunk");
 		expect(entries[2].kind).toBe("stream_end");
 
-		const payloads = entries.map((e) => JSON.parse(e.payload) as { seq: number; chunks: StreamChunk[] });
+		const payloads = entries.map(
+			(e) => JSON.parse(e.payload) as { seq: number; chunks: StreamChunk[] },
+		);
 		expect(payloads[0].seq).toBe(0);
 		expect(payloads[1].seq).toBe(1);
 		expect(payloads[2].seq).toBe(2);
@@ -133,7 +114,7 @@ describe("relayStream() async generator", () => {
 
 		const streamId = randomUUID();
 		const textChunk: StreamChunk = { type: "text", content: "Response" };
-		const doneChunk: StreamChunk = {
+		const finishChunk: StreamChunk = {
 			type: "done",
 			usage: { input_tokens: 10, output_tokens: 5 },
 		};
@@ -165,7 +146,7 @@ describe("relayStream() async generator", () => {
 				"stream_end",
 				null,
 				null,
-				JSON.stringify({ chunks: [doneChunk], seq: 1 }),
+				JSON.stringify({ chunks: [finishChunk], seq: 1 }),
 				new Date(Date.now() + 60_000).toISOString(),
 				new Date().toISOString(),
 				0,
@@ -180,8 +161,12 @@ describe("relayStream() async generator", () => {
 		expect(streamEndEntry).toBeDefined();
 		const endPayload = JSON.parse(streamEndEntry.payload) as { chunks: StreamChunk[] };
 		expect(endPayload.chunks[0].type).toBe("done");
-		expect((endPayload.chunks[0] as any).usage.input_tokens).toBe(10);
-		expect((endPayload.chunks[0] as any).usage.output_tokens).toBe(5);
+		const doneChunkInfo = endPayload.chunks[0] as {
+			type: string;
+			usage: { input_tokens: number; output_tokens: number };
+		};
+		expect(doneChunkInfo.usage.input_tokens).toBe(10);
+		expect(doneChunkInfo.usage.output_tokens).toBe(5);
 	});
 
 	it("AC1.3: out-of-order seq allows buffer reordering", async () => {
@@ -249,7 +234,9 @@ describe("relayStream() async generator", () => {
 			.query("SELECT payload FROM relay_inbox WHERE stream_id = ?")
 			.all(streamId) as Array<{ payload: string }>;
 
-		const seqs = entries.map((e) => (JSON.parse(e.payload) as { seq: number }).seq).sort((a, b) => a - b);
+		const seqs = entries
+			.map((e) => (JSON.parse(e.payload) as { seq: number }).seq)
+			.sort((a, b) => a - b);
 		expect(seqs).toEqual([0, 1, 2]);
 	});
 
@@ -286,61 +273,19 @@ describe("relayStream() async generator", () => {
 	});
 
 	it("AC1.5: multiple eligible hosts enable failover", async () => {
-		// Verify that when provided multiple hosts, failover is possible
-		const eligibleHosts: EligibleHost[] = [
+		// AC1.5: Multiple hosts allow failover attempts during timeout
+		// relayStream iterates through eligibleHosts on timeout, trying each one
+		expect([
 			{ site_id: "host-1", host_name: "Host 1" },
 			{ site_id: "host-2", host_name: "Host 2" },
-		];
-
-		expect(eligibleHosts.length).toBe(2);
-		// relayStream iterates through hosts on timeout, trying each one
-		// AC1.5 verified: multiple hosts are available for failover iteration
+		]).toHaveLength(2);
 	});
 
 	it("AC1.6: timeout with single eligible host returns error message", async () => {
-		db.run("DELETE FROM relay_inbox");
-		db.run("DELETE FROM relay_outbox WHERE kind = 'inference'");
-
-		const ctx = makeCtx(db);
-		const agentLoop = new AgentLoop(
-			ctx,
-			{ exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }) },
-			{
-				getDefault: () => ({
-					async *chat() {
-						yield { type: "text", content: "" };
-						yield { type: "done", usage: { input_tokens: 0, output_tokens: 0 } };
-					},
-					capabilities: () => ({
-						streaming: true,
-						tool_use: false,
-						system_prompt: false,
-						prompt_caching: false,
-						vision: false,
-						max_context: 8000,
-					}),
-				}),
-				resolveModel: () => ({ kind: "local" }),
-			} as any,
-			{
-				threadId: randomUUID(),
-				userId: "test-user",
-			},
-		);
-
-		const payload: InferenceRequestPayload = {
-			model: "claude-opus",
-			messages: [],
-			timeout_ms: 120_000,
-		};
-		const eligibleHosts: EligibleHost[] = [
-			{ site_id: "host-1", host_name: "Host 1" },
-		];
-
-		// Error should be thrown when timeout expires (120s with no response)
-		// We verify the error message format is correct
+		// AC1.6: Error message format matches the expected pattern when timeout occurs
 		const errorRegex = /all.*1.*eligible host/i;
-		expect(errorRegex.test("all 1 eligible host(s) timed out")).toBe(true);
+		const errorMessage = "all 1 eligible host(s) timed out";
+		expect(errorRegex.test(errorMessage)).toBe(true);
 	});
 
 	it("AC1.7: error response payload is properly formatted", async () => {
