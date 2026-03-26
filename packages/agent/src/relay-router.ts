@@ -73,6 +73,65 @@ export function isHostStale(host: EligibleHost): boolean {
 	return Date.now() - new Date(host.online_at).getTime() > STALE_THRESHOLD_MS;
 }
 
+export function findEligibleHostsByModel(
+	db: Database,
+	modelId: string,
+	localSiteId: string,
+): RelayRoutingResult | RelayRoutingError {
+	const rows = db
+		.query(
+			`SELECT site_id, host_name, sync_url, models, online_at
+			 FROM hosts
+			 WHERE deleted = 0 AND site_id != ?`,
+		)
+		.all(localSiteId) as Array<{
+		site_id: string;
+		host_name: string;
+		sync_url: string | null;
+		models: string | null;
+		online_at: string | null;
+	}>;
+
+	const eligible: EligibleHost[] = [];
+	for (const row of rows) {
+		if (!row.models) continue;
+		// Stale hosts are excluded (online_at older than STALE_THRESHOLD_MS)
+		if (row.online_at) {
+			const age = Date.now() - new Date(row.online_at).getTime();
+			if (age > STALE_THRESHOLD_MS) continue;
+		} else {
+			continue; // No online_at means never seen — skip
+		}
+		let models: string[];
+		try {
+			models = JSON.parse(row.models);
+		} catch {
+			continue; // Malformed JSON — skip host
+		}
+		if (!models.includes(modelId)) continue;
+		eligible.push({
+			site_id: row.site_id,
+			host_name: row.host_name,
+			sync_url: row.sync_url,
+			online_at: row.online_at,
+		});
+	}
+
+	if (eligible.length === 0) {
+		return { ok: false, error: `Model "${modelId}" not available on any remote host` };
+	}
+
+	// Sort by online_at descending (most recent first)
+	eligible.sort((a, b) => {
+		if (!a.online_at && !b.online_at) return 0;
+		if (!a.online_at) return 1;
+		if (!b.online_at) return -1;
+		return new Date(b.online_at).getTime() - new Date(a.online_at).getTime();
+	});
+
+	return { ok: true, hosts: eligible };
+}
+
 export function buildIdempotencyKey(
 	kind: string,
 	toolName: string,

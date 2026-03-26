@@ -6,6 +6,7 @@ import {
 	buildIdempotencyKey,
 	createRelayOutboxEntry,
 	findEligibleHosts,
+	findEligibleHostsByModel,
 	isHostStale,
 } from "../relay-router";
 
@@ -239,6 +240,287 @@ describe("Relay Router", () => {
 		it("generates 32-character hex string", () => {
 			const key = buildIdempotencyKey("tool_call", "test-tool", {});
 			expect(key).toMatch(/^[0-9a-f]{32}$/);
+		});
+	});
+
+	describe("findEligibleHostsByModel", () => {
+		it("returns empty result when model not available on any host (AC2.2)", () => {
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"remote-1",
+					"Remote Host 1",
+					JSON.stringify(["claude-opus", "claude-sonnet"]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-haiku", "local-site");
+			expect(result.ok).toBe(false);
+			if (!result.ok) {
+				expect(result.error).toContain("not available");
+			}
+		});
+
+		it("returns matching host for model present on remote (AC2.2)", () => {
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"remote-1",
+					"Remote Host 1",
+					JSON.stringify(["claude-opus", "claude-sonnet"]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-opus", "local-site");
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.hosts.length).toBe(1);
+				expect(result.hosts[0].site_id).toBe("remote-1");
+				expect(result.hosts[0].host_name).toBe("Remote Host 1");
+			}
+		});
+
+		it("sorts hosts by online_at descending (most recent first) (AC2.2)", () => {
+			const now = new Date();
+			const recentTime = new Date(now.getTime() - 1 * 60 * 1000).toISOString(); // 1 min ago
+			const olderTime = new Date(now.getTime() - 3 * 60 * 1000).toISOString(); // 3 min ago
+
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"older-host",
+					"Older Host",
+					JSON.stringify(["claude-opus"]),
+					0,
+					olderTime,
+					new Date().toISOString(),
+				],
+			);
+
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"recent-host",
+					"Recent Host",
+					JSON.stringify(["claude-opus"]),
+					0,
+					recentTime,
+					new Date().toISOString(),
+				],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-opus", "local-site");
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.hosts.length).toBe(2);
+				expect(result.hosts[0].site_id).toBe("recent-host");
+				expect(result.hosts[1].site_id).toBe("older-host");
+			}
+		});
+
+		it("filters out stale hosts (online_at older than 5 min) (AC2.5)", () => {
+			const now = new Date();
+			const freshTime = new Date(now.getTime() - 2 * 60 * 1000).toISOString(); // 2 min ago
+			const staleTime = new Date(now.getTime() - 6 * 60 * 1000).toISOString(); // 6 min ago
+
+			// Fresh host with model
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"fresh-host",
+					"Fresh Host",
+					JSON.stringify(["claude-opus"]),
+					0,
+					freshTime,
+					new Date().toISOString(),
+				],
+			);
+
+			// Stale host with same model
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"stale-host",
+					"Stale Host",
+					JSON.stringify(["claude-opus"]),
+					0,
+					staleTime,
+					new Date().toISOString(),
+				],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-opus", "local-site");
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.hosts.length).toBe(1);
+				expect(result.hosts[0].site_id).toBe("fresh-host");
+			}
+		});
+
+		it("returns error when all matching hosts are stale (AC2.5)", () => {
+			const staleTime = new Date(Date.now() - 6 * 60 * 1000).toISOString(); // 6 min ago
+
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"stale-host",
+					"Stale Host",
+					JSON.stringify(["claude-opus"]),
+					0,
+					staleTime,
+					new Date().toISOString(),
+				],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-opus", "local-site");
+			expect(result.ok).toBe(false);
+			if (!result.ok) {
+				expect(result.error).toContain("not available");
+			}
+		});
+
+		it("excludes hosts with null online_at (AC2.5)", () => {
+			const now = new Date().toISOString();
+
+			// Host with null online_at
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"no-sync-host",
+					"Never Synced",
+					JSON.stringify(["claude-opus"]),
+					0,
+					null,
+					now,
+				],
+			);
+
+			// Host with valid online_at
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"synced-host",
+					"Synced Host",
+					JSON.stringify(["claude-opus"]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-opus", "local-site");
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.hosts.length).toBe(1);
+				expect(result.hosts[0].site_id).toBe("synced-host");
+			}
+		});
+
+		it("excludes deleted hosts", () => {
+			const now = new Date().toISOString();
+
+			// Deleted host
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				["deleted-host", "Deleted", JSON.stringify(["claude-opus"]), 1, now, now],
+			);
+
+			// Active host
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				["active-host", "Active", JSON.stringify(["claude-opus"]), 0, now, now],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-opus", "local-site");
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.hosts.length).toBe(1);
+				expect(result.hosts[0].site_id).toBe("active-host");
+			}
+		});
+
+		it("excludes local siteId from routing", () => {
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				["local-site", "Local Host", JSON.stringify(["claude-opus"]), 0, now, now],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-opus", "local-site");
+			expect(result.ok).toBe(false);
+		});
+
+		it("handles hosts with malformed models JSON", () => {
+			const now = new Date().toISOString();
+
+			// Host with malformed JSON
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				["bad-host", "Bad Host", "not json", 0, now, now],
+			);
+
+			// Valid host
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				["good-host", "Good Host", JSON.stringify(["claude-opus"]), 0, now, now],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-opus", "local-site");
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.hosts.length).toBe(1);
+				expect(result.hosts[0].site_id).toBe("good-host");
+			}
+		});
+
+		it("handles hosts with null models column", () => {
+			const now = new Date().toISOString();
+
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				["null-host", "Null Models Host", null, 0, now, now],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-opus", "local-site");
+			expect(result.ok).toBe(false);
 		});
 	});
 
