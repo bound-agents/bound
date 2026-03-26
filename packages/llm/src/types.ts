@@ -76,3 +76,23 @@ export class LLMError extends Error {
 		this.name = "LLMError";
 	}
 }
+
+// Inference relay payload types
+export interface InferenceRequestPayload {
+	model: string;
+	messages: LLMMessage[];
+	tools?: ToolDefinition[];
+	system?: string;
+	max_tokens?: number;
+	temperature?: number;
+	cache_breakpoints?: number[];
+	timeout_ms: number;
+}
+
+export interface StreamChunkPayload {
+	chunks: StreamChunk[];
+	seq: number;
+}
+
+// stream_end has the same shape as stream_chunk — the relay kind field distinguishes them
+export type StreamEndPayload = StreamChunkPayload;
