@@ -238,6 +238,7 @@ export interface RelayOutboxEntry {
 	kind: string;
 	ref_id: string | null;
 	idempotency_key: string | null;
+	stream_id: string | null;
 	payload: string;
 	created_at: string;
 	expires_at: string;
@@ -250,6 +251,7 @@ export interface RelayInboxEntry {
 	kind: string;
 	ref_id: string | null;
 	idempotency_key: string | null;
+	stream_id: string | null;
 	payload: string;
 	expires_at: string;
 	received_at: string;

@@ -24,8 +24,8 @@ export function writeOutbox(
 ): void {
 	enforcePayloadLimit(entry.payload, maxPayloadBytes);
 	db.run(
-		`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, idempotency_key, payload, created_at, expires_at, delivered)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+		`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, created_at, expires_at, delivered)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
 		[
 			entry.id,
 			entry.source_site_id,
@@ -33,6 +33,7 @@ export function writeOutbox(
 			entry.kind,
 			entry.ref_id,
 			entry.idempotency_key,
+			entry.stream_id,
 			entry.payload,
 			entry.created_at,
 			entry.expires_at,
@@ -72,14 +73,15 @@ export function insertInbox(
 ): boolean {
 	enforcePayloadLimit(entry.payload, maxPayloadBytes);
 	const result = db.run(
-		`INSERT OR IGNORE INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+		`INSERT OR IGNORE INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
 		[
 			entry.id,
 			entry.source_site_id,
 			entry.kind,
 			entry.ref_id,
 			entry.idempotency_key,
+			entry.stream_id,
 			entry.payload,
 			entry.expires_at,
 			entry.received_at,
