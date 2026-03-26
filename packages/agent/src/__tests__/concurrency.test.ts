@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
+import { ModelRouter } from "@bound/llm";
 import { AgentLoop } from "../agent-loop";
 
 // Mock LLM Backend that returns text responses
@@ -33,6 +34,12 @@ function createMockSandbox() {
 	return {
 		exec: async () => ({ stdout: "mock output", stderr: "", exitCode: 0 }),
 	};
+}
+
+function createMockRouter(backend: LLMBackend): ModelRouter {
+	const backends = new Map<string, LLMBackend>();
+	backends.set('claude-opus', backend);
+	return new ModelRouter(backends, 'claude-opus');
 }
 
 describe("Concurrent agent loops with WAL serialization (R-U3)", () => {
@@ -245,7 +252,7 @@ describe("Concurrent agent loops with WAL serialization (R-U3)", () => {
 		const loops = threadIds.map((threadId) => {
 			const mockBackend = new MockLLMBackend();
 			const mockBash = createMockSandbox();
-			return new AgentLoop(ctx, mockBash, mockBackend, {
+			return new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId,
 			});

@@ -7,7 +7,16 @@ import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { TypedEventEmitter } from "@bound/shared";
+import type { LLMBackend } from "@bound/llm";
+import { ModelRouter } from "@bound/llm";
 import { AgentLoop } from "../agent-loop";
+
+
+function createMockRouter(backend: LLMBackend): ModelRouter {
+	const backends = new Map<string, LLMBackend>();
+	backends.set('claude-opus', backend);
+	return new ModelRouter(backends, 'claude-opus');
+}
 
 describe("Agent Loop End-to-End Integration", () => {
 	let tmpDir: string;

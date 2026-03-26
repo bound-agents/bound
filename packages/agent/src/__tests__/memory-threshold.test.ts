@@ -7,7 +7,16 @@ import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
+import type { LLMBackend } from "@bound/llm";
+import { ModelRouter } from "@bound/llm";
 import { AgentLoop } from "../agent-loop";
+
+
+function createMockRouter(backend: LLMBackend): ModelRouter {
+	const backends = new Map<string, LLMBackend>();
+	backends.set('claude-opus', backend);
+	return new ModelRouter(backends, 'claude-opus');
+}
 
 describe("Memory Threshold Check (R-W2)", () => {
 	let tmpDir: string;

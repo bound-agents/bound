@@ -17,7 +17,7 @@ import {
 	withChangeLog,
 } from "@bound/core";
 import { createModelRouter } from "@bound/llm";
-import type { BackendConfig, LLMBackend, ModelBackendsConfig, ToolDefinition } from "@bound/llm";
+import type { BackendConfig, ModelBackendsConfig, ToolDefinition } from "@bound/llm";
 import { createClusterFs, createDefineCommands, createSandbox } from "@bound/sandbox";
 import type { SyncConfig } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
@@ -514,15 +514,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 			try {
 				const selectedModelId = message.model_id || undefined;
-				let llmBackend: LLMBackend;
-				try {
-					llmBackend = modelRouter.getBackend(selectedModelId);
-				} catch {
-					llmBackend = modelRouter.getDefault();
-				}
 				const activeModelId = selectedModelId || routerConfig.default;
 
-				const agentLoop = new AgentLoop(appContext, sandbox?.bash ?? ({} as any), llmBackend, {
+				const agentLoop = new AgentLoop(appContext, sandbox?.bash ?? ({} as any), modelRouter, {
 					threadId: thread_id,
 					userId: message.user_id || appContext.config.allowlist.default_web_user,
 					modelId: activeModelId,
@@ -550,7 +544,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				}
 
 				// Fire-and-forget: generate thread title
-				generateThreadTitle(appContext.db, thread_id, llmBackend, appContext.siteId)
+				generateThreadTitle(appContext.db, thread_id, modelRouter.getDefault(), appContext.siteId)
 					.then((titleResult) => {
 						if (titleResult.ok) {
 							console.log(`[agent] Thread title: ${titleResult.value}`);
@@ -591,36 +585,10 @@ export async function runStart(args: StartArgs): Promise<void> {
 	};
 
 	const agentLoopFactory = (config: AgentLoopConfig): AgentLoop => {
-		let backend: LLMBackend;
-		try {
-			backend = modelRouter
-				? modelRouter.getBackend(config.modelId)
-				: {
-						chat: async function* () {},
-						capabilities: () => ({
-							streaming: false,
-							tool_use: false,
-							system_prompt: false,
-							prompt_caching: false,
-							vision: false,
-							max_context: 0,
-						}),
-					};
-		} catch {
-			backend = modelRouter?.getDefault() ?? {
-				chat: async function* () {},
-				capabilities: () => ({
-					streaming: false,
-					tool_use: false,
-					system_prompt: false,
-					prompt_caching: false,
-					vision: false,
-					max_context: 0,
-				}),
-			};
+		if (!modelRouter) {
+			throw new Error("agentLoopFactory called without a configured model router");
 		}
-
-		return new AgentLoop(appContext, sandbox?.bash ?? ({} as any), backend, {
+		return new AgentLoop(appContext, sandbox?.bash ?? ({} as any), modelRouter, {
 			...config,
 			tools: config.tools ?? [sandboxTool],
 		});

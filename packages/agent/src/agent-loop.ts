@@ -9,11 +9,12 @@ import {
 	recordTurnRelayMetrics,
 	writeOutbox,
 } from "@bound/core";
-import type { LLMBackend, StreamChunk } from "@bound/llm";
+import type { ModelRouter, StreamChunk } from "@bound/llm";
 import { formatError } from "@bound/shared";
 
 import { assembleContext } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
+import { resolveModel } from "./model-resolution";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
 import { createRelayOutboxEntry } from "./relay-router";
 import { extractSummaryAndMemories } from "./summary-extraction";
@@ -57,7 +58,7 @@ export class AgentLoop {
 	constructor(
 		private ctx: AppContext,
 		private sandbox: BashLike,
-		private llmBackend: LLMBackend,
+		private modelRouter: ModelRouter,
 		private config: AgentLoopConfig,
 	) {
 		if (config.abortSignal) {
@@ -81,7 +82,7 @@ export class AgentLoop {
 
 			this.state = "ASSEMBLE_CONTEXT";
 			// Get context window from LLM backend capabilities
-			const capabilities = this.llmBackend.capabilities();
+			const capabilities = this.modelRouter.getDefault().capabilities();
 			const contextWindow = capabilities.max_context || 8000;
 
 			const contextMessages = assembleContext({
@@ -115,16 +116,42 @@ export class AgentLoop {
 						.map((m) => (typeof m.content === "string" ? m.content : ""))
 						.join("\n\n");
 
-					const chatStream = this.llmBackend.chat({
-						model: "",
-						messages: nonSystemMessages,
-						system: systemPrompt || undefined,
-						tools: this.config.tools,
-					});
+					const resolution = resolveModel(
+						this.config.modelId,
+						this.modelRouter,
+						this.ctx.db,
+						this.ctx.siteId,
+					);
 
-					for await (const chunk of this.withSilenceTimeout(chatStream, SILENCE_TIMEOUT_MS)) {
-						if (this.aborted) break;
-						chunks.push(chunk);
+					if (resolution.kind === "error") {
+						throw new Error(resolution.error);
+					}
+
+					if (resolution.kind === "remote") {
+						// Phase 3 will implement RELAY_STREAM here.
+						// For now, fall back to the default local backend so Phase 2 is fully functional.
+						const fallback = this.modelRouter.getDefault();
+						const chatStream = fallback.chat({
+							model: resolution.modelId,
+							messages: nonSystemMessages,
+							system: systemPrompt || undefined,
+							tools: this.config.tools,
+						});
+						for await (const chunk of this.withSilenceTimeout(chatStream, SILENCE_TIMEOUT_MS)) {
+							if (this.aborted) break;
+							chunks.push(chunk);
+						}
+					} else {
+						const chatStream = resolution.backend.chat({
+							model: resolution.modelId,
+							messages: nonSystemMessages,
+							system: systemPrompt || undefined,
+							tools: this.config.tools,
+						});
+						for await (const chunk of this.withSilenceTimeout(chatStream, SILENCE_TIMEOUT_MS)) {
+							if (this.aborted) break;
+							chunks.push(chunk);
+						}
 					}
 				} catch (error) {
 					this.state = "ERROR_PERSIST";
@@ -380,7 +407,7 @@ export class AgentLoop {
 			extractSummaryAndMemories(
 				this.ctx.db,
 				this.config.threadId,
-				this.llmBackend,
+				this.modelRouter.getDefault(),
 				this.ctx.siteId,
 			).catch(() => {});
 
