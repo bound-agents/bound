@@ -250,9 +250,18 @@ export class AgentLoop {
 				}
 
 				// AC4.1: Record relay metrics if this was a remote inference
-				if (currentTurnId !== null && relayMetadataRef.hostName !== undefined && relayMetadataRef.firstChunkLatencyMs !== undefined) {
+				if (
+					currentTurnId !== null &&
+					relayMetadataRef.hostName !== undefined &&
+					relayMetadataRef.firstChunkLatencyMs !== undefined
+				) {
 					try {
-						recordTurnRelayMetrics(this.ctx.db, currentTurnId, relayMetadataRef.hostName, relayMetadataRef.firstChunkLatencyMs);
+						recordTurnRelayMetrics(
+							this.ctx.db,
+							currentTurnId,
+							relayMetadataRef.hostName,
+							relayMetadataRef.firstChunkLatencyMs,
+						);
 					} catch {
 						// Non-fatal
 					}
