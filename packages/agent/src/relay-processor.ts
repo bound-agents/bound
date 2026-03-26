@@ -72,6 +72,11 @@ export class RelayProcessor {
 		for (const entry of entries) {
 			if (entry.kind === "cancel" && entry.ref_id) {
 				this.pendingCancels.add(entry.ref_id);
+				// Immediately abort any active inference stream for this ref_id
+				const abortController = this.activeInferenceStreams.get(entry.ref_id);
+				if (abortController) {
+					abortController.abort();
+				}
 				markProcessed(this.db, [entry.id]);
 			}
 		}
@@ -153,6 +158,17 @@ export class RelayProcessor {
 					case "cache_warm": {
 						const payload = JSON.parse(entry.payload) as CacheWarmPayload;
 						response = await this.executeCacheWarm(entry, payload);
+						break;
+					}
+					case "inference": {
+						const inferencePayload = JSON.parse(entry.payload) as InferenceRequestPayload;
+						// inference is handled asynchronously — executeInference() writes
+						// stream_chunk/stream_end outbox entries directly and returns null
+						this.executeInference(entry, inferencePayload).catch((err) => {
+							this.logger.error("executeInference failed", { error: err, entryId: entry.id });
+						});
+						// Return null to skip the single writeResponse() call below
+						response = null;
 						break;
 					}
 					default:
@@ -384,6 +400,31 @@ export class RelayProcessor {
 		});
 	}
 
+	private writeStreamChunk(
+		requestEntry: RelayInboxEntry,
+		kind: "stream_chunk" | "stream_end",
+		streamId: string,
+		seq: number,
+		chunks: StreamChunk[],
+	): void {
+		if (!requestEntry.source_site_id) return;
+		const chunkPayload: StreamChunkPayload = { chunks, seq };
+		const now = new Date();
+		const outboxEntry: Omit<RelayOutboxEntry, "delivered"> = {
+			id: randomUUID(),
+			source_site_id: this.siteId,
+			target_site_id: requestEntry.source_site_id,
+			kind,
+			ref_id: requestEntry.id,
+			idempotency_key: null,
+			stream_id: streamId,
+			payload: JSON.stringify(chunkPayload),
+			created_at: now.toISOString(),
+			expires_at: new Date(now.getTime() + 10 * 60 * 1000).toISOString(), // 10 min expiry for chunks
+		};
+		writeOutbox(this.db, outboxEntry);
+	}
+
 	private pruneIdempotencyCache(): void {
 		const now = Date.now();
 		for (const [key, value] of this.idempotencyCache) {
@@ -420,6 +461,13 @@ export class RelayProcessor {
 			if (new Date(request.expires_at) < now) {
 				// Discard without returning anything
 				return results;
+			}
+
+			// Step 2b: Skip inference kind (handled asynchronously by target's polling loop)
+			// inference kind is handled asynchronously by the target's background polling loop,
+			// not synchronously in the hub relay phase
+			if (request.kind === "inference") {
+				return []; // hub routes to inbox; target's RelayProcessor handles it
 			}
 
 			// Step 3: Check cancel (AC7.3)
@@ -503,6 +551,179 @@ export class RelayProcessor {
 			};
 			results.push(this.createResultEntry(request, "error", JSON.stringify(errorResponse)));
 			return results;
+		}
+	}
+
+	private async executeInference(
+		entry: RelayInboxEntry,
+		payload: InferenceRequestPayload,
+	): Promise<void> {
+		const FLUSH_INTERVAL_MS = 200;
+		const FLUSH_BUFFER_BYTES = 4096;
+
+		// stream_id comes from the inbox entry (set by the requester in RELAY_STREAM)
+		const streamId = entry.stream_id;
+		if (!streamId) {
+			this.writeResponse(
+				entry,
+				"error",
+				JSON.stringify({ error: "Missing stream_id on inference request", retriable: false }),
+			);
+			return;
+		}
+
+		// Check model availability
+		if (!this.modelRouter) {
+			this.writeResponse(
+				entry,
+				"error",
+				JSON.stringify({ error: "No model router configured on this host", retriable: false }),
+			);
+			return;
+		}
+
+		const backend = this.modelRouter.tryGetBackend(payload.model);
+		if (!backend) {
+			this.writeResponse(
+				entry,
+				"error",
+				JSON.stringify({
+					error: `Model not available on this host: ${payload.model}`,
+					retriable: false,
+				}),
+			);
+			return;
+		}
+
+		// Resolve large prompt file ref if present (AC1.9)
+		let messages = payload.messages;
+		if (payload.messages_file_ref) {
+			const fileRow = this.db
+				.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
+				.get(payload.messages_file_ref) as { content: string } | null;
+			if (!fileRow) {
+				this.writeResponse(
+					entry,
+					"error",
+					JSON.stringify({
+						error: `Large prompt file not found: ${payload.messages_file_ref}`,
+						retriable: false,
+					}),
+				);
+				return;
+			}
+			try {
+				messages = JSON.parse(fileRow.content);
+			} catch {
+				this.writeResponse(
+					entry,
+					"error",
+					JSON.stringify({ error: "Failed to parse large prompt file", retriable: false }),
+				);
+				return;
+			}
+		}
+
+		// Set up AbortController for cancel support (AC3.4)
+		const abortController = new AbortController();
+		this.activeInferenceStreams.set(entry.id, abortController);
+
+		// Note: LLMBackend.chat() currently does not accept an AbortSignal parameter
+		// (ChatParams in packages/llm/src/types.ts has no `signal` field). The abortController
+		// is used to break the for-await loop, but the underlying HTTP stream to the LLM
+		// provider will NOT be cancelled — it continues until the provider completes or times out.
+		// To properly cancel the provider stream, add `signal?: AbortSignal` to ChatParams
+		// and wire it through the Anthropic, Bedrock, OpenAI-compatible, and Ollama drivers.
+		// This is a resource efficiency improvement; cancel correctness is maintained by the
+		// loop-break and "cancelled by requester" error response.
+
+		let seq = 0;
+		let chunkBuffer: StreamChunk[] = [];
+		let bufferBytes = 0;
+		let lastFlushTime = Date.now();
+		const inferenceStartTime = Date.now();
+
+		const flush = (isFinal: boolean): void => {
+			if (chunkBuffer.length === 0 && !isFinal) return;
+			const kind = isFinal ? "stream_end" : "stream_chunk";
+			this.writeStreamChunk(entry, kind, streamId, seq, [...chunkBuffer]);
+			// Record relay cycle for each flush
+			try {
+				recordRelayCycle(this.db, {
+					direction: "inbound",
+					peer_site_id: entry.source_site_id,
+					kind,
+					delivery_method: "sync",
+					latency_ms: Date.now() - inferenceStartTime,
+					expired: false,
+					success: true,
+				});
+			} catch {
+				// Non-fatal
+			}
+			seq++;
+			chunkBuffer = [];
+			bufferBytes = 0;
+			lastFlushTime = Date.now();
+		};
+
+		try {
+			const chatStream = backend.chat({
+				model: payload.model,
+				messages,
+				tools: payload.tools,
+				system: payload.system,
+				max_tokens: payload.max_tokens,
+				temperature: payload.temperature,
+				cache_breakpoints: payload.cache_breakpoints,
+			});
+
+			for await (const chunk of chatStream) {
+				// AC3.4: Check abort signal (cancel from requester)
+				if (abortController.signal.aborted) break;
+
+				chunkBuffer.push(chunk);
+				const chunkBytes = new TextEncoder().encode(JSON.stringify(chunk)).byteLength;
+				bufferBytes += chunkBytes;
+
+				const elapsed = Date.now() - lastFlushTime;
+				if (elapsed >= FLUSH_INTERVAL_MS || bufferBytes >= FLUSH_BUFFER_BYTES) {
+					flush(false);
+				}
+			}
+
+			if (abortController.signal.aborted) {
+				// AC3.4: Write error response indicating cancellation
+				this.writeResponse(
+					entry,
+					"error",
+					JSON.stringify({ error: "cancelled by requester", retriable: false }),
+				);
+			} else {
+				// Normal completion — final flush as stream_end (AC3.3)
+				flush(true);
+			}
+		} catch (err) {
+			this.writeResponse(
+				entry,
+				"error",
+				JSON.stringify({ error: String(err), retriable: true }),
+			);
+			try {
+				recordRelayCycle(this.db, {
+					direction: "inbound",
+					peer_site_id: entry.source_site_id,
+					kind: "inference",
+					delivery_method: "sync",
+					latency_ms: Date.now() - inferenceStartTime,
+					expired: false,
+					success: false,
+				});
+			} catch {
+				// Non-fatal
+			}
+		} finally {
+			this.activeInferenceStreams.delete(entry.id);
 		}
 	}
 
