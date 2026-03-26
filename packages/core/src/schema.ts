@@ -300,4 +300,33 @@ export function applySchema(db: Database): void {
 		CREATE INDEX IF NOT EXISTS idx_relay_cycles_created
 		ON relay_cycles(created_at)
 	`);
+
+	// stream_id column migrations (idempotent — ignore if column already exists)
+	try {
+		db.run(`ALTER TABLE relay_outbox ADD COLUMN stream_id TEXT`);
+	} catch {
+		/* already exists */
+	}
+	try {
+		db.run(`ALTER TABLE relay_inbox  ADD COLUMN stream_id TEXT`);
+	} catch {
+		/* already exists */
+	}
+	try {
+		db.run(`ALTER TABLE relay_cycles ADD COLUMN stream_id TEXT`);
+	} catch {
+		/* already exists */
+	}
+
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_relay_outbox_stream
+		ON relay_outbox(stream_id)
+		WHERE stream_id IS NOT NULL
+	`);
+
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_relay_inbox_stream
+		ON relay_inbox(stream_id, processed)
+		WHERE stream_id IS NOT NULL AND processed = 0
+	`);
 }
