@@ -20,6 +20,7 @@ export interface CommandContext {
 	threadId?: string;
 	taskId?: string;
 	mcpClients?: Map<string, unknown>;
+	modelRouter?: unknown; // ModelRouter from @bound/llm, optional for backward compatibility
 }
 
 export interface CommandDefinition {

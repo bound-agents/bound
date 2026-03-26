@@ -2,6 +2,8 @@ import { formatError } from "@bound/shared";
 
 import { updateRow } from "@bound/core";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
+import type { ModelRouter } from "@bound/llm";
+import { resolveModel } from "../model-resolution";
 
 export const modelHint: CommandDefinition = {
 	name: "model-hint",
@@ -54,15 +56,25 @@ export const modelHint: CommandDefinition = {
 				};
 			}
 
-			// Build the update payload
-			const updates: Record<string, unknown> = { model_hint: args.model };
-
-			if (args["for-turns"]) {
-				const turns = Number.parseInt(args["for-turns"], 10);
-				if (!Number.isNaN(turns) && turns > 0) {
-					updates.model_hint_turns = turns;
+			// Validate model against cluster-wide pool if modelRouter is available
+			if (args.model && ctx.modelRouter) {
+				const resolution = resolveModel(
+					args.model,
+					ctx.modelRouter as ModelRouter,
+					ctx.db,
+					ctx.siteId,
+				);
+				if (resolution.kind === "error") {
+					return {
+						stdout: "",
+						stderr: `Error: ${resolution.error}\n`,
+						exitCode: 1,
+					};
 				}
 			}
+
+			// Build the update payload
+			const updates: Record<string, unknown> = { model_hint: args.model };
 
 			// Store the model hint for the agent loop to read
 			updateRow(ctx.db, "tasks", ctx.taskId, updates, ctx.siteId);
