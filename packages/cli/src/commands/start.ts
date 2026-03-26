@@ -457,6 +457,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			modelRouter ?? null,
 			new Set(Object.keys(keyring.hosts)),
 			appContext.logger,
+			appContext.eventBus,
 			relayConfig,
 		);
 		relayProcessorHandle = relayProcessor.start();

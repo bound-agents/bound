@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { applySchema, markProcessed, readUnprocessed } from "@bound/core";
 import type {
 	CacheWarmPayload,
+	TypedEventEmitter,
 	Logger,
 	PromptInvokePayload,
 	RelayInboxEntry,
@@ -58,6 +59,11 @@ class MockMCPClient implements Partial<MCPClient> {
 }
 
 // Mock logger
+const createMockEventBus = (): TypedEventEmitter => {
+	return new (require("@bound/shared").TypedEventEmitter)();
+};
+
+// Mock logger
 const createMockLogger = (): Logger => ({
 	info: () => {},
 	warn: () => {},
@@ -102,6 +108,7 @@ describe("RelayProcessor", () => {
 				null,
 				keyringSiteIds,
 				createMockLogger(),
+			createMockEventBus(),
 			);
 
 			const handle = processor.start(100);
@@ -122,6 +129,7 @@ describe("RelayProcessor", () => {
 				null,
 				keyringSiteIds,
 				createMockLogger(),
+			createMockEventBus(),
 			);
 
 			// Insert an unprocessed inbox entry
@@ -181,6 +189,7 @@ describe("RelayProcessor", () => {
 				null,
 				keyringSiteIds,
 				createMockLogger(),
+			createMockEventBus(),
 			);
 
 			const handle = processor.start(50);
@@ -203,6 +212,7 @@ describe("RelayProcessor", () => {
 				null,
 				keyringSiteIds,
 				createMockLogger(),
+			createMockEventBus(),
 			);
 
 			const now = new Date();
@@ -259,6 +269,7 @@ describe("RelayProcessor", () => {
 				null,
 				keyringSiteIds,
 				createMockLogger(),
+			createMockEventBus(),
 			);
 
 			const now = new Date();
@@ -324,6 +335,7 @@ describe("RelayProcessor", () => {
 				null,
 				keyringSiteIds,
 				createMockLogger(),
+			createMockEventBus(),
 			);
 
 			const now = new Date();
@@ -385,6 +397,7 @@ describe("RelayProcessor", () => {
 				null,
 				keyringSiteIds,
 				createMockLogger(),
+			createMockEventBus(),
 			);
 
 			const now = new Date();
@@ -443,6 +456,7 @@ describe("RelayProcessor", () => {
 				null,
 				keyringSiteIds,
 				createMockLogger(),
+			createMockEventBus(),
 			);
 
 			// Create temporary test files
@@ -539,6 +553,7 @@ describe("RelayProcessor", () => {
 				null,
 				keyringSiteIds,
 				createMockLogger(),
+			createMockEventBus(),
 			);
 
 			const now = new Date();
@@ -655,6 +670,7 @@ describe("RelayProcessor", () => {
 				null,
 				keyringSiteIds,
 				createMockLogger(),
+			createMockEventBus(),
 			);
 
 			const baseTime = Date.now();
@@ -811,6 +827,7 @@ describe("RelayProcessor", () => {
 				null,
 				keyringSiteIds,
 				createMockLogger(),
+			createMockEventBus(),
 			);
 
 			const now = new Date();
@@ -903,6 +920,7 @@ describe("RelayProcessor", () => {
 				null,
 				keyringSiteIds,
 				createMockLogger(),
+			createMockEventBus(),
 			);
 
 			const now = new Date();
@@ -998,6 +1016,7 @@ describe("RelayProcessor", () => {
 				null,
 				keyringSiteIds,
 				createMockLogger(),
+			createMockEventBus(),
 			);
 
 			const now = new Date();
@@ -1069,6 +1088,7 @@ describe("RelayProcessor", () => {
 				null,
 				keyringSiteIds,
 				createMockLogger(),
+			createMockEventBus(),
 			);
 
 			const now = new Date();

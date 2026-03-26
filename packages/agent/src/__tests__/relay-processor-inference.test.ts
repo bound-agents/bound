@@ -46,6 +46,11 @@ class MockBackend implements LLMBackend {
 	}
 }
 
+const createMockEventBus = (): TypedEventEmitter => {
+	return new (require("@bound/shared").TypedEventEmitter)();
+};
+
+// Mock logger
 const createMockLogger = (): Logger => ({
 	info: () => {},
 	warn: () => {},
@@ -96,7 +101,8 @@ describe("RelayProcessor - executeInference", () => {
 			new Map(),
 			mockRouter,
 			new Set(["requester-site"]),
-			createMockLogger(),
+			createMockockLogger(),
+		createMockEventBus(),
 		);
 
 		const now = new Date();
@@ -195,7 +201,8 @@ describe("RelayProcessor - executeInference", () => {
 			new Map(),
 			mockRouter,
 			new Set(["requester-site"]),
-			createMockLogger(),
+			createMockockLogger(),
+		createMockEventBus(),
 		);
 
 		const now = new Date();
@@ -264,7 +271,8 @@ describe("RelayProcessor - executeInference", () => {
 			new Map(),
 			mockRouter,
 			new Set(["requester-site"]),
-			createMockLogger(),
+			createMockockLogger(),
+		createMockEventBus(),
 		);
 
 		const now = new Date();
@@ -328,7 +336,8 @@ describe("RelayProcessor - executeInference", () => {
 			new Map(),
 			mockRouter,
 			new Set(["requester-site"]),
-			createMockLogger(),
+			createMockockLogger(),
+		createMockEventBus(),
 		);
 
 		const now = new Date();
@@ -408,7 +417,8 @@ describe("RelayProcessor - executeInference", () => {
 			new Map(),
 			mockRouter,
 			new Set(["requester-site"]),
-			createMockLogger(),
+			createMockockLogger(),
+		createMockEventBus(),
 		);
 
 		const now = new Date();
@@ -506,7 +516,8 @@ describe("RelayProcessor - executeInference", () => {
 			new Map(),
 			mockRouter,
 			new Set(["requester-site"]),
-			createMockLogger(),
+			createMockockLogger(),
+		createMockEventBus(),
 		);
 
 		const now = new Date();
@@ -597,7 +608,8 @@ describe("RelayProcessor - executeInference", () => {
 			new Map(),
 			mockRouter,
 			new Set(["requester-site"]),
-			createMockLogger(),
+			createMockockLogger(),
+		createMockEventBus(),
 		);
 
 		const now = new Date();
