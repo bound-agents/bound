@@ -1,8 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { applySchema, createDatabase } from "@bound/core";
 import type { StatusForwardPayload } from "@bound/shared";
+import { TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
+import { createStatusRoutes } from "../routes/status";
 import { createThreadsRoutes } from "../routes/threads";
 
 describe("/api/threads/{id}/status with status_forward cache (AC6.3)", () => {
@@ -158,5 +161,98 @@ describe("/api/threads/{id}/status with status_forward cache (AC6.3)", () => {
 			expect(body.active).toBe(false);
 			expect(body.state).toBeNull();
 		});
+	});
+});
+
+describe("/api/status/cancel with delegation (AC6.4)", () => {
+	let db: Database;
+	let eventBus: TypedEventEmitter;
+	let app: Hono;
+	let activeDelegations: Map<
+		string,
+		{ targetSiteId: string; processOutboxId: string }
+	>;
+	const threadId = "test-thread-delegation";
+	const delegatedThreadId = "delegated-thread-123";
+
+	beforeEach(() => {
+		db = createDatabase(":memory:");
+		applySchema(db);
+		eventBus = new TypedEventEmitter();
+		activeDelegations = new Map();
+
+		// Create status routes app with activeDelegations
+		app = createStatusRoutes(db, eventBus, "test-host", "test-site", undefined, activeDelegations);
+
+		// Insert a test thread
+		const now = new Date().toISOString();
+		db.prepare(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)"
+		).run(delegatedThreadId, "default_web_user", "web", "localhost:3000", 0, "", now, now, now);
+
+		// Insert host_meta for host_name
+		db.prepare("INSERT INTO host_meta (key, value) VALUES (?, ?)").run("host_name", "test-host");
+
+		// Insert site_id
+		db.prepare("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)").run(
+			"site_id",
+			"test-site",
+			new Date().toISOString(),
+		);
+	});
+
+	it("cancel on originating host sends cancel with ref_id matching process outbox entry (AC6.4)", async () => {
+		// Set up a delegation for this thread
+		const targetSiteId = "remote-site-123";
+		const processOutboxId = randomUUID();
+
+		activeDelegations.set(delegatedThreadId, {
+			targetSiteId,
+			processOutboxId,
+		});
+
+		// Call cancel endpoint
+		const res = await app.fetch(
+			new Request(`http://localhost/cancel/${delegatedThreadId}`, {
+				method: "POST",
+			}),
+		);
+
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { cancelled: boolean; thread_id: string };
+		expect(body.cancelled).toBe(true);
+		expect(body.thread_id).toBe(delegatedThreadId);
+
+		// Verify cancel entry was written to relay_outbox with correct ref_id
+		const cancelEntry = db
+			.query(
+				"SELECT kind, ref_id, target_site_id FROM relay_outbox WHERE kind = 'cancel' ORDER BY created_at DESC LIMIT 1",
+			)
+			.get() as { kind: string; ref_id: string | null; target_site_id: string } | null;
+
+		expect(cancelEntry).toBeDefined();
+		expect(cancelEntry?.kind).toBe("cancel");
+		expect(cancelEntry?.ref_id).toBe(processOutboxId);
+		expect(cancelEntry?.target_site_id).toBe(targetSiteId);
+	});
+
+	it("cancel on thread with no delegation does not write relay cancel entry", async () => {
+		// Don't set up a delegation for this thread
+
+		// Call cancel endpoint
+		const res = await app.fetch(
+			new Request(`http://localhost/cancel/${delegatedThreadId}`, {
+				method: "POST",
+			}),
+		);
+
+		expect(res.status).toBe(200);
+
+		// Verify NO cancel entry was written to relay_outbox
+		const cancelEntries = db
+			.query("SELECT COUNT(*) as cnt FROM relay_outbox WHERE kind = 'cancel'")
+			.get() as { cnt: number };
+
+		expect(cancelEntries.cnt).toBe(0);
 	});
 });
