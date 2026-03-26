@@ -101,7 +101,7 @@ describe("RelayProcessor - executeInference", () => {
 			new Map(),
 			mockRouter,
 			new Set(["requester-site"]),
-			createMockockLogger(),
+			createMockLogger(),
 		createMockEventBus(),
 		);
 
@@ -201,7 +201,7 @@ describe("RelayProcessor - executeInference", () => {
 			new Map(),
 			mockRouter,
 			new Set(["requester-site"]),
-			createMockockLogger(),
+			createMockLogger(),
 		createMockEventBus(),
 		);
 
@@ -271,7 +271,7 @@ describe("RelayProcessor - executeInference", () => {
 			new Map(),
 			mockRouter,
 			new Set(["requester-site"]),
-			createMockockLogger(),
+			createMockLogger(),
 		createMockEventBus(),
 		);
 
@@ -336,7 +336,7 @@ describe("RelayProcessor - executeInference", () => {
 			new Map(),
 			mockRouter,
 			new Set(["requester-site"]),
-			createMockockLogger(),
+			createMockLogger(),
 		createMockEventBus(),
 		);
 
@@ -417,7 +417,7 @@ describe("RelayProcessor - executeInference", () => {
 			new Map(),
 			mockRouter,
 			new Set(["requester-site"]),
-			createMockockLogger(),
+			createMockLogger(),
 		createMockEventBus(),
 		);
 
@@ -516,7 +516,7 @@ describe("RelayProcessor - executeInference", () => {
 			new Map(),
 			mockRouter,
 			new Set(["requester-site"]),
-			createMockockLogger(),
+			createMockLogger(),
 		createMockEventBus(),
 		);
 
@@ -608,7 +608,7 @@ describe("RelayProcessor - executeInference", () => {
 			new Map(),
 			mockRouter,
 			new Set(["requester-site"]),
-			createMockockLogger(),
+			createMockLogger(),
 		createMockEventBus(),
 		);
 
