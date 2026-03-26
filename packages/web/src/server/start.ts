@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { KeyringConfig, Logger, TypedEventEmitter } from "@bound/shared";
+import type { KeyringConfig, Logger, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { EagerPushConfig, RelayExecutor } from "@bound/sync";
 import { type AppConfig, type ModelsConfig, createApp } from "./index";
 import { createWebSocketHandler } from "./websocket";
@@ -17,6 +17,8 @@ export interface WebServerConfig {
 	relayExecutor?: RelayExecutor;
 	hubSiteId?: string;
 	eagerPushConfig?: EagerPushConfig;
+	statusForwardCache?: Map<string, StatusForwardPayload>;
+	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 }
 
 export interface WebServer {
@@ -46,6 +48,8 @@ export async function createWebServer(
 		relayExecutor: config.relayExecutor,
 		hubSiteId: config.hubSiteId,
 		eagerPushConfig: config.eagerPushConfig,
+		statusForwardCache: config.statusForwardCache,
+		activeDelegations: config.activeDelegations,
 	};
 
 	// Create the Hono app with all routes (loads embedded assets if available)

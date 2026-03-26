@@ -1,4 +1,5 @@
-import { getSiteId } from "@bound/core";
+import { getSiteId, writeOutbox } from "@bound/core";
+import { createRelayOutboxEntry } from "@bound/agent";
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
@@ -30,6 +31,7 @@ export function createStatusRoutes(
 	hostName: string,
 	siteId: string,
 	modelsConfig?: ModelsConfig,
+	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>,
 ): Hono {
 	const app = new Hono();
 
@@ -164,7 +166,7 @@ export function createStatusRoutes(
 			const hostNameRow = db.query("SELECT value FROM host_meta WHERE key = 'host_name'").get() as
 				| { value: string }
 				| undefined;
-			const hostName = hostNameRow?.value ?? "unknown";
+			const hostNameValue = hostNameRow?.value ?? "unknown";
 
 			// Persist cancellation message per spec R-E14
 			const cancelMsgId = randomUUID();
@@ -176,18 +178,36 @@ export function createStatusRoutes(
 					id: cancelMsgId,
 					thread_id: threadId,
 					role: "system",
-					content: `Agent cancelled by user on host ${hostName}`,
+					content: `Agent cancelled by user on host ${hostNameValue}`,
 					model_id: null,
 					tool_name: null,
 					created_at: now,
 					modified_at: now,
-					host_origin: hostName,
+					host_origin: hostNameValue,
 				},
 				siteId,
 			);
 
 			// Emit cancel event on eventBus to signal agent loop to stop
 			eventBus.emit("agent:cancel", { thread_id: threadId });
+
+			// AC6.4: Propagate cancel to delegated processing host
+			const delegation = activeDelegations?.get(threadId);
+			if (delegation) {
+				const cancelEntry = createRelayOutboxEntry(
+					delegation.targetSiteId,
+					"cancel",
+					JSON.stringify({}),
+					30_000,
+					delegation.processOutboxId, // ref_id matches the process message
+				);
+				try {
+					writeOutbox(db, cancelEntry);
+					eventBus.emit("sync:trigger", { reason: "delegation-cancel" });
+				} catch {
+					// Non-fatal
+				}
+			}
 
 			return c.json({
 				cancelled: true,

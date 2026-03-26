@@ -490,6 +490,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// 12. Web server
 	console.log("Starting web server...");
 	let webServer: Awaited<ReturnType<typeof createWebServer>> | null = null;
+	const statusForwardCache = new Map<string, StatusForwardPayload>();
+	const activeDelegations = new Map<string, { targetSiteId: string; processOutboxId: string }>();
 	try {
 		const modelBackends = appContext.config.modelBackends;
 
@@ -528,13 +530,13 @@ export async function runStart(args: StartArgs): Promise<void> {
 			relayExecutor,
 			hubSiteId,
 			eagerPushConfig,
+			statusForwardCache,
+			activeDelegations,
 		});
 		await webServer.start();
 
 		// Wire message:created events to the agent loop
 		const activeLoops = new Set<string>();
-		const statusForwardCache = new Map<string, StatusForwardPayload>();
-		const activeDelegations = new Map<string, { targetSiteId: string; processOutboxId: string }>();
 
 		// Listen for status:forward events from RelayProcessor
 		appContext.eventBus.on("status:forward", (payload: StatusForwardPayload) => {

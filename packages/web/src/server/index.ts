@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { formatError } from "@bound/shared";
-import type { KeyringConfig, Logger, TypedEventEmitter } from "@bound/shared";
+import type { KeyringConfig, Logger, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { EagerPushConfig, RelayExecutor } from "@bound/sync";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
@@ -29,6 +29,8 @@ export interface AppConfig {
 	relayExecutor?: RelayExecutor;
 	hubSiteId?: string;
 	eagerPushConfig?: EagerPushConfig;
+	statusForwardCache?: Map<string, StatusForwardPayload>;
+	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 }
 
 export async function createApp(
@@ -42,6 +44,10 @@ export async function createApp(
 			appConfig && "hostName" in appConfig ? appConfig.hostName : undefined,
 		siteId:
 			appConfig && "hostSiteId" in appConfig ? appConfig.hostSiteId : undefined,
+		statusForwardCache:
+			appConfig && "statusForwardCache" in appConfig ? appConfig.statusForwardCache : undefined,
+		activeDelegations:
+			appConfig && "activeDelegations" in appConfig ? appConfig.activeDelegations : undefined,
 	};
 
 	const app = new Hono();

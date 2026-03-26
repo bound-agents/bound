@@ -3,10 +3,14 @@ import { getSiteId } from "@bound/core";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertRow } from "@bound/core";
-import type { Thread } from "@bound/shared";
+import type { Thread, StatusForwardPayload } from "@bound/shared";
 import { Hono } from "hono";
 
-export function createThreadsRoutes(db: Database, defaultModel?: string): Hono {
+export function createThreadsRoutes(
+	db: Database,
+	defaultModel?: string,
+	statusForwardCache?: Map<string, StatusForwardPayload>,
+): Hono {
 	const app = new Hono();
 
 	app.get("/", (c) => {
@@ -130,23 +134,23 @@ export function createThreadsRoutes(db: Database, defaultModel?: string): Hono {
 				);
 			}
 
+			// Check for forwarded status (delegated loops)
+			const forwarded = statusForwardCache?.get(id);
+
 			const runningTask = db
-				.query("SELECT * FROM tasks WHERE thread_id = ? AND status = 'running' LIMIT 1")
-				.get(id) as Record<string, unknown> | undefined;
+				.query("SELECT id FROM tasks WHERE thread_id = ? AND status = 'running' LIMIT 1")
+				.get(id) as { id: string } | null;
 
-			const status = runningTask
-				? {
-						active: true,
-						state: "running",
-						model: defaultModel ?? null,
-					}
-				: {
-						active: false,
-						state: null,
-						model: defaultModel ?? null,
-					};
+			const isActive =
+				!!runningTask || (forwarded?.status === "thinking" || forwarded?.status === "tool_call");
 
-			return c.json(status);
+			return c.json({
+				active: isActive,
+				state: forwarded?.status ?? (runningTask ? "running" : null),
+				detail: forwarded?.detail ?? null,
+				tokens: forwarded?.tokens ?? 0,
+				model: defaultModel ?? null,
+			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json(
