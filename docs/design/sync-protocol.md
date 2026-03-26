@@ -11,19 +11,21 @@ The `@bound/sync` package implements event-sourced synchronisation between distr
 3. [Request Signing](#request-signing)
 4. [Reducers](#reducers)
 5. [Changesets and Peer Cursors](#changesets-and-peer-cursors)
-6. [Three-Phase Sync Protocol](#three-phase-sync-protocol)
+6. [Four-Phase Sync Protocol](#four-phase-sync-protocol)
 7. [HTTP Endpoints](#http-endpoints)
 8. [Change Log Pruning](#change-log-pruning)
+9. [Relay Transport](#relay-transport)
 
 ---
 
 ## Overview
 
-Bound uses a hub-and-spoke topology. Each spoke instance runs a `SyncClient` that periodically executes a three-phase cycle against its hub:
+Bound uses a hub-and-spoke topology. Each spoke instance runs a `SyncClient` that periodically executes a four-phase cycle against its hub:
 
 1. **Push** — the spoke serialises every change log entry the hub has not yet seen and POSTs it to `/sync/push`.
 2. **Pull** — the spoke requests all entries the hub holds that the spoke has not yet seen via `/sync/pull`.
 3. **Ack** — the spoke confirms the highest sequence number it received via `/sync/ack`, allowing the hub to eventually prune its change log.
+4. **Relay** — the spoke exchanges pending `relay_outbox` messages with the hub and receives any `relay_inbox` messages the hub has routed to it. Relay failure is non-fatal; the sync cycle still succeeds.
 
 Every HTTP request in the sync protocol is signed with the caller's Ed25519 private key. The receiving side authenticates the request by verifying the signature against the caller's public key, which it retrieves from a shared `keyring` configuration file. This means no pre-shared passwords or TLS client certificates are required — identity is entirely key-based.
 
@@ -351,7 +353,7 @@ Returns `MIN(last_received)` across all rows in `sync_state`, or `0` if the tabl
 
 ---
 
-## Three-Phase Sync Protocol
+## Four-Phase Sync Protocol
 
 **Source:** `packages/sync/src/sync-loop.ts`
 
@@ -598,3 +600,127 @@ Unlike the sync loop, the pruning loop does not apply exponential backoff — pr
 ### Safety Invariant
 
 The combination of `getMinConfirmedSeq` (taking the minimum across all peers) and the ack mechanism ensures that an entry is only deleted after every registered peer has sent an `/sync/ack` confirming a sequence number at or above that entry's `seq`. A peer that falls behind — for example due to an extended outage — will hold the minimum at a low value and effectively block pruning until it catches up.
+
+---
+
+## Relay Transport
+
+The relay phase (phase 4 of the sync cycle) provides store-and-forward delivery for cross-host operations: MCP tool calls, remote LLM inference, and loop delegation.
+
+### Tables
+
+Three local-only tables (not synced via change_log):
+
+| Table | Purpose |
+|-------|---------|
+| `relay_outbox` | Messages the local host wants to send to a specific remote host |
+| `relay_inbox` | Messages received from remote hosts, awaiting processing |
+| `relay_cycles` | Per-cycle metrics (latency, success, kind) |
+
+All three tables carry a nullable `stream_id TEXT` column for correlating streaming inference chunks. The outbox and inbox both have partial indexes on `(stream_id)` where `stream_id IS NOT NULL`.
+
+CRUD helpers (from `@bound/core`): `writeOutbox`, `insertInbox`, `readUnprocessed`, `markProcessed`, `readUndelivered`, `markDelivered`, `readInboxByStreamId`.
+
+### Relay Kinds
+
+**Request kinds** (requester → target):
+
+| Kind | Purpose |
+|------|---------|
+| `tool_call` | Execute an MCP tool on the target |
+| `resource_read` | Read an MCP resource on the target |
+| `prompt_invoke` | Invoke an MCP prompt on the target |
+| `cache_warm` | Warm cache on the target |
+| `cancel` | Cancel an active inference stream or delegated loop (carries `ref_id`) |
+| `inference` | Request LLM inference from the target (streaming response) |
+| `process` | Delegate entire agent loop to the target |
+
+**Response kinds** (target → requester):
+
+| Kind | Purpose |
+|------|---------|
+| `result` | Tool call / resource read result |
+| `error` | Error response for any request kind |
+| `stream_chunk` | One batch of `StreamChunk` objects from a remote inference stream |
+| `stream_end` | Final batch; closes the inference stream |
+| `status_forward` | Agent loop state update from a delegated loop |
+
+### Hub Routing
+
+The hub acts as a relay router. When a spoke pushes relay outbox entries to the hub (in the relay phase), the hub:
+
+1. Identifies the target spoke from `target_site_id`.
+2. Writes the entry to a pending-outbox record in its own database.
+3. When the target spoke syncs, the hub includes the pending entries in the relay response.
+4. The target spoke inserts them into its `relay_inbox`.
+
+`stream_id` is propagated through all three hub routing paths (inline construction, `writeOutbox`, and pending-for-requester mapping), so `readInboxByStreamId()` on the requester always finds its chunks.
+
+**Eager push:** The hub can proactively push relay messages to spokes with a known `sync_url` (skipping the wait for the next sync cycle). Controlled by `sync.relay.eager_push` config. Falls back to sync-based delivery if the spoke is unreachable. Reachability is tracked by `ReachabilityTracker` (3 consecutive failures → unreachable; recovered on success).
+
+### Inference Relay Flow
+
+```
+Requester                        Hub                       Target
+    |                             |                            |
+    | writeOutbox(inference)      |                            |
+    | emit sync:trigger           |                            |
+    |                             |                            |
+    |----- relay phase push ----->|                            |
+    |                             |------ relay response ----->|
+    |                             |     (routes to target)     |
+    |                             |                            |-- insertInbox(inference)
+    |                             |                            |-- RelayProcessor.executeInference()
+    |                             |                            |   - calls local LLMBackend.chat()
+    |                             |                            |   - flushes at 200ms or 4KB
+    |                             |                            |   writes stream_chunk / stream_end
+    |                             |                            |
+    |                             |<------ relay phase push ---|
+    |<----- relay phase pull -----| (routes to requester)      |
+    |                             |                            |
+    | RELAY_STREAM polling        |                            |
+    | readInboxByStreamId()       |                            |
+    | yields StreamChunks         |                            |
+```
+
+The `InferenceRequestPayload` (defined in `@bound/llm`) carries:
+
+```typescript
+interface InferenceRequestPayload {
+  model: string;
+  messages: LLMMessage[];
+  tools?: ToolDefinition[];
+  system?: string;
+  max_tokens?: number;
+  temperature?: number;
+  cache_breakpoints?: number[];
+  timeout_ms: number;
+  messages_file_ref?: string;  // set when messages were written to files table (>2MB payloads)
+}
+```
+
+`stream_chunk` and `stream_end` payloads:
+
+```typescript
+interface StreamChunkPayload {
+  chunks: StreamChunk[];  // one or more StreamChunk objects
+  seq: number;            // monotonic, starting at 0
+}
+```
+
+### Relay Metrics
+
+`relay_cycles` records one row per relay operation:
+
+| Column | Description |
+|--------|-------------|
+| `direction` | `"inbound"` (target receiving) or `"outbound"` (requester sending) |
+| `peer_site_id` | Site ID of the other party |
+| `kind` | Relay kind (e.g., `"inference"`, `"stream_chunk"`, `"stream_end"`) |
+| `delivery_method` | `"sync"` or `"eager_push"` |
+| `latency_ms` | Milliseconds from request to response (null for intermediate chunks) |
+| `expired` | 1 if the entry was expired without execution |
+| `success` | 1 if the operation completed successfully |
+| `stream_id` | Stream ID for inference operations |
+
+The `turns` table also records relay metrics per agent turn: `relay_target` (host_name of the inference provider) and `relay_latency_ms` (time to first chunk). Both are NULL for local inference.

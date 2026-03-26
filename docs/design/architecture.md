@@ -109,11 +109,39 @@ Spoke                              Hub
   |-- POST /sync/ack [signed] -->  |  (spoke confirms receipt)
   |                                |-- update peer cursor
   |                                |
+  |-- POST /sync/relay [signed]--> |  (exchange relay_outbox/inbox messages)
+  | <-- relay response ------------|
+  |                                |
 ```
+
+### Relay Transport (Inference & Tool Calls)
+
+Cross-host operations (MCP tool calls, LLM inference, loop delegation) use a store-and-forward relay piggybacked on the sync cycle:
+
+```
+Requester                          Hub                         Target
+    |                               |                              |
+    |-- writes relay_outbox ------->|                              |
+    |                               |                              |
+    |-- syncCycle() relay phase --> |                              |
+    |                               |-- routes to target inbox --> |
+    |                               |                              |-- RelayProcessor processes
+    |                               |                              |-- writes relay_outbox (response)
+    |                               |                              |
+    |                               | <-- syncCycle() relay phase--|
+    |                               |-- routes to requester inbox  |
+    |                               |                              |
+    | <-- syncCycle() relay phase---|                              |
+    |-- reads relay_inbox           |                              |
+```
+
+Relay message kinds:
+- **Request kinds:** `tool_call`, `resource_read`, `prompt_invoke`, `cache_warm`, `cancel`, `inference`, `process`
+- **Response kinds:** `result`, `error`, `stream_chunk`, `stream_end`, `status_forward`
 
 ## Database Schema
 
-13 STRICT tables in WAL mode:
+16 STRICT tables in WAL mode:
 
 | Table | Purpose | Reducer |
 |-------|---------|---------|
@@ -123,15 +151,20 @@ Spoke                              Hub
 | `semantic_memory` | Key-value persistent memory | LWW |
 | `tasks` | Scheduled/deferred/event-driven tasks | LWW |
 | `files` | Virtual filesystem contents | LWW |
-| `hosts` | Known hosts in the cluster | LWW |
+| `hosts` | Known hosts in the cluster (includes `models` JSON array) | LWW |
 | `overlay_index` | Content-addressed overlay file index | LWW |
 | `cluster_config` | Cluster-wide settings (hub, emergency_stop) | LWW |
 | `advisories` | Cost/frequency/model advisories | LWW |
 | `change_log` | Event-sourced outbox for sync | Local only |
 | `sync_state` | Per-peer replication cursors | Local only |
 | `host_meta` | Local host identity (site_id, keys) | Local only |
+| `relay_outbox` | Pending relay messages to send to other hosts | Local only |
+| `relay_inbox` | Received relay messages awaiting processing | Local only |
+| `relay_cycles` | Per-cycle relay metrics (latency, success) | Local only |
 
-Every write to a synced table also writes to `change_log` via the transactional outbox pattern, ensuring atomic event production.
+Every write to a synced table also writes to `change_log` via the transactional outbox pattern, ensuring atomic event production. The three relay tables are local-only and use dedicated CRUD helpers (`writeOutbox`, `insertInbox`, `readUnprocessed`, `markProcessed`).
+
+The `relay_outbox` and `relay_inbox` tables carry a nullable `stream_id TEXT` column used to correlate streaming inference chunks.
 
 ## Key Design Decisions
 
@@ -145,7 +178,13 @@ Every write to a synced table also writes to `change_log` via the transactional 
 
 **Context assembly pipeline.** 8 stages transform raw message history into an optimized LLM prompt, handling purge substitution, tool pair sanitization, budget validation, persona injection, and stable orientation (available commands, model info, host identity).
 
-**MCP integration via @modelcontextprotocol/sdk.** Supports stdio and Streamable HTTP transports. Tools from connected servers are auto-generated as agent commands. Cross-host tool proxying via signed HTTP at `POST /api/mcp-proxy`.
+**MCP integration via @modelcontextprotocol/sdk.** Supports stdio and Streamable HTTP transports. Tools from connected servers are auto-generated as agent commands. Cross-host tool proxying via the relay transport (`tool_call` relay kind).
+
+**Inference relay over store-and-forward.** Remote LLM inference uses the sync relay transport: the requester writes an `inference` relay message; the target streams `stream_chunk`/`stream_end` responses back via the same relay. The agent loop enters `RELAY_STREAM` state during remote inference, polling `relay_inbox` for chunks. Chunks carry a monotonic `seq` field for reordering. Failover retries on the next eligible host after a 120s per-host timeout.
+
+**Cluster-wide model resolution.** Each host advertises its available model IDs in `hosts.models`. `resolveModel()` checks local backends first, then queries remote hosts. `ModelSelector` in the web UI shows all cluster models with relay/offline annotations.
+
+**Loop delegation.** When a message targets a remote model on a single host that also serves ≥50% of the thread's recent tool calls, the originator writes a `process` relay message instead of running a local `AgentLoop`. The target's `RelayProcessor` starts the loop, forwards status via `status_forward`, and the response syncs back.
 
 **Ed25519 cryptographic identity.** Each host's site_id is derived from its Ed25519 public key (first 16 bytes of SHA-256, hex). Keypair stored at `data/host.key` (mode 0600) and `data/host.pub`.
 

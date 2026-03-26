@@ -34,6 +34,8 @@ type AgentLoopState =
   | "LLM_CALL"
   | "PARSE_RESPONSE"
   | "TOOL_EXECUTE"
+  | "RELAY_WAIT"
+  | "RELAY_STREAM"
   | "TOOL_PERSIST"
   | "RESPONSE_PERSIST"
   | "FS_PERSIST"
@@ -46,10 +48,12 @@ type AgentLoopState =
 |---|---|
 | `IDLE` | Initial state before run begins; also the terminal state after a successful run. |
 | `HYDRATE_FS` | Loads workspace files into the sandbox before the LLM call. |
-| `ASSEMBLE_CONTEXT` | Runs the 8-stage context assembly pipeline (see below). |
-| `LLM_CALL` | Streams tokens from the LLM backend, accumulating `StreamChunk` objects. |
+| `ASSEMBLE_CONTEXT` | Runs the 8-stage context assembly pipeline (see below). Model resolution also happens here. |
+| `LLM_CALL` | Streams tokens from the LLM backend (local) or enters `RELAY_STREAM` (remote). |
 | `PARSE_RESPONSE` | Iterates accumulated chunks to extract text content and detect tool-use starts. |
-| `TOOL_EXECUTE` | Dispatches tool calls via the sandbox. |
+| `TOOL_EXECUTE` | Dispatches tool calls via the sandbox. Remote MCP tools enter `RELAY_WAIT`. |
+| `RELAY_WAIT` | Polls `relay_inbox` for a tool result from a remote host (500ms intervals, 30s timeout per host, automatic failover). |
+| `RELAY_STREAM` | Polls `relay_inbox` for streaming inference chunks from a remote host. Reorders by `seq`, handles gaps, fails over after 120s per host. |
 | `TOOL_PERSIST` | Writes tool call and tool result messages to the database. |
 | `RESPONSE_PERSIST` | Persists the assembled assistant message to `messages`. |
 | `FS_PERSIST` | Flushes workspace file mutations back to the database. |
@@ -62,9 +66,9 @@ type AgentLoopState =
 ```typescript
 interface AgentLoopConfig {
   threadId: string;
-  taskId?: string;
+  taskId?: string;   // "delegated-{id}" prefix blocks confirmed MCP tools on delegated loops
   userId: string;
-  modelId?: string;
+  modelId?: string;  // resolved cluster-wide via resolveModel(); routes to RELAY_STREAM if remote
   abortSignal?: AbortSignal;
 }
 
@@ -83,18 +87,24 @@ interface AgentLoopResult {
 ```
 IDLE
   -> HYDRATE_FS       (workspace hydration)
-  -> ASSEMBLE_CONTEXT (8-stage pipeline)
-  -> LLM_CALL         (streaming)
+  -> ASSEMBLE_CONTEXT (8-stage pipeline + model resolution)
+  -> LLM_CALL         (local: streams from LLMBackend)
+     |                (remote: enters RELAY_STREAM, polls relay_inbox for chunks)
      [on error] -> ERROR_PERSIST -> return with error field
   -> PARSE_RESPONSE
-  -> TOOL_EXECUTE     (if tool use detected)
+  -> TOOL_EXECUTE     (local tools: sandbox dispatch)
+     |                (remote MCP tools: enters RELAY_WAIT, polls relay_inbox for result)
   -> RESPONSE_PERSIST (writes assistant message row)
   -> FS_PERSIST       (workspace flush)
   -> QUEUE_CHECK
   -> IDLE             (return result)
 ```
 
-During `LLM_CALL`, each `StreamChunk` is collected. If `this.aborted` is set at any point during streaming, the loop breaks out of the chunk iterator early (no error is raised; the partial response is still processed).
+During `LLM_CALL`, model resolution determines the execution path:
+- **Local model** — `StreamChunk`s collected directly from the local `LLMBackend.chat()` call.
+- **Remote model** — loop enters `RELAY_STREAM`: writes an `inference` outbox entry with a UUID `stream_id`, then polls `readInboxByStreamId()` at 500ms intervals for `stream_chunk` and `stream_end` inbox entries. Chunks are reordered by `seq`. Gaps are skipped after 2 polling cycles with a warning. Per-host timeout is 120s; the loop fails over to the next eligible host on timeout.
+
+If `this.aborted` is set during streaming, `RELAY_STREAM` writes a `cancel` outbox entry (with `ref_id` pointing to the original `inference` entry) and exits cleanly.
 
 If the LLM backend throws, the loop transitions to `ERROR_PERSIST`, writes an `alert`-role message to `messages` with the error text, and returns immediately with the error populated in the result.
 
@@ -104,7 +114,7 @@ Any other unhandled error caught by the outer `try/catch` also transitions to `E
 
 ```typescript
 const ac = new AbortController();
-const loop = new AgentLoop(ctx, sandbox, llm, {
+const loop = new AgentLoop(ctx, sandbox, modelRouter, {
   threadId: "t-123",
   userId:   "u-456",
   abortSignal: ac.signal,
@@ -960,3 +970,87 @@ if (lastThread && lastThread !== currentThreadId) {
 ```
 
 `getFileThreadNotificationMessage` returns a human-readable warning string intended to be surfaced to the user or appended to the volatile context before an LLM call.
+
+---
+
+## Relay Transport
+
+The agent package contains all requester-side and target-side relay logic for cross-host operations.
+
+### Model Resolution
+
+**Source:** `packages/agent/src/model-resolution.ts`
+
+`resolveModel(modelId, modelRouter, db, localSiteId)` returns a `ModelResolution` discriminated union:
+
+```typescript
+type ModelResolution =
+  | { kind: "local";  backend: LLMBackend; modelId: string }
+  | { kind: "remote"; hosts: EligibleHost[]; modelId: string }
+  | { kind: "error";  error: string };
+```
+
+Resolution order: local backends first (via `modelRouter.tryGetBackend()`), then remote hosts (via `findEligibleHostsByModel()`). If `modelId` is undefined, the router's default ID is used.
+
+`findEligibleHostsByModel(db, modelId, localSiteId)` queries the `hosts` table for hosts whose `models` JSON column contains the requested model ID. Hosts with `online_at` older than 5 minutes are excluded. Results are sorted by `online_at` descending (most recently seen first).
+
+### `RELAY_STREAM` — Remote Inference
+
+**Source:** `packages/agent/src/agent-loop.ts`, method `relayStream()`
+
+When `resolveModel()` returns `kind: "remote"`, `LLM_CALL` constructs an `InferenceRequestPayload` and enters `RELAY_STREAM`:
+
+1. Writes an `inference` outbox entry with a UUID `stream_id`.
+2. Emits `sync:trigger` to accelerate delivery to the hub.
+3. Polls `readInboxByStreamId(db, streamId)` at 500ms intervals.
+4. Buffers received `stream_chunk` entries by `seq`; yields contiguous chunks in order.
+5. Gaps (missing seq) are skipped after `MAX_GAP_CYCLES = 2` polling cycles with a warning log.
+6. `stream_end` closes the generator.
+7. On abort, writes a `cancel` outbox entry with `ref_id = inference outbox entry ID`.
+8. Per-host timeout: 120s. On timeout, generates a new `stream_id` and retries on the next eligible host.
+9. After the first chunk, records `relay_target` and `relay_latency_ms` on the turn row via `recordTurnRelayMetrics`.
+
+**Large prompts (AC1.9):** If the serialized `InferenceRequestPayload` exceeds 2MB, the messages array is written to the `files` table (path `cluster/relay/inference-{uuid}.json`) and the payload sets `messages_file_ref` / `messages: []`. The file syncs to all cluster hosts; the target reads it by path.
+
+### `RELAY_WAIT` — Remote Tool Calls
+
+**Source:** `packages/agent/src/agent-loop.ts`, method `relayWait()`
+
+When a tool call targets a remote host (detected via `isRelayRequest()` in the MCP bridge), `TOOL_EXECUTE` enters `RELAY_WAIT`. The loop polls `relay_inbox` for a `result` or `error` response keyed by the outbox entry's `idempotency_key`. Per-host timeout: 30s; failover to next eligible host.
+
+### `RelayProcessor` — Target-Side Execution
+
+**Source:** `packages/agent/src/relay-processor.ts`
+
+`RelayProcessor` runs on the target host, polling `relay_inbox` for unprocessed entries. It handles:
+
+| Kind | Handler | Behaviour |
+|------|---------|-----------|
+| `tool_call` | `executeMcpTool()` | Calls local MCP server, writes `result`/`error` |
+| `resource_read` | `executeMcpResource()` | Reads MCP resource |
+| `prompt_invoke` | `executeMcpPrompt()` | Invokes MCP prompt |
+| `inference` | `executeInference()` | Runs local `LLMBackend.chat()`, writes streaming `stream_chunk`/`stream_end` outbox entries |
+| `process` | `executeProcess()` | Starts a full `AgentLoop` on the delegated thread, emits `status_forward` outbox entries |
+| `status_forward` | (local event) | Emits `status:forward` event so the web server can serve forwarded status |
+| `cancel` | (first-pass) | Aborts active inference stream via stored `AbortController` |
+
+**`executeInference` buffering:** Chunks are flushed to outbox at 200ms timer OR 4KB buffer threshold, whichever fires first. The final flush is always `stream_end`. Each flush records a `relay_cycles` row. Cancel aborts the `for await` loop via `AbortController.signal.aborted` and writes an `error` response.
+
+**Constructor:** `new RelayProcessor(db, siteId, mcpClients, modelRouter, keyringSiteIds, logger, eventBus, appCtx?, relayConfig?)`
+
+### Loop Delegation
+
+**Source:** `packages/agent/src/delegation.ts`, `packages/cli/src/commands/start.ts`
+
+Before starting a local `AgentLoop`, `start.ts` checks `getDelegationTarget()` which returns a target `EligibleHost` when all AC6.1 conditions hold:
+
+1. `resolveModel()` returns `kind: "remote"` for the thread's model.
+2. Exactly one host has the model.
+3. That host has ≥50% of the thread's 20 most-recent tool calls in its `mcp_tools`.
+4. Vacuous match: threads with no tool history also delegate (condition 3 vacuously true).
+
+When delegation fires, `dispatchDelegation()` writes a `process` outbox entry targeting the host and polls for a new assistant message to appear in the thread (indicating the delegated loop finished and synced back). The originator tracks the delegation in `activeDelegations` for cancel routing: cancel emits `agent:cancel` locally AND writes a `cancel` relay message with `ref_id` matching the `process` outbox entry ID.
+
+**Status forwarding:** While the delegated loop runs on the target, `executeProcess()` writes `status_forward` outbox entries on each state change. These sync back and are received by the originating host's `RelayProcessor`, which emits `status:forward` events cached in `statusForwardCache`. The web server serves this from `/api/threads/{id}/status`.
+
+**Confirmed tools on delegated loops:** `AgentLoop` instances created by `executeProcess()` use `taskId = "delegated-{id}"`, which does NOT start with `"interactive-"`. The MCP bridge blocks confirmed-tool prompts for non-interactive task IDs, so the delegated agent receives block errors instead of asking the user for confirmation.
