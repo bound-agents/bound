@@ -110,6 +110,9 @@ export class AgentLoop {
 				const chunks: StreamChunk[] = [];
 				const SILENCE_TIMEOUT_MS = 120_000;
 				let currentTurnId: number | null = null;
+				// AC4.1: Capture relay metadata (host name and first chunk latency) during relayStream()
+				// so we can record metrics AFTER recordTurn() sets currentTurnId
+				const relayMetadataRef: { hostName?: string; firstChunkLatencyMs?: number } = {};
 
 				try {
 					// Extract system messages for drivers that handle them separately (e.g., Bedrock, Anthropic)
@@ -179,7 +182,7 @@ export class AgentLoop {
 						for await (const chunk of this.relayStream(
 							inferencePayload,
 							resolution.hosts,
-							currentTurnId,
+							relayMetadataRef,
 						)) {
 							if (this.aborted) break;
 							chunks.push(chunk);
@@ -244,6 +247,15 @@ export class AgentLoop {
 					});
 				} catch {
 					// Non-fatal — don't break the loop over metrics
+				}
+
+				// AC4.1: Record relay metrics if this was a remote inference
+				if (currentTurnId !== null && relayMetadataRef.hostName !== undefined && relayMetadataRef.firstChunkLatencyMs !== undefined) {
+					try {
+						recordTurnRelayMetrics(this.ctx.db, currentTurnId, relayMetadataRef.hostName, relayMetadataRef.firstChunkLatencyMs);
+					} catch {
+						// Non-fatal
+					}
 				}
 
 				if (parsed.toolCalls.length > 0) {
@@ -648,10 +660,11 @@ export class AgentLoop {
 	private async *relayStream(
 		payload: InferenceRequestPayload,
 		eligibleHosts: EligibleHost[],
-		currentTurnId: number | null,
+		relayMetadataRef?: { hostName?: string; firstChunkLatencyMs?: number },
+		options?: { pollIntervalMs?: number; perHostTimeoutMs?: number },
 	): AsyncGenerator<StreamChunk> {
-		const POLL_INTERVAL_MS = 500;
-		const PER_HOST_TIMEOUT_MS = 120_000; // AC1.6: inference_timeout_ms default
+		const POLL_INTERVAL_MS = options?.pollIntervalMs ?? 500;
+		const PER_HOST_TIMEOUT_MS = options?.perHostTimeoutMs ?? 120_000; // AC1.6: inference_timeout_ms default
 		const MAX_GAP_CYCLES = 2;
 		const previousState = this.state;
 		this.state = "RELAY_STREAM";
@@ -768,21 +781,14 @@ export class AgentLoop {
 						nextExpectedSeq++;
 
 						for (const chunk of chunkPayload.chunks) {
-							// AC4.1: Record relay_target and relay_latency_ms on first chunk
+							// AC4.1: Capture relay_target and relay_latency_ms on first chunk for later recording
 							if (!firstChunkReceived) {
 								firstChunkReceived = true;
 								firstChunkLatencyMs = Date.now() - hostStartTime; // first-chunk latency
-								if (currentTurnId !== null) {
-									try {
-										recordTurnRelayMetrics(
-											this.ctx.db,
-											currentTurnId,
-											host.host_name,
-											firstChunkLatencyMs,
-										);
-									} catch {
-										// Non-fatal
-									}
+								// Populate the metadata ref so it can be recorded after currentTurnId is set
+								if (relayMetadataRef) {
+									relayMetadataRef.hostName = host.host_name;
+									relayMetadataRef.firstChunkLatencyMs = firstChunkLatencyMs;
 								}
 								this.ctx.logger.info("RELAY_STREAM: first chunk", {
 									host: host.host_name,
