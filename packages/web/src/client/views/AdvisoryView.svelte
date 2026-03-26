@@ -24,7 +24,7 @@ let loading = $state(true);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let expandedId = $state<string | null>(null);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
-const filterStatus = $state("");
+let filterStatus = $state("");
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let actionInProgress = $state<string | null>(null);
 

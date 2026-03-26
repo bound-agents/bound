@@ -2,7 +2,7 @@
 import { onDestroy, onMount } from "svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import MessageBubble from "../components/MessageBubble.svelte";
-import { activeModel } from "../components/ModelSelector.svelte";
+import { modelStore } from "../lib/modelStore";
 import { api } from "../lib/api";
 import type { Thread } from "../lib/api";
 import { navigateTo } from "../lib/router";
@@ -22,7 +22,7 @@ let waiting = $state(false);
 let waitingSinceMessageCount = $state(0);
 let agentActive = $state(false);
 let agentState = $state<string | null>(null);
-const fileInput: HTMLInputElement | null = $state(null);
+let fileInput = $state<HTMLInputElement | null>(null);
 let uploadStatus = $state<string | null>(null);
 let thread = $state<Thread | null>(null);
 
@@ -116,7 +116,7 @@ async function handleSendMessage(): Promise<void> {
 
 	sending = true;
 	try {
-		const newMessage = await api.sendMessage(threadId, inputText.trim(), activeModel || undefined);
+		const newMessage = await api.sendMessage(threadId, inputText.trim(), modelStore.getModel() || undefined);
 		messages = [...messages, newMessage];
 		inputText = "";
 		waitingSinceMessageCount = messages.length;

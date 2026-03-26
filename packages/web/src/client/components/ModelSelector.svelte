@@ -1,27 +1,26 @@
-<script module lang="ts">
-// Module-level selected model so message-sending code can reference it
-export const activeModel = "";
-</script>
-
 <script lang="ts">
 import { onMount } from "svelte";
+import { modelStore } from "../lib/modelStore";
 
-interface ModelInfo {
+interface ClusterModelInfo {
 	id: string;
 	provider: string;
+	host: string;
+	via: "local" | "relay";
+	status: "local" | "online" | "offline?";
 }
 
 let selectedModel = $state("");
-let models = $state<ModelInfo[]>([]);
+let models = $state<ClusterModelInfo[]>([]);
 
 onMount(async () => {
 	try {
 		const res = await fetch("/api/status/models");
 		if (res.ok) {
-			const data = (await res.json()) as { models: ModelInfo[]; default: string };
+			const data = (await res.json()) as { models: ClusterModelInfo[]; default: string };
 			models = data.models;
 			selectedModel = data.default;
-			activeModel = data.default;
+			modelStore.setModel(data.default);
 		}
 	} catch (error) {
 		console.error("Failed to load models:", error);
@@ -29,7 +28,9 @@ onMount(async () => {
 });
 
 function handleChange(): void {
-	activeModel = selectedModel;
+	// Extract model ID (strip @host suffix if present)
+	const modelId = selectedModel.includes("@") ? selectedModel.split("@")[0] : selectedModel;
+	modelStore.setModel(modelId);
 }
 </script>
 
@@ -42,7 +43,16 @@ function handleChange(): void {
 	</label>
 	<select id="model" aria-label="Model" bind:value={selectedModel} onchange={handleChange}>
 		{#each models as model}
-			<option value={model.id}>{model.id}</option>
+			<option
+				value={model.id + "@" + model.host}
+				class:relay={model.via === "relay"}
+				class:stale={model.status === "offline?"}
+			>
+				{model.id}
+				{#if model.via === "relay"}
+					({model.host}{model.status === "offline?" ? " · offline?" : " · via relay"})
+				{/if}
+			</option>
 		{/each}
 	</select>
 </div>
@@ -80,5 +90,14 @@ function handleChange(): void {
 	select:focus {
 		outline: none;
 		border-color: var(--line-3);
+	}
+
+	option.relay {
+		color: var(--text-muted);
+	}
+
+	option.stale {
+		color: var(--text-muted);
+		font-style: italic;
 	}
 </style>
