@@ -1,28 +1,33 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { markProcessed, readUnprocessed, recordRelayCycle, writeOutbox } from "@bound/core";
+import {
+	type AppContext,
+	markProcessed,
+	readUnprocessed,
+	recordRelayCycle,
+	writeOutbox,
+} from "@bound/core";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
 import type { ModelRouter } from "@bound/llm";
 import type {
 	CacheWarmPayload,
 	ErrorPayload,
 	Logger,
+	Message,
+	ProcessPayload,
 	PromptInvokePayload,
 	RelayConfig,
 	RelayInboxEntry,
 	RelayOutboxEntry,
 	ResourceReadPayload,
 	ResultPayload,
+	StatusForwardPayload,
 	ToolCallPayload,
 	TypedEventEmitter,
-	ProcessPayload,
-	StatusForwardPayload,
 } from "@bound/shared";
-import type { MCPClient } from "./mcp-client.js";
-import type { AppContext } from "@bound/core";
-import type { Message } from "@bound/shared";
 import { AgentLoop } from "./agent-loop.js";
+import type { MCPClient } from "./mcp-client.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -46,6 +51,7 @@ export class RelayProcessor {
 		private keyringSiteIds: Set<string>,
 		private logger: Logger,
 		private eventBus: TypedEventEmitter,
+		private appCtx: AppContext | null = null,
 		private relayConfig?: RelayConfig,
 	) {}
 
@@ -760,10 +766,7 @@ export class RelayProcessor {
 		}
 	}
 
-	private async executeProcess(
-		entry: RelayInboxEntry,
-		payload: ProcessPayload,
-	): Promise<void> {
+	private async executeProcess(entry: RelayInboxEntry, payload: ProcessPayload): Promise<void> {
 		if (!this.modelRouter) {
 			this.writeResponse(
 				entry,
@@ -787,10 +790,22 @@ export class RelayProcessor {
 			return;
 		}
 
-		// For the delegated AgentLoop, we'd need the full AppContext. For now, emit error.
-		// The plan indicates we'd need to pass AppContext to RelayProcessor constructor
-		// to support delegated loops on the processing side.
-		// For now, emit a stub status to acknowledge receipt.
+		// For the delegated AgentLoop, we need the full AppContext passed to RelayProcessor
+		if (!this.appCtx) {
+			this.writeResponse(
+				entry,
+				"error",
+				JSON.stringify({
+					error: "AppContext not available for delegated loop execution",
+					retriable: false,
+				}),
+			);
+			return;
+		}
+
+		const delegatedCtx = this.appCtx;
+
+		// Emit status_forward on each state change
 		const emitStatusForward = (status: string, detail: string | null, tokens: number): void => {
 			const fwdPayload: StatusForwardPayload = {
 				thread_id: payload.thread_id,
@@ -821,17 +836,34 @@ export class RelayProcessor {
 		emitStatusForward("thinking", null, 0);
 
 		try {
-			// Stub implementation for now - would create AgentLoop with full AppContext
-			// This requires architectural changes to pass AppContext through
+			const agentLoop = new AgentLoop(
+				delegatedCtx,
+				{
+					/* sandbox disabled for delegated loop */
+				} as object,
+				this.modelRouter,
+				{
+					threadId: payload.thread_id,
+					userId: payload.user_id,
+					taskId: `delegated-${entry.id}`, // taskId starts with "delegated-" → confirmed tools blocked
+				},
+			);
+
+			const result = await agentLoop.run();
 			emitStatusForward("idle", null, 0);
-			this.writeResponse(entry, "result", JSON.stringify({ success: true }));
+
+			if (result.error) {
+				this.writeResponse(
+					entry,
+					"error",
+					JSON.stringify({ error: result.error, retriable: false }),
+				);
+			} else {
+				this.writeResponse(entry, "result", JSON.stringify({ success: true }));
+			}
 		} catch (err) {
 			emitStatusForward("idle", null, 0);
-			this.writeResponse(
-				entry,
-				"error",
-				JSON.stringify({ error: String(err), retriable: false }),
-			);
+			this.writeResponse(entry, "error", JSON.stringify({ error: String(err), retriable: false }));
 		}
 	}
 

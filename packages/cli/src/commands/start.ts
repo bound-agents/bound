@@ -458,6 +458,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			new Set(Object.keys(keyring.hosts)),
 			appContext.logger,
 			appContext.eventBus,
+			appContext,
 			relayConfig,
 		);
 		relayProcessorHandle = relayProcessor.start();

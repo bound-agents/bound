@@ -102,7 +102,7 @@ describe("RelayProcessor - executeInference", () => {
 			mockRouter,
 			new Set(["requester-site"]),
 			createMockLogger(),
-		createMockEventBus(),
+			createMockEventBus(),
 		);
 
 		const now = new Date();
@@ -202,7 +202,7 @@ describe("RelayProcessor - executeInference", () => {
 			mockRouter,
 			new Set(["requester-site"]),
 			createMockLogger(),
-		createMockEventBus(),
+			createMockEventBus(),
 		);
 
 		const now = new Date();
@@ -272,7 +272,7 @@ describe("RelayProcessor - executeInference", () => {
 			mockRouter,
 			new Set(["requester-site"]),
 			createMockLogger(),
-		createMockEventBus(),
+			createMockEventBus(),
 		);
 
 		const now = new Date();
@@ -337,7 +337,7 @@ describe("RelayProcessor - executeInference", () => {
 			mockRouter,
 			new Set(["requester-site"]),
 			createMockLogger(),
-		createMockEventBus(),
+			createMockEventBus(),
 		);
 
 		const now = new Date();
@@ -418,7 +418,7 @@ describe("RelayProcessor - executeInference", () => {
 			mockRouter,
 			new Set(["requester-site"]),
 			createMockLogger(),
-		createMockEventBus(),
+			createMockEventBus(),
 		);
 
 		const now = new Date();
@@ -517,7 +517,7 @@ describe("RelayProcessor - executeInference", () => {
 			mockRouter,
 			new Set(["requester-site"]),
 			createMockLogger(),
-		createMockEventBus(),
+			createMockEventBus(),
 		);
 
 		const now = new Date();
@@ -609,7 +609,7 @@ describe("RelayProcessor - executeInference", () => {
 			mockRouter,
 			new Set(["requester-site"]),
 			createMockLogger(),
-		createMockEventBus(),
+			createMockEventBus(),
 		);
 
 		const now = new Date();

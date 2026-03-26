@@ -22,8 +22,13 @@ export function registerRoutes(
 	eventBus: TypedEventEmitter,
 	config: RoutesConfig = {},
 ) {
-	const { modelsConfig, hostName = "unknown", siteId = "", statusForwardCache, activeDelegations } =
-		config;
+	const {
+		modelsConfig,
+		hostName = "unknown",
+		siteId = "",
+		statusForwardCache,
+		activeDelegations,
+	} = config;
 
 	return {
 		threads: createThreadsRoutes(db, modelsConfig?.default, statusForwardCache),
