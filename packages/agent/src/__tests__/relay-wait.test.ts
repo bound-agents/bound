@@ -401,7 +401,8 @@ describe("RELAY_WAIT polling and failover logic", () => {
 
 		// Track cancel entry and sync:trigger event
 		let cancelEntryWritten = false;
-		let cancelEntryDetails: { kind: string; ref_id: string | null; target_site_id: string } | null = null;
+		let cancelEntryDetails: { kind: string; ref_id: string | null; target_site_id: string } | null =
+			null;
 		let syncTriggerEmitted = false;
 		let syncTriggerReason = "";
 

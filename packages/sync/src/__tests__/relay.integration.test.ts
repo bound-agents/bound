@@ -615,7 +615,7 @@ describe("relay integration tests", () => {
 			expect(syncResult?.ok).toBe(true);
 
 			// Verify spoke1's outbox is empty (delivered)
-			let outbox1 = readUndelivered(spoke1.db);
+			const outbox1 = readUndelivered(spoke1.db);
 			expect(outbox1).toHaveLength(0);
 
 			// Verify hub's outbox has the entry with stream_id preserved

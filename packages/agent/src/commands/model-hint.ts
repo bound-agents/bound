@@ -1,8 +1,8 @@
 import { formatError } from "@bound/shared";
 
 import { updateRow } from "@bound/core";
-import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 import type { ModelRouter } from "@bound/llm";
+import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 import { resolveModel } from "../model-resolution";
 
 export const modelHint: CommandDefinition = {

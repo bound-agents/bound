@@ -43,7 +43,14 @@ describe("Relay Router", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, mcp_tools, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				["remote-1", "Remote Host 1", JSON.stringify(["other-tool"]), 0, new Date().toISOString(), new Date().toISOString()],
+				[
+					"remote-1",
+					"Remote Host 1",
+					JSON.stringify(["other-tool"]),
+					0,
+					new Date().toISOString(),
+					new Date().toISOString(),
+				],
 			);
 
 			const result = findEligibleHosts(db, "nonexistent-tool", "local-site");
@@ -59,7 +66,14 @@ describe("Relay Router", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, mcp_tools, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				["remote-1", "Remote Host 1", JSON.stringify(["remote-tool"]), 0, staleTime, new Date().toISOString()],
+				[
+					"remote-1",
+					"Remote Host 1",
+					JSON.stringify(["remote-tool"]),
+					0,
+					staleTime,
+					new Date().toISOString(),
+				],
 			);
 
 			const result = findEligibleHosts(db, "remote-tool", "local-site");
@@ -118,14 +132,28 @@ describe("Relay Router", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, mcp_tools, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				["older-1", "Older Host", JSON.stringify(["remote-tool"]), 0, olderTime, new Date().toISOString()],
+				[
+					"older-1",
+					"Older Host",
+					JSON.stringify(["remote-tool"]),
+					0,
+					olderTime,
+					new Date().toISOString(),
+				],
 			);
 
 			db.run(
 				`INSERT INTO hosts (
 					site_id, host_name, mcp_tools, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				["recent-1", "Recent Host", JSON.stringify(["remote-tool"]), 0, recentTime, new Date().toISOString()],
+				[
+					"recent-1",
+					"Recent Host",
+					JSON.stringify(["remote-tool"]),
+					0,
+					recentTime,
+					new Date().toISOString(),
+				],
 			);
 
 			const result = findEligibleHosts(db, "remote-tool", "local-site");
@@ -222,7 +250,14 @@ describe("Relay Router", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				["remote-1", "Remote Host 1", JSON.stringify(["claude-opus", "claude-sonnet"]), 0, now, now],
+				[
+					"remote-1",
+					"Remote Host 1",
+					JSON.stringify(["claude-opus", "claude-sonnet"]),
+					0,
+					now,
+					now,
+				],
 			);
 
 			const result = findEligibleHostsByModel(db, "claude-haiku", "local-site");
@@ -238,7 +273,14 @@ describe("Relay Router", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				["remote-1", "Remote Host 1", JSON.stringify(["claude-opus", "claude-sonnet"]), 0, now, now],
+				[
+					"remote-1",
+					"Remote Host 1",
+					JSON.stringify(["claude-opus", "claude-sonnet"]),
+					0,
+					now,
+					now,
+				],
 			);
 
 			const result = findEligibleHostsByModel(db, "claude-opus", "local-site");

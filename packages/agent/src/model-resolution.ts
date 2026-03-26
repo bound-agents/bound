@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { LLMBackend } from "@bound/llm";
-import { ModelRouter } from "@bound/llm";
+import type { ModelRouter } from "@bound/llm";
 
 import { type EligibleHost, findEligibleHostsByModel } from "./relay-router";
 
