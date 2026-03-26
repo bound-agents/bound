@@ -11,7 +11,8 @@ export type AgentLoopState =
 	| "QUEUE_CHECK"
 	| "ERROR_PERSIST"
 	| "AWAIT_POLL"
-	| "RELAY_WAIT";
+	| "RELAY_WAIT"
+	| "RELAY_STREAM";
 
 export interface AgentLoopConfig {
 	threadId: string;

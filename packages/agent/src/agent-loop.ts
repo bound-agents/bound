@@ -5,18 +5,20 @@ import {
 	insertRow,
 	markProcessed,
 	readInboxByRefId,
+	readInboxByStreamId,
 	recordTurn,
 	recordTurnRelayMetrics,
 	writeOutbox,
 } from "@bound/core";
 import type { ModelRouter, StreamChunk } from "@bound/llm";
+import type { InferenceRequestPayload, StreamChunkPayload } from "@bound/llm";
 import { formatError } from "@bound/shared";
 
 import { assembleContext } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
 import { resolveModel } from "./model-resolution";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
-import { createRelayOutboxEntry } from "./relay-router";
+import { type EligibleHost, createRelayOutboxEntry } from "./relay-router";
 import { extractSummaryAndMemories } from "./summary-extraction";
 import type { AgentLoopConfig, AgentLoopResult, AgentLoopState } from "./types";
 
@@ -107,6 +109,7 @@ export class AgentLoop {
 				this.state = "LLM_CALL";
 				const chunks: StreamChunk[] = [];
 				const SILENCE_TIMEOUT_MS = 120_000;
+			let currentTurnId: number | null = null;
 
 				try {
 					// Extract system messages for drivers that handle them separately (e.g., Bedrock, Anthropic)
@@ -128,16 +131,52 @@ export class AgentLoop {
 					}
 
 					if (resolution.kind === "remote") {
-						// Phase 3 will implement RELAY_STREAM here.
-						// For now, fall back to the default local backend so Phase 2 is fully functional.
-						const fallback = this.modelRouter.getDefault();
-						const chatStream = fallback.chat({
+						let inferencePayload: InferenceRequestPayload = {
 							model: resolution.modelId,
 							messages: nonSystemMessages,
-							system: systemPrompt || undefined,
 							tools: this.config.tools,
-						});
-						for await (const chunk of this.withSilenceTimeout(chatStream, SILENCE_TIMEOUT_MS)) {
+							system: systemPrompt || undefined,
+							max_tokens: undefined,
+							temperature: undefined,
+							cache_breakpoints: undefined,
+							timeout_ms: 120_000,
+						};
+						// AC1.9: Large prompt handling — write to synced file if payload >2MB
+						const MAX_INLINE_BYTES = 2 * 1024 * 1024;
+						const serialized = JSON.stringify(inferencePayload);
+						const payloadBytes = new TextEncoder().encode(serialized).byteLength;
+
+						if (payloadBytes > MAX_INLINE_BYTES) {
+							const fileRef = `cluster/relay/inference-${randomUUID()}.json`;
+							const messagesJson = JSON.stringify(inferencePayload.messages);
+							// Write messages to synced files table via insertRow (change-log outbox pattern)
+							insertRow(this.ctx.db, "files", {
+								id: randomUUID(),
+								path: fileRef,
+								content: messagesJson,
+								is_binary: 0,
+								size_bytes: new TextEncoder().encode(messagesJson).byteLength,
+								created_at: new Date().toISOString(),
+								modified_at: new Date().toISOString(),
+								deleted: 0,
+								created_by: this.config.userId,
+								host_origin: this.ctx.hostName,
+							}, this.ctx.siteId);
+							// Trigger sync so the file reaches the target host
+							this.ctx.eventBus.emit("sync:trigger", { reason: "relay-large-prompt" });
+							inferencePayload = {
+								...inferencePayload,
+								messages: [],            // Clear inline messages
+								messages_file_ref: fileRef,
+							};
+						}
+
+
+						for await (const chunk of this.relayStream(
+							inferencePayload,
+							resolution.hosts,
+							currentTurnId,
+						)) {
 							if (this.aborted) break;
 							chunks.push(chunk);
 						}
@@ -188,7 +227,6 @@ export class AgentLoop {
 				const parsed = this.parseResponseChunks(chunks);
 
 				// Record turn metrics for budget tracking
-				let currentTurnId: number | null = null;
 				try {
 					currentTurnId = recordTurn(this.ctx.db, {
 						thread_id: this.config.threadId,
@@ -588,6 +626,207 @@ export class AgentLoop {
 
 			// Wait before next poll
 			await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+		}
+	}
+
+	/**
+	 * Async generator that requests LLM inference from a remote host via the relay transport,
+	 * yielding StreamChunks identical to what a local LLMBackend.chat() would produce.
+	 *
+	 * Mirrors the _relayWaitImpl() pattern but for streaming:
+	 * - One inference outbox entry per host attempt (with unique stream_id per attempt)
+	 * - Polls readInboxByStreamId() for stream_chunk / stream_end entries
+	 * - Reorders chunks by seq, buffers out-of-order arrivals
+	 * - Skips gaps after MAX_GAP_CYCLES polling cycles with a warning
+	 * - Failover on withSilenceTimeout() expiry: new stream_id, next eligible host
+	 * - Cancel writes cancel entry with ref_id pointing to inference outbox entry
+	 */
+	private async *relayStream(
+		payload: InferenceRequestPayload,
+		eligibleHosts: EligibleHost[],
+		currentTurnId: number | null,
+	): AsyncGenerator<StreamChunk> {
+		const POLL_INTERVAL_MS = 500;
+		const PER_HOST_TIMEOUT_MS = 120_000; // AC1.6: inference_timeout_ms default
+		const MAX_GAP_CYCLES = 2;
+		const previousState = this.state;
+		this.state = "RELAY_STREAM";
+
+		try {
+			for (let hostIndex = 0; hostIndex < eligibleHosts.length; hostIndex++) {
+				const host = eligibleHosts[hostIndex];
+				const streamId = randomUUID();
+
+				// Write inference request to outbox
+				const serializedPayload = JSON.stringify(payload);
+				const outboxEntry = createRelayOutboxEntry(
+					host.site_id,
+					"inference",
+					serializedPayload,
+					PER_HOST_TIMEOUT_MS,
+					undefined,  // refId — not used for inference (no idempotency key)
+					undefined,  // idempotencyKey — omitted per spec §3.6
+					streamId,
+				);
+				writeOutbox(this.ctx.db, outboxEntry);
+				this.ctx.eventBus.emit("sync:trigger", { reason: "relay-stream" });
+
+				this.ctx.logger.info("RELAY_STREAM: connecting", {
+					host: host.host_name,
+					model: payload.model,
+					streamId,
+				});
+
+				let firstChunkReceived = false;
+				const hostStartTime = Date.now();  // when we started waiting on this host
+				let lastActivityTime = Date.now(); // updated on each new chunk (for mid-stream silence)
+				let firstChunkLatencyMs: number | null = null;
+				let nextExpectedSeq = 0;
+				// Buffer for out-of-order chunks: seq -> StreamChunkPayload
+				const buffer = new Map<number, StreamChunkPayload>();
+				let gapCyclesWaited = 0;
+				let hostSucceeded = false;
+
+				// Polling loop for this host attempt
+				while (true) {
+					// Check abort/cancel before every poll
+					if (this.aborted) {
+						// AC1.4: send cancel to target
+						const cancelEntry = createRelayOutboxEntry(
+							host.site_id,
+							"cancel",
+							JSON.stringify({}),
+							30_000,
+							outboxEntry.id, // ref_id points to original inference request
+						);
+						try {
+							writeOutbox(this.ctx.db, cancelEntry);
+							this.ctx.eventBus.emit("sync:trigger", { reason: "relay-cancel" });
+						} catch {
+							// Non-fatal if cancel write fails
+						}
+						return;
+					}
+
+					// Check per-host timeout: before first chunk use hostStartTime; after first chunk
+					// use lastActivityTime (mid-stream silence). Both use PER_HOST_TIMEOUT_MS.
+					const now = Date.now();
+					const timeoutSource = firstChunkReceived ? lastActivityTime : hostStartTime;
+					const elapsedMs = now - timeoutSource;
+					if (elapsedMs > PER_HOST_TIMEOUT_MS) {
+						// AC1.5: Failover to next host
+						this.ctx.logger.warn("RELAY_STREAM: timeout, failing over", {
+							host: host.host_name,
+							elapsedMs,
+							nextHostAvailable: hostIndex + 1 < eligibleHosts.length,
+						});
+						break; // Exit inner while(true) — outer for-loop will try next host
+					}
+
+					// Fetch all unprocessed stream_chunk / stream_end for this stream_id
+					const inboxEntries = readInboxByStreamId(this.ctx.db, streamId);
+
+					// AC1.7: Check for error response
+					const errorEntry = inboxEntries.find((e) => e.kind === "error");
+					if (errorEntry) {
+						try {
+							const errPayload = JSON.parse(errorEntry.payload) as { error?: string };
+							markProcessed(this.ctx.db, [errorEntry.id]);
+							throw new Error(errPayload.error ?? "Remote inference error");
+						} catch (parseErr) {
+							markProcessed(this.ctx.db, [errorEntry.id]);
+							throw new Error(`Remote inference error: ${errorEntry.payload}`);
+						}
+					}
+
+					// Buffer all received stream_chunk and stream_end entries by seq
+					const streamEndEntry = inboxEntries.find((e) => e.kind === "stream_end");
+					const chunkEntries = inboxEntries.filter((e) => e.kind === "stream_chunk");
+
+					for (const entry of [...chunkEntries, ...(streamEndEntry ? [streamEndEntry] : [])]) {
+						try {
+							const chunkPayload = JSON.parse(entry.payload) as StreamChunkPayload;
+							if (!buffer.has(chunkPayload.seq)) {
+								buffer.set(chunkPayload.seq, chunkPayload);
+							}
+							markProcessed(this.ctx.db, [entry.id]);
+						} catch {
+							markProcessed(this.ctx.db, [entry.id]);
+						}
+					}
+
+					// AC1.3: Yield contiguous chunks starting from nextExpectedSeq
+					while (buffer.has(nextExpectedSeq)) {
+						const chunkPayload = buffer.get(nextExpectedSeq)!;
+						buffer.delete(nextExpectedSeq);
+						nextExpectedSeq++;
+
+						for (const chunk of chunkPayload.chunks) {
+							// AC4.1: Record relay_target and relay_latency_ms on first chunk
+							if (!firstChunkReceived) {
+								firstChunkReceived = true;
+								firstChunkLatencyMs = Date.now() - hostStartTime; // first-chunk latency
+								if (currentTurnId !== null) {
+									try {
+										recordTurnRelayMetrics(
+											this.ctx.db,
+											currentTurnId,
+											host.host_name,
+											firstChunkLatencyMs,
+										);
+									} catch {
+										// Non-fatal
+									}
+								}
+								this.ctx.logger.info("RELAY_STREAM: first chunk", {
+									host: host.host_name,
+									latencyMs: firstChunkLatencyMs,
+								});
+							}
+							lastActivityTime = Date.now(); // reset mid-stream silence timer
+							yield chunk;
+						}
+						gapCyclesWaited = 0; // Gap resolved
+					}
+
+					// Check if stream_end was the last contiguous chunk (buffer empty after draining)
+					if (streamEndEntry && buffer.size === 0 && !buffer.has(nextExpectedSeq)) {
+						// Stream complete — all chunks yielded including stream_end's chunks
+						hostSucceeded = true;
+						break;
+					}
+
+					// AC1.8: Detect gap — buffer has entries but next seq is missing
+					if (buffer.size > 0) {
+						gapCyclesWaited++;
+						if (gapCyclesWaited >= MAX_GAP_CYCLES) {
+							this.ctx.logger.warn("RELAY_STREAM: seq gap detected, skipping", {
+								expectedSeq: nextExpectedSeq,
+								bufferedSeqs: Array.from(buffer.keys()).sort(),
+							});
+							// Skip the gap by advancing nextExpectedSeq to lowest buffered seq
+							const lowestBuffered = Math.min(...buffer.keys());
+							nextExpectedSeq = lowestBuffered;
+							gapCyclesWaited = 0;
+						}
+					}
+
+					// Wait before next poll
+					await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+				}
+
+				if (hostSucceeded) {
+					return; // Done
+				}
+				// Continue outer for-loop to try next host
+			}
+
+			// All hosts exhausted
+			throw new Error(
+				`inference-relay.AC1.5: all ${eligibleHosts.length} eligible host(s) timed out`,
+			);
+		} finally {
+			this.state = previousState;
 		}
 	}
 

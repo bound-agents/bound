@@ -8,6 +8,9 @@ export type {
 	ToolDefinition,
 	BackendConfig,
 	ModelBackendsConfig,
+	InferenceRequestPayload,
+	StreamChunkPayload,
+	StreamEndPayload,
 } from "./types";
 
 export { LLMError } from "./types";

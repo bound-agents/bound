@@ -87,6 +87,7 @@ export interface InferenceRequestPayload {
 	temperature?: number;
 	cache_breakpoints?: number[];
 	timeout_ms: number;
+	messages_file_ref?: string; // Set when messages are written to synced file (large prompt path)
 }
 
 export interface StreamChunkPayload {
