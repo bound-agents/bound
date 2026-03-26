@@ -14,6 +14,8 @@ import type {
 	ResultPayload,
 	ToolCallPayload,
 } from "@bound/shared";
+import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
+import { ModelRouter } from "@bound/llm";
 import type { MCPClient } from "./mcp-client.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 500;
@@ -28,11 +30,13 @@ export class RelayProcessor {
 	private stopped = false;
 	private idempotencyCache = new Map<string, IdempotencyCacheEntry>();
 	private pendingCancels = new Set<string>();
+	private activeInferenceStreams = new Map<string, AbortController>();
 
 	constructor(
 		private db: Database,
 		private siteId: string,
 		private mcpClients: Map<string, MCPClient>,
+		private modelRouter: ModelRouter | null,
 		private keyringSiteIds: Set<string>,
 		private logger: Logger,
 		private relayConfig?: RelayConfig,

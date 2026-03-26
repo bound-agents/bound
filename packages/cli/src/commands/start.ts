@@ -317,38 +317,19 @@ export async function runStart(args: StartArgs): Promise<void> {
 		);
 	}
 
-	// 8b. Relay processor setup
+	// 8b. Relay processor setup (deferred until after modelRouter is initialized)
 	console.log("Initializing relay processor...");
 	let relayProcessorHandle: { stop: () => void } | null = null;
 	let relayExecutor: RelayExecutor | undefined;
+	let keyring: import("@bound/shared").KeyringConfig | undefined;
 	{
 		const keyringResult = appContext.optionalConfig["keyring"];
-		const keyring =
+		keyring =
 			keyringResult && keyringResult.ok
 				? (keyringResult.value as import("@bound/shared").KeyringConfig)
 				: undefined;
 
-		if (keyring) {
-			const syncConfigResult = appContext.optionalConfig.sync;
-			const relayConfig = resolveRelayConfig(
-				syncConfigResult?.ok ? (syncConfigResult.value as SyncConfig) : undefined,
-			);
-			const relayProcessor = new RelayProcessor(
-				appContext.db,
-				appContext.siteId,
-				mcpClientsMap,
-				new Set(Object.keys(keyring.hosts)),
-				appContext.logger,
-				relayConfig,
-			);
-			relayProcessorHandle = relayProcessor.start();
-			console.log("[relay] Relay processor started");
-
-			// Create the RelayExecutor callback for hub-local execution
-			relayExecutor = async (request, hubSiteId) => {
-				return relayProcessor.executeImmediate(request, hubSiteId);
-			};
-		} else {
+		if (!keyring) {
 			console.log("[relay] No keyring configured, relay processor disabled");
 		}
 	}
@@ -433,6 +414,30 @@ export async function runStart(args: StartArgs): Promise<void> {
 		console.log(`[llm] Model router ready — backends: ${ids} (default: ${routerConfig.default})`);
 	} catch (error) {
 		console.warn(`[llm] Failed to create model router: ${formatError(error)}`);
+	}
+
+	// 11a. Initialize relay processor (now that modelRouter is ready)
+	if (keyring) {
+		const syncConfigResult = appContext.optionalConfig.sync;
+		const relayConfig = resolveRelayConfig(
+			syncConfigResult?.ok ? (syncConfigResult.value as SyncConfig) : undefined,
+		);
+		const relayProcessor = new RelayProcessor(
+			appContext.db,
+			appContext.siteId,
+			mcpClientsMap,
+			modelRouter ?? null,
+			new Set(Object.keys(keyring.hosts)),
+			appContext.logger,
+			relayConfig,
+		);
+		relayProcessorHandle = relayProcessor.start();
+		console.log("[relay] Relay processor started");
+
+		// Create the RelayExecutor callback for hub-local execution
+		relayExecutor = async (request, hubSiteId) => {
+			return relayProcessor.executeImmediate(request, hubSiteId);
+		};
 	}
 
 	// 11b. Initialize reachability tracker for eager push (hub-side)
