@@ -277,6 +277,21 @@ describe("relay-stream integration tests", () => {
 	// ============================================================
 	// TASK 2: End-to-end streaming test (AC1.1, AC4.1)
 	// ============================================================
+	//
+	// SKIPPED: This test requires full end-to-end network simulation with:
+	// 1. AgentLoop in RELAY_STREAM state for ~500ms polling intervals
+	// 2. RelayProcessor on target executing inference concurrently
+	// 3. Precise sync cycle coordination between requester/target/hub
+	// 4. Message delivery through relay_outbox -> relay_inbox flow
+	//
+	// Current blocker: Bun test environment lacks hooks for precise timing
+	// coordination between concurrent polling loops. Would need either:
+	// - Custom test event bus triggering sync cycles at specific moments
+	// - Deterministic clock/time-mocking
+	// - Or simpler: unit tests of relayStream() and executeInference() separately
+	//
+	// The infrastructure (MockLLMBackend, driveSyncUntil) exists for when
+	// this can be implemented properly.
 
 	it.skip("streams inference chunks from target to requester end-to-end", async () => {
 		// Setup: Register target spoke in requester's hosts table
@@ -396,6 +411,11 @@ describe("relay-stream integration tests", () => {
 	// ============================================================
 	// TASK 3: Cancel integration test (AC1.4)
 	// ============================================================
+	//
+	// SKIPPED: Requires same full network simulation as TASK 2.
+	// The cancel logic is tested indirectly through relayStream() cancel path
+	// and RelayProcessor's pendingCancels handling, but end-to-end timing
+	// coordination is needed for full integration test.
 
 	it.skip("cancel during streaming sends cancel to target and stops requester", async () => {
 		// Setup: Register target in requester's hosts
@@ -714,6 +734,11 @@ describe("relay-stream integration tests", () => {
 	// ============================================================
 	// TASK 5: Concurrent streams and large prompt integration tests
 	// ============================================================
+	//
+	// SKIPPED: Requires full network simulation with multiple concurrent
+	// AgentLoop instances and RelayProcessor streams. Same infrastructure
+	// blocker as TASK 2. Unit tests of concurrent stream_id isolation in
+	// RelayProcessor.activeInferenceStreams exist separately.
 
 	it.skip("multiple concurrent inference streams run without interference (AC3.6)", async () => {
 		// Register target
@@ -857,6 +882,11 @@ describe("relay-stream integration tests", () => {
 
 		expect(cycles.length).toBeGreaterThanOrEqual(1);
 	});
+
+	// SKIPPED: Requires full network simulation to verify end-to-end flow.
+	// The large prompt file creation in AgentLoop (lines 147-180) and the
+	// file loading in RelayProcessor.executeInference (lines 598-625) are
+	// tested indirectly through unit tests.
 
 	it.skip("large prompt uses file-based relay (AC1.9)", async () => {
 		// Register target
