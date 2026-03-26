@@ -162,6 +162,17 @@ describe("RelayProcessor - executeInference", () => {
 		for (let i = 1; i < seqs.length; i++) {
 			expect(seqs[i]).toBe(seqs[i - 1] + 1);
 		}
+
+		// AC4.3: Verify relay_cycles recorded for inference, stream_chunk, stream_end
+		const cycles = db
+			.query(
+				"SELECT kind FROM relay_cycles WHERE kind IN ('inference', 'stream_chunk', 'stream_end')",
+			)
+			.all() as Array<{ kind: string }>;
+		const cycleKinds = new Set(cycles.map((c) => c.kind));
+		expect(cycleKinds.has("inference")).toBe(true);
+		expect(cycleKinds.has("stream_chunk")).toBe(true);
+		expect(cycleKinds.has("stream_end")).toBe(true);
 	});
 
 	it("AC3.2a: flushes at 200ms timer with pending chunks", async () => {
