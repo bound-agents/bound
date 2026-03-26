@@ -170,12 +170,12 @@ describe("Concurrent agent loops with WAL serialization (R-U3)", () => {
 		const mockBash2 = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop1 = new AgentLoop(ctx, mockBash1, mockBackend1, {
+		const agentLoop1 = new AgentLoop(ctx, mockBash1, createMockRouter(mockBackend1), {
 			threadId: threadId1,
 			userId,
 		});
 
-		const agentLoop2 = new AgentLoop(ctx, mockBash2, mockBackend2, {
+		const agentLoop2 = new AgentLoop(ctx, mockBash2, createMockRouter(mockBackend2), {
 			threadId: threadId2,
 			userId,
 		});

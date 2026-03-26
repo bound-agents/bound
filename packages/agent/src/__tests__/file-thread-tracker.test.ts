@@ -104,7 +104,7 @@ describe("File-Thread Tracker (R-E20)", () => {
 				siteId: "test-site-id",
 			} as unknown as AppContext;
 
-			const agentLoop = new AgentLoop(ctx, mockSandbox, new MockLLMBackend(), {
+			const agentLoop = new AgentLoop(ctx, mockSandbox, createMockRouter(new MockLLMBackend()), {
 				threadId,
 				userId: "test-user",
 			});
@@ -153,7 +153,7 @@ describe("File-Thread Tracker (R-E20)", () => {
 				siteId: "test-site-id",
 			} as unknown as AppContext;
 
-			const agentLoop = new AgentLoop(ctx, mockSandbox, new MockLLMBackend(), {
+			const agentLoop = new AgentLoop(ctx, mockSandbox, createMockRouter(new MockLLMBackend()), {
 				threadId,
 				userId: "test-user",
 			});

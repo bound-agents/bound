@@ -107,7 +107,7 @@ describe("Memory Threshold Check (R-W2)", () => {
 		};
 
 		const ctx = makeCtx();
-		const agentLoop = new AgentLoop(ctx, mockSandbox, new MockLLMBackend(), {
+		const agentLoop = new AgentLoop(ctx, mockSandbox, createMockRouter(new MockLLMBackend()), {
 			threadId,
 			userId: "test-user",
 		});
@@ -165,7 +165,7 @@ describe("Memory Threshold Check (R-W2)", () => {
 		};
 
 		const ctx = makeCtx();
-		const agentLoop = new AgentLoop(ctx, mockSandbox, new MockLLMBackend(), {
+		const agentLoop = new AgentLoop(ctx, mockSandbox, createMockRouter(new MockLLMBackend()), {
 			threadId,
 			userId: "test-user",
 		});
@@ -226,7 +226,7 @@ describe("Memory Threshold Check (R-W2)", () => {
 		};
 
 		const ctx = makeCtx();
-		const agentLoop = new AgentLoop(ctx, mockSandbox, new MockLLMBackend(), {
+		const agentLoop = new AgentLoop(ctx, mockSandbox, createMockRouter(new MockLLMBackend()), {
 			threadId,
 			userId: "test-user",
 		});

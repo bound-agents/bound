@@ -172,7 +172,7 @@ describe("Agent Loop End-to-End Integration", () => {
 
 		// Run agent loop
 		// biome-ignore lint/suspicious/noExplicitAny: test mocks require any casts
-		const agentLoop = new AgentLoop(mockAppContext as any, mockSandbox as any, mockLLMBackend, {
+		const agentLoop = new AgentLoop(mockAppContext as any, mockSandbox as any, createMockRouter(mockLLMBackend), {
 			threadId,
 			userId,
 			modelId: "default",
@@ -309,7 +309,7 @@ describe("Agent Loop End-to-End Integration", () => {
 		};
 
 		// biome-ignore lint/suspicious/noExplicitAny: test mocks require any casts
-		const agentLoop = new AgentLoop(mockAppContext as any, mockSandbox as any, mockLLMBackend, {
+		const agentLoop = new AgentLoop(mockAppContext as any, mockSandbox as any, createMockRouter(mockLLMBackend), {
 			threadId,
 			userId,
 			modelId: "default",
@@ -432,7 +432,7 @@ describe("Agent Loop End-to-End Integration", () => {
 		};
 
 		// biome-ignore lint/suspicious/noExplicitAny: test mocks require any casts
-		const agentLoop = new AgentLoop(mockAppContext as any, mockSandbox as any, mockLLMBackend, {
+		const agentLoop = new AgentLoop(mockAppContext as any, mockSandbox as any, createMockRouter(mockLLMBackend), {
 			threadId,
 			userId,
 		});

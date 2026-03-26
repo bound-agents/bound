@@ -567,7 +567,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, stallBackend, {
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(stallBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -604,7 +604,7 @@ describe("AgentLoop", () => {
 			},
 		};
 
-		const agentLoop2 = new AgentLoop(ctx, mockBash, fastBackend, {
+		const agentLoop2 = new AgentLoop(ctx, mockBash, createMockRouter(fastBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -715,7 +715,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, capturingBackend, {
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(capturingBackend), {
 			threadId,
 			userId: "test-user",
 		});
