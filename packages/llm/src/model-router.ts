@@ -43,6 +43,16 @@ export class ModelRouter {
 			capabilities: backend.capabilities(),
 		}));
 	}
+
+	/** Returns the default backend ID. */
+	getDefaultId(): string {
+		return this.defaultId;
+	}
+
+	/** Returns the backend for modelId, or null if not found (non-throwing). */
+	tryGetBackend(modelId: string): LLMBackend | null {
+		return this.backends.get(modelId) ?? null;
+	}
 }
 
 function createBackendFromConfig(config: BackendConfig): LLMBackend {
