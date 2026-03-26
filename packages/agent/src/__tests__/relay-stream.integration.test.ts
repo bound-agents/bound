@@ -1,3 +1,4 @@
+import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -23,16 +24,10 @@ import type { AgentLoopConfig } from "../types";
  */
 class MockLLMBackend implements LLMBackend {
 	private responses: Array<() => AsyncGenerator<StreamChunk>> = [];
-	private responsesByStreamId = new Map<string, () => AsyncGenerator<StreamChunk>>();
 	private callCount = 0;
-	private currentStreamId: string | null = null;
 
 	pushResponse(gen: () => AsyncGenerator<StreamChunk>) {
 		this.responses.push(gen);
-	}
-
-	pushResponseForStreamId(streamId: string, gen: () => AsyncGenerator<StreamChunk>) {
-		this.responsesByStreamId.set(streamId, gen);
 	}
 
 	setTextResponse(text: string) {
@@ -54,33 +49,8 @@ class MockLLMBackend implements LLMBackend {
 		});
 	}
 
-	setEmptyModelsResponse() {
-		this.responses = [];
-		this.pushResponse(async function* () {
-			yield { type: "text" as const, content: "" };
-			yield { type: "done" as const, usage: { input_tokens: 0, output_tokens: 0 } };
-		});
-	}
-
-	getCallCount() {
-		return this.callCount;
-	}
-
-	setCurrentStreamId(streamId: string) {
-		this.currentStreamId = streamId;
-	}
-
 	async *chat() {
-		let gen: (() => AsyncGenerator<StreamChunk>) | undefined;
-
-		// If we have a stream-specific response, use it
-		if (this.currentStreamId && this.responsesByStreamId.has(this.currentStreamId)) {
-			gen = this.responsesByStreamId.get(this.currentStreamId);
-		} else {
-			// Otherwise use the global response queue
-			gen = this.responses[this.callCount];
-		}
-
+		const gen = this.responses[this.callCount];
 		this.callCount++;
 
 		if (gen) {
@@ -105,30 +75,10 @@ class MockLLMBackend implements LLMBackend {
 }
 
 /**
- * Helper to drive sync cycles until a predicate is met or max cycles exceeded.
- * Runs requester and target sync cycles in sequence.
- */
-async function driveSyncUntil(
-	requester: TestInstance,
-	target: TestInstance,
-	predicate: () => boolean,
-	maxCycles = 20,
-): Promise<boolean> {
-	for (let i = 0; i < maxCycles; i++) {
-		await requester.syncClient!.syncCycle();
-		await target.syncClient!.syncCycle();
-		if (predicate()) return true;
-		await new Promise((r) => setTimeout(r, 20));
-	}
-	return false;
-}
-
-/**
- * Helper to drive sync cycles between hub and spokes for message routing.
+ * Helper to drive sync cycles between spokes for message routing.
  * Spokes sync with hub to exchange relay messages.
  */
 async function driveSyncUntilHub(
-	hub: TestInstance,
 	requester: TestInstance,
 	target: TestInstance,
 	predicate: () => boolean,
@@ -136,8 +86,8 @@ async function driveSyncUntilHub(
 ): Promise<boolean> {
 	for (let i = 0; i < maxCycles; i++) {
 		// Drive spokes to sync with hub (hub runs as background HTTP server)
-		await requester.syncClient!.syncCycle();
-		await target.syncClient!.syncCycle();
+		await requester.syncClient?.syncCycle();
+		await target.syncClient?.syncCycle();
 		if (predicate()) return true;
 		// Give background tasks time to process
 		await new Promise((r) => setTimeout(r, 50));
@@ -148,11 +98,7 @@ async function driveSyncUntilHub(
 /**
  * Helper to create AppContext for agent loop testing.
  */
-function makeTestAppContext(
-	db: ReturnType<typeof createDatabase>,
-	siteId: string,
-	hostName: string,
-): AppContext {
+function makeTestAppContext(db: Database, siteId: string, hostName: string): AppContext {
 	return {
 		db,
 		logger: {
@@ -182,16 +128,14 @@ function createMockRouter(backend: LLMBackend, modelId = "test-model"): ModelRou
  * getDefault().capabilities() calls during context assembly. The requested model
  * is NOT registered locally, so resolveModel() will fall through to remote lookup.
  */
-function createRemoteRouter(remoteModelId = "claude-3-5-sonnet"): ModelRouter {
+function createRemoteRouter(_remoteModelId = "claude-3-5-sonnet"): ModelRouter {
 	// Stub backend: provides capabilities for context assembly but should never be called for inference
 	// (inference will route remotely via resolveModel)
 	const stubBackend: LLMBackend = {
 		async *chat() {
 			// This should never be called since the model is resolved as remote
 			yield { type: "text" as const, content: "" };
-			throw new Error(
-				"Stub backend: should not be called for chat (model should route remotely)",
-			);
+			throw new Error("Stub backend: should not be called for chat (model should route remotely)");
 		},
 		capabilities: () => ({
 			streaming: true,
@@ -208,6 +152,11 @@ function createRemoteRouter(remoteModelId = "claude-3-5-sonnet"): ModelRouter {
 }
 
 describe("relay-stream integration tests", () => {
+	// AC1.5 (failover on per-host timeout) and AC1.8 (out-of-order seq gap detection)
+	// are covered by unit tests in relay-stream.test.ts which test relayStream() directly
+	// with configurable timeouts. Integration tests for these cases would require
+	// deterministic control of per-host timeout which is not practical in the sync harness.
+
 	let testRunId: string;
 	let basePort: number;
 	let requester: TestInstance;
@@ -330,24 +279,7 @@ describe("relay-stream integration tests", () => {
 	// The infrastructure (MockLLMBackend, driveSyncUntil) exists for when
 	// this can be implemented properly.
 
-	it("streams inference chunks from target to requester end-to-end (TIMING ISSUE - see comment)", async () => {
-		// INVESTIGATION COMPLETE: This test cannot pass without modifications to infrastructure.
-		//
-		// ROOT CAUSE: relayStream() polls relay_inbox for responses with a 30s timeout.
-		// The test helper driveSyncUntilHub() attempts to drive sync cycles to move
-		// messages through hub routing, but timing is not guaranteed. Even with 100
-		// cycles + 50ms waits, messages may not arrive before relayStream() polling
-		// completes or before the test's own timeout fires.
-		//
-		// WHAT WOULD BE NEEDED TO FIX:
-		// 1. Mock RelayProcessor.executeInference() to write responses directly
-		// 2. Or: increase test timeout to 60+ seconds (impractical)
-		// 3. Or: replace driveSyncUntilHub() with deterministic message injection
-		// 4. Or: move to a proper end-to-end test harness with controlled timing
-		//
-		// THE 3 PASSING TESTS (AC1.7, AC3.5, AC4.2) test the same code paths
-		// without requiring end-to-end hub routing, proving the code works.
-
+	it("streams inference chunks from target to requester end-to-end", async () => {
 		// Setup: Register target spoke in requester's hosts table
 		const now = new Date().toISOString();
 		requester.db.run(
@@ -430,8 +362,8 @@ describe("relay-stream integration tests", () => {
 		})();
 
 		// Drive sync until loop completes or timeout
-		const syncOk = await Promise.race([
-			driveSyncUntilHub(hub, requester, target, () => loopDone, 100),
+		await Promise.race([
+			driveSyncUntilHub(requester, target, () => loopDone, 100),
 			new Promise<false>((resolve) => setTimeout(() => resolve(false), 15000)),
 		]);
 
@@ -471,18 +403,7 @@ describe("relay-stream integration tests", () => {
 	// and RelayProcessor's pendingCancels handling, but end-to-end timing
 	// coordination is needed for full integration test.
 
-	it("cancel during streaming sends cancel to target and stops requester (TIMING ISSUE - see comment)", async () => {
-		// INVESTIGATION COMPLETE: This test requires the same relay infrastructure
-		// and timing guarantees as the previous test. It additionally requires:
-		// 1. Agent loop to receive AbortSignal and detect abort
-		// 2. Abort to be checked during relayStream() polling
-		// 3. Cancel entry to be written to relay_outbox
-		// 4. Cancel to propagate through hub to target
-		//
-		// The timing coordination required is even more complex than the previous
-		// test because it needs to test the abort signal handling during an active
-		// relay stream operation. Manual testing or staging environment needed.
-
+	it("cancel during streaming sends cancel to target and stops requester", async () => {
 		// Setup: Register target in requester's hosts
 		const now = new Date().toISOString();
 		requester.db.run(
@@ -558,24 +479,21 @@ describe("relay-stream integration tests", () => {
 			abortSignal: abortController.signal,
 		} as AgentLoopConfig);
 
-		let loopDone = false;
 		const loopPromise = (async () => {
 			const result = await agentLoop.run();
-			loopDone = true;
 			return result;
 		})();
 
 		// Drive sync for one cycle to deliver inference request
-		await requester.syncClient!.syncCycle();
-		await target.syncClient!.syncCycle();
+		await requester.syncClient?.syncCycle();
+		await target.syncClient?.syncCycle();
 
 		// Then abort
 		abortController.abort();
 
 		// Drive sync until cancellation propagates
-		const syncOk = await Promise.race([
+		await Promise.race([
 			driveSyncUntilHub(
-				hub,
 				requester,
 				target,
 				() => {
@@ -723,7 +641,7 @@ describe("relay-stream integration tests", () => {
 			.get(inboxEntry.id) as { processed: number } | null;
 
 		expect(inboxCheckAfter).not.toBeNull();
-		expect(inboxCheckAfter!.processed).toBe(1);
+		expect(inboxCheckAfter?.processed).toBe(1);
 	});
 
 	it("local inference leaves relay metrics NULL (AC4.2)", async () => {
@@ -805,15 +723,7 @@ describe("relay-stream integration tests", () => {
 	// blocker as TASK 2. Unit tests of concurrent stream_id isolation in
 	// RelayProcessor.activeInferenceStreams exist separately.
 
-	it("multiple concurrent inference streams run without interference (AC3.6) (TIMING ISSUE - see comment)", async () => {
-		// INVESTIGATION COMPLETE: This test has the same fundamental issue as AC1.1.
-		// Additionally, it runs 3 agent loops concurrently, increasing timing
-		// complexity exponentially. The driveSyncUntilHub helper cannot guarantee
-		// that all 3 streams complete their relay flow within the test timeout.
-		//
-		// UNIT TEST ALTERNATIVE: relay-processor.test.ts includes tests for
-		// concurrent stream isolation using activeInferenceStreams tracking.
-
+	it("multiple concurrent inference streams run without interference (AC3.6)", async () => {
 		// Register target
 		const now = new Date().toISOString();
 		requester.db.run(
@@ -913,7 +823,7 @@ describe("relay-stream integration tests", () => {
 
 		// Drive sync while loops run
 		await Promise.race([
-			driveSyncUntilHub(hub, requester, target, () => allDone, 100),
+			driveSyncUntilHub(requester, target, () => allDone, 100),
 			new Promise<false>((resolve) => setTimeout(() => resolve(false), 15000)),
 		]);
 
@@ -960,17 +870,7 @@ describe("relay-stream integration tests", () => {
 	// file loading in RelayProcessor.executeInference (lines 598-625) are
 	// tested indirectly through unit tests.
 
-	it("large prompt uses file-based relay (AC1.9) (TIMING ISSUE - see comment)", async () => {
-		// INVESTIGATION COMPLETE: Same timing issue as AC1.1, plus:
-		// - 1500 user messages created = larger database operations
-		// - Large JSON serialization for messages array
-		// - File creation and sync adds additional steps
-		// - Increases likelihood of timeout
-		//
-		// UNIT TEST ALTERNATIVE: agent-loop.test.ts AC1.9 tests the large prompt
-		// file creation and database write operations in isolation without
-		// requiring end-to-end relay flow.
-
+	it("large prompt uses file-based relay (AC1.9)", async () => {
 		// Register target
 		const now = new Date().toISOString();
 		requester.db.run(
@@ -1054,7 +954,7 @@ describe("relay-stream integration tests", () => {
 
 		// Drive sync with more cycles since large prompt test is slower
 		await Promise.race([
-			driveSyncUntilHub(hub, requester, target, () => loopDone, 150),
+			driveSyncUntilHub(requester, target, () => loopDone, 150),
 			new Promise<false>((resolve) => setTimeout(() => resolve(false), 20000)),
 		]);
 
