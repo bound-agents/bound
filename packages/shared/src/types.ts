@@ -213,9 +213,17 @@ export const RELAY_REQUEST_KINDS = [
 	"prompt_invoke",
 	"cache_warm",
 	"cancel",
+	"inference",
+	"process",
 ] as const;
 
-export const RELAY_RESPONSE_KINDS = ["result", "error"] as const;
+export const RELAY_RESPONSE_KINDS = [
+	"result",
+	"error",
+	"stream_chunk",
+	"stream_end",
+	"status_forward",
+] as const;
 
 export const RELAY_KINDS = [...RELAY_REQUEST_KINDS, ...RELAY_RESPONSE_KINDS] as const;
 
