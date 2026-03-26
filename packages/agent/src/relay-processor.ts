@@ -2,6 +2,8 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { markProcessed, readUnprocessed, recordRelayCycle, writeOutbox } from "@bound/core";
+import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
+import type { ModelRouter } from "@bound/llm";
 import type {
 	CacheWarmPayload,
 	ErrorPayload,
@@ -14,8 +16,6 @@ import type {
 	ResultPayload,
 	ToolCallPayload,
 } from "@bound/shared";
-import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
-import { ModelRouter } from "@bound/llm";
 import type { MCPClient } from "./mcp-client.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 500;
@@ -624,6 +624,20 @@ export class RelayProcessor {
 			}
 		}
 
+		// AC4.3: Record relay cycle for inference request receipt
+		try {
+			recordRelayCycle(this.db, {
+				direction: "inbound",
+				peer_site_id: entry.source_site_id,
+				kind: "inference",
+				delivery_method: "sync",
+				latency_ms: null, // not known yet at request start
+				expired: false,
+				success: true,
+			});
+		} catch {
+			// Non-fatal
+		}
 		// Set up AbortController for cancel support (AC3.4)
 		const abortController = new AbortController();
 		this.activeInferenceStreams.set(entry.id, abortController);
@@ -704,11 +718,7 @@ export class RelayProcessor {
 				flush(true);
 			}
 		} catch (err) {
-			this.writeResponse(
-				entry,
-				"error",
-				JSON.stringify({ error: String(err), retriable: true }),
-			);
+			this.writeResponse(entry, "error", JSON.stringify({ error: String(err), retriable: true }));
 			try {
 				recordRelayCycle(this.db, {
 					direction: "inbound",
