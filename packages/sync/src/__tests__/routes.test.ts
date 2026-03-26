@@ -91,7 +91,7 @@ describe("routes", () => {
 				kind TEXT NOT NULL,
 				ref_id TEXT,
 				idempotency_key TEXT,
-			stream_id TEXT,
+				stream_id TEXT,
 				payload TEXT NOT NULL,
 				expires_at TEXT NOT NULL,
 				received_at TEXT NOT NULL,

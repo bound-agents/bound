@@ -301,6 +301,7 @@ describe("eagerPushToSpoke", () => {
 			kind: "result" as const,
 			ref_id: "ref-789",
 			idempotency_key: null,
+			stream_id: null,
 			payload: JSON.stringify({ status: "success" }),
 			expires_at: expiresAt,
 			received_at: now,

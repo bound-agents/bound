@@ -326,87 +326,86 @@ describe("Relay CRUD Helpers", () => {
 			expect(found).toBeNull();
 		});
 
-	it("readInboxByStreamId returns empty array when no matching stream_id", () => {
-		const results = readInboxByStreamId(db, "non-existent-stream");
-		expect(results).toHaveLength(0);
-	});
+		it("readInboxByStreamId returns empty array when no matching stream_id", () => {
+			const results = readInboxByStreamId(db, "non-existent-stream");
+			expect(results).toHaveLength(0);
+		});
 
-	it("readInboxByStreamId returns entries ordered by received_at", () => {
-		const now = new Date().toISOString();
-		const later = new Date(Date.now() + 1000).toISOString();
+		it("readInboxByStreamId returns entries ordered by received_at", () => {
+			const now = new Date().toISOString();
+			const later = new Date(Date.now() + 1000).toISOString();
 
-		const entry1: RelayInboxEntry = {
-			id: "msg-1",
-			source_site_id: "site-1",
-			kind: "stream_chunk",
-			ref_id: null,
-			idempotency_key: null,
-			stream_id: "stream-123",
-			payload: "{}",
-			expires_at: new Date(Date.now() + 60000).toISOString(),
-			received_at: later,
-			processed: 0,
-		};
+			const entry1: RelayInboxEntry = {
+				id: "msg-1",
+				source_site_id: "site-1",
+				kind: "stream_chunk",
+				ref_id: null,
+				idempotency_key: null,
+				stream_id: "stream-123",
+				payload: "{}",
+				expires_at: new Date(Date.now() + 60000).toISOString(),
+				received_at: later,
+				processed: 0,
+			};
 
-		const entry2: RelayInboxEntry = {
-			id: "msg-2",
-			source_site_id: "site-1",
-			kind: "stream_chunk",
-			ref_id: null,
-			idempotency_key: null,
-			stream_id: "stream-123",
-			payload: "{}",
-			expires_at: new Date(Date.now() + 60000).toISOString(),
-			received_at: now,
-			processed: 0,
-		};
+			const entry2: RelayInboxEntry = {
+				id: "msg-2",
+				source_site_id: "site-1",
+				kind: "stream_chunk",
+				ref_id: null,
+				idempotency_key: null,
+				stream_id: "stream-123",
+				payload: "{}",
+				expires_at: new Date(Date.now() + 60000).toISOString(),
+				received_at: now,
+				processed: 0,
+			};
 
-		insertInbox(db, entry1);
-		insertInbox(db, entry2);
+			insertInbox(db, entry1);
+			insertInbox(db, entry2);
 
-		const results = readInboxByStreamId(db, "stream-123");
-		expect(results).toHaveLength(2);
-		expect(results[0].id).toBe("msg-2");
-		expect(results[1].id).toBe("msg-1");
-	});
+			const results = readInboxByStreamId(db, "stream-123");
+			expect(results).toHaveLength(2);
+			expect(results[0].id).toBe("msg-2");
+			expect(results[1].id).toBe("msg-1");
+		});
 
-	it("readInboxByStreamId excludes processed entries", () => {
-		const now = new Date().toISOString();
-		const entry1: RelayInboxEntry = {
-			id: "msg-1",
-			source_site_id: "site-1",
-			kind: "stream_chunk",
-			ref_id: null,
-			idempotency_key: null,
-			stream_id: "stream-456",
-			payload: "{}",
-			expires_at: new Date(Date.now() + 60000).toISOString(),
-			received_at: now,
-			processed: 0,
-		};
+		it("readInboxByStreamId excludes processed entries", () => {
+			const now = new Date().toISOString();
+			const entry1: RelayInboxEntry = {
+				id: "msg-1",
+				source_site_id: "site-1",
+				kind: "stream_chunk",
+				ref_id: null,
+				idempotency_key: null,
+				stream_id: "stream-456",
+				payload: "{}",
+				expires_at: new Date(Date.now() + 60000).toISOString(),
+				received_at: now,
+				processed: 0,
+			};
 
-		const entry2: RelayInboxEntry = {
-			id: "msg-2",
-			source_site_id: "site-1",
-			kind: "stream_chunk",
-			ref_id: null,
-			idempotency_key: null,
-			stream_id: "stream-456",
-			payload: "{}",
-			expires_at: new Date(Date.now() + 60000).toISOString(),
-			received_at: now,
-			processed: 0,
-		};
+			const entry2: RelayInboxEntry = {
+				id: "msg-2",
+				source_site_id: "site-1",
+				kind: "stream_chunk",
+				ref_id: null,
+				idempotency_key: null,
+				stream_id: "stream-456",
+				payload: "{}",
+				expires_at: new Date(Date.now() + 60000).toISOString(),
+				received_at: now,
+				processed: 0,
+			};
 
-		insertInbox(db, entry1);
-		insertInbox(db, entry2);
-		markProcessed(db, ["msg-1"]);
+			insertInbox(db, entry1);
+			insertInbox(db, entry2);
+			markProcessed(db, ["msg-1"]);
 
-		const results = readInboxByStreamId(db, "stream-456");
-		expect(results).toHaveLength(1);
-		expect(results[0].id).toBe("msg-2");
-	});
-
+			const results = readInboxByStreamId(db, "stream-456");
+			expect(results).toHaveLength(1);
+			expect(results[0].id).toBe("msg-2");
+		});
 	});
 
 	describe("Payload Size Enforcement (AC9.1)", () => {
