@@ -7,16 +7,14 @@ import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
-import type { LLMBackend } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { AgentLoop } from "../agent-loop";
 import { getLastThreadForFile, trackFilePath } from "../file-thread-tracker";
 
-
 function createMockRouter(backend: LLMBackend): ModelRouter {
 	const backends = new Map<string, LLMBackend>();
-	backends.set('claude-opus', backend);
-	return new ModelRouter(backends, 'claude-opus');
+	backends.set("claude-opus", backend);
+	return new ModelRouter(backends, "claude-opus");
 }
 
 describe("File-Thread Tracker (R-E20)", () => {

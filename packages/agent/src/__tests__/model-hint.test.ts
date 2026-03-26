@@ -62,23 +62,12 @@ describe("model-hint command", () => {
 				`INSERT INTO tasks (
 					id, type, status, trigger_spec, deleted, created_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				[
-					"task-1",
-					"test",
-					"pending",
-					"{}",
-					0,
-					new Date().toISOString(),
-					new Date().toISOString(),
-				],
+				["task-1", "test", "pending", "{}", 0, new Date().toISOString(), new Date().toISOString()],
 			);
 
 			// Create a modelRouter with a local backend
 			const mockBackend = new MockBackend();
-			const modelRouter = new ModelRouter(
-				new Map([["claude-3", mockBackend]]),
-				"claude-3",
-			);
+			const modelRouter = new ModelRouter(new Map([["claude-3", mockBackend]]), "claude-3");
 
 			const eventBus = new TypedEventEmitter();
 			const logger = {
@@ -96,18 +85,15 @@ describe("model-hint command", () => {
 				modelRouter,
 			};
 
-			const result = await modelHint.handler(
-				{ model: "claude-3" },
-				ctx,
-			);
+			const result = await modelHint.handler({ model: "claude-3" }, ctx);
 
 			expect(result.exitCode).toBe(0);
 			expect(result.stdout).toContain("Model hint set to: claude-3");
 
 			// Verify the hint was stored
-			const task = db
-				.prepare("SELECT model_hint FROM tasks WHERE id = ?")
-				.get("task-1") as { model_hint: string | null } | undefined;
+			const task = db.prepare("SELECT model_hint FROM tasks WHERE id = ?").get("task-1") as
+				| { model_hint: string | null }
+				| undefined;
 			expect(task?.model_hint).toBe("claude-3");
 		});
 
@@ -117,23 +103,12 @@ describe("model-hint command", () => {
 				`INSERT INTO tasks (
 					id, type, status, trigger_spec, deleted, created_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				[
-					"task-1",
-					"test",
-					"pending",
-					"{}",
-					0,
-					new Date().toISOString(),
-					new Date().toISOString(),
-				],
+				["task-1", "test", "pending", "{}", 0, new Date().toISOString(), new Date().toISOString()],
 			);
 
 			// Create a modelRouter with a local backend
 			const mockBackend = new MockBackend();
-			const modelRouter = new ModelRouter(
-				new Map([["claude-3", mockBackend]]),
-				"claude-3",
-			);
+			const modelRouter = new ModelRouter(new Map([["claude-3", mockBackend]]), "claude-3");
 
 			const eventBus = new TypedEventEmitter();
 			const logger = {
@@ -151,19 +126,16 @@ describe("model-hint command", () => {
 				modelRouter,
 			};
 
-			const result = await modelHint.handler(
-				{ model: "unknown-model-xyz" },
-				ctx,
-			);
+			const result = await modelHint.handler({ model: "unknown-model-xyz" }, ctx);
 
 			expect(result.exitCode).toBe(1);
 			expect(result.stderr).toContain("unknown-model-xyz");
 			expect(result.stderr).toContain("Unknown model");
 
 			// Verify the hint was NOT stored
-			const task = db
-				.prepare("SELECT model_hint FROM tasks WHERE id = ?")
-				.get("task-1") as { model_hint: string | null } | undefined;
+			const task = db.prepare("SELECT model_hint FROM tasks WHERE id = ?").get("task-1") as
+				| { model_hint: string | null }
+				| undefined;
 			expect(task?.model_hint).toBeNull();
 		});
 
@@ -173,15 +145,7 @@ describe("model-hint command", () => {
 				`INSERT INTO tasks (
 					id, type, status, trigger_spec, deleted, created_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				[
-					"task-1",
-					"test",
-					"pending",
-					"{}",
-					0,
-					new Date().toISOString(),
-					new Date().toISOString(),
-				],
+				["task-1", "test", "pending", "{}", 0, new Date().toISOString(), new Date().toISOString()],
 			);
 
 			// Insert a remote host with a model
@@ -190,22 +154,12 @@ describe("model-hint command", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"remote-1",
-					"Remote Host",
-					JSON.stringify(["gpt-4", "gpt-3.5"]),
-					0,
-					now,
-					now,
-				],
+				["remote-1", "Remote Host", JSON.stringify(["gpt-4", "gpt-3.5"]), 0, now, now],
 			);
 
 			// Create a modelRouter with only a local backend
 			const mockBackend = new MockBackend();
-			const modelRouter = new ModelRouter(
-				new Map([["claude-3", mockBackend]]),
-				"claude-3",
-			);
+			const modelRouter = new ModelRouter(new Map([["claude-3", mockBackend]]), "claude-3");
 
 			const eventBus = new TypedEventEmitter();
 			const logger = {
@@ -224,18 +178,15 @@ describe("model-hint command", () => {
 			};
 
 			// Try to set model that only exists on remote host
-			const result = await modelHint.handler(
-				{ model: "gpt-4" },
-				ctx,
-			);
+			const result = await modelHint.handler({ model: "gpt-4" }, ctx);
 
 			expect(result.exitCode).toBe(0);
 			expect(result.stdout).toContain("Model hint set to: gpt-4");
 
 			// Verify the hint was stored
-			const task = db
-				.prepare("SELECT model_hint FROM tasks WHERE id = ?")
-				.get("task-1") as { model_hint: string | null } | undefined;
+			const task = db.prepare("SELECT model_hint FROM tasks WHERE id = ?").get("task-1") as
+				| { model_hint: string | null }
+				| undefined;
 			expect(task?.model_hint).toBe("gpt-4");
 		});
 
@@ -245,15 +196,7 @@ describe("model-hint command", () => {
 				`INSERT INTO tasks (
 					id, type, status, trigger_spec, deleted, created_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				[
-					"task-1",
-					"test",
-					"pending",
-					"{}",
-					0,
-					new Date().toISOString(),
-					new Date().toISOString(),
-				],
+				["task-1", "test", "pending", "{}", 0, new Date().toISOString(), new Date().toISOString()],
 			);
 
 			const eventBus = new TypedEventEmitter();
@@ -273,18 +216,15 @@ describe("model-hint command", () => {
 			};
 
 			// Without modelRouter, any model should be accepted
-			const result = await modelHint.handler(
-				{ model: "unknown-model" },
-				ctx,
-			);
+			const result = await modelHint.handler({ model: "unknown-model" }, ctx);
 
 			expect(result.exitCode).toBe(0);
 			expect(result.stdout).toContain("Model hint set to: unknown-model");
 
 			// Verify the hint was stored
-			const task = db
-				.prepare("SELECT model_hint FROM tasks WHERE id = ?")
-				.get("task-1") as { model_hint: string | null } | undefined;
+			const task = db.prepare("SELECT model_hint FROM tasks WHERE id = ?").get("task-1") as
+				| { model_hint: string | null }
+				| undefined;
 			expect(task?.model_hint).toBe("unknown-model");
 		});
 
@@ -294,16 +234,7 @@ describe("model-hint command", () => {
 				`INSERT INTO tasks (
 					id, type, status, trigger_spec, model_hint, deleted, created_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					"task-1",
-					"test",
-					"pending",
-					"{}",
-					"claude-3",
-					0,
-					new Date().toISOString(),
-					new Date().toISOString(),
-				],
+				["task-1", "test", "pending", "{}", "claude-3", 0, new Date().toISOString(), new Date().toISOString()],
 			);
 
 			const eventBus = new TypedEventEmitter();
@@ -321,18 +252,15 @@ describe("model-hint command", () => {
 				taskId: "task-1",
 			};
 
-			const result = await modelHint.handler(
-				{ reset: "true" },
-				ctx,
-			);
+			const result = await modelHint.handler({ reset: "true" }, ctx);
 
 			expect(result.exitCode).toBe(0);
 			expect(result.stdout).toContain("Model hint cleared");
 
 			// Verify the hint was cleared
-			const task = db
-				.prepare("SELECT model_hint FROM tasks WHERE id = ?")
-				.get("task-1") as { model_hint: string | null } | undefined;
+			const task = db.prepare("SELECT model_hint FROM tasks WHERE id = ?").get("task-1") as
+				| { model_hint: string | null }
+				| undefined;
 			expect(task?.model_hint).toBeNull();
 		});
 	});

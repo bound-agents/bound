@@ -38,8 +38,8 @@ function createMockSandbox() {
 
 function createMockRouter(backend: LLMBackend): ModelRouter {
 	const backends = new Map<string, LLMBackend>();
-	backends.set('claude-opus', backend);
-	return new ModelRouter(backends, 'claude-opus');
+	backends.set("claude-opus", backend);
+	return new ModelRouter(backends, "claude-opus");
 }
 
 describe("Concurrent agent loops with WAL serialization (R-U3)", () => {

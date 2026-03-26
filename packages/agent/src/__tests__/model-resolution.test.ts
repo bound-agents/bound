@@ -92,14 +92,7 @@ describe("Model Resolution", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"remote-1",
-					"Remote Host",
-					JSON.stringify(["claude-haiku"]),
-					0,
-					now,
-					now,
-				],
+				["remote-1", "Remote Host", JSON.stringify(["claude-haiku"]), 0, now, now],
 			);
 
 			const mockBackend = {
@@ -145,12 +138,7 @@ describe("Model Resolution", () => {
 			const backends = new Map([["claude-opus", mockBackend]]);
 			const modelRouter = new ModelRouter(backends, "claude-opus");
 
-			const resolution = resolveModel(
-				"unknown-model-xyz",
-				modelRouter,
-				db,
-				"local-site",
-			);
+			const resolution = resolveModel("unknown-model-xyz", modelRouter, db, "local-site");
 
 			expect(resolution.kind).toBe("error");
 			if (resolution.kind === "error") {
@@ -192,12 +180,7 @@ describe("Model Resolution", () => {
 			]);
 			const modelRouter = new ModelRouter(backends, "claude-opus");
 
-			const resolution = resolveModel(
-				"unknown-model",
-				modelRouter,
-				db,
-				"local-site",
-			);
+			const resolution = resolveModel("unknown-model", modelRouter, db, "local-site");
 
 			expect(resolution.kind).toBe("error");
 			if (resolution.kind === "error") {
@@ -213,14 +196,7 @@ describe("Model Resolution", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"remote-1",
-					"Remote Host",
-					JSON.stringify(["claude-opus"]),
-					0,
-					now,
-					now,
-				],
+				["remote-1", "Remote Host", JSON.stringify(["claude-opus"]), 0, now, now],
 			);
 
 			const mockBackend = {

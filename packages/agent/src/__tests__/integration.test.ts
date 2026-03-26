@@ -6,16 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
-import { TypedEventEmitter } from "@bound/shared";
-import type { LLMBackend } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
+import { TypedEventEmitter } from "@bound/shared";
 import { AgentLoop } from "../agent-loop";
-
 
 function createMockRouter(backend: LLMBackend): ModelRouter {
 	const backends = new Map<string, LLMBackend>();
-	backends.set('default', backend);
-	return new ModelRouter(backends, 'default');
+	backends.set("default", backend);
+	return new ModelRouter(backends, "default");
 }
 
 describe("Agent Loop End-to-End Integration", () => {
@@ -172,11 +170,16 @@ describe("Agent Loop End-to-End Integration", () => {
 
 		// Run agent loop
 		// biome-ignore lint/suspicious/noExplicitAny: test mocks require any casts
-		const agentLoop = new AgentLoop(mockAppContext as any, mockSandbox as any, createMockRouter(mockLLMBackend), {
-			threadId,
-			userId,
-			modelId: "default",
-		});
+		const agentLoop = new AgentLoop(
+			mockAppContext as any,
+			mockSandbox as any,
+			createMockRouter(mockLLMBackend),
+			{
+				threadId,
+				userId,
+				modelId: "default",
+			},
+		);
 
 		const result = await agentLoop.run();
 
@@ -309,11 +312,16 @@ describe("Agent Loop End-to-End Integration", () => {
 		};
 
 		// biome-ignore lint/suspicious/noExplicitAny: test mocks require any casts
-		const agentLoop = new AgentLoop(mockAppContext as any, mockSandbox as any, createMockRouter(mockLLMBackend), {
-			threadId,
-			userId,
-			modelId: "default",
-		});
+		const agentLoop = new AgentLoop(
+			mockAppContext as any,
+			mockSandbox as any,
+			createMockRouter(mockLLMBackend),
+			{
+				threadId,
+				userId,
+				modelId: "default",
+			},
+		);
 
 		const result = await agentLoop.run();
 
@@ -432,11 +440,16 @@ describe("Agent Loop End-to-End Integration", () => {
 		};
 
 		// biome-ignore lint/suspicious/noExplicitAny: test mocks require any casts
-		const agentLoop = new AgentLoop(mockAppContext as any, mockSandbox as any, createMockRouter(mockLLMBackend), {
-			threadId,
-			userId,
-			modelId: "default",
-		});
+		const agentLoop = new AgentLoop(
+			mockAppContext as any,
+			mockSandbox as any,
+			createMockRouter(mockLLMBackend),
+			{
+				threadId,
+				userId,
+				modelId: "default",
+			},
+		);
 
 		const result = await agentLoop.run();
 

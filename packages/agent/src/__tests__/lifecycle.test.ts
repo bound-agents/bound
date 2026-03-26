@@ -16,9 +16,8 @@ import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase, insertRow } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
-import { TypedEventEmitter } from "@bound/shared";
-import type { LLMBackend } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
+import { TypedEventEmitter } from "@bound/shared";
 import { AgentLoop } from "../agent-loop";
 
 // ---------------------------------------------------------------------------
@@ -129,8 +128,8 @@ function createMockSandbox() {
 
 function createMockRouter(backend: LLMBackend): ModelRouter {
 	const backends = new Map<string, LLMBackend>();
-	backends.set('mock', backend);
-	return new ModelRouter(backends, 'mock');
+	backends.set("mock", backend);
+	return new ModelRouter(backends, "mock");
 }
 
 describe("AgentLoop lifecycle", () => {
