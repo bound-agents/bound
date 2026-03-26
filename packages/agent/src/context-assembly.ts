@@ -476,7 +476,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		// AC5.4: Model location when inference is relayed
 		if (relayInfo) {
 			volatileLines.push(
-				`You are: ${relayInfo.model} (via remote on host ${relayInfo.remoteHost}, relayed from ${relayInfo.localHost})`,
+				`You are: ${relayInfo.model} (via ${relayInfo.provider} on host ${relayInfo.remoteHost}, relayed from ${relayInfo.localHost})`,
 			);
 		}
 

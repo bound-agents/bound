@@ -123,8 +123,7 @@ export function createStatusRoutes(
 			}
 			// AC5.3: Annotate stale models with "offline?"
 			const isStale =
-				!host.online_at ||
-				Date.now() - new Date(host.online_at).getTime() > STALE_THRESHOLD_MS;
+				!host.online_at || Date.now() - new Date(host.online_at).getTime() > STALE_THRESHOLD_MS;
 
 			// AC5.5: Same model ID on multiple hosts → separate entries
 			for (const modelId of modelIds) {

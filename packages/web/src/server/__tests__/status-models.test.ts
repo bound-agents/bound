@@ -16,38 +16,24 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 		db = createDatabase(":memory:");
 		applySchema(db);
 		eventBus = new TypedEventEmitter();
-		app = createStatusRoutes(
-			db,
-			eventBus,
-			localHostName,
-			localSiteId,
-			{
-				models: [
-					{ id: "local-claude", provider: "anthropic" },
-					{ id: "local-gpt", provider: "openai" },
-				],
-				default: "local-claude",
-			},
-		);
+		app = createStatusRoutes(db, eventBus, localHostName, localSiteId, {
+			models: [
+				{ id: "local-claude", provider: "anthropic" },
+				{ id: "local-gpt", provider: "openai" },
+			],
+			default: "local-claude",
+		});
 
 		// Insert local host row using raw SQL (for testing only)
 		const now = new Date().toISOString();
 		db.prepare(
 			"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
-		).run(
-			localSiteId,
-			localHostName,
-			JSON.stringify(["local-claude", "local-gpt"]),
-			now,
-			now,
-		);
+		).run(localSiteId, localHostName, JSON.stringify(["local-claude", "local-gpt"]), now, now);
 	});
 
 	describe("AC5.1: Returns union of local and remote models", () => {
 		it("returns local models from config", async () => {
-			const res = await app.fetch(
-				new Request("http://localhost/models"),
-			);
+			const res = await app.fetch(new Request("http://localhost/models"));
 
 			expect(res.status).toBe(200);
 			const body = (await res.json()) as {
@@ -72,9 +58,7 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 				"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
 			).run("remote-site-1", "remote-host-1", JSON.stringify(["gpt-4"]), now, now);
 
-			const res = await app.fetch(
-				new Request("http://localhost/models"),
-			);
+			const res = await app.fetch(new Request("http://localhost/models"));
 
 			expect(res.status).toBe(200);
 			const body = (await res.json()) as {
@@ -87,9 +71,7 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 				}>;
 			};
 
-			const remoteModels = body.models.filter(
-				(m) => m.id === "gpt-4" && m.via === "relay",
-			);
+			const remoteModels = body.models.filter((m) => m.id === "gpt-4" && m.via === "relay");
 			expect(remoteModels).toHaveLength(1);
 			expect(remoteModels[0].host).toBe("remote-host-1");
 		});
@@ -102,9 +84,7 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 				"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
 			).run("remote-site-2", "remote-host-2", JSON.stringify(["remote-model"]), now, now);
 
-			const res = await app.fetch(
-				new Request("http://localhost/models"),
-			);
+			const res = await app.fetch(new Request("http://localhost/models"));
 
 			const body = (await res.json()) as {
 				models: Array<{
@@ -115,9 +95,7 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 				}>;
 			};
 
-			const remoteModel = body.models.find(
-				(m) => m.id === "remote-model",
-			);
+			const remoteModel = body.models.find((m) => m.id === "remote-model");
 			expect(remoteModel?.via).toBe("relay");
 			expect(remoteModel?.host).toBe("remote-host-2");
 		});
@@ -128,9 +106,7 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 				"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
 			).run("remote-site-3", "remote-host-3", JSON.stringify(["fresh-model"]), now, now);
 
-			const res = await app.fetch(
-				new Request("http://localhost/models"),
-			);
+			const res = await app.fetch(new Request("http://localhost/models"));
 
 			const body = (await res.json()) as {
 				models: Array<{ id: string; status: string }>;
@@ -143,17 +119,13 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 
 	describe("AC5.3: Stale models annotated offline", () => {
 		it("marks models offline when host online_at > 5 minutes ago", async () => {
-			const staleTime = new Date(
-				Date.now() - 6 * 60 * 1000,
-			).toISOString();
+			const staleTime = new Date(Date.now() - 6 * 60 * 1000).toISOString();
 			const now = new Date().toISOString();
 			db.prepare(
 				"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
 			).run("stale-site", "stale-host", JSON.stringify(["stale-model"]), staleTime, now);
 
-			const res = await app.fetch(
-				new Request("http://localhost/models"),
-			);
+			const res = await app.fetch(new Request("http://localhost/models"));
 
 			const body = (await res.json()) as {
 				models: Array<{ id: string; status: string }>;
@@ -169,9 +141,7 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 				"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
 			).run("no-online-site", "no-online-host", JSON.stringify(["no-online-model"]), null, now);
 
-			const res = await app.fetch(
-				new Request("http://localhost/models"),
-			);
+			const res = await app.fetch(new Request("http://localhost/models"));
 
 			const body = (await res.json()) as {
 				models: Array<{ id: string; status: string }>;
@@ -193,30 +163,21 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 				"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
 			).run("host-b", "host-b", JSON.stringify(["shared-model"]), now, now);
 
-			const res = await app.fetch(
-				new Request("http://localhost/models"),
-			);
+			const res = await app.fetch(new Request("http://localhost/models"));
 
 			const body = (await res.json()) as {
 				models: Array<{ id: string; host: string }>;
 			};
 
-			const sharedModels = body.models.filter(
-				(m) => m.id === "shared-model",
-			);
+			const sharedModels = body.models.filter((m) => m.id === "shared-model");
 			expect(sharedModels).toHaveLength(2);
-			expect(sharedModels.map((m) => m.host).sort()).toEqual([
-				"host-a",
-				"host-b",
-			]);
+			expect(sharedModels.map((m) => m.host).sort()).toEqual(["host-a", "host-b"]);
 		});
 	});
 
 	describe("Returns local models with correct annotations", () => {
 		it("marks local models with host: hostName and via: local", async () => {
-			const res = await app.fetch(
-				new Request("http://localhost/models"),
-			);
+			const res = await app.fetch(new Request("http://localhost/models"));
 
 			const body = (await res.json()) as {
 				models: Array<{
@@ -234,9 +195,7 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 		});
 
 		it("includes default model in response", async () => {
-			const res = await app.fetch(
-				new Request("http://localhost/models"),
-			);
+			const res = await app.fetch(new Request("http://localhost/models"));
 
 			const body = (await res.json()) as { default: string };
 
@@ -251,18 +210,14 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 				"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
 			).run("bad-json-site", "bad-json-host", "not valid json", now, now);
 
-			const res = await app.fetch(
-				new Request("http://localhost/models"),
-			);
+			const res = await app.fetch(new Request("http://localhost/models"));
 
 			expect(res.status).toBe(200);
 			const body = (await res.json()) as {
 				models: Array<{ host: string }>;
 			};
 
-			const badHost = body.models.find(
-				(m) => m.host === "bad-json-host",
-			);
+			const badHost = body.models.find((m) => m.host === "bad-json-host");
 			expect(badHost).toBeFalsy();
 		});
 
@@ -272,17 +227,13 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 				"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
 			).run("deleted-site", "deleted-host", JSON.stringify(["deleted-model"]), now, now, 1);
 
-			const res = await app.fetch(
-				new Request("http://localhost/models"),
-			);
+			const res = await app.fetch(new Request("http://localhost/models"));
 
 			const body = (await res.json()) as {
 				models: Array<{ id: string }>;
 			};
 
-			const deletedModel = body.models.find(
-				(m) => m.id === "deleted-model",
-			);
+			const deletedModel = body.models.find((m) => m.id === "deleted-model");
 			expect(deletedModel).toBeFalsy();
 		});
 
@@ -292,24 +243,18 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 				"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
 			).run("null-models-site", "null-models-host", null, now, now);
 
-			const res = await app.fetch(
-				new Request("http://localhost/models"),
-			);
+			const res = await app.fetch(new Request("http://localhost/models"));
 
 			const body = (await res.json()) as {
 				models: Array<{ host: string }>;
 			};
 
-			const nullHost = body.models.find(
-				(m) => m.host === "null-models-host",
-			);
+			const nullHost = body.models.find((m) => m.host === "null-models-host");
 			expect(nullHost).toBeFalsy();
 		});
 
 		it("excludes local host from remote query by site_id", async () => {
-			const res = await app.fetch(
-				new Request("http://localhost/models"),
-			);
+			const res = await app.fetch(new Request("http://localhost/models"));
 
 			const body = (await res.json()) as {
 				models: Array<{ host: string; via: string }>;

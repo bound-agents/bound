@@ -2,9 +2,9 @@
 import { onDestroy, onMount } from "svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import MessageBubble from "../components/MessageBubble.svelte";
-import { modelStore } from "../lib/modelStore";
 import { api } from "../lib/api";
 import type { Thread } from "../lib/api";
+import { modelStore } from "../lib/modelStore";
 import { navigateTo } from "../lib/router";
 import {
 	connectWebSocket,
@@ -17,12 +17,17 @@ const { threadId } = $props<{ threadId: string }>();
 
 let messages = $state([]);
 let inputText = $state("");
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 let sending = $state(false);
 let waiting = $state(false);
 let waitingSinceMessageCount = $state(0);
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 let agentActive = $state(false);
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 let agentState = $state<string | null>(null);
-let fileInput = $state<HTMLInputElement | null>(null);
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+const fileInput = $state<HTMLInputElement | null>(null);
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 let uploadStatus = $state<string | null>(null);
 let thread = $state<Thread | null>(null);
 
@@ -110,13 +115,16 @@ onDestroy(() => {
 	if (statusPollInterval !== null) clearInterval(statusPollInterval);
 });
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 async function handleSendMessage(): Promise<void> {
 	if (!inputText.trim()) return;
 
 	sending = true;
 	try {
-		const newMessage = await api.sendMessage(threadId, inputText.trim(), modelStore.getModel() || undefined);
+		const newMessage = await api.sendMessage(
+			threadId,
+			inputText.trim(),
+			modelStore.getModel() || undefined,
+		);
 		messages = [...messages, newMessage];
 		inputText = "";
 		waitingSinceMessageCount = messages.length;
@@ -174,7 +182,7 @@ function handleKeydown(e: KeyboardEvent): void {
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 function viewTitle(): string {
-	if (thread && thread.title && thread.title.trim().length > 0) {
+	if (thread?.title && thread.title.trim().length > 0) {
 		return thread.title.trim();
 	}
 	if (messages.length === 0) {
