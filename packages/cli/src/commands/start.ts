@@ -416,6 +416,26 @@ export async function runStart(args: StartArgs): Promise<void> {
 		console.warn(`[llm] Failed to create model router: ${formatError(error)}`);
 	}
 
+	// Register local model IDs in hosts.models for sync advertisement
+	if (modelRouter) {
+		const modelIds = modelRouter.listBackends().map((b) => b.id);
+		const existingHost = appContext.db
+			.query("SELECT site_id FROM hosts WHERE site_id = ?")
+			.get(appContext.siteId) as { site_id: string } | null;
+
+		if (existingHost) {
+			updateRow(
+				appContext.db,
+				"hosts",
+				appContext.siteId,
+				{ models: JSON.stringify(modelIds) },
+				appContext.siteId,
+			);
+		}
+		// If no host row yet, the sync bootstrap will create it — hosts.models is set
+		// on the initial row insertion. On next startup, this code re-runs and updates.
+	}
+
 	// 11a. Initialize relay processor (now that modelRouter is ready)
 	if (keyring) {
 		const syncConfigResult = appContext.optionalConfig.sync;
