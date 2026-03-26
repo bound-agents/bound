@@ -6,6 +6,9 @@ export type { ModelResolution } from "./model-resolution";
 // Export model resolution
 export { resolveModel } from "./model-resolution";
 
+// Export delegation
+export { getDelegationTarget, getRecentToolCalls } from "./delegation";
+
 // Export agent loop
 export { AgentLoop } from "./agent-loop";
 
@@ -17,6 +20,7 @@ export { Scheduler } from "./scheduler";
 
 // Export relay processor
 export { RelayProcessor } from "./relay-processor";
+export { createRelayOutboxEntry } from "./relay-router";
 
 // Export commands
 export { getAllCommands, setCommandRegistry } from "./commands/index";

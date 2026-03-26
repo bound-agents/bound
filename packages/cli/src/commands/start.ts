@@ -4,7 +4,14 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { AgentLoop, RelayProcessor, Scheduler, seedCronTasks } from "@bound/agent";
+import {
+	AgentLoop,
+	RelayProcessor,
+	Scheduler,
+	seedCronTasks,
+	getDelegationTarget,
+	createRelayOutboxEntry,
+} from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
 import { generateMCPCommands, getAllCommands, setCommandRegistry } from "@bound/agent";
@@ -15,11 +22,12 @@ import {
 	resolveRelayConfig,
 	updateRow,
 	withChangeLog,
+	writeOutbox,
 } from "@bound/core";
 import { createModelRouter } from "@bound/llm";
 import type { BackendConfig, ModelBackendsConfig, ToolDefinition } from "@bound/llm";
 import { createClusterFs, createDefineCommands, createSandbox } from "@bound/sandbox";
-import type { SyncConfig } from "@bound/shared";
+import type { SyncConfig, StatusForwardPayload, ProcessPayload } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import { ReachabilityTracker, ensureKeypair } from "@bound/sync";
 import type { RelayExecutor } from "@bound/sync";
@@ -524,6 +532,70 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 		// Wire message:created events to the agent loop
 		const activeLoops = new Set<string>();
+		const statusForwardCache = new Map<string, StatusForwardPayload>();
+		const activeDelegations = new Map<string, { targetSiteId: string; processOutboxId: string }>();
+
+		// Listen for status:forward events from RelayProcessor
+		appContext.eventBus.on("status:forward", (payload: StatusForwardPayload) => {
+			statusForwardCache.set(payload.thread_id, payload);
+		});
+
+		// Helper: count messages in thread
+		const getThreadMessageCount = (threadId: string): number => {
+			const result = appContext.db
+				.query("SELECT COUNT(*) as count FROM messages WHERE thread_id = ? AND deleted = 0")
+				.get(threadId) as { count: number } | null;
+			return result?.count ?? 0;
+		};
+
+		// Helper: dispatch delegation to remote host
+		const dispatchDelegation = async (
+			targetHost: ReturnType<typeof getDelegationTarget>,
+			threadId: string,
+			messageId: string,
+			userId: string,
+		): Promise<void> => {
+			if (!targetHost) return;
+
+			const processPayload: ProcessPayload = {
+				thread_id: threadId,
+				message_id: messageId,
+				user_id: userId,
+				platform: null, // null = web UI delegation
+			};
+			const outboxEntry = createRelayOutboxEntry(
+				targetHost.site_id,
+				"process",
+				JSON.stringify(processPayload),
+				5 * 60 * 1000, // 5 minute timeout for delegated loop
+			);
+			writeOutbox(appContext.db, outboxEntry);
+			activeDelegations.set(threadId, {
+				targetSiteId: targetHost.site_id,
+				processOutboxId: outboxEntry.id,
+			});
+			appContext.eventBus.emit("sync:trigger", { reason: "delegation" });
+
+			// Poll until new assistant message appears in thread (loop completed on remote)
+			const POLL_INTERVAL_MS = 1000;
+			const TIMEOUT_MS = 5 * 60 * 1000;
+			const startTime = Date.now();
+			const initialMessageCount = getThreadMessageCount(threadId);
+
+			while (true) {
+				if (Date.now() - startTime > TIMEOUT_MS) {
+					appContext.logger.warn("Delegation timeout — no response received", { threadId });
+					break;
+				}
+				const currentCount = getThreadMessageCount(threadId);
+				if (currentCount > initialMessageCount) break; // Response arrived via sync
+
+				await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+			}
+
+			activeDelegations.delete(threadId);
+		};
+
 		appContext.eventBus.on("message:created", async ({ message, thread_id }) => {
 			if (message.role !== "user") return;
 			if (!modelRouter) {
@@ -542,20 +614,42 @@ export async function runStart(args: StartArgs): Promise<void> {
 				const selectedModelId = message.model_id || undefined;
 				const activeModelId = selectedModelId || routerConfig.default;
 
-				const agentLoop = new AgentLoop(appContext, sandbox?.bash ?? ({} as any), modelRouter, {
-					threadId: thread_id,
-					userId: message.user_id || appContext.config.allowlist.default_web_user,
-					modelId: activeModelId,
-				});
+				// AC6.1: Check delegation conditions
+				const delegationTarget = getDelegationTarget(
+					appContext.db,
+					thread_id,
+					activeModelId,
+					modelRouter,
+					appContext.siteId,
+				);
 
-				const result = await agentLoop.run();
+				// Get thread user_id
+				const threadRow = appContext.db
+					.query("SELECT user_id FROM threads WHERE id = ?")
+					.get(thread_id) as { user_id: string } | null;
+				const userId = threadRow?.user_id || appContext.config.allowlist.default_web_user;
 
-				if (result.error) {
-					console.error(`[agent] Error: ${result.error}`);
+				if (delegationTarget) {
+					// Delegate entire loop to remote host
+					console.log(`[agent] Delegating to remote host ${delegationTarget.site_id}`);
+					await dispatchDelegation(delegationTarget, thread_id, message.id, userId);
 				} else {
-					console.log(
-						`[agent] Done: ${result.messagesCreated} messages, ${result.toolCallsMade} tool calls`,
-					);
+					// AC6.5: Run locally
+					const agentLoop = new AgentLoop(appContext, sandbox?.bash ?? ({} as any), modelRouter, {
+						threadId: thread_id,
+						userId,
+						modelId: activeModelId,
+					});
+
+					const result = await agentLoop.run();
+
+					if (result.error) {
+						console.error(`[agent] Error: ${result.error}`);
+					} else {
+						console.log(
+							`[agent] Done: ${result.messagesCreated} messages, ${result.toolCallsMade} tool calls`,
+						);
+					}
 				}
 
 				// Emit the last message for WebSocket push
