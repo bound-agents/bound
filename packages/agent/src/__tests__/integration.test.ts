@@ -169,9 +169,10 @@ describe("Agent Loop End-to-End Integration", () => {
 		};
 
 		// Run agent loop
-		// biome-ignore lint/suspicious/noExplicitAny: test mocks require any casts
 		const agentLoop = new AgentLoop(
+			// biome-ignore lint/suspicious/noExplicitAny: test mocks require any casts
 			mockAppContext as any,
+			// biome-ignore lint/suspicious/noExplicitAny: test mocks require any casts
 			mockSandbox as any,
 			createMockRouter(mockLLMBackend),
 			{

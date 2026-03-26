@@ -234,7 +234,16 @@ describe("model-hint command", () => {
 				`INSERT INTO tasks (
 					id, type, status, trigger_spec, model_hint, deleted, created_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-				["task-1", "test", "pending", "{}", "claude-3", 0, new Date().toISOString(), new Date().toISOString()],
+				[
+					"task-1",
+					"test",
+					"pending",
+					"{}",
+					"claude-3",
+					0,
+					new Date().toISOString(),
+					new Date().toISOString(),
+				],
 			);
 
 			const eventBus = new TypedEventEmitter();

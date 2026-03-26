@@ -16,8 +16,8 @@ import { formatError } from "@bound/shared";
 
 import { assembleContext } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
-import { resolveModel } from "./model-resolution";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
+import { resolveModel } from "./model-resolution";
 import { type EligibleHost, createRelayOutboxEntry } from "./relay-router";
 import { extractSummaryAndMemories } from "./summary-extraction";
 import type { AgentLoopConfig, AgentLoopResult, AgentLoopState } from "./types";
@@ -109,7 +109,7 @@ export class AgentLoop {
 				this.state = "LLM_CALL";
 				const chunks: StreamChunk[] = [];
 				const SILENCE_TIMEOUT_MS = 120_000;
-			let currentTurnId: number | null = null;
+				let currentTurnId: number | null = null;
 
 				try {
 					// Extract system messages for drivers that handle them separately (e.g., Bedrock, Anthropic)
@@ -150,27 +150,31 @@ export class AgentLoop {
 							const fileRef = `cluster/relay/inference-${randomUUID()}.json`;
 							const messagesJson = JSON.stringify(inferencePayload.messages);
 							// Write messages to synced files table via insertRow (change-log outbox pattern)
-							insertRow(this.ctx.db, "files", {
-								id: randomUUID(),
-								path: fileRef,
-								content: messagesJson,
-								is_binary: 0,
-								size_bytes: new TextEncoder().encode(messagesJson).byteLength,
-								created_at: new Date().toISOString(),
-								modified_at: new Date().toISOString(),
-								deleted: 0,
-								created_by: this.config.userId,
-								host_origin: this.ctx.hostName,
-							}, this.ctx.siteId);
+							insertRow(
+								this.ctx.db,
+								"files",
+								{
+									id: randomUUID(),
+									path: fileRef,
+									content: messagesJson,
+									is_binary: 0,
+									size_bytes: new TextEncoder().encode(messagesJson).byteLength,
+									created_at: new Date().toISOString(),
+									modified_at: new Date().toISOString(),
+									deleted: 0,
+									created_by: this.config.userId,
+									host_origin: this.ctx.hostName,
+								},
+								this.ctx.siteId,
+							);
 							// Trigger sync so the file reaches the target host
 							this.ctx.eventBus.emit("sync:trigger", { reason: "relay-large-prompt" });
 							inferencePayload = {
 								...inferencePayload,
-								messages: [],            // Clear inline messages
+								messages: [], // Clear inline messages
 								messages_file_ref: fileRef,
 							};
 						}
-
 
 						for await (const chunk of this.relayStream(
 							inferencePayload,
@@ -664,8 +668,8 @@ export class AgentLoop {
 					"inference",
 					serializedPayload,
 					PER_HOST_TIMEOUT_MS,
-					undefined,  // refId — not used for inference (no idempotency key)
-					undefined,  // idempotencyKey — omitted per spec §3.6
+					undefined, // refId — not used for inference (no idempotency key)
+					undefined, // idempotencyKey — omitted per spec §3.6
 					streamId,
 				);
 				writeOutbox(this.ctx.db, outboxEntry);
@@ -678,7 +682,7 @@ export class AgentLoop {
 				});
 
 				let firstChunkReceived = false;
-				const hostStartTime = Date.now();  // when we started waiting on this host
+				const hostStartTime = Date.now(); // when we started waiting on this host
 				let lastActivityTime = Date.now(); // updated on each new chunk (for mid-stream silence)
 				let firstChunkLatencyMs: number | null = null;
 				let nextExpectedSeq = 0;
@@ -729,14 +733,15 @@ export class AgentLoop {
 					// AC1.7: Check for error response
 					const errorEntry = inboxEntries.find((e) => e.kind === "error");
 					if (errorEntry) {
+						let parsedError: string;
 						try {
 							const errPayload = JSON.parse(errorEntry.payload) as { error?: string };
-							markProcessed(this.ctx.db, [errorEntry.id]);
-							throw new Error(errPayload.error ?? "Remote inference error");
-						} catch (parseErr) {
-							markProcessed(this.ctx.db, [errorEntry.id]);
-							throw new Error(`Remote inference error: ${errorEntry.payload}`);
+							parsedError = errPayload.error ?? "Remote inference error";
+						} catch {
+							parsedError = `Remote inference error: ${errorEntry.payload}`;
 						}
+						markProcessed(this.ctx.db, [errorEntry.id]);
+						throw new Error(parsedError);
 					}
 
 					// Buffer all received stream_chunk and stream_end entries by seq
@@ -757,6 +762,7 @@ export class AgentLoop {
 
 					// AC1.3: Yield contiguous chunks starting from nextExpectedSeq
 					while (buffer.has(nextExpectedSeq)) {
+						// biome-ignore lint/style/noNonNullAssertion: checked with buffer.has() above
 						const chunkPayload = buffer.get(nextExpectedSeq)!;
 						buffer.delete(nextExpectedSeq);
 						nextExpectedSeq++;

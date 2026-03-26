@@ -588,6 +588,7 @@ describe("AgentLoop", () => {
 
 		// Instead, let's verify the mechanism exists by checking a fast-fail scenario
 		const fastBackend: LLMBackend = {
+			// biome-ignore lint/correctness/useYield: generator throws before yield
 			async *chat() {
 				// Immediately throw an error to simulate what happens after timeout
 				throw new Error("LLM silence timeout: no chunk received for 120000ms");
@@ -766,14 +767,12 @@ describe("AgentLoop", () => {
 
 		// Query the turns table to check relay metrics columns
 		const turns = db
-			.query(
-				"SELECT id, relay_target, relay_latency_ms FROM turns WHERE thread_id = ?",
-			)
+			.query("SELECT id, relay_target, relay_latency_ms FROM turns WHERE thread_id = ?")
 			.all(threadId) as Array<{
-				id: number;
-				relay_target: string | null;
-				relay_latency_ms: number | null;
-			}>;
+			id: number;
+			relay_target: string | null;
+			relay_latency_ms: number | null;
+		}>;
 
 		expect(turns.length).toBeGreaterThan(0);
 
