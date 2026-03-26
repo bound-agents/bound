@@ -265,6 +265,7 @@ export interface RelayMessage {
 	kind: string;
 	ref_id: string | null;
 	idempotency_key: string | null;
+	stream_id: string | null;
 	payload: string;
 	created_at: string;
 	expires_at: string;

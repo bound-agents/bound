@@ -1,4 +1,4 @@
-import type { Message } from "./types.js";
+import type { Message, StatusForwardPayload } from "./types.js";
 
 export interface EventMap {
 	"message:created": { message: Message; thread_id: string };
@@ -9,4 +9,5 @@ export interface EventMap {
 	"file:changed": { path: string; operation: "created" | "modified" | "deleted" };
 	"alert:created": { message: Message; thread_id: string };
 	"agent:cancel": { thread_id: string };
+	"status:forward": StatusForwardPayload;
 }

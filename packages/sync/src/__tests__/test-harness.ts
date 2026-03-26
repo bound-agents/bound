@@ -202,6 +202,7 @@ const FULL_SCHEMA = `
 		kind TEXT NOT NULL,
 		ref_id TEXT,
 		idempotency_key TEXT,
+		stream_id TEXT,
 		payload TEXT NOT NULL,
 		created_at TEXT NOT NULL,
 		expires_at TEXT NOT NULL,
@@ -214,10 +215,22 @@ const FULL_SCHEMA = `
 		kind TEXT NOT NULL,
 		ref_id TEXT,
 		idempotency_key TEXT,
+		stream_id TEXT,
 		payload TEXT NOT NULL,
 		expires_at TEXT NOT NULL,
 		received_at TEXT NOT NULL,
 		processed INTEGER DEFAULT 0
+	);
+
+	CREATE TABLE relay_cycles (
+		id TEXT PRIMARY KEY,
+		requester_site_id TEXT NOT NULL,
+		target_site_id TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		stream_id TEXT,
+		created_at TEXT NOT NULL,
+		latency_ms INTEGER NOT NULL,
+		success INTEGER NOT NULL
 	);
 `;
 

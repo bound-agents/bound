@@ -85,6 +85,7 @@ describe("relay integration tests", () => {
 					kind: "result",
 					ref_id: request.id,
 					idempotency_key: null,
+					stream_id: request.stream_id ?? null,
 					payload: JSON.stringify({
 						status: "success",
 						data: "echoed from hub executor",
@@ -116,6 +117,7 @@ describe("relay integration tests", () => {
 			kind: "request",
 			ref_id: requestId,
 			idempotency_key: null,
+			stream_id: null,
 			payload: JSON.stringify({ test: "data" }),
 			created_at: now,
 			expires_at: expiresAt,
@@ -226,6 +228,7 @@ describe("relay integration tests", () => {
 				kind: "relay_message",
 				ref_id: requestId1,
 				idempotency_key: idempotencyKey,
+				stream_id: null,
 				payload: JSON.stringify({ attempt: 1 }),
 				created_at: now,
 				expires_at: expiresAt,
@@ -248,6 +251,7 @@ describe("relay integration tests", () => {
 				kind: "relay_message",
 				ref_id: requestId2,
 				idempotency_key: idempotencyKey,
+				stream_id: null,
 				payload: JSON.stringify({ attempt: 2 }),
 				created_at: now,
 				expires_at: expiresAt,
@@ -349,6 +353,7 @@ describe("relay integration tests", () => {
 				kind: "relay_message",
 				ref_id: messageId,
 				idempotency_key: null,
+				stream_id: null,
 				payload: JSON.stringify({ message: "hello from spoke1" }),
 				created_at: now,
 				expires_at: expiresAt,
@@ -402,7 +407,7 @@ describe("relay integration tests", () => {
 
 	it("Relay failure non-fatal - if relay endpoint returns error, sync still completes", async () => {
 		// Create a broken relay executor that throws
-		const brokenExecutor: RelayExecutor = async () => {
+		const brokenExecutor: RelayExecutor = async (_request, _hubSiteId) => {
 			throw new Error("Executor broke!");
 		};
 
@@ -426,6 +431,7 @@ describe("relay integration tests", () => {
 			kind: "request",
 			ref_id: requestId,
 			idempotency_key: null,
+			stream_id: null,
 			payload: JSON.stringify({ test: "data" }),
 			created_at: now,
 			expires_at: expiresAt,
@@ -451,6 +457,7 @@ describe("relay integration tests", () => {
 					kind: "result",
 					ref_id: request.id,
 					idempotency_key: null,
+					stream_id: request.stream_id ?? null,
 					payload: JSON.stringify({ test: "data" }),
 					expires_at: request.expires_at,
 					received_at: new Date().toISOString(),
@@ -479,6 +486,7 @@ describe("relay integration tests", () => {
 			kind: "request",
 			ref_id: requestId,
 			idempotency_key: null,
+			stream_id: null,
 			payload: JSON.stringify({ test: "data" }),
 			created_at: now,
 			expires_at: expiresAt,
@@ -496,7 +504,7 @@ describe("relay integration tests", () => {
 		const existingResult = inboxB.find((e) => e.ref_id === requestId);
 		if (existingResult) {
 			const inboxQuery = instanceB.db.query(
-				"INSERT OR IGNORE INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+				"INSERT OR IGNORE INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
 			);
 			inboxQuery.run([
 				existingResult.id,
@@ -504,6 +512,7 @@ describe("relay integration tests", () => {
 				existingResult.kind,
 				existingResult.ref_id,
 				existingResult.idempotency_key,
+				existingResult.stream_id,
 				existingResult.payload,
 				existingResult.expires_at,
 				existingResult.received_at,
@@ -513,5 +522,124 @@ describe("relay integration tests", () => {
 		// Verify no duplicate was inserted
 		inboxB = readUnprocessed(instanceB.db);
 		expect(inboxB.length).toBe(initialCount);
+	});
+
+	it("stream_id round-trip - spoke writes outbox with stream_id, hub routes to target, target receives with same stream_id", async () => {
+		// Setup a hub and two spokes
+		const portHub = 10000 + Math.floor(Math.random() * 50000);
+		const portSpoke1 = portHub + 1;
+		const portSpoke2 = portHub + 2;
+
+		// Generate keypairs
+		const keypairHub = await ensureKeypair(`/tmp/bound-test-hub-stream-${testRunId}`);
+		const keypairSpoke1 = await ensureKeypair(`/tmp/bound-test-spoke1-stream-${testRunId}`);
+		const keypairSpoke2 = await ensureKeypair(`/tmp/bound-test-spoke2-stream-${testRunId}`);
+
+		const pubKeyHub = await exportPublicKey(keypairHub.publicKey);
+		const pubKeySpoke1 = await exportPublicKey(keypairSpoke1.publicKey);
+		const pubKeySpoke2 = await exportPublicKey(keypairSpoke2.publicKey);
+
+		const keyringStream: KeyringConfig = {
+			hosts: {
+				[keypairHub.siteId]: {
+					public_key: pubKeyHub,
+					url: `http://localhost:${portHub}`,
+				},
+				[keypairSpoke1.siteId]: {
+					public_key: pubKeySpoke1,
+					url: `http://localhost:${portSpoke1}`,
+				},
+				[keypairSpoke2.siteId]: {
+					public_key: pubKeySpoke2,
+					url: `http://localhost:${portSpoke2}`,
+				},
+			},
+		};
+
+		// Create hub
+		const hub = await createTestInstance({
+			name: "hub-stream",
+			port: portHub,
+			dbPath: `/tmp/bound-test-hub-stream-${testRunId}/bound.db`,
+			role: "hub",
+			keyring: keyringStream,
+			keypairPath: `/tmp/bound-test-hub-stream-${testRunId}`,
+		});
+
+		// Create spokes
+		const spoke1 = await createTestInstance({
+			name: "spoke1-stream",
+			port: portSpoke1,
+			dbPath: `/tmp/bound-test-spoke1-stream-${testRunId}/bound.db`,
+			role: "spoke",
+			hubPort: portHub,
+			keyring: keyringStream,
+			keypairPath: `/tmp/bound-test-spoke1-stream-${testRunId}`,
+		});
+
+		const spoke2 = await createTestInstance({
+			name: "spoke2-stream",
+			port: portSpoke2,
+			dbPath: `/tmp/bound-test-spoke2-stream-${testRunId}/bound.db`,
+			role: "spoke",
+			hubPort: portHub,
+			keyring: keyringStream,
+			keypairPath: `/tmp/bound-test-spoke2-stream-${testRunId}`,
+		});
+
+		try {
+			// Verify spoke instances have syncClient
+			expect(spoke1.syncClient).toBeDefined();
+			expect(spoke2.syncClient).toBeDefined();
+
+			// Spoke1 writes relay outbox entry targeting Spoke2 WITH stream_id
+			const streamId = crypto.randomUUID();
+			const now = new Date().toISOString();
+			const expiresAt = new Date(Date.now() + 60000).toISOString();
+
+			writeOutbox(spoke1.db, {
+				id: crypto.randomUUID(),
+				source_site_id: spoke1.siteId,
+				target_site_id: spoke2.siteId,
+				kind: "stream_chunk",
+				ref_id: null,
+				idempotency_key: null,
+				stream_id: streamId,
+				payload: JSON.stringify({ chunks: [], seq: 1 }),
+				created_at: now,
+				expires_at: expiresAt,
+			});
+
+			// Spoke1 syncs - hub should store message with stream_id preserved
+			let syncResult = await spoke1.syncClient?.syncCycle();
+			expect(syncResult?.ok).toBe(true);
+
+			// Verify spoke1's outbox is empty (delivered)
+			let outbox1 = readUndelivered(spoke1.db);
+			expect(outbox1).toHaveLength(0);
+
+			// Verify hub's outbox has the entry with stream_id preserved
+			const hubOutbox = readUndelivered(hub.db);
+			const spoke2Targets = hubOutbox.filter((e) => e.target_site_id === spoke2.siteId);
+			expect(spoke2Targets.length).toBeGreaterThan(0);
+			const hubEntry = spoke2Targets[0];
+			expect(hubEntry.stream_id).toBe(streamId);
+
+			// Spoke2 syncs - should receive the message with stream_id preserved
+			syncResult = await spoke2.syncClient?.syncCycle();
+			expect(syncResult?.ok).toBe(true);
+
+			// Verify spoke2 received the message with stream_id
+			const inbox2 = readUnprocessed(spoke2.db);
+			expect(inbox2.length).toBeGreaterThan(0);
+			const streamEntry = inbox2.find((e) => e.stream_id === streamId);
+			expect(streamEntry).toBeDefined();
+			expect(streamEntry?.kind).toBe("stream_chunk");
+			expect(streamEntry?.stream_id).toBe(streamId);
+		} finally {
+			await hub.cleanup();
+			await spoke1.cleanup();
+			await spoke2.cleanup();
+		}
 	});
 });

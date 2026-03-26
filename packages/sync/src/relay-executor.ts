@@ -24,6 +24,7 @@ export const noopRelayExecutor: RelayExecutor = async (request, hubSiteId) => {
 			kind: "error",
 			ref_id: request.id,
 			idempotency_key: null,
+			stream_id: request.stream_id ?? null,
 			payload: JSON.stringify({
 				error: "Hub-local relay execution not yet implemented",
 				retriable: false,
