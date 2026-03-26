@@ -22,9 +22,8 @@ export type { ModelsConfig };
 export interface AppConfig {
 	modelsConfig?: ModelsConfig;
 	hostName?: string;
-	hostSiteId?: string;
-	keyring?: KeyringConfig;
 	siteId?: string;
+	keyring?: KeyringConfig;
 	logger?: Logger;
 	relayExecutor?: RelayExecutor;
 	hubSiteId?: string;
@@ -40,14 +39,10 @@ export async function createApp(
 ): Promise<Hono> {
 	const routesConfig: RoutesConfig = {
 		modelsConfig: appConfig as ModelsConfig | undefined,
-		hostName:
-			appConfig && "hostName" in appConfig ? appConfig.hostName : undefined,
-		siteId:
-			appConfig && "hostSiteId" in appConfig ? appConfig.hostSiteId : undefined,
-		statusForwardCache:
-			appConfig && "statusForwardCache" in appConfig ? appConfig.statusForwardCache : undefined,
-		activeDelegations:
-			appConfig && "activeDelegations" in appConfig ? appConfig.activeDelegations : undefined,
+		hostName: appConfig?.hostName,
+		siteId: appConfig?.siteId,
+		statusForwardCache: appConfig?.statusForwardCache,
+		activeDelegations: appConfig?.activeDelegations,
 	};
 
 	const app = new Hono();

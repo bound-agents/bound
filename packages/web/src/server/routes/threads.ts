@@ -3,7 +3,7 @@ import { getSiteId } from "@bound/core";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertRow } from "@bound/core";
-import type { Thread, StatusForwardPayload } from "@bound/shared";
+import type { StatusForwardPayload, Thread } from "@bound/shared";
 import { Hono } from "hono";
 
 export function createThreadsRoutes(
@@ -142,7 +142,7 @@ export function createThreadsRoutes(
 				.get(id) as { id: string } | null;
 
 			const isActive =
-				!!runningTask || (forwarded?.status === "thinking" || forwarded?.status === "tool_call");
+				!!runningTask || forwarded?.status === "thinking" || forwarded?.status === "tool_call";
 
 			return c.json({
 				active: isActive,
