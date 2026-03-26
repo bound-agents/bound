@@ -1,18 +1,18 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { join } from "node:path";
 
 import { createTestInstance } from "../../../sync/src/__tests__/test-harness";
 import type { TestInstance } from "../../../sync/src/__tests__/test-harness";
 
 import { applyMetricsSchema } from "@bound/core";
-import { TypedEventEmitter } from "@bound/shared";
 import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
-import { RelayProcessor } from "../relay-processor";
+import { TypedEventEmitter } from "@bound/shared";
 import { AgentLoop } from "../agent-loop";
+import { RelayProcessor } from "../relay-processor";
 import type { AgentLoopConfig } from "../types";
 
 /**
@@ -168,7 +168,7 @@ function makeTestAppContext(
 /**
  * Helper to create a ModelRouter with a mock backend.
  */
-function createMockRouter(backend: LLMBackend, modelId: string = "test-model"): ModelRouter {
+function createMockRouter(backend: LLMBackend, modelId = "test-model"): ModelRouter {
 	const backends = new Map<string, LLMBackend>();
 	backends.set(modelId, backend);
 	return new ModelRouter(backends, modelId);
@@ -176,10 +176,33 @@ function createMockRouter(backend: LLMBackend, modelId: string = "test-model"): 
 
 /**
  * Helper to create a ModelRouter that marks a model as remote (no local backend).
+ * The router has a stub backend under a different key (_stub_default_) to satisfy
+ * getDefault().capabilities() calls during context assembly. The requested model
+ * is NOT registered locally, so resolveModel() will fall through to remote lookup.
  */
-function createRemoteRouter(modelId: string = "claude-3-5-sonnet"): ModelRouter {
+function createRemoteRouter(remoteModelId = "claude-3-5-sonnet"): ModelRouter {
+	// Stub backend: provides capabilities for context assembly but should never be called for inference
+	// (inference will route remotely via resolveModel)
+	const stubBackend: LLMBackend = {
+		async *chat() {
+			// This should never be called since the model is resolved as remote
+			yield { type: "text" as const, content: "" };
+			throw new Error(
+				"Stub backend: should not be called for chat (model should route remotely)",
+			);
+		},
+		capabilities: () => ({
+			streaming: true,
+			tool_use: true,
+			system_prompt: true,
+			prompt_caching: false,
+			vision: false,
+			max_context: 200000,
+		}),
+	};
 	const backends = new Map<string, LLMBackend>();
-	return new ModelRouter(backends, modelId);
+	backends.set("_stub_default_", stubBackend);
+	return new ModelRouter(backends, "_stub_default_");
 }
 
 describe("relay-stream integration tests", () => {
@@ -817,18 +840,7 @@ describe("relay-stream integration tests", () => {
 			requester.db.run(
 				`INSERT INTO threads (id, user_id, interface, host_origin, color, title, created_at, modified_at, last_message_at, deleted)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					threadId,
-					userIds[i],
-					"cli",
-					"localhost",
-					0,
-					`Thread ${i}`,
-					now,
-					now,
-					now,
-					0,
-				],
+				[threadId, userIds[i], "cli", "localhost", 0, `Thread ${i}`, now, now, now, 0],
 			);
 			requester.db.run(
 				"INSERT INTO messages (id, thread_id, role, content, created_at, host_origin) VALUES (?, ?, ?, ?, ?, ?)",
