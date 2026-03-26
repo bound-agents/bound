@@ -11,6 +11,14 @@ export interface ModelInfo {
 	provider: string;
 }
 
+export interface ClusterModelInfo {
+	id: string;
+	provider: string;
+	host: string;
+	via: "local" | "relay";
+	status: "local" | "online" | "offline?";
+}
+
 export interface ModelsConfig {
 	models: ModelInfo[];
 	default: string;
@@ -19,6 +27,8 @@ export interface ModelsConfig {
 export function createStatusRoutes(
 	db: Database,
 	eventBus: TypedEventEmitter,
+	hostName: string,
+	siteId: string,
 	modelsConfig?: ModelsConfig,
 ): Hono {
 	const app = new Hono();
@@ -83,12 +93,54 @@ export function createStatusRoutes(
 	});
 
 	app.get("/models", (c) => {
-		if (modelsConfig && modelsConfig.models.length > 0) {
-			return c.json(modelsConfig);
+		const STALE_THRESHOLD_MS = 5 * 60 * 1000;
+
+		const localModels: ClusterModelInfo[] = (modelsConfig?.models ?? []).map((m) => ({
+			id: m.id,
+			provider: m.provider,
+			host: hostName,
+			via: "local" as const,
+			status: "local" as const,
+		}));
+
+		// AC5.1: Query remote models from hosts table
+		// Exclude local host by site_id (unique key) not host_name (not guaranteed unique)
+		const remoteHosts = db
+			.query(
+				`SELECT host_name, models, online_at
+				 FROM hosts
+				 WHERE deleted = 0 AND models IS NOT NULL AND site_id != ?`,
+			)
+			.all(siteId) as Array<{ host_name: string; models: string; online_at: string | null }>;
+
+		const remoteModels: ClusterModelInfo[] = [];
+		for (const host of remoteHosts) {
+			let modelIds: string[];
+			try {
+				modelIds = JSON.parse(host.models);
+			} catch {
+				continue;
+			}
+			// AC5.3: Annotate stale models with "offline?"
+			const isStale =
+				!host.online_at ||
+				Date.now() - new Date(host.online_at).getTime() > STALE_THRESHOLD_MS;
+
+			// AC5.5: Same model ID on multiple hosts → separate entries
+			for (const modelId of modelIds) {
+				remoteModels.push({
+					id: modelId,
+					provider: "remote",
+					host: host.host_name,
+					via: "relay" as const,
+					status: isStale ? ("offline?" as const) : ("online" as const),
+				});
+			}
 		}
+
 		return c.json({
-			models: [] as ModelInfo[],
-			default: "",
+			models: [...localModels, ...remoteModels],
+			default: modelsConfig?.default ?? "",
 		});
 	});
 

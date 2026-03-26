@@ -11,6 +11,8 @@ export type { ModelsConfig };
 
 export interface RoutesConfig {
 	modelsConfig?: ModelsConfig;
+	hostName?: string;
+	siteId?: string;
 }
 
 export function registerRoutes(
@@ -18,13 +20,13 @@ export function registerRoutes(
 	eventBus: TypedEventEmitter,
 	config: RoutesConfig = {},
 ) {
-	const { modelsConfig } = config;
+	const { modelsConfig, hostName = "unknown", siteId = "" } = config;
 
 	return {
 		threads: createThreadsRoutes(db, modelsConfig?.default),
 		messages: createMessagesRoutes(db, eventBus),
 		files: createFilesRoutes(db),
-		status: createStatusRoutes(db, eventBus, modelsConfig),
+		status: createStatusRoutes(db, eventBus, hostName, siteId, modelsConfig),
 		tasks: createTasksRoutes(db),
 		advisories: createAdvisoriesRoutes(db),
 	};

@@ -507,6 +507,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		webServer = await createWebServer(appContext.db, appContext.eventBus, {
 			port: webPort,
 			host: "localhost",
+			hostName: appContext.hostName,
 			models: {
 				models: modelBackends.backends.map((b) => ({ id: b.id, provider: b.provider })),
 				default: modelBackends.default,

@@ -21,6 +21,8 @@ export type { ModelsConfig };
 
 export interface AppConfig {
 	modelsConfig?: ModelsConfig;
+	hostName?: string;
+	hostSiteId?: string;
 	keyring?: KeyringConfig;
 	siteId?: string;
 	logger?: Logger;
@@ -36,6 +38,10 @@ export async function createApp(
 ): Promise<Hono> {
 	const routesConfig: RoutesConfig = {
 		modelsConfig: appConfig as ModelsConfig | undefined,
+		hostName:
+			appConfig && "hostName" in appConfig ? appConfig.hostName : undefined,
+		siteId:
+			appConfig && "hostSiteId" in appConfig ? appConfig.hostSiteId : undefined,
 	};
 
 	const app = new Hono();
