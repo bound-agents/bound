@@ -49,5 +49,6 @@ export {
 	markProcessed,
 	pruneRelayTables,
 	readInboxByRefId,
+	readInboxByStreamId,
 	PayloadTooLargeError,
 } from "./relay";

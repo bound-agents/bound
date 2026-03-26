@@ -122,3 +122,14 @@ export function readInboxByRefId(db: Database, refId: string): RelayInboxEntry |
 		)
 		.get(refId) as RelayInboxEntry | null;
 }
+
+export function readInboxByStreamId(
+	db: Database,
+	streamId: string,
+): RelayInboxEntry[] {
+	return db
+		.query(
+			"SELECT * FROM relay_inbox WHERE stream_id = ? AND processed = 0 ORDER BY received_at ASC",
+		)
+		.all(streamId) as RelayInboxEntry[];
+}
