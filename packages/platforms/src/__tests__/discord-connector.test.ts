@@ -344,17 +344,6 @@ describe("DiscordConnector", () => {
 	});
 
 	describe("Edge cases", () => {
-		it("should ignore bot messages", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
-
-			// This would normally be filtered in connect() messageCreate handler,
-			// but we're testing onMessage directly. The code checks author.bot,
-			// so we'll test through the handler simulation.
-			// Since we can't easily test the event handler, we verify the connector
-			// has the expected interface.
-			expect(connector.platform).toBe("discord");
-		});
-
 		it("should reuse existing user and thread on subsequent messages", async () => {
 			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
 

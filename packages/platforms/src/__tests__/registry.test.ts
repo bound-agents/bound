@@ -12,6 +12,7 @@ import type {
 import { TypedEventEmitter } from "@bound/shared";
 import type { PlatformConnector } from "../connector.js";
 import { WebhookStubConnector } from "../connectors/webhook-stub.js";
+import { PlatformLeaderElection } from "../leader-election.js";
 import { PlatformConnectorRegistry } from "../registry.js";
 
 // Mock connector for testing (used in some tests)
@@ -133,29 +134,46 @@ afterEach(() => {
 describe("PlatformConnectorRegistry", () => {
 	describe("AC5.5: Routes platform:deliver to correct connector", () => {
 		it("should route platform:deliver event to the leader connector", async () => {
-			// Manually create a registry and inject the mock connector by overriding createConnector
+			// Create mock connector to track deliver() calls
+			const mockConnector = new _MockConnector("test-platform", "broadcast");
+
+			// Create a minimal config that won't match our mock platform
+			// so the registry doesn't try to create real connectors
 			const platformsConfig: PlatformsConfig = {
-				connectors: [
-					{
-						platform: "webhook-stub",
-						failover_threshold_ms: 100,
-						allowed_users: [],
-					},
-				],
+				connectors: [],
 			};
 
 			const registry = new PlatformConnectorRegistry(mockAppContext, platformsConfig);
 
-			// Override the private createConnector method by using a subclass approach
-			// Since createConnector is private, we test through the public interface
+			// Manually set up leader election with mock connector
+			const connectorConfig: PlatformConnectorConfig = {
+				platform: "test-platform",
+				failover_threshold_ms: 100,
+				allowed_users: [],
+			};
+
+			const election = new PlatformLeaderElection(
+				mockConnector,
+				connectorConfig,
+				db,
+				mockAppContext.siteId,
+			);
+
+			// Inject election into registry's internal elections map
+			(registry as { elections: Map<string, PlatformLeaderElection> }).elections.set(
+				"test-platform",
+				election,
+			);
+
+			// Manually set isLeader flag so routing works
+			(election as { isLeaderFlag: boolean }).isLeaderFlag = true;
+
+			// Set up event routing by calling start() which wires eventBus handlers
 			registry.start();
 
-			// Give leader election time to complete
-			await new Promise((resolve) => setTimeout(resolve, 150));
-
-			// Now emit platform:deliver event
+			// Emit platform:deliver event
 			const payload: PlatformDeliverPayload = {
-				platform: "webhook-stub",
+				platform: "test-platform",
 				thread_id: "thread-1",
 				message_id: "msg-1",
 				content: "Test message",
@@ -166,9 +184,12 @@ describe("PlatformConnectorRegistry", () => {
 			// Give event handler time to process
 			await new Promise((resolve) => setTimeout(resolve, 50));
 
-			// The webhook-stub's deliver() should have been called and thrown
-			// (since WebhookStubConnector.deliver() throws)
-			// But the error should have been caught and logged, not thrown
+			// Verify the mock's deliver() was called with correct arguments (AC5.5)
+			expect(mockConnector.deliverCalls.length).toBe(1);
+			const call = mockConnector.deliverCalls[0];
+			expect(call.threadId).toBe("thread-1");
+			expect(call.messageId).toBe("msg-1");
+			expect(call.content).toBe("Test message");
 
 			registry.stop();
 		});
@@ -254,7 +275,7 @@ describe("PlatformConnectorRegistry", () => {
 			expect(() => registry.stop()).not.toThrow();
 		});
 
-		it("should handle multiple connectors", async () => {
+		it("should handle single connector lifecycle", async () => {
 			const platformsConfig: PlatformsConfig = {
 				connectors: [
 					{
