@@ -52,7 +52,7 @@ describe("Config key consistency", () => {
 	it("config loader defines at least the known optional config keys", () => {
 		// These are the keys we know should exist from the config loader source
 		expect(LOADER_KEYS).toContain("network");
-		expect(LOADER_KEYS).toContain("discord");
+		expect(LOADER_KEYS).toContain("platforms");
 		expect(LOADER_KEYS).toContain("sync");
 		expect(LOADER_KEYS).toContain("keyring");
 		expect(LOADER_KEYS).toContain("mcp");

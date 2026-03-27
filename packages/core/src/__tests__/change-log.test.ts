@@ -232,7 +232,7 @@ describe("Change Log Producer", () => {
 		const userData = {
 			id: userId,
 			display_name: "Frank",
-			discord_id: "discord-123",
+			platform_ids: JSON.stringify({ discord: "discord-123" }),
 			first_seen_at: now,
 			modified_at: now,
 			deleted: 0,
@@ -247,7 +247,7 @@ describe("Change Log Producer", () => {
 		const rowData = JSON.parse(entry.row_data);
 		expect(rowData.id).toBe(userId);
 		expect(rowData.display_name).toBe("Frank");
-		expect(rowData.discord_id).toBe("discord-123");
+		expect(rowData.platform_ids).toBe(JSON.stringify({ discord: "discord-123" }));
 		expect(rowData.first_seen_at).toBe(now);
 	});
 
