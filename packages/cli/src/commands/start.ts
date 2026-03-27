@@ -719,7 +719,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	};
 
 	// 13. Platform connectors (if configured)
-	let platformRegistry: { stop(): void } | null = null;
+	let platformRegistry: { start(): void; stop(): void } | null = null;
 	const platformsResult = appContext.optionalConfig.platforms;
 	if (platformsResult?.ok) {
 		const { PlatformConnectorRegistry } = await import("@bound/platforms");
