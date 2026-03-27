@@ -1,4 +1,4 @@
-import type { Message, StatusForwardPayload } from "./types.js";
+import type { Message, StatusForwardPayload, PlatformDeliverPayload } from "./types.js";
 
 export interface EventMap {
 	"message:created": { message: Message; thread_id: string };
@@ -10,4 +10,6 @@ export interface EventMap {
 	"alert:created": { message: Message; thread_id: string };
 	"agent:cancel": { thread_id: string };
 	"status:forward": StatusForwardPayload;
+	"platform:deliver": PlatformDeliverPayload;
+	"platform:webhook": { platform: string; rawBody: string; headers: Record<string, string> };
 }
