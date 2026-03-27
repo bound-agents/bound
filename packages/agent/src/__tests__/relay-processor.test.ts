@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema, markProcessed, readUnprocessed } from "@bound/core";
 import { applyMetricsSchema } from "@bound/core";
+import type { ChatParams, InferenceRequestPayload, LLMBackend } from "@bound/llm";
+import { ModelRouter } from "@bound/llm";
 import type {
 	CacheWarmPayload,
 	EventBroadcastPayload,
@@ -16,8 +18,6 @@ import type {
 	ToolCallPayload,
 	TypedEventEmitter,
 } from "@bound/shared";
-import type { ChatParams, InferenceRequestPayload, LLMBackend, StreamChunk } from "@bound/llm";
-import { ModelRouter } from "@bound/llm";
 import type { MCPClient } from "../mcp-client";
 import { RelayProcessor } from "../relay-processor";
 

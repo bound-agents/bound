@@ -582,10 +582,7 @@ describe("BedrockDriver", () => {
 
 		let abortSignalReceived: AbortSignal | undefined;
 		sendSpy.mockImplementation(
-			async (
-				_command: unknown,
-				options?: { abortSignal?: AbortSignal },
-			) => {
+			async (_command: unknown, options?: { abortSignal?: AbortSignal }) => {
 				abortSignalReceived = options?.abortSignal;
 				return createMockStream([
 					{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "Hello " } } },
