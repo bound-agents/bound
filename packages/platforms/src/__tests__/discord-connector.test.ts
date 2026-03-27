@@ -25,6 +25,7 @@ interface MockDiscordMessage {
 	};
 	channel: {
 		type: number;
+		sendTyping?: () => Promise<void>;
 	};
 	content: string;
 }
@@ -87,7 +88,7 @@ describe("DiscordConnector", () => {
 					username: "alice",
 					displayName: "Alice",
 				},
-				channel: { type: 1 }, // DM channel
+				channel: { type: 1, sendTyping: async () => {} }, // DM channel
 				content: "Hello!",
 			};
 
@@ -122,7 +123,7 @@ describe("DiscordConnector", () => {
 					username: "alice",
 					displayName: "Alice",
 				},
-				channel: { type: 1 },
+				channel: { type: 1, sendTyping: async () => {} },
 				content: "Hello!",
 			};
 
@@ -157,7 +158,7 @@ describe("DiscordConnector", () => {
 					username: "alice",
 					displayName: "Alice",
 				},
-				channel: { type: 1 },
+				channel: { type: 1, sendTyping: async () => {} },
 				content: "Hello!",
 			};
 
@@ -257,7 +258,7 @@ describe("DiscordConnector", () => {
 					username: "bob",
 					displayName: "Bob",
 				},
-				channel: { type: 1 },
+				channel: { type: 1, sendTyping: async () => {} },
 				content: "Hello!",
 			};
 
@@ -287,7 +288,7 @@ describe("DiscordConnector", () => {
 					username: "alice",
 					displayName: "Alice",
 				},
-				channel: { type: 1 },
+				channel: { type: 1, sendTyping: async () => {} },
 				content: "Hello!",
 			};
 
@@ -313,7 +314,7 @@ describe("DiscordConnector", () => {
 					username: "user",
 					displayName: "User",
 				},
-				channel: { type: 1 },
+				channel: { type: 1, sendTyping: async () => {} },
 				content: "Hello!",
 			};
 
@@ -362,7 +363,7 @@ describe("DiscordConnector", () => {
 					username: "alice",
 					displayName: "Alice",
 				},
-				channel: { type: 1 },
+				channel: { type: 1, sendTyping: async () => {} },
 				content: "First message",
 			};
 

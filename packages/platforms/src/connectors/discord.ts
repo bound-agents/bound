@@ -30,6 +30,8 @@ export class DiscordConnector implements PlatformConnector {
 	readonly delivery = "broadcast" as const;
 
 	private client: DiscordClient | null = null;
+	/** Typing indicators per thread — cleared when platform:deliver fires for that thread. */
+	private typingTimers = new Map<string, ReturnType<typeof setInterval>>();
 
 	constructor(
 		private readonly config: PlatformConnectorConfig,
@@ -74,6 +76,9 @@ export class DiscordConnector implements PlatformConnector {
 	}
 
 	async disconnect(): Promise<void> {
+		for (const threadId of this.typingTimers.keys()) {
+			this.stopTyping(threadId);
+		}
 		this.client?.destroy();
 		this.client = null;
 	}
@@ -87,6 +92,9 @@ export class DiscordConnector implements PlatformConnector {
 		if (!this.client) {
 			throw new Error("DiscordConnector: not connected");
 		}
+
+		// Stop typing indicator now that we have a response
+		this.stopTyping(threadId);
 
 		const channel = await this.getDMChannelForThread(threadId);
 		if (!channel) {
@@ -139,6 +147,10 @@ export class DiscordConnector implements PlatformConnector {
 			this.siteId,
 		);
 
+		// Start typing indicator — refreshed every 8s (Discord typing expires at ~10s).
+		// Cleared when platform:deliver fires for this thread or after 5 minutes.
+		this.startTyping(thread.id, msg.channel as { sendTyping(): Promise<void> });
+
 		// Write intake relay to outbox — no direct agent loop invocation (AC6.1)
 		const hubSiteId = this.getHubSiteId();
 		writeOutbox(this.db, {
@@ -162,6 +174,26 @@ export class DiscordConnector implements PlatformConnector {
 		});
 
 		this.eventBus.emit("sync:trigger", { reason: "discord-intake" });
+	}
+
+	private startTyping(threadId: string, channel: { sendTyping(): Promise<void> }): void {
+		this.stopTyping(threadId); // Clear any existing timer for this thread
+		// Send immediately, then every 8s (Discord typing expires ~10s)
+		channel.sendTyping().catch(() => {});
+		const timer = setInterval(() => {
+			channel.sendTyping().catch(() => {});
+		}, 8_000);
+		this.typingTimers.set(threadId, timer);
+		// Safety cap: stop after 5 minutes regardless
+		setTimeout(() => this.stopTyping(threadId), 5 * 60 * 1000);
+	}
+
+	private stopTyping(threadId: string): void {
+		const timer = this.typingTimers.get(threadId);
+		if (timer !== undefined) {
+			clearInterval(timer);
+			this.typingTimers.delete(threadId);
+		}
 	}
 
 	private findOrCreateUser(discordId: string, displayName: string): User {

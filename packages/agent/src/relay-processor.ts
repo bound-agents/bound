@@ -3,7 +3,10 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
 	type AppContext,
+	insertInbox,
+	markDelivered,
 	markProcessed,
+	readUndelivered,
 	readUnprocessed,
 	recordRelayCycle,
 	writeOutbox,
@@ -86,6 +89,33 @@ export class RelayProcessor {
 	}
 
 	private async processPendingEntries(): Promise<void> {
+		// Local loopback: move self-targeted outbox entries directly to inbox.
+		// In single-host setups (no sync hub configured), relay_outbox entries targeting
+		// this host are never delivered via the sync relay phase. Moving them here ensures
+		// the intake/platform_deliver/event_broadcast pipeline works without a sync hub.
+		const selfOutbox = readUndelivered(this.db, this.siteId);
+		if (selfOutbox.length > 0) {
+			const now = new Date().toISOString();
+			for (const entry of selfOutbox) {
+				insertInbox(this.db, {
+					id: randomUUID(),
+					source_site_id: entry.source_site_id ?? this.siteId,
+					kind: entry.kind,
+					ref_id: entry.id,
+					idempotency_key: entry.idempotency_key,
+					stream_id: entry.stream_id ?? null,
+					payload: entry.payload,
+					expires_at: entry.expires_at,
+					received_at: now,
+					processed: 0,
+				});
+			}
+			markDelivered(
+				this.db,
+				selfOutbox.map((e) => e.id),
+			);
+		}
+
 		const entries = readUnprocessed(this.db);
 		if (entries.length === 0) return;
 
