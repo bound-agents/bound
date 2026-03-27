@@ -334,9 +334,16 @@ describe("AgentLoop", () => {
 
 		await agentLoop.run();
 
-		// For non-bash commands, the command string is "name arg1 arg2 ..."
+		// Non-bash commands use --_json encoding to safely pass values containing
+		// shell metacharacters (Bug #2 fix).
 		expect(mockBash.calls.length).toBe(1);
-		expect(mockBash.calls[0]).toBe("memorize project bound");
+		const cmd = mockBash.calls[0];
+		expect(cmd.startsWith("memorize --_json '")).toBe(true);
+		// The JSON payload must be parseable and contain the original args
+		const jsonPart = cmd.slice("memorize --_json '".length, -1);
+		const decoded = JSON.parse(jsonPart.replace(/\\u0027/g, "'")) as Record<string, unknown>;
+		expect(decoded.key).toBe("project");
+		expect(decoded.value).toBe("bound");
 	});
 
 	it("should handle sandbox without exec gracefully", async () => {

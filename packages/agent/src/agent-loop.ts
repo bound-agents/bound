@@ -913,13 +913,13 @@ export class AgentLoop {
 			// Bash tool: pass the command directly
 			commandString = toolCall.input.command;
 		} else {
-			// Built-in or MCP command: construct "commandName arg1 arg2 ..."
-			// The sandbox's custom command framework parses positional arguments
-			// from argv, so we pass each input value as a positional arg.
-			const args = Object.values(toolCall.input).map((v) =>
-				typeof v === "string" ? v : JSON.stringify(v),
-			);
-			commandString = [toolCall.name, ...args].join(" ");
+			// Bug #2: naive space-joining of arg values causes just-bash's tokenizer to
+			// split on single quotes embedded in SQL queries or other string arguments.
+			// Instead, JSON-encode all args and pass via --_json '<escaped-json>' so the
+			// value is a single token with no shell metacharacters.
+			// \u0027 replaces literal ' so the single-quoted shell wrapper stays intact.
+			const jsonArgs = JSON.stringify(toolCall.input).replace(/'/g, "\\u0027");
+			commandString = `${toolCall.name} --_json '${jsonArgs}'`;
 		}
 
 		const result = await this.sandbox.exec(commandString);
