@@ -1464,11 +1464,11 @@ describe("RelayProcessor", () => {
 			// Setup: two hosts with different models
 			const timestamp = new Date().toISOString();
 			db.run(
-				`INSERT INTO hosts (site_id, host_name, models, deleted, modified_at) VALUES (?, ?, ?, ?, ?)`,
+				"INSERT INTO hosts (site_id, host_name, models, deleted, modified_at) VALUES (?, ?, ?, ?, ?)",
 				["host-a", "Host A", JSON.stringify(["gpt-4"]), 0, timestamp],
 			);
 			db.run(
-				`INSERT INTO hosts (site_id, host_name, models, deleted, modified_at) VALUES (?, ?, ?, ?, ?)`,
+				"INSERT INTO hosts (site_id, host_name, models, deleted, modified_at) VALUES (?, ?, ?, ?, ?)",
 				["host-b", "Host B", JSON.stringify(["claude-3"]), 0, timestamp],
 			);
 
@@ -1476,7 +1476,7 @@ describe("RelayProcessor", () => {
 			// Insert a turns row for the thread with model_id = "claude-3"
 			const turnTimestamp = new Date().toISOString();
 			db.run(
-				`INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, created_at) VALUES (?, ?, ?, ?, ?)`,
+				"INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, created_at) VALUES (?, ?, ?, ?, ?)",
 				[threadId, "claude-3", 100, 50, turnTimestamp],
 			);
 
@@ -1550,11 +1550,11 @@ describe("RelayProcessor", () => {
 			// Setup: two hosts with different tools
 			const timestamp = new Date().toISOString();
 			db.run(
-				`INSERT INTO hosts (site_id, host_name, mcp_tools, deleted, modified_at) VALUES (?, ?, ?, ?, ?)`,
+				"INSERT INTO hosts (site_id, host_name, mcp_tools, deleted, modified_at) VALUES (?, ?, ?, ?, ?)",
 				["host-a", "Host A", JSON.stringify(["bash", "files"]), 0, timestamp],
 			);
 			db.run(
-				`INSERT INTO hosts (site_id, host_name, mcp_tools, deleted, modified_at) VALUES (?, ?, ?, ?, ?)`,
+				"INSERT INTO hosts (site_id, host_name, mcp_tools, deleted, modified_at) VALUES (?, ?, ?, ?, ?)",
 				["host-b", "Host B", JSON.stringify(["bash", "web", "files"]), 0, timestamp],
 			);
 
@@ -1564,19 +1564,19 @@ describe("RelayProcessor", () => {
 			const userId = "user-1";
 			const nowIso = new Date().toISOString();
 			db.run(
-				`INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				"INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 				[threadId, userId, nowIso, "unknown", "local", nowIso, nowIso],
 			);
 			db.run(
-				`INSERT INTO messages (id, thread_id, role, tool_name, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				"INSERT INTO messages (id, thread_id, role, tool_name, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 				["msg-bash", threadId, "tool", "bash", "{}", "local", new Date().toISOString()],
 			);
 			db.run(
-				`INSERT INTO messages (id, thread_id, role, tool_name, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				"INSERT INTO messages (id, thread_id, role, tool_name, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 				["msg-web", threadId, "tool", "web", "{}", "local", new Date().toISOString()],
 			);
 			db.run(
-				`INSERT INTO messages (id, thread_id, role, tool_name, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				"INSERT INTO messages (id, thread_id, role, tool_name, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 				["msg-files", threadId, "tool", "files", "{}", "local", new Date().toISOString()],
 			);
 
