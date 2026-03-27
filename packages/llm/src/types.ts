@@ -11,6 +11,7 @@ export interface ChatParams {
 	temperature?: number;
 	system?: string;
 	cache_breakpoints?: number[];
+	signal?: AbortSignal;
 }
 
 export type LLMMessage = {
