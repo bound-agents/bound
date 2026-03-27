@@ -2043,4 +2043,159 @@ describe("RelayProcessor", () => {
 			});
 		});
 	});
+
+	describe("platform-connectors Phase 7 — relay processor integration regression", () => {
+		it("event_broadcast with depth tracking passes __relay_event_depth to fired event", async () => {
+			const eventBus = createMockEventBus();
+			let emittedPayload: Record<string, unknown> | undefined;
+
+			// Capture emitted event
+			eventBus.on("test:custom" as never, (payload: unknown) => {
+				emittedPayload = payload as Record<string, unknown>;
+			});
+
+			const mcpClients = new Map<string, MCPClient>();
+			const keyringSiteIds = new Set(["requester-site"]);
+			const processor = new RelayProcessor(
+				db,
+				"target-site",
+				mcpClients,
+				null,
+				keyringSiteIds,
+				createMockLogger(),
+				eventBus,
+			);
+
+			const now = new Date();
+			const broadcastPayload: EventBroadcastPayload = {
+				event_name: "test:custom",
+				event_payload: { task_id: "t1" },
+				source_host: "test-spoke",
+				event_depth: 2,
+			};
+
+			const inboxEntry: RelayInboxEntry = {
+				id: "broadcast-1",
+				source_site_id: "requester-site",
+				kind: "event_broadcast",
+				ref_id: null,
+				idempotency_key: null,
+				payload: JSON.stringify(broadcastPayload),
+				expires_at: new Date(now.getTime() + 60000).toISOString(),
+				received_at: now.toISOString(),
+				processed: 0,
+				stream_id: null,
+			};
+
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					inboxEntry.id,
+					inboxEntry.source_site_id,
+					inboxEntry.kind,
+					inboxEntry.ref_id,
+					inboxEntry.idempotency_key,
+					inboxEntry.payload,
+					inboxEntry.expires_at,
+					inboxEntry.received_at,
+					inboxEntry.processed,
+					inboxEntry.stream_id,
+				],
+			);
+
+			const handle = processor.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			handle.stop();
+
+			// Assert: emitted payload has __relay_event_depth = 2
+			expect(emittedPayload).toBeDefined();
+			expect(emittedPayload?.__relay_event_depth).toBe(2);
+			expect(emittedPayload?.task_id).toBe("t1");
+		});
+
+		it("intake routing respects thread-affinity map for routing decision", async () => {
+			const mcpClients = new Map<string, MCPClient>();
+			const keyringSiteIds = new Set(["requester-site"]);
+			const threadId = "thread-affinity-test";
+			const targetHost = "host-b";
+			const threadAffinityMap = new Map([[threadId, targetHost]]);
+
+			const processor = new RelayProcessor(
+				db,
+				"hub-site",
+				mcpClients,
+				null,
+				keyringSiteIds,
+				createMockLogger(),
+				createMockEventBus(),
+				null,
+				undefined,
+				threadAffinityMap,
+			);
+
+			// Setup: create two hosts
+			const hostTimestamp = new Date().toISOString();
+			db.run("INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)", [
+				"host-a",
+				"Host A",
+				0,
+				hostTimestamp,
+			]);
+			db.run("INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)", [
+				targetHost,
+				"Host B",
+				0,
+				hostTimestamp,
+			]);
+
+			const now = new Date();
+			const intakeEntry: RelayInboxEntry = {
+				id: "intake-affinity-1",
+				source_site_id: "requester-site",
+				kind: "intake",
+				ref_id: null,
+				idempotency_key: `intake:slack:affinity-test`,
+				payload: JSON.stringify({
+					platform: "slack",
+					platform_event_id: "event-affinity",
+					thread_id: threadId,
+					user_id: "user-affinity",
+					message_id: "msg-affinity",
+					content: "Affinity test",
+				} as IntakePayload),
+				expires_at: new Date(now.getTime() + 60000).toISOString(),
+				received_at: now.toISOString(),
+				processed: 0,
+				stream_id: null,
+			};
+
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					intakeEntry.id,
+					intakeEntry.source_site_id,
+					intakeEntry.kind,
+					intakeEntry.ref_id,
+					intakeEntry.idempotency_key,
+					intakeEntry.payload,
+					intakeEntry.expires_at,
+					intakeEntry.received_at,
+					intakeEntry.processed,
+					intakeEntry.stream_id,
+				],
+			);
+
+			const handle = processor.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 250));
+			handle.stop();
+
+			// Verify process relay was created targeting the affinity host
+			const processEntries = db
+				.query("SELECT * FROM relay_outbox WHERE kind = ? AND target_site_id = ?")
+				.all("process", targetHost) as RelayOutboxEntry[];
+			expect(processEntries.length).toBeGreaterThan(0);
+		});
+	});
 });

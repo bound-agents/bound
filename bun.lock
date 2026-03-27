@@ -101,6 +101,9 @@
         "@bound/shared": "workspace:*",
         "hono": "^4.0.0",
       },
+      "devDependencies": {
+        "@bound/agent": "workspace:*",
+      },
     },
     "packages/web": {
       "name": "@bound/web",
