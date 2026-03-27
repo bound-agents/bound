@@ -5,7 +5,7 @@ import type { EagerPushConfig, RelayExecutor } from "@bound/sync";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { type ModelsConfig, type RoutesConfig, registerRoutes } from "./routes/index";
-import { createWebhookRoutes } from "./routes/webhooks.js";
+import { createWebhookRoutes } from "./routes/webhooks";
 
 type AssetMap = Map<string, { content: string; contentType: string }>;
 
