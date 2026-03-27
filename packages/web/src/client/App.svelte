@@ -5,6 +5,8 @@ import TopBar from "./components/TopBar.svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import AdvisoryView from "./views/AdvisoryView.svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
+import FilesView from "./views/FilesView.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
 import LineView from "./views/LineView.svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import NetworkStatus from "./views/NetworkStatus.svelte";
@@ -37,6 +39,8 @@ onMount(() => {
 				<NetworkStatus />
 			{:else if route === "/advisories"}
 				<AdvisoryView />
+			{:else if route === "/files"}
+				<FilesView />
 			{:else}
 				<SystemMap />
 			{/if}

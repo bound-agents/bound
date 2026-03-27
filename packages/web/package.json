@@ -15,7 +15,8 @@
 		"@bound/core": "workspace:*",
 		"@bound/agent": "workspace:*",
 		"@bound/sync": "workspace:*",
-		"hono": "^4.0.0"
+		"hono": "^4.0.0",
+		"lucide-svelte": "^0.371.0"
 	},
 	"devDependencies": {
 		"@sveltejs/vite-plugin-svelte": "^4.0.0",
