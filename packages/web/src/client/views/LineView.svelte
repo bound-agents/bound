@@ -29,6 +29,7 @@ let agentState = $state<string | null>(null);
 let fileInput = $state<HTMLInputElement | null>(null);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let uploadStatus = $state<string | null>(null);
+let pendingFileId = $state<string | null>(null);
 let thread = $state<Thread | null>(null);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
@@ -116,7 +117,7 @@ onDestroy(() => {
 });
 
 async function handleSendMessage(): Promise<void> {
-	if (!inputText.trim()) return;
+	if (!inputText.trim() && !pendingFileId) return;
 
 	sending = true;
 	try {
@@ -124,9 +125,12 @@ async function handleSendMessage(): Promise<void> {
 			threadId,
 			inputText.trim(),
 			modelStore.getModel() || undefined,
+			pendingFileId ?? undefined,
 		);
 		messages = [...messages, newMessage];
 		inputText = "";
+		pendingFileId = null;
+		uploadStatus = null;
 		waitingSinceMessageCount = messages.length;
 		waiting = true;
 	} catch (error) {
@@ -152,10 +156,13 @@ async function handleFileChange(e: Event): Promise<void> {
 	const form = new FormData();
 	form.append("file", file);
 	uploadStatus = "Uploading...";
+	pendingFileId = null;
 	try {
 		const res = await fetch("/api/files/upload", { method: "POST", body: form });
 		if (res.ok) {
-			uploadStatus = `Uploaded: ${file.name}`;
+			const uploaded = await res.json();
+			pendingFileId = uploaded.id ?? null;
+			uploadStatus = `Attached: ${file.name}`;
 		} else {
 			uploadStatus = "Upload failed";
 		}

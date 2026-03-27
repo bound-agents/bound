@@ -55,9 +55,15 @@ export const api = {
 		return fetchJson(`/api/threads/${threadId}/messages`);
 	},
 
-	async sendMessage(threadId: string, content: string, modelId?: string): Promise<Message> {
-		const body: Record<string, string> = { content };
+	async sendMessage(
+		threadId: string,
+		content: string,
+		modelId?: string,
+		fileId?: string,
+	): Promise<Message> {
+		const body: Record<string, unknown> = { content };
 		if (modelId) body.model_id = modelId;
+		if (fileId) body.file_ids = [fileId];
 		return fetchJson(`/api/threads/${threadId}/messages`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
