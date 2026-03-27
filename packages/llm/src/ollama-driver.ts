@@ -216,6 +216,7 @@ export class OllamaDriver implements LLMBackend {
 						"Content-Type": "application/json",
 					},
 					body: JSON.stringify(request),
+					signal: params.signal,
 				});
 			} catch (error) {
 				throw wrapFetchError(error, "ollama", endpoint);
