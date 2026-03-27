@@ -1,0 +1,23 @@
+{
+	"name": "@bound/platforms",
+	"version": "0.0.1",
+	"description": "Platform connector framework for @bound — leader election, intake pipeline, Discord connector",
+	"type": "module",
+	"main": "src/index.ts",
+	"types": "src/index.ts",
+	"dependencies": {
+		"@bound/core": "workspace:*",
+		"@bound/shared": "workspace:*"
+	},
+	"devDependencies": {
+		"discord.js": "^14.0.0"
+	},
+	"peerDependencies": {
+		"discord.js": "^14.0.0"
+	},
+	"peerDependenciesMeta": {
+		"discord.js": {
+			"optional": true
+		}
+	}
+}
