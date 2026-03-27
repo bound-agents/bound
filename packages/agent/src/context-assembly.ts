@@ -104,7 +104,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	const messages: Message[] = [];
 	if (!noHistory) {
 		const query = db.query(
-			"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin FROM messages WHERE thread_id = ? ORDER BY created_at ASC",
+			"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin FROM messages WHERE thread_id = ? ORDER BY created_at ASC, rowid ASC",
 		);
 		const rows = query.all(threadId) as Message[];
 		messages.push(...rows);
@@ -246,40 +246,54 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 
 		const msg = messagesFiltered[i];
 		if (msg.role === "tool_call") {
-			// Look ahead for the matching tool_result
-			let matchIdx = -1;
-			const interleaved: Message[] = [];
-			const interleavedIndices: number[] = [];
+			// Collect ALL tool_results that belong to this tool_call, looking past any
+			// interleaved non-tool messages (e.g. an assistant text message that shares
+			// the same created_at and lands between two tool_results due to ordering).
+			// Non-tool messages found in the look-ahead are moved before the tool_call.
+			const matchIndices: number[] = [];
+			const nonToolMessages: Message[] = [];
+			const nonToolIndices: number[] = [];
 
 			for (let j = i + 1; j < messagesFiltered.length; j++) {
 				if (consumed.has(j)) continue;
-				if (messagesFiltered[j].role === "tool_result") {
-					matchIdx = j;
+				const jMsg = messagesFiltered[j];
+				if (jMsg.role === "tool_call") {
+					// Hit the next tool_call — stop collecting
 					break;
 				}
-				if (messagesFiltered[j].role === "tool_call") {
-					// Another tool_call before finding tool_result - stop looking
-					break;
+				if (jMsg.role === "tool_result") {
+					matchIndices.push(j);
+				} else {
+					// Non-tool message — move it before this tool_call
+					nonToolMessages.push(jMsg);
+					nonToolIndices.push(j);
 				}
-				// Non-tool message between tool_call and tool_result
-				interleaved.push(messagesFiltered[j]);
-				interleavedIndices.push(j);
 			}
 
-			if (matchIdx !== -1) {
-				// Move interleaved messages before the tool_call
-				for (const m of interleaved) {
+			if (matchIndices.length > 0) {
+				// Move non-tool messages before the tool_call
+				for (const m of nonToolMessages) {
 					reordered.push(m);
 				}
-				for (const idx of interleavedIndices) {
+				for (const idx of nonToolIndices) {
 					consumed.add(idx);
 				}
-				consumed.add(matchIdx);
-				// Push tool_call immediately followed by tool_result
+				for (const idx of matchIndices) {
+					consumed.add(idx);
+				}
+				// Push tool_call followed by ALL its tool_results in order
 				reordered.push(msg);
-				reordered.push(messagesFiltered[matchIdx]);
+				for (const idx of matchIndices) {
+					reordered.push(messagesFiltered[idx]);
+				}
 			} else {
-				// No matching tool_result found - push tool_call as-is (handled in pass 2)
+				// No tool_results found — push non-tool messages and tool_call as-is
+				for (const m of nonToolMessages) {
+					reordered.push(m);
+				}
+				for (const idx of nonToolIndices) {
+					consumed.add(idx);
+				}
 				reordered.push(msg);
 			}
 		} else {
@@ -291,18 +305,28 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	const sanitized: Message[] = [];
 	let inActiveTool = false;
 	let lastToolId = "";
+	let prevSanitizedRole: string | null = null;
 
 	for (const msg of reordered) {
 		if (msg.role === "tool_call") {
 			inActiveTool = true;
 			lastToolId = msg.id;
 			sanitized.push(msg);
+			prevSanitizedRole = "tool_call";
 		} else if (msg.role === "tool_result") {
 			if (inActiveTool) {
+				// First tool_result closing the active tool_call
 				sanitized.push(msg);
 				inActiveTool = false;
+				prevSanitizedRole = "tool_result";
+			} else if (prevSanitizedRole === "tool_result") {
+				// Additional tool_result in a multi-tool response — push directly,
+				// no synthetic tool_call needed. The driver merges these into one
+				// user message per the Bedrock/Anthropic multi-tool requirement.
+				sanitized.push(msg);
+				// prevSanitizedRole stays "tool_result"
 			} else {
-				// Orphaned tool_result - inject synthetic tool_call first
+				// Truly orphaned tool_result (no preceding tool_call at all) — inject synthetic
 				sanitized.push({
 					id: `synthetic-${msg.id}`,
 					thread_id: threadId,
@@ -315,6 +339,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 					host_origin: msg.host_origin,
 				});
 				sanitized.push(msg);
+				prevSanitizedRole = "tool_result";
 			}
 		} else {
 			if (inActiveTool) {
@@ -332,8 +357,10 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 					host_origin: "local",
 				});
 				inActiveTool = false;
+				prevSanitizedRole = "tool_result";
 			}
 			sanitized.push(msg);
+			prevSanitizedRole = msg.role;
 		}
 	}
 
