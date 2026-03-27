@@ -29,7 +29,7 @@
 		try {
 			loading = true;
 			error = null;
-			const response = await fetch("/api/files/");
+			const response = await fetch("/api/files");
 			if (!response.ok) {
 				throw new Error(`HTTP ${response.status}`);
 			}
