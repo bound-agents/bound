@@ -69,21 +69,46 @@ export async function extractSummaryAndMemories(
 			).run(summary, now, "default", threadId);
 		}
 
-		// Extract key facts as memories (simplified)
-		const memoryCount = Math.min(3, Math.max(0, messages.length - 1)); // Create 0-3 memories
-		for (let i = 0; i < memoryCount; i++) {
+		// Extract key facts as memories by asking the LLM for a bullet-point list.
+		// Bug #5: previously stored the literal placeholder "Extracted from conversation".
+		const factChunks: string[] = [];
+		try {
+			for await (const chunk of llmBackend.chat({
+				model: "",
+				messages: [
+					{
+						role: "user",
+						content: `Extract up to 3 key facts from the following conversation summary as a bullet list (one fact per line, starting with "- "):\n\n${summary}`,
+					},
+				],
+				max_tokens: 200,
+			})) {
+				if (chunk.type === "text") {
+					factChunks.push(chunk.content);
+				}
+			}
+		} catch {
+			// Non-fatal — skip memory extraction if the LLM call fails
+		}
+
+		const factsText = factChunks.join("").trim();
+		const factLines = factsText
+			.split("\n")
+			.map((l) => l.replace(/^[-*\d.]+\s*/, "").trim())
+			.filter((l) => l.length > 0)
+			.slice(0, 3);
+
+		for (let i = 0; i < factLines.length; i++) {
 			const memId = randomUUID();
 			const key = `thread_${threadId}_fact_${i}`;
-			const value = `Extracted from conversation`;
-
 			db.prepare(
 				`INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			).run(memId, key, value, threadId, now, now);
+			).run(memId, key, factLines[i], threadId, now, now);
 		}
 
 		return {
 			ok: true,
-			value: { summaryGenerated: summary.length > 0, memoriesExtracted: memoryCount },
+			value: { summaryGenerated: summary.length > 0, memoriesExtracted: factLines.length },
 		};
 	} catch (error) {
 		return {

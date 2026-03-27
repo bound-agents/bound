@@ -39,6 +39,76 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
+	// Bug #5: extracted memories must not contain the literal placeholder "Extracted from conversation"
+	it("extractSummaryAndMemories stores actual LLM-derived content, not a placeholder", async () => {
+		const threadId = randomUUID();
+		const now = new Date(Date.now() - 5000).toISOString(); // slightly in the past
+
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			[threadId, "test-user", "web", "localhost", now, now, now],
+		);
+		for (let i = 0; i < 4; i++) {
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, host_origin) VALUES (?, ?, ?, ?, ?, ?)",
+				[randomUUID(), threadId, i % 2 === 0 ? "user" : "assistant", `Message ${i}`, now, "localhost"],
+			);
+		}
+
+		let callNumber = 0;
+		class FactMockLLMBackend implements LLMBackend {
+			async *chat(): AsyncGenerator<StreamChunk> {
+				callNumber++;
+				if (callNumber === 1) {
+					// First call: summary
+					yield { type: "text" as const, content: "The user discussed topic Alpha and Beta." };
+				} else {
+					// Second call: fact extraction
+					yield {
+						type: "text" as const,
+						content: "- The user discussed topic Alpha\n- The user discussed topic Beta",
+					};
+				}
+				yield { type: "done" as const, usage: { input_tokens: 5, output_tokens: 5 } };
+			}
+			capabilities() {
+				return {
+					streaming: true,
+					tool_use: true,
+					system_prompt: true,
+					prompt_caching: false,
+					vision: false,
+					max_context: 8000,
+				};
+			}
+		}
+
+		const { extractSummaryAndMemories } = await import("../summary-extraction");
+		const result = await extractSummaryAndMemories(
+			db,
+			threadId,
+			new FactMockLLMBackend(),
+			"test-site",
+		);
+
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.value.memoriesExtracted).toBeGreaterThan(0);
+		}
+
+		// No memory must contain the literal placeholder
+		const memories = db
+			.prepare("SELECT value FROM semantic_memory WHERE source = ?")
+			.all(threadId) as Array<{ value: string }>;
+
+		expect(memories.length).toBeGreaterThan(0);
+		for (const mem of memories) {
+			expect(mem.value).not.toBe("Extracted from conversation");
+			// Values must contain real content from the LLM response
+			expect(mem.value.length).toBeGreaterThan(5);
+		}
+	});
+
 	it("fires extractSummaryAndMemories after loop completion", async () => {
 		const threadId = randomUUID();
 		const now = new Date().toISOString();
@@ -62,11 +132,13 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 			async *chat(params: {
 				messages: Array<{ role: string; content: string }>;
 			}): AsyncGenerator<StreamChunk> {
-				// Check if this is a summary extraction call (single user message with "Summarize")
 				const lastMsg = params.messages[params.messages.length - 1];
 				if (lastMsg?.content?.includes("Summarize")) {
 					chatCalls.push({ purpose: "summary" });
 					yield { type: "text" as const, content: "This was a conversation about greetings." };
+				} else if (lastMsg?.content?.includes("Extract up to 3 key facts")) {
+					chatCalls.push({ purpose: "facts" });
+					yield { type: "text" as const, content: "- The conversation was about greetings" };
 				} else {
 					chatCalls.push({ purpose: "main" });
 					yield { type: "text" as const, content: "Hello there!" };
@@ -106,10 +178,11 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 		// Wait briefly for the fire-and-forget extractSummaryAndMemories to complete
 		await new Promise((resolve) => setTimeout(resolve, 200));
 
-		// The main loop made 1 call; the extraction made another
-		expect(chatCalls.length).toBe(2);
+		// The main loop made 1 call; extraction made a summary call + a facts call
+		expect(chatCalls.length).toBe(3);
 		expect(chatCalls[0].purpose).toBe("main");
 		expect(chatCalls[1].purpose).toBe("summary");
+		expect(chatCalls[2].purpose).toBe("facts");
 
 		// Verify the thread's summary was updated
 		const thread = db.prepare("SELECT summary FROM threads WHERE id = ?").get(threadId) as {
