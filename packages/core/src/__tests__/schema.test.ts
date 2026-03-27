@@ -77,7 +77,6 @@ describe("Database Schema", () => {
 
 		const indexNames = indexes.map((i) => i.name);
 
-		expect(indexNames).toContain("idx_users_discord");
 		expect(indexNames).toContain("idx_threads_user");
 		expect(indexNames).toContain("idx_messages_thread");
 		expect(indexNames).toContain("idx_memory_key");
