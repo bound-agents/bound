@@ -262,6 +262,23 @@ export class AgentLoop {
 							? this.lastModelResolution.modelId
 							: this.config.modelId || "unknown";
 
+					// Bug #6: compute cost_usd from model pricing config rather than hardcoding 0.
+					let cost_usd = 0;
+					const backends = this.ctx.config?.modelBackends?.backends;
+					if (backends) {
+						const backendConfig = backends.find(
+							(b: { id: string; price_per_m_input?: number; price_per_m_output?: number }) =>
+								b.id === resolvedModelId,
+						);
+						if (backendConfig) {
+							const inputCost =
+								(parsed.usage.inputTokens * (backendConfig.price_per_m_input ?? 0)) / 1_000_000;
+							const outputCost =
+								(parsed.usage.outputTokens * (backendConfig.price_per_m_output ?? 0)) / 1_000_000;
+							cost_usd = inputCost + outputCost;
+						}
+					}
+
 					currentTurnId = recordTurn(this.ctx.db, {
 						thread_id: this.config.threadId,
 						task_id: this.config.taskId || undefined,
@@ -269,7 +286,7 @@ export class AgentLoop {
 						model_id: resolvedModelId,
 						tokens_in: parsed.usage.inputTokens,
 						tokens_out: parsed.usage.outputTokens,
-						cost_usd: 0, // Cost calculation requires model pricing config
+						cost_usd,
 						created_at: new Date().toISOString(),
 					});
 				} catch {

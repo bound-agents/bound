@@ -783,6 +783,58 @@ describe("AgentLoop", () => {
 		}
 	});
 
+	// Bug #6: cost_usd must be computed from model pricing config, not hardcoded 0
+	it("records non-zero cost_usd in turns table when backend has pricing configured", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("Priced response");
+
+		const mockBash = createMockSandbox();
+		// ctx with pricing: $3/M input, $15/M output (like claude-opus-4)
+		const ctx = {
+			db,
+			logger: { info: () => {}, warn: () => {}, error: () => {} },
+			eventBus: { on: () => {}, emit: () => {} },
+			hostName: "test-host",
+			siteId: "test-site-id",
+			config: {
+				modelBackends: {
+					backends: [
+						{
+							id: "claude-opus",
+							provider: "anthropic",
+							model: "claude-opus",
+							context_window: 8000,
+							tier: 1,
+							price_per_m_input: 3.0,
+							price_per_m_output: 15.0,
+						},
+					],
+					default: "claude-opus",
+				},
+			},
+		} as unknown as AppContext;
+
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		await agentLoop.run();
+
+		// MockLLMBackend yields done with { input_tokens: 10, output_tokens: 5 }
+		// Expected cost = (10 * 3.0 / 1_000_000) + (5 * 15.0 / 1_000_000)
+		//               = 0.00003 + 0.000075 = 0.000105
+		const turns = db
+			.query("SELECT cost_usd FROM turns WHERE thread_id = ?")
+			.all(threadId) as Array<{ cost_usd: number }>;
+
+		expect(turns.length).toBeGreaterThan(0);
+		for (const turn of turns) {
+			expect(turn.cost_usd).toBeGreaterThan(0);
+		}
+		expect(turns[0].cost_usd).toBeCloseTo(0.000105, 8);
+	});
+
 	// Bug #10: turns table must record the resolved model_id, not "unknown"
 	it("records the resolved model_id in the turns table (not 'unknown')", async () => {
 		const mockBackend = new MockLLMBackend();

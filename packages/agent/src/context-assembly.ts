@@ -254,6 +254,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			const nonToolMessages: Message[] = [];
 			const nonToolIndices: number[] = [];
 
+			let foundFirstResult = false;
 			for (let j = i + 1; j < messagesFiltered.length; j++) {
 				if (consumed.has(j)) continue;
 				const jMsg = messagesFiltered[j];
@@ -263,8 +264,14 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 				}
 				if (jMsg.role === "tool_result") {
 					matchIndices.push(j);
+					foundFirstResult = true;
 				} else {
-					// Non-tool message — move it before this tool_call
+					if (foundFirstResult) {
+						// Non-tool message AFTER the tool_result(s) — stop here so
+						// we don't displace messages that legitimately follow the pair.
+						break;
+					}
+					// Non-tool message BEFORE the first tool_result — move before tool_call
 					nonToolMessages.push(jMsg);
 					nonToolIndices.push(j);
 				}
