@@ -782,4 +782,34 @@ describe("AgentLoop", () => {
 			expect(turn.relay_latency_ms).toBeNull();
 		}
 	});
+
+	// Bug #10: turns table must record the resolved model_id, not "unknown"
+	it("records the resolved model_id in the turns table (not 'unknown')", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("Hello from resolved model");
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		// AgentLoopConfig with NO modelId — forces resolution via ModelRouter default
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+			// modelId intentionally omitted — simulates a scheduler task with no model_hint
+		});
+
+		await agentLoop.run();
+
+		const turns = db
+			.query("SELECT model_id FROM turns WHERE thread_id = ?")
+			.all(threadId) as Array<{ model_id: string }>;
+
+		expect(turns.length).toBeGreaterThan(0);
+
+		for (const turn of turns) {
+			// Must be the actual resolved model id ("claude-opus"), NOT "unknown"
+			expect(turn.model_id).not.toBe("unknown");
+			expect(turn.model_id).toBe("claude-opus");
+		}
+	});
 });

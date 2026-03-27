@@ -255,11 +255,18 @@ export class AgentLoop {
 
 				// Record turn metrics for budget tracking
 				try {
+					// Bug #10: use the resolved model id (from lastModelResolution) rather than
+					// config.modelId which is undefined when no model_hint is set on the task.
+					const resolvedModelId =
+						this.lastModelResolution && this.lastModelResolution.kind !== "error"
+							? this.lastModelResolution.modelId
+							: this.config.modelId || "unknown";
+
 					currentTurnId = recordTurn(this.ctx.db, {
 						thread_id: this.config.threadId,
 						task_id: this.config.taskId || undefined,
 						dag_root_id: undefined,
-						model_id: this.config.modelId || "unknown",
+						model_id: resolvedModelId,
 						tokens_in: parsed.usage.inputTokens,
 						tokens_out: parsed.usage.outputTokens,
 						cost_usd: 0, // Cost calculation requires model pricing config
