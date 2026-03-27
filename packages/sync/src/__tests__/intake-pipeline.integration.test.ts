@@ -1,10 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { randomBytes, randomUUID } from "crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { RelayProcessor } from "@bound/agent";
 import type { KeyringConfig } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import type { IntakePayload } from "@bound/shared";
-import { RelayProcessor } from "@bound/agent";
-import { writeOutbox } from "@bound/core";
 import { ensureKeypair, exportPublicKey } from "../crypto.js";
 import { createTestInstance } from "./test-harness.js";
 import type { TestInstance } from "./test-harness.js";
@@ -83,7 +82,7 @@ describe("platform-connectors Phase 7 — intake pipeline integration", () => {
 				instanceB.siteId,
 				"intake",
 				null,
-				`intake:discord:test-event-1`,
+				"intake:discord:test-event-1",
 				JSON.stringify({
 					platform: "discord",
 					platform_event_id: "test-event-1",

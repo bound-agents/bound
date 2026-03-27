@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { randomBytes, randomUUID } from "crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { RelayProcessor } from "@bound/agent";
+import { insertRow } from "@bound/core";
 import type { KeyringConfig } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import type { EventBroadcastPayload } from "@bound/shared";
-import { RelayProcessor } from "@bound/agent";
-import { Scheduler } from "@bound/agent";
-import { writeOutbox, insertRow } from "@bound/core";
 import { ensureKeypair, exportPublicKey } from "../crypto.js";
 import { createTestInstance } from "./test-harness.js";
 import type { TestInstance } from "./test-harness.js";
@@ -85,7 +84,7 @@ describe("platform-connectors Phase 7 — event broadcast integration", () => {
 		await spokeB.cleanup();
 	});
 
-	it("AC4.3: RelayProcessor fires event_broadcast and Scheduler responds to event", async () => {
+	it("AC4.3: RelayProcessor fires event_broadcast on eventBus, making event available for Scheduler", async () => {
 		const now = new Date().toISOString();
 		const userId = randomUUID();
 		const threadId = randomUUID();
@@ -202,9 +201,7 @@ describe("platform-connectors Phase 7 — event broadcast integration", () => {
 
 		// Verify task exists and is still pending (waiting for scheduler to claim it)
 		const task = spokeB.db
-			.query<{ status: string }, [string]>(
-				"SELECT status FROM tasks WHERE id = ? LIMIT 1",
-			)
+			.query<{ status: string }, [string]>("SELECT status FROM tasks WHERE id = ? LIMIT 1")
 			.get(taskId);
 
 		expect(task).toBeDefined();
