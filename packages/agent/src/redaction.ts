@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { softDelete, updateRow } from "@bound/core";
 import type { Result } from "@bound/shared";
 
 export interface RedactionResult {
@@ -12,12 +13,9 @@ export function redactMessage(
 	siteId: string,
 ): Result<void, Error> {
 	try {
-		const now = new Date().toISOString();
-		db.prepare("UPDATE messages SET content = ?, modified_at = ? WHERE id = ?").run(
-			"[redacted]",
-			now,
-			messageId,
-		);
+		// Use updateRow so a change_log entry is created and the redaction
+		// propagates to other nodes via sync (Bug #7).
+		updateRow(db, "messages", messageId, { content: "[redacted]" }, siteId);
 		return { ok: true, value: undefined };
 	} catch (error) {
 		return {
@@ -33,38 +31,30 @@ export function redactThread(
 	siteId: string,
 ): Result<RedactionResult, Error> {
 	try {
-		const now = new Date().toISOString();
-
 		// Get all message IDs in the thread
 		const messages = db
 			.prepare("SELECT id FROM messages WHERE thread_id = ?")
 			.all(threadId) as Array<{ id: string }>;
 
-		// Redact all messages
+		// Redact all messages via updateRow so change_log entries are created
 		for (const msg of messages) {
-			db.prepare("UPDATE messages SET content = ?, modified_at = ? WHERE id = ?").run(
-				"[redacted]",
-				now,
-				msg.id,
-			);
+			updateRow(db, "messages", msg.id, { content: "[redacted]" }, siteId);
 		}
 
 		// Tombstone semantic_memory entries whose source matches the thread_id
-		const memoryResult = db
-			.prepare(`SELECT COUNT(*) as count FROM semantic_memory WHERE source = ? AND deleted = 0`)
-			.get(threadId) as { count: number };
+		const memoryRows = db
+			.prepare("SELECT id FROM semantic_memory WHERE source = ? AND deleted = 0")
+			.all(threadId) as Array<{ id: string }>;
 
-		const memoryCount = memoryResult.count;
-
-		db.prepare(
-			"UPDATE semantic_memory SET deleted = 1, modified_at = ? WHERE source = ? AND deleted = 0",
-		).run(now, threadId);
+		for (const mem of memoryRows) {
+			softDelete(db, "semantic_memory", mem.id, siteId);
+		}
 
 		return {
 			ok: true,
 			value: {
 				messagesRedacted: messages.length,
-				memoriesAffected: memoryCount,
+				memoriesAffected: memoryRows.length,
 			},
 		};
 	} catch (error) {

@@ -127,6 +127,75 @@ describe("Redaction", () => {
 		expect(memory.deleted).toBe(1);
 	});
 
+	// Bug #7: redaction must write change_log entries so changes sync to other nodes
+	it("redactMessage creates a change_log entry for the message", () => {
+		const userId = randomUUID();
+		const threadId = randomUUID();
+		const messageId = randomUUID();
+		const now = new Date().toISOString();
+
+		db.prepare(
+			"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+		).run(userId, "Test User", now, now);
+		db.prepare(
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(threadId, userId, "web", "localhost", now, now, now);
+		db.prepare(
+			"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(messageId, threadId, "user", "Secret", now, now, "localhost");
+
+		redactMessage(db, messageId, siteId);
+
+		const entry = db
+			.prepare("SELECT COUNT(*) as c FROM change_log WHERE table_name = 'messages' AND row_id = ?")
+			.get(messageId) as { c: number };
+
+		expect(entry.c).toBeGreaterThan(0);
+	});
+
+	it("redactThread creates change_log entries for all redacted messages and tombstoned memories", () => {
+		const userId = randomUUID();
+		const threadId = randomUUID();
+		const msg1Id = randomUUID();
+		const msg2Id = randomUUID();
+		const memId = randomUUID();
+		const now = new Date().toISOString();
+
+		db.prepare(
+			"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+		).run(userId, "Test User", now, now);
+		db.prepare(
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(threadId, userId, "web", "localhost", now, now, now);
+		db.prepare(
+			"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(msg1Id, threadId, "user", "Msg1", now, now, "localhost");
+		db.prepare(
+			"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(msg2Id, threadId, "assistant", "Msg2", now, now, "localhost");
+		db.prepare(
+			"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?)",
+		).run(memId, "k", "v", threadId, now, now);
+
+		redactThread(db, threadId, siteId);
+
+		// Each message must have a change_log entry
+		const msgEntries = db
+			.prepare(
+				"SELECT COUNT(*) as c FROM change_log WHERE table_name = 'messages' AND row_id IN (?, ?)",
+			)
+			.get(msg1Id, msg2Id) as { c: number };
+		expect(msgEntries.c).toBe(2);
+
+		// The tombstoned memory must have a change_log entry
+		const memEntry = db
+			.prepare(
+				"SELECT COUNT(*) as c FROM change_log WHERE table_name = 'semantic_memory' AND row_id = ?",
+			)
+			.get(memId) as { c: number };
+		expect(memEntry.c).toBeGreaterThan(0);
+	});
+
 	it("should not tombstone memories from other threads", () => {
 		const userId = randomUUID();
 		const threadId1 = randomUUID();
