@@ -107,6 +107,151 @@ describe("API Routes", () => {
 			const data = await response.json();
 			expect(Array.isArray(data)).toBe(true);
 		});
+
+		it("returns files without content field", async () => {
+			// Upload a text file first
+			const form = new FormData();
+			form.append("file", new File(["test content"], "test.txt", { type: "text/plain" }));
+			const uploadRes = await app.fetch(
+				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
+			);
+			expect(uploadRes.status).toBe(201);
+
+			// Get list of files
+			const request = new Request("http://localhost:3000/api/files");
+			const response = await app.fetch(request);
+
+			expect(response.status).toBe(200);
+			const files = await response.json();
+			expect(Array.isArray(files)).toBe(true);
+			expect(files.length).toBe(1);
+			// Verify content field is absent
+			expect("content" in files[0]).toBe(false);
+			// Verify other fields are present
+			expect(files[0].id).toBeDefined();
+			expect(files[0].path).toBeDefined();
+			expect(files[0].is_binary).toBeDefined();
+			expect(files[0].size_bytes).toBeDefined();
+		});
+	});
+
+	describe("GET /api/files/download/:id", () => {
+		it("returns 404 for unknown file id", async () => {
+			const request = new Request("http://localhost:3000/api/files/download/unknown-id");
+			const response = await app.fetch(request);
+
+			expect(response.status).toBe(404);
+			const error = await response.json();
+			expect(error.error).toBe("File not found");
+		});
+
+		it("returns 404 for deleted file", async () => {
+			// Upload a text file
+			const form = new FormData();
+			form.append("file", new File(["content"], "test.txt", { type: "text/plain" }));
+			const uploadRes = await app.fetch(
+				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
+			);
+			const file = await uploadRes.json();
+			const fileId = file.id;
+
+			// Mark as deleted
+			db.exec("UPDATE files SET deleted = 1 WHERE id = ?", [fileId]);
+
+			const request = new Request(`http://localhost:3000/api/files/download/${fileId}`);
+			const response = await app.fetch(request);
+
+			expect(response.status).toBe(404);
+		});
+
+		it("returns 404 when content is null", async () => {
+			// Insert a file with null content directly
+			const fileId = "test-null-content";
+			db.exec(
+				"INSERT INTO files (id, path, content, is_binary, size_bytes, created_at, modified_at, deleted, created_by, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					fileId,
+					"/test.txt",
+					null,
+					0,
+					0,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+					"test",
+					"localhost",
+				],
+			);
+
+			const request = new Request(`http://localhost:3000/api/files/download/${fileId}`);
+			const response = await app.fetch(request);
+
+			expect(response.status).toBe(404);
+			const error = await response.json();
+			expect(error.error).toBe("File content not available");
+		});
+
+		it("returns text file with correct Content-Type and Content-Disposition", async () => {
+			// Upload a text file
+			const textContent = "Hello, this is a test file!";
+			const form = new FormData();
+			form.append("file", new File([textContent], "document.txt", { type: "text/plain" }));
+			const uploadRes = await app.fetch(
+				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
+			);
+			const file = await uploadRes.json();
+
+			const request = new Request(`http://localhost:3000/api/files/download/${file.id}`);
+			const response = await app.fetch(request);
+
+			expect(response.status).toBe(200);
+			expect(response.headers.get("Content-Type")).toBe("text/plain");
+			expect(response.headers.get("Content-Disposition")).toContain("attachment");
+			expect(response.headers.get("Content-Disposition")).toContain("document.txt");
+
+			const responseText = await response.text();
+			expect(responseText).toBe(textContent);
+		});
+
+		it("decodes base64 and returns binary file with correct headers", async () => {
+			// Upload a binary file (PNG magic bytes)
+			const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+			const form = new FormData();
+			form.append("file", new File([pngBytes], "image.png", { type: "image/png" }));
+			const uploadRes = await app.fetch(
+				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
+			);
+			const file = await uploadRes.json();
+
+			const request = new Request(`http://localhost:3000/api/files/download/${file.id}`);
+			const response = await app.fetch(request);
+
+			expect(response.status).toBe(200);
+			expect(response.headers.get("Content-Type")).toBe("image/png");
+			expect(response.headers.get("Content-Disposition")).toContain("attachment");
+			expect(response.headers.get("Content-Disposition")).toContain("image.png");
+
+			const arrayBuffer = await response.arrayBuffer();
+			const returnedBytes = new Uint8Array(arrayBuffer);
+			expect(returnedBytes).toEqual(pngBytes);
+		});
+
+		it("returns default MIME type for unknown extension", async () => {
+			// Upload file with unknown extension
+			const content = "some content";
+			const form = new FormData();
+			form.append("file", new File([content], "file.xyz123", { type: "application/octet-stream" }));
+			const uploadRes = await app.fetch(
+				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
+			);
+			const file = await uploadRes.json();
+
+			const request = new Request(`http://localhost:3000/api/files/download/${file.id}`);
+			const response = await app.fetch(request);
+
+			expect(response.status).toBe(200);
+			expect(response.headers.get("Content-Type")).toBe("application/octet-stream");
+		});
 	});
 
 	describe("POST /api/threads/:id/messages", () => {

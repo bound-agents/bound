@@ -17,9 +17,55 @@ const TEXT_MIME_EXACT = new Set([
 	"application/graphql",
 ]);
 
+/** File extension to MIME type mapping. */
+const EXTENSION_MIME_MAP: Record<string, string> = {
+	".txt": "text/plain",
+	".md": "text/markdown",
+	".json": "application/json",
+	".xml": "application/xml",
+	".html": "text/html",
+	".htm": "text/html",
+	".css": "text/css",
+	".js": "application/javascript",
+	".ts": "application/typescript",
+	".jsx": "application/javascript",
+	".tsx": "application/typescript",
+	".py": "text/x-python",
+	".sh": "application/x-sh",
+	".bash": "application/x-sh",
+	".png": "image/png",
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif": "image/gif",
+	".svg": "image/svg+xml",
+	".pdf": "application/pdf",
+	".zip": "application/zip",
+	".tar": "application/x-tar",
+	".gz": "application/gzip",
+	".csv": "text/csv",
+	".yaml": "application/x-yaml",
+	".yml": "application/x-yaml",
+};
+
 function isTextMime(mimeType: string): boolean {
 	const base = mimeType.split(";")[0].trim().toLowerCase();
 	return TEXT_MIME_PREFIXES.some((p) => base.startsWith(p)) || TEXT_MIME_EXACT.has(base);
+}
+
+/**
+ * Detect MIME type from file extension.
+ * Returns the mapped MIME type or "application/octet-stream" as default.
+ */
+function detectMimeType(path: string): string {
+	const ext = path.substring(path.lastIndexOf(".")).toLowerCase();
+	return EXTENSION_MIME_MAP[ext] || "application/octet-stream";
+}
+
+/**
+ * Get filename from a path.
+ */
+function getFilename(path: string): string {
+	return path.substring(path.lastIndexOf("/") + 1);
 }
 
 /**
@@ -83,12 +129,79 @@ export function createFilesRoutes(db: Database): Hono {
 				)
 				.all() as AgentFile[];
 
-			return c.json(files);
+			// Strip content field from each file in response
+			const filesWithoutContent = files.map((file) => {
+				const { content: _, ...fileWithoutContent } = file;
+				return fileWithoutContent;
+			});
+
+			return c.json(filesWithoutContent);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json(
 				{
 					error: "Failed to list files",
+					details: message,
+				},
+				500,
+			);
+		}
+	});
+
+	app.get("/download/:id", (c) => {
+		try {
+			const fileId = c.req.param("id");
+
+			const file = db
+				.query(
+					`
+				SELECT * FROM files
+				WHERE id = ? AND deleted = 0
+			`,
+				)
+				.get(fileId) as AgentFile | null;
+
+			if (!file) {
+				return c.json(
+					{
+						error: "File not found",
+					},
+					404,
+				);
+			}
+
+			if (file.content === null) {
+				return c.json(
+					{
+						error: "File content not available",
+					},
+					404,
+				);
+			}
+
+			const mimeType = detectMimeType(file.path);
+			const filename = getFilename(file.path);
+
+			let responseBody: string | Uint8Array;
+			if (file.is_binary === 1) {
+				// Decode base64 to binary
+				responseBody = Buffer.from(file.content, "base64");
+			} else {
+				// Return text as-is
+				responseBody = file.content;
+			}
+
+			return c.body(responseBody, {
+				headers: {
+					"Content-Type": mimeType,
+					"Content-Disposition": `attachment; filename="${filename}"`,
+				},
+			});
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json(
+				{
+					error: "Failed to download file",
 					details: message,
 				},
 				500,
