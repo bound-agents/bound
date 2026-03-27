@@ -6,16 +6,11 @@ export function applySchema(db: Database): void {
 		CREATE TABLE IF NOT EXISTS users (
 			id            TEXT PRIMARY KEY,
 			display_name  TEXT NOT NULL,
-			discord_id    TEXT,
+			platform_ids  TEXT,
 			first_seen_at TEXT NOT NULL,
 			modified_at   TEXT NOT NULL,
 			deleted       INTEGER DEFAULT 0
 		) STRICT
-	`);
-
-	db.run(`
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_users_discord ON users(discord_id)
-		WHERE discord_id IS NOT NULL AND deleted = 0
 	`);
 
 	// 2. threads
@@ -152,6 +147,7 @@ export function applySchema(db: Database): void {
 			overlay_root TEXT,
 			online_at    TEXT,
 			modified_at  TEXT NOT NULL,
+			platforms    TEXT,
 			deleted      INTEGER DEFAULT 0
 		) STRICT
 	`);
@@ -329,4 +325,46 @@ export function applySchema(db: Database): void {
 		ON relay_inbox(stream_id, processed)
 		WHERE stream_id IS NOT NULL AND processed = 0
 	`);
+
+	// ── Platform connector migrations (Phase 1) ──────────────────────────────
+
+	// Add platform_ids column to users (replaces discord_id)
+	try {
+		db.run(`ALTER TABLE users ADD COLUMN platform_ids TEXT`);
+	} catch {
+		/* already exists */
+	}
+
+	// Migrate existing discord_id values → platform_ids JSON {"discord":"<id>"}
+	// Safe to re-run: WHERE clause skips rows already migrated
+	// Uses PRAGMA table_info to check if discord_id column still exists before migrating
+	try {
+		db.run(
+			`UPDATE users
+			 SET    platform_ids = json_object('discord', discord_id)
+			 WHERE  discord_id IS NOT NULL
+			   AND  platform_ids IS NULL`,
+		);
+	} catch {
+		/* discord_id column doesn't exist (fresh install or already migrated) */
+	}
+
+	// Drop the discord index BEFORE dropping the column
+	// (SQLite rejects DROP COLUMN on indexed columns)
+	db.run(`DROP INDEX IF EXISTS idx_users_discord`);
+
+	// Drop the discord_id column
+	// (Requires SQLite 3.35.0+; Bun bundles 3.51.0)
+	try {
+		db.run(`ALTER TABLE users DROP COLUMN discord_id`);
+	} catch {
+		/* already dropped, or column does not exist on fresh install */
+	}
+
+	// Add platforms column to hosts
+	try {
+		db.run(`ALTER TABLE hosts ADD COLUMN platforms TEXT`);
+	} catch {
+		/* already exists */
+	}
 }
