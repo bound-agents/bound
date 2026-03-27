@@ -12,8 +12,8 @@
 	"dependencies": {
 		"@bound/agent": "workspace:*",
 		"@bound/core": "workspace:*",
-		"@bound/discord": "workspace:*",
 		"@bound/llm": "workspace:*",
+		"@bound/platforms": "workspace:*",
 		"@bound/sandbox": "workspace:*",
 		"@bound/shared": "workspace:*",
 		"@bound/sync": "workspace:*",
