@@ -521,4 +521,49 @@ describe("multi-instance sync", () => {
 		// Verify the new hub URL was resolved from cluster_config
 		expect(newHubUrl).toBe("http://localhost:3200");
 	});
+
+	it("AC3.9: broadcast target_site_id='*' writes one inbox entry per spoke excluding source", async () => {
+		const now = new Date().toISOString();
+
+		// Insert a relay_outbox entry on instanceB (spoke) with target_site_id="*"
+		const broadcastOutboxId = Math.random().toString(36).substring(2);
+		instanceB.db
+			.query(
+				"INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, idempotency_key, payload, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			)
+			.run(
+				broadcastOutboxId,
+				instanceB.siteId,
+				"*",
+				"event_broadcast",
+				`broadcast-${broadcastOutboxId}`,
+				JSON.stringify({
+					event_name: "test:event",
+					event_payload: { data: "test" },
+					event_depth: 1,
+				}),
+				now,
+				new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+			);
+
+		// Initiate a sync cycle from B (spoke) to A (hub)
+		// This should cause the hub to fan-out the broadcast to the relay_inbox
+		const result = await instanceB.syncClient.syncCycle();
+		expect(result.ok).toBe(true);
+
+		// Query the hub's relay_inbox - should have one entry targeting the hub
+		const inboxEntries = instanceA.db
+			.query("SELECT * FROM relay_inbox WHERE kind = ?")
+			.all("event_broadcast") as Array<{
+			id: string;
+			source_site_id: string;
+			kind: string;
+		}>;
+
+		// Verify we have exactly one broadcast entry in the hub's inbox
+		expect(inboxEntries.length).toBe(1);
+
+		// Verify the entry came from the spoke
+		expect(inboxEntries[0].source_site_id).toBe(instanceB.siteId);
+	});
 });

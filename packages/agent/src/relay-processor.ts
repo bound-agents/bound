@@ -14,6 +14,7 @@ import type {
 	CacheWarmPayload,
 	ErrorPayload,
 	EventBroadcastPayload,
+	EventMap,
 	IntakePayload,
 	Logger,
 	Message,
@@ -29,7 +30,6 @@ import type {
 	ToolCallPayload,
 	TypedEventEmitter,
 } from "@bound/shared";
-import type { EventMap } from "@bound/shared";
 import { AgentLoop } from "./agent-loop.js";
 import type { MCPClient } from "./mcp-client.js";
 
@@ -208,72 +208,77 @@ export class RelayProcessor {
 						response = null;
 						break;
 					}
-			case "intake": {
-				const payload = JSON.parse(entry.payload) as IntakePayload;
-				const idempotencyKey = `intake:${payload.platform}:${payload.platform_event_id}`;
+					case "intake": {
+						const payload = JSON.parse(entry.payload) as IntakePayload;
+						const idempotencyKey = `intake:${payload.platform}:${payload.platform_event_id}`;
 
-				// Dedup: check idempotency cache (same cache already used by other relay kinds)
-				const cached = this.idempotencyCache.get(idempotencyKey);
-				if (cached && cached.expiresAt > Date.now()) {
-					// Duplicate — silently discard
-					response = null;
-					break;
-				}
-				this.idempotencyCache.set(idempotencyKey, {
-					response: "",
-					expiresAt: Date.now() + IDEMPOTENCY_TTL_MS,
-				});
+						// Dedup: check idempotency cache (same cache already used by other relay kinds)
+						const cached = this.idempotencyCache.get(idempotencyKey);
+						if (cached && cached.expiresAt > Date.now()) {
+							// Duplicate — silently discard
+							response = null;
+							break;
+						}
+						this.idempotencyCache.set(idempotencyKey, {
+							response: "",
+							expiresAt: Date.now() + IDEMPOTENCY_TTL_MS,
+						});
 
-				// Select routing target
-				const targetSiteId = this.selectIntakeHost(payload.thread_id);
-				if (!targetSiteId) {
-					this.logger.warn("relay-processor", { msg: "intake: no eligible host found, dropping" });
-					response = null;
-					break;
-				}
+						// Select routing target
+						const targetSiteId = this.selectIntakeHost(payload.thread_id);
+						if (!targetSiteId) {
+							this.logger.warn("relay-processor", {
+								msg: "intake: no eligible host found, dropping",
+							});
+							response = null;
+							break;
+						}
 
-				// Write process signal to the selected host
-				const processOutboxId = randomUUID();
-				writeOutbox(this.db, {
-					id: processOutboxId,
-					source_site_id: entry.source_site_id,
-					target_site_id: targetSiteId,
-					kind: "process",
-					ref_id: entry.id,
-					idempotency_key: `process:${entry.id}`,
-					stream_id: null,
-					payload: JSON.stringify({
-						thread_id: payload.thread_id,
-						message_id: payload.message_id,
-						user_id: payload.user_id,
-						platform: payload.platform,
-					} satisfies ProcessPayload),
-					created_at: new Date().toISOString(),
-					expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-				});
+						// Write process signal to the selected host
+						const processOutboxId = randomUUID();
+						writeOutbox(this.db, {
+							id: processOutboxId,
+							source_site_id: entry.source_site_id,
+							target_site_id: targetSiteId,
+							kind: "process",
+							ref_id: entry.id,
+							idempotency_key: `process:${entry.id}`,
+							stream_id: null,
+							payload: JSON.stringify({
+								thread_id: payload.thread_id,
+								message_id: payload.message_id,
+								user_id: payload.user_id,
+								platform: payload.platform,
+							} satisfies ProcessPayload),
+							created_at: new Date().toISOString(),
+							expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+						});
 
-				this.eventBus.emit("sync:trigger", { reason: "intake-routed" });
-				response = null;
-				break;
-			}
+						this.eventBus.emit("sync:trigger", { reason: "intake-routed" });
+						response = null;
+						break;
+					}
 
-			case "platform_deliver": {
-				const payload = JSON.parse(entry.payload) as PlatformDeliverPayload;
-				this.eventBus.emit("platform:deliver", payload);
-				response = null;
-				break;
-			}
+					case "platform_deliver": {
+						const payload = JSON.parse(entry.payload) as PlatformDeliverPayload;
+						this.eventBus.emit("platform:deliver", payload);
+						response = null;
+						break;
+					}
 
-			case "event_broadcast": {
-				const payload = JSON.parse(entry.payload) as EventBroadcastPayload;
-				// Fire the named event locally. Include __relay_event_depth field for relay tracking.
-				this.eventBus.emit(payload.event_name as keyof EventMap, {
-					...payload.event_payload,
-					__relay_event_depth: payload.event_depth,
-				} as never);
-				response = null;
-				break;
-			}
+					case "event_broadcast": {
+						const payload = JSON.parse(entry.payload) as EventBroadcastPayload;
+						// Fire the named event locally. Include __relay_event_depth field for relay tracking.
+						this.eventBus.emit(
+							payload.event_name as keyof EventMap,
+							{
+								...payload.event_payload,
+								__relay_event_depth: payload.event_depth,
+							} as never,
+						);
+						response = null;
+						break;
+					}
 
 					default:
 						throw new Error(`Unknown request kind: ${entry.kind}`);
@@ -546,45 +551,58 @@ export class RelayProcessor {
 		// Tier 1: Thread affinity — use host that most recently processed this thread
 		const affinityHost = this.threadAffinityMap.get(threadId);
 		if (affinityHost) {
-			const alive = this.db
-				.query<{ site_id: string }, [string]>(
-					"SELECT site_id FROM hosts WHERE site_id = ? AND deleted = 0",
-				)
-				.get(affinityHost);
-			if (alive) return alive.site_id;
+			try {
+				const alive = this.db
+					.query<{ site_id: string }, [string]>(
+						"SELECT site_id FROM hosts WHERE site_id = ? AND deleted = 0",
+					)
+					.get(affinityHost);
+				if (alive) return alive.site_id;
+			} catch {
+				// Table missing or other error — fall through
+			}
 			// Affinity host gone — fall through
 		}
 
 		// Tier 2: Model match — find a host that supports the model last used in this thread
-		const lastModel = this.db
-			.query<{ model_id: string | null }, [string]>(
-				"SELECT model_id FROM turns WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
-			)
-			.get(threadId);
-
-		if (lastModel?.model_id) {
-			const hosts = this.db
-				.query<{ site_id: string; models: string }, []>(
-					"SELECT site_id, models FROM hosts WHERE deleted = 0 AND models IS NOT NULL",
+		try {
+			const lastModel = this.db
+				.query<{ model_id: string | null }, [string]>(
+					"SELECT model_id FROM turns WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
 				)
-				.all();
-			for (const host of hosts) {
-				const models = JSON.parse(host.models) as string[];
-				if (models.includes(lastModel.model_id)) return host.site_id;
+				.get(threadId);
+
+			if (lastModel?.model_id) {
+				const hosts = this.db
+					.query<{ site_id: string; models: string }, []>(
+						"SELECT site_id, models FROM hosts WHERE deleted = 0 AND models IS NOT NULL",
+					)
+					.all();
+				for (const host of hosts) {
+					const models = JSON.parse(host.models) as string[];
+					if (models.includes(lastModel.model_id)) return host.site_id;
+				}
 			}
+		} catch {
+			// turns table missing or other error — fall through
 		}
 
 		// Tier 3: Tool match — find the host with the most tools matching this thread's tool usage.
 		// Uses the tool_name column on messages (populated for role='tool' result messages).
-		const threadTools = this.db
-			.query<{ tool_name: string }, [string]>(
-				`SELECT DISTINCT tool_name
-				 FROM messages
-				 WHERE thread_id = ? AND role = 'tool' AND tool_name IS NOT NULL
-				 LIMIT 50`,
-			)
-			.all(threadId)
-			.map((r) => r.tool_name);
+		let threadTools: string[] = [];
+		try {
+			threadTools = this.db
+				.query<{ tool_name: string }, [string]>(
+					`SELECT DISTINCT tool_name
+					 FROM messages
+					 WHERE thread_id = ? AND role = 'tool' AND tool_name IS NOT NULL
+					 LIMIT 50`,
+				)
+				.all(threadId)
+				.map((r) => r.tool_name);
+		} catch {
+			// messages table missing or other error — fall through
+		}
 
 		if (threadTools.length > 0) {
 			const hosts = this.db

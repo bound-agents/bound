@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema, markProcessed, readUnprocessed } from "@bound/core";
+import { applyMetricsSchema } from "@bound/core";
 import type {
 	CacheWarmPayload,
 	EventBroadcastPayload,
@@ -84,6 +85,7 @@ beforeEach(() => {
 	const sqlite3 = require("bun:sqlite");
 	db = new sqlite3.Database(testDbPath);
 	applySchema(db);
+	applyMetricsSchema(db);
 });
 
 afterEach(() => {
@@ -1174,10 +1176,12 @@ describe("RelayProcessor", () => {
 
 			// Basic intake intake setup (skips complex tier logic)
 			const hostTimestamp = new Date().toISOString();
-			db.run(
-				`INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)`,
-				["host-a", "Host A", 0, hostTimestamp],
-			);
+			db.run("INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)", [
+				"host-a",
+				"Host A",
+				0,
+				hostTimestamp,
+			]);
 
 			const now = new Date();
 			const intakeEntry: RelayInboxEntry = {
@@ -1225,11 +1229,11 @@ describe("RelayProcessor", () => {
 			const processEntries = db
 				.query("SELECT * FROM relay_outbox WHERE kind = ?")
 				.all("process") as RelayOutboxEntry[];
-			expect(processEntries.length).toBeGreaterThanOrEqual(0);
+			expect(processEntries.length).toBe(1);
 		});
 
-		// Skip old AC3.2 test placeholder
-		it.skip("AC3.2: duplicate intake with same platform+platform_event_id is discarded", async () => {
+		// AC3.2: Duplicate intake is discarded via idempotency
+		it("AC3.2: duplicate intake with same platform+platform_event_id is discarded", async () => {
 			const mcpClients = new Map<string, MCPClient>();
 			const keyringSiteIds = new Set(["requester-site"]);
 			const threadAffinityMap = new Map<string, string>();
@@ -1248,14 +1252,18 @@ describe("RelayProcessor", () => {
 
 			// Setup: create two hosts
 			const hostTimestamp = new Date().toISOString();
-			db.run(
-				`INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)`,
-				["host-a", "Host A", 0, hostTimestamp],
-			);
-			db.run(
-				`INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)`,
-				["host-b", "Host B", 0, hostTimestamp],
-			);
+			db.run("INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)", [
+				"host-a",
+				"Host A",
+				0,
+				hostTimestamp,
+			]);
+			db.run("INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)", [
+				"host-b",
+				"Host B",
+				0,
+				hostTimestamp,
+			]);
 
 			const now = new Date();
 			const threadId = "thread-1";
@@ -1373,14 +1381,18 @@ describe("RelayProcessor", () => {
 
 			// Setup: create two hosts in hosts table
 			const timestamp = new Date().toISOString();
-			db.run(
-				`INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)`,
-				["host-a", "Host A", 0, timestamp],
-			);
-			db.run(
-				`INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)`,
-				["host-b", "Host B", 0, timestamp],
-			);
+			db.run("INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)", [
+				"host-a",
+				"Host A",
+				0,
+				timestamp,
+			]);
+			db.run("INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)", [
+				"host-b",
+				"Host B",
+				0,
+				timestamp,
+			]);
 
 			const now = new Date();
 			const intakeEntry: RelayInboxEntry = {
@@ -1432,7 +1444,7 @@ describe("RelayProcessor", () => {
 		});
 
 		// AC3.4: Model match routing
-		it.skip("AC3.4: intake routing selects host with matching model when no affinity", async () => {
+		it("AC3.4: intake routing selects host with matching model when no affinity", async () => {
 			const mcpClients = new Map<string, MCPClient>();
 			const keyringSiteIds = new Set(["requester-site"]);
 			const threadAffinityMap = new Map<string, string>();
@@ -1462,9 +1474,10 @@ describe("RelayProcessor", () => {
 
 			const threadId = "thread-model-match";
 			// Insert a turns row for the thread with model_id = "claude-3"
+			const turnTimestamp = new Date().toISOString();
 			db.run(
-				`INSERT INTO turns (id, thread_id, model_id, created_at) VALUES (?, ?, ?, ?)`,
-				["turn-1", threadId, "claude-3", new Date().toISOString()],
+				`INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, created_at) VALUES (?, ?, ?, ?, ?)`,
+				[threadId, "claude-3", 100, 50, turnTimestamp],
 			);
 
 			const now = new Date();
@@ -1517,7 +1530,7 @@ describe("RelayProcessor", () => {
 		});
 
 		// AC3.5: Tool match routing
-		it.skip("AC3.5: intake routing selects host with most matching mcp_tools", async () => {
+		it("AC3.5: intake routing selects host with most matching mcp_tools", async () => {
 			const mcpClients = new Map<string, MCPClient>();
 			const keyringSiteIds = new Set(["requester-site"]);
 			const threadAffinityMap = new Map<string, string>();
@@ -1549,21 +1562,22 @@ describe("RelayProcessor", () => {
 
 			// Insert tool usage in the thread: ["bash", "web", "files"]
 			const userId = "user-1";
+			const nowIso = new Date().toISOString();
 			db.run(
-				`INSERT INTO threads (id, user_id, created_at, interface) VALUES (?, ?, ?, ?)`,
-				[threadId, userId, new Date().toISOString(), "unknown"],
+				`INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[threadId, userId, nowIso, "unknown", "local", nowIso, nowIso],
 			);
 			db.run(
-				`INSERT INTO messages (id, thread_id, role, tool_name, created_at) VALUES (?, ?, ?, ?, ?)`,
-				["msg-bash", threadId, "tool", "bash", new Date().toISOString()],
+				`INSERT INTO messages (id, thread_id, role, tool_name, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				["msg-bash", threadId, "tool", "bash", "{}", "local", new Date().toISOString()],
 			);
 			db.run(
-				`INSERT INTO messages (id, thread_id, role, tool_name, created_at) VALUES (?, ?, ?, ?, ?)`,
-				["msg-web", threadId, "tool", "web", new Date().toISOString()],
+				`INSERT INTO messages (id, thread_id, role, tool_name, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				["msg-web", threadId, "tool", "web", "{}", "local", new Date().toISOString()],
 			);
 			db.run(
-				`INSERT INTO messages (id, thread_id, role, tool_name, created_at) VALUES (?, ?, ?, ?, ?)`,
-				["msg-files", threadId, "tool", "files", new Date().toISOString()],
+				`INSERT INTO messages (id, thread_id, role, tool_name, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				["msg-files", threadId, "tool", "files", "{}", "local", new Date().toISOString()],
 			);
 
 			const now = new Date();
@@ -1616,7 +1630,7 @@ describe("RelayProcessor", () => {
 		});
 
 		// AC3.6: Fallback routing
-		it.skip("AC3.6: intake routing falls back to least-loaded host", async () => {
+		it("AC3.6: intake routing falls back to least-loaded host", async () => {
 			const mcpClients = new Map<string, MCPClient>();
 			const keyringSiteIds = new Set(["requester-site"]);
 			const threadAffinityMap = new Map<string, string>();
@@ -1635,36 +1649,41 @@ describe("RelayProcessor", () => {
 
 			// Setup: two hosts
 			const timestamp = new Date().toISOString();
-			db.run(
-				`INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)`,
-				["host-a", "Host A", 0, timestamp],
-			);
-			db.run(
-				`INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)`,
-				["host-b", "Host B", 0, timestamp],
-			);
+			db.run("INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)", [
+				"host-a",
+				"Host A",
+				0,
+				timestamp,
+			]);
+			db.run("INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)", [
+				"host-b",
+				"Host B",
+				0,
+				timestamp,
+			]);
 
 			// Add 3 pending relay_outbox entries targeting hostA, 1 targeting hostB
 			const outboxTimestamp = new Date().toISOString();
+			const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 			db.run(
-				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, delivered, created_at, payload)
-				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				["out-1", "spoke-1", "host-a", "tool_call", 0, outboxTimestamp, "{}"],
+				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, delivered, created_at, expires_at, payload)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				["out-1", "spoke-1", "host-a", "tool_call", 0, outboxTimestamp, expiresAt, "{}"],
 			);
 			db.run(
-				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, delivered, created_at, payload)
-				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				["out-2", "spoke-1", "host-a", "tool_call", 0, outboxTimestamp, "{}"],
+				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, delivered, created_at, expires_at, payload)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				["out-2", "spoke-1", "host-a", "tool_call", 0, outboxTimestamp, expiresAt, "{}"],
 			);
 			db.run(
-				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, delivered, created_at, payload)
-				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				["out-3", "spoke-1", "host-a", "tool_call", 0, outboxTimestamp, "{}"],
+				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, delivered, created_at, expires_at, payload)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				["out-3", "spoke-1", "host-a", "tool_call", 0, outboxTimestamp, expiresAt, "{}"],
 			);
 			db.run(
-				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, delivered, created_at, payload)
-				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				["out-4", "spoke-1", "host-b", "tool_call", 0, outboxTimestamp, "{}"],
+				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, delivered, created_at, expires_at, payload)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				["out-4", "spoke-1", "host-b", "tool_call", 0, outboxTimestamp, expiresAt, "{}"],
 			);
 
 			const threadId = "thread-fallback";
