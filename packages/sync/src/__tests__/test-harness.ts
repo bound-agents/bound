@@ -35,7 +35,7 @@ const FULL_SCHEMA = `
 	CREATE TABLE users (
 		id TEXT PRIMARY KEY,
 		display_name TEXT NOT NULL,
-		discord_id TEXT,
+		platform_ids TEXT,
 		first_seen_at TEXT NOT NULL,
 		modified_at TEXT NOT NULL,
 		deleted INTEGER NOT NULL DEFAULT 0
@@ -138,6 +138,7 @@ const FULL_SCHEMA = `
 		overlay_root TEXT,
 		online_at TEXT NOT NULL,
 		modified_at TEXT NOT NULL,
+		platforms TEXT,
 		deleted INTEGER NOT NULL DEFAULT 0
 	);
 

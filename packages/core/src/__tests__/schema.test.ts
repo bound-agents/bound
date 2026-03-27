@@ -222,3 +222,87 @@ describe("Database Schema", () => {
 		db.close();
 	});
 });
+
+describe("platform-connectors Phase 1 migrations", () => {
+	let dbPath: string;
+
+	beforeEach(() => {
+		dbPath = join(tmpdir(), `bound-test-${randomBytes(4).toString("hex")}.db`);
+	});
+
+	afterEach(() => {
+		try {
+			require("node:fs").unlinkSync(dbPath);
+		} catch {
+			// ignore
+		}
+	});
+
+	it("AC1.1: users table has platform_ids column after applySchema", () => {
+		// Create fresh in-memory DB and apply schema
+		const db = createDatabase(":memory:");
+		applySchema(db);
+		const cols = db.query("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+		expect(cols.map((c) => c.name)).toContain("platform_ids");
+		db.close();
+	});
+
+	it("AC1.2: existing discord_id rows are migrated to platform_ids", () => {
+		const db = createDatabase(":memory:");
+		// Apply OLD schema (before platform_ids exists) by running the base
+		// CREATE TABLE with discord_id but without platform_ids
+		db.run(`
+			CREATE TABLE IF NOT EXISTS users (
+				id           TEXT PRIMARY KEY,
+				display_name TEXT NOT NULL,
+				discord_id   TEXT,
+				first_seen_at TEXT NOT NULL,
+				modified_at  TEXT NOT NULL,
+				deleted      INTEGER DEFAULT 0
+			) STRICT
+		`);
+		db.run(
+			`INSERT INTO users VALUES ('u1', 'Alice', '12345', '2026-01-01', '2026-01-01', 0)`,
+		);
+		// Now run the full schema (triggers the migration)
+		applySchema(db);
+		const row = db.query("SELECT platform_ids FROM users WHERE id = 'u1'").get() as {
+			platform_ids: string | null;
+		};
+		expect(row.platform_ids).toBe('{"discord":"12345"}');
+		db.close();
+	});
+
+	it("AC1.3: discord_id column does not exist after applySchema", () => {
+		const db = createDatabase(":memory:");
+		applySchema(db);
+		const cols = db.query("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+		expect(cols.map((c) => c.name)).not.toContain("discord_id");
+		db.close();
+	});
+
+	it("AC1.4: hosts table has platforms column after applySchema", () => {
+		const db = createDatabase(":memory:");
+		applySchema(db);
+		const cols = db.query("PRAGMA table_info(hosts)").all() as Array<{ name: string }>;
+		expect(cols.map((c) => c.name)).toContain("platforms");
+		db.close();
+	});
+
+	it("AC1.5: threads table accepts non-web-non-discord interface values", () => {
+		const db = createDatabase(":memory:");
+		applySchema(db);
+		// Insert a thread with interface = "telegram" — should not throw
+		expect(() => {
+			db.run(
+				`INSERT INTO threads (id, user_id, interface, host_origin, color, created_at, last_message_at, modified_at, deleted)
+				 VALUES ('t1', 'u1', 'telegram', 'host1', 0, '2026-01-01', '2026-01-01', '2026-01-01', 0)`,
+			);
+		}).not.toThrow();
+		const row = db.query("SELECT interface FROM threads WHERE id = 't1'").get() as {
+			interface: string;
+		};
+		expect(row.interface).toBe("telegram");
+		db.close();
+	});
+});

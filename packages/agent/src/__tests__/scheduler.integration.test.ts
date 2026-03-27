@@ -56,7 +56,7 @@ describe("Scheduler Integration", () => {
 
 		// Insert user
 		db.exec(`
-			INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted)
+			INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted)
 			VALUES ('${userId}', 'Test User', NULL, '${nowStr}', '${nowStr}', 0)
 		`);
 

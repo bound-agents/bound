@@ -247,30 +247,12 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		const msg = messagesFiltered[i];
 		if (msg.role === "tool_call") {
 			// Collect ALL tool_results that belong to this tool_call, looking past any
-			// interleaved non-tool messages. The co-emitted assistant text is persisted
-			// with the same `now` timestamp as the tool_call; if some tool_results land
-			// in the next millisecond, ORDER BY (created_at, rowid) places the assistant
-			// between the fast and slow results. We detect this by tracking which
-			// tool_use_ids are still unmatched — if more are pending we continue past
-			// the non-tool message; if all are matched we stop (legitimate post-pair msg).
+			// interleaved non-tool messages (e.g. an assistant text message that shares
+			// the same created_at and lands between two tool_results due to ordering).
+			// Non-tool messages found in the look-ahead are moved before the tool_call.
 			const matchIndices: number[] = [];
 			const nonToolMessages: Message[] = [];
 			const nonToolIndices: number[] = [];
-
-			// Build set of expected tool_use_ids from this tool_call's content
-			const pendingToolUseIds = new Set<string>();
-			try {
-				const tcBlocks = JSON.parse(msg.content);
-				if (Array.isArray(tcBlocks)) {
-					for (const block of tcBlocks) {
-						if (block.type === "tool_use" && block.id) {
-							pendingToolUseIds.add(block.id);
-						}
-					}
-				}
-			} catch {
-				// Non-parseable content — fall back to unlimited scan
-			}
 
 			for (let j = i + 1; j < messagesFiltered.length; j++) {
 				if (consumed.has(j)) continue;
@@ -281,19 +263,8 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 				}
 				if (jMsg.role === "tool_result") {
 					matchIndices.push(j);
-					// Remove matched tool_use_id from pending set
-					if (jMsg.tool_name) pendingToolUseIds.delete(jMsg.tool_name);
 				} else {
-					// Non-tool message encountered after finding at least one result.
-					// Continue scanning past it only if there are still unmatched
-					// tool_use_ids — those results are displaced by the timestamp
-					// collision and we need to keep looking for them.
-					// If all tool_use_ids are matched (or the set was never populated),
-					// stop: this message legitimately follows the completed pair.
-					if (matchIndices.length > 0 && pendingToolUseIds.size === 0) {
-						break;
-					}
-					// Interleaved non-tool message — move before the tool_call
+					// Non-tool message — move it before this tool_call
 					nonToolMessages.push(jMsg);
 					nonToolIndices.push(j);
 				}
@@ -355,20 +326,14 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 				sanitized.push(msg);
 				// prevSanitizedRole stays "tool_result"
 			} else {
-				// Truly orphaned tool_result (no preceding tool_call at all) — inject synthetic.
-				// Use the tool_result's own tool_use_id (stored in tool_name) so the Bedrock
-				// driver emits a proper toolUse block instead of falling back to [{ text: "" }]
-				// which Bedrock rejects with "text field is blank".
-				const toolUseId = msg.tool_name || `synthetic-tc-${msg.id}`;
+				// Truly orphaned tool_result (no preceding tool_call at all) — inject synthetic
 				sanitized.push({
 					id: `synthetic-${msg.id}`,
 					thread_id: threadId,
 					role: "tool_call",
-					content: JSON.stringify([
-						{ type: "tool_use", id: toolUseId, name: "unknown", input: {} },
-					]),
+					content: '{"tool_name":"unknown","input":{}}',
 					model_id: null,
-					tool_name: toolUseId,
+					tool_name: "unknown",
 					created_at: msg.created_at,
 					modified_at: msg.modified_at,
 					host_origin: msg.host_origin,
@@ -612,19 +577,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		const historyMessages = assembled.filter((m) => m.role !== "system");
 
 		if (historyMessages.length > 0) {
-			let sliceStart = Math.max(0, historyMessages.length - 10);
-
-			// Bug #8: slicing may orphan a tool_result at the new start (its paired
-			// tool_call was cut off). Advance past any leading tool_result messages
-			// to prevent "Expected toolResult blocks" errors on Bedrock.
-			while (
-				sliceStart < historyMessages.length &&
-				historyMessages[sliceStart].role === "tool_result"
-			) {
-				sliceStart++;
-			}
-
-			const remaining = historyMessages.slice(sliceStart);
+			const remaining = historyMessages.slice(Math.max(0, historyMessages.length - 10));
 			return [...systemMessages, ...remaining];
 		}
 	}

@@ -94,7 +94,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 					{
 						id: userId,
 						display_name: entry.display_name,
-						discord_id: entry.discord_id ?? null,
+						platform_ids: entry.platforms ? JSON.stringify(entry.platforms) : null,
 						first_seen_at: now,
 						modified_at: now,
 						deleted: 0,
@@ -102,14 +102,14 @@ export async function runStart(args: StartArgs): Promise<void> {
 					appContext.siteId,
 				);
 			} else {
-				// Update display_name and discord_id if changed in allowlist
+				// Update display_name and platforms if changed in allowlist
 				updateRow(
 					appContext.db,
 					"users",
 					userId,
 					{
 						display_name: entry.display_name,
-						discord_id: entry.discord_id ?? null,
+						platform_ids: entry.platforms ? JSON.stringify(entry.platforms) : null,
 						modified_at: now,
 					},
 					appContext.siteId,
@@ -721,15 +721,22 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// 13. Discord (if configured)
 	console.log("Initializing Discord...");
 	let discordBot: { stop(): Promise<void> } | null = null;
-	const discordResult = appContext.optionalConfig.discord;
-	if (discordResult?.ok) {
+	const platformsResult = appContext.optionalConfig.platforms;
+	if (platformsResult?.ok) {
 		const { shouldActivate, DiscordBot } = await import("@bound/discord");
 		if (shouldActivate(appContext)) {
-			const discordConfig = discordResult.value as { bot_token: string; host: string };
-			const bot = new DiscordBot(appContext, agentLoopFactory, discordConfig.bot_token);
-			await bot.start();
-			discordBot = bot;
-			console.log("[discord] Bot started");
+			// Find the discord connector config
+			const config = platformsResult.value as unknown as { connectors?: Array<{ platform: string; token?: string }> };
+			const connectors = config.connectors || [];
+			const discordConnector = connectors.find((c) => c.platform === "discord");
+			if (discordConnector?.token) {
+				const bot = new DiscordBot(appContext, agentLoopFactory, discordConnector.token);
+				await bot.start();
+				discordBot = bot;
+				console.log("[discord] Bot started");
+			} else {
+				console.log("[discord] Discord connector found but no token, skipping");
+			}
 		} else {
 			console.log("[discord] Config present but host does not match, skipping");
 		}

@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 // Allowlist Config
-const userEntrySchema = z
+export const userEntrySchema = z
 	.object({
 		display_name: z.string().min(1),
 		platforms: z.record(z.string(), z.string()).optional(),

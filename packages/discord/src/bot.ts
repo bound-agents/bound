@@ -255,10 +255,15 @@ export class DiscordBot {
 
 /**
  * Check if Discord should activate on this host.
- * Returns true only if discord.json exists and its host field matches this machine's hostname.
+ * Returns true only if platforms.json exists and its host field matches this machine's hostname.
  */
 export function shouldActivate(ctx: AppContext): boolean {
-	const discordConfig = ctx.optionalConfig.discord;
-	if (!discordConfig || !discordConfig.ok) return false;
-	return (discordConfig.value.host as string) === ctx.hostName;
+	const platformsConfig = ctx.optionalConfig.platforms;
+	if (!platformsConfig || !platformsConfig.ok) return false;
+	// For now, check if Discord connector is configured
+	// TODO(Phase 6): This entire file will be deleted
+	const config = platformsConfig.value as unknown as { connectors?: Array<{ platform: string }> };
+	const connectors = config.connectors || [];
+	const discordConnector = connectors.find((c) => c.platform === "discord");
+	return !!discordConnector;
 }

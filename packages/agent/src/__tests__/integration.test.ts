@@ -50,7 +50,7 @@ describe("Agent Loop End-to-End Integration", () => {
 			{
 				id: userId,
 				display_name: "Test User",
-				discord_id: null,
+				platform_ids: null,
 				first_seen_at: now,
 				modified_at: now,
 				deleted: 0,
@@ -221,7 +221,7 @@ describe("Agent Loop End-to-End Integration", () => {
 			{
 				id: userId,
 				display_name: "Test User 2",
-				discord_id: null,
+				platform_ids: null,
 				first_seen_at: now,
 				modified_at: now,
 				deleted: 0,
@@ -353,7 +353,7 @@ describe("Agent Loop End-to-End Integration", () => {
 			{
 				id: userId,
 				display_name: "Test User 3",
-				discord_id: null,
+				platform_ids: null,
 				first_seen_at: now,
 				modified_at: now,
 				deleted: 0,

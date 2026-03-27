@@ -2,7 +2,9 @@ import { describe, expect, it } from "bun:test";
 import {
 	allowlistSchema,
 	cronSchedulesSchema,
+	configSchemaMap,
 	platformsSchema,
+	userEntrySchema,
 	keyringSchema,
 	mcpSchema,
 	modelBackendsSchema,
@@ -10,6 +12,7 @@ import {
 	overlaySchema,
 	syncSchema,
 } from "../config-schemas.js";
+import { RELAY_REQUEST_KINDS } from "../types.js";
 
 describe("Config schemas", () => {
 	describe("allowlistSchema", () => {
@@ -360,5 +363,83 @@ describe("Config schemas", () => {
 			const result = cronSchedulesSchema.safeParse(config);
 			expect(result.success).toBe(false);
 		});
+	});
+});
+
+describe("platform-connectors Phase 1 config schema validation", () => {
+	// AC1.6: discord_id in allowlist.json entry must fail with helpful message
+	it("AC1.6: userEntrySchema rejects discord_id with message referencing platforms.discord", () => {
+		const result = userEntrySchema.safeParse({
+			display_name: "Alice",
+			discord_id: "12345",
+		});
+		expect(result.success).toBe(false);
+		if (!result.success) {
+			const messages = result.error.issues.map((i) => i.message);
+			expect(messages.some((m) => m.includes("platforms.discord"))).toBe(true);
+		}
+	});
+
+	// AC1.7: platforms.discord in allowlist.json entry must pass
+	it("AC1.7: userEntrySchema accepts platforms.discord field", () => {
+		const result = userEntrySchema.safeParse({
+			display_name: "Alice",
+			platforms: { discord: "12345" },
+		});
+		expect(result.success).toBe(true);
+	});
+
+	// AC2.1: valid Discord connector config parses successfully
+	it("AC2.1: platformsSchema accepts valid Discord connector config", () => {
+		const result = platformsSchema.safeParse({
+			connectors: [
+				{
+					platform: "discord",
+					token: "Bot.MyToken",
+					leadership: "auto",
+				},
+			],
+		});
+		expect(result.success).toBe(true);
+	});
+
+	// AC2.2: invalid leadership value "manual" must fail Zod validation
+	it("AC2.2: platformsSchema rejects invalid leadership value 'manual'", () => {
+		const result = platformsSchema.safeParse({
+			connectors: [
+				{
+					platform: "discord",
+					token: "Bot.MyToken",
+					leadership: "manual",
+				},
+			],
+		});
+		expect(result.success).toBe(false);
+	});
+
+	// AC2.3: configSchemaMap must not contain "discord.json"
+	it("AC2.3: configSchemaMap has no 'discord.json' entry", () => {
+		expect("discord.json" in configSchemaMap).toBe(false);
+	});
+
+	// AC2.4: discordSchema and DiscordConfig must not be exported from @bound/shared
+	it("AC2.4: discordSchema is not exported from config-schemas", async () => {
+		const mod = await import("../config-schemas.js");
+		expect("discordSchema" in mod).toBe(false);
+	});
+});
+
+// AC3.1 tests — new relay kinds exist
+describe("platform-connectors.AC3.1 — new relay kinds exist", () => {
+	it("AC3.1: RELAY_REQUEST_KINDS contains intake", () => {
+		expect(RELAY_REQUEST_KINDS).toContain("intake");
+	});
+
+	it("AC3.1: RELAY_REQUEST_KINDS contains platform_deliver", () => {
+		expect(RELAY_REQUEST_KINDS).toContain("platform_deliver");
+	});
+
+	it("AC3.1: RELAY_REQUEST_KINDS contains event_broadcast", () => {
+		expect(RELAY_REQUEST_KINDS).toContain("event_broadcast");
 	});
 });
