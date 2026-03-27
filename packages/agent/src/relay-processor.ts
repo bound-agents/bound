@@ -896,6 +896,7 @@ export class RelayProcessor {
 				max_tokens: payload.max_tokens,
 				temperature: payload.temperature,
 				cache_breakpoints: payload.cache_breakpoints,
+				signal: abortController.signal,
 			});
 
 			for await (const chunk of chatStream) {
