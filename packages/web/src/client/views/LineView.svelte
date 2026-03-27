@@ -26,7 +26,7 @@ let agentActive = $state(false);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let agentState = $state<string | null>(null);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
-const fileInput = $state<HTMLInputElement | null>(null);
+let fileInput = $state<HTMLInputElement | null>(null);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let uploadStatus = $state<string | null>(null);
 let thread = $state<Thread | null>(null);
