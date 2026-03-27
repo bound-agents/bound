@@ -5,6 +5,7 @@ import type { EagerPushConfig, RelayExecutor } from "@bound/sync";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { type ModelsConfig, type RoutesConfig, registerRoutes } from "./routes/index";
+import { createWebhookRoutes } from "./routes/webhooks.js";
 
 type AssetMap = Map<string, { content: string; contentType: string }>;
 
@@ -72,6 +73,9 @@ export async function createApp(
 	app.route("/api/status", routes.status);
 	app.route("/api/tasks", routes.tasks);
 	app.route("/api/advisories", routes.advisories);
+
+	// Webhook routes
+	app.route("/hooks", createWebhookRoutes(eventBus));
 
 	// Mount sync routes if siteId, keyring, and logger are available
 	if (
