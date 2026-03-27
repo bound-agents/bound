@@ -718,30 +718,17 @@ export async function runStart(args: StartArgs): Promise<void> {
 		});
 	};
 
-	// 13. Discord (if configured)
-	console.log("Initializing Discord...");
-	let discordBot: { stop(): Promise<void> } | null = null;
+	// 13. Platform connectors (if configured)
+	let platformRegistry: { stop(): void } | null = null;
 	const platformsResult = appContext.optionalConfig.platforms;
 	if (platformsResult?.ok) {
-		const { shouldActivate, DiscordBot } = await import("@bound/discord");
-		if (shouldActivate(appContext)) {
-			// Find the discord connector config
-			const config = platformsResult.value as unknown as { connectors?: Array<{ platform: string; token?: string }> };
-			const connectors = config.connectors || [];
-			const discordConnector = connectors.find((c) => c.platform === "discord");
-			if (discordConnector?.token) {
-				const bot = new DiscordBot(appContext, agentLoopFactory, discordConnector.token);
-				await bot.start();
-				discordBot = bot;
-				console.log("[discord] Bot started");
-			} else {
-				console.log("[discord] Discord connector found but no token, skipping");
-			}
-		} else {
-			console.log("[discord] Config present but host does not match, skipping");
-		}
+		const { PlatformConnectorRegistry } = await import("@bound/platforms");
+		const platformsConfig = platformsResult.value as import("@bound/shared").PlatformsConfig;
+		platformRegistry = new PlatformConnectorRegistry(appContext, platformsConfig);
+		platformRegistry.start();
+		console.log("[platforms] Platform connector registry started");
 	} else {
-		console.log("[discord] Not configured");
+		console.log("[platforms] Not configured (no platforms.json)");
 	}
 
 	// 14. Sync (if configured)
@@ -850,11 +837,11 @@ Press Ctrl+C to stop.
 			if (syncLoopHandle) syncLoopHandle.stop();
 			if (overlayHandle) overlayHandle.stop();
 			if (relayProcessorHandle) relayProcessorHandle.stop();
-			if (discordBot) {
+			if (platformRegistry) {
 				try {
-					await discordBot.stop();
-				} catch (_err) {
-					// Ignore Discord shutdown errors
+					platformRegistry.stop();
+				} catch (err) {
+					console.error("[platforms] Error stopping platform registry:", err);
 				}
 			}
 			// Disconnect MCP clients
@@ -875,11 +862,11 @@ Press Ctrl+C to stop.
 			if (syncLoopHandle) syncLoopHandle.stop();
 			if (overlayHandle) overlayHandle.stop();
 			if (relayProcessorHandle) relayProcessorHandle.stop();
-			if (discordBot) {
+			if (platformRegistry) {
 				try {
-					await discordBot.stop();
-				} catch (_err) {
-					// Ignore Discord shutdown errors
+					platformRegistry.stop();
+				} catch (err) {
+					console.error("[platforms] Error stopping platform registry:", err);
 				}
 			}
 			for (const [, client] of mcpClientsMap) {
