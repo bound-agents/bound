@@ -478,12 +478,12 @@ describe("Context assembly Bedrock compatibility", () => {
 		expect(historyRoles).toEqual(expectedRoles);
 	});
 
-	// Bug: when a multi-tool response's co-emitted assistant text lands at the same
+	// When a multi-tool response's co-emitted assistant text lands at the same
 	// millisecond as the tool_call but later tool_results tick to the next millisecond,
-	// ORDER BY (created_at, rowid) puts the assistant text BETWEEN the tool_results.
-	// Stage 3 Pass 2 then injects a synthetic tool_call with non-array content, which
-	// the Bedrock driver converts to [{ text: "" }] — producing the blank text error.
-	it("does not produce a synthetic tool_call with blank-text content when assistant text lands between tool_results", () => {
+	// ORDER BY (created_at, rowid) puts the assistant text BETWEEN the results.
+	// ALL N tool_results must still be grouped under their tool_call — no orphaned
+	// results creating "blank text" or "toolResult blocks exceeds toolUse" errors.
+	it("groups all N tool_results under their tool_call when co-emitted assistant text lands between them", () => {
 		const threadId = randomUUID();
 		insertThread(db, threadId, userId);
 
@@ -492,36 +492,37 @@ describe("Context assembly Bedrock compatibility", () => {
 
 		const tc1Id = "tooluse_aaa";
 		const tc2Id = "tooluse_bbb";
+		const tc3Id = "tooluse_ccc";
 
-		// Insertion order mirrors what agent-loop produces:
-		//   1. tool_call  (created_at = T, rowid = lowest)
-		//   2. tr_tc1     (created_at = T, rowid = +1)   — same ms, fast tool
-		//   3. tr_tc2     (created_at = T1, rowid = +2)  — next ms, slower tool
-		//   4. assistant  (created_at = T, rowid = +3)   — co-emitted, uses `now`
-		// Sort: (T, 1), (T, 2), (T, 4=assistant), (T1, 3=tr_tc2)
-		// → tool_call, tr_tc1, assistant, tr_tc2 — assistant BETWEEN tool_results!
+		// Mirrors production: 3-tool call, first result fast (same ms), last two slow (next ms)
+		// agent-loop persists in insertion order:
+		//   tool_call(T), tr1(T), tr2(T1), tr3(T1), assistant(T)   [textNow fix not yet applied here]
+		// Sort by (created_at, rowid):
+		//   (T, tc), (T, tr1), (T, assistant), (T1, tr2), (T1, tr3)
+		// → assistant wedged between tr1 and tr2/tr3
 
-		insertMessage(db, threadId, "user", "Run two things", { timestamp: "2025-12-31T23:59:59.000Z" });
+		insertMessage(db, threadId, "user", "Run three things", {
+			timestamp: "2025-12-31T23:59:59.000Z",
+		});
 		insertMessage(
 			db,
 			threadId,
 			"tool_call",
 			JSON.stringify([
 				{ type: "tool_use", id: tc1Id, name: "bash", input: { command: "echo fast" } },
-				{ type: "tool_use", id: tc2Id, name: "bash", input: { command: "echo slow" } },
+				{ type: "tool_use", id: tc2Id, name: "bash", input: { command: "echo medium" } },
+				{ type: "tool_use", id: tc3Id, name: "bash", input: { command: "echo slow" } },
 			]),
 			{ timestamp: T },
 		);
-		insertMessage(db, threadId, "tool_result", "fast output", {
-			tool_name: tc1Id,
-			timestamp: T,
-		});
-		insertMessage(db, threadId, "tool_result", "slow output", {
+		insertMessage(db, threadId, "tool_result", "fast output", { tool_name: tc1Id, timestamp: T });
+		insertMessage(db, threadId, "tool_result", "medium output", {
 			tool_name: tc2Id,
 			timestamp: T1,
 		});
-		// Assistant text inserted AFTER tool_results but with same `now` = T
-		insertMessage(db, threadId, "assistant", "I ran both tools.", { timestamp: T });
+		insertMessage(db, threadId, "tool_result", "slow output", { tool_name: tc3Id, timestamp: T1 });
+		// Co-emitted assistant with same `now` = T — sorts between tr1 and tr2/tr3
+		insertMessage(db, threadId, "assistant", "I ran all three tools.", { timestamp: T });
 
 		const messages = assembleContext({ db, threadId, userId });
 
@@ -544,5 +545,14 @@ describe("Context assembly Bedrock compatibility", () => {
 				expect(Array.isArray(parsed)).toBe(true);
 			}
 		}
+
+		// All tool_results must be grouped under their tool_call — no orphaned results
+		// producing extra toolResult blocks that exceed the toolUse count.
+		const tcIdx = nonSystem.findIndex((m) => m.role === "tool_call");
+		expect(tcIdx).not.toBe(-1);
+		// All 3 tool_results must immediately follow the tool_call
+		expect(nonSystem[tcIdx + 1]?.role).toBe("tool_result");
+		expect(nonSystem[tcIdx + 2]?.role).toBe("tool_result");
+		expect(nonSystem[tcIdx + 3]?.role).toBe("tool_result");
 	});
 });

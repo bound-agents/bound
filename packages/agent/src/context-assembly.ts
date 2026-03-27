@@ -247,14 +247,31 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		const msg = messagesFiltered[i];
 		if (msg.role === "tool_call") {
 			// Collect ALL tool_results that belong to this tool_call, looking past any
-			// interleaved non-tool messages (e.g. an assistant text message that shares
-			// the same created_at and lands between two tool_results due to ordering).
-			// Non-tool messages found in the look-ahead are moved before the tool_call.
+			// interleaved non-tool messages. The co-emitted assistant text is persisted
+			// with the same `now` timestamp as the tool_call; if some tool_results land
+			// in the next millisecond, ORDER BY (created_at, rowid) places the assistant
+			// between the fast and slow results. We detect this by tracking which
+			// tool_use_ids are still unmatched — if more are pending we continue past
+			// the non-tool message; if all are matched we stop (legitimate post-pair msg).
 			const matchIndices: number[] = [];
 			const nonToolMessages: Message[] = [];
 			const nonToolIndices: number[] = [];
 
-			let foundFirstResult = false;
+			// Build set of expected tool_use_ids from this tool_call's content
+			const pendingToolUseIds = new Set<string>();
+			try {
+				const tcBlocks = JSON.parse(msg.content);
+				if (Array.isArray(tcBlocks)) {
+					for (const block of tcBlocks) {
+						if (block.type === "tool_use" && block.id) {
+							pendingToolUseIds.add(block.id);
+						}
+					}
+				}
+			} catch {
+				// Non-parseable content — fall back to unlimited scan
+			}
+
 			for (let j = i + 1; j < messagesFiltered.length; j++) {
 				if (consumed.has(j)) continue;
 				const jMsg = messagesFiltered[j];
@@ -264,14 +281,19 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 				}
 				if (jMsg.role === "tool_result") {
 					matchIndices.push(j);
-					foundFirstResult = true;
+					// Remove matched tool_use_id from pending set
+					if (jMsg.tool_name) pendingToolUseIds.delete(jMsg.tool_name);
 				} else {
-					if (foundFirstResult) {
-						// Non-tool message AFTER the tool_result(s) — stop here so
-						// we don't displace messages that legitimately follow the pair.
+					// Non-tool message encountered after finding at least one result.
+					// Continue scanning past it only if there are still unmatched
+					// tool_use_ids — those results are displaced by the timestamp
+					// collision and we need to keep looking for them.
+					// If all tool_use_ids are matched (or the set was never populated),
+					// stop: this message legitimately follows the completed pair.
+					if (matchIndices.length > 0 && pendingToolUseIds.size === 0) {
 						break;
 					}
-					// Non-tool message BEFORE the first tool_result — move before tool_call
+					// Interleaved non-tool message — move before the tool_call
 					nonToolMessages.push(jMsg);
 					nonToolIndices.push(j);
 				}
