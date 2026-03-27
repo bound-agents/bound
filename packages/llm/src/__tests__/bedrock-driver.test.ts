@@ -420,6 +420,55 @@ describe("BedrockDriver", () => {
 		});
 
 		it.skipIf(shouldSkip)(
+			"merges consecutive tool_result messages into a single user message for multi-tool responses",
+			async () => {
+				sendSpy.mockImplementation(() =>
+					Promise.resolve(
+						createMockStream([{ metadata: { usage: { inputTokens: 1, outputTokens: 1 } } }]),
+					),
+				);
+
+				const driver = makeDriver();
+				await collectChunks(
+					driver.chat({
+						model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+						messages: [
+							{ role: "user", content: "Run a systems check" },
+							{
+								role: "tool_call",
+								content: JSON.stringify([
+									{ type: "tool_use", id: "tu-1", name: "bash", input: { command: "ping" } },
+									{ type: "tool_use", id: "tu-2", name: "commands", input: {} },
+									{ type: "tool_use", id: "tu-3", name: "hostinfo", input: {} },
+								]),
+							},
+							{ role: "tool_result", content: "pong", tool_use_id: "tu-1" },
+							{ role: "tool_result", content: "cmd list", tool_use_id: "tu-2" },
+							{ role: "tool_result", content: "host: local", tool_use_id: "tu-3" },
+						],
+					}),
+				);
+
+				const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
+				const messages = commandInput.messages as Array<{
+					role: string;
+					content: Array<{ toolResult?: { toolUseId: string; content: Array<{ text: string }> } }>;
+				}>;
+
+				// All three tool_result messages must be merged into a single user message
+				const userMessages = messages.filter((m) => m.role === "user");
+				// The last user message should contain all three toolResult blocks
+				const toolResultBlocks = userMessages[userMessages.length - 1].content.filter(
+					(b) => b.toolResult,
+				);
+				expect(toolResultBlocks).toHaveLength(3);
+				expect(toolResultBlocks[0].toolResult?.toolUseId).toBe("tu-1");
+				expect(toolResultBlocks[1].toolResult?.toolUseId).toBe("tu-2");
+				expect(toolResultBlocks[2].toolResult?.toolUseId).toBe("tu-3");
+			},
+		);
+
+		it.skipIf(shouldSkip)(
 			"converts tool_call with ContentBlock array to assistant with toolUse blocks",
 			async () => {
 				sendSpy.mockImplementation(() =>

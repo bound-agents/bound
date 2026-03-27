@@ -81,17 +81,28 @@ function toBedrockMessages(messages: LLMMessage[]): Message[] {
 			const textContent = Array.isArray(msg.content)
 				? extractTextFromBlocks(msg.content)
 				: msg.content;
-			result.push({
-				role: "user",
-				content: [
-					{
-						toolResult: {
-							toolUseId,
-							content: [{ text: textContent }],
-						},
-					},
-				],
-			});
+			const toolResultBlock = {
+				toolResult: {
+					toolUseId,
+					content: [{ text: textContent }],
+				},
+			};
+			// Merge consecutive tool_result messages into a single user message.
+			// Bedrock requires ALL toolResult blocks for a multi-tool response to be
+			// in one user message.
+			const lastMsg = result.at(-1);
+			if (
+				lastMsg?.role === "user" &&
+				Array.isArray(lastMsg.content) &&
+				lastMsg.content.some((b) => "toolResult" in b)
+			) {
+				lastMsg.content.push(toolResultBlock);
+			} else {
+				result.push({
+					role: "user",
+					content: [toolResultBlock],
+				});
+			}
 			continue;
 		}
 

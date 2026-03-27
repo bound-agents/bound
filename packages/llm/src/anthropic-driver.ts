@@ -95,19 +95,25 @@ function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] {
 					content: content.length > 0 ? content : [{ type: "text", text: "" }],
 				});
 			} else if (msg.role === "tool_result") {
-				// Convert tool_result to user message with tool_result block
+				// Convert tool_result to user message with tool_result block.
+				// Merge consecutive tool_result messages into a single user message —
+				// Anthropic requires ALL tool_result blocks for a multi-tool response to be
+				// in one user message.
 				const textContent = extractTextFromBlocks(msg.content);
-
-				result.push({
-					role: "user",
-					content: [
-						{
-							type: "tool_result",
-							tool_use_id: msg.tool_use_id,
-							content: [{ type: "text", text: textContent }],
-						},
-					],
-				});
+				const toolResultBlock = {
+					type: "tool_result" as const,
+					tool_use_id: msg.tool_use_id,
+					content: [{ type: "text" as const, text: textContent }],
+				};
+				const lastMsg = result.at(-1);
+				if (lastMsg?.role === "user" && lastMsg.content.some((b) => b.type === "tool_result")) {
+					lastMsg.content.push(toolResultBlock);
+				} else {
+					result.push({
+						role: "user",
+						content: [toolResultBlock],
+					});
+				}
 			} else {
 				// Regular message with text content
 				const textContent = extractTextFromBlocks(msg.content);
@@ -143,16 +149,21 @@ function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] {
 					result.push({ role: "assistant", content: [{ type: "text", text: msg.content }] });
 				}
 			} else if (msg.role === "tool_result") {
-				result.push({
-					role: "user",
-					content: [
-						{
-							type: "tool_result",
-							tool_use_id: msg.tool_use_id,
-							content: [{ type: "text", text: msg.content }],
-						},
-					],
-				});
+				// Merge consecutive tool_result messages into a single user message.
+				const toolResultBlock = {
+					type: "tool_result" as const,
+					tool_use_id: msg.tool_use_id,
+					content: [{ type: "text" as const, text: msg.content }],
+				};
+				const lastMsg = result.at(-1);
+				if (lastMsg?.role === "user" && lastMsg.content.some((b) => b.type === "tool_result")) {
+					lastMsg.content.push(toolResultBlock);
+				} else {
+					result.push({
+						role: "user",
+						content: [toolResultBlock],
+					});
+				}
 			} else {
 				result.push({
 					role: msg.role as "user" | "assistant",

@@ -187,6 +187,58 @@ describe("AnthropicDriver", () => {
 		expect(toolResultContent.content).toEqual([{ type: "text", text: "3" }]);
 	});
 
+	it("merges consecutive tool_result messages into a single user message for multi-tool responses", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-3-sonnet-20240229",
+			contextWindow: 200000,
+		});
+
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "Run a systems check" },
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "tu-1", name: "bash", input: { command: "ping" } },
+					{ type: "tool_use", id: "tu-2", name: "commands", input: {} },
+					{ type: "tool_use", id: "tu-3", name: "hostinfo", input: {} },
+				]),
+			},
+			{ role: "tool_result", content: "pong", tool_use_id: "tu-1" },
+			{ role: "tool_result", content: "cmd list", tool_use_id: "tu-2" },
+			{ role: "tool_result", content: "host: local", tool_use_id: "tu-3" },
+		];
+
+		let requestBody: string | null = null;
+
+		global.fetch = (async (url: string, options: RequestInit) => {
+			if (url.includes("anthropic.com")) {
+				requestBody = options.body as string;
+				return new Response("data: {}", {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			}
+			return new Response("Not found", { status: 404 });
+		}) as typeof fetch;
+
+		for await (const _ of driver.chat({ model: "claude-3-sonnet-20240229", messages })) {
+			// drain stream
+		}
+
+		expect(requestBody).not.toBeNull();
+		const request = JSON.parse(requestBody!);
+
+		// All three tool_result messages must be merged into a single user message
+		const userMessages = request.messages.filter((m: any) => m.role === "user");
+		const lastUser = userMessages[userMessages.length - 1];
+		const toolResultBlocks = lastUser.content.filter((b: any) => b.type === "tool_result");
+		expect(toolResultBlocks).toHaveLength(3);
+		expect(toolResultBlocks[0].tool_use_id).toBe("tu-1");
+		expect(toolResultBlocks[1].tool_use_id).toBe("tu-2");
+		expect(toolResultBlocks[2].tool_use_id).toBe("tu-3");
+	});
+
 	it("should parse SSE stream correctly", async () => {
 		const driver = new AnthropicDriver({
 			apiKey: "test-key",
