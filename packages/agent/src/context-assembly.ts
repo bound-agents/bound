@@ -104,7 +104,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	const messages: Message[] = [];
 	if (!noHistory) {
 		const query = db.query(
-			"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin FROM messages WHERE thread_id = ? ORDER BY created_at ASC",
+			"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin FROM messages WHERE thread_id = ? ORDER BY created_at ASC, rowid ASC",
 		);
 		const rows = query.all(threadId) as Message[];
 		messages.push(...rows);
@@ -246,40 +246,83 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 
 		const msg = messagesFiltered[i];
 		if (msg.role === "tool_call") {
-			// Look ahead for the matching tool_result
-			let matchIdx = -1;
-			const interleaved: Message[] = [];
-			const interleavedIndices: number[] = [];
+			// Collect ALL tool_results that belong to this tool_call, looking past any
+			// interleaved non-tool messages. The co-emitted assistant text is persisted
+			// with the same `now` timestamp as the tool_call; if some tool_results land
+			// in the next millisecond, ORDER BY (created_at, rowid) places the assistant
+			// between the fast and slow results. We detect this by tracking which
+			// tool_use_ids are still unmatched — if more are pending we continue past
+			// the non-tool message; if all are matched we stop (legitimate post-pair msg).
+			const matchIndices: number[] = [];
+			const nonToolMessages: Message[] = [];
+			const nonToolIndices: number[] = [];
+
+			// Build set of expected tool_use_ids from this tool_call's content
+			const pendingToolUseIds = new Set<string>();
+			try {
+				const tcBlocks = JSON.parse(msg.content);
+				if (Array.isArray(tcBlocks)) {
+					for (const block of tcBlocks) {
+						if (block.type === "tool_use" && block.id) {
+							pendingToolUseIds.add(block.id);
+						}
+					}
+				}
+			} catch {
+				// Non-parseable content — fall back to unlimited scan
+			}
 
 			for (let j = i + 1; j < messagesFiltered.length; j++) {
 				if (consumed.has(j)) continue;
-				if (messagesFiltered[j].role === "tool_result") {
-					matchIdx = j;
+				const jMsg = messagesFiltered[j];
+				if (jMsg.role === "tool_call") {
+					// Hit the next tool_call — stop collecting
 					break;
 				}
-				if (messagesFiltered[j].role === "tool_call") {
-					// Another tool_call before finding tool_result - stop looking
-					break;
+				if (jMsg.role === "tool_result") {
+					matchIndices.push(j);
+					// Remove matched tool_use_id from pending set
+					if (jMsg.tool_name) pendingToolUseIds.delete(jMsg.tool_name);
+				} else {
+					// Non-tool message encountered after finding at least one result.
+					// Continue scanning past it only if there are still unmatched
+					// tool_use_ids — those results are displaced by the timestamp
+					// collision and we need to keep looking for them.
+					// If all tool_use_ids are matched (or the set was never populated),
+					// stop: this message legitimately follows the completed pair.
+					if (matchIndices.length > 0 && pendingToolUseIds.size === 0) {
+						break;
+					}
+					// Interleaved non-tool message — move before the tool_call
+					nonToolMessages.push(jMsg);
+					nonToolIndices.push(j);
 				}
-				// Non-tool message between tool_call and tool_result
-				interleaved.push(messagesFiltered[j]);
-				interleavedIndices.push(j);
 			}
 
-			if (matchIdx !== -1) {
-				// Move interleaved messages before the tool_call
-				for (const m of interleaved) {
+			if (matchIndices.length > 0) {
+				// Move non-tool messages before the tool_call
+				for (const m of nonToolMessages) {
 					reordered.push(m);
 				}
-				for (const idx of interleavedIndices) {
+				for (const idx of nonToolIndices) {
 					consumed.add(idx);
 				}
-				consumed.add(matchIdx);
-				// Push tool_call immediately followed by tool_result
+				for (const idx of matchIndices) {
+					consumed.add(idx);
+				}
+				// Push tool_call followed by ALL its tool_results in order
 				reordered.push(msg);
-				reordered.push(messagesFiltered[matchIdx]);
+				for (const idx of matchIndices) {
+					reordered.push(messagesFiltered[idx]);
+				}
 			} else {
-				// No matching tool_result found - push tool_call as-is (handled in pass 2)
+				// No tool_results found — push non-tool messages and tool_call as-is
+				for (const m of nonToolMessages) {
+					reordered.push(m);
+				}
+				for (const idx of nonToolIndices) {
+					consumed.add(idx);
+				}
 				reordered.push(msg);
 			}
 		} else {
@@ -291,30 +334,47 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	const sanitized: Message[] = [];
 	let inActiveTool = false;
 	let lastToolId = "";
+	let prevSanitizedRole: string | null = null;
 
 	for (const msg of reordered) {
 		if (msg.role === "tool_call") {
 			inActiveTool = true;
 			lastToolId = msg.id;
 			sanitized.push(msg);
+			prevSanitizedRole = "tool_call";
 		} else if (msg.role === "tool_result") {
 			if (inActiveTool) {
+				// First tool_result closing the active tool_call
 				sanitized.push(msg);
 				inActiveTool = false;
+				prevSanitizedRole = "tool_result";
+			} else if (prevSanitizedRole === "tool_result") {
+				// Additional tool_result in a multi-tool response — push directly,
+				// no synthetic tool_call needed. The driver merges these into one
+				// user message per the Bedrock/Anthropic multi-tool requirement.
+				sanitized.push(msg);
+				// prevSanitizedRole stays "tool_result"
 			} else {
-				// Orphaned tool_result - inject synthetic tool_call first
+				// Truly orphaned tool_result (no preceding tool_call at all) — inject synthetic.
+				// Use the tool_result's own tool_use_id (stored in tool_name) so the Bedrock
+				// driver emits a proper toolUse block instead of falling back to [{ text: "" }]
+				// which Bedrock rejects with "text field is blank".
+				const toolUseId = msg.tool_name || `synthetic-tc-${msg.id}`;
 				sanitized.push({
 					id: `synthetic-${msg.id}`,
 					thread_id: threadId,
 					role: "tool_call",
-					content: '{"tool_name":"unknown","input":{}}',
+					content: JSON.stringify([
+						{ type: "tool_use", id: toolUseId, name: "unknown", input: {} },
+					]),
 					model_id: null,
-					tool_name: "unknown",
+					tool_name: toolUseId,
 					created_at: msg.created_at,
 					modified_at: msg.modified_at,
 					host_origin: msg.host_origin,
 				});
 				sanitized.push(msg);
+				prevSanitizedRole = "tool_result";
 			}
 		} else {
 			if (inActiveTool) {
@@ -332,8 +392,10 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 					host_origin: "local",
 				});
 				inActiveTool = false;
+				prevSanitizedRole = "tool_result";
 			}
 			sanitized.push(msg);
+			prevSanitizedRole = msg.role;
 		}
 	}
 
@@ -550,7 +612,19 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		const historyMessages = assembled.filter((m) => m.role !== "system");
 
 		if (historyMessages.length > 0) {
-			const remaining = historyMessages.slice(Math.max(0, historyMessages.length - 10));
+			let sliceStart = Math.max(0, historyMessages.length - 10);
+
+			// Bug #8: slicing may orphan a tool_result at the new start (its paired
+			// tool_call was cut off). Advance past any leading tool_result messages
+			// to prevent "Expected toolResult blocks" errors on Bedrock.
+			while (
+				sliceStart < historyMessages.length &&
+				historyMessages[sliceStart].role === "tool_result"
+			) {
+				sliceStart++;
+			}
+
+			const remaining = historyMessages.slice(sliceStart);
 			return [...systemMessages, ...remaining];
 		}
 	}
