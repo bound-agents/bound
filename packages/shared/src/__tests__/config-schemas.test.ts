@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
 	allowlistSchema,
 	cronSchedulesSchema,
-	discordSchema,
+	platformsSchema,
 	keyringSchema,
 	mcpSchema,
 	modelBackendsSchema,
@@ -17,7 +17,7 @@ describe("Config schemas", () => {
 			const config = {
 				default_web_user: "alice",
 				users: {
-					alice: { display_name: "Alice", discord_id: "123456" },
+					alice: { display_name: "Alice", platforms: { discord: "123456" } },
 					bob: { display_name: "Bob" },
 				},
 			};
@@ -49,7 +49,7 @@ describe("Config schemas", () => {
 			const config = {
 				default_web_user: "alice",
 				users: {
-					alice: { discord_id: "123456" },
+					alice: { platforms: { discord: "123456" } },
 				},
 			};
 			const result = allowlistSchema.safeParse(config);
@@ -183,22 +183,40 @@ describe("Config schemas", () => {
 		});
 	});
 
-	describe("discordSchema", () => {
-		it("validates correct discord config", () => {
+	describe("platformsSchema", () => {
+		it("validates correct platforms config", () => {
 			const config = {
-				bot_token: "some-token-123",
-				host: "http://localhost:3000",
+				connectors: [
+					{
+						platform: "discord",
+						token: "Bot.MyToken",
+						leadership: "auto",
+					},
+				],
 			};
-			const result = discordSchema.safeParse(config);
+			const result = platformsSchema.safeParse(config);
 			expect(result.success).toBe(true);
 		});
 
-		it("requires non-empty bot_token", () => {
+		it("requires at least one connector", () => {
 			const config = {
-				bot_token: "",
-				host: "http://localhost:3000",
+				connectors: [],
 			};
-			const result = discordSchema.safeParse(config);
+			const result = platformsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
+		it("rejects invalid leadership value", () => {
+			const config = {
+				connectors: [
+					{
+						platform: "discord",
+						token: "Bot.MyToken",
+						leadership: "invalid",
+					},
+				],
+			};
+			const result = platformsSchema.safeParse(config);
 			expect(result.success).toBe(false);
 		});
 	});
