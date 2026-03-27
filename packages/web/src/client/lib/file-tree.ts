@@ -64,9 +64,7 @@ function sortTree(nodes: FileTreeNode[]): FileTreeNode[] {
 			children: sortTree(n.children),
 		}));
 
-	const files = nodes
-		.filter((n) => n.type === "file")
-		.sort((a, b) => a.name.localeCompare(b.name));
+	const files = nodes.filter((n) => n.type === "file").sort((a, b) => a.name.localeCompare(b.name));
 
 	return [...dirs, ...files];
 }

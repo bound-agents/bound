@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { buildFileTree } from "../file-tree";
 import type { FileMetadata } from "../file-tree";
 
@@ -187,8 +187,6 @@ describe("buildFileTree", () => {
 		expect(result[0].children[0].children[0].children).toHaveLength(1);
 		expect(result[0].children[0].children[0].children[0].name).toBe("d");
 		expect(result[0].children[0].children[0].children[0].children).toHaveLength(1);
-		expect(result[0].children[0].children[0].children[0].children[0].name).toBe(
-			"file.txt"
-		);
+		expect(result[0].children[0].children[0].children[0].children[0].name).toBe("file.txt");
 	});
 });

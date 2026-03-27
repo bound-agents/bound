@@ -1,4 +1,6 @@
 <script lang="ts">
+	// biome-ignore lint/style/useImportType: SvelteSet used as type annotation
+	import { SvelteSet } from "svelte/reactivity";
 	import {
 		Folder,
 		FolderOpen,
@@ -7,20 +9,22 @@
 		ChevronDown,
 	} from "lucide-svelte";
 	import type { FileTreeNode } from "../lib/file-tree";
+	import type { Component } from "svelte";
 	// biome-ignore lint/correctness/noUnusedImports: used in template
 	import TreeNode from "./TreeNode.svelte";
 
 	interface Props {
 		node: FileTreeNode;
-		expandedPaths: Set<string>;
+		expandedPaths: SvelteSet<string>;
 		toggleExpanded: (path: string) => void;
 		formatFileSize: (bytes: number) => string;
-		getFileIcon: (name: string) => any;
+		getFileIcon: (name: string) => Component;
 		downloadFile: (fileId: string) => void;
 		level?: number;
 	}
 
-	let {
+	// biome-ignore lint/correctness/noUnusedVariables: used in template
+	const {
 		node,
 		expandedPaths,
 		toggleExpanded,
@@ -30,17 +34,23 @@
 		level = 0,
 	}: Props = $props();
 
+	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	const isExpanded = $derived(expandedPaths.has(node.fullPath));
+	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	const isDir = $derived(node.type === "dir");
+	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	const nodeName = $derived(node.name);
+	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	const IconComponent = $derived(getFileIcon(nodeName));
 
+	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	function handleClick() {
 		if (isDir) {
 			toggleExpanded(node.fullPath);
 		}
 	}
 
+	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	function handleDownload(e: Event) {
 		e.stopPropagation();
 		if (node.file) {

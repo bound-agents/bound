@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onDestroy, onMount } from "svelte";
+	import type { Component } from "svelte";
+	import { SvelteSet } from "svelte/reactivity";
 	import {
 		File,
 		FileText,
@@ -9,6 +11,7 @@
 	} from "lucide-svelte";
 	import { buildFileTree, type FileTreeNode, type FileMetadata } from "../lib/file-tree";
 	import { wsEvents } from "../lib/websocket";
+	// biome-ignore lint/correctness/noUnusedImports: used in template
 	import TreeNode from "../components/TreeNode.svelte";
 
 	// biome-ignore lint/correctness/noUnusedVariables: used in template
@@ -18,7 +21,9 @@
 	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	let error = $state<string | null>(null);
 
-	const expandedPaths = new Set<string>();
+	// biome-ignore lint/correctness/noUnusedVariables: used in template
+	// biome-ignore lint/style/useConst: $state requires let
+	let expandedPaths = $state(new SvelteSet<string>());
 
 	async function loadFiles(): Promise<void> {
 		try {
@@ -51,6 +56,7 @@
 		}
 	}
 
+	// biome-ignore lint/correctness/noUnusedVariables: passed to template
 	function toggleExpanded(path: string): void {
 		if (expandedPaths.has(path)) {
 			expandedPaths.delete(path);
@@ -59,6 +65,7 @@
 		}
 	}
 
+	// biome-ignore lint/correctness/noUnusedVariables: passed to template
 	function formatFileSize(bytes: number): string {
 		if (bytes === 0) return "0 B";
 		if (bytes < 1024) return `${bytes} B`;
@@ -67,7 +74,8 @@
 		return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 	}
 
-	function getFileIcon(name: string) {
+	// biome-ignore lint/correctness/noUnusedVariables: passed to template
+	function getFileIcon(name: string): Component {
 		const lower = name.toLowerCase();
 		if (lower.endsWith(".md") || lower.endsWith(".txt")) return FileText;
 		if (
@@ -84,6 +92,7 @@
 		return File;
 	}
 
+	// biome-ignore lint/correctness/noUnusedVariables: passed to template
 	function downloadFile(fileId: string): void {
 		window.location.href = `/api/files/download/${fileId}`;
 	}
