@@ -1,12 +1,12 @@
-import { randomUUID } from "crypto";
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import { insertRow, writeOutbox } from "@bound/core";
 import type {
-	PlatformConnectorConfig,
-	TypedEventEmitter,
-	Logger,
 	IntakePayload,
+	Logger,
+	PlatformConnectorConfig,
 	Thread,
+	TypedEventEmitter,
 	User,
 } from "@bound/shared";
 import type { PlatformConnector } from "../connector.js";
@@ -102,12 +102,18 @@ export class DiscordConnector implements PlatformConnector {
 
 	private async onMessage(msg: DiscordMessage): Promise<void> {
 		// Allowlist check — reads allowed_users from platforms.json config (AC6.5)
-		if (this.config.allowed_users.length > 0 && !this.config.allowed_users.includes(msg.author.id)) {
+		if (
+			this.config.allowed_users.length > 0 &&
+			!this.config.allowed_users.includes(msg.author.id)
+		) {
 			return; // Silently reject non-allowlisted users
 		}
 
 		// Find or create the bound user record (using platform_ids JSON)
-		const user = this.findOrCreateUser(msg.author.id, msg.author.displayName ?? msg.author.username);
+		const user = this.findOrCreateUser(
+			msg.author.id,
+			msg.author.displayName ?? msg.author.username,
+		);
 
 		// Find or create the thread for this user
 		const thread = this.findOrCreateThread(user.id);
@@ -183,7 +189,13 @@ export class DiscordConnector implements PlatformConnector {
 			},
 			this.siteId,
 		);
-		return this.db.query<User, [string]>("SELECT * FROM users WHERE id = ? LIMIT 1").get(userId)!;
+		const result = this.db
+			.query<User, [string]>("SELECT * FROM users WHERE id = ? LIMIT 1")
+			.get(userId);
+		if (!result) {
+			throw new Error(`User ${userId} not found after insertRow`);
+		}
+		return result;
 	}
 
 	private findOrCreateThread(userId: string): Thread {
@@ -217,10 +229,18 @@ export class DiscordConnector implements PlatformConnector {
 			},
 			this.siteId,
 		);
-		return this.db.query<Thread, [string]>("SELECT * FROM threads WHERE id = ? LIMIT 1").get(threadId)!;
+		const result = this.db
+			.query<Thread, [string]>("SELECT * FROM threads WHERE id = ? LIMIT 1")
+			.get(threadId);
+		if (!result) {
+			throw new Error(`Thread ${threadId} not found after insertRow`);
+		}
+		return result;
 	}
 
-	private async getDMChannelForThread(threadId: string): Promise<{ send(content: string): Promise<unknown> } | null> {
+	private async getDMChannelForThread(
+		threadId: string,
+	): Promise<{ send(content: string): Promise<unknown> } | null> {
 		const thread = this.db
 			.query<{ user_id: string }, [string]>(
 				"SELECT user_id FROM threads WHERE id = ? AND deleted = 0 LIMIT 1",
@@ -239,7 +259,10 @@ export class DiscordConnector implements PlatformConnector {
 		const discordId = platformIds.discord;
 		if (!discordId) return null;
 
-		const discordUser = await this.client!.users.fetch(discordId);
+		if (!this.client) {
+			throw new Error("Discord client not initialized");
+		}
+		const discordUser = await this.client.users.fetch(discordId);
 		return discordUser.createDM();
 	}
 

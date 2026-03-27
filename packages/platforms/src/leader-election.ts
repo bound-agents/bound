@@ -29,9 +29,7 @@ export class PlatformLeaderElection {
 	async start(): Promise<void> {
 		const leaderKey = `platform_leader:${this.connector.platform}`;
 		const existing = this.db
-			.query<{ value: string }, [string]>(
-				"SELECT value FROM cluster_config WHERE key = ? LIMIT 1",
-			)
+			.query<{ value: string }, [string]>("SELECT value FROM cluster_config WHERE key = ? LIMIT 1")
 			.get(leaderKey);
 
 		if (!existing || existing.value === this.siteId) {
@@ -70,16 +68,13 @@ export class PlatformLeaderElection {
 		// Follow the pattern from packages/cli/src/commands/set-hub.ts.
 		this.db.transaction(() => {
 			this.db.run(
-				`INSERT INTO cluster_config (key, value, modified_at)
-				 VALUES (?, ?, ?)
-				 ON CONFLICT(key) DO UPDATE SET value = excluded.value, modified_at = excluded.modified_at`,
+				"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, modified_at = excluded.modified_at",
 				[leaderKey, this.siteId, now],
 			);
 			// Insert change_log entry to propagate the leadership claim via sync.
 			// change_log columns: table_name, row_id, site_id, timestamp, row_data
 			this.db.run(
-				`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
-				 VALUES ('cluster_config', ?, ?, ?, ?)`,
+				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES ('cluster_config', ?, ?, ?, ?)",
 				[
 					leaderKey,
 					this.siteId,
@@ -100,14 +95,15 @@ export class PlatformLeaderElection {
 			try {
 				const ts = new Date().toISOString();
 				this.db.transaction(() => {
+					this.db.run("UPDATE hosts SET modified_at = ? WHERE site_id = ?", [ts, this.siteId]);
 					this.db.run(
-						"UPDATE hosts SET modified_at = ? WHERE site_id = ?",
-						[ts, this.siteId],
-					);
-					this.db.run(
-						`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
-						 VALUES ('hosts', ?, ?, ?, ?)`,
-						[this.siteId, this.siteId, ts, JSON.stringify({ site_id: this.siteId, modified_at: ts })],
+						"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES ('hosts', ?, ?, ?, ?)",
+						[
+							this.siteId,
+							this.siteId,
+							ts,
+							JSON.stringify({ site_id: this.siteId, modified_at: ts }),
+						],
 					);
 				})();
 			} catch {
@@ -124,17 +120,15 @@ export class PlatformLeaderElection {
 			// Read current leader's modified_at from hosts table
 			const row = this.db
 				.query<{ modified_at: string }, [string]>(
-					`SELECT h.modified_at
-					 FROM cluster_config cc
-					 JOIN hosts h ON h.site_id = cc.value
-					 WHERE cc.key = ? AND h.deleted = 0
-					 LIMIT 1`,
+					"SELECT h.modified_at FROM cluster_config cc JOIN hosts h ON h.site_id = cc.value WHERE cc.key = ? AND h.deleted = 0 LIMIT 1",
 				)
 				.get(leaderKey);
 
 			if (!row) {
 				// Leader host record gone — take over
-				clearInterval(this.stalenessTimer!);
+				if (this.stalenessTimer !== null) {
+					clearInterval(this.stalenessTimer);
+				}
 				this.stalenessTimer = null;
 				await this.claimLeadership(leaderKey);
 				return;
@@ -142,7 +136,9 @@ export class PlatformLeaderElection {
 
 			const leaderAgeMs = Date.now() - new Date(row.modified_at).getTime();
 			if (leaderAgeMs > this.config.failover_threshold_ms) {
-				clearInterval(this.stalenessTimer!);
+				if (this.stalenessTimer !== null) {
+					clearInterval(this.stalenessTimer);
+				}
 				this.stalenessTimer = null;
 				await this.claimLeadership(leaderKey);
 			}

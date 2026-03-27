@@ -1,9 +1,9 @@
-import type { PlatformConnectorConfig, PlatformsConfig, TypedEventEmitter } from "@bound/shared";
 import type { AppContext } from "@bound/core";
-import { PlatformLeaderElection } from "./leader-election.js";
+import type { PlatformConnectorConfig, PlatformsConfig } from "@bound/shared";
 import type { PlatformConnector } from "./connector.js";
 import { DiscordConnector } from "./connectors/discord.js";
 import { WebhookStubConnector } from "./connectors/webhook-stub.js";
+import { PlatformLeaderElection } from "./leader-election.js";
 
 /**
  * Instantiates all configured platform connectors, starts their leader elections,
@@ -37,10 +37,10 @@ export class PlatformConnectorRegistry {
 			);
 			this.elections.set(connectorConfig.platform, election);
 			election.start().catch((err) => {
-				this.ctx.logger.error(
-					"Leader election failed to start",
-					{ platform: connectorConfig.platform, error: String(err) },
-				);
+				this.ctx.logger.error("Leader election failed to start", {
+					platform: connectorConfig.platform,
+					error: String(err),
+				});
 			});
 		}
 
@@ -51,10 +51,10 @@ export class PlatformConnectorRegistry {
 			election.connector
 				.deliver(payload.thread_id, payload.message_id, payload.content, payload.attachments)
 				.catch((err) => {
-					this.ctx.logger.error(
-						"Deliver failed",
-						{ platform: payload.platform, error: String(err) },
-					);
+					this.ctx.logger.error("Deliver failed", {
+						platform: payload.platform,
+						error: String(err),
+					});
 				});
 		});
 
@@ -63,10 +63,10 @@ export class PlatformConnectorRegistry {
 			const election = this.elections.get(payload.platform);
 			if (!election?.isLeader()) return;
 			election.connector.handleWebhookPayload?.(payload.rawBody, payload.headers).catch((err) => {
-				this.ctx.logger.error(
-					"Webhook handling failed",
-					{ platform: payload.platform, error: String(err) },
-				);
+				this.ctx.logger.error("Webhook handling failed", {
+					platform: payload.platform,
+					error: String(err),
+				});
 			});
 		});
 	}

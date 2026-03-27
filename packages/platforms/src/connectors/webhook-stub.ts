@@ -29,10 +29,7 @@ export class WebhookStubConnector implements PlatformConnector {
 		throw new Error("not implemented — stub only");
 	}
 
-	async handleWebhookPayload(
-		_rawBody: string,
-		_headers: Record<string, string>,
-	): Promise<void> {
+	async handleWebhookPayload(_rawBody: string, _headers: Record<string, string>): Promise<void> {
 		// no-op — stub only
 	}
 }
