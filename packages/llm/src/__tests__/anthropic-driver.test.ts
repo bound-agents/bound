@@ -404,4 +404,49 @@ data: ${JSON.stringify({
 		const request = JSON.parse(requestBody);
 		expect(request.system).toBe("You are a helpful assistant.");
 	});
+
+	it("AC8.1: passes signal to fetch request", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-3-sonnet-20240229",
+			contextWindow: 200000,
+		});
+
+		const controller = new AbortController();
+
+		let capturedSignal: AbortSignal | undefined;
+		global.fetch = (async (_url: string, options: RequestInit) => {
+			capturedSignal = options?.signal;
+			const mockResponse = `data: ${JSON.stringify({
+				type: "message_start",
+				message: {
+					id: "msg-123",
+					type: "message",
+					role: "assistant",
+					content: [],
+					usage: { input_tokens: 10, output_tokens: 0 },
+				},
+			})}\n`;
+
+			return new Response(mockResponse, {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		try {
+			const chunks: StreamChunk[] = [];
+			for await (const chunk of driver.chat({
+				model: "claude-3-sonnet-20240229",
+				messages: [{ role: "user", content: "hi" }],
+				signal: controller.signal,
+			})) {
+				chunks.push(chunk);
+			}
+
+			expect(capturedSignal).toBe(controller.signal);
+		} finally {
+			global.fetch = originalFetch;
+		}
+	});
 });

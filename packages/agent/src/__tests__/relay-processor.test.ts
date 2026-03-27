@@ -16,6 +16,8 @@ import type {
 	ToolCallPayload,
 	TypedEventEmitter,
 } from "@bound/shared";
+import type { ChatParams, InferenceRequestPayload, LLMBackend, StreamChunk } from "@bound/llm";
+import { ModelRouter } from "@bound/llm";
 import type { MCPClient } from "../mcp-client";
 import { RelayProcessor } from "../relay-processor";
 
@@ -1948,6 +1950,97 @@ describe("RelayProcessor", () => {
 			expect(emittedPayload).toBeDefined();
 			expect(emittedPayload?.__relay_event_depth).toBe(1);
 			expect(emittedPayload?.task_id).toBe("t2");
+		});
+
+		describe("execution - inference (AC8.5)", () => {
+			it("AC8.5: passes abortController.signal to backend.chat()", async () => {
+				// Mock LLM backend that captures parameters
+				let capturedParams: ChatParams | null = null;
+
+				class MockLLMBackend implements LLMBackend {
+					async *chat(params: ChatParams) {
+						capturedParams = params;
+						yield { type: "text" as const, content: "Test response" };
+						yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5 } };
+					}
+
+					capabilities() {
+						return {
+							streaming: true,
+							tool_use: true,
+							system_prompt: true,
+							prompt_caching: false,
+							vision: false,
+							max_context: 8000,
+						};
+					}
+				}
+
+				// Create a model router with the mock backend
+				const mockBackend = new MockLLMBackend();
+				const backends = new Map<string, LLMBackend>();
+				backends.set("test-model", mockBackend);
+				const modelRouter = new ModelRouter(backends, "test-model");
+
+				const mcpClients = new Map<string, MCPClient>();
+				const keyringSiteIds = new Set(["requester-site"]);
+				const processor = new RelayProcessor(
+					db,
+					"target-site",
+					mcpClients,
+					modelRouter,
+					keyringSiteIds,
+					createMockLogger(),
+					createMockEventBus(),
+				);
+
+				const now = new Date();
+				const streamId = "stream-1";
+				const inferencePayload: InferenceRequestPayload = {
+					model: "test-model",
+					messages: [{ role: "user", content: "test query" }],
+					timeout_ms: 5000,
+				};
+
+				const inboxEntry: RelayInboxEntry = {
+					id: "inference-1",
+					source_site_id: "requester-site",
+					kind: "inference",
+					ref_id: null,
+					idempotency_key: null,
+					payload: JSON.stringify(inferencePayload),
+					expires_at: new Date(now.getTime() + 60000).toISOString(),
+					received_at: now.toISOString(),
+					processed: 0,
+					stream_id: streamId,
+				};
+
+				db.run(
+					`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[
+						inboxEntry.id,
+						inboxEntry.source_site_id,
+						inboxEntry.kind,
+						inboxEntry.ref_id,
+						inboxEntry.idempotency_key,
+						inboxEntry.payload,
+						inboxEntry.expires_at,
+						inboxEntry.received_at,
+						inboxEntry.processed,
+						inboxEntry.stream_id,
+					],
+				);
+
+				const handle = processor.start(50);
+				await new Promise((resolve) => setTimeout(resolve, 300));
+				handle.stop();
+
+				// Assert: capturedParams includes signal property (defined, not undefined)
+				expect(capturedParams).toBeDefined();
+				expect(capturedParams?.signal).toBeDefined();
+				expect(capturedParams?.signal).toBeInstanceOf(AbortSignal);
+			});
 		});
 	});
 });
