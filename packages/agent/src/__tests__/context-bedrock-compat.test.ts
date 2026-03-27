@@ -477,4 +477,72 @@ describe("Context assembly Bedrock compatibility", () => {
 		const historyRoles = history.map((m) => m.role);
 		expect(historyRoles).toEqual(expectedRoles);
 	});
+
+	// Bug: when a multi-tool response's co-emitted assistant text lands at the same
+	// millisecond as the tool_call but later tool_results tick to the next millisecond,
+	// ORDER BY (created_at, rowid) puts the assistant text BETWEEN the tool_results.
+	// Stage 3 Pass 2 then injects a synthetic tool_call with non-array content, which
+	// the Bedrock driver converts to [{ text: "" }] — producing the blank text error.
+	it("does not produce a synthetic tool_call with blank-text content when assistant text lands between tool_results", () => {
+		const threadId = randomUUID();
+		insertThread(db, threadId, userId);
+
+		const T = "2026-01-01T00:00:00.000Z";
+		const T1 = "2026-01-01T00:00:00.001Z"; // one ms later — simulates the timing issue
+
+		const tc1Id = "tooluse_aaa";
+		const tc2Id = "tooluse_bbb";
+
+		// Insertion order mirrors what agent-loop produces:
+		//   1. tool_call  (created_at = T, rowid = lowest)
+		//   2. tr_tc1     (created_at = T, rowid = +1)   — same ms, fast tool
+		//   3. tr_tc2     (created_at = T1, rowid = +2)  — next ms, slower tool
+		//   4. assistant  (created_at = T, rowid = +3)   — co-emitted, uses `now`
+		// Sort: (T, 1), (T, 2), (T, 4=assistant), (T1, 3=tr_tc2)
+		// → tool_call, tr_tc1, assistant, tr_tc2 — assistant BETWEEN tool_results!
+
+		insertMessage(db, threadId, "user", "Run two things", { timestamp: "2025-12-31T23:59:59.000Z" });
+		insertMessage(
+			db,
+			threadId,
+			"tool_call",
+			JSON.stringify([
+				{ type: "tool_use", id: tc1Id, name: "bash", input: { command: "echo fast" } },
+				{ type: "tool_use", id: tc2Id, name: "bash", input: { command: "echo slow" } },
+			]),
+			{ timestamp: T },
+		);
+		insertMessage(db, threadId, "tool_result", "fast output", {
+			tool_name: tc1Id,
+			timestamp: T,
+		});
+		insertMessage(db, threadId, "tool_result", "slow output", {
+			tool_name: tc2Id,
+			timestamp: T1,
+		});
+		// Assistant text inserted AFTER tool_results but with same `now` = T
+		insertMessage(db, threadId, "assistant", "I ran both tools.", { timestamp: T });
+
+		const messages = assembleContext({ db, threadId, userId });
+
+		// No message in the output may have blank string content (would cause Bedrock
+		// "text field is blank" error). This is the specific error being tested.
+		for (const m of messages) {
+			if (typeof m.content === "string") {
+				expect(m.content).not.toBe("");
+			}
+		}
+
+		// When an orphaned tool_result is synthesized with a proper tool_call, the
+		// synthetic tool_call content must be a valid JSON array (not the old object
+		// format that produced [{ text: "" }] in the Bedrock driver).
+		const nonSystem = messages.filter((m) => m.role !== "system");
+		for (const m of nonSystem) {
+			if (m.role === "tool_call" && typeof m.content === "string") {
+				// Must be parseable as an array (either real tool_calls or synthetic)
+				const parsed = JSON.parse(m.content as string);
+				expect(Array.isArray(parsed)).toBe(true);
+			}
+		}
+	});
 });

@@ -415,8 +415,15 @@ export class AgentLoop {
 						});
 					}
 
-					// Also persist any text content the assistant emitted alongside tool calls
+					// Also persist any text content the assistant emitted alongside tool calls.
+					// Compute textNow AFTER the tool_result loop so this message always sorts
+					// after all tool_results under ORDER BY (created_at, rowid). Using the
+					// same `now` as the tool_call risks same-ms collisions where fast results
+					// stay at T while a slower result ticks to T+1ms — the sort then wedges
+					// this message between them, orphaning the slow tool_result and causing a
+					// Bedrock "text field is blank" error via synthetic tool_call injection.
 					if (parsed.textContent) {
+						const textNow = new Date().toISOString();
 						const textMsgId = randomUUID();
 						insertRow(
 							this.ctx.db,
@@ -428,8 +435,8 @@ export class AgentLoop {
 								content: parsed.textContent,
 								model_id: this.config.modelId || null,
 								tool_name: null,
-								created_at: now,
-								modified_at: now,
+								created_at: textNow,
+								modified_at: textNow,
 								host_origin: this.ctx.hostName,
 							},
 							this.ctx.siteId,

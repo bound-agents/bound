@@ -333,14 +333,20 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 				sanitized.push(msg);
 				// prevSanitizedRole stays "tool_result"
 			} else {
-				// Truly orphaned tool_result (no preceding tool_call at all) — inject synthetic
+				// Truly orphaned tool_result (no preceding tool_call at all) — inject synthetic.
+				// Use the tool_result's own tool_use_id (stored in tool_name) so the Bedrock
+				// driver emits a proper toolUse block instead of falling back to [{ text: "" }]
+				// which Bedrock rejects with "text field is blank".
+				const toolUseId = msg.tool_name || `synthetic-tc-${msg.id}`;
 				sanitized.push({
 					id: `synthetic-${msg.id}`,
 					thread_id: threadId,
 					role: "tool_call",
-					content: '{"tool_name":"unknown","input":{}}',
+					content: JSON.stringify([
+						{ type: "tool_use", id: toolUseId, name: "unknown", input: {} },
+					]),
 					model_id: null,
-					tool_name: "unknown",
+					tool_name: toolUseId,
 					created_at: msg.created_at,
 					modified_at: msg.modified_at,
 					host_origin: msg.host_origin,
