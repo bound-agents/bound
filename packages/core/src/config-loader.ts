@@ -5,13 +5,13 @@ import {
 	type Result,
 	type SyncConfig,
 	cronSchedulesSchema,
-	discordSchema,
 	err,
 	keyringSchema,
 	mcpSchema,
 	networkSchema,
 	ok,
 	overlaySchema,
+	platformsSchema,
 	relaySchema,
 	syncSchema,
 } from "@bound/shared";
@@ -204,7 +204,7 @@ export function loadOptionalConfigs(configDir: string): OptionalConfigs {
 		key: string;
 	}> = [
 		{ filename: "network.json", schema: networkSchema as ZodSchema<unknown>, key: "network" },
-		{ filename: "discord.json", schema: discordSchema as ZodSchema<unknown>, key: "discord" },
+		{ filename: "platforms.json", schema: platformsSchema as ZodSchema<unknown>, key: "platforms" },
 		{ filename: "sync.json", schema: syncSchema as ZodSchema<unknown>, key: "sync" },
 		{ filename: "keyring.json", schema: keyringSchema as ZodSchema<unknown>, key: "keyring" },
 		{ filename: "mcp.json", schema: mcpSchema as ZodSchema<unknown>, key: "mcp" },
