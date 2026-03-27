@@ -8,6 +8,24 @@ import { canRunHere, computeNextRunAt } from "./task-resolution";
 import type { AgentLoopConfig } from "./types";
 
 const LEASE_DURATION = 300000; // 5 minutes
+
+/**
+ * Extracts the raw cron expression from a trigger_spec string.
+ * The schedule command stores trigger_spec as JSON like {"type":"cron","expression":"0 * * * *"},
+ * but seedCronTasks stores raw cron strings like "0 * * * *".
+ * This helper handles both formats.
+ */
+function extractCronExpression(triggerSpec: string): string {
+	try {
+		const parsed = JSON.parse(triggerSpec);
+		if (parsed && typeof parsed.expression === "string") {
+			return parsed.expression;
+		}
+	} catch {
+		// Not JSON — treat as raw cron expression
+	}
+	return triggerSpec;
+}
 const EVICTION_TIMEOUT = 120_000; // 2 minutes
 const POLL_INTERVAL = 5000; // 5 seconds
 const MAX_EVENT_DEPTH = 5;
@@ -283,27 +301,55 @@ export class Scheduler {
 					.get(task.id) as { lease_id: string | null } | undefined;
 
 				if (currentTask?.lease_id === leaseId) {
-					// Mark as completed
 					const resultStr = JSON.stringify(result);
-					this.ctx.db
-						.query(
-							"UPDATE tasks SET status = 'completed', result = ?, run_count = run_count + 1, last_run_at = ? WHERE id = ?",
-						)
-						.run(resultStr, new Date().toISOString(), task.id);
+					const completedAt = new Date().toISOString();
 
-					// If cron task, compute next run time
-					if (task.type === "cron" && task.trigger_spec) {
-						try {
-							const nextRunAt = computeNextRunAt(task.trigger_spec, new Date());
-							this.ctx.db
-								.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?")
-								.run(nextRunAt.toISOString(), task.id);
-						} catch (error) {
-							const errorMsg = formatError(error);
-							this.ctx.logger.error("Failed to compute next cron time", {
-								error: errorMsg,
-								taskId: task.id,
-							});
+					if (result.error) {
+						// Soft error: run() returned normally but with an error field
+						this.ctx.db
+							.query(
+								"UPDATE tasks SET status = 'failed', error = ?, result = ?, run_count = run_count + 1, last_run_at = ? WHERE id = ?",
+							)
+							.run(result.error, resultStr, completedAt, task.id);
+
+						// Cron tasks still reschedule even after soft errors so they keep retrying
+						if (task.type === "cron" && task.trigger_spec) {
+							try {
+								const cronExpr = extractCronExpression(task.trigger_spec);
+								const nextRunAt = computeNextRunAt(cronExpr, new Date());
+								this.ctx.db
+									.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?")
+									.run(nextRunAt.toISOString(), task.id);
+							} catch (cronError) {
+								this.ctx.logger.error("Failed to compute next cron time after soft error", {
+									error: formatError(cronError),
+									taskId: task.id,
+								});
+							}
+						}
+					} else {
+						// Mark as completed
+						this.ctx.db
+							.query(
+								"UPDATE tasks SET status = 'completed', result = ?, run_count = run_count + 1, last_run_at = ? WHERE id = ?",
+							)
+							.run(resultStr, completedAt, task.id);
+
+						// If cron task, compute next run time
+						if (task.type === "cron" && task.trigger_spec) {
+							try {
+								const cronExpr = extractCronExpression(task.trigger_spec);
+								const nextRunAt = computeNextRunAt(cronExpr, new Date());
+								this.ctx.db
+									.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?")
+									.run(nextRunAt.toISOString(), task.id);
+							} catch (error) {
+								const errorMsg = formatError(error);
+								this.ctx.logger.error("Failed to compute next cron time", {
+									error: errorMsg,
+									taskId: task.id,
+								});
+							}
 						}
 					}
 				}
@@ -460,7 +506,8 @@ export class Scheduler {
 					// If cron task, compute next run time
 					if (task.type === "cron" && task.trigger_spec) {
 						try {
-							const nextRunAt = computeNextRunAt(task.trigger_spec, new Date());
+							const cronExpr = extractCronExpression(task.trigger_spec);
+							const nextRunAt = computeNextRunAt(cronExpr, new Date());
 							this.ctx.db
 								.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?")
 								.run(nextRunAt.toISOString(), task.id);

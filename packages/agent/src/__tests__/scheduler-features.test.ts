@@ -272,6 +272,61 @@ describe("Scheduler features", () => {
 	// Task failure alert
 	// -----------------------------------------------------------------------
 	describe("task failure alert", () => {
+		it("marks task as failed when run() returns an error result without throwing", async () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'deferred', 'pending', 'manual', NULL, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, pastTime, now, now],
+			);
+
+			// Factory returns a soft error (result with .error, no exception thrown)
+			const softErrorFactory = () => ({
+				run: async (): Promise<AgentLoopResult> => ({
+					messagesCreated: 0,
+					toolCallsMade: 0,
+					filesChanged: 0,
+					error: "Bedrock request failed: connection refused",
+				}),
+			});
+
+			const ctx = makeCtx();
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, softErrorFactory as any);
+			const { stop } = scheduler.start(50);
+
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+			stop();
+
+			const task = db.query("SELECT status, error FROM tasks WHERE id = ?").get(taskId) as {
+				status: string;
+				error: string | null;
+			} | null;
+
+			expect(task).not.toBeNull();
+			// Must be 'failed', not 'completed'
+			expect(task!.status).toBe("failed");
+			expect(task!.error).toContain("Bedrock request failed");
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
 		it("persists an alert message on task failure", async () => {
 			const userId = randomUUID();
 			const threadId = randomUUID();
@@ -416,6 +471,67 @@ describe("Scheduler features", () => {
 			// Documents the bug: template is NOT found because the Result
 			// wrapper is iterated instead of the inner config map.
 			expect(foundTemplate).toBeNull();
+		});
+	});
+
+	// -----------------------------------------------------------------------
+	// Bug #9: JSON trigger_spec from schedule command must be parsed for rescheduling
+	// -----------------------------------------------------------------------
+	describe("cron rescheduling with JSON trigger_spec", () => {
+		it("reschedules cron task when trigger_spec is JSON-encoded (from schedule command)", async () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+
+			// This is the format the `schedule --every` command produces
+			const triggerSpec = JSON.stringify({ type: "cron", expression: "0 * * * *" });
+
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'cron', 'pending', ?, NULL, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, triggerSpec, pastTime, now, now],
+			);
+
+			const ctx = makeCtx();
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
+			const { stop } = scheduler.start(50);
+
+			await new Promise((resolve) => setTimeout(resolve, 1500));
+			stop();
+
+			const task = db
+				.query("SELECT status, next_run_at, run_count FROM tasks WHERE id = ?")
+				.get(taskId) as {
+				status: string;
+				next_run_at: string | null;
+				run_count: number;
+			} | null;
+
+			expect(task).not.toBeNull();
+			// Task must have run at least once
+			expect(task!.run_count).toBeGreaterThanOrEqual(1);
+			// After completing, cron task should be rescheduled to a future time
+			expect(task!.status).toBe("pending");
+			expect(task!.next_run_at).not.toBeNull();
+			// next_run_at should be in the future (not the old pastTime)
+			const nextRun = new Date(task!.next_run_at!);
+			expect(nextRun.getTime()).toBeGreaterThan(Date.now());
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
 	});
 
