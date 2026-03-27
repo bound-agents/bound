@@ -4,8 +4,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentLoop } from "@bound/agent";
-import { createAppContext } from "@bound/core";
-import { DiscordBot, shouldActivate } from "../bot";
+import { applySchema, createDatabase, createAppContext } from "@bound/core";
+import { DiscordBot, shouldActivate, buildAttachmentContent } from "../bot";
 
 describe("DiscordBot", () => {
 	let configDir: string;
@@ -115,6 +115,73 @@ describe("DiscordBot", () => {
 		const result = shouldActivate(ctxWithConfig);
 
 		expect(result).toBe(true);
+	});
+
+	describe("buildAttachmentContent", () => {
+		it("appends text file content inline", async () => {
+			const db = createDatabase(":memory:");
+			applySchema(db);
+			const siteId = randomUUID();
+			const fileBytes = new TextEncoder().encode("const x = 42;");
+
+			const result = await buildAttachmentContent(
+				"look at this",
+				[{ name: "index.ts", contentType: "text/typescript", url: "http://cdn/index.ts", size: fileBytes.byteLength }],
+				db,
+				siteId,
+				"test-host",
+				async (_url) => fileBytes.buffer as ArrayBuffer,
+			);
+
+			expect(result).toContain("look at this");
+			expect(result).toContain("index.ts");
+			expect(result).toContain("const x = 42;");
+
+			// File must be stored in the DB
+			const row = db.prepare("SELECT is_binary FROM files WHERE path LIKE '%index.ts'").get() as { is_binary: number } | null;
+			expect(row).not.toBeNull();
+			expect(row!.is_binary).toBe(0);
+		});
+
+		it("appends binary file metadata without raw content", async () => {
+			const db = createDatabase(":memory:");
+			applySchema(db);
+			const siteId = randomUUID();
+			const pngBytes = new Uint8Array([137, 80, 78, 71]);
+
+			const result = await buildAttachmentContent(
+				"",
+				[{ name: "photo.png", contentType: "image/png", url: "http://cdn/photo.png", size: pngBytes.byteLength }],
+				db,
+				siteId,
+				"test-host",
+				async (_url) => pngBytes.buffer as ArrayBuffer,
+			);
+
+			expect(result).toContain("photo.png");
+			expect(result).toContain("binary");
+			// Must NOT dump base64 into the message
+			expect(result).not.toContain(Buffer.from(pngBytes).toString("base64"));
+
+			const row = db.prepare("SELECT is_binary FROM files WHERE path LIKE '%photo.png'").get() as { is_binary: number } | null;
+			expect(row!.is_binary).toBe(1);
+		});
+
+		it("handles attachment-only message (empty text content)", async () => {
+			const db = createDatabase(":memory:");
+			applySchema(db);
+			const textBytes = new TextEncoder().encode("data");
+			const result = await buildAttachmentContent(
+				"",
+				[{ name: "data.csv", contentType: "text/csv", url: "http://cdn/data.csv", size: 4 }],
+				db,
+				randomUUID(),
+				"host",
+				async (_url) => textBytes.buffer as ArrayBuffer,
+			);
+			// Content should not be empty even though msg.content was ""
+			expect(result.trim().length).toBeGreaterThan(0);
+		});
 	});
 
 	it("shouldActivate returns false when host does not match", () => {

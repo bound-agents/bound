@@ -3,10 +3,94 @@ import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import { insertRow } from "@bound/core";
 import { formatError } from "@bound/shared";
+import type { Database } from "bun:sqlite";
 import type { Client } from "discord.js";
 import { ChannelType, GatewayIntentBits, Partials } from "discord.js";
 import { isAllowlisted } from "./allowlist";
 import { findOrCreateThread, mapDiscordUser } from "./thread-mapping";
+
+const TEXT_MIME_PREFIXES = ["text/"];
+const TEXT_MIME_EXACT = new Set([
+	"application/json",
+	"application/xml",
+	"application/javascript",
+	"application/typescript",
+	"application/xhtml+xml",
+	"application/x-yaml",
+	"application/x-sh",
+	"application/graphql",
+]);
+
+function isTextMime(mimeType: string): boolean {
+	const base = mimeType.split(";")[0].trim().toLowerCase();
+	return TEXT_MIME_PREFIXES.some((p) => base.startsWith(p)) || TEXT_MIME_EXACT.has(base);
+}
+
+export interface DiscordAttachment {
+	name: string;
+	contentType: string;
+	url: string;
+	size: number;
+}
+
+/**
+ * Download Discord attachments, store them in the files table, and append
+ * their content (or metadata for binary files) to the message text.
+ * Extracted for testability; `fetcher` is injectable.
+ */
+export async function buildAttachmentContent(
+	textContent: string,
+	attachments: DiscordAttachment[],
+	db: Database,
+	siteId: string,
+	hostOrigin: string,
+	fetcher: (url: string) => Promise<ArrayBuffer> = async (url) => {
+		const res = await fetch(url);
+		return res.arrayBuffer();
+	},
+): Promise<string> {
+	let content = textContent;
+
+	for (const att of attachments) {
+		try {
+			const data = await fetcher(att.url);
+			const binary = !isTextMime(att.contentType);
+			const fileContent = binary
+				? Buffer.from(data).toString("base64")
+				: new TextDecoder().decode(data);
+			const now = new Date().toISOString();
+
+			insertRow(
+				db,
+				"files",
+				{
+					id: randomUUID(),
+					path: `/home/user/uploads/discord/${att.name}`,
+					content: fileContent,
+					is_binary: binary ? 1 : 0,
+					size_bytes: data.byteLength,
+					created_at: now,
+					modified_at: now,
+					deleted: 0,
+					created_by: "discord",
+					host_origin: hostOrigin,
+				},
+				siteId,
+			);
+
+			if (binary) {
+				content += `\n\n[Attached file: ${att.name} (binary, ${att.size} bytes)]`;
+			} else {
+				content += `\n\n[Attached file: ${att.name}]\n${new TextDecoder().decode(data)}`;
+			}
+		} catch (err) {
+			// Non-fatal: note the attachment even if download failed
+			content += `\n\n[Attached file: ${att.name} — download failed: ${formatError(err)}]`;
+		}
+	}
+
+	return content;
+}
 
 export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
 
@@ -57,6 +141,21 @@ export class DiscordBot {
 			const thread = findOrCreateThread(this.ctx.db, user.id, this.ctx.siteId);
 			console.log(`[discord] DM from ${msg.author.tag}: thread=${thread.id.slice(0, 8)}`);
 
+			// Build message content including any attachments
+			const attachments: DiscordAttachment[] = msg.attachments.map((a) => ({
+				name: a.name ?? "attachment",
+				contentType: a.contentType ?? "application/octet-stream",
+				url: a.url,
+				size: a.size,
+			}));
+			const content = await buildAttachmentContent(
+				msg.content,
+				attachments,
+				this.ctx.db,
+				this.ctx.siteId,
+				this.ctx.hostName,
+			);
+
 			insertRow(
 				this.ctx.db,
 				"messages",
@@ -64,7 +163,7 @@ export class DiscordBot {
 					id: randomUUID(),
 					thread_id: thread.id,
 					role: "user",
-					content: msg.content,
+					content,
 					model_id: null,
 					tool_name: null,
 					created_at: new Date().toISOString(),
