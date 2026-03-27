@@ -56,7 +56,7 @@ export class DiscordConnector implements PlatformConnector {
 			partials: [Partials.Channel, Partials.Message, Partials.Reaction],
 		});
 
-		this.client.on("ready", (client) => {
+		this.client.on("clientReady", (client) => {
 			this.logger.info("Logged in as Discord bot", { tag: client.user.tag });
 		});
 
