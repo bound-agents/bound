@@ -475,6 +475,141 @@ describe("Scheduler features", () => {
 	});
 
 	// -----------------------------------------------------------------------
+	// Bug #4: runTask must create a thread row when generating a new threadId
+	// Bug #1: runTask must inject the task payload as a user message before running
+	// -----------------------------------------------------------------------
+	describe("task thread and payload injection", () => {
+		it("creates a thread row when task has no thread_id", async () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+
+			// Task with NULL thread_id — scheduler must create a thread row
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'deferred', 'pending', 'manual', NULL, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, pastTime, now, now],
+			);
+
+			let capturedThreadId: string | undefined;
+			const factory = (config: { threadId: string }) => {
+				capturedThreadId = config.threadId;
+				return {
+					run: async (): Promise<AgentLoopResult> => ({
+						messagesCreated: 0,
+						toolCallsMade: 0,
+						filesChanged: 0,
+					}),
+				};
+			};
+
+			const ctx = makeCtx();
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, factory as any);
+			const { stop } = scheduler.start(50);
+
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+			stop();
+
+			expect(capturedThreadId).toBeDefined();
+
+			// A thread row must exist for the generated threadId
+			const thread = db
+				.query("SELECT id FROM threads WHERE id = ?")
+				.get(capturedThreadId!) as { id: string } | null;
+
+			expect(thread).not.toBeNull();
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			if (capturedThreadId) {
+				db.run("DELETE FROM threads WHERE id = ?", [capturedThreadId]);
+				db.run("DELETE FROM messages WHERE thread_id = ?", [capturedThreadId]);
+			}
+		});
+
+		it("inserts task payload as first user message before running agent loop", async () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			const payload = "Analyze the sales report and summarize key findings.";
+
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'deferred', 'pending', 'manual', ?, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, payload, pastTime, now, now],
+			);
+
+			let capturedThreadId: string | undefined;
+			let messagesAtRunTime = 0;
+			const factory = (config: { threadId: string }) => {
+				capturedThreadId = config.threadId;
+				return {
+					run: async (): Promise<AgentLoopResult> => {
+						// Count user messages visible before run() body executes
+						const rows = db
+							.query(
+								"SELECT COUNT(*) as c FROM messages WHERE thread_id = ? AND role = 'user'",
+							)
+							.get(capturedThreadId!) as { c: number };
+						messagesAtRunTime = rows.c;
+						return { messagesCreated: 0, toolCallsMade: 0, filesChanged: 0 };
+					},
+				};
+			};
+
+			const ctx = makeCtx();
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, factory as any);
+			const { stop } = scheduler.start(50);
+
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+			stop();
+
+			// The payload must have been inserted as a user message before run() was called
+			expect(messagesAtRunTime).toBeGreaterThanOrEqual(1);
+
+			// Verify the message content matches the payload
+			const msg = db
+				.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'user' LIMIT 1")
+				.get(capturedThreadId!) as { content: string } | null;
+			expect(msg).not.toBeNull();
+			expect(msg!.content).toBe(payload);
+
+			if (capturedThreadId) {
+				db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+				db.run("DELETE FROM threads WHERE id = ?", [capturedThreadId]);
+				db.run("DELETE FROM messages WHERE thread_id = ?", [capturedThreadId]);
+			}
+		});
+	});
+
+	// -----------------------------------------------------------------------
 	// Bug #9: JSON trigger_spec from schedule command must be parsed for rescheduling
 	// -----------------------------------------------------------------------
 	describe("cron rescheduling with JSON trigger_spec", () => {

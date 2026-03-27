@@ -286,8 +286,64 @@ export class Scheduler {
 		// Create agent loop and run asynchronously
 		setImmediate(async () => {
 			try {
+				const threadId = task.thread_id || randomUUID();
+				const taskNow = new Date().toISOString();
+
+				// Bug #4: Ensure a thread row exists for the threadId.
+				// The thread may not exist if this is a system task with no pre-created thread.
+				const existingThread = this.ctx.db
+					.query("SELECT id FROM threads WHERE id = ?")
+					.get(threadId) as { id: string } | null;
+
+				if (!existingThread) {
+					insertRow(
+						this.ctx.db,
+						"threads",
+						{
+							id: threadId,
+							user_id: "system",
+							interface: "scheduler",
+							host_origin: this.ctx.hostName,
+							color: 0,
+							title: task.payload ? task.payload.slice(0, 80) : `Task ${task.id}`,
+							summary: null,
+							summary_through: null,
+							summary_model_id: null,
+							extracted_through: null,
+							created_at: taskNow,
+							last_message_at: taskNow,
+							modified_at: taskNow,
+							deleted: 0,
+						},
+						this.ctx.siteId,
+					);
+				}
+
+				// Bug #1: Inject task payload as the first user message so the agent
+				// loop has something to work from (required for Bedrock and any model
+				// that enforces "conversation must start with a user message").
+				if (task.payload) {
+					insertRow(
+						this.ctx.db,
+						"messages",
+						{
+							id: randomUUID(),
+							thread_id: threadId,
+							role: "user",
+							content: task.payload,
+							model_id: null,
+							tool_name: null,
+							created_at: taskNow,
+							modified_at: taskNow,
+							host_origin: this.ctx.hostName,
+							deleted: 0,
+						},
+						this.ctx.siteId,
+					);
+				}
+
 				const agentLoop = this.agentLoopFactory({
-					threadId: task.thread_id || randomUUID(),
+					threadId,
 					taskId: task.id,
 					userId: "system",
 					modelId: task.model_hint || undefined,
