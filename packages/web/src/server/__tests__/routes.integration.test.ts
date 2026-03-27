@@ -263,6 +263,74 @@ describe("API Routes", () => {
 		});
 	});
 
+	describe("POST /api/threads/:id/messages with file_ids", () => {
+		async function createThread(): Promise<string> {
+			const res = await app.fetch(
+				new Request("http://localhost:3000/api/threads", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({}),
+				}),
+			);
+			const t = await res.json();
+			return t.id;
+		}
+
+		it("inlines text file content into message when file_ids provided", async () => {
+			const threadId = await createThread();
+			// Upload a text file first
+			const form = new FormData();
+			form.append("file", new File(["Hello from file!"], "note.txt", { type: "text/plain" }));
+			const uploadRes = await app.fetch(
+				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
+			);
+			const uploaded = await uploadRes.json();
+
+			// Send message with file_id
+			const msgRes = await app.fetch(
+				new Request(`http://localhost:3000/api/threads/${threadId}/messages`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ content: "check this", file_ids: [uploaded.id] }),
+				}),
+			);
+
+			expect(msgRes.status).toBe(201);
+			const msg = await msgRes.json();
+			// File content must be appended to the message
+			expect(msg.content).toContain("check this");
+			expect(msg.content).toContain("Hello from file!");
+			expect(msg.content).toContain("note.txt");
+		});
+
+		it("appends binary file metadata (not raw content) when file is binary", async () => {
+			const threadId = await createThread();
+			const form = new FormData();
+			form.append(
+				"file",
+				new File([new Uint8Array([137, 80, 78, 71])], "img.png", { type: "image/png" }),
+			);
+			const uploadRes = await app.fetch(
+				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
+			);
+			const uploaded = await uploadRes.json();
+
+			const msgRes = await app.fetch(
+				new Request(`http://localhost:3000/api/threads/${threadId}/messages`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ content: "see image", file_ids: [uploaded.id] }),
+				}),
+			);
+
+			const msg = await msgRes.json();
+			expect(msg.content).toContain("see image");
+			expect(msg.content).toContain("img.png");
+			// Must NOT dump raw base64 into the message
+			expect(msg.content).not.toContain(Buffer.from([137, 80, 78, 71]).toString("base64"));
+		});
+	});
+
 	describe("POST /api/files/upload", () => {
 		it("stores a text file with correct is_binary=0 and real size_bytes", async () => {
 			const content = "hello world";

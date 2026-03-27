@@ -75,6 +75,23 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 				);
 			}
 
+			// Append any referenced file contents to the message so the agent can see them.
+			let content: string = body.content;
+			const fileIds: string[] = Array.isArray(body.file_ids) ? body.file_ids : [];
+			for (const fileId of fileIds) {
+				const file = db
+					.query("SELECT * FROM files WHERE id = ? AND deleted = 0")
+					.get(fileId) as { path: string; content: string | null; is_binary: number; size_bytes: number } | null;
+				if (!file) continue;
+				const name = file.path.split("/").pop() ?? file.path;
+				if (file.is_binary) {
+					// Binary files: mention metadata only (don't dump base64 into the prompt)
+					content += `\n\n[Attached file: ${name} (binary, ${file.size_bytes} bytes)]`;
+				} else {
+					content += `\n\n[Attached file: ${name}]\n${file.content ?? ""}`;
+				}
+			}
+
 			const messageId = randomUUID();
 			const now = new Date().toISOString();
 
@@ -87,7 +104,7 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 					id: messageId,
 					thread_id: threadId,
 					role: "user",
-					content: body.content,
+					content,
 					model_id: body.model_id || null,
 					tool_name: null,
 					created_at: now,
