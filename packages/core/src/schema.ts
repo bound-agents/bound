@@ -299,17 +299,17 @@ export function applySchema(db: Database): void {
 
 	// stream_id column migrations (idempotent — ignore if column already exists)
 	try {
-		db.run(`ALTER TABLE relay_outbox ADD COLUMN stream_id TEXT`);
+		db.run("ALTER TABLE relay_outbox ADD COLUMN stream_id TEXT");
 	} catch {
 		/* already exists */
 	}
 	try {
-		db.run(`ALTER TABLE relay_inbox  ADD COLUMN stream_id TEXT`);
+		db.run("ALTER TABLE relay_inbox  ADD COLUMN stream_id TEXT");
 	} catch {
 		/* already exists */
 	}
 	try {
-		db.run(`ALTER TABLE relay_cycles ADD COLUMN stream_id TEXT`);
+		db.run("ALTER TABLE relay_cycles ADD COLUMN stream_id TEXT");
 	} catch {
 		/* already exists */
 	}
@@ -330,7 +330,7 @@ export function applySchema(db: Database): void {
 
 	// Add platform_ids column to users (replaces discord_id)
 	try {
-		db.run(`ALTER TABLE users ADD COLUMN platform_ids TEXT`);
+		db.run("ALTER TABLE users ADD COLUMN platform_ids TEXT");
 	} catch {
 		/* already exists */
 	}
@@ -351,19 +351,19 @@ export function applySchema(db: Database): void {
 
 	// Drop the discord index BEFORE dropping the column
 	// (SQLite rejects DROP COLUMN on indexed columns)
-	db.run(`DROP INDEX IF EXISTS idx_users_discord`);
+	db.run("DROP INDEX IF EXISTS idx_users_discord");
 
 	// Drop the discord_id column
 	// (Requires SQLite 3.35.0+; Bun bundles 3.51.0)
 	try {
-		db.run(`ALTER TABLE users DROP COLUMN discord_id`);
+		db.run("ALTER TABLE users DROP COLUMN discord_id");
 	} catch {
 		/* already dropped, or column does not exist on fresh install */
 	}
 
 	// Add platforms column to hosts
 	try {
-		db.run(`ALTER TABLE hosts ADD COLUMN platforms TEXT`);
+		db.run("ALTER TABLE hosts ADD COLUMN platforms TEXT");
 	} catch {
 		/* already exists */
 	}

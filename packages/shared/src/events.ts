@@ -1,4 +1,4 @@
-import type { Message, StatusForwardPayload, PlatformDeliverPayload } from "./types.js";
+import type { Message, PlatformDeliverPayload, StatusForwardPayload } from "./types.js";
 
 export interface EventMap {
 	"message:created": { message: Message; thread_id: string };
