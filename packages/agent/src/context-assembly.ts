@@ -577,7 +577,19 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		const historyMessages = assembled.filter((m) => m.role !== "system");
 
 		if (historyMessages.length > 0) {
-			const remaining = historyMessages.slice(Math.max(0, historyMessages.length - 10));
+			let sliceStart = Math.max(0, historyMessages.length - 10);
+
+			// Bug #8: slicing may orphan a tool_result at the new start (its paired
+			// tool_call was cut off). Advance past any leading tool_result messages
+			// to prevent "Expected toolResult blocks" errors on Bedrock.
+			while (
+				sliceStart < historyMessages.length &&
+				historyMessages[sliceStart].role === "tool_result"
+			) {
+				sliceStart++;
+			}
+
+			const remaining = historyMessages.slice(sliceStart);
 			return [...systemMessages, ...remaining];
 		}
 	}

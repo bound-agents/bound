@@ -1269,4 +1269,102 @@ describe("Context Assembly Pipeline", () => {
 			expect(volatileMsg).toBeUndefined();
 		});
 	});
+
+	// Bug #8: budget truncation must not produce an orphaned tool_result at the
+	// start of the history slice (which would cause "Expected toolResult blocks" on Bedrock)
+	describe("budget truncation tool-pair safety", () => {
+		it("does not leave an orphaned tool_result at the start of history after truncation", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-01-01T00:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Budget User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Budget Test",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			const insertMsg = (
+				role: string,
+				content: string,
+				offsetSec: number,
+				toolName: string | null = null,
+			): string => {
+				const ts = new Date(nowBase.getTime() + offsetSec * 1000).toISOString();
+				const id = randomUUID();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[id, localThreadId, role, content, null, toolName, ts, ts, "local"],
+				);
+				return id;
+			};
+
+			// Insert exactly 12 history entries:
+			//   index 0: user
+			//   index 1: tool_call   ← gets sliced off (slice starts at index 2)
+			//   index 2: tool_result ← BUG: would be first after slice
+			//   indices 3-11: user/assistant pairs
+			insertMsg("user", "First user message", 1);
+			{
+				const ts = new Date(nowBase.getTime() + 2 * 1000).toISOString();
+				const id = randomUUID();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						id,
+						localThreadId,
+						"tool_call",
+						JSON.stringify([{ type: "tool_use", id: "tu1", name: "bash", input: {} }]),
+						null,
+						null,
+						ts,
+						ts,
+						"local",
+					],
+				);
+			}
+			insertMsg("tool_result", "tool result content", 3, "tu1");
+			for (let i = 4; i <= 12; i++) {
+				insertMsg(i % 2 === 0 ? "assistant" : "user", `Message ${i}`, i);
+			}
+
+			// Use tiny contextWindow to force truncation
+			const messages = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 50,
+			});
+
+			const historyMessages = messages.filter((m) => m.role !== "system");
+
+			// After truncation the first history message must NOT be a tool_result
+			if (historyMessages.length > 0) {
+				expect(historyMessages[0].role).not.toBe("tool_result");
+			}
+
+			// Clean up
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+	});
 });
