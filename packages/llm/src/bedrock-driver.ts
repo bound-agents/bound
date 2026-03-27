@@ -182,7 +182,9 @@ export class BedrockDriver implements LLMBackend {
 		const response = await withRetry(async () => {
 			let res: ConverseStreamCommandOutput;
 			try {
-				res = await this.client.send(command);
+				res = await this.client.send(command, {
+					abortSignal: params.signal,
+				});
 			} catch (error) {
 				throw new LLMError(
 					`Bedrock request failed: ${formatError(error)}`,

@@ -29,7 +29,7 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 		// Create a test user
 		const userId = randomUUID();
 		db.run(
-			"INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+			"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
 			[userId, "Test User", null, new Date().toISOString(), new Date().toISOString(), 0],
 		);
 	});

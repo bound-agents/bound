@@ -94,7 +94,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 					{
 						id: userId,
 						display_name: entry.display_name,
-						discord_id: entry.discord_id ?? null,
+						platform_ids: entry.platforms ? JSON.stringify(entry.platforms) : null,
 						first_seen_at: now,
 						modified_at: now,
 						deleted: 0,
@@ -102,14 +102,14 @@ export async function runStart(args: StartArgs): Promise<void> {
 					appContext.siteId,
 				);
 			} else {
-				// Update display_name and discord_id if changed in allowlist
+				// Update display_name and platforms if changed in allowlist
 				updateRow(
 					appContext.db,
 					"users",
 					userId,
 					{
 						display_name: entry.display_name,
-						discord_id: entry.discord_id ?? null,
+						platform_ids: entry.platforms ? JSON.stringify(entry.platforms) : null,
 						modified_at: now,
 					},
 					appContext.siteId,
@@ -686,7 +686,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		console.warn("Continuing without web UI. API will not be available.");
 	}
 
-	// Define agent loop factory (used by Discord, scheduler)
+	// Define agent loop factory (used by platform connectors, scheduler)
 	// Single bash tool for sandbox interaction — all commands (built-in + MCP) are
 	// registered inside the sandbox via defineCommand, so the LLM only needs bash.
 	const sandboxTool: ToolDefinition = {
@@ -718,23 +718,17 @@ export async function runStart(args: StartArgs): Promise<void> {
 		});
 	};
 
-	// 13. Discord (if configured)
-	console.log("Initializing Discord...");
-	let discordBot: { stop(): Promise<void> } | null = null;
-	const discordResult = appContext.optionalConfig.discord;
-	if (discordResult?.ok) {
-		const { shouldActivate, DiscordBot } = await import("@bound/discord");
-		if (shouldActivate(appContext)) {
-			const discordConfig = discordResult.value as { bot_token: string; host: string };
-			const bot = new DiscordBot(appContext, agentLoopFactory, discordConfig.bot_token);
-			await bot.start();
-			discordBot = bot;
-			console.log("[discord] Bot started");
-		} else {
-			console.log("[discord] Config present but host does not match, skipping");
-		}
+	// 13. Platform connectors (if configured)
+	let platformRegistry: { start(): void; stop(): void } | null = null;
+	const platformsResult = appContext.optionalConfig.platforms;
+	if (platformsResult?.ok) {
+		const { PlatformConnectorRegistry } = await import("@bound/platforms");
+		const platformsConfig = platformsResult.value as import("@bound/shared").PlatformsConfig;
+		platformRegistry = new PlatformConnectorRegistry(appContext, platformsConfig);
+		platformRegistry.start();
+		console.log("[platforms] Platform connector registry started");
 	} else {
-		console.log("[discord] Not configured");
+		console.log("[platforms] Not configured (no platforms.json)");
 	}
 
 	// 14. Sync (if configured)
@@ -843,11 +837,11 @@ Press Ctrl+C to stop.
 			if (syncLoopHandle) syncLoopHandle.stop();
 			if (overlayHandle) overlayHandle.stop();
 			if (relayProcessorHandle) relayProcessorHandle.stop();
-			if (discordBot) {
+			if (platformRegistry) {
 				try {
-					await discordBot.stop();
-				} catch (_err) {
-					// Ignore Discord shutdown errors
+					platformRegistry.stop();
+				} catch (err) {
+					console.error("[platforms] Error stopping platform registry:", err);
 				}
 			}
 			// Disconnect MCP clients
@@ -868,11 +862,11 @@ Press Ctrl+C to stop.
 			if (syncLoopHandle) syncLoopHandle.stop();
 			if (overlayHandle) overlayHandle.stop();
 			if (relayProcessorHandle) relayProcessorHandle.stop();
-			if (discordBot) {
+			if (platformRegistry) {
 				try {
-					await discordBot.stop();
-				} catch (_err) {
-					// Ignore Discord shutdown errors
+					platformRegistry.stop();
+				} catch (err) {
+					console.error("[platforms] Error stopping platform registry:", err);
 				}
 			}
 			for (const [, client] of mcpClientsMap) {

@@ -203,7 +203,7 @@ describe("Startup Wiring", () => {
 
 			// Create user and thread
 			db.run(
-				"INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
 				[userId, "TestUser", now, now],
 			);
 			db.run(
@@ -307,7 +307,7 @@ describe("Startup Wiring", () => {
 
 			// Create user and thread
 			db.run(
-				"INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
 				[userId, "TestUser2", now, now],
 			);
 			db.run(
@@ -497,7 +497,7 @@ describe("Startup Wiring", () => {
 				{
 					id: userId,
 					display_name: "Seeded User",
-					discord_id: null,
+					platform_ids: null,
 					first_seen_at: now,
 					modified_at: now,
 					deleted: 0,

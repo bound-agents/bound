@@ -149,7 +149,7 @@ describe("AgentLoop lifecycle", () => {
 		// Insert a test user
 		const userId = randomUUID();
 		db.run(
-			"INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
+			"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
 			[userId, "LifecycleUser", new Date().toISOString(), new Date().toISOString()],
 		);
 	});
@@ -285,7 +285,7 @@ describe("AgentLoop lifecycle", () => {
 
 		// Create a thread in the database so extractSummaryAndMemories can find it
 		db.run(
-			"INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
+			"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
 			[userId, "SummaryUser", now, now],
 		);
 		db.run(

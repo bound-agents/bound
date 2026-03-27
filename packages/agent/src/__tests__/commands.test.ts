@@ -60,7 +60,7 @@ describe("defineCommand implementations", () => {
 		it("should execute a SELECT query and return results", async () => {
 			const userId = randomUUID();
 			db.run(
-				`INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted)
+				`INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted)
 				 VALUES (?, ?, ?, ?, ?, ?)`,
 				[userId, "Test User", null, new Date().toISOString(), new Date().toISOString(), 0],
 			);
@@ -246,7 +246,7 @@ describe("defineCommand implementations", () => {
 			const msgId2 = randomUUID();
 
 			db.run(
-				`INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted)
+				`INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted)
 				 VALUES (?, ?, ?, ?, ?, ?)`,
 				[userId, "Test", null, new Date().toISOString(), new Date().toISOString(), 0],
 			);
@@ -321,7 +321,7 @@ describe("defineCommand implementations", () => {
 			const threadId = randomUUID();
 
 			db.run(
-				`INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted)
+				`INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted)
 				 VALUES (?, ?, ?, ?, ?, ?)`,
 				[userId, "Test", null, new Date().toISOString(), new Date().toISOString(), 0],
 			);

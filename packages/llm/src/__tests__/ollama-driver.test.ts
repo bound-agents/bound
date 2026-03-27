@@ -356,4 +356,49 @@ describe("OllamaDriver", () => {
 			expect(String(e.message)).toContain("404");
 		}
 	});
+
+	it("AC8.4: passes signal to fetch request", async () => {
+		const driver = new OllamaDriver({
+			baseUrl: "http://localhost:11434",
+			model: "llama2",
+			contextWindow: 4096,
+		});
+
+		const controller = new AbortController();
+
+		let capturedSignal: AbortSignal | undefined;
+		global.fetch = (async (_url: string, options: RequestInit) => {
+			capturedSignal = options?.signal;
+			const ndjson = [
+				JSON.stringify({
+					model: "llama2",
+					created_at: "2024-01-01T00:00:00Z",
+					message: { role: "assistant", content: "Hello" },
+					done: true,
+					prompt_eval_count: 5,
+					eval_count: 3,
+				}),
+			];
+
+			return new Response(ndjson.join("\n"), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}) as typeof fetch;
+
+		try {
+			const chunks: unknown[] = [];
+			for await (const chunk of driver.chat({
+				model: "llama2",
+				messages: [{ role: "user", content: "hi" }],
+				signal: controller.signal,
+			})) {
+				chunks.push(chunk);
+			}
+
+			expect(capturedSignal).toBe(controller.signal);
+		} finally {
+			global.fetch = originalFetch;
+		}
+	});
 });

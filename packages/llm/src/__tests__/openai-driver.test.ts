@@ -302,4 +302,53 @@ data: [DONE]
 		expect(capturedUrl).toContain("deepseek.example.com");
 		expect(capturedAuth).toBe("Bearer sk-test-123");
 	});
+
+	it("AC8.3: passes signal to fetch request", async () => {
+		const driver = new OpenAICompatibleDriver({
+			baseUrl: "http://localhost:8000",
+			apiKey: "test-key",
+			model: "gpt-4",
+			contextWindow: 8192,
+		});
+
+		const controller = new AbortController();
+
+		let capturedSignal: AbortSignal | undefined;
+		global.fetch = (async (_url: string, options: RequestInit) => {
+			capturedSignal = options?.signal;
+			const mockResponse = `data: ${JSON.stringify({
+				id: "chatcmpl-123",
+				object: "text_completion",
+				created: 1234567890,
+				model: "gpt-4",
+				choices: [
+					{
+						index: 0,
+						delta: { content: "Hello!" },
+						finish_reason: null,
+					},
+				],
+			})}\n`;
+
+			return new Response(mockResponse, {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		try {
+			const chunks: StreamChunk[] = [];
+			for await (const chunk of driver.chat({
+				model: "gpt-4",
+				messages: [{ role: "user", content: "hi" }],
+				signal: controller.signal,
+			})) {
+				chunks.push(chunk);
+			}
+
+			expect(capturedSignal).toBe(controller.signal);
+		} finally {
+			global.fetch = originalFetch;
+		}
+	});
 });

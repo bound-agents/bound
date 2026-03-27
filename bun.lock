@@ -32,8 +32,8 @@
       "dependencies": {
         "@bound/agent": "workspace:*",
         "@bound/core": "workspace:*",
-        "@bound/discord": "workspace:*",
         "@bound/llm": "workspace:*",
+        "@bound/platforms": "workspace:*",
         "@bound/sandbox": "workspace:*",
         "@bound/shared": "workspace:*",
         "@bound/sync": "workspace:*",
@@ -50,16 +50,6 @@
         "tsyringe": "^4.8.0",
       },
     },
-    "packages/discord": {
-      "name": "@bound/discord",
-      "version": "0.0.1",
-      "dependencies": {
-        "@bound/agent": "workspace:*",
-        "@bound/core": "workspace:*",
-        "@bound/shared": "workspace:*",
-        "discord.js": "^14.0.0",
-      },
-    },
     "packages/llm": {
       "name": "@bound/llm",
       "version": "0.0.1",
@@ -68,6 +58,23 @@
         "@bound/shared": "workspace:*",
         "@smithy/types": "^4.13.1",
       },
+    },
+    "packages/platforms": {
+      "name": "@bound/platforms",
+      "version": "0.0.1",
+      "dependencies": {
+        "@bound/core": "workspace:*",
+        "@bound/shared": "workspace:*",
+      },
+      "devDependencies": {
+        "discord.js": "^14.0.0",
+      },
+      "peerDependencies": {
+        "discord.js": "^14.0.0",
+      },
+      "optionalPeers": [
+        "discord.js",
+      ],
     },
     "packages/sandbox": {
       "name": "@bound/sandbox",
@@ -93,6 +100,9 @@
         "@bound/core": "workspace:*",
         "@bound/shared": "workspace:*",
         "hono": "^4.0.0",
+      },
+      "devDependencies": {
+        "@bound/agent": "workspace:*",
       },
     },
     "packages/web": {
@@ -213,9 +223,9 @@
 
     "@bound/core": ["@bound/core@workspace:packages/core"],
 
-    "@bound/discord": ["@bound/discord@workspace:packages/discord"],
-
     "@bound/llm": ["@bound/llm@workspace:packages/llm"],
+
+    "@bound/platforms": ["@bound/platforms@workspace:packages/platforms"],
 
     "@bound/sandbox": ["@bound/sandbox@workspace:packages/sandbox"],
 

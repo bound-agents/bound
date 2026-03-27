@@ -26,7 +26,7 @@ describe("R-E14: Cancel persists system cancellation message with host name", ()
 		// Create a test user
 		userId = randomUUID();
 		db.run(
-			"INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+			"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
 			[userId, "Test User", null, new Date().toISOString(), new Date().toISOString(), 0],
 		);
 

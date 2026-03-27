@@ -576,4 +576,32 @@ describe("BedrockDriver", () => {
 			expect(toolUseBlocks[0].toolUse?.input).toEqual({ command: "echo hi" });
 		});
 	});
+
+	it.skipIf(shouldSkip)("AC8.2: passes signal to AWS SDK send()", async () => {
+		const controller = new AbortController();
+
+		let abortSignalReceived: AbortSignal | undefined;
+		sendSpy.mockImplementation(
+			async (_command: unknown, options?: { abortSignal?: AbortSignal }) => {
+				abortSignalReceived = options?.abortSignal;
+				return createMockStream([
+					{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "Hello " } } },
+					{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "world" } } },
+					{ metadata: { usage: { inputTokens: 10, outputTokens: 5 } } },
+				]);
+			},
+		);
+
+		const driver = makeDriver();
+		const chunks = await collectChunks(
+			driver.chat({
+				model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+				messages: [{ role: "user", content: "hi" }],
+				signal: controller.signal,
+			}),
+		);
+
+		expect(chunks.length).toBeGreaterThan(0);
+		expect(abortSignalReceived).toBe(controller.signal);
+	});
 });

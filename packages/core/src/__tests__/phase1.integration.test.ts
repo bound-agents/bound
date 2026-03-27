@@ -21,7 +21,7 @@ describe("Phase 1 Integration", () => {
 		const allowlist = {
 			default_web_user: "alice",
 			users: {
-				alice: { display_name: "Alice", discord_id: "alice-discord" },
+				alice: { display_name: "Alice", platforms: { discord: "alice-discord" } },
 				bob: { display_name: "Bob" },
 			},
 		};
@@ -127,7 +127,7 @@ describe("Phase 1 Integration", () => {
 		const userData = {
 			id: userId,
 			display_name: "Charlie",
-			discord_id: null,
+			platform_ids: null,
 			first_seen_at: now,
 			modified_at: now,
 			deleted: 0,
@@ -210,7 +210,7 @@ describe("Phase 1 Integration", () => {
 		const alice = {
 			id: randomUUID(),
 			display_name: "Alice",
-			discord_id: "alice-123",
+			platform_ids: JSON.stringify({ discord: "alice-123" }),
 			first_seen_at: now,
 			modified_at: now,
 			deleted: 0,
@@ -219,7 +219,7 @@ describe("Phase 1 Integration", () => {
 		const bob = {
 			id: randomUUID(),
 			display_name: "Bob",
-			discord_id: null,
+			platform_ids: null,
 			first_seen_at: now,
 			modified_at: now,
 			deleted: 0,

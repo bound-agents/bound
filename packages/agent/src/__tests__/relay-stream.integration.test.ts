@@ -327,7 +327,7 @@ describe("relay-stream integration tests", () => {
 		// Create user in requester's DB
 		const userId = randomUUID();
 		requester.db.run(
-			"INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+			"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
 			[userId, "Test User", null, now, now, 0],
 		);
 
@@ -453,7 +453,7 @@ describe("relay-stream integration tests", () => {
 		// Create user and thread
 		const userId = randomUUID();
 		requester.db.run(
-			"INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+			"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
 			[userId, "Test User", null, now, now, 0],
 		);
 
@@ -651,7 +651,7 @@ describe("relay-stream integration tests", () => {
 		const userId = randomUUID();
 		const now = new Date().toISOString();
 		requester.db.run(
-			"INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+			"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
 			[userId, "Test User", null, now, now, 0],
 		);
 
@@ -751,7 +751,7 @@ describe("relay-stream integration tests", () => {
 		for (let i = 0; i < 3; i++) {
 			const userId = randomUUID();
 			requester.db.run(
-				"INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
 				[userId, `User ${i}`, null, now, now, 0],
 			);
 			userIds.push(userId);
@@ -896,7 +896,7 @@ describe("relay-stream integration tests", () => {
 		// Create user and thread
 		const userId = randomUUID();
 		requester.db.run(
-			"INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+			"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
 			[userId, "Test User", null, now, now, 0],
 		);
 

@@ -9,5 +9,8 @@
 		"@bound/shared": "workspace:*",
 		"@bound/core": "workspace:*",
 		"hono": "^4.0.0"
+	},
+	"devDependencies": {
+		"@bound/agent": "workspace:*"
 	}
 }

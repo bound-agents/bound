@@ -1,10 +1,18 @@
 import { z } from "zod";
 
 // Allowlist Config
-const userEntrySchema = z.object({
-	display_name: z.string().min(1),
-	discord_id: z.string().optional(),
-});
+export const userEntrySchema = z
+	.object({
+		display_name: z.string().min(1),
+		platforms: z.record(z.string(), z.string()).optional(),
+		discord_id: z
+			.string()
+			.optional()
+			.refine((v) => v === undefined, {
+				message: "discord_id is no longer supported — use platforms.discord instead",
+			}),
+	})
+	.transform(({ discord_id: _legacy, ...rest }) => rest);
 
 export const allowlistSchema = z
 	.object({
@@ -75,12 +83,21 @@ export const networkSchema = z.object({
 
 export type NetworkConfig = z.infer<typeof networkSchema>;
 
-export const discordSchema = z.object({
-	bot_token: z.string().min(1),
-	host: z.string().min(1),
+const connectorConfigSchema = z.object({
+	platform: z.string().min(1),
+	token: z.string().optional(),
+	signing_secret: z.string().optional(),
+	allowed_users: z.array(z.string()).default([]),
+	leadership: z.enum(["auto", "leader", "standby", "all"]).default("auto"),
+	failover_threshold_ms: z.number().int().positive().default(30_000),
 });
 
-export type DiscordConfig = z.infer<typeof discordSchema>;
+export const platformsSchema = z.object({
+	connectors: z.array(connectorConfigSchema).min(1),
+});
+
+export type PlatformConnectorConfig = z.infer<typeof connectorConfigSchema>;
+export type PlatformsConfig = z.infer<typeof platformsSchema>;
 
 export const relaySchema = z.object({
 	enabled: z.boolean().default(true),
@@ -160,7 +177,7 @@ export type ConfigType =
 	| AllowlistConfig
 	| ModelBackendsConfig
 	| NetworkConfig
-	| DiscordConfig
+	| PlatformsConfig
 	| SyncConfig
 	| KeyringConfig
 	| McpConfig
@@ -172,7 +189,7 @@ export const configSchemaMap = {
 	"allowlist.json": allowlistSchema,
 	"model_backends.json": modelBackendsSchema,
 	"network.json": networkSchema,
-	"discord.json": discordSchema,
+	"platforms.json": platformsSchema,
 	"sync.json": syncSchema,
 	"keyring.json": keyringSchema,
 	"mcp.json": mcpSchema,

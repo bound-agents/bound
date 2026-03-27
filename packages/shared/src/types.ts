@@ -34,7 +34,7 @@ export type ReducerType = "lww" | "append-only";
 export interface User {
 	id: string;
 	display_name: string;
-	discord_id: string | null;
+	platform_ids: string | null;
 	first_seen_at: string;
 	modified_at: string;
 	deleted: number;
@@ -43,7 +43,7 @@ export interface User {
 export interface Thread {
 	id: string;
 	user_id: string;
-	interface: "web" | "discord";
+	interface: string;
 	host_origin: string;
 	color: number;
 	title: string | null;
@@ -136,6 +136,7 @@ export interface Host {
 	overlay_root: string | null;
 	online_at: string | null;
 	modified_at: string;
+	platforms: string | null;
 }
 
 export interface OverlayIndexEntry {
@@ -215,6 +216,9 @@ export const RELAY_REQUEST_KINDS = [
 	"cancel",
 	"inference",
 	"process",
+	"intake",
+	"platform_deliver",
+	"event_broadcast",
 ] as const;
 
 export const RELAY_RESPONSE_KINDS = [
@@ -320,4 +324,29 @@ export interface StatusForwardPayload {
 	status: string; // "idle" | "thinking" | "tool_call" | etc.
 	detail: string | null; // e.g. tool name
 	tokens: number;
+}
+
+export interface IntakePayload {
+	platform: string;
+	platform_event_id: string;
+	thread_id: string;
+	user_id: string;
+	message_id: string;
+	content: string;
+	attachments?: unknown[];
+}
+
+export interface PlatformDeliverPayload {
+	platform: string;
+	thread_id: string;
+	message_id: string;
+	content: string;
+	attachments?: unknown[];
+}
+
+export interface EventBroadcastPayload {
+	event_name: string;
+	event_payload: Record<string, unknown>;
+	source_host: string;
+	event_depth: number;
 }

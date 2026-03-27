@@ -47,7 +47,7 @@ describe("R-O3: Task output delivered to original scheduling thread", () => {
 		// Create a test user
 		userId = randomUUID();
 		db.run(
-			"INSERT INTO users (id, display_name, discord_id, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+			"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
 			[userId, "Test User", null, new Date().toISOString(), new Date().toISOString(), 0],
 		);
 

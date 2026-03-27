@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import { insertInbox, markDelivered, readUndelivered, writeOutbox } from "@bound/core";
 import type { KeyringConfig, Logger, RelayInboxEntry, TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
@@ -26,6 +27,7 @@ export function createSyncRoutes(
 	relayExecutor?: RelayExecutor,
 	hubSiteId?: string,
 	eagerPushConfig?: EagerPushConfig,
+	threadAffinityMap?: Map<string, string>,
 ): Hono<AppContext> {
 	const app = new Hono<AppContext>();
 
@@ -133,6 +135,42 @@ export function createSyncRoutes(
 					}
 				}
 
+				// Broadcast: fan-out to all known spokes except the source
+				if (entry.target_site_id === "*") {
+					const allSiteIds = Object.keys(keyring.hosts ?? {});
+					const targets = allSiteIds.filter((id) => id !== requesterSiteId);
+					for (const targetId of targets) {
+						const inboxEntry: RelayInboxEntry = {
+							id: randomUUID(),
+							source_site_id: requesterSiteId,
+							kind: entry.kind,
+							ref_id: entry.id,
+							idempotency_key: entry.idempotency_key,
+							stream_id: entry.stream_id ?? null,
+							payload: entry.payload,
+							expires_at: entry.expires_at,
+							received_at: new Date().toISOString(),
+							processed: 0,
+						};
+						insertInbox(db, inboxEntry);
+						if (eagerPushConfig) {
+							void eagerPushToSpoke(eagerPushConfig, targetId, [inboxEntry]);
+						}
+					}
+					deliveredIds.push(entry.id);
+					continue; // skip the single-target routing below
+				}
+				// Update thread-affinity map when a status_forward passes through
+				if (entry.kind === "status_forward" && threadAffinityMap) {
+					try {
+						const sfPayload = JSON.parse(entry.payload) as { thread_id?: string };
+						if (sfPayload.thread_id) {
+							threadAffinityMap.set(sfPayload.thread_id, requesterSiteId);
+						}
+					} catch {
+						// Malformed payload — ignore, affinity is best-effort
+					}
+				}
 				if (entry.target_site_id === siteId) {
 					// Hub-local execution
 					const results = await executor(entry, siteId);

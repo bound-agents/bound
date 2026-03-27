@@ -55,7 +55,7 @@ describe("Config Loader", () => {
 				users: {
 					alice: {
 						display_name: "Alice",
-						discord_id: "123456",
+						platforms: { discord: "123456" },
 					},
 				},
 			};

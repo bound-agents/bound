@@ -423,7 +423,7 @@ describe("sync E2E", () => {
 			{
 				id: userId,
 				display_name: "Alice",
-				discord_id: null,
+				platform_ids: null,
 				first_seen_at: now,
 				modified_at: now,
 				deleted: 0,
@@ -1449,7 +1449,7 @@ describe("sync E2E", () => {
 			{
 				id: userId,
 				display_name: "Mixed User",
-				discord_id: null,
+				platform_ids: null,
 				first_seen_at: now,
 				modified_at: now,
 				deleted: 0,
