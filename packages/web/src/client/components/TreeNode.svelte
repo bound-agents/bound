@@ -23,7 +23,6 @@
 		level?: number;
 	}
 
-	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	const {
 		node,
 		expandedPaths,
@@ -36,9 +35,7 @@
 
 	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	const isExpanded = $derived(expandedPaths.has(node.fullPath));
-	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	const isDir = $derived(node.type === "dir");
-	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	const nodeName = $derived(node.name);
 	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	const IconComponent = $derived(getFileIcon(nodeName));
