@@ -270,6 +270,7 @@ export class OpenAICompatibleDriver implements LLMBackend {
 						Authorization: `Bearer ${this.apiKey}`,
 					},
 					body: JSON.stringify(request),
+					signal: params.signal,
 				});
 			} catch (error) {
 				throw wrapFetchError(error, "openai", endpoint);
