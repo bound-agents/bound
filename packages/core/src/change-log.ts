@@ -6,6 +6,16 @@ import type { SyncedTableName } from "@bound/shared";
 // Only allow lowercase letters, numbers, and underscores
 const VALID_COLUMN_NAME = /^[a-z_]+$/;
 
+// Primary key column per synced table. Defaults to "id" for all others.
+const TABLE_PK_COLUMN: Partial<Record<SyncedTableName, string>> = {
+	hosts: "site_id",
+	cluster_config: "key",
+};
+
+function getTablePkColumn(table: SyncedTableName): string {
+	return TABLE_PK_COLUMN[table] ?? "id";
+}
+
 export function validateColumnName(name: string): void {
 	if (!VALID_COLUMN_NAME.test(name)) {
 		throw new Error(`Invalid column name: ${name}`);
@@ -54,7 +64,8 @@ export function insertRow(
 	row: Record<string, unknown>,
 	siteId: string,
 ): void {
-	const rowId = row.id as string;
+	const pkColumn = getTablePkColumn(table);
+	const rowId = row[pkColumn] as string;
 	const columns = Object.keys(row);
 	// Validate all column names to prevent SQL injection
 	columns.forEach(validateColumnName);
@@ -93,10 +104,11 @@ export function updateRow(
 
 		const values = [...Object.values(updatesWithModified), id];
 
-		db.run(`UPDATE ${table} SET ${setClause} WHERE id = ?`, values);
+		const pkColumn = getTablePkColumn(table);
+		db.run(`UPDATE ${table} SET ${setClause} WHERE ${pkColumn} = ?`, values);
 
 		// Fetch the updated row to get the full snapshot
-		const updatedRow = db.query(`SELECT * FROM ${table} WHERE id = ?`).get(id) as Record<
+		const updatedRow = db.query(`SELECT * FROM ${table} WHERE ${pkColumn} = ?`).get(id) as Record<
 			string,
 			unknown
 		>;
@@ -111,10 +123,11 @@ export function softDelete(db: Database, table: SyncedTableName, id: string, sit
 	const txFn = db.transaction(() => {
 		const now = new Date().toISOString();
 
-		db.run(`UPDATE ${table} SET deleted = 1, modified_at = ? WHERE id = ?`, [now, id]);
+		const pkColumn = getTablePkColumn(table);
+		db.run(`UPDATE ${table} SET deleted = 1, modified_at = ? WHERE ${pkColumn} = ?`, [now, id]);
 
 		// Fetch the deleted row to get the full snapshot
-		const deletedRow = db.query(`SELECT * FROM ${table} WHERE id = ?`).get(id) as Record<
+		const deletedRow = db.query(`SELECT * FROM ${table} WHERE ${pkColumn} = ?`).get(id) as Record<
 			string,
 			unknown
 		>;
