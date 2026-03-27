@@ -35,8 +35,6 @@ export interface User {
 	id: string;
 	display_name: string;
 	platform_ids: string | null;
-	/** @deprecated removed in Phase 6 — use platform_ids */
-	discord_id?: string | null;
 	first_seen_at: string;
 	modified_at: string;
 	deleted: number;
