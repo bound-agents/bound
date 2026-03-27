@@ -262,4 +262,53 @@ describe("API Routes", () => {
 			expect(response.status).toBe(200);
 		});
 	});
+
+	describe("POST /api/files/upload", () => {
+		it("stores a text file with correct is_binary=0 and real size_bytes", async () => {
+			const content = "hello world";
+			const form = new FormData();
+			form.append("file", new File([content], "hello.txt", { type: "text/plain" }));
+
+			const response = await app.fetch(
+				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
+			);
+
+			expect(response.status).toBe(201);
+			const file = await response.json();
+			expect(file.is_binary).toBe(0);
+			expect(file.size_bytes).toBe(new TextEncoder().encode(content).byteLength);
+			expect(file.content).toBe(content);
+		});
+
+		it("stores a binary file with is_binary=1 and base64 content", async () => {
+			// PNG magic bytes
+			const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+			const form = new FormData();
+			form.append("file", new File([pngBytes], "img.png", { type: "image/png" }));
+
+			const response = await app.fetch(
+				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
+			);
+
+			expect(response.status).toBe(201);
+			const file = await response.json();
+			expect(file.is_binary).toBe(1);
+			expect(file.size_bytes).toBe(pngBytes.byteLength);
+			// Content stored as base64
+			expect(file.content).toBe(Buffer.from(pngBytes).toString("base64"));
+		});
+
+		it("creates a change_log entry (uses insertRow not raw db.run)", async () => {
+			const form = new FormData();
+			form.append("file", new File(["data"], "test.txt", { type: "text/plain" }));
+			await app.fetch(
+				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
+			);
+
+			const entry = db
+				.prepare("SELECT COUNT(*) as c FROM change_log WHERE table_name = 'files'")
+				.get() as { c: number };
+			expect(entry.c).toBeGreaterThan(0);
+		});
+	});
 });

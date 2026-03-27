@@ -1,7 +1,72 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import { getSiteId, insertRow } from "@bound/core";
 import type { AgentFile } from "@bound/shared";
 import { Hono } from "hono";
+
+/** MIME type prefixes and exact types considered text (not binary). */
+const TEXT_MIME_PREFIXES = ["text/"];
+const TEXT_MIME_EXACT = new Set([
+	"application/json",
+	"application/xml",
+	"application/javascript",
+	"application/typescript",
+	"application/xhtml+xml",
+	"application/x-yaml",
+	"application/x-sh",
+	"application/graphql",
+]);
+
+function isTextMime(mimeType: string): boolean {
+	const base = mimeType.split(";")[0].trim().toLowerCase();
+	return TEXT_MIME_PREFIXES.some((p) => base.startsWith(p)) || TEXT_MIME_EXACT.has(base);
+}
+
+/**
+ * Store an uploaded file in the `files` table via the change-log outbox pattern.
+ * Returns the new file ID.
+ */
+export async function storeFile(
+	db: Database,
+	siteId: string,
+	opts: {
+		name: string;
+		mimeType: string;
+		data: ArrayBuffer;
+		createdBy: string;
+		hostOrigin: string;
+	},
+): Promise<string> {
+	const fileId = randomUUID();
+	const now = new Date().toISOString();
+	const filePath = `/home/user/uploads/${opts.name}`;
+
+	const binary = !isTextMime(opts.mimeType);
+	const sizeBytes = opts.data.byteLength;
+	const content = binary
+		? Buffer.from(opts.data).toString("base64")
+		: new TextDecoder().decode(opts.data);
+
+	insertRow(
+		db,
+		"files",
+		{
+			id: fileId,
+			path: filePath,
+			content,
+			is_binary: binary ? 1 : 0,
+			size_bytes: sizeBytes,
+			created_at: now,
+			modified_at: now,
+			deleted: 0,
+			created_by: opts.createdBy,
+			host_origin: opts.hostOrigin,
+		},
+		siteId,
+	);
+
+	return fileId;
+}
 
 export function createFilesRoutes(db: Database): Hono {
 	const app = new Hono();
@@ -81,32 +146,14 @@ export function createFilesRoutes(db: Database): Hono {
 				);
 			}
 
-			const fileId = randomUUID();
-			const now = new Date().toISOString();
-			const filePath = `/home/user/uploads/${file.name}`;
-			const fileContent = await file.text();
-			const fileSize = fileContent.length;
-
-			db.run(
-				`
-				INSERT INTO files (
-					id, path, content, is_binary, size_bytes,
-					created_at, modified_at, deleted, created_by, host_origin
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`,
-				[
-					fileId,
-					filePath,
-					fileContent,
-					0,
-					fileSize,
-					now,
-					now,
-					0,
-					"default_web_user",
-					"localhost:3000",
-				],
-			);
+			const siteId = getSiteId(db);
+			const fileId = await storeFile(db, siteId, {
+				name: file.name,
+				mimeType: file.type || "application/octet-stream",
+				data: await file.arrayBuffer(),
+				createdBy: "default_web_user",
+				hostOrigin: "localhost:3000",
+			});
 
 			const result = db.query("SELECT * FROM files WHERE id = ?").get(fileId) as AgentFile;
 
