@@ -87,8 +87,8 @@ Maps each synced table to its conflict resolution strategy. `"lww"` (last-write-
 
 | Interface | Primary Key | Soft-delete | Notes |
 |---|---|---|---|
-| `User` | `id: string` | `deleted: number` | Optional `discord_id` |
-| `Thread` | `id: string` | `deleted: number` | Tracks summary state, interface type (`"web"` or `"discord"`) |
+| `User` | `id: string` | `deleted: number` | Optional `platform_ids` JSON (e.g. `{"discord":"12345"}`) |
+| `Thread` | `id: string` | `deleted: number` | Tracks summary state, interface type (any `string` — e.g. `"web"`, `"discord"`) |
 | `Message` | `id: string` | — | `role` is a `MessageRole`; append-only table |
 | `SemanticMemory` | `id: string` | `deleted: number` | Keyed memory with LRU tracking (`last_accessed_at`) |
 | `Task` | `id: string` | `deleted: number` | Full task scheduling state; see field notes below |
@@ -309,7 +309,7 @@ type AllowlistConfig = {
   default_web_user: string;         // Must reference a key in users
   users: Record<string, {
     display_name: string;
-    discord_id?: string;
+    platforms?: Record<string, string>;  // e.g. { discord: "128581209109430272" }
   }>;
 };
 ```
@@ -345,7 +345,7 @@ Two cross-field constraints are enforced: `default` must reference a `backend.id
 | Export | File | Type |
 |---|---|---|
 | `networkSchema` | `network.json` | Outbound HTTP allowlist with optional header injection |
-| `discordSchema` | `discord.json` | Bot token and host name for the Discord interface |
+| `platformsSchema` | `platforms.json` | Platform connector configs (Discord, etc.) with leader election settings |
 | `syncSchema` | `sync.json` | Hub URL and polling interval |
 | `keyringSchema` | `keyring.json` | Per-host public key and URL map |
 | `mcpSchema` | `mcp.json` | MCP server definitions (stdio or SSE transport) |
@@ -401,7 +401,7 @@ const configSchemaMap: {
   "allowlist.json":       typeof allowlistSchema;
   "model_backends.json":  typeof modelBackendsSchema;
   "network.json":         typeof networkSchema;
-  "discord.json":         typeof discordSchema;
+  "platforms.json":       typeof platformsSchema;
   "sync.json":            typeof syncSchema;
   "keyring.json":         typeof keyringSchema;
   "mcp.json":             typeof mcpSchema;
@@ -458,10 +458,10 @@ These 10 tables are the source of truth for replicated state. Every mutation sho
 
 **`users`**
 ```sql
-id TEXT PRIMARY KEY, display_name TEXT NOT NULL, discord_id TEXT,
+id TEXT PRIMARY KEY, display_name TEXT NOT NULL, platform_ids TEXT,
 first_seen_at TEXT NOT NULL, modified_at TEXT NOT NULL, deleted INTEGER DEFAULT 0
 ```
-Index: unique on `discord_id` where `discord_id IS NOT NULL AND deleted = 0`.
+`platform_ids` stores a JSON object mapping platform name to platform user ID (e.g. `{"discord":"128581209109430272"}`).
 
 **`threads`**
 ```sql
@@ -639,7 +639,7 @@ import { randomUUID } from "@bound/shared";
 insertRow(db, "users", {
   id: randomUUID(),
   display_name: "Alice",
-  discord_id: null,
+  platform_ids: JSON.stringify({ discord: "128581209109430272" }),
   first_seen_at: new Date().toISOString(),
   modified_at: new Date().toISOString(),
   deleted: 0,
@@ -749,10 +749,10 @@ Attempts to load all seven optional config files. Files that are absent (ENOENT)
 ```typescript
 const optionals = loadOptionalConfigs("/etc/bound/config");
 
-if ("discord" in optionals) {
-  const discordResult = optionals["discord"];
-  if (discordResult.ok) {
-    // discordResult.value is a validated DiscordConfig
+if ("platforms" in optionals) {
+  const platformsResult = optionals["platforms"];
+  if (platformsResult.ok) {
+    // platformsResult.value is a validated PlatformsConfig
   }
 }
 ```

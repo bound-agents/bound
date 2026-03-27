@@ -1,6 +1,6 @@
-# Web and Discord Interfaces
+# Web and Platform Interfaces
 
-This document covers the `@bound/web` and `@bound/discord` packages. The web package provides a local HTTP/WebSocket API server and a Svelte single-page application with a Tokyo Metro-inspired visual design (Nunito Sans + IBM Plex Mono typography, 10-line color palette). The Discord package connects the agent system to a Discord bot that accepts direct messages from allowlisted users.
+This document covers the `@bound/web` and `@bound/platforms` packages. The web package provides a local HTTP/WebSocket API server and a Svelte single-page application with a Tokyo Metro-inspired visual design (Nunito Sans + IBM Plex Mono typography, 10-line color palette). The platforms package connects the agent system to external messaging platforms (Discord, and future connectors) via a relay-based intake pipeline and cluster-wide leader election.
 
 ### Recent changes
 
@@ -28,13 +28,12 @@ This document covers the `@bound/web` and `@bound/discord` packages. The web pac
    - [Components](#components)
    - [API Client](#api-client)
    - [WebSocket Client](#websocket-client)
-3. [@bound/discord](#bounddiscord)
-   - [shouldActivate](#shouldactivate)
-   - [DiscordBot Lifecycle](#discordbot-lifecycle)
-   - [Allowlist Enforcement](#allowlist-enforcement)
-   - [DM-to-Agent Message Flow](#dm-to-agent-message-flow)
-   - [Thread Mapping](#thread-mapping)
-   - [Reaction-Based Cancellation](#reaction-based-cancellation)
+3. [@bound/platforms](#boundplatforms)
+   - [PlatformConnector Interface](#platformconnector-interface)
+   - [PlatformLeaderElection](#platformleaderelection)
+   - [PlatformConnectorRegistry](#platformconnectorregistry)
+   - [DiscordConnector](#discordconnector)
+   - [Webhook Ingress](#webhook-ingress)
 
 ---
 
@@ -369,73 +368,85 @@ The module does not implement automatic reconnection. A connection dropped by th
 
 ---
 
-## @bound/discord
+## @bound/platforms
 
-The `@bound/discord` package connects the agent system to Discord. It operates exclusively over DMs: guild messages are ignored.
+The `@bound/platforms` package connects the agent system to external messaging platforms. It replaces the old `@bound/discord` package with a generic connector framework supporting multiple platforms (Discord, and future webhook-based connectors).
 
-### shouldActivate
+### PlatformConnector Interface
 
-`shouldActivate(ctx: AppContext): boolean` is called at startup to decide whether the Discord bot should be started on the current machine. It reads `ctx.optionalConfig.discord`:
+Every platform connector implements `PlatformConnector`:
 
-- If the config is absent or failed to load, returns `false`.
-- If the config loaded successfully, compares `config.host` against `ctx.hostName`. Returns `true` only when they match.
+```typescript
+interface PlatformConnector {
+  readonly platform: string;          // e.g. "discord"
+  readonly delivery: "broadcast" | "exclusive";
+  connect(hostBaseUrl?: string): Promise<void>;
+  disconnect(): Promise<void>;
+  deliver(threadId: string, messageId: string, content: string, attachments?: unknown[]): Promise<void>;
+  handleWebhookPayload?(rawBody: string, headers: Record<string, string>): Promise<void>;
+}
+```
 
-This allows a single shared configuration store to contain a Discord token that is only activated on the designated host, preventing duplicate bots from connecting when the agent system runs on multiple machines.
+- **`broadcast`** connectors maintain a persistent gateway connection (Discord). Only the elected leader connects.
+- **`exclusive`** connectors receive events via HTTP webhook (Telegram, Slack Events API). The new leader re-registers the webhook URL on failover.
 
-### DiscordBot Lifecycle
+### PlatformLeaderElection
 
-`DiscordBot` is a class that wraps a `discord.js` `Client`. It is constructed with:
+`PlatformLeaderElection` ensures exactly one host holds the platform connection per platform at a time. It uses `cluster_config` (key `platform_leader:<platform>`) as the distributed lock, synced via the change-log outbox.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `ctx` | `AppContext` | Application context: database, event bus, logger, siteId, hostName |
-| `agentLoopFactory` | `AgentLoopFactory` | Factory that creates an `AgentLoop` from a config |
-| `botToken` | `string` | Discord bot token |
+**Startup logic:**
+- If no `cluster_config` entry exists for this platform, the host claims leadership immediately.
+- If this host is already registered as leader, it reclaims (idempotent).
+- If another host is leader, the host enters standby and polls for staleness.
 
-**`start()`** — Dynamically imports `discord.js`, creates a `Client` requesting the `DirectMessages` and `MessageContent` gateway intents, registers the `messageCreate` and `messageReactionAdd` handlers, and calls `client.login(botToken)`.
+**Heartbeat:** The leader updates `hosts.modified_at` every `failover_threshold_ms / 3` (default 10s).
 
-**`stop()`** — Calls `client.destroy()`, which closes the gateway connection and cleans up all internal state.
+**Failover:** A standby host checks the leader's `hosts.modified_at` on the same interval. If the leader's timestamp is older than `failover_threshold_ms` (default 30s), the standby promotes itself.
 
-### Allowlist Enforcement
+### PlatformConnectorRegistry
 
-`isAllowlisted(discordId, db)` in `packages/discord/src/allowlist.ts` queries the `users` table for a non-deleted row where `discord_id` matches the given Discord snowflake. It returns `true` if such a row exists, `false` otherwise.
+`PlatformConnectorRegistry` instantiates all configured connectors from `platforms.json`, starts their leader elections, and routes `platform:deliver` and `platform:webhook` eventBus events to the correct leader connector.
 
-Per the spec, rejection is silent: no reply is sent to non-allowlisted users and nothing is logged above the `debug` level. This prevents the bot from being a signal to unapproved users that the account is active.
+```typescript
+const registry = new PlatformConnectorRegistry(ctx, platformsConfig, hostBaseUrl);
+registry.start();   // launches leader elections, wires eventBus listeners
+// ... on shutdown:
+registry.stop();
+```
 
-### DM-to-Agent Message Flow
+Only the leader connector for a given platform handles `platform:deliver` and `platform:webhook` events. Non-leaders ignore them.
 
-When a `messageCreate` event fires:
+### DiscordConnector
 
-1. Bot messages and non-DM messages are filtered out.
-2. `isAllowlisted` checks whether the author's Discord ID exists in the database. Non-allowlisted users are silently ignored.
-3. `mapDiscordUser` resolves the Discord ID to a database `User` row. If no mapping exists the message is dropped.
-4. `findOrCreateThread` fetches or creates the user's persistent Discord thread (see [Thread Mapping](#thread-mapping)).
-5. The user's message is persisted to the `messages` table with `role = "user"`, `host_origin` set to `ctx.hostName`, and the current timestamp.
-6. An `AbortController` is created and registered in the module-level `activeLoops` map under the thread ID.
-7. `agentLoopFactory` produces an `AgentLoop` bound to the thread, user, and abort signal. `agentLoop.run()` is awaited.
-8. On success, the most recent `assistant`-role message from the thread is fetched and sent back as a Discord reply.
-9. On failure, the error message is sent as a reply. Either way, the `AbortController` is removed from `activeLoops` in the `finally` block.
+`DiscordConnector` migrates the old `DiscordBot` behavior to the new connector contract:
 
-### Thread Mapping
+| Aspect | Old `DiscordBot` | New `DiscordConnector` |
+|--------|------------------|------------------------|
+| Message handling | Called `agentLoopFactory()` directly | Writes `intake` relay to `relay_outbox` targeting hub |
+| Activation | `shouldActivate()` hostname check | Leader election handles this |
+| User identity | `discord_id` DB column | `platform_ids` JSON (`{"discord":"<id>"}`) |
+| Allowlist | Queried DB for `discord_id` | Reads `allowed_users` from `platforms.json` connector config |
+| Interface | `start()` / `stop()` | `connect()` / `disconnect()` |
 
-`packages/discord/src/thread-mapping.ts` exposes two functions.
+**Inbound flow (DM received):**
+1. Allowlist check against `config.allowed_users` — non-allowlisted users silently dropped.
+2. `findOrCreateUser` looks up by `json_extract(platform_ids, '$.discord') = ?`, creates if absent.
+3. `findOrCreateThread` finds or creates a thread with `interface = 'discord'` for that user.
+4. Persists the message via `insertRow()` with `role = "user"`.
+5. Writes an `intake` relay to `relay_outbox` with `target_site_id = hub`. The hub's `RelayProcessor` routes this to the appropriate spoke via the four-tier intake routing algorithm (thread affinity → model match → tool match → least-loaded).
 
-**`mapDiscordUser(db, discordId)`** — Queries `users WHERE discord_id = ? AND deleted = 0` and returns the first matching `User`, or `null` if none exists. The users table must be pre-populated; the Discord bot does not auto-register new users.
+**Outbound flow (deliver called):**
+1. Looks up `platform_ids.discord` for the thread's user.
+2. Opens a DM channel via the Discord client.
+3. Chunks content at Discord's 2000-character limit and sends each chunk.
 
-**`findOrCreateThread(db, userId, siteId)`** — Looks for an existing thread with `user_id = userId`, `interface = 'discord'`, and `deleted = 0`. If found, it is returned directly. Otherwise, a new thread is inserted with `host_origin = siteId` and both `created_at` and `last_message_at` set to the current time. The newly inserted row is fetched and returned.
+### Webhook Ingress
 
-Each Discord user has exactly one active Discord thread at a time. The bot does not provide a mechanism to start a new thread; continued DMs always continue the same thread.
+The web server exposes `POST /hooks/:platform` for exclusive-delivery connectors. It emits `platform:webhook` on the eventBus with the raw body and headers; signature verification is delegated to each connector's `handleWebhookPayload()` implementation.
 
-### Reaction-Based Cancellation
+```
+POST /hooks/discord  →  eventBus.emit("platform:webhook", { platform, rawBody, headers })
+POST /hooks/telegram →  eventBus.emit("platform:webhook", { platform, rawBody, headers })
+```
 
-The `messageReactionAdd` handler provides an out-of-band mechanism for a user to cancel a running agent loop without sending a new message.
-
-When a reaction is added:
-
-1. Bot reactions are ignored.
-2. The reaction emoji must be either `"❌"` (the Unicode cross mark) or the custom emoji named `"cancel"`. All other emoji are ignored.
-3. The reaction must be on a message in a DM channel. Reactions in guilds are ignored.
-4. The reacted-to message must be authored by the bot itself. This prevents a user from accidentally cancelling a loop by reacting to their own messages.
-5. `mapDiscordUser` resolves the reactor's Discord ID. If no database user is found, the event is dropped.
-6. The most recent non-deleted Discord thread for that user is looked up.
-7. If an `AbortController` exists in `activeLoops` for that thread, it is aborted. The agent loop receives the abort signal via the `AbortSignal` it was given at construction time and is expected to stop at its next cancellation checkpoint.
+The `PlatformConnectorRegistry` routes `platform:webhook` events to the leader connector matching `payload.platform`.

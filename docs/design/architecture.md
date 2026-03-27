@@ -13,8 +13,8 @@ Bound is a distributed, model-agnostic personal agent system built as a Bun mono
               +-------------------+-------------------+
               |                   |                   |
      +--------v--------+ +-------v--------+ +--------v--------+
-     |  @bound/web     | | @bound/discord | |  @bound/agent   |
-     |  Hono + Svelte  | | discord.js DM  | |  Loop + Sched   |
+     |  @bound/web     | | @bound/platforms | |  @bound/agent   |
+     |  Hono + Svelte  | | connector fwk  | |  Loop + Sched   |
      +--------+--------+ +-------+--------+ +----+-------+----+
               |                   |               |       |
               +-------------------+-------+-------+       |
