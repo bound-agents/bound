@@ -37,8 +37,12 @@ export async function createApp(
 	eventBus: TypedEventEmitter,
 	appConfig?: AppConfig | ModelsConfig,
 ): Promise<Hono> {
+	const modelsConfig =
+		appConfig && "modelsConfig" in appConfig
+			? (appConfig as AppConfig).modelsConfig
+			: (appConfig as ModelsConfig | undefined);
 	const routesConfig: RoutesConfig = {
-		modelsConfig: appConfig as ModelsConfig | undefined,
+		modelsConfig,
 		hostName: appConfig?.hostName,
 		siteId: appConfig?.siteId,
 		statusForwardCache: appConfig?.statusForwardCache,
