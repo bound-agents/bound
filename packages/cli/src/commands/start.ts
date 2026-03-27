@@ -686,7 +686,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		console.warn("Continuing without web UI. API will not be available.");
 	}
 
-	// Define agent loop factory (used by Discord, scheduler)
+	// Define agent loop factory (used by platform connectors, scheduler)
 	// Single bash tool for sandbox interaction — all commands (built-in + MCP) are
 	// registered inside the sandbox via defineCommand, so the LLM only needs bash.
 	const sandboxTool: ToolDefinition = {
