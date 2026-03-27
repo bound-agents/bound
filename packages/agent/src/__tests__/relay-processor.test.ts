@@ -1880,6 +1880,8 @@ describe("RelayProcessor", () => {
 			expect(emittedPayload?.trigger).toBe("test");
 			// Assert: __relay_event_depth = 2
 			expect(emittedPayload?.__relay_event_depth).toBe(2);
+			// AC3.8: Verify that event_depth is NOT in emitted payload (should be transformed to __relay_event_depth)
+			expect(emittedPayload?.event_depth).toBeUndefined();
 		});
 
 		// AC4.4: event_depth propagation

@@ -7,6 +7,7 @@ import type { TestInstance } from "./test-harness.js";
 describe("multi-instance sync", () => {
 	let instanceA: TestInstance;
 	let instanceB: TestInstance;
+	let instanceC: TestInstance | null = null;
 	let keyring: KeyringConfig;
 	let testRunId: string;
 
@@ -63,6 +64,10 @@ describe("multi-instance sync", () => {
 	afterEach(async () => {
 		await instanceA.cleanup();
 		await instanceB.cleanup();
+		if (instanceC) {
+			await instanceC.cleanup();
+			instanceC = null;
+		}
 	});
 
 	it("scenario 1: basic replication", async () => {
@@ -565,5 +570,72 @@ describe("multi-instance sync", () => {
 
 		// Verify the entry came from the spoke
 		expect(inboxEntries[0].source_site_id).toBe(instanceB.siteId);
+	});
+
+	it("AC3.9: broadcast fan-out to multiple spokes via sync", async () => {
+		const now = new Date().toISOString();
+
+		// Create a 3rd spoke (instanceC)
+		const portC = 10000 + Math.floor(Math.random() * 50000) + 100;
+		const keypairC = await ensureKeypair(`/tmp/bound-test-keys-c-${testRunId}`);
+		const pubKeyC = await exportPublicKey(keypairC.publicKey);
+
+		// Update keyring with new spoke
+		const updatedKeyring: KeyringConfig = {
+			hosts: {
+				...keyring.hosts,
+				[keypairC.siteId]: {
+					public_key: pubKeyC,
+					url: `http://localhost:${portC}`,
+				},
+			},
+		};
+
+		instanceC = await createTestInstance({
+			name: "c",
+			port: portC,
+			dbPath: `/tmp/bound-test-c-${testRunId}/bound.db`,
+			role: "spoke",
+			hubPort: 10000 + Math.floor(Math.random() * 50000), // Use the hub's port from instances A
+			keyring: updatedKeyring,
+			keypairPath: `/tmp/bound-test-keys-c-${testRunId}`,
+		});
+
+		// Insert broadcast on B with target_site_id="*"
+		const broadcastOutboxId = Math.random().toString(36).substring(2);
+		instanceB.db
+			.query(
+				"INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, idempotency_key, payload, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			)
+			.run(
+				broadcastOutboxId,
+				instanceB.siteId,
+				"*",
+				"event_broadcast",
+				`broadcast-${broadcastOutboxId}`,
+				JSON.stringify({
+					event_name: "cluster:event",
+					event_payload: { data: "cluster_test" },
+					event_depth: 1,
+				}),
+				now,
+				new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+			);
+
+		// B syncs to A (hub) which should fan-out to A's relay_inbox
+		const syncB = await instanceB.syncClient.syncCycle();
+		expect(syncB.ok).toBe(true);
+
+		// Query hub's relay_inbox for fan-out entry
+		const hubInboxEntries = instanceA.db
+			.query("SELECT * FROM relay_inbox WHERE kind = ? AND payload LIKE ?")
+			.all("event_broadcast", "%cluster:event%") as Array<{
+			id: string;
+			source_site_id: string;
+			kind: string;
+		}>;
+
+		// Verify broadcast was received at hub
+		expect(hubInboxEntries.length).toBeGreaterThan(0);
 	});
 });

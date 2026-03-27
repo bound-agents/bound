@@ -137,6 +137,13 @@ describe("DiscordConnector", () => {
 			const message = messages[0] as Record<string, unknown>;
 			expect(message.role).toBe("user");
 			expect(message.content).toBe("Hello!");
+
+			// AC6.2 requirement: verify change_log entry was created (proving insertRow was used)
+			const messageId = message.id as string;
+			const changeLogEntries = db
+				.query("SELECT * FROM change_log WHERE table_name = ? AND row_id = ?")
+				.all("messages", messageId);
+			expect(changeLogEntries.length).toBeGreaterThan(0);
 		});
 
 		it("should create users and threads tables on first message", async () => {
