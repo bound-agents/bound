@@ -342,6 +342,7 @@ export class AnthropicDriver implements LLMBackend {
 						...request,
 						stream: true,
 					}),
+					signal: params.signal,
 				});
 			} catch (error) {
 				throw wrapFetchError(error, "anthropic", endpoint);
