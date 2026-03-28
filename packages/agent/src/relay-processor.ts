@@ -1101,7 +1101,7 @@ export class RelayProcessor {
 				if (thread && thread.interface !== "web") {
 					const lastAssistant = this.db
 						.query<{ id: string; content: string }, [string]>(
-							"SELECT id, content FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+							"SELECT id, content FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC, rowid DESC LIMIT 1",
 						)
 						.get(payload.thread_id);
 					if (lastAssistant) {

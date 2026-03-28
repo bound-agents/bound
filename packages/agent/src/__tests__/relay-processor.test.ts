@@ -2303,5 +2303,140 @@ describe("RelayProcessor", () => {
 				expect(platformDeliverPayload.message_id).toBe(assistantMsgId);
 			}
 		});
+
+		// Item #6: Rowid tiebreaker in ORDER BY
+		it("Item #6: uses rowid tiebreaker when last-message timestamps are identical", async () => {
+			// This test verifies that when two assistant messages have identical created_at timestamps,
+			// the one with the higher rowid (inserted later) is selected.
+
+			// Setup: Create thread with interface="discord"
+			const threadId = "thread-item6";
+			const userId = "user-1";
+			const userMsgId = "msg-user-item6";
+			const nowIso = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, nowIso, "discord", "local", nowIso, nowIso],
+			);
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+				[userId, "Test User", nowIso, nowIso],
+			);
+
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				[userMsgId, threadId, "user", "Hello", "local", nowIso],
+			);
+
+			// INSERT TWO assistant messages with IDENTICAL created_at timestamps
+			// SQLite assigns rowid in insertion order, so second message has higher rowid
+			const sameTimestamp = nowIso;
+			const firstMsgId = "msg-assistant-first";
+			const secondMsgId = "msg-assistant-second";
+
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				[firstMsgId, threadId, "assistant", "first", "local", sameTimestamp],
+			);
+
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				[secondMsgId, threadId, "assistant", "second", "local", sameTimestamp],
+			);
+
+			// Setup: Create mock event bus to track platform:deliver emissions
+			const eventBus = createMockEventBus();
+			let platformDeliverPayload: PlatformDeliverPayload | null = null;
+			eventBus.on("platform:deliver", (payload: PlatformDeliverPayload) => {
+				platformDeliverPayload = payload;
+			});
+
+			// Setup: Create mock AppContext
+			const mockAppCtx = {
+				db,
+				config: {},
+				optionalConfig: {},
+				eventBus,
+				logger: createMockLogger(),
+				siteId: "local-site",
+				hostName: "localhost",
+			};
+
+			// Setup: Create mock agent loop
+			const mockAgentLoop = {
+				run: async () => ({
+					error: null,
+					messagesCreated: 1,
+					toolCallsMade: 0,
+					filesChanged: 0,
+				}),
+			};
+
+			// Create RelayProcessor
+			const processor = new RelayProcessor(
+				db,
+				"local-site",
+				new Map(),
+				null,
+				new Set(["requester-site"]),
+				createMockLogger(),
+				eventBus,
+				mockAppCtx as any,
+				undefined,
+				new Map(),
+				() => mockAgentLoop as any,
+			);
+
+			// Execute: Insert process entry
+			const now = new Date();
+			const processInboxEntry: RelayInboxEntry = {
+				id: "process-item6",
+				source_site_id: "requester-site",
+				kind: "process",
+				ref_id: null,
+				idempotency_key: null,
+				payload: JSON.stringify({
+					thread_id: threadId,
+					message_id: userMsgId,
+					user_id: userId,
+					platform: "discord",
+				}),
+				expires_at: new Date(now.getTime() + 60000).toISOString(),
+				received_at: now.toISOString(),
+				processed: 0,
+				stream_id: null,
+			};
+
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					processInboxEntry.id,
+					processInboxEntry.source_site_id,
+					processInboxEntry.kind,
+					processInboxEntry.ref_id,
+					processInboxEntry.idempotency_key,
+					processInboxEntry.payload,
+					processInboxEntry.expires_at,
+					processInboxEntry.received_at,
+					processInboxEntry.processed,
+					processInboxEntry.stream_id,
+				],
+			);
+
+			// Run processor
+			const handle = processor.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			handle.stop();
+
+			// Verify: platform:deliver should contain content from SECOND message (higher rowid)
+			expect(platformDeliverPayload).toBeDefined();
+			if (platformDeliverPayload) {
+				expect(platformDeliverPayload.content).toBe("second");
+				expect(platformDeliverPayload.message_id).toBe(secondMsgId);
+			}
+		});
 	});
 });
