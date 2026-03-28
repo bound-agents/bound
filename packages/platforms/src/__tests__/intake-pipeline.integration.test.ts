@@ -69,7 +69,13 @@ describe("platform-connectors Phase 7 — intake pipeline integration", () => {
 				username: "alice",
 				displayName: "Alice",
 			},
-			channel: { type: 1 }, // DM channel
+			channel: {
+				type: 1, // DM channel
+				async sendTyping() {
+					// Mock sendTyping method for typing indicator
+					return Promise.resolve();
+				},
+			},
 			content: "Hello from intake test!",
 		};
 
