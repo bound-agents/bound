@@ -542,6 +542,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 		// Wire message:created events to the agent loop
 		const activeLoops = new Set<string>();
+		const activeLoopAbortControllers = new Map<string, AbortController>();
 
 		// Listen for status:forward events from RelayProcessor
 		appContext.eventBus.on("status:forward", (payload: StatusForwardPayload) => {
@@ -646,24 +647,47 @@ export async function runStart(args: StartArgs): Promise<void> {
 					// Don't re-emit on delegation path to avoid stale message propagation
 				} else {
 					// AC6.5: Run locally
-					const agentLoop = new AgentLoop(appContext, sandbox?.bash ?? ({} as any), modelRouter, {
-						threadId: thread_id,
-						userId,
-						modelId: activeModelId,
-					});
+					const abortController = new AbortController();
+					activeLoopAbortControllers.set(thread_id, abortController);
 
-					const result = await agentLoop.run();
+					// Set 5-minute timeout for LLM response
+					const timeoutId = setTimeout(() => {
+						abortController.abort(new Error("LLM response timeout (5 minutes)"));
+					}, 5 * 60 * 1000);
 
-					if (result.error) {
-						console.error(`[agent] Error: ${result.error}`);
-					} else {
-						console.log(
-							`[agent] Done: ${result.messagesCreated} messages, ${result.toolCallsMade} tool calls`,
-						);
+					// Listen for agent:cancel events
+					const onCancel = (payload: { thread_id: string }) => {
+						if (payload.thread_id === thread_id) {
+							abortController.abort();
+						}
+					};
+					appContext.eventBus.on("agent:cancel", onCancel);
+
+					try {
+						const agentLoop = agentLoopFactory({
+							threadId: thread_id,
+							userId,
+							modelId: activeModelId,
+							abortSignal: abortController.signal,
+						});
+
+						const result = await agentLoop.run();
+
+						if (result.error) {
+							console.error(`[agent] Error: ${result.error}`);
+						} else {
+							console.log(
+								`[agent] Done: ${result.messagesCreated} messages, ${result.toolCallsMade} tool calls`,
+							);
+						}
+
+						// Only re-emit if successful AND created new messages
+						shouldReEmitMessage = !result.error && result.messagesCreated > 0;
+					} finally {
+						clearTimeout(timeoutId);
+						appContext.eventBus.off("agent:cancel", onCancel);
+						activeLoopAbortControllers.delete(thread_id);
 					}
-
-					// Only re-emit if successful AND created new messages
-					shouldReEmitMessage = !result.error && result.messagesCreated > 0;
 				}
 
 				// Emit the last message for WebSocket push (only on local success)
