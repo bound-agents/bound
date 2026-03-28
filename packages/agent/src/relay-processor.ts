@@ -1118,6 +1118,7 @@ export class RelayProcessor {
 						} catch {
 							// already a plain string
 						}
+						if (!textContent.trim()) return; // nothing to deliver
 						this.eventBus.emit("platform:deliver", {
 							platform: thread.interface,
 							thread_id: payload.thread_id,

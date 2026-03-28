@@ -2044,5 +2044,133 @@ describe("RelayProcessor", () => {
 				expect(capturedParams?.signal).toBeInstanceOf(AbortSignal);
 			});
 		});
+
+		// Item #2: Empty content guard in executeProcess
+		it("Item #2: does NOT emit platform:deliver when assistant message has only tool_use blocks", async () => {
+			// This test verifies that when the last assistant message contains ONLY tool_use blocks
+			// (no text content), the platform:deliver event should NOT be emitted even though
+			// the agent loop executed successfully.
+
+			// Setup: Create thread with interface="discord"
+			const threadId = "thread-item2";
+			const userId = "user-1";
+			const userMsgId = "msg-user-item2";
+			const nowIso = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, nowIso, "discord", "local", nowIso, nowIso],
+			);
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+				[userId, "Test User", nowIso, nowIso],
+			);
+
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				[userMsgId, threadId, "user", "Hello", "local", nowIso],
+			);
+
+			// Pre-insert an assistant message with ONLY tool_use blocks (the problematic case)
+			const assistantMsgId = "msg-assistant-tool-only";
+			const toolUseContent = JSON.stringify([
+				{ type: "tool_use", id: "t1", name: "bash", input: {} }
+			]);
+			const laterTime = new Date(new Date(nowIso).getTime() + 5000).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				[assistantMsgId, threadId, "assistant", toolUseContent, "local", laterTime],
+			);
+
+			// Setup: Create mock event bus to track platform:deliver emissions
+			const eventBus = createMockEventBus();
+			let platformDeliverEmitted = false;
+			eventBus.on("platform:deliver", () => {
+				platformDeliverEmitted = true;
+			});
+
+			// Setup: Create mock AppContext
+			const mockAppCtx = {
+				db,
+				config: {},
+				optionalConfig: {},
+				eventBus,
+				logger: createMockLogger(),
+				siteId: "local-site",
+				hostName: "localhost",
+			};
+
+			// Setup: Create mock agent loop that completes successfully
+			const mockAgentLoop = {
+				run: async () => ({
+					error: null,
+					messagesCreated: 1,
+					toolCallsMade: 1,
+					filesChanged: 0,
+				}),
+			};
+
+			// Create RelayProcessor with mock agent loop factory
+			const processor = new RelayProcessor(
+				db,
+				"local-site",
+				new Map(),
+				null,
+				new Set(["requester-site"]),
+				createMockLogger(),
+				eventBus,
+				mockAppCtx as any,
+				undefined,
+				new Map(),
+				() => mockAgentLoop as any,
+			);
+
+			// Execute: Insert a process inbox entry to trigger executeProcess
+			const now = new Date();
+			const processInboxEntry: RelayInboxEntry = {
+				id: "process-item2",
+				source_site_id: "requester-site",
+				kind: "process",
+				ref_id: null,
+				idempotency_key: null,
+				payload: JSON.stringify({
+					thread_id: threadId,
+					message_id: userMsgId,
+					user_id: userId,
+					platform: "discord",
+				}),
+				expires_at: new Date(now.getTime() + 60000).toISOString(),
+				received_at: now.toISOString(),
+				processed: 0,
+				stream_id: null,
+			};
+
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					processInboxEntry.id,
+					processInboxEntry.source_site_id,
+					processInboxEntry.kind,
+					processInboxEntry.ref_id,
+					processInboxEntry.idempotency_key,
+					processInboxEntry.payload,
+					processInboxEntry.expires_at,
+					processInboxEntry.received_at,
+					processInboxEntry.processed,
+					processInboxEntry.stream_id,
+				],
+			);
+
+			// Run processor to execute the process entry
+			const handle = processor.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			handle.stop();
+
+			// Verify: platform:deliver should NOT be emitted when assistant message has only tool_use blocks
+			// This is the fix we're testing: empty textContent should prevent platform:deliver emission
+			expect(platformDeliverEmitted).toBe(false);
+		});
 	});
 });
