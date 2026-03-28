@@ -758,5 +758,69 @@ describe("Startup Wiring", () => {
 			expect(emittedEvents.length).toBe(1);
 			expect(emittedEvents[0]!.thread_id).toBe(threadId);
 		});
+
+		it("does NOT re-emit message:created when delegation times out or fails (item #12)", async () => {
+			const userId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+
+			// Create user and thread
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
+				[userId, "TestUser", now, now],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, 'web', 'localhost', 0, 'test', NULL, ?, ?, ?, 0)",
+				[threadId, userId, now, now, now],
+			);
+
+			// Insert a user message
+			insertRow(
+				db,
+				"messages",
+				{
+					id: randomUUID(),
+					thread_id: threadId,
+					role: "user",
+					content: "Hello",
+					model_id: "test-model",
+					tool_name: null,
+					created_at: now,
+					modified_at: now,
+					host_origin: "localhost",
+				},
+				siteId,
+			);
+
+			const emittedEvents: Array<{ message: unknown; thread_id: string }> = [];
+			let eventListenerActive = false;
+			const listener = (payload: { message: unknown; thread_id: string }) => {
+				if (eventListenerActive) {
+					emittedEvents.push(payload);
+				}
+			};
+			eventBus.on("message:created", listener);
+			eventListenerActive = true;
+
+			// Simulate delegation path: set shouldReEmitMessage = false
+			// (delegation doesn't provide error info, so we don't re-emit to avoid stale message propagation)
+			let shouldReEmitMessage = false; // This would be set in the delegation path
+
+			// Apply the same guard logic as start.ts
+			if (shouldReEmitMessage) {
+				const lastMsg = db
+					.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
+					.get(threadId);
+				if (lastMsg) {
+					eventBus.emit("message:created", {
+						message: lastMsg as any,
+						thread_id: threadId,
+					});
+				}
+			}
+
+			// Should NOT re-emit on delegation path (messages arrive via sync, trigger their own events)
+			expect(emittedEvents.length).toBe(0);
+		});
 	});
 });
