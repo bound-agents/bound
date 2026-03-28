@@ -445,17 +445,23 @@ export async function runStart(args: StartArgs): Promise<void> {
 	}
 
 	// 11a. Initialize relay processor (now that modelRouter is ready)
-	if (keyring) {
+	// Always started — even in single-host mode without a keyring, the relay processor
+	// handles local platform connector intake relays via the self-loopback mechanism.
+	{
 		const syncConfigResult = appContext.optionalConfig.sync;
 		const relayConfig = resolveRelayConfig(
 			syncConfigResult?.ok ? (syncConfigResult.value as SyncConfig) : undefined,
 		);
+		// In single-host mode (no keyring), trust only self; in multi-host, trust all keyring peers.
+		const keyringSiteIds = keyring
+			? new Set(Object.keys(keyring.hosts))
+			: new Set([appContext.siteId]);
 		const relayProcessor = new RelayProcessor(
 			appContext.db,
 			appContext.siteId,
 			mcpClientsMap,
 			modelRouter ?? null,
-			new Set(Object.keys(keyring.hosts)),
+			keyringSiteIds,
 			appContext.logger,
 			appContext.eventBus,
 			appContext,
