@@ -1764,9 +1764,8 @@ describe("RelayProcessor", () => {
 			const deliverPayload: PlatformDeliverPayload = {
 				platform: "slack",
 				thread_id: "thread-1",
-				user_id: "user-1",
+				message_id: "msg-1",
 				content: "Delivery confirmation",
-				delivery_status: "delivered",
 			};
 
 			const inboxEntry: RelayInboxEntry = {
@@ -1807,6 +1806,7 @@ describe("RelayProcessor", () => {
 			expect(emittedPayload).toBeDefined();
 			expect(emittedPayload?.platform).toBe("slack");
 			expect(emittedPayload?.thread_id).toBe("thread-1");
+			expect(emittedPayload?.message_id).toBe("msg-1");
 			expect(emittedPayload?.content).toBe("Delivery confirmation");
 		});
 
