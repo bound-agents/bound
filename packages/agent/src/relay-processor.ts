@@ -35,6 +35,7 @@ import type {
 } from "@bound/shared";
 import { AgentLoop } from "./agent-loop.js";
 import type { MCPClient } from "./mcp-client.js";
+import type { AgentLoopConfig } from "./types.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -62,8 +63,14 @@ export class RelayProcessor {
 		private appCtx: AppContext | null = null,
 		private relayConfig?: RelayConfig,
 		threadAffinityMap: Map<string, string> = new Map(),
+		private agentLoopFactory?: (config: AgentLoopConfig) => AgentLoop,
 	) {
 		this.threadAffinityMap = threadAffinityMap;
+	}
+
+	/** Inject the agent loop factory after startup completes (avoids circular init order). */
+	setAgentLoopFactory(factory: (config: AgentLoopConfig) => AgentLoop): void {
+		this.agentLoopFactory = factory;
 	}
 
 	start(pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS): { stop: () => void } {
@@ -1044,18 +1051,24 @@ export class RelayProcessor {
 		emitStatusForward("thinking", null, 0);
 
 		try {
-			const agentLoop = new AgentLoop(
-				delegatedCtx,
-				{
-					/* sandbox disabled for delegated loop */
-				} as object,
-				this.modelRouter,
-				{
-					threadId: payload.thread_id,
-					userId: payload.user_id,
-					taskId: `delegated-${entry.id}`, // taskId starts with "delegated-" → confirmed tools blocked
-				},
-			);
+			// Use the provided factory (which has sandbox + tools) when available.
+			// Falls back to a sandbox-less loop for true cross-host delegation where
+			// this host intentionally runs without the originating host's sandbox.
+			const loopConfig: AgentLoopConfig = {
+				threadId: payload.thread_id,
+				userId: payload.user_id,
+				taskId: `delegated-${entry.id}`,
+			};
+			const agentLoop = this.agentLoopFactory
+				? this.agentLoopFactory(loopConfig)
+				: new AgentLoop(
+						delegatedCtx,
+						{
+							/* sandbox not available — no tools in context */
+						} as object,
+						this.modelRouter,
+						loopConfig,
+					);
 
 			const result = await agentLoop.run();
 			emitStatusForward("idle", null, 0);
