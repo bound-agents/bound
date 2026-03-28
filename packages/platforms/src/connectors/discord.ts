@@ -31,7 +31,10 @@ export class DiscordConnector implements PlatformConnector {
 
 	private client: DiscordClient | null = null;
 	/** Typing indicators per thread — cleared when platform:deliver fires for that thread. */
-	private typingTimers = new Map<string, ReturnType<typeof setInterval>>();
+	private typingTimers = new Map<
+		string,
+		{ interval: ReturnType<typeof setInterval>; timeout: ReturnType<typeof setTimeout> }
+	>();
 
 	constructor(
 		private readonly config: PlatformConnectorConfig,
@@ -180,18 +183,19 @@ export class DiscordConnector implements PlatformConnector {
 		this.stopTyping(threadId); // Clear any existing timer for this thread
 		// Send immediately, then every 8s (Discord typing expires ~10s)
 		channel.sendTyping().catch(() => {});
-		const timer = setInterval(() => {
+		const interval = setInterval(() => {
 			channel.sendTyping().catch(() => {});
 		}, 8_000);
-		this.typingTimers.set(threadId, timer);
 		// Safety cap: stop after 5 minutes regardless
-		setTimeout(() => this.stopTyping(threadId), 5 * 60 * 1000);
+		const timeout = setTimeout(() => this.stopTyping(threadId), 5 * 60 * 1000);
+		this.typingTimers.set(threadId, { interval, timeout });
 	}
 
 	private stopTyping(threadId: string): void {
-		const timer = this.typingTimers.get(threadId);
-		if (timer !== undefined) {
-			clearInterval(timer);
+		const handles = this.typingTimers.get(threadId);
+		if (handles !== undefined) {
+			clearInterval(handles.interval);
+			clearTimeout(handles.timeout);
 			this.typingTimers.delete(threadId);
 		}
 	}

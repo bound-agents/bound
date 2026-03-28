@@ -446,4 +446,151 @@ describe("DiscordConnector", () => {
 			expect(warningLogged).toBe(true);
 		});
 	});
+
+	describe("Typing timer management (item #1)", () => {
+		it("should store both interval and timeout handles (not just interval)", () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+
+			const mockChannel = {
+				sendTypingCalls: 0,
+				async sendTyping() {
+					this.sendTypingCalls++;
+					return Promise.resolve();
+				},
+			};
+
+			// Call startTyping for thread A
+			(connector as { startTyping: (id: string, ch: unknown) => void }).startTyping(
+				"thread-A",
+				mockChannel,
+			);
+
+			// Access the internal map to verify the structure
+			const typingTimersMap = (connector as { typingTimers: unknown }).typingTimers as Map<
+				string,
+				{ interval: ReturnType<typeof setInterval>; timeout: ReturnType<typeof setTimeout> }
+			>;
+			expect(typingTimersMap.size).toBe(1);
+
+			const timerEntry = typingTimersMap.get("thread-A");
+			expect(timerEntry).toBeDefined();
+			expect(timerEntry).toHaveProperty("interval");
+			expect(timerEntry).toHaveProperty("timeout");
+			expect(timerEntry?.interval).toBeDefined();
+			expect(timerEntry?.timeout).toBeDefined();
+		});
+
+		it("should clear both handles when stopTyping called", () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+
+			const mockChannel = {
+				sendTypingCalls: 0,
+				async sendTyping() {
+					this.sendTypingCalls++;
+					return Promise.resolve();
+				},
+			};
+
+			// Start typing
+			(connector as { startTyping: (id: string, ch: unknown) => void }).startTyping(
+				"thread-A",
+				mockChannel,
+			);
+
+			const typingTimersMap = (connector as { typingTimers: unknown }).typingTimers as Map<
+				string,
+				unknown
+			>;
+			expect(typingTimersMap.size).toBe(1);
+
+			// Stop typing
+			(connector as { stopTyping: (id: string) => void }).stopTyping("thread-A");
+
+			// Should be completely cleaned up
+			expect(typingTimersMap.size).toBe(0);
+		});
+
+		it("should replace old handles when startTyping called twice for same thread", () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+
+			const mockChannel = {
+				sendTypingCalls: 0,
+				async sendTyping() {
+					this.sendTypingCalls++;
+					return Promise.resolve();
+				},
+			};
+
+			// Call startTyping for thread A
+			(connector as { startTyping: (id: string, ch: unknown) => void }).startTyping(
+				"thread-A",
+				mockChannel,
+			);
+
+			const typingTimersMap = (connector as { typingTimers: unknown }).typingTimers as Map<
+				string,
+				{ interval: ReturnType<typeof setInterval>; timeout: ReturnType<typeof setTimeout> }
+			>;
+			const firstEntry = typingTimersMap.get("thread-A");
+			const firstInterval = firstEntry?.interval;
+
+			// Call startTyping again for thread A (should replace with new handles)
+			(connector as { startTyping: (id: string, ch: unknown) => void }).startTyping(
+				"thread-A",
+				mockChannel,
+			);
+
+			const secondEntry = typingTimersMap.get("thread-A");
+			const secondInterval = secondEntry?.interval;
+
+			// The interval handle should be different (new timer created)
+			expect(secondInterval).not.toBe(firstInterval);
+
+			// Still should have exactly 1 entry
+			expect(typingTimersMap.size).toBe(1);
+
+			// Stop and verify cleanup
+			(connector as { stopTyping: (id: string) => void }).stopTyping("thread-A");
+			expect(typingTimersMap.size).toBe(0);
+		});
+
+		it("should clear typing timers on disconnect", async () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+
+			const mockChannel = {
+				sendTypingCalls: 0,
+				async sendTyping() {
+					this.sendTypingCalls++;
+					return Promise.resolve();
+				},
+			};
+
+			// Start typing for multiple threads
+			(connector as { startTyping: (id: string, ch: unknown) => void }).startTyping(
+				"thread-1",
+				mockChannel,
+			);
+			(connector as { startTyping: (id: string, ch: unknown) => void }).startTyping(
+				"thread-2",
+				mockChannel,
+			);
+
+			const typingTimersBeforeDisconnect = (connector as { typingTimers: unknown }).typingTimers as Map<
+				string,
+				unknown
+			>;
+			expect(typingTimersBeforeDisconnect.size).toBe(2);
+
+			// Disconnect (mocking that client is not actually connected)
+			(connector as { client: unknown }).client = null;
+			await connector.disconnect();
+
+			// All timers should be cleared
+			const typingTimersAfterDisconnect = (connector as { typingTimers: unknown }).typingTimers as Map<
+				string,
+				unknown
+			>;
+			expect(typingTimersAfterDisconnect.size).toBe(0);
+		});
+	});
 });
