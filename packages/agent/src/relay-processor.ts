@@ -893,15 +893,6 @@ export class RelayProcessor {
 		const abortController = new AbortController();
 		this.activeInferenceStreams.set(entry.id, abortController);
 
-		// Note: LLMBackend.chat() currently does not accept an AbortSignal parameter
-		// (ChatParams in packages/llm/src/types.ts has no `signal` field). The abortController
-		// is used to break the for-await loop, but the underlying HTTP stream to the LLM
-		// provider will NOT be cancelled — it continues until the provider completes or times out.
-		// To properly cancel the provider stream, add `signal?: AbortSignal` to ChatParams
-		// and wire it through the Anthropic, Bedrock, OpenAI-compatible, and Ollama drivers.
-		// This is a resource efficiency improvement; cancel correctness is maintained by the
-		// loop-break and "cancelled by requester" error response.
-
 		let seq = 0;
 		let chunkBuffer: StreamChunk[] = [];
 		let bufferBytes = 0;
