@@ -96,10 +96,11 @@ export class DiscordConnector implements PlatformConnector {
 			throw new Error("DiscordConnector: not connected");
 		}
 
-		// Stop typing indicator now that we have a response
+		const channel = await this.getDMChannelForThread(threadId);
+
+		// Stop typing indicator now that we have the channel (or failed to get it)
 		this.stopTyping(threadId);
 
-		const channel = await this.getDMChannelForThread(threadId);
 		if (!channel) {
 			this.logger.warn("No DM channel found for thread", { threadId });
 			return;

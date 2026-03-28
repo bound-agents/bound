@@ -416,6 +416,64 @@ describe("DiscordConnector", () => {
 			await expect(connector.deliver("thread-1", "msg-1", "content")).rejects.toThrow();
 		});
 
+		it("should keep typing active while getDMChannelForThread() is resolving", async () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+
+			const userId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[userId, "Alice", JSON.stringify({ discord: "user123" }), now, now, 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, "discord", "site-1", 0, null, null, null, null, null, now, now, now, 0],
+			);
+
+			const mockChannel = {
+				sendCalls: [] as string[],
+				async send(msg: string) {
+					this.sendCalls.push(msg);
+				},
+			};
+
+			// Track how many typing timers are active at the moment getDMChannelForThread resolves
+			let typingTimerCountDuringFetch = -1;
+			const typingTimers = (connector as { typingTimers: Map<string, unknown> }).typingTimers;
+
+			const mockDiscordClient = {
+				users: {
+					fetch: async (_id: string) => {
+						// Capture the timer state right as we're about to return the channel
+						typingTimerCountDuringFetch = typingTimers.size;
+						return {
+							createDM: async () => mockChannel,
+						};
+					},
+				},
+			};
+
+			(connector as { client: unknown }).client = mockDiscordClient;
+
+			// Start typing for this thread (simulating what onMessage does)
+			const mockTypingChannel = { sendTyping: async () => {} };
+			(connector as { startTyping: (id: string, ch: unknown) => void }).startTyping(
+				threadId,
+				mockTypingChannel,
+			);
+
+			expect(typingTimers.size).toBe(1);
+
+			await connector.deliver(threadId, "msg-1", "hello");
+
+			// Typing should have still been active when getDMChannelForThread() ran
+			expect(typingTimerCountDuringFetch).toBe(1);
+			// Typing should be cleared after deliver() completes
+			expect(typingTimers.size).toBe(0);
+		});
+
 		it("should log warning when thread not found", async () => {
 			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
 
