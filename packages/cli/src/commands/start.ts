@@ -637,10 +637,13 @@ export async function runStart(args: StartArgs): Promise<void> {
 					.get(thread_id) as { user_id: string } | null;
 				const userId = threadRow?.user_id || appContext.config.allowlist.default_web_user;
 
+				let shouldReEmitMessage = false;
+
 				if (delegationTarget) {
 					// Delegate entire loop to remote host
 					console.log(`[agent] Delegating to remote host ${delegationTarget.site_id}`);
 					await dispatchDelegation(delegationTarget, thread_id, message.id, userId);
+					// Don't re-emit on delegation path to avoid stale message propagation
 				} else {
 					// AC6.5: Run locally
 					const agentLoop = new AgentLoop(appContext, sandbox?.bash ?? ({} as any), modelRouter, {
@@ -658,17 +661,22 @@ export async function runStart(args: StartArgs): Promise<void> {
 							`[agent] Done: ${result.messagesCreated} messages, ${result.toolCallsMade} tool calls`,
 						);
 					}
+
+					// Only re-emit if successful AND created new messages
+					shouldReEmitMessage = !result.error && result.messagesCreated > 0;
 				}
 
-				// Emit the last message for WebSocket push
-				const lastMsg = appContext.db
-					.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
-					.get(thread_id);
-				if (lastMsg) {
-					appContext.eventBus.emit("message:created", {
-						message: lastMsg as any,
-						thread_id,
-					});
+				// Emit the last message for WebSocket push (only on local success)
+				if (shouldReEmitMessage) {
+					const lastMsg = appContext.db
+						.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
+						.get(thread_id);
+					if (lastMsg) {
+						appContext.eventBus.emit("message:created", {
+							message: lastMsg as any,
+							thread_id,
+						});
+					}
 				}
 
 				// Fire-and-forget: generate thread title

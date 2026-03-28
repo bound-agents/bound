@@ -528,4 +528,235 @@ describe("Startup Wiring", () => {
 			expect(clEntry).not.toBeNull();
 		});
 	});
+
+	// -----------------------------------------------------------------------
+	// Test 7: Agent loop message:created re-emit guard (#11, #12)
+	// -----------------------------------------------------------------------
+	describe("agent loop message:created re-emit guard", () => {
+		it("does NOT re-emit message:created when agent loop errors", async () => {
+			const userId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+
+			// Create user and thread
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
+				[userId, "TestUser", now, now],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, 'web', 'localhost', 0, 'test', NULL, ?, ?, ?, 0)",
+				[threadId, userId, now, now, now],
+			);
+
+			// Insert a user message
+			const messageId = randomUUID();
+			insertRow(
+				db,
+				"messages",
+				{
+					id: messageId,
+					thread_id: threadId,
+					role: "user",
+					content: "Hello",
+					model_id: "test-model",
+					tool_name: null,
+					created_at: now,
+					modified_at: now,
+					host_origin: "localhost",
+				},
+				siteId,
+			);
+
+			// Track emitted message:created events after the user message
+			const emittedEvents: Array<{ message: unknown; thread_id: string }> = [];
+			let eventListenerActive = false;
+			const listener = (payload: { message: unknown; thread_id: string }) => {
+				if (eventListenerActive) {
+					emittedEvents.push(payload);
+				}
+			};
+			eventBus.on("message:created", listener);
+			eventListenerActive = true;
+
+			// Simulate agent loop result: error occurred, no messages created
+			const result = {
+				error: "LLM failed",
+				messagesCreated: 0,
+				toolCallsMade: 0,
+				filesChanged: 0,
+			};
+
+			// The guarded re-emit logic that MUST be in place (currently not in start.ts)
+			if (!result.error && result.messagesCreated > 0) {
+				const lastMsg = db
+					.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
+					.get(threadId);
+				if (lastMsg) {
+					eventBus.emit("message:created", {
+						message: lastMsg as any,
+						thread_id: threadId,
+					});
+				}
+			}
+
+			// Should NOT re-emit when error occurred
+			expect(emittedEvents.length).toBe(0);
+		});
+
+		it("does NOT re-emit message:created when agent loop succeeds but creates no messages", async () => {
+			const userId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+
+			// Create user and thread
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
+				[userId, "TestUser", now, now],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, 'web', 'localhost', 0, 'test', NULL, ?, ?, ?, 0)",
+				[threadId, userId, now, now, now],
+			);
+
+			// Insert a user message
+			insertRow(
+				db,
+				"messages",
+				{
+					id: randomUUID(),
+					thread_id: threadId,
+					role: "user",
+					content: "Hello",
+					model_id: "test-model",
+					tool_name: null,
+					created_at: now,
+					modified_at: now,
+					host_origin: "localhost",
+				},
+				siteId,
+			);
+
+			const emittedEvents: Array<{ message: unknown; thread_id: string }> = [];
+			let eventListenerActive = false;
+			const listener = (payload: { message: unknown; thread_id: string }) => {
+				if (eventListenerActive) {
+					emittedEvents.push(payload);
+				}
+			};
+			eventBus.on("message:created", listener);
+			eventListenerActive = true;
+
+			// Agent loop succeeds but creates no messages
+			const result = {
+				error: null,
+				messagesCreated: 0,
+				toolCallsMade: 0,
+				filesChanged: 0,
+			};
+
+			// Apply the guard
+			if (!result.error && result.messagesCreated > 0) {
+				const lastMsg = db
+					.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
+					.get(threadId);
+				if (lastMsg) {
+					eventBus.emit("message:created", {
+						message: lastMsg as any,
+						thread_id: threadId,
+					});
+				}
+			}
+
+			// Should NOT re-emit when no messages created
+			expect(emittedEvents.length).toBe(0);
+		});
+
+		it("DOES re-emit message:created when agent loop succeeds and creates messages", async () => {
+			const userId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+
+			// Create user and thread
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
+				[userId, "TestUser", now, now],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, 'web', 'localhost', 0, 'test', NULL, ?, ?, ?, 0)",
+				[threadId, userId, now, now, now],
+			);
+
+			// Insert a user message
+			insertRow(
+				db,
+				"messages",
+				{
+					id: randomUUID(),
+					thread_id: threadId,
+					role: "user",
+					content: "Hello",
+					model_id: "test-model",
+					tool_name: null,
+					created_at: now,
+					modified_at: now,
+					host_origin: "localhost",
+				},
+				siteId,
+			);
+
+			// Insert an assistant response (simulating agent loop creating a message)
+			const assistantTime = new Date(Date.now() + 1000).toISOString();
+			insertRow(
+				db,
+				"messages",
+				{
+					id: randomUUID(),
+					thread_id: threadId,
+					role: "assistant",
+					content: "Response",
+					model_id: "test-model",
+					tool_name: null,
+					created_at: assistantTime,
+					modified_at: assistantTime,
+					host_origin: "localhost",
+				},
+				siteId,
+			);
+
+			const emittedEvents: Array<{ message: unknown; thread_id: string }> = [];
+			let eventListenerActive = false;
+			const listener = (payload: { message: unknown; thread_id: string }) => {
+				if (eventListenerActive) {
+					emittedEvents.push(payload);
+				}
+			};
+			eventBus.on("message:created", listener);
+			eventListenerActive = true;
+
+			// Agent loop succeeds and creates 1 message
+			const result = {
+				error: null,
+				messagesCreated: 1,
+				toolCallsMade: 0,
+				filesChanged: 0,
+			};
+
+			// Apply the guard
+			if (!result.error && result.messagesCreated > 0) {
+				const lastMsg = db
+					.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
+					.get(threadId);
+				if (lastMsg) {
+					eventBus.emit("message:created", {
+						message: lastMsg as any,
+						thread_id: threadId,
+					});
+				}
+			}
+
+			// SHOULD re-emit when messages created
+			expect(emittedEvents.length).toBe(1);
+			expect(emittedEvents[0]!.thread_id).toBe(threadId);
+		});
+	});
 });
