@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import type { Thread } from "../lib/api";
 import { modelStore } from "../lib/modelStore";
 import { navigateTo } from "../lib/router";
+import { shouldClearWaiting } from "../utils/waiting";
 import {
 	connectWebSocket,
 	disconnectWebSocket,
@@ -52,8 +53,8 @@ const unsubscribeWs = wsEvents.subscribe((events) => {
 			if (!exists) {
 				messages = [...messages, last.data];
 			}
-			// Clear waiting indicator when an assistant message arrives
-			if (msg.role === "assistant") {
+			// Clear waiting indicator when an assistant or alert message arrives
+			if (shouldClearWaiting(msg.role ?? "")) {
 				waiting = false;
 			}
 		}
@@ -64,11 +65,11 @@ async function pollMessages(): Promise<void> {
 	try {
 		const latest = await api.listMessages(threadId);
 		messages = latest;
-		// Clear waiting indicator if a new assistant message arrived after we started waiting
+		// Clear waiting indicator if a new assistant or alert message arrived after we started waiting
 		if (
 			waiting &&
 			latest.length > waitingSinceMessageCount &&
-			latest.slice(waitingSinceMessageCount).some((m: { role: string }) => m.role === "assistant")
+			latest.slice(waitingSinceMessageCount).some((m: { role: string }) => shouldClearWaiting(m.role))
 		) {
 			waiting = false;
 		}
