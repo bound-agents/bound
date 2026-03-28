@@ -2172,5 +2172,136 @@ describe("RelayProcessor", () => {
 			// This is the fix we're testing: empty textContent should prevent platform:deliver emission
 			expect(platformDeliverEmitted).toBe(false);
 		});
+
+		// Item #5: Test platform:deliver is emitted with correct content in happy path
+		it("Item #5: emits platform:deliver with correct content when assistant message has text", async () => {
+			// This test verifies the happy path: when the last assistant message contains text content,
+			// platform:deliver SHOULD be emitted with that content.
+
+			// Setup: Create thread with interface="discord"
+			const threadId = "thread-item5";
+			const userId = "user-1";
+			const userMsgId = "msg-user-item5";
+			const nowIso = new Date().toISOString();
+			const expectedContent = "Hello from the agent!";
+
+			db.run(
+				"INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, nowIso, "discord", "local", nowIso, nowIso],
+			);
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+				[userId, "Test User", nowIso, nowIso],
+			);
+
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				[userMsgId, threadId, "user", "Hello", "local", nowIso],
+			);
+
+			// Pre-insert an assistant message with TEXT CONTENT (the happy path)
+			const assistantMsgId = "msg-assistant-with-text";
+			const laterTime = new Date(new Date(nowIso).getTime() + 5000).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				[assistantMsgId, threadId, "assistant", expectedContent, "local", laterTime],
+			);
+
+			// Setup: Create mock event bus to track platform:deliver emissions
+			const eventBus = createMockEventBus();
+			let platformDeliverPayload: PlatformDeliverPayload | null = null;
+			eventBus.on("platform:deliver", (payload: PlatformDeliverPayload) => {
+				platformDeliverPayload = payload;
+			});
+
+			// Setup: Create mock AppContext
+			const mockAppCtx = {
+				db,
+				config: {},
+				optionalConfig: {},
+				eventBus,
+				logger: createMockLogger(),
+				siteId: "local-site",
+				hostName: "localhost",
+			};
+
+			// Setup: Create mock agent loop that completes successfully
+			const mockAgentLoop = {
+				run: async () => ({
+					error: null,
+					messagesCreated: 1,
+					toolCallsMade: 0,
+					filesChanged: 0,
+				}),
+			};
+
+			// Create RelayProcessor with mock agent loop factory
+			const processor = new RelayProcessor(
+				db,
+				"local-site",
+				new Map(),
+				null,
+				new Set(["requester-site"]),
+				createMockLogger(),
+				eventBus,
+				mockAppCtx as any,
+				undefined,
+				new Map(),
+				() => mockAgentLoop as any,
+			);
+
+			// Execute: Insert a process inbox entry to trigger executeProcess
+			const now = new Date();
+			const processInboxEntry: RelayInboxEntry = {
+				id: "process-item5",
+				source_site_id: "requester-site",
+				kind: "process",
+				ref_id: null,
+				idempotency_key: null,
+				payload: JSON.stringify({
+					thread_id: threadId,
+					message_id: userMsgId,
+					user_id: userId,
+					platform: "discord",
+				}),
+				expires_at: new Date(now.getTime() + 60000).toISOString(),
+				received_at: now.toISOString(),
+				processed: 0,
+				stream_id: null,
+			};
+
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					processInboxEntry.id,
+					processInboxEntry.source_site_id,
+					processInboxEntry.kind,
+					processInboxEntry.ref_id,
+					processInboxEntry.idempotency_key,
+					processInboxEntry.payload,
+					processInboxEntry.expires_at,
+					processInboxEntry.received_at,
+					processInboxEntry.processed,
+					processInboxEntry.stream_id,
+				],
+			);
+
+			// Run processor to execute the process entry
+			const handle = processor.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			handle.stop();
+
+			// Verify: platform:deliver should be emitted with correct content
+			expect(platformDeliverPayload).toBeDefined();
+			// Debug: verify the payload structure by checking each field
+			if (platformDeliverPayload) {
+				expect(platformDeliverPayload.platform).toBe("discord");
+				expect(platformDeliverPayload.content).toBe(expectedContent);
+				expect(platformDeliverPayload.thread_id).toBe(threadId);
+				expect(platformDeliverPayload.message_id).toBe(assistantMsgId);
+			}
+		});
 	});
 });
