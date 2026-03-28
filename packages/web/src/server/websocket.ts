@@ -26,7 +26,7 @@ export function createWebSocketHandler(eventBus: TypedEventEmitter): WebSocketCo
 		for (const [ws, conn] of clients) {
 			if (conn.subscriptions.has(data.thread_id)) {
 				const message = JSON.stringify({
-					type: "message",
+					type: "message:created",
 					data: data.message,
 				});
 				if (ws.readyState === WebSocket.OPEN) {

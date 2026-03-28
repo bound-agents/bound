@@ -63,7 +63,7 @@ describe("WebSocket Handler", () => {
 
 		expect(messages.length).toBe(1);
 		const parsed = JSON.parse(messages[0]);
-		expect(parsed.type).toBe("message");
+		expect(parsed.type).toBe("message:created");
 		expect(parsed.data.role).toBe("user");
 	});
 
