@@ -447,6 +447,89 @@ describe("DiscordConnector", () => {
 		});
 	});
 
+	describe("writeOutbox error handling (item #8)", () => {
+		it("should stop typing timer if writeOutbox throws after startTyping", async () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+
+			// First, create user/thread records
+			const userId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[userId, "Alice", JSON.stringify({ discord: "user123" }), now, now, 0],
+			);
+
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, "discord", "site-1", 0, null, null, null, null, null, now, now, now, 0],
+			);
+
+			// Patch findOrCreateUser and findOrCreateThread to return our records
+			(connector as { findOrCreateUser: unknown }).findOrCreateUser = () => ({
+				id: userId,
+				display_name: "Alice",
+				platform_ids: JSON.stringify({ discord: "user123" }),
+				first_seen_at: now,
+				modified_at: now,
+				deleted: 0,
+			});
+
+			(connector as { findOrCreateThread: unknown }).findOrCreateThread = () => ({
+				id: threadId,
+				user_id: userId,
+				interface: "discord",
+				host_origin: "site-1",
+				color: 0,
+				title: null,
+				summary: null,
+				summary_through: null,
+				summary_model_id: null,
+				extracted_through: null,
+				created_at: now,
+				last_message_at: now,
+				modified_at: now,
+				deleted: 0,
+			});
+
+			const mockMsg: MockDiscordMessage = {
+				id: "discord-msg-1",
+				author: {
+					id: "user123",
+					bot: false,
+					username: "alice",
+					displayName: "Alice",
+				},
+				channel: { type: 1, sendTyping: async () => {} },
+				content: "Hello!",
+			};
+
+			const typingTimersMap = (connector as { typingTimers: unknown }).typingTimers as Map<
+				string,
+				unknown
+			>;
+
+			// Mock getHubSiteId to throw error, simulating writeOutbox failure path
+			(connector as { getHubSiteId: unknown }).getHubSiteId = () => {
+				throw new Error("Database query failed for cluster_hub");
+			};
+
+			// Call onMessage - it will get past user/thread creation and startTyping,
+			// but fail when trying to write to outbox
+			try {
+				await (connector as {
+					onMessage: (msg: MockDiscordMessage) => Promise<void>;
+				}).onMessage(mockMsg);
+			} catch (err) {
+				// Error is caught internally and handled
+			}
+
+			// AFTER FIX: typing timer should be cleaned up (size === 0)
+			expect(typingTimersMap.size).toBe(0);
+		});
+	});
+
 	describe("Typing timer management (item #1)", () => {
 		it("should store both interval and timeout handles (not just interval)", () => {
 			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);

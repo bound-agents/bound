@@ -155,28 +155,33 @@ export class DiscordConnector implements PlatformConnector {
 		this.startTyping(thread.id, msg.channel as { sendTyping(): Promise<void> });
 
 		// Write intake relay to outbox — no direct agent loop invocation (AC6.1)
-		const hubSiteId = this.getHubSiteId();
-		writeOutbox(this.db, {
-			id: randomUUID(),
-			source_site_id: this.siteId,
-			target_site_id: hubSiteId,
-			kind: "intake",
-			ref_id: null,
-			idempotency_key: `intake:discord:${msg.id}`,
-			stream_id: null,
-			payload: JSON.stringify({
-				platform: "discord",
-				platform_event_id: msg.id,
-				thread_id: thread.id,
-				user_id: user.id,
-				message_id: messageId,
-				content: msg.content,
-			} satisfies IntakePayload),
-			created_at: now,
-			expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-		});
+		try {
+			const hubSiteId = this.getHubSiteId();
+			writeOutbox(this.db, {
+				id: randomUUID(),
+				source_site_id: this.siteId,
+				target_site_id: hubSiteId,
+				kind: "intake",
+				ref_id: null,
+				idempotency_key: `intake:discord:${msg.id}`,
+				stream_id: null,
+				payload: JSON.stringify({
+					platform: "discord",
+					platform_event_id: msg.id,
+					thread_id: thread.id,
+					user_id: user.id,
+					message_id: messageId,
+					content: msg.content,
+				} satisfies IntakePayload),
+				created_at: now,
+				expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+			});
 
-		this.eventBus.emit("sync:trigger", { reason: "discord-intake" });
+			this.eventBus.emit("sync:trigger", { reason: "discord-intake" });
+		} catch (err) {
+			this.stopTyping(thread.id);
+			this.logger.error("Failed to write intake relay to outbox", { error: String(err) });
+		}
 	}
 
 	private startTyping(threadId: string, channel: { sendTyping(): Promise<void> }): void {
