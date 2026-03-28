@@ -1,6 +1,8 @@
 import { insertRow } from "@bound/core";
+import type { ModelRouter } from "@bound/llm";
 import type { CommandContext, CommandDefinition } from "@bound/sandbox";
 import { randomUUID } from "@bound/shared";
+import { resolveModel } from "../model-resolution";
 import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
 function parseTimeOffset(offset: string): Date {
@@ -75,6 +77,19 @@ export const schedule: CommandDefinition = {
 			const payload = args.payload ? args.payload : null;
 			const requiresField = args.requires ? args.requires : null;
 			const modelHint = args["model-hint"] ? args["model-hint"] : null;
+
+			// Validate model-hint against the cluster-wide pool when modelRouter is available
+			if (modelHint && ctx.modelRouter) {
+				const resolution = resolveModel(
+					modelHint,
+					ctx.modelRouter as ModelRouter,
+					ctx.db,
+					ctx.siteId,
+				);
+				if (resolution.kind === "error") {
+					return commandError(resolution.error);
+				}
+			}
 			const noHistory = args["no-history"] ? 1 : 0;
 			const dependsOn = args.after ? JSON.stringify([args.after]) : null;
 			const requireSuccess = args["require-success"] ? 1 : 0;

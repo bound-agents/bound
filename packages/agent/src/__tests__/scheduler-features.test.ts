@@ -399,6 +399,157 @@ describe("Scheduler features", () => {
 	});
 
 	// -----------------------------------------------------------------------
+	// consecutive_failures tracking and advisory escalation
+	// -----------------------------------------------------------------------
+	describe("consecutive_failures tracking", () => {
+		function insertTask(
+			id: string,
+			opts: {
+				consecutiveFailures?: number;
+				alertThreshold?: number;
+				threadId?: string;
+			} = {},
+		) {
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'deferred', 'pending', 'manual', NULL, ?,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, ?,
+					?, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[
+					id,
+					opts.threadId ?? null,
+					pastTime,
+					opts.alertThreshold ?? 3,
+					opts.consecutiveFailures ?? 0,
+					now,
+					now,
+				],
+			);
+		}
+
+		function softErrorFactory(msg = "inference error") {
+			return () => ({
+				run: async (): Promise<AgentLoopResult> => ({
+					messagesCreated: 0,
+					toolCallsMade: 0,
+					filesChanged: 0,
+					error: msg,
+				}),
+			});
+		}
+
+		it("increments consecutive_failures on soft error", async () => {
+			const taskId = randomUUID();
+			insertTask(taskId, { consecutiveFailures: 0, alertThreshold: 5 });
+
+			const ctx = makeCtx();
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, softErrorFactory() as any);
+			const { stop } = scheduler.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			stop();
+
+			const task = db
+				.query("SELECT consecutive_failures FROM tasks WHERE id = ?")
+				.get(taskId) as { consecutive_failures: number } | null;
+			expect(task!.consecutive_failures).toBeGreaterThan(0);
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("creates an advisory when consecutive_failures reaches alert_threshold (soft error)", async () => {
+			const taskId = randomUUID();
+			// One failure already — next failure crosses the threshold of 2
+			insertTask(taskId, { consecutiveFailures: 1, alertThreshold: 2 });
+
+			const ctx = makeCtx();
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, softErrorFactory() as any);
+			const { stop } = scheduler.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			stop();
+
+			const advisories = db
+				.query("SELECT title, detail FROM advisories WHERE detail LIKE ?")
+				.all(`%${taskId}%`) as Array<{ title: string; detail: string }>;
+			expect(advisories.length).toBeGreaterThan(0);
+			expect(advisories[0].detail).toContain(taskId);
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM advisories WHERE detail LIKE ?", [`%${taskId}%`]);
+		});
+
+		it("creates an advisory when consecutive_failures reaches alert_threshold (hard error)", async () => {
+			const taskId = randomUUID();
+			// One failure already — next hard-error throw crosses threshold of 2
+			insertTask(taskId, { consecutiveFailures: 1, alertThreshold: 2 });
+
+			const ctx = makeCtx();
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, makeFailingAgentLoopFactory() as any);
+			const { stop } = scheduler.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			stop();
+
+			const advisories = db
+				.query("SELECT title, detail FROM advisories WHERE detail LIKE ?")
+				.all(`%${taskId}%`) as Array<{ title: string; detail: string }>;
+			expect(advisories.length).toBeGreaterThan(0);
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM advisories WHERE detail LIKE ?", [`%${taskId}%`]);
+		});
+
+		it("does not create a duplicate advisory when failures exceed alert_threshold", async () => {
+			const taskId = randomUUID();
+			// Already at threshold — next failure goes beyond it (no new advisory)
+			insertTask(taskId, { consecutiveFailures: 2, alertThreshold: 2 });
+
+			const ctx = makeCtx();
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, softErrorFactory() as any);
+			const { stop } = scheduler.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			stop();
+
+			const advisories = db
+				.query("SELECT id FROM advisories WHERE detail LIKE ?")
+				.all(`%${taskId}%`) as Array<{ id: string }>;
+			expect(advisories.length).toBe(0);
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("resets consecutive_failures to 0 on success", async () => {
+			const taskId = randomUUID();
+			// Task has failures on record but now succeeds
+			insertTask(taskId, { consecutiveFailures: 4, alertThreshold: 5 });
+
+			const ctx = makeCtx();
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
+			const { stop } = scheduler.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			stop();
+
+			const task = db
+				.query("SELECT consecutive_failures FROM tasks WHERE id = ?")
+				.get(taskId) as { consecutive_failures: number } | null;
+			expect(task!.consecutive_failures).toBe(0);
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+	});
+
+	// -----------------------------------------------------------------------
 	// Cron template wiring (deterministic, no scheduler timing dependency)
 	// -----------------------------------------------------------------------
 	describe("cron template execution", () => {

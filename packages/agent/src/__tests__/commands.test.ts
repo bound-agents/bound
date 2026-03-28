@@ -5,6 +5,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
+import type { LLMBackend, StreamChunk } from "@bound/llm";
+import { ModelRouter } from "@bound/llm";
 import type { CommandContext } from "@bound/sandbox";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
@@ -17,6 +19,22 @@ import { memorize } from "../commands/memorize";
 import { purge } from "../commands/purge";
 import { query } from "../commands/query";
 import { schedule } from "../commands/schedule";
+
+class MinimalMockBackend implements LLMBackend {
+	async *chat(): AsyncIterable<StreamChunk> {
+		yield { type: "done", usage: { input_tokens: 0, output_tokens: 0 } };
+	}
+	capabilities() {
+		return {
+			streaming: true,
+			tool_use: true,
+			system_prompt: true,
+			prompt_caching: false,
+			vision: false,
+			max_context: 8000,
+		};
+	}
+}
 
 describe("defineCommand implementations", () => {
 	let tmpDir: string;
@@ -187,6 +205,53 @@ describe("defineCommand implementations", () => {
 				unknown
 			>;
 			expect(row.type).toBe("event");
+		});
+
+		it("rejects unknown model-hint when modelRouter is available", async () => {
+			const modelRouter = new ModelRouter(
+				new Map([["claude-3", new MinimalMockBackend()]]),
+				"claude-3",
+			);
+			const ctxWithRouter: CommandContext = { ...ctx, modelRouter };
+
+			const result = await schedule.handler(
+				{ in: "5m", payload: "test", "model-hint": "unknown-model-xyz" },
+				ctxWithRouter,
+			);
+
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain("unknown-model-xyz");
+		});
+
+		it("accepts known model-hint when modelRouter is available", async () => {
+			const modelRouter = new ModelRouter(
+				new Map([["claude-3", new MinimalMockBackend()]]),
+				"claude-3",
+			);
+			const ctxWithRouter: CommandContext = { ...ctx, modelRouter };
+
+			const result = await schedule.handler(
+				{ in: "5m", payload: "test", "model-hint": "claude-3" },
+				ctxWithRouter,
+			);
+
+			expect(result.exitCode).toBe(0);
+			const taskId = result.stdout.trim();
+			const row = db.query("SELECT model_hint FROM tasks WHERE id = ?").get(taskId) as Record<
+				string,
+				unknown
+			>;
+			expect(row.model_hint).toBe("claude-3");
+		});
+
+		it("allows any model-hint when no modelRouter is available (backward compat)", async () => {
+			// ctx has no modelRouter — validation is skipped
+			const result = await schedule.handler(
+				{ in: "5m", payload: "test", "model-hint": "some-future-model" },
+				ctx,
+			);
+
+			expect(result.exitCode).toBe(0);
 		});
 	});
 

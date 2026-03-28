@@ -871,4 +871,37 @@ describe("AgentLoop", () => {
 			expect(turn.model_id).toBe("claude-opus");
 		}
 	});
+
+	// Model unavailability: when a model_hint can't be resolved, fall back to default
+	it("falls back to default model when model-hint is unavailable, persisting a warning alert", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("Completed with fallback model.");
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		// Router only knows "claude-opus" but we request "nonexistent-model"
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+			modelId: "nonexistent-model",
+		});
+
+		const result = await agentLoop.run();
+
+		// Should succeed via fallback — no error
+		expect(result.error).toBeUndefined();
+		expect(result.messagesCreated).toBeGreaterThan(0);
+
+		// A warning alert should have been persisted describing the fallback
+		const alerts = db
+			.query(
+				"SELECT content FROM messages WHERE thread_id = ? AND role = 'alert' ORDER BY created_at ASC",
+			)
+			.all(threadId) as Array<{ content: string }>;
+
+		expect(alerts.length).toBeGreaterThan(0);
+		expect(alerts[0].content).toContain("nonexistent-model");
+		expect(alerts[0].content).toContain("claude-opus");
+	});
 });

@@ -96,6 +96,42 @@ export class AgentLoop {
 				this.ctx.siteId,
 			);
 
+			// If the requested model can't be resolved, fall back to default and warn
+			if (this.lastModelResolution.kind === "error" && this.config.modelId !== undefined) {
+				const fallbackResolution = resolveModel(
+					undefined,
+					this.modelRouter,
+					this.ctx.db,
+					this.ctx.siteId,
+				);
+				if (fallbackResolution.kind !== "error") {
+					const warningMsg = `Model "${this.config.modelId}" is unavailable (${this.lastModelResolution.error}). Falling back to default model "${fallbackResolution.modelId}".`;
+					this.ctx.logger.warn("[agent-loop] Model hint unavailable, falling back to default", {
+						requestedModel: this.config.modelId,
+						fallbackModel: fallbackResolution.modelId,
+					});
+					insertRow(
+						this.ctx.db,
+						"messages",
+						{
+							id: randomUUID(),
+							thread_id: this.config.threadId,
+							role: "alert",
+							content: warningMsg,
+							model_id: null,
+							tool_name: null,
+							created_at: new Date().toISOString(),
+							modified_at: new Date().toISOString(),
+							host_origin: this.ctx.hostName,
+						},
+						this.ctx.siteId,
+					);
+					this.lastModelResolution = fallbackResolution;
+				}
+				// If even the default can't resolve, lastModelResolution stays as error
+				// and the loop will fail with a clear message as before
+			}
+
 			// Build relayInfo if resolution is remote
 			let relayInfo: { remoteHost: string; localHost: string; model: string; provider: string } | undefined;
 			if (this.lastModelResolution.kind === "remote" && this.lastModelResolution.hosts.length > 0) {

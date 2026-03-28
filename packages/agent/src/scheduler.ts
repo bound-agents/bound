@@ -3,6 +3,7 @@ import type { AppContext } from "@bound/core";
 import { insertRow } from "@bound/core";
 import { formatError } from "@bound/shared";
 import type { Task } from "@bound/shared";
+import { createAdvisory } from "./advisories";
 import type { AgentLoop } from "./agent-loop";
 import { canRunHere, computeNextRunAt } from "./task-resolution";
 import type { AgentLoopConfig } from "./types";
@@ -364,9 +365,15 @@ export class Scheduler {
 						// Soft error: run() returned normally but with an error field
 						this.ctx.db
 							.query(
-								"UPDATE tasks SET status = 'failed', error = ?, result = ?, run_count = run_count + 1, last_run_at = ? WHERE id = ?",
+								"UPDATE tasks SET status = 'failed', error = ?, result = ?, run_count = run_count + 1, last_run_at = ?, consecutive_failures = consecutive_failures + 1 WHERE id = ?",
 							)
 							.run(result.error, resultStr, completedAt, task.id);
+
+						// Alert if consecutive failures just reached the threshold
+						const newConsecutiveFailures = (task.consecutive_failures ?? 0) + 1;
+						if (newConsecutiveFailures === task.alert_threshold) {
+							this.triggerFailureAdvisory(task, result.error, newConsecutiveFailures);
+						}
 
 						// Cron tasks still reschedule even after soft errors so they keep retrying
 						if (task.type === "cron" && task.trigger_spec) {
@@ -384,10 +391,10 @@ export class Scheduler {
 							}
 						}
 					} else {
-						// Mark as completed
+						// Mark as completed and reset consecutive failure counter
 						this.ctx.db
 							.query(
-								"UPDATE tasks SET status = 'completed', result = ?, run_count = run_count + 1, last_run_at = ? WHERE id = ?",
+								"UPDATE tasks SET status = 'completed', result = ?, run_count = run_count + 1, last_run_at = ?, consecutive_failures = 0 WHERE id = ?",
 							)
 							.run(resultStr, completedAt, task.id);
 
@@ -417,8 +424,16 @@ export class Scheduler {
 
 				if (currentTask?.lease_id === leaseId) {
 					this.ctx.db
-						.query("UPDATE tasks SET status = 'failed', error = ? WHERE id = ?")
+						.query(
+							"UPDATE tasks SET status = 'failed', error = ?, consecutive_failures = consecutive_failures + 1 WHERE id = ?",
+						)
 						.run(errorMsg, task.id);
+
+					// Alert if consecutive failures just reached the threshold
+					const newConsecutiveFailures = (task.consecutive_failures ?? 0) + 1;
+					if (newConsecutiveFailures === task.alert_threshold) {
+						this.triggerFailureAdvisory(task, errorMsg, newConsecutiveFailures);
+					}
 
 					// Persist alert message per R-E15
 					if (task.thread_id) {
@@ -482,6 +497,33 @@ export class Scheduler {
 			}
 		} finally {
 			this.eventDepth--;
+		}
+	}
+
+	private triggerFailureAdvisory(task: Task, error: string, consecutiveFailures: number): void {
+		try {
+			createAdvisory(
+				this.ctx.db,
+				{
+					type: "general",
+					status: "proposed",
+					title: `Task has failed ${consecutiveFailures} times consecutively`,
+					detail: `Task ${task.id} has failed ${consecutiveFailures} consecutive times. Latest error: ${error.slice(0, 500)}`,
+					action: "Review the task configuration, model availability, and error details.",
+					impact: "Scheduled task is not completing. Cron tasks will continue retrying on schedule.",
+					evidence: JSON.stringify({
+						taskId: task.id,
+						consecutiveFailures,
+						error: error.slice(0, 500),
+					}),
+				},
+				this.ctx.siteId,
+			);
+		} catch (advisoryError) {
+			this.ctx.logger.error("[scheduler] Failed to create task failure advisory", {
+				error: formatError(advisoryError),
+				taskId: task.id,
+			});
 		}
 	}
 
