@@ -11,6 +11,7 @@ import {
 	recordRelayCycle,
 	writeOutbox,
 } from "@bound/core";
+import { RELAY_REQUEST_KINDS } from "@bound/shared";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
 import type { ModelRouter } from "@bound/llm";
 import type {
@@ -96,30 +97,37 @@ export class RelayProcessor {
 	}
 
 	private async processPendingEntries(): Promise<void> {
-		// Local loopback: move self-targeted outbox entries directly to inbox.
+		// Local loopback: deliver self-targeted outbox entries in single-host mode.
 		// In single-host setups (no sync hub configured), relay_outbox entries targeting
-		// this host are never delivered via the sync relay phase. Moving them here ensures
-		// the intake/platform_deliver/event_broadcast pipeline works without a sync hub.
-		const selfOutbox = readUndelivered(this.db, this.siteId);
-		if (selfOutbox.length > 0) {
+		// this host are never delivered via the sync relay phase. We handle them here:
+		//   - REQUEST kinds (intake, process, etc.) → insert into relay_inbox for processing
+		//   - RESPONSE kinds (result, error, stream_chunk, etc.) → just mark delivered; they
+		//     are callbacks from a prior request and do not need re-processing on this host.
+		const allSelfOutbox = readUndelivered(this.db, this.siteId);
+		if (allSelfOutbox.length > 0) {
 			const now = new Date().toISOString();
-			for (const entry of selfOutbox) {
-				insertInbox(this.db, {
-					id: randomUUID(),
-					source_site_id: entry.source_site_id ?? this.siteId,
-					kind: entry.kind,
-					ref_id: entry.id,
-					idempotency_key: entry.idempotency_key,
-					stream_id: entry.stream_id ?? null,
-					payload: entry.payload,
-					expires_at: entry.expires_at,
-					received_at: now,
-					processed: 0,
-				});
+			const requestKindSet = new Set<string>(RELAY_REQUEST_KINDS);
+			for (const entry of allSelfOutbox) {
+				if (requestKindSet.has(entry.kind)) {
+					insertInbox(this.db, {
+						id: randomUUID(),
+						source_site_id: entry.source_site_id ?? this.siteId,
+						kind: entry.kind,
+						ref_id: entry.id,
+						idempotency_key: entry.idempotency_key,
+						stream_id: entry.stream_id ?? null,
+						payload: entry.payload,
+						expires_at: entry.expires_at,
+						received_at: now,
+						processed: 0,
+					});
+				}
+				// Response kinds are silently marked delivered — they are acknowledged by
+				// being discarded (no cross-host requester to notify in single-host mode).
 			}
 			markDelivered(
 				this.db,
-				selfOutbox.map((e) => e.id),
+				allSelfOutbox.map((e) => e.id),
 			);
 		}
 
