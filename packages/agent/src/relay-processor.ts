@@ -1089,6 +1089,43 @@ export class RelayProcessor {
 				);
 			} else {
 				this.writeResponse(entry, "result", JSON.stringify({ success: true }));
+
+				// Deliver the response back to the originating platform connector.
+				// Check the thread's interface — if it's not "web", emit platform:deliver
+				// so the connector (e.g. DiscordConnector) sends the response to the user.
+				const thread = this.db
+					.query<{ interface: string }, [string]>(
+						"SELECT interface FROM threads WHERE id = ? AND deleted = 0 LIMIT 1",
+					)
+					.get(payload.thread_id);
+				if (thread && thread.interface !== "web") {
+					const lastAssistant = this.db
+						.query<{ id: string; content: string }, [string]>(
+							"SELECT id, content FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+						)
+						.get(payload.thread_id);
+					if (lastAssistant) {
+						// content is TEXT in the db — extract plain string from ContentBlock[] if needed
+						let textContent = lastAssistant.content;
+						try {
+							const parsed = JSON.parse(lastAssistant.content);
+							if (Array.isArray(parsed)) {
+								textContent = parsed
+									.filter((b: { type: string; text?: string }) => b.type === "text")
+									.map((b: { text?: string }) => b.text ?? "")
+									.join("");
+							}
+						} catch {
+							// already a plain string
+						}
+						this.eventBus.emit("platform:deliver", {
+							platform: thread.interface,
+							thread_id: payload.thread_id,
+							message_id: lastAssistant.id,
+							content: textContent,
+						} satisfies PlatformDeliverPayload);
+					}
+				}
 			}
 		} catch (err) {
 			emitStatusForward("idle", null, 0);
