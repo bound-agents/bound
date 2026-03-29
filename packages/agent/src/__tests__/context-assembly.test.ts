@@ -1232,7 +1232,7 @@ describe("Context Assembly Pipeline", () => {
 				db,
 				threadId,
 				userId,
-				platformContext: { platform: "discord" },
+				platformContext: { platform: "discord", toolNames: ["discord_send_message"] },
 			});
 
 			// Find the system message containing the silence semantics
@@ -1261,6 +1261,29 @@ describe("Context Assembly Pipeline", () => {
 			);
 
 			expect(platformMsg).toBeUndefined();
+		});
+
+		it("uses toolNames from platformContext in platform system message, not hardcoded discord_send_message (AC5.3)", () => {
+			// Bug: when a second platform (e.g. Telegram) is added, the context message hardcodes
+			// "discord_send_message" even for Telegram threads. Fix: toolNames in platformContext
+			// should be referenced dynamically.
+			const messages = assembleContext({
+				db,
+				threadId,
+				userId,
+				platformContext: { platform: "telegram", toolNames: ["telegram_send_message"] },
+			});
+
+			const systemMessages = messages.filter((m) => m.role === "system");
+			const platformMsg = systemMessages.find(
+				(m) => typeof m.content === "string" && m.content.includes("Platform Context"),
+			);
+
+			expect(platformMsg).toBeDefined();
+			// Tool name should be from platformContext.toolNames, not hardcoded
+			expect(platformMsg?.content).toContain("telegram_send_message");
+			expect(platformMsg?.content).not.toContain("discord_send_message");
+			expect(platformMsg?.content).toMatch(/sees nothing|silence|cannot see/i);
 		});
 	});
 });

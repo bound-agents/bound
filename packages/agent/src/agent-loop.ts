@@ -156,7 +156,14 @@ export class AgentLoop {
 				hostName: this.ctx.hostName,
 				siteId: this.ctx.siteId,
 				relayInfo,
-				platformContext: this.config.platform ? { platform: this.config.platform } : undefined,
+				platformContext: this.config.platform
+					? {
+							platform: this.config.platform,
+							toolNames: this.config.platformTools
+								? Array.from(this.config.platformTools.keys())
+								: undefined,
+						}
+					: undefined,
 			});
 
 			// Agentic loop: keep calling the LLM until it produces a text-only

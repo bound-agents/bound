@@ -23,8 +23,11 @@ export interface ContextParams {
 		model: string;
 		provider: string;
 	};
-	/** When set, assembleContext() prepends a system message explaining silence semantics. */
-	platformContext?: { platform: string };
+	/** When set, assembleContext() prepends a system message explaining silence semantics.
+	 * toolNames lists the tools the agent should use to send messages on this platform.
+	 * When omitted, a generic reference is used instead of a specific tool name.
+	 */
+	platformContext?: { platform: string; toolNames?: string[] };
 }
 
 // Cache for persona content - loaded once at startup
@@ -546,19 +549,18 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		}
 
 		// Platform silence semantics: user only sees what you explicitly send.
-		// NOTE: The tool name below is Discord-specific for the current single-platform
-		// scope. When a second platform is added, extend ContextParams.platformContext
-		// to carry { platform: string; toolNames: string[] } and reference tool names
-		// dynamically here rather than hardcoding "discord_send_message".
 		if (platformContext) {
+			const toolRef =
+				platformContext.toolNames && platformContext.toolNames.length > 0
+					? platformContext.toolNames.map((n) => `\`${n}\``).join(" or ")
+					: "the platform send tool";
 			volatileLines.push("");
 			volatileLines.push(`## Platform Context: ${platformContext.platform}`);
 			volatileLines.push(
 				"The user of this conversation is on an external platform and cannot see your responses directly.",
 			);
 			volatileLines.push(
-				"To send a message to the user, call the `discord_send_message` tool. " +
-					"If you do not call it, the user sees nothing (silence).",
+				`To send a message to the user, call ${toolRef}. If you do not call it, the user sees nothing (silence).`,
 			);
 			volatileLines.push(
 				"Each call to the tool produces one separate message to the user. " +
