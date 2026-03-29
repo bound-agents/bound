@@ -204,6 +204,7 @@ export class BedrockDriver implements LLMBackend {
 		// Track which content block index is a tool use so we can emit tool_use_end
 		// when the corresponding contentBlockStop arrives.
 		const toolUseIndexToId = new Map<number, string>();
+		let outputText = "";
 
 		try {
 			// biome-ignore lint/style/noNonNullAssertion: stream existence already checked above
@@ -219,6 +220,7 @@ export class BedrockDriver implements LLMBackend {
 				} else if (event.contentBlockDelta) {
 					const { contentBlockIndex, delta } = event.contentBlockDelta;
 					if (delta?.text !== undefined) {
+						outputText += delta.text;
 						yield { type: "text", content: delta.text };
 					} else if (delta?.toolUse) {
 						const id = toolUseIndexToId.get(contentBlockIndex ?? 0) ?? "";
@@ -232,13 +234,26 @@ export class BedrockDriver implements LLMBackend {
 						toolUseIndexToId.delete(contentBlockIndex ?? 0);
 					}
 				} else if (event.metadata) {
-					const usage = event.metadata.usage;
+					const usage = event.metadata.usage as Record<string, unknown> | undefined;
+					let inputTokens = (usage?.inputTokens as number) ?? 0;
+					let outputTokens = (usage?.outputTokens as number) ?? 0;
+					const cw = usage?.cacheWriteInputTokens; // NOTE: "Tokens" not "Count" per AWS API
+					const cr = usage?.cacheReadInputTokens;  // NOTE: "Tokens" not "Count" per AWS API
+					const cacheWriteTokens = typeof cw === "number" ? cw : null;
+					const cacheReadTokens = typeof cr === "number" ? cr : null;
+
+					// Zero-usage guard
+					let estimated = false;
+					if (inputTokens === 0 && outputTokens === 0 && outputText.length > 0) {
+						inputTokens = Math.ceil(
+							params.messages.reduce((sum, m) => sum + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length), 0) / 4,
+						);
+						outputTokens = Math.ceil(outputText.length / 4);
+						estimated = true;
+					}
 					yield {
 						type: "done",
-						usage: {
-							input_tokens: usage?.inputTokens ?? 0,
-							output_tokens: usage?.outputTokens ?? 0,
-						},
+						usage: { input_tokens: inputTokens, output_tokens: outputTokens, cache_write_tokens: cacheWriteTokens, cache_read_tokens: cacheReadTokens, estimated },
 					};
 				}
 			}
