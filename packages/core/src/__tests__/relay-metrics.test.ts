@@ -89,7 +89,7 @@ describe("Relay Metrics", () => {
 				.all() as Array<{ name: string }>;
 
 			// Should still have 16 tables (15 original + relay_cycles)
-			expect(tables.length).toBe(16);
+			expect(tables.length).toBe(17);
 
 			db.close();
 		});

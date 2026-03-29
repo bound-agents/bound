@@ -86,7 +86,7 @@ describe("Phase 1 Integration", () => {
 			)
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(18); // 13 main tables + 3 relay tables + 2 metrics tables
+		expect(tables.length).toBe(19); // 14 main tables (+ skills) + 3 relay tables + 2 metrics tables
 
 		const tableNames = tables.map((t) => t.name);
 		const expectedTables = [

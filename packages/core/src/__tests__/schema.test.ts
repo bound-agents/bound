@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDatabase } from "../database";
 import { applySchema } from "../schema";
+import { insertRow, updateRow } from "../change-log";
 
 describe("Database Schema", () => {
 	let dbPath: string;
@@ -32,7 +33,7 @@ describe("Database Schema", () => {
 		db.close();
 	});
 
-	it("applies schema successfully creating all 16 tables", () => {
+	it("applies schema successfully creating all 17 tables", () => {
 		const db = createDatabase(dbPath);
 		applySchema(db);
 
@@ -44,7 +45,7 @@ describe("Database Schema", () => {
 
 		const tableNames = tables.map((t) => t.name);
 
-		// Verify all 16 tables exist
+		// Verify all 17 tables exist
 		expect(tableNames).toContain("users");
 		expect(tableNames).toContain("threads");
 		expect(tableNames).toContain("messages");
@@ -55,6 +56,7 @@ describe("Database Schema", () => {
 		expect(tableNames).toContain("overlay_index");
 		expect(tableNames).toContain("cluster_config");
 		expect(tableNames).toContain("advisories");
+		expect(tableNames).toContain("skills");
 		expect(tableNames).toContain("change_log");
 		expect(tableNames).toContain("sync_state");
 		expect(tableNames).toContain("host_meta");
@@ -62,7 +64,7 @@ describe("Database Schema", () => {
 		expect(tableNames).toContain("relay_inbox");
 		expect(tableNames).toContain("relay_cycles");
 
-		expect(tableNames.length).toBe(16);
+		expect(tableNames.length).toBe(17);
 
 		db.close();
 	});
@@ -82,6 +84,7 @@ describe("Database Schema", () => {
 		expect(indexNames).toContain("idx_memory_key");
 		expect(indexNames).toContain("idx_overlay_site_path");
 		expect(indexNames).toContain("idx_files_path");
+		expect(indexNames).toContain("idx_skills_name");
 		expect(indexNames).toContain("idx_changelog_seq");
 
 		db.close();
@@ -121,8 +124,8 @@ describe("Database Schema", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		// Still exactly 16 tables
-		expect(tables.length).toBe(16);
+		// Still exactly 17 tables
+		expect(tables.length).toBe(17);
 
 		db.close();
 	});
@@ -193,6 +196,112 @@ describe("Database Schema", () => {
 		for (const col of requiredColumns) {
 			expect(columnNames).toContain(col);
 		}
+
+		db.close();
+	});
+
+	it("verifies skills table has all required columns", () => {
+		const db = createDatabase(dbPath);
+		applySchema(db);
+
+		const columns = db.query("PRAGMA table_info(skills)").all() as Array<{ name: string }>;
+		const columnNames = columns.map((c) => c.name);
+
+		expect(columnNames).toContain("id");
+		expect(columnNames).toContain("name");
+		expect(columnNames).toContain("description");
+		expect(columnNames).toContain("status");
+		expect(columnNames).toContain("skill_root");
+		expect(columnNames).toContain("content_hash");
+		expect(columnNames).toContain("allowed_tools");
+		expect(columnNames).toContain("compatibility");
+		expect(columnNames).toContain("metadata_json");
+		expect(columnNames).toContain("activated_at");
+		expect(columnNames).toContain("created_by_thread");
+		expect(columnNames).toContain("activation_count");
+		expect(columnNames).toContain("last_activated_at");
+		expect(columnNames).toContain("retired_by");
+		expect(columnNames).toContain("retired_reason");
+		expect(columnNames).toContain("modified_at");
+		expect(columnNames).toContain("deleted");
+
+		db.close();
+	});
+
+	it("enforces unique index on active skill name", () => {
+		const db = createDatabase(dbPath);
+		applySchema(db);
+		const now = new Date().toISOString();
+
+		db.run(
+			`INSERT INTO skills (id, name, description, status, skill_root, activation_count, modified_at, deleted)
+			 VALUES ('id-1', 'pr-review', 'Review PRs', 'active', '/home/user/skills/pr-review', 0, ?, 0)`,
+			[now],
+		);
+
+		// Inserting a second active skill with the same name must fail
+		expect(() => {
+			db.run(
+				`INSERT INTO skills (id, name, description, status, skill_root, activation_count, modified_at, deleted)
+				 VALUES ('id-2', 'pr-review', 'Duplicate', 'active', '/home/user/skills/pr-review', 0, ?, 0)`,
+				[now],
+			);
+		}).toThrow();
+
+		db.close();
+	});
+
+	it("insertRow and updateRow write change-log entries for skills table", () => {
+		const db = createDatabase(dbPath);
+		applySchema(db);
+		const siteId = "test-site";
+		const skillId = randomUUID();
+		const now = new Date().toISOString();
+
+		insertRow(
+			db,
+			"skills",
+			{
+				id: skillId,
+				name: "test-skill",
+				description: "A test skill",
+				status: "active",
+				skill_root: "/home/user/skills/test-skill",
+				content_hash: null,
+				allowed_tools: null,
+				compatibility: null,
+				metadata_json: null,
+				activated_at: null,
+				created_by_thread: null,
+				activation_count: 0,
+				last_activated_at: null,
+				retired_by: null,
+				retired_reason: null,
+				modified_at: now,
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		const entry = db
+			.query("SELECT * FROM change_log WHERE row_id = ?")
+			.get(skillId) as Record<string, unknown>;
+		expect(entry).toBeDefined();
+		expect(entry.table_name).toBe("skills");
+
+		updateRow(
+			db,
+			"skills",
+			skillId,
+			{ description: "Updated description", modified_at: now },
+			siteId,
+		);
+
+		const entries = db
+			.query("SELECT * FROM change_log WHERE row_id = ? ORDER BY seq")
+			.all(skillId) as Array<Record<string, unknown>>;
+		expect(entries).toHaveLength(2);
+		expect(entries[1].table_name).toBe("skills");
 
 		db.close();
 	});
