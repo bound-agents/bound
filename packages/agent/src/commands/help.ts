@@ -5,9 +5,13 @@ import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sa
  * The help command reads from this to show available commands and syntax.
  */
 let commandRegistry: CommandDefinition[] = [];
+let serverNamesRegistry: Set<string> = new Set();
 
-export function setCommandRegistry(commands: CommandDefinition[]): void {
+export function setCommandRegistry(commands: CommandDefinition[], serverNames?: Set<string>): void {
 	commandRegistry = commands;
+	if (serverNames) {
+		serverNamesRegistry = serverNames;
+	}
 }
 
 export const help: CommandDefinition = {
@@ -29,6 +33,12 @@ export const help: CommandDefinition = {
 				};
 			}
 
+			// For MCP server commands, delegate to the handler's built-in --help output
+			if (serverNamesRegistry.has(target)) {
+				return cmd.handler({ help: "true" }, ctx);
+			}
+
+			// Regular command: show args listing
 			let output = `${cmd.name}`;
 			if (cmd.args.length > 0) {
 				const argSyntax = cmd.args
@@ -50,56 +60,18 @@ export const help: CommandDefinition = {
 				}
 			}
 
-			// For MCP tools, show the --key value syntax
-			const isMCP =
-				cmd.name.includes("-") &&
-				!cmd.name.startsWith("cache-") &&
-				!cmd.name.startsWith("model-") &&
-				cmd.name !== "commands";
-			if (isMCP) {
-				const exampleArgs = cmd.args
-					.filter((a) => a.required)
-					.map((a) => `--${a.name} <value>`)
-					.join(" ");
-				output += `\nUsage: ${cmd.name} ${exampleArgs || "--key value"}\n`;
-			}
-
 			return { stdout: output, stderr: "", exitCode: 0 };
 		}
 
 		// List all commands
 		let output = "Available commands:\n\n";
 
-		const builtins = commandRegistry.filter(
-			(c) => !c.name.includes("-") || c.name.startsWith("cache-") || c.name.startsWith("model-"),
-		);
-		const mcpTools = commandRegistry.filter(
-			(c) =>
-				c.name.includes("-") &&
-				!c.name.startsWith("cache-") &&
-				!c.name.startsWith("model-") &&
-				c.name !== "commands",
-		);
+		const builtins = commandRegistry.filter((c) => !serverNamesRegistry.has(c.name));
+		const localMcp = commandRegistry.filter((c) => serverNamesRegistry.has(c.name));
 
-		// Get local MCP tool names from the MCPClient map
-		const localMcpToolNames = new Set<string>();
-		if (ctx.mcpClients) {
-			for (const [serverName, client] of ctx.mcpClients) {
-				try {
-					const clientTyped = client as { listTools: () => Promise<Array<{ name: string }>> };
-					const tools = await clientTyped.listTools();
-					for (const tool of tools) {
-						localMcpToolNames.add(`${serverName}-${tool.name}`);
-					}
-				} catch {
-					// If we can't list tools, skip this client
-				}
-			}
-		}
-
-		// Get remote MCP tool names from hosts table and build tool-to-host map
-		const remoteMcpToolNames = new Set<string>();
-		const toolToHostName = new Map<string, string>();
+		// Get remote MCP server names from hosts table
+		const remoteServerNames = new Set<string>();
+		const serverToHostName = new Map<string, string>();
 		try {
 			const hosts = ctx.db
 				.prepare(
@@ -108,25 +80,20 @@ export const help: CommandDefinition = {
 				.all() as Array<{ site_id: string; host_name: string; mcp_tools: string }>;
 			for (const host of hosts) {
 				try {
-					const tools = JSON.parse(host.mcp_tools) as Array<{ server: string; name: string }>;
-					for (const tool of tools) {
-						const toolName = `${tool.server}-${tool.name}`;
-						if (!localMcpToolNames.has(toolName)) {
-							remoteMcpToolNames.add(toolName);
-							toolToHostName.set(toolName, host.host_name);
+					const serverNames = JSON.parse(host.mcp_tools) as string[];
+					for (const serverName of serverNames) {
+						if (!serverNamesRegistry.has(serverName)) {
+							remoteServerNames.add(serverName);
+							serverToHostName.set(serverName, host.host_name);
 						}
 					}
 				} catch {
-					// If we can't parse mcp_tools, skip this host
+					// skip unparseable hosts
 				}
 			}
 		} catch {
-			// If query fails, skip remote tools
+			// skip DB errors
 		}
-
-		// Categorize MCP tools into local and remote
-		const localMcp = mcpTools.filter((c) => localMcpToolNames.has(c.name));
-		const remoteMcp = mcpTools.filter((c) => remoteMcpToolNames.has(c.name));
 
 		if (builtins.length > 0) {
 			output += "Built-in:\n";
@@ -146,16 +113,16 @@ export const help: CommandDefinition = {
 			}
 		}
 
-		if (remoteMcp.length > 0) {
+		if (remoteServerNames.size > 0) {
 			output += "\nREMOTE (via relay):\n";
-			for (const cmd of remoteMcp) {
-				const hostName = toolToHostName.get(cmd.name);
+			for (const serverName of remoteServerNames) {
+				const hostName = serverToHostName.get(serverName);
 				const hostInfo = hostName ? ` [host: ${hostName}]` : "";
-				output += `  ${cmd.name}${hostInfo}\n`;
+				output += `  ${serverName}${hostInfo}\n`;
 			}
 		}
 
-		output += "\nRun 'help <command>' for detailed usage.\n";
+		output += "\nRun 'commands <name>' for detailed usage.\n";
 
 		return { stdout: output, stderr: "", exitCode: 0 };
 	},

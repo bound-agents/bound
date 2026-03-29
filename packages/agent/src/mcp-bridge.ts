@@ -45,23 +45,34 @@ export function isRelayRequest(
 }
 
 /**
+ * Return type for generateMCPCommands.
+ * Carries both the command definitions and a registry of server names
+ * for use by help.ts and start.ts.
+ */
+export interface MCPCommandsResult {
+	commands: CommandDefinition[];
+	serverNames: Set<string>; // names of server-level MCP commands (excludes meta-commands)
+}
+
+/**
  * Generate defineCommands from MCP tools discovered on connected servers.
- * Returns an array of CommandDefinition for each tool with name format: {server-name}-{tool-name}
+ * Returns one CommandDefinition per connected server with internal subcommand dispatch,
+ * plus 4 meta-commands for resources and prompts.
  *
  * Calls listTools() on each connected client to enumerate tools.
  */
 export async function generateMCPCommands(
 	clients: Map<string, MCPClient>,
 	confirmGates: Map<string, string[]> = new Map(),
-): Promise<CommandDefinition[]> {
+): Promise<MCPCommandsResult> {
 	const commands: CommandDefinition[] = [];
+	const serverNames = new Set<string>();
 
 	for (const [serverName, client] of clients) {
 		if (!client.isConnected()) {
 			continue;
 		}
 
-		// Get the server config to check allow_tools
 		const config = client.getConfig();
 		const allowTools = config.allow_tools;
 
@@ -69,83 +80,147 @@ export async function generateMCPCommands(
 		try {
 			toolsList = await client.listTools();
 		} catch {
-			// If listTools throws (e.g., server disconnected), skip this server
 			continue;
 		}
 
 		const serverConfirms = confirmGates.get(serverName) ?? [];
 
+		// Build dispatch table with allow_tools filtering applied
+		type DispatchEntry = { tool: Tool; isConfirmed: boolean };
+		const dispatchTable = new Map<string, DispatchEntry>();
 		for (const tool of toolsList) {
-			// Apply allow_tools filter
 			if (allowTools && !allowTools.includes(tool.name)) {
 				continue;
 			}
-
-			const commandName = `${serverName}-${tool.name}`;
-			const isConfirmed = serverConfirms.includes(tool.name);
-
-			// Extract parameter names from tool's inputSchema for help/discovery
-			const toolArgs: CommandDefinition["args"] = [];
-			const schema = tool.inputSchema as
-				| { properties?: Record<string, unknown>; required?: string[] }
-				| undefined;
-			if (schema?.properties) {
-				const required = new Set(schema.required ?? []);
-				for (const paramName of Object.keys(schema.properties)) {
-					const prop = schema.properties[paramName] as { description?: string } | undefined;
-					toolArgs.push({
-						name: paramName,
-						required: required.has(paramName),
-						description: prop?.description,
-					});
-				}
-			}
-
-			const command: CommandDefinition = {
-				name: commandName,
-				args: toolArgs,
-				handler: async (
-					args: Record<string, string>,
-					ctx: CommandContext,
-				): Promise<CommandResult> => {
-					// Check if this is a confirmed tool and we're in autonomous mode
-					if (isConfirmed && ctx.taskId && !ctx.taskId.startsWith("interactive-")) {
-						return {
-							stdout: "",
-							stderr: `Tool ${commandName} requires confirmation and cannot be used in autonomous mode\n`,
-							exitCode: 1,
-						};
-					}
-
-					try {
-						const result = await client.callTool(tool.name, args);
-						return {
-							stdout: result.content,
-							stderr: result.isError ? result.content : "",
-							exitCode: result.isError ? 1 : 0,
-						};
-					} catch (error) {
-						const message = formatError(error);
-						return {
-							stdout: "",
-							stderr: `Failed to call tool ${commandName}: ${message}\n`,
-							exitCode: 1,
-						};
-					}
-				},
-			};
-
-			commands.push(command);
+			dispatchTable.set(tool.name, {
+				tool,
+				isConfirmed: serverConfirms.includes(tool.name),
+			});
 		}
+
+		const command: CommandDefinition = {
+			name: serverName,
+			args: [
+				{
+					name: "subcommand",
+					required: false,
+					description: "Subcommand to run, or omit for usage listing",
+				},
+			],
+			handler: async (
+				args: Record<string, string>,
+				ctx: CommandContext,
+			): Promise<CommandResult> => {
+				const subcommand = args.subcommand;
+				const hasHelp = args.help !== undefined;
+
+				// Subcommand-level help: subcommand provided + help flag
+				if (hasHelp && subcommand) {
+					const entry = dispatchTable.get(subcommand);
+					if (!entry) {
+						const available = Array.from(dispatchTable.keys()).join(", ");
+						return {
+							stdout: "",
+							stderr: `Unknown subcommand: ${subcommand}\nAvailable subcommands: ${available}\n`,
+							exitCode: 1,
+						};
+					}
+					const schema = entry.tool.inputSchema as
+						| { properties?: Record<string, unknown>; required?: string[] }
+						| undefined;
+					const props = schema?.properties ?? {};
+					const required = new Set(schema?.required ?? []);
+					let out = `${subcommand}`;
+					if (entry.tool.description) out += ` — ${entry.tool.description}`;
+					out += "\n\nParameters:\n";
+					for (const [param, def] of Object.entries(props)) {
+						const propDef = def as { description?: string };
+						const req = required.has(param) ? "(required)" : "(optional)";
+						out += `  ${param} ${req}`;
+						if (propDef.description) out += ` — ${propDef.description}`;
+						out += "\n";
+					}
+					if (Object.keys(props).length === 0) {
+						out += "  (no parameters)\n";
+					}
+					return { stdout: out, stderr: "", exitCode: 0 };
+				}
+
+				// Server-level help: no subcommand, --help only, or subcommand="help" (LLM convention).
+				// The LLM ToolDefinition instructs the model to send subcommand="help" for discovery.
+				// "help" is therefore a reserved keyword — not dispatched to the tool dispatch table.
+				// Covers: no-args (AC2.3), --help only (AC2.1), and subcommand="help" (LLM path).
+				if (!subcommand || subcommand === "help") {
+					let out = `${serverName} subcommands:\n\n`;
+					for (const [name, entry] of dispatchTable) {
+						const schema = entry.tool.inputSchema as { required?: string[] } | undefined;
+						const reqParams = schema?.required ?? [];
+						out += `  ${name}`;
+						if (entry.tool.description) out += ` — ${entry.tool.description}`;
+						if (reqParams.length > 0) out += ` (required: ${reqParams.join(", ")})`;
+						out += "\n";
+					}
+					if (dispatchTable.size === 0) {
+						out += "  (no subcommands available)\n";
+					}
+					out += `\nUsage: ${serverName} --subcommand <name> [--key value ...]\n`;
+					out += `Run '${serverName} --subcommand <name> --help' for parameter details.\n`;
+					return { stdout: out, stderr: "", exitCode: 0 };
+				}
+
+				// Dispatch: subcommand provided, no help flag
+				const entry = dispatchTable.get(subcommand);
+				if (!entry) {
+					const available = Array.from(dispatchTable.keys()).join(", ");
+					return {
+						stdout: "",
+						stderr: `Unknown subcommand: ${subcommand}\nAvailable subcommands: ${available}\n`,
+						exitCode: 1,
+					};
+				}
+
+				// confirmGates check
+				if (entry.isConfirmed && ctx.taskId && !ctx.taskId.startsWith("interactive-")) {
+					return {
+						stdout: "",
+						stderr: `Subcommand ${subcommand} requires confirmation and cannot be used in autonomous mode\n`,
+						exitCode: 1,
+					};
+				}
+
+				try {
+					// Pass all args except 'subcommand' itself to callTool.
+					// Note: args values are strings because the --_json path in commands.ts stringifies all values.
+					// This is pre-existing behaviour for all MCP tool calls, not a regression.
+					const { subcommand: _, ...toolArgs } = args as Record<string, unknown>;
+					const result = await client.callTool(subcommand, toolArgs);
+					return {
+						stdout: result.content,
+						stderr: result.isError ? result.content : "",
+						exitCode: result.isError ? 1 : 0,
+					};
+				} catch (error) {
+					const message = formatError(error);
+					return {
+						stdout: "",
+						stderr: `Failed to call tool ${subcommand}: ${message}\n`,
+						exitCode: 1,
+					};
+				}
+			},
+		};
+
+		commands.push(command);
+		serverNames.add(serverName);
 	}
 
-	// Add MCP access commands
+	// Meta-commands remain unchanged
 	commands.push(createResourcesCommand(clients));
 	commands.push(createResourceCommand(clients));
 	commands.push(createPromptsCommand(clients));
 	commands.push(createPromptCommand(clients));
 
-	return commands;
+	return { commands, serverNames };
 }
 
 /**
@@ -358,7 +433,8 @@ function createPromptCommand(clients: Map<string, MCPClient>): CommandDefinition
 
 /**
  * Update host's MCP info in database.
- * Records the connected servers and their tools in the hosts table.
+ * Records the connected servers and their server names in the hosts table.
+ * Under the new dispatch model, mcp_tools stores server names only (not individual tool names).
  */
 export async function updateHostMCPInfo(
 	db: Database,
@@ -368,22 +444,16 @@ export async function updateHostMCPInfo(
 	try {
 		const mcp_servers = Array.from(clients.keys());
 
-		// Flatten tool names from all servers
+		// Store server names only — no listTools() call needed.
+		// The relay router matches on server name (e.g. "github") rather than
+		// individual tool names (e.g. "github-create_issue") under the new dispatch model.
 		const mcp_tools: string[] = [];
 		for (const [serverName, client] of clients) {
 			if (client.isConnected()) {
-				try {
-					const tools = await client.listTools();
-					for (const tool of tools) {
-						mcp_tools.push(`${serverName}-${tool.name}`);
-					}
-				} catch {
-					// Skip servers that fail to list tools (e.g., temporary disconnect)
-				}
+				mcp_tools.push(serverName);
 			}
 		}
 
-		// Update hosts table
 		const stmt = db.prepare(
 			"UPDATE hosts SET mcp_servers = ?, mcp_tools = ?, modified_at = ? WHERE site_id = ?",
 		);
@@ -394,6 +464,6 @@ export async function updateHostMCPInfo(
 			siteId,
 		);
 	} catch {
-		// Silently ignore DB errors — this is a best-effort metadata update, logger not available in this function signature
+		// Silently ignore DB errors — this is a best-effort metadata update
 	}
 }

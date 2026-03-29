@@ -39,6 +39,35 @@ export interface StartArgs {
 	configDir?: string;
 }
 
+/**
+ * Build LLM ToolDefinitions for MCP servers — one per server using subcommand dispatch schema.
+ * @param serverNames - Set of connected server names from MCPCommandsResult
+ */
+export function buildMcpToolDefinitions(serverNames: Set<string>): ToolDefinition[] {
+	const definitions: ToolDefinition[] = [];
+	for (const serverName of serverNames) {
+		definitions.push({
+			type: "function",
+			function: {
+				name: serverName,
+				description: `${serverName} MCP server tools. Call with subcommand="help" to list available tools and their parameters.`,
+				parameters: {
+					type: "object",
+					properties: {
+						subcommand: {
+							type: "string",
+							description: 'Tool to invoke on this server. Use "help" to list available subcommands.',
+						},
+					},
+					required: ["subcommand"],
+					additionalProperties: true,
+				},
+			},
+		});
+	}
+	return definitions;
+}
+
 export async function runStart(args: StartArgs): Promise<void> {
 	const configDir = args.configDir || "config";
 
@@ -298,32 +327,17 @@ export async function runStart(args: StartArgs): Promise<void> {
 		}
 	}
 
-	const mcpCommands = await generateMCPCommands(mcpClientsMap, confirmGates);
+	const { commands: mcpCommands, serverNames: mcpServerNames } = await generateMCPCommands(
+		mcpClientsMap,
+		confirmGates,
+	);
 	console.log(`[mcp] Generated ${mcpCommands.length} MCP command definition(s)`);
 
-	// Build LLM ToolDefinitions from discovered MCP tools
-	const mcpToolDefinitions: ToolDefinition[] = [];
-	for (const [serverName, client] of mcpClientsMap) {
-		if (!client.isConnected()) continue;
-		try {
-			const tools = await client.listTools();
-			for (const tool of tools) {
-				mcpToolDefinitions.push({
-					type: "function",
-					function: {
-						name: `${serverName}-${tool.name}`,
-						description: tool.description ?? "",
-						parameters: tool.inputSchema as Record<string, unknown>,
-					},
-				});
-			}
-		} catch (error) {
-			console.warn(`[mcp] Failed to list tools for ${serverName}:`, formatError(error));
-		}
-	}
+	// Build LLM ToolDefinitions — one per server, using subcommand dispatch schema.
+	const mcpToolDefinitions = buildMcpToolDefinitions(mcpServerNames);
 	if (mcpToolDefinitions.length > 0) {
 		console.log(
-			`[mcp] Registered ${mcpToolDefinitions.length} tool(s) for LLM: ${mcpToolDefinitions.map((t) => t.function.name).join(", ")}`,
+			`[mcp] Registered ${mcpToolDefinitions.length} server(s) for LLM: ${mcpToolDefinitions.map((t) => t.function.name).join(", ")}`,
 		);
 	}
 
@@ -361,7 +375,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		};
 		const builtinCommands = getAllCommands();
 		const allDefinitions = [...builtinCommands, ...mcpCommands];
-		setCommandRegistry(allDefinitions);
+		setCommandRegistry(allDefinitions, mcpServerNames);
 		const registeredCommands = createDefineCommands(allDefinitions, commandContext);
 		sandbox = await createSandbox({
 			clusterFs,
