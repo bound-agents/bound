@@ -1120,18 +1120,31 @@ export class RelayProcessor {
 			} else {
 				this.writeResponse(entry, "result", JSON.stringify({ success: true }));
 
-				// Auto-deliver is suppressed when running in a platform context.
-				// In platform contexts the agent calls discord_send_message (or equivalent)
-				// explicitly. Auto-deliver is only used for non-platform (web UI) contexts.
-				if (!payload.platform) {
-					// Deliver the response back to the originating platform connector.
-					// Check the thread's interface — if it's not "web", emit platform:deliver
-					// so the connector (e.g. DiscordConnector) sends the response to the user.
-					const thread = this.db
-						.query<{ interface: string }, [string]>(
-							"SELECT interface FROM threads WHERE id = ? AND deleted = 0 LIMIT 1",
-						)
-						.get(payload.thread_id);
+				// Look up thread interface once — used for both platform-context typing-stop
+				// and the legacy auto-deliver path.
+				const thread = this.db
+					.query<{ interface: string }, [string]>(
+						"SELECT interface FROM threads WHERE id = ? AND deleted = 0 LIMIT 1",
+					)
+					.get(payload.thread_id);
+
+				if (payload.platform) {
+					// Platform-context process: agent calls discord_send_message explicitly.
+					// Always emit platform:deliver with empty content to stop the typing
+					// indicator, regardless of whether the agent produced any text.
+					// deliver() calls stopTyping() before checking content, so an empty-
+					// content emit stops typing without sending a Discord message.
+					if (thread && thread.interface !== "web") {
+						this.eventBus.emit("platform:deliver", {
+							platform: thread.interface,
+							thread_id: payload.thread_id,
+							message_id: payload.message_id,
+							content: "",
+						} satisfies PlatformDeliverPayload);
+					}
+				} else {
+					// Non-platform context (legacy auto-deliver): deliver the last assistant
+					// message to the originating platform connector.
 					if (thread && thread.interface !== "web") {
 						const lastAssistant = this.db
 							.query<{ id: string; content: string }, [string]>(
@@ -1166,6 +1179,26 @@ export class RelayProcessor {
 		} catch (err) {
 			emitStatusForward("idle", null, 0);
 			this.writeResponse(entry, "error", JSON.stringify({ error: String(err), retriable: false }));
+			// Stop typing indicator even on failure — same empty-content mechanism as success path.
+			if (payload.platform) {
+				try {
+					const errThread = this.db
+						.query<{ interface: string }, [string]>(
+							"SELECT interface FROM threads WHERE id = ? AND deleted = 0 LIMIT 1",
+						)
+						.get(payload.thread_id);
+					if (errThread && errThread.interface !== "web") {
+						this.eventBus.emit("platform:deliver", {
+							platform: errThread.interface,
+							thread_id: payload.thread_id,
+							message_id: payload.message_id,
+							content: "",
+						} satisfies PlatformDeliverPayload);
+					}
+				} catch {
+					// ignore — already in error path
+				}
+			}
 		}
 	}
 

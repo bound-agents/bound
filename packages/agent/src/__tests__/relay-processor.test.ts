@@ -2060,7 +2060,7 @@ describe("RelayProcessor", () => {
 		});
 
 		// Item #2: Empty content guard in executeProcess
-		it("Item #2: does NOT emit platform:deliver when assistant message has only tool_use blocks", async () => {
+		it("Item #2: emits platform:deliver with empty content when platform-context process has tool_use-only assistant (typing stop)", async () => {
 			// This test verifies that when the last assistant message contains ONLY tool_use blocks
 			// (no text content), the platform:deliver event should NOT be emitted even though
 			// the agent loop executed successfully.
@@ -2184,9 +2184,10 @@ describe("RelayProcessor", () => {
 			await new Promise((resolve) => setTimeout(resolve, 600));
 			handle.stop();
 
-			// Verify: platform:deliver should NOT be emitted when assistant message has only tool_use blocks
-			// This is the fix we're testing: empty textContent should prevent platform:deliver emission
-			expect(platformDeliverEmitted).toBe(false);
+			// Verify: platform:deliver IS now emitted even with tool_use-only assistant content.
+			// In platform context, we always emit with empty content to stop the typing indicator.
+			// (The Discord connector calls stopTyping() before checking content length.)
+			expect(platformDeliverEmitted).toBe(true);
 		});
 
 		// Item #5: Test platform:deliver is emitted with correct content in happy path
@@ -2281,7 +2282,7 @@ describe("RelayProcessor", () => {
 					thread_id: threadId,
 					message_id: userMsgId,
 					user_id: userId,
-					platform: "discord",
+					platform: null,
 				}),
 				expires_at: new Date(now.getTime() + 60000).toISOString(),
 				received_at: now.toISOString(),
@@ -2312,8 +2313,8 @@ describe("RelayProcessor", () => {
 			handle.stop();
 
 			// Verify: platform:deliver should be emitted with correct content
-			expect(platformDeliverPayload).toBeDefined();
-			// Debug: verify the payload structure by checking each field
+			expect(platformDeliverPayload).not.toBeNull();
+			// Verify: auto-deliver should emit with the assistant's text content
 			if (platformDeliverPayload) {
 				expect(platformDeliverPayload.platform).toBe("discord");
 				expect(platformDeliverPayload.content).toBe(expectedContent);
@@ -2421,7 +2422,7 @@ describe("RelayProcessor", () => {
 					thread_id: threadId,
 					message_id: userMsgId,
 					user_id: userId,
-					platform: "discord",
+					platform: null,
 				}),
 				expires_at: new Date(now.getTime() + 60000).toISOString(),
 				received_at: now.toISOString(),
@@ -2452,7 +2453,7 @@ describe("RelayProcessor", () => {
 			handle.stop();
 
 			// Verify: platform:deliver should contain content from SECOND message (higher rowid)
-			expect(platformDeliverPayload).toBeDefined();
+			expect(platformDeliverPayload).not.toBeNull();
 			if (platformDeliverPayload) {
 				expect(platformDeliverPayload.content).toBe("second");
 				expect(platformDeliverPayload.message_id).toBe(secondMsgId);
@@ -2620,7 +2621,7 @@ describe("RelayProcessor", () => {
 				expect(capturedLoopConfig.platformTools.has("discord_send_message")).toBe(true);
 			});
 
-			it("does not emit platform:deliver when payload.platform is non-null (AC6.2)", async () => {
+			it("emits platform:deliver with empty content for typing stop when payload.platform is non-null (AC6.2)", async () => {
 				// Setup: listen for platform:deliver on eventBus
 				// Run: process a relay with platform: "discord", agent produces an assistant message
 				// Assert: platform:deliver was NOT emitted
@@ -2743,8 +2744,8 @@ describe("RelayProcessor", () => {
 				await new Promise((resolve) => setTimeout(resolve, 600));
 				handle.stop();
 
-				// Assert: platform:deliver should NOT be emitted even though agent produced an assistant message
-				expect(platformDeliverEmitted).toBe(false);
+				// Assert: platform:deliver IS emitted with empty content (typing stop), NOT with the assistant text
+				expect(platformDeliverEmitted).toBe(true);
 			});
 
 			it("emits platform:deliver when payload.platform is null (AC6.3)", async () => {
@@ -3005,6 +3006,195 @@ describe("RelayProcessor", () => {
 				expect(capturedLoopConfig.platformTools).toBeUndefined();
 
 				// Assert: no crash (if we got here, it passed)
+			});
+
+			it("emits platform:deliver with empty content when platform-context process completes silently (typing stop)", async () => {
+				// Bug: when the agent is silent (no discord_send_message call) in a platform context,
+				// the Discord typing indicator persists for 5 minutes. executeProcess() must always
+				// emit platform:deliver (even with empty content) so the connector can stop typing.
+				const threadId = "thread-typing-stop-silent";
+				const userId = "user-ts-1";
+				const userMsgId = "msg-user-ts-1";
+				const nowIso = new Date().toISOString();
+
+				db.run(
+					"INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+					[threadId, userId, nowIso, "discord", "local", nowIso, nowIso],
+				);
+				db.run(
+					"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+					[userId, "Test User", nowIso, nowIso],
+				);
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+					[userMsgId, threadId, "user", "Hello", "local", nowIso],
+				);
+				// No assistant message — agent was silent
+
+				const eventBus = createMockEventBus();
+				let platformDeliverPayload: PlatformDeliverPayload | null = null;
+				eventBus.on("platform:deliver", (payload: PlatformDeliverPayload) => {
+					platformDeliverPayload = payload;
+				});
+
+				const mockAppCtx = {
+					db,
+					config: {},
+					optionalConfig: {},
+					eventBus,
+					logger: createMockLogger(),
+					siteId: "local-site",
+					hostName: "localhost",
+				};
+
+				const processor = new RelayProcessor(
+					db,
+					"local-site",
+					new Map(),
+					createMockModelRouter(),
+					new Set(["requester-site"]),
+					createMockLogger(),
+					eventBus,
+					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
+					mockAppCtx as any,
+					undefined,
+					new Map(),
+					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
+					() =>
+						({
+							run: async () => ({
+								error: null,
+								messagesCreated: 0,
+								toolCallsMade: 0,
+								filesChanged: 0,
+							}),
+							// biome-ignore lint/suspicious/noExplicitAny: partial mock in test
+						}) as any,
+				);
+
+				const now = new Date();
+				db.run(
+					"INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						"process-ts-silent",
+						"requester-site",
+						"process",
+						null,
+						null,
+						JSON.stringify({
+							thread_id: threadId,
+							message_id: userMsgId,
+							user_id: userId,
+							platform: "discord",
+						}),
+						new Date(now.getTime() + 60000).toISOString(),
+						now.toISOString(),
+						0,
+						null,
+					],
+				);
+
+				const handle = processor.start(50);
+				await new Promise((resolve) => setTimeout(resolve, 600));
+				handle.stop();
+
+				// platform:deliver MUST be emitted even when agent produced no messages,
+				// so the Discord connector can call stopTyping().
+				expect(platformDeliverPayload).not.toBeNull();
+				expect((platformDeliverPayload as PlatformDeliverPayload | null)?.platform).toBe("discord");
+				expect((platformDeliverPayload as PlatformDeliverPayload | null)?.thread_id).toBe(threadId);
+				expect((platformDeliverPayload as PlatformDeliverPayload | null)?.content).toBe("");
+			});
+
+			it("emits platform:deliver with empty content when platform-context process fails (typing stop on error)", async () => {
+				// Bug: when the agent loop throws (error path), the typing indicator is also never cleared.
+				const threadId = "thread-typing-stop-error";
+				const userId = "user-ts-2";
+				const userMsgId = "msg-user-ts-2";
+				const nowIso = new Date().toISOString();
+
+				db.run(
+					"INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+					[threadId, userId, nowIso, "discord", "local", nowIso, nowIso],
+				);
+				db.run(
+					"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+					[userId, "Test User", nowIso, nowIso],
+				);
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+					[userMsgId, threadId, "user", "Hello", "local", nowIso],
+				);
+
+				const eventBus = createMockEventBus();
+				let platformDeliverPayload: PlatformDeliverPayload | null = null;
+				eventBus.on("platform:deliver", (payload: PlatformDeliverPayload) => {
+					platformDeliverPayload = payload;
+				});
+
+				const mockAppCtx = {
+					db,
+					config: {},
+					optionalConfig: {},
+					eventBus,
+					logger: createMockLogger(),
+					siteId: "local-site",
+					hostName: "localhost",
+				};
+
+				const processor = new RelayProcessor(
+					db,
+					"local-site",
+					new Map(),
+					createMockModelRouter(),
+					new Set(["requester-site"]),
+					createMockLogger(),
+					eventBus,
+					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
+					mockAppCtx as any,
+					undefined,
+					new Map(),
+					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
+					() =>
+						({
+							run: async (): Promise<never> => {
+								throw new Error("Simulated agent failure");
+							},
+							// biome-ignore lint/suspicious/noExplicitAny: partial mock in test
+						}) as any,
+				);
+
+				const now = new Date();
+				db.run(
+					"INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						"process-ts-error",
+						"requester-site",
+						"process",
+						null,
+						null,
+						JSON.stringify({
+							thread_id: threadId,
+							message_id: userMsgId,
+							user_id: userId,
+							platform: "discord",
+						}),
+						new Date(now.getTime() + 60000).toISOString(),
+						now.toISOString(),
+						0,
+						null,
+					],
+				);
+
+				const handle = processor.start(50);
+				await new Promise((resolve) => setTimeout(resolve, 600));
+				handle.stop();
+
+				// platform:deliver MUST be emitted even when agent loop throws.
+				expect(platformDeliverPayload).not.toBeNull();
+				expect((platformDeliverPayload as PlatformDeliverPayload | null)?.platform).toBe("discord");
+				expect((platformDeliverPayload as PlatformDeliverPayload | null)?.thread_id).toBe(threadId);
+				expect((platformDeliverPayload as PlatformDeliverPayload | null)?.content).toBe("");
 			});
 		});
 	});
