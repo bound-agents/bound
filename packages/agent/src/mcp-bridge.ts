@@ -107,7 +107,10 @@ export async function generateMCPCommands(
 					description: "Subcommand to run, or omit for usage listing",
 				},
 			],
-			handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
+			handler: async (
+				args: Record<string, string>,
+				ctx: CommandContext,
+			): Promise<CommandResult> => {
 				const subcommand = args.subcommand;
 				const hasHelp = args.help !== undefined;
 
@@ -189,8 +192,7 @@ export async function generateMCPCommands(
 					// Pass all args except 'subcommand' itself to callTool.
 					// Note: args values are strings because the --_json path in commands.ts stringifies all values.
 					// This is pre-existing behaviour for all MCP tool calls, not a regression.
-					const toolArgs: Record<string, unknown> = { ...args };
-					delete toolArgs.subcommand;
+					const { subcommand: _, ...toolArgs } = args as Record<string, unknown>;
 					const result = await client.callTool(subcommand, toolArgs);
 					return {
 						stdout: result.content,
