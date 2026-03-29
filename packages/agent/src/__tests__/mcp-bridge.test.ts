@@ -321,7 +321,13 @@ describe("MCP Bridge", () => {
 	it("dispatches valid subcommand to callTool with correct args", async () => {
 		const client = makeMockClient(
 			{ name: "dispatch-server", transport: "stdio", command: "test" },
-			[{ name: "greet", description: "Greet someone", inputSchema: { properties: { name: { type: "string" } } } }],
+			[
+				{
+					name: "greet",
+					description: "Greet someone",
+					inputSchema: { properties: { name: { type: "string" } } },
+				},
+			],
 			[],
 			[],
 		);
