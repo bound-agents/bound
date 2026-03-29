@@ -20,6 +20,7 @@ import type {
 } from "@bound/shared";
 import type { MCPClient } from "../mcp-client";
 import { RelayProcessor } from "../relay-processor";
+import type { AgentLoopConfig } from "../types";
 
 // Mock MCPClient for testing
 class MockMCPClient implements Partial<MCPClient> {
@@ -81,9 +82,11 @@ const createMockLogger = (): Logger => ({
 class MockLLMBackend implements LLMBackend {
 	async chat(_params: ChatParams) {
 		return {
-			choices: [{
-				message: { role: "assistant", content: "mocked response" },
-			}],
+			choices: [
+				{
+					message: { role: "assistant", content: "mocked response" },
+				},
+			],
 			usage: { input_tokens: 10, output_tokens: 10 },
 		};
 	}
@@ -143,7 +146,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -164,7 +167,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -224,7 +227,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -247,7 +250,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -304,7 +307,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -370,7 +373,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -432,7 +435,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -491,7 +494,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -588,7 +591,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -705,7 +708,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -862,7 +865,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -955,7 +958,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -1051,7 +1054,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -1123,7 +1126,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -1198,11 +1201,11 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
-			createMockModelRouter(),
+				createMockModelRouter(),
 				undefined,
 				threadAffinityMap,
 			);
@@ -1274,11 +1277,11 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
-			createMockModelRouter(),
+				createMockModelRouter(),
 				undefined,
 				threadAffinityMap,
 			);
@@ -1403,11 +1406,11 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
-			createMockModelRouter(),
+				createMockModelRouter(),
 				undefined,
 				threadAffinityMap,
 			);
@@ -1485,11 +1488,11 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
-			createMockModelRouter(),
+				createMockModelRouter(),
 				undefined,
 				threadAffinityMap,
 			);
@@ -1571,11 +1574,11 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
-			createMockModelRouter(),
+				createMockModelRouter(),
 				undefined,
 				threadAffinityMap,
 			);
@@ -1671,11 +1674,11 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
-			createMockModelRouter(),
+				createMockModelRouter(),
 				undefined,
 				threadAffinityMap,
 			);
@@ -1785,7 +1788,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				eventBus,
@@ -1857,7 +1860,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				eventBus,
@@ -1931,7 +1934,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-			createMockModelRouter(),
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				eventBus,
@@ -2106,7 +2109,7 @@ describe("RelayProcessor", () => {
 			// Pre-insert an assistant message with ONLY tool_use blocks (the problematic case)
 			const assistantMsgId = "msg-assistant-tool-only";
 			const toolUseContent = JSON.stringify([
-				{ type: "tool_use", id: "t1", name: "bash", input: {} }
+				{ type: "tool_use", id: "t1", name: "bash", input: {} },
 			]);
 			const laterTime = new Date(new Date(nowIso).getTime() + 5000).toISOString();
 			db.run(
@@ -2147,7 +2150,7 @@ describe("RelayProcessor", () => {
 				db,
 				"local-site",
 				new Map(),
-			createMockModelRouter(),
+				createMockModelRouter(),
 				new Set(["requester-site"]),
 				createMockLogger(),
 				eventBus,
@@ -2272,7 +2275,7 @@ describe("RelayProcessor", () => {
 				db,
 				"local-site",
 				new Map(),
-			createMockModelRouter(),
+				createMockModelRouter(),
 				new Set(["requester-site"]),
 				createMockLogger(),
 				eventBus,
@@ -2410,7 +2413,7 @@ describe("RelayProcessor", () => {
 				db,
 				"local-site",
 				new Map(),
-			createMockModelRouter(),
+				createMockModelRouter(),
 				new Set(["requester-site"]),
 				createMockLogger(),
 				eventBus,
@@ -2513,7 +2516,7 @@ describe("RelayProcessor", () => {
 				};
 
 				// Capture loopConfig passed to agentLoopFactory
-				let capturedLoopConfig: any = null;
+				let capturedLoopConfig: AgentLoopConfig | null = null;
 				const mockAgentLoop = {
 					run: async () => ({
 						error: null,
@@ -2523,7 +2526,7 @@ describe("RelayProcessor", () => {
 					}),
 				};
 
-				const mockAgentLoopFactory = (config: any) => {
+				const mockAgentLoopFactory = (config: AgentLoopConfig) => {
 					capturedLoopConfig = config;
 					return mockAgentLoop as any;
 				};
@@ -2533,7 +2536,7 @@ describe("RelayProcessor", () => {
 					db,
 					"local-site",
 					new Map(),
-			createMockModelRouter(),
+					createMockModelRouter(),
 					new Set(["requester-site"]),
 					createMockLogger(),
 					eventBus,
@@ -2697,7 +2700,7 @@ describe("RelayProcessor", () => {
 					db,
 					"local-site",
 					new Map(),
-			createMockModelRouter(),
+					createMockModelRouter(),
 					new Set(["requester-site"]),
 					createMockLogger(),
 					eventBus,
@@ -2821,7 +2824,7 @@ describe("RelayProcessor", () => {
 					db,
 					"local-site",
 					new Map(),
-			createMockModelRouter(),
+					createMockModelRouter(),
 					new Set(["requester-site"]),
 					createMockLogger(),
 					eventBus,
@@ -2925,7 +2928,7 @@ describe("RelayProcessor", () => {
 				};
 
 				// Capture loopConfig passed to agentLoopFactory
-				let capturedLoopConfig: any = null;
+				let capturedLoopConfig: AgentLoopConfig | null = null;
 				const mockAgentLoop = {
 					run: async () => ({
 						error: null,
@@ -2935,7 +2938,7 @@ describe("RelayProcessor", () => {
 					}),
 				};
 
-				const mockAgentLoopFactory = (config: any) => {
+				const mockAgentLoopFactory = (config: AgentLoopConfig) => {
 					capturedLoopConfig = config;
 					return mockAgentLoop as any;
 				};
@@ -2945,7 +2948,7 @@ describe("RelayProcessor", () => {
 					db,
 					"local-site",
 					new Map(),
-			createMockModelRouter(),
+					createMockModelRouter(),
 					new Set(["requester-site"]),
 					createMockLogger(),
 					eventBus,

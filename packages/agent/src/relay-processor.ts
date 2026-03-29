@@ -11,7 +11,6 @@ import {
 	recordRelayCycle,
 	writeOutbox,
 } from "@bound/core";
-import { RELAY_REQUEST_KINDS } from "@bound/shared";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
 import type { ModelRouter } from "@bound/llm";
 import type {
@@ -34,6 +33,7 @@ import type {
 	ToolCallPayload,
 	TypedEventEmitter,
 } from "@bound/shared";
+import { RELAY_REQUEST_KINDS } from "@bound/shared";
 import { AgentLoop } from "./agent-loop.js";
 import type { MCPClient } from "./mcp-client.js";
 import type { AgentLoopConfig } from "./types.js";
@@ -48,15 +48,20 @@ interface IdempotencyCacheEntry {
 
 /** Minimal interface for connector registry — avoids cross-package dep. */
 interface ConnectorRegistry {
-	getConnector(platform: string): {
-		getPlatformTools?(threadId: string): Map<
-			string,
-			{
-				toolDefinition: { type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } };
-				execute: (input: Record<string, unknown>) => Promise<string>;
-			}
-		>;
-	} | undefined;
+	getConnector(platform: string):
+		| {
+				getPlatformTools?(threadId: string): Map<
+					string,
+					{
+						toolDefinition: {
+							type: "function";
+							function: { name: string; description: string; parameters: Record<string, unknown> };
+						};
+						execute: (input: Record<string, unknown>) => Promise<string>;
+					}
+				>;
+		  }
+		| undefined;
 }
 
 export class RelayProcessor {
