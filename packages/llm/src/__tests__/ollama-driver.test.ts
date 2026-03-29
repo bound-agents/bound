@@ -379,16 +379,13 @@ describe("OllamaDriver", () => {
 			chunks.push(chunk);
 		}
 
-		expect(chunks).toContainEqual({
-			type: "tool_use_start",
-			id: "add",
-			name: "add",
-		});
-		expect(chunks.some((c) => c.type === "tool_use_args")).toBe(true);
-		expect(chunks).toContainEqual({
-			type: "tool_use_end",
-			id: "add",
-		});
+		const startChunks = chunks.filter((c) => c.type === "tool_use_start");
+		expect(startChunks).toHaveLength(1);
+		const toolId = (startChunks[0] as { id: string }).id;
+		expect(toolId).toMatch(/^ollama-\d+-0$/);
+
+		expect(chunks.some((c) => c.type === "tool_use_args" && c.id === toolId)).toBe(true);
+		expect(chunks.some((c) => c.type === "tool_use_end" && c.id === toolId)).toBe(true);
 	});
 
 	it("should throw LLMError on connection failure", async () => {
@@ -490,5 +487,55 @@ describe("OllamaDriver", () => {
 		} finally {
 			global.fetch = originalFetch;
 		}
+	});
+
+	it("calling the same tool twice in one turn produces distinct IDs (AC6.1)", async () => {
+		const driver = new OllamaDriver({
+			baseUrl: "http://localhost:11434",
+			model: "llama2",
+			contextWindow: 4096,
+		});
+
+		global.fetch = (async () => {
+			const ndjson = [
+				JSON.stringify({
+					model: "llama2",
+					created_at: "2024-01-01T00:00:00Z",
+					message: {
+						role: "assistant",
+						content: "",
+						tool_calls: [
+							{ function: { name: "search", arguments: '{"q":"foo"}' } },
+							{ function: { name: "search", arguments: '{"q":"bar"}' } },
+						],
+					},
+					done: true,
+					prompt_eval_count: 5,
+					eval_count: 3,
+				}),
+			];
+
+			return new Response(ndjson.join("\n"), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}) as typeof fetch;
+
+		const chunks: StreamChunk[] = [];
+		for await (const chunk of driver.chat({
+			model: "llama2",
+			messages: [{ role: "user", content: "Search for foo and bar" }],
+		})) {
+			chunks.push(chunk);
+		}
+
+		const startChunks = chunks.filter((c) => c.type === "tool_use_start");
+		expect(startChunks).toHaveLength(2);
+
+		const ids = startChunks.map((c) => (c as { id: string }).id);
+		expect(ids[0]).not.toEqual(ids[1]);
+
+		expect(ids[0]).toMatch(/^ollama-\d+-0$/);
+		expect(ids[1]).toMatch(/^ollama-\d+-1$/);
 	});
 });

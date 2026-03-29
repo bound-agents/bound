@@ -121,6 +121,8 @@ function* emitChunkEvents(
 	chunk: OllamaStreamResponse,
 	params: ChatParams,
 	state: { outputText: string },
+	turnTs: number,
+	getNextToolIndex: () => number,
 ): IterableIterator<StreamChunk> {
 	// Emit text content if present (check for undefined/empty, but keep whitespace)
 	if (chunk.message.content !== undefined && chunk.message.content !== "") {
@@ -134,21 +136,22 @@ function* emitChunkEvents(
 	// Emit tool calls
 	if (chunk.message.tool_calls && chunk.message.tool_calls.length > 0) {
 		for (const toolCall of chunk.message.tool_calls) {
+			const toolId = `ollama-${turnTs}-${getNextToolIndex()}`;
 			yield {
 				type: "tool_use_start",
-				id: toolCall.function.name,
+				id: toolId,
 				name: toolCall.function.name,
 			};
 
 			yield {
 				type: "tool_use_args",
-				id: toolCall.function.name,
+				id: toolId,
 				partial_json: toolCall.function.arguments,
 			};
 
 			yield {
 				type: "tool_use_end",
-				id: toolCall.function.name,
+				id: toolId,
 			};
 		}
 	}
@@ -191,6 +194,8 @@ async function* parseOllamaStream(
 	params: ChatParams,
 ): AsyncIterable<StreamChunk> {
 	const state = { outputText: "" };
+	const turnTs = Date.now();
+	let toolCallIndex = 0;
 	for await (const line of parseStreamLines(response, "ollama")) {
 		let chunk: OllamaStreamResponse;
 		try {
@@ -203,7 +208,7 @@ async function* parseOllamaStream(
 			continue;
 		}
 
-		yield* emitChunkEvents(chunk, params, state);
+		yield* emitChunkEvents(chunk, params, state, turnTs, () => toolCallIndex++);
 	}
 }
 
