@@ -247,7 +247,6 @@ export class AgentLoop {
 						}
 					} else {
 						const chatStream = resolution.backend.chat({
-							model: resolution.modelId,
 							messages: nonSystemMessages,
 							system: systemPrompt || undefined,
 							tools: this.config.tools,

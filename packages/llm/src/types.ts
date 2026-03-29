@@ -4,7 +4,8 @@ export interface LLMBackend {
 }
 
 export interface ChatParams {
-	model: string;
+	/** Backend-specific model identifier. If omitted, the driver uses the model from its constructor config. */
+	model?: string;
 	messages: LLMMessage[];
 	tools?: ToolDefinition[];
 	max_tokens?: number;
