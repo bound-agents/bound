@@ -878,6 +878,183 @@ describe("Scheduler features", () => {
 	});
 
 	// -----------------------------------------------------------------------
+	// Model hint validation at run time (Issue 6)
+	// -----------------------------------------------------------------------
+	describe("run-time model hint validation", () => {
+		function insertTaskWithModelHint(id: string, modelHint: string, threadId?: string) {
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'deferred', 'pending', 'manual', NULL, ?,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, ?, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[id, threadId ?? null, pastTime, modelHint, now, now],
+			);
+		}
+
+		it("marks task failed with clear error when model_hint is invalid at run time", async () => {
+			const taskId = randomUUID();
+			insertTaskWithModelHint(taskId, "nonexistent-model-xyz");
+
+			let agentLoopCalled = false;
+			const factory = () => {
+				agentLoopCalled = true;
+				return {
+					run: async (): Promise<AgentLoopResult> => ({
+						messagesCreated: 1,
+						toolCallsMade: 0,
+						filesChanged: 0,
+					}),
+				};
+			};
+
+			// modelValidator rejects the hint
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+				ctx as any,
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+				factory as any,
+				{
+					modelValidator: (_modelId: string) => ({
+						ok: false,
+						error: `Model "nonexistent-model-xyz" not found in cluster`,
+					}),
+				},
+			);
+			const { stop } = scheduler.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			stop();
+
+			// Agent loop should NOT have been called
+			expect(agentLoopCalled).toBe(false);
+
+			// Task should be marked failed with a descriptive error
+			const task = db.query("SELECT status, error FROM tasks WHERE id = ?").get(taskId) as {
+				status: string;
+				error: string | null;
+			} | null;
+			expect(task!.status).toBe("failed");
+			expect(task!.error).toContain("nonexistent-model-xyz");
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("runs normally when model_hint passes validation", async () => {
+			const taskId = randomUUID();
+			insertTaskWithModelHint(taskId, "valid-model");
+
+			let agentLoopCalled = false;
+			const factory = () => {
+				agentLoopCalled = true;
+				return {
+					run: async (): Promise<AgentLoopResult> => ({
+						messagesCreated: 1,
+						toolCallsMade: 0,
+						filesChanged: 0,
+					}),
+				};
+			};
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+				ctx as any,
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+				factory as any,
+				{
+					modelValidator: (_modelId: string) => ({ ok: true }),
+				},
+			);
+			const { stop } = scheduler.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			stop();
+
+			expect(agentLoopCalled).toBe(true);
+
+			const task = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as {
+				status: string;
+			} | null;
+			expect(task!.status).toBe("completed");
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("runs normally when no model_hint is set (validator not consulted)", async () => {
+			const taskId = randomUUID();
+			// No model_hint
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'deferred', 'pending', 'manual', NULL, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, pastTime, now, now],
+			);
+
+			let agentLoopCalled = false;
+			const factory = () => {
+				agentLoopCalled = true;
+				return {
+					run: async (): Promise<AgentLoopResult> => ({
+						messagesCreated: 1,
+						toolCallsMade: 0,
+						filesChanged: 0,
+					}),
+				};
+			};
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+				ctx as any,
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+				factory as any,
+				{
+					// Validator that would reject everything — but should NOT be consulted
+					// because model_hint is null
+					modelValidator: (_modelId: string) => ({
+						ok: false,
+						error: "should never fire",
+					}),
+				},
+			);
+			const { stop } = scheduler.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			stop();
+
+			// Agent loop must still run because there's no model_hint to validate
+			expect(agentLoopCalled).toBe(true);
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+	});
+
+	// -----------------------------------------------------------------------
 	// seedCronTasks from config
 	// -----------------------------------------------------------------------
 	describe("seedCronTasks", () => {

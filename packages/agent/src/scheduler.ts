@@ -44,6 +44,12 @@ const QUIESCENCE_TIERS: Array<{ threshold: number; multiplier: number }> = [
 interface SchedulerConfig {
 	pollInterval?: number;
 	syncEnabled?: boolean;
+	/**
+	 * Optional model-hint validator called before each task run.
+	 * Returns { ok: true } when the model is available, { ok: false, error } otherwise.
+	 * When absent, model hints are not validated at run time (existing behaviour).
+	 */
+	modelValidator?: (modelId: string) => { ok: true } | { ok: false; error: string };
 }
 
 export class Scheduler {
@@ -341,6 +347,24 @@ export class Scheduler {
 						},
 						this.ctx.siteId,
 					);
+				}
+
+				// Validate model hint at run time before creating the agent loop.
+				// This catches models that became unavailable after the task was scheduled.
+				if (task.model_hint && this.config.modelValidator) {
+					const validation = this.config.modelValidator(task.model_hint);
+					if (!validation.ok) {
+						const errorMsg = validation.error;
+						const currentTask = this.ctx.db
+							.query("SELECT lease_id FROM tasks WHERE id = ?")
+							.get(task.id) as { lease_id: string | null } | undefined;
+						if (currentTask?.lease_id === leaseId) {
+							this.ctx.db
+								.query("UPDATE tasks SET status = 'failed', error = ? WHERE id = ?")
+								.run(errorMsg, task.id);
+						}
+						return; // exit runTask — agent loop is not created
+					}
 				}
 
 				const agentLoop = this.agentLoopFactory({

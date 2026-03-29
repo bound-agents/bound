@@ -11,6 +11,7 @@ import {
 	seedCronTasks,
 	getDelegationTarget,
 	createRelayOutboxEntry,
+	resolveModel,
 } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
@@ -839,7 +840,27 @@ export async function runStart(args: StartArgs): Promise<void> {
 	console.log("Starting scheduler...");
 	let schedulerHandle: { stop: () => void } | null = null;
 	try {
-		const scheduler = new Scheduler(appContext, agentLoopFactory, {}, sandbox?.bash);
+		const scheduler = new Scheduler(
+			appContext,
+			agentLoopFactory,
+			{
+				modelValidator: modelRouter
+					? (modelId: string) => {
+							const resolution = resolveModel(
+								modelId,
+								modelRouter,
+								appContext.db,
+								appContext.siteId,
+							);
+							if (resolution.kind === "error") {
+								return { ok: false as const, error: resolution.error };
+							}
+							return { ok: true as const };
+						}
+					: undefined,
+			},
+			sandbox?.bash,
+		);
 		schedulerHandle = scheduler.start(30_000);
 		console.log("[scheduler] Scheduler started (30s poll interval)");
 	} catch (error) {
