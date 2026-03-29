@@ -39,6 +39,35 @@ export interface StartArgs {
 	configDir?: string;
 }
 
+/**
+ * Build LLM ToolDefinitions for MCP servers — one per server using subcommand dispatch schema.
+ * @param serverNames - Set of connected server names from MCPCommandsResult
+ */
+export function buildMcpToolDefinitions(serverNames: Set<string>): ToolDefinition[] {
+	const definitions: ToolDefinition[] = [];
+	for (const serverName of serverNames) {
+		definitions.push({
+			type: "function",
+			function: {
+				name: serverName,
+				description: `${serverName} MCP server tools. Call with subcommand="help" to list available tools and their parameters.`,
+				parameters: {
+					type: "object",
+					properties: {
+						subcommand: {
+							type: "string",
+							description: 'Tool to invoke on this server. Use "help" to list available subcommands.',
+						},
+					},
+					required: ["subcommand"],
+					additionalProperties: true,
+				},
+			},
+		});
+	}
+	return definitions;
+}
+
 export async function runStart(args: StartArgs): Promise<void> {
 	const configDir = args.configDir || "config";
 
@@ -305,28 +334,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	console.log(`[mcp] Generated ${mcpCommands.length} MCP command definition(s)`);
 
 	// Build LLM ToolDefinitions — one per server, using subcommand dispatch schema.
-	// The LLM calls e.g. `github` with subcommand="create_issue" and any tool args.
-	const mcpToolDefinitions: ToolDefinition[] = [];
-	for (const serverName of mcpServerNames) {
-		mcpToolDefinitions.push({
-			type: "function",
-			function: {
-				name: serverName,
-				description: `${serverName} MCP server tools. Call with subcommand="help" to list available tools and their parameters.`,
-				parameters: {
-					type: "object",
-					properties: {
-						subcommand: {
-							type: "string",
-							description: 'Tool to invoke on this server. Use "help" to list available subcommands.',
-						},
-					},
-					required: ["subcommand"],
-					additionalProperties: true,
-				},
-			},
-		});
-	}
+	const mcpToolDefinitions = buildMcpToolDefinitions(mcpServerNames);
 	if (mcpToolDefinitions.length > 0) {
 		console.log(
 			`[mcp] Registered ${mcpToolDefinitions.length} server(s) for LLM: ${mcpToolDefinitions.map((t) => t.function.name).join(", ")}`,
