@@ -904,4 +904,102 @@ describe("AgentLoop", () => {
 		expect(alerts[0].content).toContain("nonexistent-model");
 		expect(alerts[0].content).toContain("claude-opus");
 	});
+
+	it("should dispatch to platformTools when tool name matches (AC3.1)", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setToolThenTextResponse(
+			"tool-platform",
+			"discord_send_message",
+			{ message: "Hello from platform!" },
+			"Message sent.",
+		);
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		// Create a spy for the platform tool execution
+		let platformToolExecuted = false;
+		let platformToolInput: Record<string, unknown> | null = null;
+
+		const platformTools = new Map([
+			[
+				"discord_send_message",
+				{
+					toolDefinition: {
+						name: "discord_send_message",
+						description: "Send a message to Discord",
+					},
+					execute: async (input: Record<string, unknown>) => {
+						platformToolExecuted = true;
+						platformToolInput = input;
+						return "Message sent to Discord";
+					},
+				},
+			],
+		]);
+
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+			platformTools,
+		});
+
+		const result = await agentLoop.run();
+
+		// Platform tool should have been executed
+		expect(platformToolExecuted).toBe(true);
+		expect(platformToolInput).toEqual({ message: "Hello from platform!" });
+
+		// Sandbox should NOT have been called for this platform tool
+		expect(mockBash.calls.length).toBe(0);
+
+		expect(result.toolCallsMade).toBe(1);
+		expect(result.error).toBeUndefined();
+	});
+
+	it("should fall through to sandbox dispatch when tool not in platformTools (AC3.2)", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setToolThenTextResponse(
+			"tool-bash",
+			"bash",
+			{ command: "echo 'test'" },
+			"Command executed.",
+		);
+
+		const mockBash = createMockSandbox((_cmd) => ({
+			stdout: "test\n",
+			stderr: "",
+			exitCode: 0,
+		}));
+		const ctx = makeCtx();
+
+		// Empty platformTools or doesn't include the tool being called
+		const platformTools = new Map([
+			[
+				"some_other_tool",
+				{
+					toolDefinition: {
+						name: "some_other_tool",
+						description: "Some other tool",
+					},
+					execute: async () => "should not be called",
+				},
+			],
+		]);
+
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+			platformTools,
+		});
+
+		const result = await agentLoop.run();
+
+		// Sandbox SHOULD have been called since bash is not a platform tool
+		expect(mockBash.calls.length).toBe(1);
+		expect(mockBash.calls[0]).toBe("echo 'test'");
+
+		expect(result.toolCallsMade).toBe(1);
+		expect(result.error).toBeUndefined();
+	});
 });
