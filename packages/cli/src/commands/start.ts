@@ -298,7 +298,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		}
 	}
 
-	const mcpCommands = await generateMCPCommands(mcpClientsMap, confirmGates);
+	const { commands: mcpCommands, serverNames: _mcpServerNames } = await generateMCPCommands(mcpClientsMap, confirmGates);
 	console.log(`[mcp] Generated ${mcpCommands.length} MCP command definition(s)`);
 
 	// Build LLM ToolDefinitions from discovered MCP tools
