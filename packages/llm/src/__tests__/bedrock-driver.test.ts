@@ -233,7 +233,7 @@ describe("BedrockDriver", () => {
 		expect(chunks[3]).toEqual({ type: "tool_use_end", id: "tool-1" });
 		expect(chunks[4]).toEqual({
 			type: "done",
-			usage: { input_tokens: 20, output_tokens: 15 },
+			usage: { input_tokens: 20, output_tokens: 15, cache_write_tokens: null, cache_read_tokens: null, estimated: false },
 		});
 	});
 
