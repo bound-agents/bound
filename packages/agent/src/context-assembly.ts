@@ -552,19 +552,17 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		// dynamically here rather than hardcoding "discord_send_message".
 		if (platformContext) {
 			volatileLines.push("");
-			volatileLines.push(
-				`## Platform Context: ${platformContext.platform}`,
-			);
+			volatileLines.push(`## Platform Context: ${platformContext.platform}`);
 			volatileLines.push(
 				"The user of this conversation is on an external platform and cannot see your responses directly.",
 			);
 			volatileLines.push(
-				`To send a message to the user, call the \`discord_send_message\` tool. ` +
-				"If you do not call it, the user sees nothing (silence).",
+				"To send a message to the user, call the `discord_send_message` tool. " +
+					"If you do not call it, the user sees nothing (silence).",
 			);
 			volatileLines.push(
 				"Each call to the tool produces one separate message to the user. " +
-				"Multiple calls are allowed and delivered in order.",
+					"Multiple calls are allowed and delivered in order.",
 			);
 		}
 

@@ -926,8 +926,12 @@ describe("AgentLoop", () => {
 				"discord_send_message",
 				{
 					toolDefinition: {
-						name: "discord_send_message",
-						description: "Send a message to Discord",
+						type: "function",
+						function: {
+							name: "discord_send_message",
+							description: "Send a message to Discord",
+							parameters: {},
+						},
 					},
 					execute: async (input: Record<string, unknown>) => {
 						platformToolExecuted = true;
@@ -979,8 +983,12 @@ describe("AgentLoop", () => {
 				"some_other_tool",
 				{
 					toolDefinition: {
-						name: "some_other_tool",
-						description: "Some other tool",
+						type: "function",
+						function: {
+							name: "some_other_tool",
+							description: "Some other tool",
+							parameters: {},
+						},
 					},
 					execute: async () => "should not be called",
 				},
