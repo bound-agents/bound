@@ -15,13 +15,20 @@
 		"@bound/core": "workspace:*",
 		"@bound/agent": "workspace:*",
 		"@bound/sync": "workspace:*",
+		"dompurify": "^3.3.3",
 		"hono": "^4.0.0",
-		"lucide-svelte": "^0.371.0"
+		"lucide-svelte": "^0.371.0",
+		"marked": "^17.0.5",
+		"marked-highlight": "^2.2.3",
+		"shiki": "^4.0.2"
 	},
 	"devDependencies": {
 		"@sveltejs/vite-plugin-svelte": "^4.0.0",
+		"@types/dompurify": "^3.2.0",
+		"@types/jsdom": "^21.1.7",
+		"@testing-library/svelte": "^5.0.0",
+		"jsdom": "^26.1.0",
 		"svelte": "^5.0.0",
-		"vite": "^6.0.0",
-		"@testing-library/svelte": "^5.0.0"
+		"vite": "^6.0.0"
 	}
 }

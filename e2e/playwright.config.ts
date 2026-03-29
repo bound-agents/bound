@@ -40,7 +40,9 @@ export default defineConfig({
 
 	/* Run your local dev server before starting the tests */
 	webServer: {
-		command: "bun run test:server",
+		// Run from packages/web so Bun resolves workspace packages (@bound/core etc.)
+		// Note: playwright runs webServer command from the directory containing this config (e2e/)
+		command: "bun ../packages/web/scripts/start-test-server.ts",
 		url: "http://localhost:3000",
 		reuseExistingServer: !process.env.CI,
 		timeout: 120 * 1000,
