@@ -1144,16 +1144,21 @@ export class RelayProcessor {
 					}
 				} else {
 					// Non-platform context (legacy auto-deliver): deliver the last assistant
-					// message to the originating platform connector.
+					// message text. Always emit platform:deliver even with empty content so the
+					// connector can call stopTyping() — deliver() checks content length before
+					// sending, so an empty emit stops typing without messaging the user.
 					if (thread && thread.interface !== "web") {
 						const lastAssistant = this.db
 							.query<{ id: string; content: string }, [string]>(
 								"SELECT id, content FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC, rowid DESC LIMIT 1",
 							)
 							.get(payload.thread_id);
+
+						// Extract text content if available; default to "" for typing-stop-only emit.
+						let textContent = "";
+						const messageId = lastAssistant?.id ?? payload.message_id;
 						if (lastAssistant) {
-							// content is TEXT in the db — extract plain string from ContentBlock[] if needed
-							let textContent = lastAssistant.content;
+							textContent = lastAssistant.content;
 							try {
 								const parsed = JSON.parse(lastAssistant.content);
 								if (Array.isArray(parsed)) {
@@ -1165,14 +1170,14 @@ export class RelayProcessor {
 							} catch {
 								// already a plain string
 							}
-							if (!textContent.trim()) return; // nothing to deliver
-							this.eventBus.emit("platform:deliver", {
-								platform: thread.interface,
-								thread_id: payload.thread_id,
-								message_id: lastAssistant.id,
-								content: textContent,
-							} satisfies PlatformDeliverPayload);
 						}
+
+						this.eventBus.emit("platform:deliver", {
+							platform: thread.interface,
+							thread_id: payload.thread_id,
+							message_id: messageId,
+							content: textContent,
+						} satisfies PlatformDeliverPayload);
 					}
 				}
 			}

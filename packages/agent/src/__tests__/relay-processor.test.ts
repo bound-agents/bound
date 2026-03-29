@@ -2190,6 +2190,216 @@ describe("RelayProcessor", () => {
 			expect(platformDeliverEmitted).toBe(true);
 		});
 
+		// Auto-deliver path (payload.platform = null): typing stop when no assistant messages
+		it("auto-deliver: emits platform:deliver with empty content when no assistant messages (alert-only, typing stop)", async () => {
+			// Bug: when auto-deliver runs with no assistant messages in the thread (e.g. agent only
+			// created alert messages), platform:deliver is not emitted and typing persists.
+			const threadId = "thread-auto-no-assistant";
+			const userId = "user-auto-1";
+			const userMsgId = "msg-user-auto-1";
+			const nowIso = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, nowIso, "discord", "local", nowIso, nowIso],
+			);
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+				[userId, "Test User", nowIso, nowIso],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				[userMsgId, threadId, "user", "Hello", "local", nowIso],
+			);
+			// Agent created only an alert message (no assistant message)
+			const laterTime = new Date(new Date(nowIso).getTime() + 5000).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				[
+					"msg-alert-auto",
+					threadId,
+					"alert",
+					"Task failed: something went wrong",
+					"local",
+					laterTime,
+				],
+			);
+
+			const eventBus = createMockEventBus();
+			let platformDeliverPayload: PlatformDeliverPayload | null = null;
+			eventBus.on("platform:deliver", (payload: PlatformDeliverPayload) => {
+				platformDeliverPayload = payload;
+			});
+			const mockAppCtx = {
+				db,
+				config: {},
+				optionalConfig: {},
+				eventBus,
+				logger: createMockLogger(),
+				siteId: "local-site",
+				hostName: "localhost",
+			};
+
+			const processor = new RelayProcessor(
+				db,
+				"local-site",
+				new Map(),
+				createMockModelRouter(),
+				new Set(["requester-site"]),
+				createMockLogger(),
+				eventBus,
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
+				mockAppCtx as any,
+				undefined,
+				new Map(),
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
+				() =>
+					({
+						run: async () => ({
+							error: null,
+							messagesCreated: 1,
+							toolCallsMade: 0,
+							filesChanged: 0,
+						}),
+						// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
+					}) as any,
+			);
+
+			const now = new Date();
+			db.run(
+				"INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					"process-auto-no-asst",
+					"requester-site",
+					"process",
+					null,
+					null,
+					JSON.stringify({
+						thread_id: threadId,
+						message_id: userMsgId,
+						user_id: userId,
+						platform: null,
+					}),
+					new Date(now.getTime() + 60000).toISOString(),
+					now.toISOString(),
+					0,
+					null,
+				],
+			);
+
+			const handle = processor.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			handle.stop();
+
+			// platform:deliver MUST be emitted even with no assistant messages, to stop typing.
+			expect(platformDeliverPayload).not.toBeNull();
+			expect((platformDeliverPayload as PlatformDeliverPayload | null)?.platform).toBe("discord");
+			expect((platformDeliverPayload as PlatformDeliverPayload | null)?.content).toBe("");
+		});
+
+		// Auto-deliver path (payload.platform = null): typing stop when assistant has tool_use only
+		it("auto-deliver: emits platform:deliver with empty content when assistant has only tool_use blocks (typing stop)", async () => {
+			// Bug: when auto-deliver runs but last assistant has no text (only tool_use), the
+			// `if (!textContent.trim()) return` guard prevents platform:deliver from firing.
+			const threadId = "thread-auto-tool-only";
+			const userId = "user-auto-2";
+			const userMsgId = "msg-user-auto-2";
+			const nowIso = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, nowIso, "discord", "local", nowIso, nowIso],
+			);
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+				[userId, "Test User", nowIso, nowIso],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				[userMsgId, threadId, "user", "Hello", "local", nowIso],
+			);
+			// Last assistant message has only tool_use blocks — no text content
+			const toolOnlyContent = JSON.stringify([
+				{ type: "tool_use", id: "t1", name: "bash", input: {} },
+			]);
+			const laterTime = new Date(new Date(nowIso).getTime() + 5000).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				["msg-asst-tool-auto", threadId, "assistant", toolOnlyContent, "local", laterTime],
+			);
+
+			const eventBus = createMockEventBus();
+			let platformDeliverPayload: PlatformDeliverPayload | null = null;
+			eventBus.on("platform:deliver", (payload: PlatformDeliverPayload) => {
+				platformDeliverPayload = payload;
+			});
+			const mockAppCtx = {
+				db,
+				config: {},
+				optionalConfig: {},
+				eventBus,
+				logger: createMockLogger(),
+				siteId: "local-site",
+				hostName: "localhost",
+			};
+
+			const processor = new RelayProcessor(
+				db,
+				"local-site",
+				new Map(),
+				createMockModelRouter(),
+				new Set(["requester-site"]),
+				createMockLogger(),
+				eventBus,
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
+				mockAppCtx as any,
+				undefined,
+				new Map(),
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
+				() =>
+					({
+						run: async () => ({
+							error: null,
+							messagesCreated: 1,
+							toolCallsMade: 1,
+							filesChanged: 0,
+						}),
+						// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
+					}) as any,
+			);
+
+			const now = new Date();
+			db.run(
+				"INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					"process-auto-tool",
+					"requester-site",
+					"process",
+					null,
+					null,
+					JSON.stringify({
+						thread_id: threadId,
+						message_id: userMsgId,
+						user_id: userId,
+						platform: null,
+					}),
+					new Date(now.getTime() + 60000).toISOString(),
+					now.toISOString(),
+					0,
+					null,
+				],
+			);
+
+			const handle = processor.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			handle.stop();
+
+			// platform:deliver MUST be emitted even with empty text content, to stop typing.
+			expect(platformDeliverPayload).not.toBeNull();
+			expect((platformDeliverPayload as PlatformDeliverPayload | null)?.platform).toBe("discord");
+			expect((platformDeliverPayload as PlatformDeliverPayload | null)?.content).toBe("");
+		});
+
 		// Item #5: Test platform:deliver is emitted with correct content in happy path
 		it("Item #5: emits platform:deliver with correct content when assistant message has text", async () => {
 			// This test verifies the happy path: when the last assistant message contains text content,
