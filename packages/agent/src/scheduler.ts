@@ -363,14 +363,19 @@ export class Scheduler {
 
 					if (result.error) {
 						// Soft error: run() returned normally but with an error field
-						this.ctx.db
+						const softUpdated = this.ctx.db
 							.query(
-								"UPDATE tasks SET status = 'failed', error = ?, result = ?, run_count = run_count + 1, last_run_at = ?, consecutive_failures = consecutive_failures + 1 WHERE id = ?",
+								"UPDATE tasks SET status = 'failed', error = ?, result = ?, run_count = run_count + 1, last_run_at = ?, consecutive_failures = consecutive_failures + 1 WHERE id = ? RETURNING consecutive_failures",
 							)
-							.run(result.error, resultStr, completedAt, task.id);
+							.get(result.error, resultStr, completedAt, task.id) as {
+							consecutive_failures: number;
+						} | null;
 
-						// Alert if consecutive failures just reached the threshold
-						const newConsecutiveFailures = (task.consecutive_failures ?? 0) + 1;
+						// Alert if consecutive failures just reached the threshold.
+						// Use the RETURNING value so concurrent modifications to
+						// consecutive_failures (e.g. from another process) are reflected.
+						const newConsecutiveFailures =
+							softUpdated?.consecutive_failures ?? (task.consecutive_failures ?? 0) + 1;
 						if (newConsecutiveFailures === task.alert_threshold) {
 							this.triggerFailureAdvisory(task, result.error, newConsecutiveFailures);
 						}
@@ -423,14 +428,16 @@ export class Scheduler {
 					.get(task.id) as { lease_id: string | null } | undefined;
 
 				if (currentTask?.lease_id === leaseId) {
-					this.ctx.db
+					const hardUpdated = this.ctx.db
 						.query(
-							"UPDATE tasks SET status = 'failed', error = ?, consecutive_failures = consecutive_failures + 1 WHERE id = ?",
+							"UPDATE tasks SET status = 'failed', error = ?, consecutive_failures = consecutive_failures + 1 WHERE id = ? RETURNING consecutive_failures",
 						)
-						.run(errorMsg, task.id);
+						.get(errorMsg, task.id) as { consecutive_failures: number } | null;
 
-					// Alert if consecutive failures just reached the threshold
-					const newConsecutiveFailures = (task.consecutive_failures ?? 0) + 1;
+					// Alert if consecutive failures just reached the threshold.
+					// Use the RETURNING value so concurrent modifications are reflected.
+					const newConsecutiveFailures =
+						hardUpdated?.consecutive_failures ?? (task.consecutive_failures ?? 0) + 1;
 					if (newConsecutiveFailures === task.alert_threshold) {
 						this.triggerFailureAdvisory(task, errorMsg, newConsecutiveFailures);
 					}

@@ -529,6 +529,50 @@ describe("Scheduler features", () => {
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
 
+		it("fires advisory when DB consecutive_failures reaches threshold via RETURNING (stale-value regression)", async () => {
+			// Scenario: a concurrent process increments consecutive_failures in the DB
+			// while the scheduler task is executing. The scheduler's own UPDATE then
+			// takes it exactly to the alert_threshold. With a stale in-memory value the
+			// threshold check computes (0)+1=1 ≠ 2, so the advisory is MISSED. With
+			// RETURNING the check uses the fresh DB value 2 === 2 and fires correctly.
+			const taskId = randomUUID();
+			insertTask(taskId, { consecutiveFailures: 0, alertThreshold: 2 });
+
+			// Factory that simulates a concurrent increment while the task runs
+			const factory = () => ({
+				run: async (): Promise<AgentLoopResult> => {
+					// Concurrent increment: another process touched consecutive_failures
+					db.run(
+						"UPDATE tasks SET consecutive_failures = consecutive_failures + 1 WHERE id = ?",
+						[taskId],
+					);
+					return { messagesCreated: 0, toolCallsMade: 0, filesChanged: 0, error: "timeout" };
+				},
+			});
+
+			const ctx = makeCtx();
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, factory as any);
+			const { stop } = scheduler.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			stop();
+
+			// DB should be at 2 (1 from concurrent + 1 from scheduler UPDATE)
+			const task = db
+				.query("SELECT consecutive_failures FROM tasks WHERE id = ?")
+				.get(taskId) as { consecutive_failures: number } | null;
+			expect(task!.consecutive_failures).toBe(2);
+
+			// Advisory MUST have fired because DB consecutive_failures === alert_threshold
+			const advisories = db
+				.query("SELECT id FROM advisories WHERE detail LIKE ?")
+				.all(`%${taskId}%`) as Array<{ id: string }>;
+			expect(advisories.length).toBe(1);
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM advisories WHERE detail LIKE ?", [`%${taskId}%`]);
+		});
+
 		it("resets consecutive_failures to 0 on success", async () => {
 			const taskId = randomUUID();
 			// Task has failures on record but now succeeds
