@@ -11,7 +11,6 @@ import {
 	recordRelayCycle,
 	writeOutbox,
 } from "@bound/core";
-import { RELAY_REQUEST_KINDS } from "@bound/shared";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
 import type { ModelRouter } from "@bound/llm";
 import type {
@@ -34,6 +33,7 @@ import type {
 	ToolCallPayload,
 	TypedEventEmitter,
 } from "@bound/shared";
+import { RELAY_REQUEST_KINDS } from "@bound/shared";
 import { AgentLoop } from "./agent-loop.js";
 import type { MCPClient } from "./mcp-client.js";
 import type { AgentLoopConfig } from "./types.js";
@@ -46,12 +46,31 @@ interface IdempotencyCacheEntry {
 	expiresAt: number;
 }
 
+/** Minimal interface for connector registry — avoids cross-package dep. */
+interface ConnectorRegistry {
+	getConnector(platform: string):
+		| {
+				getPlatformTools?(threadId: string): Map<
+					string,
+					{
+						toolDefinition: {
+							type: "function";
+							function: { name: string; description: string; parameters: Record<string, unknown> };
+						};
+						execute: (input: Record<string, unknown>) => Promise<string>;
+					}
+				>;
+		  }
+		| undefined;
+}
+
 export class RelayProcessor {
 	private stopped = false;
 	private idempotencyCache = new Map<string, IdempotencyCacheEntry>();
 	private pendingCancels = new Set<string>();
 	private activeInferenceStreams = new Map<string, AbortController>();
 	private readonly threadAffinityMap: Map<string, string>;
+	private platformConnectorRegistry: ConnectorRegistry | null = null;
 
 	constructor(
 		private db: Database,
@@ -72,6 +91,11 @@ export class RelayProcessor {
 	/** Inject the agent loop factory after startup completes (avoids circular init order). */
 	setAgentLoopFactory(factory: (config: AgentLoopConfig) => AgentLoop): void {
 		this.agentLoopFactory = factory;
+	}
+
+	/** Inject the platform connector registry after startup completes (avoids circular init order). */
+	setPlatformConnectorRegistry(registry: ConnectorRegistry): void {
+		this.platformConnectorRegistry = registry;
 	}
 
 	start(pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS): { stop: () => void } {
@@ -1058,6 +1082,17 @@ export class RelayProcessor {
 				userId: payload.user_id,
 				taskId: `delegated-${entry.id}`,
 			};
+
+			// Inject platform tools when running in a platform context
+			if (payload.platform && this.platformConnectorRegistry) {
+				const connector = this.platformConnectorRegistry.getConnector(payload.platform);
+				if (connector?.getPlatformTools) {
+					const platformTools = connector.getPlatformTools(payload.thread_id);
+					loopConfig.platform = payload.platform;
+					loopConfig.platformTools = platformTools;
+				}
+			}
+
 			const agentLoop = this.agentLoopFactory
 				? this.agentLoopFactory(loopConfig)
 				: new AgentLoop(
@@ -1081,41 +1116,46 @@ export class RelayProcessor {
 			} else {
 				this.writeResponse(entry, "result", JSON.stringify({ success: true }));
 
-				// Deliver the response back to the originating platform connector.
-				// Check the thread's interface — if it's not "web", emit platform:deliver
-				// so the connector (e.g. DiscordConnector) sends the response to the user.
-				const thread = this.db
-					.query<{ interface: string }, [string]>(
-						"SELECT interface FROM threads WHERE id = ? AND deleted = 0 LIMIT 1",
-					)
-					.get(payload.thread_id);
-				if (thread && thread.interface !== "web") {
-					const lastAssistant = this.db
-						.query<{ id: string; content: string }, [string]>(
-							"SELECT id, content FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+				// Auto-deliver is suppressed when running in a platform context.
+				// In platform contexts the agent calls discord_send_message (or equivalent)
+				// explicitly. Auto-deliver is only used for non-platform (web UI) contexts.
+				if (!payload.platform) {
+					// Deliver the response back to the originating platform connector.
+					// Check the thread's interface — if it's not "web", emit platform:deliver
+					// so the connector (e.g. DiscordConnector) sends the response to the user.
+					const thread = this.db
+						.query<{ interface: string }, [string]>(
+							"SELECT interface FROM threads WHERE id = ? AND deleted = 0 LIMIT 1",
 						)
 						.get(payload.thread_id);
-					if (lastAssistant) {
-						// content is TEXT in the db — extract plain string from ContentBlock[] if needed
-						let textContent = lastAssistant.content;
-						try {
-							const parsed = JSON.parse(lastAssistant.content);
-							if (Array.isArray(parsed)) {
-								textContent = parsed
-									.filter((b: { type: string; text?: string }) => b.type === "text")
-									.map((b: { text?: string }) => b.text ?? "")
-									.join("");
+					if (thread && thread.interface !== "web") {
+						const lastAssistant = this.db
+							.query<{ id: string; content: string }, [string]>(
+								"SELECT id, content FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+							)
+							.get(payload.thread_id);
+						if (lastAssistant) {
+							// content is TEXT in the db — extract plain string from ContentBlock[] if needed
+							let textContent = lastAssistant.content;
+							try {
+								const parsed = JSON.parse(lastAssistant.content);
+								if (Array.isArray(parsed)) {
+									textContent = parsed
+										.filter((b: { type: string; text?: string }) => b.type === "text")
+										.map((b: { text?: string }) => b.text ?? "")
+										.join("");
+								}
+							} catch {
+								// already a plain string
 							}
-						} catch {
-							// already a plain string
+							if (!textContent.trim()) return; // nothing to deliver
+							this.eventBus.emit("platform:deliver", {
+								platform: thread.interface,
+								thread_id: payload.thread_id,
+								message_id: lastAssistant.id,
+								content: textContent,
+							} satisfies PlatformDeliverPayload);
 						}
-						if (!textContent.trim()) return; // nothing to deliver
-						this.eventBus.emit("platform:deliver", {
-							platform: thread.interface,
-							thread_id: payload.thread_id,
-							message_id: lastAssistant.id,
-							content: textContent,
-						} satisfies PlatformDeliverPayload);
 					}
 				}
 			}

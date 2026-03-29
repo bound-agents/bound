@@ -341,7 +341,7 @@ export interface PlatformDeliverPayload {
 	thread_id: string;
 	message_id: string;
 	content: string;
-	attachments?: unknown[];
+	attachments?: Array<{ filename: string; data: Buffer }>;
 }
 
 export interface EventBroadcastPayload {

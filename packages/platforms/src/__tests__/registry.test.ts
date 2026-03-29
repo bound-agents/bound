@@ -23,7 +23,7 @@ class _MockConnector implements PlatformConnector {
 		threadId: string;
 		messageId: string;
 		content: string;
-		attachments?: unknown[];
+		attachments?: Array<{ filename: string; data: Buffer }>;
 	}> = [];
 
 	constructor(platform = "test-platform", delivery: "broadcast" | "exclusive" = "broadcast") {
@@ -43,7 +43,7 @@ class _MockConnector implements PlatformConnector {
 		threadId: string,
 		messageId: string,
 		content: string,
-		attachments?: unknown[],
+		attachments?: Array<{ filename: string; data: Buffer }>,
 	): Promise<void> {
 		this.deliverCalls.push({ threadId, messageId, content, attachments });
 	}
@@ -323,6 +323,51 @@ describe("PlatformConnectorRegistry", () => {
 			eventBus.emit("platform:webhook", payload);
 
 			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			registry.stop();
+		});
+	});
+
+	describe("PlatformConnectorRegistry.getConnector()", () => {
+		it("returns the registered connector for a known platform (AC4.1)", () => {
+			const platformsConfig: PlatformsConfig = {
+				connectors: [
+					{
+						platform: "webhook-stub",
+						failover_threshold_ms: 100,
+						allowed_users: [],
+					},
+				],
+			};
+
+			const registry = new PlatformConnectorRegistry(mockAppContext, platformsConfig);
+			registry.start();
+
+			const connector = registry.getConnector("webhook-stub");
+
+			expect(connector).toBeDefined();
+			expect(connector?.platform).toBe("webhook-stub");
+
+			registry.stop();
+		});
+
+		it("returns undefined for an unknown platform (AC4.2)", () => {
+			const platformsConfig: PlatformsConfig = {
+				connectors: [
+					{
+						platform: "webhook-stub",
+						failover_threshold_ms: 100,
+						allowed_users: [],
+					},
+				],
+			};
+
+			const registry = new PlatformConnectorRegistry(mockAppContext, platformsConfig);
+			registry.start();
+
+			const connector = registry.getConnector("nonexistent");
+
+			expect(connector).toBeUndefined();
 
 			registry.stop();
 		});

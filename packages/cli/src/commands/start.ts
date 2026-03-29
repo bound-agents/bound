@@ -525,9 +525,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 		if (!modelRouter) {
 			throw new Error("agentLoopFactory called without a configured model router");
 		}
+		const platformToolDefs = config.platformTools
+			? Array.from(config.platformTools.values()).map((t) => t.toolDefinition)
+			: [];
 		return new AgentLoop(appContext, sandbox?.bash ?? ({} as any), modelRouter, {
 			...config,
-			tools: config.tools ?? [sandboxTool],
+			tools: [...(config.tools ?? [sandboxTool]), ...platformToolDefs],
 		});
 	};
 
@@ -753,6 +756,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 		const platformsConfig = platformsResult.value as import("@bound/shared").PlatformsConfig;
 		platformRegistry = new PlatformConnectorRegistry(appContext, platformsConfig);
 		platformRegistry.start();
+		// Wire into relay processor for platform-context process relays
+		relayProcessor.setPlatformConnectorRegistry(platformRegistry as any);
 		console.log("[platforms] Platform connector registry started");
 	} else {
 		console.log("[platforms] Not configured (no platforms.json)");

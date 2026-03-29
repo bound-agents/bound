@@ -78,6 +78,17 @@ export class PlatformConnectorRegistry {
 		this.elections.clear();
 	}
 
+	/**
+	 * Look up a connector by platform name.
+	 * Returns the connector instance regardless of whether it is currently the leader.
+	 *
+	 * @param platform - Platform identifier, e.g. "discord"
+	 * @returns The connector instance, or `undefined` if not registered.
+	 */
+	getConnector(platform: string): PlatformConnector | undefined {
+		return this.elections.get(platform)?.connector;
+	}
+
 	private createConnector(config: PlatformConnectorConfig): PlatformConnector {
 		switch (config.platform) {
 			case "discord":

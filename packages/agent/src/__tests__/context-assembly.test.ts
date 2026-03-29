@@ -1225,4 +1225,42 @@ describe("Context Assembly Pipeline", () => {
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 	});
+
+	describe("platformContext injection", () => {
+		it("includes platform system message when platformContext is set (AC5.1)", () => {
+			const messages = assembleContext({
+				db,
+				threadId,
+				userId,
+				platformContext: { platform: "discord" },
+			});
+
+			// Find the system message containing the silence semantics
+			const systemMessages = messages.filter((m) => m.role === "system");
+			const platformMsg = systemMessages.find(
+				(m) => typeof m.content === "string" && m.content.includes("discord_send_message"),
+			);
+
+			expect(platformMsg).toBeDefined();
+			expect(platformMsg?.content).toContain("discord_send_message");
+			// Should mention silence/invisibility semantics
+			expect(platformMsg?.content).toMatch(/sees nothing|silence|cannot see/i);
+		});
+
+		it("no platform system message when platformContext is absent (AC5.2)", () => {
+			const messages = assembleContext({
+				db,
+				threadId,
+				userId,
+				// no platformContext
+			});
+
+			const systemMessages = messages.filter((m) => m.role === "system");
+			const platformMsg = systemMessages.find(
+				(m) => typeof m.content === "string" && m.content.includes("discord_send_message"),
+			);
+
+			expect(platformMsg).toBeUndefined();
+		});
+	});
 });

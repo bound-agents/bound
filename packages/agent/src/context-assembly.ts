@@ -23,6 +23,8 @@ export interface ContextParams {
 		model: string;
 		provider: string;
 	};
+	/** When set, assembleContext() prepends a system message explaining silence semantics. */
+	platformContext?: { platform: string };
 }
 
 // Cache for persona content - loaded once at startup
@@ -98,6 +100,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		hostName,
 		siteId,
 		relayInfo,
+		platformContext,
 	} = params;
 
 	// Stage 1: MESSAGE_RETRIEVAL
@@ -539,6 +542,27 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		if (relayInfo) {
 			volatileLines.push(
 				`You are: ${relayInfo.model} (via ${relayInfo.provider} on host ${relayInfo.remoteHost}, relayed from ${relayInfo.localHost})`,
+			);
+		}
+
+		// Platform silence semantics: user only sees what you explicitly send.
+		// NOTE: The tool name below is Discord-specific for the current single-platform
+		// scope. When a second platform is added, extend ContextParams.platformContext
+		// to carry { platform: string; toolNames: string[] } and reference tool names
+		// dynamically here rather than hardcoding "discord_send_message".
+		if (platformContext) {
+			volatileLines.push("");
+			volatileLines.push(`## Platform Context: ${platformContext.platform}`);
+			volatileLines.push(
+				"The user of this conversation is on an external platform and cannot see your responses directly.",
+			);
+			volatileLines.push(
+				"To send a message to the user, call the `discord_send_message` tool. " +
+					"If you do not call it, the user sees nothing (silence).",
+			);
+			volatileLines.push(
+				"Each call to the tool produces one separate message to the user. " +
+					"Multiple calls are allowed and delivered in order.",
 			);
 		}
 

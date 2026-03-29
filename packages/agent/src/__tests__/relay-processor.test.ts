@@ -20,6 +20,7 @@ import type {
 } from "@bound/shared";
 import type { MCPClient } from "../mcp-client";
 import { RelayProcessor } from "../relay-processor";
+import type { AgentLoopConfig } from "../types";
 
 // Mock MCPClient for testing
 class MockMCPClient implements Partial<MCPClient> {
@@ -77,6 +78,39 @@ const createMockLogger = (): Logger => ({
 	debug: () => {},
 });
 
+// Mock LLM backend
+class MockLLMBackend implements LLMBackend {
+	async chat(_params: ChatParams) {
+		return {
+			choices: [
+				{
+					message: { role: "assistant", content: "mocked response" },
+				},
+			],
+			usage: { input_tokens: 10, output_tokens: 10 },
+		};
+	}
+
+	supportsStreaming(): boolean {
+		return false;
+	}
+
+	supportsToolUse(): boolean {
+		return false;
+	}
+
+	getSiteId(): string {
+		return "mock-site";
+	}
+}
+
+// Helper to create mock ModelRouter
+function createMockModelRouter(): ModelRouter {
+	const backends = new Map<string, LLMBackend>();
+	backends.set("mock-model", new MockLLMBackend());
+	return new ModelRouter(backends, "mock-model");
+}
+
 // Test database setup
 let db: Database;
 let testDbPath: string;
@@ -112,7 +146,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -133,7 +167,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -193,7 +227,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -216,7 +250,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -273,7 +307,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -339,7 +373,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -401,7 +435,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -460,7 +494,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -557,7 +591,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -674,7 +708,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -831,7 +865,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -924,7 +958,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -1020,7 +1054,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -1092,7 +1126,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
@@ -1167,11 +1201,11 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
-				null,
+				createMockModelRouter(),
 				undefined,
 				threadAffinityMap,
 			);
@@ -1243,11 +1277,11 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
-				null,
+				createMockModelRouter(),
 				undefined,
 				threadAffinityMap,
 			);
@@ -1372,11 +1406,11 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
-				null,
+				createMockModelRouter(),
 				undefined,
 				threadAffinityMap,
 			);
@@ -1454,11 +1488,11 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
-				null,
+				createMockModelRouter(),
 				undefined,
 				threadAffinityMap,
 			);
@@ -1540,11 +1574,11 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
-				null,
+				createMockModelRouter(),
 				undefined,
 				threadAffinityMap,
 			);
@@ -1640,11 +1674,11 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
-				null,
+				createMockModelRouter(),
 				undefined,
 				threadAffinityMap,
 			);
@@ -1754,7 +1788,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				eventBus,
@@ -1826,7 +1860,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				eventBus,
@@ -1900,7 +1934,7 @@ describe("RelayProcessor", () => {
 				db,
 				"target-site",
 				mcpClients,
-				null,
+				createMockModelRouter(),
 				keyringSiteIds,
 				createMockLogger(),
 				eventBus,
@@ -2075,7 +2109,7 @@ describe("RelayProcessor", () => {
 			// Pre-insert an assistant message with ONLY tool_use blocks (the problematic case)
 			const assistantMsgId = "msg-assistant-tool-only";
 			const toolUseContent = JSON.stringify([
-				{ type: "tool_use", id: "t1", name: "bash", input: {} }
+				{ type: "tool_use", id: "t1", name: "bash", input: {} },
 			]);
 			const laterTime = new Date(new Date(nowIso).getTime() + 5000).toISOString();
 			db.run(
@@ -2116,7 +2150,7 @@ describe("RelayProcessor", () => {
 				db,
 				"local-site",
 				new Map(),
-				null,
+				createMockModelRouter(),
 				new Set(["requester-site"]),
 				createMockLogger(),
 				eventBus,
@@ -2241,7 +2275,7 @@ describe("RelayProcessor", () => {
 				db,
 				"local-site",
 				new Map(),
-				null,
+				createMockModelRouter(),
 				new Set(["requester-site"]),
 				createMockLogger(),
 				eventBus,
@@ -2379,7 +2413,7 @@ describe("RelayProcessor", () => {
 				db,
 				"local-site",
 				new Map(),
-				null,
+				createMockModelRouter(),
 				new Set(["requester-site"]),
 				createMockLogger(),
 				eventBus,
@@ -2437,6 +2471,546 @@ describe("RelayProcessor", () => {
 				expect(platformDeliverPayload.content).toBe("second");
 				expect(platformDeliverPayload.message_id).toBe(secondMsgId);
 			}
+		});
+
+		describe("executeProcess platform context", () => {
+			it("injects platform tools into loop config when registry is set (AC6.1 setup + AC6.4 test)", async () => {
+				// Setup: relay processor with mock registry, mock agentLoopFactory
+				// Capture: what loopConfig was passed to agentLoopFactory
+				// Assert: loopConfig.platform === "discord"
+				// Assert: loopConfig.platformTools is a Map with "discord_send_message"
+
+				// Setup: Create thread with interface="discord"
+				const threadId = "thread-ac61";
+				const userId = "user-ac61";
+				const userMsgId = "msg-user-ac61";
+				const nowIso = new Date().toISOString();
+
+				db.run(
+					"INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+					[threadId, userId, nowIso, "discord", "local", nowIso, nowIso],
+				);
+
+				db.run(
+					"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+					[userId, "Test User", nowIso, nowIso],
+				);
+
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+					[userMsgId, threadId, "user", "Hello", "local", nowIso],
+				);
+
+				// Create mock event bus
+				const eventBus = createMockEventBus();
+
+				// Create mock AppContext
+				const mockAppCtx = {
+					db,
+					config: {},
+					optionalConfig: {},
+					eventBus,
+					logger: createMockLogger(),
+					siteId: "local-site",
+					hostName: "localhost",
+				};
+
+				// Capture loopConfig passed to agentLoopFactory
+				let capturedLoopConfig: AgentLoopConfig | null = null;
+				const mockAgentLoop = {
+					run: async () => ({
+						error: null,
+						messagesCreated: 1,
+						toolCallsMade: 1,
+						filesChanged: 0,
+					}),
+				};
+
+				const mockAgentLoopFactory = (config: AgentLoopConfig) => {
+					capturedLoopConfig = config;
+					return mockAgentLoop as any;
+				};
+
+				// Create RelayProcessor
+				const processor = new RelayProcessor(
+					db,
+					"local-site",
+					new Map(),
+					createMockModelRouter(),
+					new Set(["requester-site"]),
+					createMockLogger(),
+					eventBus,
+					mockAppCtx as any,
+					undefined,
+					new Map(),
+					mockAgentLoopFactory,
+				);
+
+				// Setup: Create mock platform connector registry
+				const mockToolDefinition = {
+					type: "function" as const,
+					function: {
+						name: "discord_send_message",
+						description: "Send a message to Discord",
+						parameters: { type: "object" as const, properties: {} },
+					},
+				};
+
+				const mockPlatformTools = new Map([
+					[
+						"discord_send_message",
+						{
+							toolDefinition: mockToolDefinition,
+							execute: async () => "message sent",
+						},
+					],
+				]);
+
+				const mockConnector = {
+					getPlatformTools: () => mockPlatformTools,
+				};
+
+				const mockRegistry = {
+					getConnector: (platform: string) => {
+						if (platform === "discord") return mockConnector;
+						return undefined;
+					},
+				};
+
+				processor.setPlatformConnectorRegistry(mockRegistry as any);
+
+				// Execute: Insert a process inbox entry to trigger executeProcess
+				const now = new Date();
+				const processInboxEntry: RelayInboxEntry = {
+					id: "process-ac61",
+					source_site_id: "requester-site",
+					kind: "process",
+					ref_id: null,
+					idempotency_key: null,
+					payload: JSON.stringify({
+						thread_id: threadId,
+						message_id: userMsgId,
+						user_id: userId,
+						platform: "discord",
+					}),
+					expires_at: new Date(now.getTime() + 60000).toISOString(),
+					received_at: now.toISOString(),
+					processed: 0,
+					stream_id: null,
+				};
+
+				db.run(
+					`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[
+						processInboxEntry.id,
+						processInboxEntry.source_site_id,
+						processInboxEntry.kind,
+						processInboxEntry.ref_id,
+						processInboxEntry.idempotency_key,
+						processInboxEntry.payload,
+						processInboxEntry.expires_at,
+						processInboxEntry.received_at,
+						processInboxEntry.processed,
+						processInboxEntry.stream_id,
+					],
+				);
+
+				// Run processor to execute the process entry
+				const handle = processor.start(50);
+				await new Promise((resolve) => setTimeout(resolve, 600));
+				handle.stop();
+
+				// Assert: loopConfig.platform === "discord"
+				expect(capturedLoopConfig).toBeDefined();
+				expect(capturedLoopConfig.platform).toBe("discord");
+
+				// Assert: loopConfig.platformTools is a Map with "discord_send_message"
+				expect(capturedLoopConfig.platformTools).toBeDefined();
+				expect(capturedLoopConfig.platformTools).toBeInstanceOf(Map);
+				expect(capturedLoopConfig.platformTools.has("discord_send_message")).toBe(true);
+			});
+
+			it("does not emit platform:deliver when payload.platform is non-null (AC6.2)", async () => {
+				// Setup: listen for platform:deliver on eventBus
+				// Run: process a relay with platform: "discord", agent produces an assistant message
+				// Assert: platform:deliver was NOT emitted
+
+				const threadId = "thread-ac62";
+				const userId = "user-ac62";
+				const userMsgId = "msg-user-ac62";
+				const nowIso = new Date().toISOString();
+
+				db.run(
+					"INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+					[threadId, userId, nowIso, "discord", "local", nowIso, nowIso],
+				);
+
+				db.run(
+					"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+					[userId, "Test User", nowIso, nowIso],
+				);
+
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+					[userMsgId, threadId, "user", "Hello", "local", nowIso],
+				);
+
+				// Setup: Create mock event bus to track platform:deliver emissions
+				const eventBus = createMockEventBus();
+				let platformDeliverEmitted = false;
+				eventBus.on("platform:deliver", () => {
+					platformDeliverEmitted = true;
+				});
+
+				// Setup: Create mock AppContext
+				const mockAppCtx = {
+					db,
+					config: {},
+					optionalConfig: {},
+					eventBus,
+					logger: createMockLogger(),
+					siteId: "local-site",
+					hostName: "localhost",
+				};
+
+				// Setup: Create mock agent loop that completes successfully and creates an assistant message
+				const assistantMsgId = "msg-assistant-ac62";
+				const assistantContent = "Hello from the agent!";
+
+				const mockAgentLoop = {
+					run: async () => {
+						// Simulate agent creating an assistant message
+						const laterTime = new Date(new Date(nowIso).getTime() + 5000).toISOString();
+						db.run(
+							"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+							[assistantMsgId, threadId, "assistant", assistantContent, "local", laterTime],
+						);
+						return {
+							error: null,
+							messagesCreated: 1,
+							toolCallsMade: 0,
+							filesChanged: 0,
+						};
+					},
+				};
+
+				// Create RelayProcessor with mock agent loop factory
+				const processor = new RelayProcessor(
+					db,
+					"local-site",
+					new Map(),
+					createMockModelRouter(),
+					new Set(["requester-site"]),
+					createMockLogger(),
+					eventBus,
+					mockAppCtx as any,
+					undefined,
+					new Map(),
+					() => mockAgentLoop as any,
+				);
+
+				// Execute: Insert a process inbox entry with platform: "discord"
+				const now = new Date();
+				const processInboxEntry: RelayInboxEntry = {
+					id: "process-ac62",
+					source_site_id: "requester-site",
+					kind: "process",
+					ref_id: null,
+					idempotency_key: null,
+					payload: JSON.stringify({
+						thread_id: threadId,
+						message_id: userMsgId,
+						user_id: userId,
+						platform: "discord",
+					}),
+					expires_at: new Date(now.getTime() + 60000).toISOString(),
+					received_at: now.toISOString(),
+					processed: 0,
+					stream_id: null,
+				};
+
+				db.run(
+					`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[
+						processInboxEntry.id,
+						processInboxEntry.source_site_id,
+						processInboxEntry.kind,
+						processInboxEntry.ref_id,
+						processInboxEntry.idempotency_key,
+						processInboxEntry.payload,
+						processInboxEntry.expires_at,
+						processInboxEntry.received_at,
+						processInboxEntry.processed,
+						processInboxEntry.stream_id,
+					],
+				);
+
+				// Run processor to execute the process entry
+				const handle = processor.start(50);
+				await new Promise((resolve) => setTimeout(resolve, 600));
+				handle.stop();
+
+				// Assert: platform:deliver should NOT be emitted even though agent produced an assistant message
+				expect(platformDeliverEmitted).toBe(false);
+			});
+
+			it("emits platform:deliver when payload.platform is null (AC6.3)", async () => {
+				// Setup: thread with interface != "web", listen for platform:deliver
+				// Run: process a relay with platform: null
+				// Assert: platform:deliver was emitted with the last assistant message
+
+				const threadId = "thread-ac63";
+				const userId = "user-ac63";
+				const userMsgId = "msg-user-ac63";
+				const nowIso = new Date().toISOString();
+
+				db.run(
+					"INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+					[threadId, userId, nowIso, "discord", "local", nowIso, nowIso],
+				);
+
+				db.run(
+					"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+					[userId, "Test User", nowIso, nowIso],
+				);
+
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+					[userMsgId, threadId, "user", "Hello", "local", nowIso],
+				);
+
+				// Setup: Create mock event bus to track platform:deliver emissions
+				const eventBus = createMockEventBus();
+				let platformDeliverPayload: PlatformDeliverPayload | null = null;
+				eventBus.on("platform:deliver", (payload: PlatformDeliverPayload) => {
+					platformDeliverPayload = payload;
+				});
+
+				// Setup: Create mock AppContext
+				const mockAppCtx = {
+					db,
+					config: {},
+					optionalConfig: {},
+					eventBus,
+					logger: createMockLogger(),
+					siteId: "local-site",
+					hostName: "localhost",
+				};
+
+				// Setup: Create mock agent loop that creates an assistant message
+				const assistantMsgId = "msg-assistant-ac63";
+				const assistantContent = "Hello from the agent!";
+
+				const mockAgentLoop = {
+					run: async () => {
+						const laterTime = new Date(new Date(nowIso).getTime() + 5000).toISOString();
+						db.run(
+							"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+							[assistantMsgId, threadId, "assistant", assistantContent, "local", laterTime],
+						);
+						return {
+							error: null,
+							messagesCreated: 1,
+							toolCallsMade: 0,
+							filesChanged: 0,
+						};
+					},
+				};
+
+				// Create RelayProcessor with mock agent loop factory
+				const processor = new RelayProcessor(
+					db,
+					"local-site",
+					new Map(),
+					createMockModelRouter(),
+					new Set(["requester-site"]),
+					createMockLogger(),
+					eventBus,
+					mockAppCtx as any,
+					undefined,
+					new Map(),
+					() => mockAgentLoop as any,
+				);
+
+				// Execute: Insert a process inbox entry with platform: null (NOT a platform context)
+				const now = new Date();
+				const processInboxEntry: RelayInboxEntry = {
+					id: "process-ac63",
+					source_site_id: "requester-site",
+					kind: "process",
+					ref_id: null,
+					idempotency_key: null,
+					payload: JSON.stringify({
+						thread_id: threadId,
+						message_id: userMsgId,
+						user_id: userId,
+						platform: null,
+					}),
+					expires_at: new Date(now.getTime() + 60000).toISOString(),
+					received_at: now.toISOString(),
+					processed: 0,
+					stream_id: null,
+				};
+
+				db.run(
+					`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[
+						processInboxEntry.id,
+						processInboxEntry.source_site_id,
+						processInboxEntry.kind,
+						processInboxEntry.ref_id,
+						processInboxEntry.idempotency_key,
+						processInboxEntry.payload,
+						processInboxEntry.expires_at,
+						processInboxEntry.received_at,
+						processInboxEntry.processed,
+						processInboxEntry.stream_id,
+					],
+				);
+
+				// Run processor to execute the process entry
+				const handle = processor.start(50);
+				await new Promise((resolve) => setTimeout(resolve, 600));
+				handle.stop();
+
+				// Assert: platform:deliver should be emitted with the last assistant message
+				expect(platformDeliverPayload).toBeDefined();
+				if (platformDeliverPayload) {
+					expect(platformDeliverPayload.platform).toBe("discord");
+					expect(platformDeliverPayload.content).toBe(assistantContent);
+					expect(platformDeliverPayload.thread_id).toBe(threadId);
+					expect(platformDeliverPayload.message_id).toBe(assistantMsgId);
+				}
+			});
+
+			it("gracefully proceeds when registry is not set (AC6.4)", async () => {
+				// Setup: relay processor WITHOUT setPlatformConnectorRegistry()
+				// Capture: loopConfig passed to agentLoopFactory
+				// Assert: loopConfig.platform is undefined
+				// Assert: loopConfig.platformTools is undefined
+				// Assert: no crash
+
+				const threadId = "thread-ac64";
+				const userId = "user-ac64";
+				const userMsgId = "msg-user-ac64";
+				const nowIso = new Date().toISOString();
+
+				db.run(
+					"INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+					[threadId, userId, nowIso, "discord", "local", nowIso, nowIso],
+				);
+
+				db.run(
+					"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+					[userId, "Test User", nowIso, nowIso],
+				);
+
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+					[userMsgId, threadId, "user", "Hello", "local", nowIso],
+				);
+
+				// Create mock event bus
+				const eventBus = createMockEventBus();
+
+				// Create mock AppContext
+				const mockAppCtx = {
+					db,
+					config: {},
+					optionalConfig: {},
+					eventBus,
+					logger: createMockLogger(),
+					siteId: "local-site",
+					hostName: "localhost",
+				};
+
+				// Capture loopConfig passed to agentLoopFactory
+				let capturedLoopConfig: AgentLoopConfig | null = null;
+				const mockAgentLoop = {
+					run: async () => ({
+						error: null,
+						messagesCreated: 1,
+						toolCallsMade: 0,
+						filesChanged: 0,
+					}),
+				};
+
+				const mockAgentLoopFactory = (config: AgentLoopConfig) => {
+					capturedLoopConfig = config;
+					return mockAgentLoop as any;
+				};
+
+				// Create RelayProcessor WITHOUT setting platform registry
+				const processor = new RelayProcessor(
+					db,
+					"local-site",
+					new Map(),
+					createMockModelRouter(),
+					new Set(["requester-site"]),
+					createMockLogger(),
+					eventBus,
+					mockAppCtx as any,
+					undefined,
+					new Map(),
+					mockAgentLoopFactory,
+				);
+
+				// NOTE: No call to setPlatformConnectorRegistry() — registry stays null
+
+				// Execute: Insert a process inbox entry with platform: "discord" even though registry is not set
+				const now = new Date();
+				const processInboxEntry: RelayInboxEntry = {
+					id: "process-ac64",
+					source_site_id: "requester-site",
+					kind: "process",
+					ref_id: null,
+					idempotency_key: null,
+					payload: JSON.stringify({
+						thread_id: threadId,
+						message_id: userMsgId,
+						user_id: userId,
+						platform: "discord",
+					}),
+					expires_at: new Date(now.getTime() + 60000).toISOString(),
+					received_at: now.toISOString(),
+					processed: 0,
+					stream_id: null,
+				};
+
+				db.run(
+					`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[
+						processInboxEntry.id,
+						processInboxEntry.source_site_id,
+						processInboxEntry.kind,
+						processInboxEntry.ref_id,
+						processInboxEntry.idempotency_key,
+						processInboxEntry.payload,
+						processInboxEntry.expires_at,
+						processInboxEntry.received_at,
+						processInboxEntry.processed,
+						processInboxEntry.stream_id,
+					],
+				);
+
+				// Run processor to execute the process entry
+				const handle = processor.start(50);
+				await new Promise((resolve) => setTimeout(resolve, 600));
+				handle.stop();
+
+				// Assert: loopConfig.platform is undefined (graceful fallback)
+				expect(capturedLoopConfig).toBeDefined();
+				expect(capturedLoopConfig.platform).toBeUndefined();
+
+				// Assert: loopConfig.platformTools is undefined (graceful fallback)
+				expect(capturedLoopConfig.platformTools).toBeUndefined();
+
+				// Assert: no crash (if we got here, it passed)
+			});
 		});
 	});
 });

@@ -154,6 +154,7 @@ export class AgentLoop {
 				hostName: this.ctx.hostName,
 				siteId: this.ctx.siteId,
 				relayInfo,
+				platformContext: this.config.platform ? { platform: this.config.platform } : undefined,
 			});
 
 			// Agentic loop: keep calling the LLM until it produces a text-only
@@ -246,6 +247,7 @@ export class AgentLoop {
 						}
 					} else {
 						const chatStream = resolution.backend.chat({
+							model: resolution.modelId,
 							messages: nonSystemMessages,
 							system: systemPrompt || undefined,
 							tools: this.config.tools,
@@ -946,6 +948,13 @@ export class AgentLoop {
 	 * the sandbox's registered custom commands can dispatch.
 	 */
 	private async executeToolCall(toolCall: ParsedToolCall): Promise<string | RelayToolCallRequest> {
+		// Priority 1: Check platform tools — these bypass the sandbox entirely.
+		const platformTool = this.config.platformTools?.get(toolCall.name);
+		if (platformTool) {
+			return platformTool.execute(toolCall.input);
+		}
+
+		// Priority 2: Sandbox dispatch (existing logic — unchanged below this line)
 		if (!this.sandbox.exec) {
 			return "Error: sandbox execution not available";
 		}
