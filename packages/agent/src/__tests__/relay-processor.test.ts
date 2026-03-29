@@ -567,7 +567,10 @@ describe("RelayProcessor", () => {
 
 	describe("idempotency", () => {
 		it("returns cached response on duplicate idempotency_key (AC5.1)", async () => {
-			const mockClient = new MockMCPClient("test-server", new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]));
+			const mockClient = new MockMCPClient(
+				"test-server",
+				new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
+			);
 			let callCount = 0;
 			const originalCallTool = mockClient.callTool.bind(mockClient);
 			mockClient.callTool = async (name: string, args: Record<string, unknown>) => {
@@ -679,7 +682,10 @@ describe("RelayProcessor", () => {
 		});
 
 		it("expires cache entries after 5 minutes (AC5.3)", async () => {
-			const mockClient = new MockMCPClient("test-server", new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]));
+			const mockClient = new MockMCPClient(
+				"test-server",
+				new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
+			);
 			let callCount = 0;
 			const originalCallTool = mockClient.callTool.bind(mockClient);
 			mockClient.callTool = async (name: string, args: Record<string, unknown>) => {
@@ -930,9 +936,7 @@ describe("RelayProcessor", () => {
 
 		it("writes result if cancel arrives after execution (AC7.4)", async () => {
 			const mockClient = new MockMCPClient("test-server");
-			mockClient.tools = new Map([
-				["test_cmd", { name: "test_cmd", description: "Test tool" }],
-			]);
+			mockClient.tools = new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]);
 			const mcpClients = new Map<string, MCPClient>();
 			mcpClients.set("test-server", mockClient as unknown as MCPClient);
 
@@ -1087,7 +1091,10 @@ describe("RelayProcessor", () => {
 		});
 
 		it("returns error response with retriable flag when MCP client call fails", async () => {
-			const failingClient = new MockMCPClient("failing-server", new Map([["test_command", { name: "test_command", description: "Test command" }]]));
+			const failingClient = new MockMCPClient(
+				"failing-server",
+				new Map([["test_command", { name: "test_command", description: "Test command" }]]),
+			);
 			// Override callTool to throw an error
 			failingClient.callTool = async () => {
 				throw new Error("MCP client connection failed");
@@ -2127,9 +2134,11 @@ describe("RelayProcessor", () => {
 				new Set(["requester-site"]),
 				createMockLogger(),
 				eventBus,
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				mockAppCtx as any,
 				undefined,
 				new Map(),
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				() => mockAgentLoop as any,
 			);
 
@@ -2252,9 +2261,11 @@ describe("RelayProcessor", () => {
 				new Set(["requester-site"]),
 				createMockLogger(),
 				eventBus,
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				mockAppCtx as any,
 				undefined,
 				new Map(),
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				() => mockAgentLoop as any,
 			);
 
@@ -2390,9 +2401,11 @@ describe("RelayProcessor", () => {
 				new Set(["requester-site"]),
 				createMockLogger(),
 				eventBus,
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				mockAppCtx as any,
 				undefined,
 				new Map(),
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				() => mockAgentLoop as any,
 			);
 
@@ -2501,6 +2514,7 @@ describe("RelayProcessor", () => {
 
 				const mockAgentLoopFactory = (config: AgentLoopConfig) => {
 					capturedLoopConfig = config;
+					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					return mockAgentLoop as any;
 				};
 
@@ -2513,6 +2527,7 @@ describe("RelayProcessor", () => {
 					new Set(["requester-site"]),
 					createMockLogger(),
 					eventBus,
+					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					mockAppCtx as any,
 					undefined,
 					new Map(),
@@ -2550,6 +2565,7 @@ describe("RelayProcessor", () => {
 					},
 				};
 
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				processor.setPlatformConnectorRegistry(mockRegistry as any);
 
 				// Execute: Insert a process inbox entry to trigger executeProcess
@@ -2677,9 +2693,11 @@ describe("RelayProcessor", () => {
 					new Set(["requester-site"]),
 					createMockLogger(),
 					eventBus,
+					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					mockAppCtx as any,
 					undefined,
 					new Map(),
+					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					() => mockAgentLoop as any,
 				);
 
@@ -2801,9 +2819,11 @@ describe("RelayProcessor", () => {
 					new Set(["requester-site"]),
 					createMockLogger(),
 					eventBus,
+					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					mockAppCtx as any,
 					undefined,
 					new Map(),
+					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					() => mockAgentLoop as any,
 				);
 
@@ -2913,6 +2933,7 @@ describe("RelayProcessor", () => {
 
 				const mockAgentLoopFactory = (config: AgentLoopConfig) => {
 					capturedLoopConfig = config;
+					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					return mockAgentLoop as any;
 				};
 
@@ -2925,6 +2946,7 @@ describe("RelayProcessor", () => {
 					new Set(["requester-site"]),
 					createMockLogger(),
 					eventBus,
+					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					mockAppCtx as any,
 					undefined,
 					new Map(),
@@ -2990,7 +3012,10 @@ describe("RelayProcessor", () => {
 	describe("execution - tool_call with subcommand dispatch (AC1.2)", () => {
 		it("server-name tool call with subcommand in args dispatches correctly", async () => {
 			// Create a mock MCP client that tracks callTool invocations
-			const mockClient = new MockMCPClient("github", new Map([["create_issue", { name: "create_issue", description: "Create an issue" }]]));
+			const mockClient = new MockMCPClient(
+				"github",
+				new Map([["create_issue", { name: "create_issue", description: "Create an issue" }]]),
+			);
 			const mcpClients = new Map<string, MCPClient>();
 			mcpClients.set("github", mockClient as unknown as MCPClient);
 
@@ -3237,7 +3262,10 @@ describe("RelayProcessor", () => {
 			]);
 
 			const mockConnector = {
-				getPlatformTools: (threadId: string, readFileFn?: (path: string) => Promise<Uint8Array>) => {
+				getPlatformTools: (
+					_threadId: string,
+					readFileFn?: (path: string) => Promise<Uint8Array>,
+				) => {
 					capturedReadFileFn = readFileFn;
 					return mockPlatformTools;
 				},
@@ -3251,7 +3279,7 @@ describe("RelayProcessor", () => {
 			};
 
 			// Setup: Create RelayProcessor
-			let capturedLoopConfig: AgentLoopConfig | null = null;
+			let _capturedLoopConfig: AgentLoopConfig | null = null;
 			const mockAgentLoop = {
 				run: async () => ({
 					error: null,
@@ -3262,7 +3290,8 @@ describe("RelayProcessor", () => {
 			};
 
 			const mockAgentLoopFactory = (config: AgentLoopConfig) => {
-				capturedLoopConfig = config;
+				_capturedLoopConfig = config;
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				return mockAgentLoop as any;
 			};
 
@@ -3274,18 +3303,21 @@ describe("RelayProcessor", () => {
 				new Set(["requester-site"]),
 				createMockLogger(),
 				eventBus,
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				mockAppCtx as any,
 				undefined,
 				new Map(),
 				mockAgentLoopFactory,
 			);
 
+			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 			processor.setPlatformConnectorRegistry(mockRegistry as any);
 
 			// Setup: Create and set the file reader
-			const mockFileReader = async (path: string): Promise<Uint8Array> => {
+			const mockFileReader = async (_path: string): Promise<Uint8Array> => {
 				return new Uint8Array([1, 2, 3, 4]);
 			};
+			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 			(processor as any).setFileReader(mockFileReader);
 
 			// Execute: Insert a process inbox entry to trigger executeProcess

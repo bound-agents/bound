@@ -12,22 +12,23 @@ interface ThreadStatus {
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let threads: Thread[] = $state([]);
-let creating = $state(false);
+let _creating = $state(false);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
-let hoveredIdx = $state(-1);
+const hoveredIdx = $state(-1);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let threadStatuses: Map<string, ThreadStatus> = $state(new Map());
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let alertThreads: Set<string> = $state(new Set());
 
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 async function createThread(): Promise<void> {
-	creating = true;
+	_creating = true;
 	try {
 		const thread = await api.createThread();
 		window.location.hash = `#/line/${thread.id}`;
 	} catch (error) {
 		console.error("Failed to create thread:", error);
-		creating = false;
+		_creating = false;
 	}
 }
 

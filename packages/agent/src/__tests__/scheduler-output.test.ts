@@ -254,7 +254,7 @@ describe("R-O3: Task output delivered to original scheduling thread", () => {
 		]);
 
 		// Mock agent loop that throws an error
-		const mockAgentLoopFactory = (config: {
+		const mockAgentLoopFactory = (_config: {
 			threadId: string;
 			taskId?: string;
 			userId: string;

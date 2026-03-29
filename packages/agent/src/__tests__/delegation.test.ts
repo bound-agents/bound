@@ -616,7 +616,7 @@ describe("Delegation", () => {
 
 			// Create empty model router
 			const backends = new Map();
-			const modelRouter = new ModelRouter(backends, "default");
+			const _modelRouter = new ModelRouter(backends, "default");
 
 			// Setup thread
 			insertRow(

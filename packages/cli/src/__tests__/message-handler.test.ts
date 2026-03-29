@@ -55,6 +55,7 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 			userId: "u1",
 			modelId: "mock",
 			activeLoopAbortControllers: controllers,
+			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 			agentLoopFactory: factory as any,
 		});
 
@@ -68,13 +69,13 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 		const capturedSignals: AbortSignal[] = [];
 
 		// Loop that takes 500ms — test fires cancel after 50ms
-		let loopFinishedNaturally = false;
+		let _loopFinishedNaturally = false;
 		const factory = (config: AgentLoopConfig): AgentLoop => {
 			if (config.abortSignal) capturedSignals.push(config.abortSignal);
 			return {
 				run: async (): Promise<AgentLoopResult> => {
 					await new Promise((resolve) => setTimeout(resolve, 500));
-					loopFinishedNaturally = true;
+					_loopFinishedNaturally = true;
 					return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
 				},
 			} as AgentLoop;
@@ -91,6 +92,7 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 			userId: "u1",
 			modelId: "mock",
 			activeLoopAbortControllers: controllers,
+			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 			agentLoopFactory: factory as any,
 		});
 
@@ -121,11 +123,12 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 			userId: "u1",
 			modelId: "mock",
 			activeLoopAbortControllers: controllers,
+			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 			agentLoopFactory: factory as any,
 		});
 
 		// Signal for THIS thread must NOT be aborted
-		expect(capturedSignals[0]!.aborted).toBe(false);
+		expect(capturedSignals[0]?.aborted).toBe(false);
 	});
 
 	it("cleans up: removes abort controller from map and event listener after completion", async () => {
@@ -141,6 +144,7 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 			userId: "u1",
 			modelId: "mock",
 			activeLoopAbortControllers: controllers,
+			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 			agentLoopFactory: factory as any,
 		});
 
@@ -171,6 +175,7 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 				userId: "u1",
 				modelId: "mock",
 				activeLoopAbortControllers: controllers,
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				agentLoopFactory: factory as any,
 			}),
 		).rejects.toThrow("LLM connection error");
@@ -192,11 +197,12 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 			userId: "u1",
 			modelId: "mock",
 			activeLoopAbortControllers: controllers,
+			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 			agentLoopFactory: factory as any,
 			timeoutMs: 30, // very short timeout for the test
 		});
 
 		// Timeout must have fired and aborted the signal
-		expect(capturedSignals[0]!.aborted).toBe(true);
+		expect(capturedSignals[0]?.aborted).toBe(true);
 	});
 });

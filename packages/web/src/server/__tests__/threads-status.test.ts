@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { applySchema, createDatabase } from "@bound/core";
 import type { StatusForwardPayload } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
-import { Hono } from "hono";
+import type { Hono } from "hono";
 import { createStatusRoutes } from "../routes/status";
 import { createThreadsRoutes } from "../routes/threads";
 
@@ -26,7 +26,7 @@ describe("/api/threads/{id}/status with status_forward cache (AC6.3)", () => {
 		// Insert a test thread
 		const now = new Date().toISOString();
 		db.prepare(
-			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)"
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
 		).run(threadId, "default_web_user", "web", "localhost:3000", 0, "", now, now, now);
 	});
 
@@ -129,9 +129,7 @@ describe("/api/threads/{id}/status with status_forward cache (AC6.3)", () => {
 		});
 
 		it("returns 404 for non-existent thread", async () => {
-			const res = await app.fetch(
-				new Request("http://localhost/non-existent-thread/status")
-			);
+			const res = await app.fetch(new Request("http://localhost/non-existent-thread/status"));
 
 			expect(res.status).toBe(404);
 			const body = (await res.json()) as { error: string };
@@ -168,11 +166,8 @@ describe("/api/status/cancel with delegation (AC6.4)", () => {
 	let db: Database;
 	let eventBus: TypedEventEmitter;
 	let app: Hono;
-	let activeDelegations: Map<
-		string,
-		{ targetSiteId: string; processOutboxId: string }
-	>;
-	const threadId = "test-thread-delegation";
+	let activeDelegations: Map<string, { targetSiteId: string; processOutboxId: string }>;
+	const _threadId = "test-thread-delegation";
 	const delegatedThreadId = "delegated-thread-123";
 
 	beforeEach(() => {
@@ -187,7 +182,7 @@ describe("/api/status/cancel with delegation (AC6.4)", () => {
 		// Insert a test thread
 		const now = new Date().toISOString();
 		db.prepare(
-			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)"
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
 		).run(delegatedThreadId, "default_web_user", "web", "localhost:3000", 0, "", now, now, now);
 
 		// Insert host_meta for host_name

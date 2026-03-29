@@ -182,16 +182,16 @@ export function createFilesRoutes(db: Database): Hono {
 			const mimeType = detectMimeType(file.path);
 			const filename = getFilename(file.path);
 
-			let responseBody: string | Uint8Array;
+			let responseBody: string | Blob;
 			if (file.is_binary === 1) {
 				// Decode base64 to binary
-				responseBody = Buffer.from(file.content, "base64");
+				responseBody = new Blob([Buffer.from(file.content, "base64")]);
 			} else {
 				// Return text as-is
 				responseBody = file.content;
 			}
 
-			return c.body(responseBody, {
+			return new Response(responseBody, {
 				headers: {
 					"Content-Type": mimeType,
 					"Content-Disposition": `attachment; filename="${filename}"`,

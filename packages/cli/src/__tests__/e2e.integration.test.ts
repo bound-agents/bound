@@ -93,7 +93,7 @@ describe("Bound CLI E2E Integration Test", () => {
 
 	it("init with Anthropic preset handles missing API key gracefully", async () => {
 		// Ensure API key is not set
-		delete process.env.ANTHROPIC_API_KEY;
+		process.env.ANTHROPIC_API_KEY = undefined;
 
 		await runInit({
 			anthropic: true,

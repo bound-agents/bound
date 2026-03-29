@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
-import type { LLMBackend } from "@bound/llm";
+import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { TypedEventEmitter } from "@bound/shared";
 import { AgentLoop } from "../agent-loop";
@@ -125,7 +125,7 @@ describe("relayStream() streaming generator", () => {
 			tools: [],
 		};
 
-		const chunks: unknown[] = [];
+		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
 
 		// Start the generator and capture its stream_id from the outbox
@@ -153,7 +153,9 @@ describe("relayStream() streaming generator", () => {
 
 		// Read the generated stream_id from relay_outbox
 		const outboxEntry = db
-			.query("SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1")
+			.query(
+				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+			)
 			.get() as { stream_id: string } | null;
 
 		if (outboxEntry) {
@@ -227,7 +229,7 @@ describe("relayStream() streaming generator", () => {
 
 		// Verify chunks were yielded
 		expect(chunks.length).toBeGreaterThanOrEqual(2);
-		const textChunks = chunks.filter((c: any) => c.type === "text");
+		const textChunks = chunks.filter((c) => c.type === "text");
 		expect(textChunks.length).toBeGreaterThanOrEqual(2);
 	});
 
@@ -248,7 +250,7 @@ describe("relayStream() streaming generator", () => {
 			tools: [],
 		};
 
-		const chunks: any[] = [];
+		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
 
 		// biome-ignore lint/suspicious/noExplicitAny: testing private method
@@ -273,7 +275,9 @@ describe("relayStream() streaming generator", () => {
 		await new Promise((r) => setTimeout(r, 50));
 
 		const outboxEntry = db
-			.query("SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1")
+			.query(
+				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+			)
 			.get() as { stream_id: string } | null;
 
 		if (outboxEntry) {
@@ -326,7 +330,7 @@ describe("relayStream() streaming generator", () => {
 
 		// Should have received text and done chunks
 		expect(chunks.length).toBeGreaterThanOrEqual(2);
-		const doneChunks = chunks.filter((c: any) => c.type === "done");
+		const doneChunks = chunks.filter((c) => c.type === "done");
 		expect(doneChunks.length).toBeGreaterThan(0);
 		if (doneChunks[0]) {
 			expect(doneChunks[0].usage).toBeDefined();
@@ -352,7 +356,7 @@ describe("relayStream() streaming generator", () => {
 			tools: [],
 		};
 
-		const chunks: any[] = [];
+		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
 
 		// biome-ignore lint/suspicious/noExplicitAny: testing private method
@@ -376,7 +380,9 @@ describe("relayStream() streaming generator", () => {
 		await new Promise((r) => setTimeout(r, 50));
 
 		const outboxEntry = db
-			.query("SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1")
+			.query(
+				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+			)
 			.get() as { stream_id: string } | null;
 
 		if (outboxEntry) {
@@ -468,7 +474,7 @@ describe("relayStream() streaming generator", () => {
 		await consumerPromise;
 
 		// Verify chunks are yielded in sequence order
-		const textChunks = chunks.filter((c: any) => c.type === "text");
+		const textChunks = chunks.filter((c) => c.type === "text");
 		if (textChunks.length >= 3) {
 			expect(textChunks[0].content).toBe("first");
 			expect(textChunks[1].content).toBe("second");
@@ -519,7 +525,9 @@ describe("relayStream() streaming generator", () => {
 		await new Promise((r) => setTimeout(r, 50));
 
 		const outboxEntry = db
-			.query("SELECT id, stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1")
+			.query(
+				"SELECT id, stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+			)
 			.get() as { id: string; stream_id: string } | null;
 
 		if (outboxEntry) {
@@ -553,7 +561,9 @@ describe("relayStream() streaming generator", () => {
 
 		// Verify cancel entry was written with correct ref_id
 		const cancelEntry = db
-			.query("SELECT ref_id FROM relay_outbox WHERE kind = 'cancel' ORDER BY created_at DESC LIMIT 1")
+			.query(
+				"SELECT ref_id FROM relay_outbox WHERE kind = 'cancel' ORDER BY created_at DESC LIMIT 1",
+			)
 			.get() as { ref_id: string | null } | null;
 
 		expect(cancelEntry).toBeDefined();
@@ -579,7 +589,7 @@ describe("relayStream() streaming generator", () => {
 			tools: [],
 		};
 
-		let generatedStreamIds: Set<string> = new Set();
+		const generatedStreamIds: Set<string> = new Set();
 
 		try {
 			// biome-ignore lint/suspicious/noExplicitAny: testing private method
@@ -601,7 +611,9 @@ describe("relayStream() streaming generator", () => {
 			.query("SELECT DISTINCT stream_id FROM relay_outbox WHERE kind = 'inference'")
 			.all() as Array<{ stream_id: string }>;
 
-		inferenceEntries.forEach((e) => generatedStreamIds.add(e.stream_id));
+		for (const e of inferenceEntries) {
+			generatedStreamIds.add(e.stream_id);
+		}
 
 		// Should have at least 2 different stream_ids (one per host)
 		expect(generatedStreamIds.size).toBeGreaterThanOrEqual(2);
@@ -692,7 +704,9 @@ describe("relayStream() streaming generator", () => {
 		await new Promise((r) => setTimeout(r, 50));
 
 		const outboxEntry = db
-			.query("SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1")
+			.query(
+				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+			)
 			.get() as { stream_id: string } | null;
 
 		if (outboxEntry) {
@@ -741,7 +755,7 @@ describe("relayStream() streaming generator", () => {
 			tools: [],
 		};
 
-		const chunks: any[] = [];
+		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
 
 		// biome-ignore lint/suspicious/noExplicitAny: testing private method
@@ -765,7 +779,9 @@ describe("relayStream() streaming generator", () => {
 		await new Promise((r) => setTimeout(r, 50));
 
 		const outboxEntry = db
-			.query("SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1")
+			.query(
+				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+			)
 			.get() as { stream_id: string } | null;
 
 		if (outboxEntry) {
@@ -840,7 +856,7 @@ describe("relayStream() streaming generator", () => {
 		await consumerPromise;
 
 		// Should have yielded first and third (skipped the gap at seq=1)
-		const textChunks = chunks.filter((c: any) => c.type === "text");
+		const textChunks = chunks.filter((c) => c.type === "text");
 		expect(textChunks.length).toBeGreaterThanOrEqual(2);
 	});
 
@@ -857,7 +873,7 @@ describe("relayStream() streaming generator", () => {
 		const eligibleHosts = [host];
 
 		// Build a large payload (>2MB) by creating many messages
-		const largeMessages = Array.from({ length: 500 }, (_, i) => ({
+		const largeMessages = Array.from({ length: 500 }, (_, _i) => ({
 			role: "user" as const,
 			content: "x".repeat(4000), // 4KB per message
 		}));
@@ -943,7 +959,9 @@ describe("relayStream() streaming generator", () => {
 		await new Promise((r) => setTimeout(r, 50));
 
 		const outboxEntry = db
-			.query("SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1")
+			.query(
+				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+			)
 			.get() as { stream_id: string } | null;
 
 		if (outboxEntry) {

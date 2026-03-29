@@ -1,4 +1,5 @@
 import type { TypedEventEmitter } from "@bound/shared";
+import type { ServerWebSocket } from "bun";
 
 interface WebSocketMessage {
 	subscribe?: string[];
@@ -6,18 +7,18 @@ interface WebSocketMessage {
 }
 
 interface ClientConnection {
-	ws: WebSocket;
+	ws: ServerWebSocket<unknown>;
 	subscriptions: Set<string>;
 }
 
 export interface WebSocketConfig {
-	open(ws: WebSocket): void;
-	message(ws: WebSocket, message: string): void;
-	close(ws: WebSocket): void;
+	open(ws: ServerWebSocket<unknown>): void;
+	message(ws: ServerWebSocket<unknown>, message: string | Buffer): void;
+	close(ws: ServerWebSocket<unknown>): void;
 }
 
 export function createWebSocketHandler(eventBus: TypedEventEmitter): WebSocketConfig {
-	const clients = new Map<WebSocket, ClientConnection>();
+	const clients = new Map<ServerWebSocket<unknown>, ClientConnection>();
 
 	const handleMessageCreated = (data: {
 		message: unknown;
@@ -29,7 +30,7 @@ export function createWebSocketHandler(eventBus: TypedEventEmitter): WebSocketCo
 					type: "message:created",
 					data: data.message,
 				});
-				if (ws.readyState === WebSocket.OPEN) {
+				if (ws.readyState === 1) {
 					ws.send(message);
 				}
 			}
@@ -49,7 +50,7 @@ export function createWebSocketHandler(eventBus: TypedEventEmitter): WebSocketCo
 		});
 
 		for (const [ws] of clients) {
-			if (ws.readyState === WebSocket.OPEN) {
+			if (ws.readyState === 1) {
 				ws.send(message);
 			}
 		}
@@ -68,7 +69,7 @@ export function createWebSocketHandler(eventBus: TypedEventEmitter): WebSocketCo
 		});
 
 		for (const [ws] of clients) {
-			if (ws.readyState === WebSocket.OPEN) {
+			if (ws.readyState === 1) {
 				ws.send(message);
 			}
 		}
@@ -85,7 +86,7 @@ export function createWebSocketHandler(eventBus: TypedEventEmitter): WebSocketCo
 
 		for (const [ws, conn] of clients) {
 			if (conn.subscriptions.has(data.thread_id)) {
-				if (ws.readyState === WebSocket.OPEN) {
+				if (ws.readyState === 1) {
 					ws.send(message);
 				}
 			}
@@ -101,7 +102,7 @@ export function createWebSocketHandler(eventBus: TypedEventEmitter): WebSocketCo
 	eventBus.on("alert:created", handleAlertCreated);
 
 	return {
-		open(ws: WebSocket): void {
+		open(ws: ServerWebSocket<unknown>): void {
 			const conn: ClientConnection = {
 				ws,
 				subscriptions: new Set(),
@@ -109,7 +110,7 @@ export function createWebSocketHandler(eventBus: TypedEventEmitter): WebSocketCo
 			clients.set(ws, conn);
 		},
 
-		message(ws: WebSocket, rawMessage: string | ArrayBufferLike): void {
+		message(ws: ServerWebSocket<unknown>, rawMessage: string | Buffer): void {
 			if (typeof rawMessage !== "string") {
 				return;
 			}
@@ -140,7 +141,7 @@ export function createWebSocketHandler(eventBus: TypedEventEmitter): WebSocketCo
 			}
 		},
 
-		close(ws: WebSocket): void {
+		close(ws: ServerWebSocket<unknown>): void {
 			clients.delete(ws);
 		},
 	};

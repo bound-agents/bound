@@ -280,6 +280,7 @@ data: [DONE]
 
 		global.fetch = (async (url: string, options: RequestInit) => {
 			capturedUrl = url as string;
+			// biome-ignore lint/suspicious/noExplicitAny: partial mock or untyped parse result in test
 			capturedAuth = (options.headers as any)?.Authorization || "";
 			return new Response("data: {}", {
 				status: 200,

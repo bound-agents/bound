@@ -36,7 +36,7 @@ export function createAdvisory(
 export function approveAdvisory(
 	db: Database,
 	advisoryId: string,
-	siteId: string,
+	_siteId: string,
 ): Result<void, Error> {
 	try {
 		const now = new Date().toISOString();
@@ -55,7 +55,7 @@ export function approveAdvisory(
 export function dismissAdvisory(
 	db: Database,
 	advisoryId: string,
-	siteId: string,
+	_siteId: string,
 ): Result<void, Error> {
 	try {
 		const now = new Date().toISOString();
@@ -75,7 +75,7 @@ export function deferAdvisory(
 	db: Database,
 	advisoryId: string,
 	deferUntil: string,
-	siteId: string,
+	_siteId: string,
 ): Result<void, Error> {
 	try {
 		const now = new Date().toISOString();
@@ -94,7 +94,7 @@ export function deferAdvisory(
 export function applyAdvisory(
 	db: Database,
 	advisoryId: string,
-	siteId: string,
+	_siteId: string,
 ): Result<void, Error> {
 	try {
 		const now = new Date().toISOString();

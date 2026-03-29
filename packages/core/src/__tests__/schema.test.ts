@@ -261,9 +261,7 @@ describe("platform-connectors Phase 1 migrations", () => {
 				deleted      INTEGER DEFAULT 0
 			) STRICT
 		`);
-		db.run(
-			`INSERT INTO users VALUES ('u1', 'Alice', '12345', '2026-01-01', '2026-01-01', 0)`,
-		);
+		db.run(`INSERT INTO users VALUES ('u1', 'Alice', '12345', '2026-01-01', '2026-01-01', 0)`);
 		// Now run the full schema (triggers the migration)
 		applySchema(db);
 		const row = db.query("SELECT platform_ids FROM users WHERE id = 'u1'").get() as {

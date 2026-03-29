@@ -1,16 +1,16 @@
 import { describe, expect, it } from "bun:test";
 import {
 	allowlistSchema,
-	cronSchedulesSchema,
 	configSchemaMap,
-	platformsSchema,
-	userEntrySchema,
+	cronSchedulesSchema,
 	keyringSchema,
 	mcpSchema,
 	modelBackendsSchema,
 	networkSchema,
 	overlaySchema,
+	platformsSchema,
 	syncSchema,
+	userEntrySchema,
 } from "../config-schemas.js";
 import { RELAY_REQUEST_KINDS } from "../types.js";
 

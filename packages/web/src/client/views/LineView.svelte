@@ -6,13 +6,13 @@ import { api } from "../lib/api";
 import type { Thread } from "../lib/api";
 import { modelStore } from "../lib/modelStore";
 import { navigateTo } from "../lib/router";
-import { shouldClearWaiting } from "../utils/waiting";
 import {
 	connectWebSocket,
 	disconnectWebSocket,
 	subscribeToThread,
 	wsEvents,
 } from "../lib/websocket";
+import { shouldClearWaiting } from "../utils/waiting";
 
 const { threadId } = $props<{ threadId: string }>();
 
@@ -27,7 +27,7 @@ let agentActive = $state(false);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let agentState = $state<string | null>(null);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
-let fileInput = $state<HTMLInputElement | null>(null);
+const fileInput = $state<HTMLInputElement | null>(null);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let uploadStatus = $state<string | null>(null);
 let pendingFileId = $state<string | null>(null);
@@ -69,7 +69,9 @@ async function pollMessages(): Promise<void> {
 		if (
 			waiting &&
 			latest.length > waitingSinceMessageCount &&
-			latest.slice(waitingSinceMessageCount).some((m: { role: string }) => shouldClearWaiting(m.role))
+			latest
+				.slice(waitingSinceMessageCount)
+				.some((m: { role: string }) => shouldClearWaiting(m.role))
 		) {
 			waiting = false;
 		}

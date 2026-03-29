@@ -114,6 +114,7 @@ describe("WebSocket Handler", () => {
 				id: "msg-1",
 				content: "Here is my answer",
 				role: "assistant",
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock or untyped parse result in test
 			} as any,
 			thread_id: "thread-1",
 		});
@@ -139,6 +140,7 @@ describe("WebSocket Handler", () => {
 		handler.message(mockWs, JSON.stringify({ subscribe: ["thread-1"] }));
 
 		eventBus.emit("message:broadcast", {
+			// biome-ignore lint/suspicious/noExplicitAny: partial mock or untyped parse result in test
 			message: { id: "msg-2", content: "Other", role: "assistant" } as any,
 			thread_id: "thread-2", // not subscribed
 		});

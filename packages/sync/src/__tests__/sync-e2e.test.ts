@@ -44,7 +44,11 @@ const servers: ReturnType<typeof Bun.serve>[] = [];
  * Create a fully-wired host with real Ed25519 identity, real DB schema,
  * and a live Hono server listening on a random port.
  */
-async function createHost(name: string, keyring: KeyringConfig, keypairDir: string): Promise<Host> {
+async function createHost(
+	_name: string,
+	keyring: KeyringConfig,
+	keypairDir: string,
+): Promise<Host> {
 	const db = new Database(":memory:");
 	db.run("PRAGMA journal_mode = WAL");
 	db.run("PRAGMA foreign_keys = ON");
@@ -120,39 +124,6 @@ function insertRawRow(
 		db.run(
 			"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
 			[tableName, rowId, siteId, new Date().toISOString(), JSON.stringify(rowData)],
-		);
-	});
-	txFn();
-}
-
-/**
- * Update a row in a non-standard-PK table and record a change_log entry.
- */
-function updateRawRow(
-	db: Database,
-	tableName: string,
-	pkColumn: string,
-	pkValue: string,
-	updates: Record<string, unknown>,
-	siteId: string,
-): void {
-	const now = new Date().toISOString();
-	const updatesWithModified = { ...updates, modified_at: now };
-	const keys = Object.keys(updatesWithModified);
-	const setClause = keys.map((k) => `${k} = ?`).join(", ");
-	const values = [...keys.map((k) => updatesWithModified[k]), pkValue];
-
-	const txFn = db.transaction(() => {
-		db.run(
-			`UPDATE ${tableName} SET ${setClause} WHERE ${pkColumn} = ?`,
-			values as (string | number | null)[],
-		);
-		const updatedRow = db
-			.query(`SELECT * FROM ${tableName} WHERE ${pkColumn} = ?`)
-			.get(pkValue) as Record<string, unknown>;
-		db.run(
-			"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			[tableName, pkValue, siteId, now, JSON.stringify(updatedRow)],
 		);
 	});
 	txFn();
@@ -277,14 +248,14 @@ describe("sync E2E", () => {
 			unknown
 		> | null;
 		expect(thread).not.toBeNull();
-		expect(thread!.title).toBe("Hello thread");
+		expect(thread?.title).toBe("Hello thread");
 
 		const msg = hostB.db.query("SELECT * FROM messages WHERE id = ?").get(msgId) as Record<
 			string,
 			unknown
 		> | null;
 		expect(msg).not.toBeNull();
-		expect(msg!.content).toBe("First message");
+		expect(msg?.content).toBe("First message");
 	});
 
 	// -----------------------------------------------------------------------
@@ -341,14 +312,14 @@ describe("sync E2E", () => {
 			unknown
 		> | null;
 		expect(thread).not.toBeNull();
-		expect(thread!.title).toBe("From B");
+		expect(thread?.title).toBe("From B");
 
 		const msg = hostA.db.query("SELECT * FROM messages WHERE id = ?").get(msgId) as Record<
 			string,
 			unknown
 		> | null;
 		expect(msg).not.toBeNull();
-		expect(msg!.content).toBe("Response from B");
+		expect(msg?.content).toBe("Response from B");
 	});
 
 	// -----------------------------------------------------------------------
@@ -440,7 +411,7 @@ describe("sync E2E", () => {
 			unknown
 		> | null;
 		expect(userOnB).not.toBeNull();
-		expect(userOnB!.display_name).toBe("Alice");
+		expect(userOnB?.display_name).toBe("Alice");
 
 		// B updates the user
 		updateRow(hostB.db, "users", userId, { display_name: "Alice B." }, hostB.siteId);
@@ -454,7 +425,7 @@ describe("sync E2E", () => {
 			unknown
 		> | null;
 		expect(userOnA).not.toBeNull();
-		expect(userOnA!.display_name).toBe("Alice B.");
+		expect(userOnA?.display_name).toBe("Alice B.");
 	});
 
 	// -----------------------------------------------------------------------
@@ -491,7 +462,7 @@ describe("sync E2E", () => {
 			.query("SELECT * FROM hosts WHERE site_id = ?")
 			.get("remote-laptop-001") as Record<string, unknown> | null;
 		expect(hostOnB).not.toBeNull();
-		expect(hostOnB!.host_name).toBe("my-laptop");
+		expect(hostOnB?.host_name).toBe("my-laptop");
 	});
 
 	// -----------------------------------------------------------------------
@@ -520,7 +491,7 @@ describe("sync E2E", () => {
 			.query("SELECT * FROM cluster_config WHERE key = ?")
 			.get("emergency_stop") as Record<string, unknown> | null;
 		expect(cfgOnB).not.toBeNull();
-		expect(cfgOnB!.value).toBe("true");
+		expect(cfgOnB?.value).toBe("true");
 	});
 
 	// -----------------------------------------------------------------------
@@ -653,7 +624,7 @@ describe("sync E2E", () => {
 			.query("SELECT * FROM semantic_memory WHERE id = ?")
 			.get(memId) as Record<string, unknown> | null;
 		expect(memOnA).not.toBeNull();
-		expect(memOnA!.value).toBe("Build a ROBUST sync system");
+		expect(memOnA?.value).toBe("Build a ROBUST sync system");
 	});
 
 	// -----------------------------------------------------------------------
@@ -709,8 +680,8 @@ describe("sync E2E", () => {
 			unknown
 		> | null;
 		expect(taskOnB).not.toBeNull();
-		expect(taskOnB!.type).toBe("cron");
-		expect(taskOnB!.trigger_spec).toBe("0 * * * *");
+		expect(taskOnB?.type).toBe("cron");
+		expect(taskOnB?.trigger_spec).toBe("0 * * * *");
 	});
 
 	// -----------------------------------------------------------------------
@@ -746,8 +717,8 @@ describe("sync E2E", () => {
 			unknown
 		> | null;
 		expect(fileOnB).not.toBeNull();
-		expect(fileOnB!.path).toBe("/docs/README.md");
-		expect(fileOnB!.content).toBe("# Hello World");
+		expect(fileOnB?.path).toBe("/docs/README.md");
+		expect(fileOnB?.content).toBe("# Hello World");
 	});
 
 	// -----------------------------------------------------------------------
@@ -788,7 +759,7 @@ describe("sync E2E", () => {
 			unknown
 		> | null;
 		expect(advOnB).not.toBeNull();
-		expect(advOnB!.status).toBe("proposed");
+		expect(advOnB?.status).toBe("proposed");
 
 		// B approves it
 		updateRow(
@@ -807,7 +778,7 @@ describe("sync E2E", () => {
 			unknown
 		> | null;
 		expect(advBackOnA).not.toBeNull();
-		expect(advBackOnA!.status).toBe("approved");
+		expect(advBackOnA?.status).toBe("approved");
 	});
 
 	// -----------------------------------------------------------------------
@@ -840,8 +811,8 @@ describe("sync E2E", () => {
 			unknown
 		> | null;
 		expect(ovOnB).not.toBeNull();
-		expect(ovOnB!.path).toBe("/data/overlay/file.txt");
-		expect(ovOnB!.size_bytes).toBe(256);
+		expect(ovOnB?.path).toBe("/data/overlay/file.txt");
+		expect(ovOnB?.size_bytes).toBe(256);
 	});
 
 	// -----------------------------------------------------------------------
@@ -895,7 +866,7 @@ describe("sync E2E", () => {
 			.query("SELECT * FROM semantic_memory WHERE id = ?")
 			.get(memId) as Record<string, unknown> | null;
 		expect(memOnA).not.toBeNull();
-		expect(memOnA!.value).toBe("B's value (new)");
+		expect(memOnA?.value).toBe("B's value (new)");
 	});
 
 	// -----------------------------------------------------------------------
@@ -1023,7 +994,7 @@ describe("sync E2E", () => {
 			.query("SELECT * FROM semantic_memory WHERE id = ?")
 			.get(memId) as Record<string, unknown> | null;
 		expect(memOnB).not.toBeNull();
-		expect(memOnB!.deleted).toBe(1);
+		expect(memOnB?.deleted).toBe(1);
 	});
 
 	// -----------------------------------------------------------------------
@@ -1204,7 +1175,7 @@ describe("sync E2E", () => {
 			.query("SELECT * FROM semantic_memory WHERE id = ?")
 			.get(memId) as Record<string, unknown> | null;
 		expect(memOnB).not.toBeNull();
-		expect(memOnB!.value).toBe("B's newer value"); // Unchanged
+		expect(memOnB?.value).toBe("B's newer value"); // Unchanged
 	});
 
 	// -----------------------------------------------------------------------
@@ -1331,7 +1302,7 @@ describe("sync E2E", () => {
 			.query("SELECT * FROM semantic_memory WHERE id = ?")
 			.get(memId) as Record<string, unknown> | null;
 		expect(memOnC).not.toBeNull();
-		expect(memOnC!.value).toBe("originated-on-a");
+		expect(memOnC?.value).toBe("originated-on-a");
 	});
 
 	// -----------------------------------------------------------------------
@@ -1364,7 +1335,7 @@ describe("sync E2E", () => {
 			.query("SELECT * FROM sync_state WHERE peer_site_id = ?")
 			.get(hostA.siteId) as Record<string, unknown> | null;
 		expect(state1).not.toBeNull();
-		const lastReceived1 = state1!.last_received as number;
+		const lastReceived1 = state1?.last_received as number;
 		expect(lastReceived1).toBeGreaterThan(0);
 
 		// Cycle 2: another row
@@ -1389,7 +1360,7 @@ describe("sync E2E", () => {
 		const state2 = hostB.db
 			.query("SELECT * FROM sync_state WHERE peer_site_id = ?")
 			.get(hostA.siteId) as Record<string, unknown> | null;
-		const lastReceived2 = state2!.last_received as number;
+		const lastReceived2 = state2?.last_received as number;
 		expect(lastReceived2).toBeGreaterThan(lastReceived1);
 
 		// Both rows should exist on B
@@ -1429,7 +1400,7 @@ describe("sync E2E", () => {
 		await clientBtoA.syncCycle();
 
 		expect(emittedEvent).not.toBeNull();
-		expect(emittedEvent!.pulled).toBeGreaterThan(0);
+		expect(emittedEvent?.pulled).toBeGreaterThan(0);
 	});
 
 	// -----------------------------------------------------------------------

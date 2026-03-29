@@ -35,9 +35,7 @@ export interface RunLocalLoopResult {
  * Guarantees cleanup (clearTimeout, off("agent:cancel"), map.delete) even on
  * error via a finally block.
  */
-export async function runLocalAgentLoop(
-	params: RunLocalLoopParams,
-): Promise<RunLocalLoopResult> {
+export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<RunLocalLoopResult> {
 	const {
 		eventBus,
 		threadId,

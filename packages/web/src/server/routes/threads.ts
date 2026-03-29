@@ -23,7 +23,7 @@ export function createThreadsRoutes(
 				ORDER BY last_message_at DESC
 			`,
 				)
-				.all(["default_web_user"]) as Thread[];
+				.all("default_web_user") as Thread[];
 
 			return c.json(threads);
 		} catch (error) {

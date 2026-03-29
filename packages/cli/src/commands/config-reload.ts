@@ -11,7 +11,7 @@ export async function runConfigReload(args: ConfigReloadArgs): Promise<void> {
 	const configDir = args.configDir || "config";
 	// Assume data directory is sibling to config directory
 	const dataDir = join(dirname(resolve(configDir)), "data");
-	const dbPath = join(dataDir, "bound.db");
+	const _dbPath = join(dataDir, "bound.db");
 	if (args.target !== "mcp") {
 		console.error(`Error: unsupported config target: ${args.target}`);
 		console.error("Supported targets: mcp");

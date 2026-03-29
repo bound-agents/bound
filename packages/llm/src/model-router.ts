@@ -60,7 +60,7 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 
 	switch (provider) {
 		case "anthropic": {
-			const apiKey = (config as any).apiKey;
+			const apiKey = config.apiKey as string | undefined;
 			if (!apiKey) {
 				throw new Error("Anthropic driver requires apiKey in config");
 			}
@@ -73,11 +73,11 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 		}
 
 		case "bedrock": {
-			const region = (config as any).region;
+			const region = config.region as string | undefined;
 			if (!region) {
 				throw new Error("Bedrock driver requires region in config");
 			}
-			const profile = (config as any).profile as string | undefined;
+			const profile = config.profile as string | undefined;
 			const contextWindow = config.contextWindow ?? 200000;
 			return new BedrockDriver({
 				region,
@@ -89,7 +89,7 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 
 		case "openai-compatible": {
 			const baseUrl = config.baseUrl ?? "http://localhost:8000";
-			const apiKey = (config as any).apiKey;
+			const apiKey = config.apiKey as string | undefined;
 			if (!apiKey) {
 				throw new Error("OpenAI-compatible driver requires apiKey in config");
 			}

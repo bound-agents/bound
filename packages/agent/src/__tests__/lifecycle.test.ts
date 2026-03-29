@@ -245,10 +245,10 @@ describe("AgentLoop lifecycle", () => {
 		} | null;
 
 		expect(turn).not.toBeNull();
-		expect(turn!.thread_id).toBe(threadId);
-		expect(turn!.model_id).toBe("mock");
-		expect(turn!.tokens_in).toBeGreaterThan(0);
-		expect(turn!.tokens_out).toBeGreaterThan(0);
+		expect(turn?.thread_id).toBe(threadId);
+		expect(turn?.model_id).toBe("mock");
+		expect(turn?.tokens_in).toBeGreaterThan(0);
+		expect(turn?.tokens_out).toBeGreaterThan(0);
 	});
 
 	it("records multiple turns when tool calls produce multiple LLM round-trips", async () => {

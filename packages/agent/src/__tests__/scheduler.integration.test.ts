@@ -163,11 +163,11 @@ describe("Scheduler Integration", () => {
 		expect(updatedTask).not.toBeNull();
 		// The task should have progressed — either completed with next_run_at updated,
 		// or at minimum been claimed/run
-		expect(["claimed", "running", "completed", "pending"]).toContain(updatedTask!.status);
+		expect(["claimed", "running", "completed", "pending"]).toContain(updatedTask?.status);
 		// If task completed, next_run_at should be updated to next cron window
-		if (updatedTask!.status === "pending" && updatedTask!.run_count > 0) {
+		if (updatedTask?.status === "pending" && updatedTask?.run_count > 0) {
 			// Task completed and was reset to pending with new next_run_at
-			expect(updatedTask!.next_run_at).not.toBe(initialNextRun);
+			expect(updatedTask?.next_run_at).not.toBe(initialNextRun);
 		}
 	});
 
@@ -255,7 +255,7 @@ describe("Scheduler Integration", () => {
 
 		// Task should have progressed beyond pending (dependencies were satisfied)
 		expect(task).toBeDefined();
-		expect(task!.status).not.toBe("pending");
+		expect(task?.status).not.toBe("pending");
 	});
 
 	it("handles host affinity constraints", async () => {

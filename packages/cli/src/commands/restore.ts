@@ -21,7 +21,7 @@ interface AffectedRow {
 }
 export async function runRestore(args: RestoreArgs): Promise<void> {
 	const configDir = args.configDir || "data";
-	const dbPath = resolve(configDir, "bound.db");
+	const _dbPath = resolve(configDir, "bound.db");
 	console.log(`Point-in-time recovery before: ${args.before}`);
 	if (args.preview) {
 		console.log("PREVIEW MODE - No changes will be made\n");

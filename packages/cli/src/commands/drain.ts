@@ -16,7 +16,7 @@ function sleep(ms: number): Promise<void> {
 }
 export async function runDrain(args: DrainArgs): Promise<void> {
 	const dataDir = args.configDir || "data";
-	const dbPath = resolve(dataDir, "bound.db");
+	const _dbPath = resolve(dataDir, "bound.db");
 	const timeoutSeconds = args.timeout ?? 120;
 	const timeoutMs = timeoutSeconds * 1000;
 	console.log(`Draining current hub and switching to: ${args.newHub}`);

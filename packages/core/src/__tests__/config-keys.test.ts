@@ -42,8 +42,7 @@ describe("Config key consistency", () => {
 		const keys: string[] = [];
 		// Match pattern: key: "..." in the optionalConfigs array
 		const keyPattern = /key:\s*"([^"]+)"/g;
-		let match: RegExpExecArray | null;
-		while ((match = keyPattern.exec(source)) !== null) {
+		for (const match of source.matchAll(keyPattern)) {
 			keys.push(match[1]);
 		}
 		return keys;
@@ -80,14 +79,12 @@ describe("Config key consistency", () => {
 
 			const content = readFileSync(file, "utf-8");
 
-			let match: RegExpExecArray | null;
-
-			while ((match = bracketPattern.exec(content)) !== null) {
+			for (const match of content.matchAll(bracketPattern)) {
 				usedKeys.add(match[1]);
 				usages.push({ file: file.replace(packagesDir, ""), key: match[1] });
 			}
 
-			while ((match = dotPattern.exec(content)) !== null) {
+			for (const match of content.matchAll(dotPattern)) {
 				usedKeys.add(match[1]);
 				usages.push({ file: file.replace(packagesDir, ""), key: match[1] });
 			}
@@ -118,10 +115,10 @@ describe("Config key consistency", () => {
 		// camelCased to "cronSchedules".  Any consumer must use "cronSchedules".
 		expect(LOADER_KEYS).toContain("cronSchedules");
 
-		// Verify the scheduler uses the correct key
+		// Verify the scheduler uses the correct key (dot or bracket notation)
 		const schedulerPath = join(PROJECT_ROOT, "packages/agent/src/scheduler.ts");
 		const schedulerSource = readFileSync(schedulerPath, "utf-8");
-		expect(schedulerSource).toContain('optionalConfig["cronSchedules"]');
+		expect(schedulerSource).toMatch(/optionalConfig(\["cronSchedules"\]|\.cronSchedules)/);
 	});
 
 	it("config loader filename-to-key mapping is internally consistent", () => {
@@ -132,8 +129,7 @@ describe("Config key consistency", () => {
 		// Extract filename/key pairs
 		const pairPattern = /filename:\s*"([^"]+)",\s*schema:\s*\w+.*?,\s*key:\s*"([^"]+)"/gs;
 		const pairs: Array<{ filename: string; key: string }> = [];
-		let match: RegExpExecArray | null;
-		while ((match = pairPattern.exec(source)) !== null) {
+		for (const match of source.matchAll(pairPattern)) {
 			pairs.push({ filename: match[1], key: match[2] });
 		}
 

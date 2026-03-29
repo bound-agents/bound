@@ -79,9 +79,12 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 			let content: string = body.content;
 			const fileIds: string[] = Array.isArray(body.file_ids) ? body.file_ids : [];
 			for (const fileId of fileIds) {
-				const file = db
-					.query("SELECT * FROM files WHERE id = ? AND deleted = 0")
-					.get(fileId) as { path: string; content: string | null; is_binary: number; size_bytes: number } | null;
+				const file = db.query("SELECT * FROM files WHERE id = ? AND deleted = 0").get(fileId) as {
+					path: string;
+					content: string | null;
+					is_binary: number;
+					size_bytes: number;
+				} | null;
 				if (!file) continue;
 				const name = file.path.split("/").pop() ?? file.path;
 				if (file.is_binary) {

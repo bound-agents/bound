@@ -93,7 +93,7 @@ describe("Memory Threshold Check (R-W2)", () => {
 		}
 
 		const mockSandbox = {
-			exec: async (cmd: string) => {
+			exec: async (_cmd: string) => {
 				toolCallCount++;
 				return { stdout: "ok", stderr: "", exitCode: 0 };
 			},

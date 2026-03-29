@@ -8,10 +8,10 @@ import {
 	AgentLoop,
 	RelayProcessor,
 	Scheduler,
-	seedCronTasks,
-	getDelegationTarget,
 	createRelayOutboxEntry,
+	getDelegationTarget,
 	resolveModel,
+	seedCronTasks,
 } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
@@ -28,7 +28,7 @@ import {
 import { createModelRouter } from "@bound/llm";
 import type { BackendConfig, ModelBackendsConfig, ToolDefinition } from "@bound/llm";
 import { createClusterFs, createDefineCommands, createSandbox } from "@bound/sandbox";
-import type { SyncConfig, StatusForwardPayload, ProcessPayload } from "@bound/shared";
+import type { ProcessPayload, StatusForwardPayload, SyncConfig } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import { ReachabilityTracker, ensureKeypair } from "@bound/sync";
 import type { RelayExecutor } from "@bound/sync";
@@ -56,7 +56,8 @@ export function buildMcpToolDefinitions(serverNames: Set<string>): ToolDefinitio
 					properties: {
 						subcommand: {
 							type: "string",
-							description: 'Tool to invoke on this server. Use "help" to list available subcommands.',
+							description:
+								'Tool to invoke on this server. Use "help" to list available subcommands.',
 						},
 					},
 					required: ["subcommand"],
@@ -273,15 +274,15 @@ export async function runStart(args: StartArgs): Promise<void> {
 	console.log("Initializing MCP servers...");
 	const mcpClientsMap = new Map<string, MCPClient>();
 	{
-		const mcpResult = appContext.optionalConfig["mcp"];
-		if (mcpResult && mcpResult.ok) {
+		const mcpResult = appContext.optionalConfig.mcp;
+		if (mcpResult?.ok) {
 			const mcpConfig = mcpResult.value as {
 				servers: Array<{
 					name: string;
 					command?: string;
 					args?: string[];
 					url?: string;
-					transport: "stdio" | "sse";
+					transport: "stdio" | "http";
 					allow_tools?: string[];
 					confirm?: string[];
 				}>;
@@ -311,8 +312,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// Build confirm gates map from MCP config (R-U32)
 	const confirmGates = new Map<string, string[]>();
 	{
-		const mcpResult = appContext.optionalConfig["mcp"];
-		if (mcpResult && mcpResult.ok) {
+		const mcpResult = appContext.optionalConfig.mcp;
+		if (mcpResult?.ok) {
 			const mcpConfig = mcpResult.value as {
 				servers: Array<{
 					name: string;
@@ -347,11 +348,10 @@ export async function runStart(args: StartArgs): Promise<void> {
 	let relayExecutor: RelayExecutor | undefined;
 	let keyring: import("@bound/shared").KeyringConfig | undefined;
 	{
-		const keyringResult = appContext.optionalConfig["keyring"];
-		keyring =
-			keyringResult && keyringResult.ok
-				? (keyringResult.value as import("@bound/shared").KeyringConfig)
-				: undefined;
+		const keyringResult = appContext.optionalConfig.keyring;
+		keyring = keyringResult?.ok
+			? (keyringResult.value as import("@bound/shared").KeyringConfig)
+			: undefined;
 
 		if (!keyring) {
 			console.log("[relay] No keyring configured, relay processor disabled");
@@ -361,6 +361,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// 9. Sandbox setup
 	console.log("Setting up sandbox...");
 	let sandbox: Awaited<ReturnType<typeof createSandbox>> | null = null;
+	// biome-ignore lint/suspicious/noExplicitAny: ClusterFsResult|MountableFs union — cross-package type not importable without just-bash dep
 	let clusterFsObj: any = null;
 	try {
 		const clusterFsRaw = createClusterFs({
@@ -368,6 +369,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			syncEnabled: false,
 		});
 		// Extract the MountableFs from either a MountableFs directly or ClusterFsResult
+		// biome-ignore lint/suspicious/noExplicitAny: MountableFs type lives in just-bash, not re-exported from @bound/sandbox
 		const clusterFs = ("fs" in clusterFsRaw ? clusterFsRaw.fs : clusterFsRaw) as any;
 		clusterFsObj = clusterFsRaw;
 		const commandContext = {
@@ -567,6 +569,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		// sandboxTool (bash) is always included first; config.tools adds extra tools beyond bash.
 		// If config.tools includes bash, dedupe it.
 		const extraTools = config.tools?.filter((t) => t.function.name !== "bash") ?? [];
+		// biome-ignore lint/suspicious/noExplicitAny: stub bash interface when sandbox unavailable
 		return new AgentLoop(appContext, sandbox?.bash ?? ({} as any), modelRouter, {
 			...config,
 			tools: [sandboxTool, ...extraTools, ...platformToolDefs],
@@ -585,11 +588,10 @@ export async function runStart(args: StartArgs): Promise<void> {
 		const modelBackends = appContext.config.modelBackends;
 
 		// Extract keyring if configured — needed by the MCP proxy endpoint for request verification
-		const keyringResult = appContext.optionalConfig["keyring"];
-		const keyring =
-			keyringResult && keyringResult.ok
-				? (keyringResult.value as import("@bound/shared").KeyringConfig)
-				: undefined;
+		const keyringResult = appContext.optionalConfig.keyring;
+		const keyring = keyringResult?.ok
+			? (keyringResult.value as import("@bound/shared").KeyringConfig)
+			: undefined;
 
 		const eagerPushConfig =
 			keyring && appContext.siteId
@@ -615,7 +617,6 @@ export async function runStart(args: StartArgs): Promise<void> {
 				models: modelBackends.backends.map((b) => ({ id: b.id, provider: b.provider })),
 				default: modelBackends.default,
 			},
-			mcpClients: mcpClientsMap,
 			keyring,
 			siteId: appContext.siteId,
 			logger: appContext.logger,
@@ -765,6 +766,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 						.get(thread_id);
 					if (lastMsg) {
 						appContext.eventBus.emit("message:broadcast", {
+							// biome-ignore lint/suspicious/noExplicitAny: db.query result is untyped at this callsite
 							message: lastMsg as any,
 							thread_id,
 						});
@@ -799,6 +801,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		platformRegistry = new PlatformConnectorRegistry(appContext, platformsConfig);
 		platformRegistry.start();
 		// Wire into relay processor for platform-context process relays
+		// biome-ignore lint/suspicious/noExplicitAny: PlatformConnectorRegistry satisfies ConnectorRegistry structurally
 		relayProcessor.setPlatformConnectorRegistry(platformRegistry as any);
 		console.log("[platforms] Platform connector registry started");
 	} else {
@@ -861,7 +864,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// 16. Seed cron tasks from config
 	console.log("Seeding cron tasks...");
 	{
-		const cronResult = appContext.optionalConfig["cronSchedules"];
+		const cronResult = appContext.optionalConfig.cronSchedules;
 		if (cronResult?.ok) {
 			const cronSchedules = cronResult.value as Record<
 				string,

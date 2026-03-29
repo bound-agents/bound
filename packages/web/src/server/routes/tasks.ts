@@ -13,7 +13,7 @@ export function createTasksRoutes(db: Database): Hono {
 			const status = c.req.query("status");
 
 			let query = "SELECT * FROM tasks WHERE deleted = 0";
-			const params: unknown[] = [];
+			const params: string[] = [];
 
 			if (status) {
 				query += " AND status = ?";

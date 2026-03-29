@@ -90,7 +90,7 @@ describe("Reducer primary key handling", () => {
 				unknown
 			> | null;
 			expect(row).not.toBeNull();
-			expect(row!.host_name).toBe("remote-host");
+			expect(row?.host_name).toBe("remote-host");
 		});
 
 		it("updates an existing host row using LWW on modified_at", () => {
@@ -122,7 +122,7 @@ describe("Reducer primary key handling", () => {
 				string,
 				unknown
 			> | null;
-			expect(row!.host_name).toBe("new-name");
+			expect(row?.host_name).toBe("new-name");
 		});
 	});
 
@@ -148,7 +148,7 @@ describe("Reducer primary key handling", () => {
 				.query("SELECT * FROM cluster_config WHERE key = ?")
 				.get("cluster_hub") as Record<string, unknown> | null;
 			expect(row).not.toBeNull();
-			expect(row!.value).toBe("hub.example.com");
+			expect(row?.value).toBe("hub.example.com");
 		});
 
 		it("updates existing cluster_config using LWW on modified_at", () => {
@@ -177,7 +177,7 @@ describe("Reducer primary key handling", () => {
 			const row = db
 				.query("SELECT value FROM cluster_config WHERE key = ?")
 				.get("cluster_hub") as Record<string, unknown> | null;
-			expect(row!.value).toBe("new-hub.com");
+			expect(row?.value).toBe("new-hub.com");
 		});
 
 		it("rejects stale cluster_config update (older modified_at)", () => {
@@ -206,7 +206,7 @@ describe("Reducer primary key handling", () => {
 			const row = db
 				.query("SELECT value FROM cluster_config WHERE key = ?")
 				.get("cluster_hub") as Record<string, unknown> | null;
-			expect(row!.value).toBe("current-hub.com");
+			expect(row?.value).toBe("current-hub.com");
 		});
 	});
 
@@ -240,7 +240,7 @@ describe("Reducer primary key handling", () => {
 				unknown
 			> | null;
 			expect(row).not.toBeNull();
-			expect(row!.content).toBe("Hello from remote host!");
+			expect(row?.content).toBe("Hello from remote host!");
 		});
 
 		it("does not duplicate messages on re-sync (ON CONFLICT DO NOTHING)", () => {

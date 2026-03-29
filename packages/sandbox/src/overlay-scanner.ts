@@ -20,7 +20,7 @@ function computeContentHash(filePath: string): string {
 	}
 }
 
-function generateDeterministicId(siteId: string, path: string): string {
+function generateDeterministicId(_siteId: string, path: string): string {
 	// Use UUID5 with site_id as namespace and path as name
 	const BOUND_NAMESPACE = "550e8400-e29b-41d4-a716-446655440000";
 	return uuidv5(path, BOUND_NAMESPACE);

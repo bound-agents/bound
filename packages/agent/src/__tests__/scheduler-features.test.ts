@@ -15,7 +15,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentLoopResult } from "@bound/agent";
+import type { AgentLoopConfig, AgentLoopResult } from "@bound/agent";
 import { applyMetricsSchema, applySchema, createDatabase, recordTurn } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
@@ -95,7 +95,7 @@ describe("Scheduler features", () => {
 
 	function makeAgentLoopFactory(
 		result?: AgentLoopResult,
-	): (config: any) => { run: () => Promise<AgentLoopResult> } {
+	): (config: AgentLoopConfig) => { run: () => Promise<AgentLoopResult> } {
 		return () => ({
 			run: async () =>
 				result ?? {
@@ -106,7 +106,7 @@ describe("Scheduler features", () => {
 		});
 	}
 
-	function makeFailingAgentLoopFactory(): (config: any) => {
+	function makeFailingAgentLoopFactory(): (config: AgentLoopConfig) => {
 		run: () => Promise<AgentLoopResult>;
 	} {
 		return () => ({
@@ -200,7 +200,7 @@ describe("Scheduler features", () => {
 			} as unknown as Partial<AppContext>);
 
 			// Record enough turns to exceed the budget
-			const today = new Date().toISOString().split("T")[0];
+			const _today = new Date().toISOString().split("T")[0];
 			for (let i = 0; i < 5; i++) {
 				recordTurn(db, {
 					thread_id: randomUUID(),
@@ -236,10 +236,10 @@ describe("Scheduler features", () => {
 				[taskId, pastTime, nowStr, nowStr],
 			);
 
-			let agentRunCalled = false;
+			let _agentRunCalled = false;
 			const factory = () => ({
 				run: async () => {
-					agentRunCalled = true;
+					_agentRunCalled = true;
 					return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
 				},
 			});
@@ -259,7 +259,7 @@ describe("Scheduler features", () => {
 
 			expect(task).not.toBeNull();
 			// Task should still be pending (released after budget check)
-			expect(task!.status).toBe("pending");
+			expect(task?.status).toBe("pending");
 
 			// Clean up
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
@@ -321,8 +321,8 @@ describe("Scheduler features", () => {
 
 			expect(task).not.toBeNull();
 			// Must be 'failed', not 'completed'
-			expect(task!.status).toBe("failed");
-			expect(task!.error).toContain("Bedrock request failed");
+			expect(task?.status).toBe("failed");
+			expect(task?.error).toContain("Bedrock request failed");
 
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
@@ -387,8 +387,8 @@ describe("Scheduler features", () => {
 			} | null;
 
 			expect(task).not.toBeNull();
-			expect(task!.status).toBe("failed");
-			expect(task!.error).toContain("Simulated task failure");
+			expect(task?.status).toBe("failed");
+			expect(task?.error).toContain("Simulated task failure");
 
 			// Clean up
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
@@ -462,10 +462,10 @@ describe("Scheduler features", () => {
 			await new Promise((resolve) => setTimeout(resolve, 600));
 			stop();
 
-			const task = db
-				.query("SELECT consecutive_failures FROM tasks WHERE id = ?")
-				.get(taskId) as { consecutive_failures: number } | null;
-			expect(task!.consecutive_failures).toBeGreaterThan(0);
+			const task = db.query("SELECT consecutive_failures FROM tasks WHERE id = ?").get(taskId) as {
+				consecutive_failures: number;
+			} | null;
+			expect(task?.consecutive_failures).toBeGreaterThan(0);
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
 
@@ -542,10 +542,9 @@ describe("Scheduler features", () => {
 			const factory = () => ({
 				run: async (): Promise<AgentLoopResult> => {
 					// Concurrent increment: another process touched consecutive_failures
-					db.run(
-						"UPDATE tasks SET consecutive_failures = consecutive_failures + 1 WHERE id = ?",
-						[taskId],
-					);
+					db.run("UPDATE tasks SET consecutive_failures = consecutive_failures + 1 WHERE id = ?", [
+						taskId,
+					]);
 					return { messagesCreated: 0, toolCallsMade: 0, filesChanged: 0, error: "timeout" };
 				},
 			});
@@ -558,10 +557,10 @@ describe("Scheduler features", () => {
 			stop();
 
 			// DB should be at 2 (1 from concurrent + 1 from scheduler UPDATE)
-			const task = db
-				.query("SELECT consecutive_failures FROM tasks WHERE id = ?")
-				.get(taskId) as { consecutive_failures: number } | null;
-			expect(task!.consecutive_failures).toBe(2);
+			const task = db.query("SELECT consecutive_failures FROM tasks WHERE id = ?").get(taskId) as {
+				consecutive_failures: number;
+			} | null;
+			expect(task?.consecutive_failures).toBe(2);
 
 			// Advisory MUST have fired because DB consecutive_failures === alert_threshold
 			const advisories = db
@@ -585,10 +584,10 @@ describe("Scheduler features", () => {
 			await new Promise((resolve) => setTimeout(resolve, 600));
 			stop();
 
-			const task = db
-				.query("SELECT consecutive_failures FROM tasks WHERE id = ?")
-				.get(taskId) as { consecutive_failures: number } | null;
-			expect(task!.consecutive_failures).toBe(0);
+			const task = db.query("SELECT consecutive_failures FROM tasks WHERE id = ?").get(taskId) as {
+				consecutive_failures: number;
+			} | null;
+			expect(task?.consecutive_failures).toBe(0);
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
 	});
@@ -734,9 +733,10 @@ describe("Scheduler features", () => {
 			expect(capturedThreadId).toBeDefined();
 
 			// A thread row must exist for the generated threadId
-			const thread = db
-				.query("SELECT id FROM threads WHERE id = ?")
-				.get(capturedThreadId!) as { id: string } | null;
+			// biome-ignore lint/style/noNonNullAssertion: verified by expect(capturedThreadId).toBeDefined() above
+			const thread = db.query("SELECT id FROM threads WHERE id = ?").get(capturedThreadId!) as {
+				id: string;
+			} | null;
 
 			expect(thread).not.toBeNull();
 
@@ -780,9 +780,8 @@ describe("Scheduler features", () => {
 					run: async (): Promise<AgentLoopResult> => {
 						// Count user messages visible before run() body executes
 						const rows = db
-							.query(
-								"SELECT COUNT(*) as c FROM messages WHERE thread_id = ? AND role = 'user'",
-							)
+							.query("SELECT COUNT(*) as c FROM messages WHERE thread_id = ? AND role = 'user'")
+							// biome-ignore lint/style/noNonNullAssertion: verified by expect above
 							.get(capturedThreadId!) as { c: number };
 						messagesAtRunTime = rows.c;
 						return { messagesCreated: 0, toolCallsMade: 0, filesChanged: 0 };
@@ -804,9 +803,10 @@ describe("Scheduler features", () => {
 			// Verify the message content matches the payload
 			const msg = db
 				.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'user' LIMIT 1")
+				// biome-ignore lint/style/noNonNullAssertion: verified by expect above
 				.get(capturedThreadId!) as { content: string } | null;
 			expect(msg).not.toBeNull();
-			expect(msg!.content).toBe(payload);
+			expect(msg?.content).toBe(payload);
 
 			if (capturedThreadId) {
 				db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
@@ -865,12 +865,13 @@ describe("Scheduler features", () => {
 
 			expect(task).not.toBeNull();
 			// Task must have run at least once
-			expect(task!.run_count).toBeGreaterThanOrEqual(1);
+			expect(task?.run_count).toBeGreaterThanOrEqual(1);
 			// After completing, cron task should be rescheduled to a future time
-			expect(task!.status).toBe("pending");
-			expect(task!.next_run_at).not.toBeNull();
+			expect(task?.status).toBe("pending");
+			expect(task?.next_run_at).not.toBeNull();
 			// next_run_at should be in the future (not the old pastTime)
-			const nextRun = new Date(task!.next_run_at!);
+			// biome-ignore lint/style/noNonNullAssertion: asserted non-null by expect above
+			const nextRun = new Date(task?.next_run_at!);
 			expect(nextRun.getTime()).toBeGreaterThan(Date.now());
 
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
@@ -946,8 +947,8 @@ describe("Scheduler features", () => {
 				status: string;
 				error: string | null;
 			} | null;
-			expect(task!.status).toBe("failed");
-			expect(task!.error).toContain("nonexistent-model-xyz");
+			expect(task?.status).toBe("failed");
+			expect(task?.error).toContain("nonexistent-model-xyz");
 
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
@@ -987,7 +988,7 @@ describe("Scheduler features", () => {
 			const task = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as {
 				status: string;
 			} | null;
-			expect(task!.status).toBe("completed");
+			expect(task?.status).toBe("completed");
 
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
@@ -1096,14 +1097,14 @@ describe("Scheduler features", () => {
 
 			const dailyBackup = tasks.find((t) => t.trigger_spec === "0 2 * * *");
 			expect(dailyBackup).toBeDefined();
-			expect(dailyBackup!.status).toBe("pending");
-			expect(dailyBackup!.payload).toBe("backup all");
-			expect(dailyBackup!.next_run_at).not.toBeNull();
+			expect(dailyBackup?.status).toBe("pending");
+			expect(dailyBackup?.payload).toBe("backup all");
+			expect(dailyBackup?.next_run_at).not.toBeNull();
 
 			const hourlyCheck = tasks.find((t) => t.trigger_spec === "0 * * * *");
 			expect(hourlyCheck).toBeDefined();
-			expect(hourlyCheck!.status).toBe("pending");
-			expect(hourlyCheck!.next_run_at).not.toBeNull();
+			expect(hourlyCheck?.status).toBe("pending");
+			expect(hourlyCheck?.next_run_at).not.toBeNull();
 		});
 
 		it("does not duplicate cron tasks on re-seed (uses INSERT OR IGNORE)", () => {

@@ -3,6 +3,7 @@ import { onDestroy, onMount } from "svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import ModelSelector from "./ModelSelector.svelte";
 
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 function navigate(hash: string): void {
 	window.location.hash = hash;
 }

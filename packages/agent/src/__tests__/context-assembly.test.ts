@@ -981,7 +981,7 @@ describe("Context Assembly Pipeline", () => {
 			});
 
 			// The queued user message should NOT appear in the assembled context
-			const queuedMessage = messages.find(
+			const _queuedMessage = messages.find(
 				(m) => m.role === "user" && m.content === "Queued message during tool execution",
 			);
 
@@ -1000,7 +1000,7 @@ describe("Context Assembly Pipeline", () => {
 
 			// Check if there's a user message between tool_call and tool_result
 			const messagesBetween = messages.slice(toolCallIdx + 1, toolResultIdx);
-			const userMessagesBetween = messagesBetween.filter((m) => m.role === "user");
+			const _userMessagesBetween = messagesBetween.filter((m) => m.role === "user");
 
 			// The sanitizer should have handled this by keeping them adjacent or
 			// injecting synthetic messages to maintain pairing

@@ -10,7 +10,7 @@ import { incrementSyncErrors } from "../peer-cursor";
 describe("R-E16: Sync failure alert persistence at 5-failure threshold", () => {
 	let dbPath: string;
 	let db: Database;
-	let eventBus: TypedEventEmitter;
+	let _eventBus: TypedEventEmitter;
 
 	beforeEach(async () => {
 		dbPath = join(tmpdir(), `bound-test-${randomBytes(4).toString("hex")}.db`);
@@ -20,7 +20,7 @@ describe("R-E16: Sync failure alert persistence at 5-failure threshold", () => {
 		// Set up site_id in host_meta
 		db.run("INSERT INTO host_meta (key, value) VALUES (?, ?)", ["site_id", "test-site-123"]);
 
-		eventBus = new TypedEventEmitter();
+		_eventBus = new TypedEventEmitter();
 	});
 
 	afterEach(() => {
@@ -149,6 +149,6 @@ describe("R-E16: Sync failure alert persistence at 5-failure threshold", () => {
 
 		expect(syncState).not.toBeNull();
 		expect(syncState?.sync_errors).toBe(4);
-		expect(syncState!.sync_errors < 5).toBe(true);
+		expect(syncState?.sync_errors < 5).toBe(true);
 	});
 });

@@ -7,7 +7,7 @@ export async function generateThreadTitle(
 	db: Database,
 	threadId: string,
 	llmBackend: LLMBackend,
-	siteId: string,
+	_siteId: string,
 ): Promise<Result<string, Error>> {
 	try {
 		// Check if thread already has a title (at-most-once guarantee)

@@ -1,117 +1,111 @@
 <script lang="ts">
-	import { onDestroy, onMount } from "svelte";
-	import type { Component } from "svelte";
-	import { SvelteSet } from "svelte/reactivity";
-	import {
-		File,
-		FileText,
-		FileCode,
-		FileImage,
-		FileArchive,
-	} from "lucide-svelte";
-	import { buildFileTree, type FileTreeNode, type FileMetadata } from "../lib/file-tree";
-	import { wsEvents } from "../lib/websocket";
-	// biome-ignore lint/correctness/noUnusedImports: used in template
-	import TreeNode from "../components/TreeNode.svelte";
+import { File, FileArchive, FileCode, FileImage, FileText } from "lucide-svelte";
+import { onDestroy, onMount } from "svelte";
+import type { Component } from "svelte";
+import { SvelteSet } from "svelte/reactivity";
+// biome-ignore lint/correctness/noUnusedImports: used in template
+import TreeNode from "../components/TreeNode.svelte";
+import { type FileMetadata, type FileTreeNode, buildFileTree } from "../lib/file-tree";
+import { wsEvents } from "../lib/websocket";
 
-	// biome-ignore lint/correctness/noUnusedVariables: used in template
-	let tree: FileTreeNode[] = $state([]);
-	// biome-ignore lint/correctness/noUnusedVariables: used in template
-	let loading = $state(true);
-	// biome-ignore lint/correctness/noUnusedVariables: used in template
-	let error = $state<string | null>(null);
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let tree: FileTreeNode[] = $state([]);
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let loading = $state(true);
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let error = $state<string | null>(null);
 
-	// biome-ignore lint/correctness/noUnusedVariables: used in template
-	// biome-ignore lint/style/useConst: $state requires let
-	let expandedPaths = $state(new SvelteSet<string>());
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+// biome-ignore lint/style/useConst: $state requires let
+let expandedPaths = $state(new SvelteSet<string>());
 
-	async function loadFiles(): Promise<void> {
-		try {
-			loading = true;
-			error = null;
-			const response = await fetch("/api/files");
-			if (!response.ok) {
-				throw new Error(`HTTP ${response.status}`);
-			}
-			const files = (await response.json()) as FileMetadata[];
-			tree = buildFileTree(files);
-			// Expand all directories on initial load
-			expandedPaths.clear();
-			for (const node of tree) {
-				expandAllRecursive(node);
-			}
-		} catch (err) {
-			error = err instanceof Error ? err.message : "Failed to load files";
-		} finally {
-			loading = false;
+async function loadFiles(): Promise<void> {
+	try {
+		loading = true;
+		error = null;
+		const response = await fetch("/api/files");
+		if (!response.ok) {
+			throw new Error(`HTTP ${response.status}`);
+		}
+		const files = (await response.json()) as FileMetadata[];
+		tree = buildFileTree(files);
+		// Expand all directories on initial load
+		expandedPaths.clear();
+		for (const node of tree) {
+			expandAllRecursive(node);
+		}
+	} catch (err) {
+		error = err instanceof Error ? err.message : "Failed to load files";
+	} finally {
+		loading = false;
+	}
+}
+
+function expandAllRecursive(node: FileTreeNode): void {
+	if (node.type === "dir") {
+		expandedPaths.add(node.fullPath);
+		for (const child of node.children) {
+			expandAllRecursive(child);
 		}
 	}
+}
 
-	function expandAllRecursive(node: FileTreeNode): void {
-		if (node.type === "dir") {
-			expandedPaths.add(node.fullPath);
-			for (const child of node.children) {
-				expandAllRecursive(child);
-			}
+// biome-ignore lint/correctness/noUnusedVariables: passed to template
+function toggleExpanded(path: string): void {
+	if (expandedPaths.has(path)) {
+		expandedPaths.delete(path);
+	} else {
+		expandedPaths.add(path);
+	}
+}
+
+// biome-ignore lint/correctness/noUnusedVariables: passed to template
+function formatFileSize(bytes: number): string {
+	if (bytes === 0) return "0 B";
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+	if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+	return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+// biome-ignore lint/correctness/noUnusedVariables: passed to template
+function getFileIcon(name: string): Component {
+	const lower = name.toLowerCase();
+	if (lower.endsWith(".md") || lower.endsWith(".txt")) return FileText;
+	if (
+		lower.endsWith(".ts") ||
+		lower.endsWith(".js") ||
+		lower.endsWith(".json") ||
+		lower.endsWith(".py") ||
+		lower.endsWith(".rs") ||
+		lower.endsWith(".go")
+	)
+		return FileCode;
+	if (lower.match(/\.(png|jpg|jpeg|gif|svg|webp)$/)) return FileImage;
+	if (lower.match(/\.(zip|tar|gz|rar|7z)$/)) return FileArchive;
+	return File;
+}
+
+// biome-ignore lint/correctness/noUnusedVariables: passed to template
+function downloadFile(fileId: string): void {
+	window.location.href = `/api/files/download/${fileId}`;
+}
+
+let unsubscribe: (() => void) | null = null;
+
+onMount(() => {
+	loadFiles();
+	unsubscribe = wsEvents.subscribe((events) => {
+		const lastEvent = events[events.length - 1];
+		if (lastEvent?.type === "file_update") {
+			loadFiles();
 		}
-	}
-
-	// biome-ignore lint/correctness/noUnusedVariables: passed to template
-	function toggleExpanded(path: string): void {
-		if (expandedPaths.has(path)) {
-			expandedPaths.delete(path);
-		} else {
-			expandedPaths.add(path);
-		}
-	}
-
-	// biome-ignore lint/correctness/noUnusedVariables: passed to template
-	function formatFileSize(bytes: number): string {
-		if (bytes === 0) return "0 B";
-		if (bytes < 1024) return `${bytes} B`;
-		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-		if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-		return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-	}
-
-	// biome-ignore lint/correctness/noUnusedVariables: passed to template
-	function getFileIcon(name: string): Component {
-		const lower = name.toLowerCase();
-		if (lower.endsWith(".md") || lower.endsWith(".txt")) return FileText;
-		if (
-			lower.endsWith(".ts") ||
-			lower.endsWith(".js") ||
-			lower.endsWith(".json") ||
-			lower.endsWith(".py") ||
-			lower.endsWith(".rs") ||
-			lower.endsWith(".go")
-		)
-			return FileCode;
-		if (lower.match(/\.(png|jpg|jpeg|gif|svg|webp)$/)) return FileImage;
-		if (lower.match(/\.(zip|tar|gz|rar|7z)$/)) return FileArchive;
-		return File;
-	}
-
-	// biome-ignore lint/correctness/noUnusedVariables: passed to template
-	function downloadFile(fileId: string): void {
-		window.location.href = `/api/files/download/${fileId}`;
-	}
-
-	let unsubscribe: (() => void) | null = null;
-
-	onMount(() => {
-		loadFiles();
-		unsubscribe = wsEvents.subscribe((events) => {
-			const lastEvent = events[events.length - 1];
-			if (lastEvent?.type === "file_update") {
-				loadFiles();
-			}
-		});
 	});
+});
 
-	onDestroy(() => {
-		if (unsubscribe) unsubscribe();
-	});
+onDestroy(() => {
+	if (unsubscribe) unsubscribe();
+});
 </script>
 
 <div class="files-view">

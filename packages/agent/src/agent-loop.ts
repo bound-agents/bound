@@ -17,7 +17,7 @@ import { formatError } from "@bound/shared";
 import { assembleContext } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
-import { resolveModel, type ModelResolution } from "./model-resolution";
+import { type ModelResolution, resolveModel } from "./model-resolution";
 import { type EligibleHost, createRelayOutboxEntry } from "./relay-router";
 import { extractSummaryAndMemories } from "./summary-extraction";
 import type { AgentLoopConfig, AgentLoopResult, AgentLoopState } from "./types";
@@ -133,7 +133,9 @@ export class AgentLoop {
 			}
 
 			// Build relayInfo if resolution is remote
-			let relayInfo: { remoteHost: string; localHost: string; model: string; provider: string } | undefined;
+			let relayInfo:
+				| { remoteHost: string; localHost: string; model: string; provider: string }
+				| undefined;
 			if (this.lastModelResolution.kind === "remote" && this.lastModelResolution.hosts.length > 0) {
 				const firstHost = this.lastModelResolution.hosts[0];
 				relayInfo = {

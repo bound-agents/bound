@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
-import type { EligibleHost } from "./relay-router.js";
 import type { ModelRouter } from "@bound/llm";
 import { resolveModel } from "./model-resolution.js";
+import type { EligibleHost } from "./relay-router.js";
 
 /**
  * Returns the counts of recent tool calls in a thread.

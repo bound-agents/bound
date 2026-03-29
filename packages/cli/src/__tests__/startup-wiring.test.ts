@@ -121,7 +121,7 @@ describe("Startup Wiring", () => {
 				unknown
 			> | null;
 			expect(host).not.toBeNull();
-			expect(host!.host_name).toBe(hostName);
+			expect(host?.host_name).toBe(hostName);
 
 			// Verify change_log entry was created (outbox pattern)
 			const seqAfter =
@@ -136,7 +136,7 @@ describe("Startup Wiring", () => {
 				.query("SELECT * FROM change_log WHERE table_name = 'hosts' AND row_id = ? AND seq > ?")
 				.get(siteId, seqBefore) as Record<string, unknown> | null;
 			expect(changeLogEntry).not.toBeNull();
-			expect(changeLogEntry!.site_id).toBe(siteId);
+			expect(changeLogEntry?.site_id).toBe(siteId);
 		});
 
 		it("updates an existing host AND writes a change_log entry", () => {
@@ -180,7 +180,7 @@ describe("Startup Wiring", () => {
 			const host = db.query("SELECT host_name FROM hosts WHERE site_id = ?").get(siteId) as {
 				host_name: string;
 			} | null;
-			expect(host!.host_name).toBe(hostName);
+			expect(host?.host_name).toBe(hostName);
 
 			const seqAfter =
 				(
@@ -434,9 +434,9 @@ describe("Startup Wiring", () => {
 			} | null;
 
 			expect(task).not.toBeNull();
-			expect(task!.status).toBe("pending");
-			expect(task!.lease_id).toBeNull();
-			expect(task!.claimed_by).toBeNull();
+			expect(task?.status).toBe("pending");
+			expect(task?.lease_id).toBeNull();
+			expect(task?.claimed_by).toBeNull();
 		});
 	});
 
@@ -511,7 +511,7 @@ describe("Startup Wiring", () => {
 				unknown
 			> | null;
 			expect(user).not.toBeNull();
-			expect(user!.display_name).toBe("Seeded User");
+			expect(user?.display_name).toBe("Seeded User");
 
 			// Verify change_log entry exists
 			const seqAfter =
@@ -593,6 +593,7 @@ describe("Startup Wiring", () => {
 					.get(threadId);
 				if (lastMsg) {
 					eventBus.emit("message:created", {
+						// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 						message: lastMsg as any,
 						thread_id: threadId,
 					});
@@ -661,6 +662,7 @@ describe("Startup Wiring", () => {
 					.get(threadId);
 				if (lastMsg) {
 					eventBus.emit("message:created", {
+						// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 						message: lastMsg as any,
 						thread_id: threadId,
 					});
@@ -748,6 +750,7 @@ describe("Startup Wiring", () => {
 					.get(threadId);
 				if (lastMsg) {
 					eventBus.emit("message:created", {
+						// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 						message: lastMsg as any,
 						thread_id: threadId,
 					});
@@ -756,7 +759,7 @@ describe("Startup Wiring", () => {
 
 			// SHOULD re-emit when messages created
 			expect(emittedEvents.length).toBe(1);
-			expect(emittedEvents[0]!.thread_id).toBe(threadId);
+			expect(emittedEvents[0]?.thread_id).toBe(threadId);
 		});
 
 		it("does NOT re-emit message:created when delegation times out or fails (item #12)", async () => {
@@ -804,7 +807,7 @@ describe("Startup Wiring", () => {
 
 			// Simulate delegation path: set shouldReEmitMessage = false
 			// (delegation doesn't provide error info, so we don't re-emit to avoid stale message propagation)
-			let shouldReEmitMessage = false; // This would be set in the delegation path
+			const shouldReEmitMessage = false; // This would be set in the delegation path
 
 			// Apply the same guard logic as start.ts
 			if (shouldReEmitMessage) {
@@ -813,6 +816,7 @@ describe("Startup Wiring", () => {
 					.get(threadId);
 				if (lastMsg) {
 					eventBus.emit("message:created", {
+						// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 						message: lastMsg as any,
 						thread_id: threadId,
 					});
@@ -861,13 +865,15 @@ describe("Startup Wiring", () => {
 
 				const configAfterFactory = {
 					...testConfig,
-					tools: testConfig && (testConfig as any).tools ? (testConfig as any).tools : [sandboxTool],
+					tools:
+						// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
+						testConfig && (testConfig as any).tools ? (testConfig as any).tools : [sandboxTool],
 				};
 
 				// Verify tools are populated
 				expect(configAfterFactory.tools).toBeDefined();
 				expect(configAfterFactory.tools).toHaveLength(1);
-				expect(configAfterFactory.tools[0]!.function.name).toBe("bash");
+				expect(configAfterFactory.tools[0]?.function.name).toBe("bash");
 			});
 
 			it("message:created handler's agentLoopFactory must NOT override tools if already provided", async () => {
@@ -910,7 +916,7 @@ describe("Startup Wiring", () => {
 				};
 
 				expect(configAfterFactory.tools).toHaveLength(1);
-				expect(configAfterFactory.tools[0]!.function.name).toBe("custom");
+				expect(configAfterFactory.tools[0]?.function.name).toBe("custom");
 			});
 		});
 

@@ -1012,18 +1012,20 @@ describe("DiscordConnector", () => {
 				return Promise.resolve();
 			};
 
-			const tools = (connector as {
-				getPlatformTools(
-					threadId: string,
-					readFileFn?: (path: string) => Promise<Uint8Array>,
-				): Map<
-					string,
-					{
-						toolDefinition: { type: string; function: Record<string, unknown> };
-						execute: (input: Record<string, unknown>) => Promise<string>;
-					}
-				>;
-			}).getPlatformTools(threadId, mockReadFileFn);
+			const tools = (
+				connector as {
+					getPlatformTools(
+						threadId: string,
+						readFileFn?: (path: string) => Promise<Uint8Array>,
+					): Map<
+						string,
+						{
+							toolDefinition: { type: string; function: Record<string, unknown> };
+							execute: (input: Record<string, unknown>) => Promise<string>;
+						}
+					>;
+				}
+			).getPlatformTools(threadId, mockReadFileFn);
 			const execute = tools.get("discord_send_message")?.execute;
 			const result = await execute?.({ content: "hi", attachments: ["/virtual/file.txt"] });
 
@@ -1098,18 +1100,20 @@ describe("DiscordConnector", () => {
 				return Promise.resolve();
 			};
 
-			const tools = (connector as {
-				getPlatformTools(
-					threadId: string,
-					readFileFn?: (path: string) => Promise<Uint8Array>,
-				): Map<
-					string,
-					{
-						toolDefinition: { type: string; function: Record<string, unknown> };
-						execute: (input: Record<string, unknown>) => Promise<string>;
-					}
-				>;
-			}).getPlatformTools(threadId, mockReadFileFn);
+			const tools = (
+				connector as {
+					getPlatformTools(
+						threadId: string,
+						readFileFn?: (path: string) => Promise<Uint8Array>,
+					): Map<
+						string,
+						{
+							toolDefinition: { type: string; function: Record<string, unknown> };
+							execute: (input: Record<string, unknown>) => Promise<string>;
+						}
+					>;
+				}
+			).getPlatformTools(threadId, mockReadFileFn);
 			const execute = tools.get("discord_send_message")?.execute;
 			const result = await execute?.({ content: "hi", attachments: ["/file.txt"] });
 

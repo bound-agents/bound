@@ -12,7 +12,7 @@ export async function extractSummaryAndMemories(
 	db: Database,
 	threadId: string,
 	llmBackend: LLMBackend,
-	siteId: string,
+	_siteId: string,
 ): Promise<Result<ExtractionResult, Error>> {
 	try {
 		// Get thread state
@@ -32,7 +32,7 @@ export async function extractSummaryAndMemories(
 		// Get messages after summary_through
 		const messages = db
 			.prepare(
-				`SELECT content FROM messages WHERE thread_id = ? AND created_at > ? ORDER BY created_at`,
+				"SELECT content FROM messages WHERE thread_id = ? AND created_at > ? ORDER BY created_at",
 			)
 			.all(threadId, summaryThrough) as Array<{ content: string }>;
 
@@ -102,7 +102,7 @@ export async function extractSummaryAndMemories(
 			const memId = randomUUID();
 			const key = `thread_${threadId}_fact_${i}`;
 			db.prepare(
-				`INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?)`,
+				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?)",
 			).run(memId, key, factLines[i], threadId, now, now);
 		}
 
@@ -123,7 +123,7 @@ export function buildCrossThreadDigest(db: Database, userId: string): string {
 		// Get recent threads for user
 		const threads = db
 			.prepare(
-				`SELECT id, title, last_message_at FROM threads WHERE user_id = ? AND deleted = 0 ORDER BY last_message_at DESC LIMIT 5`,
+				"SELECT id, title, last_message_at FROM threads WHERE user_id = ? AND deleted = 0 ORDER BY last_message_at DESC LIMIT 5",
 			)
 			.all(userId) as Array<{ id: string; title: string | null; last_message_at: string }>;
 

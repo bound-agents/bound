@@ -1,8 +1,10 @@
 <script lang="ts">
 const {
+	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	role,
 	content,
 	toolName = null,
+	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	modelId = null,
 } = $props<{
 	role: "user" | "assistant" | "tool_call" | "tool_result" | "alert" | "system";
@@ -13,6 +15,7 @@ const {
 
 let toolCallExpanded = $state(false);
 
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 function getToolName(): string {
 	if (toolName) return toolName;
 	// Attempt to parse from JSON content if tool_name field not provided separately

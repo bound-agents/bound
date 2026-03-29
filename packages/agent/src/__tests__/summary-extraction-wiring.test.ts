@@ -51,7 +51,14 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 		for (let i = 0; i < 4; i++) {
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, created_at, host_origin) VALUES (?, ?, ?, ?, ?, ?)",
-				[randomUUID(), threadId, i % 2 === 0 ? "user" : "assistant", `Message ${i}`, now, "localhost"],
+				[
+					randomUUID(),
+					threadId,
+					i % 2 === 0 ? "user" : "assistant",
+					`Message ${i}`,
+					now,
+					"localhost",
+				],
 			);
 		}
 

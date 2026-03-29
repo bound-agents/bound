@@ -1,5 +1,5 @@
-import { getSiteId, writeOutbox } from "@bound/core";
 import { createRelayOutboxEntry } from "@bound/agent";
+import { getSiteId, writeOutbox } from "@bound/core";
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";

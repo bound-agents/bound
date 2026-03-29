@@ -42,12 +42,14 @@ export async function createApp(
 		appConfig && "modelsConfig" in appConfig
 			? (appConfig as AppConfig).modelsConfig
 			: (appConfig as ModelsConfig | undefined);
+	const typedAppConfig =
+		appConfig && "hostName" in appConfig ? (appConfig as AppConfig) : undefined;
 	const routesConfig: RoutesConfig = {
 		modelsConfig,
-		hostName: appConfig?.hostName,
-		siteId: appConfig?.siteId,
-		statusForwardCache: appConfig?.statusForwardCache,
-		activeDelegations: appConfig?.activeDelegations,
+		hostName: typedAppConfig?.hostName,
+		siteId: typedAppConfig?.siteId,
+		statusForwardCache: typedAppConfig?.statusForwardCache,
+		activeDelegations: typedAppConfig?.activeDelegations,
 	};
 
 	const app = new Hono();
@@ -56,7 +58,7 @@ export async function createApp(
 	// Host header validation middleware — DNS-rebinding protection for unauthenticated routes.
 	// /sync/* and /api/relay-deliver are exempt: they carry Ed25519 signature auth and must be
 	// reachable by remote spokes connecting to a hub through a reverse proxy.
-	app.use("*", (c, next) => {
+	app.use("*", async (c, next) => {
 		const host = c.req.header("host");
 		if (host) {
 			const hostName = host.split(":")[0];
@@ -119,13 +121,14 @@ export async function createApp(
 			});
 		}
 		app.get("/", () => {
-			const index = assets.get("/index.html")!;
+			const index = assets.get("/index.html") ?? assets.values().next().value;
+			if (!index) return new Response("Not found", { status: 404 });
 			return new Response(index.content, {
 				headers: { "content-type": index.contentType },
 			});
 		});
 	} else {
-		app.use("/*", serveStatic({ root: "./dist/client", rewritePathRegex: /(?:\/)?index\.html/ }));
+		app.use("/*", serveStatic({ root: "./dist/client" }));
 	}
 
 	return app;

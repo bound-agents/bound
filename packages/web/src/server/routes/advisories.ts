@@ -18,7 +18,7 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 			const status = c.req.query("status");
 
 			let query = "SELECT * FROM advisories WHERE deleted = 0";
-			const params: unknown[] = [];
+			const params: string[] = [];
 
 			if (status) {
 				query += " AND status = ?";

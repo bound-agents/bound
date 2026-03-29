@@ -112,19 +112,10 @@ describe("API endpoint completeness", () => {
 	});
 
 	/**
-	 * Helper: replace `:param` placeholders with real IDs.
-	 */
-	function resolvePath(path: string): string {
-		return path
-			.replace(":id", advisoryId) // advisories/:id
-			.replace(":threadId", threadId);
-	}
-
-	/**
 	 * For thread sub-routes, we need to handle `:id` differently depending
 	 * on the route prefix.
 	 */
-	function resolvePathFull(method: string, path: string): string {
+	function resolvePathFull(_method: string, path: string): string {
 		if (path.startsWith("/api/threads/:id")) {
 			return path.replace(":id", threadId);
 		}

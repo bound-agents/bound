@@ -246,8 +246,8 @@ describe("relay-stream integration tests", () => {
 				debug: () => {},
 			},
 			new TypedEventEmitter(),
-		undefined, // appCtx - not needed for inference-only tests
-		undefined, // relayConfig
+			undefined, // appCtx - not needed for inference-only tests
+			undefined, // relayConfig
 		).start(50); // 50ms poll interval for faster tests
 	});
 

@@ -541,7 +541,8 @@ export class Scheduler {
 					title: `Task has failed ${consecutiveFailures} times consecutively`,
 					detail: `Task ${task.id} has failed ${consecutiveFailures} consecutive times. Latest error: ${error.slice(0, 500)}`,
 					action: "Review the task configuration, model availability, and error details.",
-					impact: "Scheduled task is not completing. Cron tasks will continue retrying on schedule.",
+					impact:
+						"Scheduled task is not completing. Cron tasks will continue retrying on schedule.",
 					evidence: JSON.stringify({
 						taskId: task.id,
 						consecutiveFailures,
@@ -573,7 +574,7 @@ export class Scheduler {
 		}
 
 		// Look up in cron_schedules config if available
-		const cronResult = this.ctx.optionalConfig["cronSchedules"];
+		const cronResult = this.ctx.optionalConfig.cronSchedules;
 		if (!cronResult || !cronResult.ok) {
 			return null;
 		}
