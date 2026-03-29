@@ -327,4 +327,49 @@ describe("PlatformConnectorRegistry", () => {
 			registry.stop();
 		});
 	});
+
+	describe("PlatformConnectorRegistry.getConnector()", () => {
+		it("returns the registered connector for a known platform (AC4.1)", () => {
+			const platformsConfig: PlatformsConfig = {
+				connectors: [
+					{
+						platform: "webhook-stub",
+						failover_threshold_ms: 100,
+						allowed_users: [],
+					},
+				],
+			};
+
+			const registry = new PlatformConnectorRegistry(mockAppContext, platformsConfig);
+			registry.start();
+
+			const connector = registry.getConnector("webhook-stub");
+
+			expect(connector).toBeDefined();
+			expect(connector?.platform).toBe("webhook-stub");
+
+			registry.stop();
+		});
+
+		it("returns undefined for an unknown platform (AC4.2)", () => {
+			const platformsConfig: PlatformsConfig = {
+				connectors: [
+					{
+						platform: "webhook-stub",
+						failover_threshold_ms: 100,
+						allowed_users: [],
+					},
+				],
+			};
+
+			const registry = new PlatformConnectorRegistry(mockAppContext, platformsConfig);
+			registry.start();
+
+			const connector = registry.getConnector("nonexistent");
+
+			expect(connector).toBeUndefined();
+
+			registry.stop();
+		});
+	});
 });

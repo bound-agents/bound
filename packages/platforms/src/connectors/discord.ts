@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { insertRow, writeOutbox } from "@bound/core";
+import type { ToolDefinition } from "@bound/llm";
 import type {
 	IntakePayload,
 	Logger,
@@ -90,7 +92,7 @@ export class DiscordConnector implements PlatformConnector {
 		threadId: string,
 		_messageId: string,
 		content: string,
-		_attachments?: Array<{ filename: string; data: Buffer }>,
+		attachments?: Array<{ filename: string; data: Buffer }>,
 	): Promise<void> {
 		if (!this.client) {
 			throw new Error("DiscordConnector: not connected");
@@ -106,10 +108,96 @@ export class DiscordConnector implements PlatformConnector {
 			return;
 		}
 
-		// Chunk content at Discord's 2000-character limit (AC6.3)
-		for (let i = 0; i < content.length; i += 2000) {
-			await channel.send(content.slice(i, i + 2000));
+		if (attachments && attachments.length > 0) {
+			// Attachment delivery: send content + files in a single message.
+			// The discord_send_message tool already validates content ≤ 2000 chars,
+			// so no chunking is needed here.
+			await channel.send({
+				content: content || undefined,
+				files: attachments.map((a) => ({ attachment: a.data, name: a.filename })),
+			});
+		} else {
+			// Text-only delivery: chunk at Discord's 2000-character limit (AC6.3).
+			for (let i = 0; i < content.length; i += 2000) {
+				await channel.send(content.slice(i, i + 2000));
+			}
 		}
+	}
+
+	getPlatformTools(threadId: string): Map<
+		string,
+		{
+			toolDefinition: ToolDefinition;
+			execute: (input: Record<string, unknown>) => Promise<string>;
+		}
+	> {
+		const toolDefinition: ToolDefinition = {
+			type: "function",
+			function: {
+				name: "discord_send_message",
+				description:
+					"Send a message to the Discord user in this conversation. " +
+					"If you do not call this tool, the user sees nothing (silence). " +
+					"Multiple calls produce multiple separate messages in order.",
+				parameters: {
+					type: "object",
+					properties: {
+						content: {
+							type: "string",
+							description: "Text content to send. Maximum 2000 characters.",
+						},
+						attachments: {
+							type: "array",
+							description: "Optional list of absolute filesystem paths to attach.",
+							items: { type: "string" },
+						},
+					},
+					required: ["content"],
+				},
+			},
+		};
+
+		const execute = async (input: Record<string, unknown>): Promise<string> => {
+			const content = input.content;
+			const attachmentPaths = input.attachments as string[] | undefined;
+
+			// Validate content
+			if (typeof content !== "string") {
+				return "Error: content must be a string";
+			}
+			if (content.length > 2000) {
+				return `Error: content exceeds 2000 characters (got ${content.length})`;
+			}
+
+			// Load attachment files (fail-fast on first unreadable path — no partial delivery).
+			// Use async readFile to avoid blocking the event loop.
+			let loadedFiles: Array<{ filename: string; data: Buffer }> | undefined;
+			if (attachmentPaths && attachmentPaths.length > 0) {
+				loadedFiles = [];
+				for (const filePath of attachmentPaths) {
+					try {
+						const data = await readFile(filePath);
+						const filename = filePath.split("/").pop() ?? filePath;
+						loadedFiles.push({ filename, data: Buffer.from(data) });
+					} catch {
+						return `Error: cannot read attachment at path "${filePath}"`;
+					}
+				}
+			}
+
+			await this.deliver(threadId, randomUUID(), content, loadedFiles);
+			return "sent";
+		};
+
+		const tools = new Map<
+			string,
+			{
+				toolDefinition: ToolDefinition;
+				execute: (input: Record<string, unknown>) => Promise<string>;
+			}
+		>();
+		tools.set("discord_send_message", { toolDefinition, execute });
+		return tools;
 	}
 
 	private async onMessage(msg: DiscordMessage): Promise<void> {
@@ -280,9 +368,16 @@ export class DiscordConnector implements PlatformConnector {
 		return result;
 	}
 
-	private async getDMChannelForThread(
-		threadId: string,
-	): Promise<{ send(content: string): Promise<unknown> } | null> {
+	private async getDMChannelForThread(threadId: string): Promise<{
+		send(
+			content:
+				| string
+				| {
+						content?: string;
+						files?: Array<{ attachment: Buffer; name: string }>;
+				  },
+		): Promise<unknown>;
+	} | null> {
 		const thread = this.db
 			.query<{ user_id: string }, [string]>(
 				"SELECT user_id FROM threads WHERE id = ? AND deleted = 0 LIMIT 1",

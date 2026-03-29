@@ -4,6 +4,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { applySchema } from "@bound/core";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { DiscordConnector } from "../connectors/discord.js";
 
 // Mock logger
@@ -733,5 +736,244 @@ describe("DiscordConnector", () => {
 			>;
 			expect(typingTimersAfterDisconnect.size).toBe(0);
 		});
+
+	describe("DiscordConnector.getPlatformTools()", () => {
+		it("returns map with discord_send_message tool definition (AC2.1)", () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const threadId = randomUUID();
+
+			const tools = connector.getPlatformTools(threadId);
+
+			expect(tools.has("discord_send_message")).toBe(true);
+			const tool = tools.get("discord_send_message");
+			expect(tool).toBeDefined();
+			expect(tool?.toolDefinition.function.name).toBe("discord_send_message");
+			expect(tool?.toolDefinition.function.parameters.required).toContain("content");
+		});
+
+		it("execute closure is bound to the provided threadId (AC2.2)", async () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const threadId = randomUUID();
+
+			const userId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[userId, "Alice", JSON.stringify({ discord: "user123" }), now, now, 0],
+			);
+
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, "discord", "site-1", 0, null, null, null, null, null, now, now, now, 0],
+			);
+
+			const deliverCalls: Array<{
+				threadId: string;
+				messageId: string;
+				content: string;
+				attachments?: Array<{ filename: string; data: Buffer }>;
+			}> = [];
+			(connector as { deliver: unknown }).deliver = async (
+				tId: string,
+				mId: string,
+				content: string,
+				attachments?: Array<{ filename: string; data: Buffer }>,
+			) => {
+				deliverCalls.push({ threadId: tId, messageId: mId, content, attachments });
+				return Promise.resolve();
+			};
+
+			const tools = connector.getPlatformTools(threadId);
+			const execute = tools.get("discord_send_message")?.execute;
+
+			await execute?.({ content: "hi" });
+
+			expect(deliverCalls.length).toBe(1);
+			expect(deliverCalls[0]?.threadId).toBe(threadId);
+		});
+
+		it("valid content under 2000 chars calls deliver() and returns 'sent' (AC1.1)", async () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const threadId = randomUUID();
+			const userId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[userId, "Alice", JSON.stringify({ discord: "user123" }), now, now, 0],
+			);
+
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, "discord", "site-1", 0, null, null, null, null, null, now, now, now, 0],
+			);
+
+			let deliverCalled = false;
+			(connector as { deliver: unknown }).deliver = async () => {
+				deliverCalled = true;
+				return Promise.resolve();
+			};
+
+			const tools = connector.getPlatformTools(threadId);
+			const execute = tools.get("discord_send_message")?.execute;
+			const result = await execute?.({ content: "hello" });
+
+			expect(deliverCalled).toBe(true);
+			expect(result).toBe("sent");
+		});
+
+		it("content exactly 2000 chars succeeds (AC1.6)", async () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const threadId = randomUUID();
+			const userId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[userId, "Alice", JSON.stringify({ discord: "user123" }), now, now, 0],
+			);
+
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, "discord", "site-1", 0, null, null, null, null, null, now, now, now, 0],
+			);
+
+			let deliverCalled = false;
+			(connector as { deliver: unknown }).deliver = async () => {
+				deliverCalled = true;
+				return Promise.resolve();
+			};
+
+			const tools = connector.getPlatformTools(threadId);
+			const execute = tools.get("discord_send_message")?.execute;
+			const result = await execute?.({ content: "x".repeat(2000) });
+
+			expect(result).toBe("sent");
+			expect(deliverCalled).toBe(true);
+		});
+
+		it("content over 2000 chars returns error, deliver not called (AC1.4)", async () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const threadId = randomUUID();
+
+			let deliverCalled = false;
+			(connector as { deliver: unknown }).deliver = async () => {
+				deliverCalled = true;
+				return Promise.resolve();
+			};
+
+			const tools = connector.getPlatformTools(threadId);
+			const execute = tools.get("discord_send_message")?.execute;
+			const result = await execute?.({ content: "x".repeat(2001) });
+
+			expect(typeof result).toBe("string");
+			expect(result?.startsWith("Error")).toBe(true);
+			expect(deliverCalled).toBe(false);
+		});
+
+		it("readable attachment path calls deliver() with loaded buffer and returns 'sent' (AC1.2)", async () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const threadId = randomUUID();
+			const userId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[userId, "Alice", JSON.stringify({ discord: "user123" }), now, now, 0],
+			);
+
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, "discord", "site-1", 0, null, null, null, null, null, now, now, now, 0],
+			);
+
+			const testId = randomBytes(4).toString("hex");
+			const tmpFile = join(tmpdir(), `test-attachment-${testId}.txt`);
+			writeFileSync(tmpFile, "test file content");
+
+			try {
+				let deliverCalled = false;
+				let deliverAttachments: Array<{ filename: string; data: Buffer }> | undefined;
+				(connector as { deliver: unknown }).deliver = async (
+					_tId: string,
+					_mId: string,
+					_content: string,
+					attachments?: Array<{ filename: string; data: Buffer }>,
+				) => {
+					deliverCalled = true;
+					deliverAttachments = attachments;
+					return Promise.resolve();
+				};
+
+				const tools = connector.getPlatformTools(threadId);
+				const execute = tools.get("discord_send_message")?.execute;
+				const result = await execute?.({ content: "hi", attachments: [tmpFile] });
+
+				expect(result).toBe("sent");
+				expect(deliverCalled).toBe(true);
+				expect(deliverAttachments).toBeDefined();
+				expect(deliverAttachments?.length).toBe(1);
+				expect(deliverAttachments?.[0]?.filename).toBe(`test-attachment-${testId}.txt`);
+				expect(deliverAttachments?.[0]?.data).toBeDefined();
+			} finally {
+				unlinkSync(tmpFile);
+			}
+		});
+
+		it("unreadable attachment path returns error, deliver not called (AC1.5)", async () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const threadId = randomUUID();
+
+			let deliverCalled = false;
+			(connector as { deliver: unknown }).deliver = async () => {
+				deliverCalled = true;
+				return Promise.resolve();
+			};
+
+			const tools = connector.getPlatformTools(threadId);
+			const execute = tools.get("discord_send_message")?.execute;
+			const result = await execute?.({
+				content: "hi",
+				attachments: ["/no/such/file.txt"],
+			});
+
+			expect(typeof result).toBe("string");
+			expect(result?.startsWith("Error")).toBe(true);
+			expect(result?.includes("cannot read attachment")).toBe(true);
+			expect(deliverCalled).toBe(false);
+		});
+
+		it("multiple execute() calls each invoke deliver() separately (AC1.3)", async () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const threadId = randomUUID();
+			const userId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[userId, "Alice", JSON.stringify({ discord: "user123" }), now, now, 0],
+			);
+
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, "discord", "site-1", 0, null, null, null, null, null, now, now, now, 0],
+			);
+
+			let deliverCallCount = 0;
+			(connector as { deliver: unknown }).deliver = async () => {
+				deliverCallCount++;
+				return Promise.resolve();
+			};
+
+			const tools = connector.getPlatformTools(threadId);
+			const execute = tools.get("discord_send_message")?.execute;
+
+			await execute?.({ content: "msg1" });
+			await execute?.({ content: "msg2" });
+
+			expect(deliverCallCount).toBe(2);
+		});
+	});
 	});
 });
