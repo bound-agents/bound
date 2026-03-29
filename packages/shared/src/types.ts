@@ -139,6 +139,25 @@ export interface Host {
 	platforms: string | null;
 }
 
+/**
+ * Mirror of Partial<BackendCapabilities> from @bound/llm — defined inline here to avoid
+ * a circular dependency (shared cannot import from llm). If BackendCapabilities gains new
+ * fields, this inline type MUST be updated to match. TypeScript's structural typing keeps
+ * them compatible at usage sites even without a shared reference.
+ */
+export interface HostModelEntry {
+	id: string;
+	tier?: number;
+	capabilities?: {
+		streaming?: boolean;
+		tool_use?: boolean;
+		system_prompt?: boolean;
+		prompt_caching?: boolean;
+		vision?: boolean;
+		max_context?: number;
+	};
+}
+
 export interface OverlayIndexEntry {
 	id: string;
 	site_id: string;
@@ -326,6 +345,14 @@ export interface StatusForwardPayload {
 	tokens: number;
 }
 
+export interface AttachmentPayload {
+	filename: string;
+	content_type: string; // MIME type, e.g. "image/jpeg"
+	size: number; // bytes
+	url: string; // platform CDN URL for download
+	description?: string; // optional caption from the platform
+}
+
 export interface IntakePayload {
 	platform: string;
 	platform_event_id: string;
@@ -333,7 +360,7 @@ export interface IntakePayload {
 	user_id: string;
 	message_id: string;
 	content: string;
-	attachments?: unknown[];
+	attachments?: AttachmentPayload[];
 }
 
 export interface PlatformDeliverPayload {
