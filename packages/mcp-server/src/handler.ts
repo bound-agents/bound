@@ -5,6 +5,7 @@ const POLL_INTERVAL_MS = 500;
 const MAX_POLL_MS = 5 * 60 * 1000; // 5 minutes
 
 export interface ToolResult {
+	[key: string]: unknown;
 	content: Array<{ type: "text"; text: string }>;
 	isError?: boolean;
 }
