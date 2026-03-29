@@ -53,14 +53,19 @@ export async function createApp(
 	const app = new Hono();
 	const routes = registerRoutes(db, eventBus, routesConfig);
 
-	// Host header validation middleware - only allow localhost/loopback
+	// Host header validation middleware — DNS-rebinding protection for unauthenticated routes.
+	// /sync/* and /api/relay-deliver are exempt: they carry Ed25519 signature auth and must be
+	// reachable by remote spokes connecting to a hub through a reverse proxy.
 	app.use("*", (c, next) => {
 		const host = c.req.header("host");
 		if (host) {
 			const hostName = host.split(":")[0];
 			const allowedHosts = ["localhost", "127.0.0.1", "[::1]"];
 			if (!allowedHosts.includes(hostName)) {
-				return c.json({ error: "Invalid Host header" }, 400);
+				const path = new URL(c.req.url).pathname;
+				if (!path.startsWith("/sync/") && path !== "/api/relay-deliver") {
+					return c.json({ error: "Invalid Host header" }, 400);
+				}
 			}
 		}
 		return next();

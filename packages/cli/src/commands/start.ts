@@ -604,9 +604,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 				: undefined;
 
 		const webPort = Number.parseInt(process.env.PORT || "3000", 10);
+		// Hub nodes set BIND_HOST=0.0.0.0 so the server accepts external connections.
+		// Spoke nodes keep the default localhost binding.
+		const webHost = process.env.BIND_HOST ?? "localhost";
 		webServer = await createWebServer(appContext.db, appContext.eventBus, {
 			port: webPort,
-			host: "localhost",
+			host: webHost,
 			hostName: appContext.hostName,
 			models: {
 				models: modelBackends.backends.map((b) => ({ id: b.id, provider: b.provider })),
