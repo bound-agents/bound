@@ -140,6 +140,11 @@ export interface Host {
 }
 
 /**
+ * Object format for hosts.models entries. Carries capability metadata alongside the
+ * model ID. The legacy string format (plain model ID) is parsed by relay-router.ts
+ * without capability metadata (treated as "unverified").
+ */
+/**
  * Mirror of Partial<BackendCapabilities> from @bound/llm — defined inline here to avoid
  * a circular dependency (shared cannot import from llm). If BackendCapabilities gains new
  * fields, this inline type MUST be updated to match. TypeScript's structural typing keeps

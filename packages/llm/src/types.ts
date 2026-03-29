@@ -24,7 +24,11 @@ export type LLMMessage = {
 };
 
 export type ImageSource =
-	| { type: "base64"; media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp"; data: string }
+	| {
+			type: "base64";
+			media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+			data: string;
+	  }
 	| { type: "file_ref"; file_id: string };
 
 export type ContentBlock =
