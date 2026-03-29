@@ -49,7 +49,16 @@ export type StreamChunk =
 	| { type: "tool_use_start"; id: string; name: string }
 	| { type: "tool_use_args"; id: string; partial_json: string }
 	| { type: "tool_use_end"; id: string }
-	| { type: "done"; usage: { input_tokens: number; output_tokens: number } }
+	| {
+			type: "done";
+			usage: {
+				input_tokens: number;
+				output_tokens: number;
+				cache_write_tokens: number | null;
+				cache_read_tokens: number | null;
+				estimated: boolean;
+			};
+	  }
 	| { type: "error"; error: string };
 
 export interface BackendCapabilities {
