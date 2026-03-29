@@ -104,7 +104,7 @@ export function splitOnThinkingBlocks(content: string): Segment[] {
 const DOMPURIFY_CONFIG = {
 	ADD_ATTR: ["style"],
 	ADD_TAGS: ["details", "summary"],
-} as const;
+};
 
 type Sanitizer = (html: string) => string;
 
