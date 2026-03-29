@@ -36,9 +36,7 @@ export const skillRead: CommandDefinition = {
 
 			// Read SKILL.md content from files table
 			const fileRow = ctx.db
-				.prepare(
-					"SELECT content FROM files WHERE path = ? AND deleted = 0",
-				)
+				.prepare("SELECT content FROM files WHERE path = ? AND deleted = 0")
 				.get(skillMdPath) as { content: string } | null;
 
 			const skillMdContent = fileRow?.content ?? "(SKILL.md content not found in files table)";
@@ -52,7 +50,7 @@ export const skillRead: CommandDefinition = {
 				"",
 			].join("\n");
 
-			return commandSuccess(header + skillMdContent + "\n");
+			return commandSuccess(`${header}${skillMdContent}\n`);
 		} catch (error) {
 			return handleCommandError(error);
 		}

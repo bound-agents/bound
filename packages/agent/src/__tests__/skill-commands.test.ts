@@ -42,6 +42,11 @@ describe("skill commands", () => {
 	});
 
 	beforeEach(() => {
+		// Clean tables before each test for consistent isolation
+		db.run("DELETE FROM skills WHERE deleted = 0");
+		db.run("DELETE FROM advisories WHERE deleted = 0");
+		db.run("DELETE FROM tasks WHERE deleted = 0");
+
 		inMemoryFs = new InMemoryFs();
 		ctx = {
 			db,
@@ -59,11 +64,6 @@ describe("skill commands", () => {
 	});
 
 	describe("skill-activate command", () => {
-		beforeEach(() => {
-			// Clear skills table between tests to avoid cap conflicts
-			db.run("DELETE FROM skills WHERE deleted = 0");
-		});
-
 		it("AC2.1: Success — activates a valid skill and persists to files and skills tables", async () => {
 			const skillMdContent = `---
 name: pr-review
@@ -71,15 +71,9 @@ description: Review pull requests with AI
 ---
 
 This is a skill for reviewing pull requests.`;
-			await inMemoryFs.writeFile(
-				"/home/user/skills/pr-review/SKILL.md",
-				skillMdContent,
-			);
+			await inMemoryFs.writeFile("/home/user/skills/pr-review/SKILL.md", skillMdContent);
 
-			const result = await skillActivate.handler(
-				{ name: "pr-review" },
-				ctx,
-			);
+			const result = await skillActivate.handler({ name: "pr-review" }, ctx);
 
 			expect(result.exitCode).toBe(0);
 
@@ -90,9 +84,7 @@ This is a skill for reviewing pull requests.`;
 			expect(skill?.status).toBe("active");
 
 			const file = db
-				.prepare(
-					"SELECT path, content FROM files WHERE path = ? AND deleted = 0",
-				)
+				.prepare("SELECT path, content FROM files WHERE path = ? AND deleted = 0")
 				.get("/home/user/skills/pr-review/SKILL.md") as {
 				path: string;
 				content: string;
@@ -107,16 +99,11 @@ description: Review code changes
 ---
 
 Code review skill.`;
-			await inMemoryFs.writeFile(
-				"/home/user/skills/code-review/SKILL.md",
-				skillMdContent,
-			);
+			await inMemoryFs.writeFile("/home/user/skills/code-review/SKILL.md", skillMdContent);
 
 			await skillActivate.handler({ name: "code-review" }, ctx);
 
-			const skill = db
-				.prepare("SELECT id FROM skills WHERE name = ?")
-				.get("code-review");
+			const skill = db.prepare("SELECT id FROM skills WHERE name = ?").get("code-review");
 			const file = db
 				.prepare("SELECT id FROM files WHERE path = ?")
 				.get("/home/user/skills/code-review/SKILL.md");
@@ -126,19 +113,12 @@ Code review skill.`;
 		});
 
 		it("AC2.3: Failure — missing SKILL.md exits non-zero and makes no DB writes", async () => {
-			const result = await skillActivate.handler(
-				{ name: "missing-skill" },
-				ctx,
-			);
+			const result = await skillActivate.handler({ name: "missing-skill" }, ctx);
 
 			expect(result.exitCode).not.toBe(0);
 
-			const skill = db
-				.prepare("SELECT id FROM skills WHERE name = ?")
-				.get("missing-skill");
-			const file = db
-				.prepare("SELECT id FROM files WHERE path LIKE ?")
-				.get("%missing-skill%");
+			const skill = db.prepare("SELECT id FROM skills WHERE name = ?").get("missing-skill");
+			const file = db.prepare("SELECT id FROM files WHERE path LIKE ?").get("%missing-skill%");
 
 			expect(skill).toBeNull();
 			expect(file).toBeNull();
@@ -151,15 +131,9 @@ description: This skill has mismatched name
 ---
 
 Skill content.`;
-			await inMemoryFs.writeFile(
-				"/home/user/skills/pr-review-v2/SKILL.md",
-				skillMdContent,
-			);
+			await inMemoryFs.writeFile("/home/user/skills/pr-review-v2/SKILL.md", skillMdContent);
 
-			const result = await skillActivate.handler(
-				{ name: "pr-review-v2" },
-				ctx,
-			);
+			const result = await skillActivate.handler({ name: "pr-review-v2" }, ctx);
 
 			expect(result.exitCode).not.toBe(0);
 			expect(result.stderr).toContain("does not match");
@@ -171,15 +145,9 @@ name: no-desc-skill
 ---
 
 Skill without description.`;
-			await inMemoryFs.writeFile(
-				"/home/user/skills/no-desc-skill/SKILL.md",
-				skillMdContent,
-			);
+			await inMemoryFs.writeFile("/home/user/skills/no-desc-skill/SKILL.md", skillMdContent);
 
-			const result = await skillActivate.handler(
-				{ name: "no-desc-skill" },
-				ctx,
-			);
+			const result = await skillActivate.handler({ name: "no-desc-skill" }, ctx);
 
 			expect(result.exitCode).not.toBe(0);
 			expect(result.stderr).toContain("missing required 'description'");
@@ -222,15 +190,9 @@ description: 21st skill
 ---
 
 This should fail.`;
-			await inMemoryFs.writeFile(
-				"/home/user/skills/skill-21/SKILL.md",
-				skillMdContent,
-			);
+			await inMemoryFs.writeFile("/home/user/skills/skill-21/SKILL.md", skillMdContent);
 
-			const result = await skillActivate.handler(
-				{ name: "skill-21" },
-				ctx,
-			);
+			const result = await skillActivate.handler({ name: "skill-21" }, ctx);
 
 			expect(result.exitCode).not.toBe(0);
 			expect(result.stderr).toContain("Active skill cap reached");
@@ -294,18 +256,15 @@ description: Test deterministic UUID
 ---
 
 Skill content.`;
-			await inMemoryFs.writeFile(
-				`/home/user/skills/${uniqueName}/SKILL.md`,
-				skillMdContent,
-			);
+			await inMemoryFs.writeFile(`/home/user/skills/${uniqueName}/SKILL.md`, skillMdContent);
 
 			// First activation
 			let result = await skillActivate.handler({ name: uniqueName }, ctx);
 			expect(result.exitCode).toBe(0);
 
-			const skill1 = db
-				.prepare("SELECT id FROM skills WHERE name = ?")
-				.get(uniqueName) as { id: string } | null;
+			const skill1 = db.prepare("SELECT id FROM skills WHERE name = ?").get(uniqueName) as {
+				id: string;
+			} | null;
 
 			const expectedId = deterministicUUID(BOUND_NAMESPACE, uniqueName);
 			expect(skill1).toBeTruthy();
@@ -315,9 +274,9 @@ Skill content.`;
 			result = await skillActivate.handler({ name: uniqueName }, ctx);
 			expect(result.exitCode).toBe(0);
 
-			const skill2 = db
-				.prepare("SELECT id FROM skills WHERE name = ?")
-				.get(uniqueName) as { id: string } | null;
+			const skill2 = db.prepare("SELECT id FROM skills WHERE name = ?").get(uniqueName) as {
+				id: string;
+			} | null;
 			expect(skill2?.id).toBe(expectedId);
 
 			const count = db
@@ -337,7 +296,7 @@ Skill content.`;
 				"skills",
 				{
 					id: skillId,
-					name: "test-skill-list-" + randomUUID().slice(0, 8),
+					name: `test-skill-list-${randomUUID().slice(0, 8)}`,
 					description: "Test skill for listing",
 					status: "active",
 					skill_root: "/home/user/skills/test-skill",
@@ -460,6 +419,7 @@ Skill content.`;
 
 			expect(result.exitCode).toBe(0);
 			expect(result.stdout).toContain("ALLOWED_TOOLS");
+			expect(result.stdout).toContain("COMPATIBILITY");
 			expect(result.stdout).toContain("CONTENT_HASH");
 			expect(result.stdout).toContain("RETIRED_REASON");
 		});
@@ -519,10 +479,7 @@ This is the skill content.`;
 				siteId,
 			);
 
-			const result = await skillRead.handler(
-				{ name: uniqueName },
-				ctx,
-			);
+			const result = await skillRead.handler({ name: uniqueName }, ctx);
 
 			expect(result.exitCode).toBe(0);
 			expect(result.stdout).toContain(`--- Skill: ${uniqueName} ---`);
@@ -533,10 +490,7 @@ This is the skill content.`;
 		});
 
 		it("AC2.13: Failure — skill-read unknown-skill exits non-zero", async () => {
-			const result = await skillRead.handler(
-				{ name: `unknown-skill-${randomUUID()}` },
-				ctx,
-			);
+			const result = await skillRead.handler({ name: `unknown-skill-${randomUUID()}` }, ctx);
 
 			expect(result.exitCode).not.toBe(0);
 			expect(result.stderr).toContain("not found");
@@ -574,10 +528,7 @@ This is the skill content.`;
 				siteId,
 			);
 
-			const result = await skillRetire.handler(
-				{ name: uniqueName },
-				ctx,
-			);
+			const result = await skillRetire.handler({ name: uniqueName }, ctx);
 
 			expect(result.exitCode).toBe(0);
 
@@ -620,16 +571,13 @@ This is the skill content.`;
 			);
 
 			const reason = "Too noisy";
-			const result = await skillRetire.handler(
-				{ name: uniqueName, reason },
-				ctx,
-			);
+			const result = await skillRetire.handler({ name: uniqueName, reason }, ctx);
 
 			expect(result.exitCode).toBe(0);
 
-			const skill = db
-				.prepare("SELECT retired_reason FROM skills WHERE id = ?")
-				.get(skillId) as { retired_reason: string };
+			const skill = db.prepare("SELECT retired_reason FROM skills WHERE id = ?").get(skillId) as {
+				retired_reason: string;
+			};
 
 			expect(skill.retired_reason).toBe(reason);
 		});
@@ -790,27 +738,20 @@ This is the skill content.`;
 				siteId,
 			);
 
-			const result = await skillRetire.handler(
-				{ name: uniqueName },
-				ctx,
-			);
+			const result = await skillRetire.handler({ name: uniqueName }, ctx);
 
 			expect(result.exitCode).toBe(0);
 			expect(result.stdout).toContain("2 advisory");
 
 			const advisories = db
-				.prepare(
-					"SELECT id, title, detail FROM advisories WHERE deleted = 0 ORDER BY proposed_at",
-				)
+				.prepare("SELECT id, title, detail FROM advisories WHERE deleted = 0 ORDER BY proposed_at")
 				.all() as Array<{
 				id: string;
 				title: string;
 				detail: string;
 			}>;
 
-			const relevantAdvisories = advisories.filter((a) =>
-				a.title.includes(uniqueName),
-			);
+			const relevantAdvisories = advisories.filter((a) => a.title.includes(uniqueName));
 			expect(relevantAdvisories.length).toBe(2);
 
 			for (const advisory of relevantAdvisories) {

@@ -72,25 +72,19 @@ export const skillActivate: CommandDefinition = {
 			try {
 				content = await ctx.fs.readFile(skillMdPath);
 			} catch {
-				return commandError(
-					`Skill '${name}' not found: missing ${skillMdPath}\n`,
-				);
+				return commandError(`Skill '${name}' not found: missing ${skillMdPath}\n`);
 			}
 
 			// Validate file size
 			const sizeBytes = Buffer.byteLength(content, "utf8");
 			if (sizeBytes > MAX_FILE_SIZE_BYTES) {
-				return commandError(
-					`SKILL.md exceeds 64 KB size limit (${sizeBytes} bytes)\n`,
-				);
+				return commandError(`SKILL.md exceeds 64 KB size limit (${sizeBytes} bytes)\n`);
 			}
 
 			// Parse frontmatter
 			const parsed = parseFrontmatter(content);
 			if (!parsed) {
-				return commandError(
-					"SKILL.md is missing required YAML frontmatter (---...---)\n",
-				);
+				return commandError("SKILL.md is missing required YAML frontmatter (---...---)\n");
 			}
 
 			const { data, body } = parsed;
@@ -104,9 +98,7 @@ export const skillActivate: CommandDefinition = {
 
 			// Validate description is present and within length limit (S6.1)
 			if (!data.description) {
-				return commandError(
-					"SKILL.md is missing required 'description' field in frontmatter\n",
-				);
+				return commandError("SKILL.md is missing required 'description' field in frontmatter\n");
 			}
 			if (data.description.length > MAX_DESCRIPTION_LENGTH) {
 				return commandError(
@@ -138,9 +130,7 @@ export const skillActivate: CommandDefinition = {
 			const now = new Date().toISOString();
 
 			// R-SK13: Early file persistence — write all skill files to files table BEFORE upserting skills row
-			const allPaths = ctx.fs
-				.getAllPaths()
-				.filter((p) => p.startsWith(skillRoot + "/"));
+			const allPaths = ctx.fs.getAllPaths().filter((p) => p.startsWith(`${skillRoot}/`));
 			for (const filePath of allPaths) {
 				let fileContent: string;
 				try {
@@ -152,9 +142,7 @@ export const skillActivate: CommandDefinition = {
 				const fileHash = createHash("sha256").update(fileContent).digest("hex");
 
 				const existingFile = ctx.db
-					.prepare(
-						"SELECT id, content FROM files WHERE path = ? AND deleted = 0",
-					)
+					.prepare("SELECT id, content FROM files WHERE path = ? AND deleted = 0")
 					.get(filePath) as { id: string; content: string } | null;
 
 				if (existingFile) {

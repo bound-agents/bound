@@ -12,7 +12,8 @@ export const skillList: CommandDefinition = {
 		{
 			name: "verbose",
 			required: false,
-			description: "Show additional columns (allowed_tools, compatibility, content_hash, retired_reason)",
+			description:
+				"Show additional columns (allowed_tools, compatibility, content_hash, retired_reason)",
 		},
 	],
 	handler: async (args: Record<string, string>, ctx: CommandContext) => {
@@ -21,9 +22,7 @@ export const skillList: CommandDefinition = {
 			// Boolean flag convention: present = true, absent = false (consistent with forget's --prefix)
 			const verbose = args.verbose !== undefined;
 
-			const whereClause = statusFilter
-				? "WHERE status = ? AND deleted = 0"
-				: "WHERE deleted = 0";
+			const whereClause = statusFilter ? "WHERE status = ? AND deleted = 0" : "WHERE deleted = 0";
 			const queryArgs = statusFilter ? [statusFilter] : [];
 
 			const rows = ctx.db
@@ -56,13 +55,11 @@ export const skillList: CommandDefinition = {
 			// Header
 			if (verbose) {
 				lines.push(
-					"NAME             STATUS   ACTIVATIONS LAST USED            DESCRIPTION                     ALLOWED_TOOLS        CONTENT_HASH     RETIRED_REASON",
+					"NAME             STATUS   ACTIVATIONS LAST USED            DESCRIPTION                     ALLOWED_TOOLS        COMPATIBILITY   CONTENT_HASH     RETIRED_REASON",
 				);
 				lines.push("-".repeat(160));
 			} else {
-				lines.push(
-					"NAME             STATUS   ACTIVATIONS LAST USED            DESCRIPTION",
-				);
+				lines.push("NAME             STATUS   ACTIVATIONS LAST USED            DESCRIPTION");
 				lines.push("-".repeat(90));
 			}
 
@@ -75,17 +72,18 @@ export const skillList: CommandDefinition = {
 
 				if (verbose) {
 					const tools = (row.allowed_tools ?? "").slice(0, 20).padEnd(20);
+					const compatibility = (row.compatibility ?? "").slice(0, 15).padEnd(15);
 					const hash = (row.content_hash ?? "").slice(0, 16).padEnd(16);
 					const reason = (row.retired_reason ?? "").slice(0, 20);
 					lines.push(
-						`${name} ${status} ${activations} ${lastUsed} ${desc} ${tools} ${hash} ${reason}`,
+						`${name} ${status} ${activations} ${lastUsed} ${desc} ${tools} ${compatibility} ${hash} ${reason}`,
 					);
 				} else {
 					lines.push(`${name} ${status} ${activations} ${lastUsed} ${desc}`);
 				}
 			}
 
-			return commandSuccess(lines.join("\n") + "\n");
+			return commandSuccess(`${lines.join("\n")}\n`);
 		} catch (error) {
 			return handleCommandError(error);
 		}
