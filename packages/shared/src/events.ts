@@ -2,6 +2,9 @@ import type { Message, PlatformDeliverPayload, StatusForwardPayload } from "./ty
 
 export interface EventMap {
 	"message:created": { message: Message; thread_id: string };
+	/** Emitted after a local agent loop run to push the new assistant message to
+	 *  WebSocket clients without re-triggering the agent loop handler. */
+	"message:broadcast": { message: Message; thread_id: string };
 	"task:triggered": { task_id: string; trigger: string };
 	"task:completed": { task_id: string; result: string | null };
 	"sync:completed": { pushed: number; pulled: number; duration_ms: number };

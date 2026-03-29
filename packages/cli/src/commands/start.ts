@@ -730,13 +730,15 @@ export async function runStart(args: StartArgs): Promise<void> {
 					}
 				}
 
-				// Emit the last message for WebSocket push (only on local success)
+				// Push the last assistant message to WebSocket clients via the dedicated
+				// broadcast event. Using message:broadcast (not message:created) avoids
+				// re-triggering the agent loop handler on the same event channel.
 				if (shouldReEmitMessage) {
 					const lastMsg = appContext.db
 						.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
 						.get(thread_id);
 					if (lastMsg) {
-						appContext.eventBus.emit("message:created", {
+						appContext.eventBus.emit("message:broadcast", {
 							message: lastMsg as any,
 							thread_id,
 						});

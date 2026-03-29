@@ -97,6 +97,57 @@ describe("WebSocket Handler", () => {
 		expect(messages.length).toBe(0);
 	});
 
+	it("broadcasts message:broadcast events to subscribed clients", async () => {
+		const messages: string[] = [];
+		const mockWs = {
+			readyState: WebSocket.OPEN,
+			send(data: string): void {
+				messages.push(data);
+			},
+		} as unknown as WebSocket;
+
+		handler.open(mockWs);
+		handler.message(mockWs, JSON.stringify({ subscribe: ["thread-1"] }));
+
+		eventBus.emit("message:broadcast", {
+			message: {
+				id: "msg-1",
+				content: "Here is my answer",
+				role: "assistant",
+			} as any,
+			thread_id: "thread-1",
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		expect(messages.length).toBe(1);
+		const parsed = JSON.parse(messages[0]);
+		expect(parsed.type).toBe("message:created");
+		expect(parsed.data.role).toBe("assistant");
+	});
+
+	it("does NOT push message:broadcast to non-subscribed clients", async () => {
+		const messages: string[] = [];
+		const mockWs = {
+			readyState: WebSocket.OPEN,
+			send(data: string): void {
+				messages.push(data);
+			},
+		} as unknown as WebSocket;
+
+		handler.open(mockWs);
+		handler.message(mockWs, JSON.stringify({ subscribe: ["thread-1"] }));
+
+		eventBus.emit("message:broadcast", {
+			message: { id: "msg-2", content: "Other", role: "assistant" } as any,
+			thread_id: "thread-2", // not subscribed
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		expect(messages.length).toBe(0);
+	});
+
 	it("handles client disconnection", () => {
 		const mockWs = {
 			readyState: WebSocket.OPEN,

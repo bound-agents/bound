@@ -93,6 +93,9 @@ export function createWebSocketHandler(eventBus: TypedEventEmitter): WebSocketCo
 	};
 
 	eventBus.on("message:created", handleMessageCreated);
+	// message:broadcast is used for assistant-response re-emit so it reaches
+	// WebSocket clients without re-triggering the agent loop handler.
+	eventBus.on("message:broadcast", handleMessageCreated);
 	eventBus.on("task:completed", handleTaskCompleted);
 	eventBus.on("file:changed", handleFileChanged);
 	eventBus.on("alert:created", handleAlertCreated);
