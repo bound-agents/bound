@@ -1,10 +1,15 @@
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import Database from "bun:sqlite";
-import { applySchema, insertRow } from "@bound/core";
-import { createClusterFs, diffWorkspaceAsync, snapshotWorkspace, hydrateWorkspace } from "../cluster-fs";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { applySchema, insertRow } from "@bound/core";
 import { InMemoryFs, MountableFs } from "just-bash";
+import {
+	createClusterFs,
+	diffWorkspaceAsync,
+	hydrateWorkspace,
+	snapshotWorkspace,
+} from "../cluster-fs";
 
 describe("ClusterFs", () => {
 	test("creates a ClusterFs with proper mount structure", () => {
@@ -224,12 +229,7 @@ describe("hydrateWorkspace", () => {
 		fs = new MountableFs({ base: new InMemoryFs() });
 	});
 
-	function insertFile(
-		database: Database,
-		path: string,
-		content: string,
-		deleted = 0,
-	) {
+	function insertFile(database: Database, path: string, content: string, deleted = 0) {
 		const now = new Date().toISOString();
 		insertRow(
 			database,
