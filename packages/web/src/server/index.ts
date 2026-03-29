@@ -80,6 +80,7 @@ export async function createApp(
 	app.route("/api/status", routes.status);
 	app.route("/api/tasks", routes.tasks);
 	app.route("/api/advisories", routes.advisories);
+	app.route("/api/mcp", routes.mcp);
 
 	// Webhook routes
 	app.route("/hooks", createWebhookRoutes(eventBus));
