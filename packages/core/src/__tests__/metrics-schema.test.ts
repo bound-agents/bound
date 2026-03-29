@@ -1,9 +1,9 @@
+import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import Database from "bun:sqlite";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { applyMetricsSchema, recordTurn } from "../metrics-schema";
 
 describe("metrics-schema — AC4.6 cache token persistence", () => {
@@ -50,7 +50,9 @@ describe("metrics-schema — AC4.6 cache token persistence", () => {
 			created_at: "2026-03-29T12:00:00Z",
 		});
 
-		const row = db.prepare("SELECT tokens_cache_write, tokens_cache_read FROM turns WHERE id = ?").get(turnId) as
+		const row = db
+			.prepare("SELECT tokens_cache_write, tokens_cache_read FROM turns WHERE id = ?")
+			.get(turnId) as
 			| { tokens_cache_write: number | null; tokens_cache_read: number | null }
 			| undefined;
 
@@ -71,7 +73,9 @@ describe("metrics-schema — AC4.6 cache token persistence", () => {
 			created_at: "2026-03-29T12:00:00Z",
 		});
 
-		const row = db.prepare("SELECT tokens_cache_write, tokens_cache_read FROM turns WHERE id = ?").get(turnId) as
+		const row = db
+			.prepare("SELECT tokens_cache_write, tokens_cache_read FROM turns WHERE id = ?")
+			.get(turnId) as
 			| { tokens_cache_write: number | null; tokens_cache_read: number | null }
 			| undefined;
 

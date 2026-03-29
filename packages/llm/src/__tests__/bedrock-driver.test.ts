@@ -90,7 +90,13 @@ describe("BedrockDriver", () => {
 		expect(chunks[1]).toEqual({ type: "text", content: "world" });
 		expect(chunks[2]).toEqual({
 			type: "done",
-			usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false },
+			usage: {
+				input_tokens: 10,
+				output_tokens: 5,
+				cache_write_tokens: null,
+				cache_read_tokens: null,
+				estimated: false,
+			},
 		});
 	});
 
@@ -133,33 +139,38 @@ describe("BedrockDriver", () => {
 			}
 		});
 
-		it.skipIf(shouldSkip)("AC4.5 — should apply zero-usage guard when all tokens are zero", async () => {
-			sendSpy.mockImplementation(() =>
-				Promise.resolve(
-					createMockStream([
-						{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "This is a response" } } },
-						{ metadata: { usage: { inputTokens: 0, outputTokens: 0 } } },
-					]),
-				),
-			);
+		it.skipIf(shouldSkip)(
+			"AC4.5 — should apply zero-usage guard when all tokens are zero",
+			async () => {
+				sendSpy.mockImplementation(() =>
+					Promise.resolve(
+						createMockStream([
+							{
+								contentBlockDelta: { contentBlockIndex: 0, delta: { text: "This is a response" } },
+							},
+							{ metadata: { usage: { inputTokens: 0, outputTokens: 0 } } },
+						]),
+					),
+				);
 
-			const driver = makeDriver();
-			const chunks = await collectChunks(
-				driver.chat({
-					model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
-					messages: [{ role: "user", content: "Hello world" }],
-				}),
-			);
+				const driver = makeDriver();
+				const chunks = await collectChunks(
+					driver.chat({
+						model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+						messages: [{ role: "user", content: "Hello world" }],
+					}),
+				);
 
-			expect(chunks).toHaveLength(2);
-			const doneChunk = chunks[1];
-			expect(doneChunk.type).toBe("done");
-			if (doneChunk.type === "done") {
-				expect(doneChunk.usage.estimated).toBe(true);
-				expect(doneChunk.usage.input_tokens).toBeGreaterThan(0);
-				expect(doneChunk.usage.output_tokens).toBeGreaterThan(0);
-			}
-		});
+				expect(chunks).toHaveLength(2);
+				const doneChunk = chunks[1];
+				expect(doneChunk.type).toBe("done");
+				if (doneChunk.type === "done") {
+					expect(doneChunk.usage.estimated).toBe(true);
+					expect(doneChunk.usage.input_tokens).toBeGreaterThan(0);
+					expect(doneChunk.usage.output_tokens).toBeGreaterThan(0);
+				}
+			},
+		);
 
 		it.skipIf(shouldSkip)("should have null cache tokens when not present", async () => {
 			sendSpy.mockImplementation(() =>
@@ -233,7 +244,13 @@ describe("BedrockDriver", () => {
 		expect(chunks[3]).toEqual({ type: "tool_use_end", id: "tool-1" });
 		expect(chunks[4]).toEqual({
 			type: "done",
-			usage: { input_tokens: 20, output_tokens: 15, cache_write_tokens: null, cache_read_tokens: null, estimated: false },
+			usage: {
+				input_tokens: 20,
+				output_tokens: 15,
+				cache_write_tokens: null,
+				cache_read_tokens: null,
+				estimated: false,
+			},
 		});
 	});
 
