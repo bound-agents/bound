@@ -17,8 +17,8 @@ import { query } from "./query";
 import { schedule } from "./schedule";
 
 /**
- * Get all built-in commands
- * MCP-generated commands are added separately via addMCPCommands()
+ * Get all built-in commands.
+ * MCP-generated commands are merged in start.ts after generateMCPCommands.
  */
 export function getAllCommands(): CommandDefinition[] {
 	return [
