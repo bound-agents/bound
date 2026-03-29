@@ -199,7 +199,35 @@ export function applySchema(db: Database): void {
 		) STRICT
 	`);
 
-	// 11. change_log (non-replicated, local-only)
+	// 11. skills
+	db.run(`
+		CREATE TABLE IF NOT EXISTS skills (
+			id                TEXT PRIMARY KEY,
+			name              TEXT NOT NULL,
+			description       TEXT NOT NULL,
+			status            TEXT NOT NULL,
+			skill_root        TEXT NOT NULL,
+			content_hash      TEXT,
+			allowed_tools     TEXT,
+			compatibility     TEXT,
+			metadata_json     TEXT,
+			activated_at      TEXT,
+			created_by_thread TEXT,
+			activation_count  INTEGER DEFAULT 0,
+			last_activated_at TEXT,
+			retired_by        TEXT,
+			retired_reason    TEXT,
+			modified_at       TEXT NOT NULL,
+			deleted           INTEGER DEFAULT 0
+		) STRICT
+	`);
+
+	db.run(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_name ON skills(name)
+			WHERE deleted = 0
+	`);
+
+	// 12. change_log (non-replicated, local-only)
 	db.run(`
 		CREATE TABLE IF NOT EXISTS change_log (
 			seq        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -215,7 +243,7 @@ export function applySchema(db: Database): void {
 		CREATE INDEX IF NOT EXISTS idx_changelog_seq ON change_log(seq)
 	`);
 
-	// 12. sync_state (non-replicated, local-only)
+	// 13. sync_state (non-replicated, local-only)
 	db.run(`
 		CREATE TABLE IF NOT EXISTS sync_state (
 			peer_site_id TEXT PRIMARY KEY,
@@ -226,7 +254,7 @@ export function applySchema(db: Database): void {
 		) STRICT
 	`);
 
-	// 13. host_meta (non-replicated, local-only)
+	// 14. host_meta (non-replicated, local-only)
 	db.run(`
 		CREATE TABLE IF NOT EXISTS host_meta (
 			key   TEXT PRIMARY KEY,
@@ -234,7 +262,7 @@ export function applySchema(db: Database): void {
 		) STRICT
 	`);
 
-	// 14. relay_outbox (non-replicated, local-only)
+	// 15. relay_outbox (non-replicated, local-only)
 	db.run(`
 		CREATE TABLE IF NOT EXISTS relay_outbox (
 			id              TEXT PRIMARY KEY,
@@ -256,7 +284,7 @@ export function applySchema(db: Database): void {
 		WHERE delivered = 0
 	`);
 
-	// 15. relay_inbox (non-replicated, local-only)
+	// 16. relay_inbox (non-replicated, local-only)
 	db.run(`
 		CREATE TABLE IF NOT EXISTS relay_inbox (
 			id              TEXT PRIMARY KEY,
@@ -277,7 +305,7 @@ export function applySchema(db: Database): void {
 		WHERE processed = 0
 	`);
 
-	// 16. relay_cycles (non-replicated, local-only)
+	// 17. relay_cycles (non-replicated, local-only)
 	db.run(`
 		CREATE TABLE IF NOT EXISTS relay_cycles (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
