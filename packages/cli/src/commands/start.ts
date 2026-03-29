@@ -492,6 +492,46 @@ export async function runStart(args: StartArgs): Promise<void> {
 		}
 	}
 
+	// Define agent loop factory BEFORE the web server section so the
+	// message:created handler can close over it without hitting the temporal
+	// dead zone that would exist if agentLoopFactory were a const declared
+	// after the handler is registered.
+	//
+	// Single bash tool for sandbox interaction — all commands (built-in + MCP)
+	// are registered inside the sandbox via defineCommand, so the LLM only
+	// needs bash.
+	const sandboxTool: ToolDefinition = {
+		type: "function",
+		function: {
+			name: "bash",
+			description:
+				"Execute a command in the sandboxed shell. Built-in commands: query, memorize, forget, schedule, cancel, emit, purge, await, cache-warm, cache-pin, cache-unpin, cache-evict, model-hint, archive, hostinfo. MCP tools are also available as commands. Run standard shell commands too.",
+			parameters: {
+				type: "object",
+				properties: {
+					command: {
+						type: "string",
+						description: "The shell command to execute",
+					},
+				},
+				required: ["command"],
+			},
+		},
+	};
+
+	const agentLoopFactory = (config: AgentLoopConfig): AgentLoop => {
+		if (!modelRouter) {
+			throw new Error("agentLoopFactory called without a configured model router");
+		}
+		return new AgentLoop(appContext, sandbox?.bash ?? ({} as any), modelRouter, {
+			...config,
+			tools: config.tools ?? [sandboxTool],
+		});
+	};
+
+	// Wire the factory into the relay processor so process relays run with full sandbox + tools.
+	relayProcessor.setAgentLoopFactory(agentLoopFactory);
+
 	// 12. Web server
 	console.log("Starting web server...");
 	let webServer: Awaited<ReturnType<typeof createWebServer>> | null = null;
@@ -721,41 +761,6 @@ export async function runStart(args: StartArgs): Promise<void> {
 		console.warn("Web server failed to start:", formatError(error));
 		console.warn("Continuing without web UI. API will not be available.");
 	}
-
-	// Define agent loop factory (used by platform connectors, scheduler)
-	// Single bash tool for sandbox interaction — all commands (built-in + MCP) are
-	// registered inside the sandbox via defineCommand, so the LLM only needs bash.
-	const sandboxTool: ToolDefinition = {
-		type: "function",
-		function: {
-			name: "bash",
-			description:
-				"Execute a command in the sandboxed shell. Built-in commands: query, memorize, forget, schedule, cancel, emit, purge, await, cache-warm, cache-pin, cache-unpin, cache-evict, model-hint, archive, hostinfo. MCP tools are also available as commands. Run standard shell commands too.",
-			parameters: {
-				type: "object",
-				properties: {
-					command: {
-						type: "string",
-						description: "The shell command to execute",
-					},
-				},
-				required: ["command"],
-			},
-		},
-	};
-
-	const agentLoopFactory = (config: AgentLoopConfig): AgentLoop => {
-		if (!modelRouter) {
-			throw new Error("agentLoopFactory called without a configured model router");
-		}
-		return new AgentLoop(appContext, sandbox?.bash ?? ({} as any), modelRouter, {
-			...config,
-			tools: config.tools ?? [sandboxTool],
-		});
-	};
-
-	// Wire the factory into the relay processor so process relays run with full sandbox + tools.
-	relayProcessor.setAgentLoopFactory(agentLoopFactory);
 
 	// 13. Platform connectors (if configured)
 	let platformRegistry: { start(): void; stop(): void } | null = null;
