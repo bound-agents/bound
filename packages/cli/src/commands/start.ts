@@ -15,7 +15,12 @@ import {
 } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
-import { generateMCPCommands, getAllCommands, setCommandRegistry, updateHostMCPInfo } from "@bound/agent";
+import {
+	generateMCPCommands,
+	getAllCommands,
+	setCommandRegistry,
+	updateHostMCPInfo,
+} from "@bound/agent";
 import { generateThreadTitle } from "@bound/agent";
 import {
 	createAppContext,
@@ -27,7 +32,16 @@ import {
 } from "@bound/core";
 import { createModelRouter } from "@bound/llm";
 import type { BackendConfig, ModelBackendsConfig, ToolDefinition } from "@bound/llm";
-import { createClusterFs, createDefineCommands, createSandbox } from "@bound/sandbox";
+import {
+	type ClusterFsResult,
+	createClusterFs,
+	createDefineCommands,
+	createSandbox,
+	diffWorkspace,
+	hydrateWorkspace,
+	persistWorkspaceChanges,
+	snapshotWorkspace,
+} from "@bound/sandbox";
 import type { ProcessPayload, StatusForwardPayload, SyncConfig } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import { ReachabilityTracker, ensureKeypair } from "@bound/sync";
@@ -365,17 +379,19 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// 9. Sandbox setup
 	console.log("Setting up sandbox...");
 	let sandbox: Awaited<ReturnType<typeof createSandbox>> | null = null;
-	// biome-ignore lint/suspicious/noExplicitAny: ClusterFsResult|MountableFs union — cross-package type not importable without just-bash dep
-	let clusterFsObj: any = null;
+	let clusterFsObj: ClusterFsResult | null = null;
 	try {
 		const clusterFsRaw = createClusterFs({
 			hostName: appContext.hostName,
 			syncEnabled: false,
+			db: appContext.db,
+			siteId: appContext.siteId,
 		});
 		// Extract the MountableFs from either a MountableFs directly or ClusterFsResult
 		// biome-ignore lint/suspicious/noExplicitAny: MountableFs type lives in just-bash, not re-exported from @bound/sandbox
 		const clusterFs = ("fs" in clusterFsRaw ? clusterFsRaw.fs : clusterFsRaw) as any;
-		clusterFsObj = clusterFsRaw;
+		// With db and siteId provided, createClusterFs always returns ClusterFsResult
+		clusterFsObj = clusterFsRaw as unknown as ClusterFsResult;
 		const commandContext = {
 			db: appContext.db,
 			siteId: appContext.siteId,
@@ -395,6 +411,10 @@ export async function runStart(args: StartArgs): Promise<void> {
 			`[sandbox] ${builtinCommands.length} built-in + ${mcpCommands.length} MCP commands registered`,
 		);
 		console.log("[sandbox] Sandbox ready");
+
+		// Restore previously persisted VFS state from the files table.
+		// This runs once at startup; agents can then overwrite or append.
+		await hydrateWorkspace(clusterFs, appContext.db);
 
 		// Wire the virtual filesystem reader so discord_send_message can read files
 		// created by bash commands in the sandbox. The MountableFs.readFile() returns
@@ -567,14 +587,61 @@ export async function runStart(args: StartArgs): Promise<void> {
 		if (!modelRouter) {
 			throw new Error("agentLoopFactory called without a configured model router");
 		}
+
+		// Per-invocation snapshot state. Each call to agentLoopFactory gets its own
+		// closure so concurrent agent loops do not share preSnapshot.
+		let preSnapshot: Map<string, string> | null = null;
+
+		const loopSandbox = {
+			// Delegate exec and checkMemoryThreshold to the underlying sandbox so
+			// bash command execution and memory tracking continue to work.
+			exec: sandbox
+				? (cmd: string, opts?: Record<string, unknown>) => sandbox.bash.exec(cmd, opts)
+				: undefined,
+			checkMemoryThreshold: sandbox ? () => sandbox.checkMemoryThreshold() : undefined,
+
+			// Called at HYDRATE_FS: record the filesystem state before any tool calls.
+			capturePreSnapshot: async (): Promise<void> => {
+				if (!clusterFsObj) return;
+				preSnapshot = await snapshotWorkspace(clusterFsObj.fs, {
+					paths: clusterFsObj.getInMemoryPaths(),
+				});
+			},
+
+			// Called at FS_PERSIST: diff pre vs post, persist changes, return count.
+			persistFs: async (): Promise<{ changes: number; changedPaths?: string[] }> => {
+				if (!clusterFsObj || !preSnapshot) {
+					return { changes: 0 };
+				}
+				const postSnapshot = await snapshotWorkspace(clusterFsObj.fs, {
+					paths: clusterFsObj.getInMemoryPaths(),
+				});
+				// Compute changedPaths synchronously for file-thread tracking.
+				const changedPaths = diffWorkspace(preSnapshot, postSnapshot).map((c) => c.path);
+				const result = await persistWorkspaceChanges(
+					appContext.db,
+					appContext.siteId,
+					preSnapshot,
+					postSnapshot,
+					appContext.eventBus,
+					undefined,
+					clusterFsObj.fs,
+				);
+				preSnapshot = null;
+				if (!result.ok) {
+					return { changes: 0 };
+				}
+				return { changes: result.value.changes, changedPaths };
+			},
+		};
+
 		const platformToolDefs = config.platformTools
 			? Array.from(config.platformTools.values()).map((t) => t.toolDefinition)
 			: [];
 		// sandboxTool (bash) is always included first; config.tools adds extra tools beyond bash.
 		// If config.tools includes bash, dedupe it.
 		const extraTools = config.tools?.filter((t) => t.function.name !== "bash") ?? [];
-		// biome-ignore lint/suspicious/noExplicitAny: stub bash interface when sandbox unavailable
-		return new AgentLoop(appContext, sandbox?.bash ?? ({} as any), modelRouter, {
+		return new AgentLoop(appContext, loopSandbox, modelRouter, {
 			...config,
 			tools: [sandboxTool, ...extraTools, ...platformToolDefs],
 		});
