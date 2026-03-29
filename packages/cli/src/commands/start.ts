@@ -542,9 +542,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 		const platformToolDefs = config.platformTools
 			? Array.from(config.platformTools.values()).map((t) => t.toolDefinition)
 			: [];
+		// sandboxTool (bash) is always included first; config.tools adds extra tools beyond bash.
+		// If config.tools includes bash, dedupe it.
+		const extraTools = config.tools?.filter((t) => t.function.name !== "bash") ?? [];
 		return new AgentLoop(appContext, sandbox?.bash ?? ({} as any), modelRouter, {
 			...config,
-			tools: [...(config.tools ?? [sandboxTool]), ...platformToolDefs],
+			tools: [sandboxTool, ...extraTools, ...platformToolDefs],
 		});
 	};
 

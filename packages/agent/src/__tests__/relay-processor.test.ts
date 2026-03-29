@@ -183,8 +183,7 @@ describe("RelayProcessor", () => {
 				idempotency_key: null,
 				payload: JSON.stringify({
 					tool: "test-tool",
-					args: {},
-					timeout_ms: 5000,
+					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
 				expires_at: new Date(now.getTime() + 60000).toISOString(),
 				received_at: now.toISOString(),
@@ -265,8 +264,7 @@ describe("RelayProcessor", () => {
 				idempotency_key: null,
 				payload: JSON.stringify({
 					tool: "test",
-					args: {},
-					timeout_ms: 5000,
+					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
 				expires_at: new Date(now.getTime() + 60000).toISOString(),
 				received_at: now.toISOString(),
@@ -322,8 +320,7 @@ describe("RelayProcessor", () => {
 				idempotency_key: null,
 				payload: JSON.stringify({
 					tool: "test",
-					args: {},
-					timeout_ms: 5000,
+					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
 				expires_at: new Date(now.getTime() - 1000).toISOString(), // Already expired
 				received_at: now.toISOString(),
@@ -389,7 +386,6 @@ describe("RelayProcessor", () => {
 				idempotency_key: null,
 				payload: JSON.stringify({
 					resource_uri: resourceUri,
-					timeout_ms: 5000,
 				} as ResourceReadPayload),
 				expires_at: new Date(now.getTime() + 60000).toISOString(),
 				received_at: now.toISOString(),
@@ -451,7 +447,6 @@ describe("RelayProcessor", () => {
 				payload: JSON.stringify({
 					prompt_name: "test-prompt",
 					prompt_args: { key: "value" },
-					timeout_ms: 5000,
 				} as PromptInvokePayload),
 				expires_at: new Date(now.getTime() + 60000).toISOString(),
 				received_at: now.toISOString(),
@@ -572,10 +567,7 @@ describe("RelayProcessor", () => {
 
 	describe("idempotency", () => {
 		it("returns cached response on duplicate idempotency_key (AC5.1)", async () => {
-			const mockClient = new MockMCPClient("test-server");
-			mockClient.tools = new Map([
-				["test-server-test", { name: "test-server-test", description: "Test tool" }],
-			]);
+			const mockClient = new MockMCPClient("test-server", new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]));
 			let callCount = 0;
 			const originalCallTool = mockClient.callTool.bind(mockClient);
 			mockClient.callTool = async (name: string, args: Record<string, unknown>) => {
@@ -608,9 +600,8 @@ describe("RelayProcessor", () => {
 				ref_id: null,
 				idempotency_key: idempotencyKey,
 				payload: JSON.stringify({
-					tool: "test-server-test",
-					args: {},
-					timeout_ms: 5000,
+					tool: "test-server",
+					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
 				expires_at: new Date(now.getTime() + 60000).toISOString(),
 				received_at: now.toISOString(),
@@ -648,9 +639,8 @@ describe("RelayProcessor", () => {
 				ref_id: null,
 				idempotency_key: idempotencyKey,
 				payload: JSON.stringify({
-					tool: "test-server-test",
-					args: {},
-					timeout_ms: 5000,
+					tool: "test-server",
+					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
 				expires_at: new Date(now.getTime() + 60000).toISOString(),
 				received_at: now.toISOString(),
@@ -689,10 +679,7 @@ describe("RelayProcessor", () => {
 		});
 
 		it("expires cache entries after 5 minutes (AC5.3)", async () => {
-			const mockClient = new MockMCPClient("test-server");
-			mockClient.tools = new Map([
-				["test-server-test-tool", { name: "test-server-test-tool", description: "Test tool" }],
-			]);
+			const mockClient = new MockMCPClient("test-server", new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]));
 			let callCount = 0;
 			const originalCallTool = mockClient.callTool.bind(mockClient);
 			mockClient.callTool = async (name: string, args: Record<string, unknown>) => {
@@ -725,9 +712,8 @@ describe("RelayProcessor", () => {
 				ref_id: null,
 				idempotency_key: idempotencyKey,
 				payload: JSON.stringify({
-					tool: "test-server-test-tool",
-					args: {},
-					timeout_ms: 5000,
+					tool: "test-server",
+					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
 				expires_at: new Date(baseTime + 600000).toISOString(),
 				received_at: new Date(baseTime).toISOString(),
@@ -765,9 +751,8 @@ describe("RelayProcessor", () => {
 				ref_id: null,
 				idempotency_key: idempotencyKey,
 				payload: JSON.stringify({
-					tool: "test-server-test-tool",
-					args: {},
-					timeout_ms: 5000,
+					tool: "test-server",
+					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
 				expires_at: new Date(baseTime + 600000).toISOString(),
 				received_at: new Date(baseTime).toISOString(),
@@ -820,9 +805,8 @@ describe("RelayProcessor", () => {
 				ref_id: null,
 				idempotency_key: idempotencyKey,
 				payload: JSON.stringify({
-					tool: "test-server-test-tool",
-					args: {},
-					timeout_ms: 5000,
+					tool: "test-server",
+					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
 				expires_at: new Date(baseTime + 600000).toISOString(),
 				received_at: new Date(baseTime).toISOString(),
@@ -912,8 +896,7 @@ describe("RelayProcessor", () => {
 				idempotency_key: null,
 				payload: JSON.stringify({
 					tool: "test",
-					args: {},
-					timeout_ms: 5000,
+					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
 				expires_at: new Date(now.getTime() + 60000).toISOString(),
 				received_at: now.toISOString(),
@@ -948,7 +931,7 @@ describe("RelayProcessor", () => {
 		it("writes result if cancel arrives after execution (AC7.4)", async () => {
 			const mockClient = new MockMCPClient("test-server");
 			mockClient.tools = new Map([
-				["test-server-test-tool", { name: "test-server-test-tool", description: "Test tool" }],
+				["test_cmd", { name: "test_cmd", description: "Test tool" }],
 			]);
 			const mcpClients = new Map<string, MCPClient>();
 			mcpClients.set("test-server", mockClient as unknown as MCPClient);
@@ -975,9 +958,8 @@ describe("RelayProcessor", () => {
 				ref_id: null,
 				idempotency_key: null,
 				payload: JSON.stringify({
-					tool: "test-server-test-tool",
-					args: {},
-					timeout_ms: 5000,
+					tool: "test-server",
+					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
 				expires_at: new Date(now.getTime() + 60000).toISOString(),
 				received_at: now.toISOString(),
@@ -1044,7 +1026,7 @@ describe("RelayProcessor", () => {
 	});
 
 	describe("error handling", () => {
-		it("returns error response for unknown tool name", async () => {
+		it("returns error response for unknown server name", async () => {
 			const mockClient = new MockMCPClient("test-server");
 			const mcpClients = new Map<string, MCPClient>();
 			mcpClients.set("test-server", mockClient as unknown as MCPClient);
@@ -1068,9 +1050,8 @@ describe("RelayProcessor", () => {
 				ref_id: null,
 				idempotency_key: null,
 				payload: JSON.stringify({
-					tool: "nonexistent-tool",
-					args: {},
-					timeout_ms: 5000,
+					tool: "nonexistent-server",
+					args: { subcommand: "some_command" },
 				} as ToolCallPayload),
 				expires_at: new Date(now.getTime() + 60000).toISOString(),
 				received_at: now.toISOString(),
@@ -1102,17 +1083,11 @@ describe("RelayProcessor", () => {
 				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
 				.all("error", inboxEntry.id) as RelayOutboxEntry[];
 			expect(errors.length).toBeGreaterThan(0);
-			expect(errors[0].payload).toContain("Tool not found");
+			expect(errors[0].payload).toContain("MCP server not found");
 		});
 
 		it("returns error response with retriable flag when MCP client call fails", async () => {
-			const failingClient = new MockMCPClient("failing-server");
-			failingClient.tools = new Map([
-				[
-					"failing-server-test-tool",
-					{ name: "failing-server-test-tool", description: "Test tool" },
-				],
-			]);
+			const failingClient = new MockMCPClient("failing-server", new Map([["test_command", { name: "test_command", description: "Test command" }]]));
 			// Override callTool to throw an error
 			failingClient.callTool = async () => {
 				throw new Error("MCP client connection failed");
@@ -1140,9 +1115,8 @@ describe("RelayProcessor", () => {
 				ref_id: null,
 				idempotency_key: null,
 				payload: JSON.stringify({
-					tool: "failing-server-test-tool",
-					args: {},
-					timeout_ms: 5000,
+					tool: "failing-server",
+					args: { subcommand: "test_command" },
 				} as ToolCallPayload),
 				expires_at: new Date(now.getTime() + 60000).toISOString(),
 				received_at: now.toISOString(),
@@ -2035,7 +2009,6 @@ describe("RelayProcessor", () => {
 				const inferencePayload: InferenceRequestPayload = {
 					model: "test-model",
 					messages: [{ role: "user", content: "test query" }],
-					timeout_ms: 5000,
 				};
 
 				const inboxEntry: RelayInboxEntry = {
@@ -3011,6 +2984,199 @@ describe("RelayProcessor", () => {
 
 				// Assert: no crash (if we got here, it passed)
 			});
+		});
+	});
+
+	describe("execution - tool_call with subcommand dispatch (AC1.2)", () => {
+		it("server-name tool call with subcommand in args dispatches correctly", async () => {
+			// Create a mock MCP client that tracks callTool invocations
+			const mockClient = new MockMCPClient("github", new Map([["create_issue", { name: "create_issue", description: "Create an issue" }]]));
+			const mcpClients = new Map<string, MCPClient>();
+			mcpClients.set("github", mockClient as unknown as MCPClient);
+
+			// Track what was passed to callTool
+			let capturedToolName: string | null = null;
+			let capturedArgs: Record<string, unknown> | null = null;
+			const originalCallTool = mockClient.callTool.bind(mockClient);
+			mockClient.callTool = async (name: string, args: Record<string, unknown>) => {
+				capturedToolName = name;
+				capturedArgs = args;
+				return originalCallTool(name, args);
+			};
+
+			const keyringSiteIds = new Set(["requester-site"]);
+			const processor = new RelayProcessor(
+				db,
+				"target-site",
+				mcpClients,
+				createMockModelRouter(),
+				keyringSiteIds,
+				createMockLogger(),
+				createMockEventBus(),
+			);
+
+			const now = new Date();
+			const inboxEntry: RelayInboxEntry = {
+				id: "tool-call-1",
+				source_site_id: "requester-site",
+				kind: "tool_call",
+				ref_id: null,
+				idempotency_key: null,
+				payload: JSON.stringify({
+					tool: "github",
+					args: { subcommand: "create_issue", title: "Fix bug", body: "Details here" },
+				} as ToolCallPayload),
+				expires_at: new Date(now.getTime() + 60000).toISOString(),
+				received_at: now.toISOString(),
+				processed: 0,
+			};
+
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					inboxEntry.id,
+					inboxEntry.source_site_id,
+					inboxEntry.kind,
+					inboxEntry.ref_id,
+					inboxEntry.idempotency_key,
+					inboxEntry.payload,
+					inboxEntry.expires_at,
+					inboxEntry.received_at,
+					inboxEntry.processed,
+				],
+			);
+
+			const handle = processor.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			handle.stop();
+
+			// Verify: callTool was called with subcommand as tool name and remaining args without subcommand
+			expect(capturedToolName).toBe("create_issue");
+			expect(capturedArgs).toEqual({ title: "Fix bug", body: "Details here" });
+
+			// Verify: result was written to outbox
+			const results = db
+				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
+				.all("result", inboxEntry.id) as RelayOutboxEntry[];
+			expect(results.length).toBeGreaterThan(0);
+		});
+
+		it("missing subcommand in args returns error response", async () => {
+			const mockClient = new MockMCPClient("github");
+			const mcpClients = new Map<string, MCPClient>();
+			mcpClients.set("github", mockClient as unknown as MCPClient);
+
+			const keyringSiteIds = new Set(["requester-site"]);
+			const processor = new RelayProcessor(
+				db,
+				"target-site",
+				mcpClients,
+				createMockModelRouter(),
+				keyringSiteIds,
+				createMockLogger(),
+				createMockEventBus(),
+			);
+
+			const now = new Date();
+			const inboxEntry: RelayInboxEntry = {
+				id: "tool-call-missing-subcommand",
+				source_site_id: "requester-site",
+				kind: "tool_call",
+				ref_id: null,
+				idempotency_key: null,
+				payload: JSON.stringify({
+					tool: "github",
+					args: { title: "Fix bug" }, // Missing subcommand
+				} as ToolCallPayload),
+				expires_at: new Date(now.getTime() + 60000).toISOString(),
+				received_at: now.toISOString(),
+				processed: 0,
+			};
+
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					inboxEntry.id,
+					inboxEntry.source_site_id,
+					inboxEntry.kind,
+					inboxEntry.ref_id,
+					inboxEntry.idempotency_key,
+					inboxEntry.payload,
+					inboxEntry.expires_at,
+					inboxEntry.received_at,
+					inboxEntry.processed,
+				],
+			);
+
+			const handle = processor.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			handle.stop();
+
+			// Verify: error response was written to outbox
+			const errors = db
+				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
+				.all("error", inboxEntry.id) as RelayOutboxEntry[];
+			expect(errors.length).toBeGreaterThan(0);
+		});
+
+		it("unknown server name (client not in mcpClients map) returns error response", async () => {
+			const mcpClients = new Map<string, MCPClient>();
+			// Don't add "unknown-server" to clients map
+
+			const keyringSiteIds = new Set(["requester-site"]);
+			const processor = new RelayProcessor(
+				db,
+				"target-site",
+				mcpClients,
+				createMockModelRouter(),
+				keyringSiteIds,
+				createMockLogger(),
+				createMockEventBus(),
+			);
+
+			const now = new Date();
+			const inboxEntry: RelayInboxEntry = {
+				id: "tool-call-unknown-server",
+				source_site_id: "requester-site",
+				kind: "tool_call",
+				ref_id: null,
+				idempotency_key: null,
+				payload: JSON.stringify({
+					tool: "unknown-server",
+					args: { subcommand: "some_command" },
+				} as ToolCallPayload),
+				expires_at: new Date(now.getTime() + 60000).toISOString(),
+				received_at: now.toISOString(),
+				processed: 0,
+			};
+
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					inboxEntry.id,
+					inboxEntry.source_site_id,
+					inboxEntry.kind,
+					inboxEntry.ref_id,
+					inboxEntry.idempotency_key,
+					inboxEntry.payload,
+					inboxEntry.expires_at,
+					inboxEntry.received_at,
+					inboxEntry.processed,
+				],
+			);
+
+			const handle = processor.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			handle.stop();
+
+			// Verify: error response was written to outbox
+			const errors = db
+				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
+				.all("error", inboxEntry.id) as RelayOutboxEntry[];
+			expect(errors.length).toBeGreaterThan(0);
 		});
 	});
 });

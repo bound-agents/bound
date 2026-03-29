@@ -45,5 +45,6 @@ describe("buildMcpToolDefinitions", () => {
 		const defs = buildMcpToolDefinitions(new Set(["github"]));
 		expect(defs[0].function.description).toContain("subcommand");
 		expect(defs[0].function.description).toContain("help");
+		expect(defs[0].function.description).toContain("github");
 	});
 });

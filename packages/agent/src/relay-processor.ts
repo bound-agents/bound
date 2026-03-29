@@ -417,32 +417,27 @@ export class RelayProcessor {
 	}
 
 	private async executeToolCall(payload: ToolCallPayload): Promise<string> {
-		// Find the MCP client that has this tool
-		// Tool names are formatted as "serverName-toolName"
-		const parts = payload.tool.split("-");
-		if (parts.length < 2) {
-			throw new Error(`Invalid tool name format: ${payload.tool}`);
+		// Under the subcommand dispatch model:
+		// payload.tool = server name (e.g., "github")
+		// payload.args = { subcommand: "create_issue", ...toolArgs }
+		// The subcommand is dispatched to the appropriate MCP server.
+
+		const serverName = payload.tool;
+		const client = this.mcpClients.get(serverName);
+		if (!client) {
+			throw new Error(`MCP server not found: ${serverName}`);
 		}
 
-		// Try to find matching client by iterating and checking listTools
-		let toolFound: MCPClient | null = null;
-		for (const client of this.mcpClients.values()) {
-			try {
-				const tools = await client.listTools();
-				if (tools.some((t) => t.name === payload.tool)) {
-					toolFound = client;
-					break;
-				}
-			} catch {
-				// Skip this client if listTools fails
-			}
+		// Extract subcommand from args
+		const subcommand = payload.args.subcommand;
+		if (typeof subcommand !== "string" || subcommand.trim().length === 0) {
+			throw new Error(`Missing or invalid subcommand in args for server: ${serverName}`);
 		}
 
-		if (!toolFound) {
-			throw new Error(`Tool not found: ${payload.tool}`);
-		}
+		// Strip subcommand from args before calling
+		const { subcommand: _, ...toolArgs } = payload.args;
 
-		const result = await toolFound.callTool(payload.tool, payload.args);
+		const result = await client.callTool(subcommand, toolArgs);
 		const resultPayload: ResultPayload = {
 			stdout: result.content,
 			stderr: result.isError ? result.content : "",
