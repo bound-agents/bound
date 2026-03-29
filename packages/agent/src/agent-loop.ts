@@ -70,7 +70,6 @@ export class AgentLoop {
 				this.aborted = true;
 			});
 		}
-
 	}
 
 	async run(): Promise<AgentLoopResult> {

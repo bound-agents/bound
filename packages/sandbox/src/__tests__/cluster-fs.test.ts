@@ -1,6 +1,6 @@
 import Database from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { applySchema, insertRow } from "@bound/core";
 import { InMemoryFs, MountableFs } from "just-bash";
@@ -179,8 +179,7 @@ describe("getInMemoryPaths", () => {
 			}
 		} finally {
 			// Cleanup
-			const fs = require("node:fs");
-			fs.rmSync(tmpDir, { recursive: true });
+			rmSync(tmpDir, { recursive: true });
 		}
 	});
 });
