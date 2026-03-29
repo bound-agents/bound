@@ -70,14 +70,15 @@ export class AgentLoop {
 			});
 		}
 
-		this.ctx.eventBus.on("agent:cancel", ({ thread_id }) => {
-			if (thread_id === this.config.threadId) {
-				this.aborted = true;
-			}
-		});
 	}
 
 	async run(): Promise<AgentLoopResult> {
+		const cancelHandler = ({ thread_id }: { thread_id: string }) => {
+			if (thread_id === this.config.threadId) {
+				this.aborted = true;
+			}
+		};
+		this.ctx.eventBus.on("agent:cancel", cancelHandler);
 		try {
 			this.state = "HYDRATE_FS";
 			// FS hydration is handled by the caller (start.ts) before constructing
@@ -588,6 +589,8 @@ export class AgentLoop {
 				filesChanged: this.filesChanged,
 				error: errorMsg,
 			};
+		} finally {
+			this.ctx.eventBus.off("agent:cancel", cancelHandler);
 		}
 	}
 

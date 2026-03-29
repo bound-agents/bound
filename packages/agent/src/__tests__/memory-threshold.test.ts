@@ -49,6 +49,7 @@ describe("Memory Threshold Check (R-W2)", () => {
 			},
 			eventBus: {
 				on: () => {},
+				off: () => {},
 				emit: () => {},
 			},
 			hostName: "test-host",

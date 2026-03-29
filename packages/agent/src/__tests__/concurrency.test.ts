@@ -79,6 +79,7 @@ describe("Concurrent agent loops with WAL serialization (R-U3)", () => {
 			},
 			eventBus: {
 				on: () => {},
+				off: () => {},
 				emit: () => {},
 			},
 			hostName: "test-host",

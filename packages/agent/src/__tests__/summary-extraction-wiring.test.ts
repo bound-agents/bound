@@ -168,7 +168,7 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 		const ctx = {
 			db,
 			logger: { info: () => {}, warn: () => {}, error: () => {} },
-			eventBus: { on: () => {}, emit: () => {} },
+			eventBus: { on: () => {}, off: () => {}, emit: () => {} },
 			hostName: "test-host",
 			siteId: "test-site-id",
 		} as unknown as AppContext;
