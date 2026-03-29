@@ -1028,6 +1028,41 @@ export class AgentLoop {
 	 * Accumulates partial_json fragments for each tool_use into complete input objects.
 	 */
 	private parseResponseChunks(chunks: StreamChunk[]): ParsedResponse {
+		// Collision detection pre-pass: reassign duplicate tool-use IDs within this turn.
+		// This is a defensive measure — drivers should produce unique IDs, but if duplicates
+		// slip through, log a warning and reassign rather than silently corrupting data.
+		const seenIds = new Set<string>();
+		// idRemap: maps original duplicate ID → new synthesized ID.
+		// Works correctly for 2+ duplicate IDs because tool_use_args and tool_use_end chunks
+		// for a given tool call ALWAYS appear sequentially after their tool_use_start (the LLM
+		// streaming protocol guarantees start → args* → end ordering within a single tool call).
+		// If the same ID appears a 3rd time (another tool_use_start with the same id), idRemap
+		// is overwritten, but by that point the 2nd tool's args/end have already been remapped.
+		const idRemap = new Map<string, string>(); // old id → new id (for remapping args/end chunks)
+		const remappedChunks = chunks.map((chunk) => {
+			if (chunk.type === "tool_use_start") {
+				if (seenIds.has(chunk.id)) {
+					const newId = `${chunk.id}-dedup-${Date.now()}-${Math.random()
+						.toString(36)
+						.slice(2, 7)}`;
+					this.ctx.logger.warn("[agent-loop] Duplicate tool-use ID detected in turn, reassigning", {
+						originalId: chunk.id,
+						newId,
+					});
+					idRemap.set(chunk.id, newId);
+					seenIds.add(newId);
+					return { ...chunk, id: newId };
+				}
+				seenIds.add(chunk.id);
+			} else if (chunk.type === "tool_use_args" || chunk.type === "tool_use_end") {
+				const remappedId = idRemap.get(chunk.id);
+				if (remappedId) {
+					return { ...chunk, id: remappedId };
+				}
+			}
+			return chunk;
+		});
+
 		let textContent = "";
 		const toolCalls: ParsedToolCall[] = [];
 		const argsAccumulator = new Map<string, string>();
@@ -1038,7 +1073,7 @@ export class AgentLoop {
 		let cacheReadTokens: number | null = null;
 		let usageEstimated = false;
 
-		for (const chunk of chunks) {
+		for (const chunk of remappedChunks) {
 			if (chunk.type === "text") {
 				textContent += chunk.content;
 			} else if (chunk.type === "tool_use_start") {
