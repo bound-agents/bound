@@ -89,6 +89,10 @@ const AVAILABLE_COMMANDS = [
 	{ name: "model-hint", description: "Set or clear the model hint for the current task" },
 	{ name: "archive", description: "Archive a thread to long-term storage" },
 	{ name: "hostinfo", description: "Display registered host information" },
+	{ name: "skill-activate", description: "Activate a skill from /home/user/skills/{name}/SKILL.md" },
+	{ name: "skill-list", description: "List skills with status, activations, and description" },
+	{ name: "skill-read", description: "Read a skill's SKILL.md content with status header" },
+	{ name: "skill-retire", description: "Retire a skill; scans tasks and creates advisories" },
 ] as const;
 
 export function assembleContext(params: ContextParams): LLMMessage[] {
