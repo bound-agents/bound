@@ -15,7 +15,7 @@ import {
 } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
-import { generateMCPCommands, getAllCommands, setCommandRegistry } from "@bound/agent";
+import { generateMCPCommands, getAllCommands, setCommandRegistry, updateHostMCPInfo } from "@bound/agent";
 import { generateThreadTitle } from "@bound/agent";
 import {
 	createAppContext,
@@ -333,6 +333,10 @@ export async function runStart(args: StartArgs): Promise<void> {
 		confirmGates,
 	);
 	console.log(`[mcp] Generated ${mcpCommands.length} MCP command definition(s)`);
+
+	// Update hosts.mcp_tools with the connected server names so relay routing
+	// and delegation affinity work correctly for this host.
+	await updateHostMCPInfo(appContext.db, appContext.siteId, mcpClientsMap);
 
 	// Build LLM ToolDefinitions — one per server, using subcommand dispatch schema.
 	const mcpToolDefinitions = buildMcpToolDefinitions(mcpServerNames);

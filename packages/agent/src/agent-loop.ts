@@ -178,6 +178,9 @@ export class AgentLoop {
 				const chunks: StreamChunk[] = [];
 				const SILENCE_TIMEOUT_MS = 120_000;
 				let currentTurnId: number | null = null;
+				// Resolved model for this turn — hoisted so message persistence can use it.
+				// Computed inside the turn-metrics try block; stays null if that block throws.
+				let resolvedModelId: string | null = null;
 				// AC4.1: Capture relay metadata (host name and first chunk latency) during relayStream()
 				// so we can record metrics AFTER recordTurn() sets currentTurnId
 				const relayMetadataRef: { hostName?: string; firstChunkLatencyMs?: number } = {};
@@ -303,7 +306,7 @@ export class AgentLoop {
 				try {
 					// Bug #10: use the resolved model id (from lastModelResolution) rather than
 					// config.modelId which is undefined when no model_hint is set on the task.
-					const resolvedModelId =
+					resolvedModelId =
 						this.lastModelResolution && this.lastModelResolution.kind !== "error"
 							? this.lastModelResolution.modelId
 							: this.config.modelId || "unknown";
@@ -409,7 +412,7 @@ export class AgentLoop {
 							thread_id: this.config.threadId,
 							role: "tool_call",
 							content: toolCallContent,
-							model_id: this.config.modelId || null,
+							model_id: resolvedModelId,
 							tool_name: null,
 							created_at: now,
 							modified_at: now,
@@ -444,7 +447,7 @@ export class AgentLoop {
 								thread_id: this.config.threadId,
 								role: "tool_result",
 								content,
-								model_id: this.config.modelId || null,
+								model_id: resolvedModelId,
 								tool_name: toolCall.id,
 								created_at: resultNow,
 								modified_at: resultNow,
@@ -479,7 +482,7 @@ export class AgentLoop {
 								thread_id: this.config.threadId,
 								role: "assistant",
 								content: parsed.textContent,
-								model_id: this.config.modelId || null,
+								model_id: resolvedModelId,
 								tool_name: null,
 								created_at: textNow,
 								modified_at: textNow,
@@ -520,7 +523,7 @@ export class AgentLoop {
 							thread_id: this.config.threadId,
 							role: "assistant",
 							content: assistantContent,
-							model_id: this.config.modelId || null,
+							model_id: resolvedModelId,
 							tool_name: null,
 							created_at: new Date().toISOString(),
 							modified_at: new Date().toISOString(),
