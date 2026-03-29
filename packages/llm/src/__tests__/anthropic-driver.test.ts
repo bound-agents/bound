@@ -316,6 +316,247 @@ data: ${JSON.stringify({
 		expect(doneChunks.length).toBe(1);
 	});
 
+	describe("cache token extraction", () => {
+		it("AC4.1 — should extract cache tokens when present", async () => {
+			const driver = new AnthropicDriver({
+				apiKey: "test-key",
+				model: "claude-3-sonnet-20240229",
+				contextWindow: 200000,
+			});
+
+			const messages: LLMMessage[] = [
+				{
+					role: "user",
+					content: "Hello",
+				},
+			];
+
+			const sseResponse = `data: ${JSON.stringify({
+				type: "message_start",
+				message: {
+					id: "msg-123",
+					type: "message",
+					role: "assistant",
+					content: [],
+					usage: {
+						input_tokens: 100,
+						output_tokens: 0,
+						cache_creation_input_tokens: 150,
+						cache_read_input_tokens: 200,
+					},
+				},
+			})}
+
+data: ${JSON.stringify({
+				type: "content_block_start",
+				index: 0,
+				content_block: { type: "text" },
+			})}
+
+data: ${JSON.stringify({
+				type: "content_block_delta",
+				index: 0,
+				delta: { type: "text_delta", text: "Response" },
+			})}
+
+data: ${JSON.stringify({
+				type: "content_block_stop",
+				index: 0,
+			})}
+
+data: ${JSON.stringify({
+				type: "message_delta",
+				delta: { stop_reason: "end_turn" },
+				usage: { output_tokens: 5 },
+			})}
+
+data: ${JSON.stringify({
+				type: "message_stop",
+			})}
+`;
+
+			global.fetch = (async () => {
+				return new Response(sseResponse, {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			}) as typeof fetch;
+
+			const chunks: StreamChunk[] = [];
+			for await (const chunk of driver.chat({
+				model: "claude-3-sonnet-20240229",
+				messages,
+			})) {
+				chunks.push(chunk);
+			}
+
+			const doneChunk = chunks.find((c) => c.type === "done");
+			expect(doneChunk).toBeDefined();
+			expect(doneChunk?.type).toBe("done");
+			if (doneChunk?.type === "done") {
+				expect(doneChunk.usage.cache_write_tokens).toBe(150);
+				expect(doneChunk.usage.cache_read_tokens).toBe(200);
+				expect(doneChunk.usage.estimated).toBe(false);
+			}
+		});
+
+		it("AC4.5 — should apply zero-usage guard when all tokens are zero", async () => {
+			const driver = new AnthropicDriver({
+				apiKey: "test-key",
+				model: "claude-3-sonnet-20240229",
+				contextWindow: 200000,
+			});
+
+			const messages: LLMMessage[] = [
+				{
+					role: "user",
+					content: "Hello world",
+				},
+			];
+
+			const sseResponse = `data: ${JSON.stringify({
+				type: "message_start",
+				message: {
+					id: "msg-123",
+					type: "message",
+					role: "assistant",
+					content: [],
+					usage: { input_tokens: 0, output_tokens: 0 },
+				},
+			})}
+
+data: ${JSON.stringify({
+				type: "content_block_start",
+				index: 0,
+				content_block: { type: "text" },
+			})}
+
+data: ${JSON.stringify({
+				type: "content_block_delta",
+				index: 0,
+				delta: { type: "text_delta", text: "This is a response" },
+			})}
+
+data: ${JSON.stringify({
+				type: "content_block_stop",
+				index: 0,
+			})}
+
+data: ${JSON.stringify({
+				type: "message_delta",
+				delta: { stop_reason: "end_turn" },
+				usage: { output_tokens: 0 },
+			})}
+
+data: ${JSON.stringify({
+				type: "message_stop",
+			})}
+`;
+
+			global.fetch = (async () => {
+				return new Response(sseResponse, {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			}) as typeof fetch;
+
+			const chunks: StreamChunk[] = [];
+			for await (const chunk of driver.chat({
+				model: "claude-3-sonnet-20240229",
+				messages,
+			})) {
+				chunks.push(chunk);
+			}
+
+			const doneChunk = chunks.find((c) => c.type === "done");
+			expect(doneChunk).toBeDefined();
+			expect(doneChunk?.type).toBe("done");
+			if (doneChunk?.type === "done") {
+				expect(doneChunk.usage.estimated).toBe(true);
+				expect(doneChunk.usage.input_tokens).toBeGreaterThan(0);
+				expect(doneChunk.usage.output_tokens).toBeGreaterThan(0);
+			}
+		});
+
+		it("should have null cache tokens when not present", async () => {
+			const driver = new AnthropicDriver({
+				apiKey: "test-key",
+				model: "claude-3-sonnet-20240229",
+				contextWindow: 200000,
+			});
+
+			const messages: LLMMessage[] = [
+				{
+					role: "user",
+					content: "Hello",
+				},
+			];
+
+			const sseResponse = `data: ${JSON.stringify({
+				type: "message_start",
+				message: {
+					id: "msg-123",
+					type: "message",
+					role: "assistant",
+					content: [],
+					usage: { input_tokens: 100, output_tokens: 0 },
+				},
+			})}
+
+data: ${JSON.stringify({
+				type: "content_block_start",
+				index: 0,
+				content_block: { type: "text" },
+			})}
+
+data: ${JSON.stringify({
+				type: "content_block_delta",
+				index: 0,
+				delta: { type: "text_delta", text: "Response" },
+			})}
+
+data: ${JSON.stringify({
+				type: "content_block_stop",
+				index: 0,
+			})}
+
+data: ${JSON.stringify({
+				type: "message_delta",
+				delta: { stop_reason: "end_turn" },
+				usage: { output_tokens: 5 },
+			})}
+
+data: ${JSON.stringify({
+				type: "message_stop",
+			})}
+`;
+
+			global.fetch = (async () => {
+				return new Response(sseResponse, {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			}) as typeof fetch;
+
+			const chunks: StreamChunk[] = [];
+			for await (const chunk of driver.chat({
+				model: "claude-3-sonnet-20240229",
+				messages,
+			})) {
+				chunks.push(chunk);
+			}
+
+			const doneChunk = chunks.find((c) => c.type === "done");
+			expect(doneChunk).toBeDefined();
+			expect(doneChunk?.type).toBe("done");
+			if (doneChunk?.type === "done") {
+				expect(doneChunk.usage.cache_write_tokens).toBeNull();
+				expect(doneChunk.usage.cache_read_tokens).toBeNull();
+				expect(doneChunk.usage.estimated).toBe(false);
+			}
+		});
+	});
+
 	it("should add cache_control at breakpoint indices", async () => {
 		const driver = new AnthropicDriver({
 			apiKey: "test-key",

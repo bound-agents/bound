@@ -62,6 +62,8 @@ interface AnthropicStreamEvent {
 		usage?: {
 			input_tokens: number;
 			output_tokens: number;
+			cache_creation_input_tokens?: number;
+			cache_read_input_tokens?: number;
 		};
 	};
 }
@@ -176,11 +178,14 @@ function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] {
 	return result;
 }
 
-async function* parseAnthropicStream(response: Response): AsyncIterable<StreamChunk> {
+async function* parseAnthropicStream(response: Response, params: ChatParams): AsyncIterable<StreamChunk> {
 	let currentToolId = "";
 	let currentToolArgs = "";
 	let inputTokens = 0;
 	let outputTokens = 0;
+	let cacheWriteTokens: number | null = null;
+	let cacheReadTokens: number | null = null;
+	let outputText = "";
 
 	for await (const line of parseStreamLines(response, "anthropic")) {
 		if (!line.startsWith(SSE_DATA_PREFIX)) {
@@ -203,9 +208,14 @@ async function* parseAnthropicStream(response: Response): AsyncIterable<StreamCh
 			continue;
 		}
 
-		// Handle message_start with input tokens
-		if (event.type === "message_start" && event.message?.usage?.input_tokens) {
-			inputTokens = event.message.usage.input_tokens;
+		// Handle message_start with input tokens and cache fields
+		if (event.type === "message_start" && event.message?.usage) {
+			const usage = event.message.usage as Record<string, unknown>;
+			inputTokens = (usage.input_tokens as number) || 0;
+			const cw = usage.cache_creation_input_tokens;
+			const cr = usage.cache_read_input_tokens;
+			if (typeof cw === "number") cacheWriteTokens = cw;
+			if (typeof cr === "number") cacheReadTokens = cr;
 		}
 
 		// Handle content_block_start for tool_use
@@ -217,9 +227,11 @@ async function* parseAnthropicStream(response: Response): AsyncIterable<StreamCh
 
 		// Handle text deltas
 		if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
+			const text = event.delta.text || "";
+			outputText += text;
 			yield {
 				type: "text",
-				content: event.delta.text || "",
+				content: text,
 			};
 		}
 
@@ -272,11 +284,23 @@ async function* parseAnthropicStream(response: Response): AsyncIterable<StreamCh
 
 		// Handle message_stop with final usage
 		if (event.type === "message_stop") {
+			// Zero-usage guard: if tokens are zero but there is output, estimate from char counts
+			let estimated = false;
+			if (inputTokens === 0 && outputTokens === 0 && outputText.length > 0) {
+				inputTokens = Math.ceil(
+					params.messages.reduce((sum, m) => sum + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length), 0) / 4,
+				);
+				outputTokens = Math.ceil(outputText.length / 4);
+				estimated = true;
+			}
 			yield {
 				type: "done",
 				usage: {
 					input_tokens: inputTokens,
 					output_tokens: outputTokens,
+					cache_write_tokens: cacheWriteTokens,
+					cache_read_tokens: cacheReadTokens,
+					estimated,
 				},
 			};
 		}
@@ -353,7 +377,7 @@ export class AnthropicDriver implements LLMBackend {
 			return res;
 		});
 
-		yield* parseAnthropicStream(response);
+		yield* parseAnthropicStream(response, params);
 	}
 
 	capabilities(): BackendCapabilities {
