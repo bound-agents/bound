@@ -90,7 +90,7 @@ export class DiscordConnector implements PlatformConnector {
 		threadId: string,
 		_messageId: string,
 		content: string,
-		_attachments?: unknown[],
+		_attachments?: Array<{ filename: string; data: Buffer }>,
 	): Promise<void> {
 		if (!this.client) {
 			throw new Error("DiscordConnector: not connected");

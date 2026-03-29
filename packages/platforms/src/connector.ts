@@ -67,8 +67,11 @@ export interface PlatformConnector {
 	 * @returns A map from tool name to tool definition + execute closure. The execute
 	 *   closure receives the LLM's input object and returns a result string.
 	 */
-	getPlatformTools?(threadId: string): Map<string, {
-		toolDefinition: ToolDefinition;
-		execute: (input: Record<string, unknown>) => Promise<string>;
-	}>;
+	getPlatformTools?(threadId: string): Map<
+		string,
+		{
+			toolDefinition: ToolDefinition;
+			execute: (input: Record<string, unknown>) => Promise<string>;
+		}
+	>;
 }

@@ -64,6 +64,7 @@
       "version": "0.0.1",
       "dependencies": {
         "@bound/core": "workspace:*",
+        "@bound/llm": "workspace:*",
         "@bound/shared": "workspace:*",
       },
       "devDependencies": {

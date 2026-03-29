@@ -36,10 +36,13 @@ export interface AgentLoopConfig {
 	 * Platform-contributed tool closures, keyed by tool name.
 	 * The agent loop checks this map before falling through to sandbox dispatch.
 	 */
-	platformTools?: Map<string, {
-		toolDefinition: ToolDefinition;
-		execute: (input: Record<string, unknown>) => Promise<string>;
-	}>;
+	platformTools?: Map<
+		string,
+		{
+			toolDefinition: ToolDefinition;
+			execute: (input: Record<string, unknown>) => Promise<string>;
+		}
+	>;
 }
 
 export interface AgentLoopResult {
