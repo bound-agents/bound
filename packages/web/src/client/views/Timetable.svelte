@@ -23,6 +23,7 @@ let tasks: Task[] = $state([]);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let loading = $state(true);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
+// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
 let filterStatus = $state("");
 
 async function loadTasks(): Promise<void> {
