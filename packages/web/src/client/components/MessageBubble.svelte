@@ -1,4 +1,6 @@
 <script lang="ts">
+import { renderMarkdown } from "../lib/markdown";
+
 const {
 	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	role,
@@ -14,6 +16,20 @@ const {
 }>();
 
 let toolCallExpanded = $state(false);
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let rendered = $state("");
+
+// Re-render whenever content or role changes (reactive to streaming updates).
+// Sets rendered to "" for non-markdown roles so the fallback branch shows nothing.
+$effect(() => {
+	if (role === "assistant" || role === "user") {
+		renderMarkdown(content).then((html) => {
+			rendered = html;
+		});
+	} else {
+		rendered = "";
+	}
+});
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 function getToolName(): string {
@@ -67,7 +83,11 @@ function toggleToolCall(): void {
 				{role}
 			{/if}
 		</div>
-		<div class="content">{content}</div>
+		{#if rendered}
+			<div class="content md-content">{@html rendered}</div>
+		{:else}
+			<div class="content">{content}</div>
+		{/if}
 	</div>
 {/if}
 
@@ -229,5 +249,183 @@ function toggleToolCall(): void {
 		word-break: break-all;
 		overflow-x: auto;
 		line-height: 1.5;
+	}
+
+	/* -----------------------------------------------------------------------
+	   Markdown content — .md-content
+	   :global() is required because marked generates HTML outside Svelte's
+	   scoped class system. All selectors are prefixed with .md-content to
+	   avoid leaking styles to non-markdown elements.
+	   ----------------------------------------------------------------------- */
+
+	:global(.md-content > *:first-child) {
+		margin-top: 0;
+	}
+
+	/* Headings — scaled down from browser defaults; messages are not documents */
+	:global(.md-content h1) {
+		font-size: 1.25rem;
+		font-weight: 700;
+		color: var(--text-primary);
+		margin: 0.75em 0 0.4em;
+		line-height: 1.3;
+	}
+
+	:global(.md-content h2) {
+		font-size: 1.1rem;
+		font-weight: 600;
+		color: var(--text-primary);
+		margin: 0.65em 0 0.35em;
+		line-height: 1.3;
+	}
+
+	:global(.md-content h3) {
+		font-size: 1rem;
+		font-weight: 600;
+		color: var(--text-primary);
+		margin: 0.6em 0 0.3em;
+	}
+
+	/* Paragraphs */
+	:global(.md-content p) {
+		margin: 0.5em 0;
+		line-height: 1.6;
+	}
+
+	/* Lists */
+	:global(.md-content ul),
+	:global(.md-content ol) {
+		margin: 0.4em 0;
+		padding-left: 1.5em;
+	}
+
+	:global(.md-content li) {
+		margin: 0.2em 0;
+		line-height: 1.55;
+	}
+
+	/* Inline code — IBM Plex Mono, distinct background, 3px radius */
+	:global(.md-content code:not(pre > code)) {
+		font-family: var(--font-mono);
+		font-size: 0.875em;
+		background: var(--bg-surface);
+		color: var(--text-primary);
+		padding: 0.15em 0.4em;
+		border-radius: 3px;
+		border: 1px solid rgba(255, 255, 255, 0.06);
+	}
+
+	/* Shiki-highlighted fenced code blocks */
+	:global(.md-content pre.shiki) {
+		margin: 0.6em 0;
+		padding: 12px 16px;
+		border-radius: 6px;
+		overflow-x: auto;
+		line-height: 1.5;
+		font-size: 0.875rem;
+		font-family: var(--font-mono);
+		/* Shiki sets background via inline style from the tokyo-night theme */
+	}
+
+	:global(.md-content pre.shiki code) {
+		background: none;
+		border: none;
+		padding: 0;
+		font-size: inherit;
+	}
+
+	/* Default fenced code blocks (no language — not Shiki-highlighted) */
+	:global(.md-content pre:not(.shiki)) {
+		margin: 0.6em 0;
+		padding: 12px 16px;
+		background: rgba(10, 10, 20, 0.6);
+		border: 1px solid rgba(255, 255, 255, 0.06);
+		border-radius: 6px;
+		font-family: var(--font-mono);
+		font-size: 0.875rem;
+		overflow-x: auto;
+		line-height: 1.5;
+		color: var(--text-primary);
+	}
+
+	:global(.md-content pre:not(.shiki) code) {
+		background: none;
+		border: none;
+		padding: 0;
+		font-size: inherit;
+		color: inherit;
+	}
+
+	/* Blockquotes */
+	:global(.md-content blockquote) {
+		margin: 0.5em 0;
+		padding: 0.3em 0 0.3em 1em;
+		border-left: 3px solid rgba(255, 255, 255, 0.12);
+		color: var(--text-secondary);
+	}
+
+	/* Horizontal rule */
+	:global(.md-content hr) {
+		border: none;
+		border-top: 1px solid rgba(255, 255, 255, 0.08);
+		margin: 0.8em 0;
+	}
+
+	/* Links */
+	:global(.md-content a) {
+		color: var(--line-3);
+		text-decoration: underline;
+		text-underline-offset: 2px;
+	}
+
+	:global(.md-content a:hover) {
+		color: var(--line-0);
+	}
+
+	/* Tables — .table-wrap is injected by the custom table renderer in markdown.ts */
+	:global(.md-content .table-wrap) {
+		overflow-x: auto;
+		margin: 0.6em 0;
+		border-radius: 4px;
+	}
+
+	:global(.md-content table) {
+		border-collapse: collapse;
+		min-width: 100%;
+		font-size: var(--text-sm);
+	}
+
+	:global(.md-content th) {
+		background: rgba(255, 255, 255, 0.04);
+		color: var(--text-secondary);
+		font-weight: 600;
+		padding: 6px 12px;
+		text-align: left;
+		border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+	}
+
+	:global(.md-content td) {
+		padding: 5px 12px;
+		border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+		color: var(--text-primary);
+	}
+
+	/* Thinking blocks — Hanzomon purple (--line-6) left border at 0.75 opacity */
+	:global(.md-content .thinking-block) {
+		border-left: 3px solid rgba(143, 118, 214, 0.75);
+		padding: 0.3em 0 0.3em 0.75em;
+		margin: 0.5em 0;
+	}
+
+	:global(.md-content .thinking-block > summary) {
+		font-size: var(--text-sm);
+		color: var(--text-secondary);
+		cursor: pointer;
+		user-select: none;
+		padding: 2px 0;
+	}
+
+	:global(.md-content .thinking-block > summary:hover) {
+		color: var(--text-primary);
 	}
 </style>

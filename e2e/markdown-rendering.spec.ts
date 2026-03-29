@@ -9,9 +9,7 @@ test.describe.configure({ mode: skipE2E ? "skip" : "default" });
 // ---------------------------------------------------------------------------
 
 /** Creates a thread via the app's HTTP API. Returns the thread id, or null on failure. */
-async function createThread(
-	page: import("@playwright/test").Page,
-): Promise<string | null> {
+async function createThread(page: import("@playwright/test").Page): Promise<string | null> {
 	const res = await page.evaluate(async () => {
 		try {
 			const r = await fetch("/api/threads", {
@@ -56,9 +54,7 @@ function makeMessageFixture(
 
 test.describe("Markdown rendering in MessageBubble", () => {
 	// AC1.1 — assistant messages render as formatted HTML
-	test("assistant message with markdown renders formatted HTML (AC1.1)", async ({
-		page,
-	}) => {
+	test("assistant message with markdown renders formatted HTML (AC1.1)", async ({ page }) => {
 		await page.goto("/");
 		const threadId = await createThread(page);
 		if (!threadId) {
@@ -67,20 +63,17 @@ test.describe("Markdown rendering in MessageBubble", () => {
 		}
 
 		// Intercept messages endpoint BEFORE navigating to thread
-		await page.route(
-			new RegExp(`/api/threads/${threadId}/messages`),
-			async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: makeMessageFixture(
-						threadId,
-						"assistant",
-						"## Hello World\n\n**Bold text** and:\n\n- list item one\n- list item two",
-					),
-				});
-			},
-		);
+		await page.route(new RegExp(`/api/threads/${threadId}/messages`), async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: makeMessageFixture(
+					threadId,
+					"assistant",
+					"## Hello World\n\n**Bold text** and:\n\n- list item one\n- list item two",
+				),
+			});
+		});
 
 		await page.goto(`/#/line/${threadId}`);
 
@@ -89,15 +82,11 @@ test.describe("Markdown rendering in MessageBubble", () => {
 
 		await expect(page.locator(".md-content h2")).toContainText("Hello World");
 		await expect(page.locator(".md-content strong")).toContainText("Bold text");
-		await expect(page.locator(".md-content li").first()).toContainText(
-			"list item one",
-		);
+		await expect(page.locator(".md-content li").first()).toContainText("list item one");
 	});
 
 	// AC1.2 — user messages render as formatted HTML
-	test("user message with markdown renders formatted HTML (AC1.2)", async ({
-		page,
-	}) => {
+	test("user message with markdown renders formatted HTML (AC1.2)", async ({ page }) => {
 		await page.goto("/");
 		const threadId = await createThread(page);
 		if (!threadId) {
@@ -105,20 +94,13 @@ test.describe("Markdown rendering in MessageBubble", () => {
 			return;
 		}
 
-		await page.route(
-			new RegExp(`/api/threads/${threadId}/messages`),
-			async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: makeMessageFixture(
-						threadId,
-						"user",
-						"**Important** request with `inline code`",
-					),
-				});
-			},
-		);
+		await page.route(new RegExp(`/api/threads/${threadId}/messages`), async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: makeMessageFixture(threadId, "user", "**Important** request with `inline code`"),
+			});
+		});
 
 		await page.goto(`/#/line/${threadId}`);
 		await page.waitForSelector(".md-content strong", { timeout: 10000 });
@@ -139,16 +121,13 @@ test.describe("Markdown rendering in MessageBubble", () => {
 		}
 
 		const rawContent = JSON.stringify({ name: "read_file", path: "/etc/hosts" });
-		await page.route(
-			new RegExp(`/api/threads/${threadId}/messages`),
-			async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: makeMessageFixture(threadId, "tool_call", rawContent, null),
-				});
-			},
-		);
+		await page.route(new RegExp(`/api/threads/${threadId}/messages`), async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: makeMessageFixture(threadId, "tool_call", rawContent, null),
+			});
+		});
 
 		await page.goto(`/#/line/${threadId}`);
 		await page.waitForSelector(".tool_call", { timeout: 10000 });
@@ -166,28 +145,19 @@ test.describe("Markdown rendering in MessageBubble", () => {
 			return;
 		}
 
-		await page.route(
-			new RegExp(`/api/threads/${threadId}/messages`),
-			async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: makeMessageFixture(
-						threadId,
-						"system",
-						"**Not rendered** as markdown",
-					),
-				});
-			},
-		);
+		await page.route(new RegExp(`/api/threads/${threadId}/messages`), async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: makeMessageFixture(threadId, "system", "**Not rendered** as markdown"),
+			});
+		});
 
 		await page.goto(`/#/line/${threadId}`);
 		await page.waitForSelector(".system", { timeout: 10000 });
 
 		// Raw markdown text must appear verbatim (not as <strong>)
-		await expect(page.locator(".system")).toContainText(
-			"**Not rendered** as markdown",
-		);
+		await expect(page.locator(".system")).toContainText("**Not rendered** as markdown");
 		await expect(page.locator(".system .md-content")).toHaveCount(0);
 	});
 
@@ -195,9 +165,7 @@ test.describe("Markdown rendering in MessageBubble", () => {
 	// This is verified by code inspection: the template shows {content} (plain text)
 	// while rendered === '' (before renderMarkdown resolves). The Playwright test
 	// below verifies that the message is NEVER empty/blank during render.
-	test("message content is never blank/empty while rendering (AC2.3)", async ({
-		page,
-	}) => {
+	test("message content is never blank/empty while rendering (AC2.3)", async ({ page }) => {
 		await page.goto("/");
 		const threadId = await createThread(page);
 		if (!threadId) {
@@ -206,16 +174,13 @@ test.describe("Markdown rendering in MessageBubble", () => {
 		}
 
 		const markdownContent = "# Quick heading\n\nSome text.";
-		await page.route(
-			new RegExp(`/api/threads/${threadId}/messages`),
-			async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: makeMessageFixture(threadId, "assistant", markdownContent),
-				});
-			},
-		);
+		await page.route(new RegExp(`/api/threads/${threadId}/messages`), async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: makeMessageFixture(threadId, "assistant", markdownContent),
+			});
+		});
 
 		await page.goto(`/#/line/${threadId}`);
 
@@ -225,17 +190,13 @@ test.describe("Markdown rendering in MessageBubble", () => {
 			timeout: 10000,
 		});
 
-		const contentEl = page
-			.locator(".assistant .content, .assistant .md-content")
-			.first();
+		const contentEl = page.locator(".assistant .content, .assistant .md-content").first();
 		const textContent = await contentEl.textContent();
 		expect((textContent ?? "").trim().length).toBeGreaterThan(0);
 	});
 
 	// AC4.1 — headings are toned down (h2 not at browser-default ~1.5em)
-	test("h2 heading in markdown renders at toned-down font-size (AC4.1)", async ({
-		page,
-	}) => {
+	test("h2 heading in markdown renders at toned-down font-size (AC4.1)", async ({ page }) => {
 		await page.goto("/");
 		const threadId = await createThread(page);
 		if (!threadId) {
@@ -243,20 +204,13 @@ test.describe("Markdown rendering in MessageBubble", () => {
 			return;
 		}
 
-		await page.route(
-			new RegExp(`/api/threads/${threadId}/messages`),
-			async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: makeMessageFixture(
-						threadId,
-						"assistant",
-						"## Section heading",
-					),
-				});
-			},
-		);
+		await page.route(new RegExp(`/api/threads/${threadId}/messages`), async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: makeMessageFixture(threadId, "assistant", "## Section heading"),
+			});
+		});
 
 		await page.goto(`/#/line/${threadId}`);
 		await page.waitForSelector(".md-content h2", { timeout: 10000 });
@@ -264,15 +218,13 @@ test.describe("Markdown rendering in MessageBubble", () => {
 		// Browser default h2 is 1.5em (~24px at 16px base). Our CSS sets 1.1rem.
 		// Check it's <= 20px (1.25rem max as per design) rather than 24px+ default.
 		const h2FontSize = await page.locator(".md-content h2").evaluate((el) => {
-			return parseFloat(window.getComputedStyle(el).fontSize);
+			return Number.parseFloat(window.getComputedStyle(el).fontSize);
 		});
 		expect(h2FontSize).toBeLessThanOrEqual(20);
 	});
 
 	// AC4.3 — inline code has monospace font and distinct background
-	test("inline code has monospace font and visible background (AC4.3)", async ({
-		page,
-	}) => {
+	test("inline code has monospace font and visible background (AC4.3)", async ({ page }) => {
 		await page.goto("/");
 		const threadId = await createThread(page);
 		if (!threadId) {
@@ -280,20 +232,13 @@ test.describe("Markdown rendering in MessageBubble", () => {
 			return;
 		}
 
-		await page.route(
-			new RegExp(`/api/threads/${threadId}/messages`),
-			async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: makeMessageFixture(
-						threadId,
-						"assistant",
-						"Use `myFunction()` here",
-					),
-				});
-			},
-		);
+		await page.route(new RegExp(`/api/threads/${threadId}/messages`), async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: makeMessageFixture(threadId, "assistant", "Use `myFunction()` here"),
+			});
+		});
 
 		await page.goto(`/#/line/${threadId}`);
 		await page.waitForSelector(".md-content code", { timeout: 10000 });
@@ -330,40 +275,33 @@ test.describe("Markdown rendering in MessageBubble", () => {
 			return;
 		}
 
-		await page.route(
-			new RegExp(`/api/threads/${threadId}/messages`),
-			async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: makeMessageFixture(
-						threadId,
-						"assistant",
-						"<thinking>reasoning here</thinking>Answer text",
-					),
-				});
-			},
-		);
+		await page.route(new RegExp(`/api/threads/${threadId}/messages`), async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: makeMessageFixture(
+					threadId,
+					"assistant",
+					"<thinking>reasoning here</thinking>Answer text",
+				),
+			});
+		});
 
 		await page.goto(`/#/line/${threadId}`);
 		await page.waitForSelector(".md-content .thinking-block", {
 			timeout: 10000,
 		});
 
-		const borderWidth = await page
-			.locator(".md-content .thinking-block")
-			.evaluate((el) => {
-				return parseFloat(window.getComputedStyle(el).borderLeftWidth);
-			});
+		const borderWidth = await page.locator(".md-content .thinking-block").evaluate((el) => {
+			return Number.parseFloat(window.getComputedStyle(el).borderLeftWidth);
+		});
 
 		// Border must be visible (> 0px)
 		expect(borderWidth).toBeGreaterThan(0);
 	});
 
 	// AC1.4 — tool_result is NOT markdown-rendered
-	test("tool_result message is not markdown-rendered (AC1.4)", async ({
-		page,
-	}) => {
+	test("tool_result message is not markdown-rendered (AC1.4)", async ({ page }) => {
 		await page.goto("/");
 		const threadId = await createThread(page);
 		if (!threadId) {
@@ -371,21 +309,13 @@ test.describe("Markdown rendering in MessageBubble", () => {
 			return;
 		}
 
-		await page.route(
-			new RegExp(`/api/threads/${threadId}/messages`),
-			async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: makeMessageFixture(
-						threadId,
-						"tool_result",
-						"**not rendered** as markdown",
-						null,
-					),
-				});
-			},
-		);
+		await page.route(new RegExp(`/api/threads/${threadId}/messages`), async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: makeMessageFixture(threadId, "tool_result", "**not rendered** as markdown", null),
+			});
+		});
 
 		await page.goto(`/#/line/${threadId}`);
 		await page.waitForSelector(".tool_result", { timeout: 10000 });
@@ -403,21 +333,13 @@ test.describe("Markdown rendering in MessageBubble", () => {
 			return;
 		}
 
-		await page.route(
-			new RegExp(`/api/threads/${threadId}/messages`),
-			async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: makeMessageFixture(
-						threadId,
-						"alert",
-						"**not rendered** as markdown",
-						null,
-					),
-				});
-			},
-		);
+		await page.route(new RegExp(`/api/threads/${threadId}/messages`), async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: makeMessageFixture(threadId, "alert", "**not rendered** as markdown", null),
+			});
+		});
 
 		await page.goto(`/#/line/${threadId}`);
 		await page.waitForSelector(".alert", { timeout: 10000 });
@@ -427,9 +349,7 @@ test.describe("Markdown rendering in MessageBubble", () => {
 	});
 
 	// AC4.2 — table wider than container scrolls horizontally via .table-wrap
-	test("markdown table has overflow-x auto on .table-wrap (AC4.2)", async ({
-		page,
-	}) => {
+	test("markdown table has overflow-x auto on .table-wrap (AC4.2)", async ({ page }) => {
 		await page.goto("/");
 		const threadId = await createThread(page);
 		if (!threadId) {
@@ -443,16 +363,13 @@ test.describe("Markdown rendering in MessageBubble", () => {
 			"| - | - | - | - | - | - | - | - |\n" +
 			"| 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |";
 
-		await page.route(
-			new RegExp(`/api/threads/${threadId}/messages`),
-			async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: makeMessageFixture(threadId, "assistant", tableMarkdown),
-				});
-			},
-		);
+		await page.route(new RegExp(`/api/threads/${threadId}/messages`), async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: makeMessageFixture(threadId, "assistant", tableMarkdown),
+			});
+		});
 
 		await page.goto(`/#/line/${threadId}`);
 		await page.waitForSelector(".md-content .table-wrap", { timeout: 10000 });
