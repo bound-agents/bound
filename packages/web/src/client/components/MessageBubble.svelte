@@ -23,9 +23,13 @@ let rendered = $state("");
 // Sets rendered to "" for non-markdown roles so the fallback branch shows nothing.
 $effect(() => {
 	if (role === "assistant" || role === "user") {
-		renderMarkdown(content).then((html) => {
-			rendered = html;
-		});
+		renderMarkdown(content)
+			.then((html) => {
+				rendered = html;
+			})
+			.catch((err: unknown) => {
+				console.error("[markdown] renderMarkdown failed:", err);
+			});
 	} else {
 		rendered = "";
 	}

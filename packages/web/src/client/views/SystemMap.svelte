@@ -12,7 +12,8 @@ interface ThreadStatus {
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let threads: Thread[] = $state([]);
-let _creating = $state(false);
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let creating = $state(false);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let hoveredIdx = $state(-1);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
