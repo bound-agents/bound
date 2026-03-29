@@ -1,6 +1,7 @@
 // Task 3: bound start command
 // Full orchestrator bootstrap sequence
 
+import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -15,7 +16,12 @@ import {
 } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
-import { generateMCPCommands, getAllCommands, setCommandRegistry, updateHostMCPInfo } from "@bound/agent";
+import {
+	generateMCPCommands,
+	getAllCommands,
+	setCommandRegistry,
+	updateHostMCPInfo,
+} from "@bound/agent";
 import { generateThreadTitle } from "@bound/agent";
 import {
 	createAppContext,
@@ -37,6 +43,32 @@ import { runLocalAgentLoop } from "../lib/message-handler";
 
 export interface StartArgs {
 	configDir?: string;
+}
+
+/**
+ * Provision the mcp system user idempotently at startup.
+ */
+export function ensureMcpUser(db: Database, siteId: string): void {
+	const now = new Date().toISOString();
+	const mcpUserId = deterministicUUID(BOUND_NAMESPACE, "mcp");
+	const existingMcpUser = db.query("SELECT id FROM users WHERE id = ?").get(mcpUserId) as {
+		id: string;
+	} | null;
+	if (!existingMcpUser) {
+		insertRow(
+			db,
+			"users",
+			{
+				id: mcpUserId,
+				display_name: "mcp",
+				platform_ids: null,
+				first_seen_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			siteId,
+		);
+	}
 }
 
 /**
@@ -149,6 +181,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 			}
 		}
 	}
+
+	// 5.1 Provision mcp system user (idempotent)
+	ensureMcpUser(appContext.db, appContext.siteId);
 
 	// 6. Host registration (via outbox for sync compliance)
 	console.log("Registering host...");
