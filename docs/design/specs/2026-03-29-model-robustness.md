@@ -68,7 +68,7 @@ The following base spec sections are affected:
 | §4.6 (LLM Backend Protocol) | Extended with multimodal content blocks, per-model capability overrides, usage extraction contract (four-tier cache-aware), tool call identity requirements, and a new qualification phase in the resolution pipeline |
 | Streaming Protocol Extension (new, supplements §4.6) | New `done` chunk schema with `cache_write_tokens` and `cache_read_tokens` fields, `null` semantics for unavailable metrics, provider-specific extraction table |
 | §9.2 (Context Assembly) | Content block pipeline handles image/document blocks; replaces multimodal blocks with text annotations when the target backend lacks vision, preserving prefix cache stability |
-| §12.3 (model_backends.json) | Schema gains per-model `capabilities` overrides and `cost_tier` field |
+| §12.3 (model_backends.json) | Schema gains per-model `capabilities` overrides; existing `tier` field (already in schema) is used as-is for advisory cost classification |
 | R-U11 (Model selection) | Extended with capability-aware validation |
 | R-U2 (Model metadata) | Extended with capability snapshot |
 | inference-relay.AC2 | Remote hosts advertise capability metadata alongside model IDs |
@@ -109,7 +109,7 @@ Requirements in this section use the prefix `R-MR` (Model Robustness) to disting
 
 **R-MR9.** Each host's `models` advertisement (in the `hosts` table and sync protocol) shall include per-model capability metadata alongside the model identifier. At minimum: `vision`, `tool_use`, `max_context`. Remote model resolution shall use this metadata to filter eligible hosts, not just the model name.
 
-**R-MR10.** The system shall maintain a `cost_tier` field per backend configuration entry, accepting values from a fixed enumeration (e.g., `budget`, `standard`, `premium`). The cost tier shall be surfaced in the orientation context (§9.2) and in the `hostinfo` command output, enabling the agent and operator to make informed model selection decisions. Automatic tier-based routing is not required.
+**R-MR10.** The system shall surface the existing `tier` field (already defined in `model_backends.json` schema as an integer 1–5) in the orientation context (§9.2) and in the `hostinfo` command output, enabling the agent and operator to make informed model selection decisions. Lower tier numbers indicate lower cost. Automatic tier-based routing is not required.
 
 ### 3.2 Event-Driven
 
@@ -127,7 +127,7 @@ Requirements in this section use the prefix `R-MR` (Model Robustness) to disting
 
 **R-MR16.** While a backend is in a rate-limited state (R-MR12), the model resolution layer shall skip it during candidate enumeration. The backend shall re-enter the eligible pool after the rate-limit window expires.
 
-**R-MR17.** While multiple backends are configured with the same model identifier (e.g., the same model accessible via both Anthropic API and Bedrock), the system shall prefer the backend with the lowest `cost_tier`. If cost tiers are equal, the system shall prefer local backends over remote backends per the existing resolution order.
+**R-MR17.** While multiple backends are configured with the same model identifier (e.g., the same model accessible via both Anthropic API and Bedrock), the system shall prefer the backend with the lowest `tier` value. If tier values are equal, the system shall prefer local backends over remote backends per the existing resolution order.
 
 ### 3.4 Optional / Deferred
 
@@ -135,7 +135,7 @@ Requirements in this section use the prefix `R-MR` (Model Robustness) to disting
 
 **R-MR19.** Where a backend supports vision but the operator wishes to disable it for cost or policy reasons, the per-model capability override (R-MR5) shall allow setting `vision: false` to suppress image content routing to that backend, even though the underlying provider reports `vision: true`.
 
-**R-MR20.** Automatic cost-optimized routing *across different models* — selecting the cheapest backend that satisfies a request's capability requirements from the full model pool — is deferred to v2 alongside model-trust heuristics (R-O2). The `cost_tier` field (R-MR10) and per-backend pricing (§12.3) provide the data model; the cross-model routing logic is deferred. Same-model tiebreaking (R-MR17), where the system chooses between multiple backends offering the identical model, is in scope for v1 as a deterministic disambiguation rule rather than an optimization strategy.
+**R-MR20.** Automatic cost-optimized routing *across different models* — selecting the cheapest backend that satisfies a request's capability requirements from the full model pool — is deferred to v2 alongside model-trust heuristics (R-O2). The `tier` field (R-MR10) and per-backend pricing (§12.3) provide the data model; the cross-model routing logic is deferred. Same-model tiebreaking (R-MR17), where the system chooses between multiple backends offering the identical model, is in scope for v1 as a deterministic disambiguation rule rather than an optimization strategy.
 
 **R-MR21.** Where the provider's streaming protocol supports real-time token counting (e.g., partial usage events mid-stream), the system may expose running token counts to the context assembly pipeline for more accurate budget validation. This is an optimization over the current character-ratio estimation and is not required for initial implementation.
 
@@ -175,7 +175,7 @@ The `model_backends.json` schema gains the following fields per backend entry:
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `capabilities` | `Partial<BackendCapabilities>` | `{}` | Per-model overrides. Merged with provider defaults per R-MR5. |
-| `cost_tier` | `"budget" \| "standard" \| "premium"` | `"standard"` | Advisory cost classification. Surfaced in orientation and hostinfo. |
+| `tier` | `integer (1–5)` | *(required, already in schema)* | Advisory cost classification. Lower = cheaper. Surfaced in orientation and hostinfo. Already validated by existing schema; no schema change needed. |
 
 Example:
 
@@ -186,11 +186,11 @@ Example:
       "id": "ollama-llava",
       "provider": "ollama",
       "model": "llava:13b",
+      "tier": 1,
       "capabilities": {
         "vision": true,
         "max_context": 32768
-      },
-      "cost_tier": "budget"
+      }
     },
     {
       "id": "openai-gpt4",
@@ -198,11 +198,11 @@ Example:
       "model": "gpt-4o",
       "baseUrl": "https://api.openai.com/v1",
       "apiKey": "...",
+      "tier": 4,
       "capabilities": {
         "vision": true,
         "max_context": 128000
-      },
-      "cost_tier": "premium"
+      }
     }
   ],
   "default": "ollama-llava"
@@ -217,12 +217,12 @@ The `hosts.models` column (currently a JSON array of model ID strings) shall be 
 [
   {
     "id": "ollama-llava",
+    "tier": 1,
     "capabilities": {
       "vision": true,
       "tool_use": true,
       "max_context": 32768
-    },
-    "cost_tier": "budget"
+    }
   }
 ]
 ```
@@ -277,7 +277,7 @@ Cost columns in the metrics schema (§9.7) are computed from the `price_per_m_*`
 
 The current resolution pipeline is two-phase (identify → dispatch). The extended pipeline is three-phase:
 
-**Phase 1: Identify.** Unchanged. Map the model ID (or default) to a local backend or set of remote eligible hosts. Same-model tiebreaking (R-MR17) applies here: when multiple backends offer the identical model, the system prefers the lowest `cost_tier`, then local over remote. This is a namespace lookup with deterministic disambiguation, not a cost optimization.
+**Phase 1: Identify.** Unchanged. Map the model ID (or default) to a local backend or set of remote eligible hosts. Same-model tiebreaking (R-MR17) applies here: when multiple backends offer the identical model, the system prefers the lowest `tier` value, then local over remote. This is a namespace lookup with deterministic disambiguation, not a cost optimization.
 
 **Phase 2: Qualify.** New. Derive the capability requirement set from the current request (R-MR3) — this covers capability flags (vision, tool use, system prompt, prompt caching) but not token budget, which cannot be known until after context assembly. Compare the flags against the resolved backend's effective capabilities (provider baseline merged with per-model overrides per R-MR5). If the backend satisfies all requirements, proceed to dispatch. If not, enumerate alternative backends (local first, then remote) that satisfy the requirements. If an alternative is found, re-resolve to that backend (with a context annotation noting the automatic re-resolution). If no alternative satisfies the requirements, return a structured error (R-MR4). Automatic re-resolution is per-turn: it does not persistently change the thread's model selection. On the next turn, resolution starts again from the thread's configured or default model. If a thread repeatedly triggers re-resolution, the advisory system (R-MR11) informs the operator that a persistent model switch would be more appropriate.
 
@@ -365,7 +365,7 @@ All changes in this RFC are additive. Existing configurations without per-model 
 
 **Phase A: Content type extension and usage extraction.** Add image and document block types to the content schema. Extend the streaming protocol's `done` chunk from two-field to four-field usage reporting (§4.4), including `null` semantics for unavailable cache metrics. Update all providers to extract real token usage including cache-specific fields where available. Fix tool call identity collisions. These are internal changes with no configuration impact.
 
-**Phase B: Per-model capability overrides and qualification.** Add the `capabilities` and `cost_tier` fields to `model_backends.json`. Implement the qualification phase in model resolution. Update context assembly to handle multimodal blocks. These require operator awareness but not immediate configuration changes.
+**Phase B: Per-model capability overrides and qualification.** Add the `capabilities` field to `model_backends.json` (the `tier` field already exists). Implement the qualification phase in model resolution. Update context assembly to handle multimodal blocks. These require operator awareness but not immediate configuration changes.
 
 **Phase C: Remote capability metadata.** Extend the host model advertisement format. Update the relay's remote resolution to filter by capabilities. This requires all cluster hosts to be updated before the extended format is fully effective.
 
