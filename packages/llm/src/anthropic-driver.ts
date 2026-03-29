@@ -178,7 +178,10 @@ function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] {
 	return result;
 }
 
-async function* parseAnthropicStream(response: Response, params: ChatParams): AsyncIterable<StreamChunk> {
+async function* parseAnthropicStream(
+	response: Response,
+	params: ChatParams,
+): AsyncIterable<StreamChunk> {
 	let currentToolId = "";
 	let currentToolArgs = "";
 	let inputTokens = 0;
@@ -210,8 +213,8 @@ async function* parseAnthropicStream(response: Response, params: ChatParams): As
 
 		// Handle message_start with input tokens and cache fields
 		if (event.type === "message_start" && event.message?.usage) {
-			const usage = event.message.usage as Record<string, unknown>;
-			inputTokens = (usage.input_tokens as number) || 0;
+			const usage = event.message.usage;
+			inputTokens = usage.input_tokens || 0;
 			const cw = usage.cache_creation_input_tokens;
 			const cr = usage.cache_read_input_tokens;
 			if (typeof cw === "number") cacheWriteTokens = cw;
@@ -288,7 +291,12 @@ async function* parseAnthropicStream(response: Response, params: ChatParams): As
 			let estimated = false;
 			if (inputTokens === 0 && outputTokens === 0 && outputText.length > 0) {
 				inputTokens = Math.ceil(
-					params.messages.reduce((sum, m) => sum + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length), 0) / 4,
+					params.messages.reduce(
+						(sum, m) =>
+							sum +
+							(typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length),
+						0,
+					) / 4,
 				);
 				outputTokens = Math.ceil(outputText.length / 4);
 				estimated = true;

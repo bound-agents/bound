@@ -135,7 +135,10 @@ function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 	return result;
 }
 
-async function* parseOpenAIStream(response: Response, params: ChatParams): AsyncIterable<StreamChunk> {
+async function* parseOpenAIStream(
+	response: Response,
+	params: ChatParams,
+): AsyncIterable<StreamChunk> {
 	const toolStates = new Map<number, { id: string; name: string; args: string }>();
 	let capturedUsage: OpenAIStreamEvent["usage"] = null;
 	let outputText = "";
@@ -158,7 +161,12 @@ async function* parseOpenAIStream(response: Response, params: ChatParams): Async
 			let estimated = false;
 			if (inputTokens === 0 && outputTokens === 0 && outputText.length > 0) {
 				inputTokens = Math.ceil(
-					params.messages.reduce((sum, m) => sum + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length), 0) / 4,
+					params.messages.reduce(
+						(sum, m) =>
+							sum +
+							(typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length),
+						0,
+					) / 4,
 				);
 				outputTokens = Math.ceil(outputText.length / 4);
 				estimated = true;

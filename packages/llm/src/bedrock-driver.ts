@@ -238,7 +238,7 @@ export class BedrockDriver implements LLMBackend {
 					let inputTokens = (usage?.inputTokens as number) ?? 0;
 					let outputTokens = (usage?.outputTokens as number) ?? 0;
 					const cw = usage?.cacheWriteInputTokens; // NOTE: "Tokens" not "Count" per AWS API
-					const cr = usage?.cacheReadInputTokens;  // NOTE: "Tokens" not "Count" per AWS API
+					const cr = usage?.cacheReadInputTokens; // NOTE: "Tokens" not "Count" per AWS API
 					const cacheWriteTokens = typeof cw === "number" ? cw : null;
 					const cacheReadTokens = typeof cr === "number" ? cr : null;
 
@@ -246,14 +246,27 @@ export class BedrockDriver implements LLMBackend {
 					let estimated = false;
 					if (inputTokens === 0 && outputTokens === 0 && outputText.length > 0) {
 						inputTokens = Math.ceil(
-							params.messages.reduce((sum, m) => sum + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length), 0) / 4,
+							params.messages.reduce(
+								(sum, m) =>
+									sum +
+									(typeof m.content === "string"
+										? m.content.length
+										: JSON.stringify(m.content).length),
+								0,
+							) / 4,
 						);
 						outputTokens = Math.ceil(outputText.length / 4);
 						estimated = true;
 					}
 					yield {
 						type: "done",
-						usage: { input_tokens: inputTokens, output_tokens: outputTokens, cache_write_tokens: cacheWriteTokens, cache_read_tokens: cacheReadTokens, estimated },
+						usage: {
+							input_tokens: inputTokens,
+							output_tokens: outputTokens,
+							cache_write_tokens: cacheWriteTokens,
+							cache_read_tokens: cacheReadTokens,
+							estimated,
+						},
 					};
 				}
 			}

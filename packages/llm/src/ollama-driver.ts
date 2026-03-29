@@ -162,7 +162,12 @@ function* emitChunkEvents(
 		// Zero-usage guard
 		if (inputTokens === 0 && outputTokens === 0 && state.outputText.length > 0) {
 			inputTokens = Math.ceil(
-				params.messages.reduce((sum, m) => sum + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length), 0) / 4,
+				params.messages.reduce(
+					(sum, m) =>
+						sum +
+						(typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length),
+					0,
+				) / 4,
 			);
 			outputTokens = Math.ceil(state.outputText.length / 4);
 			estimated = true;
@@ -181,7 +186,10 @@ function* emitChunkEvents(
 	}
 }
 
-async function* parseOllamaStream(response: Response, params: ChatParams): AsyncIterable<StreamChunk> {
+async function* parseOllamaStream(
+	response: Response,
+	params: ChatParams,
+): AsyncIterable<StreamChunk> {
 	const state = { outputText: "" };
 	for await (const line of parseStreamLines(response, "ollama")) {
 		let chunk: OllamaStreamResponse;

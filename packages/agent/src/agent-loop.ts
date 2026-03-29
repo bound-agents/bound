@@ -1072,16 +1072,16 @@ export class AgentLoop {
 		}
 
 		return {
-		textContent,
-		toolCalls,
-		usage: {
-			inputTokens,
-			outputTokens,
-			cacheWriteTokens,
-			cacheReadTokens,
-			usageEstimated,
-		},
-	};
+			textContent,
+			toolCalls,
+			usage: {
+				inputTokens,
+				outputTokens,
+				cacheWriteTokens,
+				cacheReadTokens,
+				usageEstimated,
+			},
+		};
 	}
 
 	cancel(): void {
