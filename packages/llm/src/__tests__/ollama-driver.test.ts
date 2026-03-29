@@ -245,6 +245,96 @@ describe("OllamaDriver", () => {
 		expect(chunks.some((c) => c.type === "done")).toBe(true);
 	});
 
+	describe("cache token extraction", () => {
+		it("AC4.4 — should always emit null cache tokens", async () => {
+			const driver = new OllamaDriver({
+				baseUrl: "http://localhost:11434",
+				model: "llama2",
+				contextWindow: 4096,
+			});
+
+			global.fetch = (async () => {
+				const ndjson = [
+					JSON.stringify({
+						model: "llama2",
+						created_at: "2024-01-01T00:00:00Z",
+						message: { role: "assistant", content: "Response" },
+						done: true,
+						prompt_eval_count: 5,
+						eval_count: 3,
+					}),
+				];
+
+				return new Response(ndjson.join("\n"), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}) as typeof fetch;
+
+			const chunks: StreamChunk[] = [];
+			for await (const chunk of driver.chat({
+				model: "llama2",
+				messages: [{ role: "user", content: "Hi" }],
+			})) {
+				chunks.push(chunk);
+			}
+
+			const doneChunk = chunks.find((c) => c.type === "done");
+			expect(doneChunk).toBeDefined();
+			expect(doneChunk?.type).toBe("done");
+			if (doneChunk?.type === "done") {
+				expect(doneChunk.usage.cache_write_tokens).toBeNull();
+				expect(doneChunk.usage.cache_read_tokens).toBeNull();
+				expect(doneChunk.usage.estimated).toBe(false);
+				expect(doneChunk.usage.input_tokens).toBe(5);
+				expect(doneChunk.usage.output_tokens).toBe(3);
+			}
+		});
+
+		it("AC4.5 — should apply zero-usage guard when all tokens are zero", async () => {
+			const driver = new OllamaDriver({
+				baseUrl: "http://localhost:11434",
+				model: "llama2",
+				contextWindow: 4096,
+			});
+
+			global.fetch = (async () => {
+				const ndjson = [
+					JSON.stringify({
+						model: "llama2",
+						created_at: "2024-01-01T00:00:00Z",
+						message: { role: "assistant", content: "This is a response" },
+						done: true,
+						prompt_eval_count: 0,
+						eval_count: 0,
+					}),
+				];
+
+				return new Response(ndjson.join("\n"), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}) as typeof fetch;
+
+			const chunks: StreamChunk[] = [];
+			for await (const chunk of driver.chat({
+				model: "llama2",
+				messages: [{ role: "user", content: "Hello world" }],
+			})) {
+				chunks.push(chunk);
+			}
+
+			const doneChunk = chunks.find((c) => c.type === "done");
+			expect(doneChunk).toBeDefined();
+			expect(doneChunk?.type).toBe("done");
+			if (doneChunk?.type === "done") {
+				expect(doneChunk.usage.estimated).toBe(true);
+				expect(doneChunk.usage.input_tokens).toBeGreaterThan(0);
+				expect(doneChunk.usage.output_tokens).toBeGreaterThan(0);
+			}
+		});
+	});
+
 	it("should handle tool_calls in stream response correctly", async () => {
 		const driver = new OllamaDriver({
 			baseUrl: "http://localhost:11434",
