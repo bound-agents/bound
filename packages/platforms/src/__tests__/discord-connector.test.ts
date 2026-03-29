@@ -1,12 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
+import { unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { applySchema } from "@bound/core";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
-import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { DiscordConnector } from "../connectors/discord.js";
 
 // Mock logger
@@ -579,10 +579,12 @@ describe("DiscordConnector", () => {
 			// Call onMessage - it will get past user/thread creation and startTyping,
 			// but fail when trying to write to outbox
 			try {
-				await (connector as {
-					onMessage: (msg: MockDiscordMessage) => Promise<void>;
-				}).onMessage(mockMsg);
-			} catch (err) {
+				await (
+					connector as {
+						onMessage: (msg: MockDiscordMessage) => Promise<void>;
+					}
+				).onMessage(mockMsg);
+			} catch (_err) {
 				// Error is caught internally and handled
 			}
 
@@ -719,10 +721,8 @@ describe("DiscordConnector", () => {
 				mockChannel,
 			);
 
-			const typingTimersBeforeDisconnect = (connector as { typingTimers: unknown }).typingTimers as Map<
-				string,
-				unknown
-			>;
+			const typingTimersBeforeDisconnect = (connector as { typingTimers: unknown })
+				.typingTimers as Map<string, unknown>;
 			expect(typingTimersBeforeDisconnect.size).toBe(2);
 
 			// Disconnect (mocking that client is not actually connected)
@@ -730,12 +730,11 @@ describe("DiscordConnector", () => {
 			await connector.disconnect();
 
 			// All timers should be cleared
-			const typingTimersAfterDisconnect = (connector as { typingTimers: unknown }).typingTimers as Map<
-				string,
-				unknown
-			>;
+			const typingTimersAfterDisconnect = (connector as { typingTimers: unknown })
+				.typingTimers as Map<string, unknown>;
 			expect(typingTimersAfterDisconnect.size).toBe(0);
 		});
+	});
 
 	describe("DiscordConnector.getPlatformTools()", () => {
 		it("returns map with discord_send_message tool definition (AC2.1)", () => {
@@ -974,6 +973,5 @@ describe("DiscordConnector", () => {
 
 			expect(deliverCallCount).toBe(2);
 		});
-	});
 	});
 });
