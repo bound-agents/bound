@@ -142,6 +142,8 @@ async function* parseOpenAIStream(
 	const toolStates = new Map<number, { id: string; name: string; args: string }>();
 	let capturedUsage: OpenAIStreamEvent["usage"] = null;
 	let outputText = "";
+	const turnTs = Date.now();
+	let toolCallIndex = 0;
 
 	for await (const line of parseStreamLines(response, "openai")) {
 		if (!line.startsWith(SSE_DATA_PREFIX)) {
@@ -218,35 +220,37 @@ async function* parseOpenAIStream(
 			if (delta?.tool_calls) {
 				for (const toolCall of delta.tool_calls) {
 					const toolIndex = toolCall.index;
-					const state = toolStates.get(toolIndex) || {
-						id: toolCall.id,
-						name: "",
-						args: "",
-					};
 
 					// Emit tool_use_start if this is the first chunk for this tool
 					if (!toolStates.has(toolIndex)) {
+						// Use provider-supplied ID if present and non-empty; otherwise synthesize
+						const providedId = toolCall.id;
+						const toolId = providedId ? providedId : `openai-${turnTs}-${toolCallIndex++}`;
+
+						const state = { id: toolId, name: "", args: "" };
 						if (toolCall.function?.name) {
 							state.name = toolCall.function.name;
 							yield {
 								type: "tool_use_start",
-								id: toolCall.id,
+								id: toolId,
 								name: toolCall.function.name,
 							};
 						}
+						toolStates.set(toolIndex, state);
 					}
+
+					const state = toolStates.get(toolIndex);
+					if (!state) continue;
 
 					// Accumulate arguments
 					if (toolCall.function?.arguments) {
 						state.args += toolCall.function.arguments;
 						yield {
 							type: "tool_use_args",
-							id: toolCall.id,
+							id: state.id,
 							partial_json: toolCall.function.arguments,
 						};
 					}
-
-					toolStates.set(toolIndex, state);
 
 					// Emit tool_use_end if stream is finishing this tool
 					if (choice.finish_reason === "tool_calls" || choice.finish_reason === "stop") {

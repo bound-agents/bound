@@ -580,4 +580,186 @@ data: [DONE]
 			global.fetch = originalFetch;
 		}
 	});
+
+	it("two tool calls with distinct IDs from provider produce distinct IDs (AC6.2)", async () => {
+		const driver = new OpenAICompatibleDriver({
+			baseUrl: "http://localhost:8000",
+			apiKey: "test-key",
+			model: "gpt-4",
+			contextWindow: 8192,
+		});
+
+		const sseResponse = `data: ${JSON.stringify({
+			id: "chatcmpl-123",
+			object: "text_completion",
+			created: 1234567890,
+			model: "gpt-4",
+			choices: [
+				{
+					index: 0,
+					delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "search" } }] },
+					finish_reason: null,
+				},
+			],
+		})}
+
+data: ${JSON.stringify({
+			id: "chatcmpl-123",
+			object: "text_completion",
+			created: 1234567890,
+			model: "gpt-4",
+			choices: [
+				{
+					index: 0,
+					delta: { tool_calls: [{ index: 0, id: "", type: "function", function: { arguments: '{"q":"foo"}' } }] },
+					finish_reason: null,
+				},
+			],
+		})}
+
+data: ${JSON.stringify({
+			id: "chatcmpl-123",
+			object: "text_completion",
+			created: 1234567890,
+			model: "gpt-4",
+			choices: [
+				{
+					index: 1,
+					delta: { tool_calls: [{ index: 1, id: "call_2", type: "function", function: { name: "search" } }] },
+					finish_reason: null,
+				},
+			],
+		})}
+
+data: ${JSON.stringify({
+			id: "chatcmpl-123",
+			object: "text_completion",
+			created: 1234567890,
+			model: "gpt-4",
+			choices: [
+				{
+					index: 1,
+					delta: { tool_calls: [{ index: 1, id: "", type: "function", function: { arguments: '{"q":"bar"}' } }] },
+					finish_reason: "tool_calls",
+				},
+			],
+		})}
+
+data: [DONE]
+`;
+
+		global.fetch = (async () => {
+			return new Response(sseResponse, {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		const chunks: StreamChunk[] = [];
+		for await (const chunk of driver.chat({
+			model: "gpt-4",
+			messages: [{ role: "user", content: "Search for foo and bar" }],
+		})) {
+			chunks.push(chunk);
+		}
+
+		const startChunks = chunks.filter((c) => c.type === "tool_use_start");
+		expect(startChunks).toHaveLength(2);
+
+		const ids = startChunks.map((c) => (c as { id: string }).id);
+		expect(ids[0]).not.toEqual(ids[1]);
+		expect(ids[0]).toBe("call_1");
+		expect(ids[1]).toBe("call_2");
+	});
+
+	it("tool calls with missing IDs from provider get synthesized IDs (AC6.2)", async () => {
+		const driver = new OpenAICompatibleDriver({
+			baseUrl: "http://localhost:8000",
+			apiKey: "test-key",
+			model: "gpt-4",
+			contextWindow: 8192,
+		});
+
+		const sseResponse = `data: ${JSON.stringify({
+			id: "chatcmpl-123",
+			object: "text_completion",
+			created: 1234567890,
+			model: "gpt-4",
+			choices: [
+				{
+					index: 0,
+					delta: { tool_calls: [{ index: 0, id: "", type: "function", function: { name: "search" } }] },
+					finish_reason: null,
+				},
+			],
+		})}
+
+data: ${JSON.stringify({
+			id: "chatcmpl-123",
+			object: "text_completion",
+			created: 1234567890,
+			model: "gpt-4",
+			choices: [
+				{
+					index: 0,
+					delta: { tool_calls: [{ index: 0, id: "", type: "function", function: { arguments: '{"q":"foo"}' } }] },
+					finish_reason: null,
+				},
+			],
+		})}
+
+data: ${JSON.stringify({
+			id: "chatcmpl-123",
+			object: "text_completion",
+			created: 1234567890,
+			model: "gpt-4",
+			choices: [
+				{
+					index: 1,
+					delta: { tool_calls: [{ index: 1, id: "", type: "function", function: { name: "search" } }] },
+					finish_reason: null,
+				},
+			],
+		})}
+
+data: ${JSON.stringify({
+			id: "chatcmpl-123",
+			object: "text_completion",
+			created: 1234567890,
+			model: "gpt-4",
+			choices: [
+				{
+					index: 1,
+					delta: { tool_calls: [{ index: 1, id: "", type: "function", function: { arguments: '{"q":"bar"}' } }] },
+					finish_reason: "tool_calls",
+				},
+			],
+		})}
+
+data: [DONE]
+`;
+
+		global.fetch = (async () => {
+			return new Response(sseResponse, {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		const chunks: StreamChunk[] = [];
+		for await (const chunk of driver.chat({
+			model: "gpt-4",
+			messages: [{ role: "user", content: "Search for foo and bar" }],
+		})) {
+			chunks.push(chunk);
+		}
+
+		const startChunks = chunks.filter((c) => c.type === "tool_use_start");
+		expect(startChunks).toHaveLength(2);
+
+		const ids = startChunks.map((c) => (c as { id: string }).id);
+		expect(ids[0]).not.toEqual(ids[1]);
+		expect(ids[0]).toMatch(/^openai-\d+-\d+$/);
+		expect(ids[1]).toMatch(/^openai-\d+-\d+$/);
+	});
 });
