@@ -1,0 +1,15 @@
+{
+	"name": "@bound/mcp-server",
+	"version": "0.0.1",
+	"type": "module",
+	"main": "src/server.ts",
+	"types": "src/server.ts",
+	"bin": {
+		"bound-mcp": "src/server.ts"
+	},
+	"dependencies": {
+		"@bound/shared": "workspace:*",
+		"@modelcontextprotocol/sdk": "^1.28.0",
+		"zod": "^4.0.0"
+	}
+}

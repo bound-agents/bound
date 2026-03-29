@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import { createAdvisoriesRoutes } from "./advisories";
 import { createFilesRoutes } from "./files";
+import { createMcpRoutes } from "./mcp";
 import { createMessagesRoutes } from "./messages";
 import { type ModelsConfig, createStatusRoutes } from "./status";
 import { createTasksRoutes } from "./tasks";
@@ -37,5 +38,6 @@ export function registerRoutes(
 		status: createStatusRoutes(db, eventBus, hostName, siteId, modelsConfig, activeDelegations),
 		tasks: createTasksRoutes(db),
 		advisories: createAdvisoriesRoutes(db),
+		mcp: createMcpRoutes(db),
 	};
 }
