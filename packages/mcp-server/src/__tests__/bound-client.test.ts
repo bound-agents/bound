@@ -63,9 +63,7 @@ describe("BoundClient", () => {
 
 	describe("sendMessage", () => {
 		it("POST /api/threads/:id/messages with content body", async () => {
-			mockFetch.mockImplementation(() =>
-				Promise.resolve(new Response("{}", { status: 201 })),
-			);
+			mockFetch.mockImplementation(() => Promise.resolve(new Response("{}", { status: 201 })));
 
 			await client.sendMessage("thread-1", "Hello!");
 
@@ -76,9 +74,7 @@ describe("BoundClient", () => {
 		});
 
 		it("throws BoundNotRunningError on non-2xx response", async () => {
-			mockFetch.mockImplementation(() =>
-				Promise.resolve(new Response("Error", { status: 500 })),
-			);
+			mockFetch.mockImplementation(() => Promise.resolve(new Response("Error", { status: 500 })));
 
 			await expect(client.sendMessage("thread-1", "Hello!")).rejects.toBeInstanceOf(
 				BoundNotRunningError,
@@ -113,9 +109,7 @@ describe("BoundClient", () => {
 		});
 
 		it("throws BoundNotRunningError on non-2xx response", async () => {
-			mockFetch.mockImplementation(() =>
-				Promise.resolve(new Response("Error", { status: 503 })),
-			);
+			mockFetch.mockImplementation(() => Promise.resolve(new Response("Error", { status: 503 })));
 
 			await expect(client.getStatus("thread-1")).rejects.toBeInstanceOf(BoundNotRunningError);
 		});
@@ -160,9 +154,7 @@ describe("BoundClient", () => {
 		});
 
 		it("throws BoundNotRunningError on non-2xx response", async () => {
-			mockFetch.mockImplementation(() =>
-				Promise.resolve(new Response("Error", { status: 404 })),
-			);
+			mockFetch.mockImplementation(() => Promise.resolve(new Response("Error", { status: 404 })));
 
 			await expect(client.getMessages("thread-1")).rejects.toBeInstanceOf(BoundNotRunningError);
 		});
