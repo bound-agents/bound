@@ -7,7 +7,9 @@ function makeClient(overrides: Partial<BoundClient> = {}): BoundClient {
 	return {
 		createMcpThread: mock(() => Promise.resolve({ thread_id: "new-thread" })),
 		sendMessage: mock(() => Promise.resolve()),
-		getStatus: mock(() => Promise.resolve({ active: false, state: null, detail: null } as ThreadStatus)),
+		getStatus: mock(() =>
+			Promise.resolve({ active: false, state: null, detail: null } as ThreadStatus),
+		),
 		getMessages: mock(() =>
 			Promise.resolve([
 				{
@@ -94,9 +96,7 @@ describe("createBoundChatHandler", () => {
 
 		it("returns isError:true when sendMessage throws BoundNotRunningError", async () => {
 			const client = makeClient({
-				sendMessage: mock(() =>
-					Promise.reject(new BoundNotRunningError("http://localhost:3000")),
-				),
+				sendMessage: mock(() => Promise.reject(new BoundNotRunningError("http://localhost:3000"))),
 			});
 			const handler = createBoundChatHandler(client);
 
@@ -107,9 +107,7 @@ describe("createBoundChatHandler", () => {
 
 		it("returns isError:true when getStatus throws BoundNotRunningError", async () => {
 			const client = makeClient({
-				getStatus: mock(() =>
-					Promise.reject(new BoundNotRunningError("http://localhost:3000")),
-				),
+				getStatus: mock(() => Promise.reject(new BoundNotRunningError("http://localhost:3000"))),
 			});
 			const handler = createBoundChatHandler(client);
 
@@ -138,9 +136,7 @@ describe("createBoundChatHandler", () => {
 
 			try {
 				const client = makeClient({
-					getStatus: mock(() =>
-						Promise.resolve({ active: true, state: "thinking", detail: null }),
-					),
+					getStatus: mock(() => Promise.resolve({ active: true, state: "thinking", detail: null })),
 				});
 				const handler = createBoundChatHandler(client);
 

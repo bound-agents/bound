@@ -15,8 +15,7 @@ export function createBoundChatHandler(
 	return async ({ message, thread_id }) => {
 		try {
 			// Step 1: Get or create thread
-			const threadId =
-				thread_id ?? (await client.createMcpThread()).thread_id;
+			const threadId = thread_id ?? (await client.createMcpThread()).thread_id;
 
 			// Step 2: Send message
 			await client.sendMessage(threadId, message);
