@@ -23,6 +23,8 @@ export interface ContextParams {
 		model: string;
 		provider: string;
 	};
+	/** When set, assembleContext() prepends a system message explaining silence semantics. */
+	platformContext?: { platform: string };
 }
 
 // Cache for persona content - loaded once at startup

@@ -24,7 +24,7 @@ export class WebhookStubConnector implements PlatformConnector {
 		_threadId: string,
 		_messageId: string,
 		_content: string,
-		_attachments?: unknown[],
+		_attachments?: Array<{ filename: string; data: Buffer }>,
 	): Promise<void> {
 		throw new Error("not implemented — stub only");
 	}

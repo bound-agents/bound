@@ -23,7 +23,7 @@ class _MockConnector implements PlatformConnector {
 		threadId: string;
 		messageId: string;
 		content: string;
-		attachments?: unknown[];
+		attachments?: Array<{ filename: string; data: Buffer }>;
 	}> = [];
 
 	constructor(platform = "test-platform", delivery: "broadcast" | "exclusive" = "broadcast") {
@@ -43,7 +43,7 @@ class _MockConnector implements PlatformConnector {
 		threadId: string,
 		messageId: string,
 		content: string,
-		attachments?: unknown[],
+		attachments?: Array<{ filename: string; data: Buffer }>,
 	): Promise<void> {
 		this.deliverCalls.push({ threadId, messageId, content, attachments });
 	}

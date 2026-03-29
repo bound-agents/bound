@@ -1,3 +1,5 @@
+import type { ToolDefinition } from "@bound/llm";
+
 /**
  * A PlatformConnector integrates one external messaging platform (Discord, Slack, Telegram, etc.)
  * with the bound relay pipeline.
@@ -45,7 +47,7 @@ export interface PlatformConnector {
 		threadId: string,
 		messageId: string,
 		content: string,
-		attachments?: unknown[],
+		attachments?: Array<{ filename: string; data: Buffer }>,
 	): Promise<void>;
 
 	/**
@@ -56,4 +58,17 @@ export interface PlatformConnector {
 	 * @param headers - HTTP request headers (for signature verification).
 	 */
 	handleWebhookPayload?(rawBody: string, headers: Record<string, string>): Promise<void>;
+
+	/**
+	 * Contribute platform-specific tool definitions to the agent loop.
+	 *
+	 * @param threadId - The thread ID the agent loop is processing. Closures returned
+	 *   in the map must capture this value so execution is bound to the correct thread.
+	 * @returns A map from tool name to tool definition + execute closure. The execute
+	 *   closure receives the LLM's input object and returns a result string.
+	 */
+	getPlatformTools?(threadId: string): Map<string, {
+		toolDefinition: ToolDefinition;
+		execute: (input: Record<string, unknown>) => Promise<string>;
+	}>;
 }
