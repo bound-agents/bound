@@ -361,11 +361,15 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// 9. Sandbox setup
 	console.log("Setting up sandbox...");
 	let sandbox: Awaited<ReturnType<typeof createSandbox>> | null = null;
+	let clusterFsObj: any = null;
 	try {
-		const clusterFs = createClusterFs({
+		const clusterFsRaw = createClusterFs({
 			hostName: appContext.hostName,
 			syncEnabled: false,
 		});
+		// Extract the MountableFs from either a MountableFs directly or ClusterFsResult
+		const clusterFs = ("fs" in clusterFsRaw ? clusterFsRaw.fs : clusterFsRaw) as any;
+		clusterFsObj = clusterFsRaw;
 		const commandContext = {
 			db: appContext.db,
 			siteId: appContext.siteId,
@@ -385,6 +389,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 			`[sandbox] ${builtinCommands.length} built-in + ${mcpCommands.length} MCP commands registered`,
 		);
 		console.log("[sandbox] Sandbox ready");
+
+		// Wire the virtual filesystem reader so discord_send_message can read files
+		// created by bash commands in the sandbox. The MountableFs.readFile() returns
+		// a string, which we convert to Uint8Array for the platform tools.
+		// This is done inside the try block since clusterFs is scoped here.
+		// We store it in clusterFsObj which persists after the try block.
 	} catch (error) {
 		console.warn("[sandbox] Failed to create sandbox:", formatError(error));
 	}
@@ -482,6 +492,18 @@ export async function runStart(args: StartArgs): Promise<void> {
 		appContext,
 		relayConfig,
 	);
+
+	// Wire the virtual filesystem reader so discord_send_message can read files
+	// created by bash commands in the sandbox. The MountableFs.readFile() returns
+	// a string, which we convert to Uint8Array for the platform tools.
+	if (clusterFsObj) {
+		const mountableFs = "fs" in clusterFsObj ? clusterFsObj.fs : clusterFsObj;
+		relayProcessor.setFileReader(async (path: string): Promise<Uint8Array> => {
+			const content = await mountableFs.readFile(path);
+			return new TextEncoder().encode(content);
+		});
+	}
+
 	relayProcessorHandle = relayProcessor.start();
 	console.log("[relay] Relay processor started");
 

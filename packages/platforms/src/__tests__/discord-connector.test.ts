@@ -973,5 +973,150 @@ describe("DiscordConnector", () => {
 
 			expect(deliverCallCount).toBe(2);
 		});
+
+		it("uses readFileFn when provided to read attachments (virtual FS support)", async () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const threadId = randomUUID();
+			const userId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[userId, "Alice", JSON.stringify({ discord: "user123" }), now, now, 0],
+			);
+
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, "discord", "site-1", 0, null, null, null, null, null, now, now, now, 0],
+			);
+
+			// Mock readFileFn for virtual FS
+			const mockData = new TextEncoder().encode("virtual file content");
+			const mockReadFileFn = async (path: string): Promise<Uint8Array> => {
+				if (path === "/virtual/file.txt") {
+					return mockData;
+				}
+				throw new Error(`File not found: ${path}`);
+			};
+
+			let deliverCalled = false;
+			let deliverAttachments: Array<{ filename: string; data: Buffer }> | undefined;
+			(connector as { deliver: unknown }).deliver = async (
+				_tId: string,
+				_mId: string,
+				_content: string,
+				attachments?: Array<{ filename: string; data: Buffer }>,
+			) => {
+				deliverCalled = true;
+				deliverAttachments = attachments;
+				return Promise.resolve();
+			};
+
+			const tools = (connector as {
+				getPlatformTools(
+					threadId: string,
+					readFileFn?: (path: string) => Promise<Uint8Array>,
+				): Map<
+					string,
+					{
+						toolDefinition: { type: string; function: Record<string, unknown> };
+						execute: (input: Record<string, unknown>) => Promise<string>;
+					}
+				>;
+			}).getPlatformTools(threadId, mockReadFileFn);
+			const execute = tools.get("discord_send_message")?.execute;
+			const result = await execute?.({ content: "hi", attachments: ["/virtual/file.txt"] });
+
+			expect(result).toBe("sent");
+			expect(deliverCalled).toBe(true);
+			expect(deliverAttachments?.length).toBe(1);
+			expect(deliverAttachments?.[0]?.filename).toBe("file.txt");
+			// Verify Buffer was created from Uint8Array
+			expect(deliverAttachments?.[0]?.data).toBeDefined();
+		});
+
+		it("falls back to node:fs/promises.readFile when readFileFn not provided", async () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const threadId = randomUUID();
+			const userId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[userId, "Alice", JSON.stringify({ discord: "user123" }), now, now, 0],
+			);
+
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, "discord", "site-1", 0, null, null, null, null, null, now, now, now, 0],
+			);
+
+			const testId = randomBytes(4).toString("hex");
+			const tmpFile = join(tmpdir(), `test-attachment-fallback-${testId}.txt`);
+			writeFileSync(tmpFile, "real filesystem content");
+
+			try {
+				let deliverCalled = false;
+				let deliverAttachments: Array<{ filename: string; data: Buffer }> | undefined;
+				(connector as { deliver: unknown }).deliver = async (
+					_tId: string,
+					_mId: string,
+					_content: string,
+					attachments?: Array<{ filename: string; data: Buffer }>,
+				) => {
+					deliverCalled = true;
+					deliverAttachments = attachments;
+					return Promise.resolve();
+				};
+
+				// Call without readFileFn — should use node:fs/promises
+				const tools = connector.getPlatformTools(threadId);
+				const execute = tools.get("discord_send_message")?.execute;
+				const result = await execute?.({ content: "hi", attachments: [tmpFile] });
+
+				expect(result).toBe("sent");
+				expect(deliverCalled).toBe(true);
+				expect(deliverAttachments?.length).toBe(1);
+				expect(deliverAttachments?.[0]?.data).toBeDefined();
+			} finally {
+				unlinkSync(tmpFile);
+			}
+		});
+
+		it("includes error message in attachment failure when readFileFn throws", async () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const threadId = randomUUID();
+
+			// Mock readFileFn that throws
+			const mockReadFileFn = async (_path: string): Promise<Uint8Array> => {
+				throw new Error("access denied");
+			};
+
+			let deliverCalled = false;
+			(connector as { deliver: unknown }).deliver = async () => {
+				deliverCalled = true;
+				return Promise.resolve();
+			};
+
+			const tools = (connector as {
+				getPlatformTools(
+					threadId: string,
+					readFileFn?: (path: string) => Promise<Uint8Array>,
+				): Map<
+					string,
+					{
+						toolDefinition: { type: string; function: Record<string, unknown> };
+						execute: (input: Record<string, unknown>) => Promise<string>;
+					}
+				>;
+			}).getPlatformTools(threadId, mockReadFileFn);
+			const execute = tools.get("discord_send_message")?.execute;
+			const result = await execute?.({ content: "hi", attachments: ["/file.txt"] });
+
+			expect(typeof result).toBe("string");
+			expect(result?.startsWith("Error")).toBe(true);
+			expect(result?.includes("access denied")).toBe(true);
+			expect(deliverCalled).toBe(false);
+		});
 	});
 });

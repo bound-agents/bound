@@ -64,10 +64,16 @@ export interface PlatformConnector {
 	 *
 	 * @param threadId - The thread ID the agent loop is processing. Closures returned
 	 *   in the map must capture this value so execution is bound to the correct thread.
+	 * @param readFileFn - Optional file reader function from a virtual filesystem (e.g. ClusterFs).
+	 *   When provided, platform tools use this to read files instead of node:fs/promises.
+	 *   Enables reading files created by bash commands in the sandbox's virtual FS.
 	 * @returns A map from tool name to tool definition + execute closure. The execute
 	 *   closure receives the LLM's input object and returns a result string.
 	 */
-	getPlatformTools?(threadId: string): Map<
+	getPlatformTools?(
+		threadId: string,
+		readFileFn?: (path: string) => Promise<Uint8Array>,
+	): Map<
 		string,
 		{
 			toolDefinition: ToolDefinition;

@@ -50,7 +50,10 @@ interface IdempotencyCacheEntry {
 interface ConnectorRegistry {
 	getConnector(platform: string):
 		| {
-				getPlatformTools?(threadId: string): Map<
+				getPlatformTools?(
+					threadId: string,
+					readFileFn?: (path: string) => Promise<Uint8Array>,
+				): Map<
 					string,
 					{
 						toolDefinition: {
@@ -71,6 +74,7 @@ export class RelayProcessor {
 	private activeInferenceStreams = new Map<string, AbortController>();
 	private readonly threadAffinityMap: Map<string, string>;
 	private platformConnectorRegistry: ConnectorRegistry | null = null;
+	private fileReader?: (path: string) => Promise<Uint8Array>;
 
 	constructor(
 		private db: Database,
@@ -96,6 +100,11 @@ export class RelayProcessor {
 	/** Inject the platform connector registry after startup completes (avoids circular init order). */
 	setPlatformConnectorRegistry(registry: ConnectorRegistry): void {
 		this.platformConnectorRegistry = registry;
+	}
+
+	/** Inject the file reader (e.g. ClusterFs.readFileBuffer) for virtual FS support in platform tools. */
+	setFileReader(fn: (path: string) => Promise<Uint8Array>): void {
+		this.fileReader = fn;
 	}
 
 	start(pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS): { stop: () => void } {
@@ -1082,7 +1091,7 @@ export class RelayProcessor {
 			if (payload.platform && this.platformConnectorRegistry) {
 				const connector = this.platformConnectorRegistry.getConnector(payload.platform);
 				if (connector?.getPlatformTools) {
-					const platformTools = connector.getPlatformTools(payload.thread_id);
+					const platformTools = connector.getPlatformTools(payload.thread_id, this.fileReader);
 					loopConfig.platform = payload.platform;
 					loopConfig.platformTools = platformTools;
 				}

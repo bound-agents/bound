@@ -3178,5 +3178,161 @@ describe("RelayProcessor", () => {
 				.all("error", inboxEntry.id) as RelayOutboxEntry[];
 			expect(errors.length).toBeGreaterThan(0);
 		});
+
+		it("passes fileReader to getPlatformTools when set", async () => {
+			// Setup: Create thread with interface="discord"
+			const threadId = "thread-file-reader";
+			const userId = "user-file-reader";
+			const userMsgId = "msg-user-file-reader";
+			const nowIso = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, nowIso, "discord", "local", nowIso, nowIso],
+			);
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+				[userId, "Test User", nowIso, nowIso],
+			);
+
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				[userMsgId, threadId, "user", "Hello", "local", nowIso],
+			);
+
+			// Setup: Create mock event bus
+			const eventBus = createMockEventBus();
+
+			// Setup: Create mock AppContext
+			const mockAppCtx = {
+				db,
+				config: {},
+				optionalConfig: {},
+				eventBus,
+				logger: createMockLogger(),
+				siteId: "local-site",
+				hostName: "localhost",
+			};
+
+			// Setup: Capture the fileReader argument passed to getPlatformTools
+			let capturedReadFileFn: ((path: string) => Promise<Uint8Array>) | undefined;
+			const mockToolDefinition = {
+				type: "function" as const,
+				function: {
+					name: "discord_send_message",
+					description: "Send a message to Discord",
+					parameters: { type: "object" as const, properties: {} },
+				},
+			};
+
+			const mockPlatformTools = new Map([
+				[
+					"discord_send_message",
+					{
+						toolDefinition: mockToolDefinition,
+						execute: async () => "message sent",
+					},
+				],
+			]);
+
+			const mockConnector = {
+				getPlatformTools: (threadId: string, readFileFn?: (path: string) => Promise<Uint8Array>) => {
+					capturedReadFileFn = readFileFn;
+					return mockPlatformTools;
+				},
+			};
+
+			const mockRegistry = {
+				getConnector: (platform: string) => {
+					if (platform === "discord") return mockConnector;
+					return undefined;
+				},
+			};
+
+			// Setup: Create RelayProcessor
+			let capturedLoopConfig: AgentLoopConfig | null = null;
+			const mockAgentLoop = {
+				run: async () => ({
+					error: null,
+					messagesCreated: 1,
+					toolCallsMade: 1,
+					filesChanged: 0,
+				}),
+			};
+
+			const mockAgentLoopFactory = (config: AgentLoopConfig) => {
+				capturedLoopConfig = config;
+				return mockAgentLoop as any;
+			};
+
+			const processor = new RelayProcessor(
+				db,
+				"local-site",
+				new Map(),
+				createMockModelRouter(),
+				new Set(["requester-site"]),
+				createMockLogger(),
+				eventBus,
+				mockAppCtx as any,
+				undefined,
+				new Map(),
+				mockAgentLoopFactory,
+			);
+
+			processor.setPlatformConnectorRegistry(mockRegistry as any);
+
+			// Setup: Create and set the file reader
+			const mockFileReader = async (path: string): Promise<Uint8Array> => {
+				return new Uint8Array([1, 2, 3, 4]);
+			};
+			(processor as any).setFileReader(mockFileReader);
+
+			// Execute: Insert a process inbox entry to trigger executeProcess
+			const now = new Date();
+			const processInboxEntry: RelayInboxEntry = {
+				id: "process-file-reader",
+				source_site_id: "requester-site",
+				kind: "process",
+				ref_id: null,
+				idempotency_key: null,
+				payload: JSON.stringify({
+					thread_id: threadId,
+					message_id: userMsgId,
+					user_id: userId,
+					platform: "discord",
+				}),
+				expires_at: new Date(now.getTime() + 60000).toISOString(),
+				received_at: now.toISOString(),
+				processed: 0,
+				stream_id: null,
+			};
+
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					processInboxEntry.id,
+					processInboxEntry.source_site_id,
+					processInboxEntry.kind,
+					processInboxEntry.ref_id,
+					processInboxEntry.idempotency_key,
+					processInboxEntry.payload,
+					processInboxEntry.expires_at,
+					processInboxEntry.received_at,
+					processInboxEntry.processed,
+					processInboxEntry.stream_id,
+				],
+			);
+
+			// Run processor to execute the process entry
+			const handle = processor.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			handle.stop();
+
+			// Assert: the fileReader was passed to getPlatformTools
+			expect(capturedReadFileFn).toBeDefined();
+			expect(capturedReadFileFn).toBe(mockFileReader);
+		});
 	});
 });

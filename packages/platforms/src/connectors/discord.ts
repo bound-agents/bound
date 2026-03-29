@@ -124,7 +124,10 @@ export class DiscordConnector implements PlatformConnector {
 		}
 	}
 
-	getPlatformTools(threadId: string): Map<
+	getPlatformTools(
+		threadId: string,
+		readFileFn?: (path: string) => Promise<Uint8Array>,
+	): Map<
 		string,
 		{
 			toolDefinition: ToolDefinition;
@@ -176,11 +179,14 @@ export class DiscordConnector implements PlatformConnector {
 				loadedFiles = [];
 				for (const filePath of attachmentPaths) {
 					try {
-						const data = await readFile(filePath);
+						const data: Uint8Array | Buffer = readFileFn
+							? await readFileFn(filePath)
+							: await readFile(filePath);
 						const filename = filePath.split("/").pop() ?? filePath;
 						loadedFiles.push({ filename, data: Buffer.from(data) });
-					} catch {
-						return `Error: cannot read attachment at path "${filePath}"`;
+					} catch (err) {
+						const msg = err instanceof Error ? err.message : String(err);
+						return `Error: cannot read attachment at path "${filePath}": ${msg}`;
 					}
 				}
 			}
