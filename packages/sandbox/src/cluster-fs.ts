@@ -328,7 +328,7 @@ export function diffWorkspace(
 export async function hydrateWorkspace(fs: MountableFs, db: Database): Promise<void> {
 	const query = db.prepare(`
 		SELECT path, content FROM files
-		WHERE path LIKE '/home/user/%' AND deleted = 0
+		WHERE deleted = 0 AND path NOT LIKE '/mnt/%'
 	`);
 
 	for (const row of query.all() as Array<{ path: string; content: string }>) {

@@ -1,9 +1,10 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import Database from "bun:sqlite";
 import { applySchema, insertRow } from "@bound/core";
-import { createClusterFs, diffWorkspaceAsync, snapshotWorkspace } from "../cluster-fs";
+import { createClusterFs, diffWorkspaceAsync, snapshotWorkspace, hydrateWorkspace } from "../cluster-fs";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { InMemoryFs, MountableFs } from "just-bash";
 
 describe("ClusterFs", () => {
 	test("creates a ClusterFs with proper mount structure", () => {
@@ -210,5 +211,92 @@ describe("snapshotWorkspace with paths option", () => {
 		const snapshot = await snapshotWorkspace(clusterFs, { paths: [] });
 
 		expect(snapshot.size).toBe(0);
+	});
+});
+
+describe("hydrateWorkspace", () => {
+	let db: Database;
+	let fs: MountableFs;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		applySchema(db);
+		fs = new MountableFs({ base: new InMemoryFs() });
+	});
+
+	function insertFile(
+		database: Database,
+		path: string,
+		content: string,
+		deleted = 0,
+	) {
+		const now = new Date().toISOString();
+		insertRow(
+			database,
+			"files",
+			{
+				id: path,
+				path,
+				content,
+				deleted,
+				size_bytes: Buffer.byteLength(content),
+				created_at: now,
+				modified_at: now,
+			},
+			"test-site",
+		);
+	}
+
+	test("AC2.1: restores files from /tmp/ path", async () => {
+		insertFile(db, "/tmp/scratch.txt", "hello");
+
+		await hydrateWorkspace(fs, db);
+
+		const read = await fs.readFile("/tmp/scratch.txt");
+		expect(read).toBe("hello");
+	});
+
+	test("AC2.2: restores files from arbitrary paths like /workspace/", async () => {
+		insertFile(db, "/workspace/foo.ts", "const x = 1;");
+
+		await hydrateWorkspace(fs, db);
+
+		const read = await fs.readFile("/workspace/foo.ts");
+		expect(read).toBe("const x = 1;");
+	});
+
+	test("AC2.3: restores /home/user/ files (no regression)", async () => {
+		insertFile(db, "/home/user/notes.txt", "my notes");
+
+		await hydrateWorkspace(fs, db);
+
+		const read = await fs.readFile("/home/user/notes.txt");
+		expect(read).toBe("my notes");
+	});
+
+	test("AC2.4: does NOT restore /mnt/ paths", async () => {
+		insertFile(db, "/mnt/host/file.txt", "should not restore");
+
+		await hydrateWorkspace(fs, db);
+
+		try {
+			await fs.readFile("/mnt/host/file.txt");
+			expect.unreachable("File should not have been restored");
+		} catch (_error) {
+			// Expected: file was not hydrated
+		}
+	});
+
+	test("AC2.5: does NOT restore soft-deleted rows", async () => {
+		insertFile(db, "/tmp/gone.txt", "deleted content", 1);
+
+		await hydrateWorkspace(fs, db);
+
+		try {
+			await fs.readFile("/tmp/gone.txt");
+			expect.unreachable("Deleted file should not have been restored");
+		} catch (_error) {
+			// Expected: soft-deleted file was not hydrated
+		}
 	});
 });
