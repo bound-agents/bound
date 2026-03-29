@@ -42,10 +42,9 @@ async function build() {
 	// Step 4: Compile bound-mcp (MCP stdio server)
 	console.log("\n4. Compiling bound-mcp binary...");
 	try {
-		execSync(
-			"bun build --compile packages/mcp-server/src/server.ts --outfile dist/bound-mcp",
-			{ stdio: "inherit" },
-		);
+		execSync("bun build --compile packages/mcp-server/src/server.ts --outfile dist/bound-mcp", {
+			stdio: "inherit",
+		});
 	} catch {
 		console.error("bound-mcp compilation failed");
 		console.log("Use 'bun packages/mcp-server/src/server.ts' to run directly");
