@@ -88,7 +88,7 @@ describe("Relay Metrics", () => {
 				.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 				.all() as Array<{ name: string }>;
 
-			// Should still have 16 tables (15 original + relay_cycles)
+			// Should still have 17 tables (16 original + relay_cycles)
 			expect(tables.length).toBe(17);
 
 			db.close();
