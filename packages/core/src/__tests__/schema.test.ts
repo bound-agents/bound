@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { insertRow, updateRow } from "../change-log";
 import { createDatabase } from "../database";
 import { applySchema } from "../schema";
-import { insertRow, updateRow } from "../change-log";
 
 describe("Database Schema", () => {
 	let dbPath: string;
@@ -283,9 +283,10 @@ describe("Database Schema", () => {
 			siteId,
 		);
 
-		const entry = db
-			.query("SELECT * FROM change_log WHERE row_id = ?")
-			.get(skillId) as Record<string, unknown>;
+		const entry = db.query("SELECT * FROM change_log WHERE row_id = ?").get(skillId) as Record<
+			string,
+			unknown
+		>;
 		expect(entry).toBeDefined();
 		expect(entry.table_name).toBe("skills");
 
