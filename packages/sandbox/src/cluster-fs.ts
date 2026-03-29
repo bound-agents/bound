@@ -213,19 +213,23 @@ function checkFileStaleness(db: Database, path: string): StalenessResult | null 
 	};
 }
 
-export async function snapshotWorkspace(fs: IFileSystem): Promise<Map<string, string>> {
+export async function snapshotWorkspace(
+	fs: IFileSystem,
+	options?: { paths?: string[] },
+): Promise<Map<string, string>> {
 	const snapshot = new Map<string, string>();
-	const paths = fs.getAllPaths();
+	const toSnapshot: Iterable<string> =
+		options?.paths !== undefined
+			? options.paths
+			: [...fs.getAllPaths()].filter((p) => p.startsWith("/home/user/"));
 
-	for (const path of paths) {
-		if (path.startsWith("/home/user/")) {
-			try {
-				const content = await fs.readFile(path);
-				const hash = createHash("sha256").update(content).digest("hex");
-				snapshot.set(path, hash);
-			} catch (_error) {
-				// Ignore directories and other non-readable entries
-			}
+	for (const path of toSnapshot) {
+		try {
+			const content = await fs.readFile(path);
+			const hash = createHash("sha256").update(content).digest("hex");
+			snapshot.set(path, hash);
+		} catch (_error) {
+			// Ignore directories and other non-readable entries
 		}
 	}
 

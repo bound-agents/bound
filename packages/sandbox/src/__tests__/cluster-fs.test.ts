@@ -178,3 +178,37 @@ describe("getInMemoryPaths", () => {
 		}
 	});
 });
+
+describe("snapshotWorkspace with paths option", () => {
+	test("snapshots only listed paths when paths option provided", async () => {
+		const clusterFs = createClusterFs({ hostName: "localhost", syncEnabled: true });
+		await clusterFs.writeFile("/tmp/foo.txt", "foo content");
+		await clusterFs.writeFile("/home/user/bar.txt", "bar content");
+
+		const snapshot = await snapshotWorkspace(clusterFs, { paths: ["/tmp/foo.txt"] });
+
+		expect(snapshot.has("/tmp/foo.txt")).toBe(true);
+		expect(snapshot.has("/home/user/bar.txt")).toBe(false);
+		expect(snapshot.size).toBe(1);
+	});
+
+	test("backward compat: no options still filters to /home/user/", async () => {
+		const clusterFs = createClusterFs({ hostName: "localhost", syncEnabled: true });
+		await clusterFs.writeFile("/home/user/file.txt", "home content");
+		await clusterFs.writeFile("/tmp/ignored.txt", "ignored content");
+
+		const snapshot = await snapshotWorkspace(clusterFs);
+
+		expect(snapshot.has("/home/user/file.txt")).toBe(true);
+		expect(snapshot.has("/tmp/ignored.txt")).toBe(false);
+	});
+
+	test("empty paths array returns empty snapshot", async () => {
+		const clusterFs = createClusterFs({ hostName: "localhost", syncEnabled: true });
+		await clusterFs.writeFile("/tmp/foo.txt", "foo content");
+
+		const snapshot = await snapshotWorkspace(clusterFs, { paths: [] });
+
+		expect(snapshot.size).toBe(0);
+	});
+});
