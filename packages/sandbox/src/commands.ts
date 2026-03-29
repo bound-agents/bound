@@ -3,7 +3,7 @@ import type Database from "bun:sqlite";
 import { formatError } from "@bound/shared";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
 
-import type { CustomCommand } from "just-bash";
+import type { CustomCommand, IFileSystem } from "just-bash";
 import { defineCommand } from "just-bash";
 
 export interface CommandResult {
@@ -21,6 +21,7 @@ export interface CommandContext {
 	taskId?: string;
 	mcpClients?: Map<string, unknown>;
 	modelRouter?: unknown; // ModelRouter from @bound/llm, optional for backward compatibility
+	fs?: IFileSystem;
 }
 
 export interface CommandDefinition {
