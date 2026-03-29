@@ -597,75 +597,87 @@ describe("Scheduler features", () => {
 	// Cron template wiring (deterministic, no scheduler timing dependency)
 	// -----------------------------------------------------------------------
 	describe("cron template execution", () => {
-		it("getCronTemplate finds template when config is a raw schedule map", () => {
-			// Replicate the getCronTemplate matching logic directly.
-			// When optionalConfig["cronSchedules"] is a raw schedule map
-			// (not Result-wrapped), the template should be found.
+		it("executes template commands via sandbox when optionalConfig.cronSchedules is Result-wrapped", async () => {
+			// This is the real production path: the config loader stores
+			// optionalConfig["cronSchedules"] as { ok: true, value: { <map> } }.
+			// getCronTemplate must unwrap .value to find the template — this test
+			// confirms the Scheduler handles the Result wrapper correctly end-to-end.
 
 			const cronExpression = "0 */6 * * *";
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
 
-			const cronConfig: Record<string, unknown> = {
-				backup: {
-					schedule: cronExpression,
-					template: ["echo backup-start", "echo backup-done"],
-				},
-			};
-
+			// triggerSpec as produced by the `schedule --every` command
 			const triggerSpec = JSON.stringify({ type: "cron", expression: cronExpression });
-			const cronSpec = JSON.parse(triggerSpec);
 
-			let foundTemplate: string[] | null = null;
-			for (const [_name, schedule] of Object.entries(cronConfig) as Array<[string, any]>) {
-				if (schedule.schedule === cronSpec.expression && schedule.template) {
-					foundTemplate = schedule.template;
-					break;
-				}
-			}
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'cron', 'pending', ?, NULL, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, triggerSpec, pastTime, now, now],
+			);
 
-			expect(foundTemplate).not.toBeNull();
-			expect(foundTemplate!.length).toBe(2);
-			expect(foundTemplate![0]).toBe("echo backup-start");
-			expect(foundTemplate![1]).toBe("echo backup-done");
-		});
+			const execCalls: string[] = [];
+			let agentLoopCalled = false;
 
-		it("getCronTemplate fails when config is Result-wrapped (documents wiring gap)", () => {
-			// Known wiring gap: getCronTemplate reads
-			// this.ctx.optionalConfig["cronSchedules"] which is a Result<>,
-			// then iterates with Object.entries() without unwrapping .value.
-			// Entries are ["ok", true] and ["value", {scheduleMap}], so
-			// schedule.schedule is always undefined on those entries.
-
-			const cronExpression = "0 */6 * * *";
-
-			const cronConfig: Record<string, unknown> = {
-				ok: true,
-				value: {
-					backup: {
-						schedule: cronExpression,
-						template: ["echo backup"],
+			// optionalConfig with Result-wrapped cronSchedules (real production format)
+			const ctx = makeCtx({
+				optionalConfig: {
+					cronSchedules: {
+						ok: true,
+						value: {
+							backup: {
+								schedule: cronExpression,
+								template: ["echo backup-start", "echo backup-done"],
+							},
+						},
 					},
+				} as unknown as AppContext["optionalConfig"],
+			});
+
+			const agentLoopFactory = () => {
+				agentLoopCalled = true;
+				return {
+					run: async (): Promise<AgentLoopResult> => ({
+						messagesCreated: 0,
+						toolCallsMade: 0,
+						filesChanged: 0,
+					}),
+				};
+			};
+
+			const sandbox = {
+				exec: async (cmd: string) => {
+					execCalls.push(cmd);
+					return { stdout: cmd, stderr: "", exitCode: 0 };
 				},
 			};
 
-			const triggerSpec = JSON.stringify({ type: "cron", expression: cronExpression });
-			const cronSpec = JSON.parse(triggerSpec);
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, agentLoopFactory as any, {}, sandbox);
+			const { stop } = scheduler.start(50);
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+			stop();
 
-			let foundTemplate: string[] | null = null;
-			for (const [_name, schedule] of Object.entries(cronConfig) as Array<[string, any]>) {
-				if (
-					schedule &&
-					typeof schedule === "object" &&
-					schedule.schedule === cronSpec.expression &&
-					schedule.template
-				) {
-					foundTemplate = schedule.template;
-					break;
-				}
-			}
+			// Template was found and executed via sandbox — agent loop was NOT used
+			expect(agentLoopCalled).toBe(false);
+			expect(execCalls).toContain("echo backup-start");
+			expect(execCalls).toContain("echo backup-done");
 
-			// Documents the bug: template is NOT found because the Result
-			// wrapper is iterated instead of the inner config map.
-			expect(foundTemplate).toBeNull();
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
 	});
 
