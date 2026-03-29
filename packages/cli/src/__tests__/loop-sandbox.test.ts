@@ -125,7 +125,7 @@ describe("LoopSandbox", () => {
 				.query("SELECT path, content FROM files WHERE path = ? AND deleted = 0")
 				.get("/tmp/scratch.txt") as { path: string; content: string } | null;
 
-			expect(row).toBeDefined();
+			expect(row).not.toBeNull();
 			expect(row?.path).toBe("/tmp/scratch.txt");
 			expect(row?.content).toBe("test content");
 		});
@@ -244,7 +244,7 @@ describe("LoopSandbox", () => {
 				.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
 				.get("/tmp/small.txt") as { content: string } | null;
 
-			expect(row).toBeDefined();
+			expect(row).not.toBeNull();
 			expect(row?.content.length).toBe(500 * 1024);
 		});
 	});
@@ -316,7 +316,7 @@ describe("LoopSandbox", () => {
 				.query("SELECT path, content FROM files WHERE path = ? AND deleted = 0")
 				.get("/tmp/output.txt") as { path: string; content: string } | null;
 
-			expect(row).toBeDefined();
+			expect(row).not.toBeNull();
 			expect(row?.path).toBe("/tmp/output.txt");
 			expect(row?.content).toBe("output data");
 		});
