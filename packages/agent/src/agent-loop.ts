@@ -48,7 +48,13 @@ interface ParsedToolCall {
 interface ParsedResponse {
 	textContent: string;
 	toolCalls: ParsedToolCall[];
-	usage: { inputTokens: number; outputTokens: number };
+	usage: {
+		inputTokens: number;
+		outputTokens: number;
+		cacheWriteTokens: number | null;
+		cacheReadTokens: number | null;
+		usageEstimated: boolean;
+	};
 }
 
 export class AgentLoop {
@@ -339,6 +345,8 @@ export class AgentLoop {
 						model_id: resolvedModelId,
 						tokens_in: parsed.usage.inputTokens,
 						tokens_out: parsed.usage.outputTokens,
+						tokens_cache_write: parsed.usage.cacheWriteTokens,
+						tokens_cache_read: parsed.usage.cacheReadTokens,
 						cost_usd,
 						created_at: new Date().toISOString(),
 					});
@@ -1026,6 +1034,9 @@ export class AgentLoop {
 		const nameMap = new Map<string, string>();
 		let inputTokens = 0;
 		let outputTokens = 0;
+		let cacheWriteTokens: number | null = null;
+		let cacheReadTokens: number | null = null;
+		let usageEstimated = false;
 
 		for (const chunk of chunks) {
 			if (chunk.type === "text") {
@@ -1054,10 +1065,23 @@ export class AgentLoop {
 			} else if (chunk.type === "done") {
 				inputTokens = chunk.usage.input_tokens;
 				outputTokens = chunk.usage.output_tokens;
+				cacheWriteTokens = chunk.usage.cache_write_tokens;
+				cacheReadTokens = chunk.usage.cache_read_tokens;
+				usageEstimated = chunk.usage.estimated;
 			}
 		}
 
-		return { textContent, toolCalls, usage: { inputTokens, outputTokens } };
+		return {
+		textContent,
+		toolCalls,
+		usage: {
+			inputTokens,
+			outputTokens,
+			cacheWriteTokens,
+			cacheReadTokens,
+			usageEstimated,
+		},
+	};
 	}
 
 	cancel(): void {
