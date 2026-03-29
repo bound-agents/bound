@@ -8,6 +8,7 @@ import type { AgentLoopResult } from "@bound/agent";
 import { applySchema, type createAppContext, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { Scheduler } from "../scheduler";
+import { sleep, waitFor } from "./helpers";
 
 describe("Scheduler Integration", () => {
 	let tmpDir: string;
@@ -101,7 +102,11 @@ describe("Scheduler Integration", () => {
 		const { stop } = scheduler.start(100); // Fast poll for testing
 
 		// Wait for scheduler to run the task
-		await new Promise((resolve) => setTimeout(resolve, 1000));
+		await waitFor(
+			() =>
+				(db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | undefined)?.status !== "pending",
+			{ message: "deferred task did not run" },
+		);
 
 		stop();
 
@@ -152,7 +157,11 @@ describe("Scheduler Integration", () => {
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100);
 
-		await new Promise((resolve) => setTimeout(resolve, 2000));
+		await waitFor(
+			() =>
+				(db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | null)?.status !== "pending",
+			{ message: "cron task not claimed/run" },
+		);
 		stop();
 
 		// After running, the task should have been claimed/run and next_run_at recomputed
@@ -246,7 +255,11 @@ describe("Scheduler Integration", () => {
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100);
 
-		await new Promise((resolve) => setTimeout(resolve, 1000));
+		await waitFor(
+			() =>
+				(db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | undefined)?.status !== "pending",
+			{ message: "dependent task did not run" },
+		);
 		stop();
 
 		const task = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
@@ -294,7 +307,8 @@ describe("Scheduler Integration", () => {
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100);
 
-		await new Promise((resolve) => setTimeout(resolve, 1000));
+		// Host affinity mismatch — task stays pending; wait enough cycles to confirm
+		await sleep(300);
 		stop();
 
 		const task = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as

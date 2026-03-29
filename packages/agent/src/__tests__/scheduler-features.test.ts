@@ -21,6 +21,7 @@ import type { AppContext } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { Scheduler } from "../scheduler";
 import { seedCronTasks } from "../task-resolution";
+import { sleep, waitFor } from "./helpers";
 
 describe("Scheduler features", () => {
 	let tmpDir: string;
@@ -248,7 +249,8 @@ describe("Scheduler features", () => {
 			const scheduler = new Scheduler(ctx as any, factory as any);
 			const { stop } = scheduler.start(50);
 
-			await new Promise((resolve) => setTimeout(resolve, 1000));
+			// Budget exceeded — task should stay pending; wait enough cycles to confirm
+			await sleep(300);
 			stop();
 
 			// The task should NOT have been run because the budget was exceeded.
@@ -311,7 +313,11 @@ describe("Scheduler features", () => {
 			const scheduler = new Scheduler(ctx as any, softErrorFactory as any);
 			const { stop } = scheduler.start(50);
 
-			await new Promise((resolve) => setTimeout(resolve, 1000));
+			await waitFor(
+				() =>
+					(db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | null)?.status !== "pending",
+				{ message: "task did not run/fail" },
+			);
 			stop();
 
 			const task = db.query("SELECT status, error FROM tasks WHERE id = ?").get(taskId) as {
@@ -369,7 +375,11 @@ describe("Scheduler features", () => {
 			const scheduler = new Scheduler(ctx as any, makeFailingAgentLoopFactory() as any);
 			const { stop } = scheduler.start(50);
 
-			await new Promise((resolve) => setTimeout(resolve, 1000));
+			await waitFor(
+				() =>
+					db.query("SELECT COUNT(*) as n FROM messages WHERE thread_id = ? AND role = 'alert'").get(threadId)?.n > 0,
+				{ message: "alert message not created" },
+			);
 			stop();
 
 			// Verify that a failure alert message was persisted
@@ -459,7 +469,12 @@ describe("Scheduler features", () => {
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, softErrorFactory() as any);
 			const { stop } = scheduler.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 600));
+			await waitFor(
+				() =>
+					((db.query("SELECT consecutive_failures FROM tasks WHERE id = ?").get(taskId) as { consecutive_failures: number } | null)
+						?.consecutive_failures ?? 0) > 0,
+				{ message: "consecutive_failures not incremented" },
+			);
 			stop();
 
 			const task = db.query("SELECT consecutive_failures FROM tasks WHERE id = ?").get(taskId) as {
@@ -478,7 +493,11 @@ describe("Scheduler features", () => {
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, softErrorFactory() as any);
 			const { stop } = scheduler.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 600));
+			await waitFor(
+				() =>
+					(db.query("SELECT COUNT(*) as n FROM advisories WHERE detail LIKE ?").get(`%${taskId}%`) as { n: number } | null)?.n > 0,
+				{ message: "advisory not created" },
+			);
 			stop();
 
 			const advisories = db
@@ -499,7 +518,11 @@ describe("Scheduler features", () => {
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeFailingAgentLoopFactory() as any);
 			const { stop } = scheduler.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 600));
+			await waitFor(
+				() =>
+					(db.query("SELECT COUNT(*) as n FROM advisories WHERE detail LIKE ?").get(`%${taskId}%`) as { n: number } | null)?.n > 0,
+				{ message: "advisory not created" },
+			);
 			stop();
 
 			const advisories = db
@@ -519,7 +542,11 @@ describe("Scheduler features", () => {
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, softErrorFactory() as any);
 			const { stop } = scheduler.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 600));
+			await waitFor(
+				() =>
+					((db.query("SELECT consecutive_failures FROM tasks WHERE id = ?").get(taskId) as { consecutive_failures: number } | null)?.consecutive_failures ?? 0) > 2,
+				{ message: "task did not run (consecutive_failures not incremented)" },
+			);
 			stop();
 
 			const advisories = db
@@ -553,7 +580,11 @@ describe("Scheduler features", () => {
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, factory as any);
 			const { stop } = scheduler.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 600));
+			await waitFor(
+				() =>
+					((db.query("SELECT consecutive_failures FROM tasks WHERE id = ?").get(taskId) as { consecutive_failures: number } | null)?.consecutive_failures ?? 0) >= 2,
+				{ message: "RETURNING regression: consecutive_failures did not reach 2" },
+			);
 			stop();
 
 			// DB should be at 2 (1 from concurrent + 1 from scheduler UPDATE)
@@ -581,7 +612,11 @@ describe("Scheduler features", () => {
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
 			const { stop } = scheduler.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 600));
+			await waitFor(
+				() =>
+					(db.query("SELECT consecutive_failures FROM tasks WHERE id = ?").get(taskId) as { consecutive_failures: number } | null)?.consecutive_failures === 0,
+				{ message: "consecutive_failures not reset to 0" },
+			);
 			stop();
 
 			const task = db.query("SELECT consecutive_failures FROM tasks WHERE id = ?").get(taskId) as {
@@ -668,7 +703,11 @@ describe("Scheduler features", () => {
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, agentLoopFactory as any, {}, sandbox);
 			const { stop } = scheduler.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 1000));
+			await waitFor(
+				() =>
+					execCalls.length > 0,
+				{ message: "cron template not executed" },
+			);
 			stop();
 
 			// Template was found and executed via sandbox — agent loop was NOT used
@@ -727,7 +766,11 @@ describe("Scheduler features", () => {
 			const scheduler = new Scheduler(ctx as any, factory as any);
 			const { stop } = scheduler.start(50);
 
-			await new Promise((resolve) => setTimeout(resolve, 1000));
+			await waitFor(
+				() =>
+					capturedThreadId !== undefined,
+				{ message: "agent loop factory not called with threadId" },
+			);
 			stop();
 
 			expect(capturedThreadId).toBeDefined();
@@ -794,7 +837,11 @@ describe("Scheduler features", () => {
 			const scheduler = new Scheduler(ctx as any, factory as any);
 			const { stop } = scheduler.start(50);
 
-			await new Promise((resolve) => setTimeout(resolve, 1000));
+			await waitFor(
+				() =>
+					messagesAtRunTime > 0,
+				{ message: "payload not injected as user message" },
+			);
 			stop();
 
 			// The payload must have been inserted as a user message before run() was called
@@ -852,7 +899,11 @@ describe("Scheduler features", () => {
 			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
 			const { stop } = scheduler.start(50);
 
-			await new Promise((resolve) => setTimeout(resolve, 1500));
+			await waitFor(
+				() =>
+					((db.query("SELECT run_count FROM tasks WHERE id = ?").get(taskId) as { run_count: number } | null)?.run_count ?? 0) >= 1,
+				{ message: "cron task did not run" },
+			);
 			stop();
 
 			const task = db
@@ -936,7 +987,11 @@ describe("Scheduler features", () => {
 				},
 			);
 			const { stop } = scheduler.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 600));
+			await waitFor(
+				() =>
+					(db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | null)?.status !== "pending",
+				{ message: "task did not fail on invalid model hint" },
+			);
 			stop();
 
 			// Agent loop should NOT have been called
@@ -980,7 +1035,11 @@ describe("Scheduler features", () => {
 				},
 			);
 			const { stop } = scheduler.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 600));
+			await waitFor(
+				() =>
+					agentLoopCalled,
+				{ message: "agent loop not called" },
+			);
 			stop();
 
 			expect(agentLoopCalled).toBe(true);
@@ -1045,7 +1104,11 @@ describe("Scheduler features", () => {
 				},
 			);
 			const { stop } = scheduler.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 600));
+			await waitFor(
+				() =>
+					agentLoopCalled,
+				{ message: "agent loop not called" },
+			);
 			stop();
 
 			// Agent loop must still run because there's no model_hint to validate

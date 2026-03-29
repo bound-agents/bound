@@ -20,6 +20,7 @@ import type {
 } from "@bound/shared";
 import type { MCPClient } from "../mcp-client";
 import { RelayProcessor } from "../relay-processor";
+import { sleep, waitFor } from "./helpers";
 import type { AgentLoopConfig } from "../types";
 
 // Mock MCPClient for testing
@@ -209,7 +210,7 @@ describe("RelayProcessor", () => {
 			const handle = processor.start(50);
 
 			// Wait for processor to pick up the entry
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 
 			handle.stop();
 
@@ -233,7 +234,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			await sleep(50);
 			handle.stop();
 
 			// Verify no errors during shutdown
@@ -288,7 +289,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Should have written error response to outbox
@@ -344,7 +345,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Entry should be marked as processed
@@ -409,7 +410,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Check that result was written to outbox
@@ -470,7 +471,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Check that result was written to outbox
@@ -538,7 +539,7 @@ describe("RelayProcessor", () => {
 				);
 
 				const handle = processor.start(50);
-				await new Promise((resolve) => setTimeout(resolve, 200));
+				await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 				handle.stop();
 
 				// Check that result was written to outbox
@@ -629,7 +630,7 @@ describe("RelayProcessor", () => {
 
 			// Process first request
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 
 			const callCountAfterFirst = callCount;
 			expect(callCountAfterFirst).toBeGreaterThan(0);
@@ -667,7 +668,7 @@ describe("RelayProcessor", () => {
 			);
 
 			// Wait for second request to be processed
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 
 			handle.stop();
 
@@ -744,7 +745,7 @@ describe("RelayProcessor", () => {
 
 			// Process first request
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 
 			const callCountAfterFirst = callCount;
 			expect(callCountAfterFirst).toBeGreaterThan(0);
@@ -781,7 +782,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 
 			const callCountAfterSecond = callCount;
 			// Should still be cached (no new call)
@@ -836,7 +837,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle2 = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle2.stop();
 
 			// Restore Date.now()
@@ -926,7 +927,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Tool request should be marked processed but no execution should occur
@@ -987,7 +988,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 
 			// Now insert cancel after tool execution
 			const cancelEntry: RelayInboxEntry = {
@@ -1018,7 +1019,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Result should have been written to outbox (execution occurred)
@@ -1079,7 +1080,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Should have written error response to outbox
@@ -1147,7 +1148,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Should have written error response to outbox with retriable flag
@@ -1239,7 +1240,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 250));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Verify process signal was created
@@ -1363,7 +1364,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 250));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Count relay_outbox rows with kind="process" — should be 1 after processing both
@@ -1450,7 +1451,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 250));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Verify process signal targets hostA
@@ -1536,7 +1537,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 250));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Process signal should target hostB (which has claude-3)
@@ -1636,7 +1637,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 250));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Process signal should target hostB (score 3 vs hostA score 2)
@@ -1743,7 +1744,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 250));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Process signal should target hostB (least-loaded)
@@ -1814,7 +1815,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 250));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Assert: eventBus emitted "platform:deliver" with the correct payload
@@ -1886,7 +1887,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 250));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Assert: eventBus emitted "task:triggered" with correct payload
@@ -1960,7 +1961,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 250));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Assert: emitted payload has __relay_event_depth = 1
@@ -2049,7 +2050,7 @@ describe("RelayProcessor", () => {
 				);
 
 				const handle = processor.start(50);
-				await new Promise((resolve) => setTimeout(resolve, 300));
+				await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 				handle.stop();
 
 				// Assert: capturedParams includes signal property (defined, not undefined)
@@ -2181,7 +2182,7 @@ describe("RelayProcessor", () => {
 
 			// Run processor to execute the process entry
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 600));
+				await sleep(100);
 			handle.stop();
 
 			// Verify: platform:deliver IS now emitted even with tool_use-only assistant content.
@@ -2288,7 +2289,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 600));
+				await sleep(100);
 			handle.stop();
 
 			// platform:deliver MUST be emitted even with no assistant messages, to stop typing.
@@ -2391,7 +2392,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 600));
+				await sleep(100);
 			handle.stop();
 
 			// platform:deliver MUST be emitted even with empty text content, to stop typing.
@@ -2519,7 +2520,7 @@ describe("RelayProcessor", () => {
 
 			// Run processor to execute the process entry
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 600));
+				await sleep(100);
 			handle.stop();
 
 			// Verify: platform:deliver should be emitted with correct content
@@ -2659,7 +2660,7 @@ describe("RelayProcessor", () => {
 
 			// Run processor
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 600));
+				await sleep(100);
 			handle.stop();
 
 			// Verify: platform:deliver should contain content from SECOND message (higher rowid)
@@ -2818,7 +2819,7 @@ describe("RelayProcessor", () => {
 
 				// Run processor to execute the process entry
 				const handle = processor.start(50);
-				await new Promise((resolve) => setTimeout(resolve, 600));
+					await sleep(100);
 				handle.stop();
 
 				// Assert: loopConfig.platform === "discord"
@@ -2951,7 +2952,7 @@ describe("RelayProcessor", () => {
 
 				// Run processor to execute the process entry
 				const handle = processor.start(50);
-				await new Promise((resolve) => setTimeout(resolve, 600));
+					await sleep(100);
 				handle.stop();
 
 				// Assert: platform:deliver IS emitted with empty content (typing stop), NOT with the assistant text
@@ -3077,7 +3078,7 @@ describe("RelayProcessor", () => {
 
 				// Run processor to execute the process entry
 				const handle = processor.start(50);
-				await new Promise((resolve) => setTimeout(resolve, 600));
+					await sleep(100);
 				handle.stop();
 
 				// Assert: platform:deliver should be emitted with the last assistant message
@@ -3205,7 +3206,7 @@ describe("RelayProcessor", () => {
 
 				// Run processor to execute the process entry
 				const handle = processor.start(50);
-				await new Promise((resolve) => setTimeout(resolve, 600));
+					await sleep(100);
 				handle.stop();
 
 				// Assert: loopConfig.platform is undefined (graceful fallback)
@@ -3305,7 +3306,7 @@ describe("RelayProcessor", () => {
 				);
 
 				const handle = processor.start(50);
-				await new Promise((resolve) => setTimeout(resolve, 600));
+					await sleep(100);
 				handle.stop();
 
 				// platform:deliver MUST be emitted even when agent produced no messages,
@@ -3397,7 +3398,7 @@ describe("RelayProcessor", () => {
 				);
 
 				const handle = processor.start(50);
-				await new Promise((resolve) => setTimeout(resolve, 600));
+					await sleep(100);
 				handle.stop();
 
 				// platform:deliver MUST be emitted even when agent loop throws.
@@ -3473,7 +3474,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Verify: callTool was called with subcommand as tool name and remaining args without subcommand
@@ -3536,7 +3537,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Verify: error response was written to outbox
@@ -3594,7 +3595,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
 			// Verify: error response was written to outbox
@@ -3759,7 +3760,7 @@ describe("RelayProcessor", () => {
 
 			// Run processor to execute the process entry
 			const handle = processor.start(50);
-			await new Promise((resolve) => setTimeout(resolve, 600));
+				await sleep(100);
 			handle.stop();
 
 			// Assert: the fileReader was passed to getPlatformTools

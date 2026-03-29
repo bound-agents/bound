@@ -5,6 +5,7 @@ import { applySchema } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import type { Logger, RelayInboxEntry, RelayOutboxEntry } from "@bound/shared";
+import { waitFor } from "./helpers";
 import { RelayProcessor } from "../relay-processor";
 
 class MockBackend implements LLMBackend {
@@ -142,7 +143,17 @@ describe("RelayProcessor - executeInference", () => {
 		);
 
 		const handle = processor.start(50);
-		await new Promise((resolve) => setTimeout(resolve, 2000));
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+						)
+						.get(streamId) as { n: number } | null
+				)?.n > 0,
+			{ message: "AC3.1: stream_end not written" },
+		);
 		handle.stop();
 
 		const chunks = db
@@ -242,7 +253,17 @@ describe("RelayProcessor - executeInference", () => {
 		);
 
 		const handle = processor.start(50);
-		await new Promise((resolve) => setTimeout(resolve, 2500));
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_chunk'",
+						)
+						.get(streamId) as { n: number } | null
+				)?.n >= 1,
+			{ message: "AC3.2a: stream_chunk not flushed by 200ms timer" },
+		);
 		handle.stop();
 
 		const chunks = db
@@ -312,7 +333,17 @@ describe("RelayProcessor - executeInference", () => {
 		);
 
 		const handle = processor.start(50);
-		await new Promise((resolve) => setTimeout(resolve, 2000));
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_chunk'",
+						)
+						.get(streamId) as { n: number } | null
+				)?.n >= 1,
+			{ message: "AC3.2b: stream_chunk not flushed at 4KB" },
+		);
 		handle.stop();
 
 		const chunks = db
@@ -377,7 +408,17 @@ describe("RelayProcessor - executeInference", () => {
 		);
 
 		const handle = processor.start(50);
-		await new Promise((resolve) => setTimeout(resolve, 2000));
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+						)
+						.get(streamId) as { n: number } | null
+				)?.n > 0,
+			{ message: "AC3.3: stream_end not written" },
+		);
 		handle.stop();
 
 		const ends = db
@@ -458,7 +499,16 @@ describe("RelayProcessor - executeInference", () => {
 		);
 
 		const handle = processor.start(50);
-		await new Promise((resolve) => setTimeout(resolve, 150));
+		// Wait for the inference entry to be dispatched (fire-and-forget) before inserting cancel
+		await waitFor(
+			() =>
+				(
+					db
+						.query("SELECT processed FROM relay_inbox WHERE id = ?")
+						.get(inboxEntry.id) as { processed: number } | null
+				)?.processed === 1,
+			{ message: "AC3.4: inference entry not dispatched" },
+		);
 
 		const cancelEntry: RelayInboxEntry = {
 			id: randomUUID(),
@@ -490,7 +540,17 @@ describe("RelayProcessor - executeInference", () => {
 			],
 		);
 
-		await new Promise((resolve) => setTimeout(resolve, 1000));
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) as n FROM relay_outbox WHERE kind = 'error' AND ref_id = ?",
+						)
+						.get(inboxEntry.id) as { n: number } | null
+				)?.n > 0,
+			{ message: "AC3.4: error response not written after cancel" },
+		);
 		handle.stop();
 
 		const errorResponses = db
@@ -557,7 +617,16 @@ describe("RelayProcessor - executeInference", () => {
 		);
 
 		const handle = processor.start(50);
-		await new Promise((resolve) => setTimeout(resolve, 2000));
+		// Wait for the expired entry to be processed (discarded) — no outbox entries expected
+		await waitFor(
+			() =>
+				(
+					db
+						.query("SELECT processed FROM relay_inbox WHERE id = ?")
+						.get(inboxEntry.id) as { processed: number } | null
+				)?.processed === 1,
+			{ message: "AC3.5: expired entry not processed/discarded" },
+		);
 		handle.stop();
 
 		const chunks = db
@@ -653,7 +722,20 @@ describe("RelayProcessor - executeInference", () => {
 		}
 
 		const handle = processor.start(50);
-		await new Promise((resolve) => setTimeout(resolve, 2500));
+		await waitFor(
+			() =>
+				streamIds.every(
+					(sid) =>
+						(
+							db
+								.query(
+									"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+								)
+								.get(sid) as { n: number } | null
+						)?.n > 0,
+				),
+			{ message: "AC3.6: not all stream_ends written" },
+		);
 		handle.stop();
 
 		for (let i = 0; i < 3; i++) {
