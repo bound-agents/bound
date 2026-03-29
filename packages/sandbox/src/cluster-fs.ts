@@ -18,6 +18,12 @@ export interface ClusterFsResult {
 	 * Returns null if the path is not found in either the files table or overlay index.
 	 */
 	checkStaleness: (path: string) => StalenessResult | null;
+	/**
+	 * Enumerate all paths that exist in the in-memory filesystem instances
+	 * (baseFs and homeUserFs). Never touches OverlayFs instances.
+	 * Used by snapshotWorkspace to diff only agent-written paths.
+	 */
+	getInMemoryPaths: () => string[];
 }
 
 export interface StalenessResult {
@@ -94,7 +100,20 @@ export function createClusterFs(config: ClusterFsConfig): MountableFs | ClusterF
 			return checkFileStaleness(db, path);
 		};
 
-		return { fs, checkStaleness };
+		const getInMemoryPaths = (): string[] => {
+			const paths: string[] = [];
+			for (const p of baseFs.getAllPaths()) {
+				paths.push(p);
+			}
+			for (const p of homeUserFs.getAllPaths()) {
+				// homeUserFs stores paths with the /home/user prefix stripped,
+				// e.g., "/foo.txt" for the VFS path "/home/user/foo.txt".
+				paths.push(`/home/user${p}`);
+			}
+			return paths;
+		};
+
+		return { fs, checkStaleness, getInMemoryPaths };
 	}
 
 	return fs;

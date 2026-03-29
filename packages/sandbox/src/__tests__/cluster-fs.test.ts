@@ -1,5 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import Database from "bun:sqlite";
+import { applySchema, insertRow } from "@bound/core";
 import { createClusterFs, diffWorkspaceAsync, snapshotWorkspace } from "../cluster-fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 describe("ClusterFs", () => {
 	test("creates a ClusterFs with proper mount structure", () => {
@@ -92,5 +96,85 @@ describe("ClusterFs", () => {
 		const change = changes.find((c) => c.path === "/home/user/file.txt");
 
 		expect(change?.sizeBytes).toBe(5);
+	});
+});
+
+describe("getInMemoryPaths", () => {
+	let db: Database;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		applySchema(db);
+	});
+
+	test("AC1.1: includes files written to /tmp/", async () => {
+		const result = createClusterFs({
+			hostName: "localhost",
+			syncEnabled: false,
+			db,
+			siteId: "test-site",
+		});
+		await result.fs.writeFile("/tmp/foo.txt", "content");
+
+		const paths = result.getInMemoryPaths();
+
+		expect(paths).toContain("/tmp/foo.txt");
+	});
+
+	test("AC1.2: includes files at arbitrary agent-created paths", async () => {
+		const result = createClusterFs({
+			hostName: "localhost",
+			syncEnabled: false,
+			db,
+			siteId: "test-site",
+		});
+		await result.fs.writeFile("/workspace/project/main.py", "print('hello')");
+
+		const paths = result.getInMemoryPaths();
+
+		expect(paths).toContain("/workspace/project/main.py");
+	});
+
+	test("AC1.3: includes existing /home/user/ files (no regression)", async () => {
+		const result = createClusterFs({
+			hostName: "localhost",
+			syncEnabled: false,
+			db,
+			siteId: "test-site",
+		});
+		await result.fs.writeFile("/home/user/notes.txt", "my notes");
+
+		const paths = result.getInMemoryPaths();
+
+		expect(paths).toContain("/home/user/notes.txt");
+	});
+
+	test("AC1.4 + AC1.5: excludes /mnt/ paths and OverlayFs files", async () => {
+		const tmpDir = mkdtempSync("/tmp/test-overlay-");
+		const testFile = join(tmpDir, "real-file.txt");
+		writeFileSync(testFile, "real content");
+
+		try {
+			const result = createClusterFs({
+				hostName: "localhost",
+				syncEnabled: false,
+				db,
+				siteId: "test-site",
+				overlayMounts: {
+					[tmpDir]: "/mnt/host",
+				},
+			});
+
+			const paths = result.getInMemoryPaths();
+
+			// Verify no paths start with /mnt/
+			for (const path of paths) {
+				expect(path.startsWith("/mnt/")).toBe(false);
+			}
+		} finally {
+			// Cleanup
+			const fs = require("node:fs");
+			fs.rmSync(tmpDir, { recursive: true });
+		}
 	});
 });
