@@ -120,7 +120,7 @@ All logging in `server.ts` uses `console.error` (stderr); `console.log` (stdout)
 
 **Dependencies:** None (modifies existing packages)
 
-**Done when:** mcp user row exists in DB after startup with the expected deterministic ID (idempotent across restarts); `POST /api/mcp/threads` returns 201 with `thread_id`; resulting thread has `interface = "mcp"` and `user_id = deterministicUUID(BOUND_NAMESPACE, "mcp")`. Tests cover: mcp user provisioning (idempotent), thread creation (correct `user_id` and `interface`), 400 on bad request. Covers `mcp-server.AC2`, `mcp-server.AC3`.
+**Done when:** mcp user row exists in DB after startup with the expected deterministic ID (idempotent across restarts); `POST /api/mcp/threads` returns 201 with `thread_id`; resulting thread has `interface = "mcp"` and `user_id = deterministicUUID(BOUND_NAMESPACE, "mcp")`. Tests cover: mcp user provisioning (idempotent), thread creation (correct `user_id` and `interface`), 400 on bad request. Covers `mcp-server.AC6`.
 <!-- END_PHASE_1 -->
 
 <!-- START_PHASE_2 -->
