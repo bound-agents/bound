@@ -428,6 +428,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 			eventBus: appContext.eventBus,
 			logger: appContext.logger,
 			mcpClients: mcpClientsMap,
+			// biome-ignore lint/suspicious/noExplicitAny: MountableFs satisfies IFileSystem; cross-package type not importable here
+			fs: clusterFs as any,
 		};
 		const builtinCommands = getAllCommands();
 		const allDefinitions = [...builtinCommands, ...mcpCommands];
