@@ -17,6 +17,8 @@ export type AdvisoryType = "cost" | "frequency" | "memory" | "model" | "general"
 
 export type AdvisoryStatus = "proposed" | "approved" | "dismissed" | "deferred" | "applied";
 
+export type SkillStatus = "active" | "retired";
+
 export type SyncedTableName =
 	| "users"
 	| "threads"
@@ -27,7 +29,8 @@ export type SyncedTableName =
 	| "hosts"
 	| "overlay_index"
 	| "cluster_config"
-	| "advisories";
+	| "advisories"
+	| "skills";
 
 export type ReducerType = "lww" | "append-only";
 
@@ -193,6 +196,25 @@ export interface Advisory {
 	modified_at: string;
 }
 
+export interface Skill {
+	id: string;
+	name: string;
+	description: string;
+	status: SkillStatus;
+	skill_root: string;
+	content_hash: string | null;
+	allowed_tools: string | null;
+	compatibility: string | null;
+	metadata_json: string | null;
+	activated_at: string | null;
+	created_by_thread: string | null;
+	activation_count: number;
+	last_activated_at: string | null;
+	retired_by: string | null;
+	retired_reason: string | null;
+	modified_at: string;
+}
+
 export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	users: "lww",
 	threads: "lww",
@@ -204,6 +226,7 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	overlay_index: "lww",
 	cluster_config: "lww",
 	advisories: "lww",
+	skills: "lww",
 };
 
 // --- Relay transport types (local-only, not synced) ---
