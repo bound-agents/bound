@@ -478,6 +478,44 @@ describe("Context assembly Bedrock compatibility", () => {
 		expect(historyRoles).toEqual(expectedRoles);
 	});
 
+	it("budget truncation never produces a context starting with assistant or tool_call", () => {
+		const threadId = randomUUID();
+		insertThread(db, threadId, userId);
+
+		// Build a long thread: many turns of user→tool_call→tool_result→assistant
+		// so that budget truncation will kick in. Repeat 8 times to ensure the slice
+		// lands mid-sequence (after a tool_result) rather than at a user message.
+		for (let i = 0; i < 8; i++) {
+			const offset = i * 4000;
+			const toolUseId = `tu-trunc-${i}`;
+			insertMessage(db, threadId, "user", `User turn ${i}`, { offset });
+			insertMessage(
+				db,
+				threadId,
+				"tool_call",
+				JSON.stringify([{ type: "tool_use", id: toolUseId, name: "query", input: { n: i } }]),
+				{ tool_name: "query", offset: offset + 1000 },
+			);
+			insertMessage(db, threadId, "tool_result", `Result ${i}`, {
+				tool_name: toolUseId,
+				offset: offset + 2000,
+			});
+			insertMessage(db, threadId, "assistant", `Assistant turn ${i}`, {
+				offset: offset + 3000,
+				model_id: "anthropic.claude-sonnet",
+			});
+		}
+
+		// Use a tiny contextWindow to force the Stage 7 truncation path
+		const messages = assembleContext({ db, threadId, userId, contextWindow: 500 });
+
+		// The first non-system message must be a user message — never assistant/tool_call.
+		// Otherwise Bedrock rejects with "A conversation must start with a user message."
+		const firstNonSystem = messages.find((m) => m.role !== "system");
+		expect(firstNonSystem).toBeDefined();
+		expect(firstNonSystem?.role).toBe("user");
+	});
+
 	// When a multi-tool response's co-emitted assistant text lands at the same
 	// millisecond as the tool_call but later tool_results tick to the next millisecond,
 	// ORDER BY (created_at, rowid) puts the assistant text BETWEEN the results.

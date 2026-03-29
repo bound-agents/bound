@@ -641,11 +641,13 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			let sliceStart = Math.max(0, historyMessages.length - 10);
 
 			// Bug #8: slicing may orphan a tool_result at the new start (its paired
-			// tool_call was cut off). Advance past any leading tool_result messages
-			// to prevent "Expected toolResult blocks" errors on Bedrock.
+			// tool_call was cut off). Advance past any leading non-user messages to
+			// prevent "Expected toolResult blocks" and "conversation must start with a
+			// user message" errors on Bedrock. tool_call/assistant at the head also
+			// violate Bedrock's requirement that the first message must be from the user.
 			while (
 				sliceStart < historyMessages.length &&
-				historyMessages[sliceStart].role === "tool_result"
+				historyMessages[sliceStart].role !== "user"
 			) {
 				sliceStart++;
 			}
