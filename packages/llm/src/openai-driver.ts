@@ -26,6 +26,7 @@ interface OpenAIRequest {
 	model: string;
 	messages: OpenAIMessage[];
 	stream: boolean;
+	stream_options?: { include_usage: boolean };
 	temperature?: number;
 	max_tokens?: number;
 	tools?: Array<{
@@ -54,6 +55,13 @@ interface OpenAIStreamEvent {
 		};
 		finish_reason?: string;
 	}>;
+	usage?: {
+		prompt_tokens?: number;
+		completion_tokens?: number;
+		prompt_tokens_details?: {
+			cached_tokens?: number;
+		};
+	} | null;
 }
 
 function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
@@ -127,8 +135,10 @@ function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 	return result;
 }
 
-async function* parseOpenAIStream(response: Response): AsyncIterable<StreamChunk> {
+async function* parseOpenAIStream(response: Response, params: ChatParams): AsyncIterable<StreamChunk> {
 	const toolStates = new Map<number, { id: string; name: string; args: string }>();
+	let capturedUsage: OpenAIStreamEvent["usage"] = null;
+	let outputText = "";
 
 	for await (const line of parseStreamLines(response, "openai")) {
 		if (!line.startsWith(SSE_DATA_PREFIX)) {
@@ -138,11 +148,30 @@ async function* parseOpenAIStream(response: Response): AsyncIterable<StreamChunk
 		const eventData = line.slice(SSE_DATA_PREFIX.length);
 		if (eventData === SSE_DONE_SENTINEL) {
 			// Emit done event when stream finishes
+			const promptTokens = capturedUsage?.prompt_tokens ?? 0;
+			const completionTokens = capturedUsage?.completion_tokens ?? 0;
+			const cachedTokens = capturedUsage?.prompt_tokens_details?.cached_tokens ?? null;
+
+			// Zero-usage guard
+			let inputTokens = promptTokens;
+			let outputTokens = completionTokens;
+			let estimated = false;
+			if (inputTokens === 0 && outputTokens === 0 && outputText.length > 0) {
+				inputTokens = Math.ceil(
+					params.messages.reduce((sum, m) => sum + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length), 0) / 4,
+				);
+				outputTokens = Math.ceil(outputText.length / 4);
+				estimated = true;
+			}
+
 			yield {
 				type: "done",
 				usage: {
-					input_tokens: 0,
-					output_tokens: 0,
+					input_tokens: inputTokens,
+					output_tokens: outputTokens,
+					cache_write_tokens: null,
+					cache_read_tokens: typeof cachedTokens === "number" ? cachedTokens : null,
+					estimated,
 				},
 			};
 			continue;
@@ -159,12 +188,18 @@ async function* parseOpenAIStream(response: Response): AsyncIterable<StreamChunk
 			continue;
 		}
 
+		// Capture usage from final usage chunk (comes before [DONE] when stream_options.include_usage is true)
+		if (event.usage !== undefined) {
+			capturedUsage = event.usage;
+		}
+
 		if (event.choices && event.choices.length > 0) {
 			const choice = event.choices[0];
 			const delta = choice.delta;
 
 			// Handle text content
 			if (delta?.content) {
+				outputText += delta.content;
 				yield {
 					type: "text",
 					content: delta.content,
@@ -250,6 +285,7 @@ export class OpenAICompatibleDriver implements LLMBackend {
 			model: params.model || this.model,
 			messages: openaiMessages,
 			stream: true,
+			stream_options: { include_usage: true },
 			temperature: params.temperature,
 			max_tokens: params.max_tokens,
 		};
@@ -281,7 +317,7 @@ export class OpenAICompatibleDriver implements LLMBackend {
 			return res;
 		});
 
-		yield* parseOpenAIStream(response);
+		yield* parseOpenAIStream(response, params);
 	}
 
 	capabilities(): BackendCapabilities {
