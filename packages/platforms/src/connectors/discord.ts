@@ -15,7 +15,6 @@ import type { PlatformConnector } from "../connector.js";
 import { DiscordClientManager } from "./discord-client-manager.js";
 
 // Discord.js types only — imported dynamically in connect() to avoid hard dep at module load
-type DiscordClient = import("discord.js").Client;
 type DiscordMessage = import("discord.js").Message;
 
 /** Attachments >= this size are stored as file_ref entries in the files table. */
