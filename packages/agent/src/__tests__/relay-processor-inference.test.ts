@@ -5,8 +5,8 @@ import { applySchema } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import type { Logger, RelayInboxEntry, RelayOutboxEntry } from "@bound/shared";
-import { waitFor } from "./helpers";
 import { RelayProcessor } from "../relay-processor";
+import { waitFor } from "./helpers";
 
 class MockBackend implements LLMBackend {
 	private responses: Array<() => AsyncGenerator<StreamChunk>> = [];
@@ -503,9 +503,9 @@ describe("RelayProcessor - executeInference", () => {
 		await waitFor(
 			() =>
 				(
-					db
-						.query("SELECT processed FROM relay_inbox WHERE id = ?")
-						.get(inboxEntry.id) as { processed: number } | null
+					db.query("SELECT processed FROM relay_inbox WHERE id = ?").get(inboxEntry.id) as {
+						processed: number;
+					} | null
 				)?.processed === 1,
 			{ message: "AC3.4: inference entry not dispatched" },
 		);
@@ -544,9 +544,7 @@ describe("RelayProcessor - executeInference", () => {
 			() =>
 				(
 					db
-						.query(
-							"SELECT COUNT(*) as n FROM relay_outbox WHERE kind = 'error' AND ref_id = ?",
-						)
+						.query("SELECT COUNT(*) as n FROM relay_outbox WHERE kind = 'error' AND ref_id = ?")
 						.get(inboxEntry.id) as { n: number } | null
 				)?.n > 0,
 			{ message: "AC3.4: error response not written after cancel" },
@@ -621,9 +619,9 @@ describe("RelayProcessor - executeInference", () => {
 		await waitFor(
 			() =>
 				(
-					db
-						.query("SELECT processed FROM relay_inbox WHERE id = ?")
-						.get(inboxEntry.id) as { processed: number } | null
+					db.query("SELECT processed FROM relay_inbox WHERE id = ?").get(inboxEntry.id) as {
+						processed: number;
+					} | null
 				)?.processed === 1,
 			{ message: "AC3.5: expired entry not processed/discarded" },
 		);

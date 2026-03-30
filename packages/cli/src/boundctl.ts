@@ -3,19 +3,14 @@
 // Handles: boundctl set-hub, boundctl stop, boundctl resume, boundctl restore, boundctl config, boundctl sync-status, boundctl drain
 import "reflect-metadata";
 
+import { getSiteId } from "@bound/core";
 import { runConfigReload } from "./commands/config-reload.js";
 import { runDrain } from "./commands/drain.js";
 import { runRestore } from "./commands/restore.js";
 import { runSetHub } from "./commands/set-hub.js";
+import { skillImport, skillList, skillRetire, skillView } from "./commands/skill.js";
 import { runResume, runStop } from "./commands/stop-resume.js";
 import { runSyncStatus } from "./commands/sync-status.js";
-import { getSiteId } from "@bound/core";
-import {
-	skillImport,
-	skillList,
-	skillRetire,
-	skillView,
-} from "./commands/skill.js";
 import { openBoundDB } from "./lib/db.js";
 
 function getArgValue(args: string[], flag: string): string | undefined {
@@ -250,9 +245,7 @@ EXAMPLES:
 			if (subcommand === "view") {
 				const name = args[2];
 				if (!name) {
-					console.error(
-						"Error: skill name is required. Usage: boundctl skill view <name>",
-					);
+					console.error("Error: skill name is required. Usage: boundctl skill view <name>");
 					db.close();
 					process.exit(1);
 				}
@@ -265,7 +258,7 @@ EXAMPLES:
 				const name = args[2];
 				if (!name) {
 					console.error(
-						"Error: skill name is required. Usage: boundctl skill retire <name> [--reason \"...\"]",
+						'Error: skill name is required. Usage: boundctl skill retire <name> [--reason "..."]',
 					);
 					db.close();
 					process.exit(1);
@@ -280,9 +273,7 @@ EXAMPLES:
 			if (subcommand === "import") {
 				const localPath = args[2];
 				if (!localPath) {
-					console.error(
-						"Error: path is required. Usage: boundctl skill import <path>",
-					);
+					console.error("Error: path is required. Usage: boundctl skill import <path>");
 					db.close();
 					process.exit(1);
 				}

@@ -755,10 +755,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			// prevent "Expected toolResult blocks" and "conversation must start with a
 			// user message" errors on Bedrock. tool_call/assistant at the head also
 			// violate Bedrock's requirement that the first message must be from the user.
-			while (
-				sliceStart < historyMessages.length &&
-				historyMessages[sliceStart].role !== "user"
-			) {
+			while (sliceStart < historyMessages.length && historyMessages[sliceStart].role !== "user") {
 				sliceStart++;
 			}
 

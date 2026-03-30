@@ -1,14 +1,10 @@
-import { Database } from "bun:sqlite";
-import { afterAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import type { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
-import {
-	skillImport,
-	skillList,
-	skillRetire,
-	skillView,
-} from "../commands/skill.js";
+import { skillImport, skillList, skillRetire, skillView } from "../commands/skill.js";
 
 describe("boundctl skill commands", () => {
 	let tempDir: string;
@@ -18,7 +14,7 @@ describe("boundctl skill commands", () => {
 
 	beforeEach(() => {
 		// Create temp directory for test artifacts
-		tempDir = mkdtempSync("skill-cli-test-");
+		tempDir = mkdtempSync(join(tmpdir(), "skill-cli-test-"));
 		dbPath = join(tempDir, "bound.db");
 
 		// Create and initialize database
@@ -27,13 +23,10 @@ describe("boundctl skill commands", () => {
 
 		// Set up site_id in host_meta
 		siteId = "test-site-id-12345678";
-		db.run("INSERT INTO host_meta (key, value) VALUES (?, ?)", [
-			"site_id",
-			siteId,
-		]);
+		db.run("INSERT INTO host_meta (key, value) VALUES (?, ?)", ["site_id", siteId]);
 	});
 
-	afterAll(() => {
+	afterEach(() => {
 		if (db) {
 			db.close();
 		}
@@ -63,14 +56,13 @@ describe("boundctl skill commands", () => {
 
 			// Capture console.log output
 			const logOutput: string[] = [];
-			const originalLog = console.log;
-			spyOn(console, "log").mockImplementation((msg: string) => {
+			const logSpy = spyOn(console, "log").mockImplementation((msg: string) => {
 				logOutput.push(msg);
 			});
 
 			skillList(db);
 
-			console.log = originalLog;
+			logSpy.mockRestore();
 
 			// Verify header line contains expected columns
 			const headerLine = logOutput.find((line) => line.includes("NAME"));
@@ -157,14 +149,13 @@ This is a test skill.`;
 
 			// Capture console.log
 			const logOutput: string[] = [];
-			const originalLog = console.log;
-			spyOn(console, "log").mockImplementation((msg: string) => {
+			const logSpy = spyOn(console, "log").mockImplementation((msg: string) => {
 				logOutput.push(msg);
 			});
 
 			skillView(db, "view-test");
 
-			console.log = originalLog;
+			logSpy.mockRestore();
 
 			// Verify metadata is displayed
 			const metaLine = logOutput.find((line) => line.includes("=== Skill:"));
@@ -173,7 +164,8 @@ This is a test skill.`;
 			// Verify SKILL.md section and content
 			const skillMdHeader = logOutput.find((line) => line.includes("=== SKILL.md ==="));
 			expect(skillMdHeader).toBeDefined();
-			const skillMdLineIdx = logOutput.indexOf(skillMdHeader!);
+			if (!skillMdHeader) throw new Error("expected skillMdHeader");
+			const skillMdLineIdx = logOutput.indexOf(skillMdHeader);
 			const content = logOutput.slice(skillMdLineIdx).join("\n");
 			expect(content).toContain("Test Skill");
 
@@ -207,14 +199,13 @@ This is a test skill.`;
 
 			// Call skillRetire
 			const logOutput: string[] = [];
-			const originalLog = console.log;
-			spyOn(console, "log").mockImplementation((msg: string) => {
+			const logSpy = spyOn(console, "log").mockImplementation((msg: string) => {
 				logOutput.push(msg);
 			});
 
 			skillRetire(db, siteId, "retire-test");
 
-			console.log = originalLog;
+			logSpy.mockRestore();
 
 			// Verify skill was updated
 			const skill = db
@@ -253,15 +244,13 @@ This is a test skill.`;
 			);
 
 			// Mock console to suppress output
-			const originalLog = console.log;
-			const originalWarn = console.warn;
-			spyOn(console, "log").mockImplementation(() => {});
-			spyOn(console, "warn").mockImplementation(() => {});
+			const logSpy = spyOn(console, "log").mockImplementation(() => {});
+			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
 			skillRetire(db, siteId, "retire-reason-test", "Too noisy");
 
-			console.log = originalLog;
-			console.warn = originalWarn;
+			logSpy.mockRestore();
+			warnSpy.mockRestore();
 
 			// Verify reason was stored
 			const skill = db
@@ -300,9 +289,7 @@ This skill was imported.`;
 
 			// Verify files table has entries
 			const files = db
-				.query(
-					"SELECT path FROM files WHERE path LIKE ? AND deleted = 0 ORDER BY path",
-				)
+				.query("SELECT path FROM files WHERE path LIKE ? AND deleted = 0 ORDER BY path")
 				.all("/home/user/skills/imported-skill/%") as Array<{ path: string }>;
 
 			expect(files.length).toBeGreaterThan(0);
@@ -348,6 +335,7 @@ This skill was imported.`;
 
 			// Verify process.exit was called with code 1
 			expect(exitMock).toHaveBeenCalledWith(1);
+			exitMock.mockRestore();
 		});
 	});
 });
