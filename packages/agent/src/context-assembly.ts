@@ -226,7 +226,9 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	// Enrichment state — shared between Stage 6 volatile context and Stage 7 budget check
 	let enrichmentBaseline: string | undefined;
 	let enrichmentMessageIndex = -1;
-	let preEnrichmentVolatileLines: string[] = [];
+	let enrichmentStartIdx = -1; // Index in volatileLines where enrichment section starts
+	let enrichmentEndIdx = -1; // Index in volatileLines just after enrichment section ends
+	let allVolatileLines: string[] = []; // Full volatile content for budget pressure rebuild
 	let totalMemCount = 0;
 
 	// Stage 1: MESSAGE_RETRIEVAL
@@ -769,15 +771,15 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			}
 		).c;
 
-		// Snapshot base volatile content before enrichment (needed for budget pressure rebuild)
-		preEnrichmentVolatileLines = [...volatileLines];
-
-		// Format and append enrichment
+		// Format and append enrichment, recording start/end indices
 		const memChangedCount = memoryDeltaLines.filter((l) => l.startsWith("- ")).length;
 		let memHeaderLine = `Memory: ${totalMemCount} entries`;
 		if (memChangedCount > 0) {
 			memHeaderLine += ` (${memChangedCount} changed since your last turn in this thread)`;
 		}
+
+		// Record where enrichment section begins
+		enrichmentStartIdx = volatileLines.length;
 		volatileLines.push("");
 		volatileLines.push(memHeaderLine);
 		if (memoryDeltaLines.length > 0) {
@@ -787,6 +789,8 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			volatileLines.push("");
 			volatileLines.push(...taskDigestLines);
 		}
+		// Record where enrichment section ends
+		enrichmentEndIdx = volatileLines.length;
 
 		// Include cross-thread digest
 		const crossThreadDigest = buildCrossThreadDigest(db, userId);
@@ -868,6 +872,8 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			volatileLines.push(`Referenced skill '${inactiveSkillRef}' is not active.`);
 		}
 
+		// Capture full volatile content before adding to assembled
+		allVolatileLines = [...volatileLines];
 		enrichmentMessageIndex = assembled.length;
 		assembled.push({
 			role: "system",
@@ -932,38 +938,44 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 					: ` (${shortMemChangedCount} changed since your last run)`;
 			}
 
-			if (!params.noHistory) {
-				// Rebuild volatile context with reduced enrichment
-				const shortVolatileLines = [...preEnrichmentVolatileLines];
-				shortVolatileLines.push("");
-				shortVolatileLines.push(shortMemHeader);
-				if (shortDelta.length > 0) {
-					shortVolatileLines.push(...shortDelta);
-				}
-				if (shortDigest.length > 0) {
-					shortVolatileLines.push("");
-					shortVolatileLines.push(...shortDigest);
-				}
+			// Build reduced enrichment lines
+			const shortEnrichmentLines: string[] = ["", shortMemHeader];
+			if (shortDelta.length > 0) {
+				shortEnrichmentLines.push(...shortDelta);
+			}
+			if (shortDigest.length > 0) {
+				shortEnrichmentLines.push("");
+				shortEnrichmentLines.push(...shortDigest);
+			}
+
+			if (!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0) {
+				// Splice the reduced enrichment into the full volatile array, preserving
+				// all post-enrichment content (cross-thread digest, file notifications, skill index, etc.)
+				const rebuiltVolatile = [
+					...allVolatileLines.slice(0, enrichmentStartIdx),
+					...shortEnrichmentLines,
+					...allVolatileLines.slice(enrichmentEndIdx),
+				];
 				if (enrichmentMessageIndex < assembled.length) {
 					assembled[enrichmentMessageIndex] = {
 						role: "system",
-						content: shortVolatileLines.join("\n"),
+						content: rebuiltVolatile.join("\n"),
 					};
 				}
-			} else {
-				// Rebuild standalone enrichment message with reduced enrichment
-				const shortEnrichmentLines: string[] = [shortMemHeader];
+			} else if (params.noHistory) {
+				// For noHistory path, standalone message — just replace with reduced
+				const shortStandaloneLines: string[] = [shortMemHeader];
 				if (shortDelta.length > 0) {
-					shortEnrichmentLines.push(...shortDelta);
+					shortStandaloneLines.push(...shortDelta);
 				}
 				if (shortDigest.length > 0) {
-					shortEnrichmentLines.push("");
-					shortEnrichmentLines.push(...shortDigest);
+					shortStandaloneLines.push("");
+					shortStandaloneLines.push(...shortDigest);
 				}
 				if (enrichmentMessageIndex < assembled.length) {
 					assembled[enrichmentMessageIndex] = {
 						role: "system",
-						content: shortEnrichmentLines.join("\n"),
+						content: shortStandaloneLines.join("\n"),
 					};
 				}
 			}
