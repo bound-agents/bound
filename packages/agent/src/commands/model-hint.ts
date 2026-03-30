@@ -60,28 +60,30 @@ export const modelHint: CommandDefinition = {
 			if (args.model && ctx.modelRouter) {
 				// Derive requirements from recent thread history for model hint validation
 				// Check last 5 messages for image blocks — if found, require vision capability
-				const recentMessages = ctx.db
-					.query(
-						`SELECT content FROM messages
-						 WHERE thread_id = ? AND deleted = 0
-						 ORDER BY created_at DESC LIMIT 5`,
-					)
-					.all(ctx.threadId) as Array<{ content: string }>;
+				let requirements: CapabilityRequirements | undefined;
 
-				const requiresVision = recentMessages.some((m) => {
-					try {
-						const blocks = JSON.parse(m.content);
-						return (
-							Array.isArray(blocks) && blocks.some((b: { type?: string }) => b.type === "image")
-						);
-					} catch {
-						return false;
-					}
-				});
+				if (ctx.threadId) {
+					const recentMessages = ctx.db
+						.query(
+							`SELECT content FROM messages
+							 WHERE thread_id = ? AND deleted = 0
+							 ORDER BY created_at DESC LIMIT 5`,
+						)
+						.all(ctx.threadId) as Array<{ content: string }>;
 
-				const requirements: CapabilityRequirements | undefined = requiresVision
-					? { vision: true }
-					: undefined;
+					const requiresVision = recentMessages.some((m) => {
+						try {
+							const blocks = JSON.parse(m.content);
+							return (
+								Array.isArray(blocks) && blocks.some((b: { type?: string }) => b.type === "image")
+							);
+						} catch {
+							return false;
+						}
+					});
+
+					requirements = requiresVision ? { vision: true } : undefined;
+				}
 
 				// Then pass requirements to resolveModel:
 				const resolution = resolveModel(
