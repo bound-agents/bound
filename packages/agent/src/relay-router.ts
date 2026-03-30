@@ -145,7 +145,11 @@ export function findEligibleHostsByModel(
 						unverified: true,
 					});
 				}
-			} else if (entry && typeof entry === "object" && typeof (entry as HostModelEntry).id === "string") {
+			} else if (
+				entry &&
+				typeof entry === "object" &&
+				typeof (entry as HostModelEntry).id === "string"
+			) {
 				// New object format: HostModelEntry with id, tier, capabilities
 				const hostEntry = entry as HostModelEntry;
 				if (hostEntry.id !== modelId) continue;

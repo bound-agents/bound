@@ -517,14 +517,7 @@ describe("Relay Router", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"legacy-host",
-					"Legacy Host",
-					JSON.stringify(["claude-3"]),
-					0,
-					now,
-					now,
-				],
+				["legacy-host", "Legacy Host", JSON.stringify(["claude-3"]), 0, now, now],
 			);
 
 			const result = findEligibleHostsByModel(db, "claude-3", "local-site");
@@ -654,14 +647,7 @@ describe("Relay Router", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"legacy-fallback",
-					"Legacy Fallback",
-					JSON.stringify(["claude-3"]),
-					0,
-					now,
-					now,
-				],
+				["legacy-fallback", "Legacy Fallback", JSON.stringify(["claude-3"]), 0, now, now],
 			);
 
 			const result = findEligibleHostsByModel(db, "claude-3", "local-site", { vision: true });
@@ -841,14 +827,7 @@ describe("Relay Router", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"legacy-host",
-					"Legacy Host",
-					JSON.stringify(["claude-3"]),
-					0,
-					now,
-					now,
-				],
+				["legacy-host", "Legacy Host", JSON.stringify(["claude-3"]), 0, now, now],
 			);
 
 			// Verified but no vision

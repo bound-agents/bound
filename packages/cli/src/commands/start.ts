@@ -22,7 +22,6 @@ import {
 	setCommandRegistry,
 	updateHostMCPInfo,
 } from "@bound/agent";
-import type { HostModelEntry } from "@bound/shared";
 import { generateThreadTitle } from "@bound/agent";
 import {
 	createAppContext,
@@ -44,6 +43,7 @@ import {
 	persistWorkspaceChanges,
 	snapshotWorkspace,
 } from "@bound/sandbox";
+import type { HostModelEntry } from "@bound/shared";
 import type { ProcessPayload, StatusForwardPayload, SyncConfig } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import { ReachabilityTracker, ensureKeypair } from "@bound/sync";

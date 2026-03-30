@@ -702,14 +702,7 @@ describe("Model Resolution", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"legacy-remote",
-					"Legacy Remote",
-					JSON.stringify(["vision-model"]),
-					0,
-					now,
-					now,
-				],
+				["legacy-remote", "Legacy Remote", JSON.stringify(["vision-model"]), 0, now, now],
 			);
 
 			const mockBackend = {
