@@ -1,7 +1,7 @@
+import type { CapabilityRequirements, ModelRouter } from "@bound/llm";
 import { formatError } from "@bound/shared";
 
 import { updateRow } from "@bound/core";
-import type { ModelRouter, CapabilityRequirements } from "@bound/llm";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 import { resolveModel } from "../model-resolution";
 
@@ -66,14 +66,13 @@ export const modelHint: CommandDefinition = {
 						 WHERE thread_id = ? AND deleted = 0
 						 ORDER BY created_at DESC LIMIT 5`,
 					)
-					.all(ctx.threadId!) as Array<{ content: string }>;
+					.all(ctx.threadId) as Array<{ content: string }>;
 
 				const requiresVision = recentMessages.some((m) => {
 					try {
 						const blocks = JSON.parse(m.content);
 						return (
-							Array.isArray(blocks) &&
-							blocks.some((b: { type?: string }) => b.type === "image")
+							Array.isArray(blocks) && blocks.some((b: { type?: string }) => b.type === "image")
 						);
 					} catch {
 						return false;

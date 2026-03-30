@@ -604,9 +604,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	// Replace image/document blocks in assembled messages when the target backend lacks vision support.
 	// This modifies the LLMMessage[] only — the persisted messages.content is never changed.
 	const finalAnnotated = targetCapabilities
-		? annotated.map((msg) =>
-				substituteUnsupportedBlocks(msg, targetCapabilities, db, threadId),
-		  )
+		? annotated.map((msg) => substituteUnsupportedBlocks(msg, targetCapabilities, db, threadId))
 		: annotated;
 
 	// Stage 6: ASSEMBLY
@@ -760,10 +758,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			// prevent "Expected toolResult blocks" and "conversation must start with a
 			// user message" errors on Bedrock. tool_call/assistant at the head also
 			// violate Bedrock's requirement that the first message must be from the user.
-			while (
-				sliceStart < historyMessages.length &&
-				historyMessages[sliceStart].role !== "user"
-			) {
+			while (sliceStart < historyMessages.length && historyMessages[sliceStart].role !== "user") {
 				sliceStart++;
 			}
 

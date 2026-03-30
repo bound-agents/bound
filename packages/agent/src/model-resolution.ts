@@ -1,5 +1,10 @@
 import type { Database } from "bun:sqlite";
-import type { BackendCapabilities, CapabilityRequirements, LLMBackend, ModelRouter } from "@bound/llm";
+import type {
+	BackendCapabilities,
+	CapabilityRequirements,
+	LLMBackend,
+	ModelRouter,
+} from "@bound/llm";
 
 import { type EligibleHost, findEligibleHostsByModel } from "./relay-router";
 
@@ -19,7 +24,10 @@ export type ModelResolution =
  * Checks whether caps satisfy all requirements. Returns an array of unmet requirement
  * field names (empty if all requirements are met).
  */
-function getUnmetCapabilities(caps: BackendCapabilities, requirements: CapabilityRequirements): string[] {
+function getUnmetCapabilities(
+	caps: BackendCapabilities,
+	requirements: CapabilityRequirements,
+): string[] {
 	const unmet: string[] = [];
 	if (requirements.vision && !caps.vision) unmet.push("vision");
 	if (requirements.tool_use && !caps.tool_use) unmet.push("tool_use");
@@ -78,7 +86,7 @@ export function resolveModel(
 					// Capable backends exist but are all rate-limited
 					return {
 						kind: "error",
-						error: `No backends available — all capable backends are rate-limited`,
+						error: "No backends available — all capable backends are rate-limited",
 						reason: "transient-unavailable",
 						unmetCapabilities: unmet,
 						earliestRecovery,

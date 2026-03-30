@@ -10,7 +10,7 @@ import {
 	recordTurnRelayMetrics,
 	writeOutbox,
 } from "@bound/core";
-import type { ModelRouter, StreamChunk, CapabilityRequirements } from "@bound/llm";
+import type { CapabilityRequirements, ModelRouter, StreamChunk } from "@bound/llm";
 import type { InferenceRequestPayload, StreamChunkPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
 import { formatError } from "@bound/shared";
@@ -124,8 +124,7 @@ export class AgentLoop {
 						try {
 							const blocks = JSON.parse(m.content);
 							return (
-								Array.isArray(blocks) &&
-								blocks.some((b: { type?: string }) => b.type === "image")
+								Array.isArray(blocks) && blocks.some((b: { type?: string }) => b.type === "image")
 							);
 						} catch {
 							return false;
@@ -357,19 +356,13 @@ export class AgentLoop {
 				} catch (error) {
 					// Rate-limit handling: if the LLM returned 429 or 529, mark the backend
 					// rate-limited so subsequent resolveModel() calls skip it
-					if (
-						error instanceof LLMError &&
-						(error.statusCode === 429 || error.statusCode === 529)
-					) {
+					if (error instanceof LLMError && (error.statusCode === 429 || error.statusCode === 529)) {
 						const backendId =
-							this.lastModelResolution?.kind === "local"
-								? this.lastModelResolution.modelId
-								: null;
+							this.lastModelResolution?.kind === "local" ? this.lastModelResolution.modelId : null;
 						if (backendId) {
 							// Use Retry-After from the error if available (added in Phase 5); default 60 s
-							const retryAfterMs = error instanceof LLMError && error.retryAfterMs
-								? error.retryAfterMs
-								: 60_000;
+							const retryAfterMs =
+								error instanceof LLMError && error.retryAfterMs ? error.retryAfterMs : 60_000;
 							this.modelRouter.markRateLimited(backendId, retryAfterMs);
 							this.ctx.logger.warn("[agent-loop] Backend rate-limited, marked for exclusion", {
 								backendId,
