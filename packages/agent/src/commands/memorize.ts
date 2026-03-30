@@ -14,7 +14,7 @@ export const memorize: CommandDefinition = {
 		try {
 			const key = args.key;
 			const value = args.value;
-			const source = args.source || "agent";
+			const source = args.source || ctx.taskId || ctx.threadId || "agent";
 			const memoryId = deterministicUUID(BOUND_NAMESPACE, key);
 			const now = new Date().toISOString();
 
