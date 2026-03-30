@@ -395,4 +395,13 @@ export function applySchema(db: Database): void {
 	} catch {
 		/* already exists */
 	}
+
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_memory_modified ON semantic_memory(modified_at DESC)
+	`);
+
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_tasks_last_run ON tasks(last_run_at DESC)
+		WHERE deleted = 0 AND last_run_at IS NOT NULL
+	`);
 }

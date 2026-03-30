@@ -1675,4 +1675,467 @@ This skill reviews pull requests.`;
 			expect(volatileMsg.content).not.toContain("old-skill");
 		});
 	});
+
+	describe("Stage 5.5: volatile enrichment", () => {
+		let enrichTestDb: Database;
+		let enrichTestTmpDir: string;
+		let enrichTestUserId: string;
+		let _enrichTestThreadId: string;
+
+		beforeAll(() => {
+			enrichTestTmpDir = mkdtempSync(join(tmpdir(), "enrich-test-"));
+			const dbPath = join(enrichTestTmpDir, "test.db");
+			enrichTestDb = createDatabase(dbPath);
+			applySchema(enrichTestDb);
+
+			enrichTestUserId = randomUUID();
+			_enrichTestThreadId = randomUUID();
+
+			enrichTestDb.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[
+					enrichTestUserId,
+					"Enrich Test User",
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+		});
+
+		afterAll(() => {
+			enrichTestDb.close();
+			if (enrichTestTmpDir) {
+				rmSync(enrichTestTmpDir, { recursive: true, force: true });
+			}
+		});
+
+		it("AC1.1 + AC2.6: includes memory delta lines and header in volatile context when entries changed since baseline", () => {
+			const testThreadId = randomUUID();
+			const pastTime = "2026-01-01T00:00:00.000Z";
+			const recentTime = new Date().toISOString();
+
+			enrichTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					enrichTestUserId,
+					"web",
+					"local",
+					0,
+					"Enrich Test Thread",
+					null,
+					null,
+					null,
+					null,
+					pastTime,
+					pastTime,
+					pastTime,
+					0,
+				],
+			);
+
+			// Insert a memory entry with modified_at after the thread's last_message_at
+			enrichTestDb.run(
+				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), "test_key", "test_value", null, recentTime, recentTime, 0],
+			);
+
+			const messages = assembleContext({
+				db: enrichTestDb,
+				threadId: testThreadId,
+				userId: enrichTestUserId,
+			});
+
+			// Find the system message containing "Memory:"
+			const volatileMsg = messages.find(
+				(m) =>
+					m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
+			);
+
+			expect(volatileMsg).toBeDefined();
+			expect(volatileMsg?.content).toContain("changed since your last turn");
+			expect(volatileMsg?.content).toContain("test_key");
+			expect(volatileMsg?.content).toContain("1 entries");
+		});
+
+		it("AC8.2: does not include raw 'Semantic Memory:' format in any assembled message", () => {
+			const testThreadId = randomUUID();
+
+			enrichTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					enrichTestUserId,
+					"web",
+					"local",
+					0,
+					"Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// Insert a memory entry
+			enrichTestDb.run(
+				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					"mem_key",
+					"mem_value",
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const messages = assembleContext({
+				db: enrichTestDb,
+				threadId: testThreadId,
+				userId: enrichTestUserId,
+			});
+
+			// Verify NO message contains the old format "Semantic Memory:"
+			const hasOldFormat = messages.some(
+				(m) =>
+					m.role === "system" &&
+					typeof m.content === "string" &&
+					m.content.includes("Semantic Memory:"),
+			);
+
+			expect(hasOldFormat).toBe(false);
+		});
+
+		it("AC1.2: includes task digest lines when tasks ran since baseline", () => {
+			const testThreadId = randomUUID();
+			const pastTime = "2026-01-01T00:00:00.000Z";
+			const recentTime = new Date().toISOString();
+
+			enrichTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					enrichTestUserId,
+					"web",
+					"local",
+					0,
+					"Task Test",
+					null,
+					null,
+					null,
+					null,
+					pastTime,
+					pastTime,
+					pastTime,
+					0,
+				],
+			);
+
+			// Insert a task with last_run_at after the thread's last_message_at
+			enrichTestDb.run(
+				"INSERT INTO tasks (id, type, status, trigger_spec, payload, thread_id, created_at, last_run_at, consecutive_failures, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					"manual",
+					"pending",
+					"daily_check",
+					"{}",
+					testThreadId,
+					pastTime,
+					recentTime,
+					0,
+					recentTime,
+					0,
+				],
+			);
+
+			const messages = assembleContext({
+				db: enrichTestDb,
+				threadId: testThreadId,
+				userId: enrichTestUserId,
+			});
+
+			const volatileMsg = messages.find(
+				(m) =>
+					m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
+			);
+
+			expect(volatileMsg).toBeDefined();
+			expect(volatileMsg?.content).toContain("daily_check");
+			expect(volatileMsg?.content).toContain(" ran ");
+		});
+
+		it("AC1.3: noHistory=true: pushes standalone enrichment system message when delta is non-empty", () => {
+			const testThreadId = randomUUID();
+			const testTaskId = randomUUID();
+			const pastTime = "2026-01-01T00:00:00.000Z";
+			const recentTime = new Date().toISOString();
+
+			enrichTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					enrichTestUserId,
+					"web",
+					"local",
+					0,
+					"NoHist Test",
+					null,
+					null,
+					null,
+					null,
+					recentTime,
+					recentTime,
+					recentTime,
+					0,
+				],
+			);
+
+			enrichTestDb.run(
+				"INSERT INTO tasks (id, type, status, trigger_spec, payload, thread_id, created_at, last_run_at, consecutive_failures, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testTaskId,
+					"manual",
+					"pending",
+					"test_task",
+					"{}",
+					testThreadId,
+					pastTime,
+					pastTime,
+					0,
+					pastTime,
+					0,
+				],
+			);
+
+			// Insert a memory entry with modified_at after the task's last_run_at
+			enrichTestDb.run(
+				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), "nohist_key", "nohist_value", null, recentTime, recentTime, 0],
+			);
+
+			const messages = assembleContext({
+				db: enrichTestDb,
+				threadId: testThreadId,
+				userId: enrichTestUserId,
+				noHistory: true,
+				taskId: testTaskId,
+			});
+
+			// Find system message with enrichment
+			const enrichMsg = messages.find(
+				(m) =>
+					m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
+			);
+
+			expect(enrichMsg).toBeDefined();
+			expect(enrichMsg?.content).toContain("nohist_key");
+		});
+
+		it("AC1.4: noHistory=true: no enrichment message when delta and digest are both empty", () => {
+			const testThreadId = randomUUID();
+			const testTaskId = randomUUID();
+			const recentTime = new Date().toISOString();
+
+			enrichTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					enrichTestUserId,
+					"web",
+					"local",
+					0,
+					"Empty Test",
+					null,
+					null,
+					null,
+					null,
+					recentTime,
+					recentTime,
+					recentTime,
+					0,
+				],
+			);
+
+			enrichTestDb.run(
+				"INSERT INTO tasks (id, type, status, trigger_spec, payload, thread_id, created_at, last_run_at, consecutive_failures, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testTaskId,
+					"manual",
+					"pending",
+					"empty_task",
+					"{}",
+					testThreadId,
+					recentTime,
+					recentTime,
+					0,
+					recentTime,
+					0,
+				],
+			);
+
+			const messages = assembleContext({
+				db: enrichTestDb,
+				threadId: testThreadId,
+				userId: enrichTestUserId,
+				noHistory: true,
+				taskId: testTaskId,
+			});
+
+			// Verify NO system message contains "Memory:"
+			const enrichMsg = messages.find(
+				(m) =>
+					m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
+			);
+
+			expect(enrichMsg).toBeUndefined();
+		});
+
+		it("AC8.1: delta reads do not update last_accessed_at on semantic_memory rows", () => {
+			const testThreadId = randomUUID();
+			const pastTime = "2026-01-01T00:00:00.000Z";
+			const recentTime = new Date().toISOString();
+
+			enrichTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					enrichTestUserId,
+					"web",
+					"local",
+					0,
+					"Access Test",
+					null,
+					null,
+					null,
+					null,
+					pastTime,
+					pastTime,
+					pastTime,
+					0,
+				],
+			);
+
+			const memId = randomUUID();
+			enrichTestDb.run(
+				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[memId, "access_key", "access_value", null, recentTime, recentTime, 0],
+			);
+
+			// Get the memory entry before calling assembleContext
+			const beforeMem = enrichTestDb
+				.prepare("SELECT last_accessed_at FROM semantic_memory WHERE id = ?")
+				.get(memId) as {
+				last_accessed_at: string | null;
+			};
+			const lastAccessedBefore = beforeMem?.last_accessed_at;
+
+			// Call assembleContext
+			assembleContext({
+				db: enrichTestDb,
+				threadId: testThreadId,
+				userId: enrichTestUserId,
+			});
+
+			// Check the memory entry after
+			const afterMem = enrichTestDb
+				.prepare("SELECT last_accessed_at FROM semantic_memory WHERE id = ?")
+				.get(memId) as {
+				last_accessed_at: string | null;
+			};
+			const lastAccessedAfter = afterMem?.last_accessed_at;
+
+			// Verify it hasn't changed
+			expect(lastAccessedAfter).toBe(lastAccessedBefore);
+		});
+
+		it("AC1.5: reduces to 3+3 enrichment when headroom is below 2000 tokens", () => {
+			const testThreadId = randomUUID();
+			const pastTime = "2026-01-01T00:00:00.000Z";
+			const recentTime = new Date().toISOString();
+
+			enrichTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					enrichTestUserId,
+					"web",
+					"local",
+					0,
+					"Budget Test",
+					null,
+					null,
+					null,
+					null,
+					pastTime,
+					pastTime,
+					pastTime,
+					0,
+				],
+			);
+
+			// Insert 10 memory entries all with modified_at after the thread's last_message_at
+			for (let i = 0; i < 10; i++) {
+				enrichTestDb.run(
+					"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						`budget_key_${i}`,
+						`value_${"x".repeat(100)}`,
+						null,
+						recentTime,
+						recentTime,
+						0,
+					],
+				);
+			}
+
+			// Use a very small contextWindow to force budget pressure
+			const messages = assembleContext({
+				db: enrichTestDb,
+				threadId: testThreadId,
+				userId: enrichTestUserId,
+				contextWindow: 500,
+			});
+
+			// Find the system message containing "Memory:"
+			const volatileMsg = messages.find(
+				(m) =>
+					m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
+			);
+
+			expect(volatileMsg).toBeDefined();
+
+			// Count memory entry lines ONLY (lines that are part of the memory delta, starting with "- " but before any blank line that separates memory from tasks)
+			const lines = (volatileMsg?.content as string)?.split("\n") ?? [];
+			let memoryCount = 0;
+			let inMemorySection = false;
+
+			for (const line of lines) {
+				if (line.includes("Memory:")) {
+					inMemorySection = true;
+					continue;
+				}
+				// Stop counting when we hit a blank line (separation between sections)
+				if (inMemorySection && line.trim() === "") {
+					break;
+				}
+				// Count lines starting with "- " but exclude overflow line
+				if (inMemorySection && line.startsWith("- ") && !line.startsWith("... and")) {
+					memoryCount++;
+				}
+			}
+
+			// Should be <= 3 memory entries when budget pressure reduces to 3+3
+			expect(memoryCount).toBeLessThanOrEqual(3);
+		});
+	});
 });

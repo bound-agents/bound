@@ -4,7 +4,11 @@ import { join } from "node:path";
 import type { BackendCapabilities, LLMMessage } from "@bound/llm";
 import type { Message } from "@bound/shared";
 import { getFileThreadNotificationMessage, getLastThreadForFile } from "./file-thread-tracker";
-import { buildCrossThreadDigest } from "./summary-extraction.js";
+import {
+	buildCrossThreadDigest,
+	buildVolatileEnrichment,
+	computeBaseline,
+} from "./summary-extraction.js";
 
 export interface ContextParams {
 	db: Database;
@@ -218,6 +222,14 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		platformContext,
 		targetCapabilities,
 	} = params;
+
+	// Enrichment state — shared between Stage 6 volatile context and Stage 7 budget check
+	let enrichmentBaseline: string | undefined;
+	let enrichmentMessageIndex = -1;
+	let enrichmentStartIdx = -1; // Index in volatileLines where enrichment section starts
+	let enrichmentEndIdx = -1; // Index in volatileLines just after enrichment section ends
+	let allVolatileLines: string[] = []; // Full volatile content for budget pressure rebuild
+	let totalMemCount = 0;
 
 	// Stage 1: MESSAGE_RETRIEVAL
 	const messages: Message[] = [];
@@ -748,20 +760,37 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			volatileLines.push(`Current Model: ${currentModel}`);
 		}
 
-		// Include semantic memory entries
-		const semanticMemories = db
-			.query(
-				"SELECT key, value FROM semantic_memory WHERE deleted = 0 ORDER BY modified_at DESC LIMIT 10",
-			)
-			.all() as Array<{ key: string; value: string }>;
+		// Stage 5.5: VOLATILE ENRICHMENT (replaces raw memory dump)
+		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, false);
+		const { memoryDeltaLines, taskDigestLines } = buildVolatileEnrichment(db, enrichmentBaseline);
 
-		if (semanticMemories.length > 0) {
-			volatileLines.push("");
-			volatileLines.push("Semantic Memory:");
-			for (const mem of semanticMemories) {
-				volatileLines.push(`  ${mem.key}: ${mem.value}`);
+		// Query total memory count for the header line
+		totalMemCount = (
+			db.prepare("SELECT COUNT(*) AS c FROM semantic_memory WHERE deleted = 0").get() as {
+				c: number;
 			}
+		).c;
+
+		// Format and append enrichment, recording start/end indices
+		const memChangedCount = memoryDeltaLines.filter((l) => l.startsWith("- ")).length;
+		let memHeaderLine = `Memory: ${totalMemCount} entries`;
+		if (memChangedCount > 0) {
+			memHeaderLine += ` (${memChangedCount} changed since your last turn in this thread)`;
 		}
+
+		// Record where enrichment section begins
+		enrichmentStartIdx = volatileLines.length;
+		volatileLines.push("");
+		volatileLines.push(memHeaderLine);
+		if (memoryDeltaLines.length > 0) {
+			volatileLines.push(...memoryDeltaLines);
+		}
+		if (taskDigestLines.length > 0) {
+			volatileLines.push("");
+			volatileLines.push(...taskDigestLines);
+		}
+		// Record where enrichment section ends
+		enrichmentEndIdx = volatileLines.length;
 
 		// Include cross-thread digest
 		const crossThreadDigest = buildCrossThreadDigest(db, userId);
@@ -843,13 +872,116 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			volatileLines.push(`Referenced skill '${inactiveSkillRef}' is not active.`);
 		}
 
+		// Capture full volatile content before adding to assembled
+		allVolatileLines = [...volatileLines];
+		enrichmentMessageIndex = assembled.length;
 		assembled.push({
 			role: "system",
 			content: volatileLines.join("\n"),
 		});
 	}
 
+	// Stage 5.5 (noHistory path): Inject enrichment as standalone system message for autonomous tasks
+	if (noHistory) {
+		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, true);
+		const { memoryDeltaLines: noHistDelta, taskDigestLines: noHistTasks } = buildVolatileEnrichment(
+			db,
+			enrichmentBaseline,
+		);
+
+		if (noHistDelta.length > 0 || noHistTasks.length > 0) {
+			totalMemCount = (
+				db.prepare("SELECT COUNT(*) AS c FROM semantic_memory WHERE deleted = 0").get() as {
+					c: number;
+				}
+			).c;
+
+			const noHistMemChangedCount = noHistDelta.filter((l) => l.startsWith("- ")).length;
+			let noHistMemHeader = `Memory: ${totalMemCount} entries`;
+			if (noHistMemChangedCount > 0) {
+				noHistMemHeader += ` (${noHistMemChangedCount} changed since your last run)`;
+			}
+
+			const enrichmentLines: string[] = [];
+			enrichmentLines.push(noHistMemHeader);
+			if (noHistDelta.length > 0) {
+				enrichmentLines.push(...noHistDelta);
+			}
+			if (noHistTasks.length > 0) {
+				enrichmentLines.push("");
+				enrichmentLines.push(...noHistTasks);
+			}
+
+			enrichmentMessageIndex = assembled.length;
+			assembled.push({ role: "system", content: enrichmentLines.join("\n") });
+		}
+	}
+
 	// Stage 7: BUDGET_VALIDATION
+	// Budget pressure check: reduce enrichment caps if headroom < 2,000 tokens
+	if (enrichmentBaseline !== undefined && enrichmentMessageIndex >= 0) {
+		const currentTotal = assembled.reduce((sum, msg) => {
+			const contentLength = typeof msg.content === "string" ? msg.content.length : 0;
+			return sum + Math.ceil(contentLength / 4);
+		}, 0);
+		const headroom = contextWindow - currentTotal;
+
+		if (headroom < 2000) {
+			const { memoryDeltaLines: shortDelta, taskDigestLines: shortDigest } =
+				buildVolatileEnrichment(db, enrichmentBaseline, 3, 3);
+
+			const shortMemChangedCount = shortDelta.filter((l) => l.startsWith("- ")).length;
+			let shortMemHeader = `Memory: ${totalMemCount} entries`;
+			if (shortMemChangedCount > 0) {
+				shortMemHeader += !params.noHistory
+					? ` (${shortMemChangedCount} changed since your last turn in this thread)`
+					: ` (${shortMemChangedCount} changed since your last run)`;
+			}
+
+			// Build reduced enrichment lines
+			const shortEnrichmentLines: string[] = ["", shortMemHeader];
+			if (shortDelta.length > 0) {
+				shortEnrichmentLines.push(...shortDelta);
+			}
+			if (shortDigest.length > 0) {
+				shortEnrichmentLines.push("");
+				shortEnrichmentLines.push(...shortDigest);
+			}
+
+			if (!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0) {
+				// Splice the reduced enrichment into the full volatile array, preserving
+				// all post-enrichment content (cross-thread digest, file notifications, skill index, etc.)
+				const rebuiltVolatile = [
+					...allVolatileLines.slice(0, enrichmentStartIdx),
+					...shortEnrichmentLines,
+					...allVolatileLines.slice(enrichmentEndIdx),
+				];
+				if (enrichmentMessageIndex < assembled.length) {
+					assembled[enrichmentMessageIndex] = {
+						role: "system",
+						content: rebuiltVolatile.join("\n"),
+					};
+				}
+			} else if (params.noHistory) {
+				// For noHistory path, standalone message — just replace with reduced
+				const shortStandaloneLines: string[] = [shortMemHeader];
+				if (shortDelta.length > 0) {
+					shortStandaloneLines.push(...shortDelta);
+				}
+				if (shortDigest.length > 0) {
+					shortStandaloneLines.push("");
+					shortStandaloneLines.push(...shortDigest);
+				}
+				if (enrichmentMessageIndex < assembled.length) {
+					assembled[enrichmentMessageIndex] = {
+						role: "system",
+						content: shortStandaloneLines.join("\n"),
+					};
+				}
+			}
+		}
+	}
+
 	// Approximate token count (rough estimate: 1 token per 4 characters)
 	const totalTokens = assembled.reduce((sum, msg) => {
 		const contentLength = typeof msg.content === "string" ? msg.content.length : 0;
