@@ -1,4 +1,6 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Logger } from "@bound/shared";
 import { DiscordClientManager } from "../connectors/discord-client-manager.js";
 
@@ -83,27 +85,48 @@ describe("DiscordClientManager", () => {
 		});
 	});
 
-	describe("AC5.1: Client constructor receives all required intents", () => {
-		it("should verify DiscordClientManager code references 4 intents", () => {
-			// Verify source code contains references to all 4 intents
-			// This is a compile-time check via TypeScript that the correct enum values exist
-			const logger = createMockLogger();
-			const manager = new DiscordClientManager(logger);
+	describe("AC5.1: Client constructor receives all required intents and partials", () => {
+		it("should verify source code contains all 4 intents", () => {
+			// Read source file to verify code contains intent references
+			const sourceCode = readFileSync(
+				resolve(__dirname, "../connectors/discord-client-manager.ts"),
+				"utf-8",
+			);
 
-			// Verify the class is properly instantiated
-			expect(manager).toBeTruthy();
-			expect(typeof manager.getClient).toBe("function");
-			expect(typeof manager.connect).toBe("function");
-			expect(typeof manager.disconnect).toBe("function");
+			// Verify the source code contains references to all 4 required intents
+			expect(sourceCode).toContain("GatewayIntentBits.DirectMessages");
+			expect(sourceCode).toContain("GatewayIntentBits.DirectMessageReactions");
+			expect(sourceCode).toContain("GatewayIntentBits.MessageContent");
+			expect(sourceCode).toContain("GatewayIntentBits.Guilds");
+
+			// Verify they're all in an array (intents configuration)
+			expect(sourceCode).toContain("intents: [");
 		});
 
-		it("should verify DiscordClientManager code references 3 partials", () => {
-			// Verify source code contains references to all 3 partials
+		it("should verify source code contains all 3 partials", () => {
+			// Read source file to verify code contains partial references
+			const sourceCode = readFileSync(
+				resolve(__dirname, "../connectors/discord-client-manager.ts"),
+				"utf-8",
+			);
+
+			// Verify the source code contains references to all 3 required partials
+			expect(sourceCode).toContain("Partials.Channel");
+			expect(sourceCode).toContain("Partials.Message");
+			expect(sourceCode).toContain("Partials.Reaction");
+
+			// Verify they're all in an array (partials configuration)
+			expect(sourceCode).toContain("partials: [");
+		});
+
+		it("should verify client lifecycle methods exist and are callable", () => {
+			// Verify the class has all required methods
 			const logger = createMockLogger();
 			const manager = new DiscordClientManager(logger);
 
-			// Verify the class has all required methods
-			expect(manager).toBeTruthy();
+			expect(typeof manager.connect).toBe("function");
+			expect(typeof manager.disconnect).toBe("function");
+			expect(typeof manager.getClient).toBe("function");
 		});
 	});
 });
