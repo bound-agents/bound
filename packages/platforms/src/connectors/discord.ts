@@ -21,12 +21,7 @@ type DiscordMessage = import("discord.js").Message;
 const ATTACHMENT_FILE_REF_THRESHOLD = 1024 * 1024; // 1 MB
 
 /** Discord image MIME types supported as ContentBlock image variants */
-const DISCORD_IMAGE_TYPES = new Set([
-	"image/jpeg",
-	"image/png",
-	"image/gif",
-	"image/webp",
-]);
+const DISCORD_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
 /**
  * Platform connector for Discord DM-based conversations.
@@ -242,17 +237,16 @@ export class DiscordConnector implements PlatformConnector {
 			contentBlocks.push({ type: "text", text: msg.content });
 		}
 
+		// Use same timestamp for both file and message rows
+		const now = new Date().toISOString();
+
 		// Process image attachments
-		if (msg.attachments && msg.attachments.values) {
+		if (msg.attachments?.values) {
 			for (const attachment of msg.attachments.values()) {
 				const contentType = attachment.contentType ?? "";
 				if (!DISCORD_IMAGE_TYPES.has(contentType)) continue; // Skip non-image attachments
 
-				const mediaType = contentType as
-					| "image/jpeg"
-					| "image/png"
-					| "image/gif"
-					| "image/webp";
+				const mediaType = contentType as "image/jpeg" | "image/png" | "image/gif" | "image/webp";
 
 				try {
 					const response = await fetch(attachment.url, {
@@ -271,7 +265,6 @@ export class DiscordConnector implements PlatformConnector {
 					if (attachment.size >= ATTACHMENT_FILE_REF_THRESHOLD) {
 						// Large attachment: store in files table and use file_ref source
 						const fileId = randomUUID();
-						const now = new Date().toISOString();
 						insertRow(
 							this.db,
 							"files",
@@ -315,13 +308,10 @@ export class DiscordConnector implements PlatformConnector {
 		// - If no attachments were processed: store plain text (backward-compatible)
 		// - If image blocks were added: store as JSON ContentBlock[]
 		const hasImageBlocks = contentBlocks.some((b) => b.type === "image");
-		const messageContent = hasImageBlocks
-			? JSON.stringify(contentBlocks)
-			: msg.content;
+		const messageContent = hasImageBlocks ? JSON.stringify(contentBlocks) : msg.content;
 
 		// Persist the incoming message via insertRow (AC6.2)
 		const messageId = randomUUID();
-		const now = new Date().toISOString();
 		insertRow(
 			this.db,
 			"messages",

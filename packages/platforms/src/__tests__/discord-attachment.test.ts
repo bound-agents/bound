@@ -17,32 +17,6 @@ const createMockLogger = (): Logger => ({
 	debug: () => {},
 });
 
-// Mock Discord message with attachments
-interface MockAttachment {
-	id: string;
-	name: string;
-	size: number;
-	contentType: string;
-	url: string;
-	description?: string;
-}
-
-interface MockDiscordMessageWithAttachments {
-	id: string;
-	author: {
-		id: string;
-		bot: boolean;
-		displayName?: string;
-		username: string;
-	};
-	channel: {
-		type: number;
-		sendTyping?: () => Promise<void>;
-	};
-	content: string;
-	attachments?: Map<string, MockAttachment>;
-}
-
 describe("Discord attachment ingestion", () => {
 	let db: Database;
 	let testDbPath: string;
@@ -97,7 +71,7 @@ describe("Discord attachment ingestion", () => {
 		const mockImageBytes = new Uint8Array([137, 80, 78, 71]); // PNG header
 
 		// Mock fetch to return image data
-		(global as any).fetch = async (url: string | URL | Request) => {
+		(global as { fetch: typeof fetch }).fetch = async (url: string | URL | Request) => {
 			if (String(url).includes("cdn.discordapp.com")) {
 				return new Response(mockImageBytes, {
 					headers: { "Content-Type": "image/png" },
@@ -132,9 +106,7 @@ describe("Discord attachment ingestion", () => {
 			},
 		};
 
-		await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(
-			mockMessage,
-		);
+		await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(mockMessage);
 
 		// Query the message
 		const messages = db
@@ -166,7 +138,7 @@ describe("Discord attachment ingestion", () => {
 		const largeBytes = new Uint8Array(2 * 1024 * 1024).fill(255);
 
 		// Mock fetch to return large image data
-		(global as any).fetch = async () =>
+		(global as { fetch: typeof fetch }).fetch = async () =>
 			new Response(largeBytes, {
 				headers: { "Content-Type": "image/jpeg" },
 			});
@@ -196,9 +168,7 @@ describe("Discord attachment ingestion", () => {
 			},
 		};
 
-		await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(
-			mockMessage,
-		);
+		await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(mockMessage);
 
 		// Check files table has entry
 		const fileRows = db
@@ -243,9 +213,7 @@ describe("Discord attachment ingestion", () => {
 			},
 		};
 
-		await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(
-			mockMessage,
-		);
+		await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(mockMessage);
 
 		const messages = db
 			.query("SELECT content FROM messages WHERE role = ? ORDER BY created_at DESC LIMIT 1")
@@ -259,7 +227,7 @@ describe("Discord attachment ingestion", () => {
 
 	it("message with non-image attachments skips them gracefully", async () => {
 		// Mock fetch
-		(global as any).fetch = async (url: string | URL | Request) => {
+		(global as { fetch: typeof fetch }).fetch = async (url: string | URL | Request) => {
 			if (String(url).includes("cdn.discordapp.com")) {
 				return new Response(new Uint8Array([0, 0, 0, 0]), {
 					headers: { "Content-Type": "application/pdf" },
@@ -293,9 +261,7 @@ describe("Discord attachment ingestion", () => {
 			},
 		};
 
-		await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(
-			mockMessage,
-		);
+		await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(mockMessage);
 
 		const messages = db
 			.query("SELECT content FROM messages WHERE role = ? ORDER BY created_at DESC LIMIT 1")
@@ -311,7 +277,7 @@ describe("Discord attachment ingestion", () => {
 		const mockImageBytes = new Uint8Array([137, 80, 78, 71]); // PNG header
 
 		// Mock fetch
-		(global as any).fetch = async (url: string | URL | Request) => {
+		(global as { fetch: typeof fetch }).fetch = async (url: string | URL | Request) => {
 			if (String(url).includes("cdn.discordapp.com")) {
 				return new Response(mockImageBytes, {
 					headers: { "Content-Type": "image/png" },
@@ -346,9 +312,7 @@ describe("Discord attachment ingestion", () => {
 			},
 		};
 
-		await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(
-			mockMessage,
-		);
+		await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(mockMessage);
 
 		// Check intake relay payload includes attachments metadata
 		const outboxEntries = db.query("SELECT * FROM relay_outbox WHERE kind = ?").all("intake");
