@@ -854,3 +854,107 @@ describe("Model Resolution", () => {
 		});
 	});
 });
+
+// ──────────────────────────────────────────────────────────────────────────────
+// findAnyRemoteModel + hub-only resolveModel path
+// ──────────────────────────────────────────────────────────────────────────────
+
+import { findAnyRemoteModel } from "../relay-router";
+
+describe("findAnyRemoteModel", () => {
+	it("returns the best remote model when a spoke has advertised models", () => {
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, 0)`,
+			["spoke-1", "spoke", JSON.stringify([{ id: "claude", tier: 2 }]), now, now],
+		);
+
+		const result = findAnyRemoteModel(db, "local-site");
+
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.modelId).toBe("claude");
+			expect(result.hosts[0].site_id).toBe("spoke-1");
+		}
+	});
+
+	it("prefers lower-tier models across multiple spokes", () => {
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, 0)`,
+			["spoke-high", "high-tier", JSON.stringify([{ id: "llama3", tier: 5 }]), now, now],
+		);
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, 0)`,
+			["spoke-low", "low-tier", JSON.stringify([{ id: "claude", tier: 2 }]), now, now],
+		);
+
+		const result = findAnyRemoteModel(db, "local-site");
+
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.modelId).toBe("claude"); // lower tier wins
+			expect(result.hosts[0].site_id).toBe("spoke-low");
+		}
+	});
+
+	it("excludes stale hosts (online_at older than 5 minutes)", () => {
+		const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 minutes ago
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, 0)`,
+			["spoke-stale", "stale", JSON.stringify([{ id: "gpt-4", tier: 3 }]), stale, stale],
+		);
+
+		const result = findAnyRemoteModel(db, "local-site");
+
+		expect(result.ok).toBe(false);
+	});
+
+	it("excludes the local site from candidates", () => {
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, 0)`,
+			["local-site", "self", JSON.stringify([{ id: "claude", tier: 2 }]), now, now],
+		);
+
+		const result = findAnyRemoteModel(db, "local-site");
+
+		expect(result.ok).toBe(false);
+	});
+});
+
+describe("resolveModel — hub-only mode (empty default)", () => {
+	it("discovers any remote spoke model when local default is empty", () => {
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, 0)`,
+			["spoke-1", "spoke", JSON.stringify([{ id: "claude-3", tier: 2 }]), now, now],
+		);
+
+		// Hub-only: empty router (no local backends)
+		const emptyRouter = new ModelRouter(new Map(), "");
+		const resolution = resolveModel("", emptyRouter, db, "hub-site");
+
+		expect(resolution.kind).toBe("remote");
+		if (resolution.kind === "remote") {
+			expect(resolution.modelId).toBe("claude-3");
+			expect(resolution.hosts[0].site_id).toBe("spoke-1");
+		}
+	});
+
+	it("returns error when hub-only and no remote spokes available", () => {
+		const emptyRouter = new ModelRouter(new Map(), "");
+		const resolution = resolveModel("", emptyRouter, db, "hub-site");
+
+		expect(resolution.kind).toBe("error");
+		if (resolution.kind === "error") {
+			expect(resolution.error).toMatch(/no remote inference backends/i);
+		}
+	});
+});
