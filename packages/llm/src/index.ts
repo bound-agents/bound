@@ -5,6 +5,7 @@ export type {
 	ContentBlock,
 	StreamChunk,
 	BackendCapabilities,
+	CapabilityRequirements,
 	ToolDefinition,
 	BackendConfig,
 	ModelBackendsConfig,
