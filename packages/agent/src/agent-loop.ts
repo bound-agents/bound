@@ -343,10 +343,19 @@ export class AgentLoop {
 							chunks.push(chunk);
 						}
 					} else {
+						// Compute cache breakpoints: place one at nonSystemMessages.length - 2
+						// (second-to-last message) when there are at least 2 history messages,
+						// so the Anthropic driver marks that message with cache_control and
+						// all prior turns are eligible for prompt-cache reuse. This populates
+						// tokens_cache_write and tokens_cache_read in the turns table.
+						const cacheBreakpoints: number[] | undefined =
+							nonSystemMessages.length >= 2 ? [nonSystemMessages.length - 2] : undefined;
+
 						const chatStream = resolution.backend.chat({
 							messages: nonSystemMessages,
 							system: systemPrompt || undefined,
 							tools: this.config.tools,
+							cache_breakpoints: cacheBreakpoints,
 						});
 						for await (const chunk of this.withSilenceTimeout(chatStream, SILENCE_TIMEOUT_MS)) {
 							if (this.aborted) break;

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
-import type { LLMBackend, StreamChunk } from "@bound/llm";
+import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { AgentLoop } from "../agent-loop";
 
@@ -1321,5 +1321,96 @@ describe("AgentLoop", () => {
 		expect(result.toolCallsMade).toBe(2);
 		expect(result.error).toBeUndefined();
 		expect(warningLogged).toBe(false);
+	});
+
+	// cache_breakpoints must be passed to the backend so the Anthropic driver can
+	// add cache_control headers, enabling prompt caching and populating the
+	// tokens_cache_write / tokens_cache_read columns in the turns table.
+	// Previously, the local inference call always omitted cache_breakpoints.
+	describe("cache_breakpoints passed to backend", () => {
+		/** Backend that records the ChatParams from each chat() call */
+		class CaptureParamsBackend implements LLMBackend {
+			readonly capturedParams: ChatParams[] = [];
+
+			async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
+				this.capturedParams.push(params);
+				yield { type: "text" as const, content: "ok" };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 2,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			}
+
+			capabilities() {
+				return {
+					streaming: true,
+					tool_use: true,
+					system_prompt: true,
+					prompt_caching: true,
+					vision: false,
+					max_context: 200000,
+				};
+			}
+		}
+
+		it("passes cache_breakpoints when there is prior history", async () => {
+			const localThreadId = randomUUID();
+			const ctx = makeCtx();
+			const backend = new CaptureParamsBackend();
+			const router = new ModelRouter(new Map([["test-model", backend]]), "test-model");
+
+			// Insert prior turn: user message + assistant response
+			const ts1 = new Date(Date.now() - 4000).toISOString();
+			const ts2 = new Date(Date.now() - 3000).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), localThreadId, "user", "previous question", null, null, ts1, ts1, "local"],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), localThreadId, "assistant", "previous answer", "test-model", null, ts2, ts2, "local"],
+			);
+
+			const agentLoop = new AgentLoop(ctx, createMockSandbox(), router, {
+				threadId: localThreadId,
+				userId: "test-user",
+			});
+
+			await agentLoop.run();
+
+			expect(backend.capturedParams.length).toBeGreaterThan(0);
+			const params = backend.capturedParams[0];
+			// With prior history the agent must pass cache_breakpoints
+			expect(params.cache_breakpoints).toBeDefined();
+			expect(Array.isArray(params.cache_breakpoints)).toBe(true);
+			expect((params.cache_breakpoints as number[]).length).toBeGreaterThan(0);
+		});
+
+		it("passes no cache_breakpoints when there is no prior history", async () => {
+			const localThreadId = randomUUID();
+			const ctx = makeCtx();
+			const backend = new CaptureParamsBackend();
+			const router = new ModelRouter(new Map([["test-model", backend]]), "test-model");
+
+			const agentLoop = new AgentLoop(ctx, createMockSandbox(), router, {
+				threadId: localThreadId,
+				userId: "test-user",
+			});
+
+			await agentLoop.run();
+
+			expect(backend.capturedParams.length).toBeGreaterThan(0);
+			const params = backend.capturedParams[0];
+			// No prior history — no breakpoints needed
+			expect(
+				params.cache_breakpoints === undefined || (params.cache_breakpoints as number[]).length === 0,
+			).toBe(true);
+		});
 	});
 });
