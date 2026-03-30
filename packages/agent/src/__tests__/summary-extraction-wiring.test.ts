@@ -132,22 +132,24 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 			[randomUUID(), threadId, "user", "Hello world", now, "localhost"],
 		);
 
-		// Create a mock LLM backend that tracks all chat() calls
-		const chatCalls: Array<{ purpose: string }> = [];
+		// Create a mock LLM backend that tracks all chat() calls including prompts
+		const chatCalls: Array<{ purpose: string; systemPrompt?: string; userPrompt: string }> = [];
 
 		class MockLLMBackend implements LLMBackend {
 			async *chat(params: {
+				system?: string;
 				messages: Array<{ role: string; content: string }>;
 			}): AsyncGenerator<StreamChunk> {
 				const lastMsg = params.messages[params.messages.length - 1];
-				if (lastMsg?.content?.includes("Summarize")) {
-					chatCalls.push({ purpose: "summary" });
-					yield { type: "text" as const, content: "This was a conversation about greetings." };
-				} else if (lastMsg?.content?.includes("Extract up to 3 key facts")) {
-					chatCalls.push({ purpose: "facts" });
-					yield { type: "text" as const, content: "- The conversation was about greetings" };
+				const userPrompt = typeof lastMsg?.content === "string" ? lastMsg.content : "";
+				if (userPrompt.toLowerCase().includes("summarize") || userPrompt.toLowerCase().includes("reflecting") || userPrompt.toLowerCase().includes("summary")) {
+					chatCalls.push({ purpose: "summary", systemPrompt: params.system, userPrompt });
+					yield { type: "text" as const, content: "I helped the user test a greeting interaction." };
+				} else if (userPrompt.includes("key facts") || userPrompt.includes("key things")) {
+					chatCalls.push({ purpose: "facts", systemPrompt: params.system, userPrompt });
+					yield { type: "text" as const, content: "- I responded to a greeting from the user" };
 				} else {
-					chatCalls.push({ purpose: "main" });
+					chatCalls.push({ purpose: "main", systemPrompt: params.system, userPrompt });
 					yield { type: "text" as const, content: "Hello there!" };
 				}
 				yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
@@ -196,6 +198,19 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 			summary: string | null;
 		};
 		expect(thread.summary).toBeTruthy();
-		expect(thread.summary).toContain("greetings");
+
+		// The summarization and fact-extraction calls must include first-person framing
+		// so the agent experiences summarization as its own reflection, not as a third-party
+		// observer. This ensures summaries read "I helped..." rather than "The user asked..."
+		const summaryCall = chatCalls.find((c) => c.purpose === "summary");
+		expect(summaryCall).toBeDefined();
+		// Either the system prompt or the user prompt must convey first-person perspective
+		const summaryContext = (summaryCall!.systemPrompt ?? "") + summaryCall!.userPrompt;
+		const hasFirstPersonFraming =
+			summaryContext.toLowerCase().includes("first person") ||
+			summaryContext.toLowerCase().includes("your own") ||
+			summaryContext.toLowerCase().includes("you are") ||
+			summaryContext.toLowerCase().includes("reflecting");
+		expect(hasFirstPersonFraming).toBe(true);
 	});
 });

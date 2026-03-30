@@ -43,14 +43,22 @@ export async function extractSummaryAndMemories(
 			};
 		}
 
-		// Build prompt for summarization
+		// Build prompt for summarization — framed as the agent's own first-person reflection
+		// so summaries read "I helped..." rather than "The assistant was asked..."
 		const messageText = messages.map((m) => m.content).join("\n\n");
-		const prompt = `Summarize the following conversation in 2-3 sentences:\n\n${messageText}`;
+		const summarizationSystem =
+			"You are an AI assistant reflecting on a conversation you just had. " +
+			"Write from your own first-person perspective (use 'I' or 'we'). " +
+			"Do not refer to yourself as 'the assistant'.";
+		const prompt =
+			"Write a 2-3 sentence summary of this conversation from your own perspective:\n\n" +
+			messageText;
 
 		// Call LLM to generate summary
 		const chunks: string[] = [];
 		for await (const chunk of llmBackend.chat({
 			model: "",
+			system: summarizationSystem,
 			messages: [{ role: "user", content: prompt }],
 			max_tokens: 200,
 		})) {
@@ -75,10 +83,13 @@ export async function extractSummaryAndMemories(
 		try {
 			for await (const chunk of llmBackend.chat({
 				model: "",
+				system: summarizationSystem,
 				messages: [
 					{
 						role: "user",
-						content: `Extract up to 3 key facts from the following conversation summary as a bullet list (one fact per line, starting with "- "):\n\n${summary}`,
+						content:
+							`What are up to 3 key things you did, learned, or resolved in this conversation? ` +
+							`Write each as a first-person statement on its own line starting with "- ":\n\n${summary}`,
 					},
 				],
 				max_tokens: 200,
@@ -120,18 +131,23 @@ export async function extractSummaryAndMemories(
 
 export function buildCrossThreadDigest(db: Database, userId: string): string {
 	try {
-		// Get recent threads for user
+		// Get recent threads for user, including the summary field for continuity
 		const threads = db
 			.prepare(
-				"SELECT id, title, last_message_at FROM threads WHERE user_id = ? AND deleted = 0 ORDER BY last_message_at DESC LIMIT 5",
+				"SELECT id, title, last_message_at, summary FROM threads WHERE user_id = ? AND deleted = 0 ORDER BY last_message_at DESC LIMIT 5",
 			)
-			.all(userId) as Array<{ id: string; title: string | null; last_message_at: string }>;
+			.all(userId) as Array<{
+			id: string;
+			title: string | null;
+			last_message_at: string;
+			summary: string | null;
+		}>;
 
 		if (threads.length === 0) {
 			return "No recent activity.";
 		}
 
-		// Build digest
+		// Build digest — include summary so the agent can continue prior conversations
 		const lines: string[] = [];
 		lines.push("Recent Activity Digest:");
 		lines.push("");
@@ -145,6 +161,16 @@ export function buildCrossThreadDigest(db: Database, userId: string): string {
 			lines.push(
 				`- ${title}: ${messageCount.count} messages (last updated ${thread.last_message_at})`,
 			);
+
+			// Include the thread summary (truncated to 300 chars) when available,
+			// so the agent has conversational context without needing to re-read history.
+			if (thread.summary) {
+				const truncated =
+					thread.summary.length > 300
+						? `${thread.summary.slice(0, 297)}...`
+						: thread.summary;
+				lines.push(`  Summary: ${truncated}`);
+			}
 		}
 
 		return lines.join("\n");

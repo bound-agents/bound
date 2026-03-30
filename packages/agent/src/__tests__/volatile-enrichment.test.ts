@@ -5,7 +5,7 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase, insertRow, softDelete } from "@bound/core";
-import { buildVolatileEnrichment, computeBaseline } from "../summary-extraction.js";
+import { buildCrossThreadDigest, buildVolatileEnrichment, computeBaseline } from "../summary-extraction.js";
 
 let db: Database;
 let dbPath: string;
@@ -664,5 +664,60 @@ describe("buildVolatileEnrichment — source resolution", () => {
 		const enrichment = buildVolatileEnrichment(db, baseline);
 		expect(enrichment.memoryDeltaLines.length).toBe(1);
 		expect(enrichment.memoryDeltaLines[0]).toContain("via unknown");
+	});
+});
+
+// buildCrossThreadDigest was only showing thread title + message count, silently
+// ignoring threads.summary even though extractSummaryAndMemories() populates it.
+// Cross-thread conversational continuity depends on seeing those summaries.
+describe("buildCrossThreadDigest — includes thread summaries", () => {
+	const userId = "diag-user-" + Math.random().toString(36).slice(2, 8);
+	const now = new Date().toISOString();
+
+	beforeEach(() => {
+		db.run(
+			"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+			[userId, "Digest User", now, now, 0],
+		);
+	});
+
+	afterEach(() => {
+		db.run("DELETE FROM threads WHERE user_id = ?", [userId]);
+		db.run("DELETE FROM users WHERE id = ?", [userId]);
+	});
+
+	it("includes thread summary when populated", () => {
+		const threadId = "digest-thread-" + Math.random().toString(36).slice(2, 8);
+		const summary = "The user and assistant discussed cross-thread memory persistence.";
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				threadId, userId, "web", "local", 0,
+				"Memory Discussion", summary, now, null, null,
+				now, now, now, 0,
+			],
+		);
+
+		const digest = buildCrossThreadDigest(db, userId);
+
+		// Summary content must appear in the digest so the agent can continue the conversation
+		expect(digest).toContain(summary);
+	});
+
+	it("still works when thread has no summary (null)", () => {
+		const threadId = "digest-thread-nosummary-" + Math.random().toString(36).slice(2, 8);
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				threadId, userId, "web", "local", 0,
+				"Untitled Thread", null, null, null, null,
+				now, now, now, 0,
+			],
+		);
+
+		const digest = buildCrossThreadDigest(db, userId);
+		expect(digest).toContain("Untitled Thread");
+		// No crash when summary is null
+		expect(digest).not.toBeNull();
 	});
 });
