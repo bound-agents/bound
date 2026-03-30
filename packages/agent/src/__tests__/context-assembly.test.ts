@@ -2430,4 +2430,151 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 	});
+
+	// Advisory resolution notification: when the operator applies/approves/dismisses an
+	// advisory that this agent posted (created_by = siteId), the agent should see a
+	// [Advisory notification] line in its volatile context so it can continue work.
+	describe("advisory resolution notifications in volatile context", () => {
+		it("injects notification when agent's advisory is applied within 24h (AC-ADV1)", () => {
+			const localSiteId = "test-site-" + randomUUID().slice(0, 8);
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Adv Notif User", now, now, 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[localThreadId, localUserId, "web", "local", 0, "Adv Thread", null, null, null, null, now, now, now, 0],
+			);
+
+			// Insert a recently-resolved advisory created by this siteId
+			const advisoryId = randomUUID();
+			const resolvedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString(); // 5 min ago
+			db.run(
+				"INSERT INTO advisories (id, type, status, title, detail, action, impact, evidence, proposed_at, defer_until, resolved_at, created_by, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[advisoryId, "general", "applied", "Test advisory", "Detail text", null, null, null, now, null, resolvedAt, localSiteId, resolvedAt, 0],
+			);
+
+			const messages = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				siteId: localSiteId,
+				contextWindow: 200000,
+			});
+
+			const volatileMsg = messages.find(
+				(m) =>
+					m.role === "system" &&
+					typeof m.content === "string" &&
+					m.content.includes("Advisory notification"),
+			);
+
+			expect(volatileMsg).toBeDefined();
+			const content = volatileMsg!.content as string;
+			expect(content).toContain("Test advisory");
+			expect(content).toContain("applied");
+
+			// Cleanup
+			db.run("DELETE FROM advisories WHERE id = ?", [advisoryId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+
+		it("does not inject notification for advisories resolved more than 24h ago (AC-ADV2)", () => {
+			const localSiteId = "test-site-" + randomUUID().slice(0, 8);
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Adv Old User", now, now, 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[localThreadId, localUserId, "web", "local", 0, "Old Adv Thread", null, null, null, null, now, now, now, 0],
+			);
+
+			// Advisory resolved 48h ago — outside 24h window
+			const advisoryId = randomUUID();
+			const resolvedAt = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+			db.run(
+				"INSERT INTO advisories (id, type, status, title, detail, action, impact, evidence, proposed_at, defer_until, resolved_at, created_by, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[advisoryId, "general", "applied", "Old advisory", "Old detail", null, null, null, resolvedAt, null, resolvedAt, localSiteId, resolvedAt, 0],
+			);
+
+			const messages = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				siteId: localSiteId,
+				contextWindow: 200000,
+			});
+
+			const hasOldAdvisoryNotif = messages.some(
+				(m) =>
+					m.role === "system" &&
+					typeof m.content === "string" &&
+					m.content.includes("Old advisory"),
+			);
+
+			expect(hasOldAdvisoryNotif).toBe(false);
+
+			// Cleanup
+			db.run("DELETE FROM advisories WHERE id = ?", [advisoryId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+
+		it("does not inject notification for advisories created by a different site (AC-ADV3)", () => {
+			const localSiteId = "test-site-" + randomUUID().slice(0, 8);
+			const otherSiteId = "other-site-" + randomUUID().slice(0, 8);
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Other Site User", now, now, 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[localThreadId, localUserId, "web", "local", 0, "Other Site Thread", null, null, null, null, now, now, now, 0],
+			);
+
+			// Advisory from a DIFFERENT site — should not notify this agent
+			const advisoryId = randomUUID();
+			const resolvedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+			db.run(
+				"INSERT INTO advisories (id, type, status, title, detail, action, impact, evidence, proposed_at, defer_until, resolved_at, created_by, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[advisoryId, "general", "applied", "Other site advisory", "Detail", null, null, null, now, null, resolvedAt, otherSiteId, resolvedAt, 0],
+			);
+
+			const messages = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				siteId: localSiteId,
+				contextWindow: 200000,
+			});
+
+			const hasOtherSiteNotif = messages.some(
+				(m) =>
+					m.role === "system" &&
+					typeof m.content === "string" &&
+					m.content.includes("Other site advisory"),
+			);
+
+			expect(hasOtherSiteNotif).toBe(false);
+
+			// Cleanup
+			db.run("DELETE FROM advisories WHERE id = ?", [advisoryId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+	});
 });

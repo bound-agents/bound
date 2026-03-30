@@ -891,6 +891,33 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			// Non-fatal
 		}
 
+		// Inject advisory resolution notifications (24h window) — closing the feedback loop
+		// so the agent knows when advisories it posted have been acted on by the operator.
+		if (siteId) {
+			try {
+				const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+				const resolvedAdvisories = db
+					.query(
+						`SELECT title, status FROM advisories
+						 WHERE created_by = ?
+						   AND status IN ('approved', 'applied', 'dismissed')
+						   AND resolved_at > ?
+						   AND deleted = 0
+						 ORDER BY resolved_at ASC`,
+					)
+					.all(siteId, cutoff24h) as Array<{ title: string; status: string }>;
+
+				for (const adv of resolvedAdvisories) {
+					volatileLines.push("");
+					volatileLines.push(
+						`[Advisory notification] Advisory '${adv.title}' was ${adv.status} by operator.`,
+					);
+				}
+			} catch {
+				// Non-fatal
+			}
+		}
+
 		// Inject inactive skill reference note (AC3.4)
 		if (inactiveSkillRef) {
 			volatileLines.push("");
