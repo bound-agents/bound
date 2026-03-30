@@ -26,6 +26,7 @@ OPTIONS:
   bound init --ollama              Initialize with Ollama preset
   bound init --anthropic           Initialize with Anthropic API preset
   bound init --bedrock --region <region>  Initialize with AWS Bedrock
+  bound init --hub                 Initialize as relay hub (no local inference; proxies to spokes)
   bound init --name <name>         Set operator name
   bound init --with-sync           Also create sync.json template
   bound init --with-mcp            Also create mcp.json template
@@ -38,6 +39,7 @@ EXAMPLES:
   bound init --ollama
   bound start
   bound init --anthropic --with-sync --with-mcp
+  bound init --hub --name hub-node  # Initialize relay hub
 `);
 		process.exit(0);
 	}
@@ -48,6 +50,7 @@ EXAMPLES:
 		const regionIdx = args.indexOf("--region");
 		const nameIdx = args.indexOf("--name");
 		const initArgs = {
+			hub: args.includes("--hub"),
 			ollama: args.includes("--ollama"),
 			anthropic: args.includes("--anthropic"),
 			bedrock: args.includes("--bedrock"),

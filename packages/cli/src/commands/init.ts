@@ -9,6 +9,8 @@ export interface InitArgs {
 	ollama?: boolean;
 	anthropic?: boolean;
 	bedrock?: boolean;
+	/** Hub-only mode: no local inference backends; the node relays inference to spokes. */
+	hub?: boolean;
 	region?: string;
 	name?: string;
 	withSync?: boolean;
@@ -41,7 +43,11 @@ export async function runInit(args: InitArgs): Promise<void> {
 	let model = "llama3";
 
 	// Determine configuration mode
-	if (args.ollama) {
+	if (args.hub) {
+		// Hub-only mode: no local inference. The node acts as a relay hub and
+		// proxies LLM calls to spokes that have inference backends configured.
+		// No provider/model selection needed.
+	} else if (args.ollama) {
 		// Ollama preset
 		provider = "ollama";
 		baseUrl = "http://localhost:11434";
@@ -76,37 +82,61 @@ export async function runInit(args: InitArgs): Promise<void> {
 	};
 
 	// Create model_backends.json
-	// biome-ignore lint/suspicious/noExplicitAny: config is dynamic
-	const backendConfig: any = {
-		id: provider,
-		provider,
-		model,
-		context_window: 8192,
-		tier: 3,
-	};
+	let modelBackendsConfig: { backends: unknown[]; default: string };
+	if (args.hub) {
+		// Hub-only: no inference backends. Inference is relayed to spokes.
+		modelBackendsConfig = { backends: [], default: "" };
+	} else {
+		// biome-ignore lint/suspicious/noExplicitAny: config is dynamic
+		const backendConfig: any = {
+			id: provider,
+			provider,
+			model,
+			context_window: 8192,
+			tier: 3,
+		};
 
-	if (baseUrl && provider !== "anthropic" && provider !== "bedrock") {
-		backendConfig.base_url = baseUrl;
+		if (baseUrl && provider !== "anthropic" && provider !== "bedrock") {
+			backendConfig.base_url = baseUrl;
+		}
+
+		if (apiKey) {
+			backendConfig.api_key = apiKey;
+		}
+
+		if (region) {
+			backendConfig.region = region;
+		}
+
+		modelBackendsConfig = {
+			backends: [backendConfig],
+			default: provider,
+		};
 	}
-
-	if (apiKey) {
-		backendConfig.api_key = apiKey;
-	}
-
-	if (region) {
-		backendConfig.region = region;
-	}
-
-	const modelBackendsConfig = {
-		backends: [backendConfig],
-		default: provider,
-	};
 
 	// Write config files
 	writeFileSync(allowlistPath, `${JSON.stringify(allowlistConfig, null, 2)}\n`);
 	writeFileSync(modelBackendsPath, `${JSON.stringify(modelBackendsConfig, null, 2)}\n`);
 
-	console.log(`
+	if (args.hub) {
+		console.log(`
+Hub initialized successfully!
+
+Created:
+  - ${configDir}/allowlist.json
+  - ${configDir}/model_backends.json (empty — hub relays inference to spokes)
+
+Operator: ${operatorName}
+
+Next steps:
+  1. Configure keyring.json with spoke public keys
+  2. Configure sync.json with this hub's URL (or leave blank — hub doesn't point to another hub)
+  3. Set BIND_HOST=0.0.0.0 so spokes can reach this host
+  4. Run: bound start
+  5. On each spoke: set sync.hub to this host's URL and add this hub to keyring.json
+`);
+	} else {
+		console.log(`
 Config initialized successfully!
 
 Created:
@@ -122,6 +152,7 @@ Next steps:
   2. Run: bound start
   3. Open http://localhost:3000 in your browser
 `);
+	}
 
 	// Create optional config templates if requested
 	if (args.withSync) {

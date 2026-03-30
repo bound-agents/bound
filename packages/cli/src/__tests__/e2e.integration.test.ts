@@ -91,6 +91,22 @@ describe("Bound CLI E2E Integration Test", () => {
 		expect(existsSync(join(tempDir, "overlay.json"))).toBe(true);
 	});
 
+	it("hub init generates empty-backends config for relay-only node", async () => {
+		await runInit({
+			hub: true,
+			name: "hub-operator",
+			configDir: tempDir,
+		});
+
+		const { readFileSync, existsSync } = await import("node:fs");
+		expect(existsSync(join(tempDir, "allowlist.json"))).toBe(true);
+		expect(existsSync(join(tempDir, "model_backends.json"))).toBe(true);
+
+		const modelBackends = JSON.parse(readFileSync(join(tempDir, "model_backends.json"), "utf-8"));
+		expect(modelBackends.backends).toEqual([]);
+		expect(modelBackends.default).toBe("");
+	});
+
 	it("init with Anthropic preset handles missing API key gracefully", async () => {
 		// Ensure API key is not set
 		process.env.ANTHROPIC_API_KEY = undefined;
