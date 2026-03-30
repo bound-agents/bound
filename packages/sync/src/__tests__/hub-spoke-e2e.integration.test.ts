@@ -418,4 +418,96 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 		expect(spokeConfig).toBeDefined();
 		expect(spokeConfig?.value).toBe("hub-managed");
 	});
+
+	it("hub model advertisement syncs to spoke — spoke can discover hub as inference provider", async () => {
+		const now = new Date().toISOString();
+
+		// Hub advertises its inference models (simulates what start.ts does at bootstrap)
+		hub.db
+			.query(
+				`INSERT INTO hosts (site_id, host_name, version, models, online_at, modified_at, deleted)
+				 VALUES (?, 'hub-node', '1.0.0', ?, ?, ?, 0)`,
+			)
+			.run(hub.siteId, JSON.stringify([{ id: "claude-opus", tier: 1 }]), now, now);
+		hub.db
+			.query(
+				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
+			)
+			.run(
+				"hosts",
+				hub.siteId,
+				hub.siteId,
+				now,
+				JSON.stringify({
+					site_id: hub.siteId,
+					host_name: "hub-node",
+					version: "1.0.0",
+					models: JSON.stringify([{ id: "claude-opus", tier: 1 }]),
+					online_at: now,
+					modified_at: now,
+					deleted: 0,
+				}),
+			);
+
+		// Spoke syncs — push phase sends spoke data, pull phase fetches hub's hosts row
+		const syncResult =
+			(await spoke.syncClient?.syncCycle()) ??
+			Promise.resolve({ ok: false as const, error: "No syncClient" });
+		expect(syncResult.ok).toBe(true);
+
+		// Spoke should now have hub's hosts row with models
+		const hubHostOnSpoke = spoke.db
+			.query("SELECT * FROM hosts WHERE site_id = ?")
+			.get(hub.siteId) as Record<string, unknown> | undefined;
+		expect(hubHostOnSpoke).toBeDefined();
+		expect(hubHostOnSpoke?.host_name).toBe("hub-node");
+
+		const models = JSON.parse(hubHostOnSpoke?.models as string) as Array<{ id: string }>;
+		expect(models.some((m) => m.id === "claude-opus")).toBe(true);
+	});
+
+	it("hub advertises platform names in hosts.platforms so spoke can route platform_deliver back", async () => {
+		const now = new Date().toISOString();
+
+		// Hub has Discord configured — advertises ["discord"] in hosts.platforms
+		hub.db
+			.query(
+				`INSERT INTO hosts (site_id, host_name, version, platforms, online_at, modified_at, deleted)
+				 VALUES (?, 'hub-node', '1.0.0', ?, ?, ?, 0)`,
+			)
+			.run(hub.siteId, JSON.stringify(["discord"]), now, now);
+		hub.db
+			.query(
+				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
+			)
+			.run(
+				"hosts",
+				hub.siteId,
+				hub.siteId,
+				now,
+				JSON.stringify({
+					site_id: hub.siteId,
+					host_name: "hub-node",
+					version: "1.0.0",
+					platforms: JSON.stringify(["discord"]),
+					online_at: now,
+					modified_at: now,
+					deleted: 0,
+				}),
+			);
+
+		// Spoke syncs — pull phase fetches hub's hosts row including platforms column
+		const syncResult =
+			(await spoke.syncClient?.syncCycle()) ??
+			Promise.resolve({ ok: false as const, error: "No syncClient" });
+		expect(syncResult.ok).toBe(true);
+
+		// Spoke should now know hub has Discord
+		const hubHostOnSpoke = spoke.db
+			.query("SELECT * FROM hosts WHERE site_id = ?")
+			.get(hub.siteId) as Record<string, unknown> | undefined;
+		expect(hubHostOnSpoke).toBeDefined();
+		const platformsOnHub = JSON.parse(hubHostOnSpoke?.platforms as string) as string[];
+		expect(platformsOnHub).toContain("discord");
+	});
 });

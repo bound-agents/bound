@@ -939,6 +939,20 @@ export async function runStart(args: StartArgs): Promise<void> {
 		// biome-ignore lint/suspicious/noExplicitAny: PlatformConnectorRegistry satisfies ConnectorRegistry structurally
 		relayProcessor.setPlatformConnectorRegistry(platformRegistry as any);
 		console.log("[platforms] Platform connector registry started");
+
+		// Advertise configured platform names in hosts.platforms so other nodes
+		// can route platform-context process relays back to this host.
+		const platformNames = platformsConfig.connectors.map((c) => c.platform);
+		if (platformNames.length > 0) {
+			updateRow(
+				appContext.db,
+				"hosts",
+				appContext.siteId,
+				{ platforms: JSON.stringify(platformNames) },
+				appContext.siteId,
+			);
+			console.log(`[platforms] Advertised platforms: ${platformNames.join(", ")}`);
+		}
 	} else {
 		console.log("[platforms] Not configured (no platforms.json)");
 	}
