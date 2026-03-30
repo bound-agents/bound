@@ -6,7 +6,7 @@ import type {
 	ModelRouter,
 } from "@bound/llm";
 
-import { type EligibleHost, findEligibleHostsByModel } from "./relay-router";
+import { type EligibleHost, findAnyRemoteModel, findEligibleHostsByModel } from "./relay-router";
 
 export type ModelResolution =
 	| { kind: "local"; backend: LLMBackend; modelId: string; reResolved?: boolean }
@@ -106,6 +106,19 @@ export function resolveModel(
 
 		// Phase 3: Dispatch (local, qualification passed)
 		return { kind: "local", backend: localBackend, modelId: effectiveModelId };
+	}
+
+	// Hub-only mode: if effectiveModelId is empty (no local backends, no user-specified model),
+	// fall back to discovering any available remote model in the cluster.
+	if (!effectiveModelId) {
+		const anyRemote = findAnyRemoteModel(db, localSiteId);
+		if (anyRemote.ok) {
+			return { kind: "remote", hosts: anyRemote.hosts, modelId: anyRemote.modelId };
+		}
+		return {
+			kind: "error",
+			error: `Hub-only mode: no remote inference backends available. ${anyRemote.error}`,
+		};
 	}
 
 	// Phase 1 fallback: check remote hosts

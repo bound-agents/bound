@@ -246,6 +246,12 @@ export function createModelRouter(config: ModelBackendsConfig): ModelRouter {
 		effectiveCaps.set(backendConfig.id, { ...baseline, ...capOverride });
 	}
 
+	// Hub-only mode: empty backends array is valid (inference proxied to spokes).
+	// In this case the default is "" and no local backends are available.
+	if (config.backends.length === 0) {
+		return new ModelRouter(backends, "", effectiveCaps);
+	}
+
 	// Verify default backend exists
 	const defaultExists = backends.has(config.default);
 	if (!defaultExists) {

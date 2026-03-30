@@ -220,6 +220,98 @@ export function findEligibleHostsByModel(
 	return { ok: true, hosts: eligible };
 }
 
+/**
+ * Finds any eligible remote host with any available model.
+ * Used for hub-only mode where the local default model ID is empty and the hub
+ * relies entirely on remote spoke inference.
+ * Returns the first model/host pair sorted by tier (ascending) then online_at (descending).
+ */
+export function findAnyRemoteModel(
+	db: Database,
+	localSiteId: string,
+): (RelayRoutingResult & { modelId: string }) | RelayRoutingError {
+	const rows = db
+		.query(
+			`SELECT site_id, host_name, sync_url, models, online_at
+			 FROM hosts
+			 WHERE deleted = 0 AND site_id != ?`,
+		)
+		.all(localSiteId) as Array<{
+		site_id: string;
+		host_name: string;
+		sync_url: string | null;
+		models: string | null;
+		online_at: string | null;
+	}>;
+
+	const candidates: Array<EligibleHost & { modelId: string }> = [];
+
+	for (const row of rows) {
+		if (!row.models || !row.online_at) continue;
+		const age = Date.now() - new Date(row.online_at).getTime();
+		if (age > STALE_THRESHOLD_MS) continue;
+
+		let rawModels: unknown;
+		try {
+			rawModels = JSON.parse(row.models);
+		} catch {
+			continue;
+		}
+		if (!Array.isArray(rawModels)) continue;
+
+		for (const entry of rawModels) {
+			const modelId =
+				typeof entry === "string"
+					? entry
+					: entry && typeof entry === "object" && typeof (entry as HostModelEntry).id === "string"
+						? (entry as HostModelEntry).id
+						: null;
+			if (!modelId) continue;
+
+			const tier = entry && typeof entry === "object" ? ((entry as HostModelEntry).tier ?? 99) : 99;
+
+			candidates.push({
+				site_id: row.site_id,
+				host_name: row.host_name,
+				sync_url: row.sync_url,
+				online_at: row.online_at,
+				tier,
+				modelId,
+			});
+		}
+	}
+
+	if (candidates.length === 0) {
+		return { ok: false, error: "No remote inference backends available in cluster" };
+	}
+
+	// Sort: lower tier first, then most recently online
+	candidates.sort((a, b) => {
+		const tierA = a.tier ?? 99;
+		const tierB = b.tier ?? 99;
+		if (tierA !== tierB) return tierA - tierB;
+		if (!a.online_at && !b.online_at) return 0;
+		if (!a.online_at) return 1;
+		if (!b.online_at) return -1;
+		return new Date(b.online_at).getTime() - new Date(a.online_at).getTime();
+	});
+
+	const best = candidates[0];
+	return {
+		ok: true,
+		hosts: [
+			{
+				site_id: best.site_id,
+				host_name: best.host_name,
+				sync_url: best.sync_url,
+				online_at: best.online_at,
+				tier: best.tier,
+			},
+		],
+		modelId: best.modelId,
+	};
+}
+
 export function buildIdempotencyKey(
 	kind: string,
 	toolName: string,

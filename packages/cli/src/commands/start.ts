@@ -904,14 +904,18 @@ export async function runStart(args: StartArgs): Promise<void> {
 					}
 				}
 
-				// Fire-and-forget: generate thread title
-				generateThreadTitle(appContext.db, thread_id, modelRouter.getDefault(), appContext.siteId)
-					.then((titleResult) => {
-						if (titleResult.ok) {
-							console.log(`[agent] Thread title: ${titleResult.value}`);
-						}
-					})
-					.catch((err) => console.warn("[agent] Title generation failed:", formatError(err)));
+				// Fire-and-forget: generate thread title (only when a local backend is available;
+				// hub-only nodes have no local default and delegate inference via relay).
+				const hasLocalBackend = modelRouter.listBackends().length > 0;
+				if (hasLocalBackend) {
+					generateThreadTitle(appContext.db, thread_id, modelRouter.getDefault(), appContext.siteId)
+						.then((titleResult) => {
+							if (titleResult.ok) {
+								console.log(`[agent] Thread title: ${titleResult.value}`);
+							}
+						})
+						.catch((err) => console.warn("[agent] Title generation failed:", formatError(err)));
+				}
 			} catch (error) {
 				console.error(`[agent] Error: ${formatError(error)}`);
 			} finally {

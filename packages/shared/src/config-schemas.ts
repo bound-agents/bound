@@ -58,13 +58,24 @@ const modelBackendSchema = z.object({
 
 export const modelBackendsSchema = z
 	.object({
-		backends: z.array(modelBackendSchema).min(1, "At least one backend must be configured"),
-		default: z.string().min(1),
+		// An empty array is valid for hub-only nodes that relay inference to spokes.
+		backends: z.array(modelBackendSchema).min(0),
+		// Empty string is the sentinel value meaning "no local default" (hub-only mode).
+		default: z.string().default(""),
 		daily_budget_usd: z.number().min(0).optional(),
 	})
-	.refine((data) => data.backends.some((b) => b.id === data.default), {
-		message: "default must reference a backend ID defined in backends",
-	})
+	.refine(
+		(data) => {
+			// Hub-only mode: empty backends must have empty default ("").
+			if (data.backends.length === 0) return data.default === "";
+			// Normal mode: default must reference a valid backend ID.
+			return data.backends.some((b) => b.id === data.default);
+		},
+		{
+			message:
+				"default must reference a backend ID defined in backends (or be empty when backends is empty)",
+		},
+	)
 	.refine(
 		(data) => {
 			return data.backends.every((b) => {

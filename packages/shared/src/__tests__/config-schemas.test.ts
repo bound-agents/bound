@@ -79,13 +79,23 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
-		it("rejects empty backends array", () => {
+		it("rejects empty backends array with non-empty default", () => {
 			const config = {
 				backends: [],
 				default: "some-backend",
 			};
 			const result = modelBackendsSchema.safeParse(config);
 			expect(result.success).toBe(false);
+		});
+
+		it("accepts empty backends for hub-only mode (no local inference)", () => {
+			// A hub that relays inference to spokes needs no local backends.
+			const config = {
+				backends: [],
+				default: "",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(true);
 		});
 
 		it("rejects when default references undefined backend", () => {
