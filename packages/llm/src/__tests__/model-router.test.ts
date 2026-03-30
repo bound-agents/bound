@@ -410,3 +410,224 @@ describe("Phase 4: capability management", () => {
 		expect(eligible).toHaveLength(2);
 	});
 });
+
+describe("Phase 5: getEarliestCapableRecovery", () => {
+	// AC2.4 — getEarliestCapableRecovery returns earliest expiry among rate-limited capable backends
+	it("returns earliest expiry timestamp among rate-limited backends that support requirements", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "vision-backend-1",
+					provider: "ollama",
+					model: "llava",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: true },
+				},
+				{
+					id: "vision-backend-2",
+					provider: "ollama",
+					model: "llava",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 2,
+					capabilities: { vision: true },
+				},
+				{
+					id: "no-vision",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+			],
+			default: "no-vision",
+		});
+
+		// Mark both vision backends as rate-limited with different expiry times
+		const now = Date.now();
+		router.markRateLimited("vision-backend-1", 30_000); // Expires in 30s
+		router.markRateLimited("vision-backend-2", 60_000); // Expires in 60s
+		router.markRateLimited("no-vision", 10_000); // Expires in 10s (should be ignored)
+
+		const earliest = router.getEarliestCapableRecovery({ vision: true });
+		expect(earliest).toBeDefined();
+		expect(earliest).toBeGreaterThan(now);
+		// The earliest should be approximately 30s from now (vision-backend-1)
+		if (earliest !== null) {
+			expect(earliest).toBeLessThan(now + 31_000);
+		}
+	});
+
+	// getEarliestCapableRecovery returns null when no rate-limited backend supports requirements
+	it("returns null when no rate-limited backend supports the requirements", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "vision-backend",
+					provider: "ollama",
+					model: "llava",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: true },
+				},
+				{
+					id: "no-vision",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+			],
+			default: "no-vision",
+		});
+
+		// Only mark non-vision backend as rate-limited
+		router.markRateLimited("no-vision", 10_000);
+
+		// Query for vision requirement — should return null since vision backend is not rate-limited
+		const earliest = router.getEarliestCapableRecovery({ vision: true });
+		expect(earliest).toBeNull();
+	});
+
+	// getEarliestCapableRecovery returns null when no backends are rate-limited
+	it("returns null when no backends are rate-limited", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "vision-backend",
+					provider: "ollama",
+					model: "llava",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: true },
+				},
+			],
+			default: "vision-backend",
+		});
+
+		const earliest = router.getEarliestCapableRecovery({ vision: true });
+		expect(earliest).toBeNull();
+	});
+
+	// getEarliestCapableRecovery with no requirements includes all rate-limited backends
+	it("with no requirements, returns earliest expiry among all rate-limited backends", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "backend-a",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+				{
+					id: "backend-b",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 2,
+				},
+			],
+			default: "backend-a",
+		});
+
+		const now = Date.now();
+		router.markRateLimited("backend-a", 100_000);
+		router.markRateLimited("backend-b", 50_000);
+
+		const earliest = router.getEarliestCapableRecovery();
+		expect(earliest).toBeDefined();
+		// Should be backend-b (50s < 100s)
+		if (earliest !== null) {
+			expect(earliest).toBeLessThan(now + 51_000);
+		}
+	});
+
+	// getEarliestCapableRecovery checks all capability fields
+	it("filters by all capability requirements", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "full-featured",
+					provider: "anthropic",
+					model: "claude-3",
+					apiKey: "test-key",
+					contextWindow: 200000,
+					tier: 1,
+					capabilities: {
+						vision: true,
+						tool_use: true,
+						system_prompt: true,
+						prompt_caching: true,
+					},
+				},
+				{
+					id: "limited",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: false, tool_use: true },
+				},
+			],
+			default: "limited",
+		});
+
+		const now = Date.now();
+		router.markRateLimited("full-featured", 50_000);
+		router.markRateLimited("limited", 100_000);
+
+		// Query for vision requirement — only full-featured supports it
+		const earliest = router.getEarliestCapableRecovery({ vision: true });
+		expect(earliest).toBeDefined();
+		if (earliest !== null) {
+			expect(earliest).toBeLessThan(now + 51_000); // Should return full-featured expiry
+		}
+	});
+
+	// getEarliestCapableRecovery returns null for unmet requirements
+	it("returns null when no rate-limited backend has all required capabilities", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "partial-1",
+					provider: "ollama",
+					model: "llava",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: true, tool_use: false },
+				},
+				{
+					id: "partial-2",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 2,
+					capabilities: { vision: false, tool_use: true },
+				},
+			],
+			default: "partial-1",
+		});
+
+		router.markRateLimited("partial-1", 50_000);
+		router.markRateLimited("partial-2", 100_000);
+
+		// Query for both vision AND tool_use — no backend has both
+		const earliest = router.getEarliestCapableRecovery({
+			vision: true,
+			tool_use: true,
+		});
+		expect(earliest).toBeNull();
+	});
+});

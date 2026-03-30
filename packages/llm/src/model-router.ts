@@ -142,6 +142,29 @@ export class ModelRouter {
 		}
 		return true;
 	}
+
+	/**
+	 * Returns the earliest expiry timestamp (ms) among rate-limited backends that
+	 * satisfy the given capability requirements. Returns null if no such backend exists.
+	 * Used by resolveModel() to populate `earliestRecovery` on transient-unavailable errors.
+	 */
+	getEarliestCapableRecovery(requirements?: CapabilityRequirements): number | null {
+		let earliest: number | null = null;
+		for (const [id, expiry] of this.rateLimits) {
+			const caps = this.effectiveCaps.get(id);
+			if (!caps) continue;
+			if (requirements) {
+				if (requirements.vision && !caps.vision) continue;
+				if (requirements.tool_use && !caps.tool_use) continue;
+				if (requirements.system_prompt && !caps.system_prompt) continue;
+				if (requirements.prompt_caching && !caps.prompt_caching) continue;
+			}
+			if (earliest === null || expiry < earliest) {
+				earliest = expiry;
+			}
+		}
+		return earliest;
+	}
 }
 
 function createBackendFromConfig(config: BackendConfig): LLMBackend {
