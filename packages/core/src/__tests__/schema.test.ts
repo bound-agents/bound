@@ -86,6 +86,8 @@ describe("Database Schema", () => {
 		expect(indexNames).toContain("idx_files_path");
 		expect(indexNames).toContain("idx_skills_name");
 		expect(indexNames).toContain("idx_changelog_seq");
+		expect(indexNames).toContain("idx_memory_modified");
+		expect(indexNames).toContain("idx_tasks_last_run");
 
 		db.close();
 	});
