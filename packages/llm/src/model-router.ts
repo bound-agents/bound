@@ -53,10 +53,22 @@ export class ModelRouter {
 
 	/** Returns BackendInfo list with EFFECTIVE capabilities (driver baseline merged with config overrides). */
 	listBackends(): BackendInfo[] {
-		return Array.from(this.backends.keys()).map((id) => ({
-			id,
-			capabilities: this.effectiveCaps.get(id) ?? this.backends.get(id)!.capabilities(),
-		}));
+		return Array.from(this.backends.keys()).map((id) => {
+			const effectiveCap = this.effectiveCaps.get(id);
+			const backend = this.backends.get(id);
+			return {
+				id,
+				capabilities: effectiveCap ??
+					backend?.capabilities() ?? {
+						streaming: true,
+						tool_use: true,
+						system_prompt: true,
+						prompt_caching: false,
+						vision: false,
+						max_context: 0,
+					},
+			};
+		});
 	}
 
 	/** Returns the default backend ID. */
@@ -85,22 +97,23 @@ export class ModelRouter {
 	 *   backends are excluded (text-only requests with no special requirements).
 	 */
 	listEligible(requirements?: CapabilityRequirements): BackendInfo[] {
-		return Array.from(this.backends.keys())
-			.filter((id) => !this.isRateLimited(id))
-			.filter((id) => {
-				if (!requirements) return true;
-				const caps = this.effectiveCaps.get(id);
-				if (!caps) return false;
-				if (requirements.vision && !caps.vision) return false;
-				if (requirements.tool_use && !caps.tool_use) return false;
-				if (requirements.system_prompt && !caps.system_prompt) return false;
-				if (requirements.prompt_caching && !caps.prompt_caching) return false;
-				return true;
-			})
-			.map((id) => ({
-				id,
-				capabilities: this.effectiveCaps.get(id)!,
-			}));
+		const result: BackendInfo[] = [];
+		for (const id of this.backends.keys()) {
+			if (this.isRateLimited(id)) continue;
+
+			const caps = this.effectiveCaps.get(id);
+			if (!caps) continue;
+
+			if (requirements) {
+				if (requirements.vision && !caps.vision) continue;
+				if (requirements.tool_use && !caps.tool_use) continue;
+				if (requirements.system_prompt && !caps.system_prompt) continue;
+				if (requirements.prompt_caching && !caps.prompt_caching) continue;
+			}
+
+			result.push({ id, capabilities: caps });
+		}
+		return result;
 	}
 
 	/**
@@ -203,9 +216,9 @@ export function createModelRouter(config: ModelBackendsConfig): ModelRouter {
 		// The config override (from capabilities field added in Phase 1) allows operators
 		// to add or suppress capabilities on a per-backend basis.
 		const baseline = backend.capabilities();
-		const override =
+		const capOverride =
 			(backendConfig.capabilities as Partial<BackendCapabilities> | undefined) ?? {};
-		effectiveCaps.set(backendConfig.id, { ...baseline, ...override });
+		effectiveCaps.set(backendConfig.id, { ...baseline, ...capOverride });
 	}
 
 	// Verify default backend exists

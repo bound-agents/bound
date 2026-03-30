@@ -486,6 +486,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				apiKey: b.api_key,
 				region: b.region,
 				profile: b.profile,
+				capabilities: b.capabilities, // Pass through capabilities override (may be undefined)
 			}),
 		),
 		default: rawBackends.default,
