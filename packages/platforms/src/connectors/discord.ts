@@ -55,13 +55,9 @@ export class DiscordConnector implements PlatformConnector {
 	) {}
 
 	async connect(_hostBaseUrl?: string): Promise<void> {
-		const token = this.config.token;
-		if (!token) {
-			throw new Error("DiscordConnector: token is required in platforms.json connector config");
-		}
+		// Token validation removed — registry validates before creating connectors
+		// clientManager.connect() removed — compound connector drives lifecycle
 
-		// Drive manager lifecycle (Phase 5 moves this to registry level)
-		await this.clientManager.connect(token);
 		const client = this.clientManager.getClient();
 
 		const { ChannelType } = await import("discord.js");
@@ -95,8 +91,7 @@ export class DiscordConnector implements PlatformConnector {
 		}
 		this.onClientReady = null;
 		this.onMessageCreate = null;
-		// Drive manager lifecycle (Phase 5 moves this to registry level)
-		await this.clientManager.disconnect();
+		// clientManager.disconnect() removed — compound connector drives lifecycle
 	}
 
 	async deliver(
