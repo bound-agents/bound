@@ -42,6 +42,7 @@ import {
 	createSandbox,
 	diffWorkspace,
 	hydrateWorkspace,
+	loopContextStorage,
 	persistWorkspaceChanges,
 	snapshotWorkspace,
 } from "@bound/sandbox";
@@ -654,10 +655,15 @@ export async function runStart(args: StartArgs): Promise<void> {
 		let preSnapshot: Map<string, string> | null = null;
 
 		const loopSandbox = {
-			// Delegate exec and checkMemoryThreshold to the underlying sandbox so
-			// bash command execution and memory tracking continue to work.
+			// Delegate exec to the underlying sandbox, wrapping the call in
+			// loopContextStorage.run so that command handlers can access the
+			// per-loop threadId and taskId via ctx.threadId / ctx.taskId.
 			exec: sandbox
-				? (cmd: string, opts?: Record<string, unknown>) => sandbox.bash.exec(cmd, opts)
+				? (cmd: string, opts?: Record<string, unknown>) =>
+						loopContextStorage.run(
+							{ threadId: config.threadId, taskId: config.taskId },
+							() => sandbox.bash.exec(cmd, opts),
+						)
 				: undefined,
 			checkMemoryThreshold: sandbox ? () => sandbox.checkMemoryThreshold() : undefined,
 

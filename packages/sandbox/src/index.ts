@@ -17,6 +17,7 @@ export {
 
 export {
 	createDefineCommands,
+	loopContextStorage,
 	type CommandDefinition,
 	type CommandResult,
 	type CommandContext,

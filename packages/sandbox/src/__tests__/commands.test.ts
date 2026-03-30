@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createDatabase } from "@bound/core";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
 import type { CommandDefinition } from "../commands";
-import { createDefineCommands } from "../commands";
+import { createDefineCommands, loopContextStorage } from "../commands";
 
 // Mock logger and event bus for testing
 const mockLogger: Logger = {
@@ -316,5 +316,140 @@ describe("Command Framework", () => {
 
 		expect(result.exitCode).toBe(1);
 		expect(result.stderr).toContain("Test error");
+	});
+});
+
+// ctx.threadId and ctx.taskId must return the per-loop values injected via
+// AsyncLocalStorage so that commands like `purge --last` and `schedule` can
+// use the current thread/task ID without requiring it as an explicit argument.
+describe("loopContextStorage — per-loop thread/task injection", () => {
+	test("ctx.threadId returns undefined outside a loopContextStorage.run call", async () => {
+		let capturedThreadId: string | undefined = "SENTINEL";
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "probe",
+				args: [],
+				handler: async (_args, ctx) => {
+					capturedThreadId = ctx.threadId;
+					return { stdout: "", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: { on: () => {}, emit: () => {}, off: () => {} } as unknown as TypedEventEmitter,
+			logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as Logger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		await commands[0].handler([]);
+
+		// Outside loopContextStorage.run, threadId must be undefined
+		expect(capturedThreadId).toBeUndefined();
+	});
+
+	test("ctx.threadId returns the threadId set by loopContextStorage.run", async () => {
+		let capturedThreadId: string | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "probe",
+				args: [],
+				handler: async (_args, ctx) => {
+					capturedThreadId = ctx.threadId;
+					return { stdout: "", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: { on: () => {}, emit: () => {}, off: () => {} } as unknown as TypedEventEmitter,
+			logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as Logger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+
+		// Simulate what loopSandbox.exec does: wrap the call in loopContextStorage.run
+		await loopContextStorage.run(
+			{ threadId: "expected-thread-id", taskId: "expected-task-id" },
+			() => commands[0].handler([]),
+		);
+
+		expect(capturedThreadId).toBe("expected-thread-id");
+	});
+
+	test("ctx.taskId returns the taskId set by loopContextStorage.run", async () => {
+		let capturedTaskId: string | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "probe",
+				args: [],
+				handler: async (_args, ctx) => {
+					capturedTaskId = ctx.taskId;
+					return { stdout: "", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: { on: () => {}, emit: () => {}, off: () => {} } as unknown as TypedEventEmitter,
+			logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as Logger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+
+		await loopContextStorage.run(
+			{ threadId: "t1", taskId: "task-42" },
+			() => commands[0].handler([]),
+		);
+
+		expect(capturedTaskId).toBe("task-42");
+	});
+
+	test("concurrent runs see their own threadId without interference", async () => {
+		const results: string[] = [];
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "slow-probe",
+				args: [],
+				handler: async (_args, ctx) => {
+					// Yield to let the other concurrent run potentially interfere
+					await new Promise<void>((r) => setTimeout(r, 5));
+					results.push(ctx.threadId ?? "undefined");
+					return { stdout: "", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: { on: () => {}, emit: () => {}, off: () => {} } as unknown as TypedEventEmitter,
+			logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as Logger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+
+		// Two concurrent runs with different threadIds — each must see its own
+		await Promise.all([
+			loopContextStorage.run({ threadId: "thread-A" }, () => commands[0].handler([])),
+			loopContextStorage.run({ threadId: "thread-B" }, () => commands[0].handler([])),
+		]);
+
+		expect(results).toHaveLength(2);
+		expect(results).toContain("thread-A");
+		expect(results).toContain("thread-B");
+		// Neither should have seen the other's threadId
+		expect(results.filter((r) => r === "thread-A")).toHaveLength(1);
+		expect(results.filter((r) => r === "thread-B")).toHaveLength(1);
 	});
 });

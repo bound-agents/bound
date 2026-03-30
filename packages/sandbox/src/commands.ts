@@ -1,7 +1,22 @@
 import type Database from "bun:sqlite";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 import { formatError } from "@bound/shared";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
+
+/**
+ * Per-loop execution context injected by the agent loop factory.
+ * Used to propagate threadId and taskId to command handlers without
+ * requiring a mutable shared context (which would be unsafe for
+ * concurrent agent loops running on different threads).
+ *
+ * Usage in start.ts loopSandbox.exec:
+ *   loopContextStorage.run({ threadId, taskId }, () => sandbox.bash.exec(cmd, opts))
+ */
+export const loopContextStorage = new AsyncLocalStorage<{
+	threadId?: string;
+	taskId?: string;
+}>();
 
 import type { CustomCommand, IFileSystem } from "just-bash";
 import { defineCommand } from "just-bash";
@@ -117,7 +132,21 @@ export function createDefineCommands(
 			}
 
 			try {
-				return await def.handler(args, context);
+				// Merge per-loop threadId/taskId from AsyncLocalStorage with the shared
+				// startup context, so commands like `purge --last` and `schedule` can
+				// access ctx.threadId without it being passed as an explicit argument.
+				// Safe for concurrent agent loops: AsyncLocalStorage propagates the
+				// correct value through async/await for each independent execution.
+				const loopStore = loopContextStorage.getStore();
+				const effectiveCtx: CommandContext = loopStore
+					? {
+							...context,
+							threadId: loopStore.threadId ?? context.threadId,
+							taskId: loopStore.taskId ?? context.taskId,
+						}
+					: context;
+
+				return await def.handler(args, effectiveCtx);
 			} catch (error) {
 				const errorMsg = formatError(error);
 				return {
