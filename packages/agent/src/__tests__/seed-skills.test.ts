@@ -10,16 +10,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
-import {
-	SKILL_AUTHORING_FORMAT_REFERENCE_MD,
-	SKILL_AUTHORING_SKILL_MD,
-} from "../bundled-skills";
+import { SKILL_AUTHORING_FORMAT_REFERENCE_MD, SKILL_AUTHORING_SKILL_MD } from "../bundled-skills";
 import { seedSkillAuthoring } from "../seed-skills";
 
 describe("seedSkillAuthoring", () => {
 	let tmpDir: string;
 	let dbPath: string;
-	let db: any;
+	let db: ReturnType<typeof createDatabase>;
 	const siteId = "test-site-id";
 
 	beforeEach(() => {
@@ -54,9 +51,7 @@ describe("seedSkillAuthoring", () => {
 		expect(skillMdFile?.content).toBe(SKILL_AUTHORING_SKILL_MD);
 
 		const refFile = db
-			.prepare(
-				"SELECT id, path, content FROM files WHERE path = ? AND deleted = 0",
-			)
+			.prepare("SELECT id, path, content FROM files WHERE path = ? AND deleted = 0")
 			.get("/home/user/skills/skill-authoring/references/format-reference.md");
 
 		expect(refFile).toBeDefined();
@@ -114,17 +109,15 @@ describe("seedSkillAuthoring", () => {
 		seedSkillAuthoring(db, siteId);
 
 		// Verify status remains retired
-		const skillRow = db
-			.prepare("SELECT status, retired_by FROM skills WHERE id = ?")
-			.get(skillId);
+		const skillRow = db.prepare("SELECT status, retired_by FROM skills WHERE id = ?").get(skillId);
 
 		expect(skillRow?.status).toBe("retired");
 		expect(skillRow?.retired_by).toBe("operator");
 
 		// Verify no duplicate rows exist
-		const count = db
-			.prepare("SELECT COUNT(*) as cnt FROM skills WHERE id = ?")
-			.get(skillId) as { cnt: number };
+		const count = db.prepare("SELECT COUNT(*) as cnt FROM skills WHERE id = ?").get(skillId) as {
+			cnt: number;
+		};
 
 		expect(count.cnt).toBe(1);
 	});
@@ -155,9 +148,7 @@ describe("seedSkillAuthoring", () => {
 
 		// Verify restored
 		const restoredRow = db
-			.prepare(
-				"SELECT id, path, content FROM files WHERE path = ? AND deleted = 0",
-			)
+			.prepare("SELECT id, path, content FROM files WHERE path = ? AND deleted = 0")
 			.get(skillMdPath);
 
 		expect(restoredRow).toBeDefined();
@@ -175,9 +166,7 @@ describe("seedSkillAuthoring", () => {
 
 		expect(skillMdFile?.content).toBe(SKILL_AUTHORING_SKILL_MD);
 
-		const expectedSkillHash = createHash("sha256")
-			.update(SKILL_AUTHORING_SKILL_MD)
-			.digest("hex");
+		const expectedSkillHash = createHash("sha256").update(SKILL_AUTHORING_SKILL_MD).digest("hex");
 
 		const skillRowHash = db
 			.prepare("SELECT content_hash FROM skills WHERE name = ?")

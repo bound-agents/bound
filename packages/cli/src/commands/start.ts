@@ -201,10 +201,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 	try {
 		seedSkillAuthoring(appContext.db, appContext.siteId);
 	} catch (error) {
-		appContext.logger.warn(
-			"[skills] Failed to seed skill-authoring skill",
-			{ error: String(error) },
-		);
+		appContext.logger.warn("[skills] Failed to seed skill-authoring skill", {
+			error: String(error),
+		});
 	}
 
 	// 6. Host registration (via outbox for sync compliance)

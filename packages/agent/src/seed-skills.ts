@@ -1,30 +1,20 @@
-import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { insertRow, updateRow } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
-import {
-	SKILL_AUTHORING_FORMAT_REFERENCE_MD,
-	SKILL_AUTHORING_SKILL_MD,
-} from "./bundled-skills";
+import { SKILL_AUTHORING_FORMAT_REFERENCE_MD, SKILL_AUTHORING_SKILL_MD } from "./bundled-skills";
 
 /**
  * Seed a file into the files table if missing or stale (content hash differs).
  * Follows the autoCacheFile pattern from packages/sandbox/src/cluster-fs.ts.
  */
-function seedFile(
-	db: Database,
-	siteId: string,
-	path: string,
-	content: string,
-): void {
+function seedFile(db: Database, siteId: string, path: string, content: string): void {
 	const contentHash = createHash("sha256").update(content).digest("hex");
 	const sizeBytes = Buffer.byteLength(content, "utf8");
 	const now = new Date().toISOString();
 
 	const existing = db
-		.prepare(
-			"SELECT id, content, deleted FROM files WHERE path = ?",
-		)
+		.prepare("SELECT id, content, deleted FROM files WHERE path = ?")
 		.get(path) as { id: string; content: string | null; deleted: number } | null;
 
 	if (existing) {
@@ -88,14 +78,12 @@ export function seedSkillAuthoring(db: Database, siteId: string): void {
 
 	// Step 2: Insert skills row only if it does not already exist (AC5.2, AC5.3)
 	// Equivalent to INSERT OR IGNORE — change-log compliant version.
-	const existing = db
-		.prepare("SELECT id FROM skills WHERE id = ?")
-		.get(skillId) as { id: string } | null;
+	const existing = db.prepare("SELECT id FROM skills WHERE id = ?").get(skillId) as {
+		id: string;
+	} | null;
 
 	if (!existing) {
-		const contentHash = createHash("sha256")
-			.update(SKILL_AUTHORING_SKILL_MD)
-			.digest("hex");
+		const contentHash = createHash("sha256").update(SKILL_AUTHORING_SKILL_MD).digest("hex");
 
 		insertRow(
 			db,
@@ -103,20 +91,16 @@ export function seedSkillAuthoring(db: Database, siteId: string): void {
 			{
 				id: skillId,
 				name: skillName,
-				description:
-					"Author, activate, and manage reusable instruction sets called skills.",
+				description: "Author, activate, and manage reusable instruction sets called skills.",
 				status: "active",
 				skill_root: skillRoot,
 				content_hash: contentHash,
-				allowed_tools:
-					"skill-activate skill-list skill-read skill-retire bash",
+				allowed_tools: "skill-activate skill-list skill-read skill-retire bash",
 				compatibility: null,
 				metadata_json: JSON.stringify({
 					name: skillName,
-					description:
-						"Author, activate, and manage reusable instruction sets called skills.",
-					allowed_tools:
-						"skill-activate skill-list skill-read skill-retire bash",
+					description: "Author, activate, and manage reusable instruction sets called skills.",
+					allowed_tools: "skill-activate skill-list skill-read skill-retire bash",
 				}),
 				activated_at: now,
 				created_by_thread: null,
