@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { applySchema } from "@bound/core";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
-import { DiscordClientManager } from "../connectors/discord-client-manager.js";
+import type { DiscordClientManager } from "../connectors/discord-client-manager.js";
 import { DiscordConnector } from "../connectors/discord.js";
 
 // Store original fetch for restoration
@@ -93,7 +93,14 @@ describe("Discord attachment ingestion", () => {
 			return originalFetch(url as RequestInfo | URL, undefined);
 		};
 
-		const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
+		const connector = new DiscordConnector(
+			config,
+			db,
+			"site-1",
+			eventBus,
+			mockLogger,
+			createMockClientManager(),
+		);
 
 		const attachment = {
 			id: "att1",
@@ -156,7 +163,14 @@ describe("Discord attachment ingestion", () => {
 				headers: { "Content-Type": "image/jpeg" },
 			});
 
-		const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
+		const connector = new DiscordConnector(
+			config,
+			db,
+			"site-1",
+			eventBus,
+			mockLogger,
+			createMockClientManager(),
+		);
 
 		const attachment = {
 			id: "att2",
@@ -209,7 +223,14 @@ describe("Discord attachment ingestion", () => {
 	});
 
 	it("message with no image attachments stores plain text (backward-compat)", async () => {
-		const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
+		const connector = new DiscordConnector(
+			config,
+			db,
+			"site-1",
+			eventBus,
+			mockLogger,
+			createMockClientManager(),
+		);
 
 		const mockMessage = {
 			id: "msg-3",
@@ -249,7 +270,14 @@ describe("Discord attachment ingestion", () => {
 			return originalFetch(url as RequestInfo | URL, undefined);
 		};
 
-		const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
+		const connector = new DiscordConnector(
+			config,
+			db,
+			"site-1",
+			eventBus,
+			mockLogger,
+			createMockClientManager(),
+		);
 
 		const attachment = {
 			id: "att3",
@@ -299,7 +327,14 @@ describe("Discord attachment ingestion", () => {
 			return originalFetch(url as RequestInfo | URL, undefined);
 		};
 
-		const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
+		const connector = new DiscordConnector(
+			config,
+			db,
+			"site-1",
+			eventBus,
+			mockLogger,
+			createMockClientManager(),
+		);
 
 		const attachment = {
 			id: "att4",
