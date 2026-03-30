@@ -31,7 +31,6 @@ export const advisory: CommandDefinition = {
 					action: action?.trim() ?? null,
 					impact: impact?.trim() ?? null,
 					evidence: null,
-					deleted: 0,
 				},
 				ctx.siteId,
 			);
