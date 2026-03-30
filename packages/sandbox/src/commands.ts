@@ -65,14 +65,24 @@ export function createDefineCommands(
 			const hasFlags = argv.some((a) => a.startsWith("--") || /^[^\s=]+=/.test(a));
 
 			if (hasFlags) {
-				// Parse --key value pairs and key=value pairs
+				// Parse --key value pairs, key=value pairs, and leading positional args.
+				// Commands may mix positional and named-flag syntax, e.g.:
+				//   emit event_name --payload json
+				//   memorize key value --source agent
+				// Tokens that are neither --flags nor key=value are assigned to the
+				// next unfilled positional arg definition in declaration order.
+				let positionalCount = 0;
 				for (let i = 0; i < argv.length; i++) {
 					const arg = argv[i];
 					if (arg.startsWith("--") && i + 1 < argv.length) {
 						args[arg.slice(2)] = argv[++i];
-					} else if (arg.includes("=")) {
+					} else if (/^[^\s=]+=/.test(arg)) {
 						const eqIdx = arg.indexOf("=");
 						args[arg.slice(0, eqIdx)] = arg.slice(eqIdx + 1);
+					} else if (!arg.startsWith("--") && positionalCount < def.args.length) {
+						// Unmatched token — assign to next positional arg slot
+						args[def.args[positionalCount].name] = arg;
+						positionalCount++;
 					}
 				}
 			} else if (def.args.length > 0) {

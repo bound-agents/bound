@@ -180,6 +180,84 @@ describe("Command Framework", () => {
 		expect(capturedQuery).toBe(sql);
 	});
 
+	// Bug: when a command has both leading positional args and trailing --flags
+	// (e.g. `emit event_name --payload json`), the hasFlags branch was triggered
+	// (because --payload starts with "--") and all positional args were silently
+	// dropped. args.event came back undefined, producing "Event emitted: undefined".
+	test("leading positional arg followed by --flag is parsed correctly", async () => {
+		let capturedEvent: string | undefined;
+		let capturedPayload: string | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "emit",
+				args: [
+					{ name: "event", required: true },
+					{ name: "payload", required: false },
+				],
+				handler: async (args) => {
+					capturedEvent = args.event;
+					capturedPayload = args.payload;
+					return { stdout: `Event emitted: ${args.event}\n`, stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		// Simulates: emit test_event --payload '{"x":1}'
+		const result = await commands[0].handler(["test_event", "--payload", '{"x":1}']);
+
+		expect(result.exitCode).toBe(0);
+		expect(capturedEvent).toBe("test_event");
+		expect(capturedPayload).toBe('{"x":1}');
+		expect(result.stdout).toBe("Event emitted: test_event\n");
+	});
+
+	test("memorize key value --source works (positional + flag)", async () => {
+		let capturedKey: string | undefined;
+		let capturedValue: string | undefined;
+		let capturedSource: string | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "memorize",
+				args: [
+					{ name: "key", required: true },
+					{ name: "value", required: true },
+					{ name: "source", required: false },
+				],
+				handler: async (args) => {
+					capturedKey = args.key;
+					capturedValue = args.value;
+					capturedSource = args.source;
+					return { stdout: "ok", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		const result = await commands[0].handler(["my_key", "my_value", "--source", "agent"]);
+
+		expect(result.exitCode).toBe(0);
+		expect(capturedKey).toBe("my_key");
+		expect(capturedValue).toBe("my_value");
+		expect(capturedSource).toBe("agent");
+	});
+
 	test("key=value style args still work", async () => {
 		let capturedKey: string | undefined;
 		let capturedVal: string | undefined;
