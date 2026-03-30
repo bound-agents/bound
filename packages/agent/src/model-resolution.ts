@@ -1,45 +1,114 @@
 import type { Database } from "bun:sqlite";
-import type { LLMBackend } from "@bound/llm";
-import type { ModelRouter } from "@bound/llm";
+import type { BackendCapabilities, CapabilityRequirements, LLMBackend, ModelRouter } from "@bound/llm";
 
 import { type EligibleHost, findEligibleHostsByModel } from "./relay-router";
 
 export type ModelResolution =
-	| { kind: "local"; backend: LLMBackend; modelId: string }
-	| { kind: "remote"; hosts: EligibleHost[]; modelId: string }
-	| { kind: "error"; error: string };
+	| { kind: "local"; backend: LLMBackend; modelId: string; reResolved?: boolean }
+	| { kind: "remote"; hosts: EligibleHost[]; modelId: string; reResolved?: boolean }
+	| {
+			kind: "error";
+			error: string;
+			reason?: "capability-mismatch" | "transient-unavailable";
+			unmetCapabilities?: string[];
+			alternatives?: string[];
+			earliestRecovery?: number;
+	  };
 
 /**
- * Resolves a model ID to either a local LLM backend or a list of remote eligible hosts.
+ * Checks whether caps satisfy all requirements. Returns an array of unmet requirement
+ * field names (empty if all requirements are met).
+ */
+function getUnmetCapabilities(caps: BackendCapabilities, requirements: CapabilityRequirements): string[] {
+	const unmet: string[] = [];
+	if (requirements.vision && !caps.vision) unmet.push("vision");
+	if (requirements.tool_use && !caps.tool_use) unmet.push("tool_use");
+	if (requirements.system_prompt && !caps.system_prompt) unmet.push("system_prompt");
+	if (requirements.prompt_caching && !caps.prompt_caching) unmet.push("prompt_caching");
+	return unmet;
+}
+
+/**
+ * Resolves a model ID through a three-phase pipeline: identify → qualify → dispatch.
  *
- * Resolution order:
- * 1. If modelId maps to a local backend in modelRouter → return local
- * 2. If modelId is found on remote hosts → return remote
- * 3. Otherwise → return error with context
+ * Phase 1 (identify): Check local backends first, then remote hosts.
+ * Phase 2 (qualify): If requirements are provided, check the identified backend's effective
+ *   capabilities. On mismatch, try to re-route to an eligible alternative. Distinguish
+ *   capability-mismatch (no backend has the capability) from transient-unavailable (capable
+ *   backends exist but are all rate-limited).
+ * Phase 3 (dispatch): Return the qualified resolution.
  *
- * If modelId is undefined, resolves to the default local backend.
+ * Backward-compatible: when requirements is undefined (text-only requests), the qualify
+ * phase is a no-op and resolution behaves identically to before.
  */
 export function resolveModel(
 	modelId: string | undefined,
 	modelRouter: ModelRouter,
 	db: Database,
 	localSiteId: string,
+	requirements?: CapabilityRequirements,
 ): ModelResolution {
 	const effectiveModelId = modelId ?? modelRouter.getDefaultId();
 
-	// Check local backends first
+	// Phase 1: Identify — check local backends first
 	const localBackend = modelRouter.tryGetBackend(effectiveModelId);
+
 	if (localBackend) {
+		// Phase 2: Qualify (local)
+		if (requirements) {
+			const caps = modelRouter.getEffectiveCapabilities(effectiveModelId);
+			const unmet = caps ? getUnmetCapabilities(caps, requirements) : Object.keys(requirements);
+
+			if (unmet.length > 0) {
+				// Primary backend lacks required capability — try eligible alternatives
+				const eligible = modelRouter.listEligible(requirements);
+				if (eligible.length > 0) {
+					// Re-route to first eligible alternative
+					const altId = eligible[0].id;
+					const altBackend = modelRouter.tryGetBackend(altId);
+					if (altBackend) {
+						// Phase 3: Dispatch (re-routed local)
+						return { kind: "local", backend: altBackend, modelId: altId, reResolved: true };
+					}
+				}
+
+				// No eligible alternative — distinguish transient vs permanent
+				const earliestRecovery = modelRouter.getEarliestCapableRecovery(requirements);
+				if (earliestRecovery !== null) {
+					// Capable backends exist but are all rate-limited
+					return {
+						kind: "error",
+						error: `No backends available — all capable backends are rate-limited`,
+						reason: "transient-unavailable",
+						unmetCapabilities: unmet,
+						earliestRecovery,
+					};
+				}
+
+				// No backend in cluster has the required capability
+				return {
+					kind: "error",
+					error: `No backends support required capabilities: ${unmet.join(", ")}`,
+					reason: "capability-mismatch",
+					unmetCapabilities: unmet,
+					alternatives: [],
+				};
+			}
+		}
+
+		// Phase 3: Dispatch (local, qualification passed)
 		return { kind: "local", backend: localBackend, modelId: effectiveModelId };
 	}
 
-	// Fall back to remote hosts
+	// Phase 1 fallback: check remote hosts
 	const remoteResult = findEligibleHostsByModel(db, effectiveModelId, localSiteId);
 	if (remoteResult.ok) {
+		// Phase 2: Qualify (remote) — remote capability filtering is Phase 6
+		// For now, return all eligible remote hosts and let the caller filter
 		return { kind: "remote", hosts: remoteResult.hosts, modelId: effectiveModelId };
 	}
 
-	// Build informative error — list all known local model IDs
+	// Phase 3: Error (not found anywhere)
 	const localIds = modelRouter.listBackends().map((b) => b.id);
 	return {
 		kind: "error",
