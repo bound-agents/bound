@@ -12,7 +12,7 @@ import type {
 	User,
 } from "@bound/shared";
 import type { PlatformConnector } from "../connector.js";
-import { DiscordClientManager } from "./discord-client-manager.js";
+import type { DiscordClientManager } from "./discord-client-manager.js";
 
 // Discord.js types only — imported dynamically in connect() to avoid hard dep at module load
 type DiscordMessage = import("discord.js").Message;

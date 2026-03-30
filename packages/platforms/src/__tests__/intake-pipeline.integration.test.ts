@@ -5,8 +5,8 @@ import { applySchema } from "@bound/core";
 import type { IntakePayload } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
+import type { DiscordClientManager } from "../connectors/discord-client-manager.js";
 import { DiscordConnector } from "../connectors/discord.js";
-import { DiscordClientManager } from "../connectors/discord-client-manager.js";
 
 // Mock logger
 const createMockLogger = (): Logger => ({
