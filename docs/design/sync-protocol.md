@@ -634,6 +634,9 @@ CRUD helpers (from `@bound/core`): `writeOutbox`, `insertInbox`, `readUnprocesse
 | `cancel` | Cancel an active inference stream or delegated loop (carries `ref_id`) |
 | `inference` | Request LLM inference from the target (streaming response) |
 | `process` | Delegate entire agent loop to the target |
+| `intake` | Route an inbound platform message to the appropriate spoke for processing |
+| `platform_deliver` | Route an outbound assistant response to the platform leader host for delivery |
+| `event_broadcast` | Fan out a custom event to all spokes (target is `*`) |
 
 **Response kinds** (target → requester):
 
@@ -655,6 +658,12 @@ The hub acts as a relay router. When a spoke pushes relay outbox entries to the 
 4. The target spoke inserts them into its `relay_inbox`.
 
 `stream_id` is propagated through all three hub routing paths (inline construction, `writeOutbox`, and pending-for-requester mapping), so `readInboxByStreamId()` on the requester always finds its chunks.
+
+**Routing for `intake`:** The receiving spoke's `RelayProcessor` selects the best host to handle the platform message using a four-tier algorithm: (1) **thread affinity** — the spoke that most recently processed this thread (tracked via `status_forward` messages passing through the hub); (2) **model match** — a spoke that has the model last used in this thread; (3) **tool match** — the spoke with the highest overlap between its registered MCP tools and the tools used in this thread; (4) **least-loaded fallback** — the spoke with the fewest pending undelivered `relay_outbox` entries. Once a target is selected, the intake processor writes a `process` outbox entry targeting that spoke.
+
+**Routing for `platform_deliver`:** The entry is routed to the spoke that currently holds the platform leader role for the relevant platform. Leadership is stored in the synced `cluster_config` table under the key `platform_leader:<platform>` (e.g., `platform_leader:discord`). The receiving spoke's `RelayProcessor` emits a local `platform:deliver` event, which the `PlatformConnectorRegistry` handles to send the message to the user.
+
+**Routing for `event_broadcast`:** The target field is set to `*`. The hub fans out the entry to all spokes with a known `sync_url` in the keyring, excluding the originating source spoke. Each recipient's `RelayProcessor` fires the named event locally on its event bus. Used by the agent's `emit` command to propagate custom events across the cluster.
 
 **Eager push:** The hub can proactively push relay messages to spokes with a known `sync_url` (skipping the wait for the next sync cycle). Controlled by `sync.relay.eager_push` config. Falls back to sync-based delivery if the spoke is unreachable. Reachability is tracked by `ReachabilityTracker` (3 consecutive failures → unreachable; recovered on success).
 

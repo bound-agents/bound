@@ -16,7 +16,7 @@ This document covers the two foundational packages in the Bound agent system: `@
    - [Zod Config Schemas](#zod-config-schemas)
 2. [@bound/core](#boundcore)
    - [Database Initialization](#database-initialization)
-   - [Schema — 13 STRICT Tables](#schema--13-strict-tables)
+   - [Schema — 17 STRICT Tables](#schema--17-strict-tables)
    - [Change Log and Transactional Outbox](#change-log-and-transactional-outbox)
    - [Config Loader](#config-loader)
    - [Dependency Injection Container](#dependency-injection-container)
@@ -70,10 +70,11 @@ type SyncedTableName =
   | "hosts"
   | "overlay_index"
   | "cluster_config"
-  | "advisories";
+  | "advisories"
+  | "skills";
 ```
 
-These ten names are the tables that participate in cross-host replication. Every write to one of these tables must be accompanied by a `change_log` entry (see [Change Log](#change-log-and-transactional-outbox)).
+These eleven names are the tables that participate in cross-host replication. Every write to one of these tables must be accompanied by a `change_log` entry (see [Change Log](#change-log-and-transactional-outbox)).
 
 #### TABLE_REDUCER_MAP
 
@@ -93,10 +94,11 @@ Maps each synced table to its conflict resolution strategy. `"lww"` (last-write-
 | `SemanticMemory` | `id: string` | `deleted: number` | Keyed memory with LRU tracking (`last_accessed_at`) |
 | `Task` | `id: string` | `deleted: number` | Full task scheduling state; see field notes below |
 | `AgentFile` | `id: string` | `deleted: number` | Stored as text or binary; `content` is the raw payload |
-| `Host` | `site_id: string` | — | No soft-delete; describes a Bound node in the cluster |
+| `Host` | `site_id: string` | `deleted: number` | Describes a Bound node in the cluster |
 | `OverlayIndexEntry` | `id: string` | `deleted: number` | File index for a host's overlay filesystem |
 | `ClusterConfigEntry` | `key: string` | — | Key-value cluster-wide config; LWW by `modified_at` |
-| `Advisory` | `id: string` | — | Agent self-advisory lifecycle |
+| `Advisory` | `id: string` | `deleted: number` | Agent self-advisory lifecycle |
+| `Skill` | `id: string` | `deleted: number` | Deterministic UUID from name; `status` is `"active"\|"retired"`; `skill_root` is the VFS path; `body` stored as `skill_root` content; context assembly uses `activation_count` and `last_activated_at` |
 
 **Task field notes:**
 - `trigger_spec` — cron expression or event name.
@@ -176,14 +178,22 @@ The `E` type parameter defaults to `Error` but can be any type. Throughout `@bou
 
 ```typescript
 interface EventMap {
-  "message:created": { message: Message; thread_id: string };
-  "task:triggered":  { task_id: string; trigger: string };
-  "task:completed":  { task_id: string; result: string | null };
-  "sync:completed":  { pushed: number; pulled: number; duration_ms: number };
-  "file:changed":    { path: string; operation: "created" | "modified" | "deleted" };
-  "alert:created":   { message: Message; thread_id: string };
+  "message:created":   { message: Message; thread_id: string };
+  "message:broadcast": { message: Message; thread_id: string };
+  "task:triggered":    { task_id: string; trigger: string };
+  "task:completed":    { task_id: string; result: string | null };
+  "sync:completed":    { pushed: number; pulled: number; duration_ms: number };
+  "sync:trigger":      { reason: string };
+  "file:changed":      { path: string; operation: "created" | "modified" | "deleted" };
+  "alert:created":     { message: Message; thread_id: string };
+  "agent:cancel":      { thread_id: string };
+  "status:forward":    { thread_id: string; status: string; detail: string | null; tokens: number };
+  "platform:deliver":  { platform: string; thread_id: string; message_id: string; content: string };
+  "platform:webhook":  { platform: string; rawBody: string; headers: Record<string, string> };
 }
 ```
+
+`"message:broadcast"` is emitted after a local agent loop run to push the new assistant message to WebSocket clients without re-triggering the agent loop handler. `"sync:trigger"` signals the sync loop to accelerate its next cycle. `"status:forward"` carries delegated loop state from remote hosts. `"platform:deliver"` routes outbound assistant responses to the platform leader; `"platform:webhook"` carries inbound webhook payloads for signature verification and dispatch.
 
 To add a new event to the system, add an entry to this interface. The `TypedEventEmitter` class (below) enforces the payload type at every call site.
 
@@ -321,6 +331,7 @@ Cross-field constraint: `default_web_user` must be a key present in `users`.
 ```typescript
 type ModelBackendsConfig = {
   default: string;                  // Must reference a backend id
+  daily_budget_usd?: number;
   backends: Array<{
     id: string;
     provider: "ollama" | "bedrock" | "anthropic" | "openai-compatible";
@@ -328,17 +339,26 @@ type ModelBackendsConfig = {
     base_url?: string;              // Required for ollama and openai-compatible
     api_key?: string;
     region?: string;
+    profile?: string;
     context_window: number;
     tier: number;                   // 1–5
     price_per_m_input: number;
     price_per_m_output: number;
     price_per_m_cache_write?: number;
     price_per_m_cache_read?: number;
+    capabilities?: Partial<{        // Merges over driver-reported capabilities at ModelRouter construction time
+      streaming: boolean;
+      tool_use: boolean;
+      system_prompt: boolean;
+      prompt_caching: boolean;
+      vision: boolean;
+      max_context: number;
+    }>;
   }>;
 };
 ```
 
-Two cross-field constraints are enforced: `default` must reference a `backend.id` that exists in `backends`, and `ollama` / `openai-compatible` providers must supply `base_url`.
+Two cross-field constraints are enforced: `default` must reference a `backend.id` that exists in `backends`, and `ollama` / `openai-compatible` providers must supply `base_url`. The optional `capabilities` object overrides the capabilities that the driver auto-detects at startup, allowing operators to enable or disable specific features (e.g. marking a model as vision-capable or disabling tool use) without changing the driver code.
 
 #### Optional Config Schemas
 
@@ -371,10 +391,11 @@ type NetworkConfig = {
 type McpConfig = {
   servers: Array<{
     name: string;
-    transport: "stdio" | "sse";
+    transport: "stdio" | "http";
     command?: string;
     args?: string[];
     url?: string;
+    headers?: Record<string, string>;
     allow_tools?: string[];
     confirm?: string[];   // Tools requiring user confirmation before execution
   }>;
@@ -446,15 +467,15 @@ const db = createDatabase("/data/bound.db");
 
 ---
 
-### Schema — 13 STRICT Tables
+### Schema — 17 STRICT Tables
 
-`schema.ts` exports `applySchema(db: Database): void`, which issues `CREATE TABLE IF NOT EXISTS` statements for all 13 tables. Every table uses the `STRICT` keyword, which makes SQLite enforce declared column types rather than accepting arbitrary affinities.
+`schema.ts` exports `applySchema(db: Database): void`, which issues `CREATE TABLE IF NOT EXISTS` statements for all 17 tables. Every table uses the `STRICT` keyword, which makes SQLite enforce declared column types rather than accepting arbitrary affinities.
 
 `applySchema` is idempotent and safe to call on every startup.
 
 #### Synced Tables (participate in replication)
 
-These 10 tables are the source of truth for replicated state. Every mutation should go through the change-log helpers in `change-log.ts`.
+These 11 tables are the source of truth for replicated state. Every mutation should go through the change-log helpers in `change-log.ts`.
 
 **`users`**
 ```sql
@@ -514,9 +535,10 @@ Index: unique on `path` where `deleted = 0`.
 ```sql
 site_id TEXT PRIMARY KEY, host_name TEXT NOT NULL, version TEXT, sync_url TEXT,
 mcp_servers TEXT, mcp_tools TEXT, models TEXT, overlay_root TEXT,
-online_at TEXT, modified_at TEXT NOT NULL
+online_at TEXT, modified_at TEXT NOT NULL,
+platforms TEXT, deleted INTEGER DEFAULT 0
 ```
-JSON-encoded arrays/objects stored as TEXT in `mcp_servers`, `mcp_tools`, and `models`.
+JSON-encoded arrays/objects stored as TEXT in `mcp_servers`, `mcp_tools`, `models`, and `platforms`. `platforms` is a JSON array of platform names for which this host is the leader (e.g. `["discord"]`).
 
 **`overlay_index`**
 ```sql
@@ -537,12 +559,25 @@ Simple key-value store for cluster-wide settings.
 id TEXT PRIMARY KEY, type TEXT NOT NULL, status TEXT NOT NULL,
 title TEXT NOT NULL, detail TEXT NOT NULL, action TEXT, impact TEXT,
 evidence TEXT, proposed_at TEXT NOT NULL, defer_until TEXT, resolved_at TEXT,
-created_by TEXT, modified_at TEXT NOT NULL
+created_by TEXT, modified_at TEXT NOT NULL, deleted INTEGER DEFAULT 0
 ```
+
+**`skills`**
+```sql
+id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
+status TEXT NOT NULL, skill_root TEXT NOT NULL, content_hash TEXT,
+allowed_tools TEXT, compatibility TEXT, metadata_json TEXT,
+activated_at TEXT, created_by_thread TEXT,
+activation_count INTEGER DEFAULT 0, last_activated_at TEXT,
+retired_by TEXT, retired_reason TEXT,
+modified_at TEXT NOT NULL, deleted INTEGER DEFAULT 0
+```
+Index: unique partial index `idx_skills_name ON skills(name) WHERE deleted = 0`.
+IDs are deterministic: `deterministicUUID(BOUND_NAMESPACE, name)`. `status` is `"active"` or `"retired"`. `skill_root` is the VFS path under which the skill's `SKILL.md` and supporting files live. `allowed_tools` and `compatibility` are JSON arrays stored as TEXT.
 
 #### Local-Only Tables (not replicated)
 
-These three tables hold node-local state and are never included in sync payloads.
+These six tables hold node-local state and are never included in sync payloads.
 
 **`change_log`** — the transactional outbox
 ```sql
@@ -563,6 +598,37 @@ last_sent INTEGER NOT NULL, last_sync_at TEXT, sync_errors INTEGER DEFAULT 0
 key TEXT PRIMARY KEY, value TEXT NOT NULL
 ```
 Used to persist the `site_id` UUID across restarts.
+
+**`relay_outbox`** — pending relay messages to send to other hosts
+```sql
+id TEXT PRIMARY KEY, source_site_id TEXT, target_site_id TEXT NOT NULL,
+kind TEXT NOT NULL, ref_id TEXT, idempotency_key TEXT,
+payload TEXT NOT NULL, created_at TEXT NOT NULL,
+expires_at TEXT NOT NULL, delivered INTEGER DEFAULT 0,
+stream_id TEXT  -- added via idempotent ALTER TABLE
+```
+Index: on `(target_site_id, delivered)` where `delivered = 0`; partial index on `(stream_id)` where `stream_id IS NOT NULL`.
+
+**`relay_inbox`** — received relay messages awaiting processing
+```sql
+id TEXT PRIMARY KEY, source_site_id TEXT NOT NULL, kind TEXT NOT NULL,
+ref_id TEXT, idempotency_key TEXT,
+payload TEXT NOT NULL, expires_at TEXT NOT NULL,
+received_at TEXT NOT NULL, processed INTEGER DEFAULT 0,
+stream_id TEXT  -- added via idempotent ALTER TABLE
+```
+Index: on `(processed)` where `processed = 0`; partial index on `(stream_id, processed)` where `stream_id IS NOT NULL AND processed = 0`.
+
+**`relay_cycles`** — per-cycle relay metrics
+```sql
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+direction TEXT NOT NULL, peer_site_id TEXT NOT NULL,
+kind TEXT NOT NULL, delivery_method TEXT NOT NULL,
+latency_ms INTEGER, expired INTEGER NOT NULL DEFAULT 0,
+success INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+stream_id TEXT  -- added via idempotent ALTER TABLE
+```
+Index: on `(created_at)`. Use dedicated CRUD helpers (`writeOutbox`, `insertInbox`, `readUndelivered`, `markDelivered`, `readUnprocessed`, `markProcessed`) from `@bound/core` — do not use the change-log outbox pattern for these tables.
 
 ---
 
@@ -880,8 +946,13 @@ The `AppContext` object is intended to be passed as a dependency to subsystems r
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 thread_id TEXT, task_id TEXT, dag_root_id TEXT,
 model_id TEXT NOT NULL, tokens_in INTEGER NOT NULL, tokens_out INTEGER NOT NULL,
-cost_usd REAL, created_at TEXT NOT NULL
+cost_usd REAL, created_at TEXT NOT NULL,
+relay_target TEXT,        -- hostname of the remote inference provider (NULL for local)
+relay_latency_ms INTEGER, -- time-to-first-chunk for relay inference (NULL for local)
+tokens_cache_write INTEGER, -- prompt cache write tokens (NULL if not reported)
+tokens_cache_read INTEGER   -- prompt cache read tokens (NULL if not reported)
 ```
+The four additional columns (`relay_target`, `relay_latency_ms`, `tokens_cache_write`, `tokens_cache_read`) are added via idempotent `ALTER TABLE` statements at startup so the table remains backward-compatible with existing databases.
 
 **`daily_summary`** — materialized daily aggregates, updated in-place by `recordTurn`
 ```sql
@@ -909,13 +980,15 @@ interface TurnRecord {
   model_id: string;
   tokens_in: number;
   tokens_out: number;
+  tokens_cache_write: number | null;
+  tokens_cache_read: number | null;
   cost_usd?: number;
   created_at: string;   // ISO 8601
 }
 
-function recordTurn(db: Database, turn: TurnRecord): void
+function recordTurn(db: Database, turn: TurnRecord): number
 ```
-Inserts a row into `turns` and upserts the corresponding row in `daily_summary` within a single implicit transaction. The date key is derived by splitting `created_at` on `"T"`.
+Inserts a row into `turns` and upserts the corresponding row in `daily_summary` within a single implicit transaction. The date key is derived by splitting `created_at` on `"T"`. Returns the auto-incremented row ID of the inserted turn. `tokens_cache_write` and `tokens_cache_read` should be `null` when the backend does not report prompt caching statistics.
 
 ```typescript
 function getDailySpend(db: Database, date: string): number
@@ -934,6 +1007,8 @@ recordTurn(db, {
   model_id: "claude-3-7-sonnet-20250219",
   tokens_in: 1200,
   tokens_out: 340,
+  tokens_cache_write: 800,
+  tokens_cache_read: 400,
   cost_usd: 0.0048,
   created_at: new Date().toISOString(),
 });

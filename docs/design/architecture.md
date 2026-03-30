@@ -2,7 +2,7 @@
 
 ## Overview
 
-Bound is a distributed, model-agnostic personal agent system built as a Bun monorepo with 9 packages. All state lives in a SQLite database that replicates across hosts via an event-sourced sync protocol.
+Bound is a distributed, model-agnostic personal agent system built as a Bun monorepo with 10 packages. All state lives in a SQLite database that replicates across hosts via an event-sourced sync protocol.
 
 ```
                          +------------------+
@@ -53,9 +53,11 @@ shared  <--  core  <--  sync
        |      |          |         |
        +------+----------+---------+
                          |
-                      discord
+                      platforms
                          |
                         cli  (imports all)
+
+shared  <--  mcp-server              (standalone stdio binary)
 ```
 
 ## Data Flow
@@ -73,11 +75,16 @@ Agent Loop activates:
   HYDRATE_FS --> load files into virtual filesystem
   ASSEMBLE_CONTEXT --> 8-stage pipeline builds LLM prompt
   LLM_CALL --> stream response from configured backend
+  |
+  +-- (remote model) --> RELAY_STREAM --> poll relay_inbox for stream_chunk/stream_end
+  |
   PARSE_RESPONSE --> detect text vs tool_use
   |
   +-- text --> RESPONSE_PERSIST --> save assistant message
   |
   +-- tool_use --> TOOL_EXECUTE --> run command in sandbox
+                    |
+                    +-- (remote MCP tool) --> RELAY_WAIT --> poll relay_inbox for result
                     |
                     v
                   TOOL_PERSIST --> save tool_call + tool_result
@@ -136,12 +143,14 @@ Requester                          Hub                         Target
 ```
 
 Relay message kinds:
-- **Request kinds:** `tool_call`, `resource_read`, `prompt_invoke`, `cache_warm`, `cancel`, `inference`, `process`
+- **Request kinds:** `tool_call`, `resource_read`, `prompt_invoke`, `cache_warm`, `cancel`, `inference`, `process`, `intake`, `platform_deliver`, `event_broadcast`
 - **Response kinds:** `result`, `error`, `stream_chunk`, `stream_end`, `status_forward`
+
+`intake` routes inbound platform messages to the spoke with platform affinity. `platform_deliver` routes outbound assistant responses to the platform leader host. `event_broadcast` (target `*`) fans out custom events to all spokes.
 
 ## Database Schema
 
-16 STRICT tables in WAL mode:
+17 STRICT tables in WAL mode:
 
 | Table | Purpose | Reducer |
 |-------|---------|---------|
@@ -155,6 +164,7 @@ Relay message kinds:
 | `overlay_index` | Content-addressed overlay file index | LWW |
 | `cluster_config` | Cluster-wide settings (hub, emergency_stop) | LWW |
 | `advisories` | Cost/frequency/model advisories | LWW |
+| `skills` | Operator-defined skill prompts injected into agent context | LWW |
 | `change_log` | Event-sourced outbox for sync | Local only |
 | `sync_state` | Per-peer replication cursors | Local only |
 | `host_meta` | Local host identity (site_id, keys) | Local only |
@@ -178,13 +188,15 @@ The `relay_outbox` and `relay_inbox` tables carry a nullable `stream_id TEXT` co
 
 **Context assembly pipeline.** 8 stages transform raw message history into an optimized LLM prompt, handling purge substitution, tool pair sanitization, budget validation, persona injection, and stable orientation (available commands, model info, host identity).
 
-**MCP integration via @modelcontextprotocol/sdk.** Supports stdio and Streamable HTTP transports. Tools from connected servers are auto-generated as agent commands. Cross-host tool proxying via the relay transport (`tool_call` relay kind).
+**MCP integration via @modelcontextprotocol/sdk.** Supports stdio and Streamable HTTP transports. Tools from connected servers are exposed via subcommand dispatch: one `CommandDefinition` per MCP server (named by server, e.g. `github`), with a `subcommand` parameter selecting the individual tool. This reduces LLM tool definition count and simplifies cross-host delegation tracking. Cross-host tool proxying uses the relay transport (`tool_call` relay kind). The standalone `bound-mcp` binary (`@bound/mcp-server`) exposes a `bound_chat` MCP tool over stdio, allowing external MCP clients to drive the agent; it depends only on `@bound/shared`, `@modelcontextprotocol/sdk`, and `zod`.
 
 **Inference relay over store-and-forward.** Remote LLM inference uses the sync relay transport: the requester writes an `inference` relay message; the target streams `stream_chunk`/`stream_end` responses back via the same relay. The agent loop enters `RELAY_STREAM` state during remote inference, polling `relay_inbox` for chunks. Chunks carry a monotonic `seq` field for reordering. Failover retries on the next eligible host after a 120s per-host timeout.
 
-**Cluster-wide model resolution.** Each host advertises its available model IDs in `hosts.models`. `resolveModel()` checks local backends first, then queries remote hosts. `ModelSelector` in the web UI shows all cluster models with relay/offline annotations.
+**Cluster-wide model resolution.** Each host advertises its available models in `hosts.models` as `HostModelEntry[]` objects (with `id`, `tier`, and `capabilities`). `resolveModel()` is a three-phase pipeline (identify → qualify → dispatch) that supports capability-aware routing: if the primary backend lacks required capabilities (vision, tool_use, etc.), it re-routes to eligible alternatives. Returns `{ kind: "local" }`, `{ kind: "remote" }`, or `{ kind: "error" }` with `reason` (`"capability-mismatch"` | `"transient-unavailable"`), `unmetCapabilities`, and `earliestRecovery` fields. `ModelSelector` in the web UI shows all cluster models with relay/offline annotations.
 
 **Loop delegation.** When a message targets a remote model on a single host that also serves ≥50% of the thread's recent tool calls, the originator writes a `process` relay message instead of running a local `AgentLoop`. The target's `RelayProcessor` starts the loop, forwards status via `status_forward`, and the response syncs back.
+
+**Agent skills system.** Skills are operator-defined SKILL.md files stored in the `skills` table (synced via LWW). When a task's payload specifies a skill name, its body is injected as a system message into the context assembly pipeline. Skills include frontmatter with name, description, and activation triggers. Four built-in commands (`skill-activate`, `skill-list`, `skill-read`, `skill-retire`) manage the lifecycle. A bundled skill-authoring skill is seeded idempotently on startup via `seedSkillAuthoring()`.
 
 **Ed25519 cryptographic identity.** Each host's site_id is derived from its Ed25519 public key (first 16 bytes of SHA-256, hex). Keypair stored at `data/host.key` (mode 0600) and `data/host.pub`.
 

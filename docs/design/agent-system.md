@@ -146,13 +146,27 @@ The `alert` role is a reserved message role visible in the thread but excluded f
 
 ```typescript
 interface ContextParams {
-  db:           Database;
-  threadId:     string;
-  taskId?:      string;
-  userId:       string;
-  currentModel?: string;
-  noHistory?:   boolean;   // skip message retrieval (default: false)
-  configDir?:   string;    // persona search root (default: "config")
+  db:              Database;
+  threadId:        string;
+  taskId?:         string;
+  userId:          string;
+  currentModel?:   string;
+  contextWindow?:  number;                    // token budget (default: 8000)
+  noHistory?:      boolean;                   // skip message retrieval (default: false)
+  configDir?:      string;                    // persona search root (default: "config")
+  hostName?:       string;
+  siteId?:         string;
+  relayInfo?: {                               // injected for delegated loops
+    remoteHost: string;
+    localHost:  string;
+    model:      string;
+    provider:   string;
+  };
+  platformContext?: {                         // suppresses auto-deliver for platform relay loops
+    platform:   string;
+    toolNames?: string[];                     // tools the agent should call to send messages
+  };
+  targetCapabilities?: BackendCapabilities;   // enables in-place content block substitution
 }
 ```
 
@@ -192,20 +206,35 @@ Messages that were persisted during an active tool-use window (and therefore wou
 
 Each sanitized `Message` is mapped to an `LLMMessage`, dropping messages whose `id` is in `replacedIds` (from stage 2). The mapping copies `role`, `content`, `model_id`, and `host_origin` into the LLM message shape.
 
+**Stage 5b — CONTENT_SUBSTITUTION:** When `targetCapabilities` is set on `ContextParams`, a post-annotation pass substitutes content blocks that the target backend does not support. Image blocks (`type: "image"`) in messages are replaced with `[Image: description]` text annotations when the backend lacks `vision` support. Document blocks (`type: "document"`) are always replaced with their `text_representation`. `file_ref` image sources are resolved to inline base64 from the `files` table when vision is available. The substitution modifies only the assembled `LLMMessage[]` — persisted `messages.content` rows are never altered.
+
 ### Stage 6 — ASSEMBLY
 
 The final message array is composed in this order:
 
 1. **Base system prompt** — a hardcoded instruction establishing the assistant identity and tool-use posture.
 2. **Persona** (optional) — the contents of `{configDir}/persona.md` injected as a second `system` message. The persona file is loaded once and cached in module-level variables keyed by `configDir` path. If the file does not exist, this message is omitted.
-3. **Message history** — all annotated messages from stage 5.
-4. **Volatile context** — a trailing `system` message containing `User ID` and `Thread ID`. Omitted when `noHistory` is true.
+3. **Orientation** — a stable `system` message listing available commands, current model, and host identity.
+4. **Skill body** (optional) — if the task's `payload` JSON contains `"skill": "<name>"` and that skill is active in the `skills` table, its SKILL.md content is injected as an additional `system` message. This injection happens outside the `noHistory` guard so it applies even when history is suppressed. If the referenced skill is not active, a note is deferred to the volatile context instead.
+5. **Message history** — all annotated messages from stage 5b.
+6. **Volatile context** — a trailing `system` message appended when `noHistory` is false. Contains:
+   - `User ID` and `Thread ID`
+   - Relay info: when `relayInfo` is set, injects a line identifying the remote model, provider, and host (plus the originating local host).
+   - Platform silence semantics: when `platformContext` is set, explains that the platform user sees nothing unless the agent explicitly calls a platform send tool (e.g., `discord_send_message`). The specific tool name(s) are listed if `toolNames` is provided.
+   - Semantic memory entries (up to 10, most-recently-modified first).
+   - Cross-thread digest.
+   - Cross-thread file modification notifications.
+   - Active skill index: `SKILLS (N active):` followed by name and description for each active skill, ordered by `last_activated_at DESC`.
+   - Operator retirement notifications: skills retired by `"operator"` within the last 24 hours are listed with their reason.
+   - Inactive skill reference note: if the task payload referenced a skill that is not currently active, a warning is appended here.
 
 ```
 [ system: base prompt ]
-[ system: persona ]       <- only if config/persona.md exists
+[ system: persona ]        <- only if config/persona.md exists
+[ system: orientation ]    <- available commands, model, host identity
+[ system: skill body ]     <- only if task payload contains an active skill ref
 [ ... history messages ]
-[ system: volatile ctx ]  <- only when noHistory is false
+[ system: volatile ctx ]   <- only when noHistory is false
 ```
 
 ### Stage 7 — BUDGET_VALIDATION
@@ -233,7 +262,18 @@ config/
 
 ## Built-in Commands
 
-Commands are defined as `CommandDefinition` objects from `@bound/sandbox` and dispatched by the sandbox during tool execution. All 16 built-in commands are registered via `getAllCommands()` in `packages/agent/src/commands/index.ts`.
+Commands are defined as `CommandDefinition` objects from `@bound/sandbox` and dispatched by the sandbox during tool execution. All 20 built-in commands are registered via `getAllCommands()` in `packages/agent/src/commands/index.ts`.
+
+Each command receives a `CommandContext` at runtime. Relevant fields for built-in commands:
+
+| Field | Type | Description |
+|---|---|---|
+| `db` | `Database` | SQLite database handle |
+| `siteId` | `string` | Local site identity |
+| `threadId` | `string \| undefined` | Active thread (if any) |
+| `taskId` | `string \| undefined` | Active task (if any) |
+| `eventBus` | `TypedEventEmitter` | Application event bus |
+| `fs` | `IFileSystem \| undefined` | ClusterFs instance passed for commands that need VFS access (e.g., `skill-activate`) |
 
 Each command returns a `CommandResult`:
 
@@ -505,6 +545,71 @@ archive --older-than 30d
 
 ---
 
+### `skill-activate`
+
+Activate a skill from the virtual filesystem. Reads `/home/user/skills/{name}/SKILL.md`, parses its YAML frontmatter, validates limits (64 KB max file size, 500 body lines max, 20 active skills cap), persists all files under the skill root to the `files` table, and upserts the skill record into the `skills` table. Requires `ctx.fs` to be set.
+
+| Argument | Required | Description |
+|---|---|---|
+| `name` | yes | Skill directory name under `/home/user/skills/` (must match `^[a-z0-9]+(-[a-z0-9]+)*$`) |
+
+The skill ID is a deterministic UUID derived from the name using `BOUND_NAMESPACE`. If a skill with this ID already exists, its record is updated (re-activation increments `activation_count`). The `name` field in the SKILL.md frontmatter must match the directory name if present.
+
+```
+skill-activate --name "code-reviewer"
+```
+
+---
+
+### `skill-list`
+
+List skills with their status, activation count, last-used timestamp, and description.
+
+| Argument | Required | Description |
+|---|---|---|
+| `status` | no | Filter by status: `active` or `retired` (default: show all non-deleted) |
+| `verbose` | no | Show additional columns: `allowed_tools`, `compatibility`, `content_hash`, `retired_reason` |
+
+```
+skill-list
+skill-list --status active
+skill-list --status retired --verbose
+```
+
+---
+
+### `skill-read`
+
+Read the full SKILL.md content of a skill, along with a status header showing activation count, last-used timestamp, and content hash.
+
+| Argument | Required | Description |
+|---|---|---|
+| `name` | yes | Skill name |
+
+The content is read from the `files` table (path `/home/user/skills/{name}/SKILL.md`). Returns an error if the skill is not found in the `skills` table.
+
+```
+skill-read --name "code-reviewer"
+```
+
+---
+
+### `skill-retire`
+
+Retire (soft-update status to `"retired"`) a skill by name. After retiring, scans all tasks whose `payload` JSON contains `"skill": "{name}"` and creates an advisory for each, prompting the operator to update or remove the reference.
+
+| Argument | Required | Description |
+|---|---|---|
+| `name` | yes | Skill name to retire |
+| `reason` | no | Reason for retiring the skill |
+
+```
+skill-retire --name "code-reviewer"
+skill-retire --name "old-formatter" --reason "replaced by format-v2"
+```
+
+---
+
 ## Scheduler
 
 The `Scheduler` class drives all autonomous agent execution. It polls a task queue at a configurable interval and runs tasks via the `AgentLoop`.
@@ -711,34 +816,40 @@ For testing, `registerTool`, `registerResource`, and `registerPrompt` allow inje
 
 ### Auto-Generated Commands from MCP Tools
 
-`generateMCPCommands(clients, confirmGates)` iterates all connected clients and creates one `CommandDefinition` per exposed tool. The generated command name follows the pattern:
-
-```
-{server-name}-{tool-name}
-```
-
-For example, a server named `"search"` with a tool named `"web"` produces a command named `"search-web"`.
-
-Tools not in `allow_tools` (if configured) are silently skipped.
-
-**Confirmation gate:** If a tool appears in the server's `confirm` list and the current execution context has a `taskId` that does not start with `"interactive-"` (indicating autonomous mode), the command returns exit code 1 with an error message rather than invoking the tool.
+`generateMCPCommands(clients, confirmGates)` iterates all connected clients and creates **one `CommandDefinition` per MCP server** (not one per tool). The command name is the server name (e.g., `"github"`). It returns an `MCPCommandsResult`:
 
 ```typescript
-const mcpCommands = generateMCPCommands(clients, confirmGates);
+interface MCPCommandsResult {
+  commands:    CommandDefinition[];
+  serverNames: Set<string>; // server-level command names (excludes meta-commands)
+}
+```
+
+Each server command accepts a required `subcommand` parameter that selects the tool within that server (e.g., `github --subcommand create_issue`). The LLM ToolDefinition for each server uses `additionalProperties: true` so tool-specific arguments pass through alongside `subcommand`.
+
+When no `subcommand` is provided (or `subcommand="help"`), the command prints a listing of all available subcommands for that server. Tools not in `allow_tools` (if configured) are silently excluded from the dispatch table.
+
+**Confirmation gate:** If a subcommand appears in the server's `confirm` list and the current execution context has a `taskId` that does not start with `"interactive-"` (indicating autonomous mode), the command returns exit code 1 with an error message rather than invoking the tool.
+
+```typescript
+const { commands: mcpCommands, serverNames } = await generateMCPCommands(clients, confirmGates);
 const allCommands = addMCPCommands(getAllCommands(), mcpCommands);
+setCommandRegistry(allCommands, serverNames);
 ```
 
 ### Host MCP Info
 
-`updateHostMCPInfo(db, siteId, clients)` writes the current server names and flattened tool names to the `hosts` table:
+`updateHostMCPInfo(db, siteId, clients)` writes the current server names to the `hosts` table:
 
 ```sql
 UPDATE hosts
-SET mcp_servers = ?,    -- JSON array of server names
-    mcp_tools   = ?,    -- JSON array of "{server}-{tool}" strings
+SET mcp_servers = ?,    -- JSON array of all server names (connected or not)
+    mcp_tools   = ?,    -- JSON array of connected server names (flat string[])
     modified_at = ?
 WHERE site_id = ?
 ```
+
+Under the subcommand dispatch model, `mcp_tools` stores **server names** (e.g., `["github", "slack"]`), not individual `"{server}-{tool}"` strings. Delegation affinity is evaluated at the server level: `getDelegationTarget()` checks whether a candidate host's `mcp_tools` contains the server names used in the thread's recent tool calls, not the individual tool names. Only connected clients contribute to `mcp_tools`; `mcp_servers` lists all configured servers regardless of connection state.
 
 Call this after all clients have connected to keep the host record current.
 
@@ -981,18 +1092,35 @@ The agent package contains all requester-side and target-side relay logic for cr
 
 **Source:** `packages/agent/src/model-resolution.ts`
 
-`resolveModel(modelId, modelRouter, db, localSiteId)` returns a `ModelResolution` discriminated union:
+`resolveModel(modelId, modelRouter, db, localSiteId, requirements?)` uses a three-phase pipeline to return a `ModelResolution` discriminated union:
 
 ```typescript
+interface CapabilityRequirements {
+  vision?:          boolean;
+  tool_use?:        boolean;
+  system_prompt?:   boolean;
+  prompt_caching?:  boolean;
+}
+
 type ModelResolution =
-  | { kind: "local";  backend: LLMBackend; modelId: string }
-  | { kind: "remote"; hosts: EligibleHost[]; modelId: string }
-  | { kind: "error";  error: string };
+  | { kind: "local";  backend: LLMBackend; modelId: string; reResolved?: boolean }
+  | { kind: "remote"; hosts: EligibleHost[]; modelId: string; reResolved?: boolean }
+  | { kind: "error";  error: string;
+      reason?: "capability-mismatch" | "transient-unavailable";
+      unmetCapabilities?: string[];
+      alternatives?: string[];
+      earliestRecovery?: number };
 ```
 
-Resolution order: local backends first (via `modelRouter.tryGetBackend()`), then remote hosts (via `findEligibleHostsByModel()`). If `modelId` is undefined, the router's default ID is used.
+The three phases:
 
-`findEligibleHostsByModel(db, modelId, localSiteId)` queries the `hosts` table for hosts whose `models` JSON column contains the requested model ID. Hosts with `online_at` older than 5 minutes are excluded. Results are sorted by `online_at` descending (most recently seen first).
+- **identify** — checks local backends first (via `modelRouter.tryGetBackend()`), then remote hosts (via `findEligibleHostsByModel()`). If `modelId` is undefined, the router's default ID is used.
+- **qualify** — if `requirements` is provided, checks the identified backend's effective capabilities. On mismatch, attempts to re-route to an eligible alternative from `modelRouter.listEligible(requirements)`. Distinguishes permanent capability mismatch (no backend in the cluster has the required capability) from transient rate-limit unavailability (capable backends exist but are all rate-limited, `earliestRecovery` is set to the soonest recovery timestamp). When re-routing succeeds, the result carries `reResolved: true`. When `requirements` is omitted, this phase is a no-op (backward-compatible).
+- **dispatch** — returns the qualified resolution.
+
+The agent loop derives `CapabilityRequirements` before `ASSEMBLE_CONTEXT` on each turn: `tool_use` is set when tools are configured; `vision` is set when recent messages contain image content blocks. These requirements are passed to `resolveModel()`. On `LLM_CALL` 429/529 errors, the loop marks the backend rate-limited via `modelRouter.markRateLimited()`, using `LLMError.retryAfterMs` from the parsed `Retry-After` header or a 60-second default.
+
+`findEligibleHostsByModel(db, modelId, localSiteId, requirements?)` queries the `hosts` table for hosts whose `models` JSON column contains the requested model ID. Hosts with `online_at` older than 5 minutes are excluded. When `requirements` is provided, hosts with verified capability metadata are filtered to those meeting all requirements; unverified hosts are included as a fallback. Results are sorted by tier then `online_at` descending.
 
 ### `RELAY_STREAM` — Remote Inference
 
@@ -1026,17 +1154,24 @@ When a tool call targets a remote host (detected via `isRelayRequest()` in the M
 
 | Kind | Handler | Behaviour |
 |------|---------|-----------|
-| `tool_call` | `executeMcpTool()` | Calls local MCP server, writes `result`/`error` |
-| `resource_read` | `executeMcpResource()` | Reads MCP resource |
-| `prompt_invoke` | `executeMcpPrompt()` | Invokes MCP prompt |
+| `tool_call` | `executeToolCall()` | Calls local MCP server via subcommand dispatch, writes `result`/`error` |
+| `resource_read` | `executeResourceRead()` | Reads MCP resource |
+| `prompt_invoke` | `executePromptInvoke()` | Invokes MCP prompt |
 | `inference` | `executeInference()` | Runs local `LLMBackend.chat()`, writes streaming `stream_chunk`/`stream_end` outbox entries |
 | `process` | `executeProcess()` | Starts a full `AgentLoop` on the delegated thread, emits `status_forward` outbox entries |
 | `status_forward` | (local event) | Emits `status:forward` event so the web server can serve forwarded status |
 | `cancel` | (first-pass) | Aborts active inference stream via stored `AbortController` |
+| `intake` | `selectIntakeHost()` | Routes inbound platform messages to the appropriate spoke via a four-tier algorithm: thread affinity → model match → tool match → least-loaded fallback. Writes a `process` outbox entry targeting the selected host. |
+| `platform_deliver` | (local event) | Emits `platform:deliver` on the local event bus so the platform connector delivers the message to the external platform. |
+| `event_broadcast` | (local event) | Fires the named event locally on the event bus (target `*`); sync routes broadcast entries to all spokes except the source. |
 
 **`executeInference` buffering:** Chunks are flushed to outbox at 200ms timer OR 4KB buffer threshold, whichever fires first. The final flush is always `stream_end`. Each flush records a `relay_cycles` row. Cancel aborts the `for await` loop via `AbortController.signal.aborted` and writes an `error` response.
 
-**Constructor:** `new RelayProcessor(db, siteId, mcpClients, modelRouter, keyringSiteIds, logger, eventBus, appCtx?, relayConfig?)`
+**`executeProcess` — platform tools:** When `payload.platform` is set and a `PlatformConnectorRegistry` has been injected, `executeProcess()` calls `getPlatformTools()` on the matching connector and passes the result into the delegated `AgentLoopConfig`. This allows the delegated loop to call platform tools (e.g., `discord_send_message`) explicitly. After the loop completes, a `platform:deliver` event with empty content is emitted to stop the typing indicator regardless of whether the agent produced output. When `payload.platform` is not set, the legacy auto-deliver path finds the last assistant message and emits it.
+
+**`setPlatformConnectorRegistry(registry)`:** Wired at startup (after `PlatformConnectorRegistry` is created) to avoid circular initialization order. The `setAgentLoopFactory(factory)` method is wired similarly.
+
+**Constructor:** `new RelayProcessor(db, siteId, mcpClients, modelRouter, keyringSiteIds, logger, eventBus, appCtx?, relayConfig?, threadAffinityMap?, agentLoopFactory?)`
 
 ### Loop Delegation
 

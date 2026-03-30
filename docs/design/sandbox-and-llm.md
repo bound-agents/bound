@@ -39,9 +39,14 @@ const fs = createClusterFs({
 
 #### Snapshotting and diffing
 
-The OCC (Optimistic Concurrency Control) persistence model relies on before/after snapshots of `/home/user`. Two functions handle this:
+The OCC (Optimistic Concurrency Control) persistence model relies on before/after snapshots of the in-memory workspace. Two functions handle this:
 
-- **`snapshotWorkspace(fs)`** — Walks all paths under `/home/user/` in the given filesystem and returns a `Map<string, string>` of `path -> SHA-256 hash`. Directories and unreadable entries are skipped.
+- **`snapshotWorkspace(fs, options?)`** — Returns a `Map<string, string>` of `path -> SHA-256 hash`. When `options.paths` is provided, only those specific paths are snapshotted — used by the agent loop to scope pre-execution snapshots to in-memory (agent-written) files only, avoiding unnecessary hashing of overlay content. Without `paths`, falls back to scanning all `/home/user/` paths via `fs.getAllPaths()`. Directories and unreadable entries are skipped.
+
+  ```typescript
+  snapshotWorkspace(fs: IFileSystem, options?: { paths?: string[] }): Promise<Map<string, string>>
+  ```
+
 - **`diffWorkspace(before, after)`** — Synchronously compares two snapshots and returns a `FileChange[]` listing which paths were `"created"`, `"modified"`, or `"deleted"`. No filesystem access is needed; it operates purely on the hash maps.
 - **`diffWorkspaceAsync(before, after, fs?)`** — Same diff logic, but if an `IFileSystem` is provided it also reads each changed file and populates the `content` and `sizeBytes` fields on each `FileChange`. This is the variant used by the persistence layer.
 
@@ -58,8 +63,22 @@ interface FileChange {
 
 Two helpers restore previously persisted files into a fresh filesystem at startup:
 
-- **`hydrateWorkspace(fs, db)`** — Loads all non-deleted rows from the `files` table whose `path` starts with `/home/user/` and writes them into `fs`.
+- **`hydrateWorkspace(fs, db)`** — Loads all non-deleted rows from the `files` table whose `path` does NOT start with `/mnt/` and writes them into `fs`. This covers all agent-written paths (including any outside `/home/user/`), allowing the VFS to persist arbitrary paths across restarts.
+
+  ```typescript
+  hydrateWorkspace(fs: MountableFs, db: Database): Promise<void>
+  ```
+
 - **`hydrateRemoteCache(fs, db, hostName)`** — Loads rows whose path matches `/mnt/<hostName>/%`. Used to warm the in-memory cache for a remote worker's file tree.
+
+#### Per-loop snapshot isolation
+
+The bootstrap sequence creates a `loopSandbox` wrapper per `AgentLoop` invocation via `agentLoopFactory`. Each invocation receives its own closure over the `ClusterFsResult`, providing two lifecycle hooks:
+
+- **`capturePreSnapshot(paths?)`** — Called at the HYDRATE_FS agent loop state. Calls `snapshotWorkspace` scoped to the provided `paths` (the set of in-memory paths returned by `ClusterFsResult.getInMemoryPaths()`), capturing a before-image of the VFS for that specific loop run.
+- **`persistFs()`** — Called at the FS_PERSIST agent loop state. Takes a post-execution snapshot of the same paths, diffs it against the pre-snapshot captured above, and calls `persistWorkspaceChanges` to flush any changes to the `files` table.
+
+Because each loop invocation gets its own snapshot state via a closure, concurrent agent loops running against the same `ClusterFs` do not interfere with each other's pre/post snapshots.
 
 ---
 
@@ -248,8 +267,8 @@ const clusterFs = createClusterFs({
 // 2. Hydrate from the database so prior state is available
 await hydrateWorkspace(clusterFs, db);
 
-// 3. Take a pre-snapshot before the agent runs
-const preSnapshot = await snapshotWorkspace(clusterFs);
+// 3. Take a pre-snapshot before the agent runs (scope to in-memory paths only)
+const preSnapshot = await snapshotWorkspace(clusterFs, { paths: clusterFs.getInMemoryPaths() });
 
 // 4. Register commands
 const commands = createDefineCommands(definitions, context);
@@ -267,7 +286,7 @@ const sandbox = await createSandbox({
 await sandbox.exec('echo "hello from the sandbox"');
 
 // 7. Persist any changes the agent made
-const postSnapshot = await snapshotWorkspace(clusterFs);
+const postSnapshot = await snapshotWorkspace(clusterFs, { paths: clusterFs.getInMemoryPaths() });
 const result = await persistWorkspaceChanges(
   db, siteId, preSnapshot, postSnapshot, eventBus, {}, clusterFs
 );
@@ -353,17 +372,18 @@ Every driver is an `LLMBackend`. `chat` returns an async iterable so callers can
 
 ```typescript
 interface ChatParams {
-  model: string;
+  model?: string;
   messages: LLMMessage[];
   tools?: ToolDefinition[];
   max_tokens?: number;
   temperature?: number;
   system?: string;
   cache_breakpoints?: number[];
+  signal?: AbortSignal;
 }
 ```
 
-`cache_breakpoints` is an array of message indices at which to insert Anthropic prompt caching markers. It is ignored by drivers that do not support prompt caching.
+`model` is optional; if omitted, the driver uses the model from its constructor config. `cache_breakpoints` is an array of message indices at which to insert Anthropic prompt caching markers — ignored by drivers that do not support prompt caching. `signal` is an optional `AbortSignal`; all four drivers accept it and will abort the in-progress stream when it fires.
 
 #### LLMMessage
 
@@ -382,14 +402,22 @@ type LLMMessage = {
 #### ContentBlock
 
 ```typescript
-type ContentBlock = {
-  type: "text" | "tool_use";
-  text?: string;
-  id?: string;
-  name?: string;
-  input?: Record<string, unknown>;
-};
+type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
+  | { type: "image"; source: ImageSource; description?: string }
+  | { type: "document"; source: ImageSource; text_representation: string; title?: string };
 ```
+
+#### ImageSource
+
+```typescript
+type ImageSource =
+  | { type: "base64"; media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp"; data: string }
+  | { type: "file_ref"; file_id: string };
+```
+
+`base64` is used for inline images under 1 MB. `file_ref` is used when an image is stored in the `files` table (at or above 1 MB), referencing it by its file ID rather than embedding the data directly. The context assembly pipeline substitutes unsupported blocks when `ContextParams.targetCapabilities` is set: image blocks become `[Image: description]` text annotations for non-vision backends, and document blocks always become their `text_representation` regardless of backend.
 
 #### StreamChunk
 
@@ -397,15 +425,23 @@ All drivers emit the same discriminated union:
 
 ```typescript
 type StreamChunk =
-  | { type: "text";          content: string }
+  | { type: "text";           content: string }
   | { type: "tool_use_start"; id: string; name: string }
   | { type: "tool_use_args";  id: string; partial_json: string }
   | { type: "tool_use_end";   id: string }
-  | { type: "done";           usage: { input_tokens: number; output_tokens: number } }
-  | { type: "error";          error: string };
+  | { type: "done"; usage: {
+      input_tokens: number;
+      output_tokens: number;
+      cache_write_tokens: number | null;
+      cache_read_tokens: number | null;
+      estimated: boolean;
+    }}
+  | { type: "error"; error: string };
 ```
 
 A complete tool call sequence is: `tool_use_start` -> one or more `tool_use_args` -> `tool_use_end`. The stream always terminates with `done`.
+
+`cache_write_tokens` and `cache_read_tokens` are only populated by the AnthropicDriver and BedrockDriver when prompt caching is active; other drivers set them to `null`. `estimated: true` indicates the values were estimated rather than returned directly by the API.
 
 #### BackendCapabilities
 
@@ -431,11 +467,12 @@ class LLMError extends Error {
     public provider: string,
     public statusCode?: number,
     public originalError?: Error,
+    public retryAfterMs?: number,
   )
 }
 ```
 
-All drivers throw `LLMError` on connection failures and non-2xx HTTP responses.
+All drivers throw `LLMError` on connection failures and non-2xx HTTP responses. `retryAfterMs` is populated by `checkHttpError` in `error-utils.ts`, which parses the `Retry-After` header on 429 and 529 responses (converting seconds to milliseconds, defaulting to 60 000 ms if the header is absent or non-numeric). The agent loop passes this value to `modelRouter.markRateLimited()` when retrying with a different backend.
 
 ---
 
@@ -556,6 +593,7 @@ interface BackendConfig {
   model: string;
   baseUrl?: string;
   contextWindow?: number;
+  capabilities?: Partial<BackendCapabilities>;  // merges over driver-reported capabilities
   [key: string]: unknown;  // provider-specific fields, e.g. apiKey, region
 }
 
@@ -605,8 +643,15 @@ const router = createModelRouter({
 | Method | Description |
 |---|---|
 | `getBackend(modelId?)` | Returns the backend registered under `modelId`, or the default backend if `modelId` is omitted. Throws if the ID is not found. |
+| `tryGetBackend(modelId)` | Returns the backend registered under `modelId`, or `null` if not found (non-throwing variant). |
 | `getDefault()` | Returns the default backend directly. |
-| `listBackends()` | Returns `BackendInfo[]` — an array of `{ id, capabilities }` for every registered backend. |
+| `getDefaultId()` | Returns the default backend ID string. |
+| `listBackends()` | Returns `BackendInfo[]` — an array of `{ id, capabilities }` for every registered backend, using effective capabilities (driver baseline merged with config override). |
+| `listEligible(requirements?)` | Returns backends that are not currently rate-limited, optionally filtered by `CapabilityRequirements`. Sorted by registration order. |
+| `markRateLimited(id, retryAfterMs)` | Marks a backend as rate-limited for `retryAfterMs` milliseconds. The backend is excluded from `listEligible()` until the window expires. |
+| `isRateLimited(id)` | Returns `true` if the backend is currently rate-limited. Automatically clears expired entries. |
+| `getEarliestCapableRecovery(requirements?)` | Returns the earliest expiry timestamp (ms) among rate-limited backends that satisfy `requirements`, or `null` if none exists. Used by `resolveModel()` to populate `earliestRecovery` on transient-unavailable errors. |
+| `getEffectiveCapabilities(id)` | Returns the merged capabilities (driver-reported baseline plus any config `capabilities` override) for the given backend ID, or `null` if not found. |
 
 #### Streaming a response
 

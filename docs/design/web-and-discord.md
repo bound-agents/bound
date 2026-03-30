@@ -2,19 +2,6 @@
 
 This document covers the `@bound/web` and `@bound/platforms` packages. The web package provides a local HTTP/WebSocket API server and a Svelte single-page application with a Tokyo Metro-inspired visual design (Nunito Sans + IBM Plex Mono typography, 10-line color palette). The platforms package connects the agent system to external messaging platforms (Discord, and future connectors) via a relay-based intake pipeline and cluster-wide leader election.
 
-### Recent changes
-
-- **Tokyo Metro visual design** with authentic 10-line color palette, station-style navigation, and Beck-inspired transit map
-- **`POST /api/mcp-proxy`** endpoint for cross-host MCP tool proxying with Ed25519 signed request auth
-- **`GET /api/status/models`** returns real model backends from config (not hardcoded)
-- **`GET /api/threads/:id/status`** queries actual running tasks instead of returning hardcoded `active: false`
-- **Host validation** accepts `localhost`, `127.0.0.1`, and `[::1]`
-- **Thinking indicator** (bouncing dots) while the LLM generates a response
-- **Viewport-pinned layout** — messages scroll independently, input fixed at bottom
-- **Embedded SPA** — web assets are embedded into the compiled binary via `embedded-assets.ts`
-
----
-
 ## Table of Contents
 
 1. [@bound/web Server](#boundweb-server)
@@ -56,9 +43,9 @@ interface WebServer {
 }
 ```
 
-Before starting, it checks that `dist/client/index.html` exists and throws if the Svelte SPA has not been built (`bun run build` inside `packages/web`).
+The server is launched with `Bun.serve` and binds to `localhost` by default. Set `BIND_HOST=0.0.0.0` for hub nodes that must accept external spoke connections. The `fetch` handler intercepts upgrade requests arriving on the `/ws` path and hands them to the Bun WebSocket subsystem; all other requests are forwarded to the Hono application. Stopping the server calls `Bun.Server.stop(true)`, which closes all active connections.
 
-The server is launched with `Bun.serve`. The `fetch` handler intercepts upgrade requests arriving on the `/ws` path and hands them to the Bun WebSocket subsystem; all other requests are forwarded to the Hono application. Stopping the server calls `Bun.Server.stop(true)`, which closes all active connections.
+The SPA is embedded into the compiled binary via `scripts/embed-assets.ts`. At runtime, `createApp` attempts to import the `embedded-assets` module; if embedded assets are present they are served directly from in-memory byte arrays, so `dist/client/index.html` does not need to exist on disk. If no embedded assets are found, the server falls back to `serveStatic` from `dist/client/`.
 
 ### Host Header Validation
 
@@ -72,11 +59,13 @@ localhost
 
 Any request whose `Host` header resolves to a hostname not in that list is rejected with `400 Bad Request` and the JSON body `{ "error": "Invalid Host header" }`. Requests with no `Host` header pass through unchanged.
 
-This is the primary mechanism that prevents the local API from being reachable by remote callers via DNS rebinding or forwarded proxies.
+The `/sync/*` routes and `POST /api/relay-deliver` are **exempt** from this check. These routes carry Ed25519 signature authentication and must be reachable by remote spokes connecting to a hub through a reverse proxy.
+
+This exemption aside, host header validation is the primary mechanism that prevents the local API from being reachable by remote callers via DNS rebinding or forwarded proxies.
 
 ### API Route Reference
 
-All routes are mounted under `/api` and registered in `packages/web/src/server/routes/`. Static SPA assets are served from `dist/client/` and are mounted after API routes so the API always takes precedence.
+All routes are mounted under `/api` and registered in `packages/web/src/server/routes/`. Static SPA assets are served after API routes so the API always takes precedence.
 
 #### Threads — `/api/threads`
 
@@ -86,19 +75,23 @@ All routes are mounted under `/api` and registered in `packages/web/src/server/r
 | POST | `/api/threads` | Create a new thread. |
 | GET | `/api/threads/:id` | Fetch a single thread by ID. |
 | GET | `/api/threads/:id/status` | Fetch the current agent status for a thread. |
+| POST | `/api/mcp/threads` | Create a thread owned by the deterministic `mcp` system user (interface `"mcp"`). Used by `bound-mcp` stdio server. Response `201`: `{ thread_id: string }`. |
 
 **GET /api/threads** — Response: `Thread[]`
 
-**POST /api/threads** — No request body required. Inserts a new row with `interface = "web"`, `host_origin = "localhost:3000"`, a random `color` in `0..9`, and `title = "New Thread"`. Response `201`: `Thread`.
+**POST /api/threads** — No request body required. Inserts a new row with `interface = "web"`, `host_origin = "localhost:3000"`, a `color` cycling from the last thread's value (mod 10), and an empty `title`. Response `201`: `Thread`.
 
 **GET /api/threads/:id** — Response `200`: `Thread`. Response `404`: `{ "error": "Thread not found" }`.
 
-**GET /api/threads/:id/status** — Verifies the thread exists, then returns a static placeholder object. Response `200`:
-```json
+**GET /api/threads/:id/status** — Verifies the thread exists, checks for a running task, and merges any forwarded status from delegated loops. Returns `{ active: boolean; state: string | null; detail: string | null; tokens: number; model: string | null }`. When the thread has a delegated loop running on a remote host, `state` reflects the forwarded status from `StatusForwardPayload` events cached in `statusForwardCache`. Response `200`:
+
+```ts
 {
-  "active": false,
-  "state": null,
-  "model": "gpt-4"
+  active: boolean;
+  state: string | null;   // e.g. "thinking", "tool_call", "running", or null
+  detail: string | null;  // forwarded detail from delegated loop, or null
+  tokens: number;         // forwarded token count from delegated loop, or 0
+  model: string | null;
 }
 ```
 
@@ -107,7 +100,7 @@ The `Thread` shape:
 interface Thread {
   id: string;
   user_id: string;
-  interface: "web" | "discord";
+  interface: "web" | "discord" | "mcp";
   host_origin: string;
   color: number;           // 0–9, index into a 10-color palette
   title: string;
@@ -164,6 +157,7 @@ interface Message {
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/status` | Return host uptime and active loop count. |
+| GET | `/api/status/models` | Return all cluster-wide models (local and remote). |
 | POST | `/api/status/cancel/:threadId` | Cancel the agent loop running on the given thread. |
 
 **GET /api/status** — Reads `process.uptime()` and counts tasks with `status = 'running'`. Response `200`:
@@ -176,7 +170,22 @@ interface Message {
 }
 ```
 
-**POST /api/status/cancel/:threadId** — Verifies the thread exists, then emits `agent:cancel` with `{ thread_id }` on the event bus so the agent loop can observe the signal and stop. Response `200`:
+**GET /api/status/models** — Returns all models visible across the cluster. Local models come from `modelsConfig`; remote models are read from the `hosts` table (excluding the local host by `site_id`). A remote model is annotated `"offline?"` if the host's `online_at` timestamp is more than 5 minutes old. Response `200`:
+```ts
+{
+  models: Array<{
+    id: string;
+    provider: string;        // "remote" for relay-sourced models
+    host: string;
+    via: "local" | "relay";
+    status: "local" | "online" | "offline?";
+  }>;
+  default: string;
+}
+```
+The same model ID may appear multiple times if it is available on more than one host — each host gets a separate entry.
+
+**POST /api/status/cancel/:threadId** — Verifies the thread exists, persists a cancellation system message, then emits `agent:cancel` with `{ thread_id }` on the event bus so the agent loop can observe the signal and stop. If the thread has an active delegation, a `cancel` relay is written to `relay_outbox` targeting the remote host. Response `200`:
 ```json
 {
   "cancelled": true,
@@ -191,6 +200,22 @@ interface Message {
 | GET | `/api/tasks` | List tasks, with an optional `status` query parameter filter. |
 
 **GET /api/tasks** — Accepts an optional `?status=` query parameter (`pending`, `running`, `completed`, `failed`). Returns all non-deleted tasks ordered by `created_at` descending. Response `200`: `Task[]`.
+
+#### Relay — `/api/relay-deliver`
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/relay-deliver` | Receives eager-pushed relay messages from the hub (Ed25519 signed). Exempt from host header validation. |
+
+This endpoint is used when the hub pushes relay messages directly to spokes with a known `sync_url`, bypassing the next scheduled sync cycle. The request body is an Ed25519-signed relay payload; the sync package verifies the signature.
+
+#### Webhook Ingress — `/hooks`
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/hooks/:platform` | Webhook ingress for exclusive-delivery platform connectors. Emits `platform:webhook` event; signature verification is handled by each connector's `handleWebhookPayload()`. Exempt from host header validation. |
+
+The raw body and all headers are forwarded to `platform:webhook` on the eventBus unchanged. The `PlatformConnectorRegistry` routes this event to the leader connector matching `payload.platform`.
 
 #### Error Shape
 
@@ -257,7 +282,7 @@ Only clients whose connection `readyState` equals `WebSocket.OPEN` receive frame
 
 ## @bound/web Client
 
-The client is a Svelte 5 single-page application built with Vite and served as static files from `dist/client/`.
+The client is a Svelte 5 single-page application built with Vite and embedded into the compiled binary. In development, assets can also be served from `dist/client/` via the static fallback.
 
 ### Entry Point and Routing
 
@@ -334,7 +359,7 @@ The `role` is applied as a CSS class on the outer div, giving each role a distin
 
 #### ModelSelector
 
-`components/ModelSelector.svelte` renders a `<select>` element pre-populated with three model options (`gpt-4`, `gpt-3.5-turbo`, `claude-3-opus`). The selected value is bound to a local `selectedModel` variable. An `onchange` handler is wired up but does not yet dispatch the selection to the server.
+`components/ModelSelector.svelte` renders a `<select>` element populated from `GET /api/status/models`. On mount the component fetches the models list and sets the initial selection to `data.default`. Each option displays the model ID; relay models show their host name and an `"offline?"` annotation when stale. When the selection changes, `handleChange` strips any `@host` suffix and writes the model ID to `modelStore`, which other components subscribe to in order to send the selected model to the server.
 
 ### API Client
 
@@ -384,11 +409,16 @@ interface PlatformConnector {
   disconnect(): Promise<void>;
   deliver(threadId: string, messageId: string, content: string, attachments?: unknown[]): Promise<void>;
   handleWebhookPayload?(rawBody: string, headers: Record<string, string>): Promise<void>;
+  getPlatformTools?(
+    threadId: string,
+    readFileFn?: (path: string) => Promise<Uint8Array>,
+  ): Map<string, { toolDefinition: ToolDefinition; execute: (input: Record<string, unknown>) => Promise<string> }>;
 }
 ```
 
 - **`broadcast`** connectors maintain a persistent gateway connection (Discord). Only the elected leader connects.
 - **`exclusive`** connectors receive events via HTTP webhook (Telegram, Slack Events API). The new leader re-registers the webhook URL on failover.
+- **`getPlatformTools`** is optional. When a `process` relay payload has `platform` set, the `RelayProcessor` calls `getPlatformTools()` on the matching connector and injects those tools into the delegated agent loop's config. This is how platform-scoped tools (e.g. `discord_send_message`) reach loops running on remote hosts. The `readFileFn` parameter, when provided, lets the tool read files from the virtual filesystem rather than the host OS filesystem.
 
 ### PlatformLeaderElection
 
@@ -416,6 +446,8 @@ registry.stop();
 
 Only the leader connector for a given platform handles `platform:deliver` and `platform:webhook` events. Non-leaders ignore them.
 
+After startup, the registry is wired into the `RelayProcessor` via `setPlatformConnectorRegistry()` so the processor can look up connectors when dispatching `platform_deliver` relay messages and injecting platform tools into delegated loops.
+
 ### DiscordConnector
 
 `DiscordConnector` migrates the old `DiscordBot` behavior to the new connector contract:
@@ -432,13 +464,16 @@ Only the leader connector for a given platform handles `platform:deliver` and `p
 1. Allowlist check against `config.allowed_users` — non-allowlisted users silently dropped.
 2. `findOrCreateUser` looks up by `json_extract(platform_ids, '$.discord') = ?`, creates if absent.
 3. `findOrCreateThread` finds or creates a thread with `interface = 'discord'` for that user.
-4. Persists the message via `insertRow()` with `role = "user"`.
-5. Writes an `intake` relay to `relay_outbox` with `target_site_id = hub`. The hub's `RelayProcessor` routes this to the appropriate spoke via the four-tier intake routing algorithm (thread affinity → model match → tool match → least-loaded).
+4. Image attachments are downloaded from Discord CDN URLs (30s timeout per attachment). Images smaller than 1 MB are stored inline as base64 `ContentBlock` image entries. Images 1 MB or larger are written to the `files` table and referenced via a `file_ref` source (storing only the file ID in the message). Non-image attachments are skipped.
+5. Persists the message via `insertRow()` with `role = "user"`. When image blocks were added, `content` is stored as a JSON-serialised `ContentBlock[]`; otherwise plain text is stored for backward compatibility.
+6. Writes an `intake` relay to `relay_outbox` with `target_site_id = hub`. The hub's `RelayProcessor` routes this to the appropriate spoke via the four-tier intake routing algorithm (thread affinity → model match → tool match → least-loaded).
 
 **Outbound flow (deliver called):**
 1. Looks up `platform_ids.discord` for the thread's user.
 2. Opens a DM channel via the Discord client.
-3. Chunks content at Discord's 2000-character limit and sends each chunk.
+3. If attachments are present, sends content and files in a single Discord message. Otherwise, chunks text content at Discord's 2000-character limit and sends each chunk sequentially.
+
+**Platform tools:** `getPlatformTools(threadId, readFileFn?)` returns a single `discord_send_message` tool. The tool validates that `content` does not exceed 2000 characters, loads any requested file attachment paths (using `readFileFn` if provided, falling back to `node:fs/promises`), and calls `deliver()`. If any attachment path cannot be read, an error string is returned and no message is sent (fail-fast, no partial delivery).
 
 ### Webhook Ingress
 
