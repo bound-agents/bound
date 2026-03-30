@@ -25,11 +25,17 @@ export class ModelRouter {
 	constructor(
 		backends: Map<string, LLMBackend>,
 		defaultId: string,
-		effectiveCaps: Map<string, BackendCapabilities>,
+		effectiveCaps?: Map<string, BackendCapabilities>,
 	) {
 		this.backends = backends;
 		this.defaultId = defaultId;
-		this.effectiveCaps = effectiveCaps;
+		this.effectiveCaps = effectiveCaps ??
+			new Map(
+				Array.from(backends.entries()).map(([id, b]) => [
+					id,
+					b.capabilities(),
+				]),
+			);
 		this.rateLimits = new Map();
 	}
 

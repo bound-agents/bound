@@ -205,7 +205,16 @@ describe("Phase 4: capability management", () => {
 	// AC3.4 — no capabilities field falls back to driver baseline
 	it("uses driver baseline when no capabilities override in config (AC3.4)", () => {
 		const router = createModelRouter({
-			backends: [{ id: "test", provider: "ollama", model: "llama3", baseUrl: "http://localhost:11434", contextWindow: 4096, tier: 1 }],
+			backends: [
+				{
+					id: "test",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+			],
 			default: "test",
 		});
 		const caps = router.getEffectiveCapabilities("test");
@@ -217,15 +226,17 @@ describe("Phase 4: capability management", () => {
 	// AC3.1 — capabilities override adds vision: true to an Ollama backend
 	it("merges capabilities override with driver baseline (AC3.1)", () => {
 		const router = createModelRouter({
-			backends: [{
-				id: "test",
-				provider: "ollama",
-				model: "llava",
-				baseUrl: "http://localhost:11434",
-				contextWindow: 4096,
-				tier: 1,
-				capabilities: { vision: true },
-			}],
+			backends: [
+				{
+					id: "test",
+					provider: "ollama",
+					model: "llava",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: true },
+				},
+			],
 			default: "test",
 		});
 		const caps = router.getEffectiveCapabilities("test");
@@ -236,15 +247,17 @@ describe("Phase 4: capability management", () => {
 	// AC3.2 — unspecified fields retain provider default
 	it("unspecified override fields retain provider defaults (AC3.2)", () => {
 		const router = createModelRouter({
-			backends: [{
-				id: "test",
-				provider: "ollama",
-				model: "llama3",
-				baseUrl: "http://localhost:11434",
-				contextWindow: 4096,
-				tier: 1,
-				capabilities: { vision: true }, // Only override vision
-			}],
+			backends: [
+				{
+					id: "test",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: true }, // Only override vision
+				},
+			],
 			default: "test",
 		});
 		const caps = router.getEffectiveCapabilities("test");
@@ -258,15 +271,17 @@ describe("Phase 4: capability management", () => {
 	it("can suppress vision on a vision-capable provider (AC3.3)", () => {
 		// Use Anthropic (which has vision: true by default in its capabilities())
 		const router = createModelRouter({
-			backends: [{
-				id: "claude",
-				provider: "anthropic",
-				model: "claude-3-opus",
-				apiKey: "test-key",
-				contextWindow: 200000,
-				tier: 1,
-				capabilities: { vision: false }, // Suppress vision
-			}],
+			backends: [
+				{
+					id: "claude",
+					provider: "anthropic",
+					model: "claude-3-opus",
+					apiKey: "test-key",
+					contextWindow: 200000,
+					tier: 1,
+					capabilities: { vision: false }, // Suppress vision
+				},
+			],
 			default: "claude",
 		});
 		const caps = router.getEffectiveCapabilities("claude");
@@ -276,7 +291,16 @@ describe("Phase 4: capability management", () => {
 	// AC5.1 — markRateLimited + isRateLimited round-trip
 	it("markRateLimited + isRateLimited round-trip (AC5.1)", () => {
 		const router = createModelRouter({
-			backends: [{ id: "test", provider: "ollama", model: "llama3", baseUrl: "http://localhost:11434", contextWindow: 4096, tier: 1 }],
+			backends: [
+				{
+					id: "test",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+			],
 			default: "test",
 		});
 		expect(router.isRateLimited("test")).toBe(false);
@@ -286,7 +310,16 @@ describe("Phase 4: capability management", () => {
 
 	it("isRateLimited returns false after expiry", async () => {
 		const router = createModelRouter({
-			backends: [{ id: "test", provider: "ollama", model: "llama3", baseUrl: "http://localhost:11434", contextWindow: 4096, tier: 1 }],
+			backends: [
+				{
+					id: "test",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+			],
 			default: "test",
 		});
 		router.markRateLimited("test", 1); // 1ms — expires immediately
@@ -298,8 +331,22 @@ describe("Phase 4: capability management", () => {
 	it("listEligible excludes rate-limited backends (AC5.4)", () => {
 		const router = createModelRouter({
 			backends: [
-				{ id: "a", provider: "ollama", model: "llama3", baseUrl: "http://localhost:11434", contextWindow: 4096, tier: 1 },
-				{ id: "b", provider: "ollama", model: "llama3", baseUrl: "http://localhost:11434", contextWindow: 4096, tier: 2 },
+				{
+					id: "a",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+				{
+					id: "b",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 2,
+				},
 			],
 			default: "a",
 		});
@@ -312,8 +359,23 @@ describe("Phase 4: capability management", () => {
 	it("listEligible excludes backends lacking required capability", () => {
 		const router = createModelRouter({
 			backends: [
-				{ id: "vision-backend", provider: "ollama", model: "llava", baseUrl: "http://localhost:11434", contextWindow: 4096, tier: 1, capabilities: { vision: true } },
-				{ id: "no-vision", provider: "ollama", model: "llama3", baseUrl: "http://localhost:11434", contextWindow: 4096, tier: 1 },
+				{
+					id: "vision-backend",
+					provider: "ollama",
+					model: "llava",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: true },
+				},
+				{
+					id: "no-vision",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
 			],
 			default: "no-vision",
 		});
@@ -325,8 +387,22 @@ describe("Phase 4: capability management", () => {
 	it("listEligible with no requirements returns all non-rate-limited backends", () => {
 		const router = createModelRouter({
 			backends: [
-				{ id: "a", provider: "ollama", model: "llama3", baseUrl: "http://localhost:11434", contextWindow: 4096, tier: 1 },
-				{ id: "b", provider: "ollama", model: "llama3", baseUrl: "http://localhost:11434", contextWindow: 4096, tier: 1 },
+				{
+					id: "a",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+				{
+					id: "b",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
 			],
 			default: "a",
 		});
