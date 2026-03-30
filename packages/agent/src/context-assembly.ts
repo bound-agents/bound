@@ -200,6 +200,7 @@ function substituteUnsupportedBlocks(
 const AVAILABLE_COMMANDS = [
 	{ name: "query", description: "Execute a SELECT query against the database" },
 	{ name: "memorize", description: "Store a key-value memory entry" },
+	{ name: "advisory", description: "Post a proactive advisory for operator review" },
 	{ name: "forget", description: "Soft-delete a memory entry (supports --prefix)" },
 	{ name: "schedule", description: "Schedule a deferred, cron, or event-driven task" },
 	{ name: "cancel", description: "Cancel a scheduled task (supports --payload-match)" },

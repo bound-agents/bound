@@ -1,4 +1,5 @@
 import type { CommandDefinition } from "@bound/sandbox";
+import { advisory } from "./advisory";
 import { archive } from "./archive";
 import { awaitCmd } from "./await-cmd";
 import { cacheEvict } from "./cache-evict";
@@ -28,6 +29,7 @@ export function getAllCommands(): CommandDefinition[] {
 	return [
 		help,
 		query,
+		advisory,
 		memorize,
 		forget,
 		schedule,
@@ -63,6 +65,7 @@ export function addMCPCommands(
 }
 
 export {
+	advisory,
 	query,
 	memorize,
 	forget,

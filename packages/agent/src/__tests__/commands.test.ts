@@ -10,6 +10,7 @@ import { ModelRouter } from "@bound/llm";
 import type { CommandContext } from "@bound/sandbox";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
+import { advisory } from "../commands/advisory";
 import { awaitCmd } from "../commands/await-cmd";
 import { cancel } from "../commands/cancel";
 import { emit } from "../commands/emit";
@@ -505,6 +506,87 @@ describe("defineCommand implementations", () => {
 			const output = JSON.parse(result.stdout);
 			expect(output).toHaveProperty(taskId);
 			expect(output[taskId].status).toBe("completed");
+		});
+	});
+
+	describe("advisory command", () => {
+		it("creates an advisory row in the DB and returns its ID", async () => {
+			const ctx: CommandContext = {
+				db,
+				siteId: "test-site",
+				eventBus: new TypedEventEmitter(),
+				logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+			};
+
+			const result = await advisory.handler(
+				{
+					title: "Test advisory",
+					detail: "Detailed description of the issue",
+					action: "Recommended fix",
+					impact: "Minor inconvenience",
+				},
+				ctx,
+			);
+
+			expect(result.exitCode).toBe(0);
+			// Output should contain the advisory ID (a UUID)
+			expect(result.stdout).toMatch(/^Advisory created: [0-9a-f-]{36}\n$/);
+
+			// Advisory must be persisted in the DB
+			const row = db
+				.prepare("SELECT id, type, status, title, detail, action, impact FROM advisories WHERE title = ?")
+				.get("Test advisory") as {
+				id: string;
+				type: string;
+				status: string;
+				title: string;
+				detail: string;
+				action: string | null;
+				impact: string | null;
+			} | null;
+
+			expect(row).not.toBeNull();
+			expect(row!.type).toBe("general");
+			expect(row!.status).toBe("proposed");
+			expect(row!.detail).toBe("Detailed description of the issue");
+			expect(row!.action).toBe("Recommended fix");
+			expect(row!.impact).toBe("Minor inconvenience");
+
+			// Cleanup
+			if (row) db.run("DELETE FROM advisories WHERE id = ?", [row.id]);
+		});
+
+		it("creates advisory with only required args (title + detail)", async () => {
+			const ctx: CommandContext = {
+				db,
+				siteId: "test-site",
+				eventBus: new TypedEventEmitter(),
+				logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+			};
+
+			const result = await advisory.handler(
+				{ title: "Minimal advisory", detail: "Just the detail" },
+				ctx,
+			);
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toMatch(/Advisory created: /);
+
+			// Cleanup
+			db.run("DELETE FROM advisories WHERE title = ?", ["Minimal advisory"]);
+		});
+
+		it("returns error when title is missing", async () => {
+			const ctx: CommandContext = {
+				db,
+				siteId: "test-site",
+				eventBus: new TypedEventEmitter(),
+				logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+			};
+
+			const result = await advisory.handler({ detail: "no title" }, ctx);
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain("title");
 		});
 	});
 
