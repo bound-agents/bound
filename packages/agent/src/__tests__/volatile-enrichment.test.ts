@@ -1,10 +1,10 @@
+import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase, insertRow, softDelete } from "@bound/core";
-import type { Database } from "bun:sqlite";
 import { buildVolatileEnrichment, computeBaseline } from "../summary-extraction.js";
 
 let db: Database;
@@ -60,12 +60,6 @@ describe("computeBaseline", () => {
 		// The code has the defensive fallback but it's unreachable in practice.
 		// This test verifies the logic would work IF the constraint were relaxed.
 		// For now, we test that when a thread exists, the fallback code is correct.
-		const threadId = randomBytes(8).toString("hex");
-		const createdAt = "2026-03-01T00:00:00.000Z";
-
-		const row = db
-			.prepare("SELECT last_message_at, created_at FROM threads WHERE id = ?")
-			.get(threadId) as { last_message_at: string | null; created_at: string } | null;
 
 		// Simulate the behavior: if row is null, return epoch (same as computeBaseline)
 		// If row exists, the ?? operator would choose last_message_at if it's not null

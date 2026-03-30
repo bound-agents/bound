@@ -304,15 +304,12 @@ export function buildVolatileEnrichment(
 	const taskDigestLines: string[] = [];
 	for (const row of visibleTaskRows) {
 		const status = row.consecutive_failures === 0 ? "ran" : "failed";
-		const hostLabel =
-			row.host_name ?? (row.claimed_by ? row.claimed_by.slice(0, 8) : "unknown");
+		const hostLabel = row.host_name ?? (row.claimed_by ? row.claimed_by.slice(0, 8) : "unknown");
 		const relTime = relativeTime(row.last_run_at);
 		taskDigestLines.push(`- ${row.trigger_spec} ${status} (${relTime} on ${hostLabel})`);
 	}
 	if (hasMoreTasks) {
-		taskDigestLines.push(
-			`... and ${taskRows.length - maxTasks} more (query tasks for full list)`,
-		);
+		taskDigestLines.push(`... and ${taskRows.length - maxTasks} more (query tasks for full list)`);
 	}
 
 	return { memoryDeltaLines, taskDigestLines };
