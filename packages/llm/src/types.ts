@@ -99,6 +99,7 @@ export class LLMError extends Error {
 		public provider: string,
 		public statusCode?: number,
 		public originalError?: Error,
+		public retryAfterMs?: number,
 	) {
 		super(message);
 		this.name = "LLMError";

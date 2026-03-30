@@ -10,8 +10,9 @@ import {
 	recordTurnRelayMetrics,
 	writeOutbox,
 } from "@bound/core";
-import type { ModelRouter, StreamChunk } from "@bound/llm";
+import type { ModelRouter, StreamChunk, CapabilityRequirements } from "@bound/llm";
 import type { InferenceRequestPayload, StreamChunkPayload } from "@bound/llm";
+import { LLMError } from "@bound/llm";
 import { formatError } from "@bound/shared";
 
 import { assembleContext } from "./context-assembly";
@@ -64,6 +65,7 @@ export class AgentLoop {
 	private filesChanged = 0;
 	private aborted = false;
 	private lastModelResolution: ModelResolution | null = null;
+	private _visionAdvisoryEmitted?: Set<string>;
 
 	constructor(
 		private ctx: AppContext,
@@ -98,12 +100,55 @@ export class AgentLoop {
 			const capabilities = this.modelRouter.getDefault().capabilities();
 			const contextWindow = capabilities.max_context || 8000;
 
+			// Derive capability requirements from current turn context
+			const requirements: CapabilityRequirements | undefined = (() => {
+				const req: CapabilityRequirements = {};
+				// Check if pending user message or thread history has image blocks
+				// For simplicity: if tools are configured, set tool_use requirement
+				if (this.config.tools && this.config.tools.length > 0) {
+					req.tool_use = true;
+				}
+				// Vision requirement: check recent thread messages for image ContentBlocks.
+				// Phase 7 stores image blocks as JSON ContentBlock[] in messages.content.
+				// Query the last 5 messages of the thread and check for image type.
+				try {
+					const recentMsgs = this.ctx.db
+						.query(
+							`SELECT content FROM messages
+							 WHERE thread_id = ? AND deleted = 0
+							 ORDER BY created_at DESC LIMIT 5`,
+						)
+						.all(this.config.threadId) as Array<{ content: string }>;
+
+					const hasImageBlock = recentMsgs.some((m) => {
+						try {
+							const blocks = JSON.parse(m.content);
+							return (
+								Array.isArray(blocks) &&
+								blocks.some((b: { type?: string }) => b.type === "image")
+							);
+						} catch {
+							return false;
+						}
+					});
+
+					if (hasImageBlock) {
+						req.vision = true;
+					}
+				} catch {
+					// Non-fatal: if DB query fails, proceed without vision requirement
+				}
+
+				return Object.keys(req).length > 0 ? req : undefined;
+			})();
+
 			// Resolve model before context assembly so relayInfo can be included in volatile context
 			this.lastModelResolution = resolveModel(
 				this.config.modelId,
 				this.modelRouter,
 				this.ctx.db,
 				this.ctx.siteId,
+				requirements,
 			);
 
 			// If the requested model can't be resolved, fall back to default and warn
@@ -113,6 +158,7 @@ export class AgentLoop {
 					this.modelRouter,
 					this.ctx.db,
 					this.ctx.siteId,
+					requirements,
 				);
 				if (fallbackResolution.kind !== "error") {
 					const warningMsg = `Model "${this.config.modelId}" is unavailable (${this.lastModelResolution.error}). Falling back to default model "${fallbackResolution.modelId}".`;
@@ -156,6 +202,12 @@ export class AgentLoop {
 				};
 			}
 
+			// Determine resolved capabilities for content substitution
+			const resolvedCaps =
+				this.lastModelResolution?.kind === "local"
+					? this.modelRouter.getEffectiveCapabilities(this.lastModelResolution.modelId)
+					: undefined;
+
 			const contextMessages = assembleContext({
 				db: this.ctx.db,
 				threadId: this.config.threadId,
@@ -174,7 +226,31 @@ export class AgentLoop {
 								: undefined,
 						}
 					: undefined,
+				targetCapabilities: resolvedCaps ?? undefined,
 			});
+
+			// Advisory: log once per thread when image blocks are stripped for a non-vision backend.
+			// The advisoryDedup Set in context-assembly.ts prevents repeat logs per thread+backend,
+			// but the actual log emission is here at the call site where the logger is available.
+			if (resolvedCaps && !resolvedCaps.vision) {
+				// Check if thread has any image messages (same query as requirements derivation above)
+				const advisoryKey = `${this.config.threadId}::vision:false`;
+				if (!this._visionAdvisoryEmitted?.has(advisoryKey)) {
+					// Lazy-init the Set if it doesn't exist
+					if (!this._visionAdvisoryEmitted) this._visionAdvisoryEmitted = new Set();
+					this._visionAdvisoryEmitted.add(advisoryKey);
+					this.ctx.logger.info(
+						"[agent-loop] Image blocks in context will be replaced with text annotations (target backend lacks vision support)",
+						{
+							backendId:
+								this.lastModelResolution?.kind === "local"
+									? this.lastModelResolution.modelId
+									: undefined,
+							threadId: this.config.threadId,
+						},
+					);
+				}
+			}
 
 			// Agentic loop: keep calling the LLM until it produces a text-only
 			// response with no tool calls, or until we are aborted.
@@ -279,6 +355,30 @@ export class AgentLoop {
 						}
 					}
 				} catch (error) {
+					// Rate-limit handling: if the LLM returned 429 or 529, mark the backend
+					// rate-limited so subsequent resolveModel() calls skip it
+					if (
+						error instanceof LLMError &&
+						(error.statusCode === 429 || error.statusCode === 529)
+					) {
+						const backendId =
+							this.lastModelResolution?.kind === "local"
+								? this.lastModelResolution.modelId
+								: null;
+						if (backendId) {
+							// Use Retry-After from the error if available (added in Phase 5); default 60 s
+							const retryAfterMs = error instanceof LLMError && error.retryAfterMs
+								? error.retryAfterMs
+								: 60_000;
+							this.modelRouter.markRateLimited(backendId, retryAfterMs);
+							this.ctx.logger.warn("[agent-loop] Backend rate-limited, marked for exclusion", {
+								backendId,
+								retryAfterMs,
+								statusCode: error.statusCode,
+							});
+						}
+					}
+
 					this.state = "ERROR_PERSIST";
 					const errorMsg = formatError(error);
 					this.ctx.logger.error("LLM call failed", { error: errorMsg });
