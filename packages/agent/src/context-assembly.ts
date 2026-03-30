@@ -891,10 +891,11 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			// Non-fatal
 		}
 
-		// Inject advisory resolution notifications (24h window) — closing the feedback loop
-		// so the agent knows when advisories it posted have been acted on by the operator.
+		// Inject advisory resolution notifications (24h window, capped at 5, deduped by title).
+		// Closes the feedback loop so the agent knows when its advisories were acted on.
 		if (siteId) {
 			try {
+				const ADVISORY_NOTIF_CAP = 5;
 				const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 				const resolvedAdvisories = db
 					.query(
@@ -903,15 +904,30 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 						   AND status IN ('approved', 'applied', 'dismissed')
 						   AND resolved_at > ?
 						   AND deleted = 0
-						 ORDER BY resolved_at ASC`,
+						 ORDER BY resolved_at DESC`,
 					)
 					.all(siteId, cutoff24h) as Array<{ title: string; status: string }>;
 
+				// Deduplicate by title — group identical titles and emit a counted line.
+				const titleGroups = new Map<string, { status: string; count: number }>();
 				for (const adv of resolvedAdvisories) {
+					const existing = titleGroups.get(adv.title);
+					if (existing) {
+						existing.count++;
+					} else {
+						titleGroups.set(adv.title, { status: adv.status, count: 1 });
+					}
+				}
+
+				let notifCount = 0;
+				for (const [title, { status, count }] of titleGroups) {
+					if (notifCount >= ADVISORY_NOTIF_CAP) break;
+					const countStr = count > 1 ? ` (×${count})` : "";
 					volatileLines.push("");
 					volatileLines.push(
-						`[Advisory notification] Advisory '${adv.title}' was ${adv.status} by operator.`,
+						`[Advisory notification] Advisory '${title}' was ${status} by operator${countStr}.`,
 					);
+					notifCount++;
 				}
 			} catch {
 				// Non-fatal

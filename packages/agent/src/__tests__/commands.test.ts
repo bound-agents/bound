@@ -483,6 +483,43 @@ describe("defineCommand implementations", () => {
 			}
 			expect(result.exitCode).toBe(0);
 		});
+
+		// Bug: purge --last N requires explicit --thread-id even though ctx.threadId
+		// is always set when the agent is running in a thread. The condition on line 23
+		// of purge.ts required BOTH args.last AND args["thread-id"], but ctx.threadId
+		// was only used further down (line 77) after the guard had already rejected.
+		it("should create a purge message with --last when ctx.threadId is used (no explicit --thread-id)", async () => {
+			const userId = randomUUID();
+			const threadId = randomUUID();
+
+			db.run(
+				`INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[userId, "Purge Ctx User", null, new Date().toISOString(), new Date().toISOString(), 0],
+			);
+			db.run(
+				`INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through,
+					summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[threadId, userId, "web", "local", 0, null, null, null, null, null,
+				 new Date().toISOString(), new Date().toISOString(), new Date().toISOString(), 0],
+			);
+			for (let i = 0; i < 3; i++) {
+				db.run(
+					`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[randomUUID(), threadId, "user", `Msg ${i}`, null, null,
+					 new Date(Date.now() + i * 1000).toISOString(), null, "local"],
+				);
+			}
+
+			// No --thread-id arg — should infer from ctx.threadId
+			const ctxWithThread = { ...ctx, threadId };
+			const result = await purge.handler({ last: "2" }, ctxWithThread);
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain("Targeted 2 messages");
+		});
 	});
 
 	describe("await command", () => {

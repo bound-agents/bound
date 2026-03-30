@@ -19,10 +19,12 @@ export const purge: CommandDefinition = {
 			if (args.ids) {
 				// Parse comma-separated IDs
 				targetIds = args.ids.split(",").map((id) => id.trim());
-			} else if (args.last && args["thread-id"]) {
-				// Get last N messages from thread
+			} else if (args.last && (args["thread-id"] || ctx.threadId)) {
+				// Get last N messages from thread.
+				// Falls back to ctx.threadId when --thread-id is not explicitly provided,
+				// so the agent can run `purge --last N` without repeating the thread ID.
 				const n = Number.parseInt(args.last, 10);
-				const threadId = args["thread-id"];
+				const threadId = args["thread-id"] || ctx.threadId || "";
 
 				if (Number.isNaN(n) || n <= 0) {
 					return commandError("--last must be a positive integer");

@@ -2530,6 +2530,115 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 
+		it("deduplicates multiple advisories with the same title into one counted line (AC-ADV4)", () => {
+			const localSiteId = "test-site-" + randomUUID().slice(0, 8);
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Dedup User", now, now, 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[localThreadId, localUserId, "web", "local", 0, "Dedup Thread", null, null, null, null, now, now, now, 0],
+			);
+
+			// Insert 5 advisories with identical titles, all resolved recently
+			const advisoryIds: string[] = [];
+			for (let i = 0; i < 5; i++) {
+				const id = randomUUID();
+				advisoryIds.push(id);
+				const resolvedAt = new Date(Date.now() - (i + 1) * 60 * 1000).toISOString();
+				db.run(
+					"INSERT INTO advisories (id, type, status, title, detail, action, impact, evidence, proposed_at, defer_until, resolved_at, created_by, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[id, "general", "applied", "Task has failed 1 times consecutively", "Detail", null, null, null, now, null, resolvedAt, localSiteId, resolvedAt, 0],
+				);
+			}
+
+			const messages = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				siteId: localSiteId,
+				contextWindow: 200000,
+			});
+
+			// All 5 should be collapsed into a single notification line (with count)
+			const volatileMsg = messages.find(
+				(m) =>
+					m.role === "system" &&
+					typeof m.content === "string" &&
+					m.content.includes("Advisory notification"),
+			);
+			expect(volatileMsg).toBeDefined();
+			const lines = (volatileMsg!.content as string)
+				.split("\n")
+				.filter((l) => l.includes("Advisory notification"));
+			expect(lines.length).toBe(1);
+			// The single line must reference all 5 (via count)
+			expect(lines[0]).toContain("5");
+
+			// Cleanup
+			for (const id of advisoryIds) db.run("DELETE FROM advisories WHERE id = ?", [id]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+
+		it("caps total advisory notifications at 5 even if more exist (AC-ADV5)", () => {
+			const localSiteId = "test-site-" + randomUUID().slice(0, 8);
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Cap User", now, now, 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[localThreadId, localUserId, "web", "local", 0, "Cap Thread", null, null, null, null, now, now, now, 0],
+			);
+
+			// Insert 8 advisories with distinct titles
+			const advisoryIds: string[] = [];
+			for (let i = 0; i < 8; i++) {
+				const id = randomUUID();
+				advisoryIds.push(id);
+				const resolvedAt = new Date(Date.now() - (i + 1) * 60 * 1000).toISOString();
+				db.run(
+					"INSERT INTO advisories (id, type, status, title, detail, action, impact, evidence, proposed_at, defer_until, resolved_at, created_by, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[id, "general", "applied", `Advisory ${i}`, "Detail", null, null, null, now, null, resolvedAt, localSiteId, resolvedAt, 0],
+				);
+			}
+
+			const messages = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				siteId: localSiteId,
+				contextWindow: 200000,
+			});
+
+			const volatileMsg = messages.find(
+				(m) =>
+					m.role === "system" &&
+					typeof m.content === "string" &&
+					m.content.includes("Advisory notification"),
+			);
+			expect(volatileMsg).toBeDefined();
+			const notifLines = (volatileMsg!.content as string)
+				.split("\n")
+				.filter((l) => l.includes("Advisory notification"));
+			expect(notifLines.length).toBeLessThanOrEqual(5);
+
+			// Cleanup
+			for (const id of advisoryIds) db.run("DELETE FROM advisories WHERE id = ?", [id]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+
 		it("does not inject notification for advisories created by a different site (AC-ADV3)", () => {
 			const localSiteId = "test-site-" + randomUUID().slice(0, 8);
 			const otherSiteId = "other-site-" + randomUUID().slice(0, 8);
