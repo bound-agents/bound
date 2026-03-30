@@ -72,3 +72,6 @@ export {
 	canRunHere,
 	isDependencySatisfied,
 } from "./task-resolution";
+
+// Export skill seeding
+export { seedSkillAuthoring } from "./seed-skills";
