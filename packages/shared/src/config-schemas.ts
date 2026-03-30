@@ -28,6 +28,17 @@ export const allowlistSchema = z
 export type AllowlistConfig = z.infer<typeof allowlistSchema>;
 
 // Model Backends Config
+const backendCapabilitiesOverrideSchema = z
+	.object({
+		streaming: z.boolean(),
+		tool_use: z.boolean(),
+		system_prompt: z.boolean(),
+		prompt_caching: z.boolean(),
+		vision: z.boolean(),
+		max_context: z.number().int().positive(),
+	})
+	.partial();
+
 const modelBackendSchema = z.object({
 	id: z.string().min(1),
 	provider: z.enum(["ollama", "bedrock", "anthropic", "openai-compatible"]),
@@ -42,6 +53,7 @@ const modelBackendSchema = z.object({
 	price_per_m_output: z.number().min(0).default(0),
 	price_per_m_cache_write: z.number().min(0).optional(),
 	price_per_m_cache_read: z.number().min(0).optional(),
+	capabilities: backendCapabilitiesOverrideSchema.optional(),
 });
 
 export const modelBackendsSchema = z

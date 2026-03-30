@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { ModelRouter, createModelRouter } from "../model-router";
-import type { LLMBackend, ModelBackendsConfig } from "../types";
+import type { BackendCapabilities, LLMBackend, ModelBackendsConfig } from "../types";
 
 class MockBackend implements LLMBackend {
 	constructor(public id: string) {}
@@ -21,6 +21,18 @@ class MockBackend implements LLMBackend {
 	}
 }
 
+// Helper to create a router from backends map with no capability overrides
+function createRouterFromBackends(
+	backends: Map<string, LLMBackend>,
+	defaultId: string,
+): ModelRouter {
+	const effectiveCaps = new Map<string, BackendCapabilities>();
+	for (const [id, backend] of backends) {
+		effectiveCaps.set(id, backend.capabilities());
+	}
+	return new ModelRouter(backends, defaultId, effectiveCaps);
+}
+
 describe("ModelRouter", () => {
 	it("should create a router with multiple backends", () => {
 		const backend1 = new MockBackend("backend1");
@@ -30,7 +42,7 @@ describe("ModelRouter", () => {
 			["backend2", backend2],
 		]);
 
-		const router = new ModelRouter(backends, "backend1");
+		const router = createRouterFromBackends(backends, "backend1");
 		expect(router).toBeDefined();
 	});
 
@@ -42,7 +54,7 @@ describe("ModelRouter", () => {
 			["backend2", backend2],
 		]);
 
-		const router = new ModelRouter(backends, "backend1");
+		const router = createRouterFromBackends(backends, "backend1");
 		const retrieved = router.getBackend("backend2");
 		expect(retrieved).toBe(backend2);
 	});
@@ -51,7 +63,7 @@ describe("ModelRouter", () => {
 		const backend1 = new MockBackend("backend1");
 		const backends = new Map<string, LLMBackend>([["backend1", backend1]]);
 
-		const router = new ModelRouter(backends, "backend1");
+		const router = createRouterFromBackends(backends, "backend1");
 		const retrieved = router.getBackend();
 		expect(retrieved).toBe(backend1);
 	});
@@ -60,7 +72,7 @@ describe("ModelRouter", () => {
 		const backend1 = new MockBackend("backend1");
 		const backends = new Map<string, LLMBackend>([["backend1", backend1]]);
 
-		const router = new ModelRouter(backends, "backend1");
+		const router = createRouterFromBackends(backends, "backend1");
 		const retrieved = router.getDefault();
 		expect(retrieved).toBe(backend1);
 	});
@@ -69,7 +81,7 @@ describe("ModelRouter", () => {
 		const backend1 = new MockBackend("backend1");
 		const backends = new Map<string, LLMBackend>([["backend1", backend1]]);
 
-		const router = new ModelRouter(backends, "backend1");
+		const router = createRouterFromBackends(backends, "backend1");
 		expect(() => router.getBackend("unknown")).toThrow("Unknown backend ID");
 	});
 
@@ -81,7 +93,7 @@ describe("ModelRouter", () => {
 			["backend2", backend2],
 		]);
 
-		const router = new ModelRouter(backends, "backend1");
+		const router = createRouterFromBackends(backends, "backend1");
 		expect(() => router.getBackend("unknown")).toThrow("Available backends: backend1, backend2");
 	});
 
@@ -93,7 +105,7 @@ describe("ModelRouter", () => {
 			["backend2", backend2],
 		]);
 
-		const router = new ModelRouter(backends, "backend1");
+		const router = createRouterFromBackends(backends, "backend1");
 		const list = router.listBackends();
 
 		expect(list).toHaveLength(2);
@@ -186,5 +198,436 @@ describe("ModelRouter", () => {
 
 		const router = createModelRouter(config);
 		expect(router).toBeDefined();
+	});
+});
+
+describe("Phase 4: capability management", () => {
+	// AC3.4 — no capabilities field falls back to driver baseline
+	it("uses driver baseline when no capabilities override in config (AC3.4)", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "test",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+			],
+			default: "test",
+		});
+		const caps = router.getEffectiveCapabilities("test");
+		expect(caps).not.toBeNull();
+		expect(caps?.vision).toBe(false); // Ollama baseline has vision: false
+		expect(caps?.tool_use).toBe(true); // Ollama baseline has tool_use: true
+	});
+
+	// AC3.1 — capabilities override adds vision: true to an Ollama backend
+	it("merges capabilities override with driver baseline (AC3.1)", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "test",
+					provider: "ollama",
+					model: "llava",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: true },
+				},
+			],
+			default: "test",
+		});
+		const caps = router.getEffectiveCapabilities("test");
+		expect(caps?.vision).toBe(true); // Override applied
+		expect(caps?.tool_use).toBe(true); // Baseline retained (AC3.2)
+	});
+
+	// AC3.2 — unspecified fields retain provider default
+	it("unspecified override fields retain provider defaults (AC3.2)", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "test",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: true }, // Only override vision
+				},
+			],
+			default: "test",
+		});
+		const caps = router.getEffectiveCapabilities("test");
+		// Non-overridden fields come from driver baseline
+		expect(caps?.streaming).toBe(true);
+		expect(caps?.system_prompt).toBe(true);
+		expect(caps?.max_context).toBe(4096);
+	});
+
+	// AC3.3 — suppress vision on a vision-capable provider
+	it("can suppress vision on a vision-capable provider (AC3.3)", () => {
+		// Use Anthropic (which has vision: true by default in its capabilities())
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "claude",
+					provider: "anthropic",
+					model: "claude-3-opus",
+					apiKey: "test-key",
+					contextWindow: 200000,
+					tier: 1,
+					capabilities: { vision: false }, // Suppress vision
+				},
+			],
+			default: "claude",
+		});
+		const caps = router.getEffectiveCapabilities("claude");
+		expect(caps?.vision).toBe(false);
+	});
+
+	// AC5.1 — markRateLimited + isRateLimited round-trip
+	it("markRateLimited + isRateLimited round-trip (AC5.1)", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "test",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+			],
+			default: "test",
+		});
+		expect(router.isRateLimited("test")).toBe(false);
+		router.markRateLimited("test", 60_000);
+		expect(router.isRateLimited("test")).toBe(true);
+	});
+
+	it("isRateLimited returns false after expiry", async () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "test",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+			],
+			default: "test",
+		});
+		router.markRateLimited("test", 1); // 1ms — expires immediately
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(router.isRateLimited("test")).toBe(false);
+	});
+
+	// AC5.4 — listEligible excludes rate-limited backends
+	it("listEligible excludes rate-limited backends (AC5.4)", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "a",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+				{
+					id: "b",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 2,
+				},
+			],
+			default: "a",
+		});
+		router.markRateLimited("a", 60_000);
+		const eligible = router.listEligible();
+		expect(eligible.map((b) => b.id)).toEqual(["b"]);
+	});
+
+	// listEligible excludes backends missing required capability
+	it("listEligible excludes backends lacking required capability", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "vision-backend",
+					provider: "ollama",
+					model: "llava",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: true },
+				},
+				{
+					id: "no-vision",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+			],
+			default: "no-vision",
+		});
+		const eligible = router.listEligible({ vision: true });
+		expect(eligible.map((b) => b.id)).toEqual(["vision-backend"]);
+	});
+
+	// Text-only requests pass qualification unchanged (AC2.5 prerequisite)
+	it("listEligible with no requirements returns all non-rate-limited backends", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "a",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+				{
+					id: "b",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+			],
+			default: "a",
+		});
+		const eligible = router.listEligible();
+		expect(eligible).toHaveLength(2);
+	});
+});
+
+describe("Phase 5: getEarliestCapableRecovery", () => {
+	// AC2.4 — getEarliestCapableRecovery returns earliest expiry among rate-limited capable backends
+	it("returns earliest expiry timestamp among rate-limited backends that support requirements", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "vision-backend-1",
+					provider: "ollama",
+					model: "llava",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: true },
+				},
+				{
+					id: "vision-backend-2",
+					provider: "ollama",
+					model: "llava",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 2,
+					capabilities: { vision: true },
+				},
+				{
+					id: "no-vision",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+			],
+			default: "no-vision",
+		});
+
+		// Mark both vision backends as rate-limited with different expiry times
+		const now = Date.now();
+		router.markRateLimited("vision-backend-1", 30_000); // Expires in 30s
+		router.markRateLimited("vision-backend-2", 60_000); // Expires in 60s
+		router.markRateLimited("no-vision", 10_000); // Expires in 10s (should be ignored)
+
+		const earliest = router.getEarliestCapableRecovery({ vision: true });
+		expect(earliest).toBeDefined();
+		expect(earliest).toBeGreaterThan(now);
+		// The earliest should be approximately 30s from now (vision-backend-1)
+		if (earliest !== null) {
+			expect(earliest).toBeLessThan(now + 31_000);
+		}
+	});
+
+	// getEarliestCapableRecovery returns null when no rate-limited backend supports requirements
+	it("returns null when no rate-limited backend supports the requirements", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "vision-backend",
+					provider: "ollama",
+					model: "llava",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: true },
+				},
+				{
+					id: "no-vision",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+			],
+			default: "no-vision",
+		});
+
+		// Only mark non-vision backend as rate-limited
+		router.markRateLimited("no-vision", 10_000);
+
+		// Query for vision requirement — should return null since vision backend is not rate-limited
+		const earliest = router.getEarliestCapableRecovery({ vision: true });
+		expect(earliest).toBeNull();
+	});
+
+	// getEarliestCapableRecovery returns null when no backends are rate-limited
+	it("returns null when no backends are rate-limited", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "vision-backend",
+					provider: "ollama",
+					model: "llava",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: true },
+				},
+			],
+			default: "vision-backend",
+		});
+
+		const earliest = router.getEarliestCapableRecovery({ vision: true });
+		expect(earliest).toBeNull();
+	});
+
+	// getEarliestCapableRecovery with no requirements includes all rate-limited backends
+	it("with no requirements, returns earliest expiry among all rate-limited backends", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "backend-a",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+				{
+					id: "backend-b",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 2,
+				},
+			],
+			default: "backend-a",
+		});
+
+		const now = Date.now();
+		router.markRateLimited("backend-a", 100_000);
+		router.markRateLimited("backend-b", 50_000);
+
+		const earliest = router.getEarliestCapableRecovery();
+		expect(earliest).toBeDefined();
+		// Should be backend-b (50s < 100s)
+		if (earliest !== null) {
+			expect(earliest).toBeLessThan(now + 51_000);
+		}
+	});
+
+	// getEarliestCapableRecovery checks all capability fields
+	it("filters by all capability requirements", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "full-featured",
+					provider: "anthropic",
+					model: "claude-3",
+					apiKey: "test-key",
+					contextWindow: 200000,
+					tier: 1,
+					capabilities: {
+						vision: true,
+						tool_use: true,
+						system_prompt: true,
+						prompt_caching: true,
+					},
+				},
+				{
+					id: "limited",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: false, tool_use: true },
+				},
+			],
+			default: "limited",
+		});
+
+		const now = Date.now();
+		router.markRateLimited("full-featured", 50_000);
+		router.markRateLimited("limited", 100_000);
+
+		// Query for vision requirement — only full-featured supports it
+		const earliest = router.getEarliestCapableRecovery({ vision: true });
+		expect(earliest).toBeDefined();
+		if (earliest !== null) {
+			expect(earliest).toBeLessThan(now + 51_000); // Should return full-featured expiry
+		}
+	});
+
+	// getEarliestCapableRecovery returns null for unmet requirements
+	it("returns null when no rate-limited backend has all required capabilities", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "partial-1",
+					provider: "ollama",
+					model: "llava",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: true, tool_use: false },
+				},
+				{
+					id: "partial-2",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 2,
+					capabilities: { vision: false, tool_use: true },
+				},
+			],
+			default: "partial-1",
+		});
+
+		router.markRateLimited("partial-1", 50_000);
+		router.markRateLimited("partial-2", 100_000);
+
+		// Query for both vision AND tool_use — no backend has both
+		const earliest = router.getEarliestCapableRecovery({
+			vision: true,
+			tool_use: true,
+		});
+		expect(earliest).toBeNull();
 	});
 });

@@ -1,7 +1,7 @@
+import type { CapabilityRequirements, ModelRouter } from "@bound/llm";
 import { formatError } from "@bound/shared";
 
 import { updateRow } from "@bound/core";
-import type { ModelRouter } from "@bound/llm";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 import { resolveModel } from "../model-resolution";
 
@@ -58,18 +58,58 @@ export const modelHint: CommandDefinition = {
 
 			// Validate model against cluster-wide pool if modelRouter is available
 			if (args.model && ctx.modelRouter) {
+				// Derive requirements from recent thread history for model hint validation
+				// Check last 5 messages for image blocks — if found, require vision capability
+				let requirements: CapabilityRequirements | undefined;
+
+				if (ctx.threadId) {
+					const recentMessages = ctx.db
+						.query(
+							`SELECT content FROM messages
+							 WHERE thread_id = ? AND deleted = 0
+							 ORDER BY created_at DESC LIMIT 5`,
+						)
+						.all(ctx.threadId) as Array<{ content: string }>;
+
+					const requiresVision = recentMessages.some((m) => {
+						try {
+							const blocks = JSON.parse(m.content);
+							return (
+								Array.isArray(blocks) && blocks.some((b: { type?: string }) => b.type === "image")
+							);
+						} catch {
+							return false;
+						}
+					});
+
+					requirements = requiresVision ? { vision: true } : undefined;
+				}
+
+				// Then pass requirements to resolveModel:
 				const resolution = resolveModel(
 					args.model,
 					ctx.modelRouter as ModelRouter,
 					ctx.db,
 					ctx.siteId,
+					requirements,
 				);
 				if (resolution.kind === "error") {
-					return {
-						stdout: "",
-						stderr: `Error: ${resolution.error}\n`,
-						exitCode: 1,
-					};
+					if (resolution.reason === "capability-mismatch") {
+						ctx.logger.warn(
+							"[model-hint] Requested model lacks required capabilities for this thread's content, but hint was accepted",
+							{
+								modelId: args.model,
+								unmetCapabilities: resolution.unmetCapabilities,
+							},
+						);
+						// Fall through to accept the hint anyway
+					} else {
+						return {
+							stdout: "",
+							stderr: `Error: ${resolution.error}\n`,
+							exitCode: 1,
+						};
+					}
 				}
 			}
 

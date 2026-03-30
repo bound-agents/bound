@@ -267,6 +267,234 @@ data: [DONE]
 		expect(doneChunks.length).toBe(1);
 	});
 
+	describe("cache token extraction", () => {
+		it("AC4.3 — should extract cache tokens when present", async () => {
+			const driver = new OpenAICompatibleDriver({
+				baseUrl: "http://localhost:8000",
+				apiKey: "test-key",
+				model: "gpt-4",
+				contextWindow: 8192,
+			});
+
+			const messages: LLMMessage[] = [
+				{
+					role: "user",
+					content: "Hello",
+				},
+			];
+
+			const sseResponse = `data: ${JSON.stringify({
+				id: "chatcmpl-123",
+				object: "text_completion",
+				created: 1234567890,
+				model: "gpt-4",
+				choices: [
+					{
+						index: 0,
+						delta: { content: "Response" },
+						finish_reason: null,
+					},
+				],
+			})}
+
+data: ${JSON.stringify({
+				id: "chatcmpl-123",
+				object: "text_completion",
+				created: 1234567890,
+				model: "gpt-4",
+				choices: [
+					{
+						index: 0,
+						delta: {},
+						finish_reason: "stop",
+					},
+				],
+				usage: {
+					prompt_tokens: 100,
+					completion_tokens: 25,
+					prompt_tokens_details: {
+						cached_tokens: 50,
+					},
+				},
+			})}
+
+data: [DONE]
+`;
+
+			global.fetch = (async () => {
+				return new Response(sseResponse, {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			}) as typeof fetch;
+
+			const chunks: StreamChunk[] = [];
+			for await (const chunk of driver.chat({
+				model: "gpt-4",
+				messages,
+			})) {
+				chunks.push(chunk);
+			}
+
+			const doneChunk = chunks.find((c) => c.type === "done");
+			expect(doneChunk).toBeDefined();
+			expect(doneChunk?.type).toBe("done");
+			if (doneChunk?.type === "done") {
+				expect(doneChunk.usage.input_tokens).toBe(100);
+				expect(doneChunk.usage.output_tokens).toBe(25);
+				expect(doneChunk.usage.cache_read_tokens).toBe(50);
+				expect(doneChunk.usage.cache_write_tokens).toBeNull();
+				expect(doneChunk.usage.estimated).toBe(false);
+			}
+		});
+
+		it("AC4.5 — should apply zero-usage guard when all tokens are zero", async () => {
+			const driver = new OpenAICompatibleDriver({
+				baseUrl: "http://localhost:8000",
+				apiKey: "test-key",
+				model: "gpt-4",
+				contextWindow: 8192,
+			});
+
+			const messages: LLMMessage[] = [
+				{
+					role: "user",
+					content: "Hello world",
+				},
+			];
+
+			const sseResponse = `data: ${JSON.stringify({
+				id: "chatcmpl-123",
+				object: "text_completion",
+				created: 1234567890,
+				model: "gpt-4",
+				choices: [
+					{
+						index: 0,
+						delta: { content: "This is a response" },
+						finish_reason: null,
+					},
+				],
+			})}
+
+data: ${JSON.stringify({
+				id: "chatcmpl-123",
+				object: "text_completion",
+				created: 1234567890,
+				model: "gpt-4",
+				choices: [
+					{
+						index: 0,
+						delta: {},
+						finish_reason: "stop",
+					},
+				],
+			})}
+
+data: [DONE]
+`;
+
+			global.fetch = (async () => {
+				return new Response(sseResponse, {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			}) as typeof fetch;
+
+			const chunks: StreamChunk[] = [];
+			for await (const chunk of driver.chat({
+				model: "gpt-4",
+				messages,
+			})) {
+				chunks.push(chunk);
+			}
+
+			const doneChunk = chunks.find((c) => c.type === "done");
+			expect(doneChunk).toBeDefined();
+			expect(doneChunk?.type).toBe("done");
+			if (doneChunk?.type === "done") {
+				expect(doneChunk.usage.estimated).toBe(true);
+				expect(doneChunk.usage.input_tokens).toBeGreaterThan(0);
+				expect(doneChunk.usage.output_tokens).toBeGreaterThan(0);
+			}
+		});
+
+		it("should have null cache tokens when not present", async () => {
+			const driver = new OpenAICompatibleDriver({
+				baseUrl: "http://localhost:8000",
+				apiKey: "test-key",
+				model: "gpt-4",
+				contextWindow: 8192,
+			});
+
+			const messages: LLMMessage[] = [
+				{
+					role: "user",
+					content: "Hello",
+				},
+			];
+
+			const sseResponse = `data: ${JSON.stringify({
+				id: "chatcmpl-123",
+				object: "text_completion",
+				created: 1234567890,
+				model: "gpt-4",
+				choices: [
+					{
+						index: 0,
+						delta: { content: "Response" },
+						finish_reason: null,
+					},
+				],
+			})}
+
+data: ${JSON.stringify({
+				id: "chatcmpl-123",
+				object: "text_completion",
+				created: 1234567890,
+				model: "gpt-4",
+				choices: [
+					{
+						index: 0,
+						delta: {},
+						finish_reason: "stop",
+					},
+				],
+				usage: {
+					prompt_tokens: 100,
+					completion_tokens: 25,
+				},
+			})}
+
+data: [DONE]
+`;
+
+			global.fetch = (async () => {
+				return new Response(sseResponse, {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			}) as typeof fetch;
+
+			const chunks: StreamChunk[] = [];
+			for await (const chunk of driver.chat({
+				model: "gpt-4",
+				messages,
+			})) {
+				chunks.push(chunk);
+			}
+
+			const doneChunk = chunks.find((c) => c.type === "done");
+			expect(doneChunk).toBeDefined();
+			expect(doneChunk?.type).toBe("done");
+			if (doneChunk?.type === "done") {
+				expect(doneChunk.usage.cache_read_tokens).toBeNull();
+				expect(doneChunk.usage.cache_write_tokens).toBeNull();
+				expect(doneChunk.usage.estimated).toBe(false);
+			}
+		});
+	});
+
 	it("should use correct base URL and authorization", async () => {
 		const driver = new OpenAICompatibleDriver({
 			baseUrl: "https://deepseek.example.com",
@@ -351,5 +579,215 @@ data: [DONE]
 		} finally {
 			global.fetch = originalFetch;
 		}
+	});
+
+	it("two tool calls with distinct IDs from provider produce distinct IDs (AC6.2)", async () => {
+		const driver = new OpenAICompatibleDriver({
+			baseUrl: "http://localhost:8000",
+			apiKey: "test-key",
+			model: "gpt-4",
+			contextWindow: 8192,
+		});
+
+		const sseResponse = `data: ${JSON.stringify({
+			id: "chatcmpl-123",
+			object: "text_completion",
+			created: 1234567890,
+			model: "gpt-4",
+			choices: [
+				{
+					index: 0,
+					delta: {
+						tool_calls: [
+							{ index: 0, id: "call_1", type: "function", function: { name: "search" } },
+						],
+					},
+					finish_reason: null,
+				},
+			],
+		})}
+
+data: ${JSON.stringify({
+			id: "chatcmpl-123",
+			object: "text_completion",
+			created: 1234567890,
+			model: "gpt-4",
+			choices: [
+				{
+					index: 0,
+					delta: {
+						tool_calls: [
+							{ index: 0, id: "", type: "function", function: { arguments: '{"q":"foo"}' } },
+						],
+					},
+					finish_reason: null,
+				},
+			],
+		})}
+
+data: ${JSON.stringify({
+			id: "chatcmpl-123",
+			object: "text_completion",
+			created: 1234567890,
+			model: "gpt-4",
+			choices: [
+				{
+					index: 1,
+					delta: {
+						tool_calls: [
+							{ index: 1, id: "call_2", type: "function", function: { name: "search" } },
+						],
+					},
+					finish_reason: null,
+				},
+			],
+		})}
+
+data: ${JSON.stringify({
+			id: "chatcmpl-123",
+			object: "text_completion",
+			created: 1234567890,
+			model: "gpt-4",
+			choices: [
+				{
+					index: 1,
+					delta: {
+						tool_calls: [
+							{ index: 1, id: "", type: "function", function: { arguments: '{"q":"bar"}' } },
+						],
+					},
+					finish_reason: "tool_calls",
+				},
+			],
+		})}
+
+data: [DONE]
+`;
+
+		global.fetch = (async () => {
+			return new Response(sseResponse, {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		const chunks: StreamChunk[] = [];
+		for await (const chunk of driver.chat({
+			model: "gpt-4",
+			messages: [{ role: "user", content: "Search for foo and bar" }],
+		})) {
+			chunks.push(chunk);
+		}
+
+		const startChunks = chunks.filter((c) => c.type === "tool_use_start");
+		expect(startChunks).toHaveLength(2);
+
+		const ids = startChunks.map((c) => (c as { id: string }).id);
+		expect(ids[0]).not.toEqual(ids[1]);
+		expect(ids[0]).toBe("call_1");
+		expect(ids[1]).toBe("call_2");
+	});
+
+	it("tool calls with missing IDs from provider get synthesized IDs (AC6.2)", async () => {
+		const driver = new OpenAICompatibleDriver({
+			baseUrl: "http://localhost:8000",
+			apiKey: "test-key",
+			model: "gpt-4",
+			contextWindow: 8192,
+		});
+
+		const sseResponse = `data: ${JSON.stringify({
+			id: "chatcmpl-123",
+			object: "text_completion",
+			created: 1234567890,
+			model: "gpt-4",
+			choices: [
+				{
+					index: 0,
+					delta: {
+						tool_calls: [{ index: 0, id: "", type: "function", function: { name: "search" } }],
+					},
+					finish_reason: null,
+				},
+			],
+		})}
+
+data: ${JSON.stringify({
+			id: "chatcmpl-123",
+			object: "text_completion",
+			created: 1234567890,
+			model: "gpt-4",
+			choices: [
+				{
+					index: 0,
+					delta: {
+						tool_calls: [
+							{ index: 0, id: "", type: "function", function: { arguments: '{"q":"foo"}' } },
+						],
+					},
+					finish_reason: null,
+				},
+			],
+		})}
+
+data: ${JSON.stringify({
+			id: "chatcmpl-123",
+			object: "text_completion",
+			created: 1234567890,
+			model: "gpt-4",
+			choices: [
+				{
+					index: 1,
+					delta: {
+						tool_calls: [{ index: 1, id: "", type: "function", function: { name: "search" } }],
+					},
+					finish_reason: null,
+				},
+			],
+		})}
+
+data: ${JSON.stringify({
+			id: "chatcmpl-123",
+			object: "text_completion",
+			created: 1234567890,
+			model: "gpt-4",
+			choices: [
+				{
+					index: 1,
+					delta: {
+						tool_calls: [
+							{ index: 1, id: "", type: "function", function: { arguments: '{"q":"bar"}' } },
+						],
+					},
+					finish_reason: "tool_calls",
+				},
+			],
+		})}
+
+data: [DONE]
+`;
+
+		global.fetch = (async () => {
+			return new Response(sseResponse, {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		const chunks: StreamChunk[] = [];
+		for await (const chunk of driver.chat({
+			model: "gpt-4",
+			messages: [{ role: "user", content: "Search for foo and bar" }],
+		})) {
+			chunks.push(chunk);
+		}
+
+		const startChunks = chunks.filter((c) => c.type === "tool_use_start");
+		expect(startChunks).toHaveLength(2);
+
+		const ids = startChunks.map((c) => (c as { id: string }).id);
+		expect(ids[0]).not.toEqual(ids[1]);
+		expect(ids[0]).toMatch(/^openai-\d+-\d+$/);
+		expect(ids[1]).toMatch(/^openai-\d+-\d+$/);
 	});
 });

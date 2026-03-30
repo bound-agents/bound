@@ -81,27 +81,21 @@ const createMockLogger = (): Logger => ({
 
 // Mock LLM backend
 class MockLLMBackend implements LLMBackend {
-	async chat(_params: ChatParams) {
+	// biome-ignore lint/correctness/useYield: mock generator for test
+	async *chat(_params: ChatParams) {
+		// Mock implementation
+		return;
+	}
+
+	capabilities() {
 		return {
-			choices: [
-				{
-					message: { role: "assistant", content: "mocked response" },
-				},
-			],
-			usage: { input_tokens: 10, output_tokens: 10 },
+			streaming: true,
+			tool_use: true,
+			system_prompt: true,
+			prompt_caching: false,
+			vision: false,
+			max_context: 4096,
 		};
-	}
-
-	supportsStreaming(): boolean {
-		return false;
-	}
-
-	supportsToolUse(): boolean {
-		return false;
-	}
-
-	getSiteId(): string {
-		return "mock-site";
 	}
 }
 

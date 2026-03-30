@@ -117,9 +117,16 @@ function toOllamaMessages(messages: LLMMessage[]): OllamaMessage[] {
 	});
 }
 
-function* emitChunkEvents(chunk: OllamaStreamResponse): IterableIterator<StreamChunk> {
+function* emitChunkEvents(
+	chunk: OllamaStreamResponse,
+	params: ChatParams,
+	state: { outputText: string },
+	turnTs: number,
+	getNextToolIndex: () => number,
+): IterableIterator<StreamChunk> {
 	// Emit text content if present (check for undefined/empty, but keep whitespace)
 	if (chunk.message.content !== undefined && chunk.message.content !== "") {
+		state.outputText += chunk.message.content;
 		yield {
 			type: "text",
 			content: chunk.message.content,
@@ -129,38 +136,66 @@ function* emitChunkEvents(chunk: OllamaStreamResponse): IterableIterator<StreamC
 	// Emit tool calls
 	if (chunk.message.tool_calls && chunk.message.tool_calls.length > 0) {
 		for (const toolCall of chunk.message.tool_calls) {
+			const toolId = `ollama-${turnTs}-${getNextToolIndex()}`;
 			yield {
 				type: "tool_use_start",
-				id: toolCall.function.name,
+				id: toolId,
 				name: toolCall.function.name,
 			};
 
 			yield {
 				type: "tool_use_args",
-				id: toolCall.function.name,
+				id: toolId,
 				partial_json: toolCall.function.arguments,
 			};
 
 			yield {
 				type: "tool_use_end",
-				id: toolCall.function.name,
+				id: toolId,
 			};
 		}
 	}
 
 	// Emit done when stream finishes
 	if (chunk.done) {
+		let inputTokens = chunk.prompt_eval_count || 0;
+		let outputTokens = chunk.eval_count || 0;
+		let estimated = false;
+
+		// Zero-usage guard
+		if (inputTokens === 0 && outputTokens === 0 && state.outputText.length > 0) {
+			inputTokens = Math.ceil(
+				params.messages.reduce(
+					(sum, m) =>
+						sum +
+						(typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length),
+					0,
+				) / 4,
+			);
+			outputTokens = Math.ceil(state.outputText.length / 4);
+			estimated = true;
+		}
+
 		yield {
 			type: "done",
 			usage: {
-				input_tokens: chunk.prompt_eval_count || 0,
-				output_tokens: chunk.eval_count || 0,
+				input_tokens: inputTokens,
+				output_tokens: outputTokens,
+				cache_write_tokens: null,
+				cache_read_tokens: null,
+				estimated,
 			},
 		};
 	}
 }
 
-async function* parseOllamaStream(response: Response): AsyncIterable<StreamChunk> {
+async function* parseOllamaStream(
+	response: Response,
+	params: ChatParams,
+): AsyncIterable<StreamChunk> {
+	const state = { outputText: "" };
+	const turnTs = Date.now();
+	let toolCallIndex = 0;
 	for await (const line of parseStreamLines(response, "ollama")) {
 		let chunk: OllamaStreamResponse;
 		try {
@@ -173,7 +208,7 @@ async function* parseOllamaStream(response: Response): AsyncIterable<StreamChunk
 			continue;
 		}
 
-		yield* emitChunkEvents(chunk);
+		yield* emitChunkEvents(chunk, params, state, turnTs, () => toolCallIndex++);
 	}
 }
 
@@ -227,7 +262,7 @@ export class OllamaDriver implements LLMBackend {
 			return res;
 		});
 
-		yield* parseOllamaStream(response);
+		yield* parseOllamaStream(response, params);
 	}
 
 	capabilities(): BackendCapabilities {

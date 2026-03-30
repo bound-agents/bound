@@ -23,16 +23,42 @@ export type LLMMessage = {
 	host_origin?: string;
 };
 
+export type ImageSource =
+	| {
+			type: "base64";
+			media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+			data: string;
+	  }
+	| { type: "file_ref"; file_id: string };
+
 export type ContentBlock =
 	| { type: "text"; text: string }
-	| { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
+	| { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
+	| { type: "image"; source: ImageSource; description?: string }
+	| { type: "document"; source: ImageSource; text_representation: string; title?: string };
+
+export interface CapabilityRequirements {
+	vision?: boolean;
+	tool_use?: boolean;
+	system_prompt?: boolean;
+	prompt_caching?: boolean;
+}
 
 export type StreamChunk =
 	| { type: "text"; content: string }
 	| { type: "tool_use_start"; id: string; name: string }
 	| { type: "tool_use_args"; id: string; partial_json: string }
 	| { type: "tool_use_end"; id: string }
-	| { type: "done"; usage: { input_tokens: number; output_tokens: number } }
+	| {
+			type: "done";
+			usage: {
+				input_tokens: number;
+				output_tokens: number;
+				cache_write_tokens: number | null;
+				cache_read_tokens: number | null;
+				estimated: boolean;
+			};
+	  }
 	| { type: "error"; error: string };
 
 export interface BackendCapabilities {
@@ -73,6 +99,7 @@ export class LLMError extends Error {
 		public provider: string,
 		public statusCode?: number,
 		public originalError?: Error,
+		public retryAfterMs?: number,
 	) {
 		super(message);
 		this.name = "LLMError";

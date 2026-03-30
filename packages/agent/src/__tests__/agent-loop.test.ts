@@ -1087,4 +1087,239 @@ describe("AgentLoop", () => {
 			expect(callOrder).toContain("exec");
 		});
 	});
+
+	it("reassigns duplicate tool-use IDs and logs a warning (AC6.4)", async () => {
+		const mockBackend = new MockLLMBackend();
+
+		// Mock backend that yields two tool calls with the same ID "search"
+		mockBackend.pushResponse(async function* () {
+			yield {
+				type: "tool_use_start" as const,
+				id: "search",
+				name: "search",
+			};
+			yield {
+				type: "tool_use_args" as const,
+				id: "search",
+				partial_json: '{"q":"foo"}',
+			};
+			yield {
+				type: "tool_use_end" as const,
+				id: "search",
+			};
+			yield {
+				type: "tool_use_start" as const,
+				id: "search",
+				name: "search",
+			};
+			yield {
+				type: "tool_use_args" as const,
+				id: "search",
+				partial_json: '{"q":"bar"}',
+			};
+			yield {
+				type: "tool_use_end" as const,
+				id: "search",
+			};
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		// Mock the tool execution to always succeed
+		const mockBash = createMockSandbox((_cmd) => ({
+			stdout: JSON.stringify({ result: "success" }),
+			stderr: "",
+			exitCode: 0,
+		}));
+
+		const ctx = makeCtx();
+		let warningLogged = false;
+		ctx.logger.warn = (msg: string) => {
+			if (msg.includes("Duplicate tool-use ID")) {
+				warningLogged = true;
+			}
+		};
+
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await agentLoop.run();
+
+		// Should succeed with 2 tool calls despite duplicates
+		expect(result.toolCallsMade).toBe(2);
+		expect(result.error).toBeUndefined();
+		// Warning should have been logged
+		expect(warningLogged).toBe(true);
+	});
+
+	it("handles 3+ duplicate tool-use IDs correctly (ordering guarantee)", async () => {
+		const mockBackend = new MockLLMBackend();
+
+		// Mock backend that yields three tool calls all with the same ID "search"
+		mockBackend.pushResponse(async function* () {
+			yield {
+				type: "tool_use_start" as const,
+				id: "search",
+				name: "search",
+			};
+			yield {
+				type: "tool_use_args" as const,
+				id: "search",
+				partial_json: '{"q":"first"}',
+			};
+			yield {
+				type: "tool_use_end" as const,
+				id: "search",
+			};
+			yield {
+				type: "tool_use_start" as const,
+				id: "search",
+				name: "search",
+			};
+			yield {
+				type: "tool_use_args" as const,
+				id: "search",
+				partial_json: '{"q":"second"}',
+			};
+			yield {
+				type: "tool_use_end" as const,
+				id: "search",
+			};
+			yield {
+				type: "tool_use_start" as const,
+				id: "search",
+				name: "search",
+			};
+			yield {
+				type: "tool_use_args" as const,
+				id: "search",
+				partial_json: '{"q":"third"}',
+			};
+			yield {
+				type: "tool_use_end" as const,
+				id: "search",
+			};
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		// Mock the tool execution to always succeed
+		const mockBash = createMockSandbox((_cmd) => ({
+			stdout: JSON.stringify({ result: "success" }),
+			stderr: "",
+			exitCode: 0,
+		}));
+
+		const ctx = makeCtx();
+		let warningCount = 0;
+		ctx.logger.warn = (msg: string) => {
+			if (msg.includes("Duplicate tool-use ID")) {
+				warningCount++;
+			}
+		};
+
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await agentLoop.run();
+
+		// Should succeed with 3 tool calls despite duplicates
+		expect(result.toolCallsMade).toBe(3);
+		expect(result.error).toBeUndefined();
+		// Warning should have been logged exactly 2 times (once per duplicate detected)
+		// First occurrence is not a duplicate, second and third are duplicates
+		expect(warningCount).toBe(2);
+	});
+
+	it("Anthropic native tool IDs are passed through unchanged (AC6.3)", async () => {
+		const mockBackend = new MockLLMBackend();
+
+		// Simulate Anthropic native IDs (toolu_*)
+		mockBackend.pushResponse(async function* () {
+			yield {
+				type: "tool_use_start" as const,
+				id: "toolu_01",
+				name: "search",
+			};
+			yield {
+				type: "tool_use_args" as const,
+				id: "toolu_01",
+				partial_json: '{"q":"foo"}',
+			};
+			yield {
+				type: "tool_use_end" as const,
+				id: "toolu_01",
+			};
+			yield {
+				type: "tool_use_start" as const,
+				id: "toolu_02",
+				name: "search",
+			};
+			yield {
+				type: "tool_use_args" as const,
+				id: "toolu_02",
+				partial_json: '{"q":"bar"}',
+			};
+			yield {
+				type: "tool_use_end" as const,
+				id: "toolu_02",
+			};
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		const mockBash = createMockSandbox((_cmd) => ({
+			stdout: JSON.stringify({ result: "success" }),
+			stderr: "",
+			exitCode: 0,
+		}));
+
+		const ctx = makeCtx();
+		let warningLogged = false;
+		ctx.logger.warn = (msg: string) => {
+			if (msg.includes("Duplicate tool-use ID")) {
+				warningLogged = true;
+			}
+		};
+
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await agentLoop.run();
+
+		// Native IDs should pass through unchanged, no warning needed
+		expect(result.toolCallsMade).toBe(2);
+		expect(result.error).toBeUndefined();
+		expect(warningLogged).toBe(false);
+	});
 });

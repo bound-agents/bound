@@ -44,6 +44,7 @@ import {
 	persistWorkspaceChanges,
 	snapshotWorkspace,
 } from "@bound/sandbox";
+import type { HostModelEntry } from "@bound/shared";
 import type { ProcessPayload, StatusForwardPayload, SyncConfig } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import { ReachabilityTracker, ensureKeypair } from "@bound/sync";
@@ -500,6 +501,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 				apiKey: b.api_key,
 				region: b.region,
 				profile: b.profile,
+				capabilities: b.capabilities, // Pass through capabilities override (may be undefined)
+				tier: b.tier, // Phase 6 addition — needed for HostModelEntry
 			}),
 		),
 		default: rawBackends.default,
@@ -520,9 +523,22 @@ export async function runStart(args: StartArgs): Promise<void> {
 		console.warn(`[llm] Failed to create model router: ${formatError(error)}`);
 	}
 
-	// Register local model IDs in hosts.models for sync advertisement
+	// Register local model capabilities in hosts.models for sync advertisement
 	if (modelRouter) {
-		const modelIds = modelRouter.listBackends().map((b) => b.id);
+		// Emit HostModelEntry objects with tier and effective capabilities.
+		// NOTE: Tier is sourced from rawBackends (the Zod-validated config) rather than through
+		// ModelRouter because BackendInfo.capabilities does not currently expose tier.
+		// `tier` passes through BackendConfig's [key:string]:unknown index signature but is not
+		// a typed field on BackendInfo. A future improvement could add tier to BackendInfo.
+		const modelEntries: HostModelEntry[] = modelRouter.listBackends().map((b) => {
+			const rawBackend = rawBackends.backends.find((rb) => rb.id === b.id);
+			return {
+				id: b.id,
+				tier: rawBackend?.tier,
+				capabilities: b.capabilities,
+			};
+		});
+
 		const existingHost = appContext.db
 			.query("SELECT site_id FROM hosts WHERE site_id = ?")
 			.get(appContext.siteId) as { site_id: string } | null;
@@ -532,7 +548,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				appContext.db,
 				"hosts",
 				appContext.siteId,
-				{ models: JSON.stringify(modelIds) },
+				{ models: JSON.stringify(modelEntries) },
 				appContext.siteId,
 			);
 		}

@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { LLMMessage } from "@bound/llm";
+import type { BackendCapabilities, LLMMessage } from "@bound/llm";
 import type { Message } from "@bound/shared";
 import { getFileThreadNotificationMessage, getLastThreadForFile } from "./file-thread-tracker";
 import { buildCrossThreadDigest } from "./summary-extraction.js";
@@ -28,6 +28,13 @@ export interface ContextParams {
 	 * When omitted, a generic reference is used instead of a specific tool name.
 	 */
 	platformContext?: { platform: string; toolNames?: string[] };
+	/**
+	 * When set, context assembly performs in-place substitution of content blocks
+	 * that the target backend does not support. Image blocks are replaced with text
+	 * annotations when vision is not supported. Document blocks are always replaced
+	 * with their text_representation.
+	 */
+	targetCapabilities?: BackendCapabilities;
 }
 
 // Cache for persona content - loaded once at startup
@@ -72,6 +79,104 @@ function loadPersona(configDir: string): string | null {
  * 7. BUDGET_VALIDATION - Check token count, truncate if needed
  * 8. METRIC_RECORDING - Record tokens (deferred to Phase 8)
  */
+// Tracks per-thread+backend advisory "image stripped" notifications to avoid log noise.
+// Map key: `${threadId}::${backendId}` (backendId approximated by vision flag string)
+const advisoryDedup = new Set<string>();
+
+/**
+ * Substitutes content blocks that the target backend does not support.
+ * Returns a new LLMMessage with substituted content, or the original if no substitution needed.
+ * Never modifies the database.
+ */
+function substituteUnsupportedBlocks(
+	msg: LLMMessage,
+	targetCapabilities: BackendCapabilities,
+	db: Database,
+	threadId: string,
+): LLMMessage {
+	// Try to parse content as ContentBlock[] (may be a JSON string or already an array)
+	let blocks: Array<{ type: string; [key: string]: unknown }> | null = null;
+	if (Array.isArray(msg.content)) {
+		blocks = msg.content as Array<{ type: string; [key: string]: unknown }>;
+	} else if (typeof msg.content === "string") {
+		try {
+			const parsed = JSON.parse(msg.content);
+			if (Array.isArray(parsed)) blocks = parsed;
+		} catch {
+			// Not JSON — plain text, no block substitution needed
+		}
+	}
+
+	if (!blocks) return msg;
+
+	// Check if any substitution is needed
+	const hasImage = blocks.some((b) => b.type === "image");
+	const hasDocument = blocks.some((b) => b.type === "document");
+	if (!hasImage && !hasDocument) return msg;
+
+	const substituted = blocks.map((block) => {
+		if (block.type === "image" && !targetCapabilities.vision) {
+			// Replace image block with text annotation
+			const description = typeof block.description === "string" ? block.description : "image";
+			return { type: "text" as const, text: `[Image: ${description}]` };
+		}
+
+		if (block.type === "document") {
+			// Always replace document blocks with their text_representation
+			const textRep =
+				typeof block.text_representation === "string"
+					? block.text_representation
+					: "[Document: content unavailable]";
+			return { type: "text" as const, text: textRep };
+		}
+
+		// Handle file_ref image sources that need DB lookup
+		if (block.type === "image" && targetCapabilities.vision) {
+			const source = block.source as
+				| { type?: string; file_id?: string; data?: string; media_type?: string }
+				| undefined;
+			if (source?.type === "file_ref" && source.file_id) {
+				// Attempt to resolve file content from files table
+				const fileRow = db
+					.query("SELECT content, is_binary FROM files WHERE id = ? AND deleted = 0")
+					.get(source.file_id) as { content: string | null; is_binary: number } | null;
+
+				if (!fileRow || !fileRow.content) {
+					// File not found or binary without content — use text placeholder
+					return {
+						type: "text" as const,
+						text: `[Image file unavailable: ${source.file_id}]`,
+					};
+				}
+				// Resolve to base64 inline block
+				return {
+					type: "image" as const,
+					source: {
+						type: "base64" as const,
+						media_type: "image/jpeg" as const, // default; ideally stored in files table
+						data: fileRow.content,
+					},
+					description: block.description,
+				};
+			}
+		}
+
+		return block;
+	});
+
+	// Only emit advisory once per thread+vision-capability combo to avoid log noise
+	if (hasImage && !targetCapabilities.vision) {
+		const advisoryKey = `${threadId}::vision:false`;
+		if (!advisoryDedup.has(advisoryKey)) {
+			advisoryDedup.add(advisoryKey);
+			// Note: we don't have access to logger here — advisory is a no-op for now.
+			// Agent-loop logs the substitution at the call site.
+		}
+	}
+
+	return { ...msg, content: substituted as LLMMessage["content"] };
+}
+
 // Static list of available built-in commands with brief descriptions
 const AVAILABLE_COMMANDS = [
 	{ name: "query", description: "Execute a SELECT query against the database" },
@@ -111,6 +216,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		siteId,
 		relayInfo,
 		platformContext,
+		targetCapabilities,
 	} = params;
 
 	// Stage 1: MESSAGE_RETRIEVAL
@@ -501,6 +607,13 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		annotated.push(msg);
 	}
 
+	// Stage 5b: CONTENT_SUBSTITUTION
+	// Replace image/document blocks in assembled messages when the target backend lacks vision support.
+	// This modifies the LLMMessage[] only — the persisted messages.content is never changed.
+	const finalAnnotated = targetCapabilities
+		? annotated.map((msg) => substituteUnsupportedBlocks(msg, targetCapabilities, db, threadId))
+		: annotated;
+
 	// Stage 6: ASSEMBLY
 	// Start with system prompt
 	const assembled: LLMMessage[] = [
@@ -596,7 +709,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	}
 
 	// Add message history
-	assembled.push(...annotated);
+	assembled.push(...finalAnnotated);
 
 	// Add volatile context at the end per spec R-U30
 	if (!noHistory) {

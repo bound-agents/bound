@@ -245,6 +245,96 @@ describe("OllamaDriver", () => {
 		expect(chunks.some((c) => c.type === "done")).toBe(true);
 	});
 
+	describe("cache token extraction", () => {
+		it("AC4.4 — should always emit null cache tokens", async () => {
+			const driver = new OllamaDriver({
+				baseUrl: "http://localhost:11434",
+				model: "llama2",
+				contextWindow: 4096,
+			});
+
+			global.fetch = (async () => {
+				const ndjson = [
+					JSON.stringify({
+						model: "llama2",
+						created_at: "2024-01-01T00:00:00Z",
+						message: { role: "assistant", content: "Response" },
+						done: true,
+						prompt_eval_count: 5,
+						eval_count: 3,
+					}),
+				];
+
+				return new Response(ndjson.join("\n"), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}) as typeof fetch;
+
+			const chunks: StreamChunk[] = [];
+			for await (const chunk of driver.chat({
+				model: "llama2",
+				messages: [{ role: "user", content: "Hi" }],
+			})) {
+				chunks.push(chunk);
+			}
+
+			const doneChunk = chunks.find((c) => c.type === "done");
+			expect(doneChunk).toBeDefined();
+			expect(doneChunk?.type).toBe("done");
+			if (doneChunk?.type === "done") {
+				expect(doneChunk.usage.cache_write_tokens).toBeNull();
+				expect(doneChunk.usage.cache_read_tokens).toBeNull();
+				expect(doneChunk.usage.estimated).toBe(false);
+				expect(doneChunk.usage.input_tokens).toBe(5);
+				expect(doneChunk.usage.output_tokens).toBe(3);
+			}
+		});
+
+		it("AC4.5 — should apply zero-usage guard when all tokens are zero", async () => {
+			const driver = new OllamaDriver({
+				baseUrl: "http://localhost:11434",
+				model: "llama2",
+				contextWindow: 4096,
+			});
+
+			global.fetch = (async () => {
+				const ndjson = [
+					JSON.stringify({
+						model: "llama2",
+						created_at: "2024-01-01T00:00:00Z",
+						message: { role: "assistant", content: "This is a response" },
+						done: true,
+						prompt_eval_count: 0,
+						eval_count: 0,
+					}),
+				];
+
+				return new Response(ndjson.join("\n"), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}) as typeof fetch;
+
+			const chunks: StreamChunk[] = [];
+			for await (const chunk of driver.chat({
+				model: "llama2",
+				messages: [{ role: "user", content: "Hello world" }],
+			})) {
+				chunks.push(chunk);
+			}
+
+			const doneChunk = chunks.find((c) => c.type === "done");
+			expect(doneChunk).toBeDefined();
+			expect(doneChunk?.type).toBe("done");
+			if (doneChunk?.type === "done") {
+				expect(doneChunk.usage.estimated).toBe(true);
+				expect(doneChunk.usage.input_tokens).toBeGreaterThan(0);
+				expect(doneChunk.usage.output_tokens).toBeGreaterThan(0);
+			}
+		});
+	});
+
 	it("should handle tool_calls in stream response correctly", async () => {
 		const driver = new OllamaDriver({
 			baseUrl: "http://localhost:11434",
@@ -289,16 +379,13 @@ describe("OllamaDriver", () => {
 			chunks.push(chunk);
 		}
 
-		expect(chunks).toContainEqual({
-			type: "tool_use_start",
-			id: "add",
-			name: "add",
-		});
-		expect(chunks.some((c) => c.type === "tool_use_args")).toBe(true);
-		expect(chunks).toContainEqual({
-			type: "tool_use_end",
-			id: "add",
-		});
+		const startChunks = chunks.filter((c) => c.type === "tool_use_start");
+		expect(startChunks).toHaveLength(1);
+		const toolId = (startChunks[0] as { id: string }).id;
+		expect(toolId).toMatch(/^ollama-\d+-0$/);
+
+		expect(chunks.some((c) => c.type === "tool_use_args" && c.id === toolId)).toBe(true);
+		expect(chunks.some((c) => c.type === "tool_use_end" && c.id === toolId)).toBe(true);
 	});
 
 	it("should throw LLMError on connection failure", async () => {
@@ -400,5 +487,55 @@ describe("OllamaDriver", () => {
 		} finally {
 			global.fetch = originalFetch;
 		}
+	});
+
+	it("calling the same tool twice in one turn produces distinct IDs (AC6.1)", async () => {
+		const driver = new OllamaDriver({
+			baseUrl: "http://localhost:11434",
+			model: "llama2",
+			contextWindow: 4096,
+		});
+
+		global.fetch = (async () => {
+			const ndjson = [
+				JSON.stringify({
+					model: "llama2",
+					created_at: "2024-01-01T00:00:00Z",
+					message: {
+						role: "assistant",
+						content: "",
+						tool_calls: [
+							{ function: { name: "search", arguments: '{"q":"foo"}' } },
+							{ function: { name: "search", arguments: '{"q":"bar"}' } },
+						],
+					},
+					done: true,
+					prompt_eval_count: 5,
+					eval_count: 3,
+				}),
+			];
+
+			return new Response(ndjson.join("\n"), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}) as typeof fetch;
+
+		const chunks: StreamChunk[] = [];
+		for await (const chunk of driver.chat({
+			model: "llama2",
+			messages: [{ role: "user", content: "Search for foo and bar" }],
+		})) {
+			chunks.push(chunk);
+		}
+
+		const startChunks = chunks.filter((c) => c.type === "tool_use_start");
+		expect(startChunks).toHaveLength(2);
+
+		const ids = startChunks.map((c) => (c as { id: string }).id);
+		expect(ids[0]).not.toEqual(ids[1]);
+
+		expect(ids[0]).toMatch(/^ollama-\d+-0$/);
+		expect(ids[1]).toMatch(/^ollama-\d+-1$/);
 	});
 });

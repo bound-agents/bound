@@ -510,6 +510,356 @@ describe("Relay Router", () => {
 		});
 	});
 
+	describe("Phase 6: capability metadata in hosts.models", () => {
+		it("legacy string-format hosts remain eligible for unconstrained requests (AC7.3, AC7.4)", () => {
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				["legacy-host", "Legacy Host", JSON.stringify(["claude-3"]), 0, now, now],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-3", "local-site");
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.hosts[0].unverified).toBe(true);
+			}
+		});
+
+		it("object-format HostModelEntry is parsed and returned with capabilities (AC7.1)", () => {
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"verified-host",
+					"Verified Host",
+					JSON.stringify([
+						{
+							id: "claude-3",
+							tier: 1,
+							capabilities: {
+								vision: true,
+								tool_use: true,
+								system_prompt: true,
+								prompt_caching: false,
+							},
+						},
+					]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-3", "local-site");
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.hosts[0].unverified).toBe(false);
+				expect(result.hosts[0].capabilities?.vision).toBe(true);
+				expect(result.hosts[0].capabilities?.tool_use).toBe(true);
+				expect(result.hosts[0].tier).toBe(1);
+			}
+		});
+
+		it("excludes object-format hosts lacking vision capability when requirements.vision is set (AC7.2)", () => {
+			const now = new Date().toISOString();
+
+			// Host with vision: false
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"no-vision-host",
+					"No Vision Host",
+					JSON.stringify([
+						{
+							id: "claude-3",
+							tier: 1,
+							capabilities: { vision: false, tool_use: true },
+						},
+					]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			// Host with vision: true
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"vision-host",
+					"Vision Host",
+					JSON.stringify([
+						{
+							id: "claude-3",
+							tier: 2,
+							capabilities: { vision: true, tool_use: true },
+						},
+					]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-3", "local-site", { vision: true });
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.hosts.length).toBe(1);
+				expect(result.hosts[0].capabilities?.vision).toBe(true);
+				expect(result.hosts[0].site_id).toBe("vision-host");
+			}
+		});
+
+		it("uses unverified hosts as fallback when no verified capability match exists (AC7.3)", () => {
+			const now = new Date().toISOString();
+
+			// Verified host with vision: false
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"verified-no-vision",
+					"Verified No Vision",
+					JSON.stringify([
+						{
+							id: "claude-3",
+							tier: 1,
+							capabilities: { vision: false, tool_use: true },
+						},
+					]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			// Legacy string format (unverified)
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				["legacy-fallback", "Legacy Fallback", JSON.stringify(["claude-3"]), 0, now, now],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-3", "local-site", { vision: true });
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.hosts[0].unverified).toBe(true);
+				expect(result.hosts[0].site_id).toBe("legacy-fallback");
+			}
+		});
+
+		it("handles mixed string/object entries in hosts.models without error (AC7.4)", () => {
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"mixed-host",
+					"Mixed Host",
+					JSON.stringify([
+						"old-model",
+						{
+							id: "new-model",
+							tier: 1,
+							capabilities: { vision: true, tool_use: true },
+						},
+					]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			const r1 = findEligibleHostsByModel(db, "old-model", "local-site");
+			const r2 = findEligibleHostsByModel(db, "new-model", "local-site");
+			expect(r1.ok).toBe(true);
+			expect(r2.ok).toBe(true);
+			if (r1.ok) expect(r1.hosts[0].unverified).toBe(true);
+			if (r2.ok) expect(r2.hosts[0].unverified).toBe(false);
+		});
+
+		it("sorts verified hosts by tier (lower first) then by online_at", () => {
+			const now = new Date();
+			const recentTime = new Date(now.getTime() - 1 * 60 * 1000).toISOString(); // 1 min ago
+			const olderTime = new Date(now.getTime() - 3 * 60 * 1000).toISOString(); // 3 min ago
+
+			// Tier 3, recent
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"tier3-recent",
+					"Tier 3 Recent",
+					JSON.stringify([
+						{
+							id: "claude-3",
+							tier: 3,
+							capabilities: { vision: true, tool_use: true },
+						},
+					]),
+					0,
+					recentTime,
+					new Date().toISOString(),
+				],
+			);
+
+			// Tier 1, older
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"tier1-older",
+					"Tier 1 Older",
+					JSON.stringify([
+						{
+							id: "claude-3",
+							tier: 1,
+							capabilities: { vision: true, tool_use: true },
+						},
+					]),
+					0,
+					olderTime,
+					new Date().toISOString(),
+				],
+			);
+
+			// Tier 1, recent (should be second: same tier as tier1-older but more recent)
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"tier1-recent",
+					"Tier 1 Recent",
+					JSON.stringify([
+						{
+							id: "claude-3",
+							tier: 1,
+							capabilities: { vision: true, tool_use: true },
+						},
+					]),
+					0,
+					recentTime,
+					new Date().toISOString(),
+				],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-3", "local-site");
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.hosts[0].tier).toBe(1);
+				expect(result.hosts[1].tier).toBe(1);
+				expect(result.hosts[2].tier).toBe(3);
+			}
+		});
+
+		it("filters by tool_use requirement", () => {
+			const now = new Date().toISOString();
+
+			// Host without tool_use
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"no-tools-host",
+					"No Tools Host",
+					JSON.stringify([
+						{
+							id: "claude-3",
+							tier: 1,
+							capabilities: { vision: true, tool_use: false },
+						},
+					]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			// Host with tool_use
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"with-tools-host",
+					"With Tools Host",
+					JSON.stringify([
+						{
+							id: "claude-3",
+							tier: 1,
+							capabilities: { vision: true, tool_use: true },
+						},
+					]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-3", "local-site", { tool_use: true });
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.hosts.length).toBe(1);
+				expect(result.hosts[0].site_id).toBe("with-tools-host");
+			}
+		});
+
+		it("returns verified hosts before unverified when requirements set", () => {
+			const now = new Date().toISOString();
+
+			// Unverified (legacy string)
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				["legacy-host", "Legacy Host", JSON.stringify(["claude-3"]), 0, now, now],
+			);
+
+			// Verified but no vision
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"verified-no-vision",
+					"Verified No Vision",
+					JSON.stringify([
+						{
+							id: "claude-3",
+							tier: 1,
+							capabilities: { vision: false, tool_use: true },
+						},
+					]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-3", "local-site", { vision: true });
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				// Fallback to unverified since no verified match with vision
+				expect(result.hosts[0].unverified).toBe(true);
+			}
+		});
+	});
+
 	describe("createRelayOutboxEntry", () => {
 		it("creates relay outbox entry with all required fields", () => {
 			const entry = createRelayOutboxEntry(

@@ -1,12 +1,29 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import type { RelayOutboxEntry } from "@bound/shared";
+import type { CapabilityRequirements } from "@bound/llm";
+import type { HostModelEntry, RelayOutboxEntry } from "@bound/shared";
 
 export interface EligibleHost {
 	site_id: string;
 	host_name: string;
 	sync_url: string | null;
 	online_at: string | null;
+	/** Capability metadata from the host's HostModelEntry. Present for verified hosts only. */
+	capabilities?: {
+		streaming?: boolean;
+		tool_use?: boolean;
+		system_prompt?: boolean;
+		prompt_caching?: boolean;
+		vision?: boolean;
+		max_context?: number;
+	};
+	/** Tier preference (lower = preferred). Present for verified hosts only. */
+	tier?: number;
+	/**
+	 * Whether this host entry was parsed from legacy string format (no metadata).
+	 * Unverified hosts are used as fallback when no verified match exists.
+	 */
+	unverified?: boolean;
 }
 
 export interface RelayRoutingResult {
@@ -77,6 +94,7 @@ export function findEligibleHostsByModel(
 	db: Database,
 	modelId: string,
 	localSiteId: string,
+	requirements?: CapabilityRequirements,
 ): RelayRoutingResult | RelayRoutingError {
 	const rows = db
 		.query(
@@ -92,7 +110,9 @@ export function findEligibleHostsByModel(
 		online_at: string | null;
 	}>;
 
-	const eligible: EligibleHost[] = [];
+	const verified: EligibleHost[] = [];
+	const unverified: EligibleHost[] = [];
+
 	for (const row of rows) {
 		if (!row.models) continue;
 		// Stale hosts are excluded (online_at older than STALE_THRESHOLD_MS)
@@ -102,27 +122,95 @@ export function findEligibleHostsByModel(
 		} else {
 			continue; // No online_at means never seen — skip
 		}
-		let models: string[];
+
+		let rawModels: unknown;
 		try {
-			models = JSON.parse(row.models);
+			rawModels = JSON.parse(row.models);
 		} catch {
 			continue; // Malformed JSON — skip host
 		}
-		if (!models.includes(modelId)) continue;
-		eligible.push({
-			site_id: row.site_id,
-			host_name: row.host_name,
-			sync_url: row.sync_url,
-			online_at: row.online_at,
-		});
+
+		if (!Array.isArray(rawModels)) continue;
+
+		// Parse each entry as either a legacy string or a HostModelEntry object
+		for (const entry of rawModels) {
+			if (typeof entry === "string") {
+				// Legacy format: plain model ID string, no capability metadata
+				if (entry === modelId) {
+					unverified.push({
+						site_id: row.site_id,
+						host_name: row.host_name,
+						sync_url: row.sync_url,
+						online_at: row.online_at,
+						unverified: true,
+					});
+				}
+			} else if (
+				entry &&
+				typeof entry === "object" &&
+				typeof (entry as HostModelEntry).id === "string"
+			) {
+				// New object format: HostModelEntry with id, tier, capabilities
+				const hostEntry = entry as HostModelEntry;
+				if (hostEntry.id !== modelId) continue;
+
+				const host: EligibleHost = {
+					site_id: row.site_id,
+					host_name: row.host_name,
+					sync_url: row.sync_url,
+					online_at: row.online_at,
+					capabilities: hostEntry.capabilities,
+					tier: hostEntry.tier,
+					unverified: false,
+				};
+
+				// Apply capability filter (only for verified hosts)
+				if (requirements) {
+					const caps = hostEntry.capabilities;
+					if (!caps) {
+						// No capability metadata → treat as unverified fallback
+						unverified.push({ ...host, unverified: true });
+						continue;
+					}
+					if (requirements.vision && !caps.vision) continue; // Exclude
+					if (requirements.tool_use && !caps.tool_use) continue;
+					if (requirements.system_prompt && !caps.system_prompt) continue;
+					if (requirements.prompt_caching && !caps.prompt_caching) continue;
+				}
+
+				verified.push(host);
+			}
+		}
+	}
+
+	// When requirements are set: return only verified matches; unverified hosts are
+	// fallback when no verified match exists (AC7.3/AC7.4).
+	// When no requirements: return all (verified + unverified) sorted by preference.
+	let eligible: EligibleHost[];
+	if (requirements && verified.length > 0) {
+		eligible = verified;
+	} else if (requirements && verified.length === 0) {
+		// No verified match — fall back to unverified hosts
+		eligible = unverified;
+	} else {
+		// No requirements — combine all, verified first
+		eligible = [...verified, ...unverified];
 	}
 
 	if (eligible.length === 0) {
 		return { ok: false, error: `Model "${modelId}" not available on any remote host` };
 	}
 
-	// Sort by online_at descending (most recent first)
+	// Sort: by tier (ascending, lower is better), then by online_at (descending)
 	eligible.sort((a, b) => {
+		// Verified before unverified
+		if (!a.unverified && b.unverified) return -1;
+		if (a.unverified && !b.unverified) return 1;
+		// By tier (lower tier = preferred)
+		const tierA = a.tier ?? 99;
+		const tierB = b.tier ?? 99;
+		if (tierA !== tierB) return tierA - tierB;
+		// By online_at (most recent first)
 		if (!a.online_at && !b.online_at) return 0;
 		if (!a.online_at) return 1;
 		if (!b.online_at) return -1;
