@@ -15,6 +15,12 @@ const INTERACTION_TTL_MS = 14 * 60 * 1000;
 /** Discord's message content limit. */
 const DISCORD_MAX_LENGTH = 2000;
 
+/** Polling interval for agent response. Matches bound-mcp pattern. */
+const POLL_INTERVAL_MS = 500;
+
+/** Maximum time to wait for agent response. */
+const MAX_POLL_MS = 5 * 60 * 1000; // 5 minutes
+
 interface StoredInteraction {
 	/** The Discord.js interaction object — needed for editReply. */
 	interaction: { editReply(options: { content: string }): Promise<unknown> };
@@ -30,6 +36,9 @@ export class DiscordInteractionConnector implements PlatformConnector {
 	private interactions = new Map<string, StoredInteraction>();
 	private onInteractionCreate: ((interaction: DiscordInteraction) => void) | null = null;
 
+	/** Set by disconnect() to abort any active polling loops. */
+	private disconnecting = false;
+
 	constructor(
 		private readonly config: PlatformConnectorConfig,
 		private readonly db: Database,
@@ -40,6 +49,8 @@ export class DiscordInteractionConnector implements PlatformConnector {
 	) {}
 
 	async connect(_hostBaseUrl?: string): Promise<void> {
+		this.disconnecting = false;
+
 		const client = this.clientManager.getClient();
 
 		// Register "File for Later" context menu command (idempotent upsert — AC1.1, AC1.2)
@@ -62,6 +73,8 @@ export class DiscordInteractionConnector implements PlatformConnector {
 	}
 
 	async disconnect(): Promise<void> {
+		this.disconnecting = true;
+
 		try {
 			const client = this.clientManager.getClient();
 			if (this.onInteractionCreate) {
@@ -234,6 +247,64 @@ export class DiscordInteractionConnector implements PlatformConnector {
 		return "(unrecognized)";
 	}
 
+	/**
+	 * Poll the local DB for an assistant response on the thread.
+	 * Adapted from packages/mcp-server/src/handler.ts:24-43.
+	 *
+	 * Unlike bound-mcp which polls via HTTP, this queries the DB directly
+	 * since the interaction connector runs on the platform leader host.
+	 *
+	 * Checks this.disconnecting to abort early on shutdown.
+	 */
+	private async pollForResponse(threadId: string, afterTimestamp: string): Promise<void> {
+		const startTime = Date.now();
+
+		while (true) {
+			// Abort if connector is shutting down
+			if (this.disconnecting) {
+				this.logger.info("Polling aborted — connector disconnecting", { threadId });
+				this.interactions.delete(threadId);
+				return;
+			}
+			// Query for assistant response created after the user's filing message
+			const response = this.db
+				.query<{ id: string; content: string }, [string, string]>(
+					"SELECT id, content FROM messages WHERE thread_id = ? AND role = 'assistant' AND created_at > ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+				)
+				.get(threadId, afterTimestamp);
+
+			if (response) {
+				// AC8.1: Found response — deliver via editReply
+				await this.deliver(threadId, response.id, response.content);
+				return;
+			}
+
+			// AC8.2: Check timeout
+			if (Date.now() - startTime >= MAX_POLL_MS) {
+				this.logger.warn("Polling timed out waiting for agent response", { threadId });
+				// Deliver timeout error via editReply
+				const stored = this.interactions.get(threadId);
+				if (stored && new Date(stored.expiresAt) > new Date()) {
+					try {
+						await stored.interaction.editReply({
+							content: "Error: Timed out waiting for agent response after 5 minutes.",
+						});
+					} catch (err) {
+						this.logger.warn("editReply failed for timeout message", {
+							threadId,
+							error: String(err),
+						});
+					}
+				}
+				this.interactions.delete(threadId);
+				return;
+			}
+
+			// Wait before next poll (same pattern as bound-mcp handler.ts:42)
+			await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+		}
+	}
+
 	private async handleInteraction(interaction: DiscordInteraction): Promise<void> {
 		// AC2.5: Only handle message context menu commands named "File for Later"
 		if (!interaction.isMessageContextMenuCommand()) return;
@@ -347,6 +418,7 @@ export class DiscordInteractionConnector implements PlatformConnector {
 			await interaction.editReply({
 				content: "Error: Failed to process this message. Please try again.",
 			});
+			return;
 		}
 
 		this.logger.info("File for Later interaction processed", {
@@ -354,5 +426,9 @@ export class DiscordInteractionConnector implements PlatformConnector {
 			messageId: targetMessage.id,
 			threadId: thread.id,
 		});
+
+		// Phase 4: Poll for agent response and deliver
+		// Use the user message's created_at as the "after" boundary
+		await this.pollForResponse(thread.id, now);
 	}
 }
