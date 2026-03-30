@@ -1,6 +1,7 @@
 import type { AppContext } from "@bound/core";
 import type { PlatformConnectorConfig, PlatformsConfig } from "@bound/shared";
 import type { PlatformConnector } from "./connector.js";
+import { DiscordClientManager } from "./connectors/discord-client-manager.js";
 import { DiscordConnector } from "./connectors/discord.js";
 import { WebhookStubConnector } from "./connectors/webhook-stub.js";
 import { PlatformLeaderElection } from "./leader-election.js";
@@ -91,14 +92,17 @@ export class PlatformConnectorRegistry {
 
 	private createConnector(config: PlatformConnectorConfig): PlatformConnector {
 		switch (config.platform) {
-			case "discord":
+			case "discord": {
+				const clientManager = new DiscordClientManager(this.ctx.logger);
 				return new DiscordConnector(
 					config,
 					this.ctx.db,
 					this.ctx.siteId,
 					this.ctx.eventBus,
 					this.ctx.logger,
+					clientManager,
 				);
+			}
 			case "webhook-stub":
 				return new WebhookStubConnector();
 			default:
