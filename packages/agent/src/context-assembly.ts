@@ -568,16 +568,12 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 					const skillName = (taskPayload as Record<string, unknown>).skill as string;
 
 					const skillRow = db
-						.query(
-							"SELECT id FROM skills WHERE name = ? AND status = 'active' AND deleted = 0",
-						)
+						.query("SELECT id FROM skills WHERE name = ? AND status = 'active' AND deleted = 0")
 						.get(skillName) as { id: string } | null;
 
 					if (skillRow) {
 						const skillMdRow = db
-							.query(
-								"SELECT content FROM files WHERE path = ? AND deleted = 0",
-							)
+							.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
 							.get(`/home/user/skills/${skillName}/SKILL.md`) as {
 							content: string;
 						} | null;

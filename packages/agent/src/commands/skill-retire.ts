@@ -24,9 +24,7 @@ export const skillRetire: CommandDefinition = {
 
 			// Find the skill
 			const skill = ctx.db
-				.prepare(
-					"SELECT id, status FROM skills WHERE name = ? AND deleted = 0",
-				)
+				.prepare("SELECT id, status FROM skills WHERE name = ? AND deleted = 0")
 				.get(name) as { id: string; status: string } | null;
 
 			if (!skill) {
