@@ -28,7 +28,7 @@ describe("DiscordClientManager", () => {
 			const manager = new DiscordClientManager(logger);
 
 			const mockClient = { user: { tag: "TestBot#0000" } };
-			(manager as any).client = mockClient;
+			(manager as unknown as { client: unknown }).client = mockClient;
 
 			const client = manager.getClient();
 			expect(client).toBe(mockClient);
@@ -57,7 +57,7 @@ describe("DiscordClientManager", () => {
 					destroyCalled = true;
 				},
 			};
-			(manager as any).client = mockClient;
+			(manager as unknown as { client: unknown }).client = mockClient;
 
 			await manager.disconnect();
 
@@ -77,7 +77,7 @@ describe("DiscordClientManager", () => {
 			const manager = new DiscordClientManager(logger);
 
 			// Manually set client to simulate already connected state
-			(manager as any).client = { test: "mock" };
+			(manager as unknown as { client: unknown }).client = { test: "mock" };
 
 			await manager.connect("test-token");
 
