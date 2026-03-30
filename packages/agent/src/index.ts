@@ -11,6 +11,7 @@ export { getDelegationTarget, getRecentToolCalls } from "./delegation";
 
 // Export agent loop
 export { AgentLoop } from "./agent-loop";
+export { findPendingUserMessage } from "./agent-loop-utils";
 
 // Export context assembly
 export { assembleContext } from "./context-assembly";

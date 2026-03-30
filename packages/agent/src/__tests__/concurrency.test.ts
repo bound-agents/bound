@@ -9,6 +9,7 @@ import type { AppContext } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { AgentLoop } from "../agent-loop";
+import { findPendingUserMessage } from "../agent-loop-utils";
 
 // Mock LLM Backend that returns text responses
 class MockLLMBackend implements LLMBackend {
@@ -276,5 +277,80 @@ describe("Concurrent agent loops with WAL serialization (R-U3)", () => {
 
 			expect(messages.count).toBeGreaterThan(0);
 		}
+	});
+});
+
+// When a user message arrives while a loop is already active for that thread, start.ts
+// drops it (activeLoops.has check). After the loop finishes, start.ts must check for
+// unprocessed messages and re-trigger. findPendingUserMessage() encapsulates this check.
+describe("findPendingUserMessage — queue-skip re-trigger detection", () => {
+	let tmpDir: string;
+	let db: Database;
+	let threadId: string;
+
+	beforeAll(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "queue-skip-test-"));
+		const dbPath = join(tmpDir, "test.db");
+		db = createDatabase(dbPath);
+		applySchema(db);
+		threadId = randomUUID();
+		const userId = randomUUID();
+		db.run(
+			"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+			[userId, "Queue Test User", null, new Date().toISOString(), new Date().toISOString(), 0],
+		);
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				threadId, userId, "web", "local", 0, "Queue Test", null, null, null, null,
+				new Date().toISOString(), new Date().toISOString(), new Date().toISOString(), 0,
+			],
+		);
+	});
+
+	afterAll(() => {
+		db.close();
+		if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("returns null when no user messages exist", () => {
+		expect(findPendingUserMessage(db, threadId)).toBeNull();
+	});
+
+	it("returns null when the only user message has a subsequent assistant response", () => {
+		const t1 = new Date(Date.now() - 4000).toISOString();
+		const t2 = new Date(Date.now() - 3000).toISOString();
+		db.run(
+			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[randomUUID(), threadId, "user", "first question", null, null, t1, t1, "local"],
+		);
+		db.run(
+			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[randomUUID(), threadId, "assistant", "first answer", "model-a", null, t2, t2, "local"],
+		);
+		expect(findPendingUserMessage(db, threadId)).toBeNull();
+	});
+
+	it("returns the pending user message that arrived after the last assistant response", () => {
+		// Arrange: user2 arrived AFTER the assistant response
+		const t3 = new Date(Date.now() - 1000).toISOString();
+		const pendingId = randomUUID();
+		db.run(
+			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[pendingId, threadId, "user", "second question (arrived while loop was active)", null, null, t3, t3, "local"],
+		);
+
+		const pending = findPendingUserMessage(db, threadId);
+		expect(pending).not.toBeNull();
+		expect(pending!.id).toBe(pendingId);
+	});
+
+	it("returns null once the pending message has been answered", () => {
+		const t4 = new Date().toISOString();
+		db.run(
+			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[randomUUID(), threadId, "assistant", "second answer", "model-a", null, t4, t4, "local"],
+		);
+		expect(findPendingUserMessage(db, threadId)).toBeNull();
 	});
 });

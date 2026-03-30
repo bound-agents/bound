@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
 	AgentLoop,
+	findPendingUserMessage,
 	RelayProcessor,
 	Scheduler,
 	createRelayOutboxEntry,
@@ -920,6 +921,30 @@ export async function runStart(args: StartArgs): Promise<void> {
 				console.error(`[agent] Error: ${formatError(error)}`);
 			} finally {
 				activeLoops.delete(thread_id);
+
+				// Re-queue: if a user message arrived while this loop was active
+				// (it was skipped by the activeLoops guard), detect it now and
+				// re-emit message:created so a new loop processes it.
+				try {
+					const pendingMsg = findPendingUserMessage(appContext.db, thread_id);
+					if (pendingMsg) {
+						console.log(
+							`[agent] Re-queuing skipped message in thread ${thread_id}`,
+						);
+						// Re-fetch the full message row to ensure all fields are present
+					const fullPendingMsg = appContext.db
+						.prepare("SELECT * FROM messages WHERE id = ? LIMIT 1")
+						.get(pendingMsg.id) as import("@bound/shared").Message | null;
+					if (fullPendingMsg) {
+						appContext.eventBus.emit("message:created", {
+							message: fullPendingMsg,
+							thread_id,
+						});
+					}
+					}
+				} catch {
+					// Non-fatal — don't break cleanup on re-queue failure
+				}
 			}
 		});
 	} catch (error) {
