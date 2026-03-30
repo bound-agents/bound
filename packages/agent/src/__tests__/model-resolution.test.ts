@@ -644,5 +644,168 @@ describe("Model Resolution", () => {
 			const localRes = resolution as Extract<ModelResolution, { kind: "local" }>;
 			expect(localRes.modelId).toBe("alt");
 		});
+
+		it("resolveModel with vision requirement excludes remote hosts without vision capability (AC7.2 end-to-end)", () => {
+			const now = new Date().toISOString();
+
+			// Insert a remote host with vision-model that lacks vision capability
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"remote-no-vision",
+					"Remote No Vision",
+					JSON.stringify([
+						{
+							id: "vision-model",
+							tier: 1,
+							capabilities: { vision: false, tool_use: true },
+						},
+					]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			const mockBackend = {
+				id: "local-model",
+				chat: async function* () {
+					yield { type: "text", text: "test" } as const;
+				},
+				capabilities: () => ({
+					streaming: true,
+					tools: true,
+					vision: false,
+					maxContextWindow: 200000,
+				}),
+			};
+
+			const backends = new Map([["local-model", mockBackend]]);
+			const modelRouter = new ModelRouter(backends, "local-model");
+
+			// Request vision-model with vision requirement
+			const resolution = resolveModel("vision-model", modelRouter, db, "local-site", {
+				vision: true,
+			});
+
+			// Should be error since remote host doesn't have vision
+			expect(resolution.kind).toBe("error");
+		});
+
+		it("resolveModel with no requirements accepts remote hosts without capability metadata (AC7.3 end-to-end)", () => {
+			const now = new Date().toISOString();
+
+			// Insert a remote host with legacy string format (no capabilities)
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"legacy-remote",
+					"Legacy Remote",
+					JSON.stringify(["vision-model"]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			const mockBackend = {
+				id: "local-model",
+				chat: async function* () {
+					yield { type: "text", text: "test" } as const;
+				},
+				capabilities: () => ({
+					streaming: true,
+					tools: true,
+					vision: false,
+					maxContextWindow: 200000,
+				}),
+			};
+
+			const backends = new Map([["local-model", mockBackend]]);
+			const modelRouter = new ModelRouter(backends, "local-model");
+
+			// Request vision-model WITHOUT requirements (no capability filtering)
+			const resolution = resolveModel("vision-model", modelRouter, db, "local-site");
+
+			// Should be remote since host is available (unverified legacy format accepted)
+			expect(resolution.kind).toBe("remote");
+			if (resolution.kind === "remote") {
+				expect(resolution.hosts.length).toBe(1);
+				expect(resolution.hosts[0].unverified).toBe(true);
+			}
+		});
+
+		it("resolveModel with vision requirement falls back to unverified when no verified match (AC7.3)", () => {
+			const now = new Date().toISOString();
+
+			// Insert a remote host with verified entry that lacks vision
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"remote-verified-no-vision",
+					"Remote Verified No Vision",
+					JSON.stringify([
+						{
+							id: "vision-model",
+							tier: 1,
+							capabilities: { vision: false, tool_use: true },
+						},
+					]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			// Insert a legacy unverified host for the same model
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"legacy-remote-fallback",
+					"Legacy Remote Fallback",
+					JSON.stringify(["vision-model"]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			const mockBackend = {
+				id: "local-model",
+				chat: async function* () {
+					yield { type: "text", text: "test" } as const;
+				},
+				capabilities: () => ({
+					streaming: true,
+					tools: true,
+					vision: false,
+					maxContextWindow: 200000,
+				}),
+			};
+
+			const backends = new Map([["local-model", mockBackend]]);
+			const modelRouter = new ModelRouter(backends, "local-model");
+
+			// Request with vision requirement
+			const resolution = resolveModel("vision-model", modelRouter, db, "local-site", {
+				vision: true,
+			});
+
+			// Should fall back to unverified host when no verified match
+			expect(resolution.kind).toBe("remote");
+			if (resolution.kind === "remote") {
+				expect(resolution.hosts.length).toBe(1);
+				expect(resolution.hosts[0].unverified).toBe(true);
+				expect(resolution.hosts[0].site_id).toBe("legacy-remote-fallback");
+			}
+		});
 	});
 });

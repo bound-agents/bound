@@ -109,10 +109,9 @@ export function resolveModel(
 	}
 
 	// Phase 1 fallback: check remote hosts
-	const remoteResult = findEligibleHostsByModel(db, effectiveModelId, localSiteId);
+	const remoteResult = findEligibleHostsByModel(db, effectiveModelId, localSiteId, requirements);
 	if (remoteResult.ok) {
-		// Phase 2: Qualify (remote) — remote capability filtering is Phase 6
-		// For now, return all eligible remote hosts and let the caller filter
+		// Phase 2: Qualify (remote) — remote capability filtering via requirements parameter
 		return { kind: "remote", hosts: remoteResult.hosts, modelId: effectiveModelId };
 	}
 
