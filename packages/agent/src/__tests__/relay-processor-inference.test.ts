@@ -20,7 +20,7 @@ class MockBackend implements LLMBackend {
 		this.responses = [];
 		this.pushResponse(async function* () {
 			yield { type: "text" as const, content: text };
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5 } };
+			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
 		});
 	}
 
@@ -31,7 +31,7 @@ class MockBackend implements LLMBackend {
 			yield* gen();
 		} else {
 			yield { type: "text" as const, content: "" };
-			yield { type: "done" as const, usage: { input_tokens: 0, output_tokens: 0 } };
+			yield { type: "done" as const, usage: { input_tokens: 0, output_tokens: 0, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
 		}
 	}
 
@@ -89,7 +89,7 @@ describe("RelayProcessor - executeInference", () => {
 		mockBackend.pushResponse(async function* () {
 			yield { type: "text" as const, content: "x".repeat(5000) };
 			yield { type: "text" as const, content: "final response" };
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5 } };
+			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
 		});
 
 		const backends = new Map<string, LLMBackend>();
@@ -199,7 +199,7 @@ describe("RelayProcessor - executeInference", () => {
 			yield { type: "text" as const, content: "small" };
 			await new Promise((resolve) => setTimeout(resolve, 250));
 			yield { type: "text" as const, content: "delayed" };
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5 } };
+			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
 		});
 
 		const backends = new Map<string, LLMBackend>();
@@ -279,7 +279,7 @@ describe("RelayProcessor - executeInference", () => {
 
 		mockBackend.pushResponse(async function* () {
 			yield { type: "text" as const, content: largeContent };
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5 } };
+			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
 		});
 
 		const backends = new Map<string, LLMBackend>();
@@ -445,7 +445,7 @@ describe("RelayProcessor - executeInference", () => {
 			yield { type: "text" as const, content: "chunk1" };
 			await new Promise((resolve) => setTimeout(resolve, 500));
 			yield { type: "text" as const, content: "chunk2" };
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 10 } };
+			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 10, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
 		});
 
 		const backends = new Map<string, LLMBackend>();
@@ -646,21 +646,21 @@ describe("RelayProcessor - executeInference", () => {
 		mockBackend1.pushResponse(async function* () {
 			yield { type: "text" as const, content: "A".repeat(5000) };
 			yield { type: "text" as const, content: "Response 1" };
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5 } };
+			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
 		});
 
 		const mockBackend2 = new MockBackend();
 		mockBackend2.pushResponse(async function* () {
 			yield { type: "text" as const, content: "B".repeat(5000) };
 			yield { type: "text" as const, content: "Response 2" };
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5 } };
+			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
 		});
 
 		const mockBackend3 = new MockBackend();
 		mockBackend3.pushResponse(async function* () {
 			yield { type: "text" as const, content: "C".repeat(5000) };
 			yield { type: "text" as const, content: "Response 3" };
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5 } };
+			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
 		});
 
 		const backends = new Map<string, LLMBackend>();

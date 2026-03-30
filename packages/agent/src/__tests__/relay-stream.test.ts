@@ -16,7 +16,7 @@ import type { EligibleHost } from "../relay-router";
 class MockLLMBackend implements LLMBackend {
 	async *chat() {
 		yield { type: "text" as const, content: "" };
-		yield { type: "done" as const, usage: { input_tokens: 0, output_tokens: 0 } };
+		yield { type: "done" as const, usage: { input_tokens: 0, output_tokens: 0, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
 	}
 
 	capabilities() {

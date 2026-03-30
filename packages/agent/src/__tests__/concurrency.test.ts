@@ -14,7 +14,7 @@ import { AgentLoop } from "../agent-loop";
 class MockLLMBackend implements LLMBackend {
 	async *chat() {
 		yield { type: "text" as const, content: "Response from LLM" };
-		yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5 } };
+		yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
 	}
 
 	capabilities() {

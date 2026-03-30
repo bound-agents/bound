@@ -76,7 +76,7 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 						content: "- The user discussed topic Alpha\n- The user discussed topic Beta",
 					};
 				}
-				yield { type: "done" as const, usage: { input_tokens: 5, output_tokens: 5 } };
+				yield { type: "done" as const, usage: { input_tokens: 5, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
 			}
 			capabilities() {
 				return {
@@ -150,7 +150,7 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 					chatCalls.push({ purpose: "main" });
 					yield { type: "text" as const, content: "Hello there!" };
 				}
-				yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5 } };
+				yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
 			}
 			capabilities() {
 				return {
