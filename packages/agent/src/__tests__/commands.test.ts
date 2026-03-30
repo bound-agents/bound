@@ -101,6 +101,14 @@ describe("defineCommand implementations", () => {
 	});
 
 	describe("memorize command", () => {
+		function getMemorySource(key: string): string | null {
+			const memoryId = deterministicUUID(BOUND_NAMESPACE, key);
+			const row = db.prepare("SELECT source FROM semantic_memory WHERE id = ?").get(memoryId) as {
+				source: string | null;
+			} | null;
+			return row?.source ?? null;
+		}
+
 		it("should create a semantic_memory entry", async () => {
 			const result = await memorize.handler({ key: "test_key", value: "test_value" }, ctx);
 
@@ -128,6 +136,36 @@ describe("defineCommand implementations", () => {
 				.get(memoryId) as Record<string, unknown>;
 
 			expect(row.value).toBe("value2");
+		});
+
+		it("stores source as taskId when ctx.taskId is set (AC6.1)", async () => {
+			// ctx already has taskId and threadId set
+			await memorize.handler({ key: "source_task_key", value: "v" }, ctx);
+			const source = getMemorySource("source_task_key");
+			expect(source).toBe(ctx.taskId);
+		});
+
+		it("stores source as threadId when only ctx.threadId is set (AC6.2)", async () => {
+			const threadOnlyCtx: CommandContext = { ...ctx, taskId: undefined };
+			await memorize.handler({ key: "source_thread_key", value: "v" }, threadOnlyCtx);
+			const source = getMemorySource("source_thread_key");
+			expect(source).toBe(ctx.threadId);
+		});
+
+		it("stores source as 'agent' when neither taskId nor threadId is set (AC6.3)", async () => {
+			const noCtx: CommandContext = { ...ctx, taskId: undefined, threadId: undefined };
+			await memorize.handler({ key: "source_agent_key", value: "v" }, noCtx);
+			const source = getMemorySource("source_agent_key");
+			expect(source).toBe("agent");
+		});
+
+		it("stores explicit --source argument over ctx values (AC6.4)", async () => {
+			await memorize.handler(
+				{ key: "source_explicit_key", value: "v", source: "custom-source-id" },
+				ctx,
+			);
+			const source = getMemorySource("source_explicit_key");
+			expect(source).toBe("custom-source-id");
 		});
 	});
 
