@@ -597,7 +597,11 @@ data: [DONE]
 			choices: [
 				{
 					index: 0,
-					delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "search" } }] },
+					delta: {
+						tool_calls: [
+							{ index: 0, id: "call_1", type: "function", function: { name: "search" } },
+						],
+					},
 					finish_reason: null,
 				},
 			],
@@ -611,7 +615,11 @@ data: ${JSON.stringify({
 			choices: [
 				{
 					index: 0,
-					delta: { tool_calls: [{ index: 0, id: "", type: "function", function: { arguments: '{"q":"foo"}' } }] },
+					delta: {
+						tool_calls: [
+							{ index: 0, id: "", type: "function", function: { arguments: '{"q":"foo"}' } },
+						],
+					},
 					finish_reason: null,
 				},
 			],
@@ -625,7 +633,11 @@ data: ${JSON.stringify({
 			choices: [
 				{
 					index: 1,
-					delta: { tool_calls: [{ index: 1, id: "call_2", type: "function", function: { name: "search" } }] },
+					delta: {
+						tool_calls: [
+							{ index: 1, id: "call_2", type: "function", function: { name: "search" } },
+						],
+					},
 					finish_reason: null,
 				},
 			],
@@ -639,7 +651,11 @@ data: ${JSON.stringify({
 			choices: [
 				{
 					index: 1,
-					delta: { tool_calls: [{ index: 1, id: "", type: "function", function: { arguments: '{"q":"bar"}' } }] },
+					delta: {
+						tool_calls: [
+							{ index: 1, id: "", type: "function", function: { arguments: '{"q":"bar"}' } },
+						],
+					},
 					finish_reason: "tool_calls",
 				},
 			],
@@ -688,7 +704,9 @@ data: [DONE]
 			choices: [
 				{
 					index: 0,
-					delta: { tool_calls: [{ index: 0, id: "", type: "function", function: { name: "search" } }] },
+					delta: {
+						tool_calls: [{ index: 0, id: "", type: "function", function: { name: "search" } }],
+					},
 					finish_reason: null,
 				},
 			],
@@ -702,7 +720,11 @@ data: ${JSON.stringify({
 			choices: [
 				{
 					index: 0,
-					delta: { tool_calls: [{ index: 0, id: "", type: "function", function: { arguments: '{"q":"foo"}' } }] },
+					delta: {
+						tool_calls: [
+							{ index: 0, id: "", type: "function", function: { arguments: '{"q":"foo"}' } },
+						],
+					},
 					finish_reason: null,
 				},
 			],
@@ -716,7 +738,9 @@ data: ${JSON.stringify({
 			choices: [
 				{
 					index: 1,
-					delta: { tool_calls: [{ index: 1, id: "", type: "function", function: { name: "search" } }] },
+					delta: {
+						tool_calls: [{ index: 1, id: "", type: "function", function: { name: "search" } }],
+					},
 					finish_reason: null,
 				},
 			],
@@ -730,7 +754,11 @@ data: ${JSON.stringify({
 			choices: [
 				{
 					index: 1,
-					delta: { tool_calls: [{ index: 1, id: "", type: "function", function: { arguments: '{"q":"bar"}' } }] },
+					delta: {
+						tool_calls: [
+							{ index: 1, id: "", type: "function", function: { arguments: '{"q":"bar"}' } },
+						],
+					},
 					finish_reason: "tool_calls",
 				},
 			],

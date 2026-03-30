@@ -1042,9 +1042,7 @@ export class AgentLoop {
 		const remappedChunks = chunks.map((chunk) => {
 			if (chunk.type === "tool_use_start") {
 				if (seenIds.has(chunk.id)) {
-					const newId = `${chunk.id}-dedup-${Date.now()}-${Math.random()
-						.toString(36)
-						.slice(2, 7)}`;
+					const newId = `${chunk.id}-dedup-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 					this.ctx.logger.warn("[agent-loop] Duplicate tool-use ID detected in turn, reassigning", {
 						originalId: chunk.id,
 						newId,
