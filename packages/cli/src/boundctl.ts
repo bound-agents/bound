@@ -9,6 +9,14 @@ import { runRestore } from "./commands/restore.js";
 import { runSetHub } from "./commands/set-hub.js";
 import { runResume, runStop } from "./commands/stop-resume.js";
 import { runSyncStatus } from "./commands/sync-status.js";
+import { getSiteId } from "@bound/core";
+import {
+	skillImport,
+	skillList,
+	skillRetire,
+	skillView,
+} from "./commands/skill.js";
+import { openBoundDB } from "./lib/db.js";
 
 function getArgValue(args: string[], flag: string): string | undefined {
 	const idx = args.indexOf(flag);
@@ -34,6 +42,10 @@ COMMANDS:
   config reload <target>     Hot-reload configuration
   sync-status                Show sync status for all peers
   drain <new-hub>            Graceful hub decommissioning
+  skill list                 List all skills with status and telemetry
+  skill view <name>          View SKILL.md and file listing for a skill
+  skill retire <name>        Retire a skill (operator); use --reason "..." to explain
+  skill import <path>        Import a skill from a local directory
   --help                     Show this help message
 
 OPTIONS:
@@ -219,6 +231,77 @@ EXAMPLES:
 			process.exit(1);
 		}
 		process.exit(0);
+	}
+
+	if (command === "skill") {
+		const subcommand = args[1];
+		const configDir = getArgValue(args, "--config-dir") || "data";
+		const db = openBoundDB(configDir);
+
+		try {
+			if (subcommand === "list") {
+				const statusFilter = getArgValue(args, "--status");
+				const verbose = args.includes("--verbose");
+				skillList(db, { status: statusFilter, verbose });
+				db.close();
+				process.exit(0);
+			}
+
+			if (subcommand === "view") {
+				const name = args[2];
+				if (!name) {
+					console.error(
+						"Error: skill name is required. Usage: boundctl skill view <name>",
+					);
+					db.close();
+					process.exit(1);
+				}
+				skillView(db, name);
+				db.close();
+				process.exit(0);
+			}
+
+			if (subcommand === "retire") {
+				const name = args[2];
+				if (!name) {
+					console.error(
+						"Error: skill name is required. Usage: boundctl skill retire <name> [--reason \"...\"]",
+					);
+					db.close();
+					process.exit(1);
+				}
+				const reason = getArgValue(args, "--reason");
+				const siteId = getSiteId(db);
+				skillRetire(db, siteId, name, reason);
+				db.close();
+				process.exit(0);
+			}
+
+			if (subcommand === "import") {
+				const localPath = args[2];
+				if (!localPath) {
+					console.error(
+						"Error: path is required. Usage: boundctl skill import <path>",
+					);
+					db.close();
+					process.exit(1);
+				}
+				const siteId = getSiteId(db);
+				skillImport(db, siteId, localPath);
+				db.close();
+				process.exit(0);
+			}
+
+			// Unknown subcommand
+			console.error(`Error: unknown skill subcommand '${subcommand}'.`);
+			console.error("Available: list, view, retire, import");
+			db.close();
+			process.exit(1);
+		} catch (error) {
+			console.error("skill command failed:", error);
+			db.close();
+			process.exit(1);
+		}
 	}
 
 	console.error(`Unknown command: ${command}`);
