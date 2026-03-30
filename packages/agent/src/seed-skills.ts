@@ -23,27 +23,27 @@ function seedFile(
 
 	const existing = db
 		.prepare(
-			"SELECT id, content FROM files WHERE path = ? AND deleted = 0",
+			"SELECT id, content, deleted FROM files WHERE path = ?",
 		)
-		.get(path) as { id: string; content: string | null } | null;
+		.get(path) as { id: string; content: string | null; deleted: number } | null;
 
 	if (existing) {
 		const existingHash = createHash("sha256")
 			.update(existing.content ?? "")
 			.digest("hex");
-		if (existingHash !== contentHash) {
-			// Content changed (e.g., updated bundled-skills.ts) — restore/update
+		if (existingHash !== contentHash || existing.deleted === 1) {
+			// Content changed (e.g., updated bundled-skills.ts) or file was deleted — restore/update
 			updateRow(
 				db,
 				"files",
 				existing.id,
-				{ content, size_bytes: sizeBytes, modified_at: now },
+				{ content, size_bytes: sizeBytes, modified_at: now, deleted: 0 },
 				siteId,
 			);
 		}
-		// else: content unchanged, skip update (no-op)
+		// else: content unchanged and not deleted, skip update (no-op)
 	} else {
-		// File missing (e.g., deleted from files table) — restore
+		// File missing (no row at this path at all) — insert
 		insertRow(
 			db,
 			"files",
