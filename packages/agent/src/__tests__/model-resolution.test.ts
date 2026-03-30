@@ -800,5 +800,57 @@ describe("Model Resolution", () => {
 				expect(resolution.hosts[0].site_id).toBe("legacy-remote-fallback");
 			}
 		});
+
+		// AC5.3 — primary backend is rate-limited, alternative exists with matching capability
+		it("falls back to alternative when primary backend is rate-limited (AC5.3)", () => {
+			const primaryBackend = {
+				id: "primary",
+				chat: async function* () {
+					yield { type: "text", text: "test" } as const;
+				},
+				capabilities: () => ({
+					streaming: true,
+					tool_use: true,
+					system_prompt: true,
+					prompt_caching: false,
+					vision: false,
+					max_context: 200000,
+				}),
+			};
+
+			const alternativeBackend = {
+				id: "alternative",
+				chat: async function* () {
+					yield { type: "text", text: "test" } as const;
+				},
+				capabilities: () => ({
+					streaming: true,
+					tool_use: true,
+					system_prompt: true,
+					prompt_caching: false,
+					vision: true,
+					max_context: 200000,
+				}),
+			};
+
+			const backends = new Map([
+				["primary", primaryBackend],
+				["alternative", alternativeBackend],
+			]);
+			const modelRouter = new ModelRouter(backends, "primary");
+
+			// Mark the primary backend as rate-limited
+			modelRouter.markRateLimited("primary", 60_000);
+
+			// Request vision capability; primary lacks vision and is rate-limited
+			// listEligible() should exclude primary (rate-limited) and return only alternative
+			const resolution = resolveModel("primary", modelRouter, db, "site-1", { vision: true });
+
+			// Should fall back to alternative backend
+			expect(resolution.kind).toBe("local");
+			const localRes = resolution as Extract<ModelResolution, { kind: "local" }>;
+			expect(localRes.modelId).toBe("alternative");
+			expect(localRes.reResolved).toBe(true);
+		});
 	});
 });
