@@ -20,8 +20,8 @@ import type {
 } from "@bound/shared";
 import type { MCPClient } from "../mcp-client";
 import { RelayProcessor } from "../relay-processor";
-import { sleep, waitFor } from "./helpers";
 import type { AgentLoopConfig } from "../types";
+import { sleep, waitFor } from "./helpers";
 
 // Mock MCPClient for testing
 class MockMCPClient implements Partial<MCPClient> {
@@ -2182,7 +2182,7 @@ describe("RelayProcessor", () => {
 
 			// Run processor to execute the process entry
 			const handle = processor.start(50);
-				await sleep(100);
+			await sleep(100);
 			handle.stop();
 
 			// Verify: platform:deliver IS now emitted even with tool_use-only assistant content.
@@ -2253,7 +2253,6 @@ describe("RelayProcessor", () => {
 				mockAppCtx as any,
 				undefined,
 				new Map(),
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				() =>
 					({
 						run: async () => ({
@@ -2289,7 +2288,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-				await sleep(100);
+			await sleep(100);
 			handle.stop();
 
 			// platform:deliver MUST be emitted even with no assistant messages, to stop typing.
@@ -2356,7 +2355,6 @@ describe("RelayProcessor", () => {
 				mockAppCtx as any,
 				undefined,
 				new Map(),
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				() =>
 					({
 						run: async () => ({
@@ -2392,7 +2390,7 @@ describe("RelayProcessor", () => {
 			);
 
 			const handle = processor.start(50);
-				await sleep(100);
+			await sleep(100);
 			handle.stop();
 
 			// platform:deliver MUST be emitted even with empty text content, to stop typing.
@@ -2520,7 +2518,7 @@ describe("RelayProcessor", () => {
 
 			// Run processor to execute the process entry
 			const handle = processor.start(50);
-				await sleep(100);
+			await sleep(100);
 			handle.stop();
 
 			// Verify: platform:deliver should be emitted with correct content
@@ -2660,7 +2658,7 @@ describe("RelayProcessor", () => {
 
 			// Run processor
 			const handle = processor.start(50);
-				await sleep(100);
+			await sleep(100);
 			handle.stop();
 
 			// Verify: platform:deliver should contain content from SECOND message (higher rowid)
@@ -2819,7 +2817,7 @@ describe("RelayProcessor", () => {
 
 				// Run processor to execute the process entry
 				const handle = processor.start(50);
-					await sleep(100);
+				await sleep(100);
 				handle.stop();
 
 				// Assert: loopConfig.platform === "discord"
@@ -2952,7 +2950,7 @@ describe("RelayProcessor", () => {
 
 				// Run processor to execute the process entry
 				const handle = processor.start(50);
-					await sleep(100);
+				await sleep(100);
 				handle.stop();
 
 				// Assert: platform:deliver IS emitted with empty content (typing stop), NOT with the assistant text
@@ -3078,7 +3076,7 @@ describe("RelayProcessor", () => {
 
 				// Run processor to execute the process entry
 				const handle = processor.start(50);
-					await sleep(100);
+				await sleep(100);
 				handle.stop();
 
 				// Assert: platform:deliver should be emitted with the last assistant message
@@ -3206,7 +3204,7 @@ describe("RelayProcessor", () => {
 
 				// Run processor to execute the process entry
 				const handle = processor.start(50);
-					await sleep(100);
+				await sleep(100);
 				handle.stop();
 
 				// Assert: loopConfig.platform is undefined (graceful fallback)
@@ -3270,7 +3268,6 @@ describe("RelayProcessor", () => {
 					mockAppCtx as any,
 					undefined,
 					new Map(),
-					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					() =>
 						({
 							run: async () => ({
@@ -3306,7 +3303,7 @@ describe("RelayProcessor", () => {
 				);
 
 				const handle = processor.start(50);
-					await sleep(100);
+				await sleep(100);
 				handle.stop();
 
 				// platform:deliver MUST be emitted even when agent produced no messages,
@@ -3365,7 +3362,6 @@ describe("RelayProcessor", () => {
 					mockAppCtx as any,
 					undefined,
 					new Map(),
-					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					() =>
 						({
 							run: async (): Promise<never> => {
@@ -3398,7 +3394,7 @@ describe("RelayProcessor", () => {
 				);
 
 				const handle = processor.start(50);
-					await sleep(100);
+				await sleep(100);
 				handle.stop();
 
 				// platform:deliver MUST be emitted even when agent loop throws.
@@ -3760,7 +3756,7 @@ describe("RelayProcessor", () => {
 
 			// Run processor to execute the process entry
 			const handle = processor.start(50);
-				await sleep(100);
+			await sleep(100);
 			handle.stop();
 
 			// Assert: the fileReader was passed to getPlatformTools

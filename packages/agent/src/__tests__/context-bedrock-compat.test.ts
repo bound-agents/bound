@@ -613,9 +613,7 @@ describe("Context assembly Bedrock compatibility", () => {
 				db,
 				threadId,
 				"tool_call",
-				JSON.stringify([
-					{ type: "tool_use", id: toolUseId, name: "query", input: { n: i } },
-				]),
+				JSON.stringify([{ type: "tool_use", id: toolUseId, name: "query", input: { n: i } }]),
 				{ tool_name: "query", offset: 1000 + i * 3000 },
 			);
 			insertMessage(db, threadId, "tool_result", `Result ${i}`, {

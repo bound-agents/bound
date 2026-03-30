@@ -104,7 +104,11 @@ describe("Scheduler Integration", () => {
 		// Wait for scheduler to run the task
 		await waitFor(
 			() =>
-				(db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | undefined)?.status !== "pending",
+				(
+					db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
+						| { status: string }
+						| undefined
+				)?.status !== "pending",
 			{ message: "deferred task did not run" },
 		);
 
@@ -159,7 +163,8 @@ describe("Scheduler Integration", () => {
 
 		await waitFor(
 			() =>
-				(db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | null)?.status !== "pending",
+				(db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | null)
+					?.status !== "pending",
 			{ message: "cron task not claimed/run" },
 		);
 		stop();
@@ -257,7 +262,11 @@ describe("Scheduler Integration", () => {
 
 		await waitFor(
 			() =>
-				(db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | undefined)?.status !== "pending",
+				(
+					db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
+						| { status: string }
+						| undefined
+				)?.status !== "pending",
 			{ message: "dependent task did not run" },
 		);
 		stop();

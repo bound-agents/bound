@@ -15,6 +15,10 @@ import { modelHint } from "./model-hint";
 import { purge } from "./purge";
 import { query } from "./query";
 import { schedule } from "./schedule";
+import { skillActivate } from "./skill-activate";
+import { skillList } from "./skill-list";
+import { skillRead } from "./skill-read";
+import { skillRetire } from "./skill-retire";
 
 /**
  * Get all built-in commands.
@@ -38,6 +42,10 @@ export function getAllCommands(): CommandDefinition[] {
 		modelHint,
 		archive,
 		hostinfo,
+		skillActivate,
+		skillList,
+		skillRead,
+		skillRetire,
 	];
 }
 
@@ -70,4 +78,8 @@ export {
 	modelHint,
 	archive,
 	hostinfo,
+	skillActivate,
+	skillList,
+	skillRead,
+	skillRetire,
 };
