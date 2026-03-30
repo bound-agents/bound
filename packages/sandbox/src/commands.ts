@@ -57,8 +57,12 @@ export function createDefineCommands(
 				}
 			}
 
-			// Detect if argv uses --key value or key=value format
-			const hasFlags = argv.some((a) => a.startsWith("--") || a.includes("="));
+			// Detect if argv uses --key value or key=value format.
+			// Use a strict regex: a key=value token must start with an identifier
+			// (no whitespace before "="). This prevents SQL strings like
+			// "SELECT … WHERE deleted=0" from triggering key=value parsing — those
+			// tokens contain spaces before "=", so they fail /^[^\s=]+=/
+			const hasFlags = argv.some((a) => a.startsWith("--") || /^[^\s=]+=/.test(a));
 
 			if (hasFlags) {
 				// Parse --key value pairs and key=value pairs

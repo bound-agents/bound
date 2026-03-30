@@ -144,6 +144,77 @@ describe("Command Framework", () => {
 		expect(capturedQuery).toBe(sql);
 	});
 
+	// Bug: SQL queries passed as positional args were broken when the SQL contained
+	// "=". The hasFlags heuristic treated `a.includes("=")` as a signal to enter
+	// key=value parsing mode. A SQL string like "SELECT … WHERE x=1" is one argv
+	// token that contains "=" — so hasFlags fired, the SQL got parsed as an
+	// assignment (args["SELECT … WHERE x"] = "1"), and args.query ended up
+	// undefined, causing sql.trim() to throw in the query handler.
+	test("positional arg with = in value is not parsed as key=value", async () => {
+		const sql = "SELECT * FROM semantic_memory WHERE deleted=0";
+		let capturedQuery: string | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "query",
+				args: [{ name: "query", required: true }],
+				handler: async (args) => {
+					capturedQuery = args.query;
+					return { stdout: "ok", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		// Single-token SQL arg containing "=" — should reach args.query intact
+		const result = await commands[0].handler([sql]);
+
+		expect(result.exitCode).toBe(0);
+		expect(capturedQuery).toBe(sql);
+	});
+
+	test("key=value style args still work", async () => {
+		let capturedKey: string | undefined;
+		let capturedVal: string | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "set",
+				args: [
+					{ name: "key", required: true },
+					{ name: "val", required: true },
+				],
+				handler: async (args) => {
+					capturedKey = args.key;
+					capturedVal = args.val;
+					return { stdout: "ok", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		// key=value style: "key=foo" has no space before "="
+		const result = await commands[0].handler(["key=foo", "val=bar"]);
+
+		expect(result.exitCode).toBe(0);
+		expect(capturedKey).toBe("foo");
+		expect(capturedVal).toBe("bar");
+	});
+
 	test("handler exception returns error result", async () => {
 		const definitions: CommandDefinition[] = [
 			{
