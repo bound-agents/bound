@@ -1352,7 +1352,16 @@ describe("Context Assembly Pipeline", () => {
 			const now = new Date().toISOString();
 			db2.run(
 				"INSERT INTO skills (id, name, description, status, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), "pr-review", "Review GitHub PRs", "active", "/home/user/skills/pr-review", now, now, 0],
+				[
+					randomUUID(),
+					"pr-review",
+					"Review GitHub PRs",
+					"active",
+					"/home/user/skills/pr-review",
+					now,
+					now,
+					0,
+				],
 			);
 
 			const messages = assembleContext({
@@ -1394,7 +1403,16 @@ describe("Context Assembly Pipeline", () => {
 			const skillId = randomUUID();
 			db2.run(
 				"INSERT INTO skills (id, name, description, status, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[skillId, "pr-review", "Review GitHub PRs", "active", "/home/user/skills/pr-review", now, now, 0],
+				[
+					skillId,
+					"pr-review",
+					"Review GitHub PRs",
+					"active",
+					"/home/user/skills/pr-review",
+					now,
+					now,
+					0,
+				],
 			);
 
 			// Insert the SKILL.md file
@@ -1450,7 +1468,8 @@ This skill reviews pull requests.`;
 			expect(skillBodyMsg?.content).toContain(skillMdContent);
 
 			// The skill body should appear before the volatile context
-			const skillBodyIndex = messages.indexOf(skillBodyMsg!);
+			if (!skillBodyMsg) throw new Error("expected skillBodyMsg");
+			const skillBodyIndex = messages.indexOf(skillBodyMsg);
 			const volatileMsg = systemMessages[systemMessages.length - 1];
 			const volatileIndex = messages.indexOf(volatileMsg);
 			expect(skillBodyIndex).toBeLessThan(volatileIndex);
@@ -1462,7 +1481,15 @@ This skill reviews pull requests.`;
 			const now = new Date().toISOString();
 			db2.run(
 				"INSERT INTO skills (id, name, description, status, skill_root, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), "pr-review", "Review GitHub PRs", "retired", "/home/user/skills/pr-review", now, 0],
+				[
+					randomUUID(),
+					"pr-review",
+					"Review GitHub PRs",
+					"retired",
+					"/home/user/skills/pr-review",
+					now,
+					0,
+				],
 			);
 
 			// Insert a task with skill reference
@@ -1513,7 +1540,16 @@ This skill reviews pull requests.`;
 			const skillId = randomUUID();
 			db2.run(
 				"INSERT INTO skills (id, name, description, status, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[skillId, "pr-review", "Review GitHub PRs", "active", "/home/user/skills/pr-review", now, now, 0],
+				[
+					skillId,
+					"pr-review",
+					"Review GitHub PRs",
+					"active",
+					"/home/user/skills/pr-review",
+					now,
+					now,
+					0,
+				],
 			);
 
 			// Insert the SKILL.md file
@@ -1600,7 +1636,7 @@ This skill reviews pull requests.`;
 
 			expect(volatileMsg).toBeDefined();
 			expect(volatileMsg.content).toContain(
-				'[Skill notification] Skill \'deploy-monitor\' was retired by operator: "Too aggressive".',
+				"[Skill notification] Skill 'deploy-monitor' was retired by operator: \"Too aggressive\".",
 			);
 		});
 
