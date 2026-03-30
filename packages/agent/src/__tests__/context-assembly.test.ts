@@ -1680,7 +1680,7 @@ This skill reviews pull requests.`;
 		let enrichTestDb: Database;
 		let enrichTestTmpDir: string;
 		let enrichTestUserId: string;
-		let enrichTestThreadId: string;
+		let _enrichTestThreadId: string;
 
 		beforeAll(() => {
 			enrichTestTmpDir = mkdtempSync(join(tmpdir(), "enrich-test-"));
@@ -1689,7 +1689,7 @@ This skill reviews pull requests.`;
 			applySchema(enrichTestDb);
 
 			enrichTestUserId = randomUUID();
-			enrichTestThreadId = randomUUID();
+			_enrichTestThreadId = randomUUID();
 
 			enrichTestDb.run(
 				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
@@ -2089,7 +2089,7 @@ This skill reviews pull requests.`;
 					[
 						randomUUID(),
 						`budget_key_${i}`,
-						"value_" + "x".repeat(100),
+						`value_${"x".repeat(100)}`,
 						null,
 						recentTime,
 						recentTime,
@@ -2115,7 +2115,7 @@ This skill reviews pull requests.`;
 			expect(volatileMsg).toBeDefined();
 
 			// Count memory entry lines ONLY (lines that are part of the memory delta, starting with "- " but before any blank line that separates memory from tasks)
-			const lines = volatileMsg!.content.split("\n");
+			const lines = (volatileMsg?.content as string)?.split("\n") ?? [];
 			let memoryCount = 0;
 			let inMemorySection = false;
 
