@@ -165,6 +165,16 @@ describe("PlatformConnectorRegistry", () => {
 				election,
 			);
 
+			// Inject into connectorsByPlatform as well (Phase 5 routing uses this map)
+			(
+				registry as {
+					connectorsByPlatform: Map<string, { connector: PlatformConnector; electionKey: string }>;
+				}
+			).connectorsByPlatform.set("test-platform", {
+				connector: mockConnector,
+				electionKey: "test-platform",
+			});
+
 			// Manually set isLeader flag so routing works
 			(election as { isLeaderFlag: boolean }).isLeaderFlag = true;
 
@@ -195,9 +205,9 @@ describe("PlatformConnectorRegistry", () => {
 		});
 
 		it("should not route to non-leader connectors", async () => {
-			// Setup: create a leader for a different platform
+			// Setup: create a leader for webhook-stub (no token required)
 			const connectorConfig: PlatformConnectorConfig = {
-				platform: "discord",
+				platform: "webhook-stub",
 				failover_threshold_ms: 100,
 				allowed_users: [],
 			};
@@ -370,6 +380,203 @@ describe("PlatformConnectorRegistry", () => {
 			expect(connector).toBeUndefined();
 
 			registry.stop();
+		});
+	});
+
+	describe("Discord dual-connector", () => {
+		it("should create both DiscordConnector and DiscordInteractionConnector for discord config (AC7.1)", async () => {
+			const platformsConfig: PlatformsConfig = {
+				connectors: [
+					{
+						platform: "discord",
+						token: "test-token",
+						failover_threshold_ms: 100,
+						allowed_users: [],
+					},
+				],
+			};
+
+			const registry = new PlatformConnectorRegistry(mockAppContext, platformsConfig);
+			registry.start();
+
+			// Wait for leader election
+			await new Promise((resolve) => setTimeout(resolve, 150));
+
+			// Verify getConnector returns DiscordConnector for "discord"
+			const dmConnector = registry.getConnector("discord");
+			expect(dmConnector).toBeDefined();
+			expect(dmConnector?.platform).toBe("discord");
+
+			// Verify getConnector returns DiscordInteractionConnector for "discord-interaction"
+			const interactionConnector = registry.getConnector("discord-interaction");
+			expect(interactionConnector).toBeDefined();
+			expect(interactionConnector?.platform).toBe("discord-interaction");
+
+			// Verify they are different objects
+			expect(dmConnector).not.toBe(interactionConnector);
+
+			registry.stop();
+		});
+
+		it("should route platform:deliver with platform='discord' to DiscordConnector (AC7.2)", async () => {
+			const platformsConfig: PlatformsConfig = {
+				connectors: [
+					{
+						platform: "discord",
+						token: "test-token",
+						failover_threshold_ms: 100,
+						allowed_users: [],
+					},
+				],
+			};
+
+			const registry = new PlatformConnectorRegistry(mockAppContext, platformsConfig);
+			registry.start();
+
+			// Wait for leader election and initialization
+			await new Promise((resolve) => setTimeout(resolve, 150));
+
+			// Get connectors after they've been created
+			const dmConnector = registry.getConnector("discord");
+			const interactionConnector = registry.getConnector("discord-interaction");
+
+			expect(dmConnector).toBeDefined();
+			expect(interactionConnector).toBeDefined();
+
+			// Track deliver() calls
+			const dmDeliverCalls: Array<{ threadId: string }> = [];
+			const interactionDeliverCalls: Array<{ threadId: string }> = [];
+
+			// Spy on deliver methods after they exist
+			if (dmConnector) {
+				const originalDeliver = dmConnector.deliver.bind(dmConnector);
+				dmConnector.deliver = async (threadId: string, ...args) => {
+					dmDeliverCalls.push({ threadId });
+					return originalDeliver(threadId, ...args);
+				};
+			}
+
+			if (interactionConnector) {
+				const originalDeliver = interactionConnector.deliver.bind(interactionConnector);
+				interactionConnector.deliver = async (threadId: string, ...args) => {
+					interactionDeliverCalls.push({ threadId });
+					return originalDeliver(threadId, ...args);
+				};
+			}
+
+			// Emit deliver for discord
+			const payload: PlatformDeliverPayload = {
+				platform: "discord",
+				thread_id: "dm-thread-1",
+				message_id: "msg-1",
+				content: "Test DM",
+			};
+			eventBus.emit("platform:deliver", payload);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			// Verify DM connector received the call
+			expect(dmDeliverCalls.length).toBe(1);
+			expect(dmDeliverCalls[0]?.threadId).toBe("dm-thread-1");
+
+			registry.stop();
+		});
+
+		it("should route platform:deliver with platform='discord-interaction' to DiscordInteractionConnector (AC7.3)", async () => {
+			const platformsConfig: PlatformsConfig = {
+				connectors: [
+					{
+						platform: "discord",
+						token: "test-token",
+						failover_threshold_ms: 100,
+						allowed_users: [],
+					},
+				],
+			};
+
+			const registry = new PlatformConnectorRegistry(mockAppContext, platformsConfig);
+			registry.start();
+
+			// Wait for leader election and initialization
+			await new Promise((resolve) => setTimeout(resolve, 150));
+
+			// Get connectors after they've been created
+			const dmConnector = registry.getConnector("discord");
+			const interactionConnector = registry.getConnector("discord-interaction");
+
+			expect(dmConnector).toBeDefined();
+			expect(interactionConnector).toBeDefined();
+
+			// Track deliver() calls
+			const dmDeliverCalls: Array<{ threadId: string }> = [];
+			const interactionDeliverCalls: Array<{ threadId: string }> = [];
+
+			// Spy on deliver methods after they exist
+			if (dmConnector) {
+				const originalDeliver = dmConnector.deliver.bind(dmConnector);
+				dmConnector.deliver = async (threadId: string, ...args) => {
+					dmDeliverCalls.push({ threadId });
+					return originalDeliver(threadId, ...args);
+				};
+			}
+
+			if (interactionConnector) {
+				const originalDeliver = interactionConnector.deliver.bind(interactionConnector);
+				interactionConnector.deliver = async (threadId: string, ...args) => {
+					interactionDeliverCalls.push({ threadId });
+					return originalDeliver(threadId, ...args);
+				};
+			}
+
+			// Emit deliver for discord-interaction
+			const payload: PlatformDeliverPayload = {
+				platform: "discord-interaction",
+				thread_id: "interaction-thread-1",
+				message_id: "msg-2",
+				content: "Test Interaction",
+			};
+			eventBus.emit("platform:deliver", payload);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			// Verify interaction connector received the call
+			expect(interactionDeliverCalls.length).toBe(1);
+			expect(interactionDeliverCalls[0]?.threadId).toBe("interaction-thread-1");
+
+			registry.stop();
+		});
+
+		it("should share one leader election between both Discord connectors (AC7.4)", async () => {
+			const platformsConfig: PlatformsConfig = {
+				connectors: [
+					{
+						platform: "discord",
+						token: "test-token",
+						failover_threshold_ms: 100,
+						allowed_users: [],
+					},
+				],
+			};
+
+			const registry = new PlatformConnectorRegistry(mockAppContext, platformsConfig);
+			registry.start();
+
+			// Wait for leader election
+			await new Promise((resolve) => setTimeout(resolve, 150));
+
+			// Get both connectors
+			const dmConnector = registry.getConnector("discord");
+			const interactionConnector = registry.getConnector("discord-interaction");
+
+			expect(dmConnector).toBeDefined();
+			expect(interactionConnector).toBeDefined();
+
+			// Get internal elections map to verify both map to same election
+			const elections = (registry as { elections: Map<string, PlatformLeaderElection> }).elections;
+			const election = elections.get("discord");
+
+			expect(election).toBeDefined();
+
+			// Stop should disconnect both connectors cleanly
+			expect(() => registry.stop()).not.toThrow();
 		});
 	});
 });
