@@ -4,6 +4,8 @@ import type { Component } from "svelte";
 import { SvelteSet } from "svelte/reactivity";
 import type { FileTreeNode } from "../lib/file-tree";
 // biome-ignore lint/correctness/noUnusedImports: used in template
+import { ChevronDown, ChevronRight, Download, Folder, FolderOpen } from "lucide-svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
 import TreeNode from "./TreeNode.svelte";
 
 interface Props {
