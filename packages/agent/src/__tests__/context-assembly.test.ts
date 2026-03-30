@@ -2180,7 +2180,7 @@ This skill reviews pull requests.`;
 			// each preceded by a user message so the conversation is valid
 			const models = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
 			for (let i = 0; i < models.length; i++) {
-				const ts = new Date(nowBase.getTime() + (i * 2) * 1000).toISOString();
+				const ts = new Date(nowBase.getTime() + i * 2 * 1000).toISOString();
 				const ts2 = new Date(nowBase.getTime() + (i * 2 + 1) * 1000).toISOString();
 				const uid = randomUUID();
 				const aid = randomUUID();
@@ -2202,7 +2202,10 @@ This skill reviews pull requests.`;
 			});
 
 			const switchNotifications = messages.filter(
-				(m) => m.role === "system" && typeof m.content === "string" && m.content.startsWith("Model switched"),
+				(m) =>
+					m.role === "system" &&
+					typeof m.content === "string" &&
+					m.content.startsWith("Model switched"),
 			);
 
 			expect(switchNotifications.length).toBeLessThanOrEqual(3);
@@ -2447,7 +2450,22 @@ This skill reviews pull requests.`;
 			);
 			db.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "local", 0, "Adv Thread", null, null, null, null, now, now, now, 0],
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Adv Thread",
+					null,
+					null,
+					null,
+					null,
+					now,
+					now,
+					now,
+					0,
+				],
 			);
 
 			// Insert a recently-resolved advisory created by this siteId
@@ -2455,7 +2473,22 @@ This skill reviews pull requests.`;
 			const resolvedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString(); // 5 min ago
 			db.run(
 				"INSERT INTO advisories (id, type, status, title, detail, action, impact, evidence, proposed_at, defer_until, resolved_at, created_by, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[advisoryId, "general", "applied", "Test advisory", "Detail text", null, null, null, now, null, resolvedAt, localSiteId, resolvedAt, 0],
+				[
+					advisoryId,
+					"general",
+					"applied",
+					"Test advisory",
+					"Detail text",
+					null,
+					null,
+					null,
+					now,
+					null,
+					resolvedAt,
+					localSiteId,
+					resolvedAt,
+					0,
+				],
 			);
 
 			const messages = assembleContext({
@@ -2496,7 +2529,22 @@ This skill reviews pull requests.`;
 			);
 			db.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "local", 0, "Old Adv Thread", null, null, null, null, now, now, now, 0],
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Old Adv Thread",
+					null,
+					null,
+					null,
+					null,
+					now,
+					now,
+					now,
+					0,
+				],
 			);
 
 			// Advisory resolved 48h ago — outside 24h window
@@ -2504,7 +2552,22 @@ This skill reviews pull requests.`;
 			const resolvedAt = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
 			db.run(
 				"INSERT INTO advisories (id, type, status, title, detail, action, impact, evidence, proposed_at, defer_until, resolved_at, created_by, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[advisoryId, "general", "applied", "Old advisory", "Old detail", null, null, null, resolvedAt, null, resolvedAt, localSiteId, resolvedAt, 0],
+				[
+					advisoryId,
+					"general",
+					"applied",
+					"Old advisory",
+					"Old detail",
+					null,
+					null,
+					null,
+					resolvedAt,
+					null,
+					resolvedAt,
+					localSiteId,
+					resolvedAt,
+					0,
+				],
 			);
 
 			const messages = assembleContext({
@@ -2542,7 +2605,22 @@ This skill reviews pull requests.`;
 			);
 			db.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "local", 0, "Dedup Thread", null, null, null, null, now, now, now, 0],
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Dedup Thread",
+					null,
+					null,
+					null,
+					null,
+					now,
+					now,
+					now,
+					0,
+				],
 			);
 
 			// Insert 5 advisories with identical titles, all resolved recently
@@ -2553,7 +2631,22 @@ This skill reviews pull requests.`;
 				const resolvedAt = new Date(Date.now() - (i + 1) * 60 * 1000).toISOString();
 				db.run(
 					"INSERT INTO advisories (id, type, status, title, detail, action, impact, evidence, proposed_at, defer_until, resolved_at, created_by, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-					[id, "general", "applied", "Task has failed 1 times consecutively", "Detail", null, null, null, now, null, resolvedAt, localSiteId, resolvedAt, 0],
+					[
+						id,
+						"general",
+						"applied",
+						"Task has failed 1 times consecutively",
+						"Detail",
+						null,
+						null,
+						null,
+						now,
+						null,
+						resolvedAt,
+						localSiteId,
+						resolvedAt,
+						0,
+					],
 				);
 			}
 
@@ -2598,7 +2691,22 @@ This skill reviews pull requests.`;
 			);
 			db.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "local", 0, "Cap Thread", null, null, null, null, now, now, now, 0],
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Cap Thread",
+					null,
+					null,
+					null,
+					null,
+					now,
+					now,
+					now,
+					0,
+				],
 			);
 
 			// Insert 8 advisories with distinct titles
@@ -2609,7 +2717,22 @@ This skill reviews pull requests.`;
 				const resolvedAt = new Date(Date.now() - (i + 1) * 60 * 1000).toISOString();
 				db.run(
 					"INSERT INTO advisories (id, type, status, title, detail, action, impact, evidence, proposed_at, defer_until, resolved_at, created_by, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-					[id, "general", "applied", `Advisory ${i}`, "Detail", null, null, null, now, null, resolvedAt, localSiteId, resolvedAt, 0],
+					[
+						id,
+						"general",
+						"applied",
+						`Advisory ${i}`,
+						"Detail",
+						null,
+						null,
+						null,
+						now,
+						null,
+						resolvedAt,
+						localSiteId,
+						resolvedAt,
+						0,
+					],
 				);
 			}
 
@@ -2652,7 +2775,22 @@ This skill reviews pull requests.`;
 			);
 			db.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "local", 0, "Other Site Thread", null, null, null, null, now, now, now, 0],
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Other Site Thread",
+					null,
+					null,
+					null,
+					null,
+					now,
+					now,
+					now,
+					0,
+				],
 			);
 
 			// Advisory from a DIFFERENT site — should not notify this agent
@@ -2660,7 +2798,22 @@ This skill reviews pull requests.`;
 			const resolvedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
 			db.run(
 				"INSERT INTO advisories (id, type, status, title, detail, action, impact, evidence, proposed_at, defer_until, resolved_at, created_by, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[advisoryId, "general", "applied", "Other site advisory", "Detail", null, null, null, now, null, resolvedAt, otherSiteId, resolvedAt, 0],
+				[
+					advisoryId,
+					"general",
+					"applied",
+					"Other site advisory",
+					"Detail",
+					null,
+					null,
+					null,
+					now,
+					null,
+					resolvedAt,
+					otherSiteId,
+					resolvedAt,
+					0,
+				],
 			);
 
 			const messages = assembleContext({

@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
+import { insertRow, writeOutbox } from "@bound/core";
+import type { IntakePayload, Thread, User } from "@bound/shared";
 import type { Logger, PlatformConnectorConfig, TypedEventEmitter } from "@bound/shared";
 import type { PlatformConnector } from "../connector.js";
 import type { DiscordClientManager } from "./discord-client-manager.js";
@@ -93,9 +96,8 @@ export class DiscordInteractionConnector implements PlatformConnector {
 		}
 
 		// AC6.2: truncate to Discord's limit
-		const truncated = content.length > DISCORD_MAX_LENGTH
-			? content.slice(0, DISCORD_MAX_LENGTH)
-			: content;
+		const truncated =
+			content.length > DISCORD_MAX_LENGTH ? content.slice(0, DISCORD_MAX_LENGTH) : content;
 
 		try {
 			await stored.interaction.editReply({ content: truncated });
@@ -121,6 +123,117 @@ export class DiscordInteractionConnector implements PlatformConnector {
 		});
 	}
 
+	private findOrCreateUser(discordId: string, displayName: string): User {
+		const existing = this.db
+			.query<User, [string]>(
+				"SELECT * FROM users WHERE json_extract(platform_ids, '$.discord') = ? AND deleted = 0 LIMIT 1",
+			)
+			.get(discordId);
+		if (existing) return existing;
+
+		const userId = randomUUID();
+		const now = new Date().toISOString();
+		insertRow(
+			this.db,
+			"users",
+			{
+				id: userId,
+				display_name: displayName,
+				platform_ids: JSON.stringify({ discord: discordId }),
+				first_seen_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			this.siteId,
+		);
+		const result = this.db
+			.query<User, [string]>("SELECT * FROM users WHERE id = ? LIMIT 1")
+			.get(userId);
+		if (!result) {
+			throw new Error(`User ${userId} not found after insertRow`);
+		}
+		return result;
+	}
+
+	private findOrCreateThread(userId: string): Thread {
+		const existing = this.db
+			.query<Thread, [string]>(
+				"SELECT * FROM threads WHERE user_id = ? AND interface = 'discord-interaction' AND deleted = 0 LIMIT 1",
+			)
+			.get(userId);
+		if (existing) return existing;
+
+		const threadId = randomUUID();
+		const now = new Date().toISOString();
+		insertRow(
+			this.db,
+			"threads",
+			{
+				id: threadId,
+				user_id: userId,
+				interface: "discord-interaction",
+				host_origin: this.siteId,
+				color: 0,
+				title: null,
+				summary: null,
+				summary_through: null,
+				summary_model_id: null,
+				extracted_through: null,
+				created_at: now,
+				last_message_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			this.siteId,
+		);
+		const result = this.db
+			.query<Thread, [string]>("SELECT * FROM threads WHERE id = ? LIMIT 1")
+			.get(threadId);
+		if (!result) {
+			throw new Error(`Thread ${threadId} not found after insertRow`);
+		}
+		return result;
+	}
+
+	private getHubSiteId(): string {
+		const hub = this.db
+			.query<{ value: string }, []>(
+				"SELECT value FROM cluster_config WHERE key = 'cluster_hub' LIMIT 1",
+			)
+			.get();
+		return hub?.value ?? this.siteId;
+	}
+
+	/**
+	 * Resolve trust signal for the target message's author.
+	 * - Bot itself: "(this bot)"
+	 * - Recognized bound user: "(recognized — bound user \"name\")"
+	 * - Unknown: "(unrecognized)"
+	 */
+	private resolveTrustSignal(authorId: string, _authorBot: boolean): string {
+		// AC4.3: Check if target is the bot itself
+		try {
+			const client = this.clientManager.getClient();
+			if (client.user && authorId === client.user.id) {
+				return "(this bot)";
+			}
+		} catch {
+			// Client not connected — fall through to DB lookup
+		}
+
+		// AC4.1/AC4.2: Look up in users table
+		const boundUser = this.db
+			.query<{ display_name: string }, [string]>(
+				"SELECT display_name FROM users WHERE json_extract(platform_ids, '$.discord') = ? AND deleted = 0 LIMIT 1",
+			)
+			.get(authorId);
+
+		if (boundUser) {
+			return `(recognized — bound user "${boundUser.display_name}")`;
+		}
+		return "(unrecognized)";
+	}
+
 	private async handleInteraction(interaction: DiscordInteraction): Promise<void> {
 		// AC2.5: Only handle message context menu commands named "File for Later"
 		if (!interaction.isMessageContextMenuCommand()) return;
@@ -129,12 +242,117 @@ export class DiscordInteractionConnector implements PlatformConnector {
 		// AC2.1: Defer with ephemeral response as first action
 		await interaction.deferReply({ ephemeral: true });
 
-		// Phase 3 adds: allowlist check, content validation, filing pipeline
-		// Phase 4 adds: response polling and delivery
+		// AC2.3: Allowlist check on the invoking user
+		if (
+			this.config.allowed_users.length > 0 &&
+			!this.config.allowed_users.includes(interaction.user.id)
+		) {
+			await interaction.editReply({
+				content: "Error: You are not authorized to use this command.",
+			});
+			return;
+		}
 
-		this.logger.info("File for Later interaction received", {
+		// AC2.4: Validate extractable content
+		const targetMessage = interaction.targetMessage;
+		const hasContent = targetMessage.content && targetMessage.content.trim().length > 0;
+		const hasImages = targetMessage.attachments.some(
+			(att) => att.contentType?.startsWith("image/") ?? false,
+		);
+		if (!hasContent && !hasImages) {
+			await interaction.editReply({ content: "Error: This message has no extractable content." });
+			return;
+		}
+
+		// AC3.1: Find or create user for the invoking user
+		const user = this.findOrCreateUser(
+			interaction.user.id,
+			interaction.user.displayName ?? interaction.user.username,
+		);
+
+		// AC3.2: Find or create thread with interface = 'discord-interaction'
+		const thread = this.findOrCreateThread(user.id);
+
+		// AC4.1/AC4.2/AC4.3: Resolve trust signal for the target author
+		const trustSignal = this.resolveTrustSignal(targetMessage.author.id, targetMessage.author.bot);
+
+		// Build filing prompt (AC3.3)
+		const channelName =
+			interaction.channel && "name" in interaction.channel
+				? `#${interaction.channel.name}`
+				: "unknown channel";
+		const guildName = interaction.guild?.name ?? "DM";
+		const timestamp = targetMessage.createdAt?.toISOString() ?? new Date().toISOString();
+
+		const filingPrompt = [
+			"File this message for future reference.",
+			"",
+			`From: @${targetMessage.author.displayName ?? targetMessage.author.username} ${trustSignal}`,
+			`Channel: ${channelName} in ${guildName}`,
+			`Sent: ${timestamp}`,
+			"",
+			targetMessage.content,
+		].join("\n");
+
+		// AC3.3: Persist user message with filing prompt
+		const now = new Date().toISOString();
+		const messageId = randomUUID();
+		insertRow(
+			this.db,
+			"messages",
+			{
+				id: messageId,
+				thread_id: thread.id,
+				role: "user",
+				content: filingPrompt,
+				model_id: null,
+				tool_name: null,
+				created_at: now,
+				modified_at: now,
+				host_origin: this.siteId,
+				deleted: 0,
+			},
+			this.siteId,
+		);
+
+		// Store interaction for later delivery (Phase 4 polls and calls deliver())
+		this.storeInteraction(thread.id, interaction);
+
+		// AC3.4: Write intake relay
+		try {
+			const hubSiteId = this.getHubSiteId();
+			writeOutbox(this.db, {
+				id: randomUUID(),
+				source_site_id: this.siteId,
+				target_site_id: hubSiteId,
+				kind: "intake",
+				ref_id: null,
+				idempotency_key: `intake:discord-interaction:${targetMessage.id}:${interaction.user.id}`,
+				stream_id: null,
+				payload: JSON.stringify({
+					platform: "discord-interaction",
+					platform_event_id: targetMessage.id,
+					thread_id: thread.id,
+					user_id: user.id,
+					message_id: messageId,
+					content: filingPrompt,
+				} satisfies IntakePayload),
+				created_at: now,
+				expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+			});
+
+			this.eventBus.emit("sync:trigger", { reason: "discord-interaction-intake" });
+		} catch (err) {
+			this.logger.error("Failed to write intake relay", { error: String(err) });
+			await interaction.editReply({
+				content: "Error: Failed to process this message. Please try again.",
+			});
+		}
+
+		this.logger.info("File for Later interaction processed", {
 			userId: interaction.user.id,
-			messageId: interaction.targetMessage.id,
+			messageId: targetMessage.id,
+			threadId: thread.id,
 		});
 	}
 }

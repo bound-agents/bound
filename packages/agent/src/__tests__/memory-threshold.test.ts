@@ -74,11 +74,29 @@ describe("Memory Threshold Check (R-W2)", () => {
 						partial_json: '{"command":"echo hello"}',
 					};
 					yield { type: "tool_use_end" as const, id: "t1" };
-					yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 15, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 15,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+					};
 				} else {
 					// This should NOT be reached if memory threshold breaks the loop
 					yield { type: "text" as const, content: "This should not appear." };
-					yield { type: "done" as const, usage: { input_tokens: 5, output_tokens: 3, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 5,
+							output_tokens: 3,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+					};
 				}
 			}
 			capabilities() {
@@ -136,10 +154,28 @@ describe("Memory Threshold Check (R-W2)", () => {
 						partial_json: '{"command":"echo hi"}',
 					};
 					yield { type: "tool_use_end" as const, id: "t1" };
-					yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 15, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 15,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+					};
 				} else {
 					yield { type: "text" as const, content: "All done." };
-					yield { type: "done" as const, usage: { input_tokens: 20, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 20,
+							output_tokens: 5,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+					};
 				}
 			}
 			capabilities() {
@@ -201,10 +237,28 @@ describe("Memory Threshold Check (R-W2)", () => {
 						partial_json: '{"command":"echo test"}',
 					};
 					yield { type: "tool_use_end" as const, id: "t1" };
-					yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 15, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 15,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+					};
 				} else {
 					yield { type: "text" as const, content: "Completed." };
-					yield { type: "done" as const, usage: { input_tokens: 20, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 20,
+							output_tokens: 5,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+					};
 				}
 			}
 			capabilities() {

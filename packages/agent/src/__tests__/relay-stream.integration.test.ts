@@ -34,7 +34,16 @@ class MockLLMBackend implements LLMBackend {
 		this.responses = [];
 		this.pushResponse(async function* () {
 			yield { type: "text" as const, content: text };
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
 		});
 	}
 
@@ -45,7 +54,16 @@ class MockLLMBackend implements LLMBackend {
 				yield { type: "text" as const, content: chunk };
 				await new Promise((r) => setTimeout(r, delayMs));
 			}
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
 		});
 	}
 
@@ -58,7 +76,16 @@ class MockLLMBackend implements LLMBackend {
 		} else {
 			// Default: empty text response
 			yield { type: "text" as const, content: "" };
-			yield { type: "done" as const, usage: { input_tokens: 0, output_tokens: 0, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 0,
+					output_tokens: 0,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
 		}
 	}
 
@@ -781,7 +808,16 @@ describe("relay-stream integration tests", () => {
 		for (let i = 0; i < 3; i++) {
 			mockBackend.pushResponse(async function* () {
 				yield { type: "text" as const, content: `Response ${i}` };
-				yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
 			});
 		}
 

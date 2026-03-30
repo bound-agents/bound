@@ -5,7 +5,11 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase, insertRow, softDelete } from "@bound/core";
-import { buildCrossThreadDigest, buildVolatileEnrichment, computeBaseline } from "../summary-extraction.js";
+import {
+	buildCrossThreadDigest,
+	buildVolatileEnrichment,
+	computeBaseline,
+} from "../summary-extraction.js";
 
 let db: Database;
 let dbPath: string;
@@ -692,9 +696,20 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 		db.run(
 			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			[
-				threadId, userId, "web", "local", 0,
-				"Memory Discussion", summary, now, null, null,
-				now, now, now, 0,
+				threadId,
+				userId,
+				"web",
+				"local",
+				0,
+				"Memory Discussion",
+				summary,
+				now,
+				null,
+				null,
+				now,
+				now,
+				now,
+				0,
 			],
 		);
 
@@ -709,9 +724,20 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 		db.run(
 			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			[
-				threadId, userId, "web", "local", 0,
-				"Untitled Thread", null, null, null, null,
-				now, now, now, 0,
+				threadId,
+				userId,
+				"web",
+				"local",
+				0,
+				"Untitled Thread",
+				null,
+				null,
+				null,
+				null,
+				now,
+				now,
+				now,
+				0,
 			],
 		);
 

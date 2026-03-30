@@ -37,7 +37,13 @@ class MockLLMBackend implements LLMBackend {
 			yield { type: "text" as const, content: text };
 			yield {
 				type: "done" as const,
-				usage: { input_tokens: 100, output_tokens: 50, cache_write_tokens: null, cache_read_tokens: null, estimated: false},
+				usage: {
+					input_tokens: 100,
+					output_tokens: 50,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
 			};
 		});
 	}
@@ -59,14 +65,26 @@ class MockLLMBackend implements LLMBackend {
 			yield { type: "tool_use_end" as const, id: toolId };
 			yield {
 				type: "done" as const,
-				usage: { input_tokens: 100, output_tokens: 80, cache_write_tokens: null, cache_read_tokens: null, estimated: false},
+				usage: {
+					input_tokens: 100,
+					output_tokens: 80,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
 			};
 		});
 		this.pushResponse(async function* () {
 			yield { type: "text" as const, content: finalText };
 			yield {
 				type: "done" as const,
-				usage: { input_tokens: 200, output_tokens: 60, cache_write_tokens: null, cache_read_tokens: null, estimated: false},
+				usage: {
+					input_tokens: 200,
+					output_tokens: 60,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
 			};
 		});
 	}
@@ -85,7 +103,13 @@ class MockLLMBackend implements LLMBackend {
 			}
 			yield {
 				type: "done" as const,
-				usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false},
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
 			};
 		});
 	}
@@ -103,7 +127,13 @@ class MockLLMBackend implements LLMBackend {
 			yield { type: "text" as const, content: "" };
 			yield {
 				type: "done" as const,
-				usage: { input_tokens: 0, output_tokens: 0, cache_write_tokens: null, cache_read_tokens: null, estimated: false},
+				usage: {
+					input_tokens: 0,
+					output_tokens: 0,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
 			};
 		}
 	}
@@ -317,7 +347,13 @@ describe("AgentLoop lifecycle", () => {
 			yield { type: "text" as const, content: "TypeScript is a typed superset of JavaScript." };
 			yield {
 				type: "done" as const,
-				usage: { input_tokens: 50, output_tokens: 30, cache_write_tokens: null, cache_read_tokens: null, estimated: false},
+				usage: {
+					input_tokens: 50,
+					output_tokens: 30,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
 			};
 		});
 		// Second call: will be used by extractSummaryAndMemories
@@ -325,7 +361,13 @@ describe("AgentLoop lifecycle", () => {
 			yield { type: "text" as const, content: "Discussion about TypeScript." };
 			yield {
 				type: "done" as const,
-				usage: { input_tokens: 20, output_tokens: 10, cache_write_tokens: null, cache_read_tokens: null, estimated: false},
+				usage: {
+					input_tokens: 20,
+					output_tokens: 10,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
 			};
 		});
 

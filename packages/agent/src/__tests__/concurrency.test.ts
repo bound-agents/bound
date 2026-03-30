@@ -15,7 +15,16 @@ import { findPendingUserMessage } from "../agent-loop-utils";
 class MockLLMBackend implements LLMBackend {
 	async *chat() {
 		yield { type: "text" as const, content: "Response from LLM" };
-		yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+		yield {
+			type: "done" as const,
+			usage: {
+				input_tokens: 10,
+				output_tokens: 5,
+				cache_write_tokens: null,
+				cache_read_tokens: null,
+				estimated: false,
+			},
+		};
 	}
 
 	capabilities() {
@@ -302,8 +311,20 @@ describe("findPendingUserMessage — queue-skip re-trigger detection", () => {
 		db.run(
 			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			[
-				threadId, userId, "web", "local", 0, "Queue Test", null, null, null, null,
-				new Date().toISOString(), new Date().toISOString(), new Date().toISOString(), 0,
+				threadId,
+				userId,
+				"web",
+				"local",
+				0,
+				"Queue Test",
+				null,
+				null,
+				null,
+				null,
+				new Date().toISOString(),
+				new Date().toISOString(),
+				new Date().toISOString(),
+				0,
 			],
 		);
 	});
@@ -337,7 +358,17 @@ describe("findPendingUserMessage — queue-skip re-trigger detection", () => {
 		const pendingId = randomUUID();
 		db.run(
 			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[pendingId, threadId, "user", "second question (arrived while loop was active)", null, null, t3, t3, "local"],
+			[
+				pendingId,
+				threadId,
+				"user",
+				"second question (arrived while loop was active)",
+				null,
+				null,
+				t3,
+				t3,
+				"local",
+			],
 		);
 
 		const pending = findPendingUserMessage(db, threadId);

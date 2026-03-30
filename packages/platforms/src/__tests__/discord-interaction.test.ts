@@ -4,8 +4,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { applySchema } from "@bound/core";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
-import { DiscordInteractionConnector } from "../connectors/discord-interaction.js";
 import type { DiscordClientManager } from "../connectors/discord-client-manager.js";
+import { DiscordInteractionConnector } from "../connectors/discord-interaction.js";
 
 // Mock logger
 const createMockLogger = (): Logger => ({
@@ -465,7 +465,9 @@ describe("DiscordInteractionConnector", () => {
 			connector.storeInteraction(threadId, mockInteraction);
 			const afterStore = Date.now();
 
-			const stored = (connector as { interactions: Map<string, unknown> }).interactions.get(threadId);
+			const stored = (connector as { interactions: Map<string, unknown> }).interactions.get(
+				threadId,
+			);
 			expect(stored).toBeDefined();
 
 			const expiresAtTime = new Date(stored?.expiresAt as string).getTime();
@@ -498,13 +500,17 @@ describe("DiscordInteractionConnector", () => {
 			});
 
 			// Verify stored
-			expect((connector as { interactions: Map<string, unknown> }).interactions.has(threadId)).toBe(true);
+			expect((connector as { interactions: Map<string, unknown> }).interactions.has(threadId)).toBe(
+				true,
+			);
 
 			// Attempt deliver
 			await connector.deliver(threadId, "msg-1", "test");
 
 			// Verify cleaned up
-			expect((connector as { interactions: Map<string, unknown> }).interactions.has(threadId)).toBe(false);
+			expect((connector as { interactions: Map<string, unknown> }).interactions.has(threadId)).toBe(
+				false,
+			);
 		});
 
 		it("should clean up interaction after successful deliver", async () => {
@@ -528,12 +534,16 @@ describe("DiscordInteractionConnector", () => {
 			connector.storeInteraction(threadId, mockInteraction);
 
 			// Verify stored
-			expect((connector as { interactions: Map<string, unknown> }).interactions.has(threadId)).toBe(true);
+			expect((connector as { interactions: Map<string, unknown> }).interactions.has(threadId)).toBe(
+				true,
+			);
 
 			await connector.deliver(threadId, "msg-1", "test");
 
 			// Verify cleaned up after deliver
-			expect((connector as { interactions: Map<string, unknown> }).interactions.has(threadId)).toBe(false);
+			expect((connector as { interactions: Map<string, unknown> }).interactions.has(threadId)).toBe(
+				false,
+			);
 		});
 	});
 

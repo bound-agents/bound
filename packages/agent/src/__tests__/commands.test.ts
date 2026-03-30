@@ -501,15 +501,38 @@ describe("defineCommand implementations", () => {
 				`INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through,
 					summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[threadId, userId, "web", "local", 0, null, null, null, null, null,
-				 new Date().toISOString(), new Date().toISOString(), new Date().toISOString(), 0],
+				[
+					threadId,
+					userId,
+					"web",
+					"local",
+					0,
+					null,
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
 			);
 			for (let i = 0; i < 3; i++) {
 				db.run(
 					`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin)
 					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-					[randomUUID(), threadId, "user", `Msg ${i}`, null, null,
-					 new Date(Date.now() + i * 1000).toISOString(), null, "local"],
+					[
+						randomUUID(),
+						threadId,
+						"user",
+						`Msg ${i}`,
+						null,
+						null,
+						new Date(Date.now() + i * 1000).toISOString(),
+						null,
+						"local",
+					],
 				);
 			}
 
@@ -571,7 +594,9 @@ describe("defineCommand implementations", () => {
 
 			// Advisory must be persisted in the DB
 			const row = db
-				.prepare("SELECT id, type, status, title, detail, action, impact FROM advisories WHERE title = ?")
+				.prepare(
+					"SELECT id, type, status, title, detail, action, impact FROM advisories WHERE title = ?",
+				)
 				.get("Test advisory") as {
 				id: string;
 				type: string;

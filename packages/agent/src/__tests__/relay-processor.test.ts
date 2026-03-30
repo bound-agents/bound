@@ -1973,7 +1973,16 @@ describe("RelayProcessor", () => {
 					async *chat(params: ChatParams) {
 						capturedParams = params;
 						yield { type: "text" as const, content: "Test response" };
-						yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+						yield {
+							type: "done" as const,
+							usage: {
+								input_tokens: 10,
+								output_tokens: 5,
+								cache_write_tokens: null,
+								cache_read_tokens: null,
+								estimated: false,
+							},
+						};
 					}
 
 					capabilities() {

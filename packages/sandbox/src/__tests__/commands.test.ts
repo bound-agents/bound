@@ -406,9 +406,8 @@ describe("loopContextStorage — per-loop thread/task injection", () => {
 
 		const commands = createDefineCommands(definitions, context);
 
-		await loopContextStorage.run(
-			{ threadId: "t1", taskId: "task-42" },
-			() => commands[0].handler([]),
+		await loopContextStorage.run({ threadId: "t1", taskId: "task-42" }, () =>
+			commands[0].handler([]),
 		);
 
 		expect(capturedTaskId).toBe("task-42");
