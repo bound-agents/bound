@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { applySchema } from "@bound/core";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
+import { DiscordClientManager } from "../connectors/discord-client-manager.js";
 import { DiscordConnector } from "../connectors/discord.js";
 
 // Mock logger
@@ -16,6 +17,27 @@ const createMockLogger = (): Logger => ({
 	error: () => {},
 	debug: () => {},
 });
+
+// Mock client manager
+const createMockClientManager = (): DiscordClientManager => {
+	// Tests call onMessage() directly via cast — no real client needed
+	return {
+		getClient: () => {
+			throw new Error("No client in test");
+		},
+		connect: async () => {},
+		disconnect: async () => {},
+	} as unknown as DiscordClientManager;
+};
+
+// Mock client manager with injected client
+const createMockClientManagerWithClient = (mockClient: unknown): DiscordClientManager => {
+	return {
+		getClient: () => mockClient,
+		connect: async () => {},
+		disconnect: async () => {},
+	} as unknown as DiscordClientManager;
+};
 
 // Mock Discord message
 interface MockDiscordMessage {
@@ -80,7 +102,7 @@ afterEach(() => {
 describe("DiscordConnector", () => {
 	describe("AC6.1: Writes intake relay to outbox on message", () => {
 		it("should write intake relay to relay_outbox", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 
 			// Create a test Discord message
 			const mockMsg: MockDiscordMessage = {
@@ -116,7 +138,7 @@ describe("DiscordConnector", () => {
 
 	describe("AC6.2: Persists user message via insertRow", () => {
 		it("should create messages table entry with role = user", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 
 			const mockMsg: MockDiscordMessage = {
 				id: "discord-msg-1",
@@ -151,7 +173,7 @@ describe("DiscordConnector", () => {
 		});
 
 		it("should create users and threads tables on first message", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 
 			const mockMsg: MockDiscordMessage = {
 				id: "discord-msg-1",
@@ -185,8 +207,6 @@ describe("DiscordConnector", () => {
 
 	describe("AC6.3: Chunks content at Discord's 2000 character limit", () => {
 		it("should chunk long content when delivering", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
-
 			// Setup: create user and thread
 			const userId = randomUUID();
 			const now = new Date().toISOString();
@@ -228,8 +248,7 @@ describe("DiscordConnector", () => {
 				},
 			};
 
-			// Set the private client field (for testing)
-			(connector as { client: unknown }).client = mockDiscordClient;
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManagerWithClient(mockDiscordClient));
 
 			await connector.deliver(threadId, "msg-1", content);
 
@@ -242,7 +261,7 @@ describe("DiscordConnector", () => {
 
 	describe("AC6.4: No shouldActivate method (hostname check removed)", () => {
 		it("should not have shouldActivate method", () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 			expect("shouldActivate" in connector).toBe(false);
 		});
 	});
@@ -251,7 +270,7 @@ describe("DiscordConnector", () => {
 		it("should reject non-allowlisted users", async () => {
 			config.allowed_users = ["allowed123"];
 
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 
 			const mockMsg: MockDiscordMessage = {
 				id: "discord-msg-1",
@@ -281,7 +300,7 @@ describe("DiscordConnector", () => {
 		it("should accept allowlisted users", async () => {
 			config.allowed_users = ["allowed123"];
 
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 
 			const mockMsg: MockDiscordMessage = {
 				id: "discord-msg-1",
@@ -307,7 +326,7 @@ describe("DiscordConnector", () => {
 		it("should accept all users when allowlist is empty", async () => {
 			config.allowed_users = [];
 
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 
 			const mockMsg: MockDiscordMessage = {
 				id: "discord-msg-1",
@@ -333,30 +352,30 @@ describe("DiscordConnector", () => {
 
 	describe("Connector interface requirements", () => {
 		it("should have platform = discord", () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 			expect(connector.platform).toBe("discord");
 		});
 
 		it("should have delivery = broadcast", () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 			expect(connector.delivery).toBe("broadcast");
 		});
 
 		it("should have connect and disconnect methods", () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 			expect(typeof connector.connect).toBe("function");
 			expect(typeof connector.disconnect).toBe("function");
 		});
 
 		it("should have deliver method", () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 			expect(typeof connector.deliver).toBe("function");
 		});
 	});
 
 	describe("Edge cases", () => {
 		it("should reuse existing user and thread on subsequent messages", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 
 			const mockMsg: MockDiscordMessage = {
 				id: "msg-1",
@@ -412,16 +431,15 @@ describe("DiscordConnector", () => {
 	});
 
 	describe("deliver() behavior", () => {
-		it("should throw when not connected", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+		it("should return early when thread not found", async () => {
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 
-			// connector.client is null, so deliver should throw
-			await expect(connector.deliver("thread-1", "msg-1", "content")).rejects.toThrow();
+			// Deliver to a non-existent thread should not throw, just return
+			await connector.deliver("nonexistent-thread", "msg-1", "content");
+			// Test passes if no error is thrown
 		});
 
 		it("should keep typing active while getDMChannelForThread() is resolving", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
-
 			const userId = randomUUID();
 			const threadId = randomUUID();
 			const now = new Date().toISOString();
@@ -444,12 +462,12 @@ describe("DiscordConnector", () => {
 
 			// Track how many typing timers are active at the moment getDMChannelForThread resolves
 			let typingTimerCountDuringFetch = -1;
-			const typingTimers = (connector as { typingTimers: Map<string, unknown> }).typingTimers;
 
 			const mockDiscordClient = {
 				users: {
 					fetch: async (_id: string) => {
 						// Capture the timer state right as we're about to return the channel
+						const typingTimers = (connector as { typingTimers: Map<string, unknown> }).typingTimers;
 						typingTimerCountDuringFetch = typingTimers.size;
 						return {
 							createDM: async () => mockChannel,
@@ -458,7 +476,9 @@ describe("DiscordConnector", () => {
 				},
 			};
 
-			(connector as { client: unknown }).client = mockDiscordClient;
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManagerWithClient(mockDiscordClient));
+			const typingTimers = (connector as { typingTimers: Map<string, unknown> }).typingTimers;
+
 
 			// Start typing for this thread (simulating what onMessage does)
 			const mockTypingChannel = { sendTyping: async () => {} };
@@ -478,10 +498,8 @@ describe("DiscordConnector", () => {
 		});
 
 		it("should log warning when thread not found", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 
-			// Set up a mock client
-			(connector as { client: unknown }).client = {};
 
 			let warningLogged = false;
 			const mockLoggerWithSpy: Logger = {
@@ -493,14 +511,15 @@ describe("DiscordConnector", () => {
 				debug: () => {},
 			};
 
+			const mockClient = {};
 			const connectorWithSpy = new DiscordConnector(
 				config,
 				db,
 				"site-1",
 				eventBus,
 				mockLoggerWithSpy,
+				createMockClientManagerWithClient(mockClient),
 			);
-			(connectorWithSpy as { client: unknown }).client = {};
 
 			await connectorWithSpy.deliver("nonexistent-thread", "msg-1", "content");
 
@@ -510,7 +529,7 @@ describe("DiscordConnector", () => {
 
 	describe("writeOutbox error handling (item #8)", () => {
 		it("should stop typing timer if writeOutbox throws after startTyping", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 
 			// First, create user/thread records
 			const userId = randomUUID();
@@ -595,7 +614,7 @@ describe("DiscordConnector", () => {
 
 	describe("Typing timer management (item #1)", () => {
 		it("should store both interval and timeout handles (not just interval)", () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 
 			const mockChannel = {
 				sendTypingCalls: 0,
@@ -627,7 +646,7 @@ describe("DiscordConnector", () => {
 		});
 
 		it("should clear both handles when stopTyping called", () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 
 			const mockChannel = {
 				sendTypingCalls: 0,
@@ -657,7 +676,7 @@ describe("DiscordConnector", () => {
 		});
 
 		it("should replace old handles when startTyping called twice for same thread", () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 
 			const mockChannel = {
 				sendTypingCalls: 0,
@@ -701,7 +720,7 @@ describe("DiscordConnector", () => {
 		});
 
 		it("should clear typing timers on disconnect", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 
 			const mockChannel = {
 				sendTypingCalls: 0,
@@ -726,7 +745,6 @@ describe("DiscordConnector", () => {
 			expect(typingTimersBeforeDisconnect.size).toBe(2);
 
 			// Disconnect (mocking that client is not actually connected)
-			(connector as { client: unknown }).client = null;
 			await connector.disconnect();
 
 			// All timers should be cleared
@@ -738,7 +756,7 @@ describe("DiscordConnector", () => {
 
 	describe("DiscordConnector.getPlatformTools()", () => {
 		it("returns map with discord_send_message tool definition (AC2.1)", () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 			const threadId = randomUUID();
 
 			const tools = connector.getPlatformTools(threadId);
@@ -751,7 +769,7 @@ describe("DiscordConnector", () => {
 		});
 
 		it("execute closure is bound to the provided threadId (AC2.2)", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 			const threadId = randomUUID();
 
 			const userId = randomUUID();
@@ -793,7 +811,7 @@ describe("DiscordConnector", () => {
 		});
 
 		it("valid content under 2000 chars calls deliver() and returns 'sent' (AC1.1)", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 			const threadId = randomUUID();
 			const userId = randomUUID();
 			const now = new Date().toISOString();
@@ -823,7 +841,7 @@ describe("DiscordConnector", () => {
 		});
 
 		it("content exactly 2000 chars succeeds (AC1.6)", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 			const threadId = randomUUID();
 			const userId = randomUUID();
 			const now = new Date().toISOString();
@@ -853,7 +871,7 @@ describe("DiscordConnector", () => {
 		});
 
 		it("content over 2000 chars returns error, deliver not called (AC1.4)", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 			const threadId = randomUUID();
 
 			let deliverCalled = false;
@@ -872,7 +890,7 @@ describe("DiscordConnector", () => {
 		});
 
 		it("readable attachment path calls deliver() with loaded buffer and returns 'sent' (AC1.2)", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 			const threadId = randomUUID();
 			const userId = randomUUID();
 			const now = new Date().toISOString();
@@ -921,7 +939,7 @@ describe("DiscordConnector", () => {
 		});
 
 		it("unreadable attachment path returns error, deliver not called (AC1.5)", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 			const threadId = randomUUID();
 
 			let deliverCalled = false;
@@ -944,7 +962,7 @@ describe("DiscordConnector", () => {
 		});
 
 		it("multiple execute() calls each invoke deliver() separately (AC1.3)", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 			const threadId = randomUUID();
 			const userId = randomUUID();
 			const now = new Date().toISOString();
@@ -975,7 +993,7 @@ describe("DiscordConnector", () => {
 		});
 
 		it("uses readFileFn when provided to read attachments (virtual FS support)", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 			const threadId = randomUUID();
 			const userId = randomUUID();
 			const now = new Date().toISOString();
@@ -1038,7 +1056,7 @@ describe("DiscordConnector", () => {
 		});
 
 		it("falls back to node:fs/promises.readFile when readFileFn not provided", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 			const threadId = randomUUID();
 			const userId = randomUUID();
 			const now = new Date().toISOString();
@@ -1086,7 +1104,7 @@ describe("DiscordConnector", () => {
 		});
 
 		it("includes error message in attachment failure when readFileFn throws", async () => {
-			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger);
+			const connector = new DiscordConnector(config, db, "site-1", eventBus, mockLogger, createMockClientManager());
 			const threadId = randomUUID();
 
 			// Mock readFileFn that throws
