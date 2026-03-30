@@ -2253,7 +2253,6 @@ describe("RelayProcessor", () => {
 				mockAppCtx as any,
 				undefined,
 				new Map(),
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				() =>
 					({
 						run: async () => ({
@@ -2356,7 +2355,6 @@ describe("RelayProcessor", () => {
 				mockAppCtx as any,
 				undefined,
 				new Map(),
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				() =>
 					({
 						run: async () => ({
@@ -3270,7 +3268,6 @@ describe("RelayProcessor", () => {
 					mockAppCtx as any,
 					undefined,
 					new Map(),
-					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					() =>
 						({
 							run: async () => ({
@@ -3365,7 +3362,6 @@ describe("RelayProcessor", () => {
 					mockAppCtx as any,
 					undefined,
 					new Map(),
-					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					() =>
 						({
 							run: async (): Promise<never> => {

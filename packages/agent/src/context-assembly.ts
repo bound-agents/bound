@@ -702,15 +702,16 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 
 		// Inject operator retirement notifications (24h window) (AC3.6, AC3.7)
 		try {
+			const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 			const retiredByOperator = db
 				.query(
 					`SELECT name, retired_reason FROM skills
 					 WHERE status = 'retired'
 					   AND retired_by = 'operator'
-					   AND modified_at > datetime('now', '-24 hours')
+					   AND modified_at > ?
 					   AND deleted = 0`,
 				)
-				.all() as Array<{ name: string; retired_reason: string | null }>;
+				.all(cutoff24h) as Array<{ name: string; retired_reason: string | null }>;
 
 			for (const s of retiredByOperator) {
 				const reason = s.retired_reason ? `"${s.retired_reason}"` : "no reason given";
