@@ -540,6 +540,65 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		content: orientationLines.join("\n"),
 	});
 
+	// Track inactive skill reference for volatile context note (AC3.4)
+	let inactiveSkillRef: string | null = null;
+
+	// Inject task-referenced skill body as system message (AC3.3, AC3.5)
+	// Must be outside the !noHistory guard so it works when noHistory = true
+	if (params.taskId) {
+		try {
+			const taskRow = db
+				.query("SELECT payload FROM tasks WHERE id = ? AND deleted = 0")
+				.get(params.taskId) as { payload: string | null } | null;
+
+			if (taskRow?.payload) {
+				let taskPayload: unknown;
+				try {
+					taskPayload = JSON.parse(taskRow.payload);
+				} catch {
+					// Malformed payload — skip skill injection
+				}
+
+				if (
+					typeof taskPayload === "object" &&
+					taskPayload !== null &&
+					"skill" in taskPayload &&
+					typeof (taskPayload as Record<string, unknown>).skill === "string"
+				) {
+					const skillName = (taskPayload as Record<string, unknown>).skill as string;
+
+					const skillRow = db
+						.query(
+							"SELECT id FROM skills WHERE name = ? AND status = 'active' AND deleted = 0",
+						)
+						.get(skillName) as { id: string } | null;
+
+					if (skillRow) {
+						const skillMdRow = db
+							.query(
+								"SELECT content FROM files WHERE path = ? AND deleted = 0",
+							)
+							.get(`/home/user/skills/${skillName}/SKILL.md`) as {
+							content: string;
+						} | null;
+
+						if (skillMdRow?.content) {
+							assembled.push({
+								role: "system",
+								content: skillMdRow.content,
+							});
+						}
+					} else {
+						// Skill referenced but not active — note will appear in volatile context
+						inactiveSkillRef = skillName;
+					}
+				}
+			}
+		} catch {
+			// Non-fatal: skip skill body injection on any error
+		}
+	}
+
 	// Add message history
 	assembled.push(...annotated);
 
@@ -624,6 +683,54 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			}
 		} catch {
 			// Non-fatal
+		}
+
+		// Inject active skill index (AC3.1, AC3.2)
+		try {
+			const activeSkills = db
+				.query(
+					"SELECT name, description FROM skills WHERE status = 'active' AND deleted = 0 ORDER BY last_activated_at DESC",
+				)
+				.all() as Array<{ name: string; description: string }>;
+
+			if (activeSkills.length > 0) {
+				volatileLines.push("");
+				volatileLines.push(`SKILLS (${activeSkills.length} active):`);
+				for (const s of activeSkills) {
+					volatileLines.push(`  ${s.name} — ${s.description}`);
+				}
+			}
+		} catch {
+			// Non-fatal
+		}
+
+		// Inject operator retirement notifications (24h window) (AC3.6, AC3.7)
+		try {
+			const retiredByOperator = db
+				.query(
+					`SELECT name, retired_reason FROM skills
+					 WHERE status = 'retired'
+					   AND retired_by = 'operator'
+					   AND modified_at > datetime('now', '-24 hours')
+					   AND deleted = 0`,
+				)
+				.all() as Array<{ name: string; retired_reason: string | null }>;
+
+			for (const s of retiredByOperator) {
+				const reason = s.retired_reason ? `"${s.retired_reason}"` : "no reason given";
+				volatileLines.push("");
+				volatileLines.push(
+					`[Skill notification] Skill '${s.name}' was retired by operator: ${reason}.`,
+				);
+			}
+		} catch {
+			// Non-fatal
+		}
+
+		// Inject inactive skill reference note (AC3.4)
+		if (inactiveSkillRef) {
+			volatileLines.push("");
+			volatileLines.push(`Referenced skill '${inactiveSkillRef}' is not active.`);
 		}
 
 		assembled.push({
