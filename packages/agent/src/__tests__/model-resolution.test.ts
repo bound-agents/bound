@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema } from "@bound/core";
 import { ModelRouter } from "@bound/llm";
-import { resolveModel } from "../model-resolution";
+import { type ModelResolution, resolveModel } from "../model-resolution";
 
 // Test database setup
 let db: Database;
@@ -305,7 +305,8 @@ describe("Model Resolution", () => {
 
 			const resolution = resolveModel("local-backend", modelRouter, db, "site-1");
 			expect(resolution.kind).toBe("local");
-			expect((resolution as any).reResolved).toBeUndefined();
+			const localRes = resolution as Extract<ModelResolution, { kind: "local" }>;
+			expect(localRes.reResolved).toBeUndefined();
 		});
 
 		// AC2.1 — vision requirement routes to vision-capable backend
@@ -348,8 +349,9 @@ describe("Model Resolution", () => {
 
 			const resolution = resolveModel("primary", modelRouter, db, "site-1", { vision: true });
 			expect(resolution.kind).toBe("local");
-			expect((resolution as any).modelId).toBe("vision-backend");
-			expect((resolution as any).reResolved).toBe(true);
+			const localRes = resolution as Extract<ModelResolution, { kind: "local" }>;
+			expect(localRes.modelId).toBe("vision-backend");
+			expect(localRes.reResolved).toBe(true);
 		});
 
 		// AC2.2 — re-resolution sets reResolved flag
@@ -390,14 +392,11 @@ describe("Model Resolution", () => {
 			]);
 			const modelRouter = new ModelRouter(backends, "primary");
 
-			const resolution = resolveModel(
-				"primary",
-				modelRouter,
-				db,
-				"site-1",
-				{ prompt_caching: true },
-			);
-			expect((resolution as any).reResolved).toBe(true);
+			const resolution = resolveModel("primary", modelRouter, db, "site-1", {
+				prompt_caching: true,
+			});
+			const localRes = resolution as Extract<ModelResolution, { kind: "local" }>;
+			expect(localRes.reResolved).toBe(true);
 		});
 
 		// AC2.3 — capability-mismatch when no backend has the capability
@@ -440,9 +439,9 @@ describe("Model Resolution", () => {
 
 			const resolution = resolveModel("backend-1", modelRouter, db, "site-1", { vision: true });
 			expect(resolution.kind).toBe("error");
-			const error = resolution as any;
-			expect(error.reason).toBe("capability-mismatch");
-			expect(error.unmetCapabilities).toContain("vision");
+			const errorRes = resolution as Extract<ModelResolution, { kind: "error" }>;
+			expect(errorRes.reason).toBe("capability-mismatch");
+			expect(errorRes.unmetCapabilities).toContain("vision");
 		});
 
 		// AC2.4 — transient-unavailable when capable backends are all rate-limited
@@ -488,9 +487,9 @@ describe("Model Resolution", () => {
 
 			const resolution = resolveModel("primary", modelRouter, db, "site-1", { vision: true });
 			expect(resolution.kind).toBe("error");
-			const error = resolution as any;
-			expect(error.reason).toBe("transient-unavailable");
-			expect(error.earliestRecovery).toBeGreaterThan(Date.now());
+			const errorRes = resolution as Extract<ModelResolution, { kind: "error" }>;
+			expect(errorRes.reason).toBe("transient-unavailable");
+			expect(errorRes.earliestRecovery).toBeGreaterThan(Date.now());
 		});
 
 		// AC2.1 alternative — tool_use requirement
@@ -533,8 +532,9 @@ describe("Model Resolution", () => {
 
 			const resolution = resolveModel("no-tools", modelRouter, db, "site-1", { tool_use: true });
 			expect(resolution.kind).toBe("local");
-			expect((resolution as any).modelId).toBe("with-tools");
-			expect((resolution as any).reResolved).toBe(true);
+			const localRes = resolution as Extract<ModelResolution, { kind: "local" }>;
+			expect(localRes.modelId).toBe("with-tools");
+			expect(localRes.reResolved).toBe(true);
 		});
 
 		// AC2.3 alternative — multiple unmet capabilities
@@ -557,19 +557,17 @@ describe("Model Resolution", () => {
 			const backends = new Map([["limited", limitedBackend]]);
 			const modelRouter = new ModelRouter(backends, "limited");
 
-			const resolution = resolveModel(
-				"limited",
-				modelRouter,
-				db,
-				"site-1",
-				{ vision: true, tool_use: true, prompt_caching: true },
-			);
+			const resolution = resolveModel("limited", modelRouter, db, "site-1", {
+				vision: true,
+				tool_use: true,
+				prompt_caching: true,
+			});
 			expect(resolution.kind).toBe("error");
-			const error = resolution as any;
-			expect(error.reason).toBe("capability-mismatch");
-			expect(error.unmetCapabilities).toContain("vision");
-			expect(error.unmetCapabilities).toContain("tool_use");
-			expect(error.unmetCapabilities).toContain("prompt_caching");
+			const errorRes = resolution as Extract<ModelResolution, { kind: "error" }>;
+			expect(errorRes.reason).toBe("capability-mismatch");
+			expect(errorRes.unmetCapabilities).toContain("vision");
+			expect(errorRes.unmetCapabilities).toContain("tool_use");
+			expect(errorRes.unmetCapabilities).toContain("prompt_caching");
 		});
 
 		// Backward compatibility — requirements undefined
@@ -595,7 +593,8 @@ describe("Model Resolution", () => {
 			// No requirements passed
 			const resolution = resolveModel("backend-1", modelRouter, db, "site-1");
 			expect(resolution.kind).toBe("local");
-			expect((resolution as any).reResolved).toBeUndefined();
+			const localRes = resolution as Extract<ModelResolution, { kind: "local" }>;
+			expect(localRes.reResolved).toBeUndefined();
 		});
 
 		// Edge case: primary backend has no capabilities metadata
@@ -642,7 +641,8 @@ describe("Model Resolution", () => {
 				vision: true,
 			});
 			expect(resolution.kind).toBe("local");
-			expect((resolution as any).modelId).toBe("alt");
+			const localRes = resolution as Extract<ModelResolution, { kind: "local" }>;
+			expect(localRes.modelId).toBe("alt");
 		});
 	});
 });
