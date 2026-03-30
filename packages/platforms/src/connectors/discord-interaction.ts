@@ -46,6 +46,7 @@ export class DiscordInteractionConnector implements PlatformConnector {
 		private readonly eventBus: TypedEventEmitter,
 		private readonly logger: Logger,
 		private readonly clientManager: DiscordClientManager,
+		private readonly pollTimeoutMs: number = MAX_POLL_MS,
 	) {}
 
 	async connect(_hostBaseUrl?: string): Promise<void> {
@@ -280,7 +281,7 @@ export class DiscordInteractionConnector implements PlatformConnector {
 			}
 
 			// AC8.2: Check timeout
-			if (Date.now() - startTime >= MAX_POLL_MS) {
+			if (Date.now() - startTime >= this.pollTimeoutMs) {
 				this.logger.warn("Polling timed out waiting for agent response", { threadId });
 				// Deliver timeout error via editReply
 				const stored = this.interactions.get(threadId);

@@ -1254,4 +1254,270 @@ describe("DiscordInteractionConnector", () => {
 			expect(msg.content).toContain("(this bot)");
 		});
 	});
+
+	describe("Response polling", () => {
+		/**
+		 * Helper to create a full interaction mock that completes the filing flow.
+		 * Returns { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls }
+		 */
+		const createFullMockSetup = () => {
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const editReplyCalls: Array<{ content: string }> = [];
+
+			const mockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "File for Later",
+				deferReply: async () => {},
+				editReply: async (opts: { content: string }) => {
+					editReplyCalls.push(opts);
+				},
+				user: { id: "discord-user-123", displayName: "Alice", username: "alice" },
+				targetMessage: {
+					id: "msg123",
+					content: "Test content",
+					author: {
+						id: "author-id",
+						bot: false,
+						displayName: "Author",
+						username: "author",
+					},
+					attachments: { some: () => false },
+					createdAt: new Date(),
+				},
+				channel: { name: "general" },
+				guild: { name: "Test Guild" },
+			};
+
+			const mockClient = {
+				application: {
+					commands: {
+						create: async () => {},
+					},
+				},
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") {
+						onInteractionCreateHandlers.push(handler);
+					}
+				},
+				off: () => {},
+			};
+
+			return { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls };
+		};
+
+		it("AC8.1 (immediate response): should find pre-inserted assistant message and deliver", async () => {
+			const { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls } =
+				createFullMockSetup();
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+				1000, // 1 second timeout for testing
+			);
+
+			await connector.connect();
+
+			// Fire the interaction to create user, thread, message
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			// Get the created thread ID to pre-insert a response
+			const threads = db.query("SELECT * FROM threads WHERE deleted = 0").all() as Array<{
+				id: string;
+			}>;
+			expect(threads.length).toBe(1);
+			const threadId = threads[0].id;
+
+			// Pre-insert assistant response (created shortly after user message)
+			const responseTime = new Date(Date.now() + 10).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					threadId,
+					"assistant",
+					"This is the assistant response.",
+					null,
+					null,
+					responseTime,
+					responseTime,
+					"site-1",
+					0,
+				],
+			);
+
+			// Wait for editReply to be called (polling should find the response)
+			await new Promise<void>((resolve) => {
+				const checkEditReply = () => {
+					if (editReplyCalls.length > 0) {
+						resolve();
+					} else {
+						setTimeout(checkEditReply, 50);
+					}
+				};
+				checkEditReply();
+			});
+
+			expect(editReplyCalls.length).toBe(1);
+			expect(editReplyCalls[0]?.content).toBe("This is the assistant response.");
+		});
+
+		it("AC8.1 (delayed response): should find assistant message inserted during polling", async () => {
+			const { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls } =
+				createFullMockSetup();
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+				2000, // 2 second timeout for testing
+			);
+
+			await connector.connect();
+
+			// Fire the interaction
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			// Get thread ID
+			const threads = db.query("SELECT * FROM threads WHERE deleted = 0").all() as Array<{
+				id: string;
+			}>;
+			const threadId = threads[0].id;
+
+			// Simulate delayed response insertion (600ms delay)
+			setTimeout(() => {
+				const responseTime = new Date().toISOString();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						threadId,
+						"assistant",
+						"Delayed response from agent.",
+						null,
+						null,
+						responseTime,
+						responseTime,
+						"site-1",
+						0,
+					],
+				);
+			}, 600);
+
+			// Wait for polling to complete
+			await new Promise<void>((resolve) => {
+				const checkEditReply = () => {
+					if (editReplyCalls.length > 0) {
+						resolve();
+					} else {
+						setTimeout(checkEditReply, 50);
+					}
+				};
+				checkEditReply();
+			});
+
+			expect(editReplyCalls.length).toBe(1);
+			expect(editReplyCalls[0]?.content).toBe("Delayed response from agent.");
+		});
+
+		it("AC8.2 (timeout): should deliver timeout error when no response appears", async () => {
+			const { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls } =
+				createFullMockSetup();
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+				500, // 500ms timeout for testing
+			);
+
+			await connector.connect();
+
+			// Fire the interaction
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			// Do NOT insert any response — let polling timeout
+
+			// Wait for timeout to occur (poll timeout + some buffer)
+			await new Promise<void>((resolve) => {
+				setTimeout(() => resolve(), 1000);
+			});
+
+			// Should have called editReply with timeout message
+			expect(editReplyCalls.length).toBe(1);
+			expect(editReplyCalls[0]?.content).toContain(
+				"Error: Timed out waiting for agent response after 5 minutes.",
+			);
+		});
+
+		it("AC8.1 + AC6.2 (truncation): should truncate long response to 2000 chars", async () => {
+			const { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls } =
+				createFullMockSetup();
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+				1000, // 1 second timeout
+			);
+
+			await connector.connect();
+
+			// Fire the interaction
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			// Get thread ID
+			const threads = db.query("SELECT * FROM threads WHERE deleted = 0").all() as Array<{
+				id: string;
+			}>;
+			const threadId = threads[0].id;
+
+			// Pre-insert a very long response (3000 chars)
+			const longContent = "x".repeat(3000);
+			const responseTime = new Date(Date.now() + 10).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					threadId,
+					"assistant",
+					longContent,
+					null,
+					null,
+					responseTime,
+					responseTime,
+					"site-1",
+					0,
+				],
+			);
+
+			// Wait for editReply
+			await new Promise<void>((resolve) => {
+				const checkEditReply = () => {
+					if (editReplyCalls.length > 0) {
+						resolve();
+					} else {
+						setTimeout(checkEditReply, 50);
+					}
+				};
+				checkEditReply();
+			});
+
+			expect(editReplyCalls.length).toBe(1);
+			// Verify truncation to exactly 2000 chars
+			expect(editReplyCalls[0]?.content).toBe("x".repeat(2000));
+		});
+	});
 });
