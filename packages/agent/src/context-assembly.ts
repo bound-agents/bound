@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { BackendCapabilities, LLMMessage } from "@bound/llm";
+import type { BackendCapabilities, ContentBlock, LLMMessage } from "@bound/llm";
 import type { Message } from "@bound/shared";
 import { getFileThreadNotificationMessage, getLastThreadForFile } from "./file-thread-tracker";
 import {
@@ -39,6 +39,21 @@ export interface ContextParams {
 	 * with their text_representation.
 	 */
 	targetCapabilities?: BackendCapabilities;
+}
+
+/**
+ * Estimates the character length of message content for token-budget purposes.
+ * Handles both string content and ContentBlock[] content (produced by
+ * substituteUnsupportedBlocks when the backend lacks vision/document support).
+ * Text blocks contribute their text length; all other blocks contribute their
+ * JSON-serialised length as a conservative approximation.
+ */
+export function estimateContentLength(content: string | ContentBlock[]): number {
+	if (typeof content === "string") return content.length;
+	return content.reduce((sum: number, block: ContentBlock) => {
+		if (block.type === "text") return sum + block.text.length;
+		return sum + JSON.stringify(block).length;
+	}, 0);
 }
 
 // Cache for persona content - loaded once at startup
@@ -573,6 +588,8 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	const annotated: LLMMessage[] = [];
 	let lastAssistantModel: string | null = null;
 	let lastToolCallMsgId: string | null = null;
+	let modelSwitchCount = 0;
+	const MODEL_SWITCH_CAP = 3;
 
 	for (let i = 0; i < sanitized.length; i++) {
 		const m = sanitized[i];
@@ -587,14 +604,17 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			lastToolCallMsgId = m.id;
 		}
 
-		// Check for model switch on assistant messages
+		// Check for model switch on assistant messages; cap at MODEL_SWITCH_CAP
+		// to prevent long threads with many switches from flooding the context.
 		if (m.role === "assistant" && m.model_id) {
 			if (lastAssistantModel && lastAssistantModel !== m.model_id) {
-				// Inject model switch notification
-				annotated.push({
-					role: "system",
-					content: `Model switched from ${lastAssistantModel} to ${m.model_id}`,
-				});
+				if (modelSwitchCount < MODEL_SWITCH_CAP) {
+					annotated.push({
+						role: "system",
+						content: `Model switched from ${lastAssistantModel} to ${m.model_id}`,
+					});
+					modelSwitchCount++;
+				}
 			}
 			lastAssistantModel = m.model_id;
 		}
@@ -799,15 +819,18 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			volatileLines.push(crossThreadDigest);
 		}
 
-		// R-E20: Inject cross-thread file modification notifications
+		// R-E20: Inject cross-thread file modification notifications (capped at 10)
 		try {
+			const FILE_NOTIF_CAP = 10;
 			const threadFiles = db
 				.query(
 					"SELECT DISTINCT key FROM semantic_memory WHERE key LIKE '_internal.file_thread.%' AND deleted = 0",
 				)
 				.all() as Array<{ key: string }>;
 
+			let fileNotifCount = 0;
 			for (const { key } of threadFiles) {
+				if (fileNotifCount >= FILE_NOTIF_CAP) break;
 				const filePath = key.replace("_internal.file_thread.", "");
 				const lastThread = getLastThreadForFile(db, filePath);
 				if (lastThread && lastThread !== threadId) {
@@ -817,6 +840,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 					const threadTitle = threadRow?.title || lastThread;
 					volatileLines.push("");
 					volatileLines.push(getFileThreadNotificationMessage(filePath, threadTitle));
+					fileNotifCount++;
 				}
 			}
 		} catch {
@@ -921,8 +945,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	// Budget pressure check: reduce enrichment caps if headroom < 2,000 tokens
 	if (enrichmentBaseline !== undefined && enrichmentMessageIndex >= 0) {
 		const currentTotal = assembled.reduce((sum, msg) => {
-			const contentLength = typeof msg.content === "string" ? msg.content.length : 0;
-			return sum + Math.ceil(contentLength / 4);
+			return sum + Math.ceil(estimateContentLength(msg.content) / 4);
 		}, 0);
 		const headroom = contextWindow - currentTotal;
 
@@ -984,8 +1007,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 
 	// Approximate token count (rough estimate: 1 token per 4 characters)
 	const totalTokens = assembled.reduce((sum, msg) => {
-		const contentLength = typeof msg.content === "string" ? msg.content.length : 0;
-		return sum + Math.ceil(contentLength / 4);
+		return sum + Math.ceil(estimateContentLength(msg.content) / 4);
 	}, 0);
 
 	if (totalTokens > contextWindow) {

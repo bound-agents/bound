@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
-import { assembleContext } from "../context-assembly";
+import { assembleContext, estimateContentLength } from "../context-assembly";
 
 describe("Context Assembly Pipeline", () => {
 	let tmpDir: string;
@@ -2136,6 +2136,298 @@ This skill reviews pull requests.`;
 
 			// Should be <= 3 memory entries when budget pressure reduces to 3+3
 			expect(memoryCount).toBeLessThanOrEqual(3);
+		});
+	});
+
+	// Bug: ContentBlock[] content was invisible to the token budget because both
+	// budget-check reduces used `typeof content === "string" ? content.length : 0`.
+	// When substituteUnsupportedBlocks() runs, it returns ContentBlock[] for
+	// messages with image/document blocks, making them count as 0 tokens.
+	// Fix: export estimateContentLength() that handles both forms.
+	// Bug: model switch notifications were injected for every switch in history
+	// with no cap, so a long thread with many model changes could flood the context.
+	describe("model switch notification cap", () => {
+		it("injects at most 3 model switch notifications regardless of how many switches occurred", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-02-01T00:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Switch User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Switch Thread",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			// Insert 10 assistant messages each with a different model_id,
+			// each preceded by a user message so the conversation is valid
+			const models = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+			for (let i = 0; i < models.length; i++) {
+				const ts = new Date(nowBase.getTime() + (i * 2) * 1000).toISOString();
+				const ts2 = new Date(nowBase.getTime() + (i * 2 + 1) * 1000).toISOString();
+				const uid = randomUUID();
+				const aid = randomUUID();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[uid, localThreadId, "user", `user ${i}`, null, null, ts, ts, "local"],
+				);
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[aid, localThreadId, "assistant", `response ${i}`, models[i], null, ts2, ts2, "local"],
+				);
+			}
+
+			const messages = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 200000,
+			});
+
+			const switchNotifications = messages.filter(
+				(m) => m.role === "system" && typeof m.content === "string" && m.content.startsWith("Model switched"),
+			);
+
+			expect(switchNotifications.length).toBeLessThanOrEqual(3);
+
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+	});
+
+	// Bug: file thread notifications had no cap. Every file that was modified in
+	// another thread got a notification injected, with no upper bound.
+	describe("file thread notification cap", () => {
+		it("injects at most 10 file thread notifications regardless of how many files exist", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const otherThreadId = randomUUID();
+			const nowBase = new Date("2026-02-02T00:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "File User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			for (const tid of [localThreadId, otherThreadId]) {
+				db.run(
+					"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						tid,
+						localUserId,
+						"web",
+						"local",
+						0,
+						`Thread ${tid.slice(0, 8)}`,
+						null,
+						null,
+						null,
+						null,
+						nowBase.toISOString(),
+						nowBase.toISOString(),
+						nowBase.toISOString(),
+						0,
+					],
+				);
+			}
+
+			// Insert 20 file-thread memory entries pointing to otherThreadId
+			for (let i = 0; i < 20; i++) {
+				const memId = randomUUID();
+				db.run(
+					"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+					[
+						memId,
+						`_internal.file_thread./home/user/file${i}.txt`,
+						otherThreadId,
+						"test",
+						nowBase.toISOString(),
+						nowBase.toISOString(),
+						0,
+					],
+				);
+			}
+
+			const messages = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 200000,
+			});
+
+			// Count file thread notification lines in volatile system message
+			const volatileMsg = messages.find(
+				(m) =>
+					m.role === "system" &&
+					typeof m.content === "string" &&
+					m.content.includes("was last modified in"),
+			);
+
+			let notifCount = 0;
+			if (volatileMsg && typeof volatileMsg.content === "string") {
+				for (const line of volatileMsg.content.split("\n")) {
+					if (line.includes("was last modified in")) notifCount++;
+				}
+			}
+
+			expect(notifCount).toBeLessThanOrEqual(10);
+
+			// cleanup
+			db.run("DELETE FROM semantic_memory WHERE key LIKE '_internal.file_thread.%'");
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [otherThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+	});
+
+	describe("estimateContentLength", () => {
+		it("measures string content by character count", () => {
+			expect(estimateContentLength("hello world")).toBe(11);
+		});
+
+		it("returns 0 for empty string", () => {
+			expect(estimateContentLength("")).toBe(0);
+		});
+
+		it("returns 0 for empty ContentBlock array", () => {
+			expect(estimateContentLength([])).toBe(0);
+		});
+
+		it("sums text block lengths in a ContentBlock array", () => {
+			const blocks = [
+				{ type: "text" as const, text: "hello " },
+				{ type: "text" as const, text: "world!" },
+			];
+			expect(estimateContentLength(blocks)).toBe(12);
+		});
+
+		it("uses JSON.stringify length for non-text blocks", () => {
+			const blocks = [
+				{
+					type: "tool_use" as const,
+					id: "tu1",
+					name: "bash",
+					input: { command: "ls" },
+				},
+			];
+			const expected = JSON.stringify(blocks[0]).length;
+			expect(estimateContentLength(blocks)).toBe(expected);
+		});
+
+		it("handles mixed text and tool_use blocks", () => {
+			const textBlock = { type: "text" as const, text: "prefix" };
+			const toolBlock = {
+				type: "tool_use" as const,
+				id: "tu1",
+				name: "bash",
+				input: { command: "ls" },
+			};
+			const expected = textBlock.text.length + JSON.stringify(toolBlock).length;
+			expect(estimateContentLength([textBlock, toolBlock])).toBe(expected);
+		});
+	});
+
+	describe("ContentBlock[] budget visibility", () => {
+		it("ContentBlock[] content triggers truncation when it pushes over contextWindow", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-01-01T12:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "CB User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"CB Test",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			const insertMsg = (
+				role: string,
+				content: string,
+				offsetSec: number,
+				toolName: string | null = null,
+			) => {
+				const ts = new Date(nowBase.getTime() + offsetSec * 1000).toISOString();
+				const id = randomUUID();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[id, localThreadId, role, content, null, toolName, ts, ts, "local"],
+				);
+				return id;
+			};
+
+			// Tool call with a large document block (5000-char text_representation).
+			// With the bug, substituteUnsupportedBlocks converts this to ContentBlock[]
+			// and the budget check gives it 0 length, so no truncation fires.
+			// With the fix, the text_representation length is counted.
+			const bigDocJson = JSON.stringify([
+				{
+					type: "document",
+					text_representation: "X".repeat(5000),
+				},
+			]);
+
+			// Insert 12 messages to give the slicer something to slice
+			insertMsg("user", "prompt", 1);
+			const tcId = insertMsg("tool_call", bigDocJson, 2);
+			insertMsg("tool_result", "done", 3, tcId);
+			for (let i = 4; i <= 13; i++) {
+				insertMsg(i % 2 === 0 ? "user" : "assistant", `msg ${i}`, i);
+			}
+
+			// contextWindow chosen so that the 5000-char document block alone
+			// (1250 tokens) would push us over, but string-only estimates wouldn't.
+			// System messages are ~250 tokens; history strings are ~50 tokens total.
+			// Without fix: total ≈ 300 → no truncation
+			// With fix: total ≈ 300 + 1250 = 1550 → truncation
+			const messagesWithFix = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 400,
+				targetCapabilities: { vision: false },
+			});
+
+			// Truncation must have fired: returned history should be fewer than 12
+			const historyMessages = messagesWithFix.filter((m) => m.role !== "system");
+			expect(historyMessages.length).toBeLessThan(12);
+
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 	});
 });
