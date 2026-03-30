@@ -1286,4 +1286,357 @@ describe("Context Assembly Pipeline", () => {
 			expect(platformMsg?.content).toMatch(/sees nothing|silence|cannot see/i);
 		});
 	});
+
+	describe("skill context injection", () => {
+		let tmpDir2: string;
+		let dbPath2: string;
+		let db2: Database;
+		let threadId2: string;
+		let userId2: string;
+
+		beforeAll(() => {
+			tmpDir2 = mkdtempSync(join(tmpdir(), "skill-context-test-"));
+			dbPath2 = join(tmpDir2, "test.db");
+
+			// Create database and apply schema
+			db2 = createDatabase(dbPath2);
+			applySchema(db2);
+
+			// Create a test user and thread
+			userId2 = randomUUID();
+			threadId2 = randomUUID();
+
+			db2.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[userId2, "Test User", null, new Date().toISOString(), new Date().toISOString(), 0],
+			);
+
+			db2.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					threadId2,
+					userId2,
+					"web",
+					"local",
+					0,
+					"Test Thread",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+		});
+
+		afterAll(() => {
+			db2.close();
+			if (tmpDir2) {
+				rmSync(tmpDir2, { recursive: true, force: true });
+			}
+		});
+
+		// Helper to clean up skills, files, and tasks for test isolation
+		function cleanupTestData() {
+			db2.run("DELETE FROM tasks");
+			db2.run("DELETE FROM files");
+			db2.run("DELETE FROM skills");
+		}
+
+		it("AC3.1: should inject active skill index when skills exist", () => {
+			cleanupTestData();
+			// Insert an active skill
+			const now = new Date().toISOString();
+			db2.run(
+				"INSERT INTO skills (id, name, description, status, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), "pr-review", "Review GitHub PRs", "active", "/home/user/skills/pr-review", now, now, 0],
+			);
+
+			const messages = assembleContext({
+				db: db2,
+				threadId: threadId2,
+				userId: userId2,
+			});
+
+			// Find the volatile context system message (last system message)
+			const systemMessages = messages.filter((m) => m.role === "system");
+			const volatileMsg = systemMessages[systemMessages.length - 1];
+
+			expect(volatileMsg).toBeDefined();
+			expect(volatileMsg.content).toContain("SKILLS (1 active):");
+			expect(volatileMsg.content).toContain("pr-review — Review GitHub PRs");
+		});
+
+		it("AC3.2: should not inject SKILLS block when no active skills exist", () => {
+			cleanupTestData();
+			// Ensure no active skills exist (test database is clean)
+			const messages = assembleContext({
+				db: db2,
+				threadId: threadId2,
+				userId: userId2,
+			});
+
+			// Find the volatile context system message
+			const systemMessages = messages.filter((m) => m.role === "system");
+			const volatileMsg = systemMessages[systemMessages.length - 1];
+
+			expect(volatileMsg).toBeDefined();
+			expect(volatileMsg.content).not.toContain("SKILLS (");
+		});
+
+		it("AC3.3: should inject task-referenced skill body when skill is active", () => {
+			cleanupTestData();
+			// Insert an active skill
+			const now = new Date().toISOString();
+			const skillId = randomUUID();
+			db2.run(
+				"INSERT INTO skills (id, name, description, status, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[skillId, "pr-review", "Review GitHub PRs", "active", "/home/user/skills/pr-review", now, now, 0],
+			);
+
+			// Insert the SKILL.md file
+			const fileId = randomUUID();
+			const skillMdContent = `# PR Review Skill
+name: pr-review
+description: Review GitHub PRs
+## Overview
+This skill reviews pull requests.`;
+			db2.run(
+				"INSERT INTO files (id, path, content, size_bytes, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[
+					fileId,
+					"/home/user/skills/pr-review/SKILL.md",
+					skillMdContent,
+					skillMdContent.length,
+					now,
+					now,
+					0,
+				],
+			);
+
+			// Insert a task with skill reference
+			const taskId = randomUUID();
+			db2.run(
+				"INSERT INTO tasks (id, type, status, trigger_spec, payload, thread_id, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					taskId,
+					"manual",
+					"pending",
+					"manual",
+					JSON.stringify({ skill: "pr-review" }),
+					threadId2,
+					now,
+					now,
+					0,
+				],
+			);
+
+			const messages = assembleContext({
+				db: db2,
+				threadId: threadId2,
+				userId: userId2,
+				taskId,
+			});
+
+			// Find the skill body system message (should be before history)
+			const systemMessages = messages.filter((m) => m.role === "system");
+
+			// The skill body message should be present
+			const skillBodyMsg = systemMessages.find((m) => m.content.includes("PR Review Skill"));
+			expect(skillBodyMsg).toBeDefined();
+			expect(skillBodyMsg?.content).toContain(skillMdContent);
+
+			// The skill body should appear before the volatile context
+			const skillBodyIndex = messages.indexOf(skillBodyMsg!);
+			const volatileMsg = systemMessages[systemMessages.length - 1];
+			const volatileIndex = messages.indexOf(volatileMsg);
+			expect(skillBodyIndex).toBeLessThan(volatileIndex);
+		});
+
+		it("AC3.4: should inject inactive skill reference note when skill is not active", () => {
+			cleanupTestData();
+			// Insert a retired skill (not active)
+			const now = new Date().toISOString();
+			db2.run(
+				"INSERT INTO skills (id, name, description, status, skill_root, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), "pr-review", "Review GitHub PRs", "retired", "/home/user/skills/pr-review", now, 0],
+			);
+
+			// Insert a task with skill reference
+			const taskId = randomUUID();
+			db2.run(
+				"INSERT INTO tasks (id, type, status, trigger_spec, payload, thread_id, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					taskId,
+					"manual",
+					"pending",
+					"manual",
+					JSON.stringify({ skill: "pr-review" }),
+					threadId2,
+					now,
+					now,
+					0,
+				],
+			);
+
+			const messages = assembleContext({
+				db: db2,
+				threadId: threadId2,
+				userId: userId2,
+				taskId,
+			});
+
+			// Find the volatile context system message
+			const systemMessages = messages.filter((m) => m.role === "system");
+			const volatileMsg = systemMessages[systemMessages.length - 1];
+
+			// No SKILL.md should be injected
+			const skillBodyMsg = systemMessages.find(
+				(m) =>
+					m.content.includes("Review GitHub PRs") &&
+					m !== volatileMsg &&
+					!m.content.includes("SKILLS ("),
+			);
+			expect(skillBodyMsg).toBeUndefined();
+
+			// But the inactive reference note should appear
+			expect(volatileMsg.content).toContain("Referenced skill 'pr-review' is not active.");
+		});
+
+		it("AC3.5: should inject task-referenced skill body even when noHistory = true", () => {
+			cleanupTestData();
+			// Insert an active skill
+			const now = new Date().toISOString();
+			const skillId = randomUUID();
+			db2.run(
+				"INSERT INTO skills (id, name, description, status, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[skillId, "pr-review", "Review GitHub PRs", "active", "/home/user/skills/pr-review", now, now, 0],
+			);
+
+			// Insert the SKILL.md file
+			const fileId = randomUUID();
+			const skillMdContent = `# PR Review Skill
+name: pr-review
+description: Review GitHub PRs
+## Overview
+This skill reviews pull requests.`;
+			db2.run(
+				"INSERT INTO files (id, path, content, size_bytes, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[
+					fileId,
+					"/home/user/skills/pr-review/SKILL.md",
+					skillMdContent,
+					skillMdContent.length,
+					now,
+					now,
+					0,
+				],
+			);
+
+			// Insert a task with skill reference
+			const taskId = randomUUID();
+			db2.run(
+				"INSERT INTO tasks (id, type, status, trigger_spec, payload, thread_id, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					taskId,
+					"manual",
+					"pending",
+					"manual",
+					JSON.stringify({ skill: "pr-review" }),
+					threadId2,
+					now,
+					now,
+					0,
+				],
+			);
+
+			const messages = assembleContext({
+				db: db2,
+				threadId: threadId2,
+				userId: userId2,
+				taskId,
+				noHistory: true,
+			});
+
+			// The skill body message should still be present even with noHistory = true
+			const systemMessages = messages.filter((m) => m.role === "system");
+			const skillBodyMsg = systemMessages.find((m) => m.content.includes("PR Review Skill"));
+			expect(skillBodyMsg).toBeDefined();
+			expect(skillBodyMsg?.content).toContain(skillMdContent);
+		});
+
+		it("AC3.6: should inject operator retirement notification within 24 hours", () => {
+			cleanupTestData();
+			// Insert a skill retired by operator within last hour
+			const now = new Date();
+			const recentTime = new Date(now.getTime() - 1 * 60 * 60 * 1000).toISOString(); // 1 hour ago
+			db2.run(
+				"INSERT INTO skills (id, name, description, status, skill_root, retired_by, retired_reason, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					"deploy-monitor",
+					"Monitor deployments",
+					"retired",
+					"/home/user/skills/deploy-monitor",
+					"operator",
+					"Too aggressive",
+					recentTime,
+					0,
+				],
+			);
+
+			const messages = assembleContext({
+				db: db2,
+				threadId: threadId2,
+				userId: userId2,
+			});
+
+			// Find the volatile context system message
+			const systemMessages = messages.filter((m) => m.role === "system");
+			const volatileMsg = systemMessages[systemMessages.length - 1];
+
+			expect(volatileMsg).toBeDefined();
+			expect(volatileMsg.content).toContain(
+				'[Skill notification] Skill \'deploy-monitor\' was retired by operator: "Too aggressive".',
+			);
+		});
+
+		it("AC3.7: should not inject retirement notification older than 24 hours", () => {
+			cleanupTestData();
+			// Insert a skill retired by operator more than 24 hours ago
+			const now = new Date();
+			const oldTime = new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString(); // 25 hours ago
+			db2.run(
+				"INSERT INTO skills (id, name, description, status, skill_root, retired_by, retired_reason, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					"old-skill",
+					"Old skill",
+					"retired",
+					"/home/user/skills/old-skill",
+					"operator",
+					"Deprecated",
+					oldTime,
+					0,
+				],
+			);
+
+			const messages = assembleContext({
+				db: db2,
+				threadId: threadId2,
+				userId: userId2,
+			});
+
+			// Find the volatile context system message
+			const systemMessages = messages.filter((m) => m.role === "system");
+			const volatileMsg = systemMessages[systemMessages.length - 1];
+
+			expect(volatileMsg).toBeDefined();
+			expect(volatileMsg.content).not.toContain("[Skill notification]");
+			expect(volatileMsg.content).not.toContain("old-skill");
+		});
+	});
 });
