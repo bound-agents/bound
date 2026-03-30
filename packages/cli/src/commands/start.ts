@@ -13,6 +13,7 @@ import {
 	getDelegationTarget,
 	resolveModel,
 	seedCronTasks,
+	seedSkillAuthoring,
 } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { MCPClient } from "@bound/agent";
@@ -193,6 +194,18 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 	// 5.1 Provision mcp system user (idempotent)
 	ensureMcpUser(appContext.db, appContext.siteId);
+
+	// 5.5. Skill-authoring seeding
+	// Seeds the bundled skill-authoring skill into the files and skills tables.
+	// Idempotent: safe to re-run on every boot.
+	try {
+		seedSkillAuthoring(appContext.db, appContext.siteId);
+	} catch (error) {
+		appContext.logger.warn(
+			"[skills] Failed to seed skill-authoring skill",
+			{ error: String(error) },
+		);
+	}
 
 	// 6. Host registration (via outbox for sync compliance)
 	console.log("Registering host...");
