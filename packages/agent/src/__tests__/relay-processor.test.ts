@@ -3758,4 +3758,128 @@ describe("RelayProcessor", () => {
 			expect(capturedReadFileFn).toBe(mockFileReader);
 		});
 	});
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// Cross-node platform delivery: hub executes process relay but platform
+	// connector is on the SPOKE (source_site_id), not the hub
+	// ─────────────────────────────────────────────────────────────────────────
+	describe("cross-node platform_deliver routing", () => {
+		it("routes platform_deliver via relay outbox when local registry lacks the connector", async () => {
+			// Setup: thread with non-web interface so platform delivery triggers
+			const now = new Date().toISOString();
+			const userId = "user-xnpd";
+			const threadId = "thread-xnpd";
+			const userMsgId = "msg-xnpd";
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, 0)",
+				[userId, "User", now, now],
+			);
+			db.run(
+				`INSERT INTO threads (id, user_id, interface, host_origin, color, title, created_at, modified_at, last_message_at, deleted)
+				 VALUES (?, ?, 'discord', 'spoke-host', 0, 'Thread', ?, ?, ?, 0)`,
+				[threadId, userId, now, now, now],
+			);
+			db.run(
+				`INSERT INTO messages (id, thread_id, role, content, created_at, host_origin)
+				 VALUES (?, ?, 'user', 'hello', ?, 'spoke-host')`,
+				[userMsgId, threadId, now],
+			);
+
+			const eventBus = new (require("@bound/shared").TypedEventEmitter)();
+			const mockAppCtx = {
+				db,
+				config: {},
+				optionalConfig: {},
+				eventBus,
+				logger: createMockLogger(),
+				siteId: "hub-site",
+				hostName: "hub",
+			};
+
+			// Registry WITHOUT Discord connector (Discord is only on the spoke)
+			const emptyRegistry = {
+				getConnector: (_platform: string) => undefined,
+			};
+
+			const mockAgentLoop = {
+				run: async () => ({
+					error: null,
+					messagesCreated: 1,
+					toolCallsMade: 0,
+					filesChanged: 0,
+				}),
+			};
+
+			const processor = new RelayProcessor(
+				db,
+				"hub-site",
+				new Map(),
+				createMockModelRouter(),
+				new Set(["spoke-site"]),
+				createMockLogger(),
+				eventBus,
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock
+				mockAppCtx as any,
+				undefined,
+				new Map(),
+				// biome-ignore lint/suspicious/noExplicitAny: partial mock
+				() => mockAgentLoop as any,
+			);
+			// biome-ignore lint/suspicious/noExplicitAny: partial mock
+			processor.setPlatformConnectorRegistry(emptyRegistry as any);
+
+			// Insert a process inbox entry from the SPOKE with platform="discord"
+			const processEntry: RelayInboxEntry = {
+				id: "process-xnpd",
+				source_site_id: "spoke-site", // spoke originated this
+				kind: "process",
+				ref_id: null,
+				idempotency_key: null,
+				payload: JSON.stringify({
+					thread_id: threadId,
+					message_id: userMsgId,
+					user_id: userId,
+					platform: "discord",
+				}),
+				expires_at: new Date(Date.now() + 60_000).toISOString(),
+				received_at: now,
+				processed: 0,
+				stream_id: null,
+			};
+
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					processEntry.id,
+					processEntry.source_site_id,
+					processEntry.kind,
+					processEntry.ref_id,
+					processEntry.idempotency_key,
+					processEntry.payload,
+					processEntry.expires_at,
+					processEntry.received_at,
+					processEntry.processed,
+					processEntry.stream_id,
+				],
+			);
+
+			const handle = processor.start(50);
+			await waitFor(() => readUnprocessed(db).length === 0, {
+				message: "process entry not handled",
+			});
+			handle.stop();
+
+			// The hub has no Discord connector — delivery should have been routed
+			// via a platform_deliver relay outbox entry targeting the spoke.
+			const { readUndelivered } = require("@bound/core");
+			const spokeOutbox = (
+				readUndelivered(db, "spoke-site") as Array<{ kind: string; target_site_id: string }>
+			).filter((e) => e.kind === "platform_deliver");
+
+			expect(spokeOutbox.length).toBeGreaterThan(0);
+			expect(spokeOutbox[0].target_site_id).toBe("spoke-site");
+		});
+	});
 });

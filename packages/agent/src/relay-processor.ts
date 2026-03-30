@@ -1135,12 +1135,12 @@ export class RelayProcessor {
 					// deliver() calls stopTyping() before checking content, so an empty-
 					// content emit stops typing without sending a Discord message.
 					if (thread && thread.interface !== "web") {
-						this.eventBus.emit("platform:deliver", {
+						this.deliverPlatformPayload(entry, {
 							platform: thread.interface,
 							thread_id: payload.thread_id,
 							message_id: payload.message_id,
 							content: "",
-						} satisfies PlatformDeliverPayload);
+						});
 					}
 				} else {
 					// Non-platform context (legacy auto-deliver): deliver the last assistant
@@ -1172,12 +1172,12 @@ export class RelayProcessor {
 							}
 						}
 
-						this.eventBus.emit("platform:deliver", {
+						this.deliverPlatformPayload(entry, {
 							platform: thread.interface,
 							thread_id: payload.thread_id,
 							message_id: messageId,
 							content: textContent,
-						} satisfies PlatformDeliverPayload);
+						});
 					}
 				}
 			}
@@ -1193,18 +1193,67 @@ export class RelayProcessor {
 						)
 						.get(payload.thread_id);
 					if (errThread && errThread.interface !== "web") {
-						this.eventBus.emit("platform:deliver", {
+						this.deliverPlatformPayload(entry, {
 							platform: errThread.interface,
 							thread_id: payload.thread_id,
 							message_id: payload.message_id,
 							content: "",
-						} satisfies PlatformDeliverPayload);
+						});
 					}
 				} catch {
 					// ignore — already in error path
 				}
 			}
 		}
+	}
+
+	/**
+	 * Delivers a platform:deliver payload either locally (if this host has the
+	 * platform connector) or via relay outbox to entry.source_site_id (the spoke
+	 * that delegated the process relay to this host).
+	 *
+	 * This handles the cross-node scenario: hub executes the agent loop but the
+	 * platform connector (e.g. Discord) lives only on the spoke. Without this
+	 * routing the platform:deliver event fires on the hub's event bus where no
+	 * connector is listening and the delivery is silently dropped.
+	 */
+	private deliverPlatformPayload(
+		entry: RelayInboxEntry,
+		deliverPayload: PlatformDeliverPayload,
+	): void {
+		// Local connector exists (or no registry configured — single-host / backward compat):
+		// deliver on this node's event bus.
+		if (
+			!this.platformConnectorRegistry ||
+			this.platformConnectorRegistry.getConnector(deliverPayload.platform)
+		) {
+			this.eventBus.emit("platform:deliver", deliverPayload);
+			return;
+		}
+
+		// Registry is configured but this node doesn't have the connector —
+		// route back to the node that delegated this loop.
+		const targetSiteId = entry.source_site_id;
+		if (!targetSiteId) {
+			// No source to route back to (shouldn't happen in practice) — fall back locally.
+			this.eventBus.emit("platform:deliver", deliverPayload);
+			return;
+		}
+
+		const now = new Date();
+		writeOutbox(this.db, {
+			id: randomUUID(),
+			source_site_id: this.siteId,
+			target_site_id: targetSiteId,
+			kind: "platform_deliver",
+			ref_id: entry.id,
+			idempotency_key: null,
+			stream_id: null,
+			payload: JSON.stringify(deliverPayload),
+			created_at: now.toISOString(),
+			expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
+		});
+		this.eventBus.emit("sync:trigger", { reason: "platform-deliver-relay" });
 	}
 
 	private createResultEntry(
