@@ -326,28 +326,30 @@ export class Scheduler {
 					);
 				}
 
-				// Bug #1: Inject task payload as the first user message so the agent
-				// loop has something to work from (required for Bedrock and any model
-				// that enforces "conversation must start with a user message").
-				if (task.payload) {
-					insertRow(
-						this.ctx.db,
-						"messages",
-						{
-							id: randomUUID(),
-							thread_id: threadId,
-							role: "user",
-							content: task.payload,
-							model_id: null,
-							tool_name: null,
-							created_at: taskNow,
-							modified_at: taskNow,
-							host_origin: this.ctx.hostName,
-							deleted: 0,
-						},
-						this.ctx.siteId,
-					);
-				}
+				// Always inject a user message so the agent loop has something to work
+				// from. Bedrock (and any model that enforces "conversation must start
+				// with a user message") rejects requests where the first non-system
+				// message is not from the user. When the task has no payload we use a
+				// neutral default rather than skipping the insert, which previously
+				// left empty threads or threads with only tool_call/assistant history
+				// that caused the Bedrock error on repeated no-payload cron runs.
+				insertRow(
+					this.ctx.db,
+					"messages",
+					{
+						id: randomUUID(),
+						thread_id: threadId,
+						role: "user",
+						content: task.payload ?? "Execute scheduled task.",
+						model_id: null,
+						tool_name: null,
+						created_at: taskNow,
+						modified_at: taskNow,
+						host_origin: this.ctx.hostName,
+						deleted: 0,
+					},
+					this.ctx.siteId,
+				);
 
 				// Validate model hint at run time before creating the agent loop.
 				// This catches models that became unavailable after the task was scheduled.

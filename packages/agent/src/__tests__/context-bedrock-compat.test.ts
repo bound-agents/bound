@@ -593,4 +593,48 @@ describe("Context assembly Bedrock compatibility", () => {
 		expect(nonSystem[tcIdx + 2]?.role).toBe("tool_result");
 		expect(nonSystem[tcIdx + 3]?.role).toBe("tool_result");
 	});
+
+	// Regression: cron tasks without payload accumulate tool_call/tool_result/assistant
+	// messages over many runs with NO new user message per run. After enough runs,
+	// budget truncation's forward scan (sliceStart = N-10) passes the only user message
+	// at position 0 and exhausts historyMessages → remaining=[] → Bedrock receives
+	// messages=[] → "A conversation must start with a user message."
+	// The backward scan fallback must find the last user in the full history.
+	it("budget truncation with sparse user messages (no-payload cron) falls back to last user in history", () => {
+		const threadId = randomUUID();
+		insertThread(db, threadId, userId);
+
+		// One initial user message (the original conversation trigger), then 5 cron
+		// run cycles with NO user message per run (simulates no-payload cron task).
+		insertMessage(db, threadId, "user", "Initial instruction", { offset: 0 });
+		for (let i = 0; i < 5; i++) {
+			const toolUseId = `tu-sparse-${i}`;
+			insertMessage(
+				db,
+				threadId,
+				"tool_call",
+				JSON.stringify([
+					{ type: "tool_use", id: toolUseId, name: "query", input: { n: i } },
+				]),
+				{ tool_name: "query", offset: 1000 + i * 3000 },
+			);
+			insertMessage(db, threadId, "tool_result", `Result ${i}`, {
+				tool_name: toolUseId,
+				offset: 2000 + i * 3000,
+			});
+			insertMessage(db, threadId, "assistant", `Response ${i}`, {
+				offset: 3000 + i * 3000,
+				model_id: "anthropic.claude-sonnet",
+			});
+		}
+
+		// Force Stage 7 truncation. sliceStart = max(0, 16-10) = 6 which is past the
+		// user message at position 0. The forward scan exhausts → backward scan must
+		// find user at position 0 and return a user-first context.
+		const messages = assembleContext({ db, threadId, userId, contextWindow: 500 });
+
+		const firstNonSystem = messages.find((m) => m.role !== "system");
+		expect(firstNonSystem).toBeDefined();
+		expect(firstNonSystem?.role).toBe("user");
+	});
 });

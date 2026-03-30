@@ -652,6 +652,21 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 				sliceStart++;
 			}
 
+			// If the forward scan exhausted all messages without finding a user (e.g. a
+			// no-payload cron task that accumulated many tool_call/tool_result/assistant
+			// cycles with no user message per run), fall back to the last user message
+			// anywhere in the full history. This prevents returning an empty remaining
+			// which causes Bedrock to error with "A conversation must start with a user
+			// message."
+			if (sliceStart >= historyMessages.length) {
+				for (let i = historyMessages.length - 1; i >= 0; i--) {
+					if (historyMessages[i].role === "user") {
+						sliceStart = i;
+						break;
+					}
+				}
+			}
+
 			const remaining = historyMessages.slice(sliceStart);
 			return [...systemMessages, ...remaining];
 		}
