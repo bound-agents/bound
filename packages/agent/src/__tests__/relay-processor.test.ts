@@ -81,6 +81,7 @@ const createMockLogger = (): Logger => ({
 
 // Mock LLM backend
 class MockLLMBackend implements LLMBackend {
+	// biome-ignore lint/correctness/useYield: mock generator for test
 	async *chat(_params: ChatParams) {
 		// Mock implementation
 		return;

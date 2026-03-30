@@ -29,13 +29,9 @@ export class ModelRouter {
 	) {
 		this.backends = backends;
 		this.defaultId = defaultId;
-		this.effectiveCaps = effectiveCaps ??
-			new Map(
-				Array.from(backends.entries()).map(([id, b]) => [
-					id,
-					b.capabilities(),
-				]),
-			);
+		this.effectiveCaps =
+			effectiveCaps ??
+			new Map(Array.from(backends.entries()).map(([id, b]) => [id, b.capabilities()]));
 		this.rateLimits = new Map();
 	}
 
