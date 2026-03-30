@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { insertRow, writeOutbox } from "@bound/core";
-import type { ToolDefinition } from "@bound/llm";
+import type { ContentBlock, ToolDefinition } from "@bound/llm";
 import type {
 	IntakePayload,
 	Logger,
@@ -16,6 +16,17 @@ import type { PlatformConnector } from "../connector.js";
 // Discord.js types only — imported dynamically in connect() to avoid hard dep at module load
 type DiscordClient = import("discord.js").Client;
 type DiscordMessage = import("discord.js").Message;
+
+/** Attachments >= this size are stored as file_ref entries in the files table. */
+const ATTACHMENT_FILE_REF_THRESHOLD = 1024 * 1024; // 1 MB
+
+/** Discord image MIME types supported as ContentBlock image variants */
+const DISCORD_IMAGE_TYPES = new Set([
+	"image/jpeg",
+	"image/png",
+	"image/gif",
+	"image/webp",
+]);
 
 /**
  * Platform connector for Discord DM-based conversations.
@@ -224,6 +235,90 @@ export class DiscordConnector implements PlatformConnector {
 		// Find or create the thread for this user
 		const thread = this.findOrCreateThread(user.id);
 
+		// Build message content — may be string (text only) or JSON ContentBlock[] (with images)
+		const contentBlocks: ContentBlock[] = [];
+
+		if (msg.content) {
+			contentBlocks.push({ type: "text", text: msg.content });
+		}
+
+		// Process image attachments
+		if (msg.attachments && msg.attachments.values) {
+			for (const attachment of msg.attachments.values()) {
+				const contentType = attachment.contentType ?? "";
+				if (!DISCORD_IMAGE_TYPES.has(contentType)) continue; // Skip non-image attachments
+
+				const mediaType = contentType as
+					| "image/jpeg"
+					| "image/png"
+					| "image/gif"
+					| "image/webp";
+
+				try {
+					const response = await fetch(attachment.url, {
+						signal: AbortSignal.timeout(30_000),
+					});
+					if (!response.ok) {
+						this.logger.warn("[discord] Failed to download attachment", {
+							url: attachment.url,
+							status: response.status,
+						});
+						continue;
+					}
+					const bytes = await response.bytes();
+					const base64Data = Buffer.from(bytes).toString("base64");
+
+					if (attachment.size >= ATTACHMENT_FILE_REF_THRESHOLD) {
+						// Large attachment: store in files table and use file_ref source
+						const fileId = randomUUID();
+						const now = new Date().toISOString();
+						insertRow(
+							this.db,
+							"files",
+							{
+								id: fileId,
+								path: `discord-attachments/${attachment.id}/${attachment.name}`,
+								content: base64Data,
+								is_binary: 1,
+								size_bytes: attachment.size,
+								created_at: now,
+								modified_at: now,
+								host_origin: this.siteId,
+								deleted: 0,
+								created_by: user.id,
+							},
+							this.siteId,
+						);
+						contentBlocks.push({
+							type: "image",
+							source: { type: "file_ref", file_id: fileId },
+							description: attachment.description ?? attachment.name,
+						});
+					} else {
+						// Inline: embed as base64 directly in ContentBlock
+						contentBlocks.push({
+							type: "image",
+							source: { type: "base64", media_type: mediaType, data: base64Data },
+							description: attachment.description ?? attachment.name,
+						});
+					}
+				} catch (err) {
+					this.logger.warn("[discord] Error processing attachment, skipping", {
+						attachmentId: attachment.id,
+						error: String(err),
+					});
+				}
+			}
+		}
+
+		// Determine the stored content format
+		// - If no attachments were processed: store plain text (backward-compatible)
+		// - If image blocks were added: store as JSON ContentBlock[]
+		const hasImageBlocks = contentBlocks.some((b) => b.type === "image");
+		const messageContent = hasImageBlocks
+			? JSON.stringify(contentBlocks)
+			: msg.content;
+
 		// Persist the incoming message via insertRow (AC6.2)
 		const messageId = randomUUID();
 		const now = new Date().toISOString();
@@ -234,7 +329,7 @@ export class DiscordConnector implements PlatformConnector {
 				id: messageId,
 				thread_id: thread.id,
 				role: "user",
-				content: msg.content,
+				content: messageContent,
 				model_id: null,
 				tool_name: null,
 				created_at: now,
@@ -267,6 +362,15 @@ export class DiscordConnector implements PlatformConnector {
 					user_id: user.id,
 					message_id: messageId,
 					content: msg.content,
+					attachments: msg.attachments
+						? Array.from(msg.attachments.values()).map((a) => ({
+								filename: a.name,
+								content_type: a.contentType ?? "application/octet-stream",
+								size: a.size,
+								url: a.url,
+								description: a.description ?? undefined,
+							}))
+						: undefined,
 				} satisfies IntakePayload),
 				created_at: now,
 				expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
