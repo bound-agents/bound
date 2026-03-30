@@ -20,11 +20,14 @@ const createMockLogger = (): Logger => ({
 
 // Mock client manager
 const createMockClientManager = (): DiscordClientManager => {
-	// Tests call onMessage() directly via cast — no real client needed
+	// Phase 5: connect() no longer calls clientManager.connect(), so getClient()
+	// must return a valid mock immediately (registry drives manager lifecycle)
+	const mockClient = {
+		on: () => {},
+		off: () => {},
+	};
 	return {
-		getClient: () => {
-			throw new Error("No client in test");
-		},
+		getClient: () => mockClient,
 		connect: async () => {},
 		disconnect: async () => {},
 	} as unknown as DiscordClientManager;
