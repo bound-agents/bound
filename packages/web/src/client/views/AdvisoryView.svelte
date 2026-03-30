@@ -24,6 +24,7 @@ let loading = $state(true);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let expandedId = $state<string | null>(null);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
+// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
 let filterStatus = $state("");
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let actionInProgress = $state<string | null>(null);

@@ -1011,4 +1011,80 @@ describe("AgentLoop", () => {
 		expect(result.toolCallsMade).toBe(1);
 		expect(result.error).toBeUndefined();
 	});
+
+	describe("capturePreSnapshot hook", () => {
+		it("AC5.1: capturePreSnapshot called exactly once per run()", async () => {
+			const mockBackend = new MockLLMBackend();
+			mockBackend.setTextResponse("Done.");
+
+			let captureCallCount = 0;
+			const mockBash = {
+				exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+				capturePreSnapshot: async () => {
+					captureCallCount++;
+				},
+			};
+			const ctx = makeCtx();
+
+			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				threadId,
+				userId: "test-user",
+			});
+
+			const result = await agentLoop.run();
+
+			expect(captureCallCount).toBe(1);
+			expect(result.error).toBeUndefined();
+		});
+
+		it("AC5.5: loop completes without capturePreSnapshot configured", async () => {
+			const mockBackend = new MockLLMBackend();
+			mockBackend.setTextResponse("Done.");
+
+			const mockBash = {
+				exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+				// No capturePreSnapshot method
+			};
+			const ctx = makeCtx();
+
+			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				threadId,
+				userId: "test-user",
+			});
+
+			const result = await agentLoop.run();
+
+			expect(result.error).toBeUndefined();
+			expect(result.messagesCreated).toBeGreaterThan(0);
+		});
+
+		it("capturePreSnapshot called before any tool execution", async () => {
+			const mockBackend = new MockLLMBackend();
+			mockBackend.setToolThenTextResponse("tool-1", "bash", { command: "echo 'test'" }, "Done.");
+
+			const callOrder: string[] = [];
+			const mockBash = {
+				exec: async () => {
+					callOrder.push("exec");
+					return { stdout: "", stderr: "", exitCode: 0 };
+				},
+				capturePreSnapshot: async () => {
+					callOrder.push("capturePreSnapshot");
+				},
+			};
+			const ctx = makeCtx();
+
+			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				threadId,
+				userId: "test-user",
+			});
+
+			await agentLoop.run();
+
+			// capturePreSnapshot should be first in call order
+			expect(callOrder[0]).toBe("capturePreSnapshot");
+			// exec should come after (during tool execution)
+			expect(callOrder).toContain("exec");
+		});
+	});
 });

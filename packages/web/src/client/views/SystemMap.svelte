@@ -13,8 +13,10 @@ interface ThreadStatus {
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let threads: Thread[] = $state([]);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
+// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
 let creating = $state(false);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
+// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
 let hoveredIdx = $state(-1);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let threadStatuses: Map<string, ThreadStatus> = $state(new Map());

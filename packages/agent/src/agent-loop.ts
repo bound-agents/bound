@@ -33,6 +33,7 @@ interface BashLike {
 		usageBytes: number;
 		thresholdBytes: number;
 	};
+	capturePreSnapshot?: () => Promise<void>;
 }
 
 /** Parsed tool call accumulated from stream chunks */
@@ -69,7 +70,6 @@ export class AgentLoop {
 				this.aborted = true;
 			});
 		}
-
 	}
 
 	async run(): Promise<AgentLoopResult> {
@@ -83,6 +83,9 @@ export class AgentLoop {
 			this.state = "HYDRATE_FS";
 			// FS hydration is handled by the caller (start.ts) before constructing
 			// the AgentLoop. The sandbox's ClusterFs is already populated.
+			if (this.sandbox.capturePreSnapshot) {
+				await this.sandbox.capturePreSnapshot();
+			}
 
 			this.state = "ASSEMBLE_CONTEXT";
 			// Get context window from LLM backend capabilities

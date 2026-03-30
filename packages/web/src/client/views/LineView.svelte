@@ -27,6 +27,7 @@ let agentActive = $state(false);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let agentState = $state<string | null>(null);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
+// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
 let fileInput = $state<HTMLInputElement | null>(null);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let uploadStatus = $state<string | null>(null);

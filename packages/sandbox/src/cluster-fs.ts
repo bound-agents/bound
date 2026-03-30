@@ -18,6 +18,12 @@ export interface ClusterFsResult {
 	 * Returns null if the path is not found in either the files table or overlay index.
 	 */
 	checkStaleness: (path: string) => StalenessResult | null;
+	/**
+	 * Enumerate all paths that exist in the in-memory filesystem instances
+	 * (baseFs and homeUserFs). Never touches OverlayFs instances.
+	 * Used by snapshotWorkspace to diff only agent-written paths.
+	 */
+	getInMemoryPaths: () => string[];
 }
 
 export interface StalenessResult {
@@ -94,7 +100,20 @@ export function createClusterFs(config: ClusterFsConfig): MountableFs | ClusterF
 			return checkFileStaleness(db, path);
 		};
 
-		return { fs, checkStaleness };
+		const getInMemoryPaths = (): string[] => {
+			const paths: string[] = [];
+			for (const p of baseFs.getAllPaths()) {
+				paths.push(p);
+			}
+			for (const p of homeUserFs.getAllPaths()) {
+				// homeUserFs stores paths with the /home/user prefix stripped,
+				// e.g., "/foo.txt" for the VFS path "/home/user/foo.txt".
+				paths.push(`/home/user${p}`);
+			}
+			return paths;
+		};
+
+		return { fs, checkStaleness, getInMemoryPaths };
 	}
 
 	return fs;
@@ -194,19 +213,23 @@ function checkFileStaleness(db: Database, path: string): StalenessResult | null 
 	};
 }
 
-export async function snapshotWorkspace(fs: IFileSystem): Promise<Map<string, string>> {
+export async function snapshotWorkspace(
+	fs: IFileSystem,
+	options?: { paths?: string[] },
+): Promise<Map<string, string>> {
 	const snapshot = new Map<string, string>();
-	const paths = fs.getAllPaths();
+	const toSnapshot: Iterable<string> =
+		options?.paths !== undefined
+			? options.paths
+			: [...fs.getAllPaths()].filter((p) => p.startsWith("/home/user/"));
 
-	for (const path of paths) {
-		if (path.startsWith("/home/user/")) {
-			try {
-				const content = await fs.readFile(path);
-				const hash = createHash("sha256").update(content).digest("hex");
-				snapshot.set(path, hash);
-			} catch (_error) {
-				// Ignore directories and other non-readable entries
-			}
+	for (const path of toSnapshot) {
+		try {
+			const content = await fs.readFile(path);
+			const hash = createHash("sha256").update(content).digest("hex");
+			snapshot.set(path, hash);
+		} catch (_error) {
+			// Ignore directories and other non-readable entries
 		}
 	}
 
@@ -305,7 +328,7 @@ export function diffWorkspace(
 export async function hydrateWorkspace(fs: MountableFs, db: Database): Promise<void> {
 	const query = db.prepare(`
 		SELECT path, content FROM files
-		WHERE path LIKE '/home/user/%' AND deleted = 0
+		WHERE deleted = 0 AND path NOT LIKE '/mnt/%'
 	`);
 
 	for (const row of query.all() as Array<{ path: string; content: string }>) {
