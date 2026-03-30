@@ -527,6 +527,52 @@ describe("multi-instance sync", () => {
 		expect(newHubUrl).toBe("http://localhost:3200");
 	});
 
+	it("scenario 8: skills table syncs across instances", async () => {
+		const now = new Date().toISOString();
+		const skillId = `skill-${Math.random().toString(36).substring(2, 10)}`;
+
+		// Insert a skills row on instance A
+		instanceA.db
+			.query(
+				`INSERT INTO skills (id, name, description, status, skill_root, activation_count, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, 0, ?, 0)`,
+			)
+			.run(skillId, "test-skill", "A test skill", "active", "/home/user/skills/test-skill", now);
+
+		// Record in change_log for replication
+		instanceA.db
+			.query(
+				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
+			)
+			.run(
+				"skills",
+				skillId,
+				instanceA.siteId,
+				now,
+				JSON.stringify({
+					id: skillId,
+					name: "test-skill",
+					description: "A test skill",
+					status: "active",
+					skill_root: "/home/user/skills/test-skill",
+					activation_count: 0,
+					modified_at: now,
+					deleted: 0,
+				}),
+			);
+
+		// Sync from B to A (pulls A's skills row)
+		const result = await instanceB.syncClient.syncCycle();
+		expect(result.ok).toBe(true);
+
+		// Verify instance B received the skills row
+		const rowB = instanceB.db.query("SELECT * FROM skills WHERE id = ?").get(skillId) as
+			| Record<string, unknown>
+			| undefined;
+		expect(rowB).toBeDefined();
+		expect(rowB?.name).toBe("test-skill");
+	});
+
 	it("AC3.9: broadcast target_site_id='*' writes one inbox entry per spoke excluding source", async () => {
 		const now = new Date().toISOString();
 

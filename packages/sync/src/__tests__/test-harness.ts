@@ -142,6 +142,28 @@ const FULL_SCHEMA = `
 		deleted INTEGER NOT NULL DEFAULT 0
 	);
 
+	CREATE TABLE skills (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		description TEXT NOT NULL,
+		status TEXT NOT NULL,
+		skill_root TEXT NOT NULL,
+		content_hash TEXT,
+		allowed_tools TEXT,
+		compatibility TEXT,
+		metadata_json TEXT,
+		activated_at TEXT,
+		created_by_thread TEXT,
+		activation_count INTEGER DEFAULT 0,
+		last_activated_at TEXT,
+		retired_by TEXT,
+		retired_reason TEXT,
+		modified_at TEXT NOT NULL,
+		deleted INTEGER DEFAULT 0
+	);
+
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_name ON skills(name) WHERE deleted = 0;
+
 	CREATE TABLE overlay_index (
 		id TEXT PRIMARY KEY,
 		site_id TEXT NOT NULL,
