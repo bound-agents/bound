@@ -878,14 +878,16 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	// Stage 5.5 (noHistory path): Inject enrichment as standalone system message for autonomous tasks
 	if (noHistory) {
 		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, true);
-		const { memoryDeltaLines: noHistDelta, taskDigestLines: noHistTasks } =
-			buildVolatileEnrichment(db, enrichmentBaseline);
+		const { memoryDeltaLines: noHistDelta, taskDigestLines: noHistTasks } = buildVolatileEnrichment(
+			db,
+			enrichmentBaseline,
+		);
 
 		if (noHistDelta.length > 0 || noHistTasks.length > 0) {
 			totalMemCount = (
-				db
-					.prepare("SELECT COUNT(*) AS c FROM semantic_memory WHERE deleted = 0")
-					.get() as { c: number }
+				db.prepare("SELECT COUNT(*) AS c FROM semantic_memory WHERE deleted = 0").get() as {
+					c: number;
+				}
 			).c;
 
 			const noHistMemChangedCount = noHistDelta.filter((l) => l.startsWith("- ")).length;
@@ -913,8 +915,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	// Budget pressure check: reduce enrichment caps if headroom < 2,000 tokens
 	if (enrichmentBaseline !== undefined && enrichmentMessageIndex >= 0) {
 		const currentTotal = assembled.reduce((sum, msg) => {
-			const contentLength =
-				typeof msg.content === "string" ? msg.content.length : 0;
+			const contentLength = typeof msg.content === "string" ? msg.content.length : 0;
 			return sum + Math.ceil(contentLength / 4);
 		}, 0);
 		const headroom = contextWindow - currentTotal;
@@ -926,10 +927,9 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			const shortMemChangedCount = shortDelta.filter((l) => l.startsWith("- ")).length;
 			let shortMemHeader = `Memory: ${totalMemCount} entries`;
 			if (shortMemChangedCount > 0) {
-				shortMemHeader +=
-					!params.noHistory
-						? ` (${shortMemChangedCount} changed since your last turn in this thread)`
-						: ` (${shortMemChangedCount} changed since your last run)`;
+				shortMemHeader += !params.noHistory
+					? ` (${shortMemChangedCount} changed since your last turn in this thread)`
+					: ` (${shortMemChangedCount} changed since your last run)`;
 			}
 
 			if (!params.noHistory) {

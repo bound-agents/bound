@@ -1693,7 +1693,14 @@ This skill reviews pull requests.`;
 
 			enrichTestDb.run(
 				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
-				[enrichTestUserId, "Enrich Test User", null, new Date().toISOString(), new Date().toISOString(), 0],
+				[
+					enrichTestUserId,
+					"Enrich Test User",
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
 			);
 		});
 
@@ -1743,7 +1750,8 @@ This skill reviews pull requests.`;
 
 			// Find the system message containing "Memory:"
 			const volatileMsg = messages.find(
-				(m) => m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
+				(m) =>
+					m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
 			);
 
 			expect(volatileMsg).toBeDefined();
@@ -1757,13 +1765,36 @@ This skill reviews pull requests.`;
 
 			enrichTestDb.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[testThreadId, enrichTestUserId, "web", "local", 0, "Test", null, null, null, null, new Date().toISOString(), new Date().toISOString(), new Date().toISOString(), 0],
+				[
+					testThreadId,
+					enrichTestUserId,
+					"web",
+					"local",
+					0,
+					"Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
 			);
 
 			// Insert a memory entry
 			enrichTestDb.run(
 				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), "mem_key", "mem_value", null, new Date().toISOString(), new Date().toISOString(), 0],
+				[
+					randomUUID(),
+					"mem_key",
+					"mem_value",
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
 			);
 
 			const messages = assembleContext({
@@ -1790,7 +1821,22 @@ This skill reviews pull requests.`;
 
 			enrichTestDb.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[testThreadId, enrichTestUserId, "web", "local", 0, "Task Test", null, null, null, null, pastTime, pastTime, pastTime, 0],
+				[
+					testThreadId,
+					enrichTestUserId,
+					"web",
+					"local",
+					0,
+					"Task Test",
+					null,
+					null,
+					null,
+					null,
+					pastTime,
+					pastTime,
+					pastTime,
+					0,
+				],
 			);
 
 			// Insert a task with last_run_at after the thread's last_message_at
@@ -1818,7 +1864,8 @@ This skill reviews pull requests.`;
 			});
 
 			const volatileMsg = messages.find(
-				(m) => m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
+				(m) =>
+					m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
 			);
 
 			expect(volatileMsg).toBeDefined();
@@ -1834,12 +1881,39 @@ This skill reviews pull requests.`;
 
 			enrichTestDb.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[testThreadId, enrichTestUserId, "web", "local", 0, "NoHist Test", null, null, null, null, recentTime, recentTime, recentTime, 0],
+				[
+					testThreadId,
+					enrichTestUserId,
+					"web",
+					"local",
+					0,
+					"NoHist Test",
+					null,
+					null,
+					null,
+					null,
+					recentTime,
+					recentTime,
+					recentTime,
+					0,
+				],
 			);
 
 			enrichTestDb.run(
 				"INSERT INTO tasks (id, type, status, trigger_spec, payload, thread_id, created_at, last_run_at, consecutive_failures, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[testTaskId, "manual", "pending", "test_task", "{}", testThreadId, pastTime, pastTime, 0, pastTime, 0],
+				[
+					testTaskId,
+					"manual",
+					"pending",
+					"test_task",
+					"{}",
+					testThreadId,
+					pastTime,
+					pastTime,
+					0,
+					pastTime,
+					0,
+				],
 			);
 
 			// Insert a memory entry with modified_at after the task's last_run_at
@@ -1858,7 +1932,8 @@ This skill reviews pull requests.`;
 
 			// Find system message with enrichment
 			const enrichMsg = messages.find(
-				(m) => m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
+				(m) =>
+					m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
 			);
 
 			expect(enrichMsg).toBeDefined();
@@ -1872,12 +1947,39 @@ This skill reviews pull requests.`;
 
 			enrichTestDb.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[testThreadId, enrichTestUserId, "web", "local", 0, "Empty Test", null, null, null, null, recentTime, recentTime, recentTime, 0],
+				[
+					testThreadId,
+					enrichTestUserId,
+					"web",
+					"local",
+					0,
+					"Empty Test",
+					null,
+					null,
+					null,
+					null,
+					recentTime,
+					recentTime,
+					recentTime,
+					0,
+				],
 			);
 
 			enrichTestDb.run(
 				"INSERT INTO tasks (id, type, status, trigger_spec, payload, thread_id, created_at, last_run_at, consecutive_failures, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[testTaskId, "manual", "pending", "empty_task", "{}", testThreadId, recentTime, recentTime, 0, recentTime, 0],
+				[
+					testTaskId,
+					"manual",
+					"pending",
+					"empty_task",
+					"{}",
+					testThreadId,
+					recentTime,
+					recentTime,
+					0,
+					recentTime,
+					0,
+				],
 			);
 
 			const messages = assembleContext({
@@ -1890,7 +1992,8 @@ This skill reviews pull requests.`;
 
 			// Verify NO system message contains "Memory:"
 			const enrichMsg = messages.find(
-				(m) => m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
+				(m) =>
+					m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
 			);
 
 			expect(enrichMsg).toBeUndefined();
@@ -1903,7 +2006,22 @@ This skill reviews pull requests.`;
 
 			enrichTestDb.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[testThreadId, enrichTestUserId, "web", "local", 0, "Access Test", null, null, null, null, pastTime, pastTime, pastTime, 0],
+				[
+					testThreadId,
+					enrichTestUserId,
+					"web",
+					"local",
+					0,
+					"Access Test",
+					null,
+					null,
+					null,
+					null,
+					pastTime,
+					pastTime,
+					pastTime,
+					0,
+				],
 			);
 
 			const memId = randomUUID();
@@ -1913,7 +2031,9 @@ This skill reviews pull requests.`;
 			);
 
 			// Get the memory entry before calling assembleContext
-			const beforeMem = enrichTestDb.prepare("SELECT last_accessed_at FROM semantic_memory WHERE id = ?").get(memId) as {
+			const beforeMem = enrichTestDb
+				.prepare("SELECT last_accessed_at FROM semantic_memory WHERE id = ?")
+				.get(memId) as {
 				last_accessed_at: string | null;
 			};
 			const lastAccessedBefore = beforeMem?.last_accessed_at;
@@ -1926,7 +2046,9 @@ This skill reviews pull requests.`;
 			});
 
 			// Check the memory entry after
-			const afterMem = enrichTestDb.prepare("SELECT last_accessed_at FROM semantic_memory WHERE id = ?").get(memId) as {
+			const afterMem = enrichTestDb
+				.prepare("SELECT last_accessed_at FROM semantic_memory WHERE id = ?")
+				.get(memId) as {
 				last_accessed_at: string | null;
 			};
 			const lastAccessedAfter = afterMem?.last_accessed_at;
@@ -1942,7 +2064,22 @@ This skill reviews pull requests.`;
 
 			enrichTestDb.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[testThreadId, enrichTestUserId, "web", "local", 0, "Budget Test", null, null, null, null, pastTime, pastTime, pastTime, 0],
+				[
+					testThreadId,
+					enrichTestUserId,
+					"web",
+					"local",
+					0,
+					"Budget Test",
+					null,
+					null,
+					null,
+					null,
+					pastTime,
+					pastTime,
+					pastTime,
+					0,
+				],
 			);
 
 			// Insert 10 memory entries all with modified_at after the thread's last_message_at
@@ -1971,7 +2108,8 @@ This skill reviews pull requests.`;
 
 			// Find the system message containing "Memory:"
 			const volatileMsg = messages.find(
-				(m) => m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
+				(m) =>
+					m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
 			);
 
 			expect(volatileMsg).toBeDefined();
