@@ -20,6 +20,24 @@ export interface Message {
 	created_at: string;
 }
 
+export interface Task {
+	id: string;
+	type: string;
+	status: string;
+	trigger_spec: string;
+	payload: string | null;
+	thread_id: string | null;
+	origin_thread_id: string | null;
+	claimed_by: string | null;
+	next_run_at: string | null;
+	last_run_at: string | null;
+	run_count: number;
+	max_runs: number | null;
+	created_at: string;
+	created_by: string | null;
+	error: string | null;
+}
+
 export interface ApiError {
 	error: string;
 	details?: unknown;
@@ -49,6 +67,10 @@ export const api = {
 
 	async getThread(id: string): Promise<Thread> {
 		return fetchJson(`/api/threads/${id}`);
+	},
+
+	async getTask(id: string): Promise<Task> {
+		return fetchJson(`/api/tasks/${id}`);
 	},
 
 	async listMessages(threadId: string): Promise<Message[]> {

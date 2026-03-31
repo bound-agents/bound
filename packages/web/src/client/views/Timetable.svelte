@@ -1,5 +1,7 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in Svelte template onclick
+import { navigateTo } from "../lib/router";
 
 interface Task {
 	id: string;
@@ -188,7 +190,7 @@ function canCancel(status: string): boolean {
 				<span class="col-actions">Actions</span>
 			</div>
 			{#each tasks as task}
-				<div class="board-row" class:row-running={task.status === "running" || task.status === "claimed"} class:row-failed={task.status === "failed"}>
+				<div class="board-row" class:row-running={task.status === "running" || task.status === "claimed"} class:row-failed={task.status === "failed"} role="button" tabindex={0} onclick={() => navigateTo(`/task/${task.id}`)} onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigateTo(`/task/${task.id}`); } }}>
 					<span class="col-status">
 						<span class="status-chip {getStatusBadgeClass(task.status)}">
 							<span class="status-icon">{getStatusIcon(task.status)}</span>
@@ -208,7 +210,7 @@ function canCancel(status: string): boolean {
 					<span class="col-host" title={task.claimed_by ?? ""}>{formatHost(task.claimed_by)}</span>
 					<span class="col-actions">
 						{#if canCancel(task.status)}
-							<button class="cancel-btn" onclick={() => cancelTask(task.id)} title="Cancel task">
+							<button class="cancel-btn" onclick={(e) => { e.stopPropagation(); cancelTask(task.id); }} title="Cancel task">
 								<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
 									<path d="M2 2L10 10M10 2L2 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
 								</svg>
@@ -232,6 +234,11 @@ function canCancel(status: string): boolean {
 		padding: 32px 40px;
 		max-width: 1120px;
 		margin: 0 auto;
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		overflow: hidden;
 	}
 
 	.timetable-header {
@@ -337,7 +344,9 @@ function canCancel(status: string): boolean {
 		background: rgba(10, 10, 20, 0.5);
 		border: 1px solid var(--bg-surface);
 		border-radius: 8px;
-		overflow: hidden;
+		overflow-y: auto;
+		flex: 1;
+		min-height: 0;
 	}
 
 	.board-header {
@@ -361,6 +370,7 @@ function canCancel(status: string): boolean {
 		border-bottom: 1px solid rgba(15, 52, 96, 0.4);
 		align-items: center;
 		transition: background 0.15s ease;
+		cursor: pointer;
 	}
 
 	.board-row:last-child {

@@ -37,6 +37,25 @@ export function createTasksRoutes(db: Database): Hono {
 		}
 	});
 
+	app.get("/:id", (c) => {
+		try {
+			const { id } = c.req.param();
+			const task = db.query("SELECT * FROM tasks WHERE id = ? AND deleted = 0").get(id) as Record<
+				string,
+				unknown
+			> | null;
+
+			if (!task) {
+				return c.json({ error: "Task not found" }, 404);
+			}
+
+			return c.json(task);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json({ error: "Failed to get task", details: message }, 500);
+		}
+	});
+
 	app.post("/:id/cancel", (c) => {
 		try {
 			const { id } = c.req.param();

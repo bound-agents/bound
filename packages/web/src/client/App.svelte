@@ -13,6 +13,8 @@ import NetworkStatus from "./views/NetworkStatus.svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import SystemMap from "./views/SystemMap.svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
+import TaskDetailView from "./views/TaskDetailView.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
 import Timetable from "./views/Timetable.svelte";
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
@@ -33,6 +35,8 @@ onMount(() => {
 				<SystemMap />
 			{:else if route.startsWith("/line/")}
 				<LineView threadId={route.split("/")[2]} />
+			{:else if route.startsWith("/task/")}
+				<TaskDetailView taskId={route.split("/")[2]} />
 			{:else if route === "/timetable"}
 				<Timetable />
 			{:else if route === "/network"}

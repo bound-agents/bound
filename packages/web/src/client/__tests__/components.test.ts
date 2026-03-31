@@ -15,6 +15,11 @@ describe("Component Tests", () => {
 		const ModelSelector = await import("../components/ModelSelector.svelte");
 		expect(ModelSelector).toBeDefined();
 	});
+
+	it("TaskDetailView component module imports without error", async () => {
+		const TaskDetailView = await import("../views/TaskDetailView.svelte");
+		expect(TaskDetailView).toBeDefined();
+	});
 });
 
 describe("api.sendMessage", () => {

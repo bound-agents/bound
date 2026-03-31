@@ -98,6 +98,53 @@ describe("API Routes", () => {
 		});
 	});
 
+	describe("GET /api/tasks/:id", () => {
+		it("returns 404 for non-existent task", async () => {
+			const request = new Request("http://localhost:3000/api/tasks/nonexistent-id");
+			const response = await app.fetch(request);
+
+			expect(response.status).toBe(404);
+			const error = await response.json();
+			expect(error.error).toBe("Task not found");
+		});
+
+		it("returns task by id", async () => {
+			const taskId = "task-1";
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO tasks (id, type, status, trigger_spec, created_at, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[taskId, "cron", "pending", "0 9 * * MON", now, now, 0],
+			);
+
+			const request = new Request(`http://localhost:3000/api/tasks/${taskId}`);
+			const response = await app.fetch(request);
+
+			expect(response.status).toBe(200);
+			const task = await response.json();
+			expect(task.id).toBe(taskId);
+			expect(task.type).toBe("cron");
+			expect(task.status).toBe("pending");
+		});
+
+		it("returns 404 for deleted task", async () => {
+			const taskId = "task-deleted";
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO tasks (id, type, status, trigger_spec, created_at, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[taskId, "cron", "pending", "0 9 * * MON", now, now, 1],
+			);
+
+			const request = new Request(`http://localhost:3000/api/tasks/${taskId}`);
+			const response = await app.fetch(request);
+
+			expect(response.status).toBe(404);
+			const error = await response.json();
+			expect(error.error).toBe("Task not found");
+		});
+	});
+
 	describe("GET /api/files", () => {
 		it("returns empty array when no files exist", async () => {
 			const request = new Request("http://localhost:3000/api/files");
