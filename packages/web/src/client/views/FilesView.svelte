@@ -8,6 +8,8 @@ import Breadcrumbs from "../components/Breadcrumbs.svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import DirectoryListing from "../components/DirectoryListing.svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
+import FilePreviewModal from "../components/FilePreviewModal.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
 import TreeNode from "../components/TreeNode.svelte";
 import {
 	type FileMetadata,
@@ -30,6 +32,9 @@ let expandedPaths = $state(new SvelteSet<string>());
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let selectedPath = $state("/");
+
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let selectedFile = $state<FileMetadata | null>(null);
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 const breadcrumbSegments = $derived.by(() => {
@@ -109,6 +114,16 @@ function navigateToDirectory(path: string): void {
 // biome-ignore lint/correctness/noUnusedVariables: passed to template
 function selectDirectory(path: string): void {
 	navigateToDirectory(path);
+}
+
+// biome-ignore lint/correctness/noUnusedVariables: passed to template
+function openFilePreview(file: FileMetadata): void {
+	selectedFile = file;
+}
+
+// biome-ignore lint/correctness/noUnusedVariables: passed to template
+function closeFilePreview(): void {
+	selectedFile = null;
 }
 
 // biome-ignore lint/correctness/noUnusedVariables: passed to template
@@ -233,10 +248,14 @@ onDestroy(() => {
 					{getFileIcon}
 					{relativeTime}
 					onSelectDirectory={navigateToDirectory}
-					onSelectFile={() => {}}
+					onSelectFile={openFilePreview}
 				/>
 			</main>
 		</div>
+	{/if}
+
+	{#if selectedFile}
+		<FilePreviewModal file={selectedFile} onClose={closeFilePreview} />
 	{/if}
 </div>
 
