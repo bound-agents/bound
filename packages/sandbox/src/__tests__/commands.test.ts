@@ -144,6 +144,53 @@ describe("Command Framework", () => {
 		expect(capturedQuery).toBe(sql);
 	});
 
+	// Bug: --_json path was converting all values to strings via String(v), which
+	// breaks MCP tools that expect numeric types (e.g. pullNumber: 1521 → "1521").
+	// The GitHub MCP server rejects "1521" with: type: 1521 has type "string", want "number".
+	test("--_json preserves numeric and boolean types for MCP tool dispatch", async () => {
+		let capturedArgs: Record<string, unknown> | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "github",
+				args: [{ name: "subcommand", required: true }],
+				handler: async (args) => {
+					capturedArgs = args as Record<string, unknown>;
+					return { stdout: "ok", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+
+		// Simulate executeToolCall's --_json encoding with mixed types
+		const toolInput = {
+			subcommand: "list_commits",
+			owner: "karashiiro",
+			repo: "bound",
+			perPage: 5,
+			sha: "main",
+		};
+		const jsonArg = JSON.stringify(toolInput).replace(/'/g, "\\u0027");
+		const result = await commands[0].handler(["--_json", jsonArg]);
+
+		expect(result.exitCode).toBe(0);
+		expect(capturedArgs).toBeDefined();
+		// The critical assertion: numeric value must NOT be stringified
+		expect(typeof capturedArgs!.perPage).toBe("number");
+		expect(capturedArgs!.perPage).toBe(5);
+		// String values should remain strings
+		expect(typeof capturedArgs!.owner).toBe("string");
+		expect(capturedArgs!.owner).toBe("karashiiro");
+	});
+
 	// Bug: SQL queries passed as positional args were broken when the SQL contained
 	// "=". The hasFlags heuristic treated `a.includes("=")` as a signal to enter
 	// key=value parsing mode. A SQL string like "SELECT … WHERE x=1" is one argv

@@ -63,7 +63,9 @@ export function createDefineCommands(
 					const parsed = JSON.parse(argv[jsonFlagIdx + 1]) as Record<string, unknown>;
 					if (typeof parsed === "object" && parsed !== null) {
 						return await def.handler(
-							Object.fromEntries(Object.entries(parsed).map(([k, v]) => [k, String(v)])),
+							// Preserve original JSON types (numbers, booleans) for MCP dispatch.
+							// String(5) → "5" breaks MCP servers that validate "want number".
+							parsed as Record<string, string>,
 							context,
 						);
 					}
