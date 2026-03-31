@@ -24,13 +24,13 @@ let alertThreads: Set<string> = $state(new Set());
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 async function createThread(): Promise<void> {
-	_creating = true;
+	creating = true;
 	try {
 		const thread = await api.createThread();
 		window.location.hash = `#/line/${thread.id}`;
 	} catch (error) {
 		console.error("Failed to create thread:", error);
-		_creating = false;
+		creating = false;
 	}
 }
 
