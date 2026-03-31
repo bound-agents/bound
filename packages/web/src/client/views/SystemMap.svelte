@@ -2,9 +2,10 @@
 import { onDestroy, onMount } from "svelte";
 import { api } from "../lib/api";
 import type { Thread } from "../lib/api";
+// biome-ignore lint/correctness/noUnusedImports: used in template
+import { LINE_CODES, LINE_COLORS } from "../lib/metro-lines";
 // biome-ignore lint/correctness/noUnusedImports: used in template handlers
 import { navigateTo } from "../lib/router";
-import { LINE_COLORS, LINE_CODES } from "../lib/metro-lines";
 
 interface ThreadStatus {
 	active: boolean;

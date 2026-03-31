@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { getLineColor, getLineCode } from "../lib/metro-lines";
+	// biome-ignore lint/correctness/noUnusedImports: used in template
+	import { getLineCode, getLineColor } from "../lib/metro-lines";
 	import type { ContextDebugTurn, Message } from "../lib/api";
 
 	interface Props {
@@ -9,9 +10,12 @@
 		scrollContainer: HTMLElement | null;
 	}
 
+	// biome-ignore lint/correctness/noUnusedVariables: messages prop used for reactive dependency
 	const { threadColor, messages, contextDebugTurns, scrollContainer } = $props<Props>();
 
+	// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
 	let svgEl = $state<SVGSVGElement | null>(null);
+	// biome-ignore lint/correctness/noUnusedVariables: used in template and $effect
 	let svgHeight = $state(0);
 
 	// Reactive effect to update SVG height when container changes
@@ -31,10 +35,10 @@
 
 		// Find all message bubble elements
 		const bubbles = messagesContainer.querySelectorAll(
-			'[data-message-role]',
+			"[data-message-role]",
 		);
 		let closestBubble: HTMLElement | null = null;
-		let closestDiff = Infinity;
+		let closestDiff = Number.POSITIVE_INFINITY;
 
 		for (const bubble of bubbles) {
 			const roleAttr = bubble.getAttribute("data-message-role");
@@ -58,6 +62,7 @@
 	}
 
 	// Compute branches with positions
+	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	const branches = $derived(
 		contextDebugTurns
 			.map((turn) => {
@@ -72,7 +77,7 @@
 				const containerRect = scrollContainer?.getBoundingClientRect();
 				if (!containerRect) return null;
 
-				const relativeY = rect.top - containerRect.top + scrollContainer!.scrollTop;
+				const relativeY = rect.top - containerRect.top + (scrollContainer?.scrollTop ?? 0);
 
 				return {
 					y: relativeY,
@@ -82,6 +87,7 @@
 			.filter((b) => b !== null),
 	);
 
+	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	const railColor = getLineColor(threadColor);
 </script>
 
