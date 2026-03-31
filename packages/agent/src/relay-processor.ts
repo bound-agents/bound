@@ -291,8 +291,8 @@ export class RelayProcessor {
 						const idempotencyKey = `intake:${payload.platform}:${payload.platform_event_id}`;
 
 						// Dedup: check idempotency cache (same cache already used by other relay kinds)
-						const cached = this.idempotencyCache.get(idempotencyKey);
-						if (cached && cached.expiresAt > Date.now()) {
+						const cached2 = this.idempotencyCache.get(idempotencyKey);
+						if (cached2 && cached2.expiresAt > Date.now()) {
 							// Duplicate — silently discard
 							response = null;
 							break;
