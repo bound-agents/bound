@@ -454,7 +454,7 @@ function viewTitle(): string {
 	.messages {
 		flex: 1;
 		overflow-y: auto;
-		padding: 12px 8px 24px 40px;
+		padding: 12px 8px 48px 40px;
 		min-height: 0;
 		position: relative;
 	}
