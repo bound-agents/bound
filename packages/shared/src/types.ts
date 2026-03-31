@@ -405,3 +405,20 @@ export interface EventBroadcastPayload {
 	source_host: string;
 	event_depth: number;
 }
+
+// --- Context Debug Types (Phase 2: Context Debugger) ---
+
+export interface ContextSection {
+	name: string;
+	tokens: number;
+	children?: ContextSection[];
+}
+
+export interface ContextDebugInfo {
+	contextWindow: number;
+	totalEstimated: number;
+	model: string;
+	sections: ContextSection[];
+	budgetPressure: boolean;
+	truncated: number;
+}
