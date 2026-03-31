@@ -488,12 +488,16 @@ export class AgentLoop {
 
 				// Record context debug data and emit event
 				if (currentTurnId !== null && this.lastContextDebug) {
-					recordContextDebug(this.ctx.db, currentTurnId, this.lastContextDebug);
-					this.ctx.eventBus.emit("context:debug", {
-						thread_id: this.config.threadId,
-						turn_id: currentTurnId,
-						debug: this.lastContextDebug,
-					});
+					try {
+						recordContextDebug(this.ctx.db, currentTurnId, this.lastContextDebug);
+						this.ctx.eventBus.emit("context:debug", {
+							thread_id: this.config.threadId,
+							turn_id: currentTurnId,
+							debug: this.lastContextDebug,
+						});
+					} catch {
+						// Non-fatal — don't break the loop over debug metadata
+					}
 				}
 
 				if (parsed.toolCalls.length > 0) {
