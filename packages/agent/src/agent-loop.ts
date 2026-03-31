@@ -13,7 +13,8 @@ import {
 import type { CapabilityRequirements, ModelRouter, StreamChunk } from "@bound/llm";
 import type { InferenceRequestPayload, StreamChunkPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
-import { formatError } from "@bound/shared";
+import type { ContextDebugInfo } from "@bound/shared";
+import { countTokens, formatError } from "@bound/shared";
 
 import { assembleContext } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
@@ -66,6 +67,7 @@ export class AgentLoop {
 	private aborted = false;
 	private lastModelResolution: ModelResolution | null = null;
 	private _visionAdvisoryEmitted?: Set<string>;
+	private lastContextDebug?: ContextDebugInfo;
 
 	constructor(
 		private ctx: AppContext,
@@ -207,7 +209,12 @@ export class AgentLoop {
 					? this.modelRouter.getEffectiveCapabilities(this.lastModelResolution.modelId)
 					: undefined;
 
-			const contextMessages = assembleContext({
+			// Compute tool token estimate for debug metadata
+			const toolTokenEstimate = this.config.tools
+				? countTokens(JSON.stringify(this.config.tools))
+				: 0;
+
+			const { messages: contextMessages, debug: contextDebug } = assembleContext({
 				db: this.ctx.db,
 				threadId: this.config.threadId,
 				taskId: this.config.taskId,
@@ -226,7 +233,11 @@ export class AgentLoop {
 						}
 					: undefined,
 				targetCapabilities: resolvedCaps ?? undefined,
+				toolTokenEstimate,
 			});
+
+			// Store context debug for Phase 3 persistence
+			this.lastContextDebug = contextDebug;
 
 			// Advisory: log once per thread when image blocks are stripped for a non-vision backend.
 			// The advisoryDedup Set in context-assembly.ts prevents repeat logs per thread+backend,
