@@ -135,81 +135,66 @@ function computeSplines(): void {
 		threadPositions.set(thread.id, { y, stations });
 	}
 
-	// Collect all connections
-	interface Connection {
-		sourceId: string;
-		targetId: string;
-		sourceColor: number;
-		targetColor: number;
-	}
-	const connections: Connection[] = [];
-	for (const [targetId, sources] of Object.entries(interchange)) {
-		if (!threadPositions.has(targetId)) continue;
-		for (const source of sources) {
-			if (!threadPositions.has(source.threadId)) continue;
-			connections.push({
-				sourceId: source.threadId,
-				targetId,
-				sourceColor: source.color,
-				targetColor: threads.find((t) => t.id === targetId)?.color ?? 0,
-			});
-		}
-	}
-
-	if (connections.length === 0) {
-		interchangeSplines = [];
-		return;
-	}
-
-	// Find minimum station count to safely index
-	const minStations = Math.min(
-		...Array.from(threadPositions.values()).map((p) => p.stations.length),
-	);
-	if (minStations === 0) {
-		interchangeSplines = [];
-		return;
-	}
-
-	// Distribute connections across station columns
+	// Group connections by target thread — each target's sources converge on its last dot
 	const splines: SplinePath[] = [];
 	let gradIdx = 0;
-	for (let ci = 0; ci < connections.length; ci++) {
-		const conn = connections[ci];
-		const sourcePos = threadPositions.get(conn.sourceId);
-		const targetPos = threadPositions.get(conn.targetId);
-		if (!sourcePos || !targetPos) continue;
 
-		// Assign to a station column, spread + slight offset per connection
-		const colIdx = ci % minStations;
-		const x = (sourcePos.stations[colIdx] + targetPos.stations[colIdx]) / 2;
-		const sourceY = sourcePos.y;
+	for (const [targetId, sources] of Object.entries(interchange)) {
+		const targetPos = threadPositions.get(targetId);
+		if (!targetPos || targetPos.stations.length === 0) continue;
+
+		const targetThread = threads.find((t) => t.id === targetId);
+		if (!targetThread) continue;
+
+		// Target X = rightmost station dot
+		const targetX = targetPos.stations[targetPos.stations.length - 1];
 		const targetY = targetPos.y;
 
-		// S-shaped cubic bezier: control points stay at same X,
-		// each offset vertically by 40% of the distance
-		const dist = targetY - sourceY;
-		// Small horizontal jitter to separate overlapping splines
-		const jitter = ((ci % 3) - 1) * 8;
+		// Up to 5 sources, each assigned a different station column on its own row
+		const maxSources = Math.min(sources.length, 5);
+		for (let si = 0; si < maxSources; si++) {
+			const source = sources[si];
+			const sourcePos = threadPositions.get(source.threadId);
+			if (!sourcePos || sourcePos.stations.length === 0) continue;
 
-		const path = [
-			`M ${x + jitter} ${sourceY}`,
-			`C ${x + jitter} ${sourceY + dist * 0.4},`,
-			`${x + jitter} ${targetY - dist * 0.4},`,
-			`${x + jitter} ${targetY}`,
-		].join(" ");
+			// Source X = spread across source's stations (distribute evenly)
+			const sourceStationIdx = Math.min(
+				Math.floor((si / maxSources) * sourcePos.stations.length),
+				sourcePos.stations.length - 1,
+			);
+			const sourceX = sourcePos.stations[sourceStationIdx];
+			const sourceY = sourcePos.y;
 
-		const sourceColor = getLineColor(conn.sourceColor);
-		const targetColor = getLineColor(conn.targetColor);
-		const gid = `interchange-${gradIdx++}`;
+			const dy = targetY - sourceY;
+			const dx = targetX - sourceX;
+			let path: string;
 
-		splines.push({
-			path,
-			sourceColor,
-			targetColor,
-			gradientId: gid,
-			sourceY,
-			targetY,
-		});
+			if (Math.abs(dx) < 2) {
+				// Aligned dots — straight vertical line
+				path = `M ${sourceX} ${sourceY} L ${targetX} ${targetY}`;
+			} else {
+				// S-curve: start vertical, transition horizontally, end vertical
+				path = [
+					`M ${sourceX} ${sourceY}`,
+					`C ${sourceX} ${sourceY + dy * 0.4},`,
+					`${targetX} ${targetY - dy * 0.4},`,
+					`${targetX} ${targetY}`,
+				].join(" ");
+			}
+
+			const sourceColor = getLineColor(source.color);
+			const targetColor = getLineColor(targetThread.color);
+			const gid = `interchange-${gradIdx++}`;
+
+			splines.push({
+				path,
+				sourceColor,
+				targetColor,
+				gradientId: gid,
+				sourceY,
+				targetY,
+			});
+		}
 	}
 
 	interchangeSplines = splines;
@@ -452,7 +437,7 @@ function hasAlert(threadId: string): boolean {
 		top: 0;
 		left: 0;
 		pointer-events: none;
-		z-index: 1;
+		z-index: 0;
 	}
 
 	.thread-row {
