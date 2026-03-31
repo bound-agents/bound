@@ -105,43 +105,101 @@ function computeSplines(): void {
 	const listRect = threadListEl.getBoundingClientRect();
 	svgHeight = threadListEl.scrollHeight;
 
-	const rowMap = new Map<string, DOMRect>();
+	// Build a map of threadId → { rowY, stationXPositions[] }
+	const threadPositions = new Map<string, { y: number; stations: number[] }>();
 	for (const thread of threads) {
-		const el = threadListEl.querySelector(`[data-thread-id="${thread.id}"]`);
-		if (el) rowMap.set(thread.id, el.getBoundingClientRect());
+		const rowEl = threadListEl.querySelector(`[data-thread-id="${thread.id}"]`);
+		if (!rowEl) continue;
+
+		const rowRect = rowEl.getBoundingClientRect();
+		const y = rowRect.top - listRect.top + rowRect.height / 2;
+
+		// Get station dot X positions
+		const stationEls = rowEl.querySelectorAll(".track-station");
+		const stations: number[] = [];
+		for (const st of stationEls) {
+			const stRect = st.getBoundingClientRect();
+			stations.push(stRect.left - listRect.left + stRect.width / 2);
+		}
+
+		threadPositions.set(thread.id, { y, stations });
 	}
 
+	// Collect all connections, then assign each to a station column
+	interface Connection {
+		sourceId: string;
+		targetId: string;
+		sourceColor: number;
+		targetColor: number;
+	}
+	const connections: Connection[] = [];
+	for (const [targetId, sources] of Object.entries(interchange)) {
+		if (!threadPositions.has(targetId)) continue;
+		for (const source of sources) {
+			if (!threadPositions.has(source.threadId)) continue;
+			connections.push({
+				sourceId: source.threadId,
+				targetId,
+				sourceColor: source.color,
+				targetColor: threads.find((t) => t.id === targetId)?.color ?? 0,
+			});
+		}
+	}
+
+	if (connections.length === 0) {
+		interchangeSplines = [];
+		return;
+	}
+
+	// Find the minimum station count across involved threads
+	const minStations = Math.min(
+		...Array.from(threadPositions.values()).map((p) => p.stations.length),
+	);
+	if (minStations === 0) {
+		interchangeSplines = [];
+		return;
+	}
+
+	// Distribute connections across station columns to minimize overlap
+	// Use different columns for different connections, wrapping if needed
 	const splines: SplinePath[] = [];
 	let gradIdx = 0;
-	for (const [targetId, sources] of Object.entries(interchange)) {
-		const targetRect = rowMap.get(targetId);
-		if (!targetRect) continue;
+	for (let ci = 0; ci < connections.length; ci++) {
+		const conn = connections[ci];
+		const sourcePos = threadPositions.get(conn.sourceId);
+		const targetPos = threadPositions.get(conn.targetId);
+		if (!sourcePos || !targetPos) continue;
 
-		const targetThread = threads.find((t) => t.id === targetId);
-		if (!targetThread) continue;
+		// Assign to a station column, spreading across available columns
+		const colIdx = ci % minStations;
+		const sourceX = sourcePos.stations[colIdx] ?? sourcePos.stations[0];
+		const targetX = targetPos.stations[colIdx] ?? targetPos.stations[0];
+		const sourceY = sourcePos.y;
+		const targetY = targetPos.y;
 
-		for (const source of sources) {
-			const sourceRect = rowMap.get(source.threadId);
-			if (!sourceRect) continue;
+		// Vertical distance determines curve amplitude
+		const dist = Math.abs(targetY - sourceY);
+		// Control points offset horizontally to create a smooth curve
+		// Alternate left/right offset based on connection index to reduce overlap
+		const direction = ci % 2 === 0 ? 1 : -1;
+		const cpOffsetX = direction * (20 + (ci % 3) * 12);
+		const cpOffsetY = dist * 0.3;
 
-			// Compute Y positions relative to the thread-list container
-			const sourceY = sourceRect.top - listRect.top + sourceRect.height / 2;
-			const targetY = targetRect.top - listRect.top + targetRect.height / 2;
+		// Use the midpoint X between source and target stations
+		const midX = (sourceX + targetX) / 2 + cpOffsetX;
 
-			// Spline curves to the right of the list
-			const x1 = listRect.width - 20; // near the terminus end
-			const x2 = listRect.width - 8; // target terminus
-			const dist = Math.abs(targetY - sourceY);
-			const cpOffset = Math.min(dist * 0.5, 80) + 40; // control point offset to the right
+		const path = [
+			`M ${sourceX} ${sourceY}`,
+			`C ${midX} ${sourceY + cpOffsetY},`,
+			`${midX} ${targetY - cpOffsetY},`,
+			`${targetX} ${targetY}`,
+		].join(" ");
 
-			const path = `M ${x1} ${sourceY} C ${x1 + cpOffset} ${sourceY}, ${x2 + cpOffset} ${targetY}, ${x2} ${targetY}`;
+		const sourceColor = getLineColor(conn.sourceColor);
+		const targetColor = getLineColor(conn.targetColor);
+		const gid = `interchange-${gradIdx++}`;
 
-			const sourceColor = getLineColor(source.color);
-			const targetColor = getLineColor(targetThread.color);
-			const gid = `interchange-${gradIdx++}`;
-
-			splines.push({ path, sourceColor, targetColor, gradientId: gid });
-		}
+		splines.push({ path, sourceColor, targetColor, gradientId: gid });
 	}
 
 	interchangeSplines = splines;
