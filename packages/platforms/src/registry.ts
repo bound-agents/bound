@@ -2,8 +2,8 @@ import type { AppContext } from "@bound/core";
 import type { PlatformConnectorConfig, PlatformsConfig } from "@bound/shared";
 import type { PlatformConnector } from "./connector.js";
 import { DiscordClientManager } from "./connectors/discord-client-manager.js";
-import { DiscordConnector } from "./connectors/discord.js";
 import { DiscordInteractionConnector } from "./connectors/discord-interaction.js";
+import { DiscordConnector } from "./connectors/discord.js";
 import { WebhookStubConnector } from "./connectors/webhook-stub.js";
 import { PlatformLeaderElection } from "./leader-election.js";
 
@@ -20,7 +20,10 @@ import { PlatformLeaderElection } from "./leader-election.js";
  */
 export class PlatformConnectorRegistry {
 	private elections = new Map<string, PlatformLeaderElection>();
-	private connectorsByPlatform = new Map<string, { connector: PlatformConnector; electionKey: string }>();
+	private connectorsByPlatform = new Map<
+		string,
+		{ connector: PlatformConnector; electionKey: string }
+	>();
 
 	constructor(
 		private readonly ctx: AppContext,
