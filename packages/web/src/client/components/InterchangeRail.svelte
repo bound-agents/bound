@@ -1,5 +1,5 @@
 <script lang="ts">
-import { tick } from "svelte";
+import { onMount, tick } from "svelte";
 import type { ContextDebugTurn, Message } from "../lib/api";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import { getLineCode, getLineColor } from "../lib/metro-lines";
@@ -40,7 +40,6 @@ let svgEl = $state<SVGSVGElement | null>(null);
 let svgHeight = $state(0);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let branches = $state<Branch[]>([]);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let popover = $state<PopoverState>({
 	visible: false,
 	x: 0,
@@ -50,6 +49,15 @@ let popover = $state<PopoverState>({
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 const railColor = $derived(getLineColor(threadColor));
+
+// Close popover on Escape key
+onMount(() => {
+	function handleKeydown(e: KeyboardEvent) {
+		if (e.key === "Escape") closePopover();
+	}
+	document.addEventListener("keydown", handleKeydown);
+	return () => document.removeEventListener("keydown", handleKeydown);
+});
 
 // Compute branches after DOM updates using $effect + tick
 $effect(() => {
@@ -111,38 +119,38 @@ function findAssistantMessageElement(
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 function handleStationClick(source: CrossThreadSource, event: MouseEvent): void {
+	event.stopPropagation();
 	const target = event.currentTarget as SVGElement;
 	const rect = target.getBoundingClientRect();
 	const containerRect = scrollContainer?.getBoundingClientRect();
 	if (!containerRect) return;
 
 	const x = rect.right - containerRect.left + 8;
-	const y =
-		rect.top - containerRect.top + (scrollContainer?.scrollTop ?? 0) - 8;
+	const y = rect.top - containerRect.top + (scrollContainer?.scrollTop ?? 0) - 8;
 
-	// Show popover immediately with snapshot data
+	// Show popover with snapshot data, then fetch live data
 	popover = { visible: true, x, y, source: { ...source } };
 
-	// Fetch live thread data to update title and timestamps
-	Promise.all([
-		fetch(`/api/threads/${source.threadId}`).then((r) =>
-			r.ok ? r.json() : null,
-		),
-		fetch(`/api/threads/${source.threadId}/messages`).then((r) =>
-			r.ok ? r.json() : null,
-		),
-	])
-		.then(([thread, msgs]) => {
-			if (!popover.visible) return;
-			popover = {
-				...popover,
-				source: {
-					...source,
-					title: thread?.title || source.title,
-					messageCount: Array.isArray(msgs) ? msgs.length : source.messageCount,
-					lastMessageAt: thread?.last_message_at ?? source.lastMessageAt,
-				},
-			};
+	// Fetch live thread info
+	fetch(`/api/threads/${source.threadId}`)
+		.then((r) => (r.ok ? r.json() : null))
+		.then((thread) => {
+			if (!thread || !popover.visible || popover.source?.threadId !== source.threadId) return;
+			// Count messages from the thread's messages endpoint
+			return fetch(`/api/threads/${source.threadId}/messages`)
+				.then((r) => (r.ok ? r.json() : null))
+				.then((msgs) => {
+					if (!popover.visible || popover.source?.threadId !== source.threadId) return;
+					popover = {
+						...popover,
+						source: {
+							...source,
+							title: thread.title || "(untitled)",
+							messageCount: Array.isArray(msgs) ? msgs.length : source.messageCount,
+							lastMessageAt: thread.last_message_at ?? source.lastMessageAt,
+						},
+					};
+				});
 		})
 		.catch(() => {});
 }
@@ -167,11 +175,6 @@ function navigateToThread(threadId: string): void {
 	closePopover();
 	window.location.hash = `#/line/${threadId}`;
 }
-
-// biome-ignore lint/correctness/noUnusedVariables: used in template
-function gradientId(branchIdx: number, sourceIdx: number): string {
-	return `branch-grad-${branchIdx}-${sourceIdx}`;
-}
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -183,14 +186,15 @@ function gradientId(branchIdx: number, sourceIdx: number): string {
 	width="36"
 	height={svgHeight}
 	viewBox="0 0 36 {svgHeight}"
-	preserveAspectRatio="none"
 >
 	<defs>
 		{#each branches as branch, bi}
 			{#each branch.sources as source, si}
+				{@const gid = `branch-grad-${bi}-${si}`}
 				<linearGradient
-					id={gradientId(bi, si)}
-					x1="0" y1="0" x2="1" y2="0"
+					id={gid}
+					gradientUnits="userSpaceOnUse"
+					x1="12" y1="0" x2="28" y2="0"
 				>
 					<stop offset="0%" stop-color={getLineColor(source.color)} />
 					<stop offset="100%" stop-color={railColor} />
@@ -216,15 +220,15 @@ function gradientId(branchIdx: number, sourceIdx: number): string {
 			{@const branchY = branch.y + si * 24}
 			{@const sourceColor = getLineColor(source.color)}
 			{@const sourceCode = getLineCode(source.color)}
+			{@const gradRef = `url(#branch-grad-${bi}-${si})`}
 
 			<!-- Horizontal branch line with gradient -->
-			{@const gradUrl = `url(#${gradientId(bi, si)})`}
 			<line
 				x1="12"
 				y1={branchY}
 				x2="28"
 				y2={branchY}
-				stroke={gradUrl}
+				stroke={gradRef}
 				stroke-width="3"
 				stroke-linecap="round"
 			/>
@@ -234,7 +238,7 @@ function gradientId(branchIdx: number, sourceIdx: number): string {
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<g
 				class="station-marker"
-				onclick={(e) => { e.stopPropagation(); handleStationClick(source, e); }}
+				onclick={(e) => handleStationClick(source, e)}
 			>
 				<!-- Hit area (invisible, larger) -->
 				<circle cx="12" cy={branchY} r="14" fill="transparent" />
@@ -277,6 +281,7 @@ function gradientId(branchIdx: number, sourceIdx: number): string {
 				<span class="popover-badge-code">{srcCode}</span>
 			</span>
 			<span class="popover-title">{src.title}</span>
+			<button class="popover-close" onclick={closePopover}>&times;</button>
 		</div>
 		<div class="popover-meta">
 			{src.messageCount} messages &middot; {formatTime(src.lastMessageAt)}
@@ -371,6 +376,22 @@ function gradientId(branchIdx: number, sourceIdx: number): string {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		flex: 1;
+	}
+
+	.popover-close {
+		background: none;
+		border: none;
+		color: var(--text-secondary, #9caeb7);
+		font-size: 18px;
+		cursor: pointer;
+		padding: 0 2px;
+		line-height: 1;
+		flex-shrink: 0;
+	}
+
+	.popover-close:hover {
+		color: var(--text-primary, #e0e0e0);
 	}
 
 	.popover-meta {
