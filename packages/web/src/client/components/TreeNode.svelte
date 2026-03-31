@@ -40,6 +40,7 @@ const isDir = $derived(node.type === "dir");
 const nodeName = $derived(node.name);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 const IconComponent = $derived(getFileIcon(nodeName));
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 const isSelected = $derived(selectedPath === node.fullPath);
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template

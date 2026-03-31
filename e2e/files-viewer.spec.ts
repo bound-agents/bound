@@ -65,7 +65,7 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		// Navigate to the files view
-		await page.goto("/#files");
+		await page.goto("/#/files");
 
 		// Wait for the page to load
 		await page.waitForLoadState("networkidle");
@@ -105,7 +105,7 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		// Navigate to the files view
-		await page.goto("/#files");
+		await page.goto("/#/files");
 
 		// Wait for the page to load
 		await page.waitForLoadState("networkidle");
@@ -118,7 +118,7 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		// Find a directory toggle button and click it to collapse
-		const toggleButtons = page.locator(".node-toggle");
+		const toggleButtons = page.locator(".expand-button");
 		const count = await toggleButtons.count();
 		expect(count).toBeGreaterThan(0);
 
@@ -170,7 +170,7 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		// Navigate to the files view
-		await page.goto("/#files");
+		await page.goto("/#/files");
 
 		// Wait for the page to load
 		await page.waitForLoadState("networkidle");
@@ -188,8 +188,7 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		await page.waitForTimeout(50);
 
 		// Verify the first directory has the node-selected class
-		const firstDirRow = firstDir.locator(".node-row").first();
-		const hasSelectedClass = await firstDirRow.evaluate((el) => {
+		const hasSelectedClass = await firstDir.evaluate((el) => {
 			return el.classList.contains("node-selected");
 		});
 		expect(hasSelectedClass).toBe(true);
@@ -197,8 +196,7 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		// Verify a different directory does NOT have the selected class (if there's another)
 		if (dirCount > 1) {
 			const secondDir = dirNodes.nth(1);
-			const secondDirRow = secondDir.locator(".node-row").first();
-			const secondHasSelectedClass = await secondDirRow.evaluate((el) => {
+			const secondHasSelectedClass = await secondDir.evaluate((el) => {
 				return el.classList.contains("node-selected");
 			});
 			expect(secondHasSelectedClass).toBe(false);
@@ -210,13 +208,13 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 			await page.waitForTimeout(50);
 
 			// Verify the second directory now has the selected class
-			const secondHasSelected = await secondDirRow.evaluate((el) => {
+			const secondHasSelected = await secondDir.evaluate((el) => {
 				return el.classList.contains("node-selected");
 			});
 			expect(secondHasSelected).toBe(true);
 
 			// Verify the first directory no longer has the selected class
-			const firstNoLongerSelected = await firstDirRow.evaluate((el) => {
+			const firstNoLongerSelected = await firstDir.evaluate((el) => {
 				return el.classList.contains("node-selected");
 			});
 			expect(firstNoLongerSelected).toBe(false);
