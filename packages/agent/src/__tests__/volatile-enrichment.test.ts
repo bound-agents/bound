@@ -713,10 +713,17 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 			],
 		);
 
-		const digest = buildCrossThreadDigest(db, userId);
+		const { text, sources } = buildCrossThreadDigest(db, userId);
 
 		// Summary content must appear in the digest so the agent can continue the conversation
-		expect(digest).toContain(summary);
+		expect(text).toContain(summary);
+		// Verify sources array contains the thread
+		expect(sources).toHaveLength(1);
+		expect(sources[0].threadId).toBe(threadId);
+		expect(sources[0].title).toBe("Memory Discussion");
+		expect(sources[0].color).toBe(0);
+		expect(sources[0]).toHaveProperty("messageCount");
+		expect(sources[0]).toHaveProperty("lastMessageAt");
 	});
 
 	it("still works when thread has no summary (null)", () => {
@@ -728,7 +735,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				userId,
 				"web",
 				"local",
-				0,
+				3,
 				"Untitled Thread",
 				null,
 				null,
@@ -741,9 +748,143 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 			],
 		);
 
-		const digest = buildCrossThreadDigest(db, userId);
-		expect(digest).toContain("Untitled Thread");
+		const { text, sources } = buildCrossThreadDigest(db, userId);
+		expect(text).toContain("Untitled Thread");
 		// No crash when summary is null
-		expect(digest).not.toBeNull();
+		expect(text).not.toBeNull();
+		// Verify sources array is populated
+		expect(sources).toHaveLength(1);
+		expect(sources[0].title).toBe("Untitled Thread");
+		expect(sources[0].color).toBe(3);
+	});
+
+	it("returns array with correct color values for different threads", () => {
+		// Create threads with different color values
+		const threadId1 = `digest-thread-color1-${Math.random().toString(36).slice(2, 8)}`;
+		const threadId2 = `digest-thread-color2-${Math.random().toString(36).slice(2, 8)}`;
+		const threadId3 = `digest-thread-color3-${Math.random().toString(36).slice(2, 8)}`;
+
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				threadId1,
+				userId,
+				"web",
+				"local",
+				0,
+				"Thread Color 0",
+				null,
+				null,
+				null,
+				null,
+				now,
+				new Date(Date.now() + 1000).toISOString(),
+				now,
+				0,
+			],
+		);
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				threadId2,
+				userId,
+				"web",
+				"local",
+				3,
+				"Thread Color 3",
+				null,
+				null,
+				null,
+				null,
+				now,
+				new Date(Date.now() + 2000).toISOString(),
+				now,
+				0,
+			],
+		);
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				threadId3,
+				userId,
+				"web",
+				"local",
+				7,
+				"Thread Color 7",
+				null,
+				null,
+				null,
+				null,
+				now,
+				new Date(Date.now() + 3000).toISOString(),
+				now,
+				0,
+			],
+		);
+
+		const { sources } = buildCrossThreadDigest(db, userId);
+		expect(sources).toHaveLength(3);
+		// Most recent first (by last_message_at DESC)
+		expect(sources[0].color).toBe(7);
+		expect(sources[1].color).toBe(3);
+		expect(sources[2].color).toBe(0);
+	});
+
+	it("returns empty sources when no threads exist", () => {
+		const { text, sources } = buildCrossThreadDigest(db, userId);
+		expect(text).toBe("No recent activity.");
+		expect(sources).toHaveLength(0);
+	});
+
+	it("excludes specified thread when excludeThreadId is provided", () => {
+		const threadIdA = `digest-thread-a-${Math.random().toString(36).slice(2, 8)}`;
+		const threadIdB = `digest-thread-b-${Math.random().toString(36).slice(2, 8)}`;
+
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				threadIdA,
+				userId,
+				"web",
+				"local",
+				1,
+				"Thread A",
+				null,
+				null,
+				null,
+				null,
+				now,
+				new Date(Date.now() + 1000).toISOString(),
+				now,
+				0,
+			],
+		);
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				threadIdB,
+				userId,
+				"web",
+				"local",
+				2,
+				"Thread B",
+				null,
+				null,
+				null,
+				null,
+				now,
+				new Date(Date.now() + 2000).toISOString(),
+				now,
+				0,
+			],
+		);
+
+		// Call with excludeThreadId set to threadIdA
+		const { sources } = buildCrossThreadDigest(db, userId, threadIdA);
+		// Should only return threadIdB
+		expect(sources).toHaveLength(1);
+		expect(sources[0].threadId).toBe(threadIdB);
+		expect(sources[0].title).toBe("Thread B");
+		expect(sources[0].color).toBe(2);
 	});
 });

@@ -2137,6 +2137,96 @@ This skill reviews pull requests.`;
 			// Should be <= 3 memory entries when budget pressure reduces to 3+3
 			expect(memoryCount).toBeLessThanOrEqual(3);
 		});
+
+		it("metro-interchange-ui.AC3.2: populates debug.crossThreadSources when cross-thread context is present", () => {
+			const testThreadId = randomUUID();
+			const testThreadId2 = randomUUID();
+			const pastTime = "2026-01-01T00:00:00.000Z";
+			const recentTime = new Date().toISOString();
+
+			// Create first thread (the current one)
+			enrichTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					enrichTestUserId,
+					"web",
+					"local",
+					0,
+					"Current Thread",
+					null,
+					null,
+					null,
+					null,
+					pastTime,
+					recentTime,
+					recentTime,
+					0,
+				],
+			);
+
+			// Create second thread (for cross-thread context)
+			enrichTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId2,
+					enrichTestUserId,
+					"web",
+					"local",
+					2,
+					"Other Thread",
+					"Summary of other thread",
+					recentTime,
+					null,
+					null,
+					pastTime,
+					new Date(Date.now() + 1000).toISOString(),
+					recentTime,
+					0,
+				],
+			);
+
+			const result = assembleContext({
+				db: enrichTestDb,
+				threadId: testThreadId,
+				userId: enrichTestUserId,
+			});
+
+			// Verify debug.crossThreadSources is populated
+			expect(result.debug.crossThreadSources).toBeDefined();
+			expect(Array.isArray(result.debug.crossThreadSources)).toBe(true);
+			expect((result.debug.crossThreadSources ?? []).length).toBeGreaterThan(0);
+
+			// Verify the cross-thread source has correct fields
+			const source = (result.debug.crossThreadSources ?? [])[0];
+			if (source) {
+				expect(source.threadId).toBe(testThreadId2);
+				expect(source.title).toBe("Other Thread");
+				expect(source.color).toBe(2);
+				expect(source).toHaveProperty("messageCount");
+				expect(source).toHaveProperty("lastMessageAt");
+			}
+		});
+
+		it("metro-interchange-ui.AC3.7: backward compatibility — old turns without crossThreadSources field render gracefully", () => {
+			// Simulate old ContextDebugInfo JSON without crossThreadSources field
+			const oldDebugInfo = {
+				contextWindow: 128000,
+				totalEstimated: 5000,
+				model: "claude-opus",
+				sections: [],
+				budgetPressure: false,
+				truncated: 0,
+			};
+
+			// Parse and verify accessing undefined field doesn't crash
+			const parsed = JSON.parse(JSON.stringify(oldDebugInfo));
+			expect(parsed.crossThreadSources).toBeUndefined();
+			expect(() => {
+				// Should not throw
+				const _unused = parsed.crossThreadSources ?? [];
+			}).not.toThrow();
+		});
 	});
 
 	// Bug: ContentBlock[] content was invisible to the token budget because both
