@@ -31,6 +31,7 @@ export interface AppConfig {
 	eagerPushConfig?: EagerPushConfig;
 	statusForwardCache?: Map<string, StatusForwardPayload>;
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
+	activeLoops?: Set<string>;
 }
 
 export async function createApp(
@@ -50,6 +51,7 @@ export async function createApp(
 		siteId: typedAppConfig?.siteId,
 		statusForwardCache: typedAppConfig?.statusForwardCache,
 		activeDelegations: typedAppConfig?.activeDelegations,
+		activeLoops: typedAppConfig?.activeLoops,
 	};
 
 	const app = new Hono();

@@ -16,6 +16,7 @@ export interface RoutesConfig {
 	siteId?: string;
 	statusForwardCache?: Map<string, StatusForwardPayload>;
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
+	activeLoops?: Set<string>;
 }
 
 export function registerRoutes(
@@ -29,10 +30,11 @@ export function registerRoutes(
 		siteId = "",
 		statusForwardCache,
 		activeDelegations,
+		activeLoops,
 	} = config;
 
 	return {
-		threads: createThreadsRoutes(db, modelsConfig?.default, statusForwardCache),
+		threads: createThreadsRoutes(db, modelsConfig?.default, statusForwardCache, activeLoops),
 		messages: createMessagesRoutes(db, eventBus),
 		files: createFilesRoutes(db),
 		status: createStatusRoutes(db, eventBus, hostName, siteId, modelsConfig, activeDelegations),

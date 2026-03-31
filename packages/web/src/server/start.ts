@@ -19,6 +19,7 @@ export interface WebServerConfig {
 	eagerPushConfig?: EagerPushConfig;
 	statusForwardCache?: Map<string, StatusForwardPayload>;
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
+	activeLoops?: Set<string>;
 }
 
 export interface WebServer {
@@ -49,6 +50,7 @@ export async function createWebServer(
 		eagerPushConfig: config.eagerPushConfig,
 		statusForwardCache: config.statusForwardCache,
 		activeDelegations: config.activeDelegations,
+		activeLoops: config.activeLoops,
 	};
 
 	// Create the Hono app with all routes (loads embedded assets if available)

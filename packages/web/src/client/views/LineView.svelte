@@ -155,7 +155,7 @@ onMount(async () => {
 	}
 
 	pollInterval = setInterval(pollMessages, 5000);
-	statusPollInterval = setInterval(pollStatus, 5000);
+	statusPollInterval = setInterval(pollStatus, 2000);
 	await pollStatus();
 });
 
