@@ -1,19 +1,20 @@
 <script lang="ts">
-	import { Folder } from "lucide-svelte";
-	import type { FileTreeNode, FileMetadata } from "../lib/file-tree";
-	import type { Component } from "svelte";
+import { Folder } from "lucide-svelte";
+import type { Component } from "svelte";
+import type { FileMetadata, FileTreeNode } from "../lib/file-tree";
 
-	interface Props {
-		items: FileTreeNode[];
-		formatFileSize: (bytes: number) => string;
-		getFileIcon: (name: string) => Component;
-		relativeTime: (iso: string | null) => string;
-		onSelectDirectory: (path: string) => void;
-		onSelectFile: (file: FileMetadata) => void;
-	}
+interface Props {
+	items: FileTreeNode[];
+	formatFileSize: (bytes: number) => string;
+	getFileIcon: (name: string) => Component;
+	relativeTime: (iso: string | null) => string;
+	onSelectDirectory: (path: string) => void;
+	onSelectFile: (file: FileMetadata) => void;
+}
 
-	// biome-ignore lint/correctness/noUnusedVariables: used in template
-	const { items, formatFileSize, getFileIcon, relativeTime, onSelectDirectory, onSelectFile }: Props = $props();
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+const { items, formatFileSize, getFileIcon, relativeTime, onSelectDirectory, onSelectFile }: Props =
+	$props();
 </script>
 
 {#if items.length === 0}
