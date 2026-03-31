@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import type { Thread } from "../lib/api";
 // biome-ignore lint/correctness/noUnusedImports: used in template handlers
 import { navigateTo } from "../lib/router";
+import { LINE_COLORS, LINE_CODES } from "../lib/metro-lines";
 
 interface ThreadStatus {
 	active: boolean;
@@ -77,25 +78,6 @@ onDestroy(() => {
 	if (pollInterval !== null) clearInterval(pollInterval);
 });
 
-// Authentic Tokyo Metro line palette
-// biome-ignore lint/correctness/noUnusedVariables: used in template
-const colors = [
-	"#F39700", // Ginza (G)        — orange
-	"#E60012", // Marunouchi (M)   — red
-	"#9CAEB7", // Hibiya (H)       — silver
-	"#009BBF", // Tozai (T)        — sky blue
-	"#009944", // Chiyoda (C)      — green
-	"#C1A470", // Yurakucho (Y)    — gold
-	"#8F76D6", // Hanzomon (Z)     — purple
-	"#00AC9B", // Namboku (N)      — emerald
-	"#9C5E31", // Fukutoshin (F)   — brown
-	"#B6007A", // Oedo (E)         — ruby
-];
-
-// Metro line letter codes matching Tokyo Metro's station numbering
-// biome-ignore lint/correctness/noUnusedVariables: used in template
-const lineCodes = ["G", "M", "H", "T", "C", "Y", "Z", "N", "F", "E"];
-
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 function threadLabel(thread: Thread, idx: number): string {
 	if (thread.title && thread.title.trim().length > 0) {
@@ -151,8 +133,8 @@ function hasAlert(threadId: string): boolean {
 	{:else}
 		<div class="thread-list">
 			{#each threads as thread, idx}
-				{@const color = colors[thread.color % colors.length]}
-				{@const code = lineCodes[thread.color % lineCodes.length]}
+				{@const color = LINE_COLORS[thread.color % LINE_COLORS.length]}
+				{@const code = LINE_CODES[thread.color % LINE_CODES.length]}
 				{@const active = isAgentActive(thread.id)}
 				{@const alert = hasAlert(thread.id)}
 				<button

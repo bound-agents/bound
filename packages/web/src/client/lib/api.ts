@@ -54,6 +54,13 @@ export interface ContextDebugTurn {
 		}>;
 		budgetPressure: boolean;
 		truncated: number;
+		crossThreadSources?: Array<{
+			threadId: string;
+			title: string;
+			color: number;
+			messageCount: number;
+			lastMessageAt: string;
+		}>;
 	};
 	created_at: string;
 }
