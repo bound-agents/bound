@@ -1,5 +1,4 @@
 <script lang="ts">
-import { Folder } from "lucide-svelte";
 import type { Component } from "svelte";
 import type { FileMetadata, FileTreeNode } from "../lib/file-tree";
 

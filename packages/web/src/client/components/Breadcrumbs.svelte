@@ -1,11 +1,11 @@
 <script lang="ts">
-	interface Props {
-		segments: Array<{ name: string; path: string }>;
-		onNavigate: (path: string) => void;
-	}
+interface Props {
+	segments: Array<{ name: string; path: string }>;
+	onNavigate: (path: string) => void;
+}
 
-	// biome-ignore lint/correctness/noUnusedVariables: used in template
-	const { segments, onNavigate }: Props = $props();
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+const { segments, onNavigate }: Props = $props();
 </script>
 
 <nav class="breadcrumbs" aria-label="File path">

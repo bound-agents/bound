@@ -459,9 +459,7 @@ describe("PlatformConnectorRegistry", () => {
 
 			// Manually set up the connectors with the mocked manager
 			const { DiscordConnector } = await import("../connectors/discord.js");
-			const { DiscordInteractionConnector } = await import(
-				"../connectors/discord-interaction.js"
-			);
+			const { DiscordInteractionConnector } = await import("../connectors/discord-interaction.js");
 
 			const connectorConfig: PlatformConnectorConfig = {
 				platform: "discord",
@@ -508,8 +506,7 @@ describe("PlatformConnectorRegistry", () => {
 		it("should disconnect both connectors with proper call sequence (AC5.3)", async () => {
 			// Create a mock Discord client that tracks on/off/destroy calls with sequence numbers
 			let callSequence = 0;
-			const calls: Array<{ seq: number; type: "on" | "off" | "destroy"; event?: string }> =
-				[];
+			const calls: Array<{ seq: number; type: "on" | "off" | "destroy"; event?: string }> = [];
 
 			const mockClient = {
 				user: { tag: "TestBot#1234", id: "bot-id" },
@@ -539,9 +536,7 @@ describe("PlatformConnectorRegistry", () => {
 			(testManager as any).client = mockClient;
 
 			const { DiscordConnector } = await import("../connectors/discord.js");
-			const { DiscordInteractionConnector } = await import(
-				"../connectors/discord-interaction.js"
-			);
+			const { DiscordInteractionConnector } = await import("../connectors/discord-interaction.js");
 
 			const connectorConfig: PlatformConnectorConfig = {
 				platform: "discord",
@@ -609,11 +604,7 @@ describe("PlatformConnectorRegistry", () => {
 			expect(lastDestroyCall?.type).toBe("destroy");
 
 			// Verify off() calls precede destroy
-			const firstOffCallSeq = Math.min(
-				...calls
-					.filter((c) => c.type === "off")
-					.map((c) => c.seq),
-			);
+			const firstOffCallSeq = Math.min(...calls.filter((c) => c.type === "off").map((c) => c.seq));
 			const destroySeq = calls.find((c) => c.type === "destroy")?.seq ?? -1;
 			expect(firstOffCallSeq).toBeLessThan(destroySeq);
 		});

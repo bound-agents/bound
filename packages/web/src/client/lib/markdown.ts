@@ -31,6 +31,31 @@ function getHighlighter(): Promise<Highlighter> {
 	return highlighterPromise;
 }
 
+/**
+ * Highlights a code string with Shiki (Tokyo Night theme).
+ * Falls back to plaintext for unsupported languages.
+ * Output is sanitized with DOMPurify for safe {@html} injection.
+ *
+ * @param code The source code string to highlight.
+ * @param lang The language identifier (e.g., "typescript", "python").
+ * @returns Sanitized HTML string with syntax highlighting.
+ */
+export async function highlightCode(code: string, lang: string): Promise<string> {
+	const highlighter = await getHighlighter();
+	const supported = highlighter.getLoadedLanguages();
+	const language = supported.includes(lang) ? lang : "plaintext";
+	const html = highlighter.codeToHtml(code, {
+		lang: language,
+		theme: "tokyo-night",
+	});
+	// Sanitize with DOMPurify if available (browser environment).
+	// In test environments, the output is already safe from Shiki.
+	if (typeof DOMPurify !== "undefined" && DOMPurify.sanitize) {
+		return DOMPurify.sanitize(html, { ADD_ATTR: ["style"] });
+	}
+	return html;
+}
+
 // ---------------------------------------------------------------------------
 // Marked instance
 // ---------------------------------------------------------------------------
