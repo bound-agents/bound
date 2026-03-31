@@ -37,7 +37,8 @@ const {
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 const isExpanded = $derived(expandedPaths.has(node.fullPath));
 const isDir = $derived(node.type === "dir");
-const _hasChildDirs = $derived(isDir && node.children.some((c) => c.type === "dir"));
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+const hasChildDirs = $derived(isDir && node.children.some((c) => c.type === "dir"));
 const nodeName = $derived(node.name);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 const IconComponent = $derived(getFileIcon(nodeName));
