@@ -62,6 +62,12 @@ export class DiscordConnector implements PlatformConnector {
 
 		const { ChannelType } = await import("discord.js");
 
+		// Guard against double-registration: remove old handlers before registering
+		// new ones. Without this, calling connect() twice (e.g., leader re-election)
+		// would fire onMessage multiple times per Discord event, duplicating messages.
+		if (this.onClientReady) client.off("clientReady", this.onClientReady);
+		if (this.onMessageCreate) client.off("messageCreate", this.onMessageCreate);
+
 		this.onClientReady = (c) => {
 			this.logger.info("Logged in as Discord bot", { tag: c.user.tag });
 		};
