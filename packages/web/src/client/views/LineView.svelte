@@ -11,11 +11,11 @@ import type { ContextDebugTurn, Thread } from "../lib/api";
 import { modelStore } from "../lib/modelStore";
 import { navigateTo } from "../lib/router";
 import {
+	type WebSocketMessage,
 	connectWebSocket,
 	disconnectWebSocket,
 	subscribeToThread,
 	wsEvents,
-	type WebSocketMessage,
 } from "../lib/websocket";
 import { shouldClearWaiting } from "../utils/waiting";
 
@@ -75,7 +75,12 @@ const unsubscribeWs = wsEvents.subscribe((events) => {
 const unsubscribeDebug = wsEvents.subscribe((events: WebSocketMessage[]) => {
 	if (events.length === 0) return;
 	const last = events[events.length - 1];
-	if (last && last.type === "context:debug" && typeof last.data === "object" && last.data !== null) {
+	if (
+		last &&
+		last.type === "context:debug" &&
+		typeof last.data === "object" &&
+		last.data !== null
+	) {
 		const debugData = last.data as ContextDebugTurn & { thread_id?: string };
 		if (debugData.thread_id === threadId) {
 			const exists = contextDebugTurns.some((t) => t.turn_id === debugData.turn_id);
@@ -91,7 +96,8 @@ $effect(() => {
 	const _tid = threadId; // track dependency
 	contextDebugTurns = [];
 	// Fetch initial context debug data for the new thread
-	api.getContextDebug(_tid)
+	api
+		.getContextDebug(_tid)
 		.then((turns) => {
 			contextDebugTurns = turns;
 		})

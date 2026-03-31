@@ -1,94 +1,90 @@
 <script lang="ts">
-	// biome-ignore lint/correctness/noUnusedImports: used in template
-	import { getLineCode, getLineColor } from "../lib/metro-lines";
-	import type { ContextDebugTurn, Message } from "../lib/api";
+import type { ContextDebugTurn, Message } from "../lib/api";
+// biome-ignore lint/correctness/noUnusedImports: used in template
+import { getLineCode, getLineColor } from "../lib/metro-lines";
 
-	interface Props {
-		threadColor: number;
-		messages: Message[];
-		contextDebugTurns: ContextDebugTurn[];
-		scrollContainer: HTMLElement | null;
+interface Props {
+	threadColor: number;
+	messages: Message[];
+	contextDebugTurns: ContextDebugTurn[];
+	scrollContainer: HTMLElement | null;
+}
+
+// biome-ignore lint/correctness/noUnusedVariables: messages prop used for reactive dependency
+const { threadColor, messages, contextDebugTurns, scrollContainer } = $props<Props>();
+
+// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
+let svgEl = $state<SVGSVGElement | null>(null);
+// biome-ignore lint/correctness/noUnusedVariables: used in template and $effect
+let svgHeight = $state(0);
+
+// Reactive effect to update SVG height when container changes
+$effect(() => {
+	if (scrollContainer && svgEl) {
+		svgHeight = scrollContainer.scrollHeight;
 	}
+});
 
-	// biome-ignore lint/correctness/noUnusedVariables: messages prop used for reactive dependency
-	const { threadColor, messages, contextDebugTurns, scrollContainer } = $props<Props>();
+// Function to find assistant message element by timestamp proximity
+function findAssistantMessageElement(turnCreatedAt: string): HTMLElement | null {
+	const turnTime = new Date(turnCreatedAt).getTime();
+	const messagesContainer = scrollContainer;
+	if (!messagesContainer) return null;
 
-	// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
-	let svgEl = $state<SVGSVGElement | null>(null);
-	// biome-ignore lint/correctness/noUnusedVariables: used in template and $effect
-	let svgHeight = $state(0);
+	// Find all message bubble elements
+	const bubbles = messagesContainer.querySelectorAll("[data-message-role]");
+	let closestBubble: HTMLElement | null = null;
+	let closestDiff = Number.POSITIVE_INFINITY;
 
-	// Reactive effect to update SVG height when container changes
-	$effect(() => {
-		if (scrollContainer && svgEl) {
-			svgHeight = scrollContainer.scrollHeight;
-		}
-	});
+	for (const bubble of bubbles) {
+		const roleAttr = bubble.getAttribute("data-message-role");
+		if (roleAttr !== "assistant") continue;
 
-	// Function to find assistant message element by timestamp proximity
-	function findAssistantMessageElement(
-		turnCreatedAt: string,
-	): HTMLElement | null {
-		const turnTime = new Date(turnCreatedAt).getTime();
-		const messagesContainer = scrollContainer;
-		if (!messagesContainer) return null;
+		const createdAtAttr = bubble.getAttribute("data-created-at");
+		if (!createdAtAttr) continue;
 
-		// Find all message bubble elements
-		const bubbles = messagesContainer.querySelectorAll(
-			"[data-message-role]",
-		);
-		let closestBubble: HTMLElement | null = null;
-		let closestDiff = Number.POSITIVE_INFINITY;
-
-		for (const bubble of bubbles) {
-			const roleAttr = bubble.getAttribute("data-message-role");
-			if (roleAttr !== "assistant") continue;
-
-			const createdAtAttr = bubble.getAttribute("data-created-at");
-			if (!createdAtAttr) continue;
-
-			const bubbleTime = new Date(createdAtAttr).getTime();
-			// Find message with same or later timestamp (within 5 seconds)
-			if (bubbleTime >= turnTime) {
-				const diff = bubbleTime - turnTime;
-				if (diff < closestDiff) {
-					closestDiff = diff;
-					closestBubble = bubble as HTMLElement;
-				}
+		const bubbleTime = new Date(createdAtAttr).getTime();
+		// Find message with same or later timestamp (within 5 seconds)
+		if (bubbleTime >= turnTime) {
+			const diff = bubbleTime - turnTime;
+			if (diff < closestDiff) {
+				closestDiff = diff;
+				closestBubble = bubble as HTMLElement;
 			}
 		}
-
-		return closestBubble;
 	}
 
-	// Compute branches with positions
-	// biome-ignore lint/correctness/noUnusedVariables: used in template
-	const branches = $derived(
-		contextDebugTurns
-			.map((turn) => {
-				const sources = turn.context_debug.crossThreadSources;
-				if (!sources || sources.length === 0) return null;
+	return closestBubble;
+}
 
-				const msgEl = findAssistantMessageElement(turn.created_at);
-				if (!msgEl) return null;
+// Compute branches with positions
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+const branches = $derived(
+	contextDebugTurns
+		.map((turn) => {
+			const sources = turn.context_debug.crossThreadSources;
+			if (!sources || sources.length === 0) return null;
 
-				// Get Y position relative to scroll container
-				const rect = msgEl.getBoundingClientRect();
-				const containerRect = scrollContainer?.getBoundingClientRect();
-				if (!containerRect) return null;
+			const msgEl = findAssistantMessageElement(turn.created_at);
+			if (!msgEl) return null;
 
-				const relativeY = rect.top - containerRect.top + (scrollContainer?.scrollTop ?? 0);
+			// Get Y position relative to scroll container
+			const rect = msgEl.getBoundingClientRect();
+			const containerRect = scrollContainer?.getBoundingClientRect();
+			if (!containerRect) return null;
 
-				return {
-					y: relativeY,
-					sources,
-				};
-			})
-			.filter((b) => b !== null),
-	);
+			const relativeY = rect.top - containerRect.top + (scrollContainer?.scrollTop ?? 0);
 
-	// biome-ignore lint/correctness/noUnusedVariables: used in template
-	const railColor = getLineColor(threadColor);
+			return {
+				y: relativeY,
+				sources,
+			};
+		})
+		.filter((b) => b !== null),
+);
+
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+const railColor = $derived(getLineColor(threadColor));
 </script>
 
 <!-- SVG overlay for metro rail visualization -->
