@@ -1,6 +1,8 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
+import ContextDebugPanel from "../components/ContextDebugPanel.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
 import MessageBubble from "../components/MessageBubble.svelte";
 import { api } from "../lib/api";
 import type { Thread } from "../lib/api";
@@ -36,6 +38,16 @@ let thread = $state<Thread | null>(null);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let statusPollInterval: ReturnType<typeof setInterval> | null = null;
+
+let debugOpen = $state(false);
+let debugMounted = $state(false); // tracks if panel has been opened at least once (lazy mount)
+
+function toggleDebug(): void {
+	debugOpen = !debugOpen;
+	if (debugOpen && !debugMounted) {
+		debugMounted = true; // first open triggers data fetch in ContextDebugPanel
+	}
+}
 
 // Subscribe to WebSocket events and append new messages
 const unsubscribeWs = wsEvents.subscribe((events) => {
@@ -203,23 +215,27 @@ function viewTitle(): string {
 }
 </script>
 
-<div class="line-view">
-	<div class="header">
-		<button onclick={handleBackClick} class="back-button">
-			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-				<path d="M10 3L5 8L10 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-			</svg>
-			Map
-		</button>
-		<h1>{viewTitle()}</h1>
-		{#if agentActive}
-			<span class="thinking-indicator">
-				<span class="thinking-dot"></span>
-				{agentState === "tool_call" ? "Using tool..." : "Thinking..."}
-			</span>
-			<button onclick={handleCancel} class="cancel-button">Cancel</button>
-		{/if}
-	</div>
+<div class="line-view-wrapper" class:panel-open={debugOpen}>
+	<div class="line-view">
+		<div class="header">
+			<button onclick={handleBackClick} class="back-button">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+					<path d="M10 3L5 8L10 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+				</svg>
+				Map
+			</button>
+			<h1>{viewTitle()}</h1>
+			{#if agentActive}
+				<span class="thinking-indicator">
+					<span class="thinking-dot"></span>
+					{agentState === "tool_call" ? "Using tool..." : "Thinking..."}
+				</span>
+				<button onclick={handleCancel} class="cancel-button">Cancel</button>
+			{/if}
+			<button class="debug-toggle" onclick={toggleDebug} title="Context Debug">
+				{debugOpen ? "✕" : "⚙"}
+			</button>
+		</div>
 
 	<div class="messages">
 		{#each messages as msg}
@@ -278,9 +294,23 @@ function viewTitle(): string {
 			</button>
 		</div>
 	</div>
+	</div>
+	{#if debugMounted}
+		<div class="debug-panel-container" class:hidden={!debugOpen}>
+			<ContextDebugPanel {threadId} wsEvents={wsEvents} />
+		</div>
+	{/if}
 </div>
 
 <style>
+	.line-view-wrapper {
+		display: flex;
+		flex-direction: row;
+		height: 100%;
+		width: 100%;
+		overflow: hidden;
+	}
+
 	.line-view {
 		display: flex;
 		flex-direction: column;
@@ -292,6 +322,18 @@ function viewTitle(): string {
 		padding: 24px;
 		overflow: hidden;
 		box-sizing: border-box;
+	}
+
+	.line-view-wrapper.panel-open .line-view {
+		max-width: none;
+	}
+
+	.debug-panel-container {
+		flex-shrink: 0;
+	}
+
+	.debug-panel-container.hidden {
+		display: none;
 	}
 
 	.header {
@@ -544,6 +586,23 @@ function viewTitle(): string {
 		font-size: var(--text-sm);
 		color: var(--text-muted);
 		margin-left: 4px;
+	}
+
+	.debug-toggle {
+		background: var(--bg-surface);
+		border: 1px solid var(--bg-surface);
+		color: var(--text-secondary);
+		padding: 4px 8px;
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 14px;
+		transition: color 0.2s;
+		flex-shrink: 0;
+	}
+
+	.debug-toggle:hover {
+		color: var(--text-primary);
+		border-color: var(--line-7);
 	}
 
 	@media (prefers-reduced-motion: reduce) {
