@@ -6,6 +6,7 @@ import {
 	markProcessed,
 	readInboxByRefId,
 	readInboxByStreamId,
+	recordContextDebug,
 	recordTurn,
 	recordTurnRelayMetrics,
 	writeOutbox,
@@ -483,6 +484,16 @@ export class AgentLoop {
 					} catch {
 						// Non-fatal
 					}
+				}
+
+				// Record context debug data and emit event
+				if (currentTurnId !== null && this.lastContextDebug) {
+					recordContextDebug(this.ctx.db, currentTurnId, this.lastContextDebug);
+					this.ctx.eventBus.emit("context:debug", {
+						thread_id: this.config.threadId,
+						turn_id: currentTurnId,
+						debug: this.lastContextDebug,
+					});
 				}
 
 				if (parsed.toolCalls.length > 0) {
