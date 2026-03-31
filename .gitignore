@@ -156,3 +156,4 @@ playwright-report/
 data/
 packages/web/src/server/embedded-assets.ts
 packages/web/dist/
+test-results/
