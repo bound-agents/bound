@@ -3382,4 +3382,380 @@ This skill reviews pull requests.`;
 	 * of this unit test file and the current test analyst findings.
 	 */
 	});
+
+	// ──────────────────────────────────────────────────────────────────────
+	// Token-aware truncation (replaces hardcoded keep-last-10)
+	// Root cause: context-loss-2026-03-31 — a 4900-msg thread kept only 10
+	// messages, and verbose tool errors crowded out a 30-second-old conversation.
+	// ──────────────────────────────────────────────────────────────────────
+	describe("token-aware truncation", () => {
+		it("keeps more than 10 messages when budget allows", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-02-01T00:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Token Trunc User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Token Truncation Test",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			// Insert 50 messages (alternating user/assistant, ~60 chars each ≈ 15 tokens).
+			// 50 × 15 = 750 history tokens. System overhead ≈ 300-500 tokens.
+			// With contextWindow: 800, truncation fires. Token-aware truncation
+			// should keep ~20 messages (300 tokens), well over the old hardcoded 10.
+			for (let i = 0; i < 50; i++) {
+				const role = i % 2 === 0 ? "user" : "assistant";
+				const ts = new Date(nowBase.getTime() + i * 1000).toISOString();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						localThreadId,
+						role,
+						`Message number ${i} with some padding ${"x".repeat(40)}`,
+						null,
+						null,
+						ts,
+						ts,
+						"local",
+					],
+				);
+			}
+
+			const { messages, debug } = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 800,
+			});
+
+			const historyMessages = messages.filter((m) => m.role !== "system");
+
+			// With token-aware truncation, budget for ~2000 tokens should keep
+			// WAY more than 10 short messages. The old code always kept exactly 10.
+			expect(historyMessages.length).toBeGreaterThan(10);
+			// But it should still have truncated some (50 messages + system overhead > 2000)
+			expect(debug.truncated).toBeGreaterThan(0);
+
+			// Clean up
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+
+		it("preserves most recent messages (tail, not head)", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-02-01T01:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Tail User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Tail Preservation Test",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			// Insert 30 messages; last message has unique content
+			for (let i = 0; i < 30; i++) {
+				const role = i % 2 === 0 ? "user" : "assistant";
+				const content = i === 29 ? "FINAL_SENTINEL_MESSAGE" : `Filler message ${i} ${"x".repeat(100)}`;
+				const ts = new Date(nowBase.getTime() + i * 1000).toISOString();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[randomUUID(), localThreadId, role, content, null, null, ts, ts, "local"],
+				);
+			}
+
+			const { messages } = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 1000,
+			});
+
+			const historyMessages = messages.filter((m) => m.role !== "system");
+			const lastMsg = historyMessages[historyMessages.length - 1];
+			expect(lastMsg.content).toBe("FINAL_SENTINEL_MESSAGE");
+
+			// Clean up
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+	});
+
+	// ──────────────────────────────────────────────────────────────────────
+	// Truncation marker injection
+	// When messages are truncated, the agent should know context was lost
+	// and how to recover it (query command).
+	// ──────────────────────────────────────────────────────────────────────
+	describe("truncation marker injection", () => {
+		it("injects a system message indicating truncation when messages are dropped", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-02-01T02:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Marker User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Marker Test",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			for (let i = 0; i < 30; i++) {
+				const role = i % 2 === 0 ? "user" : "assistant";
+				const ts = new Date(nowBase.getTime() + i * 1000).toISOString();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						localThreadId,
+						role,
+						`Msg ${i} ${"y".repeat(150)}`,
+						null,
+						null,
+						ts,
+						ts,
+						"local",
+					],
+				);
+			}
+
+			const { messages, debug } = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 1000,
+			});
+
+			// Truncation must have happened
+			expect(debug.truncated).toBeGreaterThan(0);
+
+			// A system message should indicate truncation occurred
+			const systemMessages = messages.filter((m) => m.role === "system");
+			const marker = systemMessages.find(
+				(m) => typeof m.content === "string" && m.content.includes("earlier messages"),
+			);
+			expect(marker).toBeDefined();
+			// Should mention the count of truncated messages
+			expect(marker?.content).toMatch(/\d+.*earlier message/);
+			// Should include instructions on how to query for older messages
+			expect(marker?.content).toMatch(/query/i);
+
+			// Clean up
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+
+		it("does NOT inject truncation marker when no truncation occurs", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-02-01T03:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "No Marker User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"No Marker Test",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			// Just 2 short messages — won't exceed any budget
+			for (let i = 0; i < 2; i++) {
+				const role = i % 2 === 0 ? "user" : "assistant";
+				const ts = new Date(nowBase.getTime() + i * 1000).toISOString();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[randomUUID(), localThreadId, role, `Short ${i}`, null, null, ts, ts, "local"],
+				);
+			}
+
+			const { messages, debug } = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 200000,
+			});
+
+			expect(debug.truncated).toBe(0);
+
+			// No truncation marker should exist
+			const systemMessages = messages.filter((m) => m.role === "system");
+			const marker = systemMessages.find(
+				(m) => typeof m.content === "string" && m.content.includes("earlier messages"),
+			);
+			expect(marker).toBeUndefined();
+
+			// Clean up
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+	});
+
+	// ──────────────────────────────────────────────────────────────────────
+	// Tool-pair integrity during truncation
+	// Truncation boundary must not split tool_call from its tool_result.
+	// ──────────────────────────────────────────────────────────────────────
+	describe("tool-pair integrity during token-aware truncation", () => {
+		it("keeps tool_call and tool_result together when boundary falls between them", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-02-01T04:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Pair User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Pair Test",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			// Build a sequence where a tool_call/tool_result pair sits right
+			// in the zone where truncation would slice. We pad before them
+			// with bulky messages so the pair ends up near the boundary.
+			const insertMsg = (role: string, content: string, offsetSec: number, toolName: string | null = null) => {
+				const ts = new Date(nowBase.getTime() + offsetSec * 1000).toISOString();
+				const id = randomUUID();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[id, localThreadId, role, content, null, toolName, ts, ts, "local"],
+				);
+				return id;
+			};
+
+			// Early bulky messages (to push total over budget)
+			for (let i = 0; i < 10; i++) {
+				insertMsg(i % 2 === 0 ? "user" : "assistant", `Bulk ${i} ${"z".repeat(200)}`, i);
+			}
+
+			// A tool_call/tool_result pair in the middle
+			const tcContent = JSON.stringify([{ type: "tool_use", id: "pair-test-1", name: "bash", input: { command: "echo hi" } }]);
+			insertMsg("tool_call", tcContent, 11);
+			insertMsg("tool_result", "command output here", 12, "pair-test-1");
+
+			// More recent user/assistant messages
+			for (let i = 13; i < 23; i++) {
+				insertMsg(i % 2 === 0 ? "user" : "assistant", `Recent ${i}`, i);
+			}
+
+			const { messages } = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 1500,
+			});
+
+			const historyMessages = messages.filter((m) => m.role !== "system");
+
+			// Check: no orphaned tool_result without its tool_call
+			for (let i = 0; i < historyMessages.length; i++) {
+				if (historyMessages[i].role === "tool_result") {
+					// There must be a preceding tool_call in the retained history
+					const hasToolCall = historyMessages.slice(0, i).some((m) => m.role === "tool_call");
+					expect(hasToolCall).toBe(true);
+				}
+			}
+
+			// Check: no orphaned tool_call without its tool_result
+			for (let i = 0; i < historyMessages.length; i++) {
+				if (historyMessages[i].role === "tool_call") {
+					// There must be a following tool_result in the retained history
+					const hasToolResult = historyMessages.slice(i + 1).some((m) => m.role === "tool_result");
+					expect(hasToolResult).toBe(true);
+				}
+			}
+
+			// Clean up
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+	});
 });

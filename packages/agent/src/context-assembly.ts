@@ -1134,12 +1134,14 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 			// Find and update the memory, task-digest, and volatile-other entries in sections
 			const shortMemTokens = shortDelta.length > 0 ? countTokens(shortDelta.join("\n")) : 0;
 			const shortTaskTokens = shortDigest.length > 0 ? countTokens(shortDigest.join("\n")) : 0;
-			const preEnrichmentTokens = enrichmentStartIdx > 0
-				? countTokens(allVolatileLines.slice(0, enrichmentStartIdx).join("\n"))
-				: 0;
-			const postEnrichmentTokens = enrichmentEndIdx < allVolatileLines.length
-				? countTokens(allVolatileLines.slice(enrichmentEndIdx).join("\n"))
-				: 0;
+			const preEnrichmentTokens =
+				enrichmentStartIdx > 0
+					? countTokens(allVolatileLines.slice(0, enrichmentStartIdx).join("\n"))
+					: 0;
+			const postEnrichmentTokens =
+				enrichmentEndIdx < allVolatileLines.length
+					? countTokens(allVolatileLines.slice(enrichmentEndIdx).join("\n"))
+					: 0;
 			const shortVolatileOtherTokens =
 				!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0
 					? Math.max(0, preEnrichmentTokens + postEnrichmentTokens)
@@ -1164,28 +1166,41 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 	}, 0);
 
 	if (totalTokens > contextWindow) {
-		// Truncate history from front
+		// Truncate history from front — token-aware backward fill.
+		// Instead of keeping a hardcoded last-N messages, we fill from the end
+		// until we hit the remaining token budget. This ensures recent conversations
+		// survive even when bulky tool exchanges sit between them.
 		const systemMessages = assembled.filter((m) => m.role === "system");
 		const historyMessages = assembled.filter((m) => m.role !== "system");
 
 		if (historyMessages.length > 0) {
-			let sliceStart = Math.max(0, historyMessages.length - 10);
+			const systemTokens = systemMessages.reduce(
+				(sum, m) => sum + countContentTokens(m.content),
+				0,
+			);
+			const historyBudget = Math.max(0, contextWindow - systemTokens);
 
-			// Bug #8: slicing may orphan a tool_result at the new start (its paired
-			// tool_call was cut off). Advance past any leading non-user messages to
-			// prevent "Expected toolResult blocks" and "conversation must start with a
-			// user message" errors on Bedrock. tool_call/assistant at the head also
-			// violate Bedrock's requirement that the first message must be from the user.
+			// Walk backwards from end, accumulating tokens until we exceed budget
+			let accumulatedTokens = 0;
+			let sliceStart = historyMessages.length; // start at end (include nothing)
+			for (let i = historyMessages.length - 1; i >= 0; i--) {
+				const msgTokens = countContentTokens(historyMessages[i].content);
+				if (accumulatedTokens + msgTokens > historyBudget) break;
+				accumulatedTokens += msgTokens;
+				sliceStart = i;
+			}
+
+			// Floor: keep at least 2 messages so the agent has something to work with
+			sliceStart = Math.min(sliceStart, Math.max(0, historyMessages.length - 2));
+
+			// Advance past orphaned tool_result/tool_call/assistant at the boundary
+			// to ensure conversation starts with a user message (Bedrock requirement).
 			while (sliceStart < historyMessages.length && historyMessages[sliceStart].role !== "user") {
 				sliceStart++;
 			}
 
-			// If the forward scan exhausted all messages without finding a user (e.g. a
-			// no-payload cron task that accumulated many tool_call/tool_result/assistant
-			// cycles with no user message per run), fall back to the last user message
-			// anywhere in the full history. This prevents returning an empty remaining
-			// which causes Bedrock to error with "A conversation must start with a user
-			// message."
+			// Fallback: if no user found in forward scan (e.g. no-payload cron task
+			// with only tool_call/tool_result/assistant cycles), find last user message.
 			if (sliceStart >= historyMessages.length) {
 				for (let i = historyMessages.length - 1; i >= 0; i--) {
 					if (historyMessages[i].role === "user") {
@@ -1197,7 +1212,25 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 
 			const remaining = historyMessages.slice(sliceStart);
 			truncatedCount = historyMessages.length - remaining.length;
-			const truncatedMessages = [...systemMessages, ...remaining];
+
+			// Inject truncation marker so the agent knows context was lost
+			const truncationMarker: LLMMessage[] = [];
+			if (truncatedCount > 0) {
+				// Count total messages in the thread for the marker
+				const totalRow = params.db
+					.prepare(
+						"SELECT COUNT(*) as count FROM messages WHERE thread_id = ? AND role IN ('user','assistant','tool_call','tool_result')",
+					)
+					.get(params.threadId) as { count: number } | null;
+				const totalInThread = totalRow?.count ?? historyMessages.length;
+
+				truncationMarker.push({
+					role: "system",
+					content: `[Context note: ${truncatedCount} earlier messages in this conversation were truncated to fit the context window. This thread has ${totalInThread} total messages. You are seeing only the most recent portion. If you need to reference earlier context, you can use the query command to search the messages table, e.g.: query "SELECT role, substr(content, 1, 200), created_at FROM messages WHERE thread_id = '${params.threadId}' ORDER BY created_at DESC LIMIT 50"]`,
+				});
+			}
+
+			const truncatedMessages = [...systemMessages, ...truncationMarker, ...remaining];
 			const totalEstimated = sections.reduce((sum, s) => sum + s.tokens, 0);
 
 			return {
