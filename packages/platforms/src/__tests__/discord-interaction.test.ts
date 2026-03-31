@@ -28,8 +28,8 @@ const createMockClientManagerWithClient = (mockClient: unknown): DiscordClientMa
 interface MockInteraction {
 	isMessageContextMenuCommand(): boolean;
 	commandName?: string;
-	deferReplyCalls: Array<{ ephemeral: boolean }>;
-	deferReply: (opts: { ephemeral: boolean }) => Promise<void>;
+	deferReplyCalls: Array<Record<string, unknown>>;
+	deferReply: (opts: Record<string, unknown>) => Promise<void>;
 	user: { id: string };
 	targetMessage: { id: string };
 	editReplyCalls: Array<{ content: string }>;
@@ -149,8 +149,8 @@ describe("DiscordInteractionConnector", () => {
 	});
 
 	describe("AC2.1: Ephemeral deferral on interaction", () => {
-		it("should call deferReply({ ephemeral: true }) for File for Later command", async () => {
-			const deferCalls: Array<{ ephemeral: boolean }> = [];
+		it("should call deferReply with flags (not deprecated ephemeral) for File for Later command", async () => {
+			const deferCalls: Array<Record<string, unknown>> = [];
 			const mockInteraction: MockInteraction = {
 				isMessageContextMenuCommand: () => true,
 				commandName: "File for Later",
@@ -194,7 +194,10 @@ describe("DiscordInteractionConnector", () => {
 			await onInteractionCreateHandlers[0]?.(mockInteraction);
 
 			expect(deferCalls.length).toBe(1);
-			expect(deferCalls[0]?.ephemeral).toBe(true);
+			// MessageFlags.Ephemeral = 1 << 6 = 64
+			expect(deferCalls[0]?.flags).toBe(64);
+			// Must NOT use deprecated ephemeral property
+			expect(deferCalls[0]?.ephemeral).toBeUndefined();
 		});
 	});
 

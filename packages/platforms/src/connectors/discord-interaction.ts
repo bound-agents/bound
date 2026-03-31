@@ -312,7 +312,8 @@ export class DiscordInteractionConnector implements PlatformConnector {
 		if (interaction.commandName !== "File for Later") return;
 
 		// AC2.1: Defer with ephemeral response as first action
-		await interaction.deferReply({ ephemeral: true });
+		// MessageFlags.Ephemeral = 1 << 6 = 64 (avoids deprecated "ephemeral" option)
+		await interaction.deferReply({ flags: 64 });
 
 		// AC2.3: Allowlist check on the invoking user
 		if (
