@@ -15,6 +15,25 @@ const createMockLogger = (): Logger => ({
 	debug: () => {},
 });
 
+/**
+ * Simulate Discord.js Collection behavior: filter() returns a Map-like object
+ * whose for...of yields [key, value] entries (not just values like an Array).
+ */
+function createMockCollection<T>(items: T[]) {
+	const map = new Map(items.map((item, i) => [String(i), item]));
+	return {
+		some: (fn: (item: T) => boolean) => items.some(fn),
+		filter: (fn: (item: T) => boolean) => {
+			const filtered = items.filter(fn);
+			const result = new Map(filtered.map((item, i) => [String(i), item]));
+			return result;
+		},
+		forEach: (fn: (item: T, key: string) => void) => map.forEach(fn),
+		values: () => map.values(),
+		[Symbol.iterator]: () => map[Symbol.iterator](),
+	};
+}
+
 // Mock client manager with injected client
 const createMockClientManagerWithClient = (mockClient: unknown): DiscordClientManager => {
 	return {
@@ -691,7 +710,7 @@ describe("DiscordInteractionConnector", () => {
 					id: "msg123",
 					content: "Some content",
 					author: { id: "author-id", bot: false, displayName: "Author", username: "author" },
-					attachments: { some: () => false, filter: () => [] },
+					attachments: createMockCollection([]),
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
@@ -762,7 +781,7 @@ describe("DiscordInteractionConnector", () => {
 					id: "msg123",
 					content: "", // Empty content
 					author: { id: "author-id", bot: false, displayName: "Author", username: "author" },
-					attachments: { some: () => false, filter: () => [] }, // No images
+					attachments: createMockCollection([]), // No images
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
@@ -816,7 +835,7 @@ describe("DiscordInteractionConnector", () => {
 					id: "msg123",
 					content: "Test content",
 					author: { id: "author-id", bot: false, displayName: "Author", username: "author" },
-					attachments: { some: () => false, filter: () => [] },
+					attachments: createMockCollection([]),
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
@@ -877,7 +896,7 @@ describe("DiscordInteractionConnector", () => {
 					id: "msg123",
 					content: "Test content",
 					author: { id: "author-id", bot: false, displayName: "Author", username: "author" },
-					attachments: { some: () => false, filter: () => [] },
+					attachments: createMockCollection([]),
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
@@ -947,7 +966,7 @@ describe("DiscordInteractionConnector", () => {
 						displayName: "Bob",
 						username: "bob",
 					},
-					attachments: { some: () => false, filter: () => [] },
+					attachments: createMockCollection([]),
 					createdAt: new Date("2026-03-30T14:22:00.000Z"),
 				},
 				channel: { name: "general" },
@@ -1015,7 +1034,7 @@ describe("DiscordInteractionConnector", () => {
 						displayName: "Bob",
 						username: "bob",
 					},
-					attachments: { some: () => false, filter: () => [] },
+					attachments: createMockCollection([]),
 					createdAt: new Date("2026-03-30T14:22:00.000Z"),
 				},
 				channel: { name: "general" },
@@ -1056,11 +1075,6 @@ describe("DiscordInteractionConnector", () => {
 		});
 
 		it("should include image attachment URLs in filing prompt", async () => {
-			const mockAttachments = [
-				{ contentType: "image/png", url: "https://cdn.discord.com/img1.png", name: "screenshot.png" },
-				{ contentType: "image/jpeg", url: "https://cdn.discord.com/img2.jpg", name: "photo.jpg" },
-				{ contentType: "application/pdf", url: "https://cdn.discord.com/doc.pdf", name: "doc.pdf" },
-			];
 			const mockInteraction = {
 				isMessageContextMenuCommand: () => true,
 				commandName: "File for Later",
@@ -1076,10 +1090,11 @@ describe("DiscordInteractionConnector", () => {
 						displayName: "Bob",
 						username: "bob",
 					},
-					attachments: {
-						some: (fn: (att: unknown) => boolean) => mockAttachments.some(fn),
-						filter: (fn: (att: unknown) => boolean) => mockAttachments.filter(fn),
-					},
+					attachments: createMockCollection([
+						{ contentType: "image/png", url: "https://cdn.discord.com/img1.png", name: "screenshot.png" },
+						{ contentType: "image/jpeg", url: "https://cdn.discord.com/img2.jpg", name: "photo.jpg" },
+						{ contentType: "application/pdf", url: "https://cdn.discord.com/doc.pdf", name: "doc.pdf" },
+					]),
 					createdAt: new Date("2026-03-30T14:22:00.000Z"),
 				},
 				channel: { name: "general" },
@@ -1119,9 +1134,6 @@ describe("DiscordInteractionConnector", () => {
 		});
 
 		it("should include image URLs even when there is no text content", async () => {
-			const mockAttachments = [
-				{ contentType: "image/png", url: "https://cdn.discord.com/img1.png", name: "screenshot.png" },
-			];
 			const mockInteraction = {
 				isMessageContextMenuCommand: () => true,
 				commandName: "File for Later",
@@ -1137,10 +1149,9 @@ describe("DiscordInteractionConnector", () => {
 						displayName: "Bob",
 						username: "bob",
 					},
-					attachments: {
-						some: (fn: (att: unknown) => boolean) => mockAttachments.some(fn),
-						filter: (fn: (att: unknown) => boolean) => mockAttachments.filter(fn),
-					},
+					attachments: createMockCollection([
+						{ contentType: "image/png", url: "https://cdn.discord.com/img1.png", name: "screenshot.png" },
+					]),
 					createdAt: new Date("2026-03-30T14:22:00.000Z"),
 				},
 				channel: { name: "general" },
@@ -1194,7 +1205,7 @@ describe("DiscordInteractionConnector", () => {
 					id: "msg123",
 					content: "Test content",
 					author: { id: "author-id", bot: false, displayName: "Author", username: "author" },
-					attachments: { some: () => false, filter: () => [] },
+					attachments: createMockCollection([]),
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
@@ -1277,7 +1288,7 @@ describe("DiscordInteractionConnector", () => {
 						displayName: "Alice",
 						username: "alice",
 					},
-					attachments: { some: () => false, filter: () => [] },
+					attachments: createMockCollection([]),
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
@@ -1334,7 +1345,7 @@ describe("DiscordInteractionConnector", () => {
 						displayName: "Unknown",
 						username: "unknown",
 					},
-					attachments: { some: () => false, filter: () => [] },
+					attachments: createMockCollection([]),
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
@@ -1393,7 +1404,7 @@ describe("DiscordInteractionConnector", () => {
 						displayName: "BotName",
 						username: "botname",
 					},
-					attachments: { some: () => false, filter: () => [] },
+					attachments: createMockCollection([]),
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
@@ -1463,7 +1474,7 @@ describe("DiscordInteractionConnector", () => {
 						displayName: "Author",
 						username: "author",
 					},
-					attachments: { some: () => false, filter: () => [] },
+					attachments: createMockCollection([]),
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
