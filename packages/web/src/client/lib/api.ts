@@ -38,6 +38,26 @@ export interface Task {
 	error: string | null;
 }
 
+export interface ContextDebugTurn {
+	turn_id: number;
+	model_id: string;
+	tokens_in: number;
+	tokens_out: number;
+	context_debug: {
+		contextWindow: number;
+		totalEstimated: number;
+		model: string;
+		sections: Array<{
+			name: string;
+			tokens: number;
+			children?: Array<{ name: string; tokens: number }>;
+		}>;
+		budgetPressure: boolean;
+		truncated: number;
+	};
+	created_at: string;
+}
+
 export interface ApiError {
 	error: string;
 	details?: unknown;
@@ -91,5 +111,9 @@ export const api = {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(body),
 		});
+	},
+
+	async getContextDebug(threadId: string): Promise<ContextDebugTurn[]> {
+		return fetchJson<ContextDebugTurn[]>(`/api/threads/${threadId}/context-debug`);
 	},
 };

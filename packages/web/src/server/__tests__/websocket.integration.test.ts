@@ -174,4 +174,83 @@ describe("WebSocket Handler", () => {
 			handler.message(mockWs, "invalid json");
 		}).not.toThrow();
 	});
+
+	it("broadcasts context:debug events to subscribed clients", async () => {
+		const messages: string[] = [];
+		const mockWs = {
+			readyState: WebSocket.OPEN,
+			send(data: string): void {
+				messages.push(data);
+			},
+		} as unknown as WebSocket;
+
+		handler.open(mockWs);
+
+		const subscribeMessage = JSON.stringify({
+			subscribe: ["thread-1"],
+		});
+		handler.message(mockWs, subscribeMessage);
+
+		const debugInfo = {
+			contextWindow: 200000,
+			totalEstimated: 15000,
+			model: "claude-3-5-sonnet",
+			sections: [
+				{ name: "system", tokens: 500 },
+				{ name: "history", tokens: 14000 },
+			],
+			budgetPressure: false,
+			truncated: 0,
+		};
+
+		eventBus.emit("context:debug", {
+			thread_id: "thread-1",
+			turn_id: 42,
+			debug: debugInfo,
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		expect(messages.length).toBe(1);
+		const parsed = JSON.parse(messages[0]);
+		expect(parsed.type).toBe("context:debug");
+		expect(parsed.data.turn_id).toBe(42);
+		expect(parsed.data.debug).toEqual(debugInfo);
+	});
+
+	it("does not broadcast context:debug to clients not subscribed to thread", async () => {
+		const messages: string[] = [];
+		const mockWs = {
+			readyState: WebSocket.OPEN,
+			send(data: string): void {
+				messages.push(data);
+			},
+		} as unknown as WebSocket;
+
+		handler.open(mockWs);
+
+		const subscribeMessage = JSON.stringify({
+			subscribe: ["thread-1"],
+		});
+		handler.message(mockWs, subscribeMessage);
+
+		const debugInfo = {
+			contextWindow: 200000,
+			totalEstimated: 15000,
+			model: "claude-3-5-sonnet",
+			sections: [{ name: "system", tokens: 500 }],
+			budgetPressure: false,
+			truncated: 0,
+		};
+
+		eventBus.emit("context:debug", {
+			thread_id: "thread-2",
+			turn_id: 42,
+			debug: debugInfo,
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		expect(messages.length).toBe(0);
+	});
 });

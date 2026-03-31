@@ -122,7 +122,7 @@ describe("context assembly content substitution", () => {
 			max_context: 8000,
 		};
 
-		const messages = assembleContext({
+		const { messages } = assembleContext({
 			db,
 			threadId,
 			userId,
@@ -214,7 +214,7 @@ describe("context assembly content substitution", () => {
 			max_context: 8000,
 		};
 
-		const messages = assembleContext({
+		const { messages } = assembleContext({
 			db,
 			threadId,
 			userId,
@@ -260,7 +260,7 @@ describe("context assembly content substitution", () => {
 			max_context: 8000,
 		};
 
-		const messages = assembleContext({
+		const { messages } = assembleContext({
 			db,
 			threadId,
 			userId,
@@ -310,7 +310,7 @@ describe("context assembly content substitution", () => {
 			max_context: 8000,
 		};
 
-		const messages = assembleContext({
+		const { messages } = assembleContext({
 			db,
 			threadId,
 			userId,
@@ -359,7 +359,7 @@ describe("context assembly content substitution", () => {
 			max_context: 8000,
 		};
 
-		const messages = assembleContext({
+		const { messages } = assembleContext({
 			db,
 			threadId,
 			userId,
@@ -393,7 +393,7 @@ describe("context assembly content substitution", () => {
 		insertMessage(db, threadId, "user", imageBlock, { offset: 0 });
 
 		// Call without targetCapabilities
-		const messages = assembleContext({
+		const { messages } = assembleContext({
 			db,
 			threadId,
 			userId,

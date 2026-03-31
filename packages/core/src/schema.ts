@@ -413,13 +413,29 @@ export function applySchema(db: Database): void {
 		WHERE deleted = 0 AND last_run_at IS NOT NULL
 	`);
 
-	// Relay idempotency: prevent duplicate outbox entries with the same
-	// idempotency_key targeting the same site. Without this, a double-fired
+	// Relay idempotency: prevent duplicate UNDELIVERED outbox entries with the
+	// same idempotency_key targeting the same site. Without this, a double-fired
 	// Discord event (or any retry) can create duplicate intake/process relays
 	// that spawn multiple concurrent agent loops for one user message.
-	db.run(`
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_outbox_idempotency
-		ON relay_outbox(idempotency_key, target_site_id)
-		WHERE idempotency_key IS NOT NULL
-	`);
+	// The index is scoped to delivered = 0 so that delivered entries don't block
+	// legitimate retries (e.g., filing the same Discord message again later).
+	// Drop the old over-broad index (no delivered filter) if it exists, then
+	// clean up pre-existing undelivered duplicates before creating the new one.
+	try {
+		db.run("DROP INDEX IF EXISTS idx_relay_outbox_idempotency");
+		db.run(`
+			DELETE FROM relay_outbox WHERE rowid NOT IN (
+				SELECT MIN(rowid) FROM relay_outbox
+				WHERE idempotency_key IS NOT NULL AND delivered = 0
+				GROUP BY idempotency_key, target_site_id
+			) AND idempotency_key IS NOT NULL AND delivered = 0
+		`);
+		db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_outbox_idempotency
+			ON relay_outbox(idempotency_key, target_site_id)
+			WHERE idempotency_key IS NOT NULL AND delivered = 0
+		`);
+	} catch {
+		/* index already exists or other non-fatal schema issue */
+	}
 }

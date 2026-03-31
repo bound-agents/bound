@@ -31,6 +31,7 @@ export { createAppContext, type AppContext } from "./app-context";
 export {
 	applyMetricsSchema,
 	recordTurn,
+	recordContextDebug,
 	getDailySpend,
 	type TurnRecord,
 } from "./metrics-schema";

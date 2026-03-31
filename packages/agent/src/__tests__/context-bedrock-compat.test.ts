@@ -92,7 +92,7 @@ describe("Context assembly Bedrock compatibility", () => {
 		insertMessage(db, threadId, "alert", "Something went wrong internally", { offset: 2000 });
 		insertMessage(db, threadId, "user", "Continue please", { offset: 3000 });
 
-		const messages = assembleContext({ db, threadId, userId });
+		const { messages } = assembleContext({ db, threadId, userId });
 
 		// No message in the output should have role "alert"
 		const alertMessages = messages.filter((m) => m.role === "alert");
@@ -114,7 +114,7 @@ describe("Context assembly Bedrock compatibility", () => {
 		insertMessage(db, threadId, "purge", "not-json", { offset: 1000 });
 		insertMessage(db, threadId, "user", "Second message", { offset: 2000 });
 
-		const messages = assembleContext({ db, threadId, userId });
+		const { messages } = assembleContext({ db, threadId, userId });
 
 		// No message in the output should have role "purge"
 		const purgeMessages = messages.filter((m) => m.role === "purge");
@@ -133,7 +133,7 @@ describe("Context assembly Bedrock compatibility", () => {
 		insertMessage(db, threadId, "alert", "Error alert", { offset: 1000 });
 		insertMessage(db, threadId, "assistant", "Response", { offset: 2000 });
 
-		const messages = assembleContext({ db, threadId, userId });
+		const { messages } = assembleContext({ db, threadId, userId });
 
 		const validRoles = new Set(["user", "assistant", "system", "tool_call", "tool_result"]);
 		for (const msg of messages) {
@@ -161,7 +161,7 @@ describe("Context assembly Bedrock compatibility", () => {
 		insertMessage(db, threadId, "tool_result", "Result: 1", { tool_name: "query", offset: 2000 });
 		insertMessage(db, threadId, "assistant", "Done", { offset: 3000 });
 
-		const messages = assembleContext({ db, threadId, userId });
+		const { messages } = assembleContext({ db, threadId, userId });
 
 		// Find the tool_result message
 		const toolResults = messages.filter((m) => m.role === "tool_result");
@@ -218,7 +218,7 @@ describe("Context assembly Bedrock compatibility", () => {
 		});
 		insertMessage(db, threadId, "user", "Just fixed another bug...", { offset: 9000 });
 
-		const messages = assembleContext({ db, threadId, userId });
+		const { messages } = assembleContext({ db, threadId, userId });
 
 		// Extract only the history portion (skip system prompt / orientation / volatile)
 		const history = messages.filter(
@@ -274,7 +274,7 @@ describe("Context assembly Bedrock compatibility", () => {
 		});
 		insertMessage(db, threadId, "user", "Are you still there?", { offset: 5000 });
 
-		const messages = assembleContext({ db, threadId, userId });
+		const { messages } = assembleContext({ db, threadId, userId });
 
 		// Alerts should be completely filtered out
 		const alertMessages = messages.filter((m) => m.role === "alert");
@@ -303,7 +303,7 @@ describe("Context assembly Bedrock compatibility", () => {
 		});
 		insertMessage(db, threadId, "assistant", "Continuing", { offset: 2000 });
 
-		const messages = assembleContext({ db, threadId, userId });
+		const { messages } = assembleContext({ db, threadId, userId });
 
 		// If tool_result exists in output, it must have a preceding tool_call
 		const toolResults = messages.filter((m) => m.role === "tool_result");
@@ -411,7 +411,7 @@ describe("Context assembly Bedrock compatibility", () => {
 			timestamp: "2026-03-23T16:42:10.114Z",
 		});
 
-		const messages = assembleContext({ db, threadId, userId });
+		const { messages } = assembleContext({ db, threadId, userId });
 
 		// Helper: extract the history portion (skip assembly-injected system messages)
 		const isAssemblySystem = (m: { role: string; content: string | unknown }) =>
@@ -507,7 +507,7 @@ describe("Context assembly Bedrock compatibility", () => {
 		}
 
 		// Use a tiny contextWindow to force the Stage 7 truncation path
-		const messages = assembleContext({ db, threadId, userId, contextWindow: 500 });
+		const { messages } = assembleContext({ db, threadId, userId, contextWindow: 500 });
 
 		// The first non-system message must be a user message — never assistant/tool_call.
 		// Otherwise Bedrock rejects with "A conversation must start with a user message."
@@ -562,7 +562,7 @@ describe("Context assembly Bedrock compatibility", () => {
 		// Co-emitted assistant with same `now` = T — sorts between tr1 and tr2/tr3
 		insertMessage(db, threadId, "assistant", "I ran all three tools.", { timestamp: T });
 
-		const messages = assembleContext({ db, threadId, userId });
+		const { messages } = assembleContext({ db, threadId, userId });
 
 		// No message in the output may have blank string content (would cause Bedrock
 		// "text field is blank" error). This is the specific error being tested.
@@ -629,7 +629,7 @@ describe("Context assembly Bedrock compatibility", () => {
 		// Force Stage 7 truncation. sliceStart = max(0, 16-10) = 6 which is past the
 		// user message at position 0. The forward scan exhausts → backward scan must
 		// find user at position 0 and return a user-first context.
-		const messages = assembleContext({ db, threadId, userId, contextWindow: 500 });
+		const { messages } = assembleContext({ db, threadId, userId, contextWindow: 500 });
 
 		const firstNonSystem = messages.find((m) => m.role !== "system");
 		expect(firstNonSystem).toBeDefined();
