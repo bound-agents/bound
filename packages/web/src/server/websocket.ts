@@ -93,6 +93,24 @@ export function createWebSocketHandler(eventBus: TypedEventEmitter): WebSocketCo
 		}
 	};
 
+	const handleContextDebug = (data: {
+		thread_id: string;
+		turn_id: number;
+		debug: unknown;
+	}): void => {
+		for (const [ws, conn] of clients) {
+			if (conn.subscriptions.has(data.thread_id)) {
+				const message = JSON.stringify({
+					type: "context:debug",
+					data: { turn_id: data.turn_id, debug: data.debug },
+				});
+				if (ws.readyState === 1) {
+					ws.send(message);
+				}
+			}
+		}
+	};
+
 	eventBus.on("message:created", handleMessageCreated);
 	// message:broadcast is used for assistant-response re-emit so it reaches
 	// WebSocket clients without re-triggering the agent loop handler.
@@ -100,6 +118,7 @@ export function createWebSocketHandler(eventBus: TypedEventEmitter): WebSocketCo
 	eventBus.on("task:completed", handleTaskCompleted);
 	eventBus.on("file:changed", handleFileChanged);
 	eventBus.on("alert:created", handleAlertCreated);
+	eventBus.on("context:debug", handleContextDebug);
 
 	return {
 		open(ws: ServerWebSocket<unknown>): void {
