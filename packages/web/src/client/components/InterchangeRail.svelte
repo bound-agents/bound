@@ -1,7 +1,19 @@
 <script lang="ts">
+import { tick } from "svelte";
 import type { ContextDebugTurn, Message } from "../lib/api";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import { getLineCode, getLineColor } from "../lib/metro-lines";
+
+interface Branch {
+	y: number;
+	sources: Array<{
+		threadId: string;
+		title: string;
+		color: number;
+		messageCount: number;
+		lastMessageAt: string;
+	}>;
+}
 
 interface Props {
 	threadColor: number;
@@ -10,41 +22,67 @@ interface Props {
 	scrollContainer: HTMLElement | null;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: messages prop used for reactive dependency
 const { threadColor, messages, contextDebugTurns, scrollContainer } = $props<Props>();
 
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 // biome-ignore lint/style/useConst: Svelte 5 $state() requires let
 let svgEl = $state<SVGSVGElement | null>(null);
-// biome-ignore lint/correctness/noUnusedVariables: used in template and $effect
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 let svgHeight = $state(0);
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let branches = $state<Branch[]>([]);
 
-// Reactive effect to update SVG height when container changes
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+const railColor = $derived(getLineColor(threadColor));
+
+// Compute branches after DOM updates using $effect + tick
 $effect(() => {
-	if (scrollContainer && svgEl) {
-		svgHeight = scrollContainer.scrollHeight;
-	}
+	// Track reactive dependencies explicitly
+	const _turns = contextDebugTurns;
+	const _msgs = messages;
+	const _container = scrollContainer;
+
+	// Wait for DOM to update after reactive changes
+	tick().then(() => {
+		if (!_container) {
+			svgHeight = 0;
+			branches = [];
+			return;
+		}
+
+		svgHeight = _container.scrollHeight;
+
+		const newBranches: Branch[] = [];
+		for (const turn of _turns) {
+			const sources = turn.context_debug?.crossThreadSources;
+			if (!sources || sources.length === 0) continue;
+
+			const msgEl = findAssistantMessageElement(turn.created_at, _container);
+			if (!msgEl) continue;
+
+			const y = msgEl.offsetTop + msgEl.offsetHeight / 2;
+			newBranches.push({ y, sources });
+		}
+
+		branches = newBranches;
+	});
 });
 
-// Function to find assistant message element by timestamp proximity
-function findAssistantMessageElement(turnCreatedAt: string): HTMLElement | null {
+function findAssistantMessageElement(
+	turnCreatedAt: string,
+	container: HTMLElement,
+): HTMLElement | null {
 	const turnTime = new Date(turnCreatedAt).getTime();
-	const messagesContainer = scrollContainer;
-	if (!messagesContainer) return null;
-
-	// Find all message bubble elements
-	const bubbles = messagesContainer.querySelectorAll("[data-message-role]");
+	const bubbles = container.querySelectorAll("[data-message-role]");
 	let closestBubble: HTMLElement | null = null;
 	let closestDiff = Number.POSITIVE_INFINITY;
 
 	for (const bubble of bubbles) {
-		const roleAttr = bubble.getAttribute("data-message-role");
-		if (roleAttr !== "assistant") continue;
-
+		if (bubble.getAttribute("data-message-role") !== "assistant") continue;
 		const createdAtAttr = bubble.getAttribute("data-created-at");
 		if (!createdAtAttr) continue;
 
 		const bubbleTime = new Date(createdAtAttr).getTime();
-		// Find message with same or later timestamp (within 5 seconds)
 		if (bubbleTime >= turnTime) {
 			const diff = bubbleTime - turnTime;
 			if (diff < closestDiff) {
@@ -56,39 +94,8 @@ function findAssistantMessageElement(turnCreatedAt: string): HTMLElement | null 
 
 	return closestBubble;
 }
-
-// Compute branches with positions
-// biome-ignore lint/correctness/noUnusedVariables: used in template
-const branches = $derived(
-	contextDebugTurns
-		.map((turn) => {
-			const sources = turn.context_debug.crossThreadSources;
-			if (!sources || sources.length === 0) return null;
-
-			const msgEl = findAssistantMessageElement(turn.created_at);
-			if (!msgEl) return null;
-
-			// Get Y position relative to scroll container
-			const rect = msgEl.getBoundingClientRect();
-			const containerRect = scrollContainer?.getBoundingClientRect();
-			if (!containerRect) return null;
-
-			const relativeY = rect.top - containerRect.top + (scrollContainer?.scrollTop ?? 0);
-
-			return {
-				y: relativeY,
-				sources,
-			};
-		})
-		.filter((b) => b !== null),
-);
-
-// biome-ignore lint/correctness/noUnusedVariables: used in template
-const railColor = $derived(getLineColor(threadColor));
 </script>
 
-<!-- SVG overlay for metro rail visualization -->
-<!-- Positioned absolutely inside .messages container to scroll naturally -->
 <svg
 	bind:this={svgEl}
 	class="interchange-rail"
@@ -165,4 +172,3 @@ const railColor = $derived(getLineColor(threadColor));
 		overflow: visible;
 	}
 </style>
-
