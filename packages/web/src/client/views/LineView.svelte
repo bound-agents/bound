@@ -42,6 +42,7 @@ let statusPollInterval: ReturnType<typeof setInterval> | null = null;
 let debugOpen = $state(false);
 let debugMounted = $state(false); // tracks if panel has been opened at least once (lazy mount)
 
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 function toggleDebug(): void {
 	debugOpen = !debugOpen;
 	if (debugOpen && !debugMounted) {

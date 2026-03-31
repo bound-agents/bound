@@ -92,8 +92,6 @@ export const api = {
 	},
 
 	async getContextDebug(threadId: string): Promise<ContextDebugTurn[]> {
-		return fetchJson<ContextDebugTurn[]>(
-			`/api/threads/${threadId}/context-debug`,
-		);
+		return fetchJson<ContextDebugTurn[]>(`/api/threads/${threadId}/context-debug`);
 	},
 };
