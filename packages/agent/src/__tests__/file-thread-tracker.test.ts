@@ -70,7 +70,16 @@ describe("File-Thread Tracker (R-E20)", () => {
 			class MockLLMBackend implements LLMBackend {
 				async *chat() {
 					yield { type: "text" as const, content: "Done." };
-					yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 5,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+					};
 				}
 				capabilities() {
 					return {
@@ -124,7 +133,16 @@ describe("File-Thread Tracker (R-E20)", () => {
 			class MockLLMBackend implements LLMBackend {
 				async *chat() {
 					yield { type: "text" as const, content: "Done." };
-					yield { type: "done" as const, usage: { input_tokens: 5, output_tokens: 3, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 5,
+							output_tokens: 3,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+					};
 				}
 				capabilities() {
 					return {

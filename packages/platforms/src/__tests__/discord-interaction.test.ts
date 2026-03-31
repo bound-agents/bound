@@ -1,0 +1,1523 @@
+import type { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomBytes, randomUUID } from "node:crypto";
+import { applySchema } from "@bound/core";
+import type { Logger, PlatformConnectorConfig } from "@bound/shared";
+import { TypedEventEmitter } from "@bound/shared";
+import type { DiscordClientManager } from "../connectors/discord-client-manager.js";
+import { DiscordInteractionConnector } from "../connectors/discord-interaction.js";
+
+// Mock logger
+const createMockLogger = (): Logger => ({
+	info: () => {},
+	warn: () => {},
+	error: () => {},
+	debug: () => {},
+});
+
+// Mock client manager with injected client
+const createMockClientManagerWithClient = (mockClient: unknown): DiscordClientManager => {
+	return {
+		getClient: () => mockClient,
+		connect: async () => {},
+		disconnect: async () => {},
+	} as unknown as DiscordClientManager;
+};
+
+// Mock interaction
+interface MockInteraction {
+	isMessageContextMenuCommand(): boolean;
+	commandName?: string;
+	deferReplyCalls: Array<{ ephemeral: boolean }>;
+	deferReply: (opts: { ephemeral: boolean }) => Promise<void>;
+	user: { id: string };
+	targetMessage: { id: string };
+	editReplyCalls: Array<{ content: string }>;
+	editReply: (opts: { content: string }) => Promise<void>;
+}
+
+let db: Database;
+let testDbPath: string;
+let eventBus: TypedEventEmitter;
+let mockLogger: Logger;
+let config: PlatformConnectorConfig;
+
+beforeEach(() => {
+	const testId = randomBytes(4).toString("hex");
+	testDbPath = `/tmp/test-discord-interaction-${testId}.db`;
+	const sqlite3 = require("bun:sqlite");
+	db = new sqlite3.Database(testDbPath);
+	applySchema(db);
+
+	eventBus = new TypedEventEmitter();
+	mockLogger = createMockLogger();
+
+	config = {
+		platform: "discord-interaction",
+		token: "test-token",
+		failover_threshold_ms: 30000,
+		allowed_users: [],
+	};
+
+	// Initialize cluster_hub
+	db.run("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)", [
+		"cluster_hub",
+		"hub-site-id",
+		new Date().toISOString(),
+	]);
+});
+
+afterEach(() => {
+	try {
+		db.close();
+	} catch {
+		// Already closed
+	}
+	try {
+		require("node:fs").unlinkSync(testDbPath);
+	} catch {
+		// Already deleted
+	}
+});
+
+describe("DiscordInteractionConnector", () => {
+	describe("AC1.1: Context menu command registration", () => {
+		it("should register 'File for Later' command on connect()", async () => {
+			const createCalls: unknown[] = [];
+			const mockClient = {
+				application: {
+					commands: {
+						create: async (opts: unknown) => {
+							createCalls.push(opts);
+						},
+					},
+				},
+				on: () => {},
+				off: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+
+			expect(createCalls.length).toBe(1);
+			const call = createCalls[0] as Record<string, unknown>;
+			expect(call.name).toBe("File for Later");
+			expect(call.type).toBe(3); // ApplicationCommandType.Message
+		});
+	});
+
+	describe("AC1.2: Idempotent upsert on reconnect", () => {
+		it("should call commands.create each time connect() is called (idempotent server-side)", async () => {
+			const createCalls: unknown[] = [];
+			const mockClient = {
+				application: {
+					commands: {
+						create: async (opts: unknown) => {
+							createCalls.push(opts);
+						},
+					},
+				},
+				on: () => {},
+				off: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			// First connect
+			await connector.connect();
+			expect(createCalls.length).toBe(1);
+
+			// Second connect (simulating reconnect)
+			await connector.connect();
+			expect(createCalls.length).toBe(2);
+		});
+	});
+
+	describe("AC2.1: Ephemeral deferral on interaction", () => {
+		it("should call deferReply({ ephemeral: true }) for File for Later command", async () => {
+			const deferCalls: Array<{ ephemeral: boolean }> = [];
+			const mockInteraction: MockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "File for Later",
+				deferReplyCalls: deferCalls,
+				deferReply: async (opts) => {
+					deferCalls.push(opts);
+				},
+				user: { id: "user123" },
+				targetMessage: { id: "msg123" },
+				editReplyCalls: [],
+				editReply: async () => {},
+			};
+
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const mockClient = {
+				application: {
+					commands: {
+						create: async () => {},
+					},
+				},
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") {
+						onInteractionCreateHandlers.push(handler);
+					}
+				},
+				off: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+
+			// Fire the interaction
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			expect(deferCalls.length).toBe(1);
+			expect(deferCalls[0]?.ephemeral).toBe(true);
+		});
+	});
+
+	describe("AC2.5: Ignore non-matching interactions", () => {
+		it("should not call deferReply for non-context-menu interactions", async () => {
+			const deferCalls: Array<{ ephemeral: boolean }> = [];
+			const mockInteraction: MockInteraction = {
+				isMessageContextMenuCommand: () => false,
+				commandName: "File for Later",
+				deferReplyCalls: deferCalls,
+				deferReply: async (opts) => {
+					deferCalls.push(opts);
+				},
+				user: { id: "user123" },
+				targetMessage: { id: "msg123" },
+				editReplyCalls: [],
+				editReply: async () => {},
+			};
+
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const mockClient = {
+				application: {
+					commands: {
+						create: async () => {},
+					},
+				},
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") {
+						onInteractionCreateHandlers.push(handler);
+					}
+				},
+				off: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+
+			// Fire the interaction
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			expect(deferCalls.length).toBe(0);
+		});
+
+		it("should not call deferReply for context-menu commands with different names", async () => {
+			const deferCalls: Array<{ ephemeral: boolean }> = [];
+			const mockInteraction: MockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "Other Command",
+				deferReplyCalls: deferCalls,
+				deferReply: async (opts) => {
+					deferCalls.push(opts);
+				},
+				user: { id: "user123" },
+				targetMessage: { id: "msg123" },
+				editReplyCalls: [],
+				editReply: async () => {},
+			};
+
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const mockClient = {
+				application: {
+					commands: {
+						create: async () => {},
+					},
+				},
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") {
+						onInteractionCreateHandlers.push(handler);
+					}
+				},
+				off: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+
+			// Fire the interaction
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			expect(deferCalls.length).toBe(0);
+		});
+	});
+
+	describe("AC6.1: Deliver via editReply with stored interaction", () => {
+		it("should call editReply on stored interaction with content", async () => {
+			const editReplyCalls: Array<{ content: string }> = [];
+			const mockInteraction = {
+				editReply: async (opts: { content: string }) => {
+					editReplyCalls.push(opts);
+				},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient({}),
+			);
+
+			const threadId = randomUUID();
+			connector.storeInteraction(threadId, mockInteraction);
+
+			await connector.deliver(threadId, "msg-1", "Hello, world!");
+
+			expect(editReplyCalls.length).toBe(1);
+			expect(editReplyCalls[0]?.content).toBe("Hello, world!");
+		});
+	});
+
+	describe("AC6.2: Truncate content to 2000 characters", () => {
+		it("should truncate content longer than 2000 chars to exactly 2000", async () => {
+			const editReplyCalls: Array<{ content: string }> = [];
+			const mockInteraction = {
+				editReply: async (opts: { content: string }) => {
+					editReplyCalls.push(opts);
+				},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient({}),
+			);
+
+			const threadId = randomUUID();
+			connector.storeInteraction(threadId, mockInteraction);
+
+			const longContent = "x".repeat(2500);
+			await connector.deliver(threadId, "msg-1", longContent);
+
+			expect(editReplyCalls.length).toBe(1);
+			expect(editReplyCalls[0]?.content).toBe("x".repeat(2000));
+		});
+
+		it("should not truncate content exactly 2000 chars", async () => {
+			const editReplyCalls: Array<{ content: string }> = [];
+			const mockInteraction = {
+				editReply: async (opts: { content: string }) => {
+					editReplyCalls.push(opts);
+				},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient({}),
+			);
+
+			const threadId = randomUUID();
+			connector.storeInteraction(threadId, mockInteraction);
+
+			const content = "x".repeat(2000);
+			await connector.deliver(threadId, "msg-1", content);
+
+			expect(editReplyCalls.length).toBe(1);
+			expect(editReplyCalls[0]?.content).toBe(content);
+		});
+	});
+
+	describe("AC6.3: Handle missing and expired interactions gracefully", () => {
+		it("should warn and not throw when no stored interaction exists", async () => {
+			let warnCalled = false;
+			const mockLoggerWithSpy: Logger = {
+				info: () => {},
+				warn: () => {
+					warnCalled = true;
+				},
+				error: () => {},
+				debug: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLoggerWithSpy,
+				createMockClientManagerWithClient({}),
+			);
+
+			// Don't store any interaction
+			await connector.deliver(randomUUID(), "msg-1", "test");
+
+			expect(warnCalled).toBe(true);
+		});
+
+		it("should warn and not throw when interaction is expired", async () => {
+			let warnCalled = false;
+			const mockLoggerWithSpy: Logger = {
+				info: () => {},
+				warn: () => {
+					warnCalled = true;
+				},
+				error: () => {},
+				debug: () => {},
+			};
+
+			const mockInteraction = {
+				editReply: async () => {
+					throw new Error("Should not call editReply on expired token");
+				},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLoggerWithSpy,
+				createMockClientManagerWithClient({}),
+			);
+
+			const threadId = randomUUID();
+			// Store with immediate expiration (in the past)
+			(connector as { interactions: Map<string, unknown> }).interactions.set(threadId, {
+				interaction: mockInteraction,
+				expiresAt: new Date(Date.now() - 1000).toISOString(), // 1 second in the past
+			});
+
+			// Deliver should warn but not throw
+			await connector.deliver(threadId, "msg-1", "test");
+
+			expect(warnCalled).toBe(true);
+		});
+	});
+
+	describe("storeInteraction() and TTL management", () => {
+		it("should store interaction with TTL expiration time", async () => {
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient({}),
+			);
+
+			const mockInteraction = {
+				editReply: async () => {},
+			};
+			const threadId = randomUUID();
+
+			const beforeStore = Date.now();
+			connector.storeInteraction(threadId, mockInteraction);
+			const afterStore = Date.now();
+
+			const stored = (connector as { interactions: Map<string, unknown> }).interactions.get(
+				threadId,
+			);
+			expect(stored).toBeDefined();
+
+			const expiresAtTime = new Date(stored?.expiresAt as string).getTime();
+			const expectedTTL = 14 * 60 * 1000; // 14 minutes in ms
+
+			// Allow ±1 second variance for test execution
+			expect(expiresAtTime - beforeStore).toBeGreaterThanOrEqual(expectedTTL - 1000);
+			expect(expiresAtTime - afterStore).toBeLessThanOrEqual(expectedTTL + 1000);
+		});
+
+		it("should clean up expired interaction on deliver attempt", async () => {
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient({}),
+			);
+
+			const mockInteraction = {
+				editReply: async () => {},
+			};
+			const threadId = randomUUID();
+
+			// Store with immediate expiration
+			(connector as { interactions: Map<string, unknown> }).interactions.set(threadId, {
+				interaction: mockInteraction,
+				expiresAt: new Date(Date.now() - 1000).toISOString(),
+			});
+
+			// Verify stored
+			expect((connector as { interactions: Map<string, unknown> }).interactions.has(threadId)).toBe(
+				true,
+			);
+
+			// Attempt deliver
+			await connector.deliver(threadId, "msg-1", "test");
+
+			// Verify cleaned up
+			expect((connector as { interactions: Map<string, unknown> }).interactions.has(threadId)).toBe(
+				false,
+			);
+		});
+
+		it("should clean up interaction after successful deliver", async () => {
+			const editReplyCalls: Array<{ content: string }> = [];
+			const mockInteraction = {
+				editReply: async (opts: { content: string }) => {
+					editReplyCalls.push(opts);
+				},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient({}),
+			);
+
+			const threadId = randomUUID();
+			connector.storeInteraction(threadId, mockInteraction);
+
+			// Verify stored
+			expect((connector as { interactions: Map<string, unknown> }).interactions.has(threadId)).toBe(
+				true,
+			);
+
+			await connector.deliver(threadId, "msg-1", "test");
+
+			// Verify cleaned up after deliver
+			expect((connector as { interactions: Map<string, unknown> }).interactions.has(threadId)).toBe(
+				false,
+			);
+		});
+	});
+
+	describe("disconnect()", () => {
+		it("should clear all stored interactions on disconnect", async () => {
+			const mockClient = {
+				application: {
+					commands: {
+						create: async () => {},
+					},
+				},
+				on: () => {},
+				off: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+
+			// Store multiple interactions
+			const mockInteraction = {
+				editReply: async () => {},
+			};
+			connector.storeInteraction(randomUUID(), mockInteraction);
+			connector.storeInteraction(randomUUID(), mockInteraction);
+
+			const interactionsMap = (connector as { interactions: Map<string, unknown> }).interactions;
+			expect(interactionsMap.size).toBe(2);
+
+			// Disconnect
+			await connector.disconnect();
+
+			// Verify cleared
+			expect(interactionsMap.size).toBe(0);
+		});
+
+		it("should remove event listener on disconnect", async () => {
+			const offCalls: Array<{ event: string; handler: unknown }> = [];
+			const mockClient = {
+				application: {
+					commands: {
+						create: async () => {},
+					},
+				},
+				on: () => {},
+				off: (event: string, handler: unknown) => {
+					offCalls.push({ event, handler });
+				},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+
+			// Disconnect
+			await connector.disconnect();
+
+			expect(offCalls.length).toBe(1);
+			expect(offCalls[0]?.event).toBe("interactionCreate");
+		});
+	});
+
+	describe("Connector interface requirements", () => {
+		it("should have platform = discord-interaction", () => {
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient({}),
+			);
+			expect(connector.platform).toBe("discord-interaction");
+		});
+
+		it("should have delivery = broadcast", () => {
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient({}),
+			);
+			expect(connector.delivery).toBe("broadcast");
+		});
+
+		it("should have connect and disconnect methods", () => {
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient({}),
+			);
+			expect(typeof connector.connect).toBe("function");
+			expect(typeof connector.disconnect).toBe("function");
+		});
+
+		it("should have deliver method", () => {
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient({}),
+			);
+			expect(typeof connector.deliver).toBe("function");
+		});
+	});
+
+	describe("Filing flow", () => {
+		it("AC2.3: allowlist rejection — should reject non-allowlisted user and not create any data", async () => {
+			config.allowed_users = ["allowed-user"];
+			const editReplyCalls: Array<{ content: string }> = [];
+
+			const mockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "File for Later",
+				deferReply: async () => {},
+				editReply: async (opts: { content: string }) => {
+					editReplyCalls.push(opts);
+				},
+				user: { id: "other-user", displayName: "Other User", username: "other" },
+				targetMessage: {
+					id: "msg123",
+					content: "Some content",
+					author: { id: "author-id", bot: false, displayName: "Author", username: "author" },
+					attachments: { some: () => false },
+					createdAt: new Date(),
+				},
+				channel: { name: "general" },
+				guild: { name: "Test Guild" },
+			};
+
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const mockClient = {
+				application: {
+					commands: {
+						create: async () => {},
+					},
+				},
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") {
+						onInteractionCreateHandlers.push(handler);
+					}
+				},
+				off: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			// Verify error response
+			expect(editReplyCalls.length).toBe(1);
+			expect(editReplyCalls[0]?.content).toContain("not authorized");
+
+			// Verify no data was created
+			const users = db.query("SELECT COUNT(*) as count FROM users").get() as { count: number };
+			expect(users.count).toBe(0);
+
+			const threads = db.query("SELECT COUNT(*) as count FROM threads").get() as { count: number };
+			expect(threads.count).toBe(0);
+
+			const messages = db.query("SELECT COUNT(*) as count FROM messages").get() as {
+				count: number;
+			};
+			expect(messages.count).toBe(0);
+
+			const outbox = db.query("SELECT COUNT(*) as count FROM relay_outbox").get() as {
+				count: number;
+			};
+			expect(outbox.count).toBe(0);
+		});
+
+		it("AC2.4: empty content — should reject and not invoke pipeline", async () => {
+			const editReplyCalls: Array<{ content: string }> = [];
+
+			const mockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "File for Later",
+				deferReply: async () => {},
+				editReply: async (opts: { content: string }) => {
+					editReplyCalls.push(opts);
+				},
+				user: { id: "user123", displayName: "User", username: "user" },
+				targetMessage: {
+					id: "msg123",
+					content: "", // Empty content
+					author: { id: "author-id", bot: false, displayName: "Author", username: "author" },
+					attachments: { some: () => false }, // No images
+					createdAt: new Date(),
+				},
+				channel: { name: "general" },
+				guild: { name: "Test Guild" },
+			};
+
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const mockClient = {
+				application: {
+					commands: {
+						create: async () => {},
+					},
+				},
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") {
+						onInteractionCreateHandlers.push(handler);
+					}
+				},
+				off: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			// Verify error response
+			expect(editReplyCalls.length).toBe(1);
+			expect(editReplyCalls[0]?.content).toContain("no extractable content");
+
+			// Verify no pipeline was invoked
+			const threads = db.query("SELECT COUNT(*) as count FROM threads").get() as { count: number };
+			expect(threads.count).toBe(0);
+		});
+
+		it("AC3.1: user creation — should create user and reuse on subsequent calls", async () => {
+			const mockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "File for Later",
+				deferReply: async () => {},
+				editReply: async () => {},
+				user: { id: "discord-user-123", displayName: "Alice", username: "alice" },
+				targetMessage: {
+					id: "msg123",
+					content: "Test content",
+					author: { id: "author-id", bot: false, displayName: "Author", username: "author" },
+					attachments: { some: () => false },
+					createdAt: new Date(),
+				},
+				channel: { name: "general" },
+				guild: { name: "Test Guild" },
+			};
+
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const mockClient = {
+				application: {
+					commands: {
+						create: async () => {},
+					},
+				},
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") {
+						onInteractionCreateHandlers.push(handler);
+					}
+				},
+				off: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+
+			// First interaction
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			const usersAfterFirst = db.query("SELECT * FROM users WHERE deleted = 0").all() as unknown[];
+			expect(usersAfterFirst.length).toBe(1);
+			const firstUserId = (usersAfterFirst[0] as { id: string }).id;
+
+			// Second interaction (same user)
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			const usersAfterSecond = db.query("SELECT * FROM users WHERE deleted = 0").all() as unknown[];
+			expect(usersAfterSecond.length).toBe(1); // Still just 1, not duplicated
+			const secondUserId = (usersAfterSecond[0] as { id: string }).id;
+
+			expect(secondUserId).toBe(firstUserId); // Same user ID
+		});
+
+		it("AC3.2: thread creation — should create thread with interface = discord-interaction and reuse", async () => {
+			const mockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "File for Later",
+				deferReply: async () => {},
+				editReply: async () => {},
+				user: { id: "discord-user-123", displayName: "Alice", username: "alice" },
+				targetMessage: {
+					id: "msg123",
+					content: "Test content",
+					author: { id: "author-id", bot: false, displayName: "Author", username: "author" },
+					attachments: { some: () => false },
+					createdAt: new Date(),
+				},
+				channel: { name: "general" },
+				guild: { name: "Test Guild" },
+			};
+
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const mockClient = {
+				application: {
+					commands: {
+						create: async () => {},
+					},
+				},
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") {
+						onInteractionCreateHandlers.push(handler);
+					}
+				},
+				off: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+
+			// First interaction
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			const threadsAfterFirst = db
+				.query("SELECT * FROM threads WHERE deleted = 0")
+				.all() as unknown[];
+			expect(threadsAfterFirst.length).toBe(1);
+			const firstThread = threadsAfterFirst[0] as { id: string; interface: string };
+			expect(firstThread.interface).toBe("discord-interaction");
+
+			// Second interaction (same user)
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			const threadsAfterSecond = db
+				.query("SELECT * FROM threads WHERE deleted = 0")
+				.all() as unknown[];
+			expect(threadsAfterSecond.length).toBe(1); // Still just 1, not duplicated
+			const secondThread = threadsAfterSecond[0] as { id: string };
+			expect(secondThread.id).toBe(firstThread.id); // Same thread ID
+		});
+
+		it("AC3.3: message persistence — should persist filing prompt with correct format", async () => {
+			const mockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "File for Later",
+				deferReply: async () => {},
+				editReply: async () => {},
+				user: { id: "discord-user-123", displayName: "Alice", username: "alice" },
+				targetMessage: {
+					id: "msg123",
+					content: "original message content",
+					author: {
+						id: "author-id",
+						bot: false,
+						displayName: "Bob",
+						username: "bob",
+					},
+					attachments: { some: () => false },
+					createdAt: new Date("2026-03-30T14:22:00.000Z"),
+				},
+				channel: { name: "general" },
+				guild: { name: "TestGuild" },
+			};
+
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const mockClient = {
+				application: {
+					commands: {
+						create: async () => {},
+					},
+				},
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") {
+						onInteractionCreateHandlers.push(handler);
+					}
+				},
+				off: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			const messages = db.query("SELECT * FROM messages WHERE role = 'user'").all() as unknown[];
+			expect(messages.length).toBe(1);
+
+			const msg = messages[0] as { id: string; content: string };
+			expect(msg.content).toContain("File this message for future reference");
+			expect(msg.content).toContain("@Bob");
+			expect(msg.content).toContain("#general");
+			expect(msg.content).toContain("TestGuild");
+			expect(msg.content).toContain("2026-03-30T14:22:00.000Z");
+			expect(msg.content).toContain("original message content");
+
+			// Verify change_log entry exists (proves insertRow was used)
+			const changeLogEntries = db
+				.query("SELECT * FROM change_log WHERE table_name = ? AND row_id = ?")
+				.all("messages", msg.id);
+			expect(changeLogEntries.length).toBeGreaterThan(0);
+		});
+
+		it("AC3.4: intake relay — should write relay_outbox with platform = discord-interaction", async () => {
+			let syncTriggerEmitted = false;
+			eventBus.on("sync:trigger", () => {
+				syncTriggerEmitted = true;
+			});
+
+			const mockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "File for Later",
+				deferReply: async () => {},
+				editReply: async () => {},
+				user: { id: "discord-user-123", displayName: "Alice", username: "alice" },
+				targetMessage: {
+					id: "msg123",
+					content: "Test content",
+					author: { id: "author-id", bot: false, displayName: "Author", username: "author" },
+					attachments: { some: () => false },
+					createdAt: new Date(),
+				},
+				channel: { name: "general" },
+				guild: { name: "Test Guild" },
+			};
+
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const mockClient = {
+				application: {
+					commands: {
+						create: async () => {},
+					},
+				},
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") {
+						onInteractionCreateHandlers.push(handler);
+					}
+				},
+				off: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			// Verify relay_outbox entry
+			const outboxEntries = db
+				.query("SELECT * FROM relay_outbox WHERE kind = 'intake'")
+				.all() as unknown[];
+			expect(outboxEntries.length).toBe(1);
+
+			const outbox = outboxEntries[0] as { payload: string };
+			const payload = JSON.parse(outbox.payload);
+
+			expect(payload.platform).toBe("discord-interaction");
+			expect(payload.platform_event_id).toBe("msg123");
+			expect(payload.thread_id).toBeDefined();
+			expect(payload.user_id).toBeDefined();
+			expect(payload.message_id).toBeDefined();
+			expect(payload.content).toBeDefined();
+
+			// Verify sync:trigger event was emitted
+			expect(syncTriggerEmitted).toBe(true);
+		});
+
+		it("AC4.1: recognized user — should include trust signal with bound user name", async () => {
+			// Pre-insert a bound user in the users table
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					"alice",
+					JSON.stringify({ discord: "target-author-id" }),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const mockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "File for Later",
+				deferReply: async () => {},
+				editReply: async () => {},
+				user: { id: "user-123", displayName: "User", username: "user" },
+				targetMessage: {
+					id: "msg123",
+					content: "Test content",
+					author: {
+						id: "target-author-id",
+						bot: false,
+						displayName: "Alice",
+						username: "alice",
+					},
+					attachments: { some: () => false },
+					createdAt: new Date(),
+				},
+				channel: { name: "general" },
+				guild: { name: "Test Guild" },
+			};
+
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const mockClient = {
+				application: {
+					commands: {
+						create: async () => {},
+					},
+				},
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") {
+						onInteractionCreateHandlers.push(handler);
+					}
+				},
+				off: () => {},
+				user: null,
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			const messages = db.query("SELECT * FROM messages WHERE role = 'user'").all() as unknown[];
+			const msg = messages[0] as { content: string };
+
+			expect(msg.content).toContain('(recognized — bound user "alice")');
+		});
+
+		it("AC4.2: unrecognized user — should include (unrecognized) trust signal", async () => {
+			const mockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "File for Later",
+				deferReply: async () => {},
+				editReply: async () => {},
+				user: { id: "user-123", displayName: "User", username: "user" },
+				targetMessage: {
+					id: "msg123",
+					content: "Test content",
+					author: {
+						id: "unknown-author-id",
+						bot: false,
+						displayName: "Unknown",
+						username: "unknown",
+					},
+					attachments: { some: () => false },
+					createdAt: new Date(),
+				},
+				channel: { name: "general" },
+				guild: { name: "Test Guild" },
+			};
+
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const mockClient = {
+				application: {
+					commands: {
+						create: async () => {},
+					},
+				},
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") {
+						onInteractionCreateHandlers.push(handler);
+					}
+				},
+				off: () => {},
+				user: null,
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			const messages = db.query("SELECT * FROM messages WHERE role = 'user'").all() as unknown[];
+			const msg = messages[0] as { content: string };
+
+			expect(msg.content).toContain("(unrecognized)");
+		});
+
+		it("AC4.3: bot message — should include (this bot) trust signal", async () => {
+			const botUserId = "bot-id-123";
+
+			const mockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "File for Later",
+				deferReply: async () => {},
+				editReply: async () => {},
+				user: { id: "user-123", displayName: "User", username: "user" },
+				targetMessage: {
+					id: "msg123",
+					content: "Test content",
+					author: {
+						id: botUserId,
+						bot: true,
+						displayName: "BotName",
+						username: "botname",
+					},
+					attachments: { some: () => false },
+					createdAt: new Date(),
+				},
+				channel: { name: "general" },
+				guild: { name: "Test Guild" },
+			};
+
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const mockClient = {
+				application: {
+					commands: {
+						create: async () => {},
+					},
+				},
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") {
+						onInteractionCreateHandlers.push(handler);
+					}
+				},
+				off: () => {},
+				user: {
+					id: botUserId,
+				},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			const messages = db.query("SELECT * FROM messages WHERE role = 'user'").all() as unknown[];
+			const msg = messages[0] as { content: string };
+
+			expect(msg.content).toContain("(this bot)");
+		});
+	});
+
+	describe("Response polling", () => {
+		/**
+		 * Helper to create a full interaction mock that completes the filing flow.
+		 * Returns { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls }
+		 */
+		const createFullMockSetup = () => {
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const editReplyCalls: Array<{ content: string }> = [];
+
+			const mockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "File for Later",
+				deferReply: async () => {},
+				editReply: async (opts: { content: string }) => {
+					editReplyCalls.push(opts);
+				},
+				user: { id: "discord-user-123", displayName: "Alice", username: "alice" },
+				targetMessage: {
+					id: "msg123",
+					content: "Test content",
+					author: {
+						id: "author-id",
+						bot: false,
+						displayName: "Author",
+						username: "author",
+					},
+					attachments: { some: () => false },
+					createdAt: new Date(),
+				},
+				channel: { name: "general" },
+				guild: { name: "Test Guild" },
+			};
+
+			const mockClient = {
+				application: {
+					commands: {
+						create: async () => {},
+					},
+				},
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") {
+						onInteractionCreateHandlers.push(handler);
+					}
+				},
+				off: () => {},
+			};
+
+			return { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls };
+		};
+
+		it("AC8.1 (immediate response): should find pre-inserted assistant message and deliver", async () => {
+			const { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls } =
+				createFullMockSetup();
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+				1000, // 1 second timeout for testing
+			);
+
+			await connector.connect();
+
+			// Fire the interaction to create user, thread, message
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			// Get the created thread ID to pre-insert a response
+			const threads = db.query("SELECT * FROM threads WHERE deleted = 0").all() as Array<{
+				id: string;
+			}>;
+			expect(threads.length).toBe(1);
+			const threadId = threads[0].id;
+
+			// Pre-insert assistant response (created shortly after user message)
+			const responseTime = new Date(Date.now() + 10).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					threadId,
+					"assistant",
+					"This is the assistant response.",
+					null,
+					null,
+					responseTime,
+					responseTime,
+					"site-1",
+					0,
+				],
+			);
+
+			// Wait for editReply to be called (polling should find the response)
+			await new Promise<void>((resolve) => {
+				const checkEditReply = () => {
+					if (editReplyCalls.length > 0) {
+						resolve();
+					} else {
+						setTimeout(checkEditReply, 50);
+					}
+				};
+				checkEditReply();
+			});
+
+			expect(editReplyCalls.length).toBe(1);
+			expect(editReplyCalls[0]?.content).toBe("This is the assistant response.");
+		});
+
+		it("AC8.1 (delayed response): should find assistant message inserted during polling", async () => {
+			const { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls } =
+				createFullMockSetup();
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+				2000, // 2 second timeout for testing
+			);
+
+			await connector.connect();
+
+			// Fire the interaction
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			// Get thread ID
+			const threads = db.query("SELECT * FROM threads WHERE deleted = 0").all() as Array<{
+				id: string;
+			}>;
+			const threadId = threads[0].id;
+
+			// Simulate delayed response insertion (600ms delay)
+			setTimeout(() => {
+				const responseTime = new Date().toISOString();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						threadId,
+						"assistant",
+						"Delayed response from agent.",
+						null,
+						null,
+						responseTime,
+						responseTime,
+						"site-1",
+						0,
+					],
+				);
+			}, 600);
+
+			// Wait for polling to complete
+			await new Promise<void>((resolve) => {
+				const checkEditReply = () => {
+					if (editReplyCalls.length > 0) {
+						resolve();
+					} else {
+						setTimeout(checkEditReply, 50);
+					}
+				};
+				checkEditReply();
+			});
+
+			expect(editReplyCalls.length).toBe(1);
+			expect(editReplyCalls[0]?.content).toBe("Delayed response from agent.");
+		});
+
+		it("AC8.2 (timeout): should deliver timeout error when no response appears", async () => {
+			const { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls } =
+				createFullMockSetup();
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+				500, // 500ms timeout for testing
+			);
+
+			await connector.connect();
+
+			// Fire the interaction
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			// Do NOT insert any response — let polling timeout
+
+			// Wait for timeout to occur (poll timeout + some buffer)
+			await new Promise<void>((resolve) => {
+				setTimeout(() => resolve(), 1000);
+			});
+
+			// Should have called editReply with timeout message
+			expect(editReplyCalls.length).toBe(1);
+			expect(editReplyCalls[0]?.content).toContain(
+				"Error: Timed out waiting for agent response after 5 minutes.",
+			);
+		});
+
+		it("AC8.1 + AC6.2 (truncation): should truncate long response to 2000 chars", async () => {
+			const { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls } =
+				createFullMockSetup();
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+				1000, // 1 second timeout
+			);
+
+			await connector.connect();
+
+			// Fire the interaction
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			// Get thread ID
+			const threads = db.query("SELECT * FROM threads WHERE deleted = 0").all() as Array<{
+				id: string;
+			}>;
+			const threadId = threads[0].id;
+
+			// Pre-insert a very long response (3000 chars)
+			const longContent = "x".repeat(3000);
+			const responseTime = new Date(Date.now() + 10).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					threadId,
+					"assistant",
+					longContent,
+					null,
+					null,
+					responseTime,
+					responseTime,
+					"site-1",
+					0,
+				],
+			);
+
+			// Wait for editReply
+			await new Promise<void>((resolve) => {
+				const checkEditReply = () => {
+					if (editReplyCalls.length > 0) {
+						resolve();
+					} else {
+						setTimeout(checkEditReply, 50);
+					}
+				};
+				checkEditReply();
+			});
+
+			expect(editReplyCalls.length).toBe(1);
+			// Verify truncation to exactly 2000 chars
+			expect(editReplyCalls[0]?.content).toBe("x".repeat(2000));
+		});
+	});
+});

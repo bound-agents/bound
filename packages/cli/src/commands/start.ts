@@ -7,10 +7,10 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
 	AgentLoop,
-	findPendingUserMessage,
 	RelayProcessor,
 	Scheduler,
 	createRelayOutboxEntry,
+	findPendingUserMessage,
 	getDelegationTarget,
 	resolveModel,
 	seedCronTasks,
@@ -660,9 +660,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 			// per-loop threadId and taskId via ctx.threadId / ctx.taskId.
 			exec: sandbox
 				? (cmd: string, opts?: Record<string, unknown>) =>
-						loopContextStorage.run(
-							{ threadId: config.threadId, taskId: config.taskId },
-							() => sandbox.bash.exec(cmd, opts),
+						loopContextStorage.run({ threadId: config.threadId, taskId: config.taskId }, () =>
+							sandbox.bash.exec(cmd, opts),
 						)
 				: undefined,
 			checkMemoryThreshold: sandbox ? () => sandbox.checkMemoryThreshold() : undefined,
@@ -934,19 +933,17 @@ export async function runStart(args: StartArgs): Promise<void> {
 				try {
 					const pendingMsg = findPendingUserMessage(appContext.db, thread_id);
 					if (pendingMsg) {
-						console.log(
-							`[agent] Re-queuing skipped message in thread ${thread_id}`,
-						);
+						console.log(`[agent] Re-queuing skipped message in thread ${thread_id}`);
 						// Re-fetch the full message row to ensure all fields are present
-					const fullPendingMsg = appContext.db
-						.prepare("SELECT * FROM messages WHERE id = ? LIMIT 1")
-						.get(pendingMsg.id) as import("@bound/shared").Message | null;
-					if (fullPendingMsg) {
-						appContext.eventBus.emit("message:created", {
-							message: fullPendingMsg,
-							thread_id,
-						});
-					}
+						const fullPendingMsg = appContext.db
+							.prepare("SELECT * FROM messages WHERE id = ? LIMIT 1")
+							.get(pendingMsg.id) as import("@bound/shared").Message | null;
+						if (fullPendingMsg) {
+							appContext.eventBus.emit("message:created", {
+								message: fullPendingMsg,
+								thread_id,
+							});
+						}
 					}
 				} catch {
 					// Non-fatal — don't break cleanup on re-queue failure

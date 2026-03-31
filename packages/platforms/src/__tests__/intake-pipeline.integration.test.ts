@@ -5,6 +5,7 @@ import { applySchema } from "@bound/core";
 import type { IntakePayload } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
+import type { DiscordClientManager } from "../connectors/discord-client-manager.js";
 import { DiscordConnector } from "../connectors/discord.js";
 
 // Mock logger
@@ -14,6 +15,18 @@ const createMockLogger = (): Logger => ({
 	error: () => {},
 	debug: () => {},
 });
+
+// Mock DiscordClientManager
+const createMockClientManager = (): DiscordClientManager => {
+	// Tests call onMessage() directly via cast — no real client needed
+	return {
+		getClient: () => {
+			throw new Error("No client in test");
+		},
+		connect: async () => {},
+		disconnect: async () => {},
+	} as unknown as DiscordClientManager;
+};
 
 describe("platform-connectors Phase 7 — intake pipeline integration", () => {
 	let db: Database;
@@ -58,7 +71,14 @@ describe("platform-connectors Phase 7 — intake pipeline integration", () => {
 			allowed_users: [],
 		};
 
-		const connector = new DiscordConnector(config, db, "site-1", eventBus, createMockLogger());
+		const connector = new DiscordConnector(
+			config,
+			db,
+			"site-1",
+			eventBus,
+			createMockLogger(),
+			createMockClientManager(),
+		);
 
 		// Create a test Discord message
 		const mockMsg = {

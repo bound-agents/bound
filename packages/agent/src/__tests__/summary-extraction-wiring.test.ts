@@ -76,7 +76,16 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 						content: "- The user discussed topic Alpha\n- The user discussed topic Beta",
 					};
 				}
-				yield { type: "done" as const, usage: { input_tokens: 5, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 5,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
 			}
 			capabilities() {
 				return {
@@ -142,9 +151,16 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 			}): AsyncGenerator<StreamChunk> {
 				const lastMsg = params.messages[params.messages.length - 1];
 				const userPrompt = typeof lastMsg?.content === "string" ? lastMsg.content : "";
-				if (userPrompt.toLowerCase().includes("summarize") || userPrompt.toLowerCase().includes("reflecting") || userPrompt.toLowerCase().includes("summary")) {
+				if (
+					userPrompt.toLowerCase().includes("summarize") ||
+					userPrompt.toLowerCase().includes("reflecting") ||
+					userPrompt.toLowerCase().includes("summary")
+				) {
 					chatCalls.push({ purpose: "summary", systemPrompt: params.system, userPrompt });
-					yield { type: "text" as const, content: "I helped the user test a greeting interaction." };
+					yield {
+						type: "text" as const,
+						content: "I helped the user test a greeting interaction.",
+					};
 				} else if (userPrompt.includes("key facts") || userPrompt.includes("key things")) {
 					chatCalls.push({ purpose: "facts", systemPrompt: params.system, userPrompt });
 					yield { type: "text" as const, content: "- I responded to a greeting from the user" };
@@ -152,7 +168,16 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 					chatCalls.push({ purpose: "main", systemPrompt: params.system, userPrompt });
 					yield { type: "text" as const, content: "Hello there!" };
 				}
-				yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
 			}
 			capabilities() {
 				return {

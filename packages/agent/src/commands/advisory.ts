@@ -1,5 +1,5 @@
-import { createAdvisory } from "../advisories";
 import type { CommandContext, CommandDefinition } from "@bound/sandbox";
+import { createAdvisory } from "../advisories";
 import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
 export const advisory: CommandDefinition = {

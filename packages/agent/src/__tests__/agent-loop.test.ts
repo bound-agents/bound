@@ -25,7 +25,16 @@ class MockLLMBackend implements LLMBackend {
 		this.responses = [];
 		this.pushResponse(async function* () {
 			yield { type: "text" as const, content: text };
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
 		});
 	}
 
@@ -46,12 +55,30 @@ class MockLLMBackend implements LLMBackend {
 				partial_json: JSON.stringify(toolInput),
 			};
 			yield { type: "tool_use_end" as const, id: toolId };
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 15, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 15,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
 		});
 		// Second call: LLM produces final text after seeing tool result
 		this.pushResponse(async function* () {
 			yield { type: "text" as const, content: finalText };
-			yield { type: "done" as const, usage: { input_tokens: 20, output_tokens: 10, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 20,
+					output_tokens: 10,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
 		});
 	}
 
@@ -67,7 +94,16 @@ class MockLLMBackend implements LLMBackend {
 		} else {
 			// Default: empty text response
 			yield { type: "text" as const, content: "" };
-			yield { type: "done" as const, usage: { input_tokens: 0, output_tokens: 0, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 0,
+					output_tokens: 0,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
 		}
 	}
 
@@ -389,7 +425,16 @@ describe("AgentLoop", () => {
 			// Simulate delay (abort will happen before next yield)
 			await new Promise((resolve) => setTimeout(resolve, 50));
 			yield { type: "text" as const, content: " still going" };
-			yield { type: "done" as const, usage: { input_tokens: 5, output_tokens: 3, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 5,
+					output_tokens: 3,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
 		});
 
 		const mockBash = createMockSandbox();
@@ -449,13 +494,31 @@ describe("AgentLoop", () => {
 			yield { type: "tool_use_start" as const, id: "t2", name: "bash" };
 			yield { type: "tool_use_args" as const, id: "t2", partial_json: '{"command":"echo world"}' };
 			yield { type: "tool_use_end" as const, id: "t2" };
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 20, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 20,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
 		});
 
 		// Second LLM call: text response
 		mockBackend.pushResponse(async function* () {
 			yield { type: "text" as const, content: "Both commands executed." };
-			yield { type: "done" as const, usage: { input_tokens: 30, output_tokens: 8, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 30,
+					output_tokens: 8,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
 		});
 
 		const mockBash = createMockSandbox((cmd) => ({
@@ -523,13 +586,31 @@ describe("AgentLoop", () => {
 			yield { type: "tool_use_args" as const, id: "t-partial", partial_json: 'nd":"cat ' };
 			yield { type: "tool_use_args" as const, id: "t-partial", partial_json: 'file.txt"}' };
 			yield { type: "tool_use_end" as const, id: "t-partial" };
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 15, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 15,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
 		});
 
 		// Second call: final text
 		mockBackend.pushResponse(async function* () {
 			yield { type: "text" as const, content: "Here is the file content." };
-			yield { type: "done" as const, usage: { input_tokens: 20, output_tokens: 10, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 20,
+					output_tokens: 10,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
 		});
 
 		const mockBash = createMockSandbox();
@@ -558,7 +639,16 @@ describe("AgentLoop", () => {
 				// exists and would reject after 120s.
 				await new Promise((resolve) => setTimeout(resolve, 130000));
 				// This line should never be reached in real timeout scenario
-				yield { type: "done" as const, usage: { input_tokens: 5, output_tokens: 3, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 5,
+						output_tokens: 3,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
 			},
 			capabilities() {
 				return {
@@ -644,7 +734,16 @@ describe("AgentLoop", () => {
 			yield { type: "text" as const, content: " Chunk 2" };
 			await new Promise((resolve) => setTimeout(resolve, 50));
 			yield { type: "text" as const, content: " Chunk 3" };
-			yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 10, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 10,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
 		});
 
 		const mockBash = createMockSandbox();
@@ -702,11 +801,29 @@ describe("AgentLoop", () => {
 						partial_json: '{"command":"echo test"}',
 					};
 					yield { type: "tool_use_end" as const, id: "tc-1" };
-					yield { type: "done" as const, usage: { input_tokens: 10, output_tokens: 15, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 15,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+					};
 				} else {
 					// Second call: return text response
 					yield { type: "text" as const, content: "Command executed successfully." };
-					yield { type: "done" as const, usage: { input_tokens: 25, output_tokens: 8, cache_write_tokens: null, cache_read_tokens: null, estimated: false} };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 25,
+							output_tokens: 8,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+					};
 				}
 			},
 			capabilities() {
@@ -1374,7 +1491,17 @@ describe("AgentLoop", () => {
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "assistant", "previous answer", "test-model", null, ts2, ts2, "local"],
+				[
+					randomUUID(),
+					localThreadId,
+					"assistant",
+					"previous answer",
+					"test-model",
+					null,
+					ts2,
+					ts2,
+					"local",
+				],
 			);
 
 			const agentLoop = new AgentLoop(ctx, createMockSandbox(), router, {
@@ -1409,7 +1536,8 @@ describe("AgentLoop", () => {
 			const params = backend.capturedParams[0];
 			// No prior history — no breakpoints needed
 			expect(
-				params.cache_breakpoints === undefined || (params.cache_breakpoints as number[]).length === 0,
+				params.cache_breakpoints === undefined ||
+					(params.cache_breakpoints as number[]).length === 0,
 			).toBe(true);
 		});
 	});

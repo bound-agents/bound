@@ -166,9 +166,7 @@ export function buildCrossThreadDigest(db: Database, userId: string): string {
 			// so the agent has conversational context without needing to re-read history.
 			if (thread.summary) {
 				const truncated =
-					thread.summary.length > 300
-						? `${thread.summary.slice(0, 297)}...`
-						: thread.summary;
+					thread.summary.length > 300 ? `${thread.summary.slice(0, 297)}...` : thread.summary;
 				lines.push(`  Summary: ${truncated}`);
 			}
 		}

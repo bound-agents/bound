@@ -12,9 +12,9 @@ import type {
 	User,
 } from "@bound/shared";
 import type { PlatformConnector } from "../connector.js";
+import type { DiscordClientManager } from "./discord-client-manager.js";
 
 // Discord.js types only — imported dynamically in connect() to avoid hard dep at module load
-type DiscordClient = import("discord.js").Client;
 type DiscordMessage = import("discord.js").Message;
 
 /** Attachments >= this size are stored as file_ref entries in the files table. */
@@ -37,7 +37,8 @@ export class DiscordConnector implements PlatformConnector {
 	readonly platform = "discord";
 	readonly delivery = "broadcast" as const;
 
-	private client: DiscordClient | null = null;
+	private onClientReady: ((client: { user: { tag: string } }) => void) | null = null;
+	private onMessageCreate: ((msg: DiscordMessage) => void) | null = null;
 	/** Typing indicators per thread — cleared when platform:deliver fires for that thread. */
 	private typingTimers = new Map<
 		string,
@@ -50,48 +51,47 @@ export class DiscordConnector implements PlatformConnector {
 		private readonly siteId: string,
 		private readonly eventBus: TypedEventEmitter,
 		private readonly logger: Logger,
+		private readonly clientManager: DiscordClientManager,
 	) {}
 
 	async connect(_hostBaseUrl?: string): Promise<void> {
-		const token = this.config.token;
-		if (!token) {
-			throw new Error("DiscordConnector: token is required in platforms.json connector config");
-		}
+		// Token validation removed — registry validates before creating connectors
+		// clientManager.connect() removed — compound connector drives lifecycle
 
-		const { Client, GatewayIntentBits, Partials, ChannelType } = await import("discord.js");
+		const client = this.clientManager.getClient();
 
-		this.client = new Client({
-			intents: [
-				GatewayIntentBits.DirectMessages,
-				GatewayIntentBits.DirectMessageReactions,
-				GatewayIntentBits.MessageContent,
-			],
-			partials: [Partials.Channel, Partials.Message, Partials.Reaction],
-		});
+		const { ChannelType } = await import("discord.js");
 
-		this.client.on("clientReady", (client) => {
-			this.logger.info("Logged in as Discord bot", { tag: client.user.tag });
-		});
+		this.onClientReady = (c) => {
+			this.logger.info("Logged in as Discord bot", { tag: c.user.tag });
+		};
 
-		this.client.on("messageCreate", (msg) => {
-			// Filter: only handle non-bot DM messages
+		this.onMessageCreate = (msg) => {
 			if (msg.author.bot) return;
 			if (msg.channel.type !== ChannelType.DM) return;
-
 			this.onMessage(msg).catch((err) => {
 				this.logger.error("onMessage error", { error: String(err) });
 			});
-		});
+		};
 
-		await this.client.login(token);
+		client.on("clientReady", this.onClientReady);
+		client.on("messageCreate", this.onMessageCreate);
 	}
 
 	async disconnect(): Promise<void> {
 		for (const threadId of this.typingTimers.keys()) {
 			this.stopTyping(threadId);
 		}
-		this.client?.destroy();
-		this.client = null;
+		try {
+			const client = this.clientManager.getClient();
+			if (this.onClientReady) client.off("clientReady", this.onClientReady);
+			if (this.onMessageCreate) client.off("messageCreate", this.onMessageCreate);
+		} catch {
+			// Client already disconnected — handlers already cleaned up by destroy()
+		}
+		this.onClientReady = null;
+		this.onMessageCreate = null;
+		// clientManager.disconnect() removed — compound connector drives lifecycle
 	}
 
 	async deliver(
@@ -100,10 +100,7 @@ export class DiscordConnector implements PlatformConnector {
 		content: string,
 		attachments?: Array<{ filename: string; data: Buffer }>,
 	): Promise<void> {
-		if (!this.client) {
-			throw new Error("DiscordConnector: not connected");
-		}
-
+		// No client null check needed — getDMChannelForThread uses clientManager.getClient()
 		const channel = await this.getDMChannelForThread(threadId);
 
 		// Stop typing indicator now that we have the channel (or failed to get it)
@@ -496,10 +493,8 @@ export class DiscordConnector implements PlatformConnector {
 		const discordId = platformIds.discord;
 		if (!discordId) return null;
 
-		if (!this.client) {
-			throw new Error("Discord client not initialized");
-		}
-		const discordUser = await this.client.users.fetch(discordId);
+		const client = this.clientManager.getClient();
+		const discordUser = await client.users.fetch(discordId);
 		return discordUser.createDM();
 	}
 
