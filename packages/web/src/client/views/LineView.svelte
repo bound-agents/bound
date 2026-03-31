@@ -298,7 +298,7 @@ function viewTitle(): string {
 		flex-direction: column;
 		flex: 1;
 		min-height: 0;
-		max-width: 48rem;
+		max-width: 42rem;
 		width: 100%;
 		margin: 0 auto;
 		padding: 24px;
@@ -308,9 +308,9 @@ function viewTitle(): string {
 
 	.header {
 		display: flex;
-		gap: 16px;
+		gap: 10px;
 		align-items: center;
-		margin-bottom: 24px;
+		margin-bottom: 12px;
 		flex-shrink: 0;
 	}
 
@@ -409,7 +409,7 @@ function viewTitle(): string {
 
 	.bottom-area {
 		flex-shrink: 0;
-		padding-top: 16px;
+		padding-top: 10px;
 		border-top: 1px solid var(--bg-surface);
 	}
 
@@ -460,7 +460,7 @@ function viewTitle(): string {
 
 	textarea {
 		flex: 1;
-		padding: 12px 16px;
+		padding: 8px 12px;
 		background: var(--bg-secondary);
 		border: 1px solid var(--bg-surface);
 		color: var(--text-primary);
@@ -468,7 +468,7 @@ function viewTitle(): string {
 		font-family: var(--font-body);
 		font-size: var(--text-base);
 		resize: vertical;
-		min-height: 56px;
+		min-height: 44px;
 		max-height: 180px;
 		transition: border-color 0.2s ease;
 		line-height: 1.5;
