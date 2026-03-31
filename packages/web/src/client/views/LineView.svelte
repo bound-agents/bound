@@ -3,9 +3,11 @@ import { onDestroy, onMount } from "svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import DebugPanelWrapper from "../components/DebugPanelWrapper.svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
+import InterchangeRail from "../components/InterchangeRail.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
 import MessageBubble from "../components/MessageBubble.svelte";
 import { api } from "../lib/api";
-import type { Thread } from "../lib/api";
+import type { ContextDebugTurn, Thread } from "../lib/api";
 import { modelStore } from "../lib/modelStore";
 import { navigateTo } from "../lib/router";
 import {
@@ -13,6 +15,7 @@ import {
 	disconnectWebSocket,
 	subscribeToThread,
 	wsEvents,
+	type WebSocketMessage,
 } from "../lib/websocket";
 import { shouldClearWaiting } from "../utils/waiting";
 
@@ -38,6 +41,7 @@ let thread = $state<Thread | null>(null);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 // biome-ignore lint/style/useConst: Svelte 5 $state() requires let
 let messagesEl = $state<HTMLDivElement | null>(null);
+let contextDebugTurns = $state<ContextDebugTurn[]>([]);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let statusPollInterval: ReturnType<typeof setInterval> | null = null;
@@ -62,6 +66,21 @@ const unsubscribeWs = wsEvents.subscribe((events) => {
 			// Clear waiting indicator when an assistant or alert message arrives
 			if (shouldClearWaiting(msg.role ?? "")) {
 				waiting = false;
+			}
+		}
+	}
+});
+
+// Subscribe to context:debug events for InterchangeRail
+const unsubscribeDebug = wsEvents.subscribe((events: WebSocketMessage[]) => {
+	if (events.length === 0) return;
+	const last = events[events.length - 1];
+	if (last && last.type === "context:debug" && typeof last.data === "object" && last.data !== null) {
+		const debugData = last.data as ContextDebugTurn & { thread_id?: string };
+		if (debugData.thread_id === threadId) {
+			const exists = contextDebugTurns.some((t) => t.turn_id === debugData.turn_id);
+			if (!exists) {
+				contextDebugTurns = [...contextDebugTurns, debugData];
 			}
 		}
 	}
@@ -107,6 +126,8 @@ onMount(async () => {
 	try {
 		thread = await api.getThread(threadId);
 		messages = await api.listMessages(threadId);
+		const initialTurns = await api.getContextDebug(threadId);
+		contextDebugTurns = initialTurns;
 		connectWebSocket();
 		subscribeToThread(threadId);
 	} catch (error) {
@@ -120,6 +141,7 @@ onMount(async () => {
 
 onDestroy(() => {
 	unsubscribeWs();
+	unsubscribeDebug();
 	disconnectWebSocket();
 	if (pollInterval !== null) clearInterval(pollInterval);
 	if (statusPollInterval !== null) clearInterval(statusPollInterval);
@@ -233,6 +255,12 @@ function viewTitle(): string {
 
 	<div class="board">
 		<div class="messages" bind:this={messagesEl}>
+			<InterchangeRail
+				threadColor={thread?.color ?? 0}
+				{messages}
+				{contextDebugTurns}
+				scrollContainer={messagesEl}
+			/>
 			{#each messages as msg}
 				<MessageBubble role={msg.role} content={msg.content} toolName={msg.tool_name} modelId={msg.model_id} createdAt={msg.created_at} />
 			{/each}
