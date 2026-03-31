@@ -348,7 +348,7 @@ function viewTitle(): string {
 		flex-direction: column;
 		flex: 1;
 		min-height: 0;
-		max-width: 42rem;
+		max-width: 52rem;
 		width: 100%;
 		margin: 0 auto;
 		padding: 24px;
