@@ -118,7 +118,7 @@ export function getPendingAdvisories(db: Database): Advisory[] {
 			`SELECT * FROM advisories
 			 WHERE status IN ('proposed', 'deferred')
 			 AND (status = 'proposed' OR (status = 'deferred' AND defer_until < ?))
-			 ORDER BY proposed_at DESC`,
+			 ORDER BY proposed_at ASC, rowid ASC`,
 		)
 		.all(now) as Advisory[];
 
