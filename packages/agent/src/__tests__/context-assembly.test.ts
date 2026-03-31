@@ -60,7 +60,7 @@ describe("Context Assembly Pipeline", () => {
 	});
 
 	it("should return an array of LLMMessages", async () => {
-		const messages = assembleContext({
+		const { messages } = assembleContext({
 			db,
 			threadId,
 			userId,
@@ -87,7 +87,7 @@ describe("Context Assembly Pipeline", () => {
 			],
 		);
 
-		const messages = assembleContext({
+		const { messages } = assembleContext({
 			db,
 			threadId,
 			userId,
@@ -97,7 +97,7 @@ describe("Context Assembly Pipeline", () => {
 	});
 
 	it("should support no_history mode", async () => {
-		const messages = assembleContext({
+		const { messages } = assembleContext({
 			db,
 			threadId,
 			userId,
@@ -115,7 +115,7 @@ describe("Context Assembly Pipeline", () => {
 			"You are a specialized technical assistant focused on system architecture.";
 		writeFileSync(join(configDir, "persona.md"), personaContent);
 
-		const messages = assembleContext({
+		const { messages } = assembleContext({
 			db,
 			threadId,
 			userId,
@@ -134,7 +134,7 @@ describe("Context Assembly Pipeline", () => {
 		const configDir = join(tmpDir, "no-persona");
 		mkdirSync(configDir, { recursive: true });
 
-		const messages = assembleContext({
+		const { messages } = assembleContext({
 			db,
 			threadId,
 			userId,
@@ -154,7 +154,7 @@ describe("Context Assembly Pipeline", () => {
 		writeFileSync(join(configDir, "persona.md"), personaContent);
 
 		// First call - loads from file
-		const messages1 = assembleContext({
+		const { messages: messages1 } = assembleContext({
 			db,
 			threadId,
 			userId,
@@ -165,7 +165,7 @@ describe("Context Assembly Pipeline", () => {
 		writeFileSync(join(configDir, "persona.md"), "Modified content");
 
 		// Second call - should use cache
-		const messages2 = assembleContext({
+		const { messages: messages2 } = assembleContext({
 			db,
 			threadId,
 			userId,
@@ -280,7 +280,7 @@ describe("Context Assembly Pipeline", () => {
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId: testThreadId,
 				userId: testUserId,
@@ -394,7 +394,7 @@ describe("Context Assembly Pipeline", () => {
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId: testThreadId,
 				userId: testUserId,
@@ -546,7 +546,7 @@ describe("Context Assembly Pipeline", () => {
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId: testThreadId,
 				userId: testUserId,
@@ -622,7 +622,7 @@ describe("Context Assembly Pipeline", () => {
 			);
 
 			// Should not throw and should keep the user message
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId: testThreadId,
 				userId: testUserId,
@@ -725,7 +725,7 @@ describe("Context Assembly Pipeline", () => {
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId: testThreadId,
 				userId: testUserId,
@@ -850,7 +850,7 @@ describe("Context Assembly Pipeline", () => {
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId: testThreadId,
 				userId: testUserId,
@@ -974,7 +974,7 @@ describe("Context Assembly Pipeline", () => {
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId: testThreadId,
 				userId: testUserId,
@@ -1066,7 +1066,7 @@ describe("Context Assembly Pipeline", () => {
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId: testThreadId,
 				userId: testUserId,
@@ -1090,7 +1090,7 @@ describe("Context Assembly Pipeline", () => {
 
 	describe("Relay Info Injection (AC5.4)", () => {
 		it("should inject relay location line when relayInfo is provided", () => {
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId,
 				userId,
@@ -1114,7 +1114,7 @@ describe("Context Assembly Pipeline", () => {
 		});
 
 		it("should not inject relay location line when relayInfo is not provided", () => {
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId,
 				userId,
@@ -1205,7 +1205,7 @@ describe("Context Assembly Pipeline", () => {
 			}
 
 			// Use tiny contextWindow to force truncation
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
@@ -1228,7 +1228,7 @@ describe("Context Assembly Pipeline", () => {
 
 	describe("platformContext injection", () => {
 		it("includes platform system message when platformContext is set (AC5.1)", () => {
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId,
 				userId,
@@ -1248,7 +1248,7 @@ describe("Context Assembly Pipeline", () => {
 		});
 
 		it("no platform system message when platformContext is absent (AC5.2)", () => {
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId,
 				userId,
@@ -1267,7 +1267,7 @@ describe("Context Assembly Pipeline", () => {
 			// Bug: when a second platform (e.g. Telegram) is added, the context message hardcodes
 			// "discord_send_message" even for Telegram threads. Fix: toolNames in platformContext
 			// should be referenced dynamically.
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId,
 				userId,
@@ -1364,7 +1364,7 @@ describe("Context Assembly Pipeline", () => {
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db: db2,
 				threadId: threadId2,
 				userId: userId2,
@@ -1382,7 +1382,7 @@ describe("Context Assembly Pipeline", () => {
 		it("AC3.2: should not inject SKILLS block when no active skills exist", () => {
 			cleanupTestData();
 			// Ensure no active skills exist (test database is clean)
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db: db2,
 				threadId: threadId2,
 				userId: userId2,
@@ -1452,7 +1452,7 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db: db2,
 				threadId: threadId2,
 				userId: userId2,
@@ -1509,7 +1509,7 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db: db2,
 				threadId: threadId2,
 				userId: userId2,
@@ -1589,7 +1589,7 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db: db2,
 				threadId: threadId2,
 				userId: userId2,
@@ -1624,7 +1624,7 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db: db2,
 				threadId: threadId2,
 				userId: userId2,
@@ -1660,7 +1660,7 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db: db2,
 				threadId: threadId2,
 				userId: userId2,
@@ -1742,7 +1742,7 @@ This skill reviews pull requests.`;
 				[randomUUID(), "test_key", "test_value", null, recentTime, recentTime, 0],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db: enrichTestDb,
 				threadId: testThreadId,
 				userId: enrichTestUserId,
@@ -1797,7 +1797,7 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db: enrichTestDb,
 				threadId: testThreadId,
 				userId: enrichTestUserId,
@@ -1857,7 +1857,7 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db: enrichTestDb,
 				threadId: testThreadId,
 				userId: enrichTestUserId,
@@ -1922,7 +1922,7 @@ This skill reviews pull requests.`;
 				[randomUUID(), "nohist_key", "nohist_value", null, recentTime, recentTime, 0],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db: enrichTestDb,
 				threadId: testThreadId,
 				userId: enrichTestUserId,
@@ -1982,7 +1982,7 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db: enrichTestDb,
 				threadId: testThreadId,
 				userId: enrichTestUserId,
@@ -2099,7 +2099,7 @@ This skill reviews pull requests.`;
 			}
 
 			// Use a very small contextWindow to force budget pressure
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db: enrichTestDb,
 				threadId: testThreadId,
 				userId: enrichTestUserId,
@@ -2194,7 +2194,7 @@ This skill reviews pull requests.`;
 				);
 			}
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
@@ -2268,7 +2268,7 @@ This skill reviews pull requests.`;
 				);
 			}
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
@@ -2416,7 +2416,7 @@ This skill reviews pull requests.`;
 			// System messages are ~250 tokens; history strings are ~50 tokens total.
 			// Without fix: total ≈ 300 → no truncation
 			// With fix: total ≈ 300 + 1250 = 1550 → truncation
-			const messagesWithFix = assembleContext({
+			const { messages: messagesWithFix } = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
@@ -2491,7 +2491,7 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
@@ -2570,7 +2570,7 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
@@ -2650,7 +2650,7 @@ This skill reviews pull requests.`;
 				);
 			}
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
@@ -2736,7 +2736,7 @@ This skill reviews pull requests.`;
 				);
 			}
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
@@ -2816,7 +2816,7 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const messages = assembleContext({
+			const { messages } = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,

@@ -2,8 +2,8 @@ import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BackendCapabilities, ContentBlock, LLMMessage } from "@bound/llm";
-import type { Message } from "@bound/shared";
-import { countContentTokens } from "@bound/shared";
+import type { ContextDebugInfo, ContextSection, Message } from "@bound/shared";
+import { countContentTokens, countTokens } from "@bound/shared";
 import { getFileThreadNotificationMessage, getLastThreadForFile } from "./file-thread-tracker";
 import {
 	buildCrossThreadDigest,
@@ -42,6 +42,11 @@ export interface ContextParams {
 	targetCapabilities?: BackendCapabilities;
 	/** Estimated token count for tool definitions (counted by caller since tools are at ChatParams level) */
 	toolTokenEstimate?: number;
+}
+
+export interface ContextAssemblyResult {
+	messages: LLMMessage[];
+	debug: ContextDebugInfo;
 }
 
 /**
@@ -228,7 +233,7 @@ const AVAILABLE_COMMANDS = [
 	{ name: "skill-retire", description: "Retire a skill; scans tasks and creates advisories" },
 ] as const;
 
-export function assembleContext(params: ContextParams): LLMMessage[] {
+export function assembleContext(params: ContextParams): ContextAssemblyResult {
 	const {
 		db,
 		threadId,
@@ -243,6 +248,11 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		platformContext,
 		targetCapabilities,
 	} = params;
+
+	// Debug tracking for ContextAssemblyResult
+	const sections: ContextSection[] = [];
+	let budgetPressure = false;
+	let truncatedCount = 0;
 
 	// Enrichment state — shared between Stage 6 volatile context and Stage 7 budget check
 	let enrichmentBaseline: string | undefined;
@@ -691,6 +701,9 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		content: orientationLines.join("\n"),
 	});
 
+	// Track system message count before skill injection (for AC2.2 tracking)
+	const systemMsgCount = assembled.length;
+
 	// Track inactive skill reference for volatile context note (AC3.4)
 	let inactiveSkillRef: string | null = null;
 
@@ -746,8 +759,43 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		}
 	}
 
+	// Track system section tokens
+	const systemTokens = assembled.reduce((sum, msg) => sum + countContentTokens(msg.content), 0);
+	sections.push({ name: "system", tokens: systemTokens });
+
+	// Track skill section if a skill message was added
+	if (assembled.length > systemMsgCount) {
+		const skillTokens = countContentTokens(assembled[assembled.length - 1].content);
+		if (skillTokens > 0) {
+			sections.push({ name: "skill-context", tokens: skillTokens });
+		}
+	}
+
 	// Add message history
 	assembled.push(...finalAnnotated);
+
+	// Track history section with role children
+	const historyChildren: ContextSection[] = [];
+	let userTokens = 0;
+	let assistantTokens = 0;
+	let toolResultTokens = 0;
+
+	for (const msg of finalAnnotated) {
+		const tokens = countContentTokens(msg.content);
+		if (msg.role === "user") userTokens += tokens;
+		else if (msg.role === "assistant" || msg.role === "tool_call") assistantTokens += tokens;
+		else if (msg.role === "tool_result") toolResultTokens += tokens;
+	}
+
+	if (userTokens > 0) historyChildren.push({ name: "user", tokens: userTokens });
+	if (assistantTokens > 0) historyChildren.push({ name: "assistant", tokens: assistantTokens });
+	if (toolResultTokens > 0) historyChildren.push({ name: "tool_result", tokens: toolResultTokens });
+
+	sections.push({
+		name: "history",
+		tokens: userTokens + assistantTokens + toolResultTokens,
+		children: historyChildren.length > 0 ? historyChildren : undefined,
+	});
 
 	// Add volatile context at the end per spec R-U30
 	if (!noHistory) {
@@ -952,6 +1000,22 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			role: "system",
 			content: volatileLines.join("\n"),
 		});
+
+		// Track volatile section tokens (memory, task-digest, volatile-other)
+		const memoryLines = volatileLines.slice(enrichmentStartIdx, enrichmentEndIdx);
+		const memoryTokens = memoryLines.length > 0 ? countTokens(memoryLines.join("\n")) : 0;
+
+		const taskDigestTokens =
+			taskDigestLines.length > 0 ? countTokens(taskDigestLines.join("\n")) : 0;
+
+		const totalVolatileTokens =
+			volatileLines.length > 0 ? countTokens(volatileLines.join("\n")) : 0;
+		const volatileOtherTokens = totalVolatileTokens - memoryTokens - taskDigestTokens;
+
+		if (memoryTokens > 0) sections.push({ name: "memory", tokens: memoryTokens });
+		if (taskDigestTokens > 0) sections.push({ name: "task-digest", tokens: taskDigestTokens });
+		if (volatileOtherTokens > 0)
+			sections.push({ name: "volatile-other", tokens: volatileOtherTokens });
 	}
 
 	// Stage 5.5 (noHistory path): Inject enrichment as standalone system message for autonomous tasks
@@ -987,8 +1051,22 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 
 			enrichmentMessageIndex = assembled.length;
 			assembled.push({ role: "system", content: enrichmentLines.join("\n") });
+
+			// Track noHistory volatile section tokens (memory, task-digest)
+			const noHistMemTokens = noHistDelta.length > 0 ? countTokens(noHistDelta.join("\n")) : 0;
+			const noHistTaskTokens = noHistTasks.length > 0 ? countTokens(noHistTasks.join("\n")) : 0;
+
+			if (noHistMemTokens > 0) sections.push({ name: "memory", tokens: noHistMemTokens });
+			if (noHistTaskTokens > 0) sections.push({ name: "task-digest", tokens: noHistTaskTokens });
+		} else {
+			// noHistory with no enrichment content — add empty history section
+			sections.push({ name: "history", tokens: 0 });
 		}
 	}
+
+	// Track tools section (from ContextParams)
+	const toolTokens = params.toolTokenEstimate ?? 0;
+	if (toolTokens > 0) sections.push({ name: "tools", tokens: toolTokens });
 
 	// Stage 7: BUDGET_VALIDATION
 	// Budget pressure check: reduce enrichment caps if headroom < 2,000 tokens
@@ -999,6 +1077,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		const headroom = contextWindow - currentTotal;
 
 		if (headroom < 2000) {
+			budgetPressure = true;
 			const { memoryDeltaLines: shortDelta, taskDigestLines: shortDigest } =
 				buildVolatileEnrichment(db, enrichmentBaseline, 3, 3);
 
@@ -1092,12 +1171,38 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 			}
 
 			const remaining = historyMessages.slice(sliceStart);
-			return [...systemMessages, ...remaining];
+			truncatedCount = historyMessages.length - remaining.length;
+			const truncatedMessages = [...systemMessages, ...remaining];
+			const totalEstimated = sections.reduce((sum, s) => sum + s.tokens, 0);
+
+			return {
+				messages: truncatedMessages,
+				debug: {
+					contextWindow: params.contextWindow ?? 128000,
+					totalEstimated,
+					model: params.currentModel ?? "unknown",
+					sections,
+					budgetPressure,
+					truncated: truncatedCount,
+				},
+			};
 		}
 	}
 
 	// Stage 8: METRIC_RECORDING
 	// Deferred to Phase 8 when metrics.db is created
 
-	return assembled;
+	const totalEstimated = sections.reduce((sum, s) => sum + s.tokens, 0);
+
+	return {
+		messages: assembled,
+		debug: {
+			contextWindow: params.contextWindow ?? 128000,
+			totalEstimated,
+			model: params.currentModel ?? "unknown",
+			sections,
+			budgetPressure,
+			truncated: truncatedCount,
+		},
+	};
 }
