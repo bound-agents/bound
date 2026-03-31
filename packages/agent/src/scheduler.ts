@@ -300,9 +300,7 @@ export class Scheduler {
 				// thread later. Without this, tasks created without a thread_id
 				// would run fine but the detail view couldn't show their messages.
 				if (!task.thread_id) {
-					this.ctx.db
-						.query("UPDATE tasks SET thread_id = ? WHERE id = ?")
-						.run(threadId, task.id);
+					this.ctx.db.query("UPDATE tasks SET thread_id = ? WHERE id = ?").run(threadId, task.id);
 				}
 
 				// Bug #4: Ensure a thread row exists for the threadId.

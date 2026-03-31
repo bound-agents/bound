@@ -420,8 +420,8 @@ describe("PlatformConnectorRegistry", () => {
 
 		it("should register both messageCreate and interactionCreate on the same client (AC5.2)", async () => {
 			// Create a mock Discord client that tracks on() calls
-			const onCalls: Array<{ event: string; handler: Function }> = [];
-			const offCalls: Array<{ event: string; handler: Function }> = [];
+			const onCalls: Array<{ event: string; handler: (...args: unknown[]) => unknown }> = [];
+			const offCalls: Array<{ event: string; handler: (...args: unknown[]) => unknown }> = [];
 
 			const mockClient = {
 				user: { tag: "TestBot#1234", id: "bot-id" },
@@ -430,11 +430,11 @@ describe("PlatformConnectorRegistry", () => {
 						create: async () => ({}),
 					},
 				},
-				on(event: string, handler: Function) {
+				on(event: string, handler: (...args: unknown[]) => unknown) {
 					onCalls.push({ event, handler });
 					return this;
 				},
-				off(event: string, handler: Function) {
+				off(event: string, handler: (...args: unknown[]) => unknown) {
 					offCalls.push({ event, handler });
 					return this;
 				},
@@ -444,7 +444,7 @@ describe("PlatformConnectorRegistry", () => {
 			};
 
 			// Mock the DiscordClientManager to return our spy-equipped client
-			const mockLogin = async () => {
+			const _mockLogin = async () => {
 				// Mock login succeeds
 			};
 
@@ -455,6 +455,7 @@ describe("PlatformConnectorRegistry", () => {
 
 			// Create a test-specific manager instance with mocked client
 			const testManager = new RealClientManager(mockLogger);
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			(testManager as any).client = mockClient;
 
 			// Manually set up the connectors with the mocked manager
@@ -533,6 +534,7 @@ describe("PlatformConnectorRegistry", () => {
 			);
 
 			const testManager = new RealClientManager(mockLogger);
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			(testManager as any).client = mockClient;
 
 			const { DiscordConnector } = await import("../connectors/discord.js");

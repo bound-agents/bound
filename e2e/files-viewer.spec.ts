@@ -537,12 +537,12 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 			await expect(panel).toHaveAttribute("role", "dialog");
 			await expect(panel).toHaveAttribute("aria-modal", "true");
 
-		// Verify ARIA labels
-		await expect(panel).toHaveAttribute("aria-label", /^File preview:/);
+			// Verify ARIA labels
+			await expect(panel).toHaveAttribute("aria-label", /^File preview:/);
 
-		// Verify close button ARIA label
-		const closeBtn = page.locator(".close-btn");
-		await expect(closeBtn).toHaveAttribute("aria-label", "Close preview");
+			// Verify close button ARIA label
+			const closeBtn = page.locator(".close-btn");
+			await expect(closeBtn).toHaveAttribute("aria-label", "Close preview");
 		});
 
 		test("AC2.2: renders code with syntax highlighting", async ({ page }) => {
@@ -901,67 +901,68 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 				expect(focusedElement).toBe("inside");
 			}
 
-		// Shift+Tab wrap test: after tabbing to first focusable, Shift+Tab should wrap to last
-		// First, move to first focusable element
-		await page.keyboard.press("Home");  // Move to beginning
-		await page.keyboard.press("Tab");
-		await page.waitForTimeout(50);
+			// Shift+Tab wrap test: after tabbing to first focusable, Shift+Tab should wrap to last
+			// First, move to first focusable element
+			await page.keyboard.press("Home"); // Move to beginning
+			await page.keyboard.press("Tab");
+			await page.waitForTimeout(50);
 
-		// Now we should be on the first focusable element
-		const firstElementBeforeShiftTab = await page.evaluate(() => {
-			const el = document.activeElement;
-			return el?.className || "";
-		});
+			// Now we should be on the first focusable element
+			const _firstElementBeforeShiftTab = await page.evaluate(() => {
+				const el = document.activeElement;
+				return el?.className || "";
+			});
 
-		// Press Shift+Tab to wrap to last
-		await page.keyboard.press("Shift+Tab");
-		await page.waitForTimeout(50);
+			// Press Shift+Tab to wrap to last
+			await page.keyboard.press("Shift+Tab");
+			await page.waitForTimeout(50);
 
-		// Verify focus is still within modal
-		const afterShiftTab = await page.evaluate(() => {
-			const el = document.activeElement;
-			if (el) {
-				const panel = el.closest(".modal-panel");
-				return panel ? "inside" : "outside";
-			}
-			return "none";
-		});
-		expect(afterShiftTab).toBe("inside");
+			// Verify focus is still within modal
+			const afterShiftTab = await page.evaluate(() => {
+				const el = document.activeElement;
+				if (el) {
+					const panel = el.closest(".modal-panel");
+					return panel ? "inside" : "outside";
+				}
+				return "none";
+			});
+			expect(afterShiftTab).toBe("inside");
 
-		// Focus restoration test: close modal and verify focus returns to trigger element
-		// Store the modal button we clicked to open
-		const triggerButton = page.locator(".listing-row.listing-file").first();
-		const triggerBoundingBox = await triggerButton.boundingBox();
+			// Focus restoration test: close modal and verify focus returns to trigger element
+			// Store the modal button we clicked to open
+			const triggerButton = page.locator(".listing-row.listing-file").first();
+			const _triggerBoundingBox = await triggerButton.boundingBox();
 
-		// Get focus position inside modal before closing
-		const focusBeforeClose = await page.evaluate(() => {
-			const el = document.activeElement as HTMLElement;
-			if (el) {
-				const rect = el.getBoundingClientRect();
-				return { x: rect.x, y: rect.y };
-			}
-			return null;
-		});
+			// Get focus position inside modal before closing
+			const _focusBeforeClose = await page.evaluate(() => {
+				const el = document.activeElement as HTMLElement;
+				if (el) {
+					const rect = el.getBoundingClientRect();
+					return { x: rect.x, y: rect.y };
+				}
+				return null;
+			});
 
-		// Close modal via Escape
-		await page.keyboard.press("Escape");
-		await page.waitForTimeout(200);
+			// Close modal via Escape
+			await page.keyboard.press("Escape");
+			await page.waitForTimeout(200);
 
-		// Verify modal is closed
-		const backdrop = page.locator(".modal-backdrop");
-		await expect(backdrop).not.toBeVisible();
+			// Verify modal is closed
+			const backdrop = page.locator(".modal-backdrop");
+			await expect(backdrop).not.toBeVisible();
 
-		// Verify focus was restored to the trigger element (file row)
-		const focusAfterClose = await page.evaluate(() => {
-			const el = document.activeElement as HTMLElement;
-			if (el) {
-				// Check if focused element is the file row
-				const isFileRow = el.classList.contains("listing-row") || el.closest(".listing-row") !== null;
-				return isFileRow ? "file-row" : el.className;
-			}
-			return "none";
-		});
-		expect(focusAfterClose).toBe("file-row");
+			// Verify focus was restored to the trigger element (file row)
+			const focusAfterClose = await page.evaluate(() => {
+				const el = document.activeElement as HTMLElement;
+				if (el) {
+					// Check if focused element is the file row
+					const isFileRow =
+						el.classList.contains("listing-row") || el.closest(".listing-row") !== null;
+					return isFileRow ? "file-row" : el.className;
+				}
+				return "none";
+			});
+			expect(focusAfterClose).toBe("file-row");
 		});
 	});
 });

@@ -373,7 +373,7 @@ describe("findPendingUserMessage — queue-skip re-trigger detection", () => {
 
 		const pending = findPendingUserMessage(db, threadId);
 		expect(pending).not.toBeNull();
-		expect(pending!.id).toBe(pendingId);
+		expect(pending?.id).toBe(pendingId);
 	});
 
 	it("returns null once the pending message has been answered", () => {

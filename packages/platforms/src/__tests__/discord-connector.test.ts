@@ -439,12 +439,15 @@ describe("DiscordConnector", () => {
 		});
 
 		it("should produce only one intake per Discord message after double connect()", async () => {
-			const handlerRegistrations: Array<{ event: string; fn: Function }> = [];
+			const handlerRegistrations: Array<{
+				event: string;
+				fn: (...args: unknown[]) => unknown;
+			}> = [];
 			const mockClient = {
-				on: (event: string, fn: Function) => {
+				on: (event: string, fn: (...args: unknown[]) => unknown) => {
 					handlerRegistrations.push({ event, fn });
 				},
-				off: (event: string, fn: Function) => {
+				off: (event: string, fn: (...args: unknown[]) => unknown) => {
 					const idx = handlerRegistrations.findIndex((h) => h.event === event && h.fn === fn);
 					if (idx >= 0) handlerRegistrations.splice(idx, 1);
 				},

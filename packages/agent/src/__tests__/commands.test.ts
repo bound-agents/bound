@@ -608,11 +608,11 @@ describe("defineCommand implementations", () => {
 			} | null;
 
 			expect(row).not.toBeNull();
-			expect(row!.type).toBe("general");
-			expect(row!.status).toBe("proposed");
-			expect(row!.detail).toBe("Detailed description of the issue");
-			expect(row!.action).toBe("Recommended fix");
-			expect(row!.impact).toBe("Minor inconvenience");
+			expect(row?.type).toBe("general");
+			expect(row?.status).toBe("proposed");
+			expect(row?.detail).toBe("Detailed description of the issue");
+			expect(row?.action).toBe("Recommended fix");
+			expect(row?.impact).toBe("Minor inconvenience");
 
 			// Cleanup
 			if (row) db.run("DELETE FROM advisories WHERE id = ?", [row.id]);

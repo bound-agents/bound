@@ -230,7 +230,7 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 		const summaryCall = chatCalls.find((c) => c.purpose === "summary");
 		expect(summaryCall).toBeDefined();
 		// Either the system prompt or the user prompt must convey first-person perspective
-		const summaryContext = (summaryCall!.systemPrompt ?? "") + summaryCall!.userPrompt;
+		const summaryContext = (summaryCall?.systemPrompt ?? "") + summaryCall?.userPrompt;
 		const hasFirstPersonFraming =
 			summaryContext.toLowerCase().includes("first person") ||
 			summaryContext.toLowerCase().includes("your own") ||

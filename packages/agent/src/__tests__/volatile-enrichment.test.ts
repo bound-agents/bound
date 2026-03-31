@@ -675,7 +675,7 @@ describe("buildVolatileEnrichment — source resolution", () => {
 // ignoring threads.summary even though extractSummaryAndMemories() populates it.
 // Cross-thread conversational continuity depends on seeing those summaries.
 describe("buildCrossThreadDigest — includes thread summaries", () => {
-	const userId = "diag-user-" + Math.random().toString(36).slice(2, 8);
+	const userId = `diag-user-${Math.random().toString(36).slice(2, 8)}`;
 	const now = new Date().toISOString();
 
 	beforeEach(() => {
@@ -691,7 +691,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 	});
 
 	it("includes thread summary when populated", () => {
-		const threadId = "digest-thread-" + Math.random().toString(36).slice(2, 8);
+		const threadId = `digest-thread-${Math.random().toString(36).slice(2, 8)}`;
 		const summary = "The user and assistant discussed cross-thread memory persistence.";
 		db.run(
 			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -720,7 +720,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 	});
 
 	it("still works when thread has no summary (null)", () => {
-		const threadId = "digest-thread-nosummary-" + Math.random().toString(36).slice(2, 8);
+		const threadId = `digest-thread-nosummary-${Math.random().toString(36).slice(2, 8)}`;
 		db.run(
 			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			[

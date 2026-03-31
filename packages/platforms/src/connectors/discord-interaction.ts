@@ -370,7 +370,7 @@ export class DiscordInteractionConnector implements PlatformConnector {
 		// Use .values() to iterate attachment objects, not [key, value] entries.
 		const imageUrls: string[] = [];
 		for (const att of targetMessage.attachments
-			.filter((a: { contentType?: string }) => a.contentType?.startsWith("image/") ?? false)
+			.filter((a: { contentType?: string | null }) => a.contentType?.startsWith("image/") ?? false)
 			.values()) {
 			imageUrls.push((att as unknown as { url: string }).url);
 		}

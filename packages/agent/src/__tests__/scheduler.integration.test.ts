@@ -377,17 +377,17 @@ describe("Scheduler Integration", () => {
 		await waitFor(
 			() =>
 				(
-					db.query("SELECT run_count FROM tasks WHERE id = ?").get(taskId) as
-						| { run_count: number }
-						| null
+					db.query("SELECT run_count FROM tasks WHERE id = ?").get(taskId) as {
+						run_count: number;
+					} | null
 				)?.run_count === 1,
 			{ message: "task did not complete", timeoutMs: 5000 },
 		);
 		stop();
 
-		const updatedTask = db
-			.query("SELECT thread_id FROM tasks WHERE id = ?")
-			.get(taskId) as { thread_id: string | null } | null;
+		const updatedTask = db.query("SELECT thread_id FROM tasks WHERE id = ?").get(taskId) as {
+			thread_id: string | null;
+		} | null;
 
 		expect(updatedTask).not.toBeNull();
 		// The scheduler should have persisted the generated thread_id back
@@ -395,9 +395,10 @@ describe("Scheduler Integration", () => {
 		expect(typeof updatedTask?.thread_id).toBe("string");
 
 		// Verify the thread actually exists in the threads table
-		const thread = db
-			.query("SELECT id FROM threads WHERE id = ?")
-			.get(updatedTask!.thread_id!) as { id: string } | null;
+		// biome-ignore lint/style/noNonNullAssertion: asserted above
+		const thread = db.query("SELECT id FROM threads WHERE id = ?").get(updatedTask!.thread_id) as {
+			id: string;
+		} | null;
 		expect(thread).not.toBeNull();
 	});
 
@@ -456,9 +457,9 @@ describe("Scheduler Integration", () => {
 		await waitFor(
 			() =>
 				(
-					db.query("SELECT run_count FROM tasks WHERE id = ?").get(taskId) as
-						| { run_count: number }
-						| null
+					db.query("SELECT run_count FROM tasks WHERE id = ?").get(taskId) as {
+						run_count: number;
+					} | null
 				)?.run_count === 1,
 			{ message: "task did not complete", timeoutMs: 5000 },
 		);

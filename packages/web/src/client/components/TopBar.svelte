@@ -8,7 +8,6 @@ function navigate(hash: string): void {
 	window.location.hash = hash;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let currentHash = $state(window.location.hash);
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template

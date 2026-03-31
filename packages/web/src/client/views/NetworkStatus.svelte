@@ -26,7 +26,6 @@ interface NetworkData {
 	syncState: SyncStateInfo[];
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let networkData: NetworkData | null = $state(null);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let loading = $state(true);

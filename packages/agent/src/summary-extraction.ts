@@ -50,9 +50,7 @@ export async function extractSummaryAndMemories(
 			"You are an AI assistant reflecting on a conversation you just had. " +
 			"Write from your own first-person perspective (use 'I' or 'we'). " +
 			"Do not refer to yourself as 'the assistant'.";
-		const prompt =
-			"Write a 2-3 sentence summary of this conversation from your own perspective:\n\n" +
-			messageText;
+		const prompt = `Write a 2-3 sentence summary of this conversation from your own perspective:\n\n${messageText}`;
 
 		// Call LLM to generate summary
 		const chunks: string[] = [];
@@ -87,9 +85,7 @@ export async function extractSummaryAndMemories(
 				messages: [
 					{
 						role: "user",
-						content:
-							`What are up to 3 key things you did, learned, or resolved in this conversation? ` +
-							`Write each as a first-person statement on its own line starting with "- ":\n\n${summary}`,
+						content: `What are up to 3 key things you did, learned, or resolved in this conversation? Write each as a first-person statement on its own line starting with "- ":\n\n${summary}`,
 					},
 				],
 				max_tokens: 200,

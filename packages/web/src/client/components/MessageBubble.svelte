@@ -2,7 +2,6 @@
 import { renderMarkdown } from "../lib/markdown";
 
 const {
-	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	role,
 	content,
 	toolName = null,

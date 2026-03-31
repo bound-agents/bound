@@ -2439,7 +2439,7 @@ This skill reviews pull requests.`;
 	// [Advisory notification] line in its volatile context so it can continue work.
 	describe("advisory resolution notifications in volatile context", () => {
 		it("injects notification when agent's advisory is applied within 24h (AC-ADV1)", () => {
-			const localSiteId = "test-site-" + randomUUID().slice(0, 8);
+			const localSiteId = `test-site-${randomUUID().slice(0, 8)}`;
 			const localThreadId = randomUUID();
 			const localUserId = randomUUID();
 			const now = new Date().toISOString();
@@ -2507,7 +2507,7 @@ This skill reviews pull requests.`;
 			);
 
 			expect(volatileMsg).toBeDefined();
-			const content = volatileMsg!.content as string;
+			const content = volatileMsg?.content as string;
 			expect(content).toContain("Test advisory");
 			expect(content).toContain("applied");
 
@@ -2518,7 +2518,7 @@ This skill reviews pull requests.`;
 		});
 
 		it("does not inject notification for advisories resolved more than 24h ago (AC-ADV2)", () => {
-			const localSiteId = "test-site-" + randomUUID().slice(0, 8);
+			const localSiteId = `test-site-${randomUUID().slice(0, 8)}`;
 			const localThreadId = randomUUID();
 			const localUserId = randomUUID();
 			const now = new Date().toISOString();
@@ -2594,7 +2594,7 @@ This skill reviews pull requests.`;
 		});
 
 		it("deduplicates multiple advisories with the same title into one counted line (AC-ADV4)", () => {
-			const localSiteId = "test-site-" + randomUUID().slice(0, 8);
+			const localSiteId = `test-site-${randomUUID().slice(0, 8)}`;
 			const localThreadId = randomUUID();
 			const localUserId = randomUUID();
 			const now = new Date().toISOString();
@@ -2666,7 +2666,7 @@ This skill reviews pull requests.`;
 					m.content.includes("Advisory notification"),
 			);
 			expect(volatileMsg).toBeDefined();
-			const lines = (volatileMsg!.content as string)
+			const lines = (volatileMsg?.content as string)
 				.split("\n")
 				.filter((l) => l.includes("Advisory notification"));
 			expect(lines.length).toBe(1);
@@ -2680,7 +2680,7 @@ This skill reviews pull requests.`;
 		});
 
 		it("caps total advisory notifications at 5 even if more exist (AC-ADV5)", () => {
-			const localSiteId = "test-site-" + randomUUID().slice(0, 8);
+			const localSiteId = `test-site-${randomUUID().slice(0, 8)}`;
 			const localThreadId = randomUUID();
 			const localUserId = randomUUID();
 			const now = new Date().toISOString();
@@ -2751,7 +2751,7 @@ This skill reviews pull requests.`;
 					m.content.includes("Advisory notification"),
 			);
 			expect(volatileMsg).toBeDefined();
-			const notifLines = (volatileMsg!.content as string)
+			const notifLines = (volatileMsg?.content as string)
 				.split("\n")
 				.filter((l) => l.includes("Advisory notification"));
 			expect(notifLines.length).toBeLessThanOrEqual(5);
@@ -2763,8 +2763,8 @@ This skill reviews pull requests.`;
 		});
 
 		it("does not inject notification for advisories created by a different site (AC-ADV3)", () => {
-			const localSiteId = "test-site-" + randomUUID().slice(0, 8);
-			const otherSiteId = "other-site-" + randomUUID().slice(0, 8);
+			const localSiteId = `test-site-${randomUUID().slice(0, 8)}`;
+			const otherSiteId = `other-site-${randomUUID().slice(0, 8)}`;
 			const localThreadId = randomUUID();
 			const localUserId = randomUUID();
 			const now = new Date().toISOString();

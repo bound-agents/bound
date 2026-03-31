@@ -19,18 +19,15 @@ import {
 } from "../lib/file-tree";
 import { wsEvents } from "../lib/websocket";
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let tree: FileTreeNode[] = $state([]);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let loading = $state(true);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let error = $state<string | null>(null);
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 // biome-ignore lint/style/useConst: $state requires let
 let expandedPaths = $state(new SvelteSet<string>());
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let selectedPath = $state("/");
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
@@ -99,7 +96,6 @@ function toggleExpanded(path: string): void {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: passed to template
 function navigateToDirectory(path: string): void {
 	selectedPath = path;
 	// Ensure all ancestors are expanded in the tree sidebar
