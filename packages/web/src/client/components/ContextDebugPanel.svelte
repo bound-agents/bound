@@ -4,6 +4,9 @@ import { type ContextDebugTurn, api } from "../lib/api";
 // biome-ignore lint/style/useImportType: need wsEvents for typeof in Props
 import { wsEvents } from "../lib/websocket";
 import type { WebSocketMessage } from "../lib/websocket";
+import ContextBar from "./ContextBar.svelte";
+import ContextSectionList from "./ContextSectionList.svelte";
+import ContextSparkline from "./ContextSparkline.svelte";
 
 interface Props {
 	threadId: string;
@@ -96,6 +99,9 @@ const turnLabel = $derived(
 const isLatest = $derived(selectedTurnIdx < 0 || selectedTurnIdx === turns.length - 1);
 
 // biome-ignore lint/correctness/noUnusedVariables: Used in template
+const effectiveIdx = $derived(selectedTurnIdx >= 0 ? selectedTurnIdx : turns.length - 1);
+
+// biome-ignore lint/correctness/noUnusedVariables: Used in template
 function navigateTurn(direction: number): void {
 	if (direction < 0) {
 		if (selectedTurnIdx > 0) {
@@ -141,25 +147,48 @@ function navigateTurn(direction: number): void {
 		<div class="turn-summary">
 			<div class="summary-row">
 				<span>Estimated:</span>
-				<span>{selectedTurn?.context_debug.totalEstimated.toLocaleString()} tokens</span>
+				<span class="mono">{selectedTurn?.context_debug.totalEstimated.toLocaleString()} tokens</span>
 			</div>
-			<div class="summary-row">
-				<span>Actual:</span>
-				<span>{selectedTurn?.tokens_in.toLocaleString()} tokens</span>
-			</div>
+			{#if selectedTurn?.tokens_in}
+				<div class="summary-row">
+					<span>Actual (API):</span>
+					<span class="mono">{selectedTurn.tokens_in.toLocaleString()} tokens</span>
+				</div>
+				{@const diff = selectedTurn.tokens_in - selectedTurn.context_debug.totalEstimated}
+				{@const diffPct = ((diff / selectedTurn.context_debug.totalEstimated) * 100).toFixed(1)}
+				<div class="summary-row variance">
+					<span>Variance:</span>
+					<span class="mono">{diff > 0 ? "+" : ""}{diff.toLocaleString()} ({diffPct}%)</span>
+				</div>
+			{/if}
 			<div class="summary-row">
 				<span>Context window:</span>
-				<span>{selectedTurn?.context_debug.contextWindow.toLocaleString()}</span>
+				<span class="mono">{selectedTurn?.context_debug.contextWindow.toLocaleString()}</span>
 			</div>
 			{#if selectedTurn?.context_debug.budgetPressure}
 				<div class="budget-warning">Budget pressure active</div>
 			{/if}
 		</div>
 
-		<!-- Phase 5 visualization components will be inserted here -->
-		<!-- <ContextBar sections={selectedTurn?.context_debug.sections} contextWindow={selectedTurn?.context_debug.contextWindow} /> -->
-		<!-- <ContextSectionList sections={selectedTurn?.context_debug.sections} contextWindow={selectedTurn?.context_debug.contextWindow} /> -->
-		<!-- <ContextSparkline turns={turns} selectedIdx={effectiveIdx} /> -->
+		{#if selectedTurn}
+			<ContextBar
+				sections={selectedTurn.context_debug.sections}
+				contextWindow={selectedTurn.context_debug.contextWindow}
+			/>
+
+			<ContextSectionList
+				sections={selectedTurn.context_debug.sections}
+				contextWindow={selectedTurn.context_debug.contextWindow}
+			/>
+
+			<ContextSparkline
+				{turns}
+				selectedIdx={effectiveIdx}
+				onSelectTurn={(idx) => {
+					selectedTurnIdx = idx;
+				}}
+			/>
+		{/if}
 	{/if}
 </div>
 
@@ -236,6 +265,15 @@ function navigateTurn(direction: number): void {
 		justify-content: space-between;
 		padding: 4px 0;
 		font-size: 12px;
+	}
+
+	.mono {
+		font-family: var(--font-mono);
+	}
+
+	.variance {
+		font-size: 11px;
+		color: var(--text-muted);
 	}
 
 	.budget-warning {
