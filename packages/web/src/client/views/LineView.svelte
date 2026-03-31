@@ -86,6 +86,22 @@ const unsubscribeDebug = wsEvents.subscribe((events: WebSocketMessage[]) => {
 	}
 });
 
+// Handle thread navigation — reset context debug data when threadId changes
+$effect(() => {
+	const _tid = threadId; // track dependency
+	contextDebugTurns = [];
+	// Fetch initial context debug data for the new thread
+	api.getContextDebug(_tid)
+		.then((turns) => {
+			contextDebugTurns = turns;
+		})
+		.catch((error) => {
+			console.error("Failed to fetch context debug data:", error);
+			// On error, set empty array — rail shows with no branches (fallback per AC3.6)
+			contextDebugTurns = [];
+		});
+});
+
 async function pollMessages(): Promise<void> {
 	try {
 		const latest = await api.listMessages(threadId);
@@ -126,8 +142,6 @@ onMount(async () => {
 	try {
 		thread = await api.getThread(threadId);
 		messages = await api.listMessages(threadId);
-		const initialTurns = await api.getContextDebug(threadId);
-		contextDebugTurns = initialTurns;
 		connectWebSocket();
 		subscribeToThread(threadId);
 	} catch (error) {
