@@ -167,6 +167,7 @@ function hasAlert(threadId: string): boolean {
 
 					<!-- Line badge -->
 					<div class="line-badge" style="background: {color}">
+						<span class="badge-inner"></span>
 						<span class="badge-code">{code}</span>
 					</div>
 
@@ -349,12 +350,22 @@ function hasAlert(threadId: string): boolean {
 		z-index: 1;
 	}
 
+	.badge-inner {
+		position: absolute;
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		background: #fff;
+	}
+
 	.badge-code {
-		color: #fff;
+		color: #000;
 		font-family: var(--font-display);
 		font-size: 14px;
 		font-weight: 700;
 		line-height: 1;
+		position: relative;
+		z-index: 1;
 	}
 
 	/* Thread info column */
