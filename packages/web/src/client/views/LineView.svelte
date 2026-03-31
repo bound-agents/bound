@@ -3,12 +3,15 @@ import { onDestroy, onMount } from "svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import DebugPanelWrapper from "../components/DebugPanelWrapper.svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
+import InterchangeRail from "../components/InterchangeRail.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
 import MessageBubble from "../components/MessageBubble.svelte";
 import { api } from "../lib/api";
-import type { Thread } from "../lib/api";
+import type { ContextDebugTurn, Thread } from "../lib/api";
 import { modelStore } from "../lib/modelStore";
 import { navigateTo } from "../lib/router";
 import {
+	type WebSocketMessage,
 	connectWebSocket,
 	disconnectWebSocket,
 	subscribeToThread,
@@ -35,6 +38,10 @@ let fileInput = $state<HTMLInputElement | null>(null);
 let uploadStatus = $state<string | null>(null);
 let pendingFileId = $state<string | null>(null);
 let thread = $state<Thread | null>(null);
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
+let messagesEl = $state<HTMLDivElement | null>(null);
+let contextDebugTurns = $state<ContextDebugTurn[]>([]);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let statusPollInterval: ReturnType<typeof setInterval> | null = null;
@@ -62,6 +69,43 @@ const unsubscribeWs = wsEvents.subscribe((events) => {
 			}
 		}
 	}
+});
+
+// Subscribe to context:debug events for InterchangeRail
+const unsubscribeDebug = wsEvents.subscribe((events: WebSocketMessage[]) => {
+	if (events.length === 0) return;
+	const last = events[events.length - 1];
+	if (
+		last &&
+		last.type === "context:debug" &&
+		typeof last.data === "object" &&
+		last.data !== null
+	) {
+		const debugData = last.data as ContextDebugTurn & { thread_id?: string };
+		if (debugData.thread_id === threadId) {
+			const exists = contextDebugTurns.some((t) => t.turn_id === debugData.turn_id);
+			if (!exists) {
+				contextDebugTurns = [...contextDebugTurns, debugData];
+			}
+		}
+	}
+});
+
+// Handle thread navigation — reset context debug data when threadId changes
+$effect(() => {
+	const _tid = threadId; // track dependency
+	contextDebugTurns = [];
+	// Fetch initial context debug data for the new thread
+	api
+		.getContextDebug(_tid)
+		.then((turns) => {
+			contextDebugTurns = turns;
+		})
+		.catch((error) => {
+			console.error("Failed to fetch context debug data:", error);
+			// On error, set empty array — rail shows with no branches (fallback per AC3.6)
+			contextDebugTurns = [];
+		});
 });
 
 async function pollMessages(): Promise<void> {
@@ -117,6 +161,7 @@ onMount(async () => {
 
 onDestroy(() => {
 	unsubscribeWs();
+	unsubscribeDebug();
 	disconnectWebSocket();
 	if (pollInterval !== null) clearInterval(pollInterval);
 	if (statusPollInterval !== null) clearInterval(statusPollInterval);
@@ -228,18 +273,26 @@ function viewTitle(): string {
 			</button>
 		</div>
 
-	<div class="messages">
-		{#each messages as msg}
-			<MessageBubble role={msg.role} content={msg.content} toolName={msg.tool_name} modelId={msg.model_id} />
-		{/each}
-		{#if waiting}
-			<div class="waiting-indicator">
-				<span class="waiting-dot"></span>
-				<span class="waiting-dot"></span>
-				<span class="waiting-dot"></span>
-				<span class="waiting-label">Thinking...</span>
-			</div>
-		{/if}
+	<div class="board">
+		<div class="messages" bind:this={messagesEl}>
+			<InterchangeRail
+				threadColor={thread?.color ?? 0}
+				{messages}
+				{contextDebugTurns}
+				scrollContainer={messagesEl}
+			/>
+			{#each messages as msg}
+				<MessageBubble role={msg.role} content={msg.content} toolName={msg.tool_name} modelId={msg.model_id} createdAt={msg.created_at} />
+			{/each}
+			{#if waiting}
+				<div class="waiting-indicator">
+					<span class="waiting-dot"></span>
+					<span class="waiting-dot"></span>
+					<span class="waiting-dot"></span>
+					<span class="waiting-label">Thinking...</span>
+				</div>
+			{/if}
+		</div>
 	</div>
 
 	<div class="bottom-area">
@@ -295,7 +348,7 @@ function viewTitle(): string {
 		flex-direction: column;
 		flex: 1;
 		min-height: 0;
-		max-width: 48rem;
+		max-width: 42rem;
 		width: 100%;
 		margin: 0 auto;
 		padding: 24px;
@@ -305,9 +358,9 @@ function viewTitle(): string {
 
 	.header {
 		display: flex;
-		gap: 16px;
+		gap: 10px;
 		align-items: center;
-		margin-bottom: 24px;
+		margin-bottom: 12px;
 		flex-shrink: 0;
 	}
 
@@ -386,16 +439,27 @@ function viewTitle(): string {
 		background: rgba(255, 23, 68, 0.2);
 	}
 
+	.board {
+		background: rgba(10, 10, 20, 0.5);
+		border: 1px solid var(--bg-surface);
+		border-radius: 8px;
+		flex: 1;
+		min-height: 0;
+		overflow: hidden;
+		position: relative;
+	}
+
 	.messages {
 		flex: 1;
 		overflow-y: auto;
-		padding-right: 8px;
-		min-height: 0;
+		padding: 12px 8px 12px 40px;
+		height: 100%;
+		position: relative;
 	}
 
 	.bottom-area {
 		flex-shrink: 0;
-		padding-top: 16px;
+		padding-top: 10px;
 		border-top: 1px solid var(--bg-surface);
 	}
 
@@ -446,7 +510,7 @@ function viewTitle(): string {
 
 	textarea {
 		flex: 1;
-		padding: 12px 16px;
+		padding: 8px 12px;
 		background: var(--bg-secondary);
 		border: 1px solid var(--bg-surface);
 		color: var(--text-primary);
@@ -454,7 +518,7 @@ function viewTitle(): string {
 		font-family: var(--font-body);
 		font-size: var(--text-base);
 		resize: vertical;
-		min-height: 56px;
+		min-height: 44px;
 		max-height: 180px;
 		transition: border-color 0.2s ease;
 		line-height: 1.5;

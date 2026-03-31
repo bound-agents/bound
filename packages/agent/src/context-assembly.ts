@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BackendCapabilities, ContentBlock, LLMMessage } from "@bound/llm";
-import type { ContextDebugInfo, ContextSection, Message } from "@bound/shared";
+import type { ContextDebugInfo, ContextSection, CrossThreadSource, Message } from "@bound/shared";
 import { countContentTokens, countTokens } from "@bound/shared";
 import { getFileThreadNotificationMessage, getLastThreadForFile } from "./file-thread-tracker";
 import {
@@ -800,6 +800,7 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 	});
 
 	// Add volatile context at the end per spec R-U30
+	let crossThreadSources: CrossThreadSource[] | undefined;
 	if (!noHistory) {
 		const volatileLines: string[] = [];
 		volatileLines.push(`User ID: ${userId}, Thread ID: ${threadId}`);
@@ -869,10 +870,13 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 		enrichmentEndIdx = volatileLines.length;
 
 		// Include cross-thread digest
-		const crossThreadDigest = buildCrossThreadDigest(db, userId);
-		if (crossThreadDigest) {
+		const crossThreadResult = buildCrossThreadDigest(db, userId, threadId);
+		if (crossThreadResult.text) {
 			volatileLines.push("");
-			volatileLines.push(crossThreadDigest);
+			volatileLines.push(crossThreadResult.text);
+		}
+		if (crossThreadResult.sources.length > 0) {
+			crossThreadSources = crossThreadResult.sources;
 		}
 
 		// R-E20: Inject cross-thread file modification notifications (capped at 10)
@@ -1242,6 +1246,7 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 					sections,
 					budgetPressure,
 					truncated: truncatedCount,
+					...(crossThreadSources ? { crossThreadSources } : {}),
 				},
 			};
 		}
@@ -1261,6 +1266,7 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 			sections,
 			budgetPressure,
 			truncated: truncatedCount,
+			...(crossThreadSources ? { crossThreadSources } : {}),
 		},
 	};
 }

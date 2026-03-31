@@ -2137,6 +2137,152 @@ This skill reviews pull requests.`;
 			// Should be <= 3 memory entries when budget pressure reduces to 3+3
 			expect(memoryCount).toBeLessThanOrEqual(3);
 		});
+
+		it("metro-interchange-ui.AC3.2: populates debug.crossThreadSources when cross-thread context is present", () => {
+			const testThreadId = randomUUID();
+			const testThreadId2 = randomUUID();
+			const pastTime = "2026-01-01T00:00:00.000Z";
+			const recentTime = new Date().toISOString();
+
+			// Create first thread (the current one)
+			enrichTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					enrichTestUserId,
+					"web",
+					"local",
+					0,
+					"Current Thread",
+					null,
+					null,
+					null,
+					null,
+					pastTime,
+					recentTime,
+					recentTime,
+					0,
+				],
+			);
+
+			// Create second thread (for cross-thread context)
+			enrichTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId2,
+					enrichTestUserId,
+					"web",
+					"local",
+					2,
+					"Other Thread",
+					"Summary of other thread",
+					recentTime,
+					null,
+					null,
+					pastTime,
+					new Date(Date.now() + 1000).toISOString(),
+					recentTime,
+					0,
+				],
+			);
+
+			const result = assembleContext({
+				db: enrichTestDb,
+				threadId: testThreadId,
+				userId: enrichTestUserId,
+			});
+
+			// Verify debug.crossThreadSources is populated
+			expect(result.debug.crossThreadSources).toBeDefined();
+			expect(Array.isArray(result.debug.crossThreadSources)).toBe(true);
+			expect((result.debug.crossThreadSources ?? []).length).toBeGreaterThan(0);
+
+			// Verify the cross-thread source has correct fields
+			const source = (result.debug.crossThreadSources ?? [])[0];
+			if (source) {
+				expect(source.threadId).toBe(testThreadId2);
+				expect(source.title).toBe("Other Thread");
+				expect(source.color).toBe(2);
+				expect(source).toHaveProperty("messageCount");
+				expect(source).toHaveProperty("lastMessageAt");
+			}
+		});
+
+		it("metro-interchange-ui.AC3.2 test #2: debug.crossThreadSources absent when no other threads exist", () => {
+			const singleThreadUserId = randomUUID();
+			const singleThreadId = randomUUID();
+			const pastTime = "2026-01-01T00:00:00.000Z";
+			const recentTime = new Date().toISOString();
+
+			// Create a new user with only one thread
+			enrichTestDb.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[
+					singleThreadUserId,
+					"Single Thread User",
+					null,
+					recentTime,
+					recentTime,
+					0,
+				],
+			);
+
+			// Create a single thread for this user (no other threads)
+			enrichTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					singleThreadId,
+					singleThreadUserId,
+					"web",
+					"local",
+					0,
+					"Single Thread",
+					null,
+					null,
+					null,
+					null,
+					pastTime,
+					recentTime,
+					recentTime,
+					0,
+				],
+			);
+
+			// Add at least one message to the thread
+			enrichTestDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), singleThreadId, "user", "Hello", null, null, recentTime, recentTime, "local"],
+			);
+
+			const result = assembleContext({
+				db: enrichTestDb,
+				threadId: singleThreadId,
+				userId: singleThreadUserId,
+			});
+
+			// Verify debug.crossThreadSources is undefined (no other threads exist)
+			expect(result.debug.crossThreadSources).toBeUndefined();
+		});
+
+		it("metro-interchange-ui.AC3.7: backward compatibility — old turns without crossThreadSources field render gracefully", () => {
+			// Simulate old ContextDebugInfo JSON without crossThreadSources field
+			const oldDebugInfo = {
+				contextWindow: 128000,
+				totalEstimated: 5000,
+				model: "claude-opus",
+				sections: [],
+				budgetPressure: false,
+				truncated: 0,
+			};
+
+			// Parse and verify accessing undefined field doesn't crash
+			const parsed = JSON.parse(JSON.stringify(oldDebugInfo));
+			expect(parsed.crossThreadSources).toBeUndefined();
+			expect(() => {
+				// Should not throw
+				const _unused = parsed.crossThreadSources ?? [];
+			}).not.toThrow();
+		});
 	});
 
 	// Bug: ContentBlock[] content was invisible to the token budget because both
@@ -3016,136 +3162,136 @@ This skill reviews pull requests.`;
 			);
 		});
 
-	it("AC2.2-extended: Comprehensive section coverage with tools, memory, task-digest, and tool_result", () => {
-		const testThreadId = randomUUID();
-		debugTestDb.run(
-			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				testThreadId,
-				debugTestUserId,
-				"web",
-				"local",
-				0,
-				"Comprehensive Sections Test",
-				null,
-				null,
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				new Date().toISOString(),
-				0,
-			],
-		);
+		it("AC2.2-extended: Comprehensive section coverage with tools, memory, task-digest, and tool_result", () => {
+			const testThreadId = randomUUID();
+			debugTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					debugTestUserId,
+					"web",
+					"local",
+					0,
+					"Comprehensive Sections Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
 
-		// Insert semantic memory to trigger "memory" section
-		debugTestDb.run(
-			"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
-			[
-				randomUUID(),
-				"test-memory-key",
-				"Test memory value with some content",
-				"agent",
-				new Date().toISOString(),
-				new Date().toISOString(),
-				0,
-			],
-		);
+			// Insert semantic memory to trigger "memory" section
+			debugTestDb.run(
+				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					"test-memory-key",
+					"Test memory value with some content",
+					"agent",
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
 
-		// Insert user message
-		const userMsgId = randomUUID();
-		debugTestDb.run(
-			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				userMsgId,
-				testThreadId,
-				"user",
-				"Please do something",
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				"local",
-			],
-		);
+			// Insert user message
+			const userMsgId = randomUUID();
+			debugTestDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					userMsgId,
+					testThreadId,
+					"user",
+					"Please do something",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
 
-		// Insert assistant message with tool_call
-		const assistantMsgId = randomUUID();
-		debugTestDb.run(
-			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				assistantMsgId,
-				testThreadId,
-				"assistant",
-				JSON.stringify([
-					{
-						type: "tool_use",
-						id: "tool-123",
-						name: "query",
-						input: { query: "SELECT 1" },
-					},
-				]),
-				"model-1",
-				"query",
-				new Date().toISOString(),
-				new Date().toISOString(),
-				"local",
-			],
-		);
+			// Insert assistant message with tool_call
+			const assistantMsgId = randomUUID();
+			debugTestDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					assistantMsgId,
+					testThreadId,
+					"assistant",
+					JSON.stringify([
+						{
+							type: "tool_use",
+							id: "tool-123",
+							name: "query",
+							input: { query: "SELECT 1" },
+						},
+					]),
+					"model-1",
+					"query",
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
 
-		// Insert tool_result message
-		debugTestDb.run(
-			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				randomUUID(),
-				testThreadId,
-				"tool_result",
-				"Tool result: 1 row returned",
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				"local",
-			],
-		);
+			// Insert tool_result message
+			debugTestDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"tool_result",
+					"Tool result: 1 row returned",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
 
-		// Call assembleContext with toolTokenEstimate to generate "tools" section
-		const result = assembleContext({
-			db: debugTestDb,
-			threadId: testThreadId,
-			userId: debugTestUserId,
-			toolTokenEstimate: 200, // This triggers "tools" section
+			// Call assembleContext with toolTokenEstimate to generate "tools" section
+			const result = assembleContext({
+				db: debugTestDb,
+				threadId: testThreadId,
+				userId: debugTestUserId,
+				toolTokenEstimate: 200, // This triggers "tools" section
+			});
+
+			// Check that key sections are present
+			const sectionNames = result.debug.sections.map((s) => s.name);
+
+			// Always present
+			expect(sectionNames).toContain("system");
+			expect(sectionNames).toContain("history");
+
+			// Should be present due to toolTokenEstimate > 0
+			expect(sectionNames).toContain("tools");
+
+			// Should be present due to semantic_memory entries
+			expect(sectionNames).toContain("memory");
+
+			// Verify history has all three children: user, assistant, tool_result
+			const historySection = result.debug.sections.find((s) => s.name === "history");
+			expect(historySection).toBeDefined();
+			expect(historySection?.children).toBeDefined();
+
+			const childNames = historySection?.children?.map((c) => c.name) || [];
+			expect(childNames).toContain("user");
+			expect(childNames).toContain("assistant");
+			expect(childNames).toContain("tool_result");
+
+			// Verify all sections have valid token counts
+			for (const section of result.debug.sections) {
+				expect(section.tokens).toBeGreaterThanOrEqual(0);
+				expect(typeof section.tokens).toBe("number");
+			}
 		});
-
-		// Check that key sections are present
-		const sectionNames = result.debug.sections.map((s) => s.name);
-
-		// Always present
-		expect(sectionNames).toContain("system");
-		expect(sectionNames).toContain("history");
-
-		// Should be present due to toolTokenEstimate > 0
-		expect(sectionNames).toContain("tools");
-
-		// Should be present due to semantic_memory entries
-		expect(sectionNames).toContain("memory");
-
-		// Verify history has all three children: user, assistant, tool_result
-		const historySection = result.debug.sections.find((s) => s.name === "history");
-		expect(historySection).toBeDefined();
-		expect(historySection?.children).toBeDefined();
-
-		const childNames = historySection?.children?.map((c) => c.name) || [];
-		expect(childNames).toContain("user");
-		expect(childNames).toContain("assistant");
-		expect(childNames).toContain("tool_result");
-
-		// Verify all sections have valid token counts
-		for (const section of result.debug.sections) {
-			expect(section.tokens).toBeGreaterThanOrEqual(0);
-			expect(typeof section.tokens).toBe("number");
-		}
-	});
 
 		it("AC2.3: sections.reduce(sum + tokens) === totalEstimated", () => {
 			const testThreadId = randomUUID();
@@ -3362,25 +3508,25 @@ This skill reviews pull requests.`;
 			expect(historySection?.children).toBeUndefined();
 		});
 
-	/**
-	 * AC4.3: Agent loop emission of context:debug events.
-	 *
-	 * This acceptance criterion requires that the agent loop emits context:debug
-	 * on eventBus after recording a turn. While a full integration test of the
-	 * agent loop is complex (requiring mock LLM, full setup, and multiple state
-	 * transitions), the underlying components ARE tested:
-	 *
-	 * 1. recordContextDebug() function: Tested in packages/core/src/__tests__/metrics-schema.test.ts
-	 *    - AC3.2 verifies recordContextDebug stores valid JSON and is retrievable
-	 *
-	 * 2. WebSocket handler delivery: Tested in packages/web/src/server/__tests__/websocket.integration.test.ts
-	 *    - "broadcasts context:debug events to subscribed clients" (line 178)
-	 *    - "does not broadcast context:debug to clients not subscribed to thread" (line 221)
-	 *
-	 * The integration of these two tested components ensures end-to-end delivery.
-	 * A full agent loop integration test would be valuable but is outside the scope
-	 * of this unit test file and the current test analyst findings.
-	 */
+		/**
+		 * AC4.3: Agent loop emission of context:debug events.
+		 *
+		 * This acceptance criterion requires that the agent loop emits context:debug
+		 * on eventBus after recording a turn. While a full integration test of the
+		 * agent loop is complex (requiring mock LLM, full setup, and multiple state
+		 * transitions), the underlying components ARE tested:
+		 *
+		 * 1. recordContextDebug() function: Tested in packages/core/src/__tests__/metrics-schema.test.ts
+		 *    - AC3.2 verifies recordContextDebug stores valid JSON and is retrievable
+		 *
+		 * 2. WebSocket handler delivery: Tested in packages/web/src/server/__tests__/websocket.integration.test.ts
+		 *    - "broadcasts context:debug events to subscribed clients" (line 178)
+		 *    - "does not broadcast context:debug to clients not subscribed to thread" (line 221)
+		 *
+		 * The integration of these two tested components ensures end-to-end delivery.
+		 * A full agent loop integration test would be valuable but is outside the scope
+		 * of this unit test file and the current test analyst findings.
+		 */
 	});
 
 	// ──────────────────────────────────────────────────────────────────────

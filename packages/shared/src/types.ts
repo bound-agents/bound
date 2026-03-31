@@ -415,6 +415,14 @@ export interface ContextSection {
 	children?: ContextSection[];
 }
 
+export interface CrossThreadSource {
+	threadId: string;
+	title: string;
+	color: number;
+	messageCount: number;
+	lastMessageAt: string;
+}
+
 export interface ContextDebugInfo {
 	contextWindow: number;
 	totalEstimated: number;
@@ -422,4 +430,5 @@ export interface ContextDebugInfo {
 	sections: ContextSection[];
 	budgetPressure: boolean;
 	truncated: number;
+	crossThreadSources?: CrossThreadSource[];
 }
