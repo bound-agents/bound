@@ -396,6 +396,14 @@ export function applySchema(db: Database): void {
 		/* already exists */
 	}
 
+	// Add origin_thread_id column to tasks (tracks the conversation that scheduled the task,
+	// separate from thread_id which is the execution thread)
+	try {
+		db.run("ALTER TABLE tasks ADD COLUMN origin_thread_id TEXT");
+	} catch {
+		/* already exists */
+	}
+
 	db.run(`
 		CREATE INDEX IF NOT EXISTS idx_memory_modified ON semantic_memory(modified_at DESC)
 	`);

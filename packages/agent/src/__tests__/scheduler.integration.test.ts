@@ -400,4 +400,80 @@ describe("Scheduler Integration", () => {
 			.get(updatedTask!.thread_id!) as { id: string } | null;
 		expect(thread).not.toBeNull();
 	});
+
+	it("creates separate execution thread when task has origin_thread_id", async () => {
+		const taskId = randomUUID();
+		const originThreadId = randomUUID();
+		const now = new Date().toISOString();
+		const pastTime = new Date(Date.now() - 60000).toISOString();
+
+		// Create the origin thread (the conversation that scheduled the task)
+		db.exec(`
+			INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted)
+			VALUES ('${originThreadId}', 'user-1', 'web', 'test', 0, 'Origin Conversation', NULL, NULL, NULL, NULL, '${now}', '${now}', '${now}', 0)
+		`);
+
+		// Insert task with origin_thread_id set but thread_id = NULL
+		// (simulating what the schedule command should do)
+		db.exec(`
+			INSERT INTO tasks (
+				id, type, status, trigger_spec, payload, thread_id, origin_thread_id,
+				claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+				run_count, max_runs, requires, model_hint, no_history,
+				inject_mode, depends_on, require_success, alert_threshold,
+				consecutive_failures, event_depth, no_quiescence,
+				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+			) VALUES (
+				'${taskId}', 'deferred', 'pending', 'in 10m', 'Do something', NULL, '${originThreadId}',
+				NULL, NULL, NULL, '${pastTime}', NULL,
+				0, NULL, NULL, NULL, 0,
+				'status', NULL, 0, 5,
+				0, 0, 0,
+				NULL, NULL, NULL, '${now}', 'system', '${now}', 0
+			)
+		`);
+
+		const agentLoopFactory = (): { run: () => Promise<AgentLoopResult> } => ({
+			run: async (): Promise<AgentLoopResult> => ({
+				messagesCreated: 1,
+				toolCallsMade: 0,
+				filesChanged: 0,
+			}),
+		});
+
+		const localCtx = {
+			...appContext,
+			config: {
+				allowlist: [],
+				modelBackends: { backends: [], default: "" },
+			},
+		};
+
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		const scheduler = new Scheduler(localCtx as any, agentLoopFactory);
+		const { stop } = scheduler.start(100);
+
+		await waitFor(
+			() =>
+				(
+					db.query("SELECT run_count FROM tasks WHERE id = ?").get(taskId) as
+						| { run_count: number }
+						| null
+				)?.run_count === 1,
+			{ message: "task did not complete", timeoutMs: 5000 },
+		);
+		stop();
+
+		const updatedTask = db
+			.query("SELECT thread_id, origin_thread_id FROM tasks WHERE id = ?")
+			.get(taskId) as { thread_id: string | null; origin_thread_id: string | null } | null;
+
+		expect(updatedTask).not.toBeNull();
+		// Execution thread should be created and persisted
+		expect(updatedTask?.thread_id).not.toBeNull();
+		// Origin thread reference should be preserved
+		expect(updatedTask?.origin_thread_id).toBe(originThreadId);
+		// Execution thread must be DIFFERENT from origin thread
+		expect(updatedTask?.thread_id).not.toBe(originThreadId);
+	});
 });

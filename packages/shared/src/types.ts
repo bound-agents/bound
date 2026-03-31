@@ -89,6 +89,7 @@ export interface Task {
 	trigger_spec: string;
 	payload: string | null;
 	thread_id: string | null;
+	origin_thread_id: string | null;
 	claimed_by: string | null;
 	claimed_at: string | null;
 	lease_id: string | null;
