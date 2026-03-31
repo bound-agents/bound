@@ -224,7 +224,7 @@ onDestroy(() => {
 	{:else}
 		<div class="files-browser">
 			<aside class="tree-sidebar">
-				{#each tree as node}
+				{#each tree.filter((n) => n.type === "dir") as node}
 					<TreeNode
 						{node}
 						{expandedPaths}

@@ -37,6 +37,7 @@ const {
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 const isExpanded = $derived(expandedPaths.has(node.fullPath));
 const isDir = $derived(node.type === "dir");
+const hasChildDirs = $derived(isDir && node.children.some((c) => c.type === "dir"));
 const nodeName = $derived(node.name);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 const IconComponent = $derived(getFileIcon(nodeName));
@@ -79,10 +80,12 @@ function handleDownload(e: Event) {
 		<div class="node-content">
 			{#if isDir}
 				<div class="expand-button">
-					{#if isExpanded}
-						<ChevronDown size={16} />
-					{:else}
-						<ChevronRight size={16} />
+					{#if hasChildDirs}
+						{#if isExpanded}
+							<ChevronDown size={16} />
+						{:else}
+							<ChevronRight size={16} />
+						{/if}
 					{/if}
 				</div>
 				<div class="node-icon">
@@ -117,7 +120,7 @@ function handleDownload(e: Event) {
 
 	{#if isDir && isExpanded}
 		<div class="children">
-			{#each node.children as child}
+			{#each node.children.filter((c) => c.type === "dir") as child}
 				<TreeNode
 					node={child}
 					{expandedPaths}
