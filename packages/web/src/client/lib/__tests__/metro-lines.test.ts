@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { getLineColor, getLineCode, LINE_COLORS, LINE_CODES } from "../metro-lines";
+import { getLineCode, getLineColor } from "../metro-lines";
 
 describe("getLineColor", () => {
 	it("returns valid distinct hex color for indices 0-9", () => {
