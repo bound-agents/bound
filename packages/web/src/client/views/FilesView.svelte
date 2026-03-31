@@ -262,6 +262,7 @@ onDestroy(() => {
 <style>
 	.files-view {
 		padding: 32px 40px;
+		width: 100%;
 		max-width: 1120px;
 		margin: 0 auto;
 		flex: 1;
