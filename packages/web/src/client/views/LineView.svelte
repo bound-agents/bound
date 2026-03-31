@@ -454,9 +454,16 @@ function viewTitle(): string {
 	.messages {
 		flex: 1;
 		overflow-y: auto;
-		padding: 12px 8px 48px 40px;
+		padding: 12px 8px 0 40px;
 		min-height: 0;
 		position: relative;
+	}
+
+	.messages::after {
+		content: "";
+		display: block;
+		height: 32px;
+		flex-shrink: 0;
 	}
 
 	.bottom-area {
