@@ -116,12 +116,35 @@ function handleStationClick(source: CrossThreadSource, event: MouseEvent): void 
 	const containerRect = scrollContainer?.getBoundingClientRect();
 	if (!containerRect) return;
 
-	popover = {
-		visible: true,
-		x: rect.right - containerRect.left + 8,
-		y: rect.top - containerRect.top + (scrollContainer?.scrollTop ?? 0) - 8,
-		source,
-	};
+	const x = rect.right - containerRect.left + 8;
+	const y =
+		rect.top - containerRect.top + (scrollContainer?.scrollTop ?? 0) - 8;
+
+	// Show popover immediately with snapshot data
+	popover = { visible: true, x, y, source: { ...source } };
+
+	// Fetch live thread data to update title and timestamps
+	Promise.all([
+		fetch(`/api/threads/${source.threadId}`).then((r) =>
+			r.ok ? r.json() : null,
+		),
+		fetch(`/api/threads/${source.threadId}/messages`).then((r) =>
+			r.ok ? r.json() : null,
+		),
+	])
+		.then(([thread, msgs]) => {
+			if (!popover.visible) return;
+			popover = {
+				...popover,
+				source: {
+					...source,
+					title: thread?.title || source.title,
+					messageCount: Array.isArray(msgs) ? msgs.length : source.messageCount,
+					lastMessageAt: thread?.last_message_at ?? source.lastMessageAt,
+				},
+			};
+		})
+		.catch(() => {});
 }
 
 function closePopover(): void {
@@ -195,12 +218,13 @@ function gradientId(branchIdx: number, sourceIdx: number): string {
 			{@const sourceCode = getLineCode(source.color)}
 
 			<!-- Horizontal branch line with gradient -->
+			{@const gradUrl = `url(#${gradientId(bi, si)})`}
 			<line
 				x1="12"
 				y1={branchY}
 				x2="28"
 				y2={branchY}
-				stroke="url(#{gradientId(bi, si)})"
+				stroke={gradUrl}
 				stroke-width="3"
 				stroke-linecap="round"
 			/>
