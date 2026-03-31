@@ -23,8 +23,12 @@ export function writeOutbox(
 	maxPayloadBytes: number = MAX_PAYLOAD_BYTES_DEFAULT,
 ): void {
 	enforcePayloadLimit(entry.payload, maxPayloadBytes);
+	// INSERT OR IGNORE: when idempotency_key + target_site_id matches an
+	// existing row (via idx_relay_outbox_idempotency), the duplicate is
+	// silently discarded. Entries with NULL idempotency_key are never
+	// deduplicated (partial index excludes NULLs).
 	db.run(
-		`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, created_at, expires_at, delivered)
+		`INSERT OR IGNORE INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, created_at, expires_at, delivered)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
 		[
 			entry.id,
