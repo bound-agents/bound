@@ -354,7 +354,10 @@ export class DiscordInteractionConnector implements PlatformConnector {
 			interaction.channel && "name" in interaction.channel
 				? `#${interaction.channel.name}`
 				: "unknown channel";
-		const guildName = interaction.guild?.name ?? "DM";
+		// Use guild name if cached, fall back to guildId, then "DM" only if truly a DM
+		const guildName =
+			interaction.guild?.name ??
+			((interaction as unknown as { guildId?: string }).guildId || "DM");
 		const timestamp = targetMessage.createdAt?.toISOString() ?? new Date().toISOString();
 
 		const filingPrompt = [

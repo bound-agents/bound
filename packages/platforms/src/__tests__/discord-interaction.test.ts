@@ -999,6 +999,62 @@ describe("DiscordInteractionConnector", () => {
 			expect(changeLogEntries.length).toBeGreaterThan(0);
 		});
 
+		it("should show guild name from guildId when guild object is null (not cached)", async () => {
+			const mockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "File for Later",
+				deferReply: async () => {},
+				editReply: async () => {},
+				user: { id: "discord-user-123", displayName: "Alice", username: "alice" },
+				targetMessage: {
+					id: "msg123",
+					content: "guild message content",
+					author: {
+						id: "author-id",
+						bot: false,
+						displayName: "Bob",
+						username: "bob",
+					},
+					attachments: { some: () => false },
+					createdAt: new Date("2026-03-30T14:22:00.000Z"),
+				},
+				channel: { name: "general" },
+				// guild is null (not cached) but guildId is set — this is normal in Discord.js
+				guild: null,
+				guildId: "123456789012345678",
+			};
+
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const mockClient = {
+				application: { commands: { create: async () => {} } },
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") onInteractionCreateHandlers.push(handler);
+				},
+				off: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			const messages = db.query("SELECT * FROM messages WHERE role = 'user'").all() as unknown[];
+			expect(messages.length).toBe(1);
+
+			const msg = messages[0] as { content: string };
+			// Must NOT say "DM" — this is a guild interaction
+			expect(msg.content).not.toContain("in DM");
+			// Should include the guild ID as fallback
+			expect(msg.content).toContain("123456789012345678");
+		});
+
 		it("AC3.4: intake relay — should write relay_outbox with platform = discord-interaction", async () => {
 			let syncTriggerEmitted = false;
 			eventBus.on("sync:trigger", () => {
