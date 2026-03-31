@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { TypedEventEmitter } from "../event-emitter.js";
-import type { Message } from "../types.js";
+import type { ContextDebugInfo, Message } from "../types.js";
 
 describe("TypedEventEmitter", () => {
 	let emitter: TypedEventEmitter;
@@ -154,5 +154,42 @@ describe("TypedEventEmitter", () => {
 
 		expect(resultWithListener).toBe(true);
 		expect(resultWithoutListener).toBe(false);
+	});
+
+	it("emits and receives context:debug events", () => {
+		let receivedData:
+			| {
+					thread_id: string;
+					turn_id: number;
+					debug: ContextDebugInfo;
+			  }
+			| undefined;
+
+		const mockDebugInfo: ContextDebugInfo = {
+			contextWindow: 200000,
+			totalEstimated: 15000,
+			model: "claude-3-5-sonnet",
+			sections: [
+				{ name: "system", tokens: 500 },
+				{ name: "history", tokens: 14000 },
+			],
+			budgetPressure: false,
+			truncated: 0,
+		};
+
+		emitter.on("context:debug", (data) => {
+			receivedData = data;
+		});
+
+		emitter.emit("context:debug", {
+			thread_id: "thread-1",
+			turn_id: 42,
+			debug: mockDebugInfo,
+		});
+
+		expect(receivedData).toBeDefined();
+		expect(receivedData?.thread_id).toBe("thread-1");
+		expect(receivedData?.turn_id).toBe(42);
+		expect(receivedData?.debug).toEqual(mockDebugInfo);
 	});
 });
