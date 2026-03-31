@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { LLMBackend } from "@bound/llm";
-import type { Result } from "@bound/shared";
+import type { CrossThreadSource, Result } from "@bound/shared";
 
 export interface ExtractionResult {
 	summaryGenerated: boolean;
@@ -125,26 +125,34 @@ export async function extractSummaryAndMemories(
 	}
 }
 
-export function buildCrossThreadDigest(db: Database, userId: string): string {
+export function buildCrossThreadDigest(
+	db: Database,
+	userId: string,
+	excludeThreadId?: string,
+): { text: string; sources: CrossThreadSource[] } {
 	try {
 		// Get recent threads for user, including the summary field for continuity
+		const sql = excludeThreadId
+			? "SELECT id, title, color, last_message_at, summary FROM threads WHERE user_id = ? AND id != ? AND deleted = 0 ORDER BY last_message_at DESC LIMIT 5"
+			: "SELECT id, title, color, last_message_at, summary FROM threads WHERE user_id = ? AND deleted = 0 ORDER BY last_message_at DESC LIMIT 5";
+		const params = excludeThreadId ? [userId, excludeThreadId] : [userId];
 		const threads = db
-			.prepare(
-				"SELECT id, title, last_message_at, summary FROM threads WHERE user_id = ? AND deleted = 0 ORDER BY last_message_at DESC LIMIT 5",
-			)
-			.all(userId) as Array<{
+			.prepare(sql)
+			.all(...params) as Array<{
 			id: string;
 			title: string | null;
+			color: number;
 			last_message_at: string;
 			summary: string | null;
 		}>;
 
 		if (threads.length === 0) {
-			return "No recent activity.";
+			return { text: "No recent activity.", sources: [] };
 		}
 
 		// Build digest — include summary so the agent can continue prior conversations
 		const lines: string[] = [];
+		const sources: CrossThreadSource[] = [];
 		lines.push("Recent Activity Digest:");
 		lines.push("");
 
@@ -165,11 +173,19 @@ export function buildCrossThreadDigest(db: Database, userId: string): string {
 					thread.summary.length > 300 ? `${thread.summary.slice(0, 297)}...` : thread.summary;
 				lines.push(`  Summary: ${truncated}`);
 			}
+
+			sources.push({
+				threadId: thread.id,
+				title,
+				color: thread.color,
+				messageCount: messageCount.count,
+				lastMessageAt: thread.last_message_at,
+			});
 		}
 
-		return lines.join("\n");
+		return { text: lines.join("\n"), sources };
 	} catch {
-		return "Error building digest.";
+		return { text: "Error building digest.", sources: [] };
 	}
 }
 
