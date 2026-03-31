@@ -759,8 +759,10 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 		}
 	}
 
-	// Track system section tokens
-	const systemTokens = assembled.reduce((sum, msg) => sum + countContentTokens(msg.content), 0);
+	// Track system section tokens (only messages before skill injection)
+	const systemTokens = assembled
+		.slice(0, systemMsgCount)
+		.reduce((sum, msg) => sum + countContentTokens(msg.content), 0);
 	sections.push({ name: "system", tokens: systemTokens });
 
 	// Track skill section if a skill message was added
@@ -1058,9 +1060,6 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 
 			if (noHistMemTokens > 0) sections.push({ name: "memory", tokens: noHistMemTokens });
 			if (noHistTaskTokens > 0) sections.push({ name: "task-digest", tokens: noHistTaskTokens });
-		} else {
-			// noHistory with no enrichment content — add empty history section
-			sections.push({ name: "history", tokens: 0 });
 		}
 	}
 
@@ -1128,6 +1127,26 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 						role: "system",
 						content: shortStandaloneLines.join("\n"),
 					};
+				}
+			}
+
+			// Re-count memory and task-digest sections after budget pressure rebuild
+			// Find and update the memory, task-digest, and volatile-other entries in sections
+			const shortMemTokens = shortDelta.length > 0 ? countTokens(shortDelta.join("\n")) : 0;
+			const shortTaskTokens = shortDigest.length > 0 ? countTokens(shortDigest.join("\n")) : 0;
+			const shortVolatileOtherTokens =
+				!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0
+					? Math.max(0, countTokens(allVolatileLines.slice(enrichmentEndIdx).join("\n")))
+					: 0;
+
+			// Update sections array to reflect new token counts
+			for (let i = 0; i < sections.length; i++) {
+				if (sections[i].name === "memory") {
+					sections[i] = { ...sections[i], tokens: shortMemTokens };
+				} else if (sections[i].name === "task-digest") {
+					sections[i] = { ...sections[i], tokens: shortTaskTokens };
+				} else if (sections[i].name === "volatile-other") {
+					sections[i] = { ...sections[i], tokens: shortVolatileOtherTokens };
 				}
 			}
 		}

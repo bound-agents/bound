@@ -2839,4 +2839,393 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 	});
+
+	describe("context debug metadata", () => {
+		let debugTestDb: Database;
+		let debugTestTmpDir: string;
+		let debugTestUserId: string;
+
+		beforeAll(() => {
+			debugTestTmpDir = mkdtempSync(join(tmpdir(), "context-debug-test-"));
+			const debugTestDbPath = join(debugTestTmpDir, "test.db");
+			debugTestDb = createDatabase(debugTestDbPath);
+			applySchema(debugTestDb);
+
+			debugTestUserId = randomUUID();
+			debugTestDb.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[
+					debugTestUserId,
+					"Debug Test User",
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+		});
+
+		afterAll(() => {
+			debugTestDb.close();
+			if (debugTestTmpDir) {
+				rmSync(debugTestTmpDir, { recursive: true, force: true });
+			}
+		});
+
+		it("AC2.1: Result has .messages and .debug with required fields", () => {
+			const testThreadId = randomUUID();
+			debugTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					debugTestUserId,
+					"web",
+					"local",
+					0,
+					"Debug Test Thread",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			debugTestDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"user",
+					"Test message",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
+
+			const result = assembleContext({
+				db: debugTestDb,
+				threadId: testThreadId,
+				userId: debugTestUserId,
+			});
+
+			expect(result).toHaveProperty("messages");
+			expect(result).toHaveProperty("debug");
+			expect(Array.isArray(result.messages)).toBe(true);
+			expect(result.debug).toHaveProperty("contextWindow");
+			expect(result.debug).toHaveProperty("totalEstimated");
+			expect(result.debug).toHaveProperty("model");
+			expect(result.debug).toHaveProperty("sections");
+			expect(result.debug).toHaveProperty("budgetPressure");
+			expect(result.debug).toHaveProperty("truncated");
+		});
+
+		it("AC2.2: Debug sections include system, history with role children", () => {
+			const testThreadId = randomUUID();
+			debugTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					debugTestUserId,
+					"web",
+					"local",
+					0,
+					"Section Test Thread",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			debugTestDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"user",
+					"User message",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
+
+			debugTestDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"assistant",
+					"Assistant message",
+					"model-1",
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
+
+			const result = assembleContext({
+				db: debugTestDb,
+				threadId: testThreadId,
+				userId: debugTestUserId,
+			});
+
+			expect(result.debug.sections).toContainEqual(
+				expect.objectContaining({
+					name: "system",
+					tokens: expect.any(Number),
+				}),
+			);
+
+			expect(result.debug.sections).toContainEqual(
+				expect.objectContaining({
+					name: "history",
+					tokens: expect.any(Number),
+				}),
+			);
+
+			// Check that history section has role children
+			const historySection = result.debug.sections.find((s) => s.name === "history");
+			expect(historySection).toBeDefined();
+			expect(historySection?.children).toBeDefined();
+			expect(historySection?.children).toContainEqual(
+				expect.objectContaining({
+					name: "user",
+					tokens: expect.any(Number),
+				}),
+			);
+			expect(historySection?.children).toContainEqual(
+				expect.objectContaining({
+					name: "assistant",
+					tokens: expect.any(Number),
+				}),
+			);
+		});
+
+		it("AC2.3: sections.reduce(sum + tokens) === totalEstimated", () => {
+			const testThreadId = randomUUID();
+			debugTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					debugTestUserId,
+					"web",
+					"local",
+					0,
+					"Token Sum Test Thread",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			debugTestDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"user",
+					"Message 1",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
+
+			debugTestDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"assistant",
+					"Message 2",
+					"model-1",
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
+
+			const result = assembleContext({
+				db: debugTestDb,
+				threadId: testThreadId,
+				userId: debugTestUserId,
+				toolTokenEstimate: 100,
+			});
+
+			const summedTokens = result.debug.sections.reduce((sum, s) => sum + s.tokens, 0);
+			expect(summedTokens).toBe(result.debug.totalEstimated);
+		});
+
+		it("AC2.4: Small contextWindow triggers budgetPressure === true", () => {
+			const testThreadId = randomUUID();
+			debugTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					debugTestUserId,
+					"web",
+					"local",
+					0,
+					"Budget Test Thread",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// Insert semantic memory to trigger enrichment
+			debugTestDb.run(
+				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					"test-key",
+					"test-value " + "x".repeat(5000),
+					"agent",
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			debugTestDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"user",
+					"Message",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
+
+			const result = assembleContext({
+				db: debugTestDb,
+				threadId: testThreadId,
+				userId: debugTestUserId,
+				contextWindow: 1000, // Very small context window
+			});
+
+			// With small contextWindow and enrichment content, budget pressure should trigger
+			expect(result.debug.budgetPressure).toBe(true);
+		});
+
+		it("AC2.5: Small contextWindow forces truncation, truncated > 0", () => {
+			const testThreadId = randomUUID();
+			debugTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					debugTestUserId,
+					"web",
+					"local",
+					0,
+					"Truncation Test Thread",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// Insert many messages to force truncation
+			for (let i = 0; i < 20; i++) {
+				const role = i % 2 === 0 ? "user" : "assistant";
+				debugTestDb.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						testThreadId,
+						role,
+						"Message " + i + " " + "x".repeat(200),
+						role === "assistant" ? "model-1" : null,
+						null,
+						new Date(Date.now() + i * 1000).toISOString(),
+						new Date(Date.now() + i * 1000).toISOString(),
+						"local",
+					],
+				);
+			}
+
+			const result = assembleContext({
+				db: debugTestDb,
+				threadId: testThreadId,
+				userId: debugTestUserId,
+				contextWindow: 1000, // Very small to force truncation
+			});
+
+			expect(result.debug.truncated).toBeGreaterThan(0);
+		});
+
+		it("AC2.6: Empty thread has history section with tokens: 0 and no children", () => {
+			const testThreadId = randomUUID();
+			debugTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					debugTestUserId,
+					"web",
+					"local",
+					0,
+					"Empty Thread",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// Don't insert any messages — empty thread
+
+			const result = assembleContext({
+				db: debugTestDb,
+				threadId: testThreadId,
+				userId: debugTestUserId,
+			});
+
+			const historySection = result.debug.sections.find((s) => s.name === "history");
+			expect(historySection).toBeDefined();
+			expect(historySection?.tokens).toBe(0);
+			expect(historySection?.children).toBeUndefined();
+		});
+	});
 });
