@@ -4,8 +4,17 @@ import { onDestroy, onMount } from "svelte";
 import type { Component } from "svelte";
 import { SvelteSet } from "svelte/reactivity";
 // biome-ignore lint/correctness/noUnusedImports: used in template
+import Breadcrumbs from "../components/Breadcrumbs.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
+import DirectoryListing from "../components/DirectoryListing.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
 import TreeNode from "../components/TreeNode.svelte";
-import { type FileMetadata, type FileTreeNode, buildFileTree } from "../lib/file-tree";
+import {
+	type FileMetadata,
+	type FileTreeNode,
+	buildFileTree,
+	findNodeByPath,
+} from "../lib/file-tree";
 import { wsEvents } from "../lib/websocket";
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
@@ -21,6 +30,27 @@ let expandedPaths = $state(new SvelteSet<string>());
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let selectedPath = $state("/");
+
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+const breadcrumbSegments = $derived.by(() => {
+	const segments: Array<{ name: string; path: string }> = [{ name: "/", path: "/" }];
+	if (selectedPath === "/") return segments;
+	const parts = selectedPath.split("/");
+	for (let i = 0; i < parts.length; i++) {
+		segments.push({
+			name: parts[i],
+			path: parts.slice(0, i + 1).join("/"),
+		});
+	}
+	return segments;
+});
+
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+const currentDirectoryContents = $derived.by(() => {
+	if (selectedPath === "/") return tree;
+	const node = findNodeByPath(tree, selectedPath);
+	return node ? node.children : [];
+});
 
 async function loadFiles(): Promise<void> {
 	try {
@@ -65,8 +95,20 @@ function toggleExpanded(path: string): void {
 }
 
 // biome-ignore lint/correctness/noUnusedVariables: passed to template
-function selectDirectory(path: string): void {
+function navigateToDirectory(path: string): void {
 	selectedPath = path;
+	// Ensure all ancestors are expanded in the tree sidebar
+	if (path !== "/") {
+		const parts = path.split("/");
+		for (let i = 1; i <= parts.length; i++) {
+			expandedPaths.add(parts.slice(0, i).join("/"));
+		}
+	}
+}
+
+// biome-ignore lint/correctness/noUnusedVariables: passed to template
+function selectDirectory(path: string): void {
+	navigateToDirectory(path);
 }
 
 // biome-ignore lint/correctness/noUnusedVariables: passed to template
@@ -94,6 +136,19 @@ function getFileIcon(name: string): Component {
 	if (lower.match(/\.(png|jpg|jpeg|gif|svg|webp)$/)) return FileImage;
 	if (lower.match(/\.(zip|tar|gz|rar|7z)$/)) return FileArchive;
 	return File;
+}
+
+// biome-ignore lint/correctness/noUnusedVariables: passed to template
+function relativeTime(iso: string | null): string {
+	if (!iso) return "—";
+	const diff = Date.now() - new Date(iso).getTime();
+	const mins = Math.floor(diff / 60_000);
+	if (mins < 1) return "just now";
+	if (mins < 60) return `${mins}m ago`;
+	const hours = Math.floor(mins / 60);
+	if (hours < 24) return `${hours}h ago`;
+	const days = Math.floor(hours / 24);
+	return `${days}d ago`;
 }
 
 // biome-ignore lint/correctness/noUnusedVariables: passed to template
@@ -168,9 +223,18 @@ onDestroy(() => {
 				{/each}
 			</aside>
 			<main class="content-area">
-				<div class="content-placeholder">
-					<p>Select a directory to browse its contents</p>
-				</div>
+				<Breadcrumbs
+					segments={breadcrumbSegments}
+					onNavigate={navigateToDirectory}
+				/>
+				<DirectoryListing
+					items={currentDirectoryContents}
+					{formatFileSize}
+					{getFileIcon}
+					{relativeTime}
+					onSelectDirectory={navigateToDirectory}
+					onSelectFile={() => {}}
+				/>
 			</main>
 		</div>
 	{/if}
@@ -305,20 +369,6 @@ onDestroy(() => {
 		overflow-y: auto;
 		min-height: 0;
 		background: var(--bg-primary);
-	}
-
-	.content-placeholder {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		flex: 1;
-		color: var(--text-muted);
-		font-size: var(--text-sm);
-		font-family: var(--font-display);
-	}
-
-	.content-placeholder p {
-		margin: 0;
 	}
 
 	@media (prefers-reduced-motion: reduce) {
