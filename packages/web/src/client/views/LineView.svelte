@@ -35,6 +35,7 @@ let fileInput = $state<HTMLInputElement | null>(null);
 let uploadStatus = $state<string | null>(null);
 let pendingFileId = $state<string | null>(null);
 let thread = $state<Thread | null>(null);
+let messagesEl = $state<HTMLDivElement | null>(null);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let statusPollInterval: ReturnType<typeof setInterval> | null = null;
@@ -228,18 +229,20 @@ function viewTitle(): string {
 			</button>
 		</div>
 
-	<div class="messages">
-		{#each messages as msg}
-			<MessageBubble role={msg.role} content={msg.content} toolName={msg.tool_name} modelId={msg.model_id} />
-		{/each}
-		{#if waiting}
-			<div class="waiting-indicator">
-				<span class="waiting-dot"></span>
-				<span class="waiting-dot"></span>
-				<span class="waiting-dot"></span>
-				<span class="waiting-label">Thinking...</span>
-			</div>
-		{/if}
+	<div class="board">
+		<div class="messages" bind:this={messagesEl}>
+			{#each messages as msg}
+				<MessageBubble role={msg.role} content={msg.content} toolName={msg.tool_name} modelId={msg.model_id} />
+			{/each}
+			{#if waiting}
+				<div class="waiting-indicator">
+					<span class="waiting-dot"></span>
+					<span class="waiting-dot"></span>
+					<span class="waiting-dot"></span>
+					<span class="waiting-label">Thinking...</span>
+				</div>
+			{/if}
+		</div>
 	</div>
 
 	<div class="bottom-area">
@@ -386,11 +389,22 @@ function viewTitle(): string {
 		background: rgba(255, 23, 68, 0.2);
 	}
 
+	.board {
+		background: rgba(10, 10, 20, 0.5);
+		border: 1px solid var(--bg-surface);
+		border-radius: 8px;
+		flex: 1;
+		min-height: 0;
+		overflow: hidden;
+		position: relative;
+	}
+
 	.messages {
 		flex: 1;
 		overflow-y: auto;
-		padding-right: 8px;
-		min-height: 0;
+		padding: 12px 8px 12px 40px;
+		height: 100%;
+		position: relative;
 	}
 
 	.bottom-area {
