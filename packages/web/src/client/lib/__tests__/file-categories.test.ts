@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { getFileCategory, extensionToLanguage } from "../file-categories";
+import { extensionToLanguage, getFileCategory } from "../file-categories";
 
 describe("getFileCategory", () => {
 	it("detects TypeScript as code", () => {

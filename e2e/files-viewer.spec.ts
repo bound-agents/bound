@@ -389,4 +389,793 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 			expect(emptyText).toContain("No files yet");
 		});
 	});
+
+	test.describe("File Preview Modal", () => {
+		// Extended test data with different file types for preview testing
+		const previewTestFiles = [
+			// Code file
+			{
+				id: "10",
+				path: "home/user/src/app.ts",
+				is_binary: 0,
+				size_bytes: 256,
+				content: 'export function hello(): string {\n\treturn "world";\n}\n',
+				created_at: "2026-03-30T00:00:00Z",
+				modified_at: "2026-03-30T00:00:00Z",
+				deleted: 0,
+				created_by: "agent",
+				host_origin: "local",
+			},
+			// Markdown file
+			{
+				id: "11",
+				path: "home/user/docs/readme.md",
+				is_binary: 0,
+				size_bytes: 128,
+				content: "# Hello\n\nThis is **bold** text.",
+				created_at: "2026-03-30T00:00:00Z",
+				modified_at: "2026-03-30T00:00:00Z",
+				deleted: 0,
+				created_by: "agent",
+				host_origin: "local",
+			},
+			// Plain text file
+			{
+				id: "12",
+				path: "home/user/notes.txt",
+				is_binary: 0,
+				size_bytes: 32,
+				content: "Some plain text content",
+				created_at: "2026-03-30T00:00:00Z",
+				modified_at: "2026-03-30T00:00:00Z",
+				deleted: 0,
+				created_by: "agent",
+				host_origin: "local",
+			},
+			// Empty file
+			{
+				id: "13",
+				path: "home/user/empty.txt",
+				is_binary: 0,
+				size_bytes: 0,
+				content: null,
+				created_at: "2026-03-30T00:00:00Z",
+				modified_at: "2026-03-30T00:00:00Z",
+				deleted: 0,
+				created_by: "agent",
+				host_origin: "local",
+			},
+			// Binary file
+			{
+				id: "14",
+				path: "home/user/data.bin",
+				is_binary: 1,
+				size_bytes: 1024,
+				content: "AQID",
+				created_at: "2026-03-30T00:00:00Z",
+				modified_at: "2026-03-30T00:00:00Z",
+				deleted: 0,
+				created_by: "agent",
+				host_origin: "local",
+			},
+			// Image file (1x1 transparent PNG, base64-encoded)
+			{
+				id: "15",
+				path: "home/user/icon.png",
+				is_binary: 1,
+				size_bytes: 68,
+				content:
+					"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+				created_at: "2026-03-30T00:00:00Z",
+				modified_at: "2026-03-30T00:00:00Z",
+				deleted: 0,
+				created_by: "agent",
+				host_origin: "local",
+			},
+			// SVG file (is_binary=0, raw XML text content)
+			{
+				id: "16",
+				path: "home/user/logo.svg",
+				is_binary: 0,
+				size_bytes: 120,
+				content:
+					'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#009BBF"/></svg>',
+				created_at: "2026-03-30T00:00:00Z",
+				modified_at: "2026-03-30T00:00:00Z",
+				deleted: 0,
+				created_by: "agent",
+				host_origin: "local",
+			},
+		];
+
+		test("AC2.1: opens modal on file click", async ({ page }) => {
+			// Mock file list endpoint
+			await page.route("**/api/files", async (route) => {
+				await route.fulfill({
+					status: 200,
+					contentType: "application/json",
+					body: JSON.stringify(previewTestFiles),
+				});
+			});
+
+			// Mock individual file content endpoint
+			await page.route("**/api/files/**", async (route) => {
+				const url = route.request().url();
+				const path = url.split("/api/files/")[1];
+				const file = previewTestFiles.find((f) => f.path === path);
+				if (file) {
+					await route.fulfill({
+						status: 200,
+						contentType: "application/json",
+						body: JSON.stringify(file),
+					});
+				} else {
+					await route.abort();
+				}
+			});
+
+			await page.goto("/#/files");
+			await page.waitForLoadState("networkidle");
+
+			// Find and click first file row
+			const fileRow = page.locator(".listing-row.listing-file").first();
+			await expect(fileRow).toBeVisible();
+			await fileRow.click();
+
+			// Wait for modal to appear
+			await page.waitForTimeout(200);
+
+			// Verify modal backdrop and panel are visible
+			const backdrop = page.locator(".modal-backdrop");
+			const panel = page.locator(".modal-panel");
+			await expect(backdrop).toBeVisible();
+			await expect(panel).toBeVisible();
+
+			// Verify accessibility attributes
+			await expect(panel).toHaveAttribute("role", "dialog");
+			await expect(panel).toHaveAttribute("aria-modal", "true");
+		});
+
+		test("AC2.2: renders code with syntax highlighting", async ({ page }) => {
+			await page.route("**/api/files", async (route) => {
+				await route.fulfill({
+					status: 200,
+					contentType: "application/json",
+					body: JSON.stringify(previewTestFiles),
+				});
+			});
+
+			await page.route("**/api/files/**", async (route) => {
+				const url = route.request().url();
+				const path = url.split("/api/files/")[1];
+				const file = previewTestFiles.find((f) => f.path === path);
+				if (file) {
+					await route.fulfill({
+						status: 200,
+						contentType: "application/json",
+						body: JSON.stringify(file),
+					});
+				} else {
+					await route.abort();
+				}
+			});
+
+			await page.goto("/#/files");
+			await page.waitForLoadState("networkidle");
+
+			// Click the TypeScript file (app.ts)
+			const fileRow = page.locator(".listing-row.listing-file").filter({ hasText: "app.ts" });
+			await fileRow.click();
+
+			// Wait for modal and content to render
+			await page.waitForTimeout(200);
+
+			// Verify code preview exists
+			const codePreview = page.locator(".preview-code");
+			await expect(codePreview).toBeVisible();
+
+			// Verify syntax highlighting HTML is present (shiki generates <span> tags with style)
+			const preTag = codePreview.locator("pre");
+			await expect(preTag).toBeVisible();
+
+			// Verify content is present
+			const content = await codePreview.textContent();
+			expect(content).toContain("hello");
+		});
+
+		test("AC2.3: renders markdown as formatted HTML", async ({ page }) => {
+			await page.route("**/api/files", async (route) => {
+				await route.fulfill({
+					status: 200,
+					contentType: "application/json",
+					body: JSON.stringify(previewTestFiles),
+				});
+			});
+
+			await page.route("**/api/files/**", async (route) => {
+				const url = route.request().url();
+				const path = url.split("/api/files/")[1];
+				const file = previewTestFiles.find((f) => f.path === path);
+				if (file) {
+					await route.fulfill({
+						status: 200,
+						contentType: "application/json",
+						body: JSON.stringify(file),
+					});
+				} else {
+					await route.abort();
+				}
+			});
+
+			await page.goto("/#/files");
+			await page.waitForLoadState("networkidle");
+
+			// Click the markdown file (readme.md)
+			const fileRow = page.locator(".listing-row.listing-file").filter({ hasText: "readme.md" });
+			await fileRow.click();
+
+			// Wait for modal and content to render
+			await page.waitForTimeout(200);
+
+			// Verify markdown preview exists
+			const markdownPreview = page.locator(".preview-markdown");
+			await expect(markdownPreview).toBeVisible();
+
+			// Verify HTML elements are rendered
+			const h1 = markdownPreview.locator("h1");
+			await expect(h1).toBeVisible();
+			const h1Text = await h1.textContent();
+			expect(h1Text).toBe("Hello");
+
+			// Verify bold text
+			const strong = markdownPreview.locator("strong");
+			await expect(strong).toBeVisible();
+			const strongText = await strong.textContent();
+			expect(strongText).toBe("bold");
+		});
+
+		test("AC2.4: displays PNG image inline", async ({ page }) => {
+			await page.route("**/api/files", async (route) => {
+				await route.fulfill({
+					status: 200,
+					contentType: "application/json",
+					body: JSON.stringify(previewTestFiles),
+				});
+			});
+
+			await page.route("**/api/files/**", async (route) => {
+				const url = route.request().url();
+				const path = url.split("/api/files/")[1];
+				const file = previewTestFiles.find((f) => f.path === path);
+				if (file) {
+					await route.fulfill({
+						status: 200,
+						contentType: "application/json",
+						body: JSON.stringify(file),
+					});
+				} else {
+					await route.abort();
+				}
+			});
+
+			await page.goto("/#/files");
+			await page.waitForLoadState("networkidle");
+
+			// Click the PNG file (icon.png)
+			const fileRow = page.locator(".listing-row.listing-file").filter({ hasText: "icon.png" });
+			await fileRow.click();
+
+			// Wait for modal and content to render
+			await page.waitForTimeout(200);
+
+			// Verify image preview exists
+			const imagePreview = page.locator(".preview-image");
+			await expect(imagePreview).toBeVisible();
+
+			// Verify img element with blob: URL
+			const img = imagePreview.locator("img");
+			await expect(img).toBeVisible();
+			const src = await img.getAttribute("src");
+			expect(src).toMatch(/^blob:/);
+		});
+
+		test("AC2.4: displays SVG image from raw text content", async ({ page }) => {
+			await page.route("**/api/files", async (route) => {
+				await route.fulfill({
+					status: 200,
+					contentType: "application/json",
+					body: JSON.stringify(previewTestFiles),
+				});
+			});
+
+			await page.route("**/api/files/**", async (route) => {
+				const url = route.request().url();
+				const path = url.split("/api/files/")[1];
+				const file = previewTestFiles.find((f) => f.path === path);
+				if (file) {
+					await route.fulfill({
+						status: 200,
+						contentType: "application/json",
+						body: JSON.stringify(file),
+					});
+				} else {
+					await route.abort();
+				}
+			});
+
+			await page.goto("/#/files");
+			await page.waitForLoadState("networkidle");
+
+			// Click the SVG file (logo.svg)
+			const fileRow = page.locator(".listing-row.listing-file").filter({ hasText: "logo.svg" });
+			await fileRow.click();
+
+			// Wait for modal and content to render
+			await page.waitForTimeout(200);
+
+			// Verify image preview exists
+			const imagePreview = page.locator(".preview-image");
+			await expect(imagePreview).toBeVisible();
+
+			// Verify img element with blob: URL
+			const img = imagePreview.locator("img");
+			await expect(img).toBeVisible();
+			const src = await img.getAttribute("src");
+			expect(src).toMatch(/^blob:/);
+		});
+
+		test("AC2.5: displays plain text in monospace", async ({ page }) => {
+			await page.route("**/api/files", async (route) => {
+				await route.fulfill({
+					status: 200,
+					contentType: "application/json",
+					body: JSON.stringify(previewTestFiles),
+				});
+			});
+
+			await page.route("**/api/files/**", async (route) => {
+				const url = route.request().url();
+				const path = url.split("/api/files/")[1];
+				const file = previewTestFiles.find((f) => f.path === path);
+				if (file) {
+					await route.fulfill({
+						status: 200,
+						contentType: "application/json",
+						body: JSON.stringify(file),
+					});
+				} else {
+					await route.abort();
+				}
+			});
+
+			await page.goto("/#/files");
+			await page.waitForLoadState("networkidle");
+
+			// Click the plain text file (notes.txt)
+			const fileRow = page.locator(".listing-row.listing-file").filter({ hasText: "notes.txt" });
+			await fileRow.click();
+
+			// Wait for modal and content to render
+			await page.waitForTimeout(200);
+
+			// Verify text preview exists
+			const textPreview = page.locator(".preview-text");
+			await expect(textPreview).toBeVisible();
+
+			// Verify content matches
+			const content = await textPreview.textContent();
+			expect(content).toContain("Some plain text content");
+		});
+
+		test("AC2.6: shows filename and download button", async ({ page }) => {
+			await page.route("**/api/files", async (route) => {
+				await route.fulfill({
+					status: 200,
+					contentType: "application/json",
+					body: JSON.stringify(previewTestFiles),
+				});
+			});
+
+			await page.route("**/api/files/**", async (route) => {
+				const url = route.request().url();
+				const path = url.split("/api/files/")[1];
+				const file = previewTestFiles.find((f) => f.path === path);
+				if (file) {
+					await route.fulfill({
+						status: 200,
+						contentType: "application/json",
+						body: JSON.stringify(file),
+					});
+				} else {
+					await route.abort();
+				}
+			});
+
+			await page.goto("/#/files");
+			await page.waitForLoadState("networkidle");
+
+			// Click a file to open modal
+			const fileRow = page.locator(".listing-row.listing-file").first();
+			await fileRow.click();
+
+			// Wait for modal to appear
+			await page.waitForTimeout(200);
+
+			// Verify filename in header
+			const title = page.locator(".modal-title");
+			await expect(title).toBeVisible();
+			const titleText = await title.textContent();
+			expect(titleText).toBeTruthy();
+
+			// Verify download button exists
+			const downloadBtn = page.locator(".action-btn");
+			await expect(downloadBtn).toBeVisible();
+		});
+
+		test("AC2.7: closes via close button", async ({ page }) => {
+			await page.route("**/api/files", async (route) => {
+				await route.fulfill({
+					status: 200,
+					contentType: "application/json",
+					body: JSON.stringify(previewTestFiles),
+				});
+			});
+
+			await page.route("**/api/files/**", async (route) => {
+				const url = route.request().url();
+				const path = url.split("/api/files/")[1];
+				const file = previewTestFiles.find((f) => f.path === path);
+				if (file) {
+					await route.fulfill({
+						status: 200,
+						contentType: "application/json",
+						body: JSON.stringify(file),
+					});
+				} else {
+					await route.abort();
+				}
+			});
+
+			await page.goto("/#/files");
+			await page.waitForLoadState("networkidle");
+
+			// Open modal
+			const fileRow = page.locator(".listing-row.listing-file").first();
+			await fileRow.click();
+			await page.waitForTimeout(200);
+
+			// Verify modal is visible
+			const backdrop = page.locator(".modal-backdrop");
+			await expect(backdrop).toBeVisible();
+
+			// Click close button
+			const closeBtn = page.locator(".close-btn");
+			await closeBtn.click();
+
+			// Wait and verify modal is gone
+			await page.waitForTimeout(100);
+			await expect(backdrop).not.toBeVisible();
+		});
+
+		test("AC2.7: closes via Escape key", async ({ page }) => {
+			await page.route("**/api/files", async (route) => {
+				await route.fulfill({
+					status: 200,
+					contentType: "application/json",
+					body: JSON.stringify(previewTestFiles),
+				});
+			});
+
+			await page.route("**/api/files/**", async (route) => {
+				const url = route.request().url();
+				const path = url.split("/api/files/")[1];
+				const file = previewTestFiles.find((f) => f.path === path);
+				if (file) {
+					await route.fulfill({
+						status: 200,
+						contentType: "application/json",
+						body: JSON.stringify(file),
+					});
+				} else {
+					await route.abort();
+				}
+			});
+
+			await page.goto("/#/files");
+			await page.waitForLoadState("networkidle");
+
+			// Open modal
+			const fileRow = page.locator(".listing-row.listing-file").first();
+			await fileRow.click();
+			await page.waitForTimeout(200);
+
+			// Verify modal is visible
+			const backdrop = page.locator(".modal-backdrop");
+			await expect(backdrop).toBeVisible();
+
+			// Press Escape
+			await page.keyboard.press("Escape");
+
+			// Wait and verify modal is gone
+			await page.waitForTimeout(100);
+			await expect(backdrop).not.toBeVisible();
+		});
+
+		test("AC2.7: closes via backdrop click", async ({ page }) => {
+			await page.route("**/api/files", async (route) => {
+				await route.fulfill({
+					status: 200,
+					contentType: "application/json",
+					body: JSON.stringify(previewTestFiles),
+				});
+			});
+
+			await page.route("**/api/files/**", async (route) => {
+				const url = route.request().url();
+				const path = url.split("/api/files/")[1];
+				const file = previewTestFiles.find((f) => f.path === path);
+				if (file) {
+					await route.fulfill({
+						status: 200,
+						contentType: "application/json",
+						body: JSON.stringify(file),
+					});
+				} else {
+					await route.abort();
+				}
+			});
+
+			await page.goto("/#/files");
+			await page.waitForLoadState("networkidle");
+
+			// Open modal
+			const fileRow = page.locator(".listing-row.listing-file").first();
+			await fileRow.click();
+			await page.waitForTimeout(200);
+
+			// Verify modal is visible
+			const backdrop = page.locator(".modal-backdrop");
+			await expect(backdrop).toBeVisible();
+
+			// Click backdrop (outside the panel)
+			const panel = page.locator(".modal-panel");
+			const panelBox = await panel.boundingBox();
+			if (panelBox) {
+				// Click outside the panel but inside backdrop
+				await backdrop.click({
+					position: { x: 10, y: 10 },
+				});
+			}
+
+			// Wait and verify modal is gone
+			await page.waitForTimeout(100);
+			await expect(backdrop).not.toBeVisible();
+		});
+
+		test("AC2.8: shows binary fallback", async ({ page }) => {
+			await page.route("**/api/files", async (route) => {
+				await route.fulfill({
+					status: 200,
+					contentType: "application/json",
+					body: JSON.stringify(previewTestFiles),
+				});
+			});
+
+			await page.route("**/api/files/**", async (route) => {
+				const url = route.request().url();
+				const path = url.split("/api/files/")[1];
+				const file = previewTestFiles.find((f) => f.path === path);
+				if (file) {
+					await route.fulfill({
+						status: 200,
+						contentType: "application/json",
+						body: JSON.stringify(file),
+					});
+				} else {
+					await route.abort();
+				}
+			});
+
+			await page.goto("/#/files");
+			await page.waitForLoadState("networkidle");
+
+			// Click the binary file (data.bin)
+			const fileRow = page.locator(".listing-row.listing-file").filter({ hasText: "data.bin" });
+			await fileRow.click();
+
+			// Wait for modal and content to render
+			await page.waitForTimeout(200);
+
+			// Verify binary fallback exists
+			const binaryPreview = page.locator(".preview-binary");
+			await expect(binaryPreview).toBeVisible();
+
+			// Verify message text
+			const text = await binaryPreview.textContent();
+			expect(text).toContain("Preview not available");
+
+			// Verify download button exists
+			const downloadBtn = page.locator(".download-btn-large");
+			await expect(downloadBtn).toBeVisible();
+		});
+
+		test("AC2.9: shows error state with retry", async ({ page }) => {
+			// First route returns file list
+			await page.route("**/api/files", async (route) => {
+				await route.fulfill({
+					status: 200,
+					contentType: "application/json",
+					body: JSON.stringify(previewTestFiles),
+				});
+			});
+
+			let fileContentCallCount = 0;
+			// File content endpoint initially fails
+			await page.route("**/api/files/home/user/src/app.ts", async (route) => {
+				fileContentCallCount++;
+				if (fileContentCallCount === 1) {
+					// First call fails
+					await route.fulfill({
+						status: 500,
+						contentType: "application/json",
+						body: JSON.stringify({ error: "Server error" }),
+					});
+				} else {
+					// Subsequent calls succeed
+					const file = previewTestFiles.find((f) => f.id === "10");
+					if (file) {
+						await route.fulfill({
+							status: 200,
+							contentType: "application/json",
+							body: JSON.stringify(file),
+						});
+					}
+				}
+			});
+
+			// Catch-all for other files
+			await page.route("**/api/files/**", async (route) => {
+				const url = route.request().url();
+				const path = url.split("/api/files/")[1];
+				if (path !== "home/user/src/app.ts") {
+					const file = previewTestFiles.find((f) => f.path === path);
+					if (file) {
+						await route.fulfill({
+							status: 200,
+							contentType: "application/json",
+							body: JSON.stringify(file),
+						});
+					}
+				}
+			});
+
+			await page.goto("/#/files");
+			await page.waitForLoadState("networkidle");
+
+			// Click the TypeScript file to trigger error
+			const fileRow = page.locator(".listing-row.listing-file").filter({ hasText: "app.ts" });
+			await fileRow.click();
+
+			// Wait for modal and error to render
+			await page.waitForTimeout(300);
+
+			// Verify error state exists
+			const errorDiv = page.locator(".modal-error");
+			await expect(errorDiv).toBeVisible();
+
+			// Verify retry button exists
+			const retryBtn = page.locator(".retry-btn");
+			await expect(retryBtn).toBeVisible();
+
+			// Click retry
+			await retryBtn.click();
+
+			// Wait for retry to complete
+			await page.waitForTimeout(300);
+
+			// Verify content loads successfully
+			const codePreview = page.locator(".preview-code");
+			await expect(codePreview).toBeVisible();
+		});
+
+		test("AC2.10: shows empty file message", async ({ page }) => {
+			await page.route("**/api/files", async (route) => {
+				await route.fulfill({
+					status: 200,
+					contentType: "application/json",
+					body: JSON.stringify(previewTestFiles),
+				});
+			});
+
+			await page.route("**/api/files/**", async (route) => {
+				const url = route.request().url();
+				const path = url.split("/api/files/")[1];
+				const file = previewTestFiles.find((f) => f.path === path);
+				if (file) {
+					await route.fulfill({
+						status: 200,
+						contentType: "application/json",
+						body: JSON.stringify(file),
+					});
+				} else {
+					await route.abort();
+				}
+			});
+
+			await page.goto("/#/files");
+			await page.waitForLoadState("networkidle");
+
+			// Click the empty file (empty.txt)
+			const fileRow = page.locator(".listing-row.listing-file").filter({ hasText: "empty.txt" });
+			await fileRow.click();
+
+			// Wait for modal and content to render
+			await page.waitForTimeout(200);
+
+			// Verify empty state exists
+			const emptyDiv = page.locator(".modal-empty");
+			await expect(emptyDiv).toBeVisible();
+
+			// Verify message text
+			const text = await emptyDiv.textContent();
+			expect(text).toContain("This file is empty");
+		});
+
+		test("AC2.11: traps focus within modal", async ({ page }) => {
+			await page.route("**/api/files", async (route) => {
+				await route.fulfill({
+					status: 200,
+					contentType: "application/json",
+					body: JSON.stringify(previewTestFiles),
+				});
+			});
+
+			await page.route("**/api/files/**", async (route) => {
+				const url = route.request().url();
+				const path = url.split("/api/files/")[1];
+				const file = previewTestFiles.find((f) => f.path === path);
+				if (file) {
+					await route.fulfill({
+						status: 200,
+						contentType: "application/json",
+						body: JSON.stringify(file),
+					});
+				} else {
+					await route.abort();
+				}
+			});
+
+			await page.goto("/#/files");
+			await page.waitForLoadState("networkidle");
+
+			// Open modal
+			const fileRow = page.locator(".listing-row.listing-file").first();
+			await fileRow.click();
+			await page.waitForTimeout(200);
+
+			// Get all focusable elements in modal
+			const focusableElements = await page
+				.locator(".modal-panel button, .modal-panel [tabindex]")
+				.count();
+			expect(focusableElements).toBeGreaterThan(0);
+
+			// Tab through multiple times and verify focus stays within modal
+			for (let i = 0; i < focusableElements * 2 + 2; i++) {
+				await page.keyboard.press("Tab");
+				await page.waitForTimeout(50);
+
+				// Verify focus is still within modal panel
+				const focusedElement = await page.evaluate(() => {
+					const el = document.activeElement;
+					if (el) {
+						const panel = el.closest(".modal-panel");
+						return panel ? "inside" : "outside";
+					}
+					return "none";
+				});
+
+				expect(focusedElement).toBe("inside");
+			}
+		});
+	});
 });
