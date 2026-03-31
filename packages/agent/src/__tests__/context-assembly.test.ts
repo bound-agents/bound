@@ -2208,6 +2208,62 @@ This skill reviews pull requests.`;
 			}
 		});
 
+		it("metro-interchange-ui.AC3.2 test #2: debug.crossThreadSources absent when no other threads exist", () => {
+			const singleThreadUserId = randomUUID();
+			const singleThreadId = randomUUID();
+			const pastTime = "2026-01-01T00:00:00.000Z";
+			const recentTime = new Date().toISOString();
+
+			// Create a new user with only one thread
+			enrichTestDb.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[
+					singleThreadUserId,
+					"Single Thread User",
+					null,
+					recentTime,
+					recentTime,
+					0,
+				],
+			);
+
+			// Create a single thread for this user (no other threads)
+			enrichTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					singleThreadId,
+					singleThreadUserId,
+					"web",
+					"local",
+					0,
+					"Single Thread",
+					null,
+					null,
+					null,
+					null,
+					pastTime,
+					recentTime,
+					recentTime,
+					0,
+				],
+			);
+
+			// Add at least one message to the thread
+			enrichTestDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), singleThreadId, "user", "Hello", null, null, recentTime, recentTime, "local"],
+			);
+
+			const result = assembleContext({
+				db: enrichTestDb,
+				threadId: singleThreadId,
+				userId: singleThreadUserId,
+			});
+
+			// Verify debug.crossThreadSources is undefined (no other threads exist)
+			expect(result.debug.crossThreadSources).toBeUndefined();
+		});
+
 		it("metro-interchange-ui.AC3.7: backward compatibility — old turns without crossThreadSources field render gracefully", () => {
 			// Simulate old ContextDebugInfo JSON without crossThreadSources field
 			const oldDebugInfo = {
