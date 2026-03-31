@@ -32,6 +32,52 @@ function getHighlighter(): Promise<Highlighter> {
 }
 
 // ---------------------------------------------------------------------------
+// Sanitizer type and config
+// ---------------------------------------------------------------------------
+
+type Sanitizer = (html: string) => string;
+
+// DOMPurify configuration:
+// ADD_ATTR: ['style'] — preserves Shiki inline color attributes on code tokens.
+// ADD_TAGS: ['details', 'summary'] — preserves thinking block disclosure widgets.
+const DOMPURIFY_CONFIG = {
+	ADD_ATTR: ["style"],
+	ADD_TAGS: ["details", "summary"],
+};
+
+// Default sanitizer uses DOMPurify directly — works in the browser where
+// window/document are available. Tests can inject a custom sanitizer.
+const browserSanitize: Sanitizer = (html) => DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
+
+/**
+ * Highlights a code string with Shiki (Tokyo Night theme).
+ * Falls back to plaintext for unsupported languages.
+ * Output is sanitized with DOMPurify for safe {@html} injection.
+ *
+ * @param code The source code string to highlight.
+ * @param lang The language identifier (e.g., "typescript", "python").
+ * @param sanitize Optional sanitizer override. Defaults to DOMPurify (browser).
+ *   Pass a custom sanitizer when calling from test environments.
+ * @returns Sanitized HTML string with syntax highlighting.
+ */
+export async function highlightCode(
+	code: string,
+	lang: string,
+	sanitize: Sanitizer = browserSanitize,
+): Promise<string> {
+	const highlighter = await getHighlighter();
+	const supported = highlighter.getLoadedLanguages();
+	const language = supported.includes(lang) ? lang : "plaintext";
+	const html = highlighter.codeToHtml(code, {
+		lang: language,
+		theme: "tokyo-night",
+	});
+	// Sanitize with DOMPurify for safe {@html} injection.
+	// Preserves Shiki inline color attributes on code tokens.
+	return sanitize(html);
+}
+
+// ---------------------------------------------------------------------------
 // Marked instance
 // ---------------------------------------------------------------------------
 
@@ -95,23 +141,6 @@ export function splitOnThinkingBlocks(content: string): Segment[] {
 
 	return segments;
 }
-
-// ---------------------------------------------------------------------------
-// DOMPurify config
-// ADD_ATTR: ['style'] — preserves Shiki inline color attributes on code tokens.
-// ADD_TAGS: ['details', 'summary'] — preserves thinking block disclosure widgets.
-// ---------------------------------------------------------------------------
-const DOMPURIFY_CONFIG = {
-	ADD_ATTR: ["style"],
-	ADD_TAGS: ["details", "summary"],
-};
-
-type Sanitizer = (html: string) => string;
-
-// Default sanitizer uses DOMPurify directly — works in the browser where
-// window/document are available. Tests inject a jsdom-backed sanitizer via
-// the optional second parameter.
-const browserSanitize: Sanitizer = (html) => DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
 
 // ---------------------------------------------------------------------------
 // renderMarkdown — public API

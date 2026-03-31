@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import createDOMPurify from "dompurify";
 import { JSDOM } from "jsdom";
-import { renderMarkdown, splitOnThinkingBlocks } from "../markdown";
+import { highlightCode, renderMarkdown, splitOnThinkingBlocks } from "../markdown";
 
 // ---------------------------------------------------------------------------
 // DOMPurify instance backed by jsdom — used only for XSS tests (AC5.*)
@@ -209,5 +209,56 @@ describe("renderMarkdown — XSS safety", () => {
 		const html = await renderMarkdown("<thinking>reasoning here</thinking>", realSanitize);
 		expect(html).toContain("<details");
 		expect(html).toContain("<summary>");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// highlightCode — standalone code highlighting
+// ---------------------------------------------------------------------------
+describe("highlightCode", () => {
+	it("highlights TypeScript code with Shiki inline styles", async () => {
+		const html = await highlightCode("const x: string = 'hello';", "typescript", realSanitize);
+		// Shiki emits style="color:..." on token spans
+		expect(html).toMatch(/style="[^"]*color:/);
+		expect(html).toContain("hello");
+	});
+
+	it("highlights JavaScript code with Shiki inline styles", async () => {
+		const html = await highlightCode("const x = 42;", "javascript", realSanitize);
+		expect(html).toMatch(/style="[^"]*color:/);
+	});
+
+	it("falls back to plaintext for unsupported languages", async () => {
+		const html = await highlightCode("some code", "unknown-lang", realSanitize);
+		// Should still produce valid HTML, but without Shiki colors
+		expect(html).toMatch(/<pre|<code/);
+		expect(html).toContain("some code");
+	});
+
+	it("returns sanitized HTML with DOMPurify", async () => {
+		const html = await highlightCode("const x = 1;", "javascript", realSanitize);
+		// Should not contain any raw HTML tags outside of the expected pre/code/span structure
+		// Check that it's been through DOMPurify by looking for expected Shiki structure
+		expect(html).toMatch(/<pre/);
+	});
+
+	it("preserves code content exactly as provided", async () => {
+		const code = "function hello() {\n\treturn 'world';\n}";
+		const html = await highlightCode(code, "javascript", realSanitize);
+		// Content should be preserved in the output
+		expect(html).toContain("function");
+		expect(html).toContain("hello");
+		expect(html).toContain("world");
+	});
+
+	it("renders Python code with Shiki inline styles", async () => {
+		const html = await highlightCode("def hello():\n\treturn 'world'", "python", realSanitize);
+		expect(html).toMatch(/style="[^"]*color:/);
+		expect(html).toContain("hello");
+	});
+
+	it("renders SQL code with Shiki inline styles", async () => {
+		const html = await highlightCode("SELECT * FROM users;", "sql", realSanitize);
+		expect(html).toMatch(/style="[^"]*color:/);
 	});
 });

@@ -55,6 +55,17 @@ export function buildFileTree(files: FileMetadata[]): FileTreeNode[] {
 	return sortTree(rootNodes);
 }
 
+export function findNodeByPath(nodes: FileTreeNode[], path: string): FileTreeNode | null {
+	for (const node of nodes) {
+		if (node.fullPath === path) return node;
+		if (path.startsWith(`${node.fullPath}/`)) {
+			const found = findNodeByPath(node.children, path);
+			if (found) return found;
+		}
+	}
+	return null;
+}
+
 function sortTree(nodes: FileTreeNode[]): FileTreeNode[] {
 	const dirs = nodes
 		.filter((n) => n.type === "dir")

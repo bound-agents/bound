@@ -4,8 +4,19 @@ import { onDestroy, onMount } from "svelte";
 import type { Component } from "svelte";
 import { SvelteSet } from "svelte/reactivity";
 // biome-ignore lint/correctness/noUnusedImports: used in template
+import Breadcrumbs from "../components/Breadcrumbs.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
+import DirectoryListing from "../components/DirectoryListing.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
+import FilePreviewModal from "../components/FilePreviewModal.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
 import TreeNode from "../components/TreeNode.svelte";
-import { type FileMetadata, type FileTreeNode, buildFileTree } from "../lib/file-tree";
+import {
+	type FileMetadata,
+	type FileTreeNode,
+	buildFileTree,
+	findNodeByPath,
+} from "../lib/file-tree";
 import { wsEvents } from "../lib/websocket";
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
@@ -18,6 +29,33 @@ let error = $state<string | null>(null);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 // biome-ignore lint/style/useConst: $state requires let
 let expandedPaths = $state(new SvelteSet<string>());
+
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let selectedPath = $state("/");
+
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let selectedFile = $state<FileMetadata | null>(null);
+
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+const breadcrumbSegments = $derived.by(() => {
+	const segments: Array<{ name: string; path: string }> = [{ name: "/", path: "/" }];
+	if (selectedPath === "/") return segments;
+	const parts = selectedPath.split("/");
+	for (let i = 0; i < parts.length; i++) {
+		segments.push({
+			name: parts[i],
+			path: parts.slice(0, i + 1).join("/"),
+		});
+	}
+	return segments;
+});
+
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+const currentDirectoryContents = $derived.by(() => {
+	if (selectedPath === "/") return tree;
+	const node = findNodeByPath(tree, selectedPath);
+	return node ? node.children : [];
+});
 
 async function loadFiles(): Promise<void> {
 	try {
@@ -34,6 +72,8 @@ async function loadFiles(): Promise<void> {
 		for (const node of tree) {
 			expandAllRecursive(node);
 		}
+		// Reset selection to root when files reload
+		selectedPath = "/";
 	} catch (err) {
 		error = err instanceof Error ? err.message : "Failed to load files";
 	} finally {
@@ -57,6 +97,33 @@ function toggleExpanded(path: string): void {
 	} else {
 		expandedPaths.add(path);
 	}
+}
+
+// biome-ignore lint/correctness/noUnusedVariables: passed to template
+function navigateToDirectory(path: string): void {
+	selectedPath = path;
+	// Ensure all ancestors are expanded in the tree sidebar
+	if (path !== "/") {
+		const parts = path.split("/");
+		for (let i = 1; i <= parts.length; i++) {
+			expandedPaths.add(parts.slice(0, i).join("/"));
+		}
+	}
+}
+
+// biome-ignore lint/correctness/noUnusedVariables: passed to template
+function selectDirectory(path: string): void {
+	navigateToDirectory(path);
+}
+
+// biome-ignore lint/correctness/noUnusedVariables: passed to template
+function openFilePreview(file: FileMetadata): void {
+	selectedFile = file;
+}
+
+// biome-ignore lint/correctness/noUnusedVariables: passed to template
+function closeFilePreview(): void {
+	selectedFile = null;
 }
 
 // biome-ignore lint/correctness/noUnusedVariables: passed to template
@@ -84,6 +151,19 @@ function getFileIcon(name: string): Component {
 	if (lower.match(/\.(png|jpg|jpeg|gif|svg|webp)$/)) return FileImage;
 	if (lower.match(/\.(zip|tar|gz|rar|7z)$/)) return FileArchive;
 	return File;
+}
+
+// biome-ignore lint/correctness/noUnusedVariables: passed to template
+function relativeTime(iso: string | null): string {
+	if (!iso) return "—";
+	const diff = Date.now() - new Date(iso).getTime();
+	const mins = Math.floor(diff / 60_000);
+	if (mins < 1) return "just now";
+	if (mins < 60) return `${mins}m ago`;
+	const hours = Math.floor(mins / 60);
+	if (hours < 24) return `${hours}h ago`;
+	const days = Math.floor(hours / 24);
+	return `${days}d ago`;
 }
 
 // biome-ignore lint/correctness/noUnusedVariables: passed to template
@@ -142,18 +222,40 @@ onDestroy(() => {
 			<p>No files yet</p>
 		</div>
 	{:else}
-		<div class="tree-container">
-			{#each tree as node}
-				<TreeNode
-					{node}
-					{expandedPaths}
-					{toggleExpanded}
+		<div class="files-browser">
+			<aside class="tree-sidebar">
+				{#each tree as node}
+					<TreeNode
+						{node}
+						{expandedPaths}
+						{toggleExpanded}
+						{formatFileSize}
+						{getFileIcon}
+						{downloadFile}
+						{selectedPath}
+						onSelectDirectory={selectDirectory}
+					/>
+				{/each}
+			</aside>
+			<main class="content-area">
+				<Breadcrumbs
+					segments={breadcrumbSegments}
+					onNavigate={navigateToDirectory}
+				/>
+				<DirectoryListing
+					items={currentDirectoryContents}
 					{formatFileSize}
 					{getFileIcon}
-					{downloadFile}
+					{relativeTime}
+					onSelectDirectory={navigateToDirectory}
+					onSelectFile={openFilePreview}
 				/>
-			{/each}
+			</main>
 		</div>
+	{/if}
+
+	{#if selectedFile}
+		<FilePreviewModal file={selectedFile} onClose={closeFilePreview} />
 	{/if}
 </div>
 
@@ -258,11 +360,34 @@ onDestroy(() => {
 		text-align: center;
 	}
 
-	.tree-container {
+	.files-browser {
+		display: grid;
+		grid-template-columns: 260px 1fr;
+		flex: 1;
+		min-height: 0;
+		gap: 0;
+		border: 1px solid rgba(0, 155, 191, 0.15);
+		border-radius: 8px;
+		overflow: hidden;
+	}
+
+	.tree-sidebar {
 		display: flex;
 		flex-direction: column;
-		gap: 0;
-		overflow: auto;
+		overflow-y: auto;
+		overflow-x: hidden;
+		min-height: 0;
+		border-right: 1px solid rgba(0, 155, 191, 0.15);
+		background: var(--bg-secondary);
+		padding: 8px 0;
+	}
+
+	.content-area {
+		display: flex;
+		flex-direction: column;
+		overflow-y: auto;
+		min-height: 0;
+		background: var(--bg-primary);
 	}
 
 	@media (prefers-reduced-motion: reduce) {

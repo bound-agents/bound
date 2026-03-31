@@ -362,8 +362,7 @@ export class DiscordInteractionConnector implements PlatformConnector {
 				: "unknown channel";
 		// Use guild name if cached, fall back to guildId, then "DM" only if truly a DM
 		const guildName =
-			interaction.guild?.name ??
-			((interaction as unknown as { guildId?: string }).guildId || "DM");
+			interaction.guild?.name ?? ((interaction as unknown as { guildId?: string }).guildId || "DM");
 		const timestamp = targetMessage.createdAt?.toISOString() ?? new Date().toISOString();
 
 		// Collect image attachment URLs
@@ -389,9 +388,7 @@ export class DiscordInteractionConnector implements PlatformConnector {
 		}
 		if (imageUrls.length > 0) {
 			if (targetMessage.content) filingPromptParts.push("");
-			filingPromptParts.push(
-				...imageUrls.map((url, i) => `[Image ${i + 1}]: ${url}`),
-			);
+			filingPromptParts.push(...imageUrls.map((url, i) => `[Image ${i + 1}]: ${url}`));
 		}
 
 		const filingPrompt = filingPromptParts.join("\n");

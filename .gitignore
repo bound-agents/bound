@@ -151,6 +151,7 @@ packages/*/src/__tests__/**/*.d.ts.map
 bound-test-*
 boundctl-test-*
 bound-e2e-*
+playwright-report/
 .worktrees/
 data/
 packages/web/src/server/embedded-assets.ts

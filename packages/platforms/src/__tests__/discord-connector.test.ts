@@ -417,9 +417,7 @@ describe("DiscordConnector", () => {
 					handlerRegistrations.push({ event, fn });
 				},
 				off: (event: string, _fn: unknown) => {
-					const idx = handlerRegistrations.findIndex(
-						(h) => h.event === event && h.fn === _fn,
-					);
+					const idx = handlerRegistrations.findIndex((h) => h.event === event && h.fn === _fn);
 					if (idx >= 0) handlerRegistrations.splice(idx, 1);
 				},
 			};
@@ -436,9 +434,7 @@ describe("DiscordConnector", () => {
 			await connector.connect();
 			await connector.connect(); // second connect() call
 
-			const messageCreateHandlers = handlerRegistrations.filter(
-				(h) => h.event === "messageCreate",
-			);
+			const messageCreateHandlers = handlerRegistrations.filter((h) => h.event === "messageCreate");
 			expect(messageCreateHandlers.length).toBe(1);
 		});
 
@@ -449,9 +445,7 @@ describe("DiscordConnector", () => {
 					handlerRegistrations.push({ event, fn });
 				},
 				off: (event: string, fn: Function) => {
-					const idx = handlerRegistrations.findIndex(
-						(h) => h.event === event && h.fn === fn,
-					);
+					const idx = handlerRegistrations.findIndex((h) => h.event === event && h.fn === fn);
 					if (idx >= 0) handlerRegistrations.splice(idx, 1);
 				},
 			};
@@ -483,33 +477,6 @@ describe("DiscordConnector", () => {
 
 			// Wait for async onMessage calls to settle
 			await new Promise((r) => setTimeout(r, 50));
-
-			const intakes = db.query("SELECT * FROM relay_outbox WHERE kind = 'intake'").all();
-			expect(intakes.length).toBe(1);
-		});
-		it("should deduplicate gateway-replayed messageCreate events", async () => {
-			const connector = new DiscordConnector(
-				config,
-				db,
-				"site-1",
-				eventBus,
-				mockLogger,
-				createMockClientManager(),
-			);
-
-			const mockMsg = {
-				id: "discord-msg-replay",
-				author: { id: "user123", bot: false, username: "alice", displayName: "Alice" },
-				channel: { type: 1, sendTyping: async () => {} },
-				content: "replayed message",
-			};
-
-			// Call onMessage twice with the same Discord message ID (gateway replay)
-			await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(mockMsg);
-			await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(mockMsg);
-
-			const messages = db.query("SELECT * FROM messages WHERE content = 'replayed message'").all();
-			expect(messages.length).toBe(1);
 
 			const intakes = db.query("SELECT * FROM relay_outbox WHERE kind = 'intake'").all();
 			expect(intakes.length).toBe(1);

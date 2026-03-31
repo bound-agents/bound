@@ -15,6 +15,8 @@ interface Props {
 	formatFileSize: (bytes: number) => string;
 	getFileIcon: (name: string) => Component;
 	downloadFile: (fileId: string) => void;
+	selectedPath: string;
+	onSelectDirectory: (path: string) => void;
 	level?: number;
 }
 
@@ -26,6 +28,8 @@ const {
 	formatFileSize,
 	getFileIcon,
 	downloadFile,
+	selectedPath,
+	onSelectDirectory,
 	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	level = 0,
 }: Props = $props();
@@ -36,11 +40,14 @@ const isDir = $derived(node.type === "dir");
 const nodeName = $derived(node.name);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 const IconComponent = $derived(getFileIcon(nodeName));
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+const isSelected = $derived(selectedPath === node.fullPath);
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 function handleClick() {
 	if (isDir) {
 		toggleExpanded(node.fullPath);
+		onSelectDirectory(node.fullPath);
 	}
 }
 
@@ -58,6 +65,7 @@ function handleDownload(e: Event) {
 		class="node-row"
 		class:node-dir={isDir}
 		class:node-file={!isDir}
+		class:node-selected={isDir && isSelected}
 		onclick={handleClick}
 		role={isDir ? "button" : undefined}
 		tabindex={isDir ? 0 : undefined}
@@ -117,6 +125,8 @@ function handleDownload(e: Event) {
 					{formatFileSize}
 					{getFileIcon}
 					{downloadFile}
+					{selectedPath}
+					{onSelectDirectory}
 					level={level + 1}
 				/>
 			{/each}
@@ -145,6 +155,16 @@ function handleDownload(e: Event) {
 
 	.node-row:hover {
 		background: rgba(15, 52, 96, 0.3);
+	}
+
+	.node-row.node-selected {
+		background: rgba(0, 155, 191, 0.15);
+		border-left: 3px solid var(--line-3);
+		padding-left: calc(9px + var(--indent));
+	}
+
+	.node-row.node-selected:hover {
+		background: rgba(0, 155, 191, 0.2);
 	}
 
 	.node-row.node-dir {

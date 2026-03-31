@@ -1091,9 +1091,21 @@ describe("DiscordInteractionConnector", () => {
 						username: "bob",
 					},
 					attachments: createMockCollection([
-						{ contentType: "image/png", url: "https://cdn.discord.com/img1.png", name: "screenshot.png" },
-						{ contentType: "image/jpeg", url: "https://cdn.discord.com/img2.jpg", name: "photo.jpg" },
-						{ contentType: "application/pdf", url: "https://cdn.discord.com/doc.pdf", name: "doc.pdf" },
+						{
+							contentType: "image/png",
+							url: "https://cdn.discord.com/img1.png",
+							name: "screenshot.png",
+						},
+						{
+							contentType: "image/jpeg",
+							url: "https://cdn.discord.com/img2.jpg",
+							name: "photo.jpg",
+						},
+						{
+							contentType: "application/pdf",
+							url: "https://cdn.discord.com/doc.pdf",
+							name: "doc.pdf",
+						},
 					]),
 					createdAt: new Date("2026-03-30T14:22:00.000Z"),
 				},
@@ -1150,7 +1162,11 @@ describe("DiscordInteractionConnector", () => {
 						username: "bob",
 					},
 					attachments: createMockCollection([
-						{ contentType: "image/png", url: "https://cdn.discord.com/img1.png", name: "screenshot.png" },
+						{
+							contentType: "image/png",
+							url: "https://cdn.discord.com/img1.png",
+							name: "screenshot.png",
+						},
 					]),
 					createdAt: new Date("2026-03-30T14:22:00.000Z"),
 				},
