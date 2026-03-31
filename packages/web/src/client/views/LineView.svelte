@@ -1,7 +1,7 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
-import ContextDebugPanel from "../components/ContextDebugPanel.svelte";
+import DebugPanelWrapper from "../components/DebugPanelWrapper.svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import MessageBubble from "../components/MessageBubble.svelte";
 import { api } from "../lib/api";
@@ -38,17 +38,6 @@ let thread = $state<Thread | null>(null);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let statusPollInterval: ReturnType<typeof setInterval> | null = null;
-
-let debugOpen = $state(false);
-let debugMounted = $state(false); // tracks if panel has been opened at least once (lazy mount)
-
-// biome-ignore lint/correctness/noUnusedVariables: used in template
-function toggleDebug(): void {
-	debugOpen = !debugOpen;
-	if (debugOpen && !debugMounted) {
-		debugMounted = true; // first open triggers data fetch in ContextDebugPanel
-	}
-}
 
 // Subscribe to WebSocket events and append new messages
 const unsubscribeWs = wsEvents.subscribe((events) => {
@@ -216,7 +205,8 @@ function viewTitle(): string {
 }
 </script>
 
-<div class="line-view-wrapper" class:panel-open={debugOpen}>
+<DebugPanelWrapper {threadId} {wsEvents}>
+	{#snippet children({ debugOpen, toggleDebug })}
 	<div class="line-view">
 		<div class="header">
 			<button onclick={handleBackClick} class="back-button">
@@ -296,22 +286,10 @@ function viewTitle(): string {
 		</div>
 	</div>
 	</div>
-	{#if debugMounted}
-		<div class="debug-panel-container" class:hidden={!debugOpen}>
-			<ContextDebugPanel {threadId} wsEvents={wsEvents} />
-		</div>
-	{/if}
-</div>
+	{/snippet}
+</DebugPanelWrapper>
 
 <style>
-	.line-view-wrapper {
-		display: flex;
-		flex-direction: row;
-		height: 100%;
-		width: 100%;
-		overflow: hidden;
-	}
-
 	.line-view {
 		display: flex;
 		flex-direction: column;
@@ -323,18 +301,6 @@ function viewTitle(): string {
 		padding: 24px;
 		overflow: hidden;
 		box-sizing: border-box;
-	}
-
-	.line-view-wrapper.panel-open .line-view {
-		max-width: none;
-	}
-
-	.debug-panel-container {
-		flex-shrink: 0;
-	}
-
-	.debug-panel-container.hidden {
-		display: none;
 	}
 
 	.header {

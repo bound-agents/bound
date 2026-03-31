@@ -1,10 +1,15 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
+import DebugPanelWrapper from "../components/DebugPanelWrapper.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
 import MessageBubble from "../components/MessageBubble.svelte";
 import { api } from "../lib/api";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import { navigateTo } from "../lib/router";
+import { connectWebSocket, disconnectWebSocket, subscribeToThread } from "../lib/websocket";
+// biome-ignore lint/correctness/noUnusedImports: wsEvents passed to DebugPanelWrapper in template
+import { wsEvents } from "../lib/websocket";
 
 interface TaskDetail {
 	id: string;
@@ -126,13 +131,24 @@ async function fetchData() {
 onMount(() => {
 	fetchData();
 	pollInterval = setInterval(fetchData, 5000);
+	connectWebSocket();
+});
+
+// Subscribe to WebSocket when thread_id becomes available
+$effect(() => {
+	if (task?.thread_id) {
+		subscribeToThread(task.thread_id);
+	}
 });
 
 onDestroy(() => {
 	if (pollInterval) clearInterval(pollInterval);
+	disconnectWebSocket();
 });
 </script>
 
+<DebugPanelWrapper threadId={task?.thread_id ?? null} {wsEvents}>
+	{#snippet children({ debugOpen, toggleDebug })}
 {#if loading}
 	<div class="task-detail-view">
 		<div class="loading">Loading task...</div>
@@ -155,6 +171,11 @@ onDestroy(() => {
 			<button class="back-link" onclick={() => navigateTo("/timetable")}>
 				← Back to Timetable
 			</button>
+			{#if task.thread_id}
+				<button class="debug-toggle" onclick={toggleDebug} title="Context Debug">
+					{debugOpen ? "✕" : "⚙"}
+				</button>
+			{/if}
 
 			<!-- Task metadata header -->
 			<div class="task-meta">
@@ -223,6 +244,8 @@ onDestroy(() => {
 		</div>
 	</div>
 {/if}
+	{/snippet}
+</DebugPanelWrapper>
 
 <style>
 	.task-detail-view {
@@ -246,6 +269,24 @@ onDestroy(() => {
 		flex-shrink: 0;
 		border-bottom: 1px solid var(--bg-surface);
 		padding-bottom: 16px;
+	}
+
+	.debug-toggle {
+		align-self: flex-end;
+		background: var(--bg-surface);
+		border: 1px solid var(--bg-surface);
+		color: var(--text-secondary);
+		padding: 4px 8px;
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 14px;
+		transition: color 0.2s;
+		flex-shrink: 0;
+	}
+
+	.debug-toggle:hover {
+		color: var(--text-primary);
+		border-color: var(--line-7);
 	}
 
 	.back-link {
