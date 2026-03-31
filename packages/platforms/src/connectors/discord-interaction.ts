@@ -102,6 +102,12 @@ export class DiscordInteractionConnector implements PlatformConnector {
 			return;
 		}
 
+		// Empty-content delivers are typing-stop signals from executeProcess.
+		// The DM connector ignores them (no-op loop), but editReply rejects
+		// empty messages (Discord API 50006). Skip without consuming the stored
+		// interaction so pollForResponse can still deliver the real response.
+		if (!content) return;
+
 		// Lazy TTL check
 		if (new Date(stored.expiresAt) <= new Date()) {
 			this.logger.warn("Interaction token expired", { threadId, expiresAt: stored.expiresAt });

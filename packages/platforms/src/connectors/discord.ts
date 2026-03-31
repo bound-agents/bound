@@ -39,6 +39,8 @@ export class DiscordConnector implements PlatformConnector {
 
 	private onClientReady: ((client: { user: { tag: string } }) => void) | null = null;
 	private onMessageCreate: ((msg: DiscordMessage) => void) | null = null;
+	/** Dedup: track recently-seen Discord message IDs to guard against gateway replays. */
+	private recentMessageIds = new Set<string>();
 	/** Typing indicators per thread — cleared when platform:deliver fires for that thread. */
 	private typingTimers = new Map<
 		string,
@@ -61,6 +63,12 @@ export class DiscordConnector implements PlatformConnector {
 		const client = this.clientManager.getClient();
 
 		const { ChannelType } = await import("discord.js");
+
+		// Guard against double-registration: remove old handlers before registering
+		// new ones. Without this, calling connect() twice (e.g., leader re-election)
+		// would fire onMessage multiple times per Discord event, duplicating messages.
+		if (this.onClientReady) client.off("clientReady", this.onClientReady);
+		if (this.onMessageCreate) client.off("messageCreate", this.onMessageCreate);
 
 		this.onClientReady = (c) => {
 			this.logger.info("Logged in as Discord bot", { tag: c.user.tag });
@@ -210,6 +218,16 @@ export class DiscordConnector implements PlatformConnector {
 	}
 
 	private async onMessage(msg: DiscordMessage): Promise<void> {
+		// Dedup: Discord.js gateway can replay the same messageCreate event
+		// (shard reconnect, packet replay). Track recent IDs and skip dupes.
+		if (this.recentMessageIds.has(msg.id)) return;
+		this.recentMessageIds.add(msg.id);
+		// Prune set lazily — keep at most 100 entries
+		if (this.recentMessageIds.size > 100) {
+			const first = this.recentMessageIds.values().next().value;
+			if (first) this.recentMessageIds.delete(first);
+		}
+
 		// Allowlist check — reads allowed_users from platforms.json config (AC6.5)
 		if (
 			this.config.allowed_users.length > 0 &&

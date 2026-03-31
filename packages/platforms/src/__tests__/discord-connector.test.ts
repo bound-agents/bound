@@ -409,6 +409,113 @@ describe("DiscordConnector", () => {
 		});
 	});
 
+	describe("Double connect() handler guard", () => {
+		it("should only register one messageCreate handler even if connect() is called twice", async () => {
+			const handlerRegistrations: Array<{ event: string; fn: unknown }> = [];
+			const mockClient = {
+				on: (event: string, fn: unknown) => {
+					handlerRegistrations.push({ event, fn });
+				},
+				off: (event: string, _fn: unknown) => {
+					const idx = handlerRegistrations.findIndex(
+						(h) => h.event === event && h.fn === _fn,
+					);
+					if (idx >= 0) handlerRegistrations.splice(idx, 1);
+				},
+			};
+
+			const connector = new DiscordConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+			await connector.connect(); // second connect() call
+
+			const messageCreateHandlers = handlerRegistrations.filter(
+				(h) => h.event === "messageCreate",
+			);
+			expect(messageCreateHandlers.length).toBe(1);
+		});
+
+		it("should produce only one intake per Discord message after double connect()", async () => {
+			const handlerRegistrations: Array<{ event: string; fn: Function }> = [];
+			const mockClient = {
+				on: (event: string, fn: Function) => {
+					handlerRegistrations.push({ event, fn });
+				},
+				off: (event: string, fn: Function) => {
+					const idx = handlerRegistrations.findIndex(
+						(h) => h.event === event && h.fn === fn,
+					);
+					if (idx >= 0) handlerRegistrations.splice(idx, 1);
+				},
+			};
+
+			const connector = new DiscordConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+			await connector.connect(); // double connect
+
+			// Simulate a Discord message by firing all registered messageCreate handlers
+			const mockMsg = {
+				id: "discord-msg-double",
+				author: { id: "user123", bot: false, username: "alice", displayName: "Alice" },
+				channel: { type: 1, sendTyping: async () => {} },
+				content: "test",
+				attachments: { values: () => [] },
+			};
+
+			for (const h of handlerRegistrations.filter((r) => r.event === "messageCreate")) {
+				h.fn(mockMsg);
+			}
+
+			// Wait for async onMessage calls to settle
+			await new Promise((r) => setTimeout(r, 50));
+
+			const intakes = db.query("SELECT * FROM relay_outbox WHERE kind = 'intake'").all();
+			expect(intakes.length).toBe(1);
+		});
+		it("should deduplicate gateway-replayed messageCreate events", async () => {
+			const connector = new DiscordConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManager(),
+			);
+
+			const mockMsg = {
+				id: "discord-msg-replay",
+				author: { id: "user123", bot: false, username: "alice", displayName: "Alice" },
+				channel: { type: 1, sendTyping: async () => {} },
+				content: "replayed message",
+			};
+
+			// Call onMessage twice with the same Discord message ID (gateway replay)
+			await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(mockMsg);
+			await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(mockMsg);
+
+			const messages = db.query("SELECT * FROM messages WHERE content = 'replayed message'").all();
+			expect(messages.length).toBe(1);
+
+			const intakes = db.query("SELECT * FROM relay_outbox WHERE kind = 'intake'").all();
+			expect(intakes.length).toBe(1);
+		});
+	});
+
 	describe("Connector interface requirements", () => {
 		it("should have platform = discord", () => {
 			const connector = new DiscordConnector(

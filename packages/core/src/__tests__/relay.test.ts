@@ -408,6 +408,164 @@ describe("Relay CRUD Helpers", () => {
 		});
 	});
 
+	describe("Outbox Idempotency (duplicate prevention)", () => {
+		let db: ReturnType<typeof createDatabase>;
+
+		beforeEach(() => {
+			dbPath = join(tmpdir(), `bound-relay-test-${randomBytes(4).toString("hex")}.db`);
+			db = createDatabase(dbPath);
+			applySchema(db);
+		});
+
+		afterEach(() => {
+			try {
+				db.close();
+			} catch {
+				// ignore
+			}
+			try {
+				unlinkSync(dbPath);
+			} catch {
+				// ignore
+			}
+		});
+
+		it("writeOutbox silently ignores duplicate idempotency_key + target_site_id", () => {
+			const now = new Date().toISOString();
+			const expiry = new Date(Date.now() + 60000).toISOString();
+
+			writeOutbox(db, {
+				id: "msg-1",
+				source_site_id: "site-1",
+				target_site_id: "site-2",
+				kind: "intake",
+				ref_id: null,
+				idempotency_key: "intake:discord:12345",
+				payload: "{}",
+				created_at: now,
+				expires_at: expiry,
+			});
+
+			// Second write with same idempotency_key + target should be silently ignored
+			writeOutbox(db, {
+				id: "msg-2",
+				source_site_id: "site-1",
+				target_site_id: "site-2",
+				kind: "intake",
+				ref_id: null,
+				idempotency_key: "intake:discord:12345",
+				payload: "{}",
+				created_at: now,
+				expires_at: expiry,
+			});
+
+			const all = readUndelivered(db);
+			expect(all).toHaveLength(1);
+			expect(all[0].id).toBe("msg-1");
+		});
+
+		it("writeOutbox allows same idempotency_key with different target_site_id", () => {
+			const now = new Date().toISOString();
+			const expiry = new Date(Date.now() + 60000).toISOString();
+
+			writeOutbox(db, {
+				id: "msg-1",
+				source_site_id: "site-1",
+				target_site_id: "site-2",
+				kind: "intake",
+				ref_id: null,
+				idempotency_key: "intake:discord:12345",
+				payload: "{}",
+				created_at: now,
+				expires_at: expiry,
+			});
+
+			writeOutbox(db, {
+				id: "msg-2",
+				source_site_id: "site-1",
+				target_site_id: "site-3",
+				kind: "intake",
+				ref_id: null,
+				idempotency_key: "intake:discord:12345",
+				payload: "{}",
+				created_at: now,
+				expires_at: expiry,
+			});
+
+			const all = readUndelivered(db);
+			expect(all).toHaveLength(2);
+		});
+
+		it("writeOutbox allows same key after first entry is delivered", () => {
+			const now = new Date().toISOString();
+			const expiry = new Date(Date.now() + 60000).toISOString();
+
+			writeOutbox(db, {
+				id: "msg-1",
+				source_site_id: "site-1",
+				target_site_id: "site-2",
+				kind: "intake",
+				ref_id: null,
+				idempotency_key: "intake:discord:12345",
+				payload: "{}",
+				created_at: now,
+				expires_at: expiry,
+			});
+
+			// Mark first as delivered
+			markDelivered(db, ["msg-1"]);
+
+			// Second write with same key should succeed (first is delivered)
+			writeOutbox(db, {
+				id: "msg-2",
+				source_site_id: "site-1",
+				target_site_id: "site-2",
+				kind: "intake",
+				ref_id: null,
+				idempotency_key: "intake:discord:12345",
+				payload: "{}",
+				created_at: now,
+				expires_at: expiry,
+			});
+
+			const undelivered = readUndelivered(db);
+			expect(undelivered).toHaveLength(1);
+			expect(undelivered[0].id).toBe("msg-2");
+		});
+
+		it("writeOutbox allows entries with null idempotency_key (no dedup)", () => {
+			const now = new Date().toISOString();
+			const expiry = new Date(Date.now() + 60000).toISOString();
+
+			writeOutbox(db, {
+				id: "msg-1",
+				source_site_id: "site-1",
+				target_site_id: "site-2",
+				kind: "status_forward",
+				ref_id: null,
+				idempotency_key: null,
+				payload: "{}",
+				created_at: now,
+				expires_at: expiry,
+			});
+
+			writeOutbox(db, {
+				id: "msg-2",
+				source_site_id: "site-1",
+				target_site_id: "site-2",
+				kind: "status_forward",
+				ref_id: null,
+				idempotency_key: null,
+				payload: "{}",
+				created_at: now,
+				expires_at: expiry,
+			});
+
+			const all = readUndelivered(db);
+			expect(all).toHaveLength(2);
+		});
+	});
+
 	describe("Payload Size Enforcement (AC9.1)", () => {
 		let db: ReturnType<typeof createDatabase>;
 
