@@ -360,15 +360,33 @@ export class DiscordInteractionConnector implements PlatformConnector {
 			((interaction as unknown as { guildId?: string }).guildId || "DM");
 		const timestamp = targetMessage.createdAt?.toISOString() ?? new Date().toISOString();
 
-		const filingPrompt = [
+		// Collect image attachment URLs
+		const imageUrls: string[] = [];
+		for (const att of targetMessage.attachments.filter(
+			(a: { contentType?: string }) => a.contentType?.startsWith("image/") ?? false,
+		)) {
+			imageUrls.push((att as unknown as { url: string }).url);
+		}
+
+		const filingPromptParts = [
 			"File this message for future reference.",
 			"",
 			`From: @${targetMessage.author.displayName ?? targetMessage.author.username} ${trustSignal}`,
 			`Channel: ${channelName} in ${guildName}`,
 			`Sent: ${timestamp}`,
 			"",
-			targetMessage.content,
-		].join("\n");
+		];
+		if (targetMessage.content) {
+			filingPromptParts.push(targetMessage.content);
+		}
+		if (imageUrls.length > 0) {
+			if (targetMessage.content) filingPromptParts.push("");
+			filingPromptParts.push(
+				...imageUrls.map((url, i) => `[Image ${i + 1}]: ${url}`),
+			);
+		}
+
+		const filingPrompt = filingPromptParts.join("\n");
 
 		// AC3.3: Persist user message with filing prompt
 		const now = new Date().toISOString();

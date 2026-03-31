@@ -691,7 +691,7 @@ describe("DiscordInteractionConnector", () => {
 					id: "msg123",
 					content: "Some content",
 					author: { id: "author-id", bot: false, displayName: "Author", username: "author" },
-					attachments: { some: () => false },
+					attachments: { some: () => false, filter: () => [] },
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
@@ -762,7 +762,7 @@ describe("DiscordInteractionConnector", () => {
 					id: "msg123",
 					content: "", // Empty content
 					author: { id: "author-id", bot: false, displayName: "Author", username: "author" },
-					attachments: { some: () => false }, // No images
+					attachments: { some: () => false, filter: () => [] }, // No images
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
@@ -816,7 +816,7 @@ describe("DiscordInteractionConnector", () => {
 					id: "msg123",
 					content: "Test content",
 					author: { id: "author-id", bot: false, displayName: "Author", username: "author" },
-					attachments: { some: () => false },
+					attachments: { some: () => false, filter: () => [] },
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
@@ -877,7 +877,7 @@ describe("DiscordInteractionConnector", () => {
 					id: "msg123",
 					content: "Test content",
 					author: { id: "author-id", bot: false, displayName: "Author", username: "author" },
-					attachments: { some: () => false },
+					attachments: { some: () => false, filter: () => [] },
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
@@ -947,7 +947,7 @@ describe("DiscordInteractionConnector", () => {
 						displayName: "Bob",
 						username: "bob",
 					},
-					attachments: { some: () => false },
+					attachments: { some: () => false, filter: () => [] },
 					createdAt: new Date("2026-03-30T14:22:00.000Z"),
 				},
 				channel: { name: "general" },
@@ -1015,7 +1015,7 @@ describe("DiscordInteractionConnector", () => {
 						displayName: "Bob",
 						username: "bob",
 					},
-					attachments: { some: () => false },
+					attachments: { some: () => false, filter: () => [] },
 					createdAt: new Date("2026-03-30T14:22:00.000Z"),
 				},
 				channel: { name: "general" },
@@ -1055,6 +1055,129 @@ describe("DiscordInteractionConnector", () => {
 			expect(msg.content).toContain("123456789012345678");
 		});
 
+		it("should include image attachment URLs in filing prompt", async () => {
+			const mockAttachments = [
+				{ contentType: "image/png", url: "https://cdn.discord.com/img1.png", name: "screenshot.png" },
+				{ contentType: "image/jpeg", url: "https://cdn.discord.com/img2.jpg", name: "photo.jpg" },
+				{ contentType: "application/pdf", url: "https://cdn.discord.com/doc.pdf", name: "doc.pdf" },
+			];
+			const mockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "File for Later",
+				deferReply: async () => {},
+				editReply: async () => {},
+				user: { id: "discord-user-123", displayName: "Alice", username: "alice" },
+				targetMessage: {
+					id: "msg123",
+					content: "check out these images",
+					author: {
+						id: "author-id",
+						bot: false,
+						displayName: "Bob",
+						username: "bob",
+					},
+					attachments: {
+						some: (fn: (att: unknown) => boolean) => mockAttachments.some(fn),
+						filter: (fn: (att: unknown) => boolean) => mockAttachments.filter(fn),
+					},
+					createdAt: new Date("2026-03-30T14:22:00.000Z"),
+				},
+				channel: { name: "general" },
+				guild: { name: "TestGuild" },
+			};
+
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const mockClient = {
+				application: { commands: { create: async () => {} } },
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") onInteractionCreateHandlers.push(handler);
+				},
+				off: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			const messages = db.query("SELECT * FROM messages WHERE role = 'user'").all() as unknown[];
+			expect(messages.length).toBe(1);
+
+			const msg = messages[0] as { content: string };
+			// Image URLs should be included in the filing prompt
+			expect(msg.content).toContain("https://cdn.discord.com/img1.png");
+			expect(msg.content).toContain("https://cdn.discord.com/img2.jpg");
+			// Non-image attachment should NOT be included
+			expect(msg.content).not.toContain("doc.pdf");
+		});
+
+		it("should include image URLs even when there is no text content", async () => {
+			const mockAttachments = [
+				{ contentType: "image/png", url: "https://cdn.discord.com/img1.png", name: "screenshot.png" },
+			];
+			const mockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "File for Later",
+				deferReply: async () => {},
+				editReply: async () => {},
+				user: { id: "discord-user-123", displayName: "Alice", username: "alice" },
+				targetMessage: {
+					id: "msg456",
+					content: "",
+					author: {
+						id: "author-id",
+						bot: false,
+						displayName: "Bob",
+						username: "bob",
+					},
+					attachments: {
+						some: (fn: (att: unknown) => boolean) => mockAttachments.some(fn),
+						filter: (fn: (att: unknown) => boolean) => mockAttachments.filter(fn),
+					},
+					createdAt: new Date("2026-03-30T14:22:00.000Z"),
+				},
+				channel: { name: "general" },
+				guild: { name: "TestGuild" },
+			};
+
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const mockClient = {
+				application: { commands: { create: async () => {} } },
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") onInteractionCreateHandlers.push(handler);
+				},
+				off: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			const messages = db.query("SELECT * FROM messages WHERE role = 'user'").all() as unknown[];
+			expect(messages.length).toBe(1);
+
+			const msg = messages[0] as { content: string };
+			// Image URL should be in the prompt
+			expect(msg.content).toContain("https://cdn.discord.com/img1.png");
+			// Should still have the filing header
+			expect(msg.content).toContain("File this message for future reference");
+		});
+
 		it("AC3.4: intake relay — should write relay_outbox with platform = discord-interaction", async () => {
 			let syncTriggerEmitted = false;
 			eventBus.on("sync:trigger", () => {
@@ -1071,7 +1194,7 @@ describe("DiscordInteractionConnector", () => {
 					id: "msg123",
 					content: "Test content",
 					author: { id: "author-id", bot: false, displayName: "Author", username: "author" },
-					attachments: { some: () => false },
+					attachments: { some: () => false, filter: () => [] },
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
@@ -1154,7 +1277,7 @@ describe("DiscordInteractionConnector", () => {
 						displayName: "Alice",
 						username: "alice",
 					},
-					attachments: { some: () => false },
+					attachments: { some: () => false, filter: () => [] },
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
@@ -1211,7 +1334,7 @@ describe("DiscordInteractionConnector", () => {
 						displayName: "Unknown",
 						username: "unknown",
 					},
-					attachments: { some: () => false },
+					attachments: { some: () => false, filter: () => [] },
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
@@ -1270,7 +1393,7 @@ describe("DiscordInteractionConnector", () => {
 						displayName: "BotName",
 						username: "botname",
 					},
-					attachments: { some: () => false },
+					attachments: { some: () => false, filter: () => [] },
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
@@ -1340,7 +1463,7 @@ describe("DiscordInteractionConnector", () => {
 						displayName: "Author",
 						username: "author",
 					},
-					attachments: { some: () => false },
+					attachments: { some: () => false, filter: () => [] },
 					createdAt: new Date(),
 				},
 				channel: { name: "general" },
