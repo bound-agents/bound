@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { buildFileTree } from "../file-tree";
+import { buildFileTree, findNodeByPath } from "../file-tree";
 import type { FileMetadata } from "../file-tree";
 
 describe("buildFileTree", () => {
@@ -188,5 +188,114 @@ describe("buildFileTree", () => {
 		expect(result[0].children[0].children[0].children[0].name).toBe("d");
 		expect(result[0].children[0].children[0].children[0].children).toHaveLength(1);
 		expect(result[0].children[0].children[0].children[0].children[0].name).toBe("file.txt");
+	});
+});
+
+describe("findNodeByPath", () => {
+	it("returns null for empty tree", () => {
+		const result = findNodeByPath([], "anything");
+		expect(result).toBeNull();
+	});
+
+	it("returns null for non-existent path", () => {
+		const files: FileMetadata[] = [
+			{
+				id: "1",
+				path: "dir/file.txt",
+				is_binary: 0,
+				size_bytes: 100,
+				created_at: "2026-01-01T00:00:00Z",
+				modified_at: "2026-01-01T00:00:00Z",
+				deleted: 0,
+				created_by: "user1",
+				host_origin: "local",
+			},
+		];
+		const tree = buildFileTree(files);
+		const result = findNodeByPath(tree, "nonexistent");
+		expect(result).toBeNull();
+	});
+
+	it("finds a top-level directory", () => {
+		const files: FileMetadata[] = [
+			{
+				id: "1",
+				path: "dir/file.txt",
+				is_binary: 0,
+				size_bytes: 100,
+				created_at: "2026-01-01T00:00:00Z",
+				modified_at: "2026-01-01T00:00:00Z",
+				deleted: 0,
+				created_by: "user1",
+				host_origin: "local",
+			},
+		];
+		const tree = buildFileTree(files);
+		const result = findNodeByPath(tree, "dir");
+		expect(result).not.toBeNull();
+		expect(result?.name).toBe("dir");
+		expect(result?.type).toBe("dir");
+	});
+
+	it("finds a nested directory", () => {
+		const files: FileMetadata[] = [
+			{
+				id: "1",
+				path: "a/b/file.txt",
+				is_binary: 0,
+				size_bytes: 100,
+				created_at: "2026-01-01T00:00:00Z",
+				modified_at: "2026-01-01T00:00:00Z",
+				deleted: 0,
+				created_by: "user1",
+				host_origin: "local",
+			},
+		];
+		const tree = buildFileTree(files);
+		const result = findNodeByPath(tree, "a/b");
+		expect(result).not.toBeNull();
+		expect(result?.name).toBe("b");
+		expect(result?.type).toBe("dir");
+	});
+
+	it("finds a file node", () => {
+		const files: FileMetadata[] = [
+			{
+				id: "1",
+				path: "dir/file.txt",
+				is_binary: 0,
+				size_bytes: 100,
+				created_at: "2026-01-01T00:00:00Z",
+				modified_at: "2026-01-01T00:00:00Z",
+				deleted: 0,
+				created_by: "user1",
+				host_origin: "local",
+			},
+		];
+		const tree = buildFileTree(files);
+		const result = findNodeByPath(tree, "dir/file.txt");
+		expect(result).not.toBeNull();
+		expect(result?.name).toBe("file.txt");
+		expect(result?.type).toBe("file");
+		expect(result?.file?.path).toBe("dir/file.txt");
+	});
+
+	it("returns null for partial path match", () => {
+		const files: FileMetadata[] = [
+			{
+				id: "1",
+				path: "src/index.ts",
+				is_binary: 0,
+				size_bytes: 100,
+				created_at: "2026-01-01T00:00:00Z",
+				modified_at: "2026-01-01T00:00:00Z",
+				deleted: 0,
+				created_by: "user1",
+				host_origin: "local",
+			},
+		];
+		const tree = buildFileTree(files);
+		const result = findNodeByPath(tree, "sr");
+		expect(result).toBeNull();
 	});
 });
