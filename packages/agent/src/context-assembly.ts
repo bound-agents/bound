@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BackendCapabilities, ContentBlock, LLMMessage } from "@bound/llm";
 import type { Message } from "@bound/shared";
+import { countContentTokens } from "@bound/shared";
 import { getFileThreadNotificationMessage, getLastThreadForFile } from "./file-thread-tracker";
 import {
 	buildCrossThreadDigest,
@@ -47,6 +48,8 @@ export interface ContextParams {
  * substituteUnsupportedBlocks when the backend lacks vision/document support).
  * Text blocks contribute their text length; all other blocks contribute their
  * JSON-serialised length as a conservative approximation.
+ * @deprecated Use countContentTokens() from @bound/shared for token counting.
+ * This function returns character counts, not token counts.
  */
 export function estimateContentLength(content: string | ContentBlock[]): number {
 	if (typeof content === "string") return content.length;
@@ -989,7 +992,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 	// Budget pressure check: reduce enrichment caps if headroom < 2,000 tokens
 	if (enrichmentBaseline !== undefined && enrichmentMessageIndex >= 0) {
 		const currentTotal = assembled.reduce((sum, msg) => {
-			return sum + Math.ceil(estimateContentLength(msg.content) / 4);
+			return sum + countContentTokens(msg.content);
 		}, 0);
 		const headroom = contextWindow - currentTotal;
 
@@ -1051,7 +1054,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 
 	// Approximate token count (rough estimate: 1 token per 4 characters)
 	const totalTokens = assembled.reduce((sum, msg) => {
-		return sum + Math.ceil(estimateContentLength(msg.content) / 4);
+		return sum + countContentTokens(msg.content);
 	}, 0);
 
 	if (totalTokens > contextWindow) {
