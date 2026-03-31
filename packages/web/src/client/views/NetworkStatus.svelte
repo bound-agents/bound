@@ -171,16 +171,21 @@ function parseModels(modelsStr: string | null): string[] {
 						<div class="card-header">
 							<div class="host-badge">
 								<svg width="36" height="36" viewBox="0 0 36 36">
-									<circle cx="18" cy="18" r="16" fill="none" stroke={online ? "var(--line-4)" : "var(--alert-disruption)"} stroke-width="2.5" />
+									<!-- Outer filled circle in metro color -->
+									<circle cx="18" cy="18" r="17" fill={online ? "var(--line-4)" : "var(--alert-disruption)"} />
+									<!-- White inner circle (~65% diameter: 11/17 ≈ 65%) -->
+									<circle cx="18" cy="18" r="11" fill="#fff" />
 									{#if isHub}
-										<circle cx="18" cy="18" r="10" fill="none" stroke={online ? "var(--line-4)" : "var(--alert-disruption)"} stroke-width="1.5" opacity="0.4" />
+										<!-- Hub indicator: subtle ring inside the white area -->
+										<circle cx="18" cy="18" r="10" fill="none" stroke={online ? "var(--line-4)" : "var(--alert-disruption)"} stroke-width="1" opacity="0.3" />
 									{/if}
+									<!-- Black bold letter -->
 									<text
 										x="18"
 										y="18"
 										font-size="14"
 										font-weight="700"
-										fill={online ? "var(--line-4)" : "var(--alert-disruption)"}
+										fill="#000"
 										text-anchor="middle"
 										dominant-baseline="central"
 										font-family="'Nunito Sans', sans-serif"
