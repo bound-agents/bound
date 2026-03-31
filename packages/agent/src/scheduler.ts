@@ -296,6 +296,15 @@ export class Scheduler {
 				const threadId = task.thread_id || randomUUID();
 				const taskNow = new Date().toISOString();
 
+				// Persist thread_id back to the task row so the UI can find the
+				// thread later. Without this, tasks created without a thread_id
+				// would run fine but the detail view couldn't show their messages.
+				if (!task.thread_id) {
+					this.ctx.db
+						.query("UPDATE tasks SET thread_id = ? WHERE id = ?")
+						.run(threadId, task.id);
+				}
+
 				// Bug #4: Ensure a thread row exists for the threadId.
 				// The thread may not exist if this is a system task with no pre-created thread.
 				const existingThread = this.ctx.db

@@ -327,4 +327,77 @@ describe("Scheduler Integration", () => {
 		// Task should remain pending since host doesn't match
 		expect(task?.status).toBe("pending");
 	});
+
+	it("persists thread_id back to task row when task had no thread", async () => {
+		const taskId = randomUUID();
+		const now = new Date().toISOString();
+		const pastTime = new Date(Date.now() - 60000).toISOString();
+
+		// Insert a deferred task with thread_id = NULL
+		db.exec(`
+			INSERT INTO tasks (
+				id, type, status, trigger_spec, payload, thread_id,
+				claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+				run_count, max_runs, requires, model_hint, no_history,
+				inject_mode, depends_on, require_success, alert_threshold,
+				consecutive_failures, event_depth, no_quiescence,
+				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+			) VALUES (
+				'${taskId}', 'deferred', 'pending', 'in 10m', 'Do something', NULL,
+				NULL, NULL, NULL, '${pastTime}', NULL,
+				0, NULL, NULL, NULL, 0,
+				'status', NULL, 0, 5,
+				0, 0, 0,
+				NULL, NULL, NULL, '${now}', 'system', '${now}', 0
+			)
+		`);
+
+		const agentLoopFactory = (): { run: () => Promise<AgentLoopResult> } => ({
+			run: async (): Promise<AgentLoopResult> => ({
+				messagesCreated: 1,
+				toolCallsMade: 0,
+				filesChanged: 0,
+			}),
+		});
+
+		// Use correct camelCase config key so shouldSkipDueToBudget doesn't throw
+		const localCtx = {
+			...appContext,
+			config: {
+				allowlist: [],
+				modelBackends: { backends: [], default: "" },
+			},
+		};
+
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		const scheduler = new Scheduler(localCtx as any, agentLoopFactory);
+		const { stop } = scheduler.start(100);
+
+		// Wait for the task to complete (run_count > 0 means it ran)
+		await waitFor(
+			() =>
+				(
+					db.query("SELECT run_count FROM tasks WHERE id = ?").get(taskId) as
+						| { run_count: number }
+						| null
+				)?.run_count === 1,
+			{ message: "task did not complete", timeoutMs: 5000 },
+		);
+		stop();
+
+		const updatedTask = db
+			.query("SELECT thread_id FROM tasks WHERE id = ?")
+			.get(taskId) as { thread_id: string | null } | null;
+
+		expect(updatedTask).not.toBeNull();
+		// The scheduler should have persisted the generated thread_id back
+		expect(updatedTask?.thread_id).not.toBeNull();
+		expect(typeof updatedTask?.thread_id).toBe("string");
+
+		// Verify the thread actually exists in the threads table
+		const thread = db
+			.query("SELECT id FROM threads WHERE id = ?")
+			.get(updatedTask!.thread_id!) as { id: string } | null;
+		expect(thread).not.toBeNull();
+	});
 });
