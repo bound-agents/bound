@@ -6,6 +6,7 @@
 	"main": "src/index.ts",
 	"types": "src/index.ts",
 	"dependencies": {
+		"js-tiktoken": "^1.0.21",
 		"zod": "^4.0.0"
 	}
 }
