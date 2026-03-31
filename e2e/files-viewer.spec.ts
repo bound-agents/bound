@@ -488,7 +488,7 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 			},
 		];
 
-		test("AC2.1: opens modal on file click", async ({ page }) => {
+		test.beforeEach(async ({ page }) => {
 			// Mock file list endpoint
 			await page.route("**/api/files", async (route) => {
 				await route.fulfill({
@@ -513,7 +513,9 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 					await route.abort();
 				}
 			});
+		});
 
+		test("AC2.1: opens modal on file click", async ({ page }) => {
 			await page.goto("/#/files");
 			await page.waitForLoadState("networkidle");
 
@@ -537,29 +539,6 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		test("AC2.2: renders code with syntax highlighting", async ({ page }) => {
-			await page.route("**/api/files", async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: JSON.stringify(previewTestFiles),
-				});
-			});
-
-			await page.route("**/api/files/**", async (route) => {
-				const url = route.request().url();
-				const path = url.split("/api/files/")[1];
-				const file = previewTestFiles.find((f) => f.path === path);
-				if (file) {
-					await route.fulfill({
-						status: 200,
-						contentType: "application/json",
-						body: JSON.stringify(file),
-					});
-				} else {
-					await route.abort();
-				}
-			});
-
 			await page.goto("/#/files");
 			await page.waitForLoadState("networkidle");
 
@@ -584,29 +563,6 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		test("AC2.3: renders markdown as formatted HTML", async ({ page }) => {
-			await page.route("**/api/files", async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: JSON.stringify(previewTestFiles),
-				});
-			});
-
-			await page.route("**/api/files/**", async (route) => {
-				const url = route.request().url();
-				const path = url.split("/api/files/")[1];
-				const file = previewTestFiles.find((f) => f.path === path);
-				if (file) {
-					await route.fulfill({
-						status: 200,
-						contentType: "application/json",
-						body: JSON.stringify(file),
-					});
-				} else {
-					await route.abort();
-				}
-			});
-
 			await page.goto("/#/files");
 			await page.waitForLoadState("networkidle");
 
@@ -635,29 +591,6 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		test("AC2.4: displays PNG image inline", async ({ page }) => {
-			await page.route("**/api/files", async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: JSON.stringify(previewTestFiles),
-				});
-			});
-
-			await page.route("**/api/files/**", async (route) => {
-				const url = route.request().url();
-				const path = url.split("/api/files/")[1];
-				const file = previewTestFiles.find((f) => f.path === path);
-				if (file) {
-					await route.fulfill({
-						status: 200,
-						contentType: "application/json",
-						body: JSON.stringify(file),
-					});
-				} else {
-					await route.abort();
-				}
-			});
-
 			await page.goto("/#/files");
 			await page.waitForLoadState("networkidle");
 
@@ -680,29 +613,6 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		test("AC2.4: displays SVG image from raw text content", async ({ page }) => {
-			await page.route("**/api/files", async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: JSON.stringify(previewTestFiles),
-				});
-			});
-
-			await page.route("**/api/files/**", async (route) => {
-				const url = route.request().url();
-				const path = url.split("/api/files/")[1];
-				const file = previewTestFiles.find((f) => f.path === path);
-				if (file) {
-					await route.fulfill({
-						status: 200,
-						contentType: "application/json",
-						body: JSON.stringify(file),
-					});
-				} else {
-					await route.abort();
-				}
-			});
-
 			await page.goto("/#/files");
 			await page.waitForLoadState("networkidle");
 
@@ -725,29 +635,6 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		test("AC2.5: displays plain text in monospace", async ({ page }) => {
-			await page.route("**/api/files", async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: JSON.stringify(previewTestFiles),
-				});
-			});
-
-			await page.route("**/api/files/**", async (route) => {
-				const url = route.request().url();
-				const path = url.split("/api/files/")[1];
-				const file = previewTestFiles.find((f) => f.path === path);
-				if (file) {
-					await route.fulfill({
-						status: 200,
-						contentType: "application/json",
-						body: JSON.stringify(file),
-					});
-				} else {
-					await route.abort();
-				}
-			});
-
 			await page.goto("/#/files");
 			await page.waitForLoadState("networkidle");
 
@@ -768,29 +655,6 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		test("AC2.6: shows filename and download button", async ({ page }) => {
-			await page.route("**/api/files", async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: JSON.stringify(previewTestFiles),
-				});
-			});
-
-			await page.route("**/api/files/**", async (route) => {
-				const url = route.request().url();
-				const path = url.split("/api/files/")[1];
-				const file = previewTestFiles.find((f) => f.path === path);
-				if (file) {
-					await route.fulfill({
-						status: 200,
-						contentType: "application/json",
-						body: JSON.stringify(file),
-					});
-				} else {
-					await route.abort();
-				}
-			});
-
 			await page.goto("/#/files");
 			await page.waitForLoadState("networkidle");
 
@@ -813,29 +677,6 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		test("AC2.7: closes via close button", async ({ page }) => {
-			await page.route("**/api/files", async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: JSON.stringify(previewTestFiles),
-				});
-			});
-
-			await page.route("**/api/files/**", async (route) => {
-				const url = route.request().url();
-				const path = url.split("/api/files/")[1];
-				const file = previewTestFiles.find((f) => f.path === path);
-				if (file) {
-					await route.fulfill({
-						status: 200,
-						contentType: "application/json",
-						body: JSON.stringify(file),
-					});
-				} else {
-					await route.abort();
-				}
-			});
-
 			await page.goto("/#/files");
 			await page.waitForLoadState("networkidle");
 
@@ -858,29 +699,6 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		test("AC2.7: closes via Escape key", async ({ page }) => {
-			await page.route("**/api/files", async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: JSON.stringify(previewTestFiles),
-				});
-			});
-
-			await page.route("**/api/files/**", async (route) => {
-				const url = route.request().url();
-				const path = url.split("/api/files/")[1];
-				const file = previewTestFiles.find((f) => f.path === path);
-				if (file) {
-					await route.fulfill({
-						status: 200,
-						contentType: "application/json",
-						body: JSON.stringify(file),
-					});
-				} else {
-					await route.abort();
-				}
-			});
-
 			await page.goto("/#/files");
 			await page.waitForLoadState("networkidle");
 
@@ -902,29 +720,6 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		test("AC2.7: closes via backdrop click", async ({ page }) => {
-			await page.route("**/api/files", async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: JSON.stringify(previewTestFiles),
-				});
-			});
-
-			await page.route("**/api/files/**", async (route) => {
-				const url = route.request().url();
-				const path = url.split("/api/files/")[1];
-				const file = previewTestFiles.find((f) => f.path === path);
-				if (file) {
-					await route.fulfill({
-						status: 200,
-						contentType: "application/json",
-						body: JSON.stringify(file),
-					});
-				} else {
-					await route.abort();
-				}
-			});
-
 			await page.goto("/#/files");
 			await page.waitForLoadState("networkidle");
 
@@ -953,29 +748,6 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		test("AC2.8: shows binary fallback", async ({ page }) => {
-			await page.route("**/api/files", async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: JSON.stringify(previewTestFiles),
-				});
-			});
-
-			await page.route("**/api/files/**", async (route) => {
-				const url = route.request().url();
-				const path = url.split("/api/files/")[1];
-				const file = previewTestFiles.find((f) => f.path === path);
-				if (file) {
-					await route.fulfill({
-						status: 200,
-						contentType: "application/json",
-						body: JSON.stringify(file),
-					});
-				} else {
-					await route.abort();
-				}
-			});
-
 			await page.goto("/#/files");
 			await page.waitForLoadState("networkidle");
 
@@ -1000,15 +772,6 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		test("AC2.9: shows error state with retry", async ({ page }) => {
-			// First route returns file list
-			await page.route("**/api/files", async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: JSON.stringify(previewTestFiles),
-				});
-			});
-
 			let fileContentCallCount = 0;
 			// File content endpoint initially fails
 			await page.route("**/api/files/home/user/src/app.ts", async (route) => {
@@ -1079,29 +842,6 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		test("AC2.10: shows empty file message", async ({ page }) => {
-			await page.route("**/api/files", async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: JSON.stringify(previewTestFiles),
-				});
-			});
-
-			await page.route("**/api/files/**", async (route) => {
-				const url = route.request().url();
-				const path = url.split("/api/files/")[1];
-				const file = previewTestFiles.find((f) => f.path === path);
-				if (file) {
-					await route.fulfill({
-						status: 200,
-						contentType: "application/json",
-						body: JSON.stringify(file),
-					});
-				} else {
-					await route.abort();
-				}
-			});
-
 			await page.goto("/#/files");
 			await page.waitForLoadState("networkidle");
 
@@ -1122,29 +862,6 @@ test.describe("Files Viewer Layout and Directory Selection", () => {
 		});
 
 		test("AC2.11: traps focus within modal", async ({ page }) => {
-			await page.route("**/api/files", async (route) => {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: JSON.stringify(previewTestFiles),
-				});
-			});
-
-			await page.route("**/api/files/**", async (route) => {
-				const url = route.request().url();
-				const path = url.split("/api/files/")[1];
-				const file = previewTestFiles.find((f) => f.path === path);
-				if (file) {
-					await route.fulfill({
-						status: 200,
-						contentType: "application/json",
-						body: JSON.stringify(file),
-					});
-				} else {
-					await route.abort();
-				}
-			});
-
 			await page.goto("/#/files");
 			await page.waitForLoadState("networkidle");
 

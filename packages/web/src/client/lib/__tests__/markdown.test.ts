@@ -19,11 +19,6 @@ const realSanitize = (html: string): string =>
 // Passthrough sanitizer for structural/rendering tests — no DOM dependency.
 const passthroughSanitize = (html: string): string => html;
 
-// Sanitizer wrapper for highlightCode tests — pass realSanitize to verify
-// that Shiki's HTML output sanitizes correctly.
-const withRealSanitize = (fn: (sanitize: (html: string) => string) => Promise<string>) =>
-	fn(realSanitize);
-
 // ---------------------------------------------------------------------------
 // splitOnThinkingBlocks
 // ---------------------------------------------------------------------------
