@@ -17,6 +17,8 @@ interface SplinePath {
 	sourceColor: string;
 	targetColor: string;
 	gradientId: string;
+	sourceY: number;
+	targetY: number;
 }
 
 let threads: Thread[] = $state([]);
@@ -102,30 +104,38 @@ function computeSplines(): void {
 		return;
 	}
 
-	const listRect = threadListEl.getBoundingClientRect();
 	svgHeight = threadListEl.scrollHeight;
 
-	// Build a map of threadId → { rowY, stationXPositions[] }
+	// Build a map of threadId → { rowY (scroll-safe), stationXPositions[] }
+	// Use offsetTop for Y (scroll-independent) and offsetLeft for X
 	const threadPositions = new Map<string, { y: number; stations: number[] }>();
 	for (const thread of threads) {
-		const rowEl = threadListEl.querySelector(`[data-thread-id="${thread.id}"]`);
+		const rowEl = threadListEl.querySelector(
+			`[data-thread-id="${thread.id}"]`,
+		) as HTMLElement | null;
 		if (!rowEl) continue;
 
-		const rowRect = rowEl.getBoundingClientRect();
-		const y = rowRect.top - listRect.top + rowRect.height / 2;
+		const y = rowEl.offsetTop + rowEl.offsetHeight / 2;
 
-		// Get station dot X positions
+		// Get station dot X positions relative to the thread-list
 		const stationEls = rowEl.querySelectorAll(".track-station");
 		const stations: number[] = [];
 		for (const st of stationEls) {
-			const stRect = st.getBoundingClientRect();
-			stations.push(stRect.left - listRect.left + stRect.width / 2);
+			const stEl = st as HTMLElement;
+			// Walk up offsetParent chain to get position relative to threadListEl
+			let left = stEl.offsetLeft + stEl.offsetWidth / 2;
+			let parent = stEl.offsetParent as HTMLElement | null;
+			while (parent && parent !== threadListEl) {
+				left += parent.offsetLeft;
+				parent = parent.offsetParent as HTMLElement | null;
+			}
+			stations.push(left);
 		}
 
 		threadPositions.set(thread.id, { y, stations });
 	}
 
-	// Collect all connections, then assign each to a station column
+	// Collect all connections
 	interface Connection {
 		sourceId: string;
 		targetId: string;
@@ -151,7 +161,7 @@ function computeSplines(): void {
 		return;
 	}
 
-	// Find the minimum station count across involved threads
+	// Find minimum station count to safely index
 	const minStations = Math.min(
 		...Array.from(threadPositions.values()).map((p) => p.stations.length),
 	);
@@ -160,8 +170,7 @@ function computeSplines(): void {
 		return;
 	}
 
-	// Distribute connections across station columns to minimize overlap
-	// Use different columns for different connections, wrapping if needed
+	// Distribute connections across station columns
 	const splines: SplinePath[] = [];
 	let gradIdx = 0;
 	for (let ci = 0; ci < connections.length; ci++) {
@@ -170,36 +179,37 @@ function computeSplines(): void {
 		const targetPos = threadPositions.get(conn.targetId);
 		if (!sourcePos || !targetPos) continue;
 
-		// Assign to a station column, spreading across available columns
+		// Assign to a station column, spread + slight offset per connection
 		const colIdx = ci % minStations;
-		const sourceX = sourcePos.stations[colIdx] ?? sourcePos.stations[0];
-		const targetX = targetPos.stations[colIdx] ?? targetPos.stations[0];
+		const x = (sourcePos.stations[colIdx] + targetPos.stations[colIdx]) / 2;
 		const sourceY = sourcePos.y;
 		const targetY = targetPos.y;
 
-		// Vertical distance determines curve amplitude
-		const dist = Math.abs(targetY - sourceY);
-		// Control points offset horizontally to create a smooth curve
-		// Alternate left/right offset based on connection index to reduce overlap
-		const direction = ci % 2 === 0 ? 1 : -1;
-		const cpOffsetX = direction * (20 + (ci % 3) * 12);
-		const cpOffsetY = dist * 0.3;
-
-		// Use the midpoint X between source and target stations
-		const midX = (sourceX + targetX) / 2 + cpOffsetX;
+		// S-shaped cubic bezier: control points stay at same X,
+		// each offset vertically by 40% of the distance
+		const dist = targetY - sourceY;
+		// Small horizontal jitter to separate overlapping splines
+		const jitter = ((ci % 3) - 1) * 8;
 
 		const path = [
-			`M ${sourceX} ${sourceY}`,
-			`C ${midX} ${sourceY + cpOffsetY},`,
-			`${midX} ${targetY - cpOffsetY},`,
-			`${targetX} ${targetY}`,
+			`M ${x + jitter} ${sourceY}`,
+			`C ${x + jitter} ${sourceY + dist * 0.4},`,
+			`${x + jitter} ${targetY - dist * 0.4},`,
+			`${x + jitter} ${targetY}`,
 		].join(" ");
 
 		const sourceColor = getLineColor(conn.sourceColor);
 		const targetColor = getLineColor(conn.targetColor);
 		const gid = `interchange-${gradIdx++}`;
 
-		splines.push({ path, sourceColor, targetColor, gradientId: gid });
+		splines.push({
+			path,
+			sourceColor,
+			targetColor,
+			gradientId: gid,
+			sourceY,
+			targetY,
+		});
 	}
 
 	interchangeSplines = splines;
@@ -273,7 +283,12 @@ function hasAlert(threadId: string): boolean {
 				<svg class="interchange-overlay" width="100%" height={svgHeight}>
 					<defs>
 						{#each interchangeSplines as spline}
-							<linearGradient id={spline.gradientId} gradientUnits="userSpaceOnUse">
+							<linearGradient
+								id={spline.gradientId}
+								gradientUnits="userSpaceOnUse"
+								x1="0" y1={spline.sourceY}
+								x2="0" y2={spline.targetY}
+							>
 								<stop offset="0%" stop-color={spline.sourceColor} />
 								<stop offset="100%" stop-color={spline.targetColor} />
 							</linearGradient>
@@ -523,8 +538,7 @@ function hasAlert(threadId: string): boolean {
 	/* Thread info column */
 	.thread-info {
 		flex-shrink: 0;
-		min-width: 180px;
-		max-width: 280px;
+		width: 200px;
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
