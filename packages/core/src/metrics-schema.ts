@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import type { ContextDebugInfo } from "@bound/shared";
 
 export interface TurnRecord {
 	thread_id?: string;
@@ -48,6 +49,13 @@ export function applyMetricsSchema(db: Database): void {
 	}
 	try {
 		db.run("ALTER TABLE turns ADD COLUMN tokens_cache_read INTEGER");
+	} catch {
+		// Column already exists
+	}
+
+	// Add context debug column to turns (idempotent — no-op if already exists)
+	try {
+		db.run("ALTER TABLE turns ADD COLUMN context_debug TEXT");
 	} catch {
 		// Column already exists
 	}
@@ -103,6 +111,15 @@ export function recordTurn(db: Database, turn: TurnRecord): number {
 	}
 
 	return Number(result.lastInsertRowid);
+}
+
+/**
+ * Record context debug metadata for a turn.
+ * Called after recordTurn() returns the turn ID.
+ * Follows the same post-insert UPDATE pattern as recordTurnRelayMetrics() in relay-metrics.ts.
+ */
+export function recordContextDebug(db: Database, turnId: number, debug: ContextDebugInfo): void {
+	db.run("UPDATE turns SET context_debug = ? WHERE id = ?", [JSON.stringify(debug), turnId]);
 }
 
 export function getDailySpend(db: Database, date: string): number {
