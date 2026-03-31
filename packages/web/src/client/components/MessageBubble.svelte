@@ -96,11 +96,11 @@ function toggleToolCall(): void {
 
 <style>
 	.message-bubble {
-		padding: 14px 18px;
-		margin: 10px 0;
+		padding: 10px 14px;
+		margin: 6px 0;
 		border-radius: 8px;
 		background: var(--bg-secondary);
-		border-left: 3px solid var(--bg-surface);
+		border-left: 2px solid var(--bg-surface);
 		transition: background 0.15s ease;
 		line-height: 1.55;
 	}
