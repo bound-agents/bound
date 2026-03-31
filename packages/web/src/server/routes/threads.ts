@@ -163,5 +163,47 @@ export function createThreadsRoutes(
 		}
 	});
 
+	app.get("/:id/context-debug", (c) => {
+		try {
+			const { id } = c.req.param();
+
+			const rows = db
+				.query(
+					`SELECT id, model_id, tokens_in, tokens_out, context_debug, created_at
+					 FROM turns
+					 WHERE thread_id = ? AND context_debug IS NOT NULL
+					 ORDER BY created_at ASC`,
+				)
+				.all(id) as Array<{
+				id: number;
+				model_id: string;
+				tokens_in: number;
+				tokens_out: number;
+				context_debug: string;
+				created_at: string;
+			}>;
+
+			const result = rows.map((row) => ({
+				turn_id: row.id,
+				model_id: row.model_id,
+				tokens_in: row.tokens_in,
+				tokens_out: row.tokens_out,
+				context_debug: JSON.parse(row.context_debug),
+				created_at: row.created_at,
+			}));
+
+			return c.json(result);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json(
+				{
+					error: "Failed to get context debug data",
+					details: message,
+				},
+				500,
+			);
+		}
+	});
+
 	return app;
 }
