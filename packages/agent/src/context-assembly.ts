@@ -40,6 +40,8 @@ export interface ContextParams {
 	 * with their text_representation.
 	 */
 	targetCapabilities?: BackendCapabilities;
+	/** Estimated token count for tool definitions (counted by caller since tools are at ChatParams level) */
+	toolTokenEstimate?: number;
 }
 
 /**
