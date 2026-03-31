@@ -418,6 +418,206 @@ describe("PlatformConnectorRegistry", () => {
 			registry.stop();
 		});
 
+		it("should register both messageCreate and interactionCreate on the same client (AC5.2)", async () => {
+			// Create a mock Discord client that tracks on() calls
+			const onCalls: Array<{ event: string; handler: Function }> = [];
+			const offCalls: Array<{ event: string; handler: Function }> = [];
+
+			const mockClient = {
+				user: { tag: "TestBot#1234", id: "bot-id" },
+				application: {
+					commands: {
+						create: async () => ({}),
+					},
+				},
+				on(event: string, handler: Function) {
+					onCalls.push({ event, handler });
+					return this;
+				},
+				off(event: string, handler: Function) {
+					offCalls.push({ event, handler });
+					return this;
+				},
+				destroy() {
+					// no-op for mock
+				},
+			};
+
+			// Mock the DiscordClientManager to return our spy-equipped client
+			const mockLogin = async () => {
+				// Mock login succeeds
+			};
+
+			// Patch the DiscordClientManager constructor to inject our mock client
+			const { DiscordClientManager: RealClientManager } = await import(
+				"../connectors/discord-client-manager.js"
+			);
+
+			// Create a test-specific manager instance with mocked client
+			const testManager = new RealClientManager(mockLogger);
+			(testManager as any).client = mockClient;
+
+			// Manually set up the connectors with the mocked manager
+			const { DiscordConnector } = await import("../connectors/discord.js");
+			const { DiscordInteractionConnector } = await import(
+				"../connectors/discord-interaction.js"
+			);
+
+			const connectorConfig: PlatformConnectorConfig = {
+				platform: "discord",
+				token: "test-token",
+				failover_threshold_ms: 100,
+				allowed_users: [],
+			};
+
+			const dmConnector = new DiscordConnector(
+				connectorConfig,
+				db,
+				mockAppContext.siteId,
+				eventBus,
+				mockLogger,
+				testManager,
+			);
+
+			const interactionConnector = new DiscordInteractionConnector(
+				connectorConfig,
+				db,
+				mockAppContext.siteId,
+				eventBus,
+				mockLogger,
+				testManager,
+			);
+
+			// Connect both connectors
+			await dmConnector.connect();
+			await interactionConnector.connect();
+
+			// AC5.2: Verify both event handlers registered on the same client
+			const messageCreateCalls = onCalls.filter((c) => c.event === "messageCreate");
+			const interactionCreateCalls = onCalls.filter((c) => c.event === "interactionCreate");
+			const clientReadyCalls = onCalls.filter((c) => c.event === "clientReady");
+
+			expect(messageCreateCalls.length).toBe(1);
+			expect(interactionCreateCalls.length).toBe(1);
+			expect(clientReadyCalls.length).toBe(1);
+
+			// Verify all on() calls were made on the same client object
+			expect(onCalls.length).toBe(3);
+		});
+
+		it("should disconnect both connectors with proper call sequence (AC5.3)", async () => {
+			// Create a mock Discord client that tracks on/off/destroy calls with sequence numbers
+			let callSequence = 0;
+			const calls: Array<{ seq: number; type: "on" | "off" | "destroy"; event?: string }> =
+				[];
+
+			const mockClient = {
+				user: { tag: "TestBot#1234", id: "bot-id" },
+				application: {
+					commands: {
+						create: async () => ({}),
+					},
+				},
+				on(event: string) {
+					calls.push({ seq: callSequence++, type: "on", event });
+					return this;
+				},
+				off(event: string) {
+					calls.push({ seq: callSequence++, type: "off", event });
+					return this;
+				},
+				destroy() {
+					calls.push({ seq: callSequence++, type: "destroy" });
+				},
+			};
+
+			const { DiscordClientManager: RealClientManager } = await import(
+				"../connectors/discord-client-manager.js"
+			);
+
+			const testManager = new RealClientManager(mockLogger);
+			(testManager as any).client = mockClient;
+
+			const { DiscordConnector } = await import("../connectors/discord.js");
+			const { DiscordInteractionConnector } = await import(
+				"../connectors/discord-interaction.js"
+			);
+
+			const connectorConfig: PlatformConnectorConfig = {
+				platform: "discord",
+				token: "test-token",
+				failover_threshold_ms: 100,
+				allowed_users: [],
+			};
+
+			const dmConnector = new DiscordConnector(
+				connectorConfig,
+				db,
+				mockAppContext.siteId,
+				eventBus,
+				mockLogger,
+				testManager,
+			);
+
+			const interactionConnector = new DiscordInteractionConnector(
+				connectorConfig,
+				db,
+				mockAppContext.siteId,
+				eventBus,
+				mockLogger,
+				testManager,
+			);
+
+			// Connect both
+			await dmConnector.connect();
+			await interactionConnector.connect();
+
+			// Clear call history from connect() phase
+			calls.length = 0;
+			callSequence = 0;
+
+			// Now disconnect in the compound connector order:
+			// interactionConnector.disconnect() -> dmConnector.disconnect() -> clientManager.disconnect()
+			await interactionConnector.disconnect();
+			await dmConnector.disconnect();
+			await testManager.disconnect();
+
+			// AC5.3: Verify call sequence
+			// (1) interactionConnector.disconnect() calls client.off("interactionCreate")
+			// (2) dmConnector.disconnect() calls client.off("clientReady") and client.off("messageCreate")
+			// (3) clientManager.disconnect() calls client.destroy()
+
+			const interactionOffCalls = calls.filter(
+				(c) => c.type === "off" && c.event === "interactionCreate",
+			);
+			const messageCreateOffCalls = calls.filter(
+				(c) => c.type === "off" && c.event === "messageCreate",
+			);
+			const clientReadyOffCalls = calls.filter(
+				(c) => c.type === "off" && c.event === "clientReady",
+			);
+			const destroyCalls = calls.filter((c) => c.type === "destroy");
+
+			// Verify all off() calls were made
+			expect(interactionOffCalls.length).toBe(1);
+			expect(messageCreateOffCalls.length).toBe(1);
+			expect(clientReadyOffCalls.length).toBe(1);
+			expect(destroyCalls.length).toBe(1);
+
+			// Verify destroy is called last (after all off() calls)
+			const lastDestroyCall = calls[calls.length - 1];
+			expect(lastDestroyCall?.type).toBe("destroy");
+
+			// Verify off() calls precede destroy
+			const firstOffCallSeq = Math.min(
+				...calls
+					.filter((c) => c.type === "off")
+					.map((c) => c.seq),
+			);
+			const destroySeq = calls.find((c) => c.type === "destroy")?.seq ?? -1;
+			expect(firstOffCallSeq).toBeLessThan(destroySeq);
+		});
+
 		it("should route platform:deliver with platform='discord' to DiscordConnector (AC7.2)", async () => {
 			const platformsConfig: PlatformsConfig = {
 				connectors: [
