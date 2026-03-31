@@ -35,6 +35,8 @@ let fileInput = $state<HTMLInputElement | null>(null);
 let uploadStatus = $state<string | null>(null);
 let pendingFileId = $state<string | null>(null);
 let thread = $state<Thread | null>(null);
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
 let messagesEl = $state<HTMLDivElement | null>(null);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
