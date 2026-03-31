@@ -686,9 +686,17 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 	});
 
 	afterEach(() => {
+		db.run("DELETE FROM messages WHERE thread_id IN (SELECT id FROM threads WHERE user_id = ?)", [userId]);
 		db.run("DELETE FROM threads WHERE user_id = ?", [userId]);
 		db.run("DELETE FROM users WHERE id = ?", [userId]);
 	});
+
+	function addMessage(threadId: string): void {
+		db.run(
+			"INSERT INTO messages (id, thread_id, role, content, model_id, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[`msg-${Math.random().toString(36).slice(2, 10)}`, threadId, "user", "test", null, now, now, "local", 0],
+		);
+	}
 
 	it("includes thread summary when populated", () => {
 		const threadId = `digest-thread-${Math.random().toString(36).slice(2, 8)}`;
@@ -712,6 +720,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				0,
 			],
 		);
+		addMessage(threadId);
 
 		const { text, sources } = buildCrossThreadDigest(db, userId);
 
@@ -747,6 +756,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				0,
 			],
 		);
+		addMessage(threadId);
 
 		const { text, sources } = buildCrossThreadDigest(db, userId);
 		expect(text).toContain("Untitled Thread");
@@ -783,6 +793,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				0,
 			],
 		);
+		addMessage(threadId1);
 		db.run(
 			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			[
@@ -802,6 +813,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				0,
 			],
 		);
+		addMessage(threadId2);
 		db.run(
 			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			[
@@ -821,6 +833,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				0,
 			],
 		);
+		addMessage(threadId3);
 
 		const { sources } = buildCrossThreadDigest(db, userId);
 		expect(sources).toHaveLength(3);
@@ -859,6 +872,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				0,
 			],
 		);
+		addMessage(threadIdA);
 		db.run(
 			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			[
@@ -878,6 +892,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				0,
 			],
 		);
+		addMessage(threadIdB);
 
 		// Call with excludeThreadId set to threadIdA
 		const { sources } = buildCrossThreadDigest(db, userId, threadIdA);

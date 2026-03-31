@@ -2185,6 +2185,11 @@ This skill reviews pull requests.`;
 					0,
 				],
 			);
+			// Add a message so the thread is included in cross-thread digest
+			enrichTestDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), testThreadId2, "user", "test msg", null, recentTime, recentTime, "local", 0],
+			);
 
 			const result = assembleContext({
 				db: enrichTestDb,

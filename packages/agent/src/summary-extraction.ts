@@ -132,9 +132,10 @@ export function buildCrossThreadDigest(
 ): { text: string; sources: CrossThreadSource[] } {
 	try {
 		// Get recent threads for user, including the summary field for continuity
+		const hasMessages = "AND EXISTS (SELECT 1 FROM messages WHERE messages.thread_id = threads.id)";
 		const sql = excludeThreadId
-			? "SELECT id, title, color, last_message_at, summary FROM threads WHERE user_id = ? AND id != ? AND deleted = 0 ORDER BY last_message_at DESC LIMIT 5"
-			: "SELECT id, title, color, last_message_at, summary FROM threads WHERE user_id = ? AND deleted = 0 ORDER BY last_message_at DESC LIMIT 5";
+			? `SELECT id, title, color, last_message_at, summary FROM threads WHERE user_id = ? AND id != ? AND deleted = 0 ${hasMessages} ORDER BY last_message_at DESC LIMIT 5`
+			: `SELECT id, title, color, last_message_at, summary FROM threads WHERE user_id = ? AND deleted = 0 ${hasMessages} ORDER BY last_message_at DESC LIMIT 5`;
 		const params = excludeThreadId ? [userId, excludeThreadId] : [userId];
 		const threads = db.prepare(sql).all(...params) as Array<{
 			id: string;
