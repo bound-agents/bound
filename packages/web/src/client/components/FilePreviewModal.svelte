@@ -12,7 +12,6 @@ interface Props {
 
 const { file, onClose }: Props = $props();
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let content = $state<string | null>(null);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let loading = $state(true);
@@ -20,7 +19,6 @@ let loading = $state(true);
 let error = $state<string | null>(null);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let renderedHtml = $state<string | null>(null);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let blobUrl = $state<string | null>(null);
 
 let modalRef: HTMLDivElement | undefined;
