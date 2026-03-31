@@ -7,14 +7,11 @@ const {
 	toolName = null,
 	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	modelId = null,
-	// biome-ignore lint/correctness/noUnusedVariables: optional prop for InterchangeRail positioning
-	createdAt = "",
 } = $props<{
 	role: "user" | "assistant" | "tool_call" | "tool_result" | "alert" | "system";
 	content: string;
 	toolName?: string | null;
 	modelId?: string | null;
-	createdAt?: string;
 }>();
 
 let toolCallExpanded = $state(false);
@@ -56,7 +53,7 @@ function toggleToolCall(): void {
 </script>
 
 {#if role === "tool_call"}
-	<div class="message-bubble tool_call" data-message-role={role} data-created-at={createdAt}>
+	<div class="message-bubble tool_call">
 		<div class="tool-call-header" onclick={toggleToolCall} onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") toggleToolCall(); }} role="button" tabindex={0}>
 			<span class="tool-icon">&#9881;</span>
 			<span class="tool-name">{getToolName()}</span>
@@ -67,21 +64,21 @@ function toggleToolCall(): void {
 		{/if}
 	</div>
 {:else if role === "tool_result"}
-	<div class="message-bubble tool_result" data-message-role={role} data-created-at={createdAt}>
+	<div class="message-bubble tool_result">
 		<div class="role-badge result-badge">result</div>
 		<pre class="tool-output">{content}</pre>
 	</div>
 {:else if role === "alert"}
-	<div class="message-bubble alert" data-message-role={role} data-created-at={createdAt}>
+	<div class="message-bubble alert">
 		<div class="role-badge alert-badge">! alert</div>
 		<div class="content">{content}</div>
 	</div>
 {:else if role === "system"}
-	<div class="message-bubble system" data-message-role={role} data-created-at={createdAt}>
+	<div class="message-bubble system">
 		<div class="content system-text">{content}</div>
 	</div>
 {:else}
-	<div class="message-bubble {role}" data-message-role={role} data-created-at={createdAt}>
+	<div class="message-bubble {role}">
 		<div class="role-badge">
 			{#if role === "assistant" && modelId}
 				<span class="model-pill">{modelId}</span>

@@ -1,15 +1,22 @@
 <script lang="ts">
-import { onDestroy, onMount } from "svelte";
+import { onDestroy, onMount, tick } from "svelte";
 import { api } from "../lib/api";
 import type { Thread } from "../lib/api";
 // biome-ignore lint/correctness/noUnusedImports: used in template
-import { LINE_CODES, LINE_COLORS } from "../lib/metro-lines";
+import { LINE_CODES, LINE_COLORS, getLineColor } from "../lib/metro-lines";
 // biome-ignore lint/correctness/noUnusedImports: used in template handlers
 import { navigateTo } from "../lib/router";
 
 interface ThreadStatus {
 	active: boolean;
 	state: string | null;
+}
+
+interface SplinePath {
+	path: string;
+	sourceColor: string;
+	targetColor: string;
+	gradientId: string;
 }
 
 let threads: Thread[] = $state([]);
@@ -21,6 +28,14 @@ let creating = $state(false);
 let hoveredIdx = $state(-1);
 let threadStatuses: Map<string, ThreadStatus> = $state(new Map());
 let alertThreads: Set<string> = $state(new Set());
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let interchangeSplines = $state<SplinePath[]>([]);
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
+let threadListEl = $state<HTMLDivElement | null>(null);
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let svgHeight = $state(0);
+let interchange: Record<string, Array<{ threadId: string; color: number }>> = {};
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 async function createThread(): Promise<void> {
@@ -65,9 +80,71 @@ async function loadThreads(): Promise<void> {
 		);
 		threadStatuses = statusMap;
 		alertThreads = alerts;
+		// Fetch interchange data
+		try {
+			interchange = await api.getInterchange();
+		} catch {
+			interchange = {};
+		}
 	} catch (error) {
 		console.error("Failed to load threads:", error);
 	}
+
+	// Recompute splines after DOM updates
+	await tick();
+	computeSplines();
+}
+
+function computeSplines(): void {
+	if (!threadListEl || threads.length === 0) {
+		interchangeSplines = [];
+		svgHeight = 0;
+		return;
+	}
+
+	const listRect = threadListEl.getBoundingClientRect();
+	svgHeight = threadListEl.scrollHeight;
+
+	const rowMap = new Map<string, DOMRect>();
+	for (const thread of threads) {
+		const el = threadListEl.querySelector(`[data-thread-id="${thread.id}"]`);
+		if (el) rowMap.set(thread.id, el.getBoundingClientRect());
+	}
+
+	const splines: SplinePath[] = [];
+	let gradIdx = 0;
+	for (const [targetId, sources] of Object.entries(interchange)) {
+		const targetRect = rowMap.get(targetId);
+		if (!targetRect) continue;
+
+		const targetThread = threads.find((t) => t.id === targetId);
+		if (!targetThread) continue;
+
+		for (const source of sources) {
+			const sourceRect = rowMap.get(source.threadId);
+			if (!sourceRect) continue;
+
+			// Compute Y positions relative to the thread-list container
+			const sourceY = sourceRect.top - listRect.top + sourceRect.height / 2;
+			const targetY = targetRect.top - listRect.top + targetRect.height / 2;
+
+			// Spline curves to the right of the list
+			const x1 = listRect.width - 20; // near the terminus end
+			const x2 = listRect.width - 8; // target terminus
+			const dist = Math.abs(targetY - sourceY);
+			const cpOffset = Math.min(dist * 0.5, 80) + 40; // control point offset to the right
+
+			const path = `M ${x1} ${sourceY} C ${x1 + cpOffset} ${sourceY}, ${x2 + cpOffset} ${targetY}, ${x2} ${targetY}`;
+
+			const sourceColor = getLineColor(source.color);
+			const targetColor = getLineColor(targetThread.color);
+			const gid = `interchange-${gradIdx++}`;
+
+			splines.push({ path, sourceColor, targetColor, gradientId: gid });
+		}
+	}
+
+	interchangeSplines = splines;
 }
 
 onMount(async () => {
@@ -132,7 +209,31 @@ function hasAlert(threadId: string): boolean {
 			<p>No active lines. Start a conversation to open a new line.</p>
 		</div>
 	{:else}
-		<div class="thread-list">
+		<div class="thread-list" bind:this={threadListEl}>
+			<!-- Interchange spline SVG overlay -->
+			{#if interchangeSplines.length > 0}
+				<svg class="interchange-overlay" width="100%" height={svgHeight}>
+					<defs>
+						{#each interchangeSplines as spline}
+							<linearGradient id={spline.gradientId} gradientUnits="userSpaceOnUse">
+								<stop offset="0%" stop-color={spline.sourceColor} />
+								<stop offset="100%" stop-color={spline.targetColor} />
+							</linearGradient>
+						{/each}
+					</defs>
+					{#each interchangeSplines as spline}
+						{@const gradRef = `url(#${spline.gradientId})`}
+						<path
+							d={spline.path}
+							fill="none"
+							stroke={gradRef}
+							stroke-width="2"
+							stroke-linecap="round"
+							opacity="0.6"
+						/>
+					{/each}
+				</svg>
+			{/if}
 			{#each threads as thread, idx}
 				{@const color = LINE_COLORS[thread.color % LINE_COLORS.length]}
 				{@const code = LINE_CODES[thread.color % LINE_CODES.length]}
@@ -140,6 +241,7 @@ function hasAlert(threadId: string): boolean {
 				{@const alert = hasAlert(thread.id)}
 				<button
 					class="thread-row"
+					data-thread-id={thread.id}
 					class:hovered={hoveredIdx === idx}
 					onclick={() => navigateTo(`/line/${thread.id}`)}
 					onmouseenter={() => hoveredIdx = idx}
@@ -269,6 +371,15 @@ function hasAlert(threadId: string): boolean {
 		gap: 4px;
 		max-height: calc(100vh - 180px);
 		overflow-y: auto;
+		position: relative;
+	}
+
+	.interchange-overlay {
+		position: absolute;
+		top: 0;
+		left: 0;
+		pointer-events: none;
+		z-index: 1;
 	}
 
 	.thread-row {

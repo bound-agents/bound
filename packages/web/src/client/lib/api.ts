@@ -123,4 +123,10 @@ export const api = {
 	async getContextDebug(threadId: string): Promise<ContextDebugTurn[]> {
 		return fetchJson<ContextDebugTurn[]>(`/api/threads/${threadId}/context-debug`);
 	},
+
+	async getInterchange(): Promise<Record<string, Array<{ threadId: string; color: number }>>> {
+		return fetchJson<Record<string, Array<{ threadId: string; color: number }>>>(
+			"/api/threads/interchange",
+		);
+	},
 };

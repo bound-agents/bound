@@ -231,7 +231,7 @@ function viewTitle(): string {
 	<div class="board">
 		<div class="messages">
 			{#each messages as msg}
-				<MessageBubble role={msg.role} content={msg.content} toolName={msg.tool_name} modelId={msg.model_id} createdAt={msg.created_at} />
+				<MessageBubble role={msg.role} content={msg.content} toolName={msg.tool_name} modelId={msg.model_id} />
 			{/each}
 			{#if waiting}
 				<div class="waiting-indicator">
