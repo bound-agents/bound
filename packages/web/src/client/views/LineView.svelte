@@ -3,15 +3,12 @@ import { onDestroy, onMount } from "svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import DebugPanelWrapper from "../components/DebugPanelWrapper.svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
-import InterchangeRail from "../components/InterchangeRail.svelte";
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import MessageBubble from "../components/MessageBubble.svelte";
 import { api } from "../lib/api";
-import type { ContextDebugTurn, Thread } from "../lib/api";
+import type { Thread } from "../lib/api";
 import { modelStore } from "../lib/modelStore";
 import { navigateTo } from "../lib/router";
 import {
-	type WebSocketMessage,
 	connectWebSocket,
 	disconnectWebSocket,
 	subscribeToThread,
@@ -38,10 +35,6 @@ let fileInput = $state<HTMLInputElement | null>(null);
 let uploadStatus = $state<string | null>(null);
 let pendingFileId = $state<string | null>(null);
 let thread = $state<Thread | null>(null);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
-// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
-let messagesEl = $state<HTMLDivElement | null>(null);
-let contextDebugTurns = $state<ContextDebugTurn[]>([]);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let statusPollInterval: ReturnType<typeof setInterval> | null = null;
@@ -69,43 +62,6 @@ const unsubscribeWs = wsEvents.subscribe((events) => {
 			}
 		}
 	}
-});
-
-// Subscribe to context:debug events for InterchangeRail
-const unsubscribeDebug = wsEvents.subscribe((events: WebSocketMessage[]) => {
-	if (events.length === 0) return;
-	const last = events[events.length - 1];
-	if (
-		last &&
-		last.type === "context:debug" &&
-		typeof last.data === "object" &&
-		last.data !== null
-	) {
-		const debugData = last.data as ContextDebugTurn & { thread_id?: string };
-		if (debugData.thread_id === threadId) {
-			const exists = contextDebugTurns.some((t) => t.turn_id === debugData.turn_id);
-			if (!exists) {
-				contextDebugTurns = [...contextDebugTurns, debugData];
-			}
-		}
-	}
-});
-
-// Handle thread navigation — reset context debug data when threadId changes
-$effect(() => {
-	const _tid = threadId; // track dependency
-	contextDebugTurns = [];
-	// Fetch initial context debug data for the new thread
-	api
-		.getContextDebug(_tid)
-		.then((turns) => {
-			contextDebugTurns = turns;
-		})
-		.catch((error) => {
-			console.error("Failed to fetch context debug data:", error);
-			// On error, set empty array — rail shows with no branches (fallback per AC3.6)
-			contextDebugTurns = [];
-		});
 });
 
 async function pollMessages(): Promise<void> {
@@ -161,7 +117,6 @@ onMount(async () => {
 
 onDestroy(() => {
 	unsubscribeWs();
-	unsubscribeDebug();
 	disconnectWebSocket();
 	if (pollInterval !== null) clearInterval(pollInterval);
 	if (statusPollInterval !== null) clearInterval(statusPollInterval);
@@ -274,13 +229,7 @@ function viewTitle(): string {
 		</div>
 
 	<div class="board">
-		<div class="messages" bind:this={messagesEl}>
-			<InterchangeRail
-				threadColor={thread?.color ?? 0}
-				{messages}
-				{contextDebugTurns}
-				scrollContainer={messagesEl}
-			/>
+		<div class="messages">
 			{#each messages as msg}
 				<MessageBubble role={msg.role} content={msg.content} toolName={msg.tool_name} modelId={msg.model_id} createdAt={msg.created_at} />
 			{/each}
@@ -454,7 +403,7 @@ function viewTitle(): string {
 	.messages {
 		flex: 1;
 		overflow-y: auto;
-		padding: 12px 8px 0 44px;
+		padding: 12px 12px 0 12px;
 		min-height: 0;
 		position: relative;
 	}
