@@ -1052,7 +1052,7 @@ export function assembleContext(params: ContextParams): LLMMessage[] {
 		}
 	}
 
-	// Approximate token count (rough estimate: 1 token per 4 characters)
+	// Token count estimate via tiktoken cl100k_base encoding
 	const totalTokens = assembled.reduce((sum, msg) => {
 		return sum + countContentTokens(msg.content);
 	}, 0);

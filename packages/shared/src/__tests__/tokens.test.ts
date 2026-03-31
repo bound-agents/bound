@@ -1,5 +1,5 @@
-import { describe, it, expect } from "bun:test";
-import { countTokens, countContentTokens } from "../tokens";
+import { describe, expect, it } from "bun:test";
+import { countContentTokens, countTokens } from "../tokens";
 
 describe("tokens", () => {
 	describe("countTokens", () => {
@@ -46,6 +46,11 @@ describe("tokens", () => {
 			expect(countContentTokens(content)).toBe(expected);
 		});
 
+		it("AC1.5 (ContentBlock[]): text block with empty string", () => {
+			const content = [{ type: "text", text: "" }];
+			expect(countContentTokens(content)).toBe(0);
+		});
+
 		it("AC1.2 (ContentBlock[]): multiple text blocks sum", () => {
 			const content = [
 				{ type: "text", text: "hello" },
@@ -77,9 +82,7 @@ describe("tokens", () => {
 					input: {},
 				},
 			];
-			const expected =
-				countTokens("hello") +
-				countTokens(JSON.stringify(content[1]));
+			const expected = countTokens("hello") + countTokens(JSON.stringify(content[1]));
 			expect(countContentTokens(content)).toBe(expected);
 		});
 

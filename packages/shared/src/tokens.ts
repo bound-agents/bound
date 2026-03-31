@@ -35,12 +35,10 @@ export function countTokens(text: string): number {
  * For text blocks, counts tokens of the text content.
  * For other block types (tool_use, image, document), counts tokens of the JSON representation.
  */
-export function countContentTokens(
-	content: string | TokenCountableBlock[]
-): number {
+export function countContentTokens(content: string | TokenCountableBlock[]): number {
 	if (typeof content === "string") return countTokens(content);
 	return content.reduce((sum, block) => {
-		if (block.type === "text" && block.text)
+		if (block.type === "text" && typeof block.text === "string")
 			return sum + countTokens(block.text);
 		return sum + countTokens(JSON.stringify(block));
 	}, 0);
