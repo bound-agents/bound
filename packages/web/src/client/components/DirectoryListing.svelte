@@ -1,4 +1,6 @@
 <script lang="ts">
+// biome-ignore lint/correctness/noUnusedImports: used in template
+import { Folder } from "lucide-svelte";
 import type { Component } from "svelte";
 import type { FileMetadata, FileTreeNode } from "../lib/file-tree";
 
