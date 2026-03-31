@@ -443,6 +443,8 @@ function viewTitle(): string {
 		background: rgba(10, 10, 20, 0.5);
 		border: 1px solid var(--bg-surface);
 		border-radius: 8px;
+		display: flex;
+		flex-direction: column;
 		flex: 1;
 		min-height: 0;
 		overflow: hidden;
@@ -453,7 +455,7 @@ function viewTitle(): string {
 		flex: 1;
 		overflow-y: auto;
 		padding: 12px 8px 24px 40px;
-		height: 100%;
+		min-height: 0;
 		position: relative;
 	}
 
