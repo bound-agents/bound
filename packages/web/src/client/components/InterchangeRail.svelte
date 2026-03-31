@@ -99,61 +99,59 @@ function findAssistantMessageElement(
 <svg
 	bind:this={svgEl}
 	class="interchange-rail"
-	width="20"
+	width="36"
 	height={svgHeight}
-	viewBox="0 0 20 {svgHeight}"
+	viewBox="0 0 36 {svgHeight}"
 	preserveAspectRatio="none"
 >
 	<!-- Vertical rail line in current thread's color -->
 	<line
-		x1="10"
+		x1="28"
 		y1="0"
-		x2="10"
+		x2="28"
 		y2={svgHeight}
 		stroke={railColor}
-		stroke-width="3"
+		stroke-width="4"
 		stroke-linecap="round"
 	/>
 
 	<!-- Branch lines and stations for each cross-thread source -->
 	{#each branches as branch}
 		{#each branch.sources as source, idx}
-			{@const branchY = branch.y + idx * 16}
+			{@const branchY = branch.y + idx * 24}
 			{@const sourceColor = getLineColor(source.color)}
 			{@const sourceCode = getLineCode(source.color)}
 
 			<!-- Horizontal branch line from rail to station marker -->
 			<line
-				x1="0"
+				x1="12"
 				y1={branchY}
-				x2="10"
+				x2="28"
 				y2={branchY}
 				stroke={sourceColor}
-				stroke-width="2"
+				stroke-width="3"
 				stroke-linecap="round"
 			/>
 
-			<!-- Station marker circle (outer colored ring) -->
+			<!-- Station marker: filled outer circle -->
 			<circle
-				cx="0"
+				cx="12"
 				cy={branchY}
-				r="6"
-				fill="none"
-				stroke={sourceColor}
-				stroke-width="2"
+				r="10"
+				fill={sourceColor}
 			/>
 
-			<!-- Station marker inner white circle -->
-			<circle cx="0" cy={branchY} r="4" fill="#fff" />
+			<!-- Station marker: white inner circle -->
+			<circle cx="12" cy={branchY} r="7" fill="#fff" />
 
 			<!-- Station letter code -->
 			<text
-				x="0"
+				x="12"
 				y={branchY}
 				text-anchor="middle"
-				dominant-baseline="middle"
-				font-family="system-ui, -apple-system, sans-serif"
-				font-size="9"
+				dominant-baseline="central"
+				font-family="'Nunito Sans', system-ui, sans-serif"
+				font-size="11"
 				font-weight="700"
 				fill="#000"
 			>
