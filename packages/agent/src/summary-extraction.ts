@@ -173,13 +173,19 @@ export function buildCrossThreadDigest(
 				lines.push(`  Summary: ${truncated}`);
 			}
 
-			sources.push({
-				threadId: thread.id,
-				title,
-				color: thread.color,
-				messageCount: messageCount.count,
-				lastMessageAt: thread.last_message_at,
-			});
+			// Only mark threads with summaries as cross-thread sources —
+			// they're the ones whose content was actually injected into context.
+			// Threads without summaries only contribute a metadata line (title + count)
+			// which can't meaningfully influence the agent's response.
+			if (thread.summary) {
+				sources.push({
+					threadId: thread.id,
+					title,
+					color: thread.color,
+					messageCount: messageCount.count,
+					lastMessageAt: thread.last_message_at,
+				});
+			}
 		}
 
 		return { text: lines.join("\n"), sources };

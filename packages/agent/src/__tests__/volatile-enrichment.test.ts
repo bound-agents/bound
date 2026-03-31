@@ -762,10 +762,9 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 		expect(text).toContain("Untitled Thread");
 		// No crash when summary is null
 		expect(text).not.toBeNull();
-		// Verify sources array is populated
-		expect(sources).toHaveLength(1);
-		expect(sources[0].title).toBe("Untitled Thread");
-		expect(sources[0].color).toBe(3);
+		// Thread without summary appears in text but NOT in sources
+		// (only threads with summaries contribute real cross-thread context)
+		expect(sources).toHaveLength(0);
 	});
 
 	it("returns array with correct color values for different threads", () => {
@@ -783,7 +782,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				"local",
 				0,
 				"Thread Color 0",
-				null,
+				"Summary for thread 0",
 				null,
 				null,
 				null,
@@ -803,7 +802,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				"local",
 				3,
 				"Thread Color 3",
-				null,
+				"Summary for thread 3",
 				null,
 				null,
 				null,
@@ -823,7 +822,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				"local",
 				7,
 				"Thread Color 7",
-				null,
+				"Summary for thread 7",
 				null,
 				null,
 				null,
@@ -862,7 +861,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				"local",
 				1,
 				"Thread A",
-				null,
+				"Summary A",
 				null,
 				null,
 				null,
@@ -882,7 +881,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				"local",
 				2,
 				"Thread B",
-				null,
+				"Summary B",
 				null,
 				null,
 				null,
