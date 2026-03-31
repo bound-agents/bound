@@ -4,8 +4,11 @@ import { type ContextDebugTurn, api } from "../lib/api";
 // biome-ignore lint/style/useImportType: need wsEvents for typeof in Props
 import { wsEvents } from "../lib/websocket";
 import type { WebSocketMessage } from "../lib/websocket";
+// biome-ignore lint/correctness/noUnusedImports: used in template
 import ContextBar from "./ContextBar.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
 import ContextSectionList from "./ContextSectionList.svelte";
+// biome-ignore lint/correctness/noUnusedImports: used in template
 import ContextSparkline from "./ContextSparkline.svelte";
 
 interface Props {

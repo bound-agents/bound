@@ -1,16 +1,21 @@
 <script lang="ts">
+// biome-ignore lint/correctness/noUnusedImports: used in template
 import { SECTION_COLORS } from "../lib/context-colors";
 
 interface Props {
-	sections: Array<{ name: string; tokens: number; children?: Array<{ name: string; tokens: number }> }>;
+	sections: Array<{
+		name: string;
+		tokens: number;
+		children?: Array<{ name: string; tokens: number }>;
+	}>;
 	contextWindow: number;
 }
 
 const { sections, contextWindow } = $props<Props>();
 
-// biome-ignore lint/correctness/noUnusedVariables: let required for $state
 let expandedSections = $state(new Set<string>());
 
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 function toggleSection(name: string): void {
 	const next = new Set(expandedSections);
 	if (next.has(name)) next.delete(name);
@@ -20,6 +25,7 @@ function toggleSection(name: string): void {
 
 const usedTokens = $derived(sections.reduce((s, sec) => s + sec.tokens, 0));
 const freeTokens = $derived(contextWindow - usedTokens);
+// biome-ignore lint/correctness/noUnusedVariables: used in template
 const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 : 0);
 </script>
 
