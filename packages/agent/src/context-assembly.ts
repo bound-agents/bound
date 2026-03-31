@@ -1138,12 +1138,14 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 			// Find and update the memory, task-digest, and volatile-other entries in sections
 			const shortMemTokens = shortDelta.length > 0 ? countTokens(shortDelta.join("\n")) : 0;
 			const shortTaskTokens = shortDigest.length > 0 ? countTokens(shortDigest.join("\n")) : 0;
-			const preEnrichmentTokens = enrichmentStartIdx > 0
-				? countTokens(allVolatileLines.slice(0, enrichmentStartIdx).join("\n"))
-				: 0;
-			const postEnrichmentTokens = enrichmentEndIdx < allVolatileLines.length
-				? countTokens(allVolatileLines.slice(enrichmentEndIdx).join("\n"))
-				: 0;
+			const preEnrichmentTokens =
+				enrichmentStartIdx > 0
+					? countTokens(allVolatileLines.slice(0, enrichmentStartIdx).join("\n"))
+					: 0;
+			const postEnrichmentTokens =
+				enrichmentEndIdx < allVolatileLines.length
+					? countTokens(allVolatileLines.slice(enrichmentEndIdx).join("\n"))
+					: 0;
 			const shortVolatileOtherTokens =
 				!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0
 					? Math.max(0, preEnrichmentTokens + postEnrichmentTokens)

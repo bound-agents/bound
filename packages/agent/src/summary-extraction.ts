@@ -136,9 +136,7 @@ export function buildCrossThreadDigest(
 			? "SELECT id, title, color, last_message_at, summary FROM threads WHERE user_id = ? AND id != ? AND deleted = 0 ORDER BY last_message_at DESC LIMIT 5"
 			: "SELECT id, title, color, last_message_at, summary FROM threads WHERE user_id = ? AND deleted = 0 ORDER BY last_message_at DESC LIMIT 5";
 		const params = excludeThreadId ? [userId, excludeThreadId] : [userId];
-		const threads = db
-			.prepare(sql)
-			.all(...params) as Array<{
+		const threads = db.prepare(sql).all(...params) as Array<{
 			id: string;
 			title: string | null;
 			color: number;
