@@ -3107,7 +3107,7 @@ This skill reviews pull requests.`;
 				[
 					randomUUID(),
 					"test-key",
-					"test-value " + "x".repeat(5000),
+					`test-value ${"x".repeat(5000)}`,
 					"agent",
 					new Date().toISOString(),
 					new Date().toISOString(),
@@ -3172,7 +3172,7 @@ This skill reviews pull requests.`;
 						randomUUID(),
 						testThreadId,
 						role,
-						"Message " + i + " " + "x".repeat(200),
+						`Message ${i} ${"x".repeat(200)}`,
 						role === "assistant" ? "model-1" : null,
 						null,
 						new Date(Date.now() + i * 1000).toISOString(),
@@ -3190,6 +3190,9 @@ This skill reviews pull requests.`;
 			});
 
 			expect(result.debug.truncated).toBeGreaterThan(0);
+
+			// Clean up semantic memory inserted in this test
+			debugTestDb.run("DELETE FROM semantic_memory WHERE key = ?", ["test-key"]);
 		});
 
 		it("AC2.6: Empty thread has history section with tokens: 0 and no children", () => {
