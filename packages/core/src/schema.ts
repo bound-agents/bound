@@ -404,4 +404,14 @@ export function applySchema(db: Database): void {
 		CREATE INDEX IF NOT EXISTS idx_tasks_last_run ON tasks(last_run_at DESC)
 		WHERE deleted = 0 AND last_run_at IS NOT NULL
 	`);
+
+	// Relay idempotency: prevent duplicate outbox entries with the same
+	// idempotency_key targeting the same site. Without this, a double-fired
+	// Discord event (or any retry) can create duplicate intake/process relays
+	// that spawn multiple concurrent agent loops for one user message.
+	db.run(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_outbox_idempotency
+		ON relay_outbox(idempotency_key, target_site_id)
+		WHERE idempotency_key IS NOT NULL
+	`);
 }
