@@ -19,6 +19,9 @@ let error = $state<string | null>(null);
 // biome-ignore lint/style/useConst: $state requires let
 let expandedPaths = $state(new SvelteSet<string>());
 
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let selectedPath = $state("/");
+
 async function loadFiles(): Promise<void> {
 	try {
 		loading = true;
@@ -34,6 +37,8 @@ async function loadFiles(): Promise<void> {
 		for (const node of tree) {
 			expandAllRecursive(node);
 		}
+		// Reset selection to root when files reload
+		selectedPath = "/";
 	} catch (err) {
 		error = err instanceof Error ? err.message : "Failed to load files";
 	} finally {
@@ -57,6 +62,11 @@ function toggleExpanded(path: string): void {
 	} else {
 		expandedPaths.add(path);
 	}
+}
+
+// biome-ignore lint/correctness/noUnusedVariables: passed to template
+function selectDirectory(path: string): void {
+	selectedPath = path;
 }
 
 // biome-ignore lint/correctness/noUnusedVariables: passed to template
@@ -142,17 +152,26 @@ onDestroy(() => {
 			<p>No files yet</p>
 		</div>
 	{:else}
-		<div class="tree-container">
-			{#each tree as node}
-				<TreeNode
-					{node}
-					{expandedPaths}
-					{toggleExpanded}
-					{formatFileSize}
-					{getFileIcon}
-					{downloadFile}
-				/>
-			{/each}
+		<div class="files-browser">
+			<aside class="tree-sidebar">
+				{#each tree as node}
+					<TreeNode
+						{node}
+						{expandedPaths}
+						{toggleExpanded}
+						{formatFileSize}
+						{getFileIcon}
+						{downloadFile}
+						{selectedPath}
+						onSelectDirectory={selectDirectory}
+					/>
+				{/each}
+			</aside>
+			<main class="content-area">
+				<div class="content-placeholder">
+					<p>Select a directory to browse its contents</p>
+				</div>
+			</main>
 		</div>
 	{/if}
 </div>
@@ -258,11 +277,48 @@ onDestroy(() => {
 		text-align: center;
 	}
 
-	.tree-container {
+	.files-browser {
+		display: grid;
+		grid-template-columns: 260px 1fr;
+		flex: 1;
+		min-height: 0;
+		gap: 0;
+		border: 1px solid rgba(0, 155, 191, 0.15);
+		border-radius: 8px;
+		overflow: hidden;
+	}
+
+	.tree-sidebar {
 		display: flex;
 		flex-direction: column;
-		gap: 0;
-		overflow: auto;
+		overflow-y: auto;
+		overflow-x: hidden;
+		min-height: 0;
+		border-right: 1px solid rgba(0, 155, 191, 0.15);
+		background: var(--bg-secondary);
+		padding: 8px 0;
+	}
+
+	.content-area {
+		display: flex;
+		flex-direction: column;
+		overflow-y: auto;
+		min-height: 0;
+		background: var(--bg-primary);
+	}
+
+	.content-placeholder {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex: 1;
+		color: var(--text-muted);
+		font-size: var(--text-sm);
+		font-family: var(--font-display);
+	}
+
+	.content-placeholder p {
+		margin: 0;
 	}
 
 	@media (prefers-reduced-motion: reduce) {
