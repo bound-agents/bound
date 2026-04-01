@@ -2222,14 +2222,7 @@ This skill reviews pull requests.`;
 			// Create a new user with only one thread
 			enrichTestDb.run(
 				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
-				[
-					singleThreadUserId,
-					"Single Thread User",
-					null,
-					recentTime,
-					recentTime,
-					0,
-				],
+				[singleThreadUserId, "Single Thread User", null, recentTime, recentTime, 0],
 			);
 
 			// Create a single thread for this user (no other threads)
@@ -2256,7 +2249,17 @@ This skill reviews pull requests.`;
 			// Add at least one message to the thread
 			enrichTestDb.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), singleThreadId, "user", "Hello", null, null, recentTime, recentTime, "local"],
+				[
+					randomUUID(),
+					singleThreadId,
+					"user",
+					"Hello",
+					null,
+					null,
+					recentTime,
+					recentTime,
+					"local",
+				],
 			);
 
 			const result = assembleContext({
@@ -3645,7 +3648,8 @@ This skill reviews pull requests.`;
 			// Insert 30 messages; last message has unique content
 			for (let i = 0; i < 30; i++) {
 				const role = i % 2 === 0 ? "user" : "assistant";
-				const content = i === 29 ? "FINAL_SENTINEL_MESSAGE" : `Filler message ${i} ${"x".repeat(100)}`;
+				const content =
+					i === 29 ? "FINAL_SENTINEL_MESSAGE" : `Filler message ${i} ${"x".repeat(100)}`;
 				const ts = new Date(nowBase.getTime() + i * 1000).toISOString();
 				db.run(
 					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -3851,7 +3855,12 @@ This skill reviews pull requests.`;
 			// Build a sequence where a tool_call/tool_result pair sits right
 			// in the zone where truncation would slice. We pad before them
 			// with bulky messages so the pair ends up near the boundary.
-			const insertMsg = (role: string, content: string, offsetSec: number, toolName: string | null = null) => {
+			const insertMsg = (
+				role: string,
+				content: string,
+				offsetSec: number,
+				toolName: string | null = null,
+			) => {
 				const ts = new Date(nowBase.getTime() + offsetSec * 1000).toISOString();
 				const id = randomUUID();
 				db.run(
@@ -3867,7 +3876,9 @@ This skill reviews pull requests.`;
 			}
 
 			// A tool_call/tool_result pair in the middle
-			const tcContent = JSON.stringify([{ type: "tool_use", id: "pair-test-1", name: "bash", input: { command: "echo hi" } }]);
+			const tcContent = JSON.stringify([
+				{ type: "tool_use", id: "pair-test-1", name: "bash", input: { command: "echo hi" } },
+			]);
 			insertMsg("tool_call", tcContent, 11);
 			insertMsg("tool_result", "command output here", 12, "pair-test-1");
 

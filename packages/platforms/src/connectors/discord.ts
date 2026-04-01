@@ -4,9 +4,9 @@ import { readFile } from "node:fs/promises";
 import { insertRow, writeOutbox } from "@bound/core";
 import type { ContentBlock, ToolDefinition } from "@bound/llm";
 import {
-	MAX_FILE_STORAGE_BYTES,
 	type IntakePayload,
 	type Logger,
+	MAX_FILE_STORAGE_BYTES,
 	type PlatformConnectorConfig,
 	type Thread,
 	type TypedEventEmitter,

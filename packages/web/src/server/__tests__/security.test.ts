@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
-import { applySchema, createDatabase, applyMetricsSchema } from "@bound/core";
+import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Hono } from "hono";
 import { createApp } from "../index";
@@ -96,10 +96,7 @@ describe("API Security", () => {
 	describe("file upload path traversal prevention", () => {
 		it("strips directory traversal from uploaded filename", async () => {
 			const form = new FormData();
-			form.append(
-				"file",
-				new File(["malicious"], "../../etc/passwd", { type: "text/plain" }),
-			);
+			form.append("file", new File(["malicious"], "../../etc/passwd", { type: "text/plain" }));
 
 			const res = await app.fetch(
 				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
@@ -114,10 +111,7 @@ describe("API Security", () => {
 
 		it("strips slashes from uploaded filename", async () => {
 			const form = new FormData();
-			form.append(
-				"file",
-				new File(["data"], "sub/dir/file.txt", { type: "text/plain" }),
-			);
+			form.append("file", new File(["data"], "sub/dir/file.txt", { type: "text/plain" }));
 
 			const res = await app.fetch(
 				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
@@ -137,10 +131,7 @@ describe("API Security", () => {
 	describe("Content-Disposition header injection prevention", () => {
 		it("sanitizes quotes in filename for Content-Disposition header", async () => {
 			const form = new FormData();
-			form.append(
-				"file",
-				new File(["test"], 'file"injected.txt', { type: "text/plain" }),
-			);
+			form.append("file", new File(["test"], 'file"injected.txt', { type: "text/plain" }));
 
 			const uploadRes = await app.fetch(
 				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
@@ -163,7 +154,18 @@ describe("API Security", () => {
 			db.exec(
 				`INSERT INTO files (id, path, content, is_binary, size_bytes, created_at, modified_at, deleted, created_by, host_origin)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				["crlf-file", "/home/user/uploads/file\r\nX-Injected: true", "data", 0, 4, now, now, 0, "test", "localhost"],
+				[
+					"crlf-file",
+					"/home/user/uploads/file\r\nX-Injected: true",
+					"data",
+					0,
+					4,
+					now,
+					now,
+					0,
+					"test",
+					"localhost",
+				],
 			);
 
 			const res = await app.fetch(

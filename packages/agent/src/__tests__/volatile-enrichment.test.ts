@@ -686,7 +686,9 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 	});
 
 	afterEach(() => {
-		db.run("DELETE FROM messages WHERE thread_id IN (SELECT id FROM threads WHERE user_id = ?)", [userId]);
+		db.run("DELETE FROM messages WHERE thread_id IN (SELECT id FROM threads WHERE user_id = ?)", [
+			userId,
+		]);
 		db.run("DELETE FROM threads WHERE user_id = ?", [userId]);
 		db.run("DELETE FROM users WHERE id = ?", [userId]);
 	});
@@ -694,7 +696,17 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 	function addMessage(threadId: string): void {
 		db.run(
 			"INSERT INTO messages (id, thread_id, role, content, model_id, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[`msg-${Math.random().toString(36).slice(2, 10)}`, threadId, "user", "test", null, now, now, "local", 0],
+			[
+				`msg-${Math.random().toString(36).slice(2, 10)}`,
+				threadId,
+				"user",
+				"test",
+				null,
+				now,
+				now,
+				"local",
+				0,
+			],
 		);
 	}
 

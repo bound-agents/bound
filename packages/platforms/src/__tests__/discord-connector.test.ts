@@ -417,9 +417,7 @@ describe("DiscordConnector", () => {
 					handlerRegistrations.push({ event, fn });
 				},
 				off: (event: string, _fn: unknown) => {
-					const idx = handlerRegistrations.findIndex(
-						(h) => h.event === event && h.fn === _fn,
-					);
+					const idx = handlerRegistrations.findIndex((h) => h.event === event && h.fn === _fn);
 					if (idx >= 0) handlerRegistrations.splice(idx, 1);
 				},
 			};
@@ -436,22 +434,18 @@ describe("DiscordConnector", () => {
 			await connector.connect();
 			await connector.connect(); // second connect() call
 
-			const messageCreateHandlers = handlerRegistrations.filter(
-				(h) => h.event === "messageCreate",
-			);
+			const messageCreateHandlers = handlerRegistrations.filter((h) => h.event === "messageCreate");
 			expect(messageCreateHandlers.length).toBe(1);
 		});
 
 		it("should produce only one intake per Discord message after double connect()", async () => {
-			const handlerRegistrations: Array<{ event: string; fn: Function }> = [];
+			const handlerRegistrations: Array<{ event: string; fn: (...args: unknown[]) => void }> = [];
 			const mockClient = {
-				on: (event: string, fn: Function) => {
+				on: (event: string, fn: (...args: unknown[]) => void) => {
 					handlerRegistrations.push({ event, fn });
 				},
-				off: (event: string, fn: Function) => {
-					const idx = handlerRegistrations.findIndex(
-						(h) => h.event === event && h.fn === fn,
-					);
+				off: (event: string, fn: (...args: unknown[]) => void) => {
+					const idx = handlerRegistrations.findIndex((h) => h.event === event && h.fn === fn);
 					if (idx >= 0) handlerRegistrations.splice(idx, 1);
 				},
 			};

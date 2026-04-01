@@ -184,11 +184,11 @@ describe("Command Framework", () => {
 		expect(result.exitCode).toBe(0);
 		expect(capturedArgs).toBeDefined();
 		// The critical assertion: numeric value must NOT be stringified
-		expect(typeof capturedArgs!.perPage).toBe("number");
-		expect(capturedArgs!.perPage).toBe(5);
+		expect(typeof capturedArgs?.perPage).toBe("number");
+		expect(capturedArgs?.perPage).toBe(5);
 		// String values should remain strings
-		expect(typeof capturedArgs!.owner).toBe("string");
-		expect(capturedArgs!.owner).toBe("karashiiro");
+		expect(typeof capturedArgs?.owner).toBe("string");
+		expect(capturedArgs?.owner).toBe("karashiiro");
 	});
 
 	// Bug: SQL queries passed as positional args were broken when the SQL contained

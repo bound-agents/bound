@@ -86,11 +86,8 @@ export async function storeFile(
 	const fileId = randomUUID();
 	const now = new Date().toISOString();
 	// Sanitize filename: strip directory components and traversal sequences
-	const safeName = opts.name
-		.replace(/\.\./g, "")
-		.replace(/[/\\]/g, "_")
-		.replace(/^_+/, "")
-		|| "unnamed";
+	const safeName =
+		opts.name.replace(/\.\./g, "").replace(/[/\\]/g, "_").replace(/^_+/, "") || "unnamed";
 	const filePath = `/home/user/uploads/${safeName}`;
 
 	const binary = !isTextMime(opts.mimeType);
