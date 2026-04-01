@@ -311,6 +311,7 @@ function hasAlert(threadId: string): boolean {
 							stroke={gradRef}
 							stroke-width={isConnected ? 3 : 2}
 							stroke-linecap="round"
+							stroke-dasharray={isConnected ? "8 4" : "6 4"}
 							opacity={isHovering ? (isConnected ? 0.85 : 0.15) : 0.5}
 							style="transition: opacity 0.2s, stroke-width 0.2s"
 						/>
