@@ -315,6 +315,69 @@ describe("AgentLoop", () => {
 		expect(msgs[2].content).toBe("Done!");
 	});
 
+	it("should persist assistant message even when model returns empty text after tool calls", async () => {
+		const mockBackend = new MockLLMBackend();
+		// First call: tool use
+		mockBackend.pushResponse(async function* () {
+			yield { type: "tool_use_start" as const, id: "tool-send-1", name: "bash" };
+			yield {
+				type: "tool_use_args" as const,
+				id: "tool-send-1",
+				partial_json: JSON.stringify({ command: "echo sent" }),
+			};
+			yield { type: "tool_use_end" as const, id: "tool-send-1" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 15,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+		// Second call: empty text (2-token bailout)
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 20,
+					output_tokens: 2,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		const mockBash = createMockSandbox(() => ({
+			stdout: "sent",
+			stderr: "",
+			exitCode: 0,
+		}));
+
+		const agentLoop = new AgentLoop(makeCtx(), mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await agentLoop.run();
+
+		// Should have created messages (not be treated as cancelled)
+		expect(result.messagesCreated).toBeGreaterThan(2); // tool_call + tool_result + assistant
+
+		// The last message should be an assistant message (even if empty-ish)
+		const msgs = db
+			.query(
+				"SELECT role, content FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
+			)
+			.all(threadId) as Array<{ role: string; content: string }>;
+
+		expect(msgs[0].role).toBe("assistant");
+	});
+
 	it("should feed tool errors back to the LLM instead of terminating", async () => {
 		const mockBackend = new MockLLMBackend();
 		mockBackend.setToolThenTextResponse(

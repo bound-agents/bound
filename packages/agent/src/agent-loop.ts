@@ -744,9 +744,14 @@ export class AgentLoop {
 					continue;
 				}
 
-				// No tool calls — persist the final assistant text response and exit
+				// No tool calls — persist the final assistant text response and exit.
+				// When the model returns empty text after tool calls were made this turn,
+				// it's a clean completion (the model decided tools were sufficient).
+				// Still persist a minimal assistant message so the thread has a proper
+				// ending and doesn't appear as "cancelled" in the UI.
 				this.state = "RESPONSE_PERSIST";
-				const assistantContent = parsed.textContent || "";
+				const assistantContent =
+					parsed.textContent || (this.toolCallsMade > 0 ? "[turn complete]" : "");
 
 				if (assistantContent) {
 					const assistantMessageId = randomUUID();
