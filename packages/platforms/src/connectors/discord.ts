@@ -135,11 +135,11 @@ export class DiscordConnector implements PlatformConnector {
 			}
 		}
 
-		// Resume typing after delivery — the agent may still be working and will
-		// send more messages via discord_send_message tool calls. Typing naturally
-		// stops via the 5-minute safety cap or when the process disconnects.
+		// Fire a single typing pulse — if the agent is still working it will send
+		// more messages (each triggering another pulse). Discord's typing indicator
+		// naturally expires after ~10s, so if the loop is done it fades on its own.
 		if (typeof (channel as { sendTyping?: unknown }).sendTyping === "function") {
-			this.startTyping(threadId, channel as { sendTyping(): Promise<void> });
+			(channel as { sendTyping(): Promise<void> }).sendTyping().catch(() => {});
 		}
 	}
 
