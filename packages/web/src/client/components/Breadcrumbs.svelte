@@ -4,7 +4,6 @@ interface Props {
 	onNavigate: (path: string) => void;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 const { segments, onNavigate }: Props = $props();
 </script>
 

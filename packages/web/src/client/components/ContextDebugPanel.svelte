@@ -1,14 +1,10 @@
 <script lang="ts">
 import { onDestroy } from "svelte";
 import { type ContextDebugTurn, api } from "../lib/api";
-// biome-ignore lint/style/useImportType: need wsEvents for typeof in Props
 import { wsEvents } from "../lib/websocket";
 import type { WebSocketMessage } from "../lib/websocket";
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import ContextBar from "./ContextBar.svelte";
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import ContextSectionList from "./ContextSectionList.svelte";
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import ContextSparkline from "./ContextSparkline.svelte";
 
 interface Props {
@@ -20,9 +16,6 @@ const { threadId, wsEvents: wsEventsStore } = $props<Props>();
 
 let turns = $state<ContextDebugTurn[]>([]);
 let selectedTurnIdx = $state(-1);
-// biome-ignore lint/correctness/noUnusedVariables: Reserved for Phase 5 visualization
-let loaded = $state(false);
-// biome-ignore lint/correctness/noUnusedVariables: Reserved for Phase 5 visualization
 let loading = $state(false);
 
 async function fetchData(): Promise<void> {
@@ -33,7 +26,6 @@ async function fetchData(): Promise<void> {
 		if (turns.length > 0) {
 			selectedTurnIdx = turns.length - 1; // start at latest
 		}
-		loaded = true;
 	} catch (error) {
 		console.error("Failed to fetch context debug data:", error);
 	}
@@ -45,7 +37,6 @@ $effect(() => {
 	const _tid = threadId; // track dependency
 	turns = [];
 	selectedTurnIdx = -1;
-	loaded = false;
 	loading = false;
 	fetchData();
 });
@@ -86,25 +77,20 @@ onDestroy(() => {
 });
 
 // Derived state
-// biome-ignore lint/correctness/noUnusedVariables: Used in template
 const selectedTurn = $derived(
 	turns.length > 0 ? turns[selectedTurnIdx >= 0 ? selectedTurnIdx : turns.length - 1] : null,
 );
 
-// biome-ignore lint/correctness/noUnusedVariables: Used in template
 const turnLabel = $derived(
 	turns.length > 0
 		? `Turn ${(selectedTurnIdx >= 0 ? selectedTurnIdx : turns.length - 1) + 1} of ${turns.length}`
 		: "No turns",
 );
 
-// biome-ignore lint/correctness/noUnusedVariables: Used in template
 const isLatest = $derived(selectedTurnIdx < 0 || selectedTurnIdx === turns.length - 1);
 
-// biome-ignore lint/correctness/noUnusedVariables: Used in template
 const effectiveIdx = $derived(selectedTurnIdx >= 0 ? selectedTurnIdx : turns.length - 1);
 
-// biome-ignore lint/correctness/noUnusedVariables: Used in template
 function navigateTurn(direction: number): void {
 	if (direction < 0) {
 		if (selectedTurnIdx > 0) {

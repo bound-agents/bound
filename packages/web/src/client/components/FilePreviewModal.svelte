@@ -1,5 +1,4 @@
 <script lang="ts">
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import { Download, X } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
 import { extensionToLanguage, getFileCategory } from "../lib/file-categories";
@@ -13,11 +12,8 @@ interface Props {
 const { file, onClose }: Props = $props();
 
 let content = $state<string | null>(null);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let loading = $state(true);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let error = $state<string | null>(null);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let renderedHtml = $state<string | null>(null);
 let blobUrl = $state<string | null>(null);
 
@@ -106,7 +102,6 @@ async function fetchContent(): Promise<void> {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 async function retry(): Promise<void> {
 	await fetchContent();
 }
@@ -117,7 +112,6 @@ function setupFocusTrap(): void {
 	modalRef?.focus();
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function handleKeydown(e: KeyboardEvent): void {
 	if (e.key === "Escape") {
 		e.preventDefault();
@@ -141,25 +135,18 @@ function handleKeydown(e: KeyboardEvent): void {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
-function handleBackdropClick(e: MouseEvent): void {
-	if (e.target === e.currentTarget) {
-		onClose();
-	}
-}
-
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function download(): void {
 	window.location.href = `/api/files/download/${file.id}`;
 }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-	class="modal-backdrop"
-	onclick={handleBackdropClick}
-	onkeydown={handleKeydown}
->
+<div class="modal-backdrop">
+	<button
+		class="backdrop-close"
+		onclick={onClose}
+		aria-label="Close file preview"
+		tabindex={-1}
+	></button>
 	<div
 		class="modal-panel"
 		role="dialog"
@@ -167,6 +154,7 @@ function download(): void {
 		aria-label="File preview: {file.path.split('/').pop()}"
 		bind:this={modalRef}
 		tabindex={-1}
+		onkeydown={handleKeydown}
 	>
 		<header class="modal-header">
 			<h2 class="modal-title">{file.path.split("/").pop()}</h2>
@@ -231,7 +219,20 @@ function download(): void {
 		padding: 40px;
 	}
 
+	.backdrop-close {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		background: none;
+		border: none;
+		cursor: default;
+		padding: 0;
+	}
+
 	.modal-panel {
+		position: relative;
+		z-index: 1;
 		background: var(--bg-primary);
 		border: 1px solid rgba(0, 155, 191, 0.2);
 		border-radius: 12px;

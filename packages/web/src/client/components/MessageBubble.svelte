@@ -5,7 +5,6 @@ const {
 	role,
 	content,
 	toolName = null,
-	// biome-ignore lint/correctness/noUnusedVariables: used in template
 	modelId = null,
 } = $props<{
 	role: "user" | "assistant" | "tool_call" | "tool_result" | "alert" | "system";
@@ -15,7 +14,6 @@ const {
 }>();
 
 let toolCallExpanded = $state(false);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let rendered = $state("");
 
 // Re-render whenever content or role changes (reactive to streaming updates).
@@ -34,7 +32,6 @@ $effect(() => {
 	}
 });
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function getToolName(): string {
 	if (toolName) return toolName;
 	// Attempt to parse from JSON content if tool_name field not provided separately
@@ -46,7 +43,6 @@ function getToolName(): string {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function toggleToolCall(): void {
 	toolCallExpanded = !toolCallExpanded;
 }

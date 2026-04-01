@@ -2,9 +2,7 @@
 import { onDestroy, onMount, tick } from "svelte";
 import { api } from "../lib/api";
 import type { Thread } from "../lib/api";
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import { LINE_CODES, LINE_COLORS, getLineColor } from "../lib/metro-lines";
-// biome-ignore lint/correctness/noUnusedImports: used in template handlers
 import { navigateTo } from "../lib/router";
 
 interface ThreadStatus {
@@ -25,24 +23,16 @@ interface RawSpline {
 }
 
 let threads: Thread[] = $state([]);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
-// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
 let creating = $state(false);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
-// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
 let hoveredIdx = $state(-1);
 let threadStatuses: Map<string, ThreadStatus> = $state(new Map());
 let alertThreads: Set<string> = $state(new Set());
 let rawSplines = $state<RawSpline[]>([]);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
-// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
 let threadListEl = $state<HTMLDivElement | null>(null);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let svgHeight = $state(0);
 let interchange: Record<string, Array<{ threadId: string; color: number }>> = {};
 
 // Derive which thread IDs are connected: only sources that contributed TO the hovered thread
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 const connectedThreadIds = $derived.by(() => {
 	if (hoveredIdx < 0 || hoveredIdx >= threads.length) return new Set<string>();
 	const hoveredId = threads[hoveredIdx].id;
@@ -56,7 +46,6 @@ const connectedThreadIds = $derived.by(() => {
 });
 
 // Derive final spline paths — recomputes when hoveredIdx changes to shift target endpoints
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let interchangeSplines = $derived.by(() => {
 	const hoveredId = hoveredIdx >= 0 && hoveredIdx < threads.length ? threads[hoveredIdx].id : null;
 	return rawSplines.map((s) => {
@@ -77,7 +66,6 @@ let interchangeSplines = $derived.by(() => {
 	});
 });
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 async function createThread(): Promise<void> {
 	creating = true;
 	try {
@@ -231,7 +219,6 @@ onDestroy(() => {
 	if (pollInterval !== null) clearInterval(pollInterval);
 });
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function threadLabel(thread: Thread, idx: number): string {
 	if (thread.title && thread.title.trim().length > 0) {
 		const t = thread.title.trim();
@@ -240,7 +227,6 @@ function threadLabel(thread: Thread, idx: number): string {
 	return `Thread ${idx + 1}`;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function relativeTime(iso: string): string {
 	const diff = Date.now() - new Date(iso).getTime();
 	const mins = Math.floor(diff / 60_000);
@@ -252,13 +238,11 @@ function relativeTime(iso: string): string {
 	return `${days}d ago`;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function isAgentActive(threadId: string): boolean {
 	const status = threadStatuses.get(threadId);
 	return status?.active ?? false;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function hasAlert(threadId: string): boolean {
 	return alertThreads.has(threadId);
 }

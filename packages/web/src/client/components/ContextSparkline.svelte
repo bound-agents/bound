@@ -6,7 +6,6 @@ interface Props {
 }
 
 const { turns, selectedIdx, onSelectTurn: _onSelectTurn } = $props<Props>();
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 const onSelectTurn = _onSelectTurn;
 
 const WIDTH = 288; // 320px panel - 32px padding
@@ -21,14 +20,12 @@ const points = $derived.by(() => {
 	}));
 });
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 const pathD = $derived.by(() => {
 	if (points.length === 0) return "";
 	const line = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
 	return `${line} L ${points[points.length - 1].x} ${HEIGHT} L ${points[0].x} ${HEIGHT} Z`;
 });
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 const selectedPoint = $derived.by(() => {
 	const idx = selectedIdx >= 0 ? selectedIdx : points.length - 1;
 	return points[idx] ?? null;

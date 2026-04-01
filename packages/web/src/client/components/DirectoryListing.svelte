@@ -1,5 +1,4 @@
 <script lang="ts">
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import { Folder } from "lucide-svelte";
 import type { Component } from "svelte";
 import type { FileMetadata, FileTreeNode } from "../lib/file-tree";
@@ -13,7 +12,6 @@ interface Props {
 	onSelectFile: (file: FileMetadata) => void;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 const { items, formatFileSize, getFileIcon, relativeTime, onSelectDirectory, onSelectFile }: Props =
 	$props();
 </script>

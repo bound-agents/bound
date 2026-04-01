@@ -1,8 +1,6 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import DebugPanelWrapper from "../components/DebugPanelWrapper.svelte";
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import MessageList from "../components/MessageList.svelte";
 import { api } from "../lib/api";
 import type { Thread } from "../lib/api";
@@ -20,18 +18,12 @@ const { threadId } = $props<{ threadId: string }>();
 
 let messages = $state([]);
 let inputText = $state("");
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let sending = $state(false);
 let waiting = $state(false);
 let waitingSinceMessageCount = $state(0);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let agentActive = $state(false);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let agentState = $state<string | null>(null);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
-// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
 let fileInput = $state<HTMLInputElement | null>(null);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let uploadStatus = $state<string | null>(null);
 let pendingFileId = $state<string | null>(null);
 let thread = $state<Thread | null>(null);
@@ -145,7 +137,6 @@ async function handleSendMessage(): Promise<void> {
 	sending = false;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 async function handleCancel(): Promise<void> {
 	try {
 		await fetch(`/api/status/cancel/${threadId}`, { method: "POST" });
@@ -154,7 +145,6 @@ async function handleCancel(): Promise<void> {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 async function handleFileChange(e: Event): Promise<void> {
 	const input = e.target as HTMLInputElement;
 	if (!input.files || input.files.length === 0) return;
@@ -180,12 +170,10 @@ async function handleFileChange(e: Event): Promise<void> {
 	input.value = "";
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function handleBackClick(): void {
 	navigateTo("/");
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function handleKeydown(e: KeyboardEvent): void {
 	if (e.key === "Enter" && !e.shiftKey) {
 		e.preventDefault();
@@ -193,7 +181,6 @@ function handleKeydown(e: KeyboardEvent): void {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function viewTitle(): string {
 	if (thread?.title && thread.title.trim().length > 0) {
 		return thread.title.trim();

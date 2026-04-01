@@ -2,7 +2,6 @@
 import type { Snippet } from "svelte";
 import type { Writable } from "svelte/store";
 import type { WebSocketMessage } from "../lib/websocket";
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import ContextDebugPanel from "./ContextDebugPanel.svelte";
 
 interface Props {
@@ -11,13 +10,11 @@ interface Props {
 	children: Snippet<[{ debugOpen: boolean; toggleDebug: () => void }]>;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 const { threadId, wsEvents, children }: Props = $props();
 
 let debugOpen = $state(false);
 let debugMounted = $state(false);
 
-// biome-ignore lint/correctness/noUnusedVariables: passed via children snippet to template
 function toggleDebug(): void {
 	debugOpen = !debugOpen;
 	if (debugOpen && !debugMounted) {

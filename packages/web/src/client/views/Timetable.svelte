@@ -1,6 +1,5 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
-// biome-ignore lint/correctness/noUnusedImports: used in Svelte template onclick
 import { navigateTo } from "../lib/router";
 
 interface Task {
@@ -20,12 +19,8 @@ interface Task {
 	error: string | null;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let tasks: Task[] = $state([]);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let loading = $state(true);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
-// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
 let filterStatus = $state("");
 
 async function loadTasks(): Promise<void> {
@@ -50,13 +45,11 @@ onDestroy(() => {
 	if (pollInterval !== null) clearInterval(pollInterval);
 });
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function handleFilterChange(): void {
 	loading = true;
 	loadTasks();
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function getStatusBadgeClass(status: string): string {
 	switch (status) {
 		case "completed":
@@ -75,7 +68,6 @@ function getStatusBadgeClass(status: string): string {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function getStatusIcon(status: string): string {
 	switch (status) {
 		case "completed":
@@ -94,14 +86,12 @@ function getStatusIcon(status: string): string {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function formatTrigger(spec: string): string {
 	if (!spec) return "--";
 	if (spec.length > 24) return `${spec.substring(0, 22)}...`;
 	return spec;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function formatTime(iso: string | null): string {
 	if (!iso) return "--";
 	const d = new Date(iso);
@@ -126,14 +116,12 @@ function formatTime(iso: string | null): string {
 	return d.toLocaleDateString();
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function formatHost(claimedBy: string | null): string {
 	if (!claimedBy) return "--";
 	if (claimedBy.length > 12) return `${claimedBy.substring(0, 10)}...`;
 	return claimedBy;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 async function cancelTask(taskId: string): Promise<void> {
 	try {
 		await fetch(`/api/tasks/${taskId}/cancel`, { method: "POST" });
@@ -143,7 +131,6 @@ async function cancelTask(taskId: string): Promise<void> {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function canCancel(status: string): boolean {
 	return status === "pending" || status === "running" || status === "claimed";
 }

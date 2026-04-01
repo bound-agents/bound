@@ -11,7 +11,6 @@ interface ClusterModelInfo {
 }
 
 let selectedModel = $state("");
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let models = $state<ClusterModelInfo[]>([]);
 
 onMount(async () => {
@@ -30,7 +29,6 @@ onMount(async () => {
 	}
 });
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function handleChange(): void {
 	// Extract model ID (strip @host suffix if present)
 	const modelId = selectedModel.includes("@") ? selectedModel.split("@")[0] : selectedModel;

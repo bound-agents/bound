@@ -1,5 +1,4 @@
 <script lang="ts">
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import MessageBubble from "./MessageBubble.svelte";
 
 interface Message {
@@ -15,7 +14,6 @@ interface Props {
 	emptyText?: string | null;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 const { messages, waiting = false, emptyText = null }: Props = $props();
 </script>
 

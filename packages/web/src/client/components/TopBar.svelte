@@ -1,16 +1,13 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import ModelSelector from "./ModelSelector.svelte";
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function navigate(hash: string): void {
 	window.location.hash = hash;
 }
 
 let currentHash = $state(window.location.hash);
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function isActive(hash: string): boolean {
 	const current = currentHash.slice(1) || "/";
 	if (hash === "#/") return current === "/" || current === "";
@@ -18,7 +15,6 @@ function isActive(hash: string): boolean {
 }
 
 // Navigation items with their metro line color associations
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 const navItems = [
 	{ hash: "#/", label: "System Map", color: "var(--line-0)" },
 	{ hash: "#/timetable", label: "Timetable", color: "var(--line-3)" },
@@ -27,7 +23,6 @@ const navItems = [
 	{ hash: "#/advisories", label: "Advisories", color: "var(--line-5)" },
 ];
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let advisoryCount = $state(0);
 let advisoryPollInterval: ReturnType<typeof setInterval> | null = null;
 

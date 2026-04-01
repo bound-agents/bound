@@ -3,13 +3,9 @@ import { File, FileArchive, FileCode, FileImage, FileText } from "lucide-svelte"
 import { onDestroy, onMount } from "svelte";
 import type { Component } from "svelte";
 import { SvelteSet } from "svelte/reactivity";
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import Breadcrumbs from "../components/Breadcrumbs.svelte";
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import DirectoryListing from "../components/DirectoryListing.svelte";
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import FilePreviewModal from "../components/FilePreviewModal.svelte";
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import TreeNode from "../components/TreeNode.svelte";
 import {
 	type FileMetadata,
@@ -20,20 +16,15 @@ import {
 import { wsEvents } from "../lib/websocket";
 
 let tree: FileTreeNode[] = $state([]);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let loading = $state(true);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let error = $state<string | null>(null);
 
-// biome-ignore lint/style/useConst: $state requires let
 let expandedPaths = $state(new SvelteSet<string>());
 
 let selectedPath = $state("/");
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let selectedFile = $state<FileMetadata | null>(null);
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 const breadcrumbSegments = $derived.by(() => {
 	const segments: Array<{ name: string; path: string }> = [{ name: "/", path: "/" }];
 	if (selectedPath === "/") return segments;
@@ -47,7 +38,6 @@ const breadcrumbSegments = $derived.by(() => {
 	return segments;
 });
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 const currentDirectoryContents = $derived.by(() => {
 	if (selectedPath === "/") return tree;
 	const node = findNodeByPath(tree, selectedPath);
@@ -87,7 +77,6 @@ function expandAllRecursive(node: FileTreeNode): void {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: passed to template
 function toggleExpanded(path: string): void {
 	if (expandedPaths.has(path)) {
 		expandedPaths.delete(path);
@@ -107,22 +96,18 @@ function navigateToDirectory(path: string): void {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: passed to template
 function selectDirectory(path: string): void {
 	navigateToDirectory(path);
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: passed to template
 function openFilePreview(file: FileMetadata): void {
 	selectedFile = file;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: passed to template
 function closeFilePreview(): void {
 	selectedFile = null;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: passed to template
 function formatFileSize(bytes: number): string {
 	if (bytes === 0) return "0 B";
 	if (bytes < 1024) return `${bytes} B`;
@@ -131,7 +116,6 @@ function formatFileSize(bytes: number): string {
 	return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: passed to template
 function getFileIcon(name: string): Component {
 	const lower = name.toLowerCase();
 	if (lower.endsWith(".md") || lower.endsWith(".txt")) return FileText;
@@ -149,7 +133,6 @@ function getFileIcon(name: string): Component {
 	return File;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: passed to template
 function relativeTime(iso: string | null): string {
 	if (!iso) return "—";
 	const diff = Date.now() - new Date(iso).getTime();
@@ -162,7 +145,6 @@ function relativeTime(iso: string | null): string {
 	return `${days}d ago`;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: passed to template
 function downloadFile(fileId: string): void {
 	window.location.href = `/api/files/download/${fileId}`;
 }

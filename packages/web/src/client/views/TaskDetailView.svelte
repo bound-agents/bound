@@ -1,14 +1,10 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import DebugPanelWrapper from "../components/DebugPanelWrapper.svelte";
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import MessageList from "../components/MessageList.svelte";
 import { api } from "../lib/api";
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import { navigateTo } from "../lib/router";
 import { connectWebSocket, disconnectWebSocket, subscribeToThread } from "../lib/websocket";
-// biome-ignore lint/correctness/noUnusedImports: wsEvents passed to DebugPanelWrapper in template
 import { wsEvents } from "../lib/websocket";
 
 interface TaskDetail {
@@ -42,16 +38,12 @@ interface Message {
 const { taskId } = $props<{ taskId: string }>();
 
 let task: TaskDetail | null = $state(null);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let messages: Message[] = $state([]);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let loading = $state(true);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let errorMsg = $state<string | null>(null);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function getStatusBadgeClass(status: string): string {
 	switch (status) {
 		case "completed":
@@ -70,7 +62,6 @@ function getStatusBadgeClass(status: string): string {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function getStatusIcon(status: string): string {
 	switch (status) {
 		case "completed":
@@ -89,7 +80,6 @@ function getStatusIcon(status: string): string {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function formatRelativeTime(iso: string | null): string {
 	if (!iso) return "—";
 	const date = new Date(iso);

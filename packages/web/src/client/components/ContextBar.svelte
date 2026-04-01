@@ -1,5 +1,4 @@
 <script lang="ts">
-// biome-ignore lint/correctness/noUnusedImports: used in template
 import { FREE_SPACE_COLOR, SECTION_COLORS } from "../lib/context-colors";
 
 interface Props {
@@ -15,7 +14,6 @@ const { sections, contextWindow } = $props<Props>();
 
 const usedTokens = $derived(sections.reduce((s, sec) => s + sec.tokens, 0));
 const usedPct = $derived((usedTokens / contextWindow) * 100);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 const freePct = $derived(100 - usedPct);
 </script>
 

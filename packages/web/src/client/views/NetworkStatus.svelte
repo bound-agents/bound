@@ -27,9 +27,7 @@ interface NetworkData {
 }
 
 let networkData: NetworkData | null = $state(null);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let loading = $state(true);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let error = $state<string | null>(null);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
@@ -60,7 +58,6 @@ onDestroy(() => {
 	if (pollInterval !== null) clearInterval(pollInterval);
 });
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function isOnline(host: HostInfo): boolean {
 	if (!host.online_at) return false;
 	const lastSeen = new Date(host.online_at).getTime();
@@ -68,13 +65,11 @@ function isOnline(host: HostInfo): boolean {
 	return lastSeen > fiveMinutesAgo;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function truncateSiteId(siteId: string): string {
 	if (siteId.length <= 12) return siteId;
 	return `${siteId.substring(0, 6)}...${siteId.substring(siteId.length - 4)}`;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function relativeTime(iso: string | null): string {
 	if (!iso) return "never";
 	const diff = Date.now() - new Date(iso).getTime();
@@ -88,13 +83,11 @@ function relativeTime(iso: string | null): string {
 	return `${days}d ago`;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function getSyncForPeer(peerSiteId: string): SyncStateInfo | null {
 	if (!networkData) return null;
 	return networkData.syncState.find((s) => s.peer_site_id === peerSiteId) ?? null;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function syncHealthClass(syncState: SyncStateInfo | null): string {
 	if (!syncState) return "sync-unknown";
 	if (syncState.sync_errors > 5) return "sync-error";
@@ -102,7 +95,6 @@ function syncHealthClass(syncState: SyncStateInfo | null): string {
 	return "sync-healthy";
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function syncHealthLabel(syncState: SyncStateInfo | null): string {
 	if (!syncState) return "No sync data";
 	if (syncState.sync_errors > 5) return `${syncState.sync_errors} errors`;
@@ -111,7 +103,6 @@ function syncHealthLabel(syncState: SyncStateInfo | null): string {
 	return "Pending";
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function parseModels(modelsStr: string | null): string[] {
 	if (!modelsStr) return [];
 	try {

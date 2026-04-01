@@ -18,10 +18,8 @@ interface Advisory {
 }
 
 let advisories: Advisory[] = $state([]);
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 let loading = $state(true);
 let expandedId = $state<string | null>(null);
-// biome-ignore lint/style/useConst: Svelte 5 $state() requires let
 let filterStatus = $state("");
 let actionInProgress = $state<string | null>(null);
 
@@ -49,13 +47,11 @@ onDestroy(() => {
 	if (pollInterval !== null) clearInterval(pollInterval);
 });
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function handleFilterChange(): void {
 	loading = true;
 	loadAdvisories();
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 async function performAction(id: string, action: string): Promise<void> {
 	actionInProgress = `${id}:${action}`;
 	try {
@@ -73,12 +69,10 @@ async function performAction(id: string, action: string): Promise<void> {
 	actionInProgress = null;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function toggleExpand(id: string): void {
 	expandedId = expandedId === id ? null : id;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function statusClass(status: string): string {
 	switch (status) {
 		case "proposed":
@@ -96,7 +90,6 @@ function statusClass(status: string): string {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function typeIcon(type: string): string {
 	switch (type) {
 		case "cost":
@@ -114,7 +107,6 @@ function typeIcon(type: string): string {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function relativeTime(iso: string): string {
 	const diff = Date.now() - new Date(iso).getTime();
 	const mins = Math.floor(diff / 60_000);
@@ -126,32 +118,26 @@ function relativeTime(iso: string): string {
 	return `${days}d ago`;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function isActionInProgress(id: string, action: string): boolean {
 	return actionInProgress === `${id}:${action}`;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function canApprove(status: string): boolean {
 	return status === "proposed" || status === "deferred";
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function canDismiss(status: string): boolean {
 	return status === "proposed" || status === "deferred";
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function canDefer(status: string): boolean {
 	return status === "proposed";
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 function canApply(status: string): boolean {
 	return status === "approved";
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: used in template
 const proposedCount = $derived(advisories.filter((a) => a.status === "proposed").length);
 </script>
 
