@@ -1,3 +1,8 @@
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import pino from "pino";
+import pinoPretty from "pino-pretty";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 export interface Logger {
@@ -7,38 +12,52 @@ export interface Logger {
 	error(message: string, context?: Record<string, unknown>): void;
 }
 
-const LOG_LEVELS: Record<LogLevel, number> = {
-	debug: 0,
-	info: 1,
-	warn: 2,
-	error: 3,
-};
+let rootLogger: pino.Logger | undefined;
+
+function getRootLogger(): pino.Logger {
+	if (rootLogger) return rootLogger;
+
+	const level = (process.env.LOG_LEVEL || "info") as LogLevel;
+
+	const logDir = join(process.cwd(), "logs");
+	mkdirSync(logDir, { recursive: true });
+	const logFile = join(logDir, "bound.log");
+
+	const prettyStream = pinoPretty({
+		destination: 2,
+		colorize: true,
+		translateTime: "HH:MM:ss.l",
+		ignore: "pid,hostname",
+		messageFormat: "[{package}/{component}] {msg}",
+	});
+
+	const fileStream = pino.destination({ dest: logFile, sync: false });
+
+	rootLogger = pino(
+		{ level },
+		pino.multistream([
+			{ stream: prettyStream, level },
+			{ stream: fileStream, level },
+		]),
+	);
+
+	return rootLogger;
+}
 
 export function createLogger(pkg: string, component: string): Logger {
-	const minLevel = (process.env.LOG_LEVEL || "info") as LogLevel;
-	const minLevelValue = LOG_LEVELS[minLevel];
-
-	const log = (level: LogLevel, message: string, context?: Record<string, unknown>): void => {
-		if (LOG_LEVELS[level] < minLevelValue) {
-			return;
-		}
-
-		const logEntry = {
-			timestamp: new Date().toISOString(),
-			level,
-			package: pkg,
-			component,
-			message,
-			...(context || {}),
-		};
-
-		console.error(JSON.stringify(logEntry));
-	};
+	const child = getRootLogger().child({ package: pkg, component });
 
 	return {
-		debug: (message, context) => log("debug", message, context),
-		info: (message, context) => log("info", message, context),
-		warn: (message, context) => log("warn", message, context),
-		error: (message, context) => log("error", message, context),
+		debug: (message, context) => child.debug(context ?? {}, message),
+		info: (message, context) => child.info(context ?? {}, message),
+		warn: (message, context) => child.warn(context ?? {}, message),
+		error: (message, context) => child.error(context ?? {}, message),
 	};
+}
+
+/**
+ * Reset the root logger instance. Used for testing.
+ */
+export function resetLogger(): void {
+	rootLogger = undefined;
 }

@@ -1,31 +1,22 @@
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createLogger } from "../logger.js";
+import { createLogger, resetLogger } from "../logger.js";
 
 describe("createLogger", () => {
-	let originalEnv: string | undefined;
-	let stderrOutput: string[] = [];
+	const logDir = join(process.cwd(), "logs");
+	const logFile = join(logDir, "bound.log");
 
 	beforeEach(() => {
-		originalEnv = process.env.LOG_LEVEL;
-		stderrOutput = [];
-
-		// @ts-expect-error - mocking console.error
-		console.error = (...args: string[]) => {
-			stderrOutput.push(
-				...args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))),
-			);
-		};
+		resetLogger();
+		if (existsSync(logFile)) rmSync(logFile);
 	});
 
 	afterEach(() => {
-		if (originalEnv === undefined) {
-			process.env.LOG_LEVEL = undefined;
-		} else {
-			process.env.LOG_LEVEL = originalEnv;
-		}
+		resetLogger();
 	});
 
-	it("creates a logger instance", () => {
+	it("creates a logger instance with all log methods", () => {
 		const logger = createLogger("@bound/test", "TestComponent");
 		expect(logger).toBeDefined();
 		expect(typeof logger.info).toBe("function");
@@ -34,74 +25,82 @@ describe("createLogger", () => {
 		expect(typeof logger.error).toBe("function");
 	});
 
-	it("logs messages with correct structure", () => {
-		const logger = createLogger("@bound/test", "TestComponent");
+	it("writes structured JSON to log file", async () => {
 		process.env.LOG_LEVEL = "debug";
+		const logger = createLogger("@bound/test", "TestComponent");
 
-		stderrOutput = [];
 		logger.info("Test message");
 
-		expect(stderrOutput.length).toBeGreaterThan(0);
-		const logEntry = JSON.parse(stderrOutput[0]);
-		expect(logEntry.level).toBe("info");
-		expect(logEntry.message).toBe("Test message");
+		// pino file destination is async — give it a moment to flush
+		await Bun.sleep(100);
+
+		expect(existsSync(logFile)).toBe(true);
+		const content = readFileSync(logFile, "utf-8").trim();
+		const lines = content.split("\n").filter(Boolean);
+		expect(lines.length).toBeGreaterThanOrEqual(1);
+
+		const logEntry = JSON.parse(lines[lines.length - 1]);
+		expect(logEntry.level).toBe(30); // pino info = 30
+		expect(logEntry.msg).toBe("Test message");
 		expect(logEntry.package).toBe("@bound/test");
 		expect(logEntry.component).toBe("TestComponent");
-		expect(logEntry.timestamp).toBeDefined();
+		expect(logEntry.time).toBeDefined();
 	});
 
-	it("includes context in log output", () => {
-		const logger = createLogger("@bound/test", "TestComponent");
+	it("includes context in log output", async () => {
 		process.env.LOG_LEVEL = "debug";
+		const logger = createLogger("@bound/test", "TestComponent");
 
-		stderrOutput = [];
 		logger.warn("Test warning", { userId: "user-123", action: "delete" });
 
-		expect(stderrOutput.length).toBeGreaterThan(0);
-		const logEntry = JSON.parse(stderrOutput[0]);
+		await Bun.sleep(100);
+
+		const content = readFileSync(logFile, "utf-8").trim();
+		const lines = content.split("\n").filter(Boolean);
+		const logEntry = JSON.parse(lines[lines.length - 1]);
 		expect(logEntry.userId).toBe("user-123");
 		expect(logEntry.action).toBe("delete");
 	});
 
-	it("respects LOG_LEVEL environment variable", () => {
+	it("respects LOG_LEVEL environment variable", async () => {
 		process.env.LOG_LEVEL = "error";
 		const logger = createLogger("@bound/test", "TestComponent");
 
-		stderrOutput = [];
 		logger.debug("Debug message");
 		logger.info("Info message");
 		logger.warn("Warn message");
 		logger.error("Error message");
 
-		expect(stderrOutput.length).toBe(1);
-		const logEntry = JSON.parse(stderrOutput[0]);
-		expect(logEntry.level).toBe("error");
+		await Bun.sleep(100);
+
+		const content = readFileSync(logFile, "utf-8").trim();
+		const lines = content.split("\n").filter(Boolean);
+		expect(lines.length).toBe(1);
+
+		const logEntry = JSON.parse(lines[0]);
+		expect(logEntry.level).toBe(50); // pino error = 50
 	});
 
-	it("defaults to info level when LOG_LEVEL not set", () => {
-		process.env.LOG_LEVEL = undefined;
+	it("defaults to info level when LOG_LEVEL not set", async () => {
+		delete process.env.LOG_LEVEL;
 		const logger = createLogger("@bound/test", "TestComponent");
 
-		stderrOutput = [];
 		logger.debug("Debug message");
 		logger.info("Info message");
 
-		expect(stderrOutput.length).toBe(1);
-		const logEntry = JSON.parse(stderrOutput[0]);
-		expect(logEntry.level).toBe("info");
+		await Bun.sleep(100);
+
+		const content = readFileSync(logFile, "utf-8").trim();
+		const lines = content.split("\n").filter(Boolean);
+		expect(lines.length).toBe(1);
+
+		const logEntry = JSON.parse(lines[0]);
+		expect(logEntry.msg).toBe("Info message");
 	});
 
-	it("outputs valid JSON to stderr", () => {
-		const logger = createLogger("@bound/test", "TestComponent");
-		process.env.LOG_LEVEL = "debug";
-
-		stderrOutput = [];
-		logger.error("Error test", { code: 500 });
-
-		expect(stderrOutput.length).toBeGreaterThan(0);
-		const logEntry = JSON.parse(stderrOutput[0]);
-		expect(logEntry.level).toBe("error");
-		expect(logEntry.message).toBe("Error test");
-		expect(logEntry.code).toBe(500);
+	it("creates logs directory automatically", () => {
+		process.env.LOG_LEVEL = "info";
+		createLogger("@bound/test", "TestComponent");
+		expect(existsSync(logDir)).toBe(true);
 	});
 });
