@@ -93,6 +93,18 @@ export class PlatformConnectorRegistry {
 		return this.connectorsByPlatform.get(platform)?.connector;
 	}
 
+	/**
+	 * Notify all connectors that the agent loop has finished for a thread.
+	 * Connectors use this to clean up per-thread state (e.g. typing indicators).
+	 */
+	notifyLoopComplete(threadId: string): void {
+		for (const { connector } of this.connectorsByPlatform.values()) {
+			if (connector.onLoopComplete) {
+				connector.onLoopComplete(threadId);
+			}
+		}
+	}
+
 	private createConnector(config: PlatformConnectorConfig): PlatformConnector {
 		switch (config.platform) {
 			case "webhook-stub":

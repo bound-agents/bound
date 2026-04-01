@@ -674,7 +674,11 @@ describe("DiscordConnector", () => {
 
 			// Typing should have still been active when getDMChannelForThread() ran
 			expect(typingTimerCountDuringFetch).toBe(1);
-			// Typing should be cleared after deliver() completes
+			// Typing should still be active after deliver() — stopped by onLoopComplete()
+			expect(typingTimers.size).toBe(1);
+
+			// Simulate loop completion
+			connector.onLoopComplete(threadId);
 			expect(typingTimers.size).toBe(0);
 		});
 

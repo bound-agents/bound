@@ -112,9 +112,6 @@ export class DiscordConnector implements PlatformConnector {
 		// No client null check needed — getDMChannelForThread uses clientManager.getClient()
 		const channel = await this.getDMChannelForThread(threadId);
 
-		// Stop typing before sending — resumed below if the agent may send more.
-		this.stopTyping(threadId);
-
 		if (!channel) {
 			this.logger.warn("No DM channel found for thread", { threadId });
 			return;
@@ -134,13 +131,10 @@ export class DiscordConnector implements PlatformConnector {
 				await channel.send(content.slice(i, i + 2000));
 			}
 		}
+	}
 
-		// Fire a single typing pulse — if the agent is still working it will send
-		// more messages (each triggering another pulse). Discord's typing indicator
-		// naturally expires after ~10s, so if the loop is done it fades on its own.
-		if (typeof (channel as { sendTyping?: unknown }).sendTyping === "function") {
-			(channel as { sendTyping(): Promise<void> }).sendTyping().catch(() => {});
-		}
+	onLoopComplete(threadId: string): void {
+		this.stopTyping(threadId);
 	}
 
 	getPlatformTools(

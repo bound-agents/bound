@@ -70,6 +70,12 @@ export interface PlatformConnector {
 	 * @returns A map from tool name to tool definition + execute closure. The execute
 	 *   closure receives the LLM's input object and returns a result string.
 	 */
+	/**
+	 * Called when the agent loop finishes processing a thread (success or error).
+	 * Connectors can use this to clean up per-thread state like typing indicators.
+	 */
+	onLoopComplete?(threadId: string): void;
+
 	getPlatformTools?(
 		threadId: string,
 		readFileFn?: (path: string) => Promise<Uint8Array>,

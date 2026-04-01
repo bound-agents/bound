@@ -938,6 +938,11 @@ export async function runStart(args: StartArgs): Promise<void> {
 			} finally {
 				activeLoops.delete(thread_id);
 
+				// Notify platform connectors that the loop is done (stops typing indicators, etc.)
+				if (platformRegistry?.notifyLoopComplete) {
+					platformRegistry.notifyLoopComplete(thread_id);
+				}
+
 				// Re-queue: if a user message arrived while this loop was active
 				// (it was skipped by the activeLoops guard), detect it now and
 				// re-emit message:created so a new loop processes it.
@@ -967,7 +972,11 @@ export async function runStart(args: StartArgs): Promise<void> {
 	}
 
 	// 13. Platform connectors (if configured)
-	let platformRegistry: { start(): void; stop(): void } | null = null;
+	let platformRegistry: {
+		start(): void;
+		stop(): void;
+		notifyLoopComplete?(threadId: string): void;
+	} | null = null;
 	const platformsResult = appContext.optionalConfig.platforms;
 	if (platformsResult?.ok) {
 		const { PlatformConnectorRegistry } = await import("@bound/platforms");
