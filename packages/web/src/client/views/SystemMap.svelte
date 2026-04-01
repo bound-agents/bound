@@ -41,23 +41,16 @@ let threadListEl = $state<HTMLDivElement | null>(null);
 let svgHeight = $state(0);
 let interchange: Record<string, Array<{ threadId: string; color: number }>> = {};
 
-// Derive which thread IDs are connected to the hovered thread (sources + targets)
+// Derive which thread IDs are connected: only sources that contributed TO the hovered thread
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 const connectedThreadIds = $derived.by(() => {
 	if (hoveredIdx < 0 || hoveredIdx >= threads.length) return new Set<string>();
 	const hoveredId = threads[hoveredIdx].id;
 	const connected = new Set<string>();
 	connected.add(hoveredId);
-	// Threads that contributed context TO the hovered thread
 	const sources = interchange[hoveredId];
 	if (sources) {
 		for (const s of sources) connected.add(s.threadId);
-	}
-	// Threads that the hovered thread contributed context TO
-	for (const [targetId, sources] of Object.entries(interchange)) {
-		if (sources.some((s) => s.threadId === hoveredId)) {
-			connected.add(targetId);
-		}
 	}
 	return connected;
 });
