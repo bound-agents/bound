@@ -125,7 +125,11 @@ async function handleSendMessage(): Promise<void> {
 			modelStore.getModel() || undefined,
 			pendingFileId ?? undefined,
 		);
-		messages = [...messages, newMessage];
+		// Deduplicate: WebSocket may have already delivered this message
+		const alreadyExists = messages.some((m: { id: string }) => m.id === newMessage.id);
+		if (!alreadyExists) {
+			messages = [...messages, newMessage];
+		}
 		inputText = "";
 		pendingFileId = null;
 		uploadStatus = null;
