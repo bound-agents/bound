@@ -3,13 +3,14 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { insertRow, writeOutbox } from "@bound/core";
 import type { ContentBlock, ToolDefinition } from "@bound/llm";
-import type {
-	IntakePayload,
-	Logger,
-	PlatformConnectorConfig,
-	Thread,
-	TypedEventEmitter,
-	User,
+import {
+	MAX_FILE_STORAGE_BYTES,
+	type IntakePayload,
+	type Logger,
+	type PlatformConnectorConfig,
+	type Thread,
+	type TypedEventEmitter,
+	type User,
 } from "@bound/shared";
 import type { PlatformConnector } from "../connector.js";
 import type { DiscordClientManager } from "./discord-client-manager.js";
@@ -262,6 +263,16 @@ export class DiscordConnector implements PlatformConnector {
 				if (!DISCORD_IMAGE_TYPES.has(contentType)) continue; // Skip non-image attachments
 
 				const mediaType = contentType as "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+
+				// Enforce shared file size limit for synced storage
+				if (attachment.size > MAX_FILE_STORAGE_BYTES) {
+					this.logger.warn("[discord] Attachment exceeds size limit, skipping", {
+						attachmentId: attachment.id,
+						size: attachment.size,
+						limit: MAX_FILE_STORAGE_BYTES,
+					});
+					continue;
+				}
 
 				try {
 					const response = await fetch(attachment.url, {

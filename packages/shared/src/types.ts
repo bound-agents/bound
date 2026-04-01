@@ -240,6 +240,9 @@ export interface Skill {
 	modified_at: string;
 }
 
+/** Maximum file size (in bytes) for storage in the synced files table. */
+export const MAX_FILE_STORAGE_BYTES = 50 * 1024 * 1024; // 50 MB
+
 export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	users: "lww",
 	threads: "lww",

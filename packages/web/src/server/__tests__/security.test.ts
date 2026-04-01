@@ -206,9 +206,9 @@ describe("API Security", () => {
 	// 5. File upload size limit
 	// ──────────────────────────────────────────────────────────────────
 	describe("file upload size limit", () => {
-		it("rejects files larger than 10MB", async () => {
-			// Create a file that exceeds 10MB
-			const bigContent = "x".repeat(11 * 1024 * 1024);
+		it("rejects files larger than 50MB", async () => {
+			// Create a file that exceeds 50MB
+			const bigContent = "x".repeat(51 * 1024 * 1024);
 			const form = new FormData();
 			form.append("file", new File([bigContent], "huge.txt", { type: "text/plain" }));
 

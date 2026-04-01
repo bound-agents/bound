@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { getSiteId, insertRow } from "@bound/core";
-import type { AgentFile } from "@bound/shared";
+import { type AgentFile, MAX_FILE_STORAGE_BYTES } from "@bound/shared";
 import { Hono } from "hono";
 
 /** MIME type prefixes and exact types considered text (not binary). */
@@ -255,8 +255,6 @@ export function createFilesRoutes(db: Database): Hono {
 
 	app.post("/upload", async (c) => {
 		try {
-			const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-
 			const formData = await c.req.formData();
 			const file = formData.get("file");
 
@@ -270,11 +268,11 @@ export function createFilesRoutes(db: Database): Hono {
 				);
 			}
 
-			if (file.size > MAX_FILE_SIZE) {
+			if (file.size > MAX_FILE_STORAGE_BYTES) {
 				return c.json(
 					{
 						error: "File too large",
-						details: `Maximum file size is ${MAX_FILE_SIZE / (1024 * 1024)}MB`,
+						details: `Maximum file size is ${MAX_FILE_STORAGE_BYTES / (1024 * 1024)}MB`,
 					},
 					413,
 				);
