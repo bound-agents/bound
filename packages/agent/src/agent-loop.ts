@@ -600,6 +600,7 @@ export class AgentLoop {
 						}
 
 						toolResults.push({ toolCall, content: resultContent });
+						this.config.onActivity?.();
 					}
 
 					// --- TOOL_RESULT_OFFLOAD ---

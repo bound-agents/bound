@@ -49,9 +49,17 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 	const abortController = new AbortController();
 	activeLoopAbortControllers.set(threadId, abortController);
 
-	const timeoutId = setTimeout(() => {
+	// Resettable inactivity timeout — restarted each time the loop signals activity.
+	let timeoutId = setTimeout(() => {
 		abortController.abort(new Error("LLM response timeout"));
 	}, timeoutMs);
+
+	const resetTimeout = (): void => {
+		clearTimeout(timeoutId);
+		timeoutId = setTimeout(() => {
+			abortController.abort(new Error("LLM response timeout"));
+		}, timeoutMs);
+	};
 
 	const onCancel = (payload: { thread_id: string }): void => {
 		if (payload.thread_id === threadId) {
@@ -66,6 +74,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 			userId,
 			modelId,
 			abortSignal: abortController.signal,
+			onActivity: resetTimeout,
 		});
 		const agentResult = await agentLoop.run();
 		return { agentResult, signal: abortController.signal };

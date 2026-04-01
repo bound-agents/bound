@@ -205,4 +205,77 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 		// Timeout must have fired and aborted the signal
 		expect(capturedSignals[0]?.aborted).toBe(true);
 	});
+
+	it("should reset timeout when onActivity is called by the loop", async () => {
+		const eventBus = makeEventBus();
+		const threadId = randomUUID();
+		const capturedSignals: AbortSignal[] = [];
+
+		// Loop that takes 200ms total, with activity at 60ms and 120ms.
+		// Timeout is 100ms — without reset it would fire at 100ms.
+		// With reset at 60ms → new deadline at 160ms; reset at 120ms → 220ms.
+		// Loop finishes at 200ms before the 220ms deadline.
+		let capturedOnActivity: (() => void) | undefined;
+		const factory = (config: AgentLoopConfig): AgentLoop => {
+			if (config.abortSignal) capturedSignals.push(config.abortSignal);
+			capturedOnActivity = config.onActivity;
+			return {
+				run: async (): Promise<AgentLoopResult> => {
+					await new Promise((resolve) => setTimeout(resolve, 60));
+					config.onActivity?.(); // First activity
+					await new Promise((resolve) => setTimeout(resolve, 60));
+					config.onActivity?.(); // Second activity
+					await new Promise((resolve) => setTimeout(resolve, 80));
+					return { messagesCreated: 1, toolCallsMade: 2, filesChanged: 0 };
+				},
+			} as AgentLoop;
+		};
+
+		const result = await runLocalAgentLoop({
+			eventBus,
+			threadId,
+			userId: "u1",
+			modelId: "mock",
+			activeLoopAbortControllers: controllers,
+			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
+			agentLoopFactory: factory as any,
+			timeoutMs: 100,
+		});
+
+		// Should NOT have been aborted — activity resets kept pushing deadline out
+		expect(capturedSignals[0]?.aborted).toBe(false);
+		expect(result.agentResult.messagesCreated).toBe(1);
+		expect(capturedOnActivity).toBeDefined();
+	});
+
+	it("should abort if no activity resets happen within timeoutMs", async () => {
+		const eventBus = makeEventBus();
+		const threadId = randomUUID();
+		const capturedSignals: AbortSignal[] = [];
+
+		// Loop takes 200ms with no activity calls. Timeout is 100ms.
+		const factory = (config: AgentLoopConfig): AgentLoop => {
+			if (config.abortSignal) capturedSignals.push(config.abortSignal);
+			return {
+				run: async (): Promise<AgentLoopResult> => {
+					await new Promise((resolve) => setTimeout(resolve, 200));
+					return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
+				},
+			} as AgentLoop;
+		};
+
+		await runLocalAgentLoop({
+			eventBus,
+			threadId,
+			userId: "u1",
+			modelId: "mock",
+			activeLoopAbortControllers: controllers,
+			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
+			agentLoopFactory: factory as any,
+			timeoutMs: 100,
+		});
+
+		// Should have been aborted — no activity to reset timeout
+		expect(capturedSignals[0]?.aborted).toBe(true);
+	});
 });

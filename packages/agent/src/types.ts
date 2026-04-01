@@ -22,6 +22,8 @@ export interface AgentLoopConfig {
 	userId: string;
 	modelId?: string;
 	abortSignal?: AbortSignal;
+	/** Called after each tool execution to signal the loop is still active. */
+	onActivity?: () => void;
 	tools?: Array<{
 		type: "function";
 		function: {
