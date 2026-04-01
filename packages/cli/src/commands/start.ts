@@ -282,6 +282,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 		}
 
 		// Scan for interrupted tool-use per R-E13
+		// Only match threads where the last tool message has no assistant after it
+		// AND no interrupt notice was already inserted (prevents duplicates on restart).
 		const interruptedThreads = appContext.db
 			.query(
 				`SELECT DISTINCT m.thread_id FROM messages m
@@ -290,7 +292,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 					SELECT 1 FROM messages m2
 					WHERE m2.thread_id = m.thread_id
 					AND m2.created_at > m.created_at
-					AND m2.role = 'assistant'
+					AND (m2.role = 'assistant'
+					  OR (m2.role = 'system' AND (m2.content LIKE '%interrupted%' OR m2.content LIKE '%cancelled%')))
 				 )`,
 			)
 			.all() as Array<{ thread_id: string }>;
