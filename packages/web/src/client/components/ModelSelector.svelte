@@ -20,7 +20,9 @@ onMount(async () => {
 		if (res.ok) {
 			const data = (await res.json()) as { models: ClusterModelInfo[]; default: string };
 			models = data.models;
-			selectedModel = data.default;
+			// Match default model to the full option value (id@host)
+			const defaultMatch = data.models.find((m) => m.id === data.default);
+			selectedModel = defaultMatch ? `${defaultMatch.id}@${defaultMatch.host}` : data.default;
 			modelStore.setModel(data.default);
 		}
 	} catch (error) {
