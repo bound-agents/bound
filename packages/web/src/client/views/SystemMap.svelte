@@ -307,6 +307,7 @@ function hasAlert(threadId: string): boolean {
 						{@const isHovering = hoveredIdx >= 0}
 						<path
 							class="interchange-spline"
+							class:flowing={isConnected}
 							d={spline.path}
 							fill="none"
 							stroke={gradRef}
@@ -469,7 +470,7 @@ function hasAlert(threadId: string): boolean {
 		z-index: 0;
 	}
 
-	.interchange-spline {
+	.interchange-spline.flowing {
 		animation: spline-flow 1.2s linear infinite;
 	}
 
