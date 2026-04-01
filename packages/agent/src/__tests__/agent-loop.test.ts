@@ -689,7 +689,7 @@ describe("AgentLoop", () => {
 			// biome-ignore lint/correctness/useYield: generator throws before yield
 			async *chat() {
 				// Immediately throw an error to simulate what happens after timeout
-				throw new Error("LLM silence timeout: no chunk received for 120000ms");
+				throw new Error("LLM silence timeout: no chunk received for 60000ms");
 			},
 			capabilities() {
 				return {
@@ -713,7 +713,7 @@ describe("AgentLoop", () => {
 		// Should have an error about silence timeout
 		expect(result.error).toBeDefined();
 		expect(result.error).toContain("silence timeout");
-		expect(result.error).toContain("120000ms");
+		expect(result.error).toContain("60000ms");
 
 		// Verify the error was persisted as an alert
 		const alerts = db

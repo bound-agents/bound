@@ -30,6 +30,12 @@ import {
 } from "./tool-result-offload";
 import type { AgentLoopConfig, AgentLoopResult, AgentLoopState } from "./types";
 
+/** Silence timeout for local LLM inference (ms). */
+export const SILENCE_TIMEOUT_MS = 60_000;
+
+/** Maximum number of retries on silence timeout before giving up. */
+export const MAX_SILENCE_RETRIES = 10;
+
 interface BashLike {
 	exec?: (
 		cmd: string,
@@ -279,7 +285,6 @@ export class AgentLoop {
 
 				this.state = "LLM_CALL";
 				const chunks: StreamChunk[] = [];
-				const SILENCE_TIMEOUT_MS = 120_000;
 				let currentTurnId: number | null = null;
 				// Resolved model for this turn — hoisted so message persistence can use it.
 				// Computed inside the turn-metrics try block; stays null if that block throws.
@@ -369,15 +374,35 @@ export class AgentLoop {
 						const cacheBreakpoints: number[] | undefined =
 							nonSystemMessages.length >= 2 ? [nonSystemMessages.length - 2] : undefined;
 
-						const chatStream = resolution.backend.chat({
-							messages: nonSystemMessages,
-							system: systemPrompt || undefined,
-							tools: this.config.tools,
-							cache_breakpoints: cacheBreakpoints,
-						});
-						for await (const chunk of this.withSilenceTimeout(chatStream, SILENCE_TIMEOUT_MS)) {
-							if (this.aborted) break;
-							chunks.push(chunk);
+						// Retry loop for transient silence timeouts
+						let silenceRetries = 0;
+						for (;;) {
+							try {
+								const chatStream = resolution.backend.chat({
+									messages: nonSystemMessages,
+									system: systemPrompt || undefined,
+									tools: this.config.tools,
+									cache_breakpoints: cacheBreakpoints,
+								});
+								for await (const chunk of this.withSilenceTimeout(chatStream, SILENCE_TIMEOUT_MS)) {
+									if (this.aborted) break;
+									chunks.push(chunk);
+								}
+								break; // Stream completed — exit retry loop
+							} catch (silenceErr) {
+								const isSilenceTimeout =
+									silenceErr instanceof Error && silenceErr.message.includes("silence timeout");
+								if (isSilenceTimeout && silenceRetries < MAX_SILENCE_RETRIES) {
+									silenceRetries++;
+									chunks.length = 0; // Clear any partial chunks
+									this.ctx.logger.warn("[agent-loop] Silence timeout, retrying", {
+										attempt: silenceRetries,
+										max: MAX_SILENCE_RETRIES,
+									});
+									continue;
+								}
+								throw silenceErr; // Exhausted retries or non-silence error
+							}
 						}
 					}
 				} catch (error) {
