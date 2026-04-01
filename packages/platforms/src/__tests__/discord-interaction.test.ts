@@ -824,6 +824,68 @@ describe("DiscordInteractionConnector", () => {
 			expect(threads.count).toBe(0);
 		});
 
+		it("should accept file-only attachments as extractable content", async () => {
+			const editReplyCalls: Array<{ content: string }> = [];
+
+			const mockInteraction = {
+				isMessageContextMenuCommand: () => true,
+				commandName: "File for Later",
+				deferReply: async () => {},
+				editReply: async (opts: { content: string }) => {
+					editReplyCalls.push(opts);
+				},
+				user: { id: "discord-user-123", displayName: "Alice", username: "alice" },
+				targetMessage: {
+					id: "msg-file-only",
+					content: "", // No text content
+					author: { id: "author-id", bot: false, displayName: "Author", username: "author" },
+					attachments: createMockCollection([
+						{
+							contentType: "application/pdf",
+							url: "https://cdn.discord.com/doc.pdf",
+							name: "report.pdf",
+						},
+					]),
+					createdAt: new Date("2026-04-01T10:00:00.000Z"),
+				},
+				channel: { name: "general" },
+				guild: { name: "Test Guild" },
+			};
+
+			const onInteractionCreateHandlers: ((interaction: unknown) => void)[] = [];
+			const mockClient = {
+				application: { commands: { create: async () => {} } },
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") onInteractionCreateHandlers.push(handler);
+				},
+				off: () => {},
+			};
+
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(mockClient),
+			);
+
+			await connector.connect();
+			await onInteractionCreateHandlers[0]?.(mockInteraction);
+
+			// Should NOT have rejected with "no extractable content"
+			const errorReply = editReplyCalls.find((c) => c.content.includes("no extractable content"));
+			expect(errorReply).toBeUndefined();
+
+			// Should have persisted a message with the file info
+			const messages = db.query("SELECT * FROM messages WHERE role = 'user'").all() as Array<{
+				content: string;
+			}>;
+			expect(messages.length).toBe(1);
+			expect(messages[0]?.content).toContain("report.pdf");
+			expect(messages[0]?.content).toContain("https://cdn.discord.com/doc.pdf");
+		});
+
 		it("AC3.1: user creation — should create user and reuse on subsequent calls", async () => {
 			const mockInteraction = {
 				isMessageContextMenuCommand: () => true,
@@ -1141,8 +1203,8 @@ describe("DiscordInteractionConnector", () => {
 			// Image URLs should be included in the filing prompt
 			expect(msg.content).toContain("https://cdn.discord.com/img1.png");
 			expect(msg.content).toContain("https://cdn.discord.com/img2.jpg");
-			// Non-image attachment should NOT be included
-			expect(msg.content).not.toContain("doc.pdf");
+			// Non-image attachment should be included as a file reference
+			expect(msg.content).toContain("doc.pdf");
 		});
 
 		it("should include image URLs even when there is no text content", async () => {

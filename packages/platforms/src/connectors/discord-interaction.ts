@@ -338,7 +338,10 @@ export class DiscordInteractionConnector implements PlatformConnector {
 		const hasImages = targetMessage.attachments.some(
 			(att) => att.contentType?.startsWith("image/") ?? false,
 		);
-		if (!hasContent && !hasImages) {
+		const hasFiles = targetMessage.attachments.some(
+			(att) => att.contentType && !att.contentType.startsWith("image/"),
+		);
+		if (!hasContent && !hasImages && !hasFiles) {
 			await interaction.editReply({ content: "Error: This message has no extractable content." });
 			return;
 		}
@@ -375,6 +378,18 @@ export class DiscordInteractionConnector implements PlatformConnector {
 			imageUrls.push((att as unknown as { url: string }).url);
 		}
 
+		// Collect non-image file attachments
+		const fileAttachments: Array<{ name: string; url: string; contentType: string }> = [];
+		for (const att of targetMessage.attachments
+			.filter(
+				(a: { contentType?: string | null }) =>
+					a.contentType != null && !a.contentType.startsWith("image/"),
+			)
+			.values()) {
+			const a = att as unknown as { name: string; url: string; contentType: string };
+			fileAttachments.push({ name: a.name, url: a.url, contentType: a.contentType });
+		}
+
 		const filingPromptParts = [
 			"File this message for future reference.",
 			"",
@@ -389,6 +404,12 @@ export class DiscordInteractionConnector implements PlatformConnector {
 		if (imageUrls.length > 0) {
 			if (targetMessage.content) filingPromptParts.push("");
 			filingPromptParts.push(...imageUrls.map((url, i) => `[Image ${i + 1}]: ${url}`));
+		}
+		if (fileAttachments.length > 0) {
+			if (targetMessage.content || imageUrls.length > 0) filingPromptParts.push("");
+			filingPromptParts.push(
+				...fileAttachments.map((f, i) => `[File ${i + 1}]: ${f.name} (${f.contentType}) ${f.url}`),
+			);
 		}
 
 		const filingPrompt = filingPromptParts.join("\n");
