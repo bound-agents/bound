@@ -229,14 +229,23 @@ export function createThreadsRoutes(
 				created_at: string;
 			}>;
 
-			const result = rows.map((row) => ({
-				turn_id: row.id,
-				model_id: row.model_id,
-				tokens_in: row.tokens_in,
-				tokens_out: row.tokens_out,
-				context_debug: JSON.parse(row.context_debug),
-				created_at: row.created_at,
-			}));
+			const result = rows
+				.map((row) => {
+					try {
+						return {
+							turn_id: row.id,
+							model_id: row.model_id,
+							tokens_in: row.tokens_in,
+							tokens_out: row.tokens_out,
+							context_debug: JSON.parse(row.context_debug),
+							created_at: row.created_at,
+						};
+					} catch {
+						// Skip turns with malformed context_debug JSON
+						return null;
+					}
+				})
+				.filter((r) => r !== null);
 
 			return c.json(result);
 		} catch (error) {
