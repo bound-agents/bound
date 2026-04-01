@@ -19,6 +19,8 @@ interface SplinePath {
 	gradientId: string;
 	sourceY: number;
 	targetY: number;
+	sourceThreadId: string;
+	targetThreadId: string;
 }
 
 let threads: Thread[] = $state([]);
@@ -38,6 +40,27 @@ let threadListEl = $state<HTMLDivElement | null>(null);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 let svgHeight = $state(0);
 let interchange: Record<string, Array<{ threadId: string; color: number }>> = {};
+
+// Derive which thread IDs are connected to the hovered thread (sources + targets)
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+const connectedThreadIds = $derived.by(() => {
+	if (hoveredIdx < 0 || hoveredIdx >= threads.length) return new Set<string>();
+	const hoveredId = threads[hoveredIdx].id;
+	const connected = new Set<string>();
+	connected.add(hoveredId);
+	// Threads that contributed context TO the hovered thread
+	const sources = interchange[hoveredId];
+	if (sources) {
+		for (const s of sources) connected.add(s.threadId);
+	}
+	// Threads that the hovered thread contributed context TO
+	for (const [targetId, sources] of Object.entries(interchange)) {
+		if (sources.some((s) => s.threadId === hoveredId)) {
+			connected.add(targetId);
+		}
+	}
+	return connected;
+});
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 async function createThread(): Promise<void> {
@@ -106,9 +129,19 @@ function computeSplines(): void {
 
 	svgHeight = threadListEl.scrollHeight;
 
-	// Build a map of threadId → { rowY (scroll-safe), stationXPositions[] }
-	// Use offsetTop for Y (scroll-independent) and offsetLeft for X
-	const threadPositions = new Map<string, { y: number; stations: number[] }>();
+	// Helper: get X position of an element relative to threadListEl
+	function getRelativeX(el: HTMLElement): number {
+		let left = el.offsetLeft + el.offsetWidth / 2;
+		let parent = el.offsetParent as HTMLElement | null;
+		while (parent && parent !== threadListEl) {
+			left += parent.offsetLeft;
+			parent = parent.offsetParent as HTMLElement | null;
+		}
+		return left;
+	}
+
+	// Build thread position data: Y center, station X positions, terminus X
+	const threadPositions = new Map<string, { y: number; stations: number[]; terminusX: number }>();
 	for (const thread of threads) {
 		const rowEl = threadListEl.querySelector(
 			`[data-thread-id="${thread.id}"]`,
@@ -117,47 +150,42 @@ function computeSplines(): void {
 
 		const y = rowEl.offsetTop + rowEl.offsetHeight / 2;
 
-		// Get station dot X positions relative to the thread-list
 		const stationEls = rowEl.querySelectorAll(".track-station");
 		const stations: number[] = [];
 		for (const st of stationEls) {
-			const stEl = st as HTMLElement;
-			// Walk up offsetParent chain to get position relative to threadListEl
-			let left = stEl.offsetLeft + stEl.offsetWidth / 2;
-			let parent = stEl.offsetParent as HTMLElement | null;
-			while (parent && parent !== threadListEl) {
-				left += parent.offsetLeft;
-				parent = parent.offsetParent as HTMLElement | null;
-			}
-			stations.push(left);
+			stations.push(getRelativeX(st as HTMLElement));
 		}
 
-		threadPositions.set(thread.id, { y, stations });
+		// Terminus = the "future" dot at the far right end of the track
+		const terminusEl = rowEl.querySelector(".track-terminus") as HTMLElement | null;
+		const terminusX = terminusEl ? getRelativeX(terminusEl) : (stations[stations.length - 1] ?? 0);
+
+		threadPositions.set(thread.id, { y, stations, terminusX });
 	}
 
-	// Group connections by target thread — each target's sources converge on its last dot
+	// Build splines: sources converge on target's terminus dot
 	const splines: SplinePath[] = [];
 	let gradIdx = 0;
 
 	for (const [targetId, sources] of Object.entries(interchange)) {
 		const targetPos = threadPositions.get(targetId);
-		if (!targetPos || targetPos.stations.length === 0) continue;
+		if (!targetPos) continue;
 
 		const targetThread = threads.find((t) => t.id === targetId);
 		if (!targetThread) continue;
 
-		// Target X = rightmost station dot
-		const targetX = targetPos.stations[targetPos.stations.length - 1];
+		// Target X = terminus (the future stop at the far right)
+		const targetX = targetPos.terminusX;
 		const targetY = targetPos.y;
 
-		// Up to 5 sources, each assigned a different station column on its own row
+		// Up to 5 sources, each at a different "visited" station on its row
 		const maxSources = Math.min(sources.length, 5);
 		for (let si = 0; si < maxSources; si++) {
 			const source = sources[si];
 			const sourcePos = threadPositions.get(source.threadId);
 			if (!sourcePos || sourcePos.stations.length === 0) continue;
 
-			// Source X = spread across source's stations (distribute evenly)
+			// Source X = spread across the source's visited station dots
 			const sourceStationIdx = Math.min(
 				Math.floor((si / maxSources) * sourcePos.stations.length),
 				sourcePos.stations.length - 1,
@@ -170,10 +198,8 @@ function computeSplines(): void {
 			let path: string;
 
 			if (Math.abs(dx) < 2) {
-				// Aligned dots — straight vertical line
 				path = `M ${sourceX} ${sourceY} L ${targetX} ${targetY}`;
 			} else {
-				// S-curve: start vertical, transition horizontally, end vertical
 				path = [
 					`M ${sourceX} ${sourceY}`,
 					`C ${sourceX} ${sourceY + dy * 0.4},`,
@@ -193,6 +219,8 @@ function computeSplines(): void {
 				gradientId: gid,
 				sourceY,
 				targetY,
+				sourceThreadId: source.threadId,
+				targetThreadId: targetId,
 			});
 		}
 	}
@@ -281,13 +309,16 @@ function hasAlert(threadId: string): boolean {
 					</defs>
 					{#each interchangeSplines as spline}
 						{@const gradRef = `url(#${spline.gradientId})`}
+						{@const isConnected = hoveredIdx >= 0 && connectedThreadIds.has(spline.sourceThreadId) && connectedThreadIds.has(spline.targetThreadId)}
+						{@const isHovering = hoveredIdx >= 0}
 						<path
 							d={spline.path}
 							fill="none"
 							stroke={gradRef}
-							stroke-width="2"
+							stroke-width={isConnected ? 3 : 2}
 							stroke-linecap="round"
-							opacity="0.6"
+							opacity={isHovering ? (isConnected ? 0.85 : 0.15) : 0.5}
+							style="transition: opacity 0.2s, stroke-width 0.2s"
 						/>
 					{/each}
 				</svg>
@@ -297,10 +328,12 @@ function hasAlert(threadId: string): boolean {
 				{@const code = LINE_CODES[thread.color % LINE_CODES.length]}
 				{@const active = isAgentActive(thread.id)}
 				{@const alert = hasAlert(thread.id)}
+				{@const dimmed = hoveredIdx >= 0 && !connectedThreadIds.has(thread.id)}
 				<button
 					class="thread-row"
 					data-thread-id={thread.id}
 					class:hovered={hoveredIdx === idx}
+					class:dimmed
 					onclick={() => navigateTo(`/line/${thread.id}`)}
 					onmouseenter={() => hoveredIdx = idx}
 					onmouseleave={() => hoveredIdx = -1}
@@ -460,6 +493,15 @@ function hasAlert(threadId: string): boolean {
 	.thread-row:hover,
 	.thread-row.hovered {
 		transform: translateX(2px);
+	}
+
+	.thread-row.dimmed {
+		opacity: 0.3;
+		transition: opacity 0.2s ease;
+	}
+
+	.thread-row:not(.dimmed) {
+		transition: opacity 0.2s ease;
 	}
 
 	/* Hover background glow — sits behind all content */
