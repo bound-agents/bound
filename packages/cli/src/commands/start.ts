@@ -666,6 +666,13 @@ export async function runStart(args: StartArgs): Promise<void> {
 				: undefined,
 			checkMemoryThreshold: sandbox ? () => sandbox.checkMemoryThreshold() : undefined,
 
+			// Write a file to the VFS (used for tool result offloading).
+			writeFile: clusterFsObj
+				? async (path: string, content: string): Promise<void> => {
+						await clusterFsObj.fs.writeFile(path, content);
+					}
+				: undefined,
+
 			// Called at HYDRATE_FS: record the filesystem state before any tool calls.
 			capturePreSnapshot: async (): Promise<void> => {
 				if (!clusterFsObj) return;

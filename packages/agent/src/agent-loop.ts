@@ -23,6 +23,11 @@ import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
 import { type ModelResolution, resolveModel } from "./model-resolution";
 import { type EligibleHost, createRelayOutboxEntry } from "./relay-router";
 import { extractSummaryAndMemories } from "./summary-extraction";
+import {
+	TOOL_RESULT_OFFLOAD_THRESHOLD,
+	buildOffloadMessage,
+	offloadToolResultPath,
+} from "./tool-result-offload";
 import type { AgentLoopConfig, AgentLoopResult, AgentLoopState } from "./types";
 
 interface BashLike {
@@ -30,6 +35,7 @@ interface BashLike {
 		cmd: string,
 		options?: Record<string, unknown>,
 	) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+	writeFile?: (path: string, content: string) => Promise<void>;
 	persistFs?: () => Promise<{ changes: number; changedPaths?: string[] }>;
 	checkMemoryThreshold?: () => {
 		overThreshold: boolean;
@@ -525,6 +531,26 @@ export class AgentLoop {
 						}
 
 						toolResults.push({ toolCall, content: resultContent });
+					}
+
+					// --- TOOL_RESULT_OFFLOAD ---
+					// Offload oversized tool results to VFS files so they don't bloat context.
+					if (this.sandbox.writeFile) {
+						for (const result of toolResults) {
+							if (result.content.length > TOOL_RESULT_OFFLOAD_THRESHOLD) {
+								const filePath = offloadToolResultPath(result.toolCall.id);
+								try {
+									await this.sandbox.writeFile(filePath, result.content);
+									result.content = buildOffloadMessage(
+										filePath,
+										result.content.length,
+										result.toolCall.name,
+									);
+								} catch {
+									// If write fails, keep original content — better than losing it
+								}
+							}
+						}
 					}
 
 					// --- TOOL_PERSIST ---
