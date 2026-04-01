@@ -457,6 +457,32 @@ export class AgentLoop {
 				this.state = "PARSE_RESPONSE";
 				const parsed = this.parseResponseChunks(chunks);
 
+				// If the loop was aborted mid-stream and no done chunk arrived,
+				// skip the ghost turn recording and persist an abort notice instead.
+				if (this.aborted && parsed.usage.inputTokens === 0 && parsed.usage.outputTokens === 0) {
+					const abortNow = new Date().toISOString();
+					insertRow(
+						this.ctx.db,
+						"messages",
+						{
+							id: randomUUID(),
+							thread_id: this.config.threadId,
+							role: "system",
+							content:
+								"[Turn cancelled] The previous inference was cancelled before it could complete. " +
+								"No response was generated for the last user message.",
+							model_id: null,
+							tool_name: null,
+							created_at: abortNow,
+							modified_at: abortNow,
+							host_origin: this.ctx.hostName,
+						},
+						this.ctx.siteId,
+					);
+					this.messagesCreated++;
+					break; // Exit the agentic while loop
+				}
+
 				// Record turn metrics for budget tracking
 				try {
 					// Bug #10: use the resolved model id (from lastModelResolution) rather than
