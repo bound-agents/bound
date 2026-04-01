@@ -306,6 +306,7 @@ function hasAlert(threadId: string): boolean {
 						{@const isConnected = hoveredIdx >= 0 && connectedThreadIds.has(spline.sourceThreadId) && connectedThreadIds.has(spline.targetThreadId)}
 						{@const isHovering = hoveredIdx >= 0}
 						<path
+							class="interchange-spline"
 							d={spline.path}
 							fill="none"
 							stroke={gradRef}
@@ -468,6 +469,10 @@ function hasAlert(threadId: string): boolean {
 		z-index: 0;
 	}
 
+	.interchange-spline {
+		animation: spline-flow 1.2s linear infinite;
+	}
+
 	.thread-row {
 		position: relative;
 		display: flex;
@@ -596,6 +601,12 @@ function hasAlert(threadId: string): boolean {
 		border-radius: 3px;
 		letter-spacing: 0.06em;
 		animation: badge-pulse 2s ease-in-out infinite;
+	}
+
+	@keyframes spline-flow {
+		to {
+			stroke-dashoffset: -12;
+		}
 	}
 
 	@keyframes badge-pulse {
