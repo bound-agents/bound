@@ -112,7 +112,7 @@ export class DiscordConnector implements PlatformConnector {
 		// No client null check needed — getDMChannelForThread uses clientManager.getClient()
 		const channel = await this.getDMChannelForThread(threadId);
 
-		// Stop typing indicator now that we have the channel (or failed to get it)
+		// Stop typing before sending — resumed below if the agent may send more.
 		this.stopTyping(threadId);
 
 		if (!channel) {
@@ -133,6 +133,13 @@ export class DiscordConnector implements PlatformConnector {
 			for (let i = 0; i < content.length; i += 2000) {
 				await channel.send(content.slice(i, i + 2000));
 			}
+		}
+
+		// Resume typing after delivery — the agent may still be working and will
+		// send more messages via discord_send_message tool calls. Typing naturally
+		// stops via the 5-minute safety cap or when the process disconnects.
+		if (typeof (channel as { sendTyping?: unknown }).sendTyping === "function") {
+			this.startTyping(threadId, channel as { sendTyping(): Promise<void> });
 		}
 	}
 
