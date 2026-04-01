@@ -12,13 +12,14 @@ interface ThreadStatus {
 	state: string | null;
 }
 
-interface SplinePath {
-	path: string;
+interface RawSpline {
+	sourceX: number;
+	sourceY: number;
+	targetX: number;
+	targetY: number;
 	sourceColor: string;
 	targetColor: string;
 	gradientId: string;
-	sourceY: number;
-	targetY: number;
 	sourceThreadId: string;
 	targetThreadId: string;
 }
@@ -32,8 +33,7 @@ let creating = $state(false);
 let hoveredIdx = $state(-1);
 let threadStatuses: Map<string, ThreadStatus> = $state(new Map());
 let alertThreads: Set<string> = $state(new Set());
-// biome-ignore lint/correctness/noUnusedVariables: used in template
-let interchangeSplines = $state<SplinePath[]>([]);
+let rawSplines = $state<RawSpline[]>([]);
 // biome-ignore lint/correctness/noUnusedVariables: used in template
 // biome-ignore lint/style/useConst: Svelte 5 $state() requires let
 let threadListEl = $state<HTMLDivElement | null>(null);
@@ -60,6 +60,28 @@ const connectedThreadIds = $derived.by(() => {
 		}
 	}
 	return connected;
+});
+
+// Derive final spline paths — recomputes when hoveredIdx changes to shift target endpoints
+// biome-ignore lint/correctness/noUnusedVariables: used in template
+let interchangeSplines = $derived.by(() => {
+	const hoveredId = hoveredIdx >= 0 && hoveredIdx < threads.length ? threads[hoveredIdx].id : null;
+	return rawSplines.map((s) => {
+		// Shift target X by 2px when target row is hovered (matches CSS translateX)
+		const txShift = hoveredId === s.targetThreadId ? 2 : 0;
+		const sxShift = hoveredId === s.sourceThreadId ? 2 : 0;
+		const sx = s.sourceX + sxShift;
+		const tx = s.targetX + txShift;
+		const dy = s.targetY - s.sourceY;
+		const dx = tx - sx;
+
+		const path =
+			Math.abs(dx) < 2
+				? `M ${sx} ${s.sourceY} L ${tx} ${s.targetY}`
+				: `M ${sx} ${s.sourceY} C ${sx} ${s.sourceY + dy * 0.4}, ${tx} ${s.targetY - dy * 0.4}, ${tx} ${s.targetY}`;
+
+		return { ...s, path };
+	});
 });
 
 // biome-ignore lint/correctness/noUnusedVariables: used in template
@@ -163,8 +185,8 @@ function computeSplines(): void {
 		threadPositions.set(thread.id, { y, stations, terminusX });
 	}
 
-	// Build splines: sources converge on target's terminus dot
-	const splines: SplinePath[] = [];
+	// Build raw spline data: sources converge on target's terminus dot
+	const splines: RawSpline[] = [];
 	let gradIdx = 0;
 
 	for (const [targetId, sources] of Object.entries(interchange)) {
@@ -174,18 +196,15 @@ function computeSplines(): void {
 		const targetThread = threads.find((t) => t.id === targetId);
 		if (!targetThread) continue;
 
-		// Target X = terminus (the future stop at the far right)
 		const targetX = targetPos.terminusX;
 		const targetY = targetPos.y;
 
-		// Up to 5 sources, each at a different "visited" station on its row
 		const maxSources = Math.min(sources.length, 5);
 		for (let si = 0; si < maxSources; si++) {
 			const source = sources[si];
 			const sourcePos = threadPositions.get(source.threadId);
 			if (!sourcePos || sourcePos.stations.length === 0) continue;
 
-			// Source X = spread across the source's visited station dots
 			const sourceStationIdx = Math.min(
 				Math.floor((si / maxSources) * sourcePos.stations.length),
 				sourcePos.stations.length - 1,
@@ -193,39 +212,21 @@ function computeSplines(): void {
 			const sourceX = sourcePos.stations[sourceStationIdx];
 			const sourceY = sourcePos.y;
 
-			const dy = targetY - sourceY;
-			const dx = targetX - sourceX;
-			let path: string;
-
-			if (Math.abs(dx) < 2) {
-				path = `M ${sourceX} ${sourceY} L ${targetX} ${targetY}`;
-			} else {
-				path = [
-					`M ${sourceX} ${sourceY}`,
-					`C ${sourceX} ${sourceY + dy * 0.4},`,
-					`${targetX} ${targetY - dy * 0.4},`,
-					`${targetX} ${targetY}`,
-				].join(" ");
-			}
-
-			const sourceColor = getLineColor(source.color);
-			const targetColor = getLineColor(targetThread.color);
-			const gid = `interchange-${gradIdx++}`;
-
 			splines.push({
-				path,
-				sourceColor,
-				targetColor,
-				gradientId: gid,
+				sourceX,
 				sourceY,
+				targetX,
 				targetY,
+				sourceColor: getLineColor(source.color),
+				targetColor: getLineColor(targetThread.color),
+				gradientId: `interchange-${gradIdx++}`,
 				sourceThreadId: source.threadId,
 				targetThreadId: targetId,
 			});
 		}
 	}
 
-	interchangeSplines = splines;
+	rawSplines = splines;
 }
 
 onMount(async () => {
