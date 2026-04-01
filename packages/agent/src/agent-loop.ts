@@ -280,6 +280,8 @@ export class AgentLoop {
 			const llmMessages = [...contextMessages];
 			let continueLoop = true;
 
+			let transportRetries = 0;
+
 			while (continueLoop) {
 				if (this.aborted) break;
 
@@ -406,6 +408,22 @@ export class AgentLoop {
 						}
 					}
 				} catch (error) {
+					// Transient transport errors (HTTP/2 drops, socket resets): retry
+					const errMsg = error instanceof Error ? error.message : String(error);
+					const isTransportError =
+						errMsg.includes("http2") ||
+						errMsg.includes("ECONNRESET") ||
+						errMsg.includes("socket hang up");
+					if (isTransportError && transportRetries < MAX_SILENCE_RETRIES) {
+						transportRetries++;
+						this.ctx.logger.warn("[agent-loop] Transport error, retrying", {
+							attempt: transportRetries,
+							max: MAX_SILENCE_RETRIES,
+							error: errMsg,
+						});
+						continue; // Re-enter the while loop → LLM_CALL
+					}
+
 					// Rate-limit handling: if the LLM returned 429 or 529, mark the backend
 					// rate-limited so subsequent resolveModel() calls skip it
 					if (error instanceof LLMError && (error.statusCode === 429 || error.statusCode === 529)) {

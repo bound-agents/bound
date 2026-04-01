@@ -185,11 +185,11 @@ describe("Silence timeout retry", () => {
 		expect(alerts[0].content).toContain("silence timeout");
 	});
 
-	it("should not retry on non-silence-timeout errors", async () => {
+	it("should not retry on non-transient errors", async () => {
 		const backend: LLMBackend = {
 			// biome-ignore lint/correctness/useYield: throws before yield
 			async *chat() {
-				throw new Error("Connection refused");
+				throw new Error("A conversation must start with a user message");
 			},
 			capabilities() {
 				return {
@@ -212,9 +212,132 @@ describe("Silence timeout retry", () => {
 
 		// Should fail immediately without retry
 		expect(result.error).toBeDefined();
-		expect(result.error).toContain("Connection refused");
+		expect(result.error).toContain("must start with a user message");
 
 		// Alert persisted
+		const alerts = db
+			.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'alert'")
+			.all(threadId) as Array<{ content: string }>;
+		expect(alerts.length).toBe(1);
+	});
+});
+
+/**
+ * LLM backend that throws transport errors N times, then succeeds.
+ */
+class TransportErrorBackend implements LLMBackend {
+	private callCount = 0;
+	constructor(private failCount: number) {}
+
+	getCallCount() {
+		return this.callCount;
+	}
+
+	async *chat(): AsyncGenerator<StreamChunk> {
+		this.callCount++;
+		if (this.callCount <= this.failCount) {
+			throw new Error(
+				"Bedrock request failed: Unexpected error: http2 request did not get a response",
+			);
+		}
+		yield { type: "text" as const, content: "Success after transport retry!" };
+		yield {
+			type: "done" as const,
+			usage: {
+				input_tokens: 10,
+				output_tokens: 5,
+				cache_write_tokens: null,
+				cache_read_tokens: null,
+				estimated: false,
+			},
+		};
+	}
+
+	capabilities() {
+		return {
+			streaming: true,
+			tool_use: true,
+			system_prompt: true,
+			prompt_caching: false,
+			vision: false,
+			max_context: 8000,
+		};
+	}
+}
+
+describe("Transport error retry", () => {
+	let tmpDir: string;
+	let db: Database;
+	let threadId: string;
+
+	beforeAll(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "transport-retry-test-"));
+		const dbPath = join(tmpDir, "test.db");
+		db = createDatabase(dbPath);
+		applySchema(db);
+		applyMetricsSchema(db);
+
+		const userId = randomUUID();
+		db.run(
+			"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+			[userId, "Test User", null, new Date().toISOString(), new Date().toISOString(), 0],
+		);
+	});
+
+	beforeEach(() => {
+		threadId = randomUUID();
+	});
+
+	afterAll(() => {
+		db.close();
+		if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	function makeCtx(): AppContext {
+		return {
+			db,
+			logger: { info: () => {}, warn: () => {}, error: () => {} },
+			eventBus: { on: () => {}, off: () => {}, emit: () => {} },
+			hostName: "test-host",
+			siteId: "test-site-id",
+		} as unknown as AppContext;
+	}
+
+	it("should retry on http2 transport errors and succeed", async () => {
+		// Fail once with transport error, then succeed
+		const backend = new TransportErrorBackend(1);
+
+		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await loop.run();
+
+		expect(result.error).toBeUndefined();
+		expect(backend.getCallCount()).toBe(2);
+
+		// No alert should exist (retry succeeded)
+		const alerts = db
+			.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'alert'")
+			.all(threadId) as Array<{ content: string }>;
+		expect(alerts.length).toBe(0);
+	});
+
+	it("should fail after exhausting transport retries", async () => {
+		// Fail more times than MAX_SILENCE_RETRIES
+		const backend = new TransportErrorBackend(MAX_SILENCE_RETRIES + 1);
+
+		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await loop.run();
+
+		expect(result.error).toBeDefined();
+		expect(result.error).toContain("http2");
+
 		const alerts = db
 			.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'alert'")
 			.all(threadId) as Array<{ content: string }>;
