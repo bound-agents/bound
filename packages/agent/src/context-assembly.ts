@@ -10,6 +10,7 @@ import {
 	buildVolatileEnrichment,
 	computeBaseline,
 } from "./summary-extraction.js";
+import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
 
 export interface ContextParams {
 	db: Database;
@@ -270,6 +271,18 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 		);
 		const rows = query.all(threadId) as Message[];
 		messages.push(...rows);
+	}
+
+	// Stage 1.5: RETROACTIVE_RESULT_TRUNCATION
+	// Truncate oversized tool_result content in-memory (does not modify DB).
+	// This is a second guard behind the agent-loop offloading: historical results
+	// persisted before offloading was introduced still get capped here.
+	for (const msg of messages) {
+		if (msg.role === "tool_result" && msg.content.length > TOOL_RESULT_OFFLOAD_THRESHOLD) {
+			const originalLength = msg.content.length;
+			msg.content = `[Tool result truncated: ${originalLength} characters exceeded the ${TOOL_RESULT_OFFLOAD_THRESHOLD} char limit]
+Original output was too large for the context window. If you need the full content, use: query "SELECT substr(content, 1, 2000) FROM messages WHERE id = '${msg.id}'"`;
+		}
 	}
 
 	// Stage 2: PURGE_SUBSTITUTION

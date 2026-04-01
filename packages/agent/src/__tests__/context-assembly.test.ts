@@ -3920,4 +3920,260 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 	});
+
+	describe("Retroactive tool result truncation", () => {
+		it("should truncate tool_result content over 50k chars in assembled context", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[
+					localUserId,
+					"Truncation User",
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Truncation Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const now = new Date();
+			// Insert user message
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					localThreadId,
+					"user",
+					"Run a big query",
+					null,
+					null,
+					new Date(now.getTime() + 1).toISOString(),
+					new Date(now.getTime() + 1).toISOString(),
+					"local",
+				],
+			);
+
+			// Insert tool_call
+			const toolCallId = "tool-big-query-1";
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					localThreadId,
+					"tool_call",
+					JSON.stringify([
+						{ type: "tool_use", id: toolCallId, name: "bash", input: { command: "cat huge.txt" } },
+					]),
+					"opus",
+					null,
+					new Date(now.getTime() + 2).toISOString(),
+					new Date(now.getTime() + 2).toISOString(),
+					"local",
+				],
+			);
+
+			// Insert oversized tool_result (51k chars — just over the 50k threshold)
+			// Use words not single chars to avoid tiktoken pathological tokenization
+			const chunk = "The quick brown fox jumps over the lazy dog. ";
+			const hugeContent = chunk.repeat(Math.ceil(51_000 / chunk.length)).slice(0, 51_000);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					localThreadId,
+					"tool_result",
+					hugeContent,
+					"opus",
+					toolCallId,
+					new Date(now.getTime() + 3).toISOString(),
+					new Date(now.getTime() + 3).toISOString(),
+					"local",
+				],
+			);
+
+			// Insert assistant response
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					localThreadId,
+					"assistant",
+					"Here are the results.",
+					"opus",
+					null,
+					new Date(now.getTime() + 4).toISOString(),
+					new Date(now.getTime() + 4).toISOString(),
+					"local",
+				],
+			);
+
+			const { messages } = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+			});
+
+			// Find the tool_result in the assembled context
+			const toolResults = messages.filter((m) => m.role === "tool_result");
+			expect(toolResults.length).toBe(1);
+
+			// Content should be truncated, NOT the original 60k
+			const resultContent =
+				typeof toolResults[0].content === "string"
+					? toolResults[0].content
+					: JSON.stringify(toolResults[0].content);
+			expect(resultContent.length).toBeLessThan(5000);
+			expect(resultContent).toContain("truncated");
+			expect(resultContent).toContain("51000");
+
+			// Clean up
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+
+		it("should NOT truncate tool_result content under 50k chars", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[
+					localUserId,
+					"No-Truncation User",
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"No-Truncation Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const now = new Date();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					localThreadId,
+					"user",
+					"Run a small query",
+					null,
+					null,
+					new Date(now.getTime() + 1).toISOString(),
+					new Date(now.getTime() + 1).toISOString(),
+					"local",
+				],
+			);
+
+			const toolCallId = "tool-small-query-1";
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					localThreadId,
+					"tool_call",
+					JSON.stringify([
+						{ type: "tool_use", id: toolCallId, name: "bash", input: { command: "echo hi" } },
+					]),
+					"opus",
+					null,
+					new Date(now.getTime() + 2).toISOString(),
+					new Date(now.getTime() + 2).toISOString(),
+					"local",
+				],
+			);
+
+			// Insert normal-sized tool_result (1k chars)
+			const normalContent = "x".repeat(1000);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					localThreadId,
+					"tool_result",
+					normalContent,
+					"opus",
+					toolCallId,
+					new Date(now.getTime() + 3).toISOString(),
+					new Date(now.getTime() + 3).toISOString(),
+					"local",
+				],
+			);
+
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					localThreadId,
+					"assistant",
+					"Done.",
+					"opus",
+					null,
+					new Date(now.getTime() + 4).toISOString(),
+					new Date(now.getTime() + 4).toISOString(),
+					"local",
+				],
+			);
+
+			const { messages } = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+			});
+
+			const toolResults = messages.filter((m) => m.role === "tool_result");
+			expect(toolResults.length).toBe(1);
+
+			// Content should be the original
+			const resultContent =
+				typeof toolResults[0].content === "string"
+					? toolResults[0].content
+					: JSON.stringify(toolResults[0].content);
+			expect(resultContent).toBe(normalContent);
+
+			// Clean up
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+	});
 });
