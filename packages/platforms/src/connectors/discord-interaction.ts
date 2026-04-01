@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertRow, writeOutbox } from "@bound/core";
+import { MAX_FILE_STORAGE_BYTES } from "@bound/shared";
 import type { IntakePayload, Thread, User } from "@bound/shared";
 import type { Logger, PlatformConnectorConfig, TypedEventEmitter } from "@bound/shared";
 import type { PlatformConnector } from "../connector.js";
@@ -367,6 +368,8 @@ export class DiscordInteractionConnector implements PlatformConnector {
 		const guildName =
 			interaction.guild?.name ?? ((interaction as unknown as { guildId?: string }).guildId || "DM");
 		const timestamp = targetMessage.createdAt?.toISOString() ?? new Date().toISOString();
+		// Use same timestamp for both file and message rows
+		const now = new Date().toISOString();
 
 		// Collect image attachment URLs
 		// Discord.js Collection.filter() returns a Collection (extends Map).
@@ -378,16 +381,70 @@ export class DiscordInteractionConnector implements PlatformConnector {
 			imageUrls.push((att as unknown as { url: string }).url);
 		}
 
-		// Collect non-image file attachments
-		const fileAttachments: Array<{ name: string; url: string; contentType: string }> = [];
+		// Download and store non-image file attachments
+		const storedFiles: Array<{ name: string; path: string; contentType: string }> = [];
 		for (const att of targetMessage.attachments
 			.filter(
 				(a: { contentType?: string | null }) =>
 					a.contentType != null && !a.contentType.startsWith("image/"),
 			)
 			.values()) {
-			const a = att as unknown as { name: string; url: string; contentType: string };
-			fileAttachments.push({ name: a.name, url: a.url, contentType: a.contentType });
+			const a = att as unknown as {
+				name: string;
+				url: string;
+				contentType: string;
+				size: number;
+			};
+			if (a.size > MAX_FILE_STORAGE_BYTES) {
+				this.logger.warn("[discord-interaction] File attachment exceeds size limit, skipping", {
+					name: a.name,
+					size: a.size,
+					limit: MAX_FILE_STORAGE_BYTES,
+				});
+				continue;
+			}
+			try {
+				const response = await fetch(a.url, { signal: AbortSignal.timeout(30_000) });
+				if (!response.ok) {
+					this.logger.warn("[discord-interaction] Failed to download file attachment", {
+						url: a.url,
+						status: response.status,
+					});
+					continue;
+				}
+				const bytes = await response.arrayBuffer();
+				const safeName =
+					a.name.replace(/\.\./g, "").replace(/[/\\]/g, "_").replace(/^_+/, "") || "unnamed";
+				const filePath = `/home/user/uploads/${safeName}`;
+				const isText = a.contentType.startsWith("text/");
+				const content = isText
+					? new TextDecoder().decode(bytes)
+					: Buffer.from(bytes).toString("base64");
+				const fileId = randomUUID();
+				insertRow(
+					this.db,
+					"files",
+					{
+						id: fileId,
+						path: filePath,
+						content,
+						is_binary: isText ? 0 : 1,
+						size_bytes: bytes.byteLength,
+						created_at: now,
+						modified_at: now,
+						host_origin: this.siteId,
+						deleted: 0,
+						created_by: user.id,
+					},
+					this.siteId,
+				);
+				storedFiles.push({ name: a.name, path: filePath, contentType: a.contentType });
+			} catch (err) {
+				this.logger.warn("[discord-interaction] Error downloading file attachment, skipping", {
+					name: a.name,
+					error: String(err),
+				});
+			}
 		}
 
 		const filingPromptParts = [
@@ -405,17 +462,16 @@ export class DiscordInteractionConnector implements PlatformConnector {
 			if (targetMessage.content) filingPromptParts.push("");
 			filingPromptParts.push(...imageUrls.map((url, i) => `[Image ${i + 1}]: ${url}`));
 		}
-		if (fileAttachments.length > 0) {
+		if (storedFiles.length > 0) {
 			if (targetMessage.content || imageUrls.length > 0) filingPromptParts.push("");
 			filingPromptParts.push(
-				...fileAttachments.map((f, i) => `[File ${i + 1}]: ${f.name} (${f.contentType}) ${f.url}`),
+				...storedFiles.map((f, i) => `[File ${i + 1}]: ${f.name} (${f.contentType}) ${f.path}`),
 			);
 		}
 
 		const filingPrompt = filingPromptParts.join("\n");
 
 		// AC3.3: Persist user message with filing prompt
-		const now = new Date().toISOString();
 		const messageId = randomUUID();
 		insertRow(
 			this.db,
