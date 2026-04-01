@@ -85,7 +85,13 @@ export async function storeFile(
 ): Promise<string> {
 	const fileId = randomUUID();
 	const now = new Date().toISOString();
-	const filePath = `/home/user/uploads/${opts.name}`;
+	// Sanitize filename: strip directory components and traversal sequences
+	const safeName = opts.name
+		.replace(/\.\./g, "")
+		.replace(/[/\\]/g, "_")
+		.replace(/^_+/, "")
+		|| "unnamed";
+	const filePath = `/home/user/uploads/${safeName}`;
 
 	const binary = !isTextMime(opts.mimeType);
 	const sizeBytes = opts.data.byteLength;
@@ -191,10 +197,13 @@ export function createFilesRoutes(db: Database): Hono {
 				responseBody = file.content;
 			}
 
+			// Sanitize filename for Content-Disposition header to prevent injection
+			const safeFilename = filename.replace(/["\\\r\n]/g, "_");
+
 			return new Response(responseBody, {
 				headers: {
 					"Content-Type": mimeType,
-					"Content-Disposition": `attachment; filename="${filename}"`,
+					"Content-Disposition": `attachment; filename="${safeFilename}"`,
 				},
 			});
 		} catch (error) {
@@ -246,6 +255,8 @@ export function createFilesRoutes(db: Database): Hono {
 
 	app.post("/upload", async (c) => {
 		try {
+			const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
 			const formData = await c.req.formData();
 			const file = formData.get("file");
 
@@ -256,6 +267,16 @@ export function createFilesRoutes(db: Database): Hono {
 						details: "file field is required",
 					},
 					400,
+				);
+			}
+
+			if (file.size > MAX_FILE_SIZE) {
+				return c.json(
+					{
+						error: "File too large",
+						details: `Maximum file size is ${MAX_FILE_SIZE / (1024 * 1024)}MB`,
+					},
+					413,
 				);
 			}
 
