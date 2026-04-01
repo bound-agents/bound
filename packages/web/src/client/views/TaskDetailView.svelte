@@ -3,7 +3,7 @@ import { onDestroy, onMount } from "svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import DebugPanelWrapper from "../components/DebugPanelWrapper.svelte";
 // biome-ignore lint/correctness/noUnusedImports: used in template
-import MessageBubble from "../components/MessageBubble.svelte";
+import MessageList from "../components/MessageList.svelte";
 import { api } from "../lib/api";
 // biome-ignore lint/correctness/noUnusedImports: used in template
 import { navigateTo } from "../lib/router";
@@ -221,27 +221,12 @@ onDestroy(() => {
 		</div>
 
 		<!-- Message history -->
-		<div class="messages">
-			{#if !task.thread_id}
-				<!-- Empty state -->
-				<div class="empty-state">
-					<p>This task hasn't run yet. Messages will appear here after the first execution.</p>
-				</div>
-			{:else if messages.length === 0}
-				<div class="empty-state">
-					<p>No messages yet.</p>
-				</div>
-			{:else}
-				{#each messages as msg}
-					<MessageBubble
-						role={msg.role}
-						content={msg.content}
-						toolName={msg.tool_name}
-						modelId={msg.model_id}
-					/>
-				{/each}
-			{/if}
-		</div>
+		<MessageList
+			{messages}
+			emptyText={!task.thread_id
+				? "This task hasn't run yet. Messages will appear here after the first execution."
+				: "No messages yet."}
+		/>
 	</div>
 {/if}
 	{/snippet}
@@ -432,22 +417,7 @@ onDestroy(() => {
 		font-weight: 600;
 	}
 
-	.messages {
-		flex: 1;
-		overflow-y: auto;
-		padding-right: 8px;
-		min-height: 0;
-	}
-
-	.empty-state {
-		padding: 32px 16px;
-		text-align: center;
-		color: var(--text-muted);
-		font-family: var(--font-body);
-		font-size: var(--text-sm);
-	}
-
-	.error-state {
+.error-state {
 		display: flex;
 		flex-direction: column;
 		align-items: center;
