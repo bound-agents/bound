@@ -29,7 +29,7 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 				.query(
 					`
 				SELECT * FROM messages
-				WHERE thread_id = ?
+				WHERE thread_id = ? AND deleted = 0
 				ORDER BY created_at ASC
 			`,
 				)
@@ -54,6 +54,8 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 			console.log(`[web] POST /api/threads/${threadId}/messages - message received`);
 			const body = await c.req.json();
 
+			const MAX_CONTENT_LENGTH = 512 * 1024; // 512KB
+
 			if (typeof body.content !== "string") {
 				return c.json(
 					{
@@ -61,6 +63,26 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 						details: "content must be a string",
 					},
 					400,
+				);
+			}
+
+			if (!body.content.trim()) {
+				return c.json(
+					{
+						error: "Invalid request body",
+						details: "content must not be empty",
+					},
+					400,
+				);
+			}
+
+			if (body.content.length > MAX_CONTENT_LENGTH) {
+				return c.json(
+					{
+						error: "Content too large",
+						details: `Maximum content length is ${MAX_CONTENT_LENGTH / 1024}KB`,
+					},
+					413,
 				);
 			}
 
@@ -77,7 +99,10 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 
 			// Append any referenced file contents to the message so the agent can see them.
 			let content: string = body.content;
-			const fileIds: string[] = Array.isArray(body.file_ids) ? body.file_ids : [];
+			const MAX_FILE_IDS = 20;
+			const fileIds: string[] = (Array.isArray(body.file_ids) ? body.file_ids : [])
+				.filter((id: unknown): id is string => typeof id === "string")
+				.slice(0, MAX_FILE_IDS);
 			for (const fileId of fileIds) {
 				const file = db.query("SELECT * FROM files WHERE id = ? AND deleted = 0").get(fileId) as {
 					path: string;
