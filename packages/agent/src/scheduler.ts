@@ -28,6 +28,33 @@ function extractCronExpression(triggerSpec: string): string {
 	return triggerSpec;
 }
 const EVICTION_TIMEOUT = 120_000; // 2 minutes
+
+/**
+ * Reschedules a cron task to its next run time and resets status to 'pending'.
+ * Extracted as a helper because this logic is needed in three places:
+ * soft errors, hard errors, and model validation failures.
+ */
+function rescheduleCronTask(
+	db: AppContext["db"],
+	task: Task,
+	logger: AppContext["logger"],
+	context: string,
+): void {
+	if (task.type !== "cron" || !task.trigger_spec) return;
+	try {
+		const cronExpr = extractCronExpression(task.trigger_spec);
+		const nextRunAt = computeNextRunAt(cronExpr, new Date());
+		db.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?").run(
+			nextRunAt.toISOString(),
+			task.id,
+		);
+	} catch (cronError) {
+		logger.error(`Failed to compute next cron time after ${context}`, {
+			error: formatError(cronError),
+			taskId: task.id,
+		});
+	}
+}
 const POLL_INTERVAL = 5000; // 5 seconds
 const MAX_EVENT_DEPTH = 5;
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
@@ -372,6 +399,8 @@ export class Scheduler {
 								.query("UPDATE tasks SET status = 'failed', error = ? WHERE id = ?")
 								.run(errorMsg, task.id);
 						}
+						// Cron tasks must still reschedule even when the model is temporarily unavailable
+						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "model validation failure");
 						return; // exit runTask — agent loop is not created
 					}
 				}
@@ -414,20 +443,7 @@ export class Scheduler {
 						}
 
 						// Cron tasks still reschedule even after soft errors so they keep retrying
-						if (task.type === "cron" && task.trigger_spec) {
-							try {
-								const cronExpr = extractCronExpression(task.trigger_spec);
-								const nextRunAt = computeNextRunAt(cronExpr, new Date());
-								this.ctx.db
-									.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?")
-									.run(nextRunAt.toISOString(), task.id);
-							} catch (cronError) {
-								this.ctx.logger.error("Failed to compute next cron time after soft error", {
-									error: formatError(cronError),
-									taskId: task.id,
-								});
-							}
-						}
+						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "soft error");
 					} else {
 						// Mark as completed and reset consecutive failure counter
 						this.ctx.db
@@ -437,21 +453,7 @@ export class Scheduler {
 							.run(resultStr, completedAt, task.id);
 
 						// If cron task, compute next run time
-						if (task.type === "cron" && task.trigger_spec) {
-							try {
-								const cronExpr = extractCronExpression(task.trigger_spec);
-								const nextRunAt = computeNextRunAt(cronExpr, new Date());
-								this.ctx.db
-									.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?")
-									.run(nextRunAt.toISOString(), task.id);
-							} catch (error) {
-								const errorMsg = formatError(error);
-								this.ctx.logger.error("Failed to compute next cron time", {
-									error: errorMsg,
-									taskId: task.id,
-								});
-							}
-						}
+						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "completion");
 					}
 				}
 			} catch (error) {
@@ -502,6 +504,9 @@ export class Scheduler {
 							});
 						}
 					}
+
+					// Cron tasks must reschedule even after hard errors so they keep running on schedule
+					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "hard error");
 				}
 			} finally {
 				this.runningTasks.delete(task.id);
@@ -643,21 +648,7 @@ export class Scheduler {
 						.run(result, new Date().toISOString(), task.id);
 
 					// If cron task, compute next run time
-					if (task.type === "cron" && task.trigger_spec) {
-						try {
-							const cronExpr = extractCronExpression(task.trigger_spec);
-							const nextRunAt = computeNextRunAt(cronExpr, new Date());
-							this.ctx.db
-								.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?")
-								.run(nextRunAt.toISOString(), task.id);
-						} catch (error) {
-							const errorMsg = formatError(error);
-							this.ctx.logger.error("Failed to compute next cron time", {
-								error: errorMsg,
-								taskId: task.id,
-							});
-						}
-					}
+					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "completion");
 				}
 			} catch (error) {
 				const errorMsg = formatError(error);
@@ -669,6 +660,9 @@ export class Scheduler {
 					this.ctx.db
 						.query("UPDATE tasks SET status = 'failed', error = ? WHERE id = ?")
 						.run(errorMsg, task.id);
+
+					// Cron template tasks must reschedule even after hard errors
+					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "template hard error");
 				}
 			} finally {
 				this.runningTasks.delete(task.id);

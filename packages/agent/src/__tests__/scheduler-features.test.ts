@@ -885,6 +885,213 @@ describe("Scheduler features", () => {
 	});
 
 	// -----------------------------------------------------------------------
+	// Cron rescheduling after hard errors (thrown exceptions)
+	// -----------------------------------------------------------------------
+	describe("cron rescheduling after hard errors", () => {
+		it("reschedules cron task to pending after a hard error (thrown exception)", async () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			const triggerSpec = JSON.stringify({ type: "cron", expression: "0 * * * *" });
+
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'cron', 'pending', ?, NULL, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, triggerSpec, pastTime, now, now],
+			);
+
+			const ctx = makeCtx();
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, makeFailingAgentLoopFactory() as any);
+			const { stop } = scheduler.start(50);
+
+			// Wait for the task to be processed (it will throw, then should reschedule)
+			await waitFor(
+				() => {
+					const task = db.query("SELECT status, error, next_run_at FROM tasks WHERE id = ?").get(taskId) as {
+						status: string;
+						error: string | null;
+						next_run_at: string | null;
+					} | null;
+					// After hard error, cron task should be rescheduled to pending with future next_run_at
+					return task?.status === "pending" && task?.next_run_at !== null && new Date(task.next_run_at).getTime() > Date.now();
+				},
+				{ message: "cron task not rescheduled after hard error", timeoutMs: 5000 },
+			);
+			stop();
+
+			const task = db.query("SELECT status, next_run_at, error FROM tasks WHERE id = ?").get(taskId) as {
+				status: string;
+				next_run_at: string | null;
+				error: string | null;
+			} | null;
+
+			expect(task).not.toBeNull();
+			expect(task?.status).toBe("pending");
+			expect(task?.next_run_at).not.toBeNull();
+			// next_run_at should be in the future
+			const nextRun = new Date(task!.next_run_at!);
+			expect(nextRun.getTime()).toBeGreaterThan(Date.now());
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("reschedules cron task after model validation failure", async () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			const triggerSpec = JSON.stringify({ type: "cron", expression: "0 * * * *" });
+
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'cron', 'pending', ?, NULL, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, 'nonexistent-model', 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, triggerSpec, pastTime, now, now],
+			);
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+				ctx as any,
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+				makeAgentLoopFactory() as any,
+				{
+					modelValidator: () => ({
+						ok: false,
+						error: "Model not found",
+					}),
+				},
+			);
+			const { stop } = scheduler.start(50);
+
+			// Wait for the task to be processed — should reschedule despite model failure
+			await waitFor(
+				() => {
+					const task = db.query("SELECT status, next_run_at FROM tasks WHERE id = ?").get(taskId) as {
+						status: string;
+						next_run_at: string | null;
+					} | null;
+					// After model validation failure, cron should be rescheduled to pending
+					return task?.status === "pending" && task?.next_run_at !== null && new Date(task.next_run_at).getTime() > Date.now();
+				},
+				{ message: "cron task not rescheduled after model validation failure", timeoutMs: 5000 },
+			);
+			stop();
+
+			const task = db.query("SELECT status, next_run_at FROM tasks WHERE id = ?").get(taskId) as {
+				status: string;
+				next_run_at: string | null;
+			} | null;
+
+			expect(task).not.toBeNull();
+			expect(task?.status).toBe("pending");
+			expect(task?.next_run_at).not.toBeNull();
+			const nextRun = new Date(task!.next_run_at!);
+			expect(nextRun.getTime()).toBeGreaterThan(Date.now());
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("reschedules cron template task after hard error", async () => {
+			const cronExpression = "0 */6 * * *";
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			const triggerSpec = JSON.stringify({ type: "cron", expression: cronExpression });
+
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'cron', 'pending', ?, NULL, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, triggerSpec, pastTime, now, now],
+			);
+
+			const ctx = makeCtx({
+				optionalConfig: {
+					cronSchedules: {
+						ok: true,
+						value: {
+							backup: {
+								schedule: cronExpression,
+								template: ["echo start", "false"], // 'false' will fail
+							},
+						},
+					},
+				} as unknown as AppContext["optionalConfig"],
+			});
+
+			const failingSandbox = {
+				exec: async (_cmd: string) => {
+					throw new Error("sandbox execution failed");
+				},
+			};
+
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any, {}, failingSandbox);
+			const { stop } = scheduler.start(50);
+
+			await waitFor(
+				() => {
+					const task = db.query("SELECT status, next_run_at FROM tasks WHERE id = ?").get(taskId) as {
+						status: string;
+						next_run_at: string | null;
+					} | null;
+					return task?.status === "pending" && task?.next_run_at !== null && new Date(task.next_run_at).getTime() > Date.now();
+				},
+				{ message: "cron template task not rescheduled after hard error", timeoutMs: 5000 },
+			);
+			stop();
+
+			const task = db.query("SELECT status, next_run_at FROM tasks WHERE id = ?").get(taskId) as {
+				status: string;
+				next_run_at: string | null;
+			} | null;
+
+			expect(task).not.toBeNull();
+			expect(task?.status).toBe("pending");
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+	});
+
+	// -----------------------------------------------------------------------
 	// Bug #9: JSON trigger_spec from schedule command must be parsed for rescheduling
 	// -----------------------------------------------------------------------
 	describe("cron rescheduling with JSON trigger_spec", () => {
