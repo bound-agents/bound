@@ -54,7 +54,12 @@ export function applyAppendOnlyReducer(db: Database, event: ChangeLogEntry): { a
 		return { applied: false };
 	}
 
-	const rowData = JSON.parse(event.row_data);
+	let rowData: Record<string, unknown>;
+	try {
+		rowData = JSON.parse(event.row_data);
+	} catch {
+		return { applied: false };
+	}
 	const hasModifiedAt = rowData.modified_at !== null && rowData.modified_at !== undefined;
 
 	const columns = Object.keys(rowData);
@@ -119,7 +124,12 @@ export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied:
 		return { applied: false };
 	}
 
-	const rowData = JSON.parse(event.row_data);
+	let rowData: Record<string, unknown>;
+	try {
+		rowData = JSON.parse(event.row_data);
+	} catch {
+		return { applied: false };
+	}
 	const schemaColumns = getTableColumns(db, event.table_name);
 
 	// Determine primary key column from schema (most tables use 'id', but some don't)
@@ -196,22 +206,33 @@ export function replayEvents(
 	let applied = 0;
 	let skipped = 0;
 
-	for (const event of events) {
-		const result = applyEvent(db, event);
+	// Wrap in transaction so partial failures don't leave the DB in an
+	// inconsistent state (all-or-nothing for each sync batch).
+	db.exec("BEGIN");
+	try {
+		for (const event of events) {
+			let rowData: Record<string, unknown>;
+			try {
+				rowData = JSON.parse(event.row_data);
+			} catch {
+				skipped++;
+				continue; // Skip malformed events rather than crashing the batch
+			}
 
-		if (result.applied) {
-			applied++;
-			// Create a change_log entry preserving the original site_id
-			createChangeLogEntry(
-				db,
-				event.table_name,
-				event.row_id,
-				event.site_id,
-				JSON.parse(event.row_data),
-			);
-		} else {
-			skipped++;
+			const result = applyEvent(db, event);
+
+			if (result.applied) {
+				applied++;
+				// Create a change_log entry preserving the original site_id
+				createChangeLogEntry(db, event.table_name, event.row_id, event.site_id, rowData);
+			} else {
+				skipped++;
+			}
 		}
+		db.exec("COMMIT");
+	} catch (error) {
+		db.exec("ROLLBACK");
+		throw error;
 	}
 
 	return { applied, skipped };

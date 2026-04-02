@@ -432,4 +432,37 @@ describe("reducers", () => {
 			expect(logEntry.site_id).toBe("remote-site");
 		});
 	});
+
+	describe("malformed JSON handling", () => {
+		it("does not crash on malformed row_data in replayEvents", () => {
+			const badEvent = {
+				seq: 1,
+				table_name: "semantic_memory",
+				row_id: "bad-1",
+				site_id: "remote-site",
+				timestamp: new Date().toISOString(),
+				row_data: "{INVALID JSON!!!",
+			};
+			// Should not throw — malformed events are skipped
+			const result = replayEvents(db, [badEvent]);
+			expect(result.applied).toBe(0);
+			expect(result.skipped).toBe(1);
+		});
+
+		it("returns applied:false for malformed JSON in applyAppendOnlyReducer", () => {
+			const result = applyAppendOnlyReducer(db, {
+				seq: 1, table_name: "messages", row_id: "bad", site_id: "x",
+				timestamp: new Date().toISOString(), row_data: "NOT JSON",
+			});
+			expect(result.applied).toBe(false);
+		});
+
+		it("returns applied:false for malformed JSON in applyLWWReducer", () => {
+			const result = applyLWWReducer(db, {
+				seq: 1, table_name: "threads", row_id: "bad", site_id: "x",
+				timestamp: new Date().toISOString(), row_data: "broken",
+			});
+			expect(result.applied).toBe(false);
+		});
+	});
 });
