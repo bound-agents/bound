@@ -904,7 +904,8 @@ export class AgentLoop {
 		toolCall: ParsedToolCall,
 		currentTurnId: number | null,
 	): Promise<string> {
-		const { outboxEntryId, toolName, eligibleHosts } = relayRequest;
+		let { outboxEntryId } = relayRequest;
+		const { toolName, eligibleHosts } = relayRequest;
 		const pollIntervalMs = 500;
 		const timeoutMs = 30_000; // 30 second timeout per host
 		let currentHostIndex = relayRequest.currentHostIndex;
@@ -1029,6 +1030,7 @@ export class AgentLoop {
 				);
 				try {
 					writeOutbox(this.ctx.db, nextEntry);
+					outboxEntryId = nextEntry.id; // Update polled ref_id for failover host
 					this.ctx.eventBus.emit("sync:trigger", { reason: "relay-failover" });
 					hostStartTime = Date.now(); // Reset timeout for next host
 				} catch {
