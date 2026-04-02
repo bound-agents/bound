@@ -1053,6 +1053,36 @@ describe("AgentLoop", () => {
 		}
 	});
 
+	it("records resolved model in context_debug (not 'unknown')", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("Hello from resolved model");
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		// AgentLoopConfig with NO modelId — simulates scheduler/discord/mcp threads
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+			// modelId intentionally omitted
+		});
+
+		await agentLoop.run();
+
+		const turns = db
+			.query("SELECT context_debug FROM turns WHERE thread_id = ? AND context_debug IS NOT NULL")
+			.all(threadId) as Array<{ context_debug: string }>;
+
+		expect(turns.length).toBeGreaterThan(0);
+
+		for (const turn of turns) {
+			const debug = JSON.parse(turn.context_debug);
+			// Must be the actual resolved model id, NOT "unknown"
+			expect(debug.model).not.toBe("unknown");
+			expect(debug.model).toBe("claude-opus");
+		}
+	});
+
 	// Model unavailability: when a model_hint can't be resolved, fall back to default
 	it("falls back to default model when model-hint is unavailable, persisting a warning alert", async () => {
 		const mockBackend = new MockLLMBackend();

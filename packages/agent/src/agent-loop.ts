@@ -227,12 +227,17 @@ export class AgentLoop {
 				? countTokens(JSON.stringify(this.config.tools))
 				: 0;
 
+			const resolvedModelForDebug =
+				this.lastModelResolution && this.lastModelResolution.kind !== "error"
+					? this.lastModelResolution.modelId
+					: this.config.modelId;
+
 			const { messages: contextMessages, debug: contextDebug } = assembleContext({
 				db: this.ctx.db,
 				threadId: this.config.threadId,
 				taskId: this.config.taskId,
 				userId: this.config.userId,
-				currentModel: this.config.modelId,
+				currentModel: resolvedModelForDebug,
 				contextWindow: contextWindow,
 				hostName: this.ctx.hostName,
 				siteId: this.ctx.siteId,
