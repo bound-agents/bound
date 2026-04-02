@@ -33,7 +33,7 @@ import type {
 	ToolCallPayload,
 	TypedEventEmitter,
 } from "@bound/shared";
-import { RELAY_REQUEST_KINDS } from "@bound/shared";
+import { RELAY_REQUEST_KINDS, RELAY_RESPONSE_KINDS } from "@bound/shared";
 import { AgentLoop } from "./agent-loop.js";
 import type { MCPClient } from "./mcp-client.js";
 import type { AgentLoopConfig } from "./types.js";
@@ -187,8 +187,20 @@ export class RelayProcessor {
 		}
 	}
 
+	private static readonly RESPONSE_KIND_SET = new Set<string>(RELAY_RESPONSE_KINDS);
+
 	private async processEntry(entry: RelayInboxEntry): Promise<void> {
 		try {
+			// Step 0: Skip response kinds (result, error, stream_chunk, etc.)
+			// These are callbacks from prior requests — consumed by RELAY_WAIT
+			// polling in the agent loop, not re-processed here. Without this
+			// guard, "error" kind entries generate "Unknown request kind: error"
+			// errors which amplify into an infinite loop (see March 28 incident).
+			if (RelayProcessor.RESPONSE_KIND_SET.has(entry.kind)) {
+				markProcessed(this.db, [entry.id]);
+				return;
+			}
+
 			// Step 1: Validate requester (keyring check)
 			if (!this.keyringSiteIds.has(entry.source_site_id)) {
 				this.writeResponse(

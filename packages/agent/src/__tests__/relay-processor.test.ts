@@ -3891,4 +3891,121 @@ describe("RelayProcessor", () => {
 			expect(spokeOutbox[0].target_site_id).toBe("spoke-site");
 		});
 	});
+
+	describe("response kind filtering", () => {
+		it("does not generate error responses for 'error' kind inbox entries", async () => {
+			const siteId = "local-site";
+			const mcpClients = new Map<string, MCPClient>();
+			const keyringSiteIds = new Set(["remote-site"]);
+			const eventBus = createMockEventBus();
+			const logger = createMockLogger();
+
+			db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', ?)", [siteId]);
+
+			const processor = new RelayProcessor(
+				db,
+				siteId,
+				mcpClients,
+				keyringSiteIds,
+				eventBus,
+				logger,
+			);
+
+			// Insert an 'error' response kind into relay_inbox
+			// (simulates a hub routing an error response back to this spoke)
+			const { insertInbox } = require("@bound/core");
+			insertInbox(db, {
+				id: "error-response-1",
+				source_site_id: "remote-site",
+				kind: "error",
+				ref_id: "original-request-id",
+				idempotency_key: "error-idemp-1",
+				stream_id: null,
+				payload: JSON.stringify({ error: "some remote error", retriable: false }),
+				expires_at: new Date(Date.now() + 300_000).toISOString(),
+				received_at: new Date().toISOString(),
+				processed: 0,
+			});
+
+			// Start processor and wait for it to process
+			const handle = processor.start(50);
+			await sleep(300);
+			handle.stop();
+
+			// The error entry should be marked processed (not left unprocessed)
+			const unprocessed = readUnprocessed(db);
+			const errorEntry = unprocessed.find(
+				(e: RelayInboxEntry) => e.id === "error-response-1",
+			);
+			expect(errorEntry).toBeUndefined();
+
+			// Check the inbox entry was actually processed (not just ignored)
+			const inboxEntry = db
+				.query("SELECT processed FROM relay_inbox WHERE id = ?")
+				.get("error-response-1") as { processed: number } | null;
+			expect(inboxEntry).not.toBeNull();
+			expect(inboxEntry!.processed).toBe(1);
+
+			// And it should NOT have generated a new error in relay_outbox
+			// Check ALL outbox entries (no filter by target)
+			const allOutbox = db
+				.query("SELECT * FROM relay_outbox")
+				.all() as RelayOutboxEntry[];
+			const amplifiedErrors = allOutbox.filter(
+				(e) =>
+					e.kind === "error" &&
+					e.payload?.includes("Unknown request kind"),
+			);
+			// BUG: This should be 0 (response kinds should be silently consumed)
+			// but the current code generates error amplification
+			expect(amplifiedErrors.length).toBe(0);
+		});
+
+		it("does not generate error responses for 'result' kind inbox entries", async () => {
+			const siteId = "local-site";
+			const mcpClients = new Map<string, MCPClient>();
+			const keyringSiteIds = new Set(["remote-site"]);
+			const eventBus = createMockEventBus();
+			const logger = createMockLogger();
+
+			db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', ?)", [siteId]);
+
+			const processor = new RelayProcessor(
+				db,
+				siteId,
+				mcpClients,
+				keyringSiteIds,
+				eventBus,
+				logger,
+			);
+
+			const { insertInbox } = require("@bound/core");
+			insertInbox(db, {
+				id: "result-response-1",
+				source_site_id: "remote-site",
+				kind: "result",
+				ref_id: "original-request-id",
+				idempotency_key: "result-idemp-1",
+				stream_id: null,
+				payload: JSON.stringify({ result: "some result" }),
+				expires_at: new Date(Date.now() + 300_000).toISOString(),
+				received_at: new Date().toISOString(),
+				processed: 0,
+			});
+
+			const handle = processor.start(50);
+			await sleep(300);
+			handle.stop();
+
+			// Should be marked processed without generating new outbox errors
+			const unprocessed = readUnprocessed(db);
+			expect(unprocessed.find((e: RelayInboxEntry) => e.id === "result-response-1")).toBeUndefined();
+
+			const allOutbox2 = db
+				.query("SELECT * FROM relay_outbox")
+				.all() as RelayOutboxEntry[];
+			const errors = allOutbox2.filter((e) => e.kind === "error");
+			expect(errors.length).toBe(0);
+		});
+	});
 });
