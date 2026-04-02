@@ -468,9 +468,15 @@ Original output was too large for the context window. If you need the full conte
 					if (matchIndices.length > 0 && pendingToolUseIds.size === 0) {
 						break;
 					}
-					// Interleaved non-tool message — move before the tool_call
-					nonToolMessages.push(jMsg);
-					nonToolIndices.push(j);
+					// Only reorder system messages, NOT assistant messages.
+					// Assistant messages between tool_call and tool_result should stay
+					// in place — Pass 2 will handle the structural repair. Moving
+					// assistants before tool_calls corrupts conversation ordering.
+					if (jMsg.role !== "assistant") {
+						nonToolMessages.push(jMsg);
+						nonToolIndices.push(j);
+					}
+					// If it IS an assistant, leave it in place — don't add to nonToolMessages
 				}
 			}
 

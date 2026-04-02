@@ -241,16 +241,17 @@ describe("Context assembly Bedrock compatibility", () => {
 		// CRITICAL: tool_result must immediately follow tool_call (no assistant between them)
 		expect(toolResultIdx).toBe(toolCallIdx + 1);
 
-		// The interleaved assistant message should appear BEFORE the tool_call, not between
-		const assistantBeforeToolCall = history
-			.slice(0, toolCallIdx)
+		// The interleaved assistant message must NOT be moved before the tool_call —
+		// it should appear AFTER the tool pair, preserving conversation order.
+		const assistantAfterToolResult = history
+			.slice(toolResultIdx + 1)
 			.filter((m) => m.role === "assistant");
-		const hasMovedAssistant = assistantBeforeToolCall.some(
+		const hasKeptAssistant = assistantAfterToolResult.some(
 			(m) =>
 				typeof m.content === "string" &&
 				m.content.includes("Let me look at what's actually loaded now"),
 		);
-		expect(hasMovedAssistant).toBe(true);
+		expect(hasKeptAssistant).toBe(true);
 	});
 
 	it("handles conversation with multiple alert messages in history", () => {
@@ -445,12 +446,13 @@ describe("Context assembly Bedrock compatibility", () => {
 		expect(toolResultIdx).not.toBe(-1);
 		expect(toolResultIdx).toBe(toolCallIdx + 1);
 
-		// 4. The assistant that shared tool_call's timestamp was moved BEFORE tool_call
-		const assistantsBefore = history.slice(0, toolCallIdx).filter((m) => m.role === "assistant");
-		const movedAssistant = assistantsBefore.some(
+		// 4. The assistant that shared tool_call's timestamp stays AFTER the tool pair,
+		// preserving conversation order (never moved before tool_calls)
+		const assistantsAfter = history.slice(toolResultIdx + 1).filter((m) => m.role === "assistant");
+		const keptAssistant = assistantsAfter.some(
 			(m) => typeof m.content === "string" && m.content === "Let me look...",
 		);
-		expect(movedAssistant).toBe(true);
+		expect(keptAssistant).toBe(true);
 
 		// 5. Only LLM-compatible roles remain in the entire output
 		const validRoles = new Set(["user", "assistant", "system", "tool_call", "tool_result"]);
@@ -458,18 +460,18 @@ describe("Context assembly Bedrock compatibility", () => {
 			expect(validRoles.has(msg.role)).toBe(true);
 		}
 
-		// 6. Expected history role sequence after filtering 4 alerts + 2 systems
-		//    and moving the assistant (msg 7) before tool_call:
-		//    user, assistant, user, assistant, user, assistant, tool_call, tool_result, user, user, user
+		// 6. Expected history role sequence after filtering 4 alerts + 2 systems.
+		//    The assistant (msg 7) stays AFTER the tool pair (not moved before tool_call):
+		//    user, assistant, user, assistant, user, tool_call, tool_result, assistant, user, user, user
 		const expectedRoles = [
 			"user",
 			"assistant",
 			"user",
 			"assistant",
 			"user",
-			"assistant",
 			"tool_call",
 			"tool_result",
+			"assistant",
 			"user",
 			"user",
 			"user",
@@ -592,6 +594,90 @@ describe("Context assembly Bedrock compatibility", () => {
 		expect(nonSystem[tcIdx + 1]?.role).toBe("tool_result");
 		expect(nonSystem[tcIdx + 2]?.role).toBe("tool_result");
 		expect(nonSystem[tcIdx + 3]?.role).toBe("tool_result");
+	});
+
+	// Regression: when a multi-tool call has a co-timestamped assistant message and
+	// late-arriving tool_results, the sanitizer must NOT move the assistant before the
+	// tool_call. Assistant messages should never be reordered before tool_calls — they
+	// stay in their natural position (after the tool pair) and Pass 2 handles any
+	// structural issues. Moving assistants before tool_calls corrupts conversation order.
+	it("does not move assistant messages before tool_calls during reordering", () => {
+		const threadId = randomUUID();
+		insertThread(db, threadId, userId);
+
+		const T = "2026-02-01T00:00:00.000Z";
+		const T1 = "2026-02-01T00:00:00.001Z";
+
+		const tc1Id = "tooluse_move1";
+		const tc2Id = "tooluse_move2";
+
+		// Setup: user, tool_call(2 uses), tr1(same ms), assistant(same ms), tr2(next ms)
+		// ORDER BY (created_at, rowid) puts assistant between tr1 and tr2.
+		insertMessage(db, threadId, "user", "Run two commands", {
+			timestamp: "2026-01-31T23:59:59.000Z",
+		});
+		insertMessage(
+			db,
+			threadId,
+			"tool_call",
+			JSON.stringify([
+				{ type: "tool_use", id: tc1Id, name: "bash", input: { command: "echo one" } },
+				{ type: "tool_use", id: tc2Id, name: "bash", input: { command: "echo two" } },
+			]),
+			{ timestamp: T },
+		);
+		insertMessage(db, threadId, "tool_result", "one", { tool_name: tc1Id, timestamp: T });
+		// Co-emitted assistant — same timestamp as tool_call, sorts between results
+		insertMessage(db, threadId, "assistant", "I ran both commands for you.", {
+			timestamp: T,
+			model_id: "anthropic.claude-sonnet",
+		});
+		insertMessage(db, threadId, "tool_result", "two", { tool_name: tc2Id, timestamp: T1 });
+
+		// Follow-up user message to continue the conversation
+		insertMessage(db, threadId, "user", "Thanks, what happened?", {
+			timestamp: "2026-02-01T00:00:01.000Z",
+		});
+
+		const { messages } = assembleContext({ db, threadId, userId });
+
+		const nonSystem = messages.filter((m) => m.role !== "system");
+
+		// Find the tool_call in the non-system messages
+		const tcIdx = nonSystem.findIndex((m) => m.role === "tool_call");
+		expect(tcIdx).not.toBe(-1);
+
+		// Both tool_results must immediately follow the tool_call
+		expect(nonSystem[tcIdx + 1]?.role).toBe("tool_result");
+		expect(nonSystem[tcIdx + 2]?.role).toBe("tool_result");
+
+		// The assistant must NOT appear before the tool_call
+		const assistantsBefore = nonSystem
+			.slice(0, tcIdx)
+			.filter((m) => m.role === "assistant");
+		const movedAssistant = assistantsBefore.some(
+			(m) =>
+				typeof m.content === "string" &&
+				m.content.includes("I ran both commands for you"),
+		);
+		expect(movedAssistant).toBe(false);
+
+		// The assistant must appear AFTER the tool pair
+		const assistantsAfter = nonSystem
+			.slice(tcIdx + 3)
+			.filter((m) => m.role === "assistant");
+		const keptAssistant = assistantsAfter.some(
+			(m) =>
+				typeof m.content === "string" &&
+				m.content.includes("I ran both commands for you"),
+		);
+		expect(keptAssistant).toBe(true);
+
+		// Only valid LLM roles in the output
+		const validRoles = new Set(["user", "assistant", "system", "tool_call", "tool_result"]);
+		for (const msg of messages) {
+			expect(validRoles.has(msg.role)).toBe(true);
+		}
 	});
 
 	// Regression: cron tasks without payload accumulate tool_call/tool_result/assistant
