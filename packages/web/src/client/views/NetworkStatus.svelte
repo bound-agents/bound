@@ -107,7 +107,11 @@ function parseModels(modelsStr: string | null): string[] {
 	if (!modelsStr) return [];
 	try {
 		const parsed = JSON.parse(modelsStr);
-		return Array.isArray(parsed) ? parsed : [];
+		if (!Array.isArray(parsed)) return [];
+		// Handle both HostModelEntry objects ({id, tier, ...}) and legacy strings
+		return parsed.map((entry: unknown) =>
+			typeof entry === "string" ? entry : (entry as { id?: string })?.id ?? "unknown"
+		);
 	} catch {
 		return [];
 	}
