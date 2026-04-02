@@ -1248,6 +1248,40 @@ Original output was too large for the context window. If you need the full conte
 			}
 
 			const truncatedMessages = [...systemMessages, ...truncationMarker, ...remaining];
+
+			// Recalculate history section tokens from the KEPT messages, not the
+			// pre-truncation total. Without this, context_debug reports wildly inflated
+			// token counts (e.g. 3M instead of 5k when thousands of messages were dropped).
+			if (truncatedCount > 0) {
+				let postTruncUserTokens = 0;
+				let postTruncAssistantTokens = 0;
+				let postTruncToolResultTokens = 0;
+				for (const msg of remaining) {
+					const tokens = countContentTokens(msg.content);
+					if (msg.role === "user") postTruncUserTokens += tokens;
+					else if (msg.role === "assistant" || msg.role === "tool_call")
+						postTruncAssistantTokens += tokens;
+					else if (msg.role === "tool_result") postTruncToolResultTokens += tokens;
+				}
+
+				const histIdx = sections.findIndex((s) => s.name === "history");
+				if (histIdx >= 0) {
+					const postTruncChildren: Array<{ name: string; tokens: number }> = [];
+					if (postTruncUserTokens > 0)
+						postTruncChildren.push({ name: "user", tokens: postTruncUserTokens });
+					if (postTruncAssistantTokens > 0)
+						postTruncChildren.push({ name: "assistant", tokens: postTruncAssistantTokens });
+					if (postTruncToolResultTokens > 0)
+						postTruncChildren.push({ name: "tool_result", tokens: postTruncToolResultTokens });
+
+					sections[histIdx] = {
+						name: "history",
+						tokens: postTruncUserTokens + postTruncAssistantTokens + postTruncToolResultTokens,
+						children: postTruncChildren.length > 0 ? postTruncChildren : undefined,
+					};
+				}
+			}
+
 			const totalEstimated = sections.reduce((sum, s) => sum + s.tokens, 0);
 
 			return {

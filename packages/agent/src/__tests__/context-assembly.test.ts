@@ -3480,6 +3480,74 @@ This skill reviews pull requests.`;
 			debugTestDb.run("DELETE FROM semantic_memory WHERE key = ?", ["test-key"]);
 		});
 
+		it("AC2.5b: totalEstimated reflects post-truncation token count, not pre-truncation", () => {
+			const testThreadId = randomUUID();
+			debugTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					debugTestUserId,
+					"web",
+					"local",
+					0,
+					"Token Inflation Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// Insert 50 messages with substantial content to force heavy truncation
+			for (let i = 0; i < 50; i++) {
+				const role = i % 2 === 0 ? "user" : "assistant";
+				debugTestDb.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						testThreadId,
+						role,
+						`Message ${i} ${"x".repeat(500)}`,
+						role === "assistant" ? "model-1" : null,
+						null,
+						new Date(Date.now() + i * 1000).toISOString(),
+						new Date(Date.now() + i * 1000).toISOString(),
+						"local",
+					],
+				);
+			}
+
+			const result = assembleContext({
+				db: debugTestDb,
+				threadId: testThreadId,
+				userId: debugTestUserId,
+				contextWindow: 2000, // Small window to force heavy truncation
+			});
+
+			expect(result.debug.truncated).toBeGreaterThan(0);
+
+			// The history section in debug should reflect only the KEPT messages,
+			// not the total pre-truncation token count.
+			const historySection = result.debug.sections.find(
+				(s: { name: string }) => s.name === "history",
+			);
+			expect(historySection).toBeDefined();
+
+			// totalEstimated should be <= contextWindow (since we truncated to fit)
+			// If the bug exists, totalEstimated would be >> contextWindow because it
+			// includes tokens from all 50 messages, not just the ones we kept.
+			expect(result.debug.totalEstimated).toBeLessThanOrEqual(result.debug.contextWindow);
+
+			// The history tokens specifically should not exceed the context window
+			if (historySection) {
+				expect(historySection.tokens).toBeLessThanOrEqual(result.debug.contextWindow);
+			}
+		});
+
 		it("AC2.6: Empty thread has history section with tokens: 0 and no children", () => {
 			const testThreadId = randomUUID();
 			debugTestDb.run(
