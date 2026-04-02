@@ -4,32 +4,45 @@ import type { Writable } from "svelte/store";
 import type { WebSocketMessage } from "../lib/websocket";
 import ContextDebugPanel from "./ContextDebugPanel.svelte";
 
+export interface TurnRange {
+	from: string;
+	to: string | null;
+}
+
 interface Props {
 	threadId: string | null;
 	wsEvents: Writable<WebSocketMessage[]>;
-	children: Snippet<[{ debugOpen: boolean; toggleDebug: () => void }]>;
+	children: Snippet<[{ debugOpen: boolean; toggleDebug: () => void; turnRange: TurnRange | null }]>;
 }
 
 const { threadId, wsEvents, children }: Props = $props();
 
 let debugOpen = $state(false);
 let debugMounted = $state(false);
+let turnRange = $state<TurnRange | null>(null);
 
 function toggleDebug(): void {
 	debugOpen = !debugOpen;
 	if (debugOpen && !debugMounted) {
 		debugMounted = true;
 	}
+	if (!debugOpen) {
+		turnRange = null;
+	}
+}
+
+function handleTurnChange(range: TurnRange | null): void {
+	turnRange = range;
 }
 </script>
 
 <div class="debug-wrapper" class:panel-open={debugOpen}>
 	<div class="main-content">
-		{@render children({ debugOpen, toggleDebug })}
+		{@render children({ debugOpen, toggleDebug, turnRange })}
 	</div>
 	{#if debugMounted && threadId}
 		<div class="debug-panel-container" class:hidden={!debugOpen}>
-			<ContextDebugPanel threadId={threadId} {wsEvents} />
+			<ContextDebugPanel threadId={threadId} {wsEvents} onTurnChange={handleTurnChange} />
 		</div>
 	{/if}
 </div>

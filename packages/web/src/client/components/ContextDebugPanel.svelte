@@ -10,9 +10,10 @@ import ContextSparkline from "./ContextSparkline.svelte";
 interface Props {
 	threadId: string;
 	wsEvents: typeof wsEvents;
+	onTurnChange?: (range: { from: string; to: string | null } | null) => void;
 }
 
-const { threadId, wsEvents: wsEventsStore } = $props<Props>();
+const { threadId, wsEvents: wsEventsStore, onTurnChange } = $props<Props>();
 
 let turns = $state<ContextDebugTurn[]>([]);
 let selectedTurnIdx = $state(-1);
@@ -91,14 +92,27 @@ const isLatest = $derived(selectedTurnIdx < 0 || selectedTurnIdx === turns.lengt
 
 const effectiveIdx = $derived(selectedTurnIdx >= 0 ? selectedTurnIdx : turns.length - 1);
 
+function emitTurnRange(idx: number): void {
+	if (!onTurnChange || turns.length === 0) return;
+	if (idx < 0 || idx >= turns.length) {
+		onTurnChange(null);
+		return;
+	}
+	const from = turns[idx].created_at;
+	const to = idx + 1 < turns.length ? turns[idx + 1].created_at : null;
+	onTurnChange({ from, to });
+}
+
 function navigateTurn(direction: number): void {
 	if (direction < 0) {
 		if (selectedTurnIdx > 0) {
 			selectedTurnIdx--;
+			emitTurnRange(selectedTurnIdx);
 		}
 	} else {
 		if (selectedTurnIdx < turns.length - 1) {
 			selectedTurnIdx++;
+			emitTurnRange(selectedTurnIdx);
 		}
 	}
 }
@@ -175,6 +189,7 @@ function navigateTurn(direction: number): void {
 				selectedIdx={effectiveIdx}
 				onSelectTurn={(idx) => {
 					selectedTurnIdx = idx;
+					emitTurnRange(idx);
 				}}
 			/>
 		{/if}

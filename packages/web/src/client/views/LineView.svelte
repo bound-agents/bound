@@ -198,7 +198,7 @@ function viewTitle(): string {
 </script>
 
 <DebugPanelWrapper {threadId} {wsEvents}>
-	{#snippet children({ debugOpen, toggleDebug })}
+	{#snippet children({ debugOpen, toggleDebug, turnRange })}
 	<div class="line-view">
 		<div class="header">
 			<button onclick={handleBackClick} class="back-button">
@@ -218,7 +218,7 @@ function viewTitle(): string {
 			</button>
 		</div>
 
-	<MessageList {messages} {waiting} />
+	<MessageList {messages} {waiting} {turnRange} />
 
 	<div class="bottom-area">
 		<div class="file-upload-area">

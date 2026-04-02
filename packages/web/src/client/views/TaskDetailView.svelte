@@ -139,7 +139,7 @@ onDestroy(() => {
 </script>
 
 <DebugPanelWrapper threadId={task?.thread_id ?? null} {wsEvents}>
-	{#snippet children({ debugOpen, toggleDebug })}
+	{#snippet children({ debugOpen, toggleDebug, turnRange })}
 {#if loading}
 	<div class="task-detail-view">
 		<div class="loading">Loading task...</div>
@@ -214,6 +214,7 @@ onDestroy(() => {
 		<!-- Message history -->
 		<MessageList
 			{messages}
+			{turnRange}
 			emptyText={!task.thread_id
 				? "This task hasn't run yet. Messages will appear here after the first execution."
 				: "No messages yet."}

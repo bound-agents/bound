@@ -8,6 +8,7 @@ interface Message {
 	content: string;
 	tool_name?: string | null;
 	model_id?: string | null;
+	created_at?: string;
 }
 
 interface ToolEntry {
@@ -20,19 +21,26 @@ interface ToolEntry {
 interface ToolCallItem {
 	content: string;
 	toolResults?: Message[];
+	earliest: string;
 }
 
 type DisplayItem =
-	| { kind: "message"; msg: Message }
-	| { kind: "toolGroup"; entries: ToolEntry[] };
+	| { kind: "message"; msg: Message; earliest: string }
+	| { kind: "toolGroup"; entries: ToolEntry[]; earliest: string };
+
+interface TurnRange {
+	from: string;
+	to: string | null;
+}
 
 interface Props {
 	messages: Message[];
 	waiting?: boolean;
 	emptyText?: string | null;
+	turnRange?: TurnRange | null;
 }
 
-const { messages, waiting = false, emptyText = null }: Props = $props();
+const { messages, waiting = false, emptyText = null, turnRange = null }: Props = $props();
 
 // --- Auto-scroll logic ---
 let scrollContainer = $state<HTMLDivElement | null>(null);
@@ -84,6 +92,38 @@ $effect(() => {
 	prevMessageCount = count;
 });
 
+// --- Turn range highlighting + scroll ---
+function isInTurnRange(item: DisplayItem): boolean {
+	if (!turnRange) return false;
+	const ts = item.earliest;
+	if (!ts) return false;
+	if (ts < turnRange.from) return false;
+	if (turnRange.to !== null && ts >= turnRange.to) return false;
+	return true;
+}
+
+// Scroll to first item in the selected turn range
+let prevTurnFrom: string | null = null;
+$effect(() => {
+	const from = turnRange?.from ?? null;
+	if (from === prevTurnFrom) return;
+	prevTurnFrom = from;
+	if (!from || !scrollContainer) return;
+
+	tick().then(() => {
+		requestAnimationFrame(() => {
+			if (!scrollContainer) return;
+			const target = scrollContainer.querySelector("[data-turn-active]") as HTMLElement | null;
+			if (target) {
+				const containerTop = scrollContainer.getBoundingClientRect().top;
+				const targetTop = target.getBoundingClientRect().top;
+				const offset = targetTop - containerTop + scrollContainer.scrollTop - 12;
+				scrollContainer.scrollTo({ top: offset, behavior: "smooth" });
+			}
+		});
+	});
+});
+
 // Parse a tool_call content + results into ToolEntry items
 function parseToolCallEntries(item: ToolCallItem): ToolEntry[] {
 	try {
@@ -111,10 +151,10 @@ let displayItems = $derived.by((): DisplayItem[] => {
 				results.push(messages[j]);
 				j++;
 			}
-			pass1.push({ kind: "toolCall", item: { content: msg.content, toolResults: results.length > 0 ? results : undefined } });
+			pass1.push({ kind: "toolCall", item: { content: msg.content, toolResults: results.length > 0 ? results : undefined, earliest: msg.created_at ?? "" } });
 			i = j;
 		} else {
-			pass1.push({ kind: "message", msg });
+			pass1.push({ kind: "message", msg, earliest: msg.created_at ?? "" });
 			i++;
 		}
 	}
@@ -146,9 +186,9 @@ let displayItems = $derived.by((): DisplayItem[] => {
 				}
 			}
 			const allEntries = batch.flatMap(parseToolCallEntries);
-			items.push({ kind: "toolGroup", entries: allEntries });
+			items.push({ kind: "toolGroup", entries: allEntries, earliest: batch[0].earliest });
 		} else {
-			items.push(entry);
+			items.push({ kind: "message", msg: entry.msg, earliest: entry.earliest });
 			k++;
 		}
 	}
@@ -164,16 +204,23 @@ let displayItems = $derived.by((): DisplayItem[] => {
 			</div>
 		{:else}
 			{#each displayItems as item}
-				{#if item.kind === "toolGroup"}
-					<ToolCallGroup entries={item.entries} />
-				{:else}
-					<MessageBubble
-						role={item.msg.role}
-						content={item.msg.content}
-						toolName={item.msg.tool_name}
-						modelId={item.msg.model_id}
-					/>
-				{/if}
+				{@const active = turnRange ? isInTurnRange(item) : true}
+				<div
+					class="display-item"
+					class:dimmed={turnRange !== null && !active}
+					data-turn-active={active && turnRange ? "" : undefined}
+				>
+					{#if item.kind === "toolGroup"}
+						<ToolCallGroup entries={item.entries} />
+					{:else}
+						<MessageBubble
+							role={item.msg.role}
+							content={item.msg.content}
+							toolName={item.msg.tool_name}
+							modelId={item.msg.model_id}
+						/>
+					{/if}
+				</div>
 			{/each}
 		{/if}
 		{#if waiting}
@@ -213,6 +260,14 @@ let displayItems = $derived.by((): DisplayItem[] => {
 		display: block;
 		height: 32px;
 		flex-shrink: 0;
+	}
+
+	.display-item {
+		transition: opacity 0.3s ease;
+	}
+
+	.display-item.dimmed {
+		opacity: 0.3;
 	}
 
 	.empty-state {
