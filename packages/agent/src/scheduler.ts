@@ -332,10 +332,21 @@ export class Scheduler {
 		const leaseId = randomUUID();
 		const now = new Date().toISOString();
 
-		// Mark as running
+		// Mark as running (CAS: only if still claimed by this host)
 		this.ctx.db
-			.query("UPDATE tasks SET status = 'running', lease_id = ?, heartbeat_at = ? WHERE id = ?")
-			.run(leaseId, now, task.id);
+			.query(
+				"UPDATE tasks SET status = 'running', lease_id = ?, heartbeat_at = ? WHERE id = ? AND status = 'claimed' AND claimed_by = ?",
+			)
+			.run(leaseId, now, task.id, this.ctx.hostName);
+		const runChanges = this.ctx.db.query("SELECT changes() as count").get() as {
+			count: number;
+		};
+		if (runChanges.count === 0) {
+			this.ctx.logger.warn("[scheduler] CAS failed: task was reclaimed before runTask", {
+				taskId: task.id,
+			});
+			return;
+		}
 
 		this.runningTasks.set(task.id, {
 			leaseId,
@@ -583,9 +594,10 @@ export class Scheduler {
 			for (const task of eventTasks) {
 				if (canRunHere(this.ctx.db, task, this.ctx.hostName, this.ctx.siteId)) {
 					const claimedAt = new Date().toISOString();
+					// CAS: only claim if still pending (prevents duplicate event execution)
 					this.ctx.db
 						.query(
-							"UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ?",
+							"UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ? AND status = 'pending'",
 						)
 						.run(this.ctx.hostName, claimedAt, task.id);
 				}
