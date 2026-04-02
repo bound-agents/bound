@@ -791,7 +791,7 @@ export class AgentLoop {
 					if (persistResult.changedPaths) {
 						for (const filePath of persistResult.changedPaths) {
 							try {
-								trackFilePath(this.ctx.db, filePath, this.config.threadId);
+								trackFilePath(this.ctx.db, filePath, this.config.threadId, this.ctx.siteId);
 							} catch {
 								// Non-fatal — don't break the loop over tracking
 							}

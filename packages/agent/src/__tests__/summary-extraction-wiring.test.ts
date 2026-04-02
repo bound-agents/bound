@@ -26,6 +26,9 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 		db = createDatabase(dbPath);
 		applySchema(db);
 
+		// Set up host_meta for change-log outbox
+		db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', 'test-site-id')");
+
 		// Create a test user
 		const userId = randomUUID();
 		db.run(

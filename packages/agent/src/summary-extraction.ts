@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import { insertRow, updateRow } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import type { CrossThreadSource, Result } from "@bound/shared";
 
@@ -12,7 +13,7 @@ export async function extractSummaryAndMemories(
 	db: Database,
 	threadId: string,
 	llmBackend: LLMBackend,
-	_siteId: string,
+	siteId: string,
 ): Promise<Result<ExtractionResult, Error>> {
 	try {
 		// Get thread state
@@ -108,9 +109,35 @@ export async function extractSummaryAndMemories(
 		for (let i = 0; i < factLines.length; i++) {
 			const memId = randomUUID();
 			const key = `thread_${threadId}_fact_${i}`;
-			db.prepare(
-				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?)",
-			).run(memId, key, factLines[i], threadId, now, now);
+			// Check for existing entry (including soft-deleted) to avoid UNIQUE violations
+			const existing = db
+				.prepare("SELECT id FROM semantic_memory WHERE key = ?")
+				.get(key) as { id: string } | undefined;
+			if (existing) {
+				updateRow(
+					db,
+					"semantic_memory",
+					existing.id,
+					{ value: factLines[i], source: threadId, deleted: 0 },
+					siteId,
+				);
+			} else {
+				insertRow(
+					db,
+					"semantic_memory",
+					{
+						id: memId,
+						key,
+						value: factLines[i],
+						source: threadId,
+						created_at: now,
+						modified_at: now,
+						last_accessed_at: now,
+						deleted: 0,
+					},
+					siteId,
+				);
+			}
 		}
 
 		return {

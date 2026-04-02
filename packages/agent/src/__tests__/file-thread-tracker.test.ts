@@ -27,6 +27,9 @@ describe("File-Thread Tracker (R-E20)", () => {
 		db = createDatabase(dbPath);
 		applySchema(db);
 
+		// Set up host_meta for change-log outbox
+		db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', 'test-site-id')");
+
 		// Create a test user
 		const userId = randomUUID();
 		db.run(
@@ -44,7 +47,7 @@ describe("File-Thread Tracker (R-E20)", () => {
 		it("stores a file-thread association in semantic_memory", () => {
 			const filePath = "/workspace/test.txt";
 			const threadId = randomUUID();
-			trackFilePath(db, filePath, threadId);
+			trackFilePath(db, filePath, threadId, "test-site-id");
 
 			const lastThread = getLastThreadForFile(db, filePath);
 			expect(lastThread).toBe(threadId);
@@ -55,10 +58,10 @@ describe("File-Thread Tracker (R-E20)", () => {
 			const thread1 = randomUUID();
 			const thread2 = randomUUID();
 
-			trackFilePath(db, filePath, thread1);
+			trackFilePath(db, filePath, thread1, "test-site-id");
 			expect(getLastThreadForFile(db, filePath)).toBe(thread1);
 
-			trackFilePath(db, filePath, thread2);
+			trackFilePath(db, filePath, thread2, "test-site-id");
 			expect(getLastThreadForFile(db, filePath)).toBe(thread2);
 		});
 	});
