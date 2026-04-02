@@ -61,7 +61,7 @@ describe("BedrockDriver", () => {
 		expect(caps.streaming).toBe(true);
 		expect(caps.tool_use).toBe(true);
 		expect(caps.system_prompt).toBe(true);
-		expect(caps.prompt_caching).toBe(false);
+		expect(caps.prompt_caching).toBe(true);
 		expect(caps.vision).toBe(true);
 		expect(caps.max_context).toBe(200000);
 	});
@@ -716,5 +716,106 @@ describe("BedrockDriver", () => {
 
 		expect(chunks.length).toBeGreaterThan(0);
 		expect(abortSignalReceived).toBe(controller.signal);
+	});
+
+	// -----------------------------------------------------------------------
+	// Prompt caching support
+	// -----------------------------------------------------------------------
+	describe("prompt caching", () => {
+		it.skipIf(shouldSkip)("reports prompt_caching as true in capabilities", () => {
+			const driver = makeDriver();
+			expect(driver.capabilities().prompt_caching).toBe(true);
+		});
+
+		it.skipIf(shouldSkip)("injects cachePoint at breakpoint message indices", async () => {
+			let capturedInput: Record<string, unknown> | undefined;
+			sendSpy.mockImplementation((command: unknown) => {
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+				capturedInput = (command as any).input;
+				return Promise.resolve(
+					createMockStream([
+						{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "OK" } } },
+						{
+							metadata: {
+								usage: {
+									inputTokens: 100,
+									outputTokens: 5,
+									cacheWriteInputTokens: 50,
+									cacheReadInputTokens: 0,
+								},
+							},
+						},
+					]),
+				);
+			});
+
+			const driver = makeDriver();
+			const chunks = await collectChunks(
+				driver.chat({
+					messages: [
+						{ role: "user", content: "message 1" },
+						{ role: "assistant", content: "response 1" },
+						{ role: "user", content: "message 2" },
+					],
+					cache_breakpoints: [1], // Mark the assistant response (index 1)
+				}),
+			);
+
+			// The message at index 1 should have cachePoint appended to its content
+			expect(capturedInput).toBeDefined();
+			const messages = capturedInput!.messages as Array<{
+				role: string;
+				content: Array<Record<string, unknown>>;
+			}>;
+			expect(messages[1].content).toEqual([
+				{ text: "response 1" },
+				{ cachePoint: { type: "default" } },
+			]);
+			// Other messages should NOT have cachePoint
+			expect(messages[0].content).toEqual([{ text: "message 1" }]);
+			expect(messages[2].content).toEqual([{ text: "message 2" }]);
+
+			// Done chunk should carry cache tokens
+			const done = chunks.find((c) => c.type === "done");
+			expect(done).toBeDefined();
+			if (done?.type === "done") {
+				expect(done.usage.cache_write_tokens).toBe(50);
+				expect(done.usage.cache_read_tokens).toBe(0);
+			}
+		});
+
+		it.skipIf(shouldSkip)("caches system prompt when breakpoints are provided", async () => {
+			let capturedInput: Record<string, unknown> | undefined;
+			sendSpy.mockImplementation((command: unknown) => {
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+				capturedInput = (command as any).input;
+				return Promise.resolve(
+					createMockStream([
+						{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "OK" } } },
+						{ metadata: { usage: { inputTokens: 100, outputTokens: 5 } } },
+					]),
+				);
+			});
+
+			const driver = makeDriver();
+			await collectChunks(
+				driver.chat({
+					messages: [
+						{ role: "user", content: "msg 1" },
+						{ role: "assistant", content: "resp 1" },
+						{ role: "user", content: "msg 2" },
+					],
+					system: "You are a helpful assistant.",
+					cache_breakpoints: [1],
+				}),
+			);
+
+			// System blocks should include a cachePoint
+			const system = capturedInput!.system as Array<Record<string, unknown>>;
+			expect(system).toBeDefined();
+			expect(system.length).toBe(2);
+			expect(system[0]).toEqual({ text: "You are a helpful assistant." });
+			expect(system[1]).toEqual({ cachePoint: { type: "default" } });
+		});
 	});
 });
