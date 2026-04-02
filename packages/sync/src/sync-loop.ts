@@ -1,5 +1,11 @@
 import type { Database } from "bun:sqlite";
-import { insertInbox, insertRow, markDelivered, readUndelivered, recordRelayCycle } from "@bound/core";
+import {
+	insertInbox,
+	insertRow,
+	markDelivered,
+	readUndelivered,
+	recordRelayCycle,
+} from "@bound/core";
 import type { KeyringConfig, Logger, Result, SyncConfig, TypedEventEmitter } from "@bound/shared";
 import { RELAY_RESPONSE_KINDS, err, formatError, ok } from "@bound/shared";
 import {

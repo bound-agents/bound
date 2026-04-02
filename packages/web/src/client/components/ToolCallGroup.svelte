@@ -14,7 +14,10 @@ interface TurnRange {
 	to: string | null;
 }
 
-const { entries, turnRange = null } = $props<{ entries: ToolEntry[]; turnRange?: TurnRange | null }>();
+const { entries, turnRange = null } = $props<{
+	entries: ToolEntry[];
+	turnRange?: TurnRange | null;
+}>();
 
 function entryInRange(entry: ToolEntry): boolean {
 	if (!turnRange || !entry.timestamp) return true;

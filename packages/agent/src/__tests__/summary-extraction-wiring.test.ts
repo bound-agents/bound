@@ -154,29 +154,52 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 				}
 				yield {
 					type: "done" as const,
-					usage: { input_tokens: 5, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false },
+					usage: {
+						input_tokens: 5,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
 				};
 			}
 			capabilities() {
-				return { streaming: true, tool_use: true, system_prompt: true, prompt_caching: false, vision: false, max_context: 8000 };
+				return {
+					streaming: true,
+					tool_use: true,
+					system_prompt: true,
+					prompt_caching: false,
+					vision: false,
+					max_context: 8000,
+				};
 			}
 		}
 
 		// Count change_log entries for this thread before extraction
 		const beforeCount = (
-			db.prepare("SELECT count(*) as cnt FROM change_log WHERE table_name = 'threads' AND row_id = ?").get(threadId) as { cnt: number }
+			db
+				.prepare(
+					"SELECT count(*) as cnt FROM change_log WHERE table_name = 'threads' AND row_id = ?",
+				)
+				.get(threadId) as { cnt: number }
 		).cnt;
 
 		const { extractSummaryAndMemories } = await import("../summary-extraction");
 		await extractSummaryAndMemories(db, threadId, new SummaryMockLLM(), "test-site");
 
 		// Verify summary was written
-		const thread = db.prepare("SELECT summary FROM threads WHERE id = ?").get(threadId) as { summary: string | null };
+		const thread = db.prepare("SELECT summary FROM threads WHERE id = ?").get(threadId) as {
+			summary: string | null;
+		};
 		expect(thread.summary).toBeTruthy();
 
 		// Verify change_log entry was created (critical for sync)
 		const afterCount = (
-			db.prepare("SELECT count(*) as cnt FROM change_log WHERE table_name = 'threads' AND row_id = ?").get(threadId) as { cnt: number }
+			db
+				.prepare(
+					"SELECT count(*) as cnt FROM change_log WHERE table_name = 'threads' AND row_id = ?",
+				)
+				.get(threadId) as { cnt: number }
 		).cnt;
 		expect(afterCount).toBeGreaterThan(beforeCount);
 	});

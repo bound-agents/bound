@@ -71,11 +71,17 @@ export async function extractSummaryAndMemories(
 
 		// Update thread with summary (via outbox for sync)
 		if (summary) {
-			updateRow(db, "threads", threadId, {
-				summary,
-				summary_through: now,
-				summary_model_id: "default",
-			}, siteId);
+			updateRow(
+				db,
+				"threads",
+				threadId,
+				{
+					summary,
+					summary_through: now,
+					summary_model_id: "default",
+				},
+				siteId,
+			);
 		}
 
 		// Extract key facts as memories by asking the LLM for a bullet-point list.
@@ -112,9 +118,9 @@ export async function extractSummaryAndMemories(
 			const memId = randomUUID();
 			const key = `thread_${threadId}_fact_${i}`;
 			// Check for existing entry (including soft-deleted) to avoid UNIQUE violations
-			const existing = db
-				.prepare("SELECT id FROM semantic_memory WHERE key = ?")
-				.get(key) as { id: string } | undefined;
+			const existing = db.prepare("SELECT id FROM semantic_memory WHERE key = ?").get(key) as
+				| { id: string }
+				| undefined;
 			if (existing) {
 				updateRow(
 					db,

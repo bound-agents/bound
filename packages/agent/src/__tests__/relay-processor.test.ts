@@ -3934,9 +3934,7 @@ describe("RelayProcessor", () => {
 
 			// The error entry should be marked processed (not left unprocessed)
 			const unprocessed = readUnprocessed(db);
-			const errorEntry = unprocessed.find(
-				(e: RelayInboxEntry) => e.id === "error-response-1",
-			);
+			const errorEntry = unprocessed.find((e: RelayInboxEntry) => e.id === "error-response-1");
 			expect(errorEntry).toBeUndefined();
 
 			// Check the inbox entry was actually processed (not just ignored)
@@ -3948,13 +3946,9 @@ describe("RelayProcessor", () => {
 
 			// And it should NOT have generated a new error in relay_outbox
 			// Check ALL outbox entries (no filter by target)
-			const allOutbox = db
-				.query("SELECT * FROM relay_outbox")
-				.all() as RelayOutboxEntry[];
+			const allOutbox = db.query("SELECT * FROM relay_outbox").all() as RelayOutboxEntry[];
 			const amplifiedErrors = allOutbox.filter(
-				(e) =>
-					e.kind === "error" &&
-					e.payload?.includes("Unknown request kind"),
+				(e) => e.kind === "error" && e.payload?.includes("Unknown request kind"),
 			);
 			// BUG: This should be 0 (response kinds should be silently consumed)
 			// but the current code generates error amplification
@@ -3999,11 +3993,11 @@ describe("RelayProcessor", () => {
 
 			// Should be marked processed without generating new outbox errors
 			const unprocessed = readUnprocessed(db);
-			expect(unprocessed.find((e: RelayInboxEntry) => e.id === "result-response-1")).toBeUndefined();
+			expect(
+				unprocessed.find((e: RelayInboxEntry) => e.id === "result-response-1"),
+			).toBeUndefined();
 
-			const allOutbox2 = db
-				.query("SELECT * FROM relay_outbox")
-				.all() as RelayOutboxEntry[];
+			const allOutbox2 = db.query("SELECT * FROM relay_outbox").all() as RelayOutboxEntry[];
 			const errors = allOutbox2.filter((e) => e.kind === "error");
 			expect(errors.length).toBe(0);
 		});

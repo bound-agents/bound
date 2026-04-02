@@ -665,9 +665,9 @@ describe("MCP Bridge", () => {
 
 		await updateHostMCPInfo(db, siteId, clients);
 
-		const host = db
-			.query(`SELECT mcp_tools FROM hosts WHERE site_id = ?`)
-			.get(siteId) as { mcp_tools: string } | null;
+		const host = db.query(`SELECT mcp_tools FROM hosts WHERE site_id = ?`).get(siteId) as {
+			mcp_tools: string;
+		} | null;
 
 		expect(host).not.toBeNull();
 		const parsed = JSON.parse(host?.mcp_tools ?? "[]");

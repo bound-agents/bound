@@ -1,7 +1,7 @@
 <script lang="ts">
+import { X } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
 import { navigateTo } from "../lib/router";
-import { X } from "lucide-svelte";
 
 interface Task {
 	id: string;

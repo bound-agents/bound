@@ -492,9 +492,11 @@ export class Scheduler {
 				// Fire-and-forget: generate a proper thread title (replaces the
 				// null placeholder set during thread creation).
 				if (this.config.generateTitle) {
-					this.config.generateTitle(threadId).catch((err) =>
-						this.ctx.logger.warn(`Title generation failed for thread ${threadId}: ${err}`),
-					);
+					this.config
+						.generateTitle(threadId)
+						.catch((err) =>
+							this.ctx.logger.warn(`Title generation failed for thread ${threadId}: ${err}`),
+						);
 				}
 			} catch (error) {
 				const errorMsg = formatError(error);

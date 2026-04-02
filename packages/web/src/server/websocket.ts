@@ -17,7 +17,9 @@ export interface WebSocketConfig {
 	close(ws: ServerWebSocket<unknown>): void;
 }
 
-export function createWebSocketHandler(eventBus: TypedEventEmitter): WebSocketConfig & { cleanup: () => void } {
+export function createWebSocketHandler(
+	eventBus: TypedEventEmitter,
+): WebSocketConfig & { cleanup: () => void } {
 	const clients = new Map<ServerWebSocket<unknown>, ClientConnection>();
 
 	const handleMessageCreated = (data: {

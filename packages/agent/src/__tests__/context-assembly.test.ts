@@ -3470,12 +3470,32 @@ This skill reviews pull requests.`;
 				const t = new Date(now + i * 1000).toISOString();
 				debugTestDb.run(
 					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-					[randomUUID(), testThreadId, "user", `Message ${i}: ${bigContent}`, null, null, t, t, "local"],
+					[
+						randomUUID(),
+						testThreadId,
+						"user",
+						`Message ${i}: ${bigContent}`,
+						null,
+						null,
+						t,
+						t,
+						"local",
+					],
 				);
 				const t2 = new Date(now + i * 1000 + 500).toISOString();
 				debugTestDb.run(
 					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-					[randomUUID(), testThreadId, "assistant", `Reply ${i}: ${bigContent}`, "opus", null, t2, t2, "local"],
+					[
+						randomUUID(),
+						testThreadId,
+						"assistant",
+						`Reply ${i}: ${bigContent}`,
+						"opus",
+						null,
+						t2,
+						t2,
+						"local",
+					],
 				);
 			}
 

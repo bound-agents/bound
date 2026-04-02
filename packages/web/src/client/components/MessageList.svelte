@@ -137,19 +137,45 @@ $effect(() => {
 function parseToolCallEntries(item: ToolCallItem): ToolEntry[] {
 	try {
 		const parsed = JSON.parse(item.content);
-		if (!Array.isArray(parsed)) return [{ name: "tool", input: item.content, id: "", result: item.toolResults?.[0]?.content, timestamp: item.earliest }];
-		return (parsed as Array<{ type: string; id: string; name: string; input: unknown }>).map((use) => {
-			const matched = item.toolResults?.find((r) => r.tool_name === use.id);
-			return { name: use.name, input: use.input, id: use.id, result: matched?.content, timestamp: item.earliest };
-		});
+		if (!Array.isArray(parsed))
+			return [
+				{
+					name: "tool",
+					input: item.content,
+					id: "",
+					result: item.toolResults?.[0]?.content,
+					timestamp: item.earliest,
+				},
+			];
+		return (parsed as Array<{ type: string; id: string; name: string; input: unknown }>).map(
+			(use) => {
+				const matched = item.toolResults?.find((r) => r.tool_name === use.id);
+				return {
+					name: use.name,
+					input: use.input,
+					id: use.id,
+					result: matched?.content,
+					timestamp: item.earliest,
+				};
+			},
+		);
 	} catch {
-		return [{ name: "tool", input: item.content, id: "", result: item.toolResults?.[0]?.content, timestamp: item.earliest }];
+		return [
+			{
+				name: "tool",
+				input: item.content,
+				id: "",
+				result: item.toolResults?.[0]?.content,
+				timestamp: item.earliest,
+			},
+		];
 	}
 }
 
 let displayItems = $derived.by((): DisplayItem[] => {
 	// Pass 1: pair tool_call with consecutive tool_results
-	const pass1: Array<{ kind: "message"; msg: Message } | { kind: "toolCall"; item: ToolCallItem }> = [];
+	const pass1: Array<{ kind: "message"; msg: Message } | { kind: "toolCall"; item: ToolCallItem }> =
+		[];
 	let i = 0;
 	while (i < messages.length) {
 		const msg = messages[i];
@@ -160,7 +186,14 @@ let displayItems = $derived.by((): DisplayItem[] => {
 				results.push(messages[j]);
 				j++;
 			}
-			pass1.push({ kind: "toolCall", item: { content: msg.content, toolResults: results.length > 0 ? results : undefined, earliest: msg.created_at ?? "" } });
+			pass1.push({
+				kind: "toolCall",
+				item: {
+					content: msg.content,
+					toolResults: results.length > 0 ? results : undefined,
+					earliest: msg.created_at ?? "",
+				},
+			});
 			i = j;
 		} else {
 			pass1.push({ kind: "message", msg, earliest: msg.created_at ?? "" });
@@ -196,7 +229,12 @@ let displayItems = $derived.by((): DisplayItem[] => {
 			}
 			const allEntries = batch.flatMap(parseToolCallEntries);
 			const timestamps = batch.map((b) => b.earliest).filter(Boolean);
-			items.push({ kind: "toolGroup", entries: allEntries, earliest: batch[0].earliest, timestamps });
+			items.push({
+				kind: "toolGroup",
+				entries: allEntries,
+				earliest: batch[0].earliest,
+				timestamps,
+			});
 		} else {
 			items.push({ kind: "message", msg: entry.msg, earliest: entry.earliest });
 			k++;

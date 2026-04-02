@@ -343,9 +343,18 @@ export class AnthropicDriver implements LLMBackend {
 		}
 
 		// When cache_breakpoints are provided, send system prompt as cacheable content blocks
-		const systemPayload: string | Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> | undefined =
+		const systemPayload:
+			| string
+			| Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }>
+			| undefined =
 			params.system && params.cache_breakpoints?.length
-				? [{ type: "text" as const, text: params.system, cache_control: { type: "ephemeral" as const } }]
+				? [
+						{
+							type: "text" as const,
+							text: params.system,
+							cache_control: { type: "ephemeral" as const },
+						},
+					]
 				: params.system;
 
 		const request: AnthropicRequest = {

@@ -109,7 +109,8 @@ function emitTurnRange(idx: number): void {
 	// (output of turn N) both fall within turn N's range, since user messages
 	// are timestamped before the LLM call and output is timestamped after.
 	const from = idx > 0 ? midpointISO(turns[idx - 1].created_at, turns[idx].created_at) : "";
-	const to = idx + 1 < turns.length ? midpointISO(turns[idx].created_at, turns[idx + 1].created_at) : null;
+	const to =
+		idx + 1 < turns.length ? midpointISO(turns[idx].created_at, turns[idx + 1].created_at) : null;
 	onTurnChange({ from, to });
 }
 

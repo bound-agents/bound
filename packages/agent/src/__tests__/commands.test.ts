@@ -189,7 +189,9 @@ describe("defineCommand implementations", () => {
 
 			// Step 1: Create the memory
 			await memorize.handler({ key, value: "original_value" }, ctx);
-			const row1 = db.query("SELECT deleted, value FROM semantic_memory WHERE id = ?").get(memoryId) as {
+			const row1 = db
+				.query("SELECT deleted, value FROM semantic_memory WHERE id = ?")
+				.get(memoryId) as {
 				deleted: number;
 				value: string;
 			};
@@ -208,7 +210,9 @@ describe("defineCommand implementations", () => {
 			expect(result.exitCode).toBe(0);
 
 			// The memory should be restored with the new value and deleted=0
-			const row3 = db.query("SELECT deleted, value FROM semantic_memory WHERE id = ?").get(memoryId) as {
+			const row3 = db
+				.query("SELECT deleted, value FROM semantic_memory WHERE id = ?")
+				.get(memoryId) as {
 				deleted: number;
 				value: string;
 			};

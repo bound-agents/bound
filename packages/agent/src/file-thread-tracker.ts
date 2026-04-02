@@ -14,9 +14,9 @@ export function trackFilePath(
 	const now = new Date().toISOString();
 
 	// Check if memory entry exists (including soft-deleted to avoid UNIQUE violations)
-	const existing = db
-		.prepare("SELECT id FROM semantic_memory WHERE key = ?")
-		.get(key) as { id: string } | undefined;
+	const existing = db.prepare("SELECT id FROM semantic_memory WHERE key = ?").get(key) as
+		| { id: string }
+		| undefined;
 
 	if (existing) {
 		// Update existing entry via change-log outbox

@@ -1,7 +1,7 @@
 <script lang="ts">
+import { Cpu } from "lucide-svelte";
 import { onMount } from "svelte";
 import { modelStore } from "../lib/modelStore";
-import { Cpu } from "lucide-svelte";
 
 interface ClusterModelInfo {
 	id: string;

@@ -921,19 +921,27 @@ describe("Scheduler features", () => {
 			// Wait for the task to be processed (it will throw, then should reschedule)
 			await waitFor(
 				() => {
-					const task = db.query("SELECT status, error, next_run_at FROM tasks WHERE id = ?").get(taskId) as {
+					const task = db
+						.query("SELECT status, error, next_run_at FROM tasks WHERE id = ?")
+						.get(taskId) as {
 						status: string;
 						error: string | null;
 						next_run_at: string | null;
 					} | null;
 					// After hard error, cron task should be rescheduled to pending with future next_run_at
-					return task?.status === "pending" && task?.next_run_at !== null && new Date(task.next_run_at).getTime() > Date.now();
+					return (
+						task?.status === "pending" &&
+						task?.next_run_at !== null &&
+						new Date(task.next_run_at).getTime() > Date.now()
+					);
 				},
 				{ message: "cron task not rescheduled after hard error", timeoutMs: 5000 },
 			);
 			stop();
 
-			const task = db.query("SELECT status, next_run_at, error FROM tasks WHERE id = ?").get(taskId) as {
+			const task = db
+				.query("SELECT status, next_run_at, error FROM tasks WHERE id = ?")
+				.get(taskId) as {
 				status: string;
 				next_run_at: string | null;
 				error: string | null;
@@ -992,12 +1000,18 @@ describe("Scheduler features", () => {
 			// Wait for the task to be processed — should reschedule despite model failure
 			await waitFor(
 				() => {
-					const task = db.query("SELECT status, next_run_at FROM tasks WHERE id = ?").get(taskId) as {
+					const task = db
+						.query("SELECT status, next_run_at FROM tasks WHERE id = ?")
+						.get(taskId) as {
 						status: string;
 						next_run_at: string | null;
 					} | null;
 					// After model validation failure, cron should be rescheduled to pending
-					return task?.status === "pending" && task?.next_run_at !== null && new Date(task.next_run_at).getTime() > Date.now();
+					return (
+						task?.status === "pending" &&
+						task?.next_run_at !== null &&
+						new Date(task.next_run_at).getTime() > Date.now()
+					);
 				},
 				{ message: "cron task not rescheduled after model validation failure", timeoutMs: 5000 },
 			);
@@ -1064,16 +1078,27 @@ describe("Scheduler features", () => {
 			};
 
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
-			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any, {}, failingSandbox);
+			const scheduler = new Scheduler(
+				ctx as any,
+				makeAgentLoopFactory() as any,
+				{},
+				failingSandbox,
+			);
 			const { stop } = scheduler.start(50);
 
 			await waitFor(
 				() => {
-					const task = db.query("SELECT status, next_run_at FROM tasks WHERE id = ?").get(taskId) as {
+					const task = db
+						.query("SELECT status, next_run_at FROM tasks WHERE id = ?")
+						.get(taskId) as {
 						status: string;
 						next_run_at: string | null;
 					} | null;
-					return task?.status === "pending" && task?.next_run_at !== null && new Date(task.next_run_at).getTime() > Date.now();
+					return (
+						task?.status === "pending" &&
+						task?.next_run_at !== null &&
+						new Date(task.next_run_at).getTime() > Date.now()
+					);
 				},
 				{ message: "cron template task not rescheduled after hard error", timeoutMs: 5000 },
 			);
@@ -1474,9 +1499,9 @@ describe("Scheduler features", () => {
 			} | null;
 			expect(task?.thread_id).toBeTruthy();
 
-			const thread = db
-				.query("SELECT title FROM threads WHERE id = ?")
-				.get(task!.thread_id!) as { title: string | null } | null;
+			const thread = db.query("SELECT title FROM threads WHERE id = ?").get(task!.thread_id!) as {
+				title: string | null;
+			} | null;
 			expect(thread).not.toBeNull();
 			// Title should be null (not raw JSON payload)
 			expect(thread?.title).toBeNull();

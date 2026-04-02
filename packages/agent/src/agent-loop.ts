@@ -3,13 +3,13 @@ import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
 import {
 	insertRow,
-	updateRow,
 	markProcessed,
 	readInboxByRefId,
 	readInboxByStreamId,
 	recordContextDebug,
 	recordTurn,
 	recordTurnRelayMetrics,
+	updateRow,
 	writeOutbox,
 } from "@bound/core";
 import type { CapabilityRequirements, ModelRouter, StreamChunk } from "@bound/llm";

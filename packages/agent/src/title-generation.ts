@@ -1,8 +1,8 @@
 import type { Database } from "bun:sqlite";
+import { updateRow } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import type { Result } from "@bound/shared";
 import type { Message, Thread } from "@bound/shared";
-import { updateRow } from "@bound/core";
 
 export async function generateThreadTitle(
 	db: Database,

@@ -6,9 +6,9 @@ import {
 	insertInbox,
 	markDelivered,
 	markProcessed,
+	pruneRelayTables,
 	readUndelivered,
 	readUnprocessed,
-	pruneRelayTables,
 	recordRelayCycle,
 	writeOutbox,
 } from "@bound/core";

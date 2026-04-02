@@ -321,9 +321,10 @@ describe("Scheduler Integration", () => {
 		await sleep(300);
 		stop();
 
-		const task = db
-			.query("SELECT status, claimed_by FROM tasks WHERE id = ?")
-			.get(taskId) as { status: string; claimed_by: string | null } | null;
+		const task = db.query("SELECT status, claimed_by FROM tasks WHERE id = ?").get(taskId) as {
+			status: string;
+			claimed_by: string | null;
+		} | null;
 
 		// Task should still be claimed by the other host, not overwritten
 		expect(task?.claimed_by).toBe("other-host");
@@ -492,11 +493,8 @@ describe("Scheduler Integration", () => {
 		// Wait for eviction to happen (phase0 runs every tick)
 		await waitFor(
 			() =>
-				(
-					db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
-						| { status: string }
-						| null
-				)?.status !== "running",
+				(db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | null)
+					?.status !== "running",
 			{ message: "cron task was not evicted" },
 		);
 		stop();

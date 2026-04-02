@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ChevronLeft, Paperclip, Send, Settings, X } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
 import DebugPanelWrapper from "../components/DebugPanelWrapper.svelte";
 import MessageList from "../components/MessageList.svelte";
@@ -13,7 +14,6 @@ import {
 	wsEvents,
 } from "../lib/websocket";
 import { shouldClearWaiting } from "../utils/waiting";
-import { ChevronLeft, Paperclip, Send, Settings, X } from "lucide-svelte";
 
 const { threadId } = $props<{ threadId: string }>();
 

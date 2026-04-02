@@ -102,11 +102,20 @@ export function scanOverlayIndex(
 			if (!existing) {
 				// New file
 				if (outbox) {
-					outbox.insertRow(db, "overlay_index", {
-						id, site_id: siteId, path: entry.path,
-						size_bytes: stat.size, content_hash: contentHash,
-						indexed_at: now, deleted: 0,
-					}, siteId);
+					outbox.insertRow(
+						db,
+						"overlay_index",
+						{
+							id,
+							site_id: siteId,
+							path: entry.path,
+							size_bytes: stat.size,
+							content_hash: contentHash,
+							indexed_at: now,
+							deleted: 0,
+						},
+						siteId,
+					);
 				} else {
 					db.prepare(
 						"INSERT OR IGNORE INTO overlay_index (id, site_id, path, size_bytes, content_hash, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -116,9 +125,17 @@ export function scanOverlayIndex(
 			} else if (existing.content_hash !== contentHash) {
 				// File changed
 				if (outbox) {
-					outbox.updateRow(db, "overlay_index", id, {
-						size_bytes: stat.size, content_hash: contentHash, indexed_at: now,
-					}, siteId);
+					outbox.updateRow(
+						db,
+						"overlay_index",
+						id,
+						{
+							size_bytes: stat.size,
+							content_hash: contentHash,
+							indexed_at: now,
+						},
+						siteId,
+					);
 				} else {
 					db.prepare(
 						"UPDATE overlay_index SET size_bytes = ?, content_hash = ?, indexed_at = ? WHERE id = ?",

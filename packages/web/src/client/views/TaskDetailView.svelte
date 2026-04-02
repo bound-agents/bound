@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ChevronLeft, Settings, X } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
 import DebugPanelWrapper from "../components/DebugPanelWrapper.svelte";
 import MessageList from "../components/MessageList.svelte";
@@ -6,7 +7,6 @@ import { api } from "../lib/api";
 import { navigateTo } from "../lib/router";
 import { connectWebSocket, disconnectWebSocket, subscribeToThread } from "../lib/websocket";
 import { wsEvents } from "../lib/websocket";
-import { ChevronLeft, Settings, X } from "lucide-svelte";
 
 interface TaskDetail {
 	id: string;

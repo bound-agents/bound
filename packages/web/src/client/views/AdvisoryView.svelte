@@ -1,6 +1,6 @@
 <script lang="ts">
-import { onDestroy, onMount } from "svelte";
 import { ChevronDown } from "lucide-svelte";
+import { onDestroy, onMount } from "svelte";
 
 interface Advisory {
 	id: string;

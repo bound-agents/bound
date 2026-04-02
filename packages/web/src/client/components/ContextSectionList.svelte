@@ -1,6 +1,6 @@
 <script lang="ts">
-import { SECTION_COLORS } from "../lib/context-colors";
 import { ChevronRight } from "lucide-svelte";
+import { SECTION_COLORS } from "../lib/context-colors";
 
 interface Props {
 	sections: Array<{
