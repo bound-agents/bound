@@ -828,6 +828,31 @@ export class AgentLoop {
 		} catch (error) {
 			this.state = "ERROR_PERSIST";
 			const errorMsg = formatError(error);
+
+			// Persist alert message so user can see what went wrong
+			try {
+				insertRow(
+					this.ctx.db,
+					"messages",
+					{
+						id: randomUUID(),
+						thread_id: this.config.threadId,
+						role: "alert",
+						content: `Agent loop error: ${errorMsg}`,
+						model_id: null,
+						tool_name: null,
+						tool_use_id: null,
+						created_at: new Date().toISOString(),
+						modified_at: new Date().toISOString(),
+						host_origin: this.ctx.hostName,
+						deleted: 0,
+					},
+					this.ctx.siteId,
+				);
+			} catch {
+				// DB itself may be the problem — don't throw
+			}
+
 			return {
 				messagesCreated: this.messagesCreated,
 				toolCallsMade: this.toolCallsMade,
