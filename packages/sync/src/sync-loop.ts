@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { insertInbox, markDelivered, readUndelivered, recordRelayCycle } from "@bound/core";
+import { insertInbox, insertRow, markDelivered, readUndelivered, recordRelayCycle } from "@bound/core";
 import type { KeyringConfig, Logger, Result, SyncConfig, TypedEventEmitter } from "@bound/shared";
 import { RELAY_RESPONSE_KINDS, err, formatError, ok } from "@bound/shared";
 import {
@@ -157,23 +157,44 @@ export class SyncClient {
 					const { deterministicUUID, BOUND_NAMESPACE } = await import("@bound/shared");
 					const systemThreadId = deterministicUUID(BOUND_NAMESPACE, "system-alerts");
 					const now = new Date().toISOString();
-					this.db
-						.query(
-							`INSERT OR IGNORE INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted) VALUES (?, 'system', 'web', ?, 0, 'System Alerts', NULL, ?, ?, ?, 0)`,
-						)
-						.run(systemThreadId, this.siteId, now, now, now);
-					this.db
-						.query(
-							`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, 'alert', ?, NULL, NULL, ?, ?, ?, 0)`,
-						)
-						.run(
-							randomUUID(),
-							systemThreadId,
-							`Sync to peer ${peerSiteId} has failed ${syncState.sync_errors} consecutive times`,
-							now,
-							now,
-							this.siteId,
-						);
+
+					// Use insertRow to ensure alerts sync to other hosts
+					insertRow(
+						this.db,
+						"threads",
+						{
+							id: systemThreadId,
+							user_id: "system",
+							interface: "web",
+							host_origin: this.siteId,
+							color: 0,
+							title: "System Alerts",
+							summary: null,
+							created_at: now,
+							last_message_at: now,
+							modified_at: now,
+							deleted: 0,
+						},
+						this.siteId,
+					);
+
+					insertRow(
+						this.db,
+						"messages",
+						{
+							id: randomUUID(),
+							thread_id: systemThreadId,
+							role: "alert",
+							content: `Sync to peer ${peerSiteId} has failed ${syncState.sync_errors} consecutive times`,
+							model_id: null,
+							tool_name: null,
+							created_at: now,
+							modified_at: now,
+							host_origin: this.siteId,
+							deleted: 0,
+						},
+						this.siteId,
+					);
 				} catch {
 					// Non-fatal
 				}
