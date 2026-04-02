@@ -92,14 +92,24 @@ const isLatest = $derived(selectedTurnIdx < 0 || selectedTurnIdx === turns.lengt
 
 const effectiveIdx = $derived(selectedTurnIdx >= 0 ? selectedTurnIdx : turns.length - 1);
 
+function midpointISO(a: string, b: string): string {
+	const ta = new Date(a).getTime();
+	const tb = new Date(b).getTime();
+	return new Date(ta + (tb - ta) / 2).toISOString();
+}
+
 function emitTurnRange(idx: number): void {
 	if (!onTurnChange || turns.length === 0) return;
 	if (idx < 0 || idx >= turns.length) {
 		onTurnChange(null);
 		return;
 	}
-	const from = turns[idx].created_at;
-	const to = idx + 1 < turns.length ? turns[idx + 1].created_at : null;
+	// Use midpoints between consecutive turns as boundaries.
+	// This ensures the user message (input to turn N) and the assistant response
+	// (output of turn N) both fall within turn N's range, since user messages
+	// are timestamped before the LLM call and output is timestamped after.
+	const from = idx > 0 ? midpointISO(turns[idx - 1].created_at, turns[idx].created_at) : "";
+	const to = idx + 1 < turns.length ? midpointISO(turns[idx].created_at, turns[idx + 1].created_at) : null;
 	onTurnChange({ from, to });
 }
 
