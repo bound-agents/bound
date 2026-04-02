@@ -490,17 +490,24 @@ export class AgentLoop {
 									this.messagesCreated++;
 								}
 
-								this.ctx.logger.info("[agent-loop] Rate-limit fallback: re-resolved to alternative backend", {
-									previousBackend: backendId,
-									newBackend: newModelId,
-									newKind: newResolution.kind,
-								});
+								this.ctx.logger.info(
+									"[agent-loop] Rate-limit fallback: re-resolved to alternative backend",
+									{
+										previousBackend: backendId,
+										newBackend: newModelId,
+										newKind: newResolution.kind,
+									},
+								);
+								transportRetries = 0; // Reset for new backend
 								continue; // Retry with the new backend
 							}
 
-							this.ctx.logger.warn("[agent-loop] Rate-limit fallback: no alternative backend available", {
-								backendId,
-							});
+							this.ctx.logger.warn(
+								"[agent-loop] Rate-limit fallback: no alternative backend available",
+								{
+									backendId,
+								},
+							);
 						}
 					}
 
@@ -636,9 +643,7 @@ export class AgentLoop {
 					};
 					// Attribute the growth to the history section (messages accumulate there)
 					if (delta > 0) {
-						const historySec = this.lastContextDebug.sections.find(
-							(s) => s.name === "history",
-						);
+						const historySec = this.lastContextDebug.sections.find((s) => s.name === "history");
 						if (historySec) {
 							historySec.tokens += delta;
 						}
