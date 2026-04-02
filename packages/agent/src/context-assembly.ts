@@ -1085,12 +1085,18 @@ Original output was too large for the context window. If you need the full conte
 	if (toolTokens > 0) sections.push({ name: "tools", tokens: toolTokens });
 
 	// Stage 7: BUDGET_VALIDATION
-	// Budget pressure check: reduce enrichment caps if headroom < 2,000 tokens
+	// Budget pressure check: reduce enrichment caps if headroom < 2,000 tokens.
+	// Use non-history token count (system msgs + tools) so that long threads
+	// with truncation don't permanently trigger budget pressure. History overflow
+	// is handled by truncation — budget pressure should only fire when the
+	// fixed-size context (system prompt, volatile enrichment, tools) genuinely
+	// crowds the window.
 	if (enrichmentBaseline !== undefined && enrichmentMessageIndex >= 0) {
-		const currentTotal = assembled.reduce((sum, msg) => {
-			return sum + countContentTokens(msg.content);
-		}, 0);
-		const headroom = contextWindow - currentTotal;
+		const nonHistoryTokens =
+			assembled
+				.filter((m) => m.role === "system")
+				.reduce((sum, m) => sum + countContentTokens(m.content), 0) + toolTokens;
+		const headroom = contextWindow - nonHistoryTokens;
 
 		if (headroom < 2000) {
 			budgetPressure = true;

@@ -3426,6 +3426,76 @@ This skill reviews pull requests.`;
 			expect(result.debug.budgetPressure).toBe(true);
 		});
 
+		it("budget pressure should not fire when truncation handles overflow", () => {
+			const testThreadId = randomUUID();
+			debugTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					debugTestUserId,
+					"web",
+					"local",
+					0,
+					"Long Thread",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// Insert memory so enrichment baseline is computed
+			debugTestDb.run(
+				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					"budget-test-key",
+					"some memory value",
+					"agent",
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// Insert enough messages to force truncation — 10 user/assistant pairs
+			// Use "word " repeated to avoid tiktoken compression of repeated chars
+			const bigContent = "The quick brown fox jumps over the lazy dog every morning. ".repeat(20);
+			const now = Date.now();
+			for (let i = 0; i < 10; i++) {
+				const t = new Date(now + i * 1000).toISOString();
+				debugTestDb.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[randomUUID(), testThreadId, "user", `Message ${i}: ${bigContent}`, null, null, t, t, "local"],
+				);
+				const t2 = new Date(now + i * 1000 + 500).toISOString();
+				debugTestDb.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[randomUUID(), testThreadId, "assistant", `Reply ${i}: ${bigContent}`, "opus", null, t2, t2, "local"],
+				);
+			}
+
+			// contextWindow of 4000: non-history (system+volatile) ~400 tokens,
+			// leaving ~3600 for history (> 2000 threshold), so no budget pressure.
+			// But total history ~5000+ tokens exceeds 4000, so truncation fires.
+			const result = assembleContext({
+				db: debugTestDb,
+				threadId: testThreadId,
+				userId: debugTestUserId,
+				contextWindow: 4000,
+			});
+
+			// Truncation SHOULD happen (many messages, small window)
+			expect(result.debug.truncated).toBeGreaterThan(0);
+			// Budget pressure should NOT fire — non-history content (system + volatile + tools)
+			// is small, so there's plenty of room after truncation
+			expect(result.debug.budgetPressure).toBe(false);
+		});
+
 		it("AC2.5: Small contextWindow forces truncation, truncated > 0", () => {
 			const testThreadId = randomUUID();
 			debugTestDb.run(
