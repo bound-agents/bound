@@ -18,13 +18,13 @@ export const memorize: CommandDefinition = {
 			const memoryId = deterministicUUID(BOUND_NAMESPACE, key);
 			const now = new Date().toISOString();
 
-			// Check if entry exists
+			// Check if entry exists (including soft-deleted rows to avoid UNIQUE constraint on re-insert)
 			const existing = ctx.db
-				.prepare("SELECT id FROM semantic_memory WHERE key = ? AND deleted = 0")
-				.get(key) as { id: string } | undefined;
+				.prepare("SELECT id, deleted FROM semantic_memory WHERE key = ?")
+				.get(key) as { id: string; deleted: number } | undefined;
 
 			if (existing) {
-				// Update existing entry
+				// Update existing entry — also restores soft-deleted rows by setting deleted=0
 				updateRow(
 					ctx.db,
 					"semantic_memory",
@@ -33,6 +33,7 @@ export const memorize: CommandDefinition = {
 						value,
 						source,
 						last_accessed_at: now,
+						deleted: 0,
 					},
 					ctx.siteId,
 				);
