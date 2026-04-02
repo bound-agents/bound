@@ -10,6 +10,7 @@ import {
 	RelayProcessor,
 	Scheduler,
 	createRelayOutboxEntry,
+	extractSummaryAndMemories,
 	findPendingUserMessage,
 	getDelegationTarget,
 	resolveModel,
@@ -561,7 +562,31 @@ export async function runStart(args: StartArgs): Promise<void> {
 		// on the initial row insertion. On next startup, this code re-runs and updates.
 	}
 
-	// 11a. Initialize relay processor (now that modelRouter is ready)
+	// 11a. Post-restart summary extraction
+	// Queue summary extraction for threads that have messages but no summary.
+	// This runs after crash recovery and after the model router is initialized.
+	if (modelRouter && modelRouter.listBackends().length > 0) {
+		const threadsNeedingSummary = appContext.db
+			.query(
+				`SELECT t.id FROM threads t
+				 WHERE t.deleted = 0 AND t.summary IS NULL
+				 AND EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id AND m.deleted = 0 AND m.role = 'assistant')
+				 LIMIT 10`,
+			)
+			.all() as Array<{ id: string }>;
+
+		if (threadsNeedingSummary.length > 0) {
+			for (const { id } of threadsNeedingSummary) {
+				extractSummaryAndMemories(appContext.db, id, modelRouter.getDefault(), appContext.siteId).catch(
+					(err: unknown) =>
+						console.warn(`[recovery] Summary extraction failed for ${id}:`, formatError(err as Error)),
+				);
+			}
+			console.log(`[recovery] Queued summary extraction for ${threadsNeedingSummary.length} thread(s)`);
+		}
+	}
+
+	// 11b. Initialize relay processor (now that modelRouter is ready)
 	// Always started — even in single-host mode without a keyring, the relay processor
 	// handles local platform connector intake relays via the self-loopback mechanism.
 	const syncConfigResult = appContext.optionalConfig.sync;
@@ -603,7 +628,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		return relayProcessor.executeImmediate(request, hubSiteId);
 	};
 
-	// 11b. Initialize reachability tracker for eager push (hub-side)
+	// 11c. Initialize reachability tracker for eager push (hub-side)
 	const reachabilityTracker = new ReachabilityTracker();
 
 	// Determine hub siteId from keyring (for spoke-side validation)
