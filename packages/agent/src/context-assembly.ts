@@ -1207,7 +1207,8 @@ Original output was too large for the context window. If you need the full conte
 				(sum, m) => sum + countContentTokens(m.content),
 				0,
 			);
-			const historyBudget = Math.max(0, contextWindow - systemTokens);
+			const toolTokens = params.toolTokenEstimate ?? 0;
+			const historyBudget = Math.max(0, contextWindow - systemTokens - toolTokens);
 
 			// Walk backwards from end, accumulating tokens until we exceed budget
 			let accumulatedTokens = 0;
