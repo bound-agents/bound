@@ -584,15 +584,28 @@ export class AgentLoop {
 					const backends = this.ctx.config?.modelBackends?.backends;
 					if (backends) {
 						const backendConfig = backends.find(
-							(b: { id: string; price_per_m_input?: number; price_per_m_output?: number }) =>
-								b.id === resolvedModelId,
+							(b: {
+								id: string;
+								price_per_m_input?: number;
+								price_per_m_output?: number;
+								price_per_m_cache_read?: number;
+								price_per_m_cache_write?: number;
+							}) => b.id === resolvedModelId,
 						);
 						if (backendConfig) {
 							const inputCost =
 								(parsed.usage.inputTokens * (backendConfig.price_per_m_input ?? 0)) / 1_000_000;
 							const outputCost =
 								(parsed.usage.outputTokens * (backendConfig.price_per_m_output ?? 0)) / 1_000_000;
-							cost_usd = inputCost + outputCost;
+							const cacheReadCost =
+								((parsed.usage.cacheReadTokens ?? 0) *
+									(backendConfig.price_per_m_cache_read ?? 0)) /
+								1_000_000;
+							const cacheWriteCost =
+								((parsed.usage.cacheWriteTokens ?? 0) *
+									(backendConfig.price_per_m_cache_write ?? 0)) /
+								1_000_000;
+							cost_usd = inputCost + outputCost + cacheReadCost + cacheWriteCost;
 						}
 					}
 

@@ -1023,6 +1023,71 @@ describe("AgentLoop", () => {
 		expect(turns[0].cost_usd).toBeCloseTo(0.000105, 8);
 	});
 
+	it("includes cache token costs in cost_usd calculation", async () => {
+		const mockBackend = new MockLLMBackend();
+		// Response with significant cache usage
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "Cached response" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 50, // Non-cached input
+					output_tokens: 10,
+					cache_write_tokens: 200, // 200 tokens written to cache
+					cache_read_tokens: 10000, // 10k tokens read from cache
+					estimated: false,
+				},
+			};
+		});
+
+		const mockBash = createMockSandbox();
+		const ctx = {
+			db,
+			logger: { info: () => {}, warn: () => {}, error: () => {} },
+			eventBus: { on: () => {}, off: () => {}, emit: () => {} },
+			hostName: "test-host",
+			siteId: "test-site-id",
+			config: {
+				modelBackends: {
+					backends: [
+						{
+							id: "claude-opus",
+							provider: "bedrock",
+							model: "claude-opus",
+							context_window: 200000,
+							tier: 1,
+							price_per_m_input: 5.0,
+							price_per_m_output: 25.0,
+							price_per_m_cache_read: 0.5,
+							price_per_m_cache_write: 6.25,
+						},
+					],
+					default: "claude-opus",
+				},
+			},
+		} as unknown as AppContext;
+
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		await agentLoop.run();
+
+		// Expected cost:
+		// input: 50 * 5.0 / 1M = 0.000250
+		// output: 10 * 25.0 / 1M = 0.000250
+		// cache_read: 10000 * 0.5 / 1M = 0.005000
+		// cache_write: 200 * 6.25 / 1M = 0.001250
+		// Total: 0.006750
+		const turns = db
+			.query("SELECT cost_usd FROM turns WHERE thread_id = ?")
+			.all(threadId) as Array<{ cost_usd: number }>;
+
+		expect(turns.length).toBe(1);
+		expect(turns[0].cost_usd).toBeCloseTo(0.006750, 6);
+	});
+
 	// Bug #10: turns table must record the resolved model_id, not "unknown"
 	it("records the resolved model_id in the turns table (not 'unknown')", async () => {
 		const mockBackend = new MockLLMBackend();
