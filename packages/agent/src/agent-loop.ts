@@ -647,7 +647,12 @@ export class AgentLoop {
 				// (avoids stale debug across multi-turn agentic loops where
 				// assembleContext runs once but recordContextDebug runs per turn)
 				if (this.lastContextDebug && parsed.usage.inputTokens > 0) {
-					const actualTokens = parsed.usage.inputTokens;
+					// Use total context size: inputTokens may exclude cached tokens
+					// (Bedrock reports only non-cached; Anthropic reports all).
+					const actualTokens =
+						parsed.usage.inputTokens +
+						(parsed.usage.cacheReadTokens ?? 0) +
+						(parsed.usage.cacheWriteTokens ?? 0);
 					const previousEstimated = this.lastContextDebug.totalEstimated;
 					const delta = actualTokens - previousEstimated;
 					this.lastContextDebug = {
