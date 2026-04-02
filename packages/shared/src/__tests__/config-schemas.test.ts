@@ -183,6 +183,34 @@ describe("Config schemas", () => {
 			const result = modelBackendsSchema.safeParse(config);
 			expect(result.success).toBe(false);
 		});
+
+		it("rejects duplicate backend IDs", () => {
+			const config = {
+				backends: [
+					{
+						id: "my-backend",
+						provider: "anthropic",
+						model: "claude-3-opus",
+						context_window: 200000,
+						tier: 5,
+					},
+					{
+						id: "my-backend",
+						provider: "anthropic",
+						model: "claude-3-sonnet",
+						context_window: 200000,
+						tier: 3,
+					},
+				],
+				default: "my-backend",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+			if (!result.success) {
+				const messages = result.error.issues.map((i) => i.message);
+				expect(messages.some((m) => m.toLowerCase().includes("duplicate"))).toBe(true);
+			}
+		});
 	});
 
 	describe("networkSchema", () => {
@@ -330,6 +358,62 @@ describe("Config schemas", () => {
 			};
 			const result = mcpSchema.safeParse(config);
 			expect(result.success).toBe(false);
+		});
+
+		it("requires command field for stdio transport", () => {
+			const config = {
+				servers: [
+					{
+						name: "filesystem",
+						transport: "stdio",
+						args: ["mcp-server.js"],
+					},
+				],
+			};
+			const result = mcpSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
+		it("requires url field for http transport", () => {
+			const config = {
+				servers: [
+					{
+						name: "web",
+						transport: "http",
+						headers: { "X-API-Key": "secret" },
+					},
+				],
+			};
+			const result = mcpSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
+		it("allows optional args and env for stdio transport", () => {
+			const config = {
+				servers: [
+					{
+						name: "filesystem",
+						command: "node",
+						transport: "stdio",
+					},
+				],
+			};
+			const result = mcpSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("allows optional headers for http transport", () => {
+			const config = {
+				servers: [
+					{
+						name: "web",
+						url: "https://mcp.example.com",
+						transport: "http",
+					},
+				],
+			};
+			const result = mcpSchema.safeParse(config);
+			expect(result.success).toBe(true);
 		});
 	});
 

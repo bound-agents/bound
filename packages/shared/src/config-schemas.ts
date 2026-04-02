@@ -86,6 +86,13 @@ export const modelBackendsSchema = z
 			});
 		},
 		{ message: "ollama and openai-compatible providers require base_url" },
+	)
+	.refine(
+		(data) => {
+			const ids = data.backends.map((b) => b.id);
+			return new Set(ids).size === ids.length;
+		},
+		{ message: "Duplicate backend IDs are not allowed" },
 	);
 
 export type ModelBackendsConfig = z.infer<typeof modelBackendsSchema>;
@@ -158,19 +165,32 @@ export const keyringSchema = z.object({
 
 export type KeyringConfig = z.infer<typeof keyringSchema>;
 
+const mcpServerBaseSchema = z.object({
+	name: z.string().min(1),
+	allow_tools: z.array(z.string()).optional(),
+	confirm: z.array(z.string()).optional(),
+});
+
+const mcpServerStdioSchema = mcpServerBaseSchema.extend({
+	transport: z.literal("stdio"),
+	command: z.string().min(1),
+	args: z.array(z.string()).optional(),
+	env: z.record(z.string(), z.string()).optional(),
+});
+
+const mcpServerHttpSchema = mcpServerBaseSchema.extend({
+	transport: z.literal("http"),
+	url: z.string().url(),
+	headers: z.record(z.string(), z.string()).optional(),
+});
+
+const mcpServerSchema = z.discriminatedUnion("transport", [
+	mcpServerStdioSchema,
+	mcpServerHttpSchema,
+]);
+
 export const mcpSchema = z.object({
-	servers: z.array(
-		z.object({
-			name: z.string().min(1),
-			command: z.string().optional(),
-			args: z.array(z.string()).optional(),
-			url: z.string().optional(),
-			transport: z.enum(["stdio", "http"]),
-			headers: z.record(z.string(), z.string()).optional(),
-			allow_tools: z.array(z.string()).optional(),
-			confirm: z.array(z.string()).optional(),
-		}),
-	),
+	servers: z.array(mcpServerSchema),
 });
 
 export type McpConfig = z.infer<typeof mcpSchema>;
