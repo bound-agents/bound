@@ -60,8 +60,13 @@ export function findEligibleHosts(
 	const eligible: EligibleHost[] = [];
 	for (const row of rows) {
 		if (!row.mcp_tools) continue;
-		const tools: string[] = JSON.parse(row.mcp_tools);
-		if (!tools.includes(toolCommandName)) continue;
+		let tools: string[];
+		try {
+			tools = JSON.parse(row.mcp_tools);
+		} catch {
+			continue; // Skip hosts with corrupted mcp_tools
+		}
+		if (!Array.isArray(tools) || !tools.includes(toolCommandName)) continue;
 		eligible.push({
 			site_id: row.site_id,
 			host_name: row.host_name,
