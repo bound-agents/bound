@@ -23,6 +23,8 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 			if (status) {
 				query += " AND status = ?";
 				params.push(status);
+			} else {
+				query += " AND status != 'applied'";
 			}
 
 			query += " ORDER BY proposed_at DESC";
