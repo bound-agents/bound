@@ -2,12 +2,13 @@ import type { Database } from "bun:sqlite";
 import type { LLMBackend } from "@bound/llm";
 import type { Result } from "@bound/shared";
 import type { Message, Thread } from "@bound/shared";
+import { updateRow } from "@bound/core";
 
 export async function generateThreadTitle(
 	db: Database,
 	threadId: string,
 	llmBackend: LLMBackend,
-	_siteId: string,
+	siteId: string,
 ): Promise<Result<string, Error>> {
 	try {
 		// Check if thread already has a title (at-most-once guarantee)
@@ -72,7 +73,7 @@ ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
 		}
 
 		// Store the generated title
-		db.prepare("UPDATE threads SET title = ? WHERE id = ?").run(title, threadId);
+		updateRow(db, "threads", threadId, { title }, siteId);
 
 		return { ok: true, value: title };
 	} catch (error) {
@@ -86,7 +87,7 @@ ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
 
 			if (fallbackMsg) {
 				const fallbackTitle = fallbackMsg.content.substring(0, 50).trim();
-				db.prepare("UPDATE threads SET title = ? WHERE id = ?").run(fallbackTitle, threadId);
+				updateRow(db, "threads", threadId, { title: fallbackTitle }, siteId);
 				return { ok: true, value: fallbackTitle };
 			}
 		} catch {

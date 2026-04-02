@@ -691,11 +691,11 @@ describe("MCP Bridge", () => {
 		insertRow(
 			db,
 			"hosts",
-			siteId,
 			{
 				site_id: siteId,
 				host_name: "test-host",
 				deleted: 0,
+				modified_at: new Date().toISOString(),
 			},
 			siteId,
 		);
