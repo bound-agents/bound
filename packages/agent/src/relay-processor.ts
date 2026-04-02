@@ -671,7 +671,12 @@ export class RelayProcessor {
 					)
 					.all();
 				for (const host of hosts) {
-					const models = JSON.parse(host.models) as string[];
+					let models: string[];
+					try {
+						models = JSON.parse(host.models) as string[];
+					} catch {
+						continue; // Skip host with corrupted models JSON
+					}
 					if (models.includes(lastModel.model_id)) return host.site_id;
 				}
 			}
