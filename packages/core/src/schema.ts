@@ -448,4 +448,11 @@ export function applySchema(db: Database): void {
 		CREATE INDEX IF NOT EXISTS idx_relay_inbox_cleanup
 		ON relay_inbox(processed, received_at) WHERE processed = 1
 	`);
+
+	// Performance indexes for scheduler task queries (run every tick)
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_tasks_pending_schedule
+		ON tasks(status, next_run_at)
+		WHERE status = 'pending' AND deleted = 0 AND next_run_at IS NOT NULL
+	`);
 }

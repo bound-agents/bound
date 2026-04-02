@@ -833,7 +833,12 @@ export class AgentLoop {
 				this.config.threadId,
 				this.modelRouter.getDefault(),
 				this.ctx.siteId,
-			).catch(() => {});
+			).catch((err) => {
+				this.ctx.logger.warn("Summary/memory extraction failed", {
+					threadId: this.config.threadId,
+					error: formatError(err),
+				});
+			});
 
 			return {
 				messagesCreated: this.messagesCreated,
