@@ -16,6 +16,7 @@ interface ToolEntry {
 	input: unknown;
 	id: string;
 	result?: string;
+	timestamp?: string;
 }
 
 interface ToolCallItem {
@@ -136,13 +137,13 @@ $effect(() => {
 function parseToolCallEntries(item: ToolCallItem): ToolEntry[] {
 	try {
 		const parsed = JSON.parse(item.content);
-		if (!Array.isArray(parsed)) return [{ name: "tool", input: item.content, id: "", result: item.toolResults?.[0]?.content }];
+		if (!Array.isArray(parsed)) return [{ name: "tool", input: item.content, id: "", result: item.toolResults?.[0]?.content, timestamp: item.earliest }];
 		return (parsed as Array<{ type: string; id: string; name: string; input: unknown }>).map((use) => {
 			const matched = item.toolResults?.find((r) => r.tool_name === use.id);
-			return { name: use.name, input: use.input, id: use.id, result: matched?.content };
+			return { name: use.name, input: use.input, id: use.id, result: matched?.content, timestamp: item.earliest };
 		});
 	} catch {
-		return [{ name: "tool", input: item.content, id: "", result: item.toolResults?.[0]?.content }];
+		return [{ name: "tool", input: item.content, id: "", result: item.toolResults?.[0]?.content, timestamp: item.earliest }];
 	}
 }
 
@@ -220,7 +221,7 @@ let displayItems = $derived.by((): DisplayItem[] => {
 					data-turn-active={active && turnRange ? "" : undefined}
 				>
 					{#if item.kind === "toolGroup"}
-						<ToolCallGroup entries={item.entries} />
+						<ToolCallGroup entries={item.entries} {turnRange} />
 					{:else}
 						<MessageBubble
 							role={item.msg.role}

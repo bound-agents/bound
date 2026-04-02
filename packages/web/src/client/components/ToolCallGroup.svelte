@@ -6,9 +6,22 @@ interface ToolEntry {
 	input: unknown;
 	id: string;
 	result?: string;
+	timestamp?: string;
 }
 
-const { entries } = $props<{ entries: ToolEntry[] }>();
+interface TurnRange {
+	from: string;
+	to: string | null;
+}
+
+const { entries, turnRange = null } = $props<{ entries: ToolEntry[]; turnRange?: TurnRange | null }>();
+
+function entryInRange(entry: ToolEntry): boolean {
+	if (!turnRange || !entry.timestamp) return true;
+	if (entry.timestamp < turnRange.from) return false;
+	if (turnRange.to !== null && entry.timestamp >= turnRange.to) return false;
+	return true;
+}
 
 let groupExpanded = $state(false);
 let expandedTools = $state(new Set<number>());
@@ -62,7 +75,7 @@ const doneCount = $derived(entries.filter((e) => e.result !== undefined).length)
 	{#if groupExpanded}
 		<div class="tool-list">
 			{#each entries as entry, idx}
-				<div class="tool-row" class:tool-row-expanded={expandedTools.has(idx)}>
+				<div class="tool-row" class:tool-row-expanded={expandedTools.has(idx)} class:tool-row-dimmed={turnRange !== null && !entryInRange(entry)}>
 					<div
 						class="tool-row-header"
 						onclick={() => toggleTool(idx)}
@@ -166,6 +179,11 @@ const doneCount = $derived(entries.filter((e) => e.result !== undefined).length)
 
 	.tool-row-expanded {
 		border-color: rgba(143, 118, 214, 0.2);
+	}
+
+	.tool-row-dimmed {
+		opacity: 0.3;
+		transition: opacity 0.3s ease;
 	}
 
 	.tool-row-header {
