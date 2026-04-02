@@ -1,5 +1,6 @@
 <script lang="ts">
 import MessageBubble from "./MessageBubble.svelte";
+import ToolCallGroup from "./ToolCallGroup.svelte";
 
 interface Message {
 	role: string;
@@ -8,6 +9,22 @@ interface Message {
 	model_id?: string | null;
 }
 
+interface ToolEntry {
+	name: string;
+	input: unknown;
+	id: string;
+	result?: string;
+}
+
+interface ToolCallItem {
+	content: string;
+	toolResults?: Message[];
+}
+
+type DisplayItem =
+	| { kind: "message"; msg: Message }
+	| { kind: "toolGroup"; entries: ToolEntry[] };
+
 interface Props {
 	messages: Message[];
 	waiting?: boolean;
@@ -15,6 +32,77 @@ interface Props {
 }
 
 const { messages, waiting = false, emptyText = null }: Props = $props();
+
+// Parse a tool_call content + results into ToolEntry items
+function parseToolCallEntries(item: ToolCallItem): ToolEntry[] {
+	try {
+		const parsed = JSON.parse(item.content);
+		if (!Array.isArray(parsed)) return [{ name: "tool", input: item.content, id: "", result: item.toolResults?.[0]?.content }];
+		return (parsed as Array<{ type: string; id: string; name: string; input: unknown }>).map((use) => {
+			const matched = item.toolResults?.find((r) => r.tool_name === use.id);
+			return { name: use.name, input: use.input, id: use.id, result: matched?.content };
+		});
+	} catch {
+		return [{ name: "tool", input: item.content, id: "", result: item.toolResults?.[0]?.content }];
+	}
+}
+
+let displayItems = $derived.by((): DisplayItem[] => {
+	// Pass 1: pair tool_call with consecutive tool_results
+	const pass1: Array<{ kind: "message"; msg: Message } | { kind: "toolCall"; item: ToolCallItem }> = [];
+	let i = 0;
+	while (i < messages.length) {
+		const msg = messages[i];
+		if (msg.role === "tool_call") {
+			const results: Message[] = [];
+			let j = i + 1;
+			while (j < messages.length && messages[j].role === "tool_result") {
+				results.push(messages[j]);
+				j++;
+			}
+			pass1.push({ kind: "toolCall", item: { content: msg.content, toolResults: results.length > 0 ? results : undefined } });
+			i = j;
+		} else {
+			pass1.push({ kind: "message", msg });
+			i++;
+		}
+	}
+
+	// Pass 2: merge consecutive toolCall items into groups.
+	// Assistant messages between tool turns (thinking-out-loud text the LLM emits
+	// alongside tool calls) are absorbed into the group so they don't break the chain.
+	const items: DisplayItem[] = [];
+	let k = 0;
+	while (k < pass1.length) {
+		const entry = pass1[k];
+		if (entry.kind === "toolCall") {
+			const batch: ToolCallItem[] = [];
+			while (k < pass1.length) {
+				const cur = pass1[k];
+				if (cur.kind === "toolCall") {
+					batch.push(cur.item);
+					k++;
+				} else if (
+					cur.kind === "message" &&
+					cur.msg.role === "assistant" &&
+					k + 1 < pass1.length &&
+					pass1[k + 1].kind === "toolCall"
+				) {
+					// Skip assistant messages that sit between tool turns
+					k++;
+				} else {
+					break;
+				}
+			}
+			const allEntries = batch.flatMap(parseToolCallEntries);
+			items.push({ kind: "toolGroup", entries: allEntries });
+		} else {
+			items.push(entry);
+			k++;
+		}
+	}
+	return items;
+});
 </script>
 
 <div class="board">
@@ -24,13 +112,17 @@ const { messages, waiting = false, emptyText = null }: Props = $props();
 				<p>{emptyText}</p>
 			</div>
 		{:else}
-			{#each messages as msg}
-				<MessageBubble
-					role={msg.role}
-					content={msg.content}
-					toolName={msg.tool_name}
-					modelId={msg.model_id}
-				/>
+			{#each displayItems as item}
+				{#if item.kind === "toolGroup"}
+					<ToolCallGroup entries={item.entries} />
+				{:else}
+					<MessageBubble
+						role={item.msg.role}
+						content={item.msg.content}
+						toolName={item.msg.tool_name}
+						modelId={item.msg.model_id}
+					/>
+				{/if}
 			{/each}
 		{/if}
 		{#if waiting}

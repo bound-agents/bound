@@ -13,11 +13,8 @@ const {
 	modelId?: string | null;
 }>();
 
-let toolCallExpanded = $state(false);
 let rendered = $state("");
 
-// Re-render whenever content or role changes (reactive to streaming updates).
-// Sets rendered to "" for non-markdown roles so the fallback branch shows nothing.
 $effect(() => {
 	if (role === "assistant" || role === "user") {
 		renderMarkdown(content)
@@ -31,35 +28,9 @@ $effect(() => {
 		rendered = "";
 	}
 });
-
-function getToolName(): string {
-	if (toolName) return toolName;
-	// Attempt to parse from JSON content if tool_name field not provided separately
-	try {
-		const parsed = JSON.parse(content) as { name?: string; tool?: string };
-		return parsed.name ?? parsed.tool ?? "tool";
-	} catch {
-		return "tool";
-	}
-}
-
-function toggleToolCall(): void {
-	toolCallExpanded = !toolCallExpanded;
-}
 </script>
 
-{#if role === "tool_call"}
-	<div class="message-bubble tool_call">
-		<div class="tool-call-header" onclick={toggleToolCall} onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") toggleToolCall(); }} role="button" tabindex={0}>
-			<span class="tool-icon">&#9881;</span>
-			<span class="tool-name">{getToolName()}</span>
-			<span class="tool-toggle">{toolCallExpanded ? "&#9650;" : "&#9660;"}</span>
-		</div>
-		{#if toolCallExpanded}
-			<pre class="tool-content">{content}</pre>
-		{/if}
-	</div>
-{:else if role === "tool_result"}
+{#if role === "tool_result"}
 	<div class="message-bubble tool_result">
 		<div class="role-badge result-badge">result</div>
 		<pre class="tool-output">{content}</pre>
@@ -111,13 +82,6 @@ function toggleToolCall(): void {
 	.assistant {
 		background: rgba(243, 151, 0, 0.08);
 		border-left-color: var(--line-0);
-	}
-
-	/* Tool calls: technical blue/purple, Hanzomon purple accent */
-	.tool_call {
-		background: rgba(143, 118, 214, 0.08);
-		border-left-color: var(--line-6);
-		border-left-style: dashed;
 	}
 
 	/* Tool results: Chiyoda green accent */
@@ -184,55 +148,6 @@ function toggleToolCall(): void {
 		font-style: italic;
 		color: var(--text-muted);
 		font-size: var(--text-sm);
-	}
-
-	.tool-call-header {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		cursor: pointer;
-		user-select: none;
-		padding: 2px 0;
-	}
-
-	.tool-call-header:focus-visible {
-		outline: 2px solid var(--line-6);
-		outline-offset: 2px;
-		border-radius: 4px;
-	}
-
-	.tool-icon {
-		color: var(--line-6);
-		font-size: 15px;
-	}
-
-	.tool-name {
-		font-family: var(--font-mono);
-		font-weight: 600;
-		color: #c4b5f4;
-		font-size: var(--text-sm);
-		flex: 1;
-	}
-
-	.tool-toggle {
-		color: var(--text-muted);
-		font-size: 10px;
-		transition: transform 0.2s ease;
-	}
-
-	.tool-content {
-		margin-top: 10px;
-		padding: 12px;
-		background: rgba(10, 10, 20, 0.6);
-		border: 1px solid rgba(143, 118, 214, 0.15);
-		border-radius: 6px;
-		font-family: var(--font-mono);
-		font-size: 12px;
-		color: #c4b5f4;
-		white-space: pre-wrap;
-		word-break: break-all;
-		overflow-x: auto;
-		line-height: 1.5;
 	}
 
 	.tool-output {
