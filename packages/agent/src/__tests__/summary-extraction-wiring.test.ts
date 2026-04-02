@@ -128,6 +128,59 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 		}
 	});
 
+	it("summary update creates change_log entry for threads table", async () => {
+		const threadId = randomUUID();
+		const now = new Date(Date.now() - 5000).toISOString();
+
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			[threadId, "test-user", "web", "localhost", now, now, now],
+		);
+		for (let i = 0; i < 4; i++) {
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, host_origin) VALUES (?, ?, ?, ?, ?, ?)",
+				[randomUUID(), threadId, i % 2 === 0 ? "user" : "assistant", `Msg ${i}`, now, "localhost"],
+			);
+		}
+
+		let callNumber = 0;
+		class SummaryMockLLM implements LLMBackend {
+			async *chat(): AsyncGenerator<StreamChunk> {
+				callNumber++;
+				if (callNumber === 1) {
+					yield { type: "text" as const, content: "Thread summary content here." };
+				} else {
+					yield { type: "text" as const, content: "- I learned something" };
+				}
+				yield {
+					type: "done" as const,
+					usage: { input_tokens: 5, output_tokens: 5, cache_write_tokens: null, cache_read_tokens: null, estimated: false },
+				};
+			}
+			capabilities() {
+				return { streaming: true, tool_use: true, system_prompt: true, prompt_caching: false, vision: false, max_context: 8000 };
+			}
+		}
+
+		// Count change_log entries for this thread before extraction
+		const beforeCount = (
+			db.prepare("SELECT count(*) as cnt FROM change_log WHERE table_name = 'threads' AND row_id = ?").get(threadId) as { cnt: number }
+		).cnt;
+
+		const { extractSummaryAndMemories } = await import("../summary-extraction");
+		await extractSummaryAndMemories(db, threadId, new SummaryMockLLM(), "test-site");
+
+		// Verify summary was written
+		const thread = db.prepare("SELECT summary FROM threads WHERE id = ?").get(threadId) as { summary: string | null };
+		expect(thread.summary).toBeTruthy();
+
+		// Verify change_log entry was created (critical for sync)
+		const afterCount = (
+			db.prepare("SELECT count(*) as cnt FROM change_log WHERE table_name = 'threads' AND row_id = ?").get(threadId) as { cnt: number }
+		).cnt;
+		expect(afterCount).toBeGreaterThan(beforeCount);
+	});
+
 	it("fires extractSummaryAndMemories after loop completion", async () => {
 		const threadId = randomUUID();
 		const now = new Date().toISOString();

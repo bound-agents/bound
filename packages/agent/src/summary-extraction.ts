@@ -69,11 +69,13 @@ export async function extractSummaryAndMemories(
 		const summary = chunks.join("").trim();
 		const now = new Date().toISOString();
 
-		// Update thread with summary
+		// Update thread with summary (via outbox for sync)
 		if (summary) {
-			db.prepare(
-				"UPDATE threads SET summary = ?, summary_through = ?, summary_model_id = ? WHERE id = ?",
-			).run(summary, now, "default", threadId);
+			updateRow(db, "threads", threadId, {
+				summary,
+				summary_through: now,
+				summary_model_id: "default",
+			}, siteId);
 		}
 
 		// Extract key facts as memories by asking the LLM for a bullet-point list.
