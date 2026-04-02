@@ -213,12 +213,32 @@ export class Scheduler {
 
 		// (b) Evict crashed running tasks
 		const evictionTime = new Date(now.getTime() - EVICTION_TIMEOUT).toISOString();
-		this.ctx.db
-			.query(
-				`UPDATE tasks SET status = 'failed', error = 'evicted due to heartbeat timeout'
-			 WHERE status = 'running' AND heartbeat_at < ?`,
-			)
-			.run(evictionTime);
+		const tasksToEvict = this.ctx.db
+			.query("SELECT * FROM tasks WHERE status = 'running' AND heartbeat_at < ?")
+			.all(evictionTime) as Task[];
+
+		if (tasksToEvict.length > 0) {
+			this.ctx.db
+				.query(
+					`UPDATE tasks SET status = 'failed', error = 'evicted due to heartbeat timeout',
+				 consecutive_failures = consecutive_failures + 1
+				 WHERE status = 'running' AND heartbeat_at < ?`,
+				)
+				.run(evictionTime);
+
+			for (const task of tasksToEvict) {
+				rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "heartbeat timeout eviction");
+
+				const newConsecutiveFailures = (task.consecutive_failures ?? 0) + 1;
+				if (newConsecutiveFailures === task.alert_threshold) {
+					this.triggerFailureAdvisory(
+						task,
+						"evicted due to heartbeat timeout",
+						newConsecutiveFailures,
+					);
+				}
+			}
+		}
 	}
 
 	private phase1Schedule(): void {

@@ -402,6 +402,73 @@ describe("Scheduler Integration", () => {
 		expect(thread).not.toBeNull();
 	});
 
+	it("reschedules cron tasks after heartbeat eviction", async () => {
+		const taskId = randomUUID();
+		const now = new Date();
+		const nowStr = now.toISOString();
+		// Heartbeat 3 minutes ago — past the 2-minute EVICTION_TIMEOUT
+		const staleHeartbeat = new Date(now.getTime() - 180_000).toISOString();
+
+		// Insert a cron task in 'running' state with a stale heartbeat
+		db.exec(`
+			INSERT INTO tasks (
+				id, type, status, trigger_spec, payload, thread_id,
+				claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+				run_count, max_runs, requires, model_hint, no_history,
+				inject_mode, depends_on, require_success, alert_threshold,
+				consecutive_failures, event_depth, no_quiescence,
+				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+			) VALUES (
+				'${taskId}', 'cron', 'running', '0 * * * *', NULL, NULL,
+				'test-host', '${nowStr}', NULL, NULL, '${nowStr}',
+				3, NULL, NULL, NULL, 0,
+				'status', NULL, 0, 1,
+				0, 0, 0,
+				'${staleHeartbeat}', NULL, NULL, '${nowStr}', 'system', '${nowStr}', 0
+			)
+		`);
+
+		const agentLoopFactory = (): { run: () => Promise<AgentLoopResult> } => ({
+			run: async (): Promise<AgentLoopResult> => ({
+				messagesCreated: 0,
+				toolCallsMade: 0,
+				filesChanged: 0,
+			}),
+		});
+
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
+		const { stop } = scheduler.start(100);
+
+		// Wait for eviction to happen (phase0 runs every tick)
+		await waitFor(
+			() =>
+				(
+					db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
+						| { status: string }
+						| null
+				)?.status !== "running",
+			{ message: "cron task was not evicted" },
+		);
+		stop();
+
+		const task = db
+			.query("SELECT status, next_run_at, consecutive_failures, error FROM tasks WHERE id = ?")
+			.get(taskId) as {
+			status: string;
+			next_run_at: string | null;
+			consecutive_failures: number;
+			error: string | null;
+		} | null;
+
+		expect(task).not.toBeNull();
+		// Cron task should be rescheduled to pending, NOT stuck in failed
+		expect(task?.status).toBe("pending");
+		expect(task?.next_run_at).not.toBeNull();
+		// consecutive_failures should be incremented
+		expect(task?.consecutive_failures).toBe(1);
+	});
+
 	it("creates separate execution thread when task has origin_thread_id", async () => {
 		const taskId = randomUUID();
 		const originThreadId = randomUUID();
