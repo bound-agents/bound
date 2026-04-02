@@ -8,6 +8,7 @@ import {
 	markProcessed,
 	readUndelivered,
 	readUnprocessed,
+	pruneRelayTables,
 	recordRelayCycle,
 	writeOutbox,
 } from "@bound/core";
@@ -109,11 +110,17 @@ export class RelayProcessor {
 
 	start(pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS): { stop: () => void } {
 		this.stopped = false;
+		let tickCount = 0;
+		const PRUNE_EVERY_N_TICKS = Math.max(1, Math.round(60_000 / pollIntervalMs));
 		const tick = async () => {
 			if (this.stopped) return;
 			try {
 				await this.processPendingEntries();
 				this.pruneIdempotencyCache();
+				// Periodically prune old processed relay entries (~every 60s)
+				if (++tickCount % PRUNE_EVERY_N_TICKS === 0) {
+					pruneRelayTables(this.db);
+				}
 			} catch (error) {
 				this.logger.error("Relay processor tick failed", { error });
 			}
