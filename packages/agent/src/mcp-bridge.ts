@@ -10,6 +10,7 @@
 
 import type { Database } from "bun:sqlite";
 
+import { updateRow } from "@bound/core";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 import { formatError } from "@bound/shared";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -454,13 +455,14 @@ export async function updateHostMCPInfo(
 			}
 		}
 
-		const stmt = db.prepare(
-			"UPDATE hosts SET mcp_servers = ?, mcp_tools = ?, modified_at = ? WHERE site_id = ?",
-		);
-		stmt.run(
-			JSON.stringify(mcp_servers),
-			JSON.stringify(mcp_tools),
-			new Date().toISOString(),
+		updateRow(
+			db,
+			"hosts",
+			siteId,
+			{
+				mcp_servers: JSON.stringify(mcp_servers),
+				mcp_tools: JSON.stringify(mcp_tools),
+			},
 			siteId,
 		);
 	} catch {

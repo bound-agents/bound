@@ -624,15 +624,20 @@ describe("MCP Bridge", () => {
 
 	// AC5.1 & AC5.2: updateHostMCPInfo stores server names not tool names
 	it("updateHostMCPInfo stores server names not tool names", async () => {
-		// Minimal mock DB for updateHostMCPInfo tests
-		const captured: { mcp_tools: string } = { mcp_tools: "" };
-		const mockDb = {
-			prepare: (_sql: string) => ({
-				run: (_mcp_servers: string, mcp_tools: string, _modified_at: string, _siteId: string) => {
-					captured.mcp_tools = mcp_tools;
-				},
-			}),
-		};
+		const { Database } = await import("bun:sqlite");
+		const { applySchema, createDatabase } = await import("@bound/core");
+
+		const db = createDatabase(":memory:");
+		applySchema(db);
+
+		const siteId = "test-site";
+
+		// Create the host row first
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, modified_at, deleted)
+			VALUES (?, ?, ?, ?)`,
+			[siteId, "test-host", new Date().toISOString(), 0],
+		);
 
 		const client1 = makeMockClient(
 			{ name: "server-a", transport: "stdio", command: "test" },
@@ -658,10 +663,76 @@ describe("MCP Bridge", () => {
 			["server-b", client2],
 		]);
 
-		await updateHostMCPInfo(mockDb as unknown as Database, "test-site", clients);
+		await updateHostMCPInfo(db, siteId, clients);
 
-		const parsed = JSON.parse(captured.mcp_tools);
+		const host = db
+			.query(`SELECT mcp_tools FROM hosts WHERE site_id = ?`)
+			.get(siteId) as { mcp_tools: string } | null;
+
+		expect(host).not.toBeNull();
+		const parsed = JSON.parse(host?.mcp_tools ?? "[]");
 		expect(parsed).toEqual(["server-a", "server-b"]);
 		expect(parsed.length).toBe(2);
+
+		db.close();
+	});
+
+	// Outbox bypass fix: updateHostMCPInfo must use change-log outbox
+	it("updateHostMCPInfo creates changelog entry for hosts table", async () => {
+		const { Database } = await import("bun:sqlite");
+		const { applySchema, createDatabase, insertRow } = await import("@bound/core");
+
+		const db = createDatabase(":memory:");
+		applySchema(db);
+
+		const siteId = "test-site-id";
+
+		// Create the host row first using insertRow to establish initial changelog
+		insertRow(
+			db,
+			"hosts",
+			siteId,
+			{
+				site_id: siteId,
+				host_name: "test-host",
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		const client1 = makeMockClient(
+			{ name: "server-x", transport: "stdio", command: "test" },
+			[{ name: "tool1", description: "Tool 1", inputSchema: {} }],
+			[],
+			[],
+		);
+
+		const clients = new Map([["server-x", client1]]);
+
+		await updateHostMCPInfo(db, siteId, clients);
+
+		// Verify changelog entry exists
+		const changelogEntry = db
+			.query(
+				`SELECT * FROM change_log
+				WHERE table_name = 'hosts' AND row_id = ?
+				ORDER BY seq DESC LIMIT 1`,
+			)
+			.get(siteId) as { table_name: string; row_id: string; row_data: string } | null;
+
+		expect(changelogEntry).not.toBeNull();
+		expect(changelogEntry?.table_name).toBe("hosts");
+		expect(changelogEntry?.row_id).toBe(siteId);
+
+		const rowData = JSON.parse(changelogEntry?.row_data ?? "{}");
+		expect(rowData.mcp_servers).toBeDefined();
+		expect(rowData.mcp_tools).toBeDefined();
+
+		const mcpServers = JSON.parse(rowData.mcp_servers);
+		const mcpTools = JSON.parse(rowData.mcp_tools);
+		expect(mcpServers).toEqual(["server-x"]);
+		expect(mcpTools).toEqual(["server-x"]);
+
+		db.close();
 	});
 });
