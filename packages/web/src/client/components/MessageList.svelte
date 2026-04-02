@@ -48,9 +48,13 @@ function checkIsAtBottom(): boolean {
 
 function scrollToBottom(smooth = true): void {
 	if (!scrollContainer) return;
-	scrollContainer.scrollTo({
-		top: scrollContainer.scrollHeight,
-		behavior: smooth ? "smooth" : "instant",
+	// Wait for browser layout so scrollHeight reflects new content
+	requestAnimationFrame(() => {
+		if (!scrollContainer) return;
+		scrollContainer.scrollTo({
+			top: scrollContainer.scrollHeight,
+			behavior: smooth ? "smooth" : "instant",
+		});
 	});
 }
 
