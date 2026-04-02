@@ -1039,6 +1039,16 @@ export async function runStart(args: StartArgs): Promise<void> {
 		console.log("[sync] Not configured");
 	}
 
+	// 14b. Change-log pruning (runs in both single-host and multi-host modes)
+	let pruningHandle: { stop: () => void } | null = null;
+	try {
+		const { startPruningLoop } = await import("@bound/sync");
+		pruningHandle = startPruningLoop(appContext.db, 300_000, appContext.logger);
+		console.log("[sync] Change-log pruning started (5m interval)");
+	} catch (error) {
+		console.warn(`[sync] Failed to start pruning: ${formatError(error)}`);
+	}
+
 	// 15. Overlay scanning (if configured)
 	console.log("Initializing overlay scanner...");
 	let overlayHandle: { stop: () => void } | null = null;
@@ -1151,6 +1161,7 @@ Press Ctrl+C to stop.
 			console.log("\nShutting down gracefully...");
 			if (schedulerHandle) schedulerHandle.stop();
 			if (syncLoopHandle) syncLoopHandle.stop();
+			if (pruningHandle) pruningHandle.stop();
 			if (overlayHandle) overlayHandle.stop();
 			if (relayProcessorHandle) relayProcessorHandle.stop();
 			if (platformRegistry) {
@@ -1176,6 +1187,7 @@ Press Ctrl+C to stop.
 			console.log("\nTerminating...");
 			if (schedulerHandle) schedulerHandle.stop();
 			if (syncLoopHandle) syncLoopHandle.stop();
+			if (pruningHandle) pruningHandle.stop();
 			if (overlayHandle) overlayHandle.stop();
 			if (relayProcessorHandle) relayProcessorHandle.stop();
 			if (platformRegistry) {

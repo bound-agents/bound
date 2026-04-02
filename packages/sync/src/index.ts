@@ -25,3 +25,6 @@ export { ReachabilityTracker } from "./reachability.js";
 // Eager push
 export type { EagerPushConfig } from "./eager-push.js";
 export { eagerPushToSpoke } from "./eager-push.js";
+
+// Pruning
+export { startPruningLoop } from "./pruning.js";
