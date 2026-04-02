@@ -117,7 +117,7 @@ export function getPendingAdvisories(db: Database): Advisory[] {
 	const advisories = db
 		.prepare(
 			`SELECT * FROM advisories
-			 WHERE status IN ('proposed', 'deferred')
+			 WHERE deleted = 0
 			 AND (status = 'proposed' OR (status = 'deferred' AND defer_until < ?))
 			 ORDER BY proposed_at ASC, rowid ASC`,
 		)

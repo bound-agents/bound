@@ -368,4 +368,26 @@ describe("Advisories", () => {
 		expect(pending.length).toBe(1);
 		expect(pending[0].id).toBe(id);
 	});
+
+	it("should not return soft-deleted advisories from getPendingAdvisories", () => {
+		const id = createAdvisory(
+			db,
+			{
+				type: "general",
+				status: "proposed",
+				title: "Deleted advisory",
+				detail: "This was soft-deleted",
+				action: null,
+				impact: null,
+				evidence: null,
+			},
+			siteId,
+		);
+
+		// Soft-delete the advisory
+		db.prepare("UPDATE advisories SET deleted = 1 WHERE id = ?").run(id);
+
+		const pending = getPendingAdvisories(db);
+		expect(pending.length).toBe(0);
+	});
 });
