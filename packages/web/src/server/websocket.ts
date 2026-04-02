@@ -17,7 +17,7 @@ export interface WebSocketConfig {
 	close(ws: ServerWebSocket<unknown>): void;
 }
 
-export function createWebSocketHandler(eventBus: TypedEventEmitter): WebSocketConfig {
+export function createWebSocketHandler(eventBus: TypedEventEmitter): WebSocketConfig & { cleanup: () => void } {
 	const clients = new Map<ServerWebSocket<unknown>, ClientConnection>();
 
 	const handleMessageCreated = (data: {
@@ -162,6 +162,16 @@ export function createWebSocketHandler(eventBus: TypedEventEmitter): WebSocketCo
 
 		close(ws: ServerWebSocket<unknown>): void {
 			clients.delete(ws);
+		},
+
+		cleanup(): void {
+			eventBus.off("message:created", handleMessageCreated);
+			eventBus.off("message:broadcast", handleMessageCreated);
+			eventBus.off("task:completed", handleTaskCompleted);
+			eventBus.off("file:changed", handleFileChanged);
+			eventBus.off("alert:created", handleAlertCreated);
+			eventBus.off("context:debug", handleContextDebug);
+			clients.clear();
 		},
 	};
 }

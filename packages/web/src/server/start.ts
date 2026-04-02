@@ -94,6 +94,7 @@ export async function createWebServer(
 		},
 
 		async stop(): Promise<void> {
+			wsHandler.cleanup();
 			if (server) {
 				server.stop(true);
 				server = null;
