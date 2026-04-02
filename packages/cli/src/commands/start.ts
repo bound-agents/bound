@@ -1047,7 +1047,15 @@ export async function runStart(args: StartArgs): Promise<void> {
 		const overlayConfig = overlayResult.value as { mounts: Record<string, string> };
 		try {
 			const { startOverlayScanLoop } = await import("@bound/sandbox");
-			overlayHandle = startOverlayScanLoop(appContext.db, appContext.siteId, overlayConfig.mounts);
+			const { insertRow, updateRow, softDelete } = await import("@bound/core");
+			// biome-ignore lint/suspicious/noExplicitAny: OverlayOutbox uses string table names; core uses SyncedTableName
+			overlayHandle = startOverlayScanLoop(
+				appContext.db,
+				appContext.siteId,
+				overlayConfig.mounts,
+				undefined,
+				{ insertRow: insertRow as any, updateRow: updateRow as any, softDelete: softDelete as any },
+			);
 			console.log(
 				`[overlay] Scanner started (${Object.keys(overlayConfig.mounts).length} mount(s))`,
 			);

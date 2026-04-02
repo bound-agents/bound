@@ -10,6 +10,23 @@ export interface ScanResult {
 	tombstoned: number;
 }
 
+/**
+ * Optional outbox writer for synced table operations. When provided,
+ * all overlay_index writes go through the change-log outbox. When absent,
+ * direct SQL is used (backward compat for environments without @bound/core).
+ */
+export interface OverlayOutbox {
+	insertRow: (db: Database, table: string, row: Record<string, unknown>, siteId: string) => void;
+	updateRow: (
+		db: Database,
+		table: string,
+		id: string,
+		changes: Record<string, unknown>,
+		siteId: string,
+	) => void;
+	softDelete: (db: Database, table: string, id: string, siteId: string) => void;
+}
+
 function computeContentHash(filePath: string): string {
 	try {
 		const content = readFileSync(filePath);
@@ -57,6 +74,7 @@ export function scanOverlayIndex(
 	db: Database,
 	siteId: string,
 	overlayMounts: Record<string, string>,
+	outbox?: OverlayOutbox,
 ): ScanResult {
 	let created = 0;
 	let updated = 0;
@@ -83,15 +101,29 @@ export function scanOverlayIndex(
 
 			if (!existing) {
 				// New file
-				db.prepare(
-					"INSERT OR IGNORE INTO overlay_index (id, site_id, path, size_bytes, content_hash, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
-				).run(id, siteId, entry.path, stat.size, contentHash, now);
+				if (outbox) {
+					outbox.insertRow(db, "overlay_index", {
+						id, site_id: siteId, path: entry.path,
+						size_bytes: stat.size, content_hash: contentHash,
+						indexed_at: now, deleted: 0,
+					}, siteId);
+				} else {
+					db.prepare(
+						"INSERT OR IGNORE INTO overlay_index (id, site_id, path, size_bytes, content_hash, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
+					).run(id, siteId, entry.path, stat.size, contentHash, now);
+				}
 				created++;
 			} else if (existing.content_hash !== contentHash) {
 				// File changed
-				db.prepare(
-					"UPDATE overlay_index SET size_bytes = ?, content_hash = ?, indexed_at = ? WHERE id = ?",
-				).run(stat.size, contentHash, now, id);
+				if (outbox) {
+					outbox.updateRow(db, "overlay_index", id, {
+						size_bytes: stat.size, content_hash: contentHash, indexed_at: now,
+					}, siteId);
+				} else {
+					db.prepare(
+						"UPDATE overlay_index SET size_bytes = ?, content_hash = ?, indexed_at = ? WHERE id = ?",
+					).run(stat.size, contentHash, now, id);
+				}
 				updated++;
 			}
 		}
@@ -104,11 +136,15 @@ export function scanOverlayIndex(
 
 	for (const entry of allEntries) {
 		if (!scannedPaths.has(entry.path)) {
-			const now = new Date().toISOString();
-			db.prepare("UPDATE overlay_index SET deleted = 1, indexed_at = ? WHERE id = ?").run(
-				now,
-				entry.id,
-			);
+			if (outbox) {
+				outbox.softDelete(db, "overlay_index", entry.id, siteId);
+			} else {
+				const now = new Date().toISOString();
+				db.prepare("UPDATE overlay_index SET deleted = 1, indexed_at = ? WHERE id = ?").run(
+					now,
+					entry.id,
+				);
+			}
 			tombstoned++;
 		}
 	}
@@ -121,15 +157,16 @@ export function startOverlayScanLoop(
 	siteId: string,
 	overlayMounts: Record<string, string>,
 	intervalMs: number = 5 * 60 * 1000,
+	outbox?: OverlayOutbox,
 ): { stop: () => void } {
 	let stopped = false;
 
 	// Run initial scan immediately at startup
-	scanOverlayIndex(db, siteId, overlayMounts);
+	scanOverlayIndex(db, siteId, overlayMounts, outbox);
 
 	const interval = setInterval(() => {
 		if (!stopped) {
-			scanOverlayIndex(db, siteId, overlayMounts);
+			scanOverlayIndex(db, siteId, overlayMounts, outbox);
 		}
 	}, intervalMs);
 
