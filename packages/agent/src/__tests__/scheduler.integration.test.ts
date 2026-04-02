@@ -280,6 +280,55 @@ describe("Scheduler Integration", () => {
 		expect(task?.status).not.toBe("pending");
 	});
 
+	it("does not overwrite task already claimed by another host", async () => {
+		const taskId = randomUUID();
+		const now = new Date();
+		const nowStr = now.toISOString();
+		const pastTime = new Date(now.getTime() - 60000).toISOString();
+
+		// Insert a task that's already claimed by another host
+		db.exec(`
+			INSERT INTO tasks (
+				id, type, status, trigger_spec, payload, thread_id,
+				claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+				run_count, max_runs, requires, model_hint, no_history,
+				inject_mode, depends_on, require_success, alert_threshold,
+				consecutive_failures, event_depth, no_quiescence,
+				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+			) VALUES (
+				'${taskId}', 'deferred', 'claimed', 'in 10m', NULL, NULL,
+				'other-host', '${nowStr}', NULL, '${pastTime}', NULL,
+				0, NULL, NULL, NULL, 0,
+				'status', NULL, 0, 5,
+				0, 0, 0,
+				NULL, NULL, NULL, '${nowStr}', 'system', '${nowStr}', 0
+			)
+		`);
+
+		const agentLoopFactory = (): { run: () => Promise<AgentLoopResult> } => ({
+			run: async (): Promise<AgentLoopResult> => ({
+				messagesCreated: 0,
+				toolCallsMade: 0,
+				filesChanged: 0,
+			}),
+		});
+
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
+		const { stop } = scheduler.start(100);
+
+		// Let a few ticks pass
+		await sleep(300);
+		stop();
+
+		const task = db
+			.query("SELECT status, claimed_by FROM tasks WHERE id = ?")
+			.get(taskId) as { status: string; claimed_by: string | null } | null;
+
+		// Task should still be claimed by the other host, not overwritten
+		expect(task?.claimed_by).toBe("other-host");
+	});
+
 	it("handles host affinity constraints", async () => {
 		const taskId = randomUUID();
 		const now = new Date().toISOString();

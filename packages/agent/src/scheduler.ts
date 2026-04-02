@@ -254,9 +254,16 @@ export class Scheduler {
 		for (const task of pendingTasks) {
 			if (canRunHere(this.ctx.db, task, this.ctx.hostName, this.ctx.siteId)) {
 				const claimedAt = new Date().toISOString();
-				this.ctx.db
-					.query("UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ?")
+				const result = this.ctx.db
+					.query(
+						"UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ? AND status = 'pending'",
+					)
 					.run(this.ctx.hostName, claimedAt, task.id);
+				if (result.changes === 0) {
+					this.ctx.logger.info("[scheduler] Task already claimed by another host", {
+						taskId: task.id,
+					});
+				}
 			}
 		}
 	}
