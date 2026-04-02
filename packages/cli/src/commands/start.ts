@@ -3,7 +3,7 @@
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
 	AgentLoop,
@@ -124,6 +124,54 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// 1. Load and validate all config files
 	console.log("Loading configuration...");
 	mkdirSync("data", { recursive: true });
+
+	// PID lockfile: prevent multiple bound processes from sharing the same data dir.
+	// Two processes on the same DB + Discord bot token causes duplicate messages.
+	const pidFile = resolve("data", "bound.pid");
+	if (existsSync(pidFile)) {
+		const existingPid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
+		if (!isNaN(existingPid) && existingPid !== process.pid) {
+			let alive = false;
+			try {
+				// signal 0 tests existence without killing
+				process.kill(existingPid, 0);
+				alive = true;
+			} catch {
+				// Process doesn't exist — stale lockfile
+			}
+			if (alive) {
+				console.error(
+					`Another bound process is already running (PID ${existingPid}).\n` +
+						`If this is stale, remove ${pidFile} and try again.`,
+				);
+				process.exit(1);
+			}
+			console.warn(`Cleaning up stale PID lockfile (previous PID ${existingPid}).`);
+		}
+	}
+	writeFileSync(pidFile, String(process.pid), "utf-8");
+
+	// Remove lockfile on clean shutdown
+	const removePidFile = () => {
+		try {
+			// Only remove if it's still our PID (guard against race with a new process)
+			if (existsSync(pidFile) && readFileSync(pidFile, "utf-8").trim() === String(process.pid)) {
+				rmSync(pidFile);
+			}
+		} catch {
+			// Best-effort cleanup
+		}
+	};
+	process.on("exit", removePidFile);
+	process.on("SIGINT", () => {
+		removePidFile();
+		process.exit(0);
+	});
+	process.on("SIGTERM", () => {
+		removePidFile();
+		process.exit(0);
+	});
+
 	const dbPath = resolve("data", "bound.db");
 
 	let appContext: Awaited<ReturnType<typeof createAppContext>>;
