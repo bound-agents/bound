@@ -1105,6 +1105,20 @@ export async function runStart(args: StartArgs): Promise<void> {
 							return { ok: true as const };
 						}
 					: undefined,
+				generateTitle:
+					modelRouter && modelRouter.listBackends().length > 0
+						? async (threadId: string) => {
+								const result = await generateThreadTitle(
+									appContext.db,
+									threadId,
+									modelRouter.getDefault(),
+									appContext.siteId,
+								);
+								if (result.ok) {
+									console.log(`[scheduler] Thread title: ${result.value}`);
+								}
+							}
+						: undefined,
 			},
 			sandbox?.bash,
 		);

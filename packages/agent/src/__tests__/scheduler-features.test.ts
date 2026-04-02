@@ -1420,4 +1420,133 @@ describe("Scheduler features", () => {
 			expect(countAfterSecond).toBe(countAfterFirst);
 		});
 	});
+
+	// -----------------------------------------------------------------------
+	// Thread title generation for scheduler threads
+	// -----------------------------------------------------------------------
+	describe("scheduler thread title generation", () => {
+		it("creates threads with null title, not raw JSON payload", async () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			const payload = JSON.stringify({ type: "deep_read", instructions: "Read something" });
+
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'deferred', 'pending', 'manual', ?, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, payload, pastTime, now, now],
+			);
+
+			const ctx = makeCtx();
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
+			const { stop } = scheduler.start(50);
+
+			await waitFor(
+				() =>
+					(
+						db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as {
+							status: string;
+						} | null
+					)?.status === "completed",
+				{ message: "task did not complete" },
+			);
+			stop();
+
+			// The scheduler should have created a thread for this task.
+			// The thread title must NOT be raw JSON — it should be null so
+			// that generateThreadTitle can produce a proper title later.
+			const task = db.query("SELECT thread_id FROM tasks WHERE id = ?").get(taskId) as {
+				thread_id: string | null;
+			} | null;
+			expect(task?.thread_id).toBeTruthy();
+
+			const thread = db
+				.query("SELECT title FROM threads WHERE id = ?")
+				.get(task!.thread_id!) as { title: string | null } | null;
+			expect(thread).not.toBeNull();
+			// Title should be null (not raw JSON payload)
+			expect(thread?.title).toBeNull();
+
+			// Clean up
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			if (task?.thread_id) {
+				db.run("DELETE FROM threads WHERE id = ?", [task.thread_id]);
+				db.run("DELETE FROM messages WHERE thread_id = ?", [task.thread_id]);
+			}
+		});
+
+		it("calls generateTitle callback after successful task completion", async () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			const payload = JSON.stringify({ type: "test_task" });
+
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'deferred', 'pending', 'manual', ?, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, payload, pastTime, now, now],
+			);
+
+			const titleGenCalls: string[] = [];
+			const ctx = makeCtx();
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any, {
+				generateTitle: async (threadId: string) => {
+					titleGenCalls.push(threadId);
+				},
+			});
+			const { stop } = scheduler.start(50);
+
+			await waitFor(
+				() =>
+					(
+						db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as {
+							status: string;
+						} | null
+					)?.status === "completed",
+				{ message: "task did not complete" },
+			);
+			stop();
+
+			// generateTitle should have been called with the thread ID
+			expect(titleGenCalls.length).toBe(1);
+
+			// Clean up
+			const task = db.query("SELECT thread_id FROM tasks WHERE id = ?").get(taskId) as {
+				thread_id: string | null;
+			} | null;
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			if (task?.thread_id) {
+				db.run("DELETE FROM threads WHERE id = ?", [task.thread_id]);
+				db.run("DELETE FROM messages WHERE thread_id = ?", [task.thread_id]);
+			}
+		});
+	});
 });

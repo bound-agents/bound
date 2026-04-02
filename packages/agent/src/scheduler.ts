@@ -77,6 +77,11 @@ interface SchedulerConfig {
 	 * When absent, model hints are not validated at run time (existing behaviour).
 	 */
 	modelValidator?: (modelId: string) => { ok: true } | { ok: false; error: string };
+	/**
+	 * Optional callback to generate a thread title after a task's agent loop completes.
+	 * Called with the thread ID; fire-and-forget (errors are logged, not propagated).
+	 */
+	generateTitle?: (threadId: string) => Promise<void>;
 }
 
 export class Scheduler {
@@ -373,7 +378,7 @@ export class Scheduler {
 							interface: "scheduler",
 							host_origin: this.ctx.hostName,
 							color: 0,
-							title: task.payload ? task.payload.slice(0, 80) : `Task ${task.id}`,
+							title: null,
 							summary: null,
 							summary_through: null,
 							summary_model_id: null,
@@ -482,6 +487,14 @@ export class Scheduler {
 						// If cron task, compute next run time
 						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "completion");
 					}
+				}
+
+				// Fire-and-forget: generate a proper thread title (replaces the
+				// null placeholder set during thread creation).
+				if (this.config.generateTitle) {
+					this.config.generateTitle(threadId).catch((err) =>
+						this.ctx.logger.warn(`Title generation failed for thread ${threadId}: ${err}`),
+					);
 				}
 			} catch (error) {
 				const errorMsg = formatError(error);
