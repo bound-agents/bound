@@ -431,7 +431,7 @@ export class AgentLoop {
 					}
 
 					// Rate-limit handling: if the LLM returned 429 or 529, mark the backend
-					// rate-limited so subsequent resolveModel() calls skip it
+					// rate-limited and attempt to re-resolve to an alternative backend
 					if (error instanceof LLMError && (error.statusCode === 429 || error.statusCode === 529)) {
 						const backendId =
 							this.lastModelResolution?.kind === "local" ? this.lastModelResolution.modelId : null;
@@ -444,6 +444,62 @@ export class AgentLoop {
 								backendId,
 								retryAfterMs,
 								statusCode: error.statusCode,
+							});
+
+							// Re-resolve model — may find an alternative backend
+							const newResolution = resolveModel(
+								undefined,
+								this.modelRouter,
+								this.ctx.db,
+								this.ctx.siteId,
+								requirements,
+							);
+							if (newResolution.kind !== "error") {
+								const previousModelId =
+									this.lastModelResolution?.kind !== "error"
+										? this.lastModelResolution?.modelId
+										: backendId;
+								const newModelId = newResolution.modelId;
+								this.lastModelResolution = newResolution;
+
+								// Inject a "Model switched" system message so the LLM
+								// (and context assembly on future turns) knows about the switch
+								if (previousModelId !== newModelId) {
+									const switchMsg = `Model switched from ${previousModelId} to ${newModelId} (rate limit on ${previousModelId})`;
+									llmMessages.push({
+										role: "system",
+										content: switchMsg,
+									});
+									// Persist the switch notice so it appears in thread history
+									insertRow(
+										this.ctx.db,
+										"messages",
+										{
+											id: randomUUID(),
+											thread_id: this.config.threadId,
+											role: "system",
+											content: switchMsg,
+											model_id: null,
+											tool_name: null,
+											created_at: new Date().toISOString(),
+											modified_at: new Date().toISOString(),
+											host_origin: this.ctx.hostName,
+										},
+										this.ctx.siteId,
+									);
+									this.messagesCreated++;
+								}
+
+								this.ctx.logger.info("[agent-loop] Rate-limit fallback: re-resolved to alternative backend", {
+									previousBackend: backendId,
+									newBackend: newModelId,
+									newKind: newResolution.kind,
+								});
+								continue; // Retry with the new backend
+							}
+
+							this.ctx.logger.warn("[agent-loop] Rate-limit fallback: no alternative backend available", {
+								backendId,
 							});
 						}
 					}
