@@ -707,7 +707,15 @@ export class RelayProcessor {
 			let bestScore = 0;
 			for (const host of hosts) {
 				if (!host.mcp_tools) continue;
-				const hostToolNames = JSON.parse(host.mcp_tools) as string[];
+				let hostToolNames: string[];
+				try {
+					hostToolNames = JSON.parse(host.mcp_tools);
+				} catch {
+					this.logger.warn(
+						`selectIntakeHost Tier 3: Skipping host ${host.site_id} with corrupted mcp_tools`,
+					);
+					continue;
+				}
 				const score = threadTools.filter((t) => hostToolNames.includes(t)).length;
 				if (score > bestScore) {
 					bestScore = score;
