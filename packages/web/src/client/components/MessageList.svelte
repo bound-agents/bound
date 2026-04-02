@@ -1,4 +1,5 @@
 <script lang="ts">
+import { onMount, tick } from "svelte";
 import MessageBubble from "./MessageBubble.svelte";
 import ToolCallGroup from "./ToolCallGroup.svelte";
 
@@ -32,6 +33,49 @@ interface Props {
 }
 
 const { messages, waiting = false, emptyText = null }: Props = $props();
+
+// --- Auto-scroll logic ---
+let scrollContainer = $state<HTMLDivElement | null>(null);
+let prevMessageCount = 0;
+let isAtBottom = true;
+const BOTTOM_THRESHOLD = 80; // px of slack for "at bottom" detection
+
+function checkIsAtBottom(): boolean {
+	if (!scrollContainer) return true;
+	const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
+	return scrollHeight - scrollTop - clientHeight < BOTTOM_THRESHOLD;
+}
+
+function scrollToBottom(): void {
+	if (!scrollContainer) return;
+	scrollContainer.scrollTop = scrollContainer.scrollHeight;
+}
+
+function handleScroll(): void {
+	isAtBottom = checkIsAtBottom();
+}
+
+// Scroll to bottom on mount (case 2: opening a thread)
+onMount(() => {
+	tick().then(scrollToBottom);
+});
+
+// React to message changes
+$effect(() => {
+	const count = messages.length;
+	if (count === prevMessageCount) return;
+
+	const lastMsg = messages[count - 1];
+	const isNewUserMessage = lastMsg?.role === "user";
+
+	// Case 1: user sent a message → always scroll
+	// Case 3: non-user message arrived while already at bottom → scroll
+	if (isNewUserMessage || isAtBottom) {
+		tick().then(scrollToBottom);
+	}
+
+	prevMessageCount = count;
+});
 
 // Parse a tool_call content + results into ToolEntry items
 function parseToolCallEntries(item: ToolCallItem): ToolEntry[] {
@@ -106,7 +150,7 @@ let displayItems = $derived.by((): DisplayItem[] => {
 </script>
 
 <div class="board">
-	<div class="messages">
+	<div class="messages" bind:this={scrollContainer} onscroll={handleScroll}>
 		{#if messages.length === 0 && emptyText}
 			<div class="empty-state">
 				<p>{emptyText}</p>
