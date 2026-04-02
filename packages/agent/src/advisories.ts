@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import { insertRow, updateRow } from "@bound/core";
 import type { Advisory, Result } from "@bound/shared";
 
 export function createAdvisory(
@@ -13,20 +14,23 @@ export function createAdvisory(
 	const id = randomUUID();
 	const now = new Date().toISOString();
 
-	db.prepare(
-		`INSERT INTO advisories (id, type, status, title, detail, action, impact, evidence, proposed_at, modified_at, created_by)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-	).run(
-		id,
-		advisory.type,
-		"proposed",
-		advisory.title,
-		advisory.detail,
-		advisory.action,
-		advisory.impact,
-		advisory.evidence,
-		now,
-		now,
+	insertRow(
+		db,
+		"advisories",
+		{
+			id,
+			type: advisory.type,
+			status: "proposed",
+			title: advisory.title,
+			detail: advisory.detail,
+			action: advisory.action,
+			impact: advisory.impact,
+			evidence: advisory.evidence,
+			proposed_at: now,
+			modified_at: now,
+			created_by: siteId,
+			deleted: 0,
+		},
 		siteId,
 	);
 
@@ -36,13 +40,11 @@ export function createAdvisory(
 export function approveAdvisory(
 	db: Database,
 	advisoryId: string,
-	_siteId: string,
+	siteId: string,
 ): Result<void, Error> {
 	try {
 		const now = new Date().toISOString();
-		db.prepare(
-			"UPDATE advisories SET status = ?, resolved_at = ?, modified_at = ? WHERE id = ?",
-		).run("approved", now, now, advisoryId);
+		updateRow(db, "advisories", advisoryId, { status: "approved", resolved_at: now }, siteId);
 		return { ok: true, value: undefined };
 	} catch (error) {
 		return {
@@ -55,13 +57,11 @@ export function approveAdvisory(
 export function dismissAdvisory(
 	db: Database,
 	advisoryId: string,
-	_siteId: string,
+	siteId: string,
 ): Result<void, Error> {
 	try {
 		const now = new Date().toISOString();
-		db.prepare(
-			"UPDATE advisories SET status = ?, resolved_at = ?, modified_at = ? WHERE id = ?",
-		).run("dismissed", now, now, advisoryId);
+		updateRow(db, "advisories", advisoryId, { status: "dismissed", resolved_at: now }, siteId);
 		return { ok: true, value: undefined };
 	} catch (error) {
 		return {
@@ -75,13 +75,16 @@ export function deferAdvisory(
 	db: Database,
 	advisoryId: string,
 	deferUntil: string,
-	_siteId: string,
+	siteId: string,
 ): Result<void, Error> {
 	try {
-		const now = new Date().toISOString();
-		db.prepare(
-			"UPDATE advisories SET status = ?, defer_until = ?, modified_at = ? WHERE id = ?",
-		).run("deferred", deferUntil, now, advisoryId);
+		updateRow(
+			db,
+			"advisories",
+			advisoryId,
+			{ status: "deferred", defer_until: deferUntil },
+			siteId,
+		);
 		return { ok: true, value: undefined };
 	} catch (error) {
 		return {
@@ -94,13 +97,11 @@ export function deferAdvisory(
 export function applyAdvisory(
 	db: Database,
 	advisoryId: string,
-	_siteId: string,
+	siteId: string,
 ): Result<void, Error> {
 	try {
 		const now = new Date().toISOString();
-		db.prepare(
-			"UPDATE advisories SET status = ?, resolved_at = ?, modified_at = ? WHERE id = ?",
-		).run("applied", now, now, advisoryId);
+		updateRow(db, "advisories", advisoryId, { status: "applied", resolved_at: now }, siteId);
 		return { ok: true, value: undefined };
 	} catch (error) {
 		return {

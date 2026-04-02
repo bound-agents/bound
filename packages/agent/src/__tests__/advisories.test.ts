@@ -24,6 +24,52 @@ describe("Advisories", () => {
 		db.close();
 	});
 
+	it("should create changelog entry when creating an advisory", () => {
+		const advisoryId = createAdvisory(
+			db,
+			{
+				type: "cost",
+				title: "Sync test",
+				detail: "Detail",
+				action: "Action",
+				impact: "low",
+				evidence: "Evidence",
+			},
+			siteId,
+		);
+
+		const changelogEntry = db
+			.prepare("SELECT * FROM change_log WHERE table_name = 'advisories' AND row_id = ?")
+			.get(advisoryId) as { row_id: string } | null;
+		expect(changelogEntry).not.toBeNull();
+		expect(changelogEntry!.row_id).toBe(advisoryId);
+	});
+
+	it("should create changelog entry when updating advisory status", () => {
+		const advisoryId = createAdvisory(
+			db,
+			{
+				type: "cost",
+				title: "Sync test",
+				detail: "Detail",
+				action: "Action",
+				impact: "low",
+				evidence: "Evidence",
+			},
+			siteId,
+		);
+
+		// Clear changelog from create
+		db.prepare("DELETE FROM change_log WHERE row_id = ?").run(advisoryId);
+
+		approveAdvisory(db, advisoryId, siteId);
+
+		const changelogEntries = db
+			.prepare("SELECT * FROM change_log WHERE table_name = 'advisories' AND row_id = ?")
+			.all(advisoryId);
+		expect(changelogEntries.length).toBeGreaterThanOrEqual(1);
+	});
+
 	it("should create an advisory", () => {
 		const advisoryInput = {
 			type: "cost" as const,
