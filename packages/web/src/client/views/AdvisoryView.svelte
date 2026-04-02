@@ -303,6 +303,9 @@ const proposedCount = $derived(advisories.filter((a) => a.status === "proposed")
 		padding: 32px 40px;
 		max-width: 860px;
 		margin: 0 auto;
+		flex: 1;
+		overflow-y: auto;
+		min-height: 0;
 	}
 
 	.advisory-header {
