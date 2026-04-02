@@ -1,7 +1,7 @@
 import { openBoundDB } from "../lib/db";
 
 import { resolve } from "node:path";
-import { getSiteId } from "@bound/core";
+import { getSiteId, validateColumnName } from "@bound/core";
 const APPEND_ONLY_TABLES = new Set(["messages"]);
 export interface RestoreArgs {
 	before: string;
@@ -71,6 +71,15 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 		let tombstonedCount = 0;
 		const processRows = () => {
 			for (const { table_name, row_id } of candidates) {
+				// Validate table name to prevent SQL injection
+				try {
+					validateColumnName(table_name);
+				} catch (error) {
+					throw new Error(
+						`Invalid table name in change_log: ${table_name}. ${error instanceof Error ? error.message : ""}`,
+					);
+				}
+
 				// Step 2a: Find the latest change_log entry at or before the safe timestamp
 				const priorEntry = db
 					.query(
@@ -83,11 +92,29 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 					.get(table_name, row_id, safeIso) as ChangeLogRow | null;
 				if (priorEntry) {
 					// Row existed before safe timestamp — restore to that state
-					const rowData = JSON.parse(priorEntry.row_data) as Record<string, unknown>;
+					let rowData: Record<string, unknown>;
+					try {
+						rowData = JSON.parse(priorEntry.row_data) as Record<string, unknown>;
+					} catch (error) {
+						console.warn(
+							`Skipping row ${table_name}.${row_id}: corrupted row_data JSON at ${priorEntry.timestamp}`,
+						);
+						continue;
+					}
+
+					// Validate all column names to prevent SQL injection
+					const columns = Object.keys(rowData);
+					try {
+						columns.forEach(validateColumnName);
+					} catch (error) {
+						throw new Error(
+							`Invalid column name in row ${table_name}.${row_id}: ${error instanceof Error ? error.message : ""}`,
+						);
+					}
+
 					if (args.preview) {
 						console.log(`  RESTORE ${table_name}.${row_id} -> snapshot at ${priorEntry.timestamp}`);
 					} else {
-						const columns = Object.keys(rowData);
 						const placeholders = columns.map(() => "?").join(", ");
 						const updateClause = columns
 							.filter((c) => c !== "id")
@@ -155,6 +182,7 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 		db.close();
 	} catch (error) {
 		console.error("Restore failed:", error);
-		process.exit(1);
+		// Re-throw for testing; process exit is done by caller in production
+		throw error;
 	}
 }
