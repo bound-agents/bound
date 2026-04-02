@@ -1293,7 +1293,7 @@ Original output was too large for the context window. If you need the full conte
 			return {
 				messages: truncatedMessages,
 				debug: {
-					contextWindow: params.contextWindow ?? 128000,
+					contextWindow: contextWindow,
 					totalEstimated,
 					model: params.currentModel ?? "unknown",
 					sections,
@@ -1313,7 +1313,7 @@ Original output was too large for the context window. If you need the full conte
 	return {
 		messages: assembled,
 		debug: {
-			contextWindow: params.contextWindow ?? 128000,
+			contextWindow: contextWindow,
 			totalEstimated,
 			model: params.currentModel ?? "unknown",
 			sections,
