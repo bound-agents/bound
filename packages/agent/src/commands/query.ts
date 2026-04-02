@@ -12,6 +12,15 @@ export const query: CommandDefinition = {
 		try {
 			const sql = args.query;
 
+			// Validate query is provided
+			if (!sql || sql.trim() === "") {
+				return {
+					stdout: "",
+					stderr: "Error: no SQL query provided. Usage: query SELECT ...\n",
+					exitCode: 1,
+				};
+			}
+
 			// Validate query is SELECT-only
 			const trimmed = sql.trim().toUpperCase();
 			if (!trimmed.startsWith("SELECT")) {

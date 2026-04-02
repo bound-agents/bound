@@ -99,6 +99,20 @@ describe("defineCommand implementations", () => {
 			expect(result.exitCode).toBe(1);
 			expect(result.stderr).toContain("SELECT-only");
 		});
+
+		it("should return error when query is undefined", async () => {
+			const result = await query.handler({}, ctx);
+
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain("no SQL query provided");
+		});
+
+		it("should return error when query is empty string", async () => {
+			const result = await query.handler({ query: "" }, ctx);
+
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain("no SQL query provided");
+		});
 	});
 
 	describe("memorize command", () => {
@@ -167,6 +181,39 @@ describe("defineCommand implementations", () => {
 			);
 			const source = getMemorySource("source_explicit_key");
 			expect(source).toBe("custom-source-id");
+		});
+
+		it("restores a previously soft-deleted key without UNIQUE constraint error", async () => {
+			const key = "forget_then_memorize_key";
+			const memoryId = deterministicUUID(BOUND_NAMESPACE, key);
+
+			// Step 1: Create the memory
+			await memorize.handler({ key, value: "original_value" }, ctx);
+			const row1 = db.query("SELECT deleted, value FROM semantic_memory WHERE id = ?").get(memoryId) as {
+				deleted: number;
+				value: string;
+			};
+			expect(row1.deleted).toBe(0);
+			expect(row1.value).toBe("original_value");
+
+			// Step 2: Soft-delete it via forget
+			await forget.handler({ key }, ctx);
+			const row2 = db.query("SELECT deleted FROM semantic_memory WHERE id = ?").get(memoryId) as {
+				deleted: number;
+			};
+			expect(row2.deleted).toBe(1);
+
+			// Step 3: Re-memorize the same key — this must succeed, not throw UNIQUE constraint
+			const result = await memorize.handler({ key, value: "restored_value" }, ctx);
+			expect(result.exitCode).toBe(0);
+
+			// The memory should be restored with the new value and deleted=0
+			const row3 = db.query("SELECT deleted, value FROM semantic_memory WHERE id = ?").get(memoryId) as {
+				deleted: number;
+				value: string;
+			};
+			expect(row3.deleted).toBe(0);
+			expect(row3.value).toBe("restored_value");
 		});
 	});
 
