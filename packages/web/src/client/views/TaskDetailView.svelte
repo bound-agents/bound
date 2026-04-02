@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import { navigateTo } from "../lib/router";
 import { connectWebSocket, disconnectWebSocket, subscribeToThread } from "../lib/websocket";
 import { wsEvents } from "../lib/websocket";
+import { ChevronLeft, Settings, X } from "lucide-svelte";
 
 interface TaskDetail {
 	id: string;
@@ -150,7 +151,7 @@ onDestroy(() => {
 			<h2>Task not found</h2>
 			<p>This task may have been deleted or doesn't exist.</p>
 			<button class="back-link" onclick={() => navigateTo("/timetable")}>
-				← Back to Timetable
+				<ChevronLeft size={14} /> Back to Timetable
 			</button>
 		</div>
 	</div>
@@ -159,11 +160,11 @@ onDestroy(() => {
 		<!-- Back link -->
 		<div class="header">
 			<button class="back-link" onclick={() => navigateTo("/timetable")}>
-				← Back to Timetable
+				<ChevronLeft size={14} /> Back to Timetable
 			</button>
 			{#if task.thread_id}
 				<button class="debug-toggle" onclick={toggleDebug} title="Context Debug">
-					{debugOpen ? "✕" : "⚙"}
+					{#if debugOpen}<X size={14} />{:else}<Settings size={14} />{/if}
 				</button>
 			{/if}
 

@@ -1,6 +1,7 @@
 <script lang="ts">
 import { onMount } from "svelte";
 import { modelStore } from "../lib/modelStore";
+import { Cpu } from "lucide-svelte";
 
 interface ClusterModelInfo {
 	id: string;
@@ -38,10 +39,7 @@ function handleChange(): void {
 
 <div class="model-selector">
 	<label for="model">
-		<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-			<rect x="1" y="1" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5" fill="none" />
-			<circle cx="7" cy="7" r="2.5" stroke="currentColor" stroke-width="1.5" fill="none" />
-		</svg>
+		<Cpu size={14} />
 	</label>
 	<select id="model" aria-label="Model" bind:value={selectedModel} onchange={handleChange}>
 		{#each models as model}

@@ -1,6 +1,7 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
 import { navigateTo } from "../lib/router";
+import { X } from "lucide-svelte";
 
 interface Task {
 	id: string;
@@ -198,9 +199,7 @@ function canCancel(status: string): boolean {
 					<span class="col-actions">
 						{#if canCancel(task.status)}
 							<button class="cancel-btn" onclick={(e) => { e.stopPropagation(); cancelTask(task.id); }} title="Cancel task">
-								<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-									<path d="M2 2L10 10M10 2L2 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-								</svg>
+								<X size={12} />
 							</button>
 						{:else if task.status === "failed" && task.error}
 							<span class="error-hint" title={task.error}>err</span>

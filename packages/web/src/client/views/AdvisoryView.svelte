@@ -1,5 +1,6 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
+import { ChevronDown } from "lucide-svelte";
 
 interface Advisory {
 	id: string;
@@ -198,9 +199,9 @@ const proposedCount = $derived(advisories.filter((a) => a.status === "proposed")
 							</div>
 						</div>
 						<div class="card-right">
-							<svg width="12" height="12" viewBox="0 0 12 12" fill="none" class="expand-icon" class:rotated={expandedId === advisory.id}>
-								<path d="M3 5L6 8L9 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-							</svg>
+							<span class="expand-icon" class:rotated={expandedId === advisory.id}>
+								<ChevronDown size={12} />
+							</span>
 						</div>
 					</button>
 

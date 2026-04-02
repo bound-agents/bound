@@ -1,5 +1,6 @@
 <script lang="ts">
 import { SECTION_COLORS } from "../lib/context-colors";
+import { ChevronRight } from "lucide-svelte";
 
 interface Props {
 	sections: Array<{
@@ -36,7 +37,9 @@ const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 
 				disabled={!section.children || section.children.length === 0}
 			>
 				{#if section.children && section.children.length > 0}
-					<span class="chevron" class:expanded={expandedSections.has(section.name)}>&#9656;</span>
+					<span class="chevron" class:expanded={expandedSections.has(section.name)}>
+						<ChevronRight size={12} />
+					</span>
 				{/if}
 				<span class="dot" style="background: {SECTION_COLORS[section.name] ?? 'var(--text-muted)'}"></span>
 				<span class="name">{section.name}</span>

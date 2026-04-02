@@ -13,6 +13,7 @@ import {
 	wsEvents,
 } from "../lib/websocket";
 import { shouldClearWaiting } from "../utils/waiting";
+import { ChevronLeft, Paperclip, Send, Settings, X } from "lucide-svelte";
 
 const { threadId } = $props<{ threadId: string }>();
 
@@ -201,9 +202,7 @@ function viewTitle(): string {
 	<div class="line-view">
 		<div class="header">
 			<button onclick={handleBackClick} class="back-button">
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-					<path d="M10 3L5 8L10 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-				</svg>
+				<ChevronLeft size={16} />
 				Map
 			</button>
 			<h1>{viewTitle()}</h1>
@@ -215,7 +214,7 @@ function viewTitle(): string {
 				<button onclick={handleCancel} class="cancel-button">Cancel</button>
 			{/if}
 			<button class="debug-toggle" onclick={toggleDebug} title="Context Debug">
-				{debugOpen ? "✕" : "⚙"}
+				{#if debugOpen}<X size={14} />{:else}<Settings size={14} />{/if}
 			</button>
 		</div>
 
@@ -224,9 +223,7 @@ function viewTitle(): string {
 	<div class="bottom-area">
 		<div class="file-upload-area">
 			<label class="file-label" for="file-input">
-				<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-					<path d="M7 1V13M1 7H13" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-				</svg>
+				<Paperclip size={14} />
 				Attach
 				<input
 					id="file-input"
@@ -256,9 +253,7 @@ function viewTitle(): string {
 				{#if sending}
 					<span class="sending-indicator"></span>
 				{:else}
-					<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-						<path d="M2 9L16 2L9 16L7.5 10.5L2 9Z" fill="currentColor" />
-					</svg>
+					<Send size={18} />
 				{/if}
 				<span class="send-label">{sending ? "Sending" : "Send"}</span>
 			</button>
