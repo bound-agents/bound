@@ -179,7 +179,7 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 			}
 
 			const message = db
-				.query("SELECT * FROM messages WHERE id = ? AND thread_id = ?")
+				.query("SELECT * FROM messages WHERE id = ? AND thread_id = ? AND deleted = 0")
 				.get(messageId, threadId);
 
 			if (!message) {

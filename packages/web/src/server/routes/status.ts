@@ -39,7 +39,7 @@ export function createStatusRoutes(
 		try {
 			const uptime = process.uptime();
 			const activeLoops = db
-				.query("SELECT COUNT(*) as count FROM tasks WHERE status = 'running'")
+				.query("SELECT COUNT(*) as count FROM tasks WHERE status = 'running' AND deleted = 0")
 				.get() as { count: number };
 
 			const status = {
@@ -64,7 +64,7 @@ export function createStatusRoutes(
 
 	app.get("/network", (c) => {
 		try {
-			const hosts = db.query("SELECT * FROM hosts ORDER BY host_name ASC").all() as Array<
+			const hosts = db.query("SELECT * FROM hosts WHERE deleted = 0 ORDER BY host_name ASC").all() as Array<
 				Record<string, unknown>
 			>;
 

@@ -92,7 +92,7 @@ export function createThreadsRoutes(
 			// Assign next palette color by cycling (0-9) per spec R-U18
 			// Pick up from the last thread's color so colors always advance
 			const lastThread = db
-				.query("SELECT color FROM threads ORDER BY created_at DESC LIMIT 1")
+				.query("SELECT color FROM threads WHERE deleted = 0 ORDER BY created_at DESC LIMIT 1")
 				.get() as { color: number } | null;
 			const nextColor = lastThread !== null ? (lastThread.color + 1) % 10 : 0;
 
@@ -180,7 +180,7 @@ export function createThreadsRoutes(
 			const forwarded = statusForwardCache?.get(id);
 
 			const runningTask = db
-				.query("SELECT id FROM tasks WHERE thread_id = ? AND status = 'running' LIMIT 1")
+				.query("SELECT id FROM tasks WHERE thread_id = ? AND status = 'running' AND deleted = 0 LIMIT 1")
 				.get(id) as { id: string } | null;
 
 			const localLoopActive = activeLoops?.has(id) ?? false;

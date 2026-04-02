@@ -110,7 +110,7 @@ describe("R-U18: Thread colors cycle sequentially 0-9", () => {
 		// Soft delete the second thread
 		db.run("UPDATE threads SET deleted = 1 WHERE id = ?", [thread2.id]);
 
-		// Create a new thread - should still be color 2 (continues from last created_at)
+		// Create a new thread - should be color 1 (skips deleted thread, advances from thread1's color 0)
 		const request3 = new Request("http://localhost:3000/api/threads", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -118,6 +118,6 @@ describe("R-U18: Thread colors cycle sequentially 0-9", () => {
 		});
 		const response3 = await app.fetch(request3);
 		const thread3 = await response3.json();
-		expect(thread3.color).toBe(2);
+		expect(thread3.color).toBe(1);
 	});
 });

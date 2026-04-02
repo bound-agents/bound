@@ -16,7 +16,7 @@ export function createMcpRoutes(db: Database): Hono {
 
 			// Assign next palette color by cycling (0-9)
 			const lastThread = db
-				.query("SELECT color FROM threads ORDER BY created_at DESC LIMIT 1")
+				.query("SELECT color FROM threads WHERE deleted = 0 ORDER BY created_at DESC LIMIT 1")
 				.get() as { color: number } | null;
 			const nextColor = lastThread !== null ? (lastThread.color + 1) % 10 : 0;
 
