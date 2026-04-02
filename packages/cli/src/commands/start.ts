@@ -429,6 +429,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	console.log("Setting up sandbox...");
 	let sandbox: Awaited<ReturnType<typeof createSandbox>> | null = null;
 	let clusterFsObj: ClusterFsResult | null = null;
+	let commandContext: Record<string, unknown> | null = null;
 	try {
 		const clusterFsRaw = createClusterFs({
 			hostName: appContext.hostName,
@@ -441,7 +442,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		const clusterFs = ("fs" in clusterFsRaw ? clusterFsRaw.fs : clusterFsRaw) as any;
 		// With db and siteId provided, createClusterFs always returns ClusterFsResult
 		clusterFsObj = clusterFsRaw as unknown as ClusterFsResult;
-		const commandContext = {
+		commandContext = {
 			db: appContext.db,
 			siteId: appContext.siteId,
 			eventBus: appContext.eventBus,
@@ -453,7 +454,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 		const builtinCommands = getAllCommands();
 		const allDefinitions = [...builtinCommands, ...mcpCommands];
 		setCommandRegistry(allDefinitions, mcpServerNames);
-		const registeredCommands = createDefineCommands(allDefinitions, commandContext);
+		// biome-ignore lint/suspicious/noExplicitAny: commandContext is typed as Record for late modelRouter injection
+		const registeredCommands = createDefineCommands(allDefinitions, commandContext as any);
 		sandbox = await createSandbox({
 			clusterFs,
 			commands: registeredCommands,
@@ -527,6 +529,11 @@ export async function runStart(args: StartArgs): Promise<void> {
 		console.log(`[llm] Model router ready — backends: ${ids} (default: ${routerConfig.default})`);
 	} catch (error) {
 		console.warn(`[llm] Failed to create model router: ${formatError(error)}`);
+	}
+
+	// Inject modelRouter into the command context so schedule/model-hint can validate
+	if (modelRouter && commandContext) {
+		(commandContext as Record<string, unknown>).modelRouter = modelRouter;
 	}
 
 	// Register local model capabilities in hosts.models for sync advertisement

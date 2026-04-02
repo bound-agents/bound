@@ -427,9 +427,17 @@ export class Scheduler {
 							.query("SELECT lease_id FROM tasks WHERE id = ?")
 							.get(task.id) as { lease_id: string | null } | undefined;
 						if (currentTask?.lease_id === leaseId) {
-							this.ctx.db
-								.query("UPDATE tasks SET status = 'failed', error = ? WHERE id = ?")
-								.run(errorMsg, task.id);
+							const updated = this.ctx.db
+								.query(
+									"UPDATE tasks SET status = 'failed', error = ?, consecutive_failures = consecutive_failures + 1 WHERE id = ? RETURNING consecutive_failures",
+								)
+								.get(errorMsg, task.id) as { consecutive_failures: number } | null;
+
+							const newConsecutiveFailures =
+								updated?.consecutive_failures ?? (task.consecutive_failures ?? 0) + 1;
+							if (newConsecutiveFailures === task.alert_threshold) {
+								this.triggerFailureAdvisory(task, errorMsg, newConsecutiveFailures);
+							}
 						}
 						// Cron tasks must still reschedule even when the model is temporarily unavailable
 						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "model validation failure");
