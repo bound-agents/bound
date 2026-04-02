@@ -557,6 +557,109 @@ data: ${JSON.stringify({
 		});
 	});
 
+	it("should send anthropic-beta prompt-caching header when cache_breakpoints provided", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-3-sonnet-20240229",
+			contextWindow: 200000,
+		});
+
+		let capturedHeaders: Record<string, string> = {};
+
+		global.fetch = (async (_url: string, options: RequestInit) => {
+			const headers = options.headers as Record<string, string>;
+			capturedHeaders = { ...headers };
+			return new Response("data: {}", {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		for await (const _ of driver.chat({
+			model: "claude-3-sonnet-20240229",
+			messages: [
+				{ role: "user", content: "Message 1" },
+				{ role: "assistant", content: "Response 1" },
+				{ role: "user", content: "Message 2" },
+			],
+			cache_breakpoints: [1],
+		})) {
+			// drain
+		}
+
+		expect(capturedHeaders["anthropic-beta"]).toBeDefined();
+		expect(capturedHeaders["anthropic-beta"]).toContain("prompt-caching");
+	});
+
+	it("should NOT send prompt-caching beta header when no cache_breakpoints", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-3-sonnet-20240229",
+			contextWindow: 200000,
+		});
+
+		let capturedHeaders: Record<string, string> = {};
+
+		global.fetch = (async (_url: string, options: RequestInit) => {
+			const headers = options.headers as Record<string, string>;
+			capturedHeaders = { ...headers };
+			return new Response("data: {}", {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		for await (const _ of driver.chat({
+			model: "claude-3-sonnet-20240229",
+			messages: [{ role: "user", content: "Hello" }],
+		})) {
+			// drain
+		}
+
+		// No beta header needed when not caching
+		expect(capturedHeaders["anthropic-beta"]).toBeUndefined();
+	});
+
+	it("should send system prompt as cacheable content blocks when cache_breakpoints provided", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-3-sonnet-20240229",
+			contextWindow: 200000,
+		});
+
+		let requestBody: string | null = null;
+
+		global.fetch = (async (_url: string, options: RequestInit) => {
+			requestBody = options.body as string;
+			return new Response("data: {}", {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		for await (const _ of driver.chat({
+			model: "claude-3-sonnet-20240229",
+			messages: [
+				{ role: "user", content: "Message 1" },
+				{ role: "assistant", content: "Response 1" },
+				{ role: "user", content: "Message 2" },
+			],
+			system: "You are a helpful assistant.",
+			cache_breakpoints: [1],
+		})) {
+			// drain
+		}
+
+		expect(requestBody).not.toBeNull();
+		// biome-ignore lint/style/noNonNullAssertion: guarded above
+		const request = JSON.parse(requestBody!);
+		// System should be an array of content blocks, not a plain string
+		expect(Array.isArray(request.system)).toBe(true);
+		expect(request.system[0].type).toBe("text");
+		expect(request.system[0].text).toBe("You are a helpful assistant.");
+		expect(request.system[0].cache_control).toEqual({ type: "ephemeral" });
+	});
+
 	it("should add cache_control at breakpoint indices", async () => {
 		const driver = new AnthropicDriver({
 			apiKey: "test-key",

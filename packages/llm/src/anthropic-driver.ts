@@ -25,7 +25,7 @@ interface AnthropicMessage {
 interface AnthropicRequest {
 	model: string;
 	max_tokens: number;
-	system?: string;
+	system?: string | Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }>;
 	messages: AnthropicMessage[];
 	tools?: Array<{
 		name: string;
@@ -342,10 +342,16 @@ export class AnthropicDriver implements LLMBackend {
 			}
 		}
 
+		// When cache_breakpoints are provided, send system prompt as cacheable content blocks
+		const systemPayload: string | Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> | undefined =
+			params.system && params.cache_breakpoints?.length
+				? [{ type: "text" as const, text: params.system, cache_control: { type: "ephemeral" as const } }]
+				: params.system;
+
 		const request: AnthropicRequest = {
 			model: params.model || this.model,
 			max_tokens: params.max_tokens || 4096,
-			system: params.system,
+			system: systemPayload,
 			messages: anthropicMessages,
 			temperature: params.temperature,
 		};
@@ -360,16 +366,21 @@ export class AnthropicDriver implements LLMBackend {
 
 		const endpoint = "https://api.anthropic.com/v1/messages";
 
+		const headers: Record<string, string> = {
+			"x-api-key": this.apiKey,
+			"anthropic-version": "2023-06-01",
+			"content-type": "application/json",
+		};
+		if (params.cache_breakpoints?.length) {
+			headers["anthropic-beta"] = "prompt-caching-2024-07-31";
+		}
+
 		const response = await withRetry(async () => {
 			let res: Response;
 			try {
 				res = await fetch(endpoint, {
 					method: "POST",
-					headers: {
-						"x-api-key": this.apiKey,
-						"anthropic-version": "2023-06-01",
-						"content-type": "application/json",
-					},
+					headers,
 					body: JSON.stringify({
 						...request,
 						stream: true,
