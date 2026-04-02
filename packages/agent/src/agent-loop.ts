@@ -623,6 +623,28 @@ export class AgentLoop {
 					}
 				}
 
+				// Update context debug with actual token usage for this turn
+				// (avoids stale debug across multi-turn agentic loops where
+				// assembleContext runs once but recordContextDebug runs per turn)
+				if (this.lastContextDebug && parsed.usage.inputTokens > 0) {
+					const actualTokens = parsed.usage.inputTokens;
+					const previousEstimated = this.lastContextDebug.totalEstimated;
+					const delta = actualTokens - previousEstimated;
+					this.lastContextDebug = {
+						...this.lastContextDebug,
+						totalEstimated: actualTokens,
+					};
+					// Attribute the growth to the history section (messages accumulate there)
+					if (delta > 0) {
+						const historySec = this.lastContextDebug.sections.find(
+							(s) => s.name === "history",
+						);
+						if (historySec) {
+							historySec.tokens += delta;
+						}
+					}
+				}
+
 				// Record context debug data and emit event
 				if (currentTurnId !== null && this.lastContextDebug) {
 					try {

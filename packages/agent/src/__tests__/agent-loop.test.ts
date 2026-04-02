@@ -1634,4 +1634,88 @@ describe("AgentLoop", () => {
 			).toBe(true);
 		});
 	});
+
+	describe("context_debug freshness per turn", () => {
+		it("should update context_debug totalEstimated for each turn in a multi-turn loop", async () => {
+			const mockBackend = new MockLLMBackend();
+
+			// First call: tool use (input_tokens = 100)
+			mockBackend.pushResponse(async function* () {
+				yield { type: "tool_use_start" as const, id: "t-cd1", name: "bash" };
+				yield {
+					type: "tool_use_args" as const,
+					id: "t-cd1",
+					partial_json: '{"command":"echo test"}',
+				};
+				yield { type: "tool_use_end" as const, id: "t-cd1" };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 100,
+						output_tokens: 15,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			});
+
+			// Second call: text response (input_tokens = 500 — context grew)
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "All done." };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 500,
+						output_tokens: 10,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			});
+
+			const mockBash = createMockSandbox(() => ({
+				stdout: "test output",
+				stderr: "",
+				exitCode: 0,
+			}));
+			const ctx = makeCtx();
+
+			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				threadId,
+				userId: "test-user",
+			});
+
+			await agentLoop.run();
+
+			// Query the turns table for context_debug
+			const turns = db
+				.query(
+					"SELECT id, tokens_in, context_debug FROM turns WHERE thread_id = ? ORDER BY id ASC",
+				)
+				.all(threadId) as Array<{
+				id: number;
+				tokens_in: number;
+				context_debug: string | null;
+			}>;
+
+			expect(turns.length).toBe(2);
+
+			// Both turns should have context_debug
+			expect(turns[0].context_debug).not.toBeNull();
+			expect(turns[1].context_debug).not.toBeNull();
+
+			const debug1 = JSON.parse(turns[0].context_debug!) as { totalEstimated: number };
+			const debug2 = JSON.parse(turns[1].context_debug!) as { totalEstimated: number };
+
+			// The second turn's totalEstimated should reflect the actual input tokens (500),
+			// not be stale from the first assembly. At minimum it should differ from turn 1.
+			expect(debug2.totalEstimated).not.toBe(debug1.totalEstimated);
+
+			// The second turn's totalEstimated should be >= the actual input tokens for that turn
+			// (since the LLM reported 500 input tokens)
+			expect(debug2.totalEstimated).toBeGreaterThanOrEqual(500);
+		});
+	});
 });
