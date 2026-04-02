@@ -652,24 +652,16 @@ describe("Context assembly Bedrock compatibility", () => {
 		expect(nonSystem[tcIdx + 2]?.role).toBe("tool_result");
 
 		// The assistant must NOT appear before the tool_call
-		const assistantsBefore = nonSystem
-			.slice(0, tcIdx)
-			.filter((m) => m.role === "assistant");
+		const assistantsBefore = nonSystem.slice(0, tcIdx).filter((m) => m.role === "assistant");
 		const movedAssistant = assistantsBefore.some(
-			(m) =>
-				typeof m.content === "string" &&
-				m.content.includes("I ran both commands for you"),
+			(m) => typeof m.content === "string" && m.content.includes("I ran both commands for you"),
 		);
 		expect(movedAssistant).toBe(false);
 
 		// The assistant must appear AFTER the tool pair
-		const assistantsAfter = nonSystem
-			.slice(tcIdx + 3)
-			.filter((m) => m.role === "assistant");
+		const assistantsAfter = nonSystem.slice(tcIdx + 3).filter((m) => m.role === "assistant");
 		const keptAssistant = assistantsAfter.some(
-			(m) =>
-				typeof m.content === "string" &&
-				m.content.includes("I ran both commands for you"),
+			(m) => typeof m.content === "string" && m.content.includes("I ran both commands for you"),
 		);
 		expect(keptAssistant).toBe(true);
 

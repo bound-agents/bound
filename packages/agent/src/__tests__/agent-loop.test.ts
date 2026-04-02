@@ -1085,7 +1085,7 @@ describe("AgentLoop", () => {
 			.all(threadId) as Array<{ cost_usd: number }>;
 
 		expect(turns.length).toBe(1);
-		expect(turns[0].cost_usd).toBeCloseTo(0.006750, 6);
+		expect(turns[0].cost_usd).toBeCloseTo(0.00675, 6);
 	});
 
 	// Bug #10: turns table must record the resolved model_id, not "unknown"
@@ -1756,9 +1756,7 @@ describe("AgentLoop", () => {
 
 			// Query the turns table for context_debug
 			const turns = db
-				.query(
-					"SELECT id, tokens_in, context_debug FROM turns WHERE thread_id = ? ORDER BY id ASC",
-				)
+				.query("SELECT id, tokens_in, context_debug FROM turns WHERE thread_id = ? ORDER BY id ASC")
 				.all(threadId) as Array<{
 				id: number;
 				tokens_in: number;

@@ -451,16 +451,24 @@ describe("reducers", () => {
 
 		it("returns applied:false for malformed JSON in applyAppendOnlyReducer", () => {
 			const result = applyAppendOnlyReducer(db, {
-				seq: 1, table_name: "messages", row_id: "bad", site_id: "x",
-				timestamp: new Date().toISOString(), row_data: "NOT JSON",
+				seq: 1,
+				table_name: "messages",
+				row_id: "bad",
+				site_id: "x",
+				timestamp: new Date().toISOString(),
+				row_data: "NOT JSON",
 			});
 			expect(result.applied).toBe(false);
 		});
 
 		it("returns applied:false for malformed JSON in applyLWWReducer", () => {
 			const result = applyLWWReducer(db, {
-				seq: 1, table_name: "threads", row_id: "bad", site_id: "x",
-				timestamp: new Date().toISOString(), row_data: "broken",
+				seq: 1,
+				table_name: "threads",
+				row_id: "bad",
+				site_id: "x",
+				timestamp: new Date().toISOString(),
+				row_data: "broken",
 			});
 			expect(result.applied).toBe(false);
 		});
