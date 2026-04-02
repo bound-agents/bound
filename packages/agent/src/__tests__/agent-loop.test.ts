@@ -1769,8 +1769,8 @@ describe("AgentLoop", () => {
 			expect(turns[0].context_debug).not.toBeNull();
 			expect(turns[1].context_debug).not.toBeNull();
 
-			const debug1 = JSON.parse(turns[0].context_debug!) as { totalEstimated: number };
-			const debug2 = JSON.parse(turns[1].context_debug!) as { totalEstimated: number };
+			const debug1 = JSON.parse(turns[0].context_debug ?? "{}") as { totalEstimated: number };
+			const debug2 = JSON.parse(turns[1].context_debug ?? "{}") as { totalEstimated: number };
 
 			// The second turn's totalEstimated should reflect the actual input tokens (500),
 			// not be stale from the first assembly. At minimum it should differ from turn 1.

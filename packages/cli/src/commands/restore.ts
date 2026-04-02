@@ -95,7 +95,7 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 					let rowData: Record<string, unknown>;
 					try {
 						rowData = JSON.parse(priorEntry.row_data) as Record<string, unknown>;
-					} catch (error) {
+					} catch {
 						console.warn(
 							`Skipping row ${table_name}.${row_id}: corrupted row_data JSON at ${priorEntry.timestamp}`,
 						);

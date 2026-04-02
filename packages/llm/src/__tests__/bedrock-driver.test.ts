@@ -763,7 +763,7 @@ describe("BedrockDriver", () => {
 
 			// The message at index 1 should have cachePoint appended to its content
 			expect(capturedInput).toBeDefined();
-			const messages = capturedInput!.messages as Array<{
+			const messages = capturedInput?.messages as Array<{
 				role: string;
 				content: Array<Record<string, unknown>>;
 			}>;
@@ -811,7 +811,7 @@ describe("BedrockDriver", () => {
 			);
 
 			// System blocks should include a cachePoint
-			const system = capturedInput!.system as Array<Record<string, unknown>>;
+			const system = capturedInput?.system as Array<Record<string, unknown>>;
 			expect(system).toBeDefined();
 			expect(system.length).toBe(2);
 			expect(system[0]).toEqual({ text: "You are a helpful assistant." });

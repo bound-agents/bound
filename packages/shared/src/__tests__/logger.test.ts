@@ -82,7 +82,7 @@ describe("createLogger", () => {
 	});
 
 	it("defaults to info level when LOG_LEVEL not set", async () => {
-		delete process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = undefined;
 		const logger = createLogger("@bound/test", "TestComponent");
 
 		logger.debug("Debug message");

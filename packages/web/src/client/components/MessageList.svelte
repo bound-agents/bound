@@ -104,7 +104,7 @@ function isInTurnRange(item: DisplayItem): boolean {
 	if (!turnRange) return false;
 	// Tool groups span multiple turns — check if ANY constituent timestamp matches
 	if (item.kind === "toolGroup") {
-		return item.timestamps.some((ts) => tsInRange(ts, turnRange!));
+		return item.timestamps.some((ts) => tsInRange(ts, turnRange));
 	}
 	const ts = item.earliest;
 	if (!ts) return false;

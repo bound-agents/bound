@@ -951,7 +951,7 @@ describe("Scheduler features", () => {
 			expect(task?.status).toBe("pending");
 			expect(task?.next_run_at).not.toBeNull();
 			// next_run_at should be in the future
-			const nextRun = new Date(task!.next_run_at!);
+			const nextRun = new Date(task?.next_run_at ?? "");
 			expect(nextRun.getTime()).toBeGreaterThan(Date.now());
 
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
@@ -1025,7 +1025,7 @@ describe("Scheduler features", () => {
 			expect(task).not.toBeNull();
 			expect(task?.status).toBe("pending");
 			expect(task?.next_run_at).not.toBeNull();
-			const nextRun = new Date(task!.next_run_at!);
+			const nextRun = new Date(task?.next_run_at ?? "");
 			expect(nextRun.getTime()).toBeGreaterThan(Date.now());
 
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
@@ -1077,9 +1077,10 @@ describe("Scheduler features", () => {
 				},
 			};
 
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
 				ctx as any,
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
 				makeAgentLoopFactory() as any,
 				{},
 				failingSandbox,
@@ -1499,7 +1500,9 @@ describe("Scheduler features", () => {
 			} | null;
 			expect(task?.thread_id).toBeTruthy();
 
-			const thread = db.query("SELECT title FROM threads WHERE id = ?").get(task!.thread_id!) as {
+			const thread = db
+				.query("SELECT title FROM threads WHERE id = ?")
+				.get(task?.thread_id ?? "") as {
 				title: string | null;
 			} | null;
 			expect(thread).not.toBeNull();

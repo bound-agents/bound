@@ -180,7 +180,9 @@ export function createThreadsRoutes(
 			const forwarded = statusForwardCache?.get(id);
 
 			const runningTask = db
-				.query("SELECT id FROM tasks WHERE thread_id = ? AND status = 'running' AND deleted = 0 LIMIT 1")
+				.query(
+					"SELECT id FROM tasks WHERE thread_id = ? AND status = 'running' AND deleted = 0 LIMIT 1",
+				)
 				.get(id) as { id: string } | null;
 
 			const localLoopActive = activeLoops?.has(id) ?? false;

@@ -3942,7 +3942,7 @@ describe("RelayProcessor", () => {
 				.query("SELECT processed FROM relay_inbox WHERE id = ?")
 				.get("error-response-1") as { processed: number } | null;
 			expect(inboxEntry).not.toBeNull();
-			expect(inboxEntry!.processed).toBe(1);
+			expect(inboxEntry?.processed).toBe(1);
 
 			// And it should NOT have generated a new error in relay_outbox
 			// Check ALL outbox entries (no filter by target)

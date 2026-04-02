@@ -624,7 +624,6 @@ describe("MCP Bridge", () => {
 
 	// AC5.1 & AC5.2: updateHostMCPInfo stores server names not tool names
 	it("updateHostMCPInfo stores server names not tool names", async () => {
-		const { Database } = await import("bun:sqlite");
 		const { applySchema, createDatabase } = await import("@bound/core");
 
 		const db = createDatabase(":memory:");
@@ -665,7 +664,7 @@ describe("MCP Bridge", () => {
 
 		await updateHostMCPInfo(db, siteId, clients);
 
-		const host = db.query(`SELECT mcp_tools FROM hosts WHERE site_id = ?`).get(siteId) as {
+		const host = db.query("SELECT mcp_tools FROM hosts WHERE site_id = ?").get(siteId) as {
 			mcp_tools: string;
 		} | null;
 
@@ -679,7 +678,6 @@ describe("MCP Bridge", () => {
 
 	// Outbox bypass fix: updateHostMCPInfo must use change-log outbox
 	it("updateHostMCPInfo creates changelog entry for hosts table", async () => {
-		const { Database } = await import("bun:sqlite");
 		const { applySchema, createDatabase, insertRow } = await import("@bound/core");
 
 		const db = createDatabase(":memory:");

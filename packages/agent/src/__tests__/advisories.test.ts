@@ -42,7 +42,7 @@ describe("Advisories", () => {
 			.prepare("SELECT * FROM change_log WHERE table_name = 'advisories' AND row_id = ?")
 			.get(advisoryId) as { row_id: string } | null;
 		expect(changelogEntry).not.toBeNull();
-		expect(changelogEntry!.row_id).toBe(advisoryId);
+		expect(changelogEntry?.row_id).toBe(advisoryId);
 	});
 
 	it("should create changelog entry when updating advisory status", () => {

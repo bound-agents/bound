@@ -129,8 +129,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// Two processes on the same DB + Discord bot token causes duplicate messages.
 	const pidFile = resolve("data", "bound.pid");
 	if (existsSync(pidFile)) {
-		const existingPid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
-		if (!isNaN(existingPid) && existingPid !== process.pid) {
+		const existingPid = Number.parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
+		if (!Number.isNaN(existingPid) && existingPid !== process.pid) {
 			let alive = false;
 			try {
 				// signal 0 tests existence without killing
@@ -1153,12 +1153,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 		try {
 			const { startOverlayScanLoop } = await import("@bound/sandbox");
 			const { insertRow, updateRow, softDelete } = await import("@bound/core");
-			// biome-ignore lint/suspicious/noExplicitAny: OverlayOutbox uses string table names; core uses SyncedTableName
 			overlayHandle = startOverlayScanLoop(
 				appContext.db,
 				appContext.siteId,
 				overlayConfig.mounts,
 				undefined,
+				// biome-ignore lint/suspicious/noExplicitAny: OverlayOutbox uses string table names; core uses SyncedTableName
 				{ insertRow: insertRow as any, updateRow: updateRow as any, softDelete: softDelete as any },
 			);
 			console.log(

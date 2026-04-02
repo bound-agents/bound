@@ -28,7 +28,7 @@ describe("restore command", () => {
 		const db = setupTestDB();
 
 		// Far past timestamp
-		const farPast = new Date(Date.now() - 300000).toISOString();
+		const _farPast = new Date(Date.now() - 300000).toISOString();
 		// Intermediate timestamp (the one we restore to)
 		const safeTime = new Date(Date.now() - 120000).toISOString();
 		// Now is after the safe timestamp - this will trigger the row as "affected"
@@ -84,7 +84,7 @@ describe("restore command", () => {
 		const db = setupTestDB();
 
 		const now = new Date().toISOString();
-		const beforeTime = new Date(Date.now() - 60000).toISOString();
+		const _beforeTime = new Date(Date.now() - 60000).toISOString();
 
 		// Create a change_log entry with an invalid table name (SQL injection attempt)
 		const rowData = JSON.stringify({
@@ -109,7 +109,7 @@ describe("restore command", () => {
 				preview: true,
 				configDir: tempDir,
 			});
-		} catch (error) {
+		} catch {
 			// Expected to fail with validation error
 			errorThrown = true;
 		}
@@ -152,7 +152,7 @@ describe("restore command", () => {
 				preview: true,
 				configDir: tempDir,
 			});
-		} catch (error) {
+		} catch {
 			// Should not throw on JSON parse error, just skip
 			errorThrown = true;
 		}

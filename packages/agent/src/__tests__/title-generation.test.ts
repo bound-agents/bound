@@ -249,7 +249,8 @@ describe("Title Generation", () => {
 
 		// Mock LLM backend that throws an error
 		const mockBackend: LLMBackend = {
-			chat: async function* () {
+			chat: async function* (_params) {
+				yield undefined as never; // satisfy useYield lint rule
 				throw new Error("LLM error");
 			},
 			capabilities: () => ({

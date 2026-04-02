@@ -64,9 +64,9 @@ export function createStatusRoutes(
 
 	app.get("/network", (c) => {
 		try {
-			const hosts = db.query("SELECT * FROM hosts WHERE deleted = 0 ORDER BY host_name ASC").all() as Array<
-				Record<string, unknown>
-			>;
+			const hosts = db
+				.query("SELECT * FROM hosts WHERE deleted = 0 ORDER BY host_name ASC")
+				.all() as Array<Record<string, unknown>>;
 
 			const hubRow = db.query("SELECT value FROM cluster_config WHERE key = 'hub'").get() as {
 				value: string;
