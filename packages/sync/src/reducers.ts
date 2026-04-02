@@ -1,7 +1,9 @@
-import type { Database } from "bun:sqlite";
+import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { createChangeLogEntry } from "@bound/core";
 import type { ChangeLogEntry, SyncedTableName } from "@bound/shared";
 import { TABLE_REDUCER_MAP } from "@bound/shared";
+
+type RowData = Record<string, SQLQueryBindings>;
 
 const columnCache: Record<string, string[]> = {};
 
@@ -54,7 +56,7 @@ export function applyAppendOnlyReducer(db: Database, event: ChangeLogEntry): { a
 		return { applied: false };
 	}
 
-	let rowData: Record<string, unknown>;
+	let rowData: RowData;
 	try {
 		rowData = JSON.parse(event.row_data);
 	} catch {
@@ -93,7 +95,7 @@ export function applyAppendOnlyReducer(db: Database, event: ChangeLogEntry): { a
 		const existingModifiedAt = existing.modified_at;
 
 		// Only update if incoming is newer
-		if (existingModifiedAt && rowData.modified_at <= existingModifiedAt) {
+		if (existingModifiedAt && rowData.modified_at && rowData.modified_at <= existingModifiedAt) {
 			return { applied: false };
 		}
 
@@ -124,7 +126,7 @@ export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied:
 		return { applied: false };
 	}
 
-	let rowData: Record<string, unknown>;
+	let rowData: RowData;
 	try {
 		rowData = JSON.parse(event.row_data);
 	} catch {
@@ -162,7 +164,7 @@ export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied:
 		const existingModifiedAt = existing.modified_at;
 
 		// Only proceed if incoming is newer
-		if (existingModifiedAt && rowData.modified_at <= existingModifiedAt) {
+		if (existingModifiedAt && rowData.modified_at && rowData.modified_at <= existingModifiedAt) {
 			return { applied: false };
 		}
 	}
@@ -211,7 +213,7 @@ export function replayEvents(
 	db.exec("BEGIN");
 	try {
 		for (const event of events) {
-			let rowData: Record<string, unknown>;
+			let rowData: RowData;
 			try {
 				rowData = JSON.parse(event.row_data);
 			} catch {
