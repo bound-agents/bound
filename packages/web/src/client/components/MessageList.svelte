@@ -46,9 +46,12 @@ function checkIsAtBottom(): boolean {
 	return scrollHeight - scrollTop - clientHeight < BOTTOM_THRESHOLD;
 }
 
-function scrollToBottom(): void {
+function scrollToBottom(smooth = true): void {
 	if (!scrollContainer) return;
-	scrollContainer.scrollTop = scrollContainer.scrollHeight;
+	scrollContainer.scrollTo({
+		top: scrollContainer.scrollHeight,
+		behavior: smooth ? "smooth" : "instant",
+	});
 }
 
 function handleScroll(): void {
@@ -255,6 +258,10 @@ let displayItems = $derived.by((): DisplayItem[] => {
 	@media (prefers-reduced-motion: reduce) {
 		.waiting-dot {
 			animation: none;
+		}
+
+		.messages {
+			scroll-behavior: auto;
 		}
 	}
 </style>
