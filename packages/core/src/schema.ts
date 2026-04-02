@@ -438,4 +438,14 @@ export function applySchema(db: Database): void {
 	} catch {
 		/* index already exists or other non-fatal schema issue */
 	}
+
+	// Performance indexes for relay table cleanup (pruneRelayTables scans 88K+ rows)
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_relay_outbox_cleanup
+		ON relay_outbox(delivered, created_at) WHERE delivered = 1
+	`);
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_relay_inbox_cleanup
+		ON relay_inbox(processed, received_at) WHERE processed = 1
+	`);
 }

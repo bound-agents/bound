@@ -69,6 +69,12 @@ export function applyMetricsSchema(db: Database): void {
 			turn_count INTEGER DEFAULT 0
 		) STRICT
 	`);
+
+	// Performance index for turns by thread (context debug lookups, thread status)
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_turns_thread
+		ON turns(thread_id, created_at DESC)
+	`);
 }
 
 export function recordTurn(db: Database, turn: TurnRecord): number {
