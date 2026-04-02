@@ -26,7 +26,7 @@ interface ToolCallItem {
 
 type DisplayItem =
 	| { kind: "message"; msg: Message; earliest: string }
-	| { kind: "toolGroup"; entries: ToolEntry[]; earliest: string };
+	| { kind: "toolGroup"; entries: ToolEntry[]; earliest: string; timestamps: string[] };
 
 interface TurnRange {
 	from: string;
@@ -93,13 +93,21 @@ $effect(() => {
 });
 
 // --- Turn range highlighting + scroll ---
+function tsInRange(ts: string, range: TurnRange): boolean {
+	if (ts < range.from) return false;
+	if (range.to !== null && ts >= range.to) return false;
+	return true;
+}
+
 function isInTurnRange(item: DisplayItem): boolean {
 	if (!turnRange) return false;
+	// Tool groups span multiple turns — check if ANY constituent timestamp matches
+	if (item.kind === "toolGroup") {
+		return item.timestamps.some((ts) => tsInRange(ts, turnRange!));
+	}
 	const ts = item.earliest;
 	if (!ts) return false;
-	if (ts < turnRange.from) return false;
-	if (turnRange.to !== null && ts >= turnRange.to) return false;
-	return true;
+	return tsInRange(ts, turnRange);
 }
 
 // Scroll to first item in the selected turn range
@@ -186,7 +194,8 @@ let displayItems = $derived.by((): DisplayItem[] => {
 				}
 			}
 			const allEntries = batch.flatMap(parseToolCallEntries);
-			items.push({ kind: "toolGroup", entries: allEntries, earliest: batch[0].earliest });
+			const timestamps = batch.map((b) => b.earliest).filter(Boolean);
+			items.push({ kind: "toolGroup", entries: allEntries, earliest: batch[0].earliest, timestamps });
 		} else {
 			items.push({ kind: "message", msg: entry.msg, earliest: entry.earliest });
 			k++;
