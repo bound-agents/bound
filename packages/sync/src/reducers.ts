@@ -231,7 +231,11 @@ export function replayEvents(
 		}
 		db.exec("COMMIT");
 	} catch (error) {
-		db.exec("ROLLBACK");
+		try {
+			db.exec("ROLLBACK");
+		} catch {
+			// ROLLBACK failed, original error takes priority
+		}
 		throw error;
 	}
 
