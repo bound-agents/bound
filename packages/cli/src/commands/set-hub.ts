@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { createChangeLogEntry, getSiteId } from "@bound/core";
 import { openBoundDB } from "../lib/db";
 export interface SetHubArgs {
 	hostName: string;
@@ -35,6 +36,13 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 	console.log(`Setting cluster hub to: ${args.hostName}`);
 	try {
 		const db = openBoundDB(args.configDir);
+		// Get site_id for change_log
+		const siteId = getSiteId(db);
+		if (siteId === "unknown") {
+			console.error("Failed to read site_id from database. Database may not be initialized.");
+			db.close();
+			process.exit(1);
+		}
 		// Ensure cluster_config table exists
 		db.exec(`
 			CREATE TABLE IF NOT EXISTS cluster_config (
@@ -112,9 +120,27 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 		// Record the timestamp when hub is set (used for polling)
 		const hubChangeTimestamp = new Date().toISOString();
 		// Step 3: Set hub
-		db.query(
-			"INSERT OR REPLACE INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)",
-		).run("cluster_hub", args.hostName, hubChangeTimestamp);
+		const hubKey = "cluster_hub";
+		const existingHub = db.query("SELECT key FROM cluster_config WHERE key = ?").get(hubKey);
+		const setHubTx = db.transaction(() => {
+			if (existingHub) {
+				db.query("UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?").run(
+					args.hostName,
+					hubChangeTimestamp,
+					hubKey,
+				);
+			} else {
+				db.query("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)").run(
+					hubKey,
+					args.hostName,
+					hubChangeTimestamp,
+				);
+			}
+			// Write change_log entry
+			const rowData = { key: hubKey, value: args.hostName, modified_at: hubChangeTimestamp };
+			createChangeLogEntry(db, "cluster_config", hubKey, siteId, rowData);
+		});
+		setHubTx();
 		console.log("Cluster hub set successfully.");
 
 		// Step 4: Clear drain flag
