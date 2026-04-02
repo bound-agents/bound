@@ -583,13 +583,28 @@ export async function runStart(args: StartArgs): Promise<void> {
 			.all() as Array<{ id: string }>;
 
 		if (threadsNeedingSummary.length > 0) {
-			for (const { id } of threadsNeedingSummary) {
-				extractSummaryAndMemories(appContext.db, id, modelRouter.getDefault(), appContext.siteId).catch(
-					(err: unknown) =>
-						console.warn(`[recovery] Summary extraction failed for ${id}:`, formatError(err as Error)),
-				);
-			}
-			console.log(`[recovery] Queued summary extraction for ${threadsNeedingSummary.length} thread(s)`);
+			console.log(
+				`[recovery] Queued summary extraction for ${threadsNeedingSummary.length} thread(s)`,
+			);
+			// Process sequentially to avoid flooding the LLM backend with
+			// concurrent requests that trigger rate-limiting at startup.
+			(async () => {
+				for (const { id } of threadsNeedingSummary) {
+					try {
+						await extractSummaryAndMemories(
+							appContext.db,
+							id,
+							modelRouter.getDefault(),
+							appContext.siteId,
+						);
+					} catch (err: unknown) {
+						console.warn(
+							`[recovery] Summary extraction failed for ${id}:`,
+							formatError(err as Error),
+						);
+					}
+				}
+			})();
 		}
 	}
 
