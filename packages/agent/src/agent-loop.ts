@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
 import {
 	insertRow,
+	updateRow,
 	markProcessed,
 	readInboxByRefId,
 	readInboxByStreamId,
@@ -809,6 +810,20 @@ export class AgentLoop {
 			// Check for new messages in the queue. If a new user message arrived
 			// while we were processing, the caller (event handler in start.ts)
 			// will re-trigger the loop.
+
+			// Update thread's last_message_at so cross-thread digest ordering
+			// and memory delta baselines reflect actual activity.
+			try {
+				updateRow(
+					this.ctx.db,
+					"threads",
+					this.config.threadId,
+					{ last_message_at: new Date().toISOString() },
+					this.ctx.siteId,
+				);
+			} catch {
+				// Non-fatal — don't break the loop over metadata
+			}
 
 			this.state = "IDLE";
 
