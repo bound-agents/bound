@@ -56,7 +56,8 @@ export function resolveModel(
 	localSiteId: string,
 	requirements?: CapabilityRequirements,
 ): ModelResolution {
-	const effectiveModelId = modelId ?? modelRouter.getDefaultId();
+	const effectiveModelId =
+		!modelId || modelId === "default" ? modelRouter.getDefaultId() : modelId;
 
 	// Phase 1: Identify — check local backends first
 	const localBackend = modelRouter.tryGetBackend(effectiveModelId);

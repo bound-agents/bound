@@ -957,4 +957,30 @@ describe("resolveModel — hub-only mode (empty default)", () => {
 			expect(resolution.error).toMatch(/no remote inference backends/i);
 		}
 	});
+
+	it("normalizes literal 'default' model hint to the actual default backend", () => {
+		const mockBackend = {
+			id: "opus",
+			chat: async function* () {
+				yield { type: "text" as const, text: "test" };
+			},
+			capabilities: () => ({
+				streaming: true,
+				tools: true,
+				vision: false,
+				maxContextWindow: 200000,
+			}),
+		};
+
+		const backends = new Map([["opus", mockBackend]]);
+		const modelRouter = new ModelRouter(backends, "opus");
+
+		// Passing "default" should resolve to the default backend ("opus"), not fail
+		const resolution = resolveModel("default", modelRouter, db, "local-site");
+
+		expect(resolution.kind).toBe("local");
+		if (resolution.kind === "local") {
+			expect(resolution.modelId).toBe("opus");
+		}
+	});
 });
