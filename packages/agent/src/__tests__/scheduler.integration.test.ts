@@ -456,8 +456,8 @@ describe("Scheduler Integration", () => {
 		const taskId = randomUUID();
 		const now = new Date();
 		const nowStr = now.toISOString();
-		// Heartbeat 3 minutes ago — past the 2-minute EVICTION_TIMEOUT
-		const staleHeartbeat = new Date(now.getTime() - 180_000).toISOString();
+		// Heartbeat 6 minutes ago — past the 5-minute EVICTION_TIMEOUT
+		const staleHeartbeat = new Date(now.getTime() - 360_000).toISOString();
 
 		// Insert a cron task in 'running' state with a stale heartbeat
 		db.exec(`

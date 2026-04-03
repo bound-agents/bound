@@ -1577,4 +1577,161 @@ describe("Scheduler features", () => {
 			}
 		});
 	});
+
+	// -----------------------------------------------------------------------
+	// Cron thread rotation
+	// -----------------------------------------------------------------------
+	describe("cron thread rotation", () => {
+		it("rotates thread when message count exceeds threshold", async () => {
+			const taskId = randomUUID();
+			const oldThreadId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+
+			// Create the old thread
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, 'system', 'scheduler', 'test-host', 0, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, 0)",
+				[oldThreadId, now, now, now],
+			);
+
+			// Insert 201 messages to exceed the 200-message threshold
+			for (let i = 0; i < 201; i++) {
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, 'user', 'msg', NULL, NULL, ?, ?, 'test-host', 0)",
+					[randomUUID(), oldThreadId, now, now],
+				);
+			}
+
+			// Create cron task pointing to the old thread
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'cron', 'pending', '{"type":"cron","expression":"0 * * * *"}', '{"prompt":"test"}', ?,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, oldThreadId, pastTime, now, now],
+			);
+
+			let capturedConfig: { threadId: string } | null = null;
+			const factory = (config: { threadId: string }) => {
+				capturedConfig = config;
+				return {
+					run: async () => ({ messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 }),
+				};
+			};
+
+			const ctx = makeCtx();
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, factory as any);
+			const { stop } = scheduler.start(50);
+
+			await waitFor(() => capturedConfig !== null, {
+				message: "agent loop factory not called",
+			});
+			stop();
+
+			// The factory should have received the NEW threadId (not the old one)
+			expect(capturedConfig).not.toBeNull();
+			// biome-ignore lint/style/noNonNullAssertion: verified not null above
+			expect(capturedConfig!.threadId).not.toBe(oldThreadId);
+
+			// The task row should now point to the new thread
+			const taskRow = db.query("SELECT thread_id FROM tasks WHERE id = ?").get(taskId) as {
+				thread_id: string;
+			};
+			expect(taskRow.thread_id).not.toBe(oldThreadId);
+
+			// The old thread should still exist (not deleted)
+			const oldThread = db.query("SELECT id FROM threads WHERE id = ?").get(oldThreadId) as {
+				id: string;
+			} | null;
+			expect(oldThread).not.toBeNull();
+
+			// Clean up
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM threads WHERE id IN (?, ?)", [oldThreadId, taskRow.thread_id]);
+			db.run("DELETE FROM messages WHERE thread_id IN (?, ?)", [oldThreadId, taskRow.thread_id]);
+		});
+
+		it("does not rotate thread when message count is below threshold", async () => {
+			const taskId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+
+			// Create thread with only 10 messages (well below threshold)
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, 'system', 'scheduler', 'test-host', 0, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, 0)",
+				[threadId, now, now, now],
+			);
+
+			for (let i = 0; i < 10; i++) {
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, 'user', 'msg', NULL, NULL, ?, ?, 'test-host', 0)",
+					[randomUUID(), threadId, now, now],
+				);
+			}
+
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'cron', 'pending', '{"type":"cron","expression":"0 * * * *"}', '{"prompt":"test"}', ?,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, threadId, pastTime, now, now],
+			);
+
+			let capturedConfig: { threadId: string } | null = null;
+			const factory = (config: { threadId: string }) => {
+				capturedConfig = config;
+				return {
+					run: async () => ({ messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 }),
+				};
+			};
+
+			const ctx = makeCtx();
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, factory as any);
+			const { stop } = scheduler.start(50);
+
+			await waitFor(() => capturedConfig !== null, {
+				message: "agent loop factory not called",
+			});
+			stop();
+
+			// Thread should NOT have been rotated
+			// biome-ignore lint/style/noNonNullAssertion: verified not null by waitFor
+			expect(capturedConfig!.threadId).toBe(threadId);
+
+			const finalTask = db.query("SELECT thread_id FROM tasks WHERE id = ?").get(taskId) as {
+				thread_id: string;
+			};
+			expect(finalTask.thread_id).toBe(threadId);
+
+			// Clean up
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM threads WHERE id = ?", [threadId]);
+			db.run("DELETE FROM messages WHERE thread_id = ?", [threadId]);
+		});
+	});
 });

@@ -27,7 +27,8 @@ function extractCronExpression(triggerSpec: string): string {
 	}
 	return triggerSpec;
 }
-const EVICTION_TIMEOUT = 120_000; // 2 minutes
+const EVICTION_TIMEOUT = 300_000; // 5 minutes
+const CRON_THREAD_ROTATION_THRESHOLD = 200;
 
 /**
  * Reschedules a cron task to its next run time and resets status to 'pending'.
@@ -363,8 +364,29 @@ export class Scheduler {
 		// Create agent loop and run asynchronously
 		setImmediate(async () => {
 			try {
-				const threadId = task.thread_id || randomUUID();
+				let threadId = task.thread_id || randomUUID();
 				const taskNow = new Date().toISOString();
+
+				// Rotate cron task threads that have grown too large.
+				// Large threads cause slow context assembly and long LLM calls,
+				// making them vulnerable to heartbeat timeout eviction.
+				if (task.type === "cron" && task.thread_id) {
+					const countRow = this.ctx.db
+						.query("SELECT COUNT(*) as count FROM messages WHERE thread_id = ?")
+						.get(task.thread_id) as { count: number };
+
+					if (countRow.count > CRON_THREAD_ROTATION_THRESHOLD) {
+						const newThreadId = randomUUID();
+						this.ctx.logger.info(
+							`[scheduler] Rotating cron task thread: ${countRow.count} messages exceeds threshold of ${CRON_THREAD_ROTATION_THRESHOLD}`,
+							{ taskId: task.id, oldThreadId: task.thread_id, newThreadId },
+						);
+						this.ctx.db
+							.query("UPDATE tasks SET thread_id = ? WHERE id = ?")
+							.run(newThreadId, task.id);
+						threadId = newThreadId;
+					}
+				}
 
 				// Persist thread_id back to the task row so the UI can find the
 				// thread later. Without this, tasks created without a thread_id
