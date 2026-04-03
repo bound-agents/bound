@@ -12,16 +12,19 @@ import {
 	updateRow,
 	writeOutbox,
 } from "@bound/core";
-import type { CapabilityRequirements, ModelRouter, StreamChunk } from "@bound/llm";
+import type { ModelRouter, StreamChunk } from "@bound/llm";
 import type { InferenceRequestPayload, StreamChunkPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
 import type { ContextDebugInfo } from "@bound/shared";
 import { countTokens, formatError } from "@bound/shared";
 
-// Cache prediction infrastructure preserved for future use when provider
-// TTL support is verified. Currently unused in the agent loop — both
-// Anthropic and Bedrock broke when receiving TTL fields.
-// import { selectCacheTtl, predictCacheState, CACHE_TTL_MS } from "./cache-prediction";
+import {
+	buildCommandOutput,
+	calculateTurnCost,
+	deriveCapabilityRequirements,
+	getResolvedModelId,
+	insertThreadMessage,
+} from "./agent-loop-utils";
 import { assembleContext } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
@@ -35,11 +38,10 @@ import {
 } from "./tool-result-offload";
 import type { AgentLoopConfig, AgentLoopResult, AgentLoopState } from "./types";
 
-/** Silence timeout for local LLM inference (ms). */
 export const SILENCE_TIMEOUT_MS = 60_000;
-
-/** Maximum number of retries on silence timeout before giving up. */
 export const MAX_SILENCE_RETRIES = 10;
+
+const textEncoder = new TextEncoder();
 
 interface BashLike {
 	exec?: (
@@ -109,59 +111,21 @@ export class AgentLoop {
 		this.ctx.eventBus.on("agent:cancel", cancelHandler);
 		try {
 			this.state = "HYDRATE_FS";
-			// FS hydration is handled by the caller (start.ts) before constructing
-			// the AgentLoop. The sandbox's ClusterFs is already populated.
 			if (this.sandbox.capturePreSnapshot) {
 				await this.sandbox.capturePreSnapshot();
 			}
 
 			this.state = "ASSEMBLE_CONTEXT";
-			// Get context window from LLM backend capabilities
 			const capabilities = this.modelRouter.getDefault().capabilities();
 			const contextWindow = capabilities.max_context || 8000;
 
-			// Derive capability requirements from current turn context
-			const requirements: CapabilityRequirements | undefined = (() => {
-				const req: CapabilityRequirements = {};
-				// Check if pending user message or thread history has image blocks
-				// For simplicity: if tools are configured, set tool_use requirement
-				if (this.config.tools && this.config.tools.length > 0) {
-					req.tool_use = true;
-				}
-				// Vision requirement: check recent thread messages for image ContentBlocks.
-				// Phase 7 stores image blocks as JSON ContentBlock[] in messages.content.
-				// Query the last 5 messages of the thread and check for image type.
-				try {
-					const recentMsgs = this.ctx.db
-						.query(
-							`SELECT content FROM messages
-							 WHERE thread_id = ? AND deleted = 0
-							 ORDER BY created_at DESC LIMIT 5`,
-						)
-						.all(this.config.threadId) as Array<{ content: string }>;
+			const hasTools = !!(this.config.tools && this.config.tools.length > 0);
+			const requirements = deriveCapabilityRequirements(
+				this.ctx.db,
+				this.config.threadId,
+				hasTools,
+			);
 
-					const hasImageBlock = recentMsgs.some((m) => {
-						try {
-							const blocks = JSON.parse(m.content);
-							return (
-								Array.isArray(blocks) && blocks.some((b: { type?: string }) => b.type === "image")
-							);
-						} catch {
-							return false;
-						}
-					});
-
-					if (hasImageBlock) {
-						req.vision = true;
-					}
-				} catch {
-					// Non-fatal: if DB query fails, proceed without vision requirement
-				}
-
-				return Object.keys(req).length > 0 ? req : undefined;
-			})();
-
-			// Resolve model before context assembly so relayInfo can be included in volatile context
 			this.lastModelResolution = resolveModel(
 				this.config.modelId,
 				this.modelRouter,
@@ -170,7 +134,6 @@ export class AgentLoop {
 				requirements,
 			);
 
-			// If the requested model can't be resolved, fall back to default and warn
 			if (this.lastModelResolution.kind === "error" && this.config.modelId !== undefined) {
 				const fallbackResolution = resolveModel(
 					undefined,
@@ -185,29 +148,16 @@ export class AgentLoop {
 						requestedModel: this.config.modelId,
 						fallbackModel: fallbackResolution.modelId,
 					});
-					insertRow(
-						this.ctx.db,
-						"messages",
-						{
-							id: randomUUID(),
-							thread_id: this.config.threadId,
-							role: "alert",
-							content: warningMsg,
-							model_id: null,
-							tool_name: null,
-							created_at: new Date().toISOString(),
-							modified_at: new Date().toISOString(),
-							host_origin: this.ctx.hostName,
-						},
-						this.ctx.siteId,
-					);
+					insertThreadMessage(this.ctx.db, {
+						threadId: this.config.threadId,
+						role: "alert",
+						content: warningMsg,
+						hostOrigin: this.ctx.hostName,
+					}, this.ctx.siteId);
 					this.lastModelResolution = fallbackResolution;
 				}
-				// If even the default can't resolve, lastModelResolution stays as error
-				// and the loop will fail with a clear message as before
 			}
 
-			// Build relayInfo if resolution is remote
 			let relayInfo:
 				| { remoteHost: string; localHost: string; model: string; provider: string }
 				| undefined;
@@ -221,30 +171,21 @@ export class AgentLoop {
 				};
 			}
 
-			// Determine resolved capabilities for content substitution
 			const resolvedCaps =
 				this.lastModelResolution?.kind === "local"
 					? this.modelRouter.getEffectiveCapabilities(this.lastModelResolution.modelId)
 					: undefined;
 
-			// Compute tool token estimate for debug metadata
 			const toolTokenEstimate = this.config.tools
 				? countTokens(JSON.stringify(this.config.tools))
 				: 0;
 
-			const resolvedModelForDebug =
-				this.lastModelResolution && this.lastModelResolution.kind !== "error"
-					? this.lastModelResolution.modelId
-					: this.config.modelId;
+			const resolvedModelForDebug = getResolvedModelId(
+				this.lastModelResolution,
+				this.config.modelId,
+			);
 
-			// Always compact old tool results outside the recent window.
-			// Compaction is deterministic (same message → same replacement text), so the
-			// compacted prefix is just as cache-friendly as the uncompacted one. This
-			// dramatically reduces context size (e.g., 190k → 60k) while maintaining
-			// stable prefixes for Bedrock/Anthropic automatic prefix caching. For no-cache
-			// backends (Ollama), compaction is even more beneficial since there's no cache
-			// and smaller context = faster inference.
-
+			// Deterministic compaction keeps cached prefixes stable while reducing context size
 			const { messages: contextMessages, debug: contextDebug } = assembleContext({
 				db: this.ctx.db,
 				threadId: this.config.threadId,
@@ -268,21 +209,16 @@ export class AgentLoop {
 				compactToolResults: true,
 			});
 
-			// Store context debug for Phase 3 persistence
 			this.lastContextDebug = contextDebug;
 
-			// Advisory: log once per thread when image blocks are stripped for a non-vision backend.
-			// The advisoryDedup Set in context-assembly.ts prevents repeat logs per thread+backend,
-			// but the actual log emission is here at the call site where the logger is available.
+			// Log once per thread when image blocks are stripped for a non-vision backend
 			if (resolvedCaps && !resolvedCaps.vision) {
-				// Check if thread has any image messages (same query as requirements derivation above)
 				const advisoryKey = `${this.config.threadId}::vision:false`;
 				if (!this._visionAdvisoryEmitted?.has(advisoryKey)) {
-					// Lazy-init the Set if it doesn't exist
 					if (!this._visionAdvisoryEmitted) this._visionAdvisoryEmitted = new Set();
 					this._visionAdvisoryEmitted.add(advisoryKey);
 					this.ctx.logger.info(
-						"[agent-loop] Image blocks in context will be replaced with text annotations (target backend lacks vision support)",
+						"[agent-loop] Image blocks replaced with text annotations (backend lacks vision)",
 						{
 							backendId:
 								this.lastModelResolution?.kind === "local"
@@ -294,11 +230,8 @@ export class AgentLoop {
 				}
 			}
 
-			// Agentic loop: keep calling the LLM until it produces a text-only
-			// response with no tool calls, or until we are aborted.
 			const llmMessages = [...contextMessages];
 			let continueLoop = true;
-
 			let transportRetries = 0;
 
 			while (continueLoop) {
@@ -307,22 +240,16 @@ export class AgentLoop {
 				this.state = "LLM_CALL";
 				const chunks: StreamChunk[] = [];
 				let currentTurnId: number | null = null;
-				// Resolved model for this turn — hoisted so message persistence can use it.
-				// Computed inside the turn-metrics try block; stays null if that block throws.
 				let resolvedModelId: string | null = null;
-				// AC4.1: Capture relay metadata (host name and first chunk latency) during relayStream()
-				// so we can record metrics AFTER recordTurn() sets currentTurnId
 				const relayMetadataRef: { hostName?: string; firstChunkLatencyMs?: number } = {};
 
 				try {
-					// Extract system messages for drivers that handle them separately (e.g., Bedrock, Anthropic)
 					const systemMessages = llmMessages.filter((m) => m.role === "system");
 					const nonSystemMessages = llmMessages.filter((m) => m.role !== "system");
 					const systemPrompt = systemMessages
 						.map((m) => (typeof m.content === "string" ? m.content : ""))
 						.join("\n\n");
 
-					// Use cached resolution from ASSEMBLE_CONTEXT state
 					const resolution = this.lastModelResolution;
 					if (!resolution) {
 						throw new Error("Model resolution not available");
@@ -343,15 +270,13 @@ export class AgentLoop {
 							cache_breakpoints: undefined,
 							timeout_ms: 120_000,
 						};
-						// AC1.9: Large prompt handling — write to synced file if payload >2MB
 						const MAX_INLINE_BYTES = 2 * 1024 * 1024;
 						const serialized = JSON.stringify(inferencePayload);
-						const payloadBytes = new TextEncoder().encode(serialized).byteLength;
+						const payloadBytes = textEncoder.encode(serialized).byteLength;
 
 						if (payloadBytes > MAX_INLINE_BYTES) {
 							const fileRef = `cluster/relay/inference-${randomUUID()}.json`;
 							const messagesJson = JSON.stringify(inferencePayload.messages);
-							// Write messages to synced files table via insertRow (change-log outbox pattern)
 							insertRow(
 								this.ctx.db,
 								"files",
@@ -360,7 +285,7 @@ export class AgentLoop {
 									path: fileRef,
 									content: messagesJson,
 									is_binary: 0,
-									size_bytes: new TextEncoder().encode(messagesJson).byteLength,
+									size_bytes: textEncoder.encode(messagesJson).byteLength,
 									created_at: new Date().toISOString(),
 									modified_at: new Date().toISOString(),
 									deleted: 0,
@@ -369,7 +294,6 @@ export class AgentLoop {
 								},
 								this.ctx.siteId,
 							);
-							// Trigger sync so the file reaches the target host
 							this.ctx.eventBus.emit("sync:trigger", { reason: "relay-large-prompt" });
 							inferencePayload = {
 								...inferencePayload,
@@ -387,15 +311,10 @@ export class AgentLoop {
 							chunks.push(chunk);
 						}
 					} else {
-						// Compute cache breakpoints: place one at nonSystemMessages.length - 2
-						// (second-to-last message) when there are at least 2 history messages,
-						// so the Anthropic driver marks that message with cache_control and
-						// all prior turns are eligible for prompt-cache reuse. This populates
-						// tokens_cache_write and tokens_cache_read in the turns table.
+						// Place cache breakpoint at second-to-last message for prompt-cache reuse
 						const cacheBreakpoints: number[] | undefined =
 							nonSystemMessages.length >= 2 ? [nonSystemMessages.length - 2] : undefined;
 
-						// Retry loop for transient silence timeouts
 						let silenceRetries = 0;
 						for (;;) {
 							try {
@@ -404,9 +323,6 @@ export class AgentLoop {
 									system: systemPrompt || undefined,
 									tools: this.config.tools,
 									cache_breakpoints: cacheBreakpoints,
-									// cache_ttl intentionally omitted — both Anthropic and Bedrock
-									// drivers currently ignore it, and passing any extra fields
-									// risks unexpected serialization behavior.
 								});
 								for await (const chunk of this.withSilenceTimeout(chatStream, SILENCE_TIMEOUT_MS)) {
 									if (this.aborted) break;
@@ -446,15 +362,11 @@ export class AgentLoop {
 						continue; // Re-enter the while loop → LLM_CALL
 					}
 
-					// Rate-limit handling: if the LLM returned 429 or 529, mark the backend
-					// rate-limited and attempt to re-resolve to an alternative backend
 					if (error instanceof LLMError && (error.statusCode === 429 || error.statusCode === 529)) {
 						const backendId =
 							this.lastModelResolution?.kind === "local" ? this.lastModelResolution.modelId : null;
 						if (backendId) {
-							// Use Retry-After from the error if available (added in Phase 5); default 60 s
-							const retryAfterMs =
-								error instanceof LLMError && error.retryAfterMs ? error.retryAfterMs : 60_000;
+							const retryAfterMs = error.retryAfterMs || 60_000;
 							this.modelRouter.markRateLimited(backendId, retryAfterMs);
 							this.ctx.logger.warn("[agent-loop] Backend rate-limited, marked for exclusion", {
 								backendId,
@@ -462,7 +374,6 @@ export class AgentLoop {
 								statusCode: error.statusCode,
 							});
 
-							// Re-resolve model — may find an alternative backend
 							const newResolution = resolveModel(
 								undefined,
 								this.modelRouter,
@@ -471,58 +382,36 @@ export class AgentLoop {
 								requirements,
 							);
 							if (newResolution.kind !== "error") {
-								const previousModelId =
-									this.lastModelResolution?.kind !== "error"
-										? this.lastModelResolution?.modelId
-										: backendId;
+								const previousModelId = getResolvedModelId(
+									this.lastModelResolution,
+									backendId,
+								);
 								const newModelId = newResolution.modelId;
 								this.lastModelResolution = newResolution;
 
-								// Inject a "Model switched" system message so the LLM
-								// (and context assembly on future turns) knows about the switch
 								if (previousModelId !== newModelId) {
 									const switchMsg = `Model switched from ${previousModelId} to ${newModelId} (rate limit on ${previousModelId})`;
-									llmMessages.push({
+									llmMessages.push({ role: "system", content: switchMsg });
+									insertThreadMessage(this.ctx.db, {
+										threadId: this.config.threadId,
 										role: "system",
 										content: switchMsg,
-									});
-									// Persist the switch notice so it appears in thread history
-									insertRow(
-										this.ctx.db,
-										"messages",
-										{
-											id: randomUUID(),
-											thread_id: this.config.threadId,
-											role: "system",
-											content: switchMsg,
-											model_id: null,
-											tool_name: null,
-											created_at: new Date().toISOString(),
-											modified_at: new Date().toISOString(),
-											host_origin: this.ctx.hostName,
-										},
-										this.ctx.siteId,
-									);
+										hostOrigin: this.ctx.hostName,
+									}, this.ctx.siteId);
 									this.messagesCreated++;
 								}
 
 								this.ctx.logger.info(
 									"[agent-loop] Rate-limit fallback: re-resolved to alternative backend",
-									{
-										previousBackend: backendId,
-										newBackend: newModelId,
-										newKind: newResolution.kind,
-									},
+									{ previousBackend: backendId, newBackend: newModelId, newKind: newResolution.kind },
 								);
-								transportRetries = 0; // Reset for new backend
-								continue; // Retry with the new backend
+								transportRetries = 0;
+								continue;
 							}
 
 							this.ctx.logger.warn(
 								"[agent-loop] Rate-limit fallback: no alternative backend available",
-								{
-									backendId,
-								},
+								{ backendId },
 							);
 						}
 					}
@@ -531,23 +420,12 @@ export class AgentLoop {
 					const errorMsg = formatError(error);
 					this.ctx.logger.error("LLM call failed", { error: errorMsg });
 
-					const alertId = randomUUID();
-					insertRow(
-						this.ctx.db,
-						"messages",
-						{
-							id: alertId,
-							thread_id: this.config.threadId,
-							role: "alert",
-							content: `Error: ${errorMsg}`,
-							model_id: null,
-							tool_name: null,
-							created_at: new Date().toISOString(),
-							modified_at: new Date().toISOString(),
-							host_origin: this.ctx.hostName,
-						},
-						this.ctx.siteId,
-					);
+					insertThreadMessage(this.ctx.db, {
+						threadId: this.config.threadId,
+						role: "alert",
+						content: `Error: ${errorMsg}`,
+						hostOrigin: this.ctx.hostName,
+					}, this.ctx.siteId);
 
 					return {
 						messagesCreated: this.messagesCreated,
@@ -560,70 +438,28 @@ export class AgentLoop {
 				this.state = "PARSE_RESPONSE";
 				const parsed = this.parseResponseChunks(chunks);
 
-				// If the loop was aborted mid-stream and no done chunk arrived,
-				// skip the ghost turn recording and persist an abort notice instead.
+					// Aborted mid-stream with no done chunk — persist notice and exit
 				if (this.aborted && parsed.usage.inputTokens === 0 && parsed.usage.outputTokens === 0) {
-					const abortNow = new Date().toISOString();
-					insertRow(
-						this.ctx.db,
-						"messages",
-						{
-							id: randomUUID(),
-							thread_id: this.config.threadId,
-							role: "system",
-							content:
-								"[Turn cancelled] The previous inference was cancelled before it could complete. " +
-								"No response was generated for the last user message.",
-							model_id: null,
-							tool_name: null,
-							created_at: abortNow,
-							modified_at: abortNow,
-							host_origin: this.ctx.hostName,
-						},
-						this.ctx.siteId,
-					);
+					insertThreadMessage(this.ctx.db, {
+						threadId: this.config.threadId,
+						role: "system",
+						content:
+							"[Turn cancelled] The previous inference was cancelled before it could complete. " +
+							"No response was generated for the last user message.",
+						hostOrigin: this.ctx.hostName,
+					}, this.ctx.siteId);
 					this.messagesCreated++;
-					break; // Exit the agentic while loop
+					break;
 				}
 
-				// Record turn metrics for budget tracking
 				try {
-					// Bug #10: use the resolved model id (from lastModelResolution) rather than
-					// config.modelId which is undefined when no model_hint is set on the task.
-					resolvedModelId =
-						this.lastModelResolution && this.lastModelResolution.kind !== "error"
-							? this.lastModelResolution.modelId
-							: this.config.modelId || "unknown";
+					resolvedModelId = getResolvedModelId(
+						this.lastModelResolution,
+						this.config.modelId || "unknown",
+					);
 
-					// Bug #6: compute cost_usd from model pricing config rather than hardcoding 0.
-					let cost_usd = 0;
-					const backends = this.ctx.config?.modelBackends?.backends;
-					if (backends) {
-						const backendConfig = backends.find(
-							(b: {
-								id: string;
-								price_per_m_input?: number;
-								price_per_m_output?: number;
-								price_per_m_cache_read?: number;
-								price_per_m_cache_write?: number;
-							}) => b.id === resolvedModelId,
-						);
-						if (backendConfig) {
-							const inputCost =
-								(parsed.usage.inputTokens * (backendConfig.price_per_m_input ?? 0)) / 1_000_000;
-							const outputCost =
-								(parsed.usage.outputTokens * (backendConfig.price_per_m_output ?? 0)) / 1_000_000;
-							const cacheReadCost =
-								((parsed.usage.cacheReadTokens ?? 0) *
-									(backendConfig.price_per_m_cache_read ?? 0)) /
-								1_000_000;
-							const cacheWriteCost =
-								((parsed.usage.cacheWriteTokens ?? 0) *
-									(backendConfig.price_per_m_cache_write ?? 0)) /
-								1_000_000;
-							cost_usd = inputCost + outputCost + cacheReadCost + cacheWriteCost;
-						}
-					}
+					const backends = this.ctx.config?.modelBackends?.backends ?? [];
+					const cost_usd = calculateTurnCost(resolvedModelId, parsed.usage, backends);
 
 					currentTurnId = recordTurn(this.ctx.db, {
 						thread_id: this.config.threadId,
@@ -641,7 +477,6 @@ export class AgentLoop {
 					// Non-fatal — don't break the loop over metrics
 				}
 
-				// AC4.1: Record relay metrics if this was a remote inference
 				if (
 					currentTurnId !== null &&
 					relayMetadataRef.hostName !== undefined &&
@@ -659,12 +494,9 @@ export class AgentLoop {
 					}
 				}
 
-				// Update context debug with actual token usage for this turn
-				// (avoids stale debug across multi-turn agentic loops where
-				// assembleContext runs once but recordContextDebug runs per turn)
+				// Update context debug with actual LLM-reported token counts
+				// (inputTokens may exclude cached tokens on Bedrock)
 				if (this.lastContextDebug && parsed.usage.inputTokens > 0) {
-					// Use total context size: inputTokens may exclude cached tokens
-					// (Bedrock reports only non-cached; Anthropic reports all).
 					const actualTokens =
 						parsed.usage.inputTokens +
 						(parsed.usage.cacheReadTokens ?? 0) +
@@ -675,7 +507,6 @@ export class AgentLoop {
 						...this.lastContextDebug,
 						totalEstimated: actualTokens,
 					};
-					// Attribute the growth to the history section (messages accumulate there)
 					if (delta > 0) {
 						const historySec = this.lastContextDebug.sections.find((s) => s.name === "history");
 						if (historySec) {
@@ -684,7 +515,6 @@ export class AgentLoop {
 					}
 				}
 
-				// Record context debug data and emit event
 				if (currentTurnId !== null && this.lastContextDebug) {
 					try {
 						recordContextDebug(this.ctx.db, currentTurnId, this.lastContextDebug);
@@ -694,12 +524,11 @@ export class AgentLoop {
 							debug: this.lastContextDebug,
 						});
 					} catch {
-						// Non-fatal — don't break the loop over debug metadata
+						// Non-fatal
 					}
 				}
 
 				if (parsed.toolCalls.length > 0) {
-					// --- TOOL_EXECUTE ---
 					this.state = "TOOL_EXECUTE";
 					const toolResults: Array<{
 						toolCall: ParsedToolCall;
@@ -715,9 +544,7 @@ export class AgentLoop {
 						try {
 							const result = await this.executeToolCall(toolCall);
 
-							// Check for relay request
 							if ("outboxEntryId" in result) {
-								// It's a RelayToolCallRequest - enter RELAY_WAIT
 								resultContent = await this.relayWait(result, toolCall, currentTurnId);
 							} else {
 								resultContent = result.content;
@@ -733,8 +560,6 @@ export class AgentLoop {
 						this.config.onActivity?.();
 					}
 
-					// --- TOOL_RESULT_OFFLOAD ---
-					// Offload oversized tool results to VFS files so they don't bloat context.
 					if (this.sandbox.writeFile) {
 						for (const result of toolResults) {
 							if (result.content.length > TOOL_RESULT_OFFLOAD_THRESHOLD) {
@@ -753,75 +578,38 @@ export class AgentLoop {
 						}
 					}
 
-					// --- TOOL_PERSIST ---
-					// Spec R-E3: persist tool_call and tool_result messages immediately
-					// after each execution, before the next LLM call.
+					// Persist tool messages before next LLM call (pairing invariant)
 					this.state = "TOOL_PERSIST";
-					const now = new Date().toISOString();
 
-					// Persist the assistant's tool_call message (contains all tool calls from this turn)
-					const toolCallContent = JSON.stringify(
-						parsed.toolCalls.map((tc) => ({
-							type: "tool_use",
-							id: tc.id,
-							name: tc.name,
-							input: tc.input,
-						})),
-					);
+					const toolCallBlocks = parsed.toolCalls.map((tc) => ({
+						type: "tool_use" as const,
+						id: tc.id,
+						name: tc.name,
+						input: tc.input,
+					}));
 
-					const toolCallMsgId = randomUUID();
-					insertRow(
-						this.ctx.db,
-						"messages",
-						{
-							id: toolCallMsgId,
-							thread_id: this.config.threadId,
-							role: "tool_call",
-							content: toolCallContent,
-							model_id: resolvedModelId,
-							tool_name: null,
-							created_at: now,
-							modified_at: now,
-							host_origin: this.ctx.hostName,
-						},
-						this.ctx.siteId,
-					);
+					insertThreadMessage(this.ctx.db, {
+						threadId: this.config.threadId,
+						role: "tool_call",
+						content: JSON.stringify(toolCallBlocks),
+						hostOrigin: this.ctx.hostName,
+						modelId: resolvedModelId,
+					}, this.ctx.siteId);
 					this.messagesCreated++;
 
-					// Add tool_call to in-memory context for next LLM call
-					// Must use ContentBlock array (not JSON string) so drivers
-					// can generate proper toolUse blocks
-					llmMessages.push({
-						role: "tool_call",
-						content: parsed.toolCalls.map((tc) => ({
-							type: "tool_use" as const,
-							id: tc.id,
-							name: tc.name,
-							input: tc.input,
-						})),
-					});
+					// In-memory context uses ContentBlock array (not JSON string)
+					llmMessages.push({ role: "tool_call", content: toolCallBlocks });
 
-					// Persist each tool_result and add to context
 					for (const { toolCall, content, exitCode } of toolResults) {
-						const resultNow = new Date().toISOString();
-						const toolResultMsgId = randomUUID();
-						insertRow(
-							this.ctx.db,
-							"messages",
-							{
-								id: toolResultMsgId,
-								thread_id: this.config.threadId,
-								role: "tool_result",
-								content,
-								model_id: resolvedModelId,
-								tool_name: toolCall.id,
-								created_at: resultNow,
-								modified_at: resultNow,
-								host_origin: this.ctx.hostName,
-								exit_code: exitCode,
-							},
-							this.ctx.siteId,
-						);
+						insertThreadMessage(this.ctx.db, {
+							threadId: this.config.threadId,
+							role: "tool_result",
+							content,
+							hostOrigin: this.ctx.hostName,
+							modelId: resolvedModelId,
+							toolName: toolCall.id,
+							exitCode,
+						}, this.ctx.siteId);
 						this.messagesCreated++;
 
 						llmMessages.push({
@@ -831,36 +619,19 @@ export class AgentLoop {
 						});
 					}
 
-					// Also persist any text content the assistant emitted alongside tool calls.
-					// Compute textNow AFTER the tool_result loop so this message always sorts
-					// after all tool_results under ORDER BY (created_at, rowid). Using the
-					// same `now` as the tool_call risks same-ms collisions where fast results
-					// stay at T while a slower result ticks to T+1ms — the sort then wedges
-					// this message between them, orphaning the slow tool_result and causing a
-					// Bedrock "text field is blank" error via synthetic tool_call injection.
+					// Timestamp computed AFTER tool_result loop to sort after all results
+					// (avoids sub-ms collisions that break Bedrock tool_call pairing)
 					if (parsed.textContent) {
-						const textNow = new Date().toISOString();
-						const textMsgId = randomUUID();
-						insertRow(
-							this.ctx.db,
-							"messages",
-							{
-								id: textMsgId,
-								thread_id: this.config.threadId,
-								role: "assistant",
-								content: parsed.textContent,
-								model_id: resolvedModelId,
-								tool_name: null,
-								created_at: textNow,
-								modified_at: textNow,
-								host_origin: this.ctx.hostName,
-							},
-							this.ctx.siteId,
-						);
+						insertThreadMessage(this.ctx.db, {
+							threadId: this.config.threadId,
+							role: "assistant",
+							content: parsed.textContent,
+							hostOrigin: this.ctx.hostName,
+							modelId: resolvedModelId,
+						}, this.ctx.siteId);
 						this.messagesCreated++;
 					}
 
-					// R-W2: Check memory threshold after tool execution
 					if (this.sandbox.checkMemoryThreshold) {
 						const memCheck = this.sandbox.checkMemoryThreshold();
 						if (memCheck.overThreshold) {
@@ -872,37 +643,22 @@ export class AgentLoop {
 						}
 					}
 
-					// Continue the loop to feed tool results back to the LLM
 					continue;
 				}
 
-				// No tool calls — persist the final assistant text response and exit.
-				// When the model returns empty text after tool calls were made this turn,
-				// it's a clean completion (the model decided tools were sufficient).
-				// Still persist a minimal assistant message so the thread has a proper
-				// ending and doesn't appear as "cancelled" in the UI.
+				// No tool calls — persist final response and exit
 				this.state = "RESPONSE_PERSIST";
 				const assistantContent =
 					parsed.textContent || (this.toolCallsMade > 0 ? "[turn complete]" : "");
 
 				if (assistantContent) {
-					const assistantMessageId = randomUUID();
-					insertRow(
-						this.ctx.db,
-						"messages",
-						{
-							id: assistantMessageId,
-							thread_id: this.config.threadId,
-							role: "assistant",
-							content: assistantContent,
-							model_id: resolvedModelId,
-							tool_name: null,
-							created_at: new Date().toISOString(),
-							modified_at: new Date().toISOString(),
-							host_origin: this.ctx.hostName,
-						},
-						this.ctx.siteId,
-					);
+					insertThreadMessage(this.ctx.db, {
+						threadId: this.config.threadId,
+						role: "assistant",
+						content: assistantContent,
+						hostOrigin: this.ctx.hostName,
+						modelId: resolvedModelId,
+					}, this.ctx.siteId);
 					this.messagesCreated++;
 				}
 
@@ -910,21 +666,17 @@ export class AgentLoop {
 			}
 
 			this.state = "FS_PERSIST";
-			// Persist filesystem changes if the sandbox supports it.
-			// The sandbox wraps a ClusterFs whose state is persisted via
-			// persistWorkspaceChanges() from @bound/sandbox.
 			if (this.sandbox.persistFs) {
 				const persistResult = await this.sandbox.persistFs();
 				if (persistResult && typeof persistResult.changes === "number") {
 					this.filesChanged += persistResult.changes;
 
-					// R-E20: Track file-thread associations for cross-thread notification
 					if (persistResult.changedPaths) {
 						for (const filePath of persistResult.changedPaths) {
 							try {
 								trackFilePath(this.ctx.db, filePath, this.config.threadId, this.ctx.siteId);
 							} catch {
-								// Non-fatal — don't break the loop over tracking
+								// Non-fatal
 							}
 						}
 					}
@@ -932,12 +684,6 @@ export class AgentLoop {
 			}
 
 			this.state = "QUEUE_CHECK";
-			// Check for new messages in the queue. If a new user message arrived
-			// while we were processing, the caller (event handler in start.ts)
-			// will re-trigger the loop.
-
-			// Update thread's last_message_at so cross-thread digest ordering
-			// and memory delta baselines reflect actual activity.
 			try {
 				updateRow(
 					this.ctx.db,
@@ -947,12 +693,11 @@ export class AgentLoop {
 					this.ctx.siteId,
 				);
 			} catch {
-				// Non-fatal — don't break the loop over metadata
+				// Non-fatal
 			}
 
 			this.state = "IDLE";
 
-			// Fire-and-forget: extract summaries and memories from the thread
 			extractSummaryAndMemories(
 				this.ctx.db,
 				this.config.threadId,
@@ -974,28 +719,15 @@ export class AgentLoop {
 			this.state = "ERROR_PERSIST";
 			const errorMsg = formatError(error);
 
-			// Persist alert message so user can see what went wrong
 			try {
-				insertRow(
-					this.ctx.db,
-					"messages",
-					{
-						id: randomUUID(),
-						thread_id: this.config.threadId,
-						role: "alert",
-						content: `Agent loop error: ${errorMsg}`,
-						model_id: null,
-						tool_name: null,
-						tool_use_id: null,
-						created_at: new Date().toISOString(),
-						modified_at: new Date().toISOString(),
-						host_origin: this.ctx.hostName,
-						deleted: 0,
-					},
-					this.ctx.siteId,
-				);
+				insertThreadMessage(this.ctx.db, {
+					threadId: this.config.threadId,
+					role: "alert",
+					content: `Agent loop error: ${errorMsg}`,
+					hostOrigin: this.ctx.hostName,
+				}, this.ctx.siteId);
 			} catch {
-				// DB itself may be the problem — don't throw
+				// DB itself may be the problem
 			}
 
 			return {
@@ -1009,11 +741,7 @@ export class AgentLoop {
 		}
 	}
 
-	/**
-	 * Poll the relay inbox for a response to a remote tool call.
-	 * Implements AC6.1-AC6.5 and AC7.1-AC7.2 for relay-based tool execution with
-	 * failover, cancel propagation, and activity status updates.
-	 */
+	/** Poll relay inbox for remote tool call response. Handles timeout, failover, and cancellation. */
 	private async relayWait(
 		relayRequest: RelayToolCallRequest,
 		toolCall: ParsedToolCall,
@@ -1042,13 +770,10 @@ export class AgentLoop {
 		let hostStartTime = Date.now();
 		const relayStartTime = Date.now();
 
-		// AC6.5: Trigger immediate sync
 		this.ctx.eventBus.emit("sync:trigger", { reason: "relay-wait" });
 
 		while (true) {
 			if (this.aborted) {
-				// AC7.1, AC7.2: User canceled - send cancel message with ref_id pointing to original
-				// Use current host's site_id (may have changed due to failover)
 				const currentHost = eligibleHosts[currentHostIndex];
 				const cancelEntry = createRelayOutboxEntry(
 					currentHost.site_id,
@@ -1066,27 +791,21 @@ export class AgentLoop {
 				return "Cancelled: relay request was cancelled by user";
 			}
 
-			// AC6.2: Update activity status showing what we're waiting for
 			const currentHost = eligibleHosts[currentHostIndex];
-			const activityStatus = `relaying ${toolName} via ${currentHost.host_name}`;
-			// Activity status update goes to logger for visibility during relay wait
 			this.ctx.logger.info("Relay wait", {
-				activityStatus,
 				tool: toolName,
 				host: currentHost.host_name,
 			});
 
-			// Poll for response
 			const response = readInboxByRefId(this.ctx.db, outboxEntryId);
 			if (response) {
-				// Got a response - record relay metrics
 				const latencyMs = Date.now() - relayStartTime;
 				const currentHost = eligibleHosts[currentHostIndex];
 				if (currentTurnId !== null) {
 					try {
 						recordTurnRelayMetrics(this.ctx.db, currentTurnId, currentHost.host_name, latencyMs);
 					} catch {
-						// Non-fatal if metrics recording fails
+						// Non-fatal
 					}
 				}
 
@@ -1110,42 +829,24 @@ export class AgentLoop {
 							complete?: boolean;
 						};
 						markProcessed(this.ctx.db, [response.id]);
-
-						// Build result content similar to local tool execution
-						const parts: string[] = [];
-						if (payload.stdout) parts.push(payload.stdout);
-						if (payload.stderr) parts.push(payload.stderr);
-						if (parts.length === 0) {
-							parts.push(
-								(payload.exitCode ?? 0) === 0
-									? "Command completed successfully"
-									: `Exit code: ${payload.exitCode ?? 1}`,
-							);
-						}
-						return parts.join("\n");
+						return buildCommandOutput(payload.stdout, payload.stderr, payload.exitCode);
 					} catch {
 						markProcessed(this.ctx.db, [response.id]);
 						return `Remote result: ${response.payload}`;
 					}
 				}
 
-				// Unknown response kind - treat as error
 				markProcessed(this.ctx.db, [response.id]);
 				return `Unknown response kind: ${response.kind}`;
 			}
 
-			// Check timeout
 			const elapsedMs = Date.now() - hostStartTime;
-
 			if (elapsedMs > timeoutMs) {
-				// AC6.3: Timeout - try next eligible host if available
 				currentHostIndex++;
 				if (currentHostIndex >= eligibleHosts.length) {
-					// AC6.4: All hosts exhausted
 					return `Timeout: all ${eligibleHosts.length} eligible host(s) did not respond within ${timeoutMs}ms`;
 				}
 
-				// Write new outbox entry for next host
 				const nextHost = eligibleHosts[currentHostIndex];
 				const nextPayload = JSON.stringify({
 					kind: "tool_call",
@@ -1175,16 +876,8 @@ export class AgentLoop {
 	}
 
 	/**
-	 * Async generator that requests LLM inference from a remote host via the relay transport,
-	 * yielding StreamChunks identical to what a local LLMBackend.chat() would produce.
-	 *
-	 * Mirrors the _relayWaitImpl() pattern but for streaming:
-	 * - One inference outbox entry per host attempt (with unique stream_id per attempt)
-	 * - Polls readInboxByStreamId() for stream_chunk / stream_end entries
-	 * - Reorders chunks by seq, buffers out-of-order arrivals
-	 * - Skips gaps after MAX_GAP_CYCLES polling cycles with a warning
-	 * - Failover on withSilenceTimeout() expiry: new stream_id, next eligible host
-	 * - Cancel writes cancel entry with ref_id pointing to inference outbox entry
+	 * Stream LLM inference from a remote host via relay. Polls for stream_chunk/stream_end,
+	 * reorders by seq, fails over on timeout, and propagates cancellation.
 	 */
 	private async *relayStream(
 		payload: InferenceRequestPayload,
@@ -1193,7 +886,7 @@ export class AgentLoop {
 		options?: { pollIntervalMs?: number; perHostTimeoutMs?: number },
 	): AsyncGenerator<StreamChunk> {
 		const POLL_INTERVAL_MS = options?.pollIntervalMs ?? 500;
-		const PER_HOST_TIMEOUT_MS = options?.perHostTimeoutMs ?? 120_000; // AC1.6: inference_timeout_ms default
+		const PER_HOST_TIMEOUT_MS = options?.perHostTimeoutMs ?? 120_000; // inference_timeout_ms default
 		const MAX_GAP_CYCLES = 2;
 		const previousState = this.state;
 		this.state = "RELAY_STREAM";
@@ -1237,7 +930,6 @@ export class AgentLoop {
 				while (true) {
 					// Check abort/cancel before every poll
 					if (this.aborted) {
-						// AC1.4: send cancel to target
 						const cancelEntry = createRelayOutboxEntry(
 							host.site_id,
 							"cancel",
@@ -1260,7 +952,6 @@ export class AgentLoop {
 					const timeoutSource = firstChunkReceived ? lastActivityTime : hostStartTime;
 					const elapsedMs = now - timeoutSource;
 					if (elapsedMs > PER_HOST_TIMEOUT_MS) {
-						// AC1.5: Failover to next host
 						this.ctx.logger.warn("RELAY_STREAM: timeout, failing over", {
 							host: host.host_name,
 							elapsedMs,
@@ -1272,7 +963,6 @@ export class AgentLoop {
 					// Fetch all unprocessed stream_chunk / stream_end for this stream_id
 					const inboxEntries = readInboxByStreamId(this.ctx.db, streamId);
 
-					// AC1.7: Check for error response
 					const errorEntry = inboxEntries.find((e) => e.kind === "error");
 					if (errorEntry) {
 						let parsedError: string;
@@ -1302,7 +992,6 @@ export class AgentLoop {
 						}
 					}
 
-					// AC1.3: Yield contiguous chunks starting from nextExpectedSeq
 					while (buffer.has(nextExpectedSeq)) {
 						// biome-ignore lint/style/noNonNullAssertion: checked with buffer.has() above
 						const chunkPayload = buffer.get(nextExpectedSeq)!;
@@ -1310,7 +999,6 @@ export class AgentLoop {
 						nextExpectedSeq++;
 
 						for (const chunk of chunkPayload.chunks) {
-							// AC4.1: Capture relay_target and relay_latency_ms on first chunk for later recording
 							if (!firstChunkReceived) {
 								firstChunkReceived = true;
 								firstChunkLatencyMs = Date.now() - hostStartTime; // first-chunk latency
@@ -1337,7 +1025,7 @@ export class AgentLoop {
 						break;
 					}
 
-					// AC1.8: Detect gap — buffer has entries but next seq is missing
+					// Detect gap — buffer has entries but next seq is missing
 					if (buffer.size > 0) {
 						gapCyclesWaited++;
 						if (gapCyclesWaited >= MAX_GAP_CYCLES) {
@@ -1371,72 +1059,38 @@ export class AgentLoop {
 		}
 	}
 
-	/**
-	 * Execute a single tool call via the sandbox.
-	 *
-	 * For "bash" tool calls the command string is passed directly to sandbox.exec().
-	 * For built-in or MCP tools the input is serialized as a command string that
-	 * the sandbox's registered custom commands can dispatch.
-	 */
+	/** Execute a tool call via platform tools or sandbox. Returns relay request for remote MCP tools. */
 	private async executeToolCall(
 		toolCall: ParsedToolCall,
 	): Promise<{ content: string; exitCode: number } | RelayToolCallRequest> {
-		// Priority 1: Check platform tools — these bypass the sandbox entirely.
 		const platformTool = this.config.platformTools?.get(toolCall.name);
 		if (platformTool) {
 			const content = await platformTool.execute(toolCall.input);
 			return { content, exitCode: 0 };
 		}
 
-		// Priority 2: Sandbox dispatch
 		if (!this.sandbox.exec) {
 			return { content: "Error: sandbox execution not available", exitCode: 1 };
 		}
 
-		// All tool calls go through bash — the LLM only sees "bash" as a tool,
-		// and MCP server tools are invoked as bash commands (e.g., "github --subcommand X").
-		const commandString = toolCall.input.command as string;
+		const result = await this.sandbox.exec(toolCall.input.command as string);
 
-		const result = await this.sandbox.exec(commandString);
-
-		// Check if this is a relay request (has outboxEntryId field)
 		if (isRelayRequest(result)) {
 			return result;
 		}
 
-		// Build result content from stdout/stderr
-		const parts: string[] = [];
-		if (result.stdout) {
-			parts.push(result.stdout);
-		}
-		if (result.stderr) {
-			parts.push(result.stderr);
-		}
-		if (parts.length === 0) {
-			parts.push(
-				result.exitCode === 0 ? "Command completed successfully" : `Exit code: ${result.exitCode}`,
-			);
-		}
-
-		return { content: parts.join("\n"), exitCode: result.exitCode };
+		return {
+			content: buildCommandOutput(result.stdout, result.stderr, result.exitCode),
+			exitCode: result.exitCode,
+		};
 	}
 
-	/**
-	 * Parse streamed LLM chunks into text content and fully-assembled tool calls.
-	 * Accumulates partial_json fragments for each tool_use into complete input objects.
-	 */
+	/** Parse streamed chunks into text and tool calls, handling partial JSON accumulation and ID dedup. */
 	private parseResponseChunks(chunks: StreamChunk[]): ParsedResponse {
-		// Collision detection pre-pass: reassign duplicate tool-use IDs within this turn.
-		// This is a defensive measure — drivers should produce unique IDs, but if duplicates
-		// slip through, log a warning and reassign rather than silently corrupting data.
+		// Defensive dedup: reassign duplicate tool-use IDs. Sequential chunk ordering
+		// (start → args* → end) means idRemap overwrites are safe for 3+ duplicates.
 		const seenIds = new Set<string>();
-		// idRemap: maps original duplicate ID → new synthesized ID.
-		// Works correctly for 2+ duplicate IDs because tool_use_args and tool_use_end chunks
-		// for a given tool call ALWAYS appear sequentially after their tool_use_start (the LLM
-		// streaming protocol guarantees start → args* → end ordering within a single tool call).
-		// If the same ID appears a 3rd time (another tool_use_start with the same id), idRemap
-		// is overwritten, but by that point the 2nd tool's args/end have already been remapped.
-		const idRemap = new Map<string, string>(); // old id → new id (for remapping args/end chunks)
+		const idRemap = new Map<string, string>();
 		const remappedChunks = chunks.map((chunk) => {
 			if (chunk.type === "tool_use_start") {
 				if (seenIds.has(chunk.id)) {
@@ -1520,10 +1174,7 @@ export class AgentLoop {
 		this.ctx.logger.info("Agent loop cancelled");
 	}
 
-	/**
-	 * Wraps an async iterable so that if no item is yielded within `timeoutMs`,
-	 * the iteration rejects with a silence-timeout error.
-	 */
+	/** Rejects if no item yielded within timeoutMs. */
 	private async *withSilenceTimeout<T>(
 		source: AsyncIterable<T>,
 		timeoutMs: number,
