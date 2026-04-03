@@ -712,6 +712,117 @@ data: ${JSON.stringify({
 		expect(request.messages[2].cache_control).toBeUndefined();
 	});
 
+	it("should pass cache_ttl through to cache_control on messages", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-3-sonnet-20240229",
+			contextWindow: 200000,
+		});
+
+		let requestBody: string | null = null;
+
+		global.fetch = (async (url: string, options: RequestInit) => {
+			if (url.includes("anthropic.com")) {
+				requestBody = options.body as string;
+				return new Response("data: {}", {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			}
+			return new Response("Not found", { status: 404 });
+		}) as typeof fetch;
+
+		for await (const _ of driver.chat({
+			model: "claude-3-sonnet-20240229",
+			messages: [
+				{ role: "user", content: "Message 1" },
+				{ role: "assistant", content: "Response 1" },
+				{ role: "user", content: "Message 2" },
+			],
+			cache_breakpoints: [1],
+			cache_ttl: "1h",
+		})) {
+			// drain
+		}
+
+		expect(requestBody).not.toBeNull();
+		const request = JSON.parse(requestBody!);
+		expect(request.messages[1].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+	});
+
+	it("should pass cache_ttl through to system prompt cache_control", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-3-sonnet-20240229",
+			contextWindow: 200000,
+		});
+
+		let requestBody: string | null = null;
+
+		global.fetch = (async (url: string, options: RequestInit) => {
+			if (url.includes("anthropic.com")) {
+				requestBody = options.body as string;
+				return new Response("data: {}", {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			}
+			return new Response("Not found", { status: 404 });
+		}) as typeof fetch;
+
+		for await (const _ of driver.chat({
+			model: "claude-3-sonnet-20240229",
+			messages: [{ role: "user", content: "Hello" }],
+			system: "You are helpful",
+			cache_breakpoints: [0],
+			cache_ttl: "1h",
+		})) {
+			// drain
+		}
+
+		expect(requestBody).not.toBeNull();
+		const request = JSON.parse(requestBody!);
+		expect(request.system[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+	});
+
+	it("should default to no ttl field when cache_ttl is not provided", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-3-sonnet-20240229",
+			contextWindow: 200000,
+		});
+
+		let requestBody: string | null = null;
+
+		global.fetch = (async (url: string, options: RequestInit) => {
+			if (url.includes("anthropic.com")) {
+				requestBody = options.body as string;
+				return new Response("data: {}", {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			}
+			return new Response("Not found", { status: 404 });
+		}) as typeof fetch;
+
+		for await (const _ of driver.chat({
+			model: "claude-3-sonnet-20240229",
+			messages: [
+				{ role: "user", content: "Message 1" },
+				{ role: "assistant", content: "Response 1" },
+				{ role: "user", content: "Message 2" },
+			],
+			cache_breakpoints: [1],
+		})) {
+			// drain
+		}
+
+		expect(requestBody).not.toBeNull();
+		const request = JSON.parse(requestBody!);
+		// No ttl field — just { type: "ephemeral" } for backward compatibility
+		expect(request.messages[1].cache_control).toEqual({ type: "ephemeral" });
+	});
+
 	it("should handle system prompt separately", async () => {
 		const driver = new AnthropicDriver({
 			apiKey: "test-key",

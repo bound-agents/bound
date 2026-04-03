@@ -145,23 +145,27 @@ export class BedrockDriver implements LLMBackend {
 		// Inject cachePoint markers at breakpoint indices so Bedrock caches
 		// all content up to and including that message.
 		if (params.cache_breakpoints) {
+			const cachePoint: Record<string, unknown> = { type: "default" };
+			if (params.cache_ttl) cachePoint.ttl = params.cache_ttl;
+
 			for (const idx of params.cache_breakpoints) {
 				if (messages[idx] && Array.isArray(messages[idx].content)) {
 					// biome-ignore lint/suspicious/noExplicitAny: Bedrock SDK types don't include cachePoint yet
-					(messages[idx].content as any[]).push({
-						cachePoint: { type: "default" },
-					});
+					(messages[idx].content as any[]).push({ cachePoint });
 				}
 			}
 		}
 
 		// When cache breakpoints are present, also cache the system prompt.
+		const systemCachePoint: Record<string, unknown> = { type: "default" };
+		if (params.cache_ttl) systemCachePoint.ttl = params.cache_ttl;
+
 		const systemBlocks: SystemContentBlock[] | undefined = params.system
 			? params.cache_breakpoints?.length
 				? [
 						{ text: params.system },
 						// biome-ignore lint/suspicious/noExplicitAny: Bedrock SDK types don't include cachePoint yet
-						{ cachePoint: { type: "default" } } as any,
+						{ cachePoint: systemCachePoint } as any,
 					]
 				: [{ text: params.system }]
 			: undefined;

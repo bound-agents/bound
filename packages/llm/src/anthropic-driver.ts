@@ -19,13 +19,13 @@ interface AnthropicMessage {
 		tool_use_id?: string;
 		content?: Array<{ type: "text"; text: string }>;
 	}>;
-	cache_control?: { type: "ephemeral" };
+	cache_control?: { type: "ephemeral"; ttl?: "5m" | "1h" };
 }
 
 interface AnthropicRequest {
 	model: string;
 	max_tokens: number;
-	system?: string | Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }>;
+	system?: string | Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral"; ttl?: "5m" | "1h" } }>;
 	messages: AnthropicMessage[];
 	tools?: Array<{
 		name: string;
@@ -335,24 +335,30 @@ export class AnthropicDriver implements LLMBackend {
 
 		// Add cache_control to messages at breakpoint indices
 		if (params.cache_breakpoints) {
+			const cacheControl: { type: "ephemeral"; ttl?: "5m" | "1h" } = { type: "ephemeral" };
+			if (params.cache_ttl) cacheControl.ttl = params.cache_ttl;
+
 			for (const breakpointIndex of params.cache_breakpoints) {
 				if (anthropicMessages[breakpointIndex]) {
-					anthropicMessages[breakpointIndex].cache_control = { type: "ephemeral" };
+					anthropicMessages[breakpointIndex].cache_control = cacheControl;
 				}
 			}
 		}
 
 		// When cache_breakpoints are provided, send system prompt as cacheable content blocks
+		const systemCacheControl: { type: "ephemeral"; ttl?: "5m" | "1h" } = { type: "ephemeral" };
+		if (params.cache_ttl) systemCacheControl.ttl = params.cache_ttl;
+
 		const systemPayload:
 			| string
-			| Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }>
+			| Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral"; ttl?: "5m" | "1h" } }>
 			| undefined =
 			params.system && params.cache_breakpoints?.length
 				? [
 						{
 							type: "text" as const,
 							text: params.system,
-							cache_control: { type: "ephemeral" as const },
+							cache_control: systemCacheControl,
 						},
 					]
 				: params.system;

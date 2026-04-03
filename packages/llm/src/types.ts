@@ -12,6 +12,8 @@ export interface ChatParams {
 	temperature?: number;
 	system?: string;
 	cache_breakpoints?: number[];
+	/** Cache TTL hint for providers that support explicit TTL (Anthropic, Bedrock). */
+	cache_ttl?: "5m" | "1h";
 	signal?: AbortSignal;
 }
 
