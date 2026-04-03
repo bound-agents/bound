@@ -229,8 +229,7 @@ describe("AnthropicDriver", () => {
 		}
 
 		expect(requestBody).not.toBeNull();
-		// biome-ignore lint/style/noNonNullAssertion: guarded by expect(requestBody).not.toBeNull() above
-		const request = JSON.parse(requestBody!);
+		const request = JSON.parse(requestBody as string);
 
 		// All three tool_result messages must be merged into a single user message
 		// biome-ignore lint/suspicious/noExplicitAny: partial mock or untyped parse result in test
@@ -721,8 +720,7 @@ data: ${JSON.stringify({
 		}
 
 		expect(requestBody).not.toBeNull();
-		// biome-ignore lint/style/noNonNullAssertion: guarded above
-		const request = JSON.parse(requestBody!);
+		const request = JSON.parse(requestBody as string);
 		// System should be an array of content blocks, not a plain string
 		expect(Array.isArray(request.system)).toBe(true);
 		expect(request.system[0].type).toBe("text");
@@ -816,7 +814,7 @@ data: ${JSON.stringify({
 		}
 
 		expect(requestBody).not.toBeNull();
-		const request = JSON.parse(requestBody!);
+		const request = JSON.parse(requestBody as string);
 		expect(request.messages[1].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
 	});
 
@@ -851,7 +849,7 @@ data: ${JSON.stringify({
 		}
 
 		expect(requestBody).not.toBeNull();
-		const request = JSON.parse(requestBody!);
+		const request = JSON.parse(requestBody as string);
 		expect(request.system[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
 	});
 
@@ -888,7 +886,7 @@ data: ${JSON.stringify({
 		}
 
 		expect(requestBody).not.toBeNull();
-		const request = JSON.parse(requestBody!);
+		const request = JSON.parse(requestBody as string);
 		// No ttl field — just { type: "ephemeral" } for backward compatibility
 		expect(request.messages[1].cache_control).toEqual({ type: "ephemeral" });
 	});

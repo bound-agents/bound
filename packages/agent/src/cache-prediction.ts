@@ -48,7 +48,7 @@ export function predictCacheState(db: Database, threadId: string, ttlMs: number)
 }
 
 /** TTL durations in milliseconds, keyed by the API TTL string. */
-export const CACHE_TTL_MS: Record<string, number> = {
+export const CACHE_TTL_MS: Record<"5m" | "1h", number> = {
 	"5m": 5 * 60_000,
 	"1h": 60 * 60_000,
 };

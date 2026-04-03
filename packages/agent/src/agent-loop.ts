@@ -235,13 +235,13 @@ export class AgentLoop {
 					: this.config.modelId;
 
 			// Predict cache state for context compaction and TTL selection.
-			// Look up thread interface to determine optimal TTL.
-			const threadRow2 = this.ctx.db
+			// Thread interface is immutable, so this lookup is safe outside the while loop.
+			const threadMeta = this.ctx.db
 				.query("SELECT interface FROM threads WHERE id = ?")
 				.get(this.config.threadId) as { interface: string } | null;
-			const threadInterface = threadRow2?.interface ?? "web";
+			const threadInterface = threadMeta?.interface ?? "web";
 			const cacheTtl = selectCacheTtl(threadInterface);
-			const ttlMs = CACHE_TTL_MS[cacheTtl] ?? CACHE_TTL_MS["5m"];
+			const ttlMs = CACHE_TTL_MS[cacheTtl];
 			const cacheState = predictCacheState(this.ctx.db, this.config.threadId, ttlMs);
 			const isColdCache = cacheState === "cold";
 

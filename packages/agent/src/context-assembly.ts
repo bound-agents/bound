@@ -301,9 +301,9 @@ Original output was too large for the context window. If you need the full conte
 		const COLD_COMPACTION_THRESHOLD = 500;
 
 		// Inject thread summary if available
-		const thread = db
-			.query("SELECT summary FROM threads WHERE id = ?")
-			.get(threadId) as { summary: string | null } | null;
+		const thread = db.query("SELECT summary FROM threads WHERE id = ?").get(threadId) as {
+			summary: string | null;
+		} | null;
 		if (thread?.summary) {
 			// Prepend a synthetic system-role summary message.
 			// It will be picked up naturally by later stages.
@@ -311,10 +311,7 @@ Original output was too large for the context window. If you need the full conte
 				id: "__cold_cache_summary__",
 				thread_id: threadId,
 				role: "system",
-				content:
-					`[Conversation compacted — ${compactionBoundary} older messages summarized. ` +
-					`Use "query" to retrieve specific messages if needed.]\n\n` +
-					`Summary: ${thread.summary}`,
+				content: `[Conversation compacted — ${compactionBoundary} older messages summarized. Use "query" to retrieve specific messages if needed.]\n\nSummary: ${thread.summary}`,
 				model_id: null,
 				tool_name: null,
 				created_at: messages[0]?.created_at ?? new Date().toISOString(),
@@ -332,10 +329,7 @@ Original output was too large for the context window. If you need the full conte
 			if (msg.role === "tool_result" && msg.content.length > COLD_COMPACTION_THRESHOLD) {
 				const originalLength = msg.content.length;
 				const preview = msg.content.slice(0, 200).trimEnd();
-				msg.content =
-					`[Result truncated from context — ${originalLength} chars. ` +
-					`Retrieve with: query SELECT content FROM messages WHERE id='${msg.id}']\n` +
-					preview;
+				msg.content = `[Result truncated from context — ${originalLength} chars. Retrieve with: query SELECT content FROM messages WHERE id='${msg.id}']\n${preview}`;
 			}
 		}
 	}
@@ -458,7 +452,12 @@ Original output was too large for the context window. If you need the full conte
 	const messagesFiltered = messagesAfterPurge.filter((m) => {
 		if (NON_LLM_ROLES.has(m.role)) return false;
 		// Filter DB-originated system messages but keep purge summaries
-		if (m.role === "system" && !m.id.startsWith("purge-summary-") && !m.id.startsWith("__cold_cache_")) return false;
+		if (
+			m.role === "system" &&
+			!m.id.startsWith("purge-summary-") &&
+			!m.id.startsWith("__cold_cache_")
+		)
+			return false;
 		return true;
 	});
 

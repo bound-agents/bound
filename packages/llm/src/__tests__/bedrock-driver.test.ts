@@ -784,6 +784,105 @@ describe("BedrockDriver", () => {
 			}
 		});
 
+		it.skipIf(shouldSkip)("passes cache_ttl through to cachePoint", async () => {
+			let capturedInput: Record<string, unknown> | undefined;
+			sendSpy.mockImplementation((command: unknown) => {
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+				capturedInput = (command as any).input;
+				return Promise.resolve(
+					createMockStream([
+						{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "OK" } } },
+						{ metadata: { usage: { inputTokens: 100, outputTokens: 5 } } },
+					]),
+				);
+			});
+
+			const driver = makeDriver();
+			await collectChunks(
+				driver.chat({
+					messages: [
+						{ role: "user", content: "message 1" },
+						{ role: "assistant", content: "response 1" },
+						{ role: "user", content: "message 2" },
+					],
+					cache_breakpoints: [1],
+					cache_ttl: "1h",
+				}),
+			);
+
+			const messages = capturedInput?.messages as Array<{
+				role: string;
+				content: Array<Record<string, unknown>>;
+			}>;
+			expect(messages[1].content).toEqual([
+				{ text: "response 1" },
+				{ cachePoint: { type: "default", ttl: "1h" } },
+			]);
+		});
+
+		it.skipIf(shouldSkip)("passes cache_ttl through to system prompt cachePoint", async () => {
+			let capturedInput: Record<string, unknown> | undefined;
+			sendSpy.mockImplementation((command: unknown) => {
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+				capturedInput = (command as any).input;
+				return Promise.resolve(
+					createMockStream([
+						{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "OK" } } },
+						{ metadata: { usage: { inputTokens: 100, outputTokens: 5 } } },
+					]),
+				);
+			});
+
+			const driver = makeDriver();
+			await collectChunks(
+				driver.chat({
+					messages: [{ role: "user", content: "msg" }],
+					system: "You are helpful.",
+					cache_breakpoints: [0],
+					cache_ttl: "1h",
+				}),
+			);
+
+			const system = capturedInput?.system as Array<Record<string, unknown>>;
+			expect(system[1]).toEqual({ cachePoint: { type: "default", ttl: "1h" } });
+		});
+
+		it.skipIf(shouldSkip)("does not include ttl when cache_ttl is not provided", async () => {
+			let capturedInput: Record<string, unknown> | undefined;
+			sendSpy.mockImplementation((command: unknown) => {
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+				capturedInput = (command as any).input;
+				return Promise.resolve(
+					createMockStream([
+						{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "OK" } } },
+						{ metadata: { usage: { inputTokens: 100, outputTokens: 5 } } },
+					]),
+				);
+			});
+
+			const driver = makeDriver();
+			await collectChunks(
+				driver.chat({
+					messages: [
+						{ role: "user", content: "message 1" },
+						{ role: "assistant", content: "response 1" },
+						{ role: "user", content: "message 2" },
+					],
+					cache_breakpoints: [1],
+				}),
+			);
+
+			const messages = capturedInput?.messages as Array<{
+				role: string;
+				content: Array<Record<string, unknown>>;
+			}>;
+			// No ttl field when cache_ttl not specified
+			expect(messages[1].content).toEqual([
+				{ text: "response 1" },
+				{ cachePoint: { type: "default" } },
+			]);
+		});
+
 		it.skipIf(shouldSkip)("caches system prompt when breakpoints are provided", async () => {
 			let capturedInput: Record<string, unknown> | undefined;
 			sendSpy.mockImplementation((command: unknown) => {

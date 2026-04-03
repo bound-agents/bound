@@ -1,6 +1,6 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { applySchema, applyMetricsSchema } from "@bound/core";
+import { applyMetricsSchema, applySchema } from "@bound/core";
 import { predictCacheState, selectCacheTtl } from "../cache-prediction";
 
 describe("Cache Prediction", () => {

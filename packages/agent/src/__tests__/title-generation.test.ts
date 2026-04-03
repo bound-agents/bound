@@ -261,7 +261,7 @@ describe("Title Generation", () => {
 		const result = await generateThreadTitle(db, threadId, mockBackend, siteId);
 
 		expect(result.ok).toBe(true);
-		expect(result.value!.length).toBeLessThanOrEqual(80);
+		expect(result.value?.length).toBeLessThanOrEqual(80);
 
 		// Verify stored title is also capped
 		const thread = db.prepare("SELECT title FROM threads WHERE id = ?").get(threadId) as {

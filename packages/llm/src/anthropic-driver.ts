@@ -25,7 +25,13 @@ interface AnthropicMessage {
 interface AnthropicRequest {
 	model: string;
 	max_tokens: number;
-	system?: string | Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral"; ttl?: "5m" | "1h" } }>;
+	system?:
+		| string
+		| Array<{
+				type: "text";
+				text: string;
+				cache_control?: { type: "ephemeral"; ttl?: "5m" | "1h" };
+		  }>;
 	messages: AnthropicMessage[];
 	tools?: Array<{
 		name: string;
@@ -351,7 +357,11 @@ export class AnthropicDriver implements LLMBackend {
 
 		const systemPayload:
 			| string
-			| Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral"; ttl?: "5m" | "1h" } }>
+			| Array<{
+					type: "text";
+					text: string;
+					cache_control?: { type: "ephemeral"; ttl?: "5m" | "1h" };
+			  }>
 			| undefined =
 			params.system && params.cache_breakpoints?.length
 				? [

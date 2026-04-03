@@ -4347,7 +4347,17 @@ This skill reviews pull requests.`;
 			);
 			db.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, summary, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "discord", "localhost", now, now, now, "We discussed testing strategies.", 0],
+				[
+					localThreadId,
+					localUserId,
+					"discord",
+					"localhost",
+					now,
+					now,
+					now,
+					"We discussed testing strategies.",
+					0,
+				],
 			);
 
 			// Insert old turn: user → tool_call → tool_result (large) → assistant
@@ -4358,12 +4368,31 @@ This skill reviews pull requests.`;
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "tool_call", JSON.stringify([{ type: "tool_use", id: toolId, name: "bash", input: {} }]), now, now, "localhost", 0],
+				[
+					randomUUID(),
+					localThreadId,
+					"tool_call",
+					JSON.stringify([{ type: "tool_use", id: toolId, name: "bash", input: {} }]),
+					now,
+					now,
+					"localhost",
+					0,
+				],
 			);
 			const largeResultId = randomUUID();
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[largeResultId, localThreadId, "tool_result", "x".repeat(5000), toolId, now, now, "localhost", 0],
+				[
+					largeResultId,
+					localThreadId,
+					"tool_result",
+					"x".repeat(5000),
+					toolId,
+					now,
+					now,
+					"localhost",
+					0,
+				],
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -4378,7 +4407,16 @@ This skill reviews pull requests.`;
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "assistant", "You're welcome!", recentTime, recentTime, "localhost", 0],
+				[
+					randomUUID(),
+					localThreadId,
+					"assistant",
+					"You're welcome!",
+					recentTime,
+					recentTime,
+					"localhost",
+					0,
+				],
 			);
 
 			const result = assembleContext({
@@ -4391,15 +4429,21 @@ This skill reviews pull requests.`;
 
 			// Find the tool_result message in the assembled context
 			const toolResult = result.messages.find(
-				(m) => m.role === "tool_result" && typeof m.content === "string" && m.content.includes("[Result truncated"),
+				(m) =>
+					m.role === "tool_result" &&
+					typeof m.content === "string" &&
+					m.content.includes("[Result truncated"),
 			);
 			expect(toolResult).toBeDefined();
-			expect((toolResult!.content as string).length).toBeLessThan(1000);
-			expect(toolResult!.content).toContain(largeResultId);
+			expect((toolResult?.content as string).length).toBeLessThan(1000);
+			expect(toolResult?.content).toContain(largeResultId);
 
 			// Thread summary should be injected
 			const summaryMsg = result.messages.find(
-				(m) => m.role === "system" && typeof m.content === "string" && m.content.includes("discussed testing"),
+				(m) =>
+					m.role === "system" &&
+					typeof m.content === "string" &&
+					m.content.includes("discussed testing"),
 			);
 			expect(summaryMsg).toBeDefined();
 
@@ -4430,11 +4474,30 @@ This skill reviews pull requests.`;
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "tool_call", JSON.stringify([{ type: "tool_use", id: toolId, name: "bash", input: {} }]), now, now, "localhost", 0],
+				[
+					randomUUID(),
+					localThreadId,
+					"tool_call",
+					JSON.stringify([{ type: "tool_use", id: toolId, name: "bash", input: {} }]),
+					now,
+					now,
+					"localhost",
+					0,
+				],
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "tool_result", "x".repeat(5000), toolId, now, now, "localhost", 0],
+				[
+					randomUUID(),
+					localThreadId,
+					"tool_result",
+					"x".repeat(5000),
+					toolId,
+					now,
+					now,
+					"localhost",
+					0,
+				],
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -4450,7 +4513,10 @@ This skill reviews pull requests.`;
 
 			// Tool result should be intact (not compacted)
 			const toolResult = result.messages.find(
-				(m) => m.role === "tool_result" && typeof m.content === "string" && m.content === "x".repeat(5000),
+				(m) =>
+					m.role === "tool_result" &&
+					typeof m.content === "string" &&
+					m.content === "x".repeat(5000),
 			);
 			expect(toolResult).toBeDefined();
 

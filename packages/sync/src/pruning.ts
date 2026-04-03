@@ -21,10 +21,34 @@ export function pruneChangeLog(
 	logger?: Logger,
 ): { deleted: number } {
 	if (mode === "single-host") {
-		// Retain changelog entries in single-host mode so they are available
-		// when multi-host sync is enabled later. Without these entries, the
-		// first sync after enabling multi-host would miss all prior changes.
-		return { deleted: 0 };
+		// Retain recent changelog entries in single-host mode so they are available
+		// when multi-host sync is enabled later. Cap at 100k entries to bound growth.
+		const MAX_SINGLE_HOST_ENTRIES = 100_000;
+		const countRow = db.query("SELECT COUNT(*) as count FROM change_log").get() as
+			| { count: number }
+			| undefined;
+		const count = countRow?.count ?? 0;
+
+		if (count <= MAX_SINGLE_HOST_ENTRIES) {
+			return { deleted: 0 };
+		}
+
+		// Keep the most recent MAX_SINGLE_HOST_ENTRIES, delete the rest
+		const cutoffRow = db
+			.query("SELECT seq FROM change_log ORDER BY seq DESC LIMIT 1 OFFSET ?")
+			.get(MAX_SINGLE_HOST_ENTRIES) as { seq: number } | null;
+		if (!cutoffRow) return { deleted: 0 };
+
+		db.query("DELETE FROM change_log WHERE seq <= ?").run(cutoffRow.seq);
+		const deletedRow = db.query("SELECT changes() as count").get() as { count: number } | undefined;
+		const deleted = deletedRow?.count ?? 0;
+
+		if (deleted > 0) {
+			logger?.info(
+				`Pruned ${deleted} old change_log entries in single-host mode (cap: ${MAX_SINGLE_HOST_ENTRIES})`,
+			);
+		}
+		return { deleted };
 	}
 
 	// Multi-host mode: only delete confirmed events
