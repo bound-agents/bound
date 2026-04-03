@@ -144,28 +144,28 @@ export class BedrockDriver implements LLMBackend {
 
 		// Inject cachePoint markers at breakpoint indices so Bedrock caches
 		// all content up to and including that message.
+		// NOTE: cache_ttl is NOT passed through to Bedrock cachePoint yet.
+		// Adding ttl to the cachePoint silently broke message-level caching for
+		// large contexts (>200k tokens). The infrastructure remains in ChatParams
+		// for future use once Bedrock TTL support is verified end-to-end.
 		if (params.cache_breakpoints) {
-			const cachePoint: Record<string, unknown> = { type: "default" };
-			if (params.cache_ttl) cachePoint.ttl = params.cache_ttl;
-
 			for (const idx of params.cache_breakpoints) {
 				if (messages[idx] && Array.isArray(messages[idx].content)) {
 					// biome-ignore lint/suspicious/noExplicitAny: Bedrock SDK types don't include cachePoint yet
-					(messages[idx].content as any[]).push({ cachePoint });
+					(messages[idx].content as any[]).push({
+						cachePoint: { type: "default" },
+					});
 				}
 			}
 		}
 
 		// When cache breakpoints are present, also cache the system prompt.
-		const systemCachePoint: Record<string, unknown> = { type: "default" };
-		if (params.cache_ttl) systemCachePoint.ttl = params.cache_ttl;
-
 		const systemBlocks: SystemContentBlock[] | undefined = params.system
 			? params.cache_breakpoints?.length
 				? [
 						{ text: params.system },
 						// biome-ignore lint/suspicious/noExplicitAny: Bedrock SDK types don't include cachePoint yet
-						{ cachePoint: systemCachePoint } as any,
+						{ cachePoint: { type: "default" } } as any,
 					]
 				: [{ text: params.system }]
 			: undefined;
