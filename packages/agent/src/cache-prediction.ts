@@ -12,11 +12,13 @@ export type CacheState = "warm" | "cold";
  * @param ttlMs Cache TTL in milliseconds (e.g., 300_000 for 5m, 3_600_000 for 1h)
  */
 export function predictCacheState(db: Database, threadId: string, ttlMs: number): CacheState {
-	let row: {
+	type TurnRow = {
 		created_at: string;
 		tokens_cache_read: number | null;
 		tokens_cache_write: number | null;
-	} | null = null;
+	};
+
+	let row: TurnRow | null = null;
 
 	try {
 		row = db
@@ -27,7 +29,7 @@ export function predictCacheState(db: Database, threadId: string, ttlMs: number)
 				 ORDER BY created_at DESC
 				 LIMIT 1`,
 			)
-			.get(threadId) as typeof row;
+			.get(threadId) as TurnRow | null;
 	} catch {
 		// turns table may not exist (e.g., test environments without metrics schema)
 		return "cold";

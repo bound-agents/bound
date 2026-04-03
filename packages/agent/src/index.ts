@@ -16,6 +16,9 @@ export { findPendingUserMessage } from "./agent-loop-utils";
 // Export context assembly
 export { assembleContext } from "./context-assembly";
 
+// Export cache prediction
+export { predictCacheState, selectCacheTtl, CACHE_TTL_MS } from "./cache-prediction";
+
 // Export scheduler
 export { Scheduler } from "./scheduler";
 
