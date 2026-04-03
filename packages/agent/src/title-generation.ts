@@ -67,6 +67,11 @@ ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
 
 		let title = chunks.join("").trim();
 
+		// Cap title length — LLMs sometimes return verbose multi-sentence "titles"
+		if (title.length > 80) {
+			title = title.substring(0, 80).trimEnd();
+		}
+
 		// Fallback per spec R-E17: use first 50 chars of user message if LLM returned empty
 		if (!title) {
 			title = firstUserMessage.content.substring(0, 50).trim();

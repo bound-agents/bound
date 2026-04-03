@@ -21,20 +21,10 @@ export function pruneChangeLog(
 	logger?: Logger,
 ): { deleted: number } {
 	if (mode === "single-host") {
-		// In single-host mode, no peers consume the change_log, so we can safely delete everything
-		db.query("DELETE FROM change_log").run();
-
-		// Get the count of deleted rows from the changes count
-		const countResult = db.query("SELECT changes() as count").get() as
-			| { count: number }
-			| undefined;
-		const deleted = countResult?.count ?? 0;
-
-		if (deleted > 0) {
-			logger?.info(`Pruned ${deleted} change_log entries in single-host mode`);
-		}
-
-		return { deleted };
+		// Retain changelog entries in single-host mode so they are available
+		// when multi-host sync is enabled later. Without these entries, the
+		// first sync after enabling multi-host would miss all prior changes.
+		return { deleted: 0 };
 	}
 
 	// Multi-host mode: only delete confirmed events

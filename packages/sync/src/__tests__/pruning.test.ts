@@ -53,7 +53,7 @@ describe("pruning", () => {
 	});
 
 	describe("pruneChangeLog", () => {
-		it("deletes all events in single-host mode", () => {
+		it("retains all events in single-host mode for future sync enablement", () => {
 			// Insert test events
 			for (let i = 1; i <= 10; i++) {
 				db.query(
@@ -62,13 +62,13 @@ describe("pruning", () => {
 			}
 
 			const result = pruneChangeLog(db, "single-host");
-			expect(result.deleted).toBe(10);
+			expect(result.deleted).toBe(0);
 
-			// Verify all events are deleted
+			// Verify all events are retained
 			const count = db.query("SELECT COUNT(*) as count FROM change_log").get() as {
 				count: number;
 			};
-			expect(count.count).toBe(0);
+			expect(count.count).toBe(10);
 		});
 
 		it("deletes confirmed events in multi-host mode", () => {

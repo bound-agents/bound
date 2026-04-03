@@ -220,6 +220,56 @@ describe("Title Generation", () => {
 		expect(changeLogEntry?.site_id).toBe(siteId);
 	});
 
+	it("should cap LLM-generated title at 80 characters", async () => {
+		const userId = randomUUID();
+		const threadId = randomUUID();
+		const now = new Date().toISOString();
+
+		db.prepare(
+			"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+		).run(userId, "Test User", now, now);
+
+		db.prepare(
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(threadId, userId, "web", "localhost", now, now, now);
+
+		db.prepare(
+			"INSERT INTO messages (id, thread_id, role, content, created_at, host_origin) VALUES (?, ?, ?, ?, ?, ?)",
+		).run(randomUUID(), threadId, "user", "Tell me everything about TypeScript", now, "localhost");
+
+		// Mock LLM that returns an excessively long title
+		const longTitle =
+			"A Comprehensive and Extremely Detailed Discussion About TypeScript Programming Language Features and Best Practices for Modern Web Development";
+		const mockBackend: LLMBackend = {
+			chat: async function* () {
+				yield { type: "text", content: longTitle } as StreamChunk;
+				yield {
+					type: "done",
+					usage: { input_tokens: 10, output_tokens: 20 },
+				} as StreamChunk;
+			},
+			capabilities: () => ({
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: false,
+				vision: false,
+				max_context: 8192,
+			}),
+		};
+
+		const result = await generateThreadTitle(db, threadId, mockBackend, siteId);
+
+		expect(result.ok).toBe(true);
+		expect(result.value!.length).toBeLessThanOrEqual(80);
+
+		// Verify stored title is also capped
+		const thread = db.prepare("SELECT title FROM threads WHERE id = ?").get(threadId) as {
+			title: string;
+		};
+		expect(thread.title.length).toBeLessThanOrEqual(80);
+	});
+
 	it("should create changelog entry for fallback title", async () => {
 		const userId = randomUUID();
 		const threadId = randomUUID();
