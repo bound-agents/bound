@@ -19,6 +19,54 @@ import type { MCPClient } from "./mcp-client";
 import type { EligibleHost } from "./relay-router";
 
 /**
+ * Coerce string argument values to the types declared in an MCP tool's input schema.
+ * The bash --key value parser produces strings for all values; MCP servers validate
+ * against their JSON Schema and reject e.g. "10" when number is expected. This function
+ * uses the schema's property types and enum values to convert args in place.
+ */
+function coerceArgsFromSchema(
+	args: Record<string, unknown>,
+	inputSchema: Tool["inputSchema"],
+): Record<string, unknown> {
+	if (!inputSchema || typeof inputSchema !== "object") return args;
+	const schema = inputSchema as {
+		properties?: Record<string, { type?: string; enum?: string[] }>;
+	};
+	const props = schema.properties;
+	if (!props) return args;
+
+	const coerced: Record<string, unknown> = { ...args };
+	for (const [key, value] of Object.entries(coerced)) {
+		if (typeof value !== "string") continue;
+		const propSchema = props[key];
+		if (!propSchema) continue;
+
+		// Number coercion
+		if (propSchema.type === "number" || propSchema.type === "integer") {
+			const n = Number(value);
+			if (!Number.isNaN(n)) coerced[key] = n;
+			continue;
+		}
+
+		// Boolean coercion
+		if (propSchema.type === "boolean") {
+			if (value === "true") coerced[key] = true;
+			else if (value === "false") coerced[key] = false;
+			continue;
+		}
+
+		// Enum case normalization: find case-insensitive match
+		if (propSchema.enum && propSchema.enum.length > 0) {
+			const match = propSchema.enum.find(
+				(e) => e.toLowerCase() === value.toLowerCase(),
+			);
+			if (match) coerced[key] = match;
+		}
+	}
+	return coerced;
+}
+
+/**
  * Signal from a remote MCP command handler that indicates a relay request
  * should be sent via the outbox, and the agent loop should enter RELAY_WAIT.
  * Also includes CommandResult fields for type compatibility with handlers.
@@ -190,10 +238,13 @@ export async function generateMCPCommands(
 				}
 
 				try {
-					// Pass all args except 'subcommand' itself to callTool.
-					// Note: args values are strings because the --_json path in commands.ts stringifies all values.
-					// This is pre-existing behaviour for all MCP tool calls, not a regression.
-					const { subcommand: _, ...toolArgs } = args as Record<string, unknown>;
+					// Pass all args except 'subcommand' to callTool, with type coercion.
+					// Args arrive as strings from the bash --key value parser. MCP servers
+					// validate against their input schema, so "10" when number is expected
+					// or "true" when boolean is expected causes validation failures.
+					// Coerce values using the tool's input schema before dispatch.
+					const { subcommand: _, ...rawArgs } = args as Record<string, unknown>;
+					const toolArgs = coerceArgsFromSchema(rawArgs, entry.tool.inputSchema);
 					const result = await client.callTool(subcommand, toolArgs);
 					return {
 						stdout: result.content,

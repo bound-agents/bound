@@ -415,13 +415,13 @@ describe("AgentLoop", () => {
 		expect(msgs[0].content).toContain("command not found");
 	});
 
-	it("should handle non-bash tool calls by constructing command string from input", async () => {
+	it("should pass bash tool command directly to sandbox exec", async () => {
 		const mockBackend = new MockLLMBackend();
 		mockBackend.setToolThenTextResponse(
-			"tool-mem",
-			"memorize",
-			{ key: "project", value: "bound" },
-			"Memorized.",
+			"tool-echo",
+			"bash",
+			{ command: "echo hello" },
+			"Done.",
 		);
 
 		const mockBash = createMockSandbox();
@@ -434,16 +434,8 @@ describe("AgentLoop", () => {
 
 		await agentLoop.run();
 
-		// Non-bash commands use --_json encoding to safely pass values containing
-		// shell metacharacters (Bug #2 fix).
 		expect(mockBash.calls.length).toBe(1);
-		const cmd = mockBash.calls[0];
-		expect(cmd.startsWith("memorize --_json '")).toBe(true);
-		// The JSON payload must be parseable and contain the original args
-		const jsonPart = cmd.slice("memorize --_json '".length, -1);
-		const decoded = JSON.parse(jsonPart.replace(/\\u0027/g, "'")) as Record<string, unknown>;
-		expect(decoded.key).toBe("project");
-		expect(decoded.value).toBe("bound");
+		expect(mockBash.calls[0]).toBe("echo hello");
 	});
 
 	it("should handle sandbox without exec gracefully", async () => {

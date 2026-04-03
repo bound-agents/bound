@@ -53,27 +53,6 @@ export function createDefineCommands(
 		const handler = async (argv: string[]) => {
 			const args: Record<string, string> = {};
 
-			// Bug #2: detect --_json <json> encoding used by executeToolCall to safely
-			// pass string values that contain single quotes or other shell metacharacters.
-			// The value arrives as a JSON-encoded string with ' replaced by \u0027 so that
-			// just-bash's tokenizer doesn't split on literal single quotes.
-			const jsonFlagIdx = argv.indexOf("--_json");
-			if (jsonFlagIdx !== -1 && jsonFlagIdx + 1 < argv.length) {
-				try {
-					const parsed = JSON.parse(argv[jsonFlagIdx + 1]) as Record<string, unknown>;
-					if (typeof parsed === "object" && parsed !== null) {
-						return await def.handler(
-							// Preserve original JSON types (numbers, booleans) for MCP dispatch.
-							// String(5) → "5" breaks MCP servers that validate "want number".
-							parsed as Record<string, string>,
-							context,
-						);
-					}
-				} catch {
-					// Fall through to normal parsing if JSON is malformed
-				}
-			}
-
 			// Detect if argv uses --key value or key=value format.
 			// Use a strict regex: a key=value token must start with an identifier
 			// (no whitespace before "="). This prevents SQL strings like

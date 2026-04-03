@@ -347,6 +347,63 @@ describe("MCP Bridge", () => {
 		}
 	});
 
+	it("coerces string args to schema types (number, boolean, enum)", async () => {
+		const client = makeMockClient(
+			{ name: "typed-server", transport: "stdio", command: "test" },
+			[
+				{
+					name: "list_commits",
+					description: "List commits",
+					inputSchema: {
+						properties: {
+							owner: { type: "string" },
+							repo: { type: "string" },
+							perPage: { type: "number" },
+							recursive: { type: "boolean" },
+							state: { type: "string", enum: ["OPEN", "CLOSED", "MERGED"] },
+						},
+						required: ["owner", "repo"],
+					},
+				},
+			],
+			[],
+			[],
+		);
+
+		const clients = new Map([["typed-server", client]]);
+		const { commands } = await generateMCPCommands(clients);
+		const serverCmd = commands.find((c) => c.name === "typed-server");
+		expect(serverCmd).toBeDefined();
+
+		if (serverCmd) {
+			const mockCtx = createMockCommandContext();
+			// Args arrive as strings from bash --key value parsing
+			const result = await serverCmd.handler(
+				{
+					subcommand: "list_commits",
+					owner: "karashiiro",
+					repo: "bound",
+					perPage: "5",
+					recursive: "true",
+					state: "open",
+				},
+				mockCtx,
+			);
+			expect(result.exitCode).toBe(0);
+			// callTool receives the args — check they were coerced
+			const output = result.stdout;
+			// Number coercion: "5" → 5
+			expect(output).toContain('"perPage":5');
+			expect(output).not.toContain('"perPage":"5"');
+			// Boolean coercion: "true" → true
+			expect(output).toContain('"recursive":true');
+			expect(output).not.toContain('"recursive":"true"');
+			// Enum case normalization: "open" → "OPEN"
+			expect(output).toContain('"state":"OPEN"');
+			expect(output).not.toContain('"state":"open"');
+		}
+	});
+
 	// AC1.4: returns error for unknown subcommand
 	it("returns error for unknown subcommand", async () => {
 		const client = makeMockClient(

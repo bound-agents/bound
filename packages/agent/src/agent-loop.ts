@@ -1384,18 +1384,9 @@ export class AgentLoop {
 
 		let commandString: string;
 
-		if (toolCall.name === "bash" && typeof toolCall.input.command === "string") {
-			// Bash tool: pass the command directly
-			commandString = toolCall.input.command;
-		} else {
-			// Bug #2: naive space-joining of arg values causes just-bash's tokenizer to
-			// split on single quotes embedded in SQL queries or other string arguments.
-			// Instead, JSON-encode all args and pass via --_json '<escaped-json>' so the
-			// value is a single token with no shell metacharacters.
-			// \u0027 replaces literal ' so the single-quoted shell wrapper stays intact.
-			const jsonArgs = JSON.stringify(toolCall.input).replace(/'/g, "\\u0027");
-			commandString = `${toolCall.name} --_json '${jsonArgs}'`;
-		}
+		// All tool calls go through bash — the LLM only sees "bash" as a tool,
+		// and MCP server tools are invoked as bash commands (e.g., "github --subcommand X").
+		commandString = toolCall.input.command as string;
 
 		const result = await this.sandbox.exec(commandString);
 
