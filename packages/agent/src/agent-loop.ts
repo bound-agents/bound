@@ -18,7 +18,7 @@ import { LLMError } from "@bound/llm";
 import type { ContextDebugInfo } from "@bound/shared";
 import { countTokens, formatError } from "@bound/shared";
 
-import { CACHE_TTL_MS, predictCacheState, selectCacheTtl } from "./cache-prediction";
+import { selectCacheTtl } from "./cache-prediction";
 import { assembleContext } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
@@ -234,19 +234,21 @@ export class AgentLoop {
 					? this.lastModelResolution.modelId
 					: this.config.modelId;
 
-			// Predict cache state for context compaction and TTL selection.
-			// Thread interface is immutable, so this lookup is safe outside the while loop.
+			// Cache-aware context assembly:
+			// - For backends WITH prompt caching (Anthropic, Bedrock, OpenAI): never compact.
+			//   Compaction changes the prompt prefix, which invalidates the cache on the
+			//   NEXT (warm) turn. The cache itself is the optimization for these backends.
+			// - For backends WITHOUT caching (Ollama): compact on every turn since there's
+			//   no cache to invalidate and smaller context = faster inference.
+			const backendSupportsCaching = capabilities.prompt_caching !== false;
 			const threadMeta = this.ctx.db
 				.query("SELECT interface FROM threads WHERE id = ?")
 				.get(this.config.threadId) as { interface: string } | null;
 			const threadInterface = threadMeta?.interface ?? "web";
 			const cacheTtl = selectCacheTtl(threadInterface);
-			// Predict using the ACTUAL provider TTL (5m for Anthropic direct API).
-			// Anthropic ignores the ttl field; extended-cache-ttl beta broke caching.
-			// Bedrock supports 1h natively, but we use 5m here as the conservative
-			// default until per-backend TTL awareness is added.
-			const cacheState = predictCacheState(this.ctx.db, this.config.threadId, CACHE_TTL_MS["5m"]);
-			const isColdCache = cacheState === "cold";
+			// Never compact when caching is available — it would break the cache.
+			// Always compact for no-cache backends (every turn benefits from smaller context).
+			const isColdCache = !backendSupportsCaching;
 
 			const { messages: contextMessages, debug: contextDebug } = assembleContext({
 				db: this.ctx.db,
