@@ -387,7 +387,11 @@ export class AnthropicDriver implements LLMBackend {
 			"content-type": "application/json",
 		};
 		if (params.cache_breakpoints?.length) {
-			headers["anthropic-beta"] = "prompt-caching-2024-07-31";
+			const betaFeatures = ["prompt-caching-2024-07-31"];
+			if (params.cache_ttl === "1h") {
+				betaFeatures.push("extended-cache-ttl-2025-04-11");
+			}
+			headers["anthropic-beta"] = betaFeatures.join(",");
 		}
 
 		const response = await withRetry(async () => {

@@ -591,6 +591,76 @@ data: ${JSON.stringify({
 		expect(capturedHeaders["anthropic-beta"]).toContain("prompt-caching");
 	});
 
+	it("should include extended-cache-ttl beta header when cache_ttl is 1h", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-3-sonnet-20240229",
+			contextWindow: 200000,
+		});
+
+		let capturedHeaders: Record<string, string> = {};
+
+		global.fetch = (async (_url: string, options: RequestInit) => {
+			const headers = options.headers as Record<string, string>;
+			capturedHeaders = { ...headers };
+			return new Response("data: {}", {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		for await (const _ of driver.chat({
+			model: "claude-3-sonnet-20240229",
+			messages: [
+				{ role: "user", content: "Message 1" },
+				{ role: "assistant", content: "Response 1" },
+				{ role: "user", content: "Message 2" },
+			],
+			cache_breakpoints: [1],
+			cache_ttl: "1h",
+		})) {
+			// drain
+		}
+
+		expect(capturedHeaders["anthropic-beta"]).toContain("prompt-caching-2024-07-31");
+		expect(capturedHeaders["anthropic-beta"]).toContain("extended-cache-ttl-2025-04-11");
+	});
+
+	it("should NOT include extended-cache-ttl beta header when cache_ttl is 5m", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-3-sonnet-20240229",
+			contextWindow: 200000,
+		});
+
+		let capturedHeaders: Record<string, string> = {};
+
+		global.fetch = (async (_url: string, options: RequestInit) => {
+			const headers = options.headers as Record<string, string>;
+			capturedHeaders = { ...headers };
+			return new Response("data: {}", {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		for await (const _ of driver.chat({
+			model: "claude-3-sonnet-20240229",
+			messages: [
+				{ role: "user", content: "Message 1" },
+				{ role: "assistant", content: "Response 1" },
+				{ role: "user", content: "Message 2" },
+			],
+			cache_breakpoints: [1],
+			cache_ttl: "5m",
+		})) {
+			// drain
+		}
+
+		expect(capturedHeaders["anthropic-beta"]).toContain("prompt-caching-2024-07-31");
+		expect(capturedHeaders["anthropic-beta"]).not.toContain("extended-cache-ttl");
+	});
+
 	it("should NOT send prompt-caching beta header when no cache_breakpoints", async () => {
 		const driver = new AnthropicDriver({
 			apiKey: "test-key",
