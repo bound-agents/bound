@@ -907,6 +907,18 @@ Original output was too large for the context window. If you need the full conte
 				"Each call to the tool produces one separate message to the user. " +
 					"Multiple calls are allowed and delivered in order.",
 			);
+
+			// Platform-specific formatting constraints
+			if (platformContext.platform === "discord" || platformContext.platform === "discord-interaction") {
+				volatileLines.push(
+					"Discord formatting: **bold**, *italic*, __underline__, ~~strikethrough~~, " +
+						"`inline code`, ```code blocks```, > block quotes, >>> multi-line quotes, " +
+						"# ## ### headers, -# subtext, [masked links](url), ||spoilers||, " +
+						"- bulleted lists (2-space indent to nest). " +
+						"Tables do NOT render — use lists or code blocks instead. " +
+						"Messages over 2000 characters are rejected; split long content across multiple calls.",
+				);
+			}
 		}
 
 		// Include current model name
