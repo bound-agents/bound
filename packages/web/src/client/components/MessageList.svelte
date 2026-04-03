@@ -27,7 +27,13 @@ interface ToolCallItem {
 
 type DisplayItem =
 	| { kind: "message"; msg: Message; earliest: string }
-	| { kind: "toolGroup"; entries: ToolEntry[]; earliest: string; timestamps: string[] };
+	| {
+			kind: "toolGroup";
+			entries: ToolEntry[];
+			earliest: string;
+			timestamps: string[];
+			reasoning: string[];
+	  };
 
 interface TurnRange {
 	from: string;
@@ -203,13 +209,14 @@ let displayItems = $derived.by((): DisplayItem[] => {
 
 	// Pass 2: merge consecutive toolCall items into groups.
 	// Assistant messages between tool turns (thinking-out-loud text the LLM emits
-	// alongside tool calls) are absorbed into the group so they don't break the chain.
+	// alongside tool calls) are collected as reasoning and displayed in the group.
 	const items: DisplayItem[] = [];
 	let k = 0;
 	while (k < pass1.length) {
 		const entry = pass1[k];
 		if (entry.kind === "toolCall") {
 			const batch: ToolCallItem[] = [];
+			const reasoning: string[] = [];
 			while (k < pass1.length) {
 				const cur = pass1[k];
 				if (cur.kind === "toolCall") {
@@ -221,7 +228,9 @@ let displayItems = $derived.by((): DisplayItem[] => {
 					k + 1 < pass1.length &&
 					pass1[k + 1].kind === "toolCall"
 				) {
-					// Skip assistant messages that sit between tool turns
+					// Collect assistant reasoning between tool turns
+					const text = cur.msg.content?.trim();
+					if (text) reasoning.push(text);
 					k++;
 				} else {
 					break;
@@ -234,6 +243,7 @@ let displayItems = $derived.by((): DisplayItem[] => {
 				entries: allEntries,
 				earliest: batch[0].earliest,
 				timestamps,
+				reasoning,
 			});
 		} else {
 			items.push({ kind: "message", msg: entry.msg, earliest: entry.earliest });
@@ -259,7 +269,7 @@ let displayItems = $derived.by((): DisplayItem[] => {
 					data-turn-active={active && turnRange ? "" : undefined}
 				>
 					{#if item.kind === "toolGroup"}
-						<ToolCallGroup entries={item.entries} {turnRange} />
+						<ToolCallGroup entries={item.entries} reasoning={item.reasoning} {turnRange} />
 					{:else}
 						<MessageBubble
 							role={item.msg.role}

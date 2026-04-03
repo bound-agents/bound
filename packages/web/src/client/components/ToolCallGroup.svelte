@@ -14,8 +14,13 @@ interface TurnRange {
 	to: string | null;
 }
 
-const { entries, turnRange = null } = $props<{
+const {
+	entries,
+	reasoning = [],
+	turnRange = null,
+} = $props<{
 	entries: ToolEntry[];
+	reasoning?: string[];
 	turnRange?: TurnRange | null;
 }>();
 
@@ -74,6 +79,14 @@ const doneCount = $derived(entries.filter((e) => e.result !== undefined).length)
 		</span>
 		<span class="tg-toggle">{#if groupExpanded}<ChevronUp size={12} />{:else}<ChevronDown size={12} />{/if}</span>
 	</div>
+
+	{#if reasoning.length > 0}
+		<div class="reasoning-strip">
+			{#each reasoning as text}
+				<p class="reasoning-text">{text}</p>
+			{/each}
+		</div>
+	{/if}
 
 	{#if groupExpanded}
 		<div class="tool-list">
@@ -165,6 +178,28 @@ const doneCount = $derived(entries.filter((e) => e.result !== undefined).length)
 		color: var(--text-muted);
 		display: flex;
 		align-items: center;
+	}
+
+	/* Reasoning text from assistant messages between tool turns */
+	.reasoning-strip {
+		margin-top: 6px;
+		padding: 4px 8px;
+		border-left: 2px solid rgba(193, 164, 112, 0.25);
+		background: rgba(193, 164, 112, 0.04);
+		border-radius: 0 4px 4px 0;
+	}
+
+	.reasoning-text {
+		margin: 0;
+		font-family: var(--font-body);
+		font-size: 12px;
+		color: var(--text-muted);
+		line-height: 1.5;
+		font-style: italic;
+	}
+
+	.reasoning-text + .reasoning-text {
+		margin-top: 4px;
 	}
 
 	/* Level 1: tool list */
