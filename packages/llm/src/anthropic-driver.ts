@@ -339,17 +339,19 @@ export class AnthropicDriver implements LLMBackend {
 	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
 		const anthropicMessages = toAnthropicMessages(params.messages);
 
-		// Add cache_control to messages at breakpoint indices.
-		// NOTE: cache_ttl ("1h") is NOT sent to Anthropic direct API yet — the
-		// extended-cache-ttl beta silently broke message-level caching (3% hit rate
-		// vs 99.8% without it). The TTL infrastructure is preserved in ChatParams
-		// for Bedrock and future Anthropic support. For now, always use plain ephemeral.
-		if (params.cache_breakpoints) {
-			for (const breakpointIndex of params.cache_breakpoints) {
-				if (anthropicMessages[breakpointIndex]) {
-					anthropicMessages[breakpointIndex].cache_control = { type: "ephemeral" };
-				}
-			}
+		// Add cache_control to the second-to-last message so everything before
+		// it is eligible for prompt cache reuse. The caller passes breakpoint
+		// indices relative to params.messages, but toAnthropicMessages() may
+		// produce a shorter array (consecutive tool_result messages get merged
+		// into a single user message). We re-compute the index from the actual
+		// Anthropic messages array to avoid silent out-of-bounds misses.
+		if (
+			params.cache_breakpoints &&
+			params.cache_breakpoints.length > 0 &&
+			anthropicMessages.length >= 2
+		) {
+			const idx = anthropicMessages.length - 2;
+			anthropicMessages[idx].cache_control = { type: "ephemeral" };
 		}
 
 		// When cache_breakpoints are provided, send system prompt as cacheable content blocks

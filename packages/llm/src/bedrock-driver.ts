@@ -142,20 +142,20 @@ export class BedrockDriver implements LLMBackend {
 		const modelId = params.model || this.model;
 		const messages = toBedrockMessages(params.messages);
 
-		// Inject cachePoint markers at breakpoint indices so Bedrock caches
-		// all content up to and including that message.
-		// NOTE: cache_ttl is NOT passed through to Bedrock cachePoint yet.
-		// Adding ttl to the cachePoint silently broke message-level caching for
-		// large contexts (>200k tokens). The infrastructure remains in ChatParams
-		// for future use once Bedrock TTL support is verified end-to-end.
-		if (params.cache_breakpoints) {
-			for (const idx of params.cache_breakpoints) {
-				if (messages[idx] && Array.isArray(messages[idx].content)) {
-					// biome-ignore lint/suspicious/noExplicitAny: Bedrock SDK types don't include cachePoint yet
-					(messages[idx].content as any[]).push({
-						cachePoint: { type: "default" },
-					});
-				}
+		// Inject cachePoint markers so Bedrock caches all content up to the
+		// marked message. The caller passes breakpoint indices relative to
+		// params.messages, but toBedrockMessages() may produce a shorter array
+		// (consecutive tool_result messages get merged into a single user
+		// message). We re-compute the breakpoint from the actual Bedrock
+		// messages array to avoid out-of-bounds indices that silently skip
+		// the cachePoint placement.
+		if (params.cache_breakpoints && params.cache_breakpoints.length > 0 && messages.length >= 2) {
+			const idx = messages.length - 2;
+			if (Array.isArray(messages[idx].content)) {
+				// biome-ignore lint/suspicious/noExplicitAny: Bedrock SDK types don't include cachePoint yet
+				(messages[idx].content as any[]).push({
+					cachePoint: { type: "default" },
+				});
 			}
 		}
 

@@ -3638,6 +3638,68 @@ This skill reviews pull requests.`;
 			}
 		});
 
+		it("AC2.5c: Truncation applies 15% headroom for cache-friendly prefix stability", () => {
+			const testThreadId = randomUUID();
+			debugTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					debugTestUserId,
+					"web",
+					"local",
+					0,
+					"Headroom Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// Insert enough messages to exceed contextWindow.
+			// Use varied content to avoid tiktoken compressing repeated patterns.
+			for (let i = 0; i < 100; i++) {
+				const role = i % 2 === 0 ? "user" : "assistant";
+				const words = Array.from({ length: 80 }, (_, j) => `word${i}_${j}_alpha_beta`);
+				debugTestDb.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						testThreadId,
+						role,
+						`Message ${i}: ${words.join(" ")}`,
+						role === "assistant" ? "model-1" : null,
+						null,
+						new Date(Date.now() + i * 1000).toISOString(),
+						new Date(Date.now() + i * 1000).toISOString(),
+						"local",
+					],
+				);
+			}
+
+			const contextWindow = 10000;
+			const result = assembleContext({
+				db: debugTestDb,
+				threadId: testThreadId,
+				userId: debugTestUserId,
+				contextWindow,
+			});
+
+			// Truncation should fire
+			expect(result.debug.truncated).toBeGreaterThan(0);
+
+			// The resulting context should be ~85% of contextWindow (15% headroom),
+			// not right at the limit. This ensures the prefix stays stable for
+			// multiple turns, enabling prompt caching.
+			const TRUNCATION_TARGET_RATIO = 0.85;
+			const targetBudget = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
+			expect(result.debug.totalEstimated).toBeLessThanOrEqual(targetBudget + 100); // small tolerance for system msgs
+		});
+
 		it("AC2.6: Empty thread has history section with tokens: 0 and no children", () => {
 			const testThreadId = randomUUID();
 			debugTestDb.run(

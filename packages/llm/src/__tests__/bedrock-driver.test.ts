@@ -826,6 +826,71 @@ describe("BedrockDriver", () => {
 			expect(system[1]).toEqual({ cachePoint: { type: "default" } });
 		});
 
+		it.skipIf(shouldSkip)(
+			"places cachePoint correctly when tool_result merging shortens the message array",
+			async () => {
+				let capturedInput: Record<string, unknown> | undefined;
+				sendSpy.mockImplementation((command: unknown) => {
+					// biome-ignore lint/suspicious/noExplicitAny: test mock
+					capturedInput = (command as any).input;
+					return Promise.resolve(
+						createMockStream([
+							{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "OK" } } },
+							{
+								metadata: {
+									usage: {
+										inputTokens: 100,
+										outputTokens: 5,
+										cacheWriteInputTokens: 80,
+										cacheReadInputTokens: 0,
+									},
+								},
+							},
+						]),
+					);
+				});
+
+				// 5 input messages: tool_call + 3 consecutive tool_results + user
+				// toBedrockMessages merges the 3 tool_results into 1 user message,
+				// producing only 3 Bedrock messages (assistant, user, user).
+				// The caller passes breakpoint index 3 (= 5 - 2) which would be
+				// out of bounds on the 3-element Bedrock array. The fix re-computes
+				// the breakpoint from messages.length - 2 = 1.
+				const driver = makeDriver();
+				await collectChunks(
+					driver.chat({
+						messages: [
+							{
+								role: "tool_call",
+								content: JSON.stringify([
+									{ type: "tool_use", id: "tc-1", name: "query", input: {} },
+									{ type: "tool_use", id: "tc-2", name: "memorize", input: {} },
+									{ type: "tool_use", id: "tc-3", name: "emit", input: {} },
+								]),
+							},
+							{ role: "tool_result", content: "result 1", tool_use_id: "tc-1" },
+							{ role: "tool_result", content: "result 2", tool_use_id: "tc-2" },
+							{ role: "tool_result", content: "result 3", tool_use_id: "tc-3" },
+							{ role: "user", content: "thanks" },
+						],
+						cache_breakpoints: [3], // 5 - 2 = 3, but Bedrock array is only 3 elements
+					}),
+				);
+
+				const messages = capturedInput?.messages as Array<{
+					role: string;
+					content: Array<Record<string, unknown>>;
+				}>;
+				// Bedrock messages: [assistant(tool_use), user(3 toolResults), user(text)]
+				expect(messages.length).toBe(3);
+				// cachePoint should be on messages[1] (= 3 - 2), not messages[3] (out of bounds)
+				const cachedMsg = messages[1].content;
+				expect(cachedMsg.at(-1)).toEqual({ cachePoint: { type: "default" } });
+				// Last message should NOT have cachePoint
+				expect(messages[2].content).toEqual([{ text: "thanks" }]);
+			},
+		);
+
 		it.skipIf(shouldSkip)("caches system prompt when breakpoints are provided", async () => {
 			let capturedInput: Record<string, unknown> | undefined;
 			sendSpy.mockImplementation((command: unknown) => {
