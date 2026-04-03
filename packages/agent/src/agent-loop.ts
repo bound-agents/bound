@@ -18,6 +18,7 @@ import { LLMError } from "@bound/llm";
 import type { ContextDebugInfo } from "@bound/shared";
 import { countTokens, formatError } from "@bound/shared";
 
+import { CACHE_TTL_MS, predictCacheState, selectCacheTtl } from "./cache-prediction";
 import { assembleContext } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
@@ -233,6 +234,17 @@ export class AgentLoop {
 					? this.lastModelResolution.modelId
 					: this.config.modelId;
 
+			// Predict cache state for context compaction and TTL selection.
+			// Look up thread interface to determine optimal TTL.
+			const threadRow2 = this.ctx.db
+				.query("SELECT interface FROM threads WHERE id = ?")
+				.get(this.config.threadId) as { interface: string } | null;
+			const threadInterface = threadRow2?.interface ?? "web";
+			const cacheTtl = selectCacheTtl(threadInterface);
+			const ttlMs = CACHE_TTL_MS[cacheTtl] ?? CACHE_TTL_MS["5m"];
+			const cacheState = predictCacheState(this.ctx.db, this.config.threadId, ttlMs);
+			const isColdCache = cacheState === "cold";
+
 			const { messages: contextMessages, debug: contextDebug } = assembleContext({
 				db: this.ctx.db,
 				threadId: this.config.threadId,
@@ -253,6 +265,7 @@ export class AgentLoop {
 					: undefined,
 				targetCapabilities: resolvedCaps ?? undefined,
 				toolTokenEstimate,
+				coldCache: isColdCache,
 			});
 
 			// Store context debug for Phase 3 persistence
@@ -391,6 +404,7 @@ export class AgentLoop {
 									system: systemPrompt || undefined,
 									tools: this.config.tools,
 									cache_breakpoints: cacheBreakpoints,
+									cache_ttl: cacheTtl,
 								});
 								for await (const chunk of this.withSilenceTimeout(chatStream, SILENCE_TIMEOUT_MS)) {
 									if (this.aborted) break;

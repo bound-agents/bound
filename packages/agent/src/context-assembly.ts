@@ -43,6 +43,10 @@ export interface ContextParams {
 	targetCapabilities?: BackendCapabilities;
 	/** Estimated token count for tool definitions (counted by caller since tools are at ChatParams level) */
 	toolTokenEstimate?: number;
+	/** When true, aggressively compacts old tool results and injects thread summary for cold-cache turns. */
+	coldCache?: boolean;
+	/** Number of recent messages to keep intact during cold-cache compaction. Defaults to 20. */
+	coldCacheRecentWindow?: number;
 }
 
 export interface ContextAssemblyResult {
@@ -285,6 +289,57 @@ Original output was too large for the context window. If you need the full conte
 		}
 	}
 
+	// Stage 1.7: COLD_CACHE_COMPACTION
+	// When the LLM prompt cache is predicted cold (or absent), aggressively compact
+	// old tool results into DB retrieval pointers. The agent can re-fetch via "query"
+	// if needed. This reduces context size dramatically on cold turns (e.g., 237k → 30k),
+	// making the cold-cache LLM call faster and the subsequent cache write smaller.
+	// Also injects the thread summary as a context anchor for compacted history.
+	if (params.coldCache && messages.length > 0) {
+		const recentWindow = params.coldCacheRecentWindow ?? 20;
+		const compactionBoundary = Math.max(0, messages.length - recentWindow);
+		const COLD_COMPACTION_THRESHOLD = 500;
+
+		// Inject thread summary if available
+		const thread = db
+			.query("SELECT summary FROM threads WHERE id = ?")
+			.get(threadId) as { summary: string | null } | null;
+		if (thread?.summary) {
+			// Prepend a synthetic system-role summary message.
+			// It will be picked up naturally by later stages.
+			messages.unshift({
+				id: "__cold_cache_summary__",
+				thread_id: threadId,
+				role: "system",
+				content:
+					`[Conversation compacted — ${compactionBoundary} older messages summarized. ` +
+					`Use "query" to retrieve specific messages if needed.]\n\n` +
+					`Summary: ${thread.summary}`,
+				model_id: null,
+				tool_name: null,
+				created_at: messages[0]?.created_at ?? new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				host_origin: params.hostName ?? "localhost",
+				deleted: 0,
+			} as Message);
+		}
+
+		// Compact old tool results (everything before the recent window)
+		// The boundary shifts by 1 if we prepended the summary message
+		const adjustedBoundary = thread?.summary ? compactionBoundary + 1 : compactionBoundary;
+		for (let i = 0; i < adjustedBoundary; i++) {
+			const msg = messages[i];
+			if (msg.role === "tool_result" && msg.content.length > COLD_COMPACTION_THRESHOLD) {
+				const originalLength = msg.content.length;
+				const preview = msg.content.slice(0, 200).trimEnd();
+				msg.content =
+					`[Result truncated from context — ${originalLength} chars. ` +
+					`Retrieve with: query SELECT content FROM messages WHERE id='${msg.id}']\n` +
+					preview;
+			}
+		}
+	}
+
 	// Stage 2: PURGE_SUBSTITUTION
 	// Find any purge messages and replace targeted IDs with summaries
 	const purgeMessages = messages.filter((m) => m.role === "purge");
@@ -403,7 +458,7 @@ Original output was too large for the context window. If you need the full conte
 	const messagesFiltered = messagesAfterPurge.filter((m) => {
 		if (NON_LLM_ROLES.has(m.role)) return false;
 		// Filter DB-originated system messages but keep purge summaries
-		if (m.role === "system" && !m.id.startsWith("purge-summary-")) return false;
+		if (m.role === "system" && !m.id.startsWith("purge-summary-") && !m.id.startsWith("__cold_cache_")) return false;
 		return true;
 	});
 

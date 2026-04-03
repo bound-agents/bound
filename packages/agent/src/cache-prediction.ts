@@ -12,19 +12,26 @@ export type CacheState = "warm" | "cold";
  * @param ttlMs Cache TTL in milliseconds (e.g., 300_000 for 5m, 3_600_000 for 1h)
  */
 export function predictCacheState(db: Database, threadId: string, ttlMs: number): CacheState {
-	const row = db
-		.query(
-			`SELECT created_at, tokens_cache_read, tokens_cache_write
-			 FROM turns
-			 WHERE thread_id = ?
-			 ORDER BY created_at DESC
-			 LIMIT 1`,
-		)
-		.get(threadId) as {
+	let row: {
 		created_at: string;
 		tokens_cache_read: number | null;
 		tokens_cache_write: number | null;
-	} | null;
+	} | null = null;
+
+	try {
+		row = db
+			.query(
+				`SELECT created_at, tokens_cache_read, tokens_cache_write
+				 FROM turns
+				 WHERE thread_id = ?
+				 ORDER BY created_at DESC
+				 LIMIT 1`,
+			)
+			.get(threadId) as typeof row;
+	} catch {
+		// turns table may not exist (e.g., test environments without metrics schema)
+		return "cold";
+	}
 
 	if (!row) return "cold";
 
