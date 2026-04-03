@@ -590,18 +590,19 @@ data: ${JSON.stringify({
 		expect(capturedHeaders["anthropic-beta"]).toContain("prompt-caching");
 	});
 
-	it("should include extended-cache-ttl beta header when cache_ttl is 1h", async () => {
+	it("should ignore cache_ttl and use plain ephemeral for Anthropic direct API", async () => {
 		const driver = new AnthropicDriver({
 			apiKey: "test-key",
 			model: "claude-3-sonnet-20240229",
 			contextWindow: 200000,
 		});
 
+		let requestBody: string | null = null;
 		let capturedHeaders: Record<string, string> = {};
 
 		global.fetch = (async (_url: string, options: RequestInit) => {
-			const headers = options.headers as Record<string, string>;
-			capturedHeaders = { ...headers };
+			requestBody = options.body as string;
+			capturedHeaders = { ...(options.headers as Record<string, string>) };
 			return new Response("data: {}", {
 				status: 200,
 				headers: { "Content-Type": "text/event-stream" },
@@ -621,42 +622,11 @@ data: ${JSON.stringify({
 			// drain
 		}
 
-		expect(capturedHeaders["anthropic-beta"]).toContain("prompt-caching-2024-07-31");
-		expect(capturedHeaders["anthropic-beta"]).toContain("extended-cache-ttl-2025-04-11");
-	});
-
-	it("should NOT include extended-cache-ttl beta header when cache_ttl is 5m", async () => {
-		const driver = new AnthropicDriver({
-			apiKey: "test-key",
-			model: "claude-3-sonnet-20240229",
-			contextWindow: 200000,
-		});
-
-		let capturedHeaders: Record<string, string> = {};
-
-		global.fetch = (async (_url: string, options: RequestInit) => {
-			const headers = options.headers as Record<string, string>;
-			capturedHeaders = { ...headers };
-			return new Response("data: {}", {
-				status: 200,
-				headers: { "Content-Type": "text/event-stream" },
-			});
-		}) as typeof fetch;
-
-		for await (const _ of driver.chat({
-			model: "claude-3-sonnet-20240229",
-			messages: [
-				{ role: "user", content: "Message 1" },
-				{ role: "assistant", content: "Response 1" },
-				{ role: "user", content: "Message 2" },
-			],
-			cache_breakpoints: [1],
-			cache_ttl: "5m",
-		})) {
-			// drain
-		}
-
-		expect(capturedHeaders["anthropic-beta"]).toContain("prompt-caching-2024-07-31");
+		const request = JSON.parse(requestBody as string);
+		// cache_ttl should NOT be passed through — extended TTL breaks Anthropic caching
+		expect(request.messages[1].cache_control).toEqual({ type: "ephemeral" });
+		// No extended-cache-ttl beta header
+		expect(capturedHeaders["anthropic-beta"]).toBe("prompt-caching-2024-07-31");
 		expect(capturedHeaders["anthropic-beta"]).not.toContain("extended-cache-ttl");
 	});
 
@@ -778,117 +748,6 @@ data: ${JSON.stringify({
 		expect(request.messages[1].cache_control).toEqual({ type: "ephemeral" });
 		expect(request.messages[0].cache_control).toBeUndefined();
 		expect(request.messages[2].cache_control).toBeUndefined();
-	});
-
-	it("should pass cache_ttl through to cache_control on messages", async () => {
-		const driver = new AnthropicDriver({
-			apiKey: "test-key",
-			model: "claude-3-sonnet-20240229",
-			contextWindow: 200000,
-		});
-
-		let requestBody: string | null = null;
-
-		global.fetch = (async (url: string, options: RequestInit) => {
-			if (url.includes("anthropic.com")) {
-				requestBody = options.body as string;
-				return new Response("data: {}", {
-					status: 200,
-					headers: { "Content-Type": "text/event-stream" },
-				});
-			}
-			return new Response("Not found", { status: 404 });
-		}) as typeof fetch;
-
-		for await (const _ of driver.chat({
-			model: "claude-3-sonnet-20240229",
-			messages: [
-				{ role: "user", content: "Message 1" },
-				{ role: "assistant", content: "Response 1" },
-				{ role: "user", content: "Message 2" },
-			],
-			cache_breakpoints: [1],
-			cache_ttl: "1h",
-		})) {
-			// drain
-		}
-
-		expect(requestBody).not.toBeNull();
-		const request = JSON.parse(requestBody as string);
-		expect(request.messages[1].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
-	});
-
-	it("should pass cache_ttl through to system prompt cache_control", async () => {
-		const driver = new AnthropicDriver({
-			apiKey: "test-key",
-			model: "claude-3-sonnet-20240229",
-			contextWindow: 200000,
-		});
-
-		let requestBody: string | null = null;
-
-		global.fetch = (async (url: string, options: RequestInit) => {
-			if (url.includes("anthropic.com")) {
-				requestBody = options.body as string;
-				return new Response("data: {}", {
-					status: 200,
-					headers: { "Content-Type": "text/event-stream" },
-				});
-			}
-			return new Response("Not found", { status: 404 });
-		}) as typeof fetch;
-
-		for await (const _ of driver.chat({
-			model: "claude-3-sonnet-20240229",
-			messages: [{ role: "user", content: "Hello" }],
-			system: "You are helpful",
-			cache_breakpoints: [0],
-			cache_ttl: "1h",
-		})) {
-			// drain
-		}
-
-		expect(requestBody).not.toBeNull();
-		const request = JSON.parse(requestBody as string);
-		expect(request.system[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
-	});
-
-	it("should default to no ttl field when cache_ttl is not provided", async () => {
-		const driver = new AnthropicDriver({
-			apiKey: "test-key",
-			model: "claude-3-sonnet-20240229",
-			contextWindow: 200000,
-		});
-
-		let requestBody: string | null = null;
-
-		global.fetch = (async (url: string, options: RequestInit) => {
-			if (url.includes("anthropic.com")) {
-				requestBody = options.body as string;
-				return new Response("data: {}", {
-					status: 200,
-					headers: { "Content-Type": "text/event-stream" },
-				});
-			}
-			return new Response("Not found", { status: 404 });
-		}) as typeof fetch;
-
-		for await (const _ of driver.chat({
-			model: "claude-3-sonnet-20240229",
-			messages: [
-				{ role: "user", content: "Message 1" },
-				{ role: "assistant", content: "Response 1" },
-				{ role: "user", content: "Message 2" },
-			],
-			cache_breakpoints: [1],
-		})) {
-			// drain
-		}
-
-		expect(requestBody).not.toBeNull();
-		const request = JSON.parse(requestBody as string);
-		// No ttl field — just { type: "ephemeral" } for backward compatibility
-		expect(request.messages[1].cache_control).toEqual({ type: "ephemeral" });
 	});
 
 	it("should handle system prompt separately", async () => {

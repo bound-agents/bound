@@ -241,8 +241,11 @@ export class AgentLoop {
 				.get(this.config.threadId) as { interface: string } | null;
 			const threadInterface = threadMeta?.interface ?? "web";
 			const cacheTtl = selectCacheTtl(threadInterface);
-			const ttlMs = CACHE_TTL_MS[cacheTtl];
-			const cacheState = predictCacheState(this.ctx.db, this.config.threadId, ttlMs);
+			// Predict using the ACTUAL provider TTL (5m for Anthropic direct API).
+			// Anthropic ignores the ttl field; extended-cache-ttl beta broke caching.
+			// Bedrock supports 1h natively, but we use 5m here as the conservative
+			// default until per-backend TTL awareness is added.
+			const cacheState = predictCacheState(this.ctx.db, this.config.threadId, CACHE_TTL_MS["5m"]);
 			const isColdCache = cacheState === "cold";
 
 			const { messages: contextMessages, debug: contextDebug } = assembleContext({

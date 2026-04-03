@@ -339,36 +339,30 @@ export class AnthropicDriver implements LLMBackend {
 	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
 		const anthropicMessages = toAnthropicMessages(params.messages);
 
-		// Add cache_control to messages at breakpoint indices
+		// Add cache_control to messages at breakpoint indices.
+		// NOTE: cache_ttl ("1h") is NOT sent to Anthropic direct API yet — the
+		// extended-cache-ttl beta silently broke message-level caching (3% hit rate
+		// vs 99.8% without it). The TTL infrastructure is preserved in ChatParams
+		// for Bedrock and future Anthropic support. For now, always use plain ephemeral.
 		if (params.cache_breakpoints) {
-			const cacheControl: { type: "ephemeral"; ttl?: "5m" | "1h" } = { type: "ephemeral" };
-			if (params.cache_ttl) cacheControl.ttl = params.cache_ttl;
-
 			for (const breakpointIndex of params.cache_breakpoints) {
 				if (anthropicMessages[breakpointIndex]) {
-					anthropicMessages[breakpointIndex].cache_control = cacheControl;
+					anthropicMessages[breakpointIndex].cache_control = { type: "ephemeral" };
 				}
 			}
 		}
 
 		// When cache_breakpoints are provided, send system prompt as cacheable content blocks
-		const systemCacheControl: { type: "ephemeral"; ttl?: "5m" | "1h" } = { type: "ephemeral" };
-		if (params.cache_ttl) systemCacheControl.ttl = params.cache_ttl;
-
 		const systemPayload:
 			| string
-			| Array<{
-					type: "text";
-					text: string;
-					cache_control?: { type: "ephemeral"; ttl?: "5m" | "1h" };
-			  }>
+			| Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }>
 			| undefined =
 			params.system && params.cache_breakpoints?.length
 				? [
 						{
 							type: "text" as const,
 							text: params.system,
-							cache_control: systemCacheControl,
+							cache_control: { type: "ephemeral" as const },
 						},
 					]
 				: params.system;
@@ -397,11 +391,7 @@ export class AnthropicDriver implements LLMBackend {
 			"content-type": "application/json",
 		};
 		if (params.cache_breakpoints?.length) {
-			const betaFeatures = ["prompt-caching-2024-07-31"];
-			if (params.cache_ttl === "1h") {
-				betaFeatures.push("extended-cache-ttl-2025-04-11");
-			}
-			headers["anthropic-beta"] = betaFeatures.join(",");
+			headers["anthropic-beta"] = "prompt-caching-2024-07-31";
 		}
 
 		const response = await withRetry(async () => {
