@@ -24,7 +24,7 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 				query += " AND status = ?";
 				params.push(status);
 			} else {
-				query += " AND status != 'applied'";
+				query += " AND status NOT IN ('applied', 'dismissed')";
 			}
 
 			query += " ORDER BY proposed_at DESC";
