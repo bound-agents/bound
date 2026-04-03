@@ -109,6 +109,11 @@ export class DiscordConnector implements PlatformConnector {
 		content: string,
 		attachments?: Array<{ filename: string; data: Buffer }>,
 	): Promise<void> {
+		// Stop the typing indicator before sending — the relay-processor emits
+		// platform:deliver with empty content specifically to stop typing, and
+		// sending a message also makes the typing indicator redundant.
+		this.stopTyping(threadId);
+
 		// No client null check needed — getDMChannelForThread uses clientManager.getClient()
 		const channel = await this.getDMChannelForThread(threadId);
 
@@ -116,6 +121,9 @@ export class DiscordConnector implements PlatformConnector {
 			this.logger.warn("No DM channel found for thread", { threadId });
 			return;
 		}
+
+		// Empty content = typing-stop-only signal from relay-processor; nothing to send.
+		if (!content && (!attachments || attachments.length === 0)) return;
 
 		if (attachments && attachments.length > 0) {
 			// Attachment delivery: send content + files in a single message.

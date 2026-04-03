@@ -614,7 +614,7 @@ describe("DiscordConnector", () => {
 			// Test passes if no error is thrown
 		});
 
-		it("should keep typing active while getDMChannelForThread() is resolving", async () => {
+		it("should stop typing immediately when deliver() is called", async () => {
 			const userId = randomUUID();
 			const threadId = randomUUID();
 			const now = new Date().toISOString();
@@ -672,12 +672,11 @@ describe("DiscordConnector", () => {
 
 			await connector.deliver(threadId, "msg-1", "hello");
 
-			// Typing should have still been active when getDMChannelForThread() ran
-			expect(typingTimerCountDuringFetch).toBe(1);
-			// Typing should still be active after deliver() — stopped by onLoopComplete()
-			expect(typingTimers.size).toBe(1);
+			// deliver() should stop typing immediately before resolving the channel
+			expect(typingTimerCountDuringFetch).toBe(0);
+			expect(typingTimers.size).toBe(0);
 
-			// Simulate loop completion
+			// onLoopComplete is a no-op safety net now (already stopped)
 			connector.onLoopComplete(threadId);
 			expect(typingTimers.size).toBe(0);
 		});
