@@ -18,7 +18,10 @@ import { LLMError } from "@bound/llm";
 import type { ContextDebugInfo } from "@bound/shared";
 import { countTokens, formatError } from "@bound/shared";
 
-import { selectCacheTtl } from "./cache-prediction";
+// Cache prediction infrastructure preserved for future use when provider
+// TTL support is verified. Currently unused in the agent loop — both
+// Anthropic and Bedrock broke when receiving TTL fields.
+// import { selectCacheTtl, predictCacheState, CACHE_TTL_MS } from "./cache-prediction";
 import { assembleContext } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
@@ -241,11 +244,6 @@ export class AgentLoop {
 			// - For backends WITHOUT caching (Ollama): compact on every turn since there's
 			//   no cache to invalidate and smaller context = faster inference.
 			const backendSupportsCaching = capabilities.prompt_caching !== false;
-			const threadMeta = this.ctx.db
-				.query("SELECT interface FROM threads WHERE id = ?")
-				.get(this.config.threadId) as { interface: string } | null;
-			const threadInterface = threadMeta?.interface ?? "web";
-			const cacheTtl = selectCacheTtl(threadInterface);
 			// Never compact when caching is available — it would break the cache.
 			// Always compact for no-cache backends (every turn benefits from smaller context).
 			const isColdCache = !backendSupportsCaching;
@@ -409,7 +407,9 @@ export class AgentLoop {
 									system: systemPrompt || undefined,
 									tools: this.config.tools,
 									cache_breakpoints: cacheBreakpoints,
-									cache_ttl: cacheTtl,
+									// cache_ttl intentionally omitted — both Anthropic and Bedrock
+									// drivers currently ignore it, and passing any extra fields
+									// risks unexpected serialization behavior.
 								});
 								for await (const chunk of this.withSilenceTimeout(chatStream, SILENCE_TIMEOUT_MS)) {
 									if (this.aborted) break;
