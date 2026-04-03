@@ -107,7 +107,7 @@ Requirements use the prefix `R-SE` (Sync Encryption). Numbering is independent.
 
 ### 3.3 State-Driven
 
-**R-SE13.** While the system is running, derived X25519 keys and cached shared secrets shall be held in memory only. They shall not be written to disk, logged, or included in any diagnostic output. The `boundcurl` tool (R-SE9) derives keys transiently for each invocation and does not cache them.
+**R-SE13.** While the system is running, derived X25519 keys and cached shared secrets shall be held in memory only. They shall not be written to disk, logged, or included in any diagnostic output. The `boundcurl` tool (R-SE18) derives keys transiently for each invocation and does not cache them.
 
 **R-SE14.** While the keyring contains a host entry whose Ed25519 public key has changed (e.g., a host regenerated its keypair), the system shall re-derive the X25519 public key and recompute the shared secret for that host on the next process restart or SIGHUP config reload. Stale cached secrets for the old key shall be evicted. This also applies when the hub identity changes via `boundctl set-hub` — the spoke already has the new hub's key in the keyring (it is just another host entry), so the shared secret is already cached; the spoke only needs to switch which cached secret it uses for sync requests. Until the keyring is updated on all hosts, requests from the rekeyed host will fail fingerprint validation (R-SE5) with a clear diagnostic.
 
@@ -220,7 +220,7 @@ At startup, after loading the Ed25519 keypair (§8.4) and before starting the sy
 3. For each host in the keyring:
    a. Derive the peer's X25519 public key from their Ed25519 public key.
    b. Compute the raw ECDH shared secret: `X25519(local_private, peer_public)`.
-   c. Derive the symmetric key: `HKDF-SHA256(ikm=shared_secret, salt=empty, info="bound-sync-v1", length=32)`.
+   c. Derive the symmetric key: `HKDF-SHA256(ikm=shared_secret, salt="bound", info="sync-v1", length=32)`.
    d. Compute the peer's key fingerprint: `SHA-256(peer_x25519_public_raw)[0:8]` as hex.
    e. Cache the symmetric key and fingerprint in memory, keyed by site ID.
 4. Log at INFO level: `"Sync encryption initialized: {N} peer keys derived."`
@@ -246,12 +246,12 @@ When the hub receives an inter-host request (`/sync/*`, `/api/relay-deliver`):
 2. Read `X-Site-Id` to identify the sender. Look up the cached symmetric key and expected fingerprint.
 3. Compare `X-Key-Fingerprint` against expected. If mismatch, reject with HTTP 400 (R-SE12).
 4. Verify the Ed25519 signature over the ciphertext body (existing `verifyRequest()`, unchanged).
-5. Read the 192-bit nonce from `X-Nonce` (hex-decode). Validate length (exactly 24 bytes). If malformed, reject with HTTP 400 (R-SE20).
+5. Read the 192-bit nonce from `X-Nonce` (hex-decode). Validate length (exactly 24 bytes). If malformed, reject with HTTP 400 (R-SE21).
 6. Decrypt the body with XChaCha20-Poly1305 using the sender's symmetric key and the nonce.
 7. If decryption fails (authentication tag mismatch), reject with HTTP 400 (R-SE11).
 8. Parse the decrypted bytes as JSON. Proceed with existing sync logic.
 
-Response encryption follows the same pattern in reverse: the hub encrypts its response body with the spoke's symmetric key and a fresh random nonce.
+Response encryption follows the same pattern in reverse: the hub encrypts its response body with the spoke's symmetric key and a fresh random nonce, and includes `X-Encryption` and `X-Nonce` headers. The spoke decrypts the response using the shared secret it derived for the hub. Successful decryption (AEAD authentication tag verification) implicitly authenticates the hub — only the hub possesses the X25519 private key needed to compute the shared secret and produce valid ciphertext. No `X-Key-Fingerprint` check is performed on responses (R-SE8). If the response lacks the `X-Encryption` header, the spoke shall check whether the HTTP status indicates an encryption-layer error (R-SE22) and parse the body as plaintext JSON error.
 
 ### 5.4 Eager Push Encryption
 
@@ -259,7 +259,7 @@ Eager push (`eagerPushToSpoke`) follows the same encryption scheme. The hub encr
 
 ### 5.5 boundcurl Diagnostic Tool
 
-`boundcurl` is a standalone CLI command (compiled alongside `bound`, `boundctl`, and `bound-mcp`) that provides human-readable access to encrypted sync endpoints. It is intended for operator debugging, not programmatic use.
+`boundcurl` is a standalone CLI command (R-SE18, compiled as `dist/boundcurl`) that provides human-readable access to encrypted sync endpoints. It is intended for operator debugging, not programmatic use.
 
 **Modes:**
 
@@ -269,11 +269,14 @@ Eager push (`eagerPushToSpoke`) follows the same encryption scheme. The hub encr
   - Encrypts body, signs request, sends to hub URL.
   - Decrypts response, pretty-prints JSON.
 
-- **Decrypt mode**: `boundcurl --decrypt --peer {site_id} < captured.bin`
+- **Decrypt mode**: `boundcurl --decrypt --peer {site_id} [--nonce <hex>] < captured.bin`
   - Reads ciphertext from stdin.
   - Derives shared secret with the named peer.
+  - If `--nonce` is provided, treats entire stdin as ciphertext and uses the supplied nonce.
+  - If `--nonce` is omitted, interprets the first 24 bytes of stdin as the nonce and the remainder as ciphertext (nonce-prefixed convenience format).
   - Decrypts and prints plaintext JSON.
-  - Requires `X-Nonce` passed via `--nonce` flag.
+
+**Capture workflow:** To capture encrypted sync traffic for offline analysis, an operator can use a packet capture tool (tcpdump, mitmproxy) to extract the HTTP body and the `X-Nonce` header value separately. The body is passed on stdin; the nonce via `--nonce`. Alternatively, a future diagnostic mode could emit nonce-prefixed blobs to a file for single-command decryption.
 
 ---
 
@@ -281,15 +284,19 @@ Eager push (`eagerPushToSpoke`) follows the same encryption scheme. The hub encr
 
 ### 6.1 Base Spec (2026-03-20)
 
-- **§8.4 (Authentication)**: Extended. Ed25519 keypair management at startup gains an X25519 derivation step. The `ensureKeypair()` function's contract expands: it continues to return `{ publicKey, privateKey, siteId }` for signing, and downstream consumers derive X25519 keys as needed. The keypair files on disk (`host.key`, `host.pub`) remain Ed25519-only.
+- **§8.4 (Authentication)**: Extended. Ed25519 keypair management at startup gains an X25519 derivation step (§5.1). The keypair files on disk (`host.key`, `host.pub`) remain Ed25519-only; X25519 keys are derived in memory at startup.
 - **§13.4 (Signed HTTP Protocol)**: Extended. Three new headers. Signing base is unchanged but the `BODY_SHA256` now hashes ciphertext. Verification order gains encryption-specific steps before the existing signature check.
 - **§8.3 (Event Exchange Protocol)**: Unchanged at the semantic level. Push, pull, ack, and relay continue to exchange the same JSON structures. Encryption/decryption is transparent to changeset serialization and reducer logic.
-- **§8.5 (Live Hub Migration)**: `boundctl set-hub` drains relay messages before switching. The drain mechanism is unaffected — messages are decrypted at the transport boundary and re-encrypted for the new hub. The shared secrets are recomputed when the keyring/sync config changes.
+- **§8.5 (Live Hub Migration)**: `boundctl set-hub` drains relay messages before switching. The drain mechanism is unaffected — messages are decrypted at the transport boundary and re-encrypted for the new hub. The spoke already has a cached shared secret for the new hub (all keyring peers are pre-computed at startup per R-SE2); `set-hub` changes which cached secret is used for sync requests, not the key derivation itself (R-SE14).
+- **§12.7 (`boundctl` CLI)**: Extended. `boundcurl` is a new binary target (R-SE18). The CLI compilation in `scripts/` and `packages/cli` must be updated to produce four binaries: `dist/bound`, `dist/boundctl`, `dist/bound-mcp`, `dist/boundcurl`.
+
+**Deployment note:** Encrypted sync requests use `Content-Type: application/octet-stream` instead of `application/json`. Reverse proxies, WAFs, or middleware that inspect or transform request bodies based on Content-Type may need configuration updates. Operators using such middleware in front of the hub should verify that `application/octet-stream` bodies are passed through without modification.
 
 ### 6.2 Service Channel Spec (2026-03-25)
 
 - **Relay transport**: All relay kinds (tool_call, inference, process, intake, platform_deliver, event_broadcast, cancel, and their response kinds) are encrypted identically. The relay processor operates on decrypted payloads; encryption is invisible to relay routing logic.
-- **Eager push**: Encrypted per R-SE3 and §5.4. The hub encrypts pushed messages with the target spoke's symmetric key.
+- **Eager push** (§3.5, §4.3): Encrypted per R-SE3 and §5.4. The hub encrypts pushed messages with the target spoke's symmetric key.
+- **Metrics** (§9.2): The `relay_cycles` table records per-cycle latency and success. Encryption adds negligible latency (sub-millisecond for payloads under 2MB) and does not warrant a new metrics column. Encryption-layer failures (fingerprint mismatch, decryption failure, plaintext rejection) are logged at WARN/ERROR level per R-SE10, R-SE11, R-SE12. Structured metrics for encryption failures are deferred — logging is sufficient for the initial deployment, and the failure modes produce clear diagnostic messages. If operational experience reveals that structured queries over encryption failures are needed, a future RFC can add columns to `relay_cycles` or a dedicated table.
 
 ### 6.3 Sync Protocol Design Doc
 
@@ -319,13 +326,13 @@ Static ECDH is chosen because:
 
 ### 7.3 Why HKDF
 
-The raw ECDH output is a group element, not a uniformly random key. HKDF-SHA256 with a context string (`"bound-sync-v1"`) extracts a proper symmetric key and domain-separates it from any other use of the same shared secret (future-proofing for key derivation if additional protocols are added).
+The raw ECDH output is a group element, not a uniformly random key. HKDF-SHA256 with a fixed salt (`"bound"`) and info string (`"sync-v1"`) extracts a proper symmetric key and domain-separates it from any other use of the same shared secret (future-proofing for key derivation if additional protocols are added). The non-empty salt follows RFC 5869's recommendation for the extract step, and the info string enables deriving distinct keys for different purposes from the same shared secret if needed in the future.
 
 ---
 
 ## 8. Testing Strategy
 
-- **Unit tests**: X25519 derivation from known Ed25519 keys (test vectors). ECDH shared secret symmetry (A derives same secret as B). Encrypt-decrypt round trip. Fingerprint computation. Nonce uniqueness (statistical test over 10,000 generations). Rejection of missing/malformed headers.
-- **Integration tests**: Full sync cycle (push/pull/ack/relay) with encryption enabled between two in-process hosts. Keyring mismatch detection (modify one host's key, verify fingerprint rejection). Decryption failure on corrupted ciphertext. Eager push with encryption.
+- **Unit tests**: X25519 derivation from known Ed25519 keys (test vectors). ECDH shared secret symmetry (A derives same secret as B). Encrypt-decrypt round trip. Empty body encrypt-decrypt round trip. Fingerprint computation. Nonce uniqueness (statistical test over 10,000 generations). Rejection of missing/malformed headers. Plaintext error responses parsed correctly when `X-Encryption` header is absent (R-SE22).
+- **Integration tests**: Full sync cycle (push/pull/ack/relay) with encryption enabled between two in-process hosts. Keyring mismatch detection (modify one host's key, verify fingerprint rejection). Decryption failure on corrupted ciphertext. Eager push with encryption. Hub migration: verify spoke switches to new hub's cached secret without restart.
 - **Compatibility**: Verify that the signing protocol's signature verification passes when the body is ciphertext (not plaintext). This confirms R-SE6 — the signature covers ciphertext.
-- **boundcurl**: Request mode against a running hub. Decrypt mode with captured traffic. Verify output matches expected plaintext.
+- **boundcurl**: Request mode against a running hub. Decrypt mode with nonce-prefixed blob. Decrypt mode with explicit `--nonce` flag. Verify output matches expected plaintext.
