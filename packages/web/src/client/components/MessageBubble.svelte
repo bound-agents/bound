@@ -6,12 +6,16 @@ const {
 	content,
 	toolName = null,
 	modelId = null,
+	exitCode = null,
 } = $props<{
 	role: "user" | "assistant" | "tool_call" | "tool_result" | "alert" | "system";
 	content: string;
 	toolName?: string | null;
 	modelId?: string | null;
+	exitCode?: number | null;
 }>();
+
+const isError = $derived(role === "tool_result" && exitCode !== null && exitCode !== 0);
 
 let rendered = $state("");
 
@@ -31,9 +35,11 @@ $effect(() => {
 </script>
 
 {#if role === "tool_result"}
-	<div class="message-bubble tool_result">
-		<div class="role-badge result-badge">result</div>
-		<pre class="tool-output">{content}</pre>
+	<div class="message-bubble tool_result" class:tool_error={isError}>
+		<div class="role-badge" class:result-badge={!isError} class:error-badge={isError}>
+			{isError ? "error" : "result"}
+		</div>
+		<pre class="tool-output" class:tool-output-error={isError}>{content}</pre>
 	</div>
 {:else if role === "alert"}
 	<div class="message-bubble alert">
@@ -90,6 +96,12 @@ $effect(() => {
 		border-left-color: var(--line-4);
 	}
 
+	/* Failed tool results: disruption red accent */
+	.tool_error {
+		background: rgba(255, 23, 68, 0.06);
+		border-left-color: var(--alert-disruption);
+	}
+
 	/* Alerts: disruption red */
 	.alert {
 		background: rgba(255, 23, 68, 0.08);
@@ -133,6 +145,11 @@ $effect(() => {
 		color: var(--line-4);
 	}
 
+	.error-badge {
+		color: var(--alert-disruption);
+		font-weight: 700;
+	}
+
 	.alert-badge {
 		color: var(--alert-warning);
 		font-weight: 700;
@@ -163,6 +180,12 @@ $effect(() => {
 		word-break: break-all;
 		overflow-x: auto;
 		line-height: 1.5;
+	}
+
+	.tool-output-error {
+		background: rgba(255, 23, 68, 0.05);
+		border-color: rgba(255, 23, 68, 0.2);
+		color: var(--alert-disruption);
 	}
 
 	/* -----------------------------------------------------------------------

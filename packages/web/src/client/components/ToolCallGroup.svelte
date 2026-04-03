@@ -6,6 +6,7 @@ interface ToolEntry {
 	input: unknown;
 	id: string;
 	result?: string;
+	exitCode?: number | null;
 	timestamp?: string;
 }
 
@@ -102,7 +103,7 @@ const doneCount = $derived(entries.filter((e) => e.result !== undefined).length)
 						<span class="tr-icon"><Wrench size={12} /></span>
 						<span class="tr-name">{entry.name}</span>
 						{#if entry.result !== undefined}
-							<span class="tr-done"><Check size={11} /></span>
+							<span class="tr-done" class:tr-error={entry.exitCode != null && entry.exitCode !== 0}><Check size={11} /></span>
 						{/if}
 						<span class="tr-toggle">{#if expandedTools.has(idx)}<ChevronUp size={11} />{:else}<ChevronDown size={11} />{/if}</span>
 					</div>
@@ -111,7 +112,7 @@ const doneCount = $derived(entries.filter((e) => e.result !== undefined).length)
 						<pre class="tr-input">{formatInput(entry.input)}</pre>
 						{#if entry.result !== undefined}
 							<div class="tr-divider"></div>
-							<pre class="tr-output">{entry.result}</pre>
+							<pre class="tr-output" class:tr-output-error={entry.exitCode != null && entry.exitCode !== 0}>{entry.result}</pre>
 						{/if}
 					{/if}
 				</div>
@@ -260,6 +261,10 @@ const doneCount = $derived(entries.filter((e) => e.result !== undefined).length)
 		align-items: center;
 	}
 
+	.tr-error {
+		color: var(--alert-disruption);
+	}
+
 	.tr-toggle {
 		color: var(--text-muted);
 		display: flex;
@@ -296,5 +301,10 @@ const doneCount = $derived(entries.filter((e) => e.result !== undefined).length)
 		word-break: break-all;
 		overflow-x: auto;
 		line-height: 1.45;
+	}
+
+	.tr-output-error {
+		background: rgba(255, 23, 68, 0.06);
+		color: var(--alert-disruption);
 	}
 </style>

@@ -69,6 +69,8 @@ export interface Message {
 	created_at: string;
 	modified_at: string | null;
 	host_origin: string;
+	/** Exit code from tool execution. Only set for tool_result messages. */
+	exit_code?: number | null;
 }
 
 export interface SemanticMemory {

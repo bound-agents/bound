@@ -16,6 +16,7 @@ interface ToolEntry {
 	input: unknown;
 	id: string;
 	result?: string;
+	exitCode?: number | null;
 	timestamp?: string;
 }
 
@@ -150,6 +151,7 @@ function parseToolCallEntries(item: ToolCallItem): ToolEntry[] {
 					input: item.content,
 					id: "",
 					result: item.toolResults?.[0]?.content,
+					exitCode: item.toolResults?.[0]?.exit_code,
 					timestamp: item.earliest,
 				},
 			];
@@ -161,6 +163,7 @@ function parseToolCallEntries(item: ToolCallItem): ToolEntry[] {
 					input: use.input,
 					id: use.id,
 					result: matched?.content,
+					exitCode: matched?.exit_code,
 					timestamp: item.earliest,
 				};
 			},
@@ -172,6 +175,7 @@ function parseToolCallEntries(item: ToolCallItem): ToolEntry[] {
 				input: item.content,
 				id: "",
 				result: item.toolResults?.[0]?.content,
+				exitCode: item.toolResults?.[0]?.exit_code,
 				timestamp: item.earliest,
 			},
 		];
@@ -276,6 +280,7 @@ let displayItems = $derived.by((): DisplayItem[] => {
 							content={item.msg.content}
 							toolName={item.msg.tool_name}
 							modelId={item.msg.model_id}
+							exitCode={item.msg.exit_code}
 						/>
 					{/if}
 				</div>

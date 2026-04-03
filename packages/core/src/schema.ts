@@ -449,6 +449,13 @@ export function applySchema(db: Database): void {
 		ON relay_inbox(processed, received_at) WHERE processed = 1
 	`);
 
+	// exit_code column on messages (tool_result exit status for UI error styling)
+	try {
+		db.run("ALTER TABLE messages ADD COLUMN exit_code INTEGER");
+	} catch {
+		/* already exists */
+	}
+
 	// Performance indexes for scheduler task queries (run every tick)
 	db.run(`
 		CREATE INDEX IF NOT EXISTS idx_tasks_pending_schedule

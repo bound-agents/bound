@@ -701,28 +701,35 @@ export class AgentLoop {
 				if (parsed.toolCalls.length > 0) {
 					// --- TOOL_EXECUTE ---
 					this.state = "TOOL_EXECUTE";
-					const toolResults: Array<{ toolCall: ParsedToolCall; content: string }> = [];
+					const toolResults: Array<{
+						toolCall: ParsedToolCall;
+						content: string;
+						exitCode: number;
+					}> = [];
 
 					for (const toolCall of parsed.toolCalls) {
 						this.toolCallsMade++;
 						let resultContent: string;
+						let exitCode = 0;
 
 						try {
 							const result = await this.executeToolCall(toolCall);
 
 							// Check for relay request
-							if (typeof result !== "string") {
+							if ("outboxEntryId" in result) {
 								// It's a RelayToolCallRequest - enter RELAY_WAIT
 								resultContent = await this.relayWait(result, toolCall, currentTurnId);
 							} else {
-								resultContent = result;
+								resultContent = result.content;
+								exitCode = result.exitCode;
 							}
 						} catch (error) {
 							const errorMsg = formatError(error);
 							resultContent = `Error: ${errorMsg}`;
+							exitCode = 1;
 						}
 
-						toolResults.push({ toolCall, content: resultContent });
+						toolResults.push({ toolCall, content: resultContent, exitCode });
 						this.config.onActivity?.();
 					}
 
@@ -795,7 +802,7 @@ export class AgentLoop {
 					});
 
 					// Persist each tool_result and add to context
-					for (const { toolCall, content } of toolResults) {
+					for (const { toolCall, content, exitCode } of toolResults) {
 						const resultNow = new Date().toISOString();
 						const toolResultMsgId = randomUUID();
 						insertRow(
@@ -811,6 +818,7 @@ export class AgentLoop {
 								created_at: resultNow,
 								modified_at: resultNow,
 								host_origin: this.ctx.hostName,
+								exit_code: exitCode,
 							},
 							this.ctx.siteId,
 						);
@@ -1370,23 +1378,24 @@ export class AgentLoop {
 	 * For built-in or MCP tools the input is serialized as a command string that
 	 * the sandbox's registered custom commands can dispatch.
 	 */
-	private async executeToolCall(toolCall: ParsedToolCall): Promise<string | RelayToolCallRequest> {
+	private async executeToolCall(
+		toolCall: ParsedToolCall,
+	): Promise<{ content: string; exitCode: number } | RelayToolCallRequest> {
 		// Priority 1: Check platform tools — these bypass the sandbox entirely.
 		const platformTool = this.config.platformTools?.get(toolCall.name);
 		if (platformTool) {
-			return platformTool.execute(toolCall.input);
+			const content = await platformTool.execute(toolCall.input);
+			return { content, exitCode: 0 };
 		}
 
-		// Priority 2: Sandbox dispatch (existing logic — unchanged below this line)
+		// Priority 2: Sandbox dispatch
 		if (!this.sandbox.exec) {
-			return "Error: sandbox execution not available";
+			return { content: "Error: sandbox execution not available", exitCode: 1 };
 		}
-
-		let commandString: string;
 
 		// All tool calls go through bash — the LLM only sees "bash" as a tool,
 		// and MCP server tools are invoked as bash commands (e.g., "github --subcommand X").
-		commandString = toolCall.input.command as string;
+		const commandString = toolCall.input.command as string;
 
 		const result = await this.sandbox.exec(commandString);
 
@@ -1409,7 +1418,7 @@ export class AgentLoop {
 			);
 		}
 
-		return parts.join("\n");
+		return { content: parts.join("\n"), exitCode: result.exitCode };
 	}
 
 	/**
