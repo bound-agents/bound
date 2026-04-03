@@ -4,6 +4,36 @@ import type { LLMBackend } from "@bound/llm";
 import type { Result } from "@bound/shared";
 import type { Message, Thread } from "@bound/shared";
 
+/**
+ * Extract a human-readable title from a JSON task payload.
+ * Returns null if the content isn't a recognized JSON payload.
+ */
+function titleFromPayload(content: string): string | null {
+	if (!content.startsWith("{")) return null;
+	try {
+		const payload = JSON.parse(content) as Record<string, unknown>;
+		// Try common fields in priority order
+		const description =
+			(typeof payload.topic === "string" && payload.topic) ||
+			(typeof payload.instructions === "string" && payload.instructions) ||
+			(typeof payload.prompt === "string" && payload.prompt) ||
+			(typeof payload.task === "string" && payload.task);
+		if (!description) return null;
+
+		const type = typeof payload.type === "string" ? payload.type : "task";
+		const label = type.replace(/_/g, " ");
+
+		// Take the first sentence or clause, cap at 70 chars to leave room for label
+		let desc = description.replace(/\r?\n/g, " ").replace(/\s+/g, " ").trim();
+		if (desc.length > 70) {
+			desc = desc.substring(0, 67).trimEnd() + "...";
+		}
+		return `[${label}] ${desc}`;
+	} catch {
+		return null;
+	}
+}
+
 export async function generateThreadTitle(
 	db: Database,
 	threadId: string,
@@ -82,7 +112,8 @@ ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
 
 		// Fallback per spec R-E17: use first 50 chars of user message if LLM returned empty
 		if (!title) {
-			title = firstUserMessage.content.substring(0, 50).trim();
+			title = titleFromPayload(firstUserMessage.content)
+				?? firstUserMessage.content.substring(0, 50).trim();
 		}
 
 		// Store the generated title
@@ -99,7 +130,8 @@ ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
 				.get(threadId) as Pick<Message, "content"> | null;
 
 			if (fallbackMsg) {
-				const fallbackTitle = fallbackMsg.content.substring(0, 50).trim();
+				const fallbackTitle = titleFromPayload(fallbackMsg.content)
+					?? fallbackMsg.content.substring(0, 50).trim();
 				updateRow(db, "threads", threadId, { title: fallbackTitle }, siteId);
 				return { ok: true, value: fallbackTitle };
 			}
