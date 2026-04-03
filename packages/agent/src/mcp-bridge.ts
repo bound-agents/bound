@@ -212,8 +212,8 @@ export async function generateMCPCommands(
 					if (dispatchTable.size === 0) {
 						out += "  (no subcommands available)\n";
 					}
-					out += `\nUsage: ${serverName} --subcommand <name> [--key value ...]\n`;
-					out += `Run '${serverName} --subcommand <name> --help' for parameter details.\n`;
+					out += `\nUsage: ${serverName} <subcommand> [--key value ...]\n`;
+					out += `Run '${serverName} <subcommand> --help' for parameter details.\n`;
 					return { stdout: out, stderr: "", exitCode: 0 };
 				}
 
