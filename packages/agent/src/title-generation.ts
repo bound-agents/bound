@@ -43,7 +43,7 @@ export async function generateThreadTitle(
 		}
 
 		// Build a prompt for title generation
-		const prompt = `Based on the initial exchange below, generate a short title (5-10 words) for this conversation thread. Return ONLY the title, nothing else.
+		const prompt = `Generate a short, single-line title (5-10 words) for this conversation. No markdown, no quotes, no punctuation at the start. Return ONLY the title text on one line.
 
 User: ${firstUserMessage.content}
 ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
@@ -67,9 +67,17 @@ ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
 
 		let title = chunks.join("").trim();
 
+		// Sanitize: collapse to single line, strip markdown headers and leading punctuation
+		title = title
+			.replace(/\r?\n/g, " ") // newlines → spaces
+			.replace(/\s+/g, " ") // collapse whitespace
+			.replace(/^[#*_>\-]+\s*/, "") // strip leading markdown syntax
+			.replace(/^["']+|["']+$/g, "") // strip wrapping quotes
+			.trim();
+
 		// Cap title length — LLMs sometimes return verbose multi-sentence "titles"
 		if (title.length > 80) {
-			title = title.substring(0, 80).trimEnd();
+			title = title.substring(0, 77).trimEnd() + "...";
 		}
 
 		// Fallback per spec R-E17: use first 50 chars of user message if LLM returned empty
