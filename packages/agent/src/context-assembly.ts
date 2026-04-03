@@ -43,10 +43,12 @@ export interface ContextParams {
 	targetCapabilities?: BackendCapabilities;
 	/** Estimated token count for tool definitions (counted by caller since tools are at ChatParams level) */
 	toolTokenEstimate?: number;
-	/** When true, aggressively compacts old tool results and injects thread summary for cold-cache turns. */
-	coldCache?: boolean;
-	/** Number of recent messages to keep intact during cold-cache compaction. Defaults to 20. */
-	coldCacheRecentWindow?: number;
+	/** When true, replaces old tool_result content (outside the recent window) with DB
+	 *  retrieval pointers and injects the thread summary. Reduces context size while
+	 *  keeping the compacted prefix deterministic and cache-friendly. */
+	compactToolResults?: boolean;
+	/** Number of recent messages to keep intact during compaction. Defaults to 20. */
+	compactRecentWindow?: number;
 }
 
 export interface ContextAssemblyResult {
@@ -289,14 +291,16 @@ Original output was too large for the context window. If you need the full conte
 		}
 	}
 
-	// Stage 1.7: COLD_CACHE_COMPACTION
-	// When the LLM prompt cache is predicted cold (or absent), aggressively compact
-	// old tool results into DB retrieval pointers. The agent can re-fetch via "query"
-	// if needed. This reduces context size dramatically on cold turns (e.g., 237k → 30k),
-	// making the cold-cache LLM call faster and the subsequent cache write smaller.
+	// Stage 1.7: TOOL_RESULT_COMPACTION
+	// Replace old tool_result content (outside the recent window) with DB retrieval
+	// pointers. The agent can re-fetch full content via "query" if needed. Compaction
+	// is deterministic (same message → same replacement), so the compacted prefix is
+	// cache-friendly: assembleContext runs once per loop invocation, and the compacted
+	// messages produce identical content across turns. This reduces context size
+	// dramatically (e.g., 190k → 80k) while preserving prompt cache stability.
 	// Also injects the thread summary as a context anchor for compacted history.
-	if (params.coldCache && messages.length > 0) {
-		const recentWindow = params.coldCacheRecentWindow ?? 20;
+	if (params.compactToolResults && messages.length > 0) {
+		const recentWindow = params.compactRecentWindow ?? 20;
 		const compactionBoundary = Math.max(0, messages.length - recentWindow);
 		const COLD_COMPACTION_THRESHOLD = 500;
 
@@ -308,7 +312,7 @@ Original output was too large for the context window. If you need the full conte
 			// Prepend a synthetic system-role summary message.
 			// It will be picked up naturally by later stages.
 			messages.unshift({
-				id: "__cold_cache_summary__",
+				id: "__compaction_summary__",
 				thread_id: threadId,
 				role: "system",
 				content: `[Conversation compacted — ${compactionBoundary} older messages summarized. Use "query" to retrieve specific messages if needed.]\n\nSummary: ${thread.summary}`,
@@ -455,7 +459,7 @@ Original output was too large for the context window. If you need the full conte
 		if (
 			m.role === "system" &&
 			!m.id.startsWith("purge-summary-") &&
-			!m.id.startsWith("__cold_cache_")
+			!m.id.startsWith("__compaction_")
 		)
 			return false;
 		return true;

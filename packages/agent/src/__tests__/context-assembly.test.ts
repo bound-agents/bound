@@ -4397,8 +4397,8 @@ This skill reviews pull requests.`;
 		});
 	});
 
-	describe("Cold-cache compaction (Stage 1.7)", () => {
-		it("should compact old tool results when coldCache is true", () => {
+	describe("Tool result compaction (Stage 1.7)", () => {
+		it("should compact old tool results when compactToolResults is true", () => {
 			const localUserId = randomUUID();
 			const localThreadId = randomUUID();
 			const now = new Date().toISOString();
@@ -4485,8 +4485,8 @@ This skill reviews pull requests.`;
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
-				coldCache: true,
-				coldCacheRecentWindow: 2,
+				compactToolResults: true,
+				compactRecentWindow: 2,
 			});
 
 			// Find the tool_result message in the assembled context
@@ -4515,7 +4515,7 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 
-		it("should not compact when coldCache is false", () => {
+		it("should not compact when compactToolResults is false", () => {
 			const localUserId = randomUUID();
 			const localThreadId = randomUUID();
 			const now = new Date().toISOString();
@@ -4570,7 +4570,7 @@ This skill reviews pull requests.`;
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
-				coldCache: false,
+				compactToolResults: false,
 			});
 
 			// Tool result should be intact (not compacted)

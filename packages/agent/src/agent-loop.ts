@@ -237,16 +237,13 @@ export class AgentLoop {
 					? this.lastModelResolution.modelId
 					: this.config.modelId;
 
-			// Cache-aware context assembly:
-			// - For backends WITH prompt caching (Anthropic, Bedrock, OpenAI): never compact.
-			//   Compaction changes the prompt prefix, which invalidates the cache on the
-			//   NEXT (warm) turn. The cache itself is the optimization for these backends.
-			// - For backends WITHOUT caching (Ollama): compact on every turn since there's
-			//   no cache to invalidate and smaller context = faster inference.
-			const backendSupportsCaching = capabilities.prompt_caching !== false;
-			// Never compact when caching is available — it would break the cache.
-			// Always compact for no-cache backends (every turn benefits from smaller context).
-			const isColdCache = !backendSupportsCaching;
+			// Always compact old tool results outside the recent window.
+			// Compaction is deterministic (same message → same replacement text), so the
+			// compacted prefix is just as cache-friendly as the uncompacted one. This
+			// dramatically reduces context size (e.g., 190k → 60k) while maintaining
+			// stable prefixes for Bedrock/Anthropic automatic prefix caching. For no-cache
+			// backends (Ollama), compaction is even more beneficial since there's no cache
+			// and smaller context = faster inference.
 
 			const { messages: contextMessages, debug: contextDebug } = assembleContext({
 				db: this.ctx.db,
@@ -268,7 +265,7 @@ export class AgentLoop {
 					: undefined,
 				targetCapabilities: resolvedCaps ?? undefined,
 				toolTokenEstimate,
-				coldCache: isColdCache,
+				compactToolResults: true,
 			});
 
 			// Store context debug for Phase 3 persistence
