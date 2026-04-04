@@ -15,12 +15,11 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentLoopResult } from "@bound/agent";
-import { applySchema, createDatabase, insertRow, type createAppContext } from "@bound/core";
+import { applySchema, type createAppContext, createDatabase, insertRow } from "@bound/core";
 import { BOUND_NAMESPACE, TypedEventEmitter, deterministicUUID } from "@bound/shared";
 import type { HeartbeatConfig } from "@bound/shared";
-import { seedHeartbeat } from "../task-resolution";
 import { buildHeartbeatContext } from "../heartbeat-context";
+import { seedHeartbeat } from "../task-resolution";
 
 describe("Heartbeat Integration", () => {
 	let tmpDir: string;
@@ -79,6 +78,7 @@ describe("Heartbeat Integration", () => {
 		seedHeartbeat(db, config, appContext.siteId);
 
 		const heartbeatTaskId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const task = db.query("SELECT * FROM tasks WHERE id = ?").get(heartbeatTaskId) as any;
 
 		expect(task).toBeDefined();
@@ -90,15 +90,15 @@ describe("Heartbeat Integration", () => {
 
 	// AC1.2: Thread creation on first run
 	it("creates persistent thread on first heartbeat run", () => {
-		const siteId = appContext.siteId;
 		const config: HeartbeatConfig = {
 			enabled: true,
 			interval_ms: 1_800_000,
 		};
 
-		seedHeartbeat(db, config, siteId);
+		seedHeartbeat(db, config, appContext.siteId);
 
 		const heartbeatTaskId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const task = db.query("SELECT thread_id FROM tasks WHERE id = ?").get(heartbeatTaskId) as any;
 
 		// Initially thread_id should be null (created on first run)
@@ -107,13 +107,12 @@ describe("Heartbeat Integration", () => {
 
 	// AC3.1: CAS blocks concurrent claim
 	it("blocks concurrent heartbeat claim via CAS (AC3.1)", () => {
-		const siteId = appContext.siteId;
 		const config: HeartbeatConfig = {
 			enabled: true,
 			interval_ms: 1_800_000,
 		};
 
-		seedHeartbeat(db, config, siteId);
+		seedHeartbeat(db, config, appContext.siteId);
 
 		const heartbeatTaskId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
 
@@ -163,9 +162,7 @@ describe("Heartbeat Integration", () => {
 
 	// AC2.3: Advisory titles in context
 	it("lists pending advisory titles in heartbeat context (AC2.3)", () => {
-		const siteId = appContext.siteId;
-
-		// Insert a proposed advisory (no status/type columns, just required fields)
+		// Insert a proposed advisory
 		db.run(
 			`INSERT INTO advisories (
 				id, type, status, title, detail, action, impact,
@@ -216,6 +213,7 @@ describe("Heartbeat Integration", () => {
 		seedHeartbeat(db, config, appContext.siteId);
 
 		const heartbeatTaskId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const task = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(heartbeatTaskId) as any;
 
 		const nextRunTime = new Date(task.next_run_at).getTime();
@@ -239,7 +237,10 @@ describe("Heartbeat Integration", () => {
 			heartbeatTaskId,
 		]);
 
-		const task = db.query("SELECT error, status FROM tasks WHERE id = ?").get(heartbeatTaskId) as any;
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
+		const task = db
+			.query("SELECT error, status FROM tasks WHERE id = ?")
+			.get(heartbeatTaskId) as any;
 		expect(task.error).toBe("Test error");
 		expect(task.status).toBe("failed");
 	});
@@ -255,9 +256,10 @@ describe("Heartbeat Integration", () => {
 		seedHeartbeat(db, config, appContext.siteId);
 		seedHeartbeat(db, config, appContext.siteId);
 
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const count = db
 			.query("SELECT COUNT(*) as count FROM tasks WHERE type = ?")
-			.get("heartbeat") as { count: number };
+			.get("heartbeat") as any;
 
 		expect(count.count).toBe(1);
 	});
