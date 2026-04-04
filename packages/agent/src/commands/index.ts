@@ -12,6 +12,7 @@ import { forget } from "./forget";
 import { help, setCommandRegistry } from "./help";
 import { hostinfo } from "./hostinfo";
 import { memorize } from "./memorize";
+import { memory } from "./memory";
 import { modelHint } from "./model-hint";
 import { purge } from "./purge";
 import { query } from "./query";
@@ -32,6 +33,7 @@ export function getAllCommands(): CommandDefinition[] {
 		advisory,
 		memorize,
 		forget,
+		memory,
 		schedule,
 		cancel,
 		emit,
@@ -69,6 +71,7 @@ export {
 	query,
 	memorize,
 	forget,
+	memory,
 	schedule,
 	cancel,
 	emit,
