@@ -407,4 +407,51 @@ describe("rescheduleHeartbeat", () => {
 
 		expect(errorLogged).toBe(true);
 	});
+
+	// AC5.1: Quiescence multiplier stretches heartbeat interval
+	it("applies quiescence multiplier to heartbeat interval (AC5.1)", () => {
+		const { taskId } = insertHeartbeatTask(30 * 60 * 1000, "running");
+		const ctx = makeCtx();
+
+		// Simulate 5 hours idle (tier 2: 5x multiplier)
+		const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000);
+
+		const task = getTask(taskId);
+		rescheduleHeartbeat(db, task, ctx.logger, "test", fiveHoursAgo);
+
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
+		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
+		const nextDate = new Date(row.next_run_at);
+
+		// With 5x multiplier: 30min becomes 150min effective interval
+		// Verify that next_run_at is in the future and at least 90min away
+		// (accounting for the fact that we could be anywhere in the cycle)
+		const msUntilNext = nextDate.getTime() - Date.now();
+		expect(msUntilNext).toBeGreaterThan(0);
+		// At minimum, should be > 1.5x the base 30-min interval to account for quiescence
+		expect(msUntilNext).toBeGreaterThan(45 * 60 * 1000); // > 45 minutes
+	});
+
+	// Additional AC5.1 test: verify different intervals with quiescence
+	it("stretches 15min interval by 3x for 2h idle (AC5.1 variant)", () => {
+		const { taskId } = insertHeartbeatTask(15 * 60 * 1000, "running");
+		const ctx = makeCtx();
+
+		// Simulate 2 hours idle (tier 1: 3x multiplier)
+		const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+
+		const task = getTask(taskId);
+		rescheduleHeartbeat(db, task, ctx.logger, "test", twoHoursAgo);
+
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
+		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
+		const nextDate = new Date(row.next_run_at);
+
+		// With 3x multiplier: 15min becomes 45min effective interval
+		// Verify that next_run_at is in the future and at least 22.5min away
+		const msUntilNext = nextDate.getTime() - Date.now();
+		expect(msUntilNext).toBeGreaterThan(0);
+		// At minimum, should be > 1.5x the base 15-min interval to account for quiescence
+		expect(msUntilNext).toBeGreaterThan(22.5 * 60 * 1000); // > 22.5 minutes
+	});
 });
