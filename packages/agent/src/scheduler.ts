@@ -87,21 +87,10 @@ export function rescheduleHeartbeat(
 		return;
 	}
 
-	// Compute quiescence multiplier using the same backward-iteration pattern
-	// as getEffectivePollInterval(). Phase 4 extracts this into a shared
-	// computeQuiescenceMultiplier() helper — when that happens, replace this
-	// inline computation with a call to the shared helper.
-	const now = Date.now();
-	const idleDuration = now - lastUserInteractionAt.getTime();
-	let multiplier = 1;
-	for (let i = QUIESCENCE_TIERS.length - 1; i >= 0; i--) {
-		const tier = QUIESCENCE_TIERS[i];
-		if (idleDuration >= tier.threshold) {
-			multiplier = tier.multiplier;
-			break;
-		}
-	}
+	// Compute quiescence multiplier using the shared helper
+	const multiplier = computeQuiescenceMultiplier(lastUserInteractionAt);
 
+	const now = Date.now();
 	const effectiveInterval = intervalMs * multiplier;
 	const nextBoundary = Math.ceil(now / effectiveInterval) * effectiveInterval;
 	const nextRunAt = new Date(nextBoundary).toISOString();
@@ -128,6 +117,38 @@ const QUIESCENCE_TIERS: Array<{ threshold: number; multiplier: number }> = [
 	{ threshold: 14_400_000, multiplier: 5 }, // 4-12h idle: ×5
 	{ threshold: 43_200_000, multiplier: 10 }, // 12-24h idle: ×10
 ];
+
+/** Minimum idle duration before quiescence note is injected into task context. */
+const QUIESCENCE_NOTE_THRESHOLD = 1_800_000; // 30 minutes
+
+/**
+ * Compute quiescence multiplier based on idle duration.
+ * Returns the multiplier from QUIESCENCE_TIERS based on how long
+ * the system has been idle.
+ */
+function computeQuiescenceMultiplier(lastUserInteractionAt: Date): number {
+	const inactivityMs = Date.now() - lastUserInteractionAt.getTime();
+	let multiplier = 1;
+	for (let i = QUIESCENCE_TIERS.length - 1; i >= 0; i--) {
+		const tier = QUIESCENCE_TIERS[i];
+		if (inactivityMs >= tier.threshold) {
+			multiplier = tier.multiplier;
+			break;
+		}
+	}
+	return multiplier;
+}
+
+/**
+ * Format idle duration in milliseconds to a human-readable string.
+ * Examples: "30m", "2h 15m", "0m".
+ */
+function formatIdleDuration(ms: number): string {
+	const hours = Math.floor(ms / 3_600_000);
+	const minutes = Math.floor((ms % 3_600_000) / 60_000);
+	if (hours > 0) return `${hours}h ${minutes}m`;
+	return `${minutes}m`;
+}
 
 interface SchedulerConfig {
 	pollInterval?: number;
@@ -520,6 +541,53 @@ export class Scheduler {
 					this.ctx.siteId,
 				);
 
+				// Inject quiescence note for scheduled tasks when system is idle
+				if (task.type === "heartbeat" || task.type === "cron") {
+					const idleMs = Date.now() - this.lastUserInteractionAt.getTime();
+					if (idleMs >= QUIESCENCE_NOTE_THRESHOLD) {
+						const multiplier = computeQuiescenceMultiplier(this.lastUserInteractionAt);
+						const idleDuration = formatIdleDuration(idleMs);
+
+						let baseInterval: string;
+						let effectiveInterval: string;
+						if (task.type === "heartbeat") {
+							try {
+								const spec = JSON.parse(task.trigger_spec);
+								const baseMs = spec.interval_ms ?? 1_800_000;
+								baseInterval = `${Math.round(baseMs / 60_000)}min`;
+								effectiveInterval = `${Math.round((baseMs * multiplier) / 60_000)}min`;
+							} catch {
+								baseInterval = "30min";
+								effectiveInterval = `${30 * multiplier}min`;
+							}
+						} else {
+							// Cron tasks don't have a simple interval, use the schedule expression
+							baseInterval = task.trigger_spec;
+							effectiveInterval = `schedule stretched by ${multiplier}x`;
+						}
+
+						const quiescenceNote = `[System note: Quiescence is active (idle ${idleDuration}). Task intervals are stretched by ${multiplier}x. Normal interval: ${baseInterval}, effective: ${effectiveInterval}.]`;
+
+						insertRow(
+							this.ctx.db,
+							"messages",
+							{
+								id: randomUUID(),
+								thread_id: threadId,
+								role: "system",
+								content: quiescenceNote,
+								model_id: null,
+								tool_name: null,
+								created_at: taskNow,
+								modified_at: taskNow,
+								host_origin: this.ctx.hostName,
+								deleted: 0,
+							},
+							this.ctx.siteId,
+						);
+					}
+				}
+
 				// Validate model hint at run time before creating the agent loop.
 				// This catches models that became unavailable after the task was scheduled.
 				if (task.model_hint && this.config.modelValidator) {
@@ -870,9 +938,6 @@ export class Scheduler {
 
 	// Get current quiescence-adjusted poll interval using 4-tier graduated table
 	getEffectivePollInterval(): number {
-		const now = new Date();
-		const inactivityMs = now.getTime() - this.lastUserInteractionAt.getTime();
-
 		// Check if any pending tasks have no_quiescence set
 		const noQuiescenceTasks = this.ctx.db
 			.query("SELECT COUNT(*) as count FROM tasks WHERE status = 'pending' AND no_quiescence = 1")
@@ -883,15 +948,8 @@ export class Scheduler {
 			return POLL_INTERVAL;
 		}
 
-		// Walk tiers from highest threshold down, pick the first that applies
-		let multiplier = 1;
-		for (let i = QUIESCENCE_TIERS.length - 1; i >= 0; i--) {
-			const tier = QUIESCENCE_TIERS[i];
-			if (inactivityMs >= tier.threshold) {
-				multiplier = tier.multiplier;
-				break;
-			}
-		}
+		// Compute quiescence multiplier using the shared helper
+		const multiplier = computeQuiescenceMultiplier(this.lastUserInteractionAt);
 
 		return POLL_INTERVAL * multiplier;
 	}
