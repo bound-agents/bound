@@ -44,13 +44,17 @@ describe("seedHeartbeat", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
+	// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 	function getHeartbeatTask(): any {
 		const expectedId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
 		return db.query("SELECT * FROM tasks WHERE id = ?").get(expectedId);
 	}
 
 	function countHeartbeatTasks(): number {
-		const result = db.query("SELECT COUNT(*) as count FROM tasks WHERE type = ?").get("heartbeat") as any;
+		const result = db
+			.query("SELECT COUNT(*) as count FROM tasks WHERE type = ?")
+			// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
+			.get("heartbeat") as any;
 		return result?.count ?? 0;
 	}
 
@@ -187,7 +191,9 @@ describe("seedHeartbeat", () => {
 		db.run("UPDATE tasks SET status = ? WHERE id = ?", ["running", taskId]);
 
 		// Simulate CAS claim query: only claiming if status = 'pending'
-		const result = db.query("SELECT id FROM tasks WHERE id = ? AND status = ?").get(taskId, "pending");
+		const result = db
+			.query("SELECT id FROM tasks WHERE id = ? AND status = ?")
+			.get(taskId, "pending");
 
 		expect(result).toBeNull(); // CAS should fail because status is 'running'
 	});
