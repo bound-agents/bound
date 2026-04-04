@@ -15,6 +15,7 @@ import {
 	getDelegationTarget,
 	resolveModel,
 	seedCronTasks,
+	seedHeartbeat,
 	seedSkillAuthoring,
 } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
@@ -1266,6 +1267,20 @@ export async function runStart(args: StartArgs): Promise<void> {
 			}
 		} else {
 			console.log("[scheduler] No cron schedules configured");
+		}
+	}
+
+	// 16b. Seed heartbeat task
+	{
+		const cronResult = appContext.optionalConfig.cronSchedules;
+		const parsed = cronResult?.ok ? cronResult.value : undefined;
+		const heartbeatConfig = (parsed as Record<string, unknown> | undefined)
+			?.heartbeat as any;
+		try {
+			seedHeartbeat(appContext.db, heartbeatConfig, appContext.siteId);
+			console.log("[scheduler] Heartbeat task seeded");
+		} catch (error) {
+			console.warn("[scheduler] Failed to seed heartbeat:", formatError(error));
 		}
 	}
 
