@@ -352,6 +352,56 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		expect(() => JSON.parse(responseText)).toThrow();
 	});
 
+	// AC3.4: Response headers do not include X-Key-Fingerprint for successful encrypted responses
+	it("sync-encryption.AC3.4: response headers lack X-Key-Fingerprint for encrypted response", async () => {
+		const keyManager = new KeyManager(
+			{ publicKey: spoke.publicKey, privateKey: spoke.privateKey },
+			spoke.siteId,
+		);
+		await keyManager.init(spokeKeyring);
+
+		const requestJson = JSON.stringify({ events: [], source_seq_end: 42 });
+		const plaintext = new TextEncoder().encode(requestJson);
+		const symmetricKey = keyManager.getSymmetricKey(hub.siteId);
+		if (!symmetricKey) {
+			throw new Error("No symmetric key");
+		}
+
+		const { encryptBody } = await import("../encryption.js");
+		const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
+		const { signRequest } = await import("../signing.js");
+		const signHeaders = await signRequest(
+			spoke.privateKey,
+			spoke.siteId,
+			"POST",
+			"/sync/echo",
+			ciphertext,
+		);
+		const nonceHex = Buffer.from(nonce).toString("hex");
+
+		const response = await fetch(`http://localhost:${serverPort}/sync/echo`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/octet-stream",
+				"X-Encryption": "xchacha20",
+				"X-Nonce": nonceHex,
+				"X-Key-Fingerprint": keyManager.getLocalFingerprint(),
+				...signHeaders,
+			},
+			body: Buffer.from(ciphertext),
+		});
+
+		expect(response.status).toBe(200);
+
+		// Verify X-Key-Fingerprint is NOT present in response headers
+		const fingerprintHeader = response.headers.get("X-Key-Fingerprint");
+		expect(fingerprintHeader).toBeNull();
+
+		// But encryption headers should still be present
+		expect(response.headers.get("X-Encryption")).toBe("xchacha20");
+		expect(response.headers.get("X-Nonce")).toBeDefined();
+	});
+
 	// AC7.3: Spoke decrypts response successfully
 	it("sync-encryption.AC7.3: spoke successfully decrypts response", async () => {
 		const keyManager = new KeyManager(
@@ -510,6 +560,62 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		expect(response.status).toBe(400);
 		const errorData = await response.json();
 		expect(errorData.error).toBe("malformed_encryption_headers");
+	});
+
+	// AC10.2: Application-layer errors (handler exceptions) are returned encrypted
+	it("sync-encryption.AC10.2: application-layer errors are returned encrypted", async () => {
+		const keyManager = new KeyManager(
+			{ publicKey: spoke.publicKey, privateKey: spoke.privateKey },
+			spoke.siteId,
+		);
+		await keyManager.init(spokeKeyring);
+
+		const requestJson = JSON.stringify({ events: [] });
+		const plaintext = new TextEncoder().encode(requestJson);
+		const symmetricKey = keyManager.getSymmetricKey(hub.siteId);
+		if (!symmetricKey) {
+			throw new Error("No symmetric key");
+		}
+
+		const { encryptBody } = await import("../encryption.js");
+		const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
+		const { signRequest } = await import("../signing.js");
+		const signHeaders = await signRequest(
+			spoke.privateKey,
+			spoke.siteId,
+			"POST",
+			"/sync/error-route",
+			ciphertext,
+		);
+		const nonceHex = Buffer.from(nonce).toString("hex");
+
+		const response = await fetch(`http://localhost:${serverPort}/sync/error-route`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/octet-stream",
+				"X-Encryption": "xchacha20",
+				"X-Nonce": nonceHex,
+				"X-Key-Fingerprint": keyManager.getLocalFingerprint(),
+				...signHeaders,
+			},
+			body: Buffer.from(ciphertext),
+		});
+
+		// Handler throws an error, so expect 500
+		expect(response.status).toBe(500);
+
+		// Error response should be encrypted (has encryption headers)
+		const encryptionHeader = response.headers.get("X-Encryption");
+		const responseNonceHeader = response.headers.get("X-Nonce");
+		expect(encryptionHeader).toBe("xchacha20");
+		expect(responseNonceHeader).toBeDefined();
+		expect(responseNonceHeader).toMatch(/^[0-9a-f]{48}$/);
+
+		// Response body should be encrypted (not plain JSON)
+		const responseBody = await response.arrayBuffer();
+		const responseText = new TextDecoder().decode(new Uint8Array(responseBody));
+		// Should not be valid JSON directly (it's encrypted binary)
+		expect(() => JSON.parse(responseText)).toThrow();
 	});
 
 	// Backward compatibility: keyManager=undefined allows plaintext (single-node mode)
