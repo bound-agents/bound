@@ -56,6 +56,65 @@ function rescheduleCronTask(
 		});
 	}
 }
+
+/**
+ * Reschedules a heartbeat task to the next clock-aligned boundary and resets status to 'pending'.
+ * Clock alignment ensures heartbeats fire at predictable times (e.g., every 30 minutes at :00 and :30).
+ * Respects quiescence multipliers to reduce frequency during idle periods.
+ */
+export function rescheduleHeartbeat(
+	db: AppContext["db"],
+	task: Task,
+	logger: AppContext["logger"],
+	context: string,
+	lastUserInteractionAt: Date,
+): void {
+	if (task.type !== "heartbeat") return;
+
+	let intervalMs: number;
+	try {
+		const spec = JSON.parse(task.trigger_spec);
+		intervalMs = spec.interval_ms;
+		if (!intervalMs || intervalMs < 60_000) {
+			logger.error(`[@bound/agent/scheduler] Invalid heartbeat interval_ms: ${intervalMs}`);
+			return;
+		}
+	} catch {
+		logger.error(
+			`[@bound/agent/scheduler] Failed to parse heartbeat trigger_spec: ${task.trigger_spec}`,
+		);
+		return;
+	}
+
+	// Compute quiescence multiplier using the same backward-iteration pattern
+	// as getEffectivePollInterval(). Phase 4 extracts this into a shared
+	// computeQuiescenceMultiplier() helper — when that happens, replace this
+	// inline computation with a call to the shared helper.
+	const now = Date.now();
+	const idleDuration = now - lastUserInteractionAt.getTime();
+	let multiplier = 1;
+	for (let i = QUIESCENCE_TIERS.length - 1; i >= 0; i--) {
+		const tier = QUIESCENCE_TIERS[i];
+		if (idleDuration >= tier.threshold) {
+			multiplier = tier.multiplier;
+			break;
+		}
+	}
+
+	const effectiveInterval = intervalMs * multiplier;
+	const nextBoundary = Math.ceil(now / effectiveInterval) * effectiveInterval;
+	const nextRunAt = new Date(nextBoundary).toISOString();
+
+	db.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?").run(
+		nextRunAt,
+		task.id,
+	);
+
+	logger.info(
+		`[@bound/agent/scheduler] Rescheduled heartbeat (${context}): next_run_at=${nextRunAt}, multiplier=${multiplier}x, effective_interval=${effectiveInterval}ms`,
+	);
+}
+
 const POLL_INTERVAL = 5000; // 5 seconds
 const MAX_EVENT_DEPTH = 5;
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
