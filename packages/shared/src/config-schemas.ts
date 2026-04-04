@@ -98,13 +98,7 @@ export const modelBackendsSchema = z
 		},
 		{ message: "cerebras and anthropic providers require api_key" },
 	)
-	.refine(
-		(data) => {
-			const ids = data.backends.map((b) => b.id);
-			return new Set(ids).size === ids.length;
-		},
-		{ message: "Duplicate backend IDs are not allowed" },
-	);
+;
 
 export type ModelBackendsConfig = z.infer<typeof modelBackendsSchema>;
 

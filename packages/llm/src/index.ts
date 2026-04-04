@@ -24,7 +24,13 @@ export { OpenAICompatibleDriver } from "./openai-driver";
 
 export { OllamaDriver } from "./ollama-driver";
 
-export { createModelRouter, ModelRouter, type BackendInfo } from "./model-router";
+export {
+	createModelRouter,
+	ModelRouter,
+	PooledBackend,
+	type BackendInfo,
+	type PoolEntry,
+} from "./model-router";
 
 export { withRetry, type RetryConfig } from "./retry";
 

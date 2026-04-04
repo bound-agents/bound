@@ -184,13 +184,14 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(false);
 		});
 
-		it("rejects duplicate backend IDs", () => {
+		it("allows duplicate backend IDs for pooling", () => {
 			const config = {
 				backends: [
 					{
 						id: "my-backend",
 						provider: "anthropic",
 						model: "claude-3-opus",
+						api_key: "key-1",
 						context_window: 200000,
 						tier: 5,
 					},
@@ -198,6 +199,7 @@ describe("Config schemas", () => {
 						id: "my-backend",
 						provider: "anthropic",
 						model: "claude-3-sonnet",
+						api_key: "key-2",
 						context_window: 200000,
 						tier: 3,
 					},
@@ -205,11 +207,7 @@ describe("Config schemas", () => {
 				default: "my-backend",
 			};
 			const result = modelBackendsSchema.safeParse(config);
-			expect(result.success).toBe(false);
-			if (!result.success) {
-				const messages = result.error.issues.map((i) => i.message);
-				expect(messages.some((m) => m.toLowerCase().includes("duplicate"))).toBe(true);
-			}
+			expect(result.success).toBe(true);
 		});
 	});
 

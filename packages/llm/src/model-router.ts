@@ -9,11 +9,91 @@ import type {
 	LLMBackend,
 	ModelBackendsConfig,
 } from "./types";
+import type { ChatParams, StreamChunk } from "./types";
 import { LLMError } from "./types";
 
 export interface BackendInfo {
 	id: string;
 	capabilities: BackendCapabilities;
+}
+
+export interface PoolEntry {
+	backend: LLMBackend;
+	tier: number;
+	pricePerMInput: number;
+}
+
+/**
+ * Wraps multiple backends under the same logical ID.
+ * Sorted by tier (ascending, best first), then by input price (ascending, cheapest first).
+ * On rate-limit errors (429/529), marks the sub-backend internally and falls through to the next.
+ * If all sub-backends are exhausted, throws the last error.
+ */
+export class PooledBackend implements LLMBackend {
+	private entries: PoolEntry[];
+	private rateLimited: Map<number, number>; // index → expiry timestamp (ms)
+	private mergedCaps: BackendCapabilities;
+
+	constructor(entries: PoolEntry[]) {
+		if (entries.length === 0) throw new Error("PooledBackend requires at least one backend");
+		// Sort by tier ascending, then by price ascending within the same tier
+		this.entries = [...entries].sort((a, b) => a.tier - b.tier || a.pricePerMInput - b.pricePerMInput);
+		this.rateLimited = new Map();
+		this.mergedCaps = this.mergeCaps();
+	}
+
+	private mergeCaps(): BackendCapabilities {
+		const caps = this.entries.map((e) => e.backend.capabilities());
+		return {
+			streaming: caps.some((c) => c.streaming),
+			tool_use: caps.some((c) => c.tool_use),
+			system_prompt: caps.some((c) => c.system_prompt),
+			prompt_caching: caps.some((c) => c.prompt_caching),
+			vision: caps.some((c) => c.vision),
+			max_context: Math.max(...caps.map((c) => c.max_context)),
+		};
+	}
+
+	private getAvailable(): PoolEntry[] {
+		const now = Date.now();
+		for (const [idx, expiry] of this.rateLimited) {
+			if (now >= expiry) this.rateLimited.delete(idx);
+		}
+		return this.entries.filter((_, i) => !this.rateLimited.has(i));
+	}
+
+	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
+		const available = this.getAvailable();
+		// If all rate-limited, try all anyway (they may have recovered)
+		const candidates = available.length > 0 ? available : this.entries;
+		let lastError: unknown;
+
+		for (const entry of candidates) {
+			try {
+				yield* entry.backend.chat(params);
+				return;
+			} catch (error) {
+				lastError = error;
+				if (error instanceof LLMError && error.statusCode !== undefined) {
+					const isRateLimit = error.statusCode === 429;
+					const isServerError = error.statusCode >= 500;
+					if (isRateLimit || isServerError) {
+						const idx = this.entries.indexOf(entry);
+						const retryMs = error.retryAfterMs || (isRateLimit ? 60_000 : 30_000);
+						this.rateLimited.set(idx, Date.now() + retryMs);
+						continue;
+					}
+				}
+				throw error; // Client errors (4xx except 429) propagate immediately
+			}
+		}
+
+		throw lastError;
+	}
+
+	capabilities(): BackendCapabilities {
+		return this.mergedCaps;
+	}
 }
 
 export class ModelRouter {
@@ -245,20 +325,49 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 }
 
 export function createModelRouter(config: ModelBackendsConfig): ModelRouter {
-	const backends = new Map<string, LLMBackend>();
-	const effectiveCaps = new Map<string, BackendCapabilities>();
+	// Group backend configs by ID to support pooling (multiple providers for the same logical model)
+	const groups = new Map<
+		string,
+		{ entries: PoolEntry[]; caps: BackendCapabilities[] }
+	>();
 
 	for (const backendConfig of config.backends) {
 		const backend = createBackendFromConfig(backendConfig);
-		backends.set(backendConfig.id, backend);
-
-		// Compute effective capabilities: driver baseline merged with config override.
-		// The config override (from capabilities field added in Phase 1) allows operators
-		// to add or suppress capabilities on a per-backend basis.
 		const baseline = backend.capabilities();
 		const capOverride =
 			(backendConfig.capabilities as Partial<BackendCapabilities> | undefined) ?? {};
-		effectiveCaps.set(backendConfig.id, { ...baseline, ...capOverride });
+		const effectiveCap = { ...baseline, ...capOverride };
+
+		const entry: PoolEntry = {
+			backend,
+			tier: (backendConfig.tier as number | undefined) ?? 3,
+			pricePerMInput: (backendConfig.pricePerMInput as number | undefined) ?? 0,
+		};
+
+		const existing = groups.get(backendConfig.id);
+		if (existing) {
+			existing.entries.push(entry);
+			existing.caps.push(effectiveCap);
+		} else {
+			groups.set(backendConfig.id, { entries: [entry], caps: [effectiveCap] });
+		}
+	}
+
+	// Build final maps — pool backends with shared IDs
+	const backends = new Map<string, LLMBackend>();
+	const effectiveCaps = new Map<string, BackendCapabilities>();
+
+	for (const [id, group] of groups) {
+		if (group.entries.length === 1) {
+			backends.set(id, group.entries[0].backend);
+			effectiveCaps.set(id, group.caps[0]);
+		} else {
+			// Multiple backends share this ID — wrap in a PooledBackend
+			const pooled = new PooledBackend(group.entries);
+			backends.set(id, pooled);
+			// Merge effective caps: best of all sub-backends
+			effectiveCaps.set(id, pooled.capabilities());
+		}
 	}
 
 	// Hub-only mode: empty backends array is valid (inference proxied to spokes).

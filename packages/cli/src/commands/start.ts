@@ -559,6 +559,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				profile: b.profile,
 				capabilities: b.capabilities, // Pass through capabilities override (may be undefined)
 				tier: b.tier, // Phase 6 addition — needed for HostModelEntry
+				pricePerMInput: b.price_per_m_input,
 			}),
 		),
 		default: rawBackends.default,
