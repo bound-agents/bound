@@ -319,6 +319,21 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 			});
 		}
 
+		case "zai": {
+			const baseUrl = config.baseUrl ?? "https://api.z.ai/api/coding/paas/v4";
+			const apiKey = config.apiKey as string | undefined;
+			if (!apiKey) {
+				throw new Error("z.AI driver requires apiKey in config");
+			}
+			const contextWindow = config.contextWindow ?? 128000;
+			return new OpenAICompatibleDriver({
+				baseUrl,
+				apiKey,
+				model: config.model,
+				contextWindow,
+			});
+		}
+
 		default:
 			throw new Error(`Provider not yet implemented: ${config.provider}`);
 	}

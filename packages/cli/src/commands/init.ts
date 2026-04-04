@@ -10,6 +10,7 @@ export interface InitArgs {
 	anthropic?: boolean;
 	bedrock?: boolean;
 	cerebras?: boolean;
+	zai?: boolean;
 	/** Hub-only mode: no local inference backends; the node relays inference to spokes. */
 	hub?: boolean;
 	region?: string;
@@ -37,7 +38,7 @@ export async function runInit(args: InitArgs): Promise<void> {
 	mkdirSync(configDir, { recursive: true });
 
 	const operatorName = args.name || process.env.USER || "operator";
-	let provider: "ollama" | "anthropic" | "bedrock" | "cerebras" = "ollama";
+	let provider: "ollama" | "anthropic" | "bedrock" | "cerebras" | "zai" = "ollama";
 	let baseUrl = "http://localhost:11434";
 	let apiKey: string | undefined;
 	let region: string | undefined;
@@ -76,6 +77,16 @@ export async function runInit(args: InitArgs): Promise<void> {
 
 		if (!apiKey) {
 			console.log("CEREBRAS_API_KEY not found in environment.");
+		}
+	} else if (args.zai) {
+		// z.AI preset (subscription-based, prices stay at 0)
+		provider = "zai";
+		baseUrl = "https://api.z.ai/api/coding/paas/v4";
+		model = "glm-4.7";
+		apiKey = process.env.ZAI_API_KEY;
+
+		if (!apiKey) {
+			console.log("ZAI_API_KEY not found in environment.");
 		}
 	}
 
