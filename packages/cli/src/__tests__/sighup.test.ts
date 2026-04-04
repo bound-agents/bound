@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { KeyringConfig } from "@bound/shared";
+import type { KeyringConfig, Logger } from "@bound/shared";
+import type { KeyManager } from "@bound/sync";
+
+// Test type for AppContext used in unit tests
+interface TestAppContext {
+	logger: Logger;
+	optionalConfig: Record<string, { ok: boolean; value?: unknown; error?: unknown }>;
+}
 
 // Mock logger for testing
 class TestLogger {
@@ -51,10 +58,10 @@ describe("SIGHUP handler", () => {
 		);
 		writeFileSync(join(tempDir, "keyring.json"), JSON.stringify({ hosts: {} }));
 
-		const mockAppContext = {
+		const mockAppContext: TestAppContext = {
 			logger: testLogger,
 			optionalConfig: {},
-		} as any;
+		};
 
 		await reloadConfigs({
 			appContext: mockAppContext,
@@ -72,15 +79,15 @@ describe("SIGHUP handler", () => {
 
 		let reloadCalled = false;
 		let receivedKeyring: KeyringConfig | null = null;
-		const mockKeyManager = {
+		const mockKeyManager: Partial<KeyManager> = {
 			reloadKeyring(_newKeyring: KeyringConfig) {
 				reloadCalled = true;
 				receivedKeyring = _newKeyring;
 			},
-		} as any;
+		};
 
 		// Initial state has empty keyring
-		const mockAppContext = {
+		const mockAppContext: TestAppContext = {
 			logger: testLogger,
 			optionalConfig: {
 				keyring: {
@@ -88,7 +95,7 @@ describe("SIGHUP handler", () => {
 					value: { hosts: {} },
 				},
 			},
-		} as any;
+		};
 
 		// New keyring with a peer should trigger reloadKeyring
 		writeFileSync(
@@ -114,17 +121,17 @@ describe("SIGHUP handler", () => {
 		const { reloadConfigs } = await import("../sighup.js");
 
 		let reloadCount = 0;
-		const mockKeyManager = {
+		const mockKeyManager: Partial<KeyManager> = {
 			reloadKeyring(_newKeyring: KeyringConfig) {
 				reloadCount++;
 			},
-		} as any;
+		};
 
 		const keyringValue = {
 			hosts: { peer1: { public_key: "ed25519:test", url: "http://peer1:8080" } },
 		};
 
-		const mockAppContext = {
+		const mockAppContext: TestAppContext = {
 			logger: testLogger,
 			optionalConfig: {
 				keyring: {
@@ -132,7 +139,7 @@ describe("SIGHUP handler", () => {
 					value: keyringValue,
 				},
 			},
-		} as any;
+		};
 
 		// Same keyring as before (no changes)
 		writeFileSync(join(tempDir, "keyring.json"), JSON.stringify(keyringValue));
@@ -153,12 +160,12 @@ describe("SIGHUP handler", () => {
 
 		let reloadCalled = false;
 		let receivedKeyring: KeyringConfig | null = null;
-		const mockKeyManager = {
+		const mockKeyManager: Partial<KeyManager> = {
 			reloadKeyring(newKeyring: KeyringConfig) {
 				reloadCalled = true;
 				receivedKeyring = newKeyring;
 			},
-		} as any;
+		};
 
 		// Initial state has peers A and B
 		const keyringWithBoth = {
@@ -168,7 +175,7 @@ describe("SIGHUP handler", () => {
 			},
 		};
 
-		const mockAppContext = {
+		const mockAppContext: TestAppContext = {
 			logger: testLogger,
 			optionalConfig: {
 				keyring: {
@@ -176,7 +183,7 @@ describe("SIGHUP handler", () => {
 					value: keyringWithBoth,
 				},
 			},
-		} as any;
+		};
 
 		// Reload with only peer A (peer B removed)
 		const keyringWithoutB = {
@@ -205,7 +212,7 @@ describe("SIGHUP handler", () => {
 	it("AC12.5: bad config file is non-fatal, keeps previous value", async () => {
 		const { reloadConfigs } = await import("../sighup.js");
 
-		const mockAppContext = {
+		const mockAppContext: TestAppContext = {
 			logger: testLogger,
 			optionalConfig: {
 				sync: {
@@ -213,7 +220,7 @@ describe("SIGHUP handler", () => {
 					value: { hub: "http://hub", sync_interval_seconds: 30 },
 				},
 			},
-		} as any;
+		};
 
 		// Write invalid JSON to sync.json
 		writeFileSync(join(tempDir, "sync.json"), "{ invalid json");
@@ -245,10 +252,10 @@ describe("SIGHUP handler", () => {
 	});
 
 	it("AC12.6: concurrent reloads handled gracefully", async () => {
-		const mockAppContext = {
+		const mockAppContext: TestAppContext = {
 			logger: testLogger,
 			optionalConfig: {},
-		} as any;
+		};
 
 		writeFileSync(
 			join(tempDir, "sync.json"),

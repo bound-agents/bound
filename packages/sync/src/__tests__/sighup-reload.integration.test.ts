@@ -223,17 +223,22 @@ describe("SIGHUP keyring reload", () => {
 	});
 
 	// -----------------------------------------------------------------------
-	// 3. Hub migration: spoke switches hub without restart
+	// 3. Hub migration: spoke switches hub without restart (AC14.4)
 	// -----------------------------------------------------------------------
 
-	it("3. hub migration: spoke switches to new hub", async () => {
-		// Create a second hub
+	it("3. hub migration: spoke switches to new hub using pre-cached key", async () => {
+		// AC14.4 test: Hub migration with key caching
+		// Scenario: spoke is syncing with hub1, then switches to hub2.
+		// Verify the pre-cached key from hub1 doesn't interfere with hub2 connection.
+
+		// Create a second hub (hub2)
 		const hub2Dir = tempKeypairDir("hub2");
 		const hub2Kp = await ensureKeypair(hub2Dir);
 		const hub2Pub = await exportPublicKey(hub2Kp.publicKey);
 
-		// Both hubs share the same keyring (same secret for spokeA)
-		const sharedKeyring: KeyringConfig = {
+		// Build keyring with both hubs (hub1 and hub2) and spokeA
+		// Both hubs will use the SAME shared secret for spokeA (both know spokeA's public key)
+		const keyringWithBothHubs: KeyringConfig = {
 			hosts: {
 				[hub.siteId]: (initialKeyring.hosts as Record<string, { public_key: string; url: string }>)[
 					hub.siteId
@@ -245,30 +250,37 @@ describe("SIGHUP keyring reload", () => {
 			},
 		};
 
-		// Create hub2 with shared keyring
-		const hub2 = await createSighupHost(hub2Dir, sharedKeyring);
+		// Create hub2 with both-hubs keyring
+		const hub2 = await createSighupHost(hub2Dir, keyringWithBothHubs);
 
 		// Patch URL for hub2
-		const hosts = sharedKeyring.hosts as Record<string, { public_key: string; url: string }>;
+		const hosts = keyringWithBothHubs.hosts as Record<string, { public_key: string; url: string }>;
 		hosts[hub2Kp.siteId].url = `http://localhost:${hub2.port}`;
 
-		// SpokeA initially syncs with hub (which has both hubs' keys via shared keyring)
-		const client1 = makeSyncClient(spokeA, hub, initialKeyring);
-		const _result1 = await client1.syncCycle();
-		// This will fail because hub doesn't have hub2 in its keyring, but that's OK
-		// The important part is that spokeA can switch to hub2
+		// STEP 1: SpokeA syncs with hub1 and caches the symmetric key
+		const clientWithHub1 = makeSyncClient(spokeA, hub, initialKeyring);
+		await clientWithHub1.syncCycle(); // May fail but that's OK, we just want to cache the key
+		const cachedKeyHub1 = spokeA.keyManager.getSymmetricKey(hub.siteId);
+		expect(cachedKeyHub1).not.toBeNull();
 
-		// SpokeA updates to point to hub2
-		const client2 = makeSyncClient(spokeA, hub2, sharedKeyring);
+		// STEP 2: SpokeA's keyring is updated to include hub2
+		spokeA.keyManager.reloadKeyring(keyringWithBothHubs);
 
-		// SpokeA now has the symmetric key for hub2 (from reloading keyring)
-		spokeA.keyManager.reloadKeyring(sharedKeyring);
+		// STEP 3: SpokeA gets the symmetric key for hub2 (should be same as hub1 since both know spokeA)
+		const keyHub2 = spokeA.keyManager.getSymmetricKey(hub2.siteId);
+		expect(keyHub2).not.toBeNull();
 
-		// Verify spokeA can sync with hub2
-		const result2 = await client2.syncCycle();
+		// STEP 4: SpokeA syncs with hub2 (should succeed with hub2's shared secret)
+		const clientWithHub2 = makeSyncClient(spokeA, hub2, keyringWithBothHubs);
+		const resultHub2 = await clientWithHub2.syncCycle();
 
 		// Should succeed: hub2 has the same shared secret from keyring
-		expect(result2.ok).toBe(true);
+		expect(resultHub2.ok).toBe(true);
+
+		// STEP 5: Verify the pre-cached hub1 key didn't interfere
+		const cachedKeyHub1After = spokeA.keyManager.getSymmetricKey(hub.siteId);
+		expect(cachedKeyHub1After).not.toBeNull();
+		expect(cachedKeyHub1After).toEqual(cachedKeyHub1); // Hub1 key unchanged
 
 		hub2.server.stop(true);
 	});

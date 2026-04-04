@@ -241,13 +241,14 @@ export function createSyncAuthMiddleware(
 						nonce: responseNonceHex,
 					});
 
+					// Copy original response headers, then override encryption-specific ones
+					const headers = new Headers(c.res.headers);
+					headers.set("X-Encryption", "xchacha20");
+					headers.set("X-Nonce", responseNonceHex);
+					headers.set("Content-Type", "application/octet-stream");
 					c.res = new Response(responseCiphertext as BodyInit, {
 						status: c.res.status,
-						headers: {
-							"X-Encryption": "xchacha20",
-							"X-Nonce": responseNonceHex,
-							"Content-Type": "application/octet-stream",
-						},
+						headers,
 					});
 				}
 			}

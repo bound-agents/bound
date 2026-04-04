@@ -716,7 +716,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 		}
 	}
 
-	// 11d. Initialize KeyManager for encrypted middleware (hub-side)
+	// 11d. Initialize KeyManager for encrypted middleware (hub-side) and sync client (spoke-side)
+	// Single instance is reused for both hub-side response encryption and spoke-side SyncTransport.
+	// SIGHUP handler holds a reference to this instance and calls reloadKeyring() on it.
 	let keyManager: import("@bound/sync").KeyManager | undefined;
 	{
 		const keyringResult = appContext.optionalConfig.keyring;
@@ -1162,37 +1164,21 @@ export async function runStart(args: StartArgs): Promise<void> {
 	if (syncResult?.ok) {
 		const syncConfig = syncResult.value as { hub: string; sync_interval_seconds: number };
 		try {
-			const { SyncClient, startSyncLoop, KeyManager, SyncTransport } = await import("@bound/sync");
+			const { SyncClient, startSyncLoop, SyncTransport } = await import("@bound/sync");
 			const keyringResult = appContext.optionalConfig.keyring;
 			const keyring = keyringResult?.ok
 				? (keyringResult.value as import("@bound/shared").KeyringConfig)
 				: { hosts: {} };
 
-			// Initialize KeyManager and SyncTransport if keyring has peers
+			// Initialize SyncTransport if keyring has peers (keyManager already initialized above at 11d)
 			const hasKeyringPeers = Object.keys(keyring.hosts).length > 0;
-			if (hasKeyringPeers) {
-				const keyManager = new KeyManager(keypair, appContext.siteId);
-				try {
-					await keyManager.init(keyring);
-					appContext.logger.info(
-						`Encryption initialized: ${Object.keys(keyring.hosts).length} peers, local fingerprint ${keyManager.getLocalFingerprint()}`,
-					);
-					transport = new SyncTransport(
-						keyManager,
-						keypair.privateKey,
-						appContext.siteId,
-						appContext.logger,
-					);
-				} catch (err) {
-					// R-SE19: Key derivation failure is FATAL
-					appContext.logger.error(
-						"FATAL: Failed to initialize encryption key manager. Sync encryption requires valid Ed25519 keys.",
-						{
-							error: err instanceof Error ? err.message : String(err),
-						},
-					);
-					process.exit(1);
-				}
+			if (hasKeyringPeers && keyManager) {
+				transport = new SyncTransport(
+					keyManager,
+					keypair.privateKey,
+					appContext.siteId,
+					appContext.logger,
+				);
 			}
 
 			const syncClient = new SyncClient(
