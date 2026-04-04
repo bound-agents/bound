@@ -240,8 +240,8 @@ describe("buildVolatileEnrichment — memory delta", () => {
 		expect(enrichment.memoryDeltaLines[10]).toContain("query semantic_memory for full list");
 	});
 
-	it("AC2.5: truncates value longer than 120 chars", () => {
-		const longValue = "x".repeat(130);
+	it("AC2.5: truncates value longer than 200 chars", () => {
+		const longValue = "x".repeat(210);
 		insertRow(
 			db,
 			"semantic_memory",

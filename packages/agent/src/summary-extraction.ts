@@ -304,7 +304,7 @@ export interface VolatileEnrichment {
 export function buildVolatileEnrichment(
 	db: Database,
 	baseline: string,
-	maxMemory = 10,
+	maxMemory = 25,
 	maxTasks = 5,
 	userMessage?: string,
 ): VolatileEnrichment {
@@ -370,10 +370,9 @@ export function buildVolatileEnrichment(
 	const memoryDeltaLines: string[] = [];
 	const deltaKeys = new Set(visibleMemoryRows.map((r) => r.key));
 
-	// Inject pinned entries first (always visible)
+	// Inject pinned entries first (always visible, no truncation — these are critical)
 	for (const row of pinnedRows) {
-		const value = row.value.length > 120 ? `${row.value.slice(0, 120)}...` : row.value;
-		memoryDeltaLines.push(`- ${row.key}: ${value} [pinned]`);
+		memoryDeltaLines.push(`- ${row.key}: ${row.value} [pinned]`);
 	}
 
 	// Relevance boosting — keyword match against user message to surface old entries
@@ -425,8 +424,8 @@ export function buildVolatileEnrichment(
 				// Skip if already in delta window or pinned set
 				if (deltaKeys.has(row.key) || pinnedKeys.has(row.key)) continue;
 				boostedKeys.add(row.key);
-				const value = row.value.length > 120 ? `${row.value.slice(0, 120)}...` : row.value;
-				memoryDeltaLines.push(`- ${row.key}: ${value} [relevant]`);
+				// No truncation for relevance-boosted entries — they were specifically selected
+				memoryDeltaLines.push(`- ${row.key}: ${row.value} [relevant]`);
 			}
 		}
 	}
@@ -439,7 +438,7 @@ export function buildVolatileEnrichment(
 		if (row.deleted) {
 			memoryDeltaLines.push(`- ${row.key}: [forgotten] (${relTime}, via ${sourceLabel})`);
 		} else {
-			const value = row.value.length > 120 ? `${row.value.slice(0, 120)}...` : row.value;
+			const value = row.value.length > 200 ? `${row.value.slice(0, 200)}...` : row.value;
 			memoryDeltaLines.push(`- ${row.key}: ${value} (${relTime}, via ${sourceLabel})`);
 		}
 	}
