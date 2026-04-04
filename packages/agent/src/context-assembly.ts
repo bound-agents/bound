@@ -105,6 +105,28 @@ function loadPersona(configDir: string): string | null {
 }
 
 /**
+ * Formats a timestamp as a relative duration string for context annotations.
+ * Returns e.g. "[5m ago]", "[2h ago]", "[3d ago]".
+ */
+export function formatRelativeTimestamp(isoTimestamp: string, now?: Date): string {
+	const then = new Date(isoTimestamp).getTime();
+	const nowMs = (now ?? new Date()).getTime();
+	const diffMs = nowMs - then;
+
+	if (diffMs < 0) return "[just now]";
+
+	const minutes = Math.floor(diffMs / 60_000);
+	if (minutes < 1) return "[just now]";
+	if (minutes < 60) return `[${minutes}m ago]`;
+
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `[${hours}h ago]`;
+
+	const days = Math.floor(hours / 24);
+	return `[${days}d ago]`;
+}
+
+/**
  * Assembles the context for an LLM call using the 8-stage pipeline from spec §13.1:
  * 1. MESSAGE_RETRIEVAL - Fetch messages by thread_id
  * 2. PURGE_SUBSTITUTION - Replace targeted IDs with summaries
@@ -712,9 +734,22 @@ Original output was too large for the context window. If you need the full conte
 			lastAssistantModel = m.model_id;
 		}
 
+		// Annotate user and assistant messages with relative timestamps
+		// so the agent can detect session boundaries and temporal gaps.
+		// Tool messages are left as-is to avoid corrupting structured content.
+		// Only annotate when the message is >= 1 minute old (no value in "[just now]").
+		let annotatedContent = m.content;
+		if ((m.role === "user" || m.role === "assistant") && m.created_at) {
+			const ageMs = Date.now() - new Date(m.created_at).getTime();
+			if (ageMs >= 60_000 && typeof annotatedContent === "string") {
+				const ts = formatRelativeTimestamp(m.created_at);
+				annotatedContent = `${ts} ${annotatedContent}`;
+			}
+		}
+
 		const msg: LLMMessage = {
 			role: m.role as LLMMessage["role"],
-			content: m.content,
+			content: annotatedContent,
 			model_id: m.model_id || undefined,
 			host_origin: m.host_origin,
 		};
@@ -931,7 +966,16 @@ Original output was too large for the context window. If you need the full conte
 
 		// Stage 5.5: VOLATILE ENRICHMENT (replaces raw memory dump)
 		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, false);
-		const { memoryDeltaLines, taskDigestLines } = buildVolatileEnrichment(db, enrichmentBaseline);
+		// Extract latest user message for relevance-aware memory boosting
+		const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+		const userMessageText = lastUserMsg?.content ?? undefined;
+		const { memoryDeltaLines, taskDigestLines } = buildVolatileEnrichment(
+			db,
+			enrichmentBaseline,
+			undefined,
+			undefined,
+			userMessageText,
+		);
 
 		// Query total memory count for the header line
 		totalMemCount = (

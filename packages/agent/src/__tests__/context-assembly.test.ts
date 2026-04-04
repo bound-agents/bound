@@ -1676,6 +1676,82 @@ This skill reviews pull requests.`;
 		});
 	});
 
+	describe("Stage 5: timestamp annotations", () => {
+		it("annotates user messages with relative timestamps", () => {
+			const tsThreadId = randomUUID();
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[tsThreadId, userId, "web", "local", 0, "Timestamp Test", null, null, null, null, new Date().toISOString(), new Date().toISOString(), new Date().toISOString(), 0],
+			);
+
+			// Message from 2 hours ago
+			const twoHoursAgo = new Date(Date.now() - 2 * 3600_000).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), tsThreadId, "user", "Hello from the past", null, null, twoHoursAgo, twoHoursAgo, "local"],
+			);
+
+			// Message from 5 minutes ago
+			const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), tsThreadId, "user", "Hello from recently", null, null, fiveMinAgo, fiveMinAgo, "local"],
+			);
+
+			const { messages } = assembleContext({
+				db,
+				threadId: tsThreadId,
+				userId,
+			});
+
+			const userMsgs = messages.filter((m) => m.role === "user");
+			expect(userMsgs.length).toBe(2);
+
+			// First message should have ~2h timestamp annotation
+			expect(userMsgs[0].content).toContain("[2h ago]");
+			expect(userMsgs[0].content).toContain("Hello from the past");
+
+			// Second message should have ~5m timestamp annotation
+			expect(userMsgs[1].content).toContain("[5m ago]");
+			expect(userMsgs[1].content).toContain("Hello from recently");
+		});
+
+		it("does not annotate tool_call or tool_result messages with timestamps", () => {
+			const tsThreadId2 = randomUUID();
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[tsThreadId2, userId, "web", "local", 0, "Timestamp Tool Test", null, null, null, null, new Date().toISOString(), new Date().toISOString(), new Date().toISOString(), 0],
+			);
+
+			const oneHourAgo = new Date(Date.now() - 3600_000).toISOString();
+			const toolCallId = randomUUID();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), tsThreadId2, "user", "Do something", null, null, oneHourAgo, oneHourAgo, "local"],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[toolCallId, tsThreadId2, "tool_call", JSON.stringify([{ type: "tool_use", id: "tc-1", name: "query", input: {} }]), null, null, oneHourAgo, oneHourAgo, "local"],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), tsThreadId2, "tool_result", "result data", null, "tc-1", oneHourAgo, oneHourAgo, "local"],
+			);
+
+			const { messages } = assembleContext({
+				db,
+				threadId: tsThreadId2,
+				userId,
+			});
+
+			const toolMsgs = messages.filter((m) => m.role === "tool_call" || m.role === "tool_result");
+			for (const msg of toolMsgs) {
+				const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+				expect(content).not.toMatch(/\[\d+[smhd] ago\]/);
+			}
+		});
+	});
+
 	describe("Stage 5.5: volatile enrichment", () => {
 		let enrichTestDb: Database;
 		let enrichTestTmpDir: string;
@@ -3886,7 +3962,7 @@ This skill reviews pull requests.`;
 
 			const historyMessages = messages.filter((m) => m.role !== "system");
 			const lastMsg = historyMessages[historyMessages.length - 1];
-			expect(lastMsg.content).toBe("FINAL_SENTINEL_MESSAGE");
+			expect(typeof lastMsg.content === "string" && lastMsg.content.includes("FINAL_SENTINEL_MESSAGE")).toBe(true);
 
 			// Clean up
 			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);

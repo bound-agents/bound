@@ -306,8 +306,37 @@ export function buildVolatileEnrichment(
 	baseline: string,
 	maxMemory = 10,
 	maxTasks = 5,
+	userMessage?: string,
 ): VolatileEnrichment {
-	// Memory delta query — fetch maxMemory+1 to detect overflow
+	// Pinned/policy entries — always injected regardless of recency.
+	// These are critical operational instructions that should never fall out of context.
+	const pinnedRows = db
+		.prepare(
+			`SELECT m.key, m.value, m.modified_at, m.deleted,
+			        t_src.trigger_spec AS task_name,
+			        th_src.id          AS thread_id,
+			        th_src.title       AS thread_title,
+			        m.source
+			 FROM   semantic_memory m
+			 LEFT JOIN tasks   t_src  ON m.source = t_src.id
+			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
+			 WHERE  m.deleted = 0
+			   AND  (m.key LIKE '\\_policy%' ESCAPE '\\' OR m.key LIKE '\\_pinned%' ESCAPE '\\')
+			 ORDER  BY m.key ASC`,
+		)
+		.all() as Array<{
+		key: string;
+		value: string;
+		modified_at: string;
+		deleted: number;
+		task_name: string | null;
+		thread_id: string | null;
+		thread_title: string | null;
+		source: string | null;
+	}>;
+	const pinnedKeys = new Set(pinnedRows.map((r) => r.key));
+
+	// Memory delta query — fetch maxMemory+1 to detect overflow, excluding pinned entries
 	const memoryRows = db
 		.prepare(
 			`SELECT m.key, m.value, m.modified_at, m.deleted,
@@ -319,6 +348,8 @@ export function buildVolatileEnrichment(
 			 LEFT JOIN tasks   t_src  ON m.source = t_src.id
 			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
 			 WHERE  m.modified_at > ?
+			   AND  m.key NOT LIKE '\\_policy%' ESCAPE '\\'
+			   AND  m.key NOT LIKE '\\_pinned%' ESCAPE '\\'
 			 ORDER  BY m.modified_at DESC
 			 LIMIT  ?`,
 		)
@@ -337,7 +368,72 @@ export function buildVolatileEnrichment(
 	const visibleMemoryRows = hasMoreMemory ? memoryRows.slice(0, maxMemory) : memoryRows;
 
 	const memoryDeltaLines: string[] = [];
+	const deltaKeys = new Set(visibleMemoryRows.map((r) => r.key));
+
+	// Inject pinned entries first (always visible)
+	for (const row of pinnedRows) {
+		const value = row.value.length > 120 ? `${row.value.slice(0, 120)}...` : row.value;
+		memoryDeltaLines.push(`- ${row.key}: ${value} [pinned]`);
+	}
+
+	// Relevance boosting — keyword match against user message to surface old entries
+	// that are topically relevant but outside the recency window.
+	// Max 5 boosted entries to avoid flooding the context.
+	const boostedKeys = new Set<string>();
+	if (userMessage && userMessage.length > 0) {
+		const STOP_WORDS = new Set([
+			"the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+			"have", "has", "had", "do", "does", "did", "will", "would", "could",
+			"should", "may", "might", "shall", "can", "to", "of", "in", "for",
+			"on", "with", "at", "by", "from", "as", "into", "through", "about",
+			"it", "its", "this", "that", "these", "those", "i", "me", "my", "we",
+			"our", "you", "your", "he", "she", "they", "what", "how", "when",
+			"where", "why", "which", "who", "not", "no", "and", "or", "but", "if",
+		]);
+		const keywords = userMessage
+			.toLowerCase()
+			.replace(/[^a-z0-9_\s-]/g, " ")
+			.split(/\s+/)
+			.filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
+
+		if (keywords.length > 0) {
+			// Build LIKE conditions for key and value matching
+			const likeConditions = keywords.map(
+				(kw) => `(LOWER(m.key) LIKE '%' || ? || '%' OR LOWER(m.value) LIKE '%' || ? || '%')`,
+			);
+			const params = keywords.flatMap((kw) => [kw, kw]);
+			const MAX_BOOSTED = 5;
+
+			const boostedRows = db
+				.prepare(
+					`SELECT m.key, m.value, m.modified_at
+					 FROM   semantic_memory m
+					 WHERE  m.deleted = 0
+					   AND  m.key NOT LIKE '\\_policy%' ESCAPE '\\'
+					   AND  m.key NOT LIKE '\\_pinned%' ESCAPE '\\'
+					   AND  (${likeConditions.join(" OR ")})
+					 ORDER  BY m.modified_at DESC
+					 LIMIT  ?`,
+				)
+				.all(...params, MAX_BOOSTED) as Array<{
+				key: string;
+				value: string;
+				modified_at: string;
+			}>;
+
+			for (const row of boostedRows) {
+				// Skip if already in delta window or pinned set
+				if (deltaKeys.has(row.key) || pinnedKeys.has(row.key)) continue;
+				boostedKeys.add(row.key);
+				const value = row.value.length > 120 ? `${row.value.slice(0, 120)}...` : row.value;
+				memoryDeltaLines.push(`- ${row.key}: ${value} [relevant]`);
+			}
+		}
+	}
+
+	// Then delta entries (recency-based)
 	for (const row of visibleMemoryRows) {
+		if (pinnedKeys.has(row.key) || boostedKeys.has(row.key)) continue; // Skip if already shown
 		const sourceLabel = resolveSource(row.task_name, row.thread_id, row.thread_title, row.source);
 		const relTime = relativeTime(row.modified_at);
 		if (row.deleted) {

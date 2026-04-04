@@ -450,7 +450,7 @@ describe("Context assembly Bedrock compatibility", () => {
 		// preserving conversation order (never moved before tool_calls)
 		const assistantsAfter = history.slice(toolResultIdx + 1).filter((m) => m.role === "assistant");
 		const keptAssistant = assistantsAfter.some(
-			(m) => typeof m.content === "string" && m.content === "Let me look...",
+			(m) => typeof m.content === "string" && m.content.includes("Let me look..."),
 		);
 		expect(keptAssistant).toBe(true);
 

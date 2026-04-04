@@ -264,6 +264,187 @@ describe("buildVolatileEnrichment — memory delta", () => {
 	});
 });
 
+describe("buildVolatileEnrichment — pinned/policy entries", () => {
+	const siteId = randomBytes(8).toString("hex");
+
+	it("always includes _policy entries regardless of recency", () => {
+		// Insert a policy entry with a very old modified_at
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: randomBytes(8).toString("hex"),
+				key: "_policy_research_guidelines",
+				value: "Always cite sources when researching",
+				source: null,
+				created_at: "2026-01-01T00:00:00.000Z",
+				modified_at: "2026-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		// Baseline well after the policy entry
+		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z");
+		const policyLine = enrichment.memoryDeltaLines.find((l) =>
+			l.includes("_policy_research_guidelines"),
+		);
+		expect(policyLine).toBeDefined();
+		expect(policyLine).toContain("Always cite sources");
+	});
+
+	it("always includes _pinned entries regardless of recency", () => {
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: randomBytes(8).toString("hex"),
+				key: "_pinned_operator_name",
+				value: "Kara is the operator",
+				source: null,
+				created_at: "2026-01-01T00:00:00.000Z",
+				modified_at: "2026-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z");
+		const pinnedLine = enrichment.memoryDeltaLines.find((l) =>
+			l.includes("_pinned_operator_name"),
+		);
+		expect(pinnedLine).toBeDefined();
+		expect(pinnedLine).toContain("Kara is the operator");
+	});
+
+	it("pinned entries do not count against maxMemory limit", () => {
+		// Insert a pinned entry
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: randomBytes(8).toString("hex"),
+				key: "_pinned_important",
+				value: "This is pinned",
+				source: null,
+				created_at: "2026-01-01T00:00:00.000Z",
+				modified_at: "2026-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		// Insert maxMemory regular entries after baseline
+		for (let i = 0; i < 3; i++) {
+			insertRow(
+				db,
+				"semantic_memory",
+				{
+					id: randomBytes(8).toString("hex"),
+					key: `regular-entry-${Date.now()}-${i}`,
+					value: `value ${i}`,
+					source: null,
+					created_at: new Date().toISOString(),
+					modified_at: "2026-03-29T12:00:00.000Z",
+					deleted: 0,
+				},
+				siteId,
+			);
+		}
+
+		// maxMemory=3: all 3 regular entries + pinned should appear
+		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z", 3);
+		const hasPinned = enrichment.memoryDeltaLines.some((l) => l.includes("_pinned_important"));
+		const regularCount = enrichment.memoryDeltaLines.filter((l) => l.includes("regular-entry")).length;
+		expect(hasPinned).toBe(true);
+		expect(regularCount).toBe(3);
+	});
+});
+
+describe("buildVolatileEnrichment — relevance boosting", () => {
+	const siteId = randomBytes(8).toString("hex");
+
+	it("boosts matching memory entries when userMessage is provided", () => {
+		// Insert an old entry (before baseline) that matches the user's question
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: randomBytes(8).toString("hex"),
+				key: "scheduler_cron_patterns",
+				value: "Cron tasks use standard crontab syntax with 5 fields",
+				source: null,
+				created_at: "2026-01-01T00:00:00.000Z",
+				modified_at: "2026-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		// Insert a recent unrelated entry (after baseline)
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: randomBytes(8).toString("hex"),
+				key: "music_preferences",
+				value: "User likes jazz",
+				source: null,
+				created_at: new Date().toISOString(),
+				modified_at: "2026-03-29T12:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		// User asks about the scheduler — the old scheduler entry should be boosted in
+		const enrichment = buildVolatileEnrichment(
+			db,
+			"2026-03-28T00:00:00.000Z",
+			10,
+			5,
+			"How does the scheduler handle cron tasks?",
+		);
+
+		const hasScheduler = enrichment.memoryDeltaLines.some((l) =>
+			l.includes("scheduler_cron_patterns"),
+		);
+		expect(hasScheduler).toBe(true);
+	});
+
+	it("does not boost entries that do not match the user message", () => {
+		// Insert an old unrelated entry
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: randomBytes(8).toString("hex"),
+				key: "favorite_color_blue",
+				value: "The sky is blue",
+				source: null,
+				created_at: "2026-01-01T00:00:00.000Z",
+				modified_at: "2026-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		// User asks about something completely unrelated
+		const enrichment = buildVolatileEnrichment(
+			db,
+			"2026-03-28T00:00:00.000Z",
+			10,
+			5,
+			"What is the sync protocol?",
+		);
+
+		const hasColor = enrichment.memoryDeltaLines.some((l) =>
+			l.includes("favorite_color_blue"),
+		);
+		expect(hasColor).toBe(false);
+	});
+});
+
 describe("buildVolatileEnrichment — task digest", () => {
 	const baseline = "2026-03-01T00:00:00.000Z";
 	const siteId = randomBytes(8).toString("hex");
