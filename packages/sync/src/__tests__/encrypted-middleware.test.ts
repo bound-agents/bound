@@ -6,7 +6,6 @@ import { join } from "node:path";
 import type { KeyringConfig } from "@bound/shared";
 import { Hono } from "hono";
 import { deriveSiteId, ensureKeypair, exportPublicKey } from "../crypto.js";
-import { decryptBody } from "../encryption.js";
 import { KeyManager } from "../key-manager.js";
 import { createSyncAuthMiddleware } from "../middleware.js";
 import { SyncTransport } from "../transport.js";
@@ -120,7 +119,7 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		});
 
 		// Route that throws an error (tests error encryption)
-		app.post("/sync/error-route", async (c) => {
+		app.post("/sync/error-route", async (_c) => {
 			throw new Error("Intentional error for testing");
 		});
 
@@ -177,7 +176,13 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		// Flip a byte in the ciphertext to corrupt it
 		ciphertext[0] ^= 0xff;
 
-		const signHeaders = await signRequest(spoke.privateKey, spoke.siteId, "POST", "/sync/echo", ciphertext);
+		const signHeaders = await signRequest(
+			spoke.privateKey,
+			spoke.siteId,
+			"POST",
+			"/sync/echo",
+			ciphertext,
+		);
 		const nonceHex = Buffer.from(nonce).toString("hex");
 
 		const response = await fetch(`http://localhost:${serverPort}/sync/echo`, {
@@ -218,7 +223,13 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
 
 		const { signRequest } = await import("../signing.js");
-		const signHeaders = await signRequest(spoke.privateKey, spoke.siteId, "POST", "/sync/echo", ciphertext);
+		const signHeaders = await signRequest(
+			spoke.privateKey,
+			spoke.siteId,
+			"POST",
+			"/sync/echo",
+			ciphertext,
+		);
 
 		// Send with wrong nonce length (46 chars instead of 48)
 		const wrongNonceHex = Buffer.from(nonce).toString("hex").slice(0, 46);
@@ -260,7 +271,13 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		const { ciphertext } = encryptBody(plaintext, symmetricKey);
 
 		const { signRequest } = await import("../signing.js");
-		const signHeaders = await signRequest(spoke.privateKey, spoke.siteId, "POST", "/sync/echo", ciphertext);
+		const signHeaders = await signRequest(
+			spoke.privateKey,
+			spoke.siteId,
+			"POST",
+			"/sync/echo",
+			ciphertext,
+		);
 
 		// Send with X-Encryption but NO X-Nonce
 		const response = await fetch(`http://localhost:${serverPort}/sync/echo`, {
@@ -298,7 +315,13 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		const { encryptBody } = await import("../encryption.js");
 		const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
 		const { signRequest } = await import("../signing.js");
-		const signHeaders = await signRequest(spoke.privateKey, spoke.siteId, "POST", "/sync/echo", ciphertext);
+		const signHeaders = await signRequest(
+			spoke.privateKey,
+			spoke.siteId,
+			"POST",
+			"/sync/echo",
+			ciphertext,
+		);
 		const nonceHex = Buffer.from(nonce).toString("hex");
 
 		const response = await fetch(`http://localhost:${serverPort}/sync/echo`, {
@@ -369,10 +392,16 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		}
 
 		const { encryptBody } = await import("../encryption.js");
-		const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
+		const { ciphertext } = encryptBody(plaintext, symmetricKey);
 
 		// Corrupt the nonce by making it too short
-		const signHeaders = await signRequest(spoke.privateKey, spoke.siteId, "POST", "/sync/echo", ciphertext);
+		const signHeaders = await signRequest(
+			spoke.privateKey,
+			spoke.siteId,
+			"POST",
+			"/sync/echo",
+			ciphertext,
+		);
 
 		const response = await fetch(`http://localhost:${serverPort}/sync/echo`, {
 			method: "POST",
@@ -389,7 +418,6 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		expect(response.status).toBe(400);
 
 		// Error response should be plaintext JSON (not encrypted)
-		const contentType = response.headers.get("Content-Type");
 		const encryptionHeader = response.headers.get("X-Encryption");
 
 		expect(encryptionHeader).toBeNull(); // No encryption header for error
@@ -402,7 +430,13 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		const requestJson = JSON.stringify({ events: [] });
 
 		const { signRequest } = await import("../signing.js");
-		const signHeaders = await signRequest(spoke.privateKey, spoke.siteId, "POST", "/sync/echo", requestJson);
+		const signHeaders = await signRequest(
+			spoke.privateKey,
+			spoke.siteId,
+			"POST",
+			"/sync/echo",
+			requestJson,
+		);
 
 		const response = await fetch(`http://localhost:${serverPort}/sync/echo`, {
 			method: "POST",
@@ -425,7 +459,13 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		const requestJson = JSON.stringify({ events: [] });
 
 		const { signRequest } = await import("../signing.js");
-		const signHeaders = await signRequest(spoke.privateKey, spoke.siteId, "POST", "/sync/echo", requestJson);
+		const signHeaders = await signRequest(
+			spoke.privateKey,
+			spoke.siteId,
+			"POST",
+			"/sync/echo",
+			requestJson,
+		);
 
 		const response = await fetch(`http://localhost:${serverPort}/sync/echo`, {
 			method: "POST",
@@ -448,7 +488,13 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		const requestJson = JSON.stringify({ events: [] });
 
 		const { signRequest } = await import("../signing.js");
-		const signHeaders = await signRequest(spoke.privateKey, spoke.siteId, "POST", "/sync/echo", requestJson);
+		const signHeaders = await signRequest(
+			spoke.privateKey,
+			spoke.siteId,
+			"POST",
+			"/sync/echo",
+			requestJson,
+		);
 
 		const response = await fetch(`http://localhost:${serverPort}/sync/echo`, {
 			method: "POST",
@@ -485,7 +531,13 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 
 		const requestJson = JSON.stringify({ test: "data" });
 		const { signRequest } = await import("../signing.js");
-		const signHeaders = await signRequest(spoke.privateKey, spoke.siteId, "POST", "/sync/test", requestJson);
+		const signHeaders = await signRequest(
+			spoke.privateKey,
+			spoke.siteId,
+			"POST",
+			"/sync/test",
+			requestJson,
+		);
 
 		const response = await fetch(`http://localhost:${testPort}/sync/test`, {
 			method: "POST",
