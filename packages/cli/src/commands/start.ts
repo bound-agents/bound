@@ -745,6 +745,18 @@ export async function runStart(args: StartArgs): Promise<void> {
 		}
 	}
 
+	// 11e. Register SIGHUP handler for config hot-reload (Phase 6 Task 3)
+	{
+		const { registerSighupHandler } = await import("../sighup.js");
+		registerSighupHandler({
+			appContext,
+			configDir: configDir || "config",
+			keyManager,
+			logger: appContext.logger,
+		});
+		console.log("[config] SIGHUP handler registered for hot-reload");
+	}
+
 	// Check for plaintext logging debug mode (Phase 5 Task 3)
 	if (process.env.BOUND_LOG_SYNC_PLAINTEXT === "1") {
 		appContext.logger.warn(
