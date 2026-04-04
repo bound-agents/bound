@@ -24,6 +24,7 @@ import {
 } from "./peer-cursor.js";
 import { replayEvents } from "./reducers.js";
 import { signRequest } from "./signing.js";
+import type { SyncTransport } from "./transport.js";
 
 export interface RelayResult {
 	sent: number;
@@ -56,6 +57,7 @@ export class SyncClient {
 		private logger: Logger,
 		private eventBus: TypedEventEmitter,
 		private keyring: KeyringConfig,
+		private transport?: SyncTransport,
 	) {
 		// Resolve hub's site_id from keyring
 		this.hubSiteId = this.resolveHubSiteId();
@@ -220,6 +222,25 @@ export class SyncClient {
 	): Promise<Result<void, SyncError>> {
 		try {
 			const body = serializeChangeset(changeset);
+
+			if (this.transport && this.hubSiteId) {
+				const tr = await this.transport.send(
+					"POST",
+					`${this.hubUrl}/sync/push`,
+					"/sync/push",
+					body,
+					this.hubSiteId,
+				);
+				if (tr.status !== 200) {
+					return err({
+						phase: "push",
+						status: tr.status,
+						message: `Push failed: ${tr.status}`,
+					});
+				}
+				return ok(undefined);
+			}
+
 			const headers = await signRequest(this.privateKey, this.siteId, "POST", "/sync/push", body);
 
 			const response = await fetch(`${this.hubUrl}/sync/push`, {
@@ -252,6 +273,32 @@ export class SyncClient {
 	private async pull(sinceSeq: number): Promise<Result<Changeset, SyncError>> {
 		try {
 			const body = JSON.stringify({ since_seq: sinceSeq });
+
+			if (this.transport && this.hubSiteId) {
+				const tr = await this.transport.send(
+					"POST",
+					`${this.hubUrl}/sync/pull`,
+					"/sync/pull",
+					body,
+					this.hubSiteId,
+				);
+				if (tr.status !== 200) {
+					return err({
+						phase: "pull",
+						status: tr.status,
+						message: `Pull failed: ${tr.status}`,
+					});
+				}
+				const changesetResult = deserializeChangeset(tr.body);
+				if (!changesetResult.ok) {
+					return err({
+						phase: "pull",
+						message: "Failed to parse changeset response",
+					});
+				}
+				return ok(changesetResult.value);
+			}
+
 			const headers = await signRequest(this.privateKey, this.siteId, "POST", "/sync/pull", body);
 
 			const response = await fetch(`${this.hubUrl}/sync/pull`, {
@@ -294,6 +341,25 @@ export class SyncClient {
 	private async ack(lastReceived: number): Promise<Result<void, SyncError>> {
 		try {
 			const body = JSON.stringify({ last_received: lastReceived });
+
+			if (this.transport && this.hubSiteId) {
+				const tr = await this.transport.send(
+					"POST",
+					`${this.hubUrl}/sync/ack`,
+					"/sync/ack",
+					body,
+					this.hubSiteId,
+				);
+				if (tr.status !== 200) {
+					return err({
+						phase: "ack",
+						status: tr.status,
+						message: `Ack failed: ${tr.status}`,
+					});
+				}
+				return ok(undefined);
+			}
+
 			const headers = await signRequest(this.privateKey, this.siteId, "POST", "/sync/ack", body);
 
 			const response = await fetch(`${this.hubUrl}/sync/ack`, {
@@ -342,23 +408,44 @@ export class SyncClient {
 			};
 
 			const body = JSON.stringify(relayRequest);
-			const headers = await signRequest(this.privateKey, this.siteId, "POST", "/sync/relay", body);
 
-			const response = await fetch(`${this.hubUrl}/sync/relay`, {
-				method: "POST",
-				headers: { ...headers, "Content-Type": "application/json" },
-				body,
-			});
+			let relayResponse: RelayResponse;
 
-			if (!response.ok) {
-				return err({
-					phase: "relay",
-					status: response.status,
-					message: `Relay failed: ${response.statusText}`,
+			if (this.transport && this.hubSiteId) {
+				const tr = await this.transport.send(
+					"POST",
+					`${this.hubUrl}/sync/relay`,
+					"/sync/relay",
+					body,
+					this.hubSiteId,
+				);
+				if (tr.status !== 200) {
+					return err({
+						phase: "relay",
+						status: tr.status,
+						message: `Relay failed: ${tr.status}`,
+					});
+				}
+				relayResponse = JSON.parse(tr.body) as RelayResponse;
+			} else {
+				const headers = await signRequest(this.privateKey, this.siteId, "POST", "/sync/relay", body);
+
+				const response = await fetch(`${this.hubUrl}/sync/relay`, {
+					method: "POST",
+					headers: { ...headers, "Content-Type": "application/json" },
+					body,
 				});
-			}
 
-			const relayResponse = (await response.json()) as RelayResponse;
+				if (!response.ok) {
+					return err({
+						phase: "relay",
+						status: response.status,
+						message: `Relay failed: ${response.statusText}`,
+					});
+				}
+
+				relayResponse = (await response.json()) as RelayResponse;
+			}
 
 			// Update local drain state from hub response
 			this.relayDraining = relayResponse.relay_draining;
