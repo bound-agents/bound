@@ -116,8 +116,6 @@ export class AgentLoop {
 			}
 
 			this.state = "ASSEMBLE_CONTEXT";
-			const capabilities = this.modelRouter.getDefault().capabilities();
-			const contextWindow = capabilities.max_context || 8000;
 
 			const hasTools = !!(this.config.tools && this.config.tools.length > 0);
 			const requirements = deriveCapabilityRequirements(
@@ -175,6 +173,13 @@ export class AgentLoop {
 				this.lastModelResolution?.kind === "local"
 					? this.modelRouter.getEffectiveCapabilities(this.lastModelResolution.modelId)
 					: undefined;
+
+			// Use the resolved model's context window, not the default backend's.
+			// Falls back to default backend caps for remote models or resolution errors.
+			const contextWindow =
+				(resolvedCaps?.max_context) ||
+				this.modelRouter.getDefault().capabilities().max_context ||
+				8000;
 
 			const toolTokenEstimate = this.config.tools
 				? countTokens(JSON.stringify(this.config.tools))

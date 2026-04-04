@@ -152,6 +152,17 @@ async function* parseOpenAIStream(
 
 		const eventData = line.slice(SSE_DATA_PREFIX.length);
 		if (eventData === SSE_DONE_SENTINEL) {
+			// Flush any remaining tool states that weren't finalized by finish_reason
+			if (toolStates.size > 0) {
+				for (const [, state] of toolStates) {
+					yield {
+						type: "tool_use_end",
+						id: state.id,
+					};
+				}
+				toolStates.clear();
+			}
+
 			// Emit done event when stream finishes
 			const promptTokens = capturedUsage?.prompt_tokens ?? 0;
 			const completionTokens = capturedUsage?.completion_tokens ?? 0;
@@ -251,22 +262,23 @@ async function* parseOpenAIStream(
 							partial_json: toolCall.function.arguments,
 						};
 					}
-
-					// Emit tool_use_end if stream is finishing this tool
-					if (choice.finish_reason === "tool_calls" || choice.finish_reason === "stop") {
-						// Check if all tool calls are done
-						const allDone = Array.from(toolStates.values()).every((s) => s.args !== "");
-						if (allDone && toolIndex === toolStates.size - 1) {
-							for (const [, state] of toolStates) {
-								yield {
-									type: "tool_use_end",
-									id: state.id,
-								};
-							}
-							toolStates.clear();
-						}
-					}
 				}
+			}
+
+			// Finalize tool calls when finish_reason indicates completion.
+			// This must be OUTSIDE the delta?.tool_calls block because many providers
+			// send finish_reason on a separate chunk with no delta content.
+			if (
+				(choice.finish_reason === "tool_calls" || choice.finish_reason === "stop") &&
+				toolStates.size > 0
+			) {
+				for (const [, state] of toolStates) {
+					yield {
+						type: "tool_use_end",
+						id: state.id,
+					};
+				}
+				toolStates.clear();
 			}
 		}
 	}
@@ -292,6 +304,11 @@ export class OpenAICompatibleDriver implements LLMBackend {
 
 	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
 		const openaiMessages = toOpenAIMessages(params.messages);
+
+		// Prepend system prompt as a system message (OpenAI format uses messages array, not a top-level field)
+		if (params.system) {
+			openaiMessages.unshift({ role: "system", content: params.system });
+		}
 
 		const request: OpenAIRequest = {
 			model: params.model || this.model,
