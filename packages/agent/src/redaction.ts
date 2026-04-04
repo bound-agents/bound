@@ -1,10 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { softDelete, updateRow } from "@bound/core";
 import type { Result } from "@bound/shared";
+import { cascadeDeleteEdges } from "./graph-queries";
 
 export interface RedactionResult {
 	messagesRedacted: number;
 	memoriesAffected: number;
+	edgesAffected?: number;
 }
 
 export function redactMessage(
@@ -43,11 +45,13 @@ export function redactThread(
 
 		// Tombstone semantic_memory entries whose source matches the thread_id
 		const memoryRows = db
-			.prepare("SELECT id FROM semantic_memory WHERE source = ? AND deleted = 0")
-			.all(threadId) as Array<{ id: string }>;
+			.prepare("SELECT id, key FROM semantic_memory WHERE source = ? AND deleted = 0")
+			.all(threadId) as Array<{ id: string; key: string }>;
 
+		let edgesAffected = 0;
 		for (const mem of memoryRows) {
 			softDelete(db, "semantic_memory", mem.id, siteId);
+			edgesAffected += cascadeDeleteEdges(db, mem.key, siteId);
 		}
 
 		return {
@@ -55,6 +59,7 @@ export function redactThread(
 			value: {
 				messagesRedacted: messages.length,
 				memoriesAffected: memoryRows.length,
+				edgesAffected,
 			},
 		};
 	} catch (error) {
