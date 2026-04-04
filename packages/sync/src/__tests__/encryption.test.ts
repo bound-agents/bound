@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test";
+import { x25519 } from "@noble/curves/ed25519";
 import { generateKeypair } from "../crypto";
 import {
 	computeFingerprint,
@@ -121,8 +122,12 @@ describe("encryption module", () => {
 			const x25519Pub2 = ed25519ToX25519Public(pub2);
 
 			const secret = deriveSharedSecret(x25519Priv1, x25519Pub2);
-			// Secret should be 32 bytes (derived), not raw ECDH
+			const rawSecret = x25519.getSharedSecret(x25519Priv1, x25519Pub2);
+
+			// Secret should be 32 bytes (derived)
 			expect(secret.length).toBe(32);
+			// Secret must differ from raw ECDH output (HKDF was applied)
+			expect(secret).not.toEqual(rawSecret);
 		});
 	});
 
