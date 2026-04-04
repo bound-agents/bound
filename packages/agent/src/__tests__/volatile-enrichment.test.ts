@@ -310,9 +310,7 @@ describe("buildVolatileEnrichment — pinned/policy entries", () => {
 		);
 
 		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z");
-		const pinnedLine = enrichment.memoryDeltaLines.find((l) =>
-			l.includes("_pinned_operator_name"),
-		);
+		const pinnedLine = enrichment.memoryDeltaLines.find((l) => l.includes("_pinned_operator_name"));
 		expect(pinnedLine).toBeDefined();
 		expect(pinnedLine).toContain("Kara is the operator");
 	});
@@ -355,7 +353,9 @@ describe("buildVolatileEnrichment — pinned/policy entries", () => {
 		// maxMemory=3: all 3 regular entries + pinned should appear
 		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z", 3);
 		const hasPinned = enrichment.memoryDeltaLines.some((l) => l.includes("_pinned_important"));
-		const regularCount = enrichment.memoryDeltaLines.filter((l) => l.includes("regular-entry")).length;
+		const regularCount = enrichment.memoryDeltaLines.filter((l) =>
+			l.includes("regular-entry"),
+		).length;
 		expect(hasPinned).toBe(true);
 		expect(regularCount).toBe(3);
 	});
@@ -438,9 +438,7 @@ describe("buildVolatileEnrichment — relevance boosting", () => {
 			"What is the sync protocol?",
 		);
 
-		const hasColor = enrichment.memoryDeltaLines.some((l) =>
-			l.includes("favorite_color_blue"),
-		);
+		const hasColor = enrichment.memoryDeltaLines.some((l) => l.includes("favorite_color_blue"));
 		expect(hasColor).toBe(false);
 	});
 });

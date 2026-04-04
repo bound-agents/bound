@@ -15,6 +15,7 @@ import {
 	getDelegationTarget,
 	resolveModel,
 	seedCronTasks,
+	seedHeartbeat,
 	seedSkillAuthoring,
 } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
@@ -47,7 +48,7 @@ import {
 	persistWorkspaceChanges,
 	snapshotWorkspace,
 } from "@bound/sandbox";
-import type { HostModelEntry } from "@bound/shared";
+import type { CronSchedulesConfig, HostModelEntry } from "@bound/shared";
 import type { ProcessPayload, StatusForwardPayload, SyncConfig } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import { ReachabilityTracker, ensureKeypair } from "@bound/sync";
@@ -1251,11 +1252,13 @@ export async function runStart(args: StartArgs): Promise<void> {
 				string,
 				{ schedule: string; payload?: string }
 			>;
-			const cronConfigs = Object.entries(cronSchedules).map(([name, cfg]) => ({
-				name,
-				cron: cfg.schedule,
-				payload: cfg.payload,
-			}));
+			const cronConfigs = Object.entries(cronSchedules)
+				.filter(([name]) => name !== "heartbeat")
+				.map(([name, cfg]) => ({
+					name,
+					cron: cfg.schedule,
+					payload: cfg.payload,
+				}));
 			try {
 				seedCronTasks(appContext.db, cronConfigs, appContext.siteId);
 				console.log(`[scheduler] Seeded ${cronConfigs.length} cron task(s)`);
@@ -1264,6 +1267,19 @@ export async function runStart(args: StartArgs): Promise<void> {
 			}
 		} else {
 			console.log("[scheduler] No cron schedules configured");
+		}
+	}
+
+	// 16b. Seed heartbeat task
+	{
+		const cronResult = appContext.optionalConfig.cronSchedules;
+		const parsed = cronResult?.ok ? (cronResult.value as CronSchedulesConfig) : undefined;
+		const heartbeatConfig = parsed?.heartbeat;
+		try {
+			seedHeartbeat(appContext.db, heartbeatConfig, appContext.siteId);
+			console.log("[scheduler] Heartbeat task seeded");
+		} catch (error) {
+			console.warn("[scheduler] Failed to seed heartbeat:", formatError(error));
 		}
 	}
 

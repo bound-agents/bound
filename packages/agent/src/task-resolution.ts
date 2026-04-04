@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { Task } from "@bound/shared";
+import type { HeartbeatConfig, Task } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 
 // Cron expression parser - supports basic 5-field cron: minute hour day month weekday
@@ -277,4 +277,38 @@ export function seedCronTasks(
 			0, // deleted
 		);
 	}
+}
+
+export function seedHeartbeat(
+	db: Database,
+	heartbeatConfig: HeartbeatConfig | undefined,
+	_siteId: string,
+): void {
+	// Default: enabled with 30min interval
+	const config = heartbeatConfig ?? { enabled: true, interval_ms: 1_800_000 };
+
+	if (!config.enabled) return;
+
+	const id = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
+	const now = new Date();
+	const intervalMs = config.interval_ms;
+	const nextBoundary = Math.ceil(now.getTime() / intervalMs) * intervalMs;
+	const nextRunAt = new Date(nextBoundary).toISOString();
+	const triggerSpec = JSON.stringify({ type: "heartbeat", interval_ms: intervalMs });
+
+	db.prepare(
+		`INSERT OR IGNORE INTO tasks (
+			id, type, status, trigger_spec, payload, created_at, created_by,
+			thread_id, claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+			run_count, max_runs, requires, model_hint, no_history, inject_mode,
+			depends_on, require_success, alert_threshold, consecutive_failures,
+			event_depth, no_quiescence, heartbeat_at, result, error, modified_at, deleted
+		) VALUES (
+			?, 'heartbeat', 'pending', ?, NULL, ?, 'system',
+			NULL, NULL, NULL, NULL, ?, NULL,
+			0, NULL, NULL, NULL, 0, 'status',
+			NULL, 0, 5, 0,
+			0, 0, NULL, NULL, NULL, ?, 0
+		)`,
+	).run(id, triggerSpec, now.toISOString(), nextRunAt, now.toISOString());
 }

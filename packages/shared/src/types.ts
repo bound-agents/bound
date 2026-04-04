@@ -7,7 +7,7 @@ export type MessageRole =
 	| "tool_result"
 	| "purge";
 
-export type TaskType = "cron" | "deferred" | "event";
+export type TaskType = "cron" | "deferred" | "event" | "heartbeat";
 
 export type TaskStatus = "pending" | "claimed" | "running" | "completed" | "failed" | "cancelled";
 

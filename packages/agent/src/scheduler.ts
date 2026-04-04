@@ -5,6 +5,7 @@ import { formatError } from "@bound/shared";
 import type { Task } from "@bound/shared";
 import { createAdvisory } from "./advisories";
 import type { AgentLoop } from "./agent-loop";
+import { buildHeartbeatContext } from "./heartbeat-context";
 import { canRunHere, computeNextRunAt } from "./task-resolution";
 import type { AgentLoopConfig } from "./types";
 
@@ -56,6 +57,54 @@ function rescheduleCronTask(
 		});
 	}
 }
+
+/**
+ * Reschedules a heartbeat task to the next clock-aligned boundary and resets status to 'pending'.
+ * Clock alignment ensures heartbeats fire at predictable times (e.g., every 30 minutes at :00 and :30).
+ * Respects quiescence multipliers to reduce frequency during idle periods.
+ */
+export function rescheduleHeartbeat(
+	db: AppContext["db"],
+	task: Task,
+	logger: AppContext["logger"],
+	context: string,
+	lastUserInteractionAt: Date,
+): void {
+	if (task.type !== "heartbeat") return;
+
+	let intervalMs: number;
+	try {
+		const spec = JSON.parse(task.trigger_spec);
+		intervalMs = spec.interval_ms;
+		if (!intervalMs || intervalMs < 60_000) {
+			logger.error(`[@bound/agent/scheduler] Invalid heartbeat interval_ms: ${intervalMs}`);
+			return;
+		}
+	} catch {
+		logger.error(
+			`[@bound/agent/scheduler] Failed to parse heartbeat trigger_spec: ${task.trigger_spec}`,
+		);
+		return;
+	}
+
+	// Compute quiescence multiplier using the shared helper
+	const multiplier = computeQuiescenceMultiplier(lastUserInteractionAt);
+
+	const now = Date.now();
+	const effectiveInterval = intervalMs * multiplier;
+	const nextBoundary = Math.ceil(now / effectiveInterval) * effectiveInterval;
+	const nextRunAt = new Date(nextBoundary).toISOString();
+
+	db.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?").run(
+		nextRunAt,
+		task.id,
+	);
+
+	logger.info(
+		`[@bound/agent/scheduler] Rescheduled heartbeat (${context}): next_run_at=${nextRunAt}, multiplier=${multiplier}x, effective_interval=${effectiveInterval}ms`,
+	);
+}
+
 const POLL_INTERVAL = 5000; // 5 seconds
 const MAX_EVENT_DEPTH = 5;
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
@@ -68,6 +117,38 @@ const QUIESCENCE_TIERS: Array<{ threshold: number; multiplier: number }> = [
 	{ threshold: 14_400_000, multiplier: 5 }, // 4-12h idle: ×5
 	{ threshold: 43_200_000, multiplier: 10 }, // 12-24h idle: ×10
 ];
+
+/** Minimum idle duration before quiescence note is injected into task context. */
+const QUIESCENCE_NOTE_THRESHOLD = 1_800_000; // 30 minutes
+
+/**
+ * Compute quiescence multiplier based on idle duration.
+ * Returns the multiplier from QUIESCENCE_TIERS based on how long
+ * the system has been idle.
+ */
+export function computeQuiescenceMultiplier(lastUserInteractionAt: Date): number {
+	const inactivityMs = Date.now() - lastUserInteractionAt.getTime();
+	let multiplier = 1;
+	for (let i = QUIESCENCE_TIERS.length - 1; i >= 0; i--) {
+		const tier = QUIESCENCE_TIERS[i];
+		if (inactivityMs >= tier.threshold) {
+			multiplier = tier.multiplier;
+			break;
+		}
+	}
+	return multiplier;
+}
+
+/**
+ * Format idle duration in milliseconds to a human-readable string.
+ * Examples: "30m", "2h 15m", "0m".
+ */
+export function formatIdleDuration(ms: number): string {
+	const hours = Math.floor(ms / 3_600_000);
+	const minutes = Math.floor((ms % 3_600_000) / 60_000);
+	if (hours > 0) return `${hours}h ${minutes}m`;
+	return `${minutes}m`;
+}
 
 interface SchedulerConfig {
 	pollInterval?: number;
@@ -234,6 +315,13 @@ export class Scheduler {
 
 			for (const task of tasksToEvict) {
 				rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "heartbeat timeout eviction");
+				rescheduleHeartbeat(
+					this.ctx.db,
+					task,
+					this.ctx.logger,
+					"heartbeat timeout eviction",
+					this.lastUserInteractionAt,
+				);
 
 				const newConsecutiveFailures = (task.consecutive_failures ?? 0) + 1;
 				if (newConsecutiveFailures === task.alert_threshold) {
@@ -439,7 +527,10 @@ export class Scheduler {
 						id: randomUUID(),
 						thread_id: threadId,
 						role: "user",
-						content: task.payload ?? "Execute scheduled task.",
+						content:
+							task.type === "heartbeat"
+								? buildHeartbeatContext(this.ctx.db, task.last_run_at)
+								: (task.payload ?? "Execute scheduled task."),
 						model_id: null,
 						tool_name: null,
 						created_at: taskNow,
@@ -449,6 +540,53 @@ export class Scheduler {
 					},
 					this.ctx.siteId,
 				);
+
+				// Inject quiescence note for scheduled tasks when system is idle
+				if (task.type === "heartbeat" || task.type === "cron") {
+					const idleMs = Date.now() - this.lastUserInteractionAt.getTime();
+					if (idleMs >= QUIESCENCE_NOTE_THRESHOLD) {
+						const multiplier = computeQuiescenceMultiplier(this.lastUserInteractionAt);
+						const idleDuration = formatIdleDuration(idleMs);
+
+						let baseInterval: string;
+						let effectiveInterval: string;
+						if (task.type === "heartbeat") {
+							try {
+								const spec = JSON.parse(task.trigger_spec);
+								const baseMs = spec.interval_ms ?? 1_800_000;
+								baseInterval = `${Math.round(baseMs / 60_000)}min`;
+								effectiveInterval = `${Math.round((baseMs * multiplier) / 60_000)}min`;
+							} catch {
+								baseInterval = "30min";
+								effectiveInterval = `${30 * multiplier}min`;
+							}
+						} else {
+							// Cron tasks don't have a simple interval, extract and use the schedule expression
+							baseInterval = extractCronExpression(task.trigger_spec);
+							effectiveInterval = `schedule stretched by ${multiplier}x`;
+						}
+
+						const quiescenceNote = `[System note: Quiescence is active (idle ${idleDuration}). Task intervals are stretched by ${multiplier}x. Normal interval: ${baseInterval}, effective: ${effectiveInterval}.]`;
+
+						insertRow(
+							this.ctx.db,
+							"messages",
+							{
+								id: randomUUID(),
+								thread_id: threadId,
+								role: "system",
+								content: quiescenceNote,
+								model_id: null,
+								tool_name: null,
+								created_at: taskNow,
+								modified_at: taskNow,
+								host_origin: this.ctx.hostName,
+								deleted: 0,
+							},
+							this.ctx.siteId,
+						);
+					}
+				}
 
 				// Validate model hint at run time before creating the agent loop.
 				// This catches models that became unavailable after the task was scheduled.
@@ -474,6 +612,13 @@ export class Scheduler {
 						}
 						// Cron tasks must still reschedule even when the model is temporarily unavailable
 						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "model validation failure");
+						rescheduleHeartbeat(
+							this.ctx.db,
+							task,
+							this.ctx.logger,
+							"model validation failure",
+							this.lastUserInteractionAt,
+						);
 						return; // exit runTask — agent loop is not created
 					}
 				}
@@ -517,6 +662,13 @@ export class Scheduler {
 
 						// Cron tasks still reschedule even after soft errors so they keep retrying
 						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "soft error");
+						rescheduleHeartbeat(
+							this.ctx.db,
+							task,
+							this.ctx.logger,
+							"soft error",
+							this.lastUserInteractionAt,
+						);
 					} else {
 						// Mark as completed and reset consecutive failure counter
 						this.ctx.db
@@ -527,6 +679,13 @@ export class Scheduler {
 
 						// If cron task, compute next run time
 						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "completion");
+						rescheduleHeartbeat(
+							this.ctx.db,
+							task,
+							this.ctx.logger,
+							"completion",
+							this.lastUserInteractionAt,
+						);
 					}
 				}
 
@@ -590,6 +749,13 @@ export class Scheduler {
 
 					// Cron tasks must reschedule even after hard errors so they keep running on schedule
 					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "hard error");
+					rescheduleHeartbeat(
+						this.ctx.db,
+						task,
+						this.ctx.logger,
+						"hard error",
+						this.lastUserInteractionAt,
+					);
 				}
 			} finally {
 				this.runningTasks.delete(task.id);
@@ -679,7 +845,9 @@ export class Scheduler {
 
 		// Find matching schedule by expression or name
 		const schedules = cronResult.value as Record<string, { schedule: string; template?: string[] }>;
-		for (const [_name, schedule] of Object.entries(schedules)) {
+		for (const [name, schedule] of Object.entries(schedules)) {
+			// Skip non-cron entries (e.g., heartbeat config)
+			if (name === "heartbeat" || !schedule.schedule) continue;
 			if (schedule.schedule === cronSpec.expression && schedule.template) {
 				return schedule.template;
 			}
@@ -733,6 +901,13 @@ export class Scheduler {
 
 					// If cron task, compute next run time
 					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "completion");
+					rescheduleHeartbeat(
+						this.ctx.db,
+						task,
+						this.ctx.logger,
+						"template completion",
+						this.lastUserInteractionAt,
+					);
 				}
 			} catch (error) {
 				const errorMsg = formatError(error);
@@ -747,6 +922,13 @@ export class Scheduler {
 
 					// Cron template tasks must reschedule even after hard errors
 					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "template hard error");
+					rescheduleHeartbeat(
+						this.ctx.db,
+						task,
+						this.ctx.logger,
+						"template hard error",
+						this.lastUserInteractionAt,
+					);
 				}
 			} finally {
 				this.runningTasks.delete(task.id);
@@ -756,9 +938,6 @@ export class Scheduler {
 
 	// Get current quiescence-adjusted poll interval using 4-tier graduated table
 	getEffectivePollInterval(): number {
-		const now = new Date();
-		const inactivityMs = now.getTime() - this.lastUserInteractionAt.getTime();
-
 		// Check if any pending tasks have no_quiescence set
 		const noQuiescenceTasks = this.ctx.db
 			.query("SELECT COUNT(*) as count FROM tasks WHERE status = 'pending' AND no_quiescence = 1")
@@ -769,15 +948,8 @@ export class Scheduler {
 			return POLL_INTERVAL;
 		}
 
-		// Walk tiers from highest threshold down, pick the first that applies
-		let multiplier = 1;
-		for (let i = QUIESCENCE_TIERS.length - 1; i >= 0; i--) {
-			const tier = QUIESCENCE_TIERS[i];
-			if (inactivityMs >= tier.threshold) {
-				multiplier = tier.multiplier;
-				break;
-			}
-		}
+		// Compute quiescence multiplier using the shared helper
+		const multiplier = computeQuiescenceMultiplier(this.lastUserInteractionAt);
 
 		return POLL_INTERVAL * multiplier;
 	}

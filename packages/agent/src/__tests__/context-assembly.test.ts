@@ -1681,17 +1681,46 @@ This skill reviews pull requests.`;
 			const imgThreadId = randomUUID();
 			db.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[imgThreadId, userId, "web", "local", 0, "Image Test", null, null, null, null, new Date().toISOString(), new Date().toISOString(), new Date().toISOString(), 0],
+				[
+					imgThreadId,
+					userId,
+					"web",
+					"local",
+					0,
+					"Image Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
 			);
 
 			const imageContent = JSON.stringify([
 				{ type: "text", text: "Check this image" },
-				{ type: "image", source: { type: "base64", media_type: "image/png", data: "abc123" }, description: "a screenshot" },
+				{
+					type: "image",
+					source: { type: "base64", media_type: "image/png", data: "abc123" },
+					description: "a screenshot",
+				},
 			]);
 
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), imgThreadId, "user", imageContent, null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+				[
+					randomUUID(),
+					imgThreadId,
+					"user",
+					imageContent,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
 			);
 
 			const { messages } = assembleContext({
@@ -1714,12 +1743,37 @@ This skill reviews pull requests.`;
 			const plainThreadId = randomUUID();
 			db.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[plainThreadId, userId, "web", "local", 0, "Plain Test", null, null, null, null, new Date().toISOString(), new Date().toISOString(), new Date().toISOString(), 0],
+				[
+					plainThreadId,
+					userId,
+					"web",
+					"local",
+					0,
+					"Plain Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
 			);
 
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), plainThreadId, "user", "Just a normal message", null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+				[
+					randomUUID(),
+					plainThreadId,
+					"user",
+					"Just a normal message",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
 			);
 
 			const { messages } = assembleContext({
@@ -1739,21 +1793,56 @@ This skill reviews pull requests.`;
 			const tsThreadId = randomUUID();
 			db.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[tsThreadId, userId, "web", "local", 0, "Timestamp Test", null, null, null, null, new Date().toISOString(), new Date().toISOString(), new Date().toISOString(), 0],
+				[
+					tsThreadId,
+					userId,
+					"web",
+					"local",
+					0,
+					"Timestamp Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
 			);
 
 			// Message from 2 hours ago
 			const twoHoursAgo = new Date(Date.now() - 2 * 3600_000).toISOString();
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), tsThreadId, "user", "Hello from the past", null, null, twoHoursAgo, twoHoursAgo, "local"],
+				[
+					randomUUID(),
+					tsThreadId,
+					"user",
+					"Hello from the past",
+					null,
+					null,
+					twoHoursAgo,
+					twoHoursAgo,
+					"local",
+				],
 			);
 
 			// Message from 5 minutes ago
 			const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), tsThreadId, "user", "Hello from recently", null, null, fiveMinAgo, fiveMinAgo, "local"],
+				[
+					randomUUID(),
+					tsThreadId,
+					"user",
+					"Hello from recently",
+					null,
+					null,
+					fiveMinAgo,
+					fiveMinAgo,
+					"local",
+				],
 			);
 
 			const { messages } = assembleContext({
@@ -1778,22 +1867,67 @@ This skill reviews pull requests.`;
 			const tsThreadId2 = randomUUID();
 			db.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[tsThreadId2, userId, "web", "local", 0, "Timestamp Tool Test", null, null, null, null, new Date().toISOString(), new Date().toISOString(), new Date().toISOString(), 0],
+				[
+					tsThreadId2,
+					userId,
+					"web",
+					"local",
+					0,
+					"Timestamp Tool Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
 			);
 
 			const oneHourAgo = new Date(Date.now() - 3600_000).toISOString();
 			const toolCallId = randomUUID();
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), tsThreadId2, "user", "Do something", null, null, oneHourAgo, oneHourAgo, "local"],
+				[
+					randomUUID(),
+					tsThreadId2,
+					"user",
+					"Do something",
+					null,
+					null,
+					oneHourAgo,
+					oneHourAgo,
+					"local",
+				],
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[toolCallId, tsThreadId2, "tool_call", JSON.stringify([{ type: "tool_use", id: "tc-1", name: "query", input: {} }]), null, null, oneHourAgo, oneHourAgo, "local"],
+				[
+					toolCallId,
+					tsThreadId2,
+					"tool_call",
+					JSON.stringify([{ type: "tool_use", id: "tc-1", name: "query", input: {} }]),
+					null,
+					null,
+					oneHourAgo,
+					oneHourAgo,
+					"local",
+				],
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), tsThreadId2, "tool_result", "result data", null, "tc-1", oneHourAgo, oneHourAgo, "local"],
+				[
+					randomUUID(),
+					tsThreadId2,
+					"tool_result",
+					"result data",
+					null,
+					"tc-1",
+					oneHourAgo,
+					oneHourAgo,
+					"local",
+				],
 			);
 
 			const { messages } = assembleContext({
@@ -4020,7 +4154,9 @@ This skill reviews pull requests.`;
 
 			const historyMessages = messages.filter((m) => m.role !== "system");
 			const lastMsg = historyMessages[historyMessages.length - 1];
-			expect(typeof lastMsg.content === "string" && lastMsg.content.includes("FINAL_SENTINEL_MESSAGE")).toBe(true);
+			expect(
+				typeof lastMsg.content === "string" && lastMsg.content.includes("FINAL_SENTINEL_MESSAGE"),
+			).toBe(true);
 
 			// Clean up
 			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
@@ -4144,7 +4280,17 @@ This skill reviews pull requests.`;
 				const ts = new Date(nowBase.getTime() + i * 1000).toISOString();
 				db.run(
 					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-					[randomUUID(), localThreadId, role, `Msg ${i} ${"z".repeat(150)}`, null, null, ts, ts, "local"],
+					[
+						randomUUID(),
+						localThreadId,
+						role,
+						`Msg ${i} ${"z".repeat(150)}`,
+						null,
+						null,
+						ts,
+						ts,
+						"local",
+					],
 				);
 			}
 

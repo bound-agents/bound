@@ -97,8 +97,7 @@ export const modelBackendsSchema = z
 			});
 		},
 		{ message: "cerebras, anthropic, and zai providers require api_key" },
-	)
-;
+	);
 
 export type ModelBackendsConfig = z.infer<typeof modelBackendsSchema>;
 
@@ -206,17 +205,33 @@ export const overlaySchema = z.object({
 
 export type OverlayConfig = z.infer<typeof overlaySchema>;
 
-export const cronSchedulesSchema = z.record(
-	z.string(),
-	z.object({
-		schedule: z.string().min(1),
-		thread: z.string().optional(),
-		payload: z.string().optional(),
-		template: z.array(z.string()).optional(),
-		requires: z.array(z.string()).optional(),
-		model_hint: z.string().optional(),
-	}),
-);
+export const heartbeatConfigSchema = z.object({
+	enabled: z.boolean().default(true),
+	interval_ms: z
+		.number()
+		.int()
+		.min(60_000, "Heartbeat interval must be at least 60 seconds")
+		.default(1_800_000),
+});
+
+export type HeartbeatConfig = z.infer<typeof heartbeatConfigSchema>;
+
+export const cronEntrySchema = z.object({
+	schedule: z.string().min(1),
+	thread: z.string().optional(),
+	payload: z.string().optional(),
+	template: z.array(z.string()).optional(),
+	requires: z.array(z.string()).optional(),
+	model_hint: z.string().optional(),
+});
+
+export type CronEntry = z.infer<typeof cronEntrySchema>;
+
+export const cronSchedulesSchema = z
+	.object({
+		heartbeat: heartbeatConfigSchema.optional(),
+	})
+	.catchall(cronEntrySchema);
 
 export type CronSchedulesConfig = z.infer<typeof cronSchedulesSchema>;
 
