@@ -716,6 +716,31 @@ export async function runStart(args: StartArgs): Promise<void> {
 		}
 	}
 
+	// 11d. Initialize KeyManager for encrypted middleware (hub-side)
+	let keyManager: import("@bound/sync").KeyManager | undefined;
+	{
+		const keyringResult = appContext.optionalConfig.keyring;
+		if (keyringResult?.ok) {
+			const keyring = keyringResult.value as import("@bound/shared").KeyringConfig;
+			const hasKeyringPeers = Object.keys(keyring.hosts).length > 0;
+			if (hasKeyringPeers) {
+				try {
+					const { KeyManager: KM } = await import("@bound/sync");
+					keyManager = new KM(keypair, appContext.siteId);
+					await keyManager.init(keyring);
+					appContext.logger.info(
+						`Encryption middleware initialized: ${Object.keys(keyring.hosts).length} peers, local fingerprint ${keyManager.getLocalFingerprint()}`,
+					);
+				} catch (err) {
+					appContext.logger.error("Failed to initialize encryption key manager for middleware", {
+						error: err,
+					});
+					process.exit(1);
+				}
+			}
+		}
+	}
+
 	// Define agent loop factory BEFORE the web server section so the
 	// message:created handler can close over it without hitting the temporal
 	// dead zone that would exist if agentLoopFactory were a const declared
@@ -869,6 +894,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			statusForwardCache,
 			activeDelegations,
 			activeLoops,
+			keyManager,
 		});
 		await webServer.start();
 

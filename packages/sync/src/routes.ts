@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { type RelayRequest, type RelayResponse, fetchInboundChangeset } from "./changeset.js";
 import { type EagerPushConfig, eagerPushToSpoke } from "./eager-push.js";
 import { createSyncAuthMiddleware } from "./middleware.js";
+import type { KeyManager } from "./key-manager.js";
 import { updatePeerCursor } from "./peer-cursor.js";
 import { replayEvents } from "./reducers.js";
 import { type RelayExecutor, noopRelayExecutor } from "./relay-executor.js";
@@ -28,14 +29,15 @@ export function createSyncRoutes(
 	hubSiteId?: string,
 	eagerPushConfig?: EagerPushConfig,
 	threadAffinityMap?: Map<string, string>,
+	keyManager?: KeyManager,
 ): Hono<AppContext> {
 	const app = new Hono<AppContext>();
 
 	// Apply auth middleware to all sync routes
-	app.use("/sync/*", createSyncAuthMiddleware(keyring));
+	app.use("/sync/*", createSyncAuthMiddleware(keyring, keyManager));
 
 	// Apply auth middleware to relay-deliver endpoint
-	app.use("/api/relay-deliver", createSyncAuthMiddleware(keyring));
+	app.use("/api/relay-deliver", createSyncAuthMiddleware(keyring, keyManager));
 
 	// POST /sync/push - Receive events from a spoke
 	app.post("/sync/push", async (c) => {

@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { formatError } from "@bound/shared";
 import type { KeyringConfig, Logger, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
-import type { EagerPushConfig, RelayExecutor } from "@bound/sync";
+import type { EagerPushConfig, KeyManager, RelayExecutor } from "@bound/sync";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { type ModelsConfig, type RoutesConfig, registerRoutes } from "./routes/index";
@@ -32,6 +32,7 @@ export interface AppConfig {
 	statusForwardCache?: Map<string, StatusForwardPayload>;
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	activeLoops?: Set<string>;
+	keyManager?: KeyManager;
 }
 
 export async function createApp(
@@ -106,6 +107,8 @@ export async function createApp(
 				appConfig.relayExecutor,
 				appConfig.hubSiteId,
 				appConfig.eagerPushConfig,
+				undefined,
+				appConfig.keyManager,
 			);
 			app.route("/", syncRoutes);
 		} catch (error) {
