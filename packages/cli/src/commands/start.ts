@@ -729,16 +729,25 @@ export async function runStart(args: StartArgs): Promise<void> {
 					keyManager = new KM(keypair, appContext.siteId);
 					await keyManager.init(keyring);
 					appContext.logger.info(
-						`Encryption middleware initialized: ${Object.keys(keyring.hosts).length} peers, local fingerprint ${keyManager.getLocalFingerprint()}`,
+						`Encryption initialized: ${Object.keys(keyring.hosts).length} peers, local fingerprint ${keyManager.getLocalFingerprint()}`,
 					);
 				} catch (err) {
-					appContext.logger.error("Failed to initialize encryption key manager for middleware", {
-						error: err,
+					// R-SE19: Key derivation failure is FATAL
+					appContext.logger.error("FATAL: Failed to initialize encryption key manager. Sync encryption requires valid Ed25519 keys.", {
+						error: err instanceof Error ? err.message : String(err),
 					});
 					process.exit(1);
 				}
 			}
 		}
+	}
+
+	// Check for plaintext logging debug mode (Phase 5 Task 3)
+	if (process.env.BOUND_LOG_SYNC_PLAINTEXT === "1") {
+		appContext.logger.warn(
+			"BOUND_LOG_SYNC_PLAINTEXT=1 is set. Decrypted sync request bodies will be logged. " +
+			"This should only be used for debugging and NEVER in production.",
+		);
 	}
 
 	// Define agent loop factory BEFORE the web server section so the
@@ -1154,9 +1163,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 					appContext.logger.info(
 						`Encryption initialized: ${Object.keys(keyring.hosts).length} peers, local fingerprint ${keyManager.getLocalFingerprint()}`,
 					);
-					transport = new SyncTransport(keyManager, keypair.privateKey, appContext.siteId);
+					transport = new SyncTransport(keyManager, keypair.privateKey, appContext.siteId, appContext.logger);
 				} catch (err) {
-					appContext.logger.error("Failed to initialize encryption key manager", { error: err });
+					// R-SE19: Key derivation failure is FATAL
+					appContext.logger.error("FATAL: Failed to initialize encryption key manager. Sync encryption requires valid Ed25519 keys.", {
+						error: err instanceof Error ? err.message : String(err),
+					});
 					process.exit(1);
 				}
 			}
