@@ -4,7 +4,6 @@ import { insertRow, updateRow } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import type { CrossThreadSource, Result } from "@bound/shared";
 import { graphSeededRetrieval } from "./graph-queries";
-import type { GraphRetrievalResult } from "./graph-queries";
 
 export interface ExtractionResult {
 	summaryGenerated: boolean;
@@ -294,7 +293,7 @@ export function computeBaseline(
 export interface VolatileEnrichment {
 	memoryDeltaLines: string[];
 	taskDigestLines: string[];
-	graphCount?: number;   // entries retrieved via graph (seed + traversal)
+	graphCount?: number; // entries retrieved via graph (seed + traversal)
 	recencyCount?: number; // entries retrieved via recency fallback
 }
 
@@ -476,13 +475,10 @@ export function buildVolatileEnrichment(
 				if (includedKeys.has(r.key)) continue;
 				includedKeys.add(r.key);
 
-				const tag = r.retrievalMethod === "seed"
-					? "[seed]"
-					: `[depth ${r.depth}, ${r.viaRelation}]`;
+				const tag =
+					r.retrievalMethod === "seed" ? "[seed]" : `[depth ${r.depth}, ${r.viaRelation}]`;
 
-				const valueDisplay = r.value.length > 200
-					? r.value.substring(0, 200) + "..."
-					: r.value;
+				const valueDisplay = r.value.length > 200 ? `${r.value.substring(0, 200)}...` : r.value;
 				memoryDeltaLines.push(`- ${r.key}: ${valueDisplay} ${tag}`);
 			}
 
@@ -522,11 +518,13 @@ export function buildVolatileEnrichment(
 					if (includedKeys.has(entry.key)) continue;
 					includedKeys.add(entry.key);
 
-					const valueDisplay = entry.value.length > 200
-						? entry.value.substring(0, 200) + "..."
-						: entry.value;
+					const valueDisplay =
+						entry.value.length > 200 ? `${entry.value.substring(0, 200)}...` : entry.value;
 					const sourceLabel = resolveSource(
-						entry.task_name, entry.thread_id, entry.thread_title, entry.source,
+						entry.task_name,
+						entry.thread_id,
+						entry.thread_title,
+						entry.source,
 					);
 					const relTime = relativeTime(entry.modified_at);
 					memoryDeltaLines.push(
@@ -542,7 +540,7 @@ export function buildVolatileEnrichment(
 		} else {
 			// No keywords extracted — fall back to pure recency (AC4.6)
 			// Existing delta+boost logic unchanged
-			// Build LIKE conditions for key and value matching (though no keywords)
+			// No keywords extracted — fall back to pure recency boosting (no results)
 			const likeConditions: string[] = [];
 			const params: string[] = [];
 			const MAX_BOOSTED = 5;
@@ -573,7 +571,12 @@ export function buildVolatileEnrichment(
 			// Then delta entries (recency-based)
 			for (const row of visibleMemoryRows) {
 				if (pinnedKeys.has(row.key) || boostedKeys.has(row.key)) continue;
-				const sourceLabel = resolveSource(row.task_name, row.thread_id, row.thread_title, row.source);
+				const sourceLabel = resolveSource(
+					row.task_name,
+					row.thread_id,
+					row.thread_title,
+					row.source,
+				);
 				const relTime = relativeTime(row.modified_at);
 				if (row.deleted) {
 					memoryDeltaLines.push(`- ${row.key}: [forgotten] (${relTime}, via ${sourceLabel})`);
