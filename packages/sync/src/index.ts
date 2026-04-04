@@ -28,3 +28,15 @@ export { eagerPushToSpoke } from "./eager-push.js";
 
 // Pruning
 export { startPruningLoop } from "./pruning.js";
+
+// Encryption and key management
+export {
+	encryptBody,
+	decryptBody,
+	deriveSharedSecret,
+	ed25519ToX25519Public,
+	ed25519ToX25519Private,
+	computeFingerprint,
+	extractRawEd25519Keys,
+} from "./encryption.js";
+export { KeyManager } from "./key-manager.js";
