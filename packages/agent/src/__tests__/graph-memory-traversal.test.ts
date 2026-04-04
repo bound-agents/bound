@@ -119,14 +119,9 @@ describe("graph-memory.AC3.3: Relation filter narrows traversal", () => {
 		// B→C (relates_to) should be included, so C should be at depth 2
 		expect(keys).toContain("C");
 
-		// A→D is part_of, not relates_to, so direct D should not appear
-		// But D might appear through B→C→D if C→D is relates_to... no, C→D is governs
-		// So D should not appear with only relates_to filter
-		const dResult = results.find((r) => r.key === "D");
-		if (dResult) {
-			// D might appear if there's a path through relates_to edges
-			// A→B (relates_to) → D? No. So D shouldn't appear.
-		}
+		// A→D is part_of, not relates_to, so D should not appear
+		// Relation filter narrows traversal so D is not reachable via relates_to only
+		expect(keys).not.toContain("D");
 	});
 });
 
@@ -186,14 +181,11 @@ describe("graph-memory.AC3.5: Cycle in graph does not cause infinite recursion",
 		expect(results.length).toBeGreaterThan(0);
 
 		// B can appear via multiple paths: A→B (depth 1) and A→D→B (depth 2)
-		// The CTE allows multiple paths but prevents infinite cycles via the path tracking
+		// Deduplication ensures B appears only once (at shallowest depth 1)
 		const bResults = results.filter((r) => r.key === "B");
-		// Should have B in results, cycle prevention prevents infinite recursion
-		expect(bResults.length).toBeGreaterThan(0);
-		// Check that depths are reasonable (not infinite)
-		for (const b of bResults) {
-			expect(b.depth).toBeLessThanOrEqual(3);
-		}
+		expect(bResults.length).toBe(1);
+		// Check that depth is reasonable (not infinite)
+		expect(bResults[0].depth).toBeLessThanOrEqual(3);
 	});
 });
 
@@ -225,11 +217,6 @@ describe("graph-memory.AC3.7: Depth clamping to MAX_DEPTH=3", () => {
 });
 
 describe("graphSeededRetrieval: Seeds and traversal", () => {
-	it("should skip test placeholder", () => {
-		// Placeholder test - actual seeding tests follow
-		expect(true).toBe(true);
-	});
-
 	it("should find seeds by keyword matching", () => {
 		const results = graphSeededRetrieval(db, ["Memory"], 10);
 

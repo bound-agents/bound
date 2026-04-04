@@ -122,6 +122,7 @@ export interface TraversalResult {
 	viaRelation: string | null;
 	viaWeight: number | null;
 	modifiedAt: string;
+	source: string | null;
 }
 
 export interface NeighborResult {
@@ -167,7 +168,7 @@ export function traverseGraph(
 				  AND (? IS NULL OR e.relation = ?)
 			)
 			SELECT r.key, r.depth, r.via_relation, r.via_weight,
-				   m.value, m.modified_at
+				   m.value, m.modified_at, m.source
 			FROM reachable r
 			JOIN semantic_memory m ON m.key = r.key AND m.deleted = 0
 			WHERE r.depth > 0
@@ -180,16 +181,30 @@ export function traverseGraph(
 		via_weight: number | null;
 		value: string;
 		modified_at: string;
+		source: string | null;
 	}>;
 
-	return rows.map((r) => ({
-		key: r.key,
-		value: r.value,
-		depth: r.depth,
-		viaRelation: r.via_relation,
-		viaWeight: r.via_weight,
-		modifiedAt: r.modified_at,
-	}));
+	// Deduplicate results by key, keeping the shallowest depth version
+	const seenKeys = new Map<string, TraversalResult>();
+	for (const r of rows) {
+		const result = {
+			key: r.key,
+			value: r.value,
+			depth: r.depth,
+			viaRelation: r.via_relation,
+			viaWeight: r.via_weight,
+			modifiedAt: r.modified_at,
+			source: r.source,
+		};
+		if (
+			!seenKeys.has(r.key) ||
+			(seenKeys.get(r.key)?.depth ?? Number.POSITIVE_INFINITY) > r.depth
+		) {
+			seenKeys.set(r.key, result);
+		}
+	}
+
+	return Array.from(seenKeys.values());
 }
 
 /**
@@ -289,7 +304,7 @@ export function graphSeededRetrieval(
 	const likeConditions = keywords.map(
 		() => "(LOWER(key) LIKE '%' || ? || '%' OR LOWER(value) LIKE '%' || ? || '%')",
 	);
-	const params = keywords.flatMap((kw) => [kw, kw]);
+	const params = keywords.flatMap((kw) => [kw.toLowerCase(), kw.toLowerCase()]);
 
 	const seeds = db
 		.prepare(
@@ -336,15 +351,10 @@ export function graphSeededRetrieval(
 			if (seen.has(t.key)) continue;
 			seen.add(t.key);
 
-			// Look up source for the traversed entry
-			const entry = db
-				.prepare("SELECT source FROM semantic_memory WHERE key = ? AND deleted = 0")
-				.get(t.key) as { source: string | null } | null;
-
 			results.push({
 				key: t.key,
 				value: t.value,
-				source: entry?.source ?? null,
+				source: t.source,
 				modifiedAt: t.modifiedAt,
 				retrievalMethod: "graph",
 				depth: t.depth,
