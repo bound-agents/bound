@@ -1,7 +1,7 @@
 import { insertRow, softDelete, updateRow } from "@bound/core";
 import type { CommandContext, CommandDefinition } from "@bound/sandbox";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
-import { getNeighbors, removeEdges, traverseGraph, upsertEdge } from "../graph-queries";
+import { cascadeDeleteEdges, getNeighbors, removeEdges, traverseGraph, upsertEdge } from "../graph-queries";
 import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
 // Positional arg mapping for the memory command (args are Record<string, string>):
@@ -139,11 +139,15 @@ function handleForget(args: Record<string, string>, ctx: CommandContext) {
 			return commandSuccess(`No memories found with prefix: ${prefix}\n`);
 		}
 
+		let totalEdges = 0;
 		for (const entry of entries) {
 			softDelete(ctx.db, "semantic_memory", entry.id, ctx.siteId);
+			totalEdges += cascadeDeleteEdges(ctx.db, entry.key, ctx.siteId);
 		}
 
-		return commandSuccess(`Deleted ${entries.length} memories with prefix: ${prefix}\n`);
+		return commandSuccess(
+			`Deleted ${entries.length} memories with prefix: ${prefix}${totalEdges > 0 ? ` (${totalEdges} edge(s) also removed)` : ""}\n`,
+		);
 	}
 
 	const key = args.key || args.source; // positional mapping
@@ -162,7 +166,13 @@ function handleForget(args: Record<string, string>, ctx: CommandContext) {
 	}
 
 	softDelete(ctx.db, "semantic_memory", memoryId, ctx.siteId);
-	return commandSuccess(`Memory deleted: ${key}\n`);
+
+	// Cascade: soft-delete all edges referencing this key (as source or target)
+	const edgesCascaded = cascadeDeleteEdges(ctx.db, key, ctx.siteId);
+
+	return commandSuccess(
+		`Memory deleted: ${key}${edgesCascaded > 0 ? ` (${edgesCascaded} edge(s) also removed)` : ""}\n`,
+	);
 }
 
 function handleSearch(args: Record<string, string>, ctx: CommandContext) {
