@@ -369,10 +369,7 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 
 export function createModelRouter(config: ModelBackendsConfig): ModelRouter {
 	// Group backend configs by ID to support pooling (multiple providers for the same logical model)
-	const groups = new Map<
-		string,
-		{ entries: PoolEntry[]; caps: BackendCapabilities[] }
-	>();
+	const groups = new Map<string, { entries: PoolEntry[]; caps: BackendCapabilities[] }>();
 
 	for (const backendConfig of config.backends) {
 		const backend = createBackendFromConfig(backendConfig);

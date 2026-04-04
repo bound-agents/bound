@@ -97,8 +97,7 @@ export const modelBackendsSchema = z
 			});
 		},
 		{ message: "cerebras, anthropic, and zai providers require api_key" },
-	)
-;
+	);
 
 export type ModelBackendsConfig = z.infer<typeof modelBackendsSchema>;
 

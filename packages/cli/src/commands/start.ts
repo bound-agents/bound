@@ -48,7 +48,7 @@ import {
 	persistWorkspaceChanges,
 	snapshotWorkspace,
 } from "@bound/sandbox";
-import type { HostModelEntry } from "@bound/shared";
+import type { CronSchedulesConfig, HostModelEntry } from "@bound/shared";
 import type { ProcessPayload, StatusForwardPayload, SyncConfig } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import { ReachabilityTracker, ensureKeypair } from "@bound/sync";
@@ -1273,9 +1273,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// 16b. Seed heartbeat task
 	{
 		const cronResult = appContext.optionalConfig.cronSchedules;
-		const parsed = cronResult?.ok ? cronResult.value : undefined;
-		const heartbeatConfig = (parsed as Record<string, unknown> | undefined)
-			?.heartbeat as any;
+		const parsed = cronResult?.ok ? (cronResult.value as CronSchedulesConfig) : undefined;
+		const heartbeatConfig = parsed?.heartbeat;
 		try {
 			seedHeartbeat(appContext.db, heartbeatConfig, appContext.siteId);
 			console.log("[scheduler] Heartbeat task seeded");

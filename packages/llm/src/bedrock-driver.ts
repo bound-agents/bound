@@ -3,7 +3,12 @@ import {
 	ConverseStreamCommand,
 	type ConverseStreamCommandOutput,
 } from "@aws-sdk/client-bedrock-runtime";
-import type { ContentBlock as BedrockContentBlock, Message, SystemContentBlock, Tool } from "@aws-sdk/client-bedrock-runtime";
+import type {
+	ContentBlock as BedrockContentBlock,
+	Message,
+	SystemContentBlock,
+	Tool,
+} from "@aws-sdk/client-bedrock-runtime";
 import { formatError } from "@bound/shared";
 import type { DocumentType } from "@smithy/types";
 import { withRetry } from "./retry";
