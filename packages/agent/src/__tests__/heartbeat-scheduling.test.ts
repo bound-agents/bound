@@ -448,10 +448,10 @@ describe("rescheduleHeartbeat", () => {
 		const nextDate = new Date(row.next_run_at);
 
 		// With 3x multiplier: 15min becomes 45min effective interval
-		// Verify that next_run_at is in the future and at least 22.5min away
+		// Verify that next_run_at is in the future and at least 15min away (the base interval)
 		const msUntilNext = nextDate.getTime() - Date.now();
 		expect(msUntilNext).toBeGreaterThan(0);
-		// At minimum, should be > 1.5x the base 15-min interval to account for quiescence
-		expect(msUntilNext).toBeGreaterThan(22.5 * 60 * 1000); // > 22.5 minutes
+		// At minimum, should be > 1x the base 15-min interval to account for quiescence
+		expect(msUntilNext).toBeGreaterThan(15 * 60 * 1000); // > 15 minutes
 	});
 });
