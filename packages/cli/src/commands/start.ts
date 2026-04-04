@@ -717,6 +717,56 @@ export async function runStart(args: StartArgs): Promise<void> {
 		}
 	}
 
+	// 11d. Initialize KeyManager for encrypted middleware (hub-side) and sync client (spoke-side)
+	// Single instance is reused for both hub-side response encryption and spoke-side SyncTransport.
+	// SIGHUP handler holds a reference to this instance and calls reloadKeyring() on it.
+	let keyManager: import("@bound/sync").KeyManager | undefined;
+	{
+		const keyringResult = appContext.optionalConfig.keyring;
+		if (keyringResult?.ok) {
+			const keyring = keyringResult.value as import("@bound/shared").KeyringConfig;
+			const hasKeyringPeers = Object.keys(keyring.hosts).length > 0;
+			if (hasKeyringPeers) {
+				try {
+					const { KeyManager: KM } = await import("@bound/sync");
+					keyManager = new KM(keypair, appContext.siteId);
+					await keyManager.init(keyring);
+					appContext.logger.info(
+						`Encryption initialized: ${Object.keys(keyring.hosts).length} peers, local fingerprint ${keyManager.getLocalFingerprint()}`,
+					);
+				} catch (err) {
+					// R-SE19: Key derivation failure is FATAL
+					appContext.logger.error(
+						"FATAL: Failed to initialize encryption key manager. Sync encryption requires valid Ed25519 keys.",
+						{
+							error: err instanceof Error ? err.message : String(err),
+						},
+					);
+					process.exit(1);
+				}
+			}
+		}
+	}
+
+	// 11e. Register SIGHUP handler for config hot-reload (Phase 6 Task 3)
+	{
+		const { registerSighupHandler } = await import("../sighup.js");
+		registerSighupHandler({
+			appContext,
+			configDir: configDir || "config",
+			keyManager,
+			logger: appContext.logger,
+		});
+	}
+
+	// Check for plaintext logging debug mode (Phase 5 Task 3)
+	if (process.env.BOUND_LOG_SYNC_PLAINTEXT === "1") {
+		appContext.logger.warn(
+			"BOUND_LOG_SYNC_PLAINTEXT=1 is set. Decrypted sync request bodies will be logged. " +
+				"This should only be used for debugging and NEVER in production.",
+		);
+	}
+
 	// Define agent loop factory BEFORE the web server section so the
 	// message:created handler can close over it without hitting the temporal
 	// dead zone that would exist if agentLoopFactory were a const declared
@@ -822,6 +872,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// Wire the factory into the relay processor so process relays run with full sandbox + tools.
 	relayProcessor.setAgentLoopFactory(agentLoopFactory);
 
+	// Declare transport here — will be initialized in sync section (14) if encryption is configured
+	let transport: import("@bound/sync").SyncTransport | undefined;
+
 	// 12. Web server
 	console.log("Starting web server...");
 	let webServer: Awaited<ReturnType<typeof createWebServer>> | null = null;
@@ -846,6 +899,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 						keyring,
 						reachabilityTracker,
 						logger: appContext.logger,
+						get transport() {
+							return transport;
+						},
 					}
 				: undefined;
 
@@ -870,6 +926,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			statusForwardCache,
 			activeDelegations,
 			activeLoops,
+			keyManager,
 		});
 		await webServer.start();
 
@@ -1108,11 +1165,23 @@ export async function runStart(args: StartArgs): Promise<void> {
 	if (syncResult?.ok) {
 		const syncConfig = syncResult.value as { hub: string; sync_interval_seconds: number };
 		try {
-			const { SyncClient, startSyncLoop } = await import("@bound/sync");
+			const { SyncClient, startSyncLoop, SyncTransport } = await import("@bound/sync");
 			const keyringResult = appContext.optionalConfig.keyring;
 			const keyring = keyringResult?.ok
 				? (keyringResult.value as import("@bound/shared").KeyringConfig)
 				: { hosts: {} };
+
+			// Initialize SyncTransport if keyring has peers (keyManager already initialized above at 11d)
+			const hasKeyringPeers = Object.keys(keyring.hosts).length > 0;
+			if (hasKeyringPeers && keyManager) {
+				transport = new SyncTransport(
+					keyManager,
+					keypair.privateKey,
+					appContext.siteId,
+					appContext.logger,
+				);
+			}
+
 			const syncClient = new SyncClient(
 				appContext.db,
 				appContext.siteId,
@@ -1121,6 +1190,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				appContext.logger,
 				appContext.eventBus,
 				keyring,
+				transport,
 			);
 			syncLoopHandle = startSyncLoop(
 				syncClient,

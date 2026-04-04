@@ -112,8 +112,9 @@ ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
 
 		// Fallback per spec R-E17: use first 50 chars of user message if LLM returned empty
 		if (!title) {
-			title = titleFromPayload(firstUserMessage.content)
-				?? firstUserMessage.content.substring(0, 50).trim();
+			title =
+				titleFromPayload(firstUserMessage.content) ??
+				firstUserMessage.content.substring(0, 50).trim();
 		}
 
 		// Store the generated title
@@ -130,8 +131,8 @@ ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
 				.get(threadId) as Pick<Message, "content"> | null;
 
 			if (fallbackMsg) {
-				const fallbackTitle = titleFromPayload(fallbackMsg.content)
-					?? fallbackMsg.content.substring(0, 50).trim();
+				const fallbackTitle =
+					titleFromPayload(fallbackMsg.content) ?? fallbackMsg.content.substring(0, 50).trim();
 				updateRow(db, "threads", threadId, { title: fallbackTitle }, siteId);
 				return { ok: true, value: fallbackTitle };
 			}

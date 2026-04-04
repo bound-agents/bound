@@ -195,4 +195,59 @@ describe("signing module", () => {
 			}
 		});
 	});
+
+	describe("signRequest with Uint8Array body", () => {
+		it("binary body round-trip: sign and verify with Uint8Array", async () => {
+			const binaryBody = new Uint8Array([0x01, 0x02, 0x03, 0x04, 0x05]);
+			const headers = await signRequest(privateKey, siteId, "POST", "/sync/push", binaryBody);
+
+			const result = await verifyRequest(keyring, "POST", "/sync/push", headers, binaryBody);
+
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.value.siteId).toBe(siteId);
+				expect(result.value.hostName).toBe(siteId);
+			}
+		});
+
+		it("string-to-bytes equivalence: same hash for string and encoded Uint8Array", async () => {
+			const stringBody = "hello world";
+			const bytesBody = new TextEncoder().encode(stringBody);
+
+			const headersString = await signRequest(privateKey, siteId, "POST", "/sync/push", stringBody);
+
+			const headersBytes = await signRequest(privateKey, siteId, "POST", "/sync/push", bytesBody);
+
+			expect(headersString["X-Signature"]).toBe(headersBytes["X-Signature"]);
+		});
+
+		it("empty Uint8Array round-trip", async () => {
+			const emptyBody = new Uint8Array(0);
+			const headers = await signRequest(privateKey, siteId, "POST", "/sync/push", emptyBody);
+
+			const result = await verifyRequest(keyring, "POST", "/sync/push", headers, emptyBody);
+
+			expect(result.ok).toBe(true);
+		});
+
+		it("verifyRequest with Uint8Array body validates signature against binary content", async () => {
+			const binaryBody = new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd]);
+			const headers = await signRequest(privateKey, siteId, "POST", "/sync/push", binaryBody);
+
+			// Verify with same binary body
+			const resultMatch = await verifyRequest(keyring, "POST", "/sync/push", headers, binaryBody);
+			expect(resultMatch.ok).toBe(true);
+
+			// Verify with different binary body should fail
+			const differentBody = new Uint8Array([0xaa, 0xbb, 0xcc, 0xde]);
+			const resultNoMatch = await verifyRequest(
+				keyring,
+				"POST",
+				"/sync/push",
+				headers,
+				differentBody,
+			);
+			expect(resultNoMatch.ok).toBe(false);
+		});
+	});
 });

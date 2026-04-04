@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import { insertRow } from "@bound/core";
 import type { CapabilityRequirements } from "@bound/llm";
 import type { ModelResolution } from "./model-resolution";
@@ -48,11 +48,7 @@ interface ThreadMessageOpts {
 }
 
 /** Insert a message into a thread via the change-log outbox. Returns the message ID. */
-export function insertThreadMessage(
-	db: Database,
-	opts: ThreadMessageOpts,
-	siteId: string,
-): string {
+export function insertThreadMessage(db: Database, opts: ThreadMessageOpts, siteId: string): string {
 	const id = randomUUID();
 	const now = new Date().toISOString();
 	const row: Record<string, unknown> = {
@@ -88,9 +84,7 @@ export function buildCommandOutput(
 	if (stderr) parts.push(stderr);
 	if (parts.length === 0) {
 		parts.push(
-			(exitCode ?? 0) === 0
-				? "Command completed successfully"
-				: `Exit code: ${exitCode ?? 1}`,
+			(exitCode ?? 0) === 0 ? "Command completed successfully" : `Exit code: ${exitCode ?? 1}`,
 		);
 	}
 	return parts.join("\n");
@@ -139,10 +133,7 @@ export function calculateTurnCost(
 // ---------------------------------------------------------------------------
 
 /** Extract a display-safe model ID from a ModelResolution, with fallback. */
-export function getResolvedModelId(
-	resolution: ModelResolution | null,
-	fallback?: string,
-): string {
+export function getResolvedModelId(resolution: ModelResolution | null, fallback?: string): string {
 	if (resolution && resolution.kind !== "error") {
 		return resolution.modelId;
 	}
@@ -177,10 +168,7 @@ export function deriveCapabilityRequirements(
 		const hasImageBlock = recentMsgs.some((m) => {
 			try {
 				const blocks = JSON.parse(m.content);
-				return (
-					Array.isArray(blocks) &&
-					blocks.some((b: { type?: string }) => b.type === "image")
-				);
+				return Array.isArray(blocks) && blocks.some((b: { type?: string }) => b.type === "image");
 			} catch {
 				return false;
 			}

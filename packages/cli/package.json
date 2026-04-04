@@ -7,7 +7,8 @@
 	"types": "src/index.ts",
 	"bin": {
 		"bound": "src/bound.ts",
-		"boundctl": "src/boundctl.ts"
+		"boundctl": "src/boundctl.ts",
+		"boundcurl": "src/boundcurl.ts"
 	},
 	"dependencies": {
 		"@bound/agent": "workspace:*",

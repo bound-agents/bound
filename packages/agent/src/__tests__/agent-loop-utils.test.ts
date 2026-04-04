@@ -1,11 +1,10 @@
 import type { Database } from "bun:sqlite";
 import { beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
-import type { ModelResolution } from "../model-resolution";
 import {
 	buildCommandOutput,
 	calculateTurnCost,
@@ -13,6 +12,7 @@ import {
 	getResolvedModelId,
 	insertThreadMessage,
 } from "../agent-loop-utils";
+import type { ModelResolution } from "../model-resolution";
 
 // ---------------------------------------------------------------------------
 // Test database setup
@@ -88,53 +88,73 @@ describe("calculateTurnCost", () => {
 	];
 
 	it("computes cost from input and output tokens", () => {
-		const cost = calculateTurnCost("claude-opus", {
-			inputTokens: 1_000_000,
-			outputTokens: 1_000_000,
-			cacheReadTokens: null,
-			cacheWriteTokens: null,
-		}, backends);
+		const cost = calculateTurnCost(
+			"claude-opus",
+			{
+				inputTokens: 1_000_000,
+				outputTokens: 1_000_000,
+				cacheReadTokens: null,
+				cacheWriteTokens: null,
+			},
+			backends,
+		);
 		expect(cost).toBe(15 + 75); // $90
 	});
 
 	it("includes cache read and write costs", () => {
-		const cost = calculateTurnCost("claude-opus", {
-			inputTokens: 0,
-			outputTokens: 0,
-			cacheReadTokens: 1_000_000,
-			cacheWriteTokens: 1_000_000,
-		}, backends);
+		const cost = calculateTurnCost(
+			"claude-opus",
+			{
+				inputTokens: 0,
+				outputTokens: 0,
+				cacheReadTokens: 1_000_000,
+				cacheWriteTokens: 1_000_000,
+			},
+			backends,
+		);
 		expect(cost).toBe(1.5 + 18.75);
 	});
 
 	it("returns 0 for unknown model", () => {
-		const cost = calculateTurnCost("unknown-model", {
-			inputTokens: 1000,
-			outputTokens: 500,
-			cacheReadTokens: null,
-			cacheWriteTokens: null,
-		}, backends);
+		const cost = calculateTurnCost(
+			"unknown-model",
+			{
+				inputTokens: 1000,
+				outputTokens: 500,
+				cacheReadTokens: null,
+				cacheWriteTokens: null,
+			},
+			backends,
+		);
 		expect(cost).toBe(0);
 	});
 
 	it("handles backend without cache pricing", () => {
-		const cost = calculateTurnCost("claude-haiku", {
-			inputTokens: 1_000_000,
-			outputTokens: 1_000_000,
-			cacheReadTokens: 500_000,
-			cacheWriteTokens: 500_000,
-		}, backends);
+		const cost = calculateTurnCost(
+			"claude-haiku",
+			{
+				inputTokens: 1_000_000,
+				outputTokens: 1_000_000,
+				cacheReadTokens: 500_000,
+				cacheWriteTokens: 500_000,
+			},
+			backends,
+		);
 		// Only input + output, cache prices default to 0
 		expect(cost).toBe(0.25 + 1.25);
 	});
 
 	it("returns 0 for empty backends array", () => {
-		const cost = calculateTurnCost("claude-opus", {
-			inputTokens: 1000,
-			outputTokens: 500,
-			cacheReadTokens: null,
-			cacheWriteTokens: null,
-		}, []);
+		const cost = calculateTurnCost(
+			"claude-opus",
+			{
+				inputTokens: 1000,
+				outputTokens: 500,
+				cacheReadTokens: null,
+				cacheWriteTokens: null,
+			},
+			[],
+		);
 		expect(cost).toBe(0);
 	});
 });
@@ -203,17 +223,22 @@ describe("deriveCapabilityRequirements", () => {
 			{ type: "text", text: "Look at this" },
 			{ type: "image", source: { type: "base64", data: "abc" } },
 		]);
-		insertRow(db, "messages", {
-			id: randomUUID(),
-			thread_id: threadId,
-			role: "user",
-			content: imageContent,
-			model_id: null,
-			tool_name: null,
-			created_at: new Date().toISOString(),
-			modified_at: new Date().toISOString(),
-			host_origin: hostName,
-		}, siteId);
+		insertRow(
+			db,
+			"messages",
+			{
+				id: randomUUID(),
+				thread_id: threadId,
+				role: "user",
+				content: imageContent,
+				model_id: null,
+				tool_name: null,
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				host_origin: hostName,
+			},
+			siteId,
+		);
 
 		const req = deriveCapabilityRequirements(db, threadId, false);
 		expect(req).toEqual({ vision: true });
@@ -223,34 +248,44 @@ describe("deriveCapabilityRequirements", () => {
 		const imageContent = JSON.stringify([
 			{ type: "image", source: { type: "base64", data: "abc" } },
 		]);
-		insertRow(db, "messages", {
-			id: randomUUID(),
-			thread_id: threadId,
-			role: "user",
-			content: imageContent,
-			model_id: null,
-			tool_name: null,
-			created_at: new Date().toISOString(),
-			modified_at: new Date().toISOString(),
-			host_origin: hostName,
-		}, siteId);
+		insertRow(
+			db,
+			"messages",
+			{
+				id: randomUUID(),
+				thread_id: threadId,
+				role: "user",
+				content: imageContent,
+				model_id: null,
+				tool_name: null,
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				host_origin: hostName,
+			},
+			siteId,
+		);
 
 		const req = deriveCapabilityRequirements(db, threadId, true);
 		expect(req).toEqual({ tool_use: true, vision: true });
 	});
 
 	it("ignores non-JSON content gracefully", () => {
-		insertRow(db, "messages", {
-			id: randomUUID(),
-			thread_id: threadId,
-			role: "user",
-			content: "just plain text",
-			model_id: null,
-			tool_name: null,
-			created_at: new Date().toISOString(),
-			modified_at: new Date().toISOString(),
-			host_origin: hostName,
-		}, siteId);
+		insertRow(
+			db,
+			"messages",
+			{
+				id: randomUUID(),
+				thread_id: threadId,
+				role: "user",
+				content: "just plain text",
+				model_id: null,
+				tool_name: null,
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				host_origin: hostName,
+			},
+			siteId,
+		);
 
 		const req = deriveCapabilityRequirements(db, threadId, false);
 		expect(req).toBeUndefined();
@@ -264,12 +299,16 @@ describe("insertThreadMessage", () => {
 	const threadId = "thread-msg-test";
 
 	it("inserts a message and returns its id", () => {
-		const id = insertThreadMessage(db, {
-			threadId,
-			role: "assistant",
-			content: "Hello world",
-			hostOrigin: hostName,
-		}, siteId);
+		const id = insertThreadMessage(
+			db,
+			{
+				threadId,
+				role: "assistant",
+				content: "Hello world",
+				hostOrigin: hostName,
+			},
+			siteId,
+		);
 
 		expect(typeof id).toBe("string");
 		const row = db.query("SELECT * FROM messages WHERE id = ?").get(id) as any;
@@ -281,59 +320,71 @@ describe("insertThreadMessage", () => {
 	});
 
 	it("sets model_id when provided", () => {
-		const id = insertThreadMessage(db, {
-			threadId,
-			role: "assistant",
-			content: "test",
-			hostOrigin: hostName,
-			modelId: "claude-opus",
-		}, siteId);
+		const id = insertThreadMessage(
+			db,
+			{
+				threadId,
+				role: "assistant",
+				content: "test",
+				hostOrigin: hostName,
+				modelId: "claude-opus",
+			},
+			siteId,
+		);
 
 		const row = db.query("SELECT model_id FROM messages WHERE id = ?").get(id) as any;
 		expect(row.model_id).toBe("claude-opus");
 	});
 
 	it("sets tool_name when provided", () => {
-		const id = insertThreadMessage(db, {
-			threadId,
-			role: "tool_result",
-			content: "result",
-			hostOrigin: hostName,
-			toolName: "tool-call-123",
-		}, siteId);
+		const id = insertThreadMessage(
+			db,
+			{
+				threadId,
+				role: "tool_result",
+				content: "result",
+				hostOrigin: hostName,
+				toolName: "tool-call-123",
+			},
+			siteId,
+		);
 
 		const row = db.query("SELECT tool_name FROM messages WHERE id = ?").get(id) as any;
 		expect(row.tool_name).toBe("tool-call-123");
 	});
 
 	it("sets exit_code when provided", () => {
-		const id = insertThreadMessage(db, {
-			threadId,
-			role: "tool_result",
-			content: "error output",
-			hostOrigin: hostName,
-			exitCode: 1,
-		}, siteId);
+		const id = insertThreadMessage(
+			db,
+			{
+				threadId,
+				role: "tool_result",
+				content: "error output",
+				hostOrigin: hostName,
+				exitCode: 1,
+			},
+			siteId,
+		);
 
 		const row = db.query("SELECT exit_code FROM messages WHERE id = ?").get(id) as any;
 		expect(row.exit_code).toBe(1);
 	});
 
 	it("creates a changelog entry", () => {
-		const countBefore = (
-			db.query("SELECT COUNT(*) as c FROM change_log").get() as any
-		).c;
+		const countBefore = (db.query("SELECT COUNT(*) as c FROM change_log").get() as any).c;
 
-		insertThreadMessage(db, {
-			threadId,
-			role: "alert",
-			content: "test alert",
-			hostOrigin: hostName,
-		}, siteId);
+		insertThreadMessage(
+			db,
+			{
+				threadId,
+				role: "alert",
+				content: "test alert",
+				hostOrigin: hostName,
+			},
+			siteId,
+		);
 
-		const countAfter = (
-			db.query("SELECT COUNT(*) as c FROM change_log").get() as any
-		).c;
+		const countAfter = (db.query("SELECT COUNT(*) as c FROM change_log").get() as any).c;
 		expect(countAfter).toBe(countBefore + 1);
 	});
 });

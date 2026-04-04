@@ -50,9 +50,20 @@ async function build() {
 		console.log("Use 'bun packages/mcp-server/src/server.ts' to run directly");
 	}
 
+	// Step 5: Compile boundcurl (encrypted sync endpoint diagnostic tool)
+	console.log("\n5. Compiling boundcurl binary...");
+	try {
+		execSync("bun build --compile packages/cli/src/boundcurl.ts --outfile dist/boundcurl", {
+			stdio: "inherit",
+		});
+	} catch {
+		console.error("boundcurl compilation failed");
+		console.log("Use 'bun packages/cli/src/boundcurl.ts' to run directly");
+	}
+
 	// Summary
 	console.log("\n--- Build summary ---");
-	for (const binary of ["dist/bound", "dist/boundctl", "dist/bound-mcp"]) {
+	for (const binary of ["dist/bound", "dist/boundctl", "dist/bound-mcp", "dist/boundcurl"]) {
 		if (existsSync(binary)) {
 			const sizeMB = (statSync(binary).size / (1024 * 1024)).toFixed(2);
 			console.log(`  ${binary} (${sizeMB} MB)`);
