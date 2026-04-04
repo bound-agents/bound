@@ -40,3 +40,5 @@ export {
 	extractRawEd25519Keys,
 } from "./encryption.js";
 export { KeyManager } from "./key-manager.js";
+export { SyncTransport } from "./transport.js";
+export type { TransportResponse } from "./transport.js";
