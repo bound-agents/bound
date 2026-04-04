@@ -1,7 +1,7 @@
 import { insertRow, softDelete, updateRow } from "@bound/core";
 import type { CommandContext, CommandDefinition } from "@bound/sandbox";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
-import { removeEdges, upsertEdge } from "../graph-queries";
+import { getNeighbors, removeEdges, traverseGraph, upsertEdge } from "../graph-queries";
 import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
 // Positional arg mapping for the memory command (args are Record<string, string>):
@@ -262,13 +262,67 @@ function handleDisconnect(args: Record<string, string>, ctx: CommandContext) {
 	return commandSuccess(`Removed ${count} edge(s) between ${src} and ${tgt}\n`);
 }
 
+function handleTraverse(args: Record<string, string>, ctx: CommandContext) {
+	const key = args.source; // first positional arg
+	if (!key) {
+		return commandError("usage: memory traverse <key> [--depth N] [--relation R]");
+	}
+
+	const depth = args.depth ? Number.parseInt(args.depth, 10) : 2;
+	const relation = args.relation || undefined;
+
+	if (Number.isNaN(depth) || depth < 1) {
+		return commandError("depth must be a positive integer (1-3)");
+	}
+
+	const results = traverseGraph(ctx.db, key, depth, relation);
+
+	if (results.length === 0) {
+		return commandSuccess(`No connected entries found from: ${key}\n`);
+	}
+
+	const lines = results.map(
+		(r) =>
+			`${"  ".repeat(r.depth)}${r.key}: ${r.value.substring(0, 80)}${r.value.length > 80 ? "..." : ""} [depth ${r.depth}, ${r.viaRelation}]`,
+	);
+	return commandSuccess(
+		`Graph traversal from ${key} (depth=${Math.min(depth, 3)}, ${results.length} entries):\n${lines.join("\n")}\n`,
+	);
+}
+
+function handleNeighbors(args: Record<string, string>, ctx: CommandContext) {
+	const key = args.source; // first positional arg
+	if (!key) {
+		return commandError("usage: memory neighbors <key> [--dir out|in|both]");
+	}
+
+	const dir = (args.dir as "out" | "in" | "both") || "both";
+	if (!["out", "in", "both"].includes(dir)) {
+		return commandError("dir must be one of: out, in, both");
+	}
+
+	const results = getNeighbors(ctx.db, key, dir);
+
+	if (results.length === 0) {
+		return commandSuccess(`No neighbors found for: ${key}\n`);
+	}
+
+	const lines = results.map(
+		(r) =>
+			`  ${r.direction === "out" ? "-->" : "<--"} ${r.key}: ${r.value.substring(0, 80)}${r.value.length > 80 ? "..." : ""} [${r.relation}, w=${r.weight}]`,
+	);
+	return commandSuccess(
+		`Neighbors of ${key} (${results.length} connections):\n${lines.join("\n")}\n`,
+	);
+}
+
 export const memory: CommandDefinition = {
 	name: "memory",
 	args: [
 		{
 			name: "subcommand",
 			required: true,
-			description: "Subcommand: store, forget, search, connect, disconnect",
+			description: "Subcommand: store, forget, search, connect, disconnect, traverse, neighbors",
 		},
 		{ name: "source", required: false, description: "First positional arg (key/source_key/query)" },
 		{ name: "target", required: false, description: "Second positional arg (value/target_key)" },
@@ -276,6 +330,8 @@ export const memory: CommandDefinition = {
 		{ name: "weight", required: false, description: "Edge weight (for connect)" },
 		{ name: "prefix", required: false, description: "Prefix for batch forget" },
 		{ name: "source_tag", required: false, description: "Source tag for store provenance" },
+		{ name: "depth", required: false, description: "Traversal depth (1-3, default 2)" },
+		{ name: "dir", required: false, description: "Neighbor direction: out, in, or both" },
 	],
 	handler: async (args: Record<string, string>, ctx: CommandContext) => {
 		try {
@@ -290,9 +346,13 @@ export const memory: CommandDefinition = {
 					return handleConnect(args, ctx);
 				case "disconnect":
 					return handleDisconnect(args, ctx);
+				case "traverse":
+					return handleTraverse(args, ctx);
+				case "neighbors":
+					return handleNeighbors(args, ctx);
 				default:
 					return commandError(
-						`unknown subcommand: ${args.subcommand}. Available: store, forget, search, connect, disconnect`,
+						`unknown subcommand: ${args.subcommand}. Available: store, forget, search, connect, disconnect, traverse, neighbors`,
 					);
 			}
 		} catch (error) {
