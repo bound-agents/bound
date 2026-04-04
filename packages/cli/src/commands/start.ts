@@ -754,7 +754,6 @@ export async function runStart(args: StartArgs): Promise<void> {
 			keyManager,
 			logger: appContext.logger,
 		});
-		console.log("[config] SIGHUP handler registered for hot-reload");
 	}
 
 	// Check for plaintext logging debug mode (Phase 5 Task 3)

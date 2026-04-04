@@ -1,13 +1,15 @@
-import type { Logger } from "@bound/shared";
-import type { KeyManager } from "@bound/sync";
 import type { AppContext } from "@bound/core";
 import { loadOptionalConfigs } from "@bound/core";
+import type { Logger } from "@bound/shared";
+import type { KeyManager } from "@bound/sync";
 
 interface SighupHandlerConfig {
 	appContext: AppContext;
 	configDir: string;
 	keyManager?: KeyManager;
 	logger: Logger;
+	// For testing: inject a delay into the reload work to allow true concurrency testing
+	delayMs?: number;
 }
 
 let reloadInProgress = false;
@@ -19,10 +21,11 @@ let reloadInProgress = false;
  * Concurrent reloads are prevented by reloadInProgress flag (AC12.6).
  */
 export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> {
-	const { appContext, configDir, keyManager, logger } = config;
+	const { appContext, configDir, keyManager, logger, delayMs } = config;
 
-	// Yield control to allow concurrent calls to be scheduled
-	await Promise.resolve();
+	// Yield control to allow concurrent calls to be scheduled.
+	// Use setTimeout to ensure the check happens in the next event loop tick.
+	await new Promise((resolve) => setTimeout(resolve, 0));
 
 	if (reloadInProgress) {
 		logger.warn("Config reload already in progress, skipping");
@@ -33,6 +36,14 @@ export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> 
 	logger.info("Reloading optional configs...");
 
 	try {
+		// Yield to allow concurrent calls a chance to check reloadInProgress before we finish
+		await Promise.resolve();
+
+		// For testing: inject optional delay to force true concurrency
+		if (delayMs) {
+			await new Promise((resolve) => setTimeout(resolve, delayMs));
+		}
+
 		const newOptionalConfigs = loadOptionalConfigs(configDir);
 
 		// Track what changed for logging

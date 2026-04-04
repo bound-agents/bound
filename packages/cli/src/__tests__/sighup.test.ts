@@ -45,7 +45,10 @@ describe("SIGHUP handler", () => {
 		const { reloadConfigs } = await import("../sighup.js");
 
 		// Create config files with minimal valid JSON (will be caught by schema validation)
-		writeFileSync(join(tempDir, "sync.json"), JSON.stringify({ hub: "http://hub", sync_interval_seconds: 30 }));
+		writeFileSync(
+			join(tempDir, "sync.json"),
+			JSON.stringify({ hub: "http://hub", sync_interval_seconds: 30 }),
+		);
 		writeFileSync(join(tempDir, "keyring.json"), JSON.stringify({ hosts: {} }));
 
 		const mockAppContext = {
@@ -70,9 +73,9 @@ describe("SIGHUP handler", () => {
 		let reloadCalled = false;
 		let receivedKeyring: KeyringConfig | null = null;
 		const mockKeyManager = {
-			reloadKeyring(newKeyring: KeyringConfig) {
+			reloadKeyring(_newKeyring: KeyringConfig) {
 				reloadCalled = true;
-				receivedKeyring = newKeyring;
+				receivedKeyring = _newKeyring;
 			},
 		} as any;
 
@@ -112,12 +115,14 @@ describe("SIGHUP handler", () => {
 
 		let reloadCount = 0;
 		const mockKeyManager = {
-			reloadKeyring(newKeyring: KeyringConfig) {
+			reloadKeyring(_newKeyring: KeyringConfig) {
 				reloadCount++;
 			},
 		} as any;
 
-		const keyringValue = { hosts: { peer1: { public_key: "ed25519:test", url: "http://peer1:8080" } } };
+		const keyringValue = {
+			hosts: { peer1: { public_key: "ed25519:test", url: "http://peer1:8080" } },
+		};
 
 		const mockAppContext = {
 			logger: testLogger,
@@ -143,6 +148,60 @@ describe("SIGHUP handler", () => {
 		expect(reloadCount).toBe(0);
 	});
 
+	it("AC12.4: removed peers evicted from keyManager", async () => {
+		const { reloadConfigs } = await import("../sighup.js");
+
+		let reloadCalled = false;
+		let receivedKeyring: KeyringConfig | null = null;
+		const mockKeyManager = {
+			reloadKeyring(newKeyring: KeyringConfig) {
+				reloadCalled = true;
+				receivedKeyring = newKeyring;
+			},
+		} as any;
+
+		// Initial state has peers A and B
+		const keyringWithBoth = {
+			hosts: {
+				peer_a: { public_key: "ed25519:test_a", url: "http://peer_a:8080" },
+				peer_b: { public_key: "ed25519:test_b", url: "http://peer_b:8080" },
+			},
+		};
+
+		const mockAppContext = {
+			logger: testLogger,
+			optionalConfig: {
+				keyring: {
+					ok: true,
+					value: keyringWithBoth,
+				},
+			},
+		} as any;
+
+		// Reload with only peer A (peer B removed)
+		const keyringWithoutB = {
+			hosts: {
+				peer_a: { public_key: "ed25519:test_a", url: "http://peer_a:8080" },
+			},
+		};
+
+		writeFileSync(join(tempDir, "keyring.json"), JSON.stringify(keyringWithoutB));
+
+		await reloadConfigs({
+			appContext: mockAppContext,
+			configDir: tempDir,
+			keyManager: mockKeyManager,
+			logger: testLogger,
+		});
+
+		// Verify KeyManager.reloadKeyring was called with reduced keyring
+		expect(reloadCalled).toBe(true);
+		expect(receivedKeyring?.hosts.peer_a).toBeTruthy();
+		expect(receivedKeyring?.hosts.peer_b).toBeUndefined();
+		// Verify appContext was updated to the reduced keyring
+		expect(mockAppContext.optionalConfig.keyring.value.hosts.peer_b).toBeUndefined();
+	});
+
 	it("AC12.5: bad config file is non-fatal, keeps previous value", async () => {
 		const { reloadConfigs } = await import("../sighup.js");
 
@@ -162,7 +221,9 @@ describe("SIGHUP handler", () => {
 		// Create a valid keyring file
 		writeFileSync(
 			join(tempDir, "keyring.json"),
-			JSON.stringify({ hosts: { peer1: { public_key: "ed25519:test", url: "http://peer1:8080" } } }),
+			JSON.stringify({
+				hosts: { peer1: { public_key: "ed25519:test", url: "http://peer1:8080" } },
+			}),
 		);
 
 		await reloadConfigs({
@@ -184,30 +245,46 @@ describe("SIGHUP handler", () => {
 	});
 
 	it("AC12.6: concurrent reloads handled gracefully", async () => {
-		const { reloadConfigs } = await import("../sighup.js");
-
 		const mockAppContext = {
 			logger: testLogger,
 			optionalConfig: {},
 		} as any;
 
-		writeFileSync(join(tempDir, "sync.json"), JSON.stringify({ hub: "http://hub", sync_interval_seconds: 30 }));
+		writeFileSync(
+			join(tempDir, "sync.json"),
+			JSON.stringify({ hub: "http://hub", sync_interval_seconds: 30 }),
+		);
 
 		const config = {
 			appContext: mockAppContext,
 			configDir: tempDir,
 			logger: testLogger,
+			delayMs: 50, // Inject delay to force both calls to overlap during work
 		};
 
-		// Start two reloads concurrently and verify both complete
+		// Import the module
+		const { reloadConfigs } = await import("../sighup.js");
+
+		// Start two reloads concurrently via Promise.all
+		// The delayMs will cause both to be running simultaneously during the work phase
+		// The second call will check reloadInProgress while the first is still running
 		const [result1, result2] = await Promise.all([reloadConfigs(config), reloadConfigs(config)]);
 
-		// Both should complete successfully
+		// Both should complete successfully (one does work, one skips due to guard)
 		expect(result1).toBeUndefined();
 		expect(result2).toBeUndefined();
 
-		// Verify at least one reload attempt was logged
+		// Verify the guard worked by checking message counts
 		const infoLogs = testLogger.getMessages("info");
-		expect(infoLogs.some((m) => m.includes("Reloading"))).toBe(true);
+		const reloadingLogs = infoLogs.filter((m) => m.includes("Reloading optional configs"));
+
+		const warnLogs = testLogger.getMessages("warn");
+		const skipLogs = warnLogs.filter((m) => m.includes("reload already in progress"));
+
+		// With the delay, second call should definitely see reloadInProgress as true
+		// and log the skip message
+		expect(skipLogs.length).toBe(1);
+		// Only first call should log "Reloading"
+		expect(reloadingLogs.length).toBe(1);
 	});
 });
