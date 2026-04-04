@@ -1396,9 +1396,17 @@ Original output was too large for the context window. If you need the full conte
 					.get(params.threadId) as { count: number } | null;
 				const totalInThread = totalRow?.count ?? historyMessages.length;
 
+				// Include thread summary if available — preserves gist of truncated history
+				const threadRow = params.db
+					.prepare("SELECT summary FROM threads WHERE id = ?")
+					.get(params.threadId) as { summary: string | null } | null;
+				const summarySection = threadRow?.summary
+					? `\n\nSummary of earlier conversation:\n${threadRow.summary}`
+					: "";
+
 				truncationMarker.push({
 					role: "system",
-					content: `[Context note: ${truncatedCount} earlier messages in this conversation were truncated to fit the context window. This thread has ${totalInThread} total messages. You are seeing only the most recent portion. If you need to reference earlier context, you can use the query command to search the messages table, e.g.: query "SELECT role, substr(content, 1, 200), created_at FROM messages WHERE thread_id = '${params.threadId}' ORDER BY created_at DESC LIMIT 50"]`,
+					content: `[Context note: ${truncatedCount} earlier messages in this conversation were truncated to fit the context window. This thread has ${totalInThread} total messages. You are seeing only the most recent portion. If you need to reference earlier context, you can use the query command to search the messages table, e.g.: query "SELECT role, substr(content, 1, 200), created_at FROM messages WHERE thread_id = '${params.threadId}' ORDER BY created_at DESC LIMIT 50"]${summarySection}`,
 				});
 			}
 

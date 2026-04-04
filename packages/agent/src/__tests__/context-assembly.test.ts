@@ -4110,6 +4110,67 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 
+		it("includes thread summary in truncation marker when available", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-02-01T02:30:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Summary Marker User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Summary Test",
+					"We discussed the scheduler design and cron task patterns.",
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			for (let i = 0; i < 30; i++) {
+				const role = i % 2 === 0 ? "user" : "assistant";
+				const ts = new Date(nowBase.getTime() + i * 1000).toISOString();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[randomUUID(), localThreadId, role, `Msg ${i} ${"z".repeat(150)}`, null, null, ts, ts, "local"],
+				);
+			}
+
+			const { messages, debug } = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 1000,
+			});
+
+			expect(debug.truncated).toBeGreaterThan(0);
+
+			const systemMessages = messages.filter((m) => m.role === "system");
+			const marker = systemMessages.find(
+				(m) => typeof m.content === "string" && m.content.includes("earlier messages"),
+			);
+			expect(marker).toBeDefined();
+			// Should include the thread summary
+			expect(marker?.content).toContain("scheduler design");
+			expect(marker?.content).toContain("cron task patterns");
+
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+
 		it("does NOT inject truncation marker when no truncation occurs", () => {
 			const localThreadId = randomUUID();
 			const localUserId = randomUUID();
