@@ -34,10 +34,10 @@ export function createSyncRoutes(
 	const app = new Hono<AppContext>();
 
 	// Apply auth middleware to all sync routes
-	app.use("/sync/*", createSyncAuthMiddleware(keyring, keyManager));
+	app.use("/sync/*", createSyncAuthMiddleware(keyring, keyManager, logger));
 
 	// Apply auth middleware to relay-deliver endpoint
-	app.use("/api/relay-deliver", createSyncAuthMiddleware(keyring, keyManager));
+	app.use("/api/relay-deliver", createSyncAuthMiddleware(keyring, keyManager, logger));
 
 	// POST /sync/push - Receive events from a spoke
 	app.post("/sync/push", async (c) => {

@@ -1,3 +1,4 @@
+import type { Logger } from "@bound/shared";
 import { decryptBody, encryptBody } from "./encryption.js";
 import type { KeyManager } from "./key-manager.js";
 import { signRequest } from "./signing.js";
@@ -13,6 +14,7 @@ export class SyncTransport {
 		private keyManager: KeyManager,
 		private privateKey: CryptoKey,
 		private siteId: string,
+		private logger?: Logger,
 	) {}
 
 	/**
@@ -47,8 +49,16 @@ export class SyncTransport {
 		// Sign the ciphertext (R-SE6: signature covers ciphertext, not plaintext)
 		const signHeaders = await signRequest(this.privateKey, this.siteId, method, path, ciphertext);
 
-		// Fetch with encryption headers
+		// Log sending of encrypted request
 		const nonceHex = Buffer.from(nonce).toString("hex");
+		this.logger?.info("Sending encrypted request", {
+			endpoint: path,
+			targetSiteId,
+			ciphertextLength: ciphertext.length,
+			nonce: nonceHex,
+		});
+
+		// Fetch with encryption headers
 		const response = await fetch(url, {
 			method,
 			headers: {
@@ -81,7 +91,14 @@ export class SyncTransport {
 
 		if (!encryption) {
 			// Plaintext response (error responses per R-SE22)
-			return response.text();
+			const text = await response.text();
+			if (response.status >= 400) {
+				this.logger?.warn("Received plaintext error response", {
+					status: response.status,
+					targetSiteId,
+				});
+			}
+			return text;
 		}
 
 		const nonceHex = response.headers.get("X-Nonce");
