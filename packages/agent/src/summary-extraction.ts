@@ -5,6 +5,79 @@ import type { LLMBackend } from "@bound/llm";
 import type { CrossThreadSource, Result } from "@bound/shared";
 import { graphSeededRetrieval } from "./graph-queries";
 
+/**
+ * Common English stop words for keyword filtering.
+ * Used in both graph-seeded and recency-based keyword extraction.
+ */
+const STOP_WORDS = new Set([
+	"the",
+	"a",
+	"an",
+	"is",
+	"are",
+	"was",
+	"were",
+	"be",
+	"been",
+	"being",
+	"have",
+	"has",
+	"had",
+	"do",
+	"does",
+	"did",
+	"will",
+	"would",
+	"could",
+	"should",
+	"may",
+	"might",
+	"shall",
+	"can",
+	"to",
+	"of",
+	"in",
+	"for",
+	"on",
+	"with",
+	"at",
+	"by",
+	"from",
+	"as",
+	"into",
+	"through",
+	"about",
+	"it",
+	"its",
+	"this",
+	"that",
+	"these",
+	"those",
+	"i",
+	"me",
+	"my",
+	"we",
+	"our",
+	"you",
+	"your",
+	"he",
+	"she",
+	"they",
+	"what",
+	"how",
+	"when",
+	"where",
+	"why",
+	"which",
+	"who",
+	"not",
+	"no",
+	"and",
+	"or",
+	"but",
+	"if",
+]);
+
 export interface ExtractionResult {
 	summaryGenerated: boolean;
 	memoriesExtracted: number;
@@ -390,74 +463,6 @@ export function buildVolatileEnrichment(
 
 	if (hasGraphEdges && userMessage) {
 		// Extract keywords from user message for graph seeding
-		const STOP_WORDS = new Set([
-			"the",
-			"a",
-			"an",
-			"is",
-			"are",
-			"was",
-			"were",
-			"be",
-			"been",
-			"being",
-			"have",
-			"has",
-			"had",
-			"do",
-			"does",
-			"did",
-			"will",
-			"would",
-			"could",
-			"should",
-			"may",
-			"might",
-			"shall",
-			"can",
-			"to",
-			"of",
-			"in",
-			"for",
-			"on",
-			"with",
-			"at",
-			"by",
-			"from",
-			"as",
-			"into",
-			"through",
-			"about",
-			"it",
-			"its",
-			"this",
-			"that",
-			"these",
-			"those",
-			"i",
-			"me",
-			"my",
-			"we",
-			"our",
-			"you",
-			"your",
-			"he",
-			"she",
-			"they",
-			"what",
-			"how",
-			"when",
-			"where",
-			"why",
-			"which",
-			"who",
-			"not",
-			"no",
-			"and",
-			"or",
-			"but",
-			"if",
-		]);
 		const keywords = userMessage
 			.toLowerCase()
 			.replace(/[^a-z0-9_\s-]/g, " ")
@@ -482,10 +487,11 @@ export function buildVolatileEnrichment(
 				memoryDeltaLines.push(`- ${r.key}: ${valueDisplay} ${tag}`);
 			}
 
-			graphCount = graphResults.filter((r) => !pinnedKeys.has(r.key)).length;
+			const graphResultsWithoutPinned = graphResults.filter((r) => !pinnedKeys.has(r.key));
+			graphCount = graphResultsWithoutPinned.length;
 
 			// Recency fallback: fill remaining slots
-			const remaining = maxMemory - graphResults.filter((r) => !pinnedKeys.has(r.key)).length;
+			const remaining = maxMemory - graphResultsWithoutPinned.length;
 			if (remaining > 0) {
 				// Use same LEFT JOIN pattern to resolve source labels
 				const recencyEntries = db
@@ -539,34 +545,7 @@ export function buildVolatileEnrichment(
 			}
 		} else {
 			// No keywords extracted — fall back to pure recency (AC4.6)
-			// Existing delta+boost logic unchanged
-			// No keywords extracted — fall back to pure recency boosting (no results)
-			const likeConditions: string[] = [];
-			const params: string[] = [];
-			const MAX_BOOSTED = 5;
-
-			const boostedRows = db
-				.prepare(
-					`SELECT m.key, m.value, m.modified_at
-					 FROM   semantic_memory m
-					 WHERE  m.deleted = 0
-					   AND  m.key NOT LIKE '\\_policy%' ESCAPE '\\'
-					   AND  m.key NOT LIKE '\\_pinned%' ESCAPE '\\'
-					   AND  (${likeConditions.join(" OR ")})
-					 ORDER  BY m.modified_at DESC
-					 LIMIT  ?`,
-				)
-				.all(...params, MAX_BOOSTED) as Array<{
-				key: string;
-				value: string;
-				modified_at: string;
-			}>;
-
-			for (const row of boostedRows) {
-				if (deltaKeys.has(row.key) || pinnedKeys.has(row.key)) continue;
-				boostedKeys.add(row.key);
-				memoryDeltaLines.push(`- ${row.key}: ${row.value} [relevant]`);
-			}
+			// Skip the boost query entirely when no keywords; go straight to delta entries
 
 			// Then delta entries (recency-based)
 			for (const row of visibleMemoryRows) {
@@ -594,74 +573,6 @@ export function buildVolatileEnrichment(
 	} else {
 		// No graph edges or no user message — existing delta+boost logic unchanged
 		if (userMessage && userMessage.length > 0) {
-			const STOP_WORDS = new Set([
-				"the",
-				"a",
-				"an",
-				"is",
-				"are",
-				"was",
-				"were",
-				"be",
-				"been",
-				"being",
-				"have",
-				"has",
-				"had",
-				"do",
-				"does",
-				"did",
-				"will",
-				"would",
-				"could",
-				"should",
-				"may",
-				"might",
-				"shall",
-				"can",
-				"to",
-				"of",
-				"in",
-				"for",
-				"on",
-				"with",
-				"at",
-				"by",
-				"from",
-				"as",
-				"into",
-				"through",
-				"about",
-				"it",
-				"its",
-				"this",
-				"that",
-				"these",
-				"those",
-				"i",
-				"me",
-				"my",
-				"we",
-				"our",
-				"you",
-				"your",
-				"he",
-				"she",
-				"they",
-				"what",
-				"how",
-				"when",
-				"where",
-				"why",
-				"which",
-				"who",
-				"not",
-				"no",
-				"and",
-				"or",
-				"but",
-				"if",
-			]);
 			const keywords = userMessage
 				.toLowerCase()
 				.replace(/[^a-z0-9_\s-]/g, " ")
@@ -671,7 +582,7 @@ export function buildVolatileEnrichment(
 			if (keywords.length > 0) {
 				// Build LIKE conditions for key and value matching
 				const likeConditions = keywords.map(
-					(kw) => `(LOWER(m.key) LIKE '%' || ? || '%' OR LOWER(m.value) LIKE '%' || ? || '%')`,
+					() => `(LOWER(m.key) LIKE '%' || ? || '%' OR LOWER(m.value) LIKE '%' || ? || '%')`,
 				);
 				const params = keywords.flatMap((kw) => [kw, kw]);
 				const MAX_BOOSTED = 5;

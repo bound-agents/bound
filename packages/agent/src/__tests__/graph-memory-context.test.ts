@@ -624,6 +624,63 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			}
 		});
 
+		it("AC4.6: handles messages with only stop words (no keywords extracted)", () => {
+			// Create memories to provide recency fallback content
+			const mem1 = {
+				id: randomBytes(8).toString("hex"),
+				key: "important_feature",
+				value: "Feature description",
+				source: null,
+				created_at: "2026-02-01T00:00:00.000Z",
+				modified_at: "2026-03-15T12:00:00.000Z",
+				deleted: 0,
+			};
+
+			const mem2 = {
+				id: randomBytes(8).toString("hex"),
+				key: "another_concept",
+				value: "Concept details",
+				source: null,
+				created_at: "2026-02-01T00:00:00.000Z",
+				modified_at: "2026-03-16T12:00:00.000Z",
+				deleted: 0,
+			};
+
+			insertRow(db, "semantic_memory", mem1, siteId);
+			insertRow(db, "semantic_memory", mem2, siteId);
+
+			// Create edges to ensure graph path would be attempted
+			upsertEdge(db, mem1.key, mem2.key, "related_to", 0.8, siteId);
+
+			// User message consisting entirely of stop words
+			// This message would previously crash the SQL query because it produced
+			// empty likeConditions, resulting in AND () syntax error
+			const userMessage = "is it the one?";
+
+			// Should not crash or throw
+			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, userMessage);
+
+			expect(enrichment.memoryDeltaLines).toBeDefined();
+			expect(Array.isArray(enrichment.memoryDeltaLines)).toBe(true);
+
+			// When no keywords are extracted but graph edges exist,
+			// falls back to pure recency (no boost). Should have recency output only.
+			const memoryLines = enrichment.memoryDeltaLines;
+
+			// Should NOT have seed or graph tags (no keywords to seed with)
+			const hasSeedTags = memoryLines.some((l) => l.includes("[seed]"));
+			const hasGraphTags = memoryLines.some((l) => l.match(/\[depth \d+/));
+			const hasRelevantTags = memoryLines.some((l) => l.includes("[relevant]"));
+
+			expect(hasSeedTags).toBe(false);
+			expect(hasGraphTags).toBe(false);
+			expect(hasRelevantTags).toBe(false);
+
+			// Should return delta entries without boost tags
+			// (pure recency format used only)
+			expect(memoryLines.length).toBeGreaterThan(0);
+		});
+
 		it("returns empty result when no edges and memory is old", () => {
 			// Create single memory with specific keyword but OLD timestamp
 			const mem = {
