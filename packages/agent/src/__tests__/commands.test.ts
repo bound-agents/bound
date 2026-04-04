@@ -114,7 +114,7 @@ describe("defineCommand implementations", () => {
 		});
 	});
 
-	describe("memorize command", () => {
+	describe("memory command", () => {
 		function getMemorySource(key: string): string | null {
 			const memoryId = deterministicUUID(BOUND_NAMESPACE, key);
 			const row = db.prepare("SELECT source FROM semantic_memory WHERE id = ?").get(memoryId) as {
@@ -123,117 +123,242 @@ describe("defineCommand implementations", () => {
 			return row?.source ?? null;
 		}
 
-		it("should create a semantic_memory entry", async () => {
-			const result = await memorize.handler({ key: "test_key", value: "test_value" }, ctx);
+		describe("store subcommand", () => {
+			it("should create a semantic_memory entry", async () => {
+				const result = await memory.handler(
+					{ subcommand: "store", source: "test_key", target: "test_value" },
+					ctx,
+				);
 
-			expect(result.exitCode).toBe(0);
+				expect(result.exitCode).toBe(0);
 
-			const memoryId = deterministicUUID(BOUND_NAMESPACE, "test_key");
-			const row = db.query("SELECT * FROM semantic_memory WHERE id = ?").get(memoryId) as Record<
-				string,
-				unknown
-			>;
+				const memoryId = deterministicUUID(BOUND_NAMESPACE, "test_key");
+				const row = db.query("SELECT * FROM semantic_memory WHERE id = ?").get(memoryId) as Record<
+					string,
+					unknown
+				>;
 
-			expect(row).toBeDefined();
-			expect(row.key).toBe("test_key");
-			expect(row.value).toBe("test_value");
+				expect(row).toBeDefined();
+				expect(row.key).toBe("test_key");
+				expect(row.value).toBe("test_value");
+			});
+
+			it("should update an existing memory entry", async () => {
+				await memory.handler(
+					{ subcommand: "store", source: "existing_key", target: "value1" },
+					ctx,
+				);
+
+				await memory.handler(
+					{ subcommand: "store", source: "existing_key", target: "value2" },
+					ctx,
+				);
+
+				const memoryId = deterministicUUID(BOUND_NAMESPACE, "existing_key");
+				const row = db
+					.query("SELECT value FROM semantic_memory WHERE id = ?")
+					.get(memoryId) as Record<string, unknown>;
+
+				expect(row.value).toBe("value2");
+			});
+
+			it("stores source as taskId when ctx.taskId is set", async () => {
+				await memory.handler(
+					{ subcommand: "store", source: "source_task_key", target: "v" },
+					ctx,
+				);
+				const source = getMemorySource("source_task_key");
+				expect(source).toBe(ctx.taskId);
+			});
+
+			it("stores source as threadId when only ctx.threadId is set", async () => {
+				const threadOnlyCtx: CommandContext = { ...ctx, taskId: undefined };
+				await memory.handler(
+					{ subcommand: "store", source: "source_thread_key", target: "v" },
+					threadOnlyCtx,
+				);
+				const source = getMemorySource("source_thread_key");
+				expect(source).toBe(ctx.threadId);
+			});
+
+			it("stores source as 'agent' when neither taskId nor threadId is set", async () => {
+				const noCtx: CommandContext = { ...ctx, taskId: undefined, threadId: undefined };
+				await memory.handler(
+					{ subcommand: "store", source: "source_agent_key", target: "v" },
+					noCtx,
+				);
+				const source = getMemorySource("source_agent_key");
+				expect(source).toBe("agent");
+			});
+
+			it("stores explicit source_tag argument over ctx values", async () => {
+				await memory.handler(
+					{
+						subcommand: "store",
+						source: "source_explicit_key",
+						target: "v",
+						source_tag: "custom-source-id",
+					},
+					ctx,
+				);
+				const source = getMemorySource("source_explicit_key");
+				expect(source).toBe("custom-source-id");
+			});
+
+			it("restores a previously soft-deleted key without UNIQUE constraint error", async () => {
+				const key = "forget_then_store_key";
+				const memoryId = deterministicUUID(BOUND_NAMESPACE, key);
+
+				// Step 1: Create the memory
+				await memory.handler({ subcommand: "store", source: key, target: "original_value" }, ctx);
+				const row1 = db
+					.query("SELECT deleted, value FROM semantic_memory WHERE id = ?")
+					.get(memoryId) as {
+					deleted: number;
+					value: string;
+				};
+				expect(row1.deleted).toBe(0);
+				expect(row1.value).toBe("original_value");
+
+				// Step 2: Soft-delete it via forget
+				await memory.handler({ subcommand: "forget", source: key }, ctx);
+				const row2 = db
+					.query("SELECT deleted FROM semantic_memory WHERE id = ?")
+					.get(memoryId) as {
+					deleted: number;
+				};
+				expect(row2.deleted).toBe(1);
+
+				// Step 3: Re-store the same key — this must succeed, not throw UNIQUE constraint
+				const result = await memory.handler(
+					{ subcommand: "store", source: key, target: "restored_value" },
+					ctx,
+				);
+				expect(result.exitCode).toBe(0);
+
+				// The memory should be restored with the new value and deleted=0
+				const row3 = db
+					.query("SELECT deleted, value FROM semantic_memory WHERE id = ?")
+					.get(memoryId) as {
+					deleted: number;
+					value: string;
+				};
+				expect(row3.deleted).toBe(0);
+				expect(row3.value).toBe("restored_value");
+			});
 		});
 
-		it("should update an existing memory entry", async () => {
-			await memorize.handler({ key: "existing_key", value: "value1" }, ctx);
+		describe("forget subcommand", () => {
+			it("should soft-delete a semantic_memory entry", async () => {
+				await memory.handler(
+					{ subcommand: "store", source: "delete_me", target: "content" },
+					ctx,
+				);
 
-			await memorize.handler({ key: "existing_key", value: "value2" }, ctx);
+				const result = await memory.handler({ subcommand: "forget", source: "delete_me" }, ctx);
 
-			const memoryId = deterministicUUID(BOUND_NAMESPACE, "existing_key");
-			const row = db
-				.query("SELECT value FROM semantic_memory WHERE id = ?")
-				.get(memoryId) as Record<string, unknown>;
+				expect(result.exitCode).toBe(0);
 
-			expect(row.value).toBe("value2");
+				const memoryId = deterministicUUID(BOUND_NAMESPACE, "delete_me");
+				const row = db
+					.query("SELECT deleted FROM semantic_memory WHERE id = ?")
+					.get(memoryId) as Record<string, unknown>;
+
+				expect(row.deleted).toBe(1);
+			});
 		});
 
-		it("stores source as taskId when ctx.taskId is set (AC6.1)", async () => {
-			// ctx already has taskId and threadId set
-			await memorize.handler({ key: "source_task_key", value: "v" }, ctx);
-			const source = getMemorySource("source_task_key");
-			expect(source).toBe(ctx.taskId);
+		describe("search subcommand", () => {
+			it("should return entries matching keywords in key", async () => {
+				await memory.handler(
+					{ subcommand: "store", source: "scheduler_v3", target: "task runner" },
+					ctx,
+				);
+
+				const result = await memory.handler(
+					{ subcommand: "search", source: "scheduler" },
+					ctx,
+				);
+
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain("scheduler_v3");
+				expect(result.stdout).toContain("Found 1 memories");
+			});
+
+			it("should return entries matching keywords in value", async () => {
+				await memory.handler(
+					{ subcommand: "store", source: "timing_config", target: "interval math" },
+					ctx,
+				);
+
+				const result = await memory.handler(
+					{ subcommand: "search", source: "interval" },
+					ctx,
+				);
+
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain("timing_config");
+				expect(result.stdout).toContain("Found 1 memories");
+			});
+
+			it("should return union of matches with multiple keywords", async () => {
+				await memory.handler(
+					{ subcommand: "store", source: "key_one", target: "apple fruit" },
+					ctx,
+				);
+				await memory.handler(
+					{ subcommand: "store", source: "key_two", target: "banana fruit" },
+					ctx,
+				);
+
+				const result = await memory.handler(
+					{ subcommand: "search", source: "apple banana" },
+					ctx,
+				);
+
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain("Found 2 memories");
+			});
+
+			it("should return message when query has only stop words", async () => {
+				const result = await memory.handler(
+					{ subcommand: "search", source: "the a an" },
+					ctx,
+				);
+
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain("No searchable keywords found");
+			});
+
+			it("should return message when no memories matched", async () => {
+				const result = await memory.handler(
+					{ subcommand: "search", source: "nonexistent_keyword_xyz" },
+					ctx,
+				);
+
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain("No memories matched");
+			});
+
+			it("should return message when less than 3 char keyword is filtered", async () => {
+				const result = await memory.handler(
+					{ subcommand: "search", source: "ab" },
+					ctx,
+				);
+
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain("No searchable keywords found");
+			});
 		});
 
-		it("stores source as threadId when only ctx.threadId is set (AC6.2)", async () => {
-			const threadOnlyCtx: CommandContext = { ...ctx, taskId: undefined };
-			await memorize.handler({ key: "source_thread_key", value: "v" }, threadOnlyCtx);
-			const source = getMemorySource("source_thread_key");
-			expect(source).toBe(ctx.threadId);
-		});
-
-		it("stores source as 'agent' when neither taskId nor threadId is set (AC6.3)", async () => {
-			const noCtx: CommandContext = { ...ctx, taskId: undefined, threadId: undefined };
-			await memorize.handler({ key: "source_agent_key", value: "v" }, noCtx);
-			const source = getMemorySource("source_agent_key");
-			expect(source).toBe("agent");
-		});
-
-		it("stores explicit --source argument over ctx values (AC6.4)", async () => {
-			await memorize.handler(
-				{ key: "source_explicit_key", value: "v", source: "custom-source-id" },
+		it("should return error for unknown subcommand", async () => {
+			const result = await memory.handler(
+				{ subcommand: "nonexistent" },
 				ctx,
 			);
-			const source = getMemorySource("source_explicit_key");
-			expect(source).toBe("custom-source-id");
-		});
 
-		it("restores a previously soft-deleted key without UNIQUE constraint error", async () => {
-			const key = "forget_then_memorize_key";
-			const memoryId = deterministicUUID(BOUND_NAMESPACE, key);
-
-			// Step 1: Create the memory
-			await memorize.handler({ key, value: "original_value" }, ctx);
-			const row1 = db
-				.query("SELECT deleted, value FROM semantic_memory WHERE id = ?")
-				.get(memoryId) as {
-				deleted: number;
-				value: string;
-			};
-			expect(row1.deleted).toBe(0);
-			expect(row1.value).toBe("original_value");
-
-			// Step 2: Soft-delete it via forget
-			await forget.handler({ key }, ctx);
-			const row2 = db.query("SELECT deleted FROM semantic_memory WHERE id = ?").get(memoryId) as {
-				deleted: number;
-			};
-			expect(row2.deleted).toBe(1);
-
-			// Step 3: Re-memorize the same key — this must succeed, not throw UNIQUE constraint
-			const result = await memorize.handler({ key, value: "restored_value" }, ctx);
-			expect(result.exitCode).toBe(0);
-
-			// The memory should be restored with the new value and deleted=0
-			const row3 = db
-				.query("SELECT deleted, value FROM semantic_memory WHERE id = ?")
-				.get(memoryId) as {
-				deleted: number;
-				value: string;
-			};
-			expect(row3.deleted).toBe(0);
-			expect(row3.value).toBe("restored_value");
-		});
-	});
-
-	describe("forget command", () => {
-		it("should soft-delete a semantic_memory entry", async () => {
-			await memorize.handler({ key: "delete_me", value: "content" }, ctx);
-
-			const result = await forget.handler({ key: "delete_me" }, ctx);
-
-			expect(result.exitCode).toBe(0);
-
-			const memoryId = deterministicUUID(BOUND_NAMESPACE, "delete_me");
-			const row = db
-				.query("SELECT deleted FROM semantic_memory WHERE id = ?")
-				.get(memoryId) as Record<string, unknown>;
-
-			expect(row.deleted).toBe(1);
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain("unknown subcommand");
 		});
 	});
 
