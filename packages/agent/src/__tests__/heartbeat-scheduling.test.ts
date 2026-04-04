@@ -424,12 +424,15 @@ describe("rescheduleHeartbeat", () => {
 		const nextDate = new Date(row.next_run_at);
 
 		// With 5x multiplier: 30min becomes 150min effective interval
-		// Verify that next_run_at is in the future and at least 90min away
-		// (accounting for the fact that we could be anywhere in the cycle)
 		const msUntilNext = nextDate.getTime() - Date.now();
+		const effectiveInterval = 30 * 60 * 1000 * 5; // 150min in ms
+
+		// Verify next_run_at is in the future
 		expect(msUntilNext).toBeGreaterThan(0);
-		// At minimum, should be > 1.5x the base 30-min interval to account for quiescence
-		expect(msUntilNext).toBeGreaterThan(45 * 60 * 1000); // > 45 minutes
+		// Verify next_run_at is at most one effective interval away
+		expect(msUntilNext).toBeLessThanOrEqual(effectiveInterval);
+		// Verify clock-alignment: next_run_at should be on a 150-minute boundary
+		expect(nextDate.getTime() % effectiveInterval).toBe(0);
 	});
 
 	// Additional AC5.1 test: verify different intervals with quiescence
@@ -448,10 +451,14 @@ describe("rescheduleHeartbeat", () => {
 		const nextDate = new Date(row.next_run_at);
 
 		// With 3x multiplier: 15min becomes 45min effective interval
-		// Verify that next_run_at is in the future and at least 15min away (the base interval)
 		const msUntilNext = nextDate.getTime() - Date.now();
+		const effectiveInterval = 15 * 60 * 1000 * 3; // 45min in ms
+
+		// Verify next_run_at is in the future
 		expect(msUntilNext).toBeGreaterThan(0);
-		// At minimum, should be > 1x the base 15-min interval to account for quiescence
-		expect(msUntilNext).toBeGreaterThan(15 * 60 * 1000); // > 15 minutes
+		// Verify next_run_at is at most one effective interval away
+		expect(msUntilNext).toBeLessThanOrEqual(effectiveInterval);
+		// Verify clock-alignment: next_run_at should be on a 45-minute boundary
+		expect(nextDate.getTime() % effectiveInterval).toBe(0);
 	});
 });
