@@ -173,20 +173,14 @@ export function traverseGraph(
 			WHERE r.depth > 0
 			ORDER BY r.depth ASC, m.modified_at DESC`,
 		)
-		.all(
-			startKey,
-			startKey,
-			effectiveDepth,
-			relationParam,
-			relationParam,
-		) as Array<{
-			key: string;
-			depth: number;
-			via_relation: string | null;
-			via_weight: number | null;
-			value: string;
-			modified_at: string;
-		}>;
+		.all(startKey, startKey, effectiveDepth, relationParam, relationParam) as Array<{
+		key: string;
+		depth: number;
+		via_relation: string | null;
+		via_weight: number | null;
+		value: string;
+		modified_at: string;
+	}>;
 
 	return rows.map((r) => ({
 		key: r.key,
@@ -219,11 +213,11 @@ export function getNeighbors(
 				 ORDER BY e.weight DESC, m.modified_at DESC`,
 			)
 			.all(key) as Array<{
-				key: string;
-				relation: string;
-				weight: number;
-				value: string;
-			}>;
+			key: string;
+			relation: string;
+			weight: number;
+			value: string;
+		}>;
 
 		for (const e of outEdges) {
 			results.push({
@@ -246,11 +240,11 @@ export function getNeighbors(
 				 ORDER BY e.weight DESC, m.modified_at DESC`,
 			)
 			.all(key) as Array<{
-				key: string;
-				relation: string;
-				weight: number;
-				value: string;
-			}>;
+			key: string;
+			relation: string;
+			weight: number;
+			value: string;
+		}>;
 
 		for (const e of inEdges) {
 			results.push({
@@ -308,11 +302,11 @@ export function graphSeededRetrieval(
 			 LIMIT 10`,
 		)
 		.all(...params) as Array<{
-			key: string;
-			value: string;
-			source: string | null;
-			modified_at: string;
-		}>;
+		key: string;
+		value: string;
+		source: string | null;
+		modified_at: string;
+	}>;
 
 	if (seeds.length === 0) return [];
 
