@@ -3,9 +3,9 @@ import type { AppContext } from "@bound/core";
 import { insertRow } from "@bound/core";
 import { formatError } from "@bound/shared";
 import type { Task } from "@bound/shared";
-import { buildHeartbeatContext } from "./heartbeat-context";
 import { createAdvisory } from "./advisories";
 import type { AgentLoop } from "./agent-loop";
+import { buildHeartbeatContext } from "./heartbeat-context";
 import { canRunHere, computeNextRunAt } from "./task-resolution";
 import type { AgentLoopConfig } from "./types";
 
@@ -294,7 +294,13 @@ export class Scheduler {
 
 			for (const task of tasksToEvict) {
 				rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "heartbeat timeout eviction");
-				rescheduleHeartbeat(this.ctx.db, task, this.ctx.logger, "heartbeat timeout eviction", this.lastUserInteractionAt);
+				rescheduleHeartbeat(
+					this.ctx.db,
+					task,
+					this.ctx.logger,
+					"heartbeat timeout eviction",
+					this.lastUserInteractionAt,
+				);
 
 				const newConsecutiveFailures = (task.consecutive_failures ?? 0) + 1;
 				if (newConsecutiveFailures === task.alert_threshold) {
@@ -500,9 +506,10 @@ export class Scheduler {
 						id: randomUUID(),
 						thread_id: threadId,
 						role: "user",
-						content: task.type === "heartbeat"
-							? buildHeartbeatContext(this.ctx.db, task.last_run_at)
-							: (task.payload ?? "Execute scheduled task."),
+						content:
+							task.type === "heartbeat"
+								? buildHeartbeatContext(this.ctx.db, task.last_run_at)
+								: (task.payload ?? "Execute scheduled task."),
 						model_id: null,
 						tool_name: null,
 						created_at: taskNow,
@@ -537,7 +544,13 @@ export class Scheduler {
 						}
 						// Cron tasks must still reschedule even when the model is temporarily unavailable
 						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "model validation failure");
-					rescheduleHeartbeat(this.ctx.db, task, this.ctx.logger, "model validation failure", this.lastUserInteractionAt);
+						rescheduleHeartbeat(
+							this.ctx.db,
+							task,
+							this.ctx.logger,
+							"model validation failure",
+							this.lastUserInteractionAt,
+						);
 						return; // exit runTask — agent loop is not created
 					}
 				}
@@ -581,7 +594,13 @@ export class Scheduler {
 
 						// Cron tasks still reschedule even after soft errors so they keep retrying
 						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "soft error");
-					rescheduleHeartbeat(this.ctx.db, task, this.ctx.logger, "soft error", this.lastUserInteractionAt);
+						rescheduleHeartbeat(
+							this.ctx.db,
+							task,
+							this.ctx.logger,
+							"soft error",
+							this.lastUserInteractionAt,
+						);
 					} else {
 						// Mark as completed and reset consecutive failure counter
 						this.ctx.db
@@ -592,7 +611,13 @@ export class Scheduler {
 
 						// If cron task, compute next run time
 						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "completion");
-					rescheduleHeartbeat(this.ctx.db, task, this.ctx.logger, "completion", this.lastUserInteractionAt);
+						rescheduleHeartbeat(
+							this.ctx.db,
+							task,
+							this.ctx.logger,
+							"completion",
+							this.lastUserInteractionAt,
+						);
 					}
 				}
 
@@ -656,7 +681,13 @@ export class Scheduler {
 
 					// Cron tasks must reschedule even after hard errors so they keep running on schedule
 					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "hard error");
-					rescheduleHeartbeat(this.ctx.db, task, this.ctx.logger, "hard error", this.lastUserInteractionAt);
+					rescheduleHeartbeat(
+						this.ctx.db,
+						task,
+						this.ctx.logger,
+						"hard error",
+						this.lastUserInteractionAt,
+					);
 				}
 			} finally {
 				this.runningTasks.delete(task.id);
@@ -802,7 +833,13 @@ export class Scheduler {
 
 					// If cron task, compute next run time
 					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "completion");
-					rescheduleHeartbeat(this.ctx.db, task, this.ctx.logger, "template completion", this.lastUserInteractionAt);
+					rescheduleHeartbeat(
+						this.ctx.db,
+						task,
+						this.ctx.logger,
+						"template completion",
+						this.lastUserInteractionAt,
+					);
 				}
 			} catch (error) {
 				const errorMsg = formatError(error);
@@ -817,7 +854,13 @@ export class Scheduler {
 
 					// Cron template tasks must reschedule even after hard errors
 					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "template hard error");
-					rescheduleHeartbeat(this.ctx.db, task, this.ctx.logger, "template hard error", this.lastUserInteractionAt);
+					rescheduleHeartbeat(
+						this.ctx.db,
+						task,
+						this.ctx.logger,
+						"template hard error",
+						this.lastUserInteractionAt,
+					);
 				}
 			} finally {
 				this.runningTasks.delete(task.id);
