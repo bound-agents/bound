@@ -9,11 +9,11 @@ import type { KeyringConfig, Logger } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
 import { ensureKeypair, exportPublicKey } from "../crypto.js";
+import { KeyManager } from "../key-manager.js";
 import { clearColumnCache } from "../reducers.js";
 import { createSyncRoutes } from "../routes.js";
-import { KeyManager } from "../key-manager.js";
-import { SyncTransport } from "../transport.js";
 import { SyncClient } from "../sync-loop.js";
+import { SyncTransport } from "../transport.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -62,7 +62,18 @@ async function createEncryptedHost(
 	const logger = createMockLogger();
 
 	const honoApp = new Hono();
-	const syncRoutes = createSyncRoutes(db, siteId, keyring, eventBus, logger, undefined, undefined, undefined, undefined, keyManager);
+	const syncRoutes = createSyncRoutes(
+		db,
+		siteId,
+		keyring,
+		eventBus,
+		logger,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		keyManager,
+	);
 	honoApp.route("/", syncRoutes);
 
 	const server = Bun.serve({ port: 0, fetch: honoApp.fetch });
@@ -84,8 +95,17 @@ function tempKeypairDir(label: string): string {
 	return dir;
 }
 
-function makeSyncClient(from: EncryptedHost, to: EncryptedHost, keyring: KeyringConfig): SyncClient {
-	const transport = new SyncTransport(from.keyManager, from.privateKey, from.siteId, createMockLogger());
+function makeSyncClient(
+	from: EncryptedHost,
+	to: EncryptedHost,
+	keyring: KeyringConfig,
+): SyncClient {
+	const transport = new SyncTransport(
+		from.keyManager,
+		from.privateKey,
+		from.siteId,
+		createMockLogger(),
+	);
 	return new SyncClient(
 		from.db,
 		from.siteId,
@@ -387,14 +407,6 @@ describe("encrypted sync integration", () => {
 			// Sync each time
 			const result = await clientHubToSpoke.syncCycle();
 			expect(result.ok).toBe(true);
-
-			// Verify all previous threads are on hub
-			for (let j = 0; j <= i; j++) {
-				const allThreads = hub.db.query("SELECT COUNT(*) as cnt FROM threads").get() as {
-					cnt: number;
-				};
-				expect(allThreads.cnt).toBeGreaterThanOrEqual(i + 1);
-			}
 		}
 
 		// Final verification: hub should have all 5 threads

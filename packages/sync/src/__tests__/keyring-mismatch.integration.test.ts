@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,11 +9,11 @@ import type { KeyringConfig, Logger } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
 import { ensureKeypair, exportPublicKey, generateKeypair } from "../crypto.js";
+import { KeyManager } from "../key-manager.js";
 import { clearColumnCache } from "../reducers.js";
 import { createSyncRoutes } from "../routes.js";
-import { KeyManager } from "../key-manager.js";
-import { SyncTransport } from "../transport.js";
 import { SyncClient } from "../sync-loop.js";
+import { SyncTransport } from "../transport.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -172,7 +172,6 @@ describe("keyring mismatch diagnostic", () => {
 		// Create spokeB with a different keypair but fake it as spokeA
 		const spokeBDir = tempKeypairDir("spoke-b");
 		const spokeBKp = await ensureKeypair(spokeBDir);
-		const spokeBPub = await exportPublicKey(spokeBKp.publicKey);
 
 		// Keyring that hub knows (only spokeA's real key)
 		const hubKeyring = keyring;
@@ -239,33 +238,27 @@ describe("keyring mismatch diagnostic", () => {
 		const unknownKeyManager = new KeyManager(unknownKp, unknownKp.siteId);
 		await unknownKeyManager.init(keyring); // Will fail to find its own key for shared secret
 
-		// This will throw or return an error
-		try {
-			const transport = new SyncTransport(
-				unknownKeyManager,
-				unknownKp.privateKey,
-				unknownKp.siteId,
-				createMockLogger(),
-			);
+		const transport = new SyncTransport(
+			unknownKeyManager,
+			unknownKp.privateKey,
+			unknownKp.siteId,
+			createMockLogger(),
+		);
 
-			const client = new SyncClient(
-				unknownDb,
-				unknownKp.siteId,
-				unknownKp.privateKey,
-				`http://localhost:${hub.port}`,
-				createMockLogger(),
-				new TypedEventEmitter(),
-				keyring,
-				transport,
-			);
+		const client = new SyncClient(
+			unknownDb,
+			unknownKp.siteId,
+			unknownKp.privateKey,
+			`http://localhost:${hub.port}`,
+			createMockLogger(),
+			new TypedEventEmitter(),
+			keyring,
+			transport,
+		);
 
-			const result = await client.syncCycle();
-			// Either sync fails or returns an error
-			expect(result.ok).toBe(false);
-		} catch (error) {
-			// Expected: unknown host not in keyring
-			expect(error).toBeDefined();
-		}
+		const result = await client.syncCycle();
+		// Unknown host not in keyring should fail
+		expect(result.ok).toBe(false);
 	});
 
 	// -----------------------------------------------------------------------
@@ -330,7 +323,7 @@ describe("keyring mismatch diagnostic", () => {
 			hosts: {
 				...keyring.hosts,
 				[spokeA.siteId]: {
-					...((keyring.hosts as Record<string, any>)[spokeA.siteId]),
+					...(keyring.hosts as Record<string, { public_key: string; url: string }>)[spokeA.siteId],
 					public_key: newPub,
 				},
 			},

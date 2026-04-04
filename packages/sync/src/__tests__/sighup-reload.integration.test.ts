@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,12 +8,12 @@ import { applySchema } from "@bound/core";
 import type { KeyringConfig, Logger } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
-import { ensureKeypair, exportPublicKey, generateKeypair } from "../crypto.js";
+import { ensureKeypair, exportPublicKey } from "../crypto.js";
+import { KeyManager } from "../key-manager.js";
 import { clearColumnCache } from "../reducers.js";
 import { createSyncRoutes } from "../routes.js";
-import { KeyManager } from "../key-manager.js";
-import { SyncTransport } from "../transport.js";
 import { SyncClient } from "../sync-loop.js";
+import { SyncTransport } from "../transport.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,10 +38,7 @@ interface SighupHost {
 const tempDirs: string[] = [];
 const servers: ReturnType<typeof Bun.serve>[] = [];
 
-async function createSighupHost(
-	keypairDir: string,
-	keyring: KeyringConfig,
-): Promise<SighupHost> {
+async function createSighupHost(keypairDir: string, keyring: KeyringConfig): Promise<SighupHost> {
 	const db = new Database(":memory:");
 	db.run("PRAGMA journal_mode = WAL");
 	db.run("PRAGMA foreign_keys = ON");
@@ -178,7 +175,7 @@ describe("SIGHUP keyring reload", () => {
 		const newKeyring: KeyringConfig = {
 			hosts: {
 				...initialKeyring.hosts,
-				[spokeCKp.siteId]: { public_key: spokeCPub, url: `http://localhost:0` },
+				[spokeCKp.siteId]: { public_key: spokeCPub, url: "http://localhost:0" },
 			},
 		};
 
@@ -204,8 +201,12 @@ describe("SIGHUP keyring reload", () => {
 		// Create new keyring without spokeA
 		const newKeyring: KeyringConfig = {
 			hosts: {
-				[hub.siteId]: (initialKeyring.hosts as Record<string, any>)[hub.siteId],
-				[spokeB.siteId]: (initialKeyring.hosts as Record<string, any>)[spokeB.siteId],
+				[hub.siteId]: (initialKeyring.hosts as Record<string, { public_key: string; url: string }>)[
+					hub.siteId
+				],
+				[spokeB.siteId]: (
+					initialKeyring.hosts as Record<string, { public_key: string; url: string }>
+				)[spokeB.siteId],
 			},
 		};
 
@@ -234,9 +235,13 @@ describe("SIGHUP keyring reload", () => {
 		// Both hubs share the same keyring (same secret for spokeA)
 		const sharedKeyring: KeyringConfig = {
 			hosts: {
-				[hub.siteId]: (initialKeyring.hosts as Record<string, any>)[hub.siteId],
+				[hub.siteId]: (initialKeyring.hosts as Record<string, { public_key: string; url: string }>)[
+					hub.siteId
+				],
 				[hub2Kp.siteId]: { public_key: hub2Pub, url: "http://localhost:0" },
-				[spokeA.siteId]: (initialKeyring.hosts as Record<string, any>)[spokeA.siteId],
+				[spokeA.siteId]: (
+					initialKeyring.hosts as Record<string, { public_key: string; url: string }>
+				)[spokeA.siteId],
 			},
 		};
 
@@ -249,7 +254,7 @@ describe("SIGHUP keyring reload", () => {
 
 		// SpokeA initially syncs with hub (which has both hubs' keys via shared keyring)
 		const client1 = makeSyncClient(spokeA, hub, initialKeyring);
-		const result1 = await client1.syncCycle();
+		const _result1 = await client1.syncCycle();
 		// This will fail because hub doesn't have hub2 in its keyring, but that's OK
 		// The important part is that spokeA can switch to hub2
 
@@ -261,9 +266,9 @@ describe("SIGHUP keyring reload", () => {
 
 		// Verify spokeA can sync with hub2
 		const result2 = await client2.syncCycle();
-		// Should succeed (or at least not fail due to encryption)
-		// The sync succeeds if hub2 can decrypt spokeA's messages
-		expect(result2.ok || result2.error?.status !== 400).toBe(true);
+
+		// Should succeed: hub2 has the same shared secret from keyring
+		expect(result2.ok).toBe(true);
 
 		hub2.server.stop(true);
 	});
