@@ -30,7 +30,8 @@ export type SyncedTableName =
 	| "overlay_index"
 	| "cluster_config"
 	| "advisories"
-	| "skills";
+	| "skills"
+	| "memory_edges";
 
 export type ReducerType = "lww" | "append-only";
 
@@ -242,6 +243,17 @@ export interface Skill {
 	modified_at: string;
 }
 
+export interface MemoryEdge {
+	id: string;
+	source_key: string;
+	target_key: string;
+	relation: string;
+	weight: number;
+	created_at: string;
+	modified_at: string;
+	deleted: number;
+}
+
 /** Maximum file size (in bytes) for storage in the synced files table. */
 export const MAX_FILE_STORAGE_BYTES = 50 * 1024 * 1024; // 50 MB
 
@@ -257,6 +269,7 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	cluster_config: "lww",
 	advisories: "lww",
 	skills: "lww",
+	memory_edges: "lww",
 };
 
 // --- Relay transport types (local-only, not synced) ---

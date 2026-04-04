@@ -3,6 +3,80 @@ import { randomUUID } from "node:crypto";
 import { insertRow, updateRow } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import type { CrossThreadSource, Result } from "@bound/shared";
+import { graphSeededRetrieval } from "./graph-queries";
+
+/**
+ * Common English stop words for keyword filtering.
+ * Used in both graph-seeded and recency-based keyword extraction.
+ */
+const STOP_WORDS = new Set([
+	"the",
+	"a",
+	"an",
+	"is",
+	"are",
+	"was",
+	"were",
+	"be",
+	"been",
+	"being",
+	"have",
+	"has",
+	"had",
+	"do",
+	"does",
+	"did",
+	"will",
+	"would",
+	"could",
+	"should",
+	"may",
+	"might",
+	"shall",
+	"can",
+	"to",
+	"of",
+	"in",
+	"for",
+	"on",
+	"with",
+	"at",
+	"by",
+	"from",
+	"as",
+	"into",
+	"through",
+	"about",
+	"it",
+	"its",
+	"this",
+	"that",
+	"these",
+	"those",
+	"i",
+	"me",
+	"my",
+	"we",
+	"our",
+	"you",
+	"your",
+	"he",
+	"she",
+	"they",
+	"what",
+	"how",
+	"when",
+	"where",
+	"why",
+	"which",
+	"who",
+	"not",
+	"no",
+	"and",
+	"or",
+	"but",
+	"if",
+]);
 
 export interface ExtractionResult {
 	summaryGenerated: boolean;
@@ -292,6 +366,8 @@ export function computeBaseline(
 export interface VolatileEnrichment {
 	memoryDeltaLines: string[];
 	taskDigestLines: string[];
+	graphCount?: number; // entries retrieved via graph (seed + traversal)
+	recencyCount?: number; // entries retrieved via recency fallback
 }
 
 /**
@@ -375,79 +451,18 @@ export function buildVolatileEnrichment(
 		memoryDeltaLines.push(`- ${row.key}: ${row.value} [pinned]`);
 	}
 
-	// Relevance boosting — keyword match against user message to surface old entries
-	// that are topically relevant but outside the recency window.
-	// Max 5 boosted entries to avoid flooding the context.
+	// Check if graph edges exist — if so, use graph-seeded retrieval
+	const edgeCount = db
+		.prepare("SELECT COUNT(*) AS cnt FROM memory_edges WHERE deleted = 0")
+		.get() as { cnt: number };
+	const hasGraphEdges = edgeCount.cnt > 0;
+
+	let graphCount: number | undefined;
+	let recencyCount: number | undefined;
 	const boostedKeys = new Set<string>();
-	if (userMessage && userMessage.length > 0) {
-		const STOP_WORDS = new Set([
-			"the",
-			"a",
-			"an",
-			"is",
-			"are",
-			"was",
-			"were",
-			"be",
-			"been",
-			"being",
-			"have",
-			"has",
-			"had",
-			"do",
-			"does",
-			"did",
-			"will",
-			"would",
-			"could",
-			"should",
-			"may",
-			"might",
-			"shall",
-			"can",
-			"to",
-			"of",
-			"in",
-			"for",
-			"on",
-			"with",
-			"at",
-			"by",
-			"from",
-			"as",
-			"into",
-			"through",
-			"about",
-			"it",
-			"its",
-			"this",
-			"that",
-			"these",
-			"those",
-			"i",
-			"me",
-			"my",
-			"we",
-			"our",
-			"you",
-			"your",
-			"he",
-			"she",
-			"they",
-			"what",
-			"how",
-			"when",
-			"where",
-			"why",
-			"which",
-			"who",
-			"not",
-			"no",
-			"and",
-			"or",
-			"but",
-			"if",
-		]);
+
+	if (hasGraphEdges && userMessage) {
+		// Extract keywords from user message for graph seeding
 		const keywords = userMessage
 			.toLowerCase()
 			.replace(/[^a-z0-9_\s-]/g, " ")
@@ -455,56 +470,165 @@ export function buildVolatileEnrichment(
 			.filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
 
 		if (keywords.length > 0) {
-			// Build LIKE conditions for key and value matching
-			const likeConditions = keywords.map(
-				(kw) => `(LOWER(m.key) LIKE '%' || ? || '%' OR LOWER(m.value) LIKE '%' || ? || '%')`,
-			);
-			const params = keywords.flatMap((kw) => [kw, kw]);
-			const MAX_BOOSTED = 5;
+			// Graph-seeded retrieval
+			const graphResults = graphSeededRetrieval(db, keywords, maxMemory);
 
-			const boostedRows = db
-				.prepare(
-					`SELECT m.key, m.value, m.modified_at
-					 FROM   semantic_memory m
-					 WHERE  m.deleted = 0
-					   AND  m.key NOT LIKE '\\_policy%' ESCAPE '\\'
-					   AND  m.key NOT LIKE '\\_pinned%' ESCAPE '\\'
-					   AND  (${likeConditions.join(" OR ")})
-					 ORDER  BY m.modified_at DESC
-					 LIMIT  ?`,
-				)
-				.all(...params, MAX_BOOSTED) as Array<{
-				key: string;
-				value: string;
-				modified_at: string;
-			}>;
+			// Track keys we've already included (pinned + graph)
+			const includedKeys = new Set<string>(pinnedKeys);
 
-			for (const row of boostedRows) {
-				// Skip if already in delta window or pinned set
-				if (deltaKeys.has(row.key) || pinnedKeys.has(row.key)) continue;
-				boostedKeys.add(row.key);
-				// No truncation for relevance-boosted entries — they were specifically selected
-				memoryDeltaLines.push(`- ${row.key}: ${row.value} [relevant]`);
+			for (const r of graphResults) {
+				if (includedKeys.has(r.key)) continue;
+				includedKeys.add(r.key);
+
+				const tag =
+					r.retrievalMethod === "seed" ? "[seed]" : `[depth ${r.depth}, ${r.viaRelation}]`;
+
+				const valueDisplay = r.value.length > 200 ? `${r.value.substring(0, 200)}...` : r.value;
+				memoryDeltaLines.push(`- ${r.key}: ${valueDisplay} ${tag}`);
+			}
+
+			const graphResultsWithoutPinned = graphResults.filter((r) => !pinnedKeys.has(r.key));
+			graphCount = graphResultsWithoutPinned.length;
+
+			// Recency fallback: fill remaining slots
+			const remaining = maxMemory - graphResultsWithoutPinned.length;
+			if (remaining > 0) {
+				// Use same LEFT JOIN pattern to resolve source labels
+				const recencyEntries = db
+					.prepare(
+						`SELECT m.key, m.value, m.source, m.modified_at,
+						        t_src.trigger_spec AS task_name,
+						        th_src.id AS thread_id,
+						        th_src.title AS thread_title
+						 FROM semantic_memory m
+						 LEFT JOIN tasks t_src ON m.source = t_src.id
+						 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
+						 WHERE m.deleted = 0
+						   AND m.key NOT LIKE '\\_policy%' ESCAPE '\\'
+						   AND m.key NOT LIKE '\\_pinned%' ESCAPE '\\'
+						 ORDER BY m.modified_at DESC
+						 LIMIT ?`,
+					)
+					.all(remaining + includedKeys.size) as Array<{
+					key: string;
+					value: string;
+					source: string | null;
+					modified_at: string;
+					task_name: string | null;
+					thread_id: string | null;
+					thread_title: string | null;
+				}>;
+
+				let addedRecency = 0;
+				for (const entry of recencyEntries) {
+					if (includedKeys.has(entry.key)) continue;
+					includedKeys.add(entry.key);
+
+					const valueDisplay =
+						entry.value.length > 200 ? `${entry.value.substring(0, 200)}...` : entry.value;
+					const sourceLabel = resolveSource(
+						entry.task_name,
+						entry.thread_id,
+						entry.thread_title,
+						entry.source,
+					);
+					const relTime = relativeTime(entry.modified_at);
+					memoryDeltaLines.push(
+						`- ${entry.key}: ${valueDisplay} (${relTime}, via ${sourceLabel}) [recency]`,
+					);
+
+					addedRecency++;
+					if (memoryDeltaLines.length >= maxMemory + pinnedRows.length) break;
+				}
+
+				recencyCount = addedRecency;
+			}
+		} else {
+			// No keywords extracted — fall back to pure recency (AC4.6)
+			// Skip the boost query entirely when no keywords; go straight to delta entries
+
+			// Then delta entries (recency-based)
+			for (const row of visibleMemoryRows) {
+				if (pinnedKeys.has(row.key) || boostedKeys.has(row.key)) continue;
+				const sourceLabel = resolveSource(
+					row.task_name,
+					row.thread_id,
+					row.thread_title,
+					row.source,
+				);
+				const relTime = relativeTime(row.modified_at);
+				if (row.deleted) {
+					memoryDeltaLines.push(`- ${row.key}: [forgotten] (${relTime}, via ${sourceLabel})`);
+				} else {
+					const value = row.value.length > 200 ? `${row.value.slice(0, 200)}...` : row.value;
+					memoryDeltaLines.push(`- ${row.key}: ${value} (${relTime}, via ${sourceLabel})`);
+				}
+			}
+			if (hasMoreMemory) {
+				memoryDeltaLines.push(
+					`... and ${memoryRows.length - maxMemory} more (query semantic_memory for full list)`,
+				);
 			}
 		}
-	}
+	} else {
+		// No graph edges or no user message — existing delta+boost logic unchanged
+		if (userMessage && userMessage.length > 0) {
+			const keywords = userMessage
+				.toLowerCase()
+				.replace(/[^a-z0-9_\s-]/g, " ")
+				.split(/\s+/)
+				.filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
 
-	// Then delta entries (recency-based)
-	for (const row of visibleMemoryRows) {
-		if (pinnedKeys.has(row.key) || boostedKeys.has(row.key)) continue; // Skip if already shown
-		const sourceLabel = resolveSource(row.task_name, row.thread_id, row.thread_title, row.source);
-		const relTime = relativeTime(row.modified_at);
-		if (row.deleted) {
-			memoryDeltaLines.push(`- ${row.key}: [forgotten] (${relTime}, via ${sourceLabel})`);
-		} else {
-			const value = row.value.length > 200 ? `${row.value.slice(0, 200)}...` : row.value;
-			memoryDeltaLines.push(`- ${row.key}: ${value} (${relTime}, via ${sourceLabel})`);
+			if (keywords.length > 0) {
+				// Build LIKE conditions for key and value matching
+				const likeConditions = keywords.map(
+					() => `(LOWER(m.key) LIKE '%' || ? || '%' OR LOWER(m.value) LIKE '%' || ? || '%')`,
+				);
+				const params = keywords.flatMap((kw) => [kw, kw]);
+				const MAX_BOOSTED = 5;
+
+				const boostedRows = db
+					.prepare(
+						`SELECT m.key, m.value, m.modified_at
+						 FROM   semantic_memory m
+						 WHERE  m.deleted = 0
+						   AND  m.key NOT LIKE '\\_policy%' ESCAPE '\\'
+						   AND  m.key NOT LIKE '\\_pinned%' ESCAPE '\\'
+						   AND  (${likeConditions.join(" OR ")})
+						 ORDER  BY m.modified_at DESC
+						 LIMIT  ?`,
+					)
+					.all(...params, MAX_BOOSTED) as Array<{
+					key: string;
+					value: string;
+					modified_at: string;
+				}>;
+
+				for (const row of boostedRows) {
+					if (deltaKeys.has(row.key) || pinnedKeys.has(row.key)) continue;
+					boostedKeys.add(row.key);
+					memoryDeltaLines.push(`- ${row.key}: ${row.value} [relevant]`);
+				}
+			}
 		}
-	}
-	if (hasMoreMemory) {
-		memoryDeltaLines.push(
-			`... and ${memoryRows.length - maxMemory} more (query semantic_memory for full list)`,
-		);
+
+		// Then delta entries (recency-based)
+		for (const row of visibleMemoryRows) {
+			if (pinnedKeys.has(row.key) || boostedKeys.has(row.key)) continue;
+			const sourceLabel = resolveSource(row.task_name, row.thread_id, row.thread_title, row.source);
+			const relTime = relativeTime(row.modified_at);
+			if (row.deleted) {
+				memoryDeltaLines.push(`- ${row.key}: [forgotten] (${relTime}, via ${sourceLabel})`);
+			} else {
+				const value = row.value.length > 200 ? `${row.value.slice(0, 200)}...` : row.value;
+				memoryDeltaLines.push(`- ${row.key}: ${value} (${relTime}, via ${sourceLabel})`);
+			}
+		}
+		if (hasMoreMemory) {
+			memoryDeltaLines.push(
+				`... and ${memoryRows.length - maxMemory} more (query semantic_memory for full list)`,
+			);
+		}
 	}
 
 	// Task digest query — fetch maxTasks+1 to detect overflow
@@ -542,5 +666,5 @@ export function buildVolatileEnrichment(
 		taskDigestLines.push(`... and ${taskRows.length - maxTasks} more (query tasks for full list)`);
 	}
 
-	return { memoryDeltaLines, taskDigestLines };
+	return { memoryDeltaLines, taskDigestLines, graphCount, recencyCount };
 }

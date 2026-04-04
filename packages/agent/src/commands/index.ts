@@ -8,10 +8,9 @@ import { cacheUnpin } from "./cache-unpin";
 import { cacheWarm } from "./cache-warm";
 import { cancel } from "./cancel";
 import { emit } from "./emit";
-import { forget } from "./forget";
 import { help, setCommandRegistry } from "./help";
 import { hostinfo } from "./hostinfo";
-import { memorize } from "./memorize";
+import { memory } from "./memory";
 import { modelHint } from "./model-hint";
 import { purge } from "./purge";
 import { query } from "./query";
@@ -30,8 +29,7 @@ export function getAllCommands(): CommandDefinition[] {
 		help,
 		query,
 		advisory,
-		memorize,
-		forget,
+		memory,
 		schedule,
 		cancel,
 		emit,
@@ -67,8 +65,7 @@ export function addMCPCommands(
 export {
 	advisory,
 	query,
-	memorize,
-	forget,
+	memory,
 	schedule,
 	cancel,
 	emit,

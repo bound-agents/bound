@@ -164,6 +164,22 @@ const FULL_SCHEMA = `
 
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_name ON skills(name) WHERE deleted = 0;
 
+	CREATE TABLE memory_edges (
+		id          TEXT PRIMARY KEY,
+		source_key  TEXT NOT NULL,
+		target_key  TEXT NOT NULL,
+		relation    TEXT NOT NULL,
+		weight      REAL DEFAULT 1.0,
+		created_at  TEXT NOT NULL,
+		modified_at TEXT NOT NULL,
+		deleted     INTEGER DEFAULT 0
+	);
+
+	CREATE UNIQUE INDEX idx_edges_triple
+		ON memory_edges(source_key, target_key, relation) WHERE deleted = 0;
+	CREATE INDEX idx_edges_source ON memory_edges(source_key) WHERE deleted = 0;
+	CREATE INDEX idx_edges_target ON memory_edges(target_key) WHERE deleted = 0;
+
 	CREATE TABLE overlay_index (
 		id TEXT PRIMARY KEY,
 		site_id TEXT NOT NULL,

@@ -238,9 +238,11 @@ function substituteUnsupportedBlocks(
 // Static list of available built-in commands with brief descriptions
 const AVAILABLE_COMMANDS = [
 	{ name: "query", description: "Execute a SELECT query against the database" },
-	{ name: "memorize", description: "Store a key-value memory entry" },
+	{
+		name: "memory",
+		description: "Memory operations: store, forget, search, connect, disconnect (use subcommands)",
+	},
 	{ name: "advisory", description: "Post a proactive advisory for operator review" },
-	{ name: "forget", description: "Soft-delete a memory entry (supports --prefix)" },
 	{ name: "schedule", description: "Schedule a deferred, cron, or event-driven task" },
 	{ name: "cancel", description: "Cancel a scheduled task (supports --payload-match)" },
 	{ name: "emit", description: "Emit a custom event on the event bus" },
@@ -983,7 +985,7 @@ Original output was too large for the context window. If you need the full conte
 		// Extract latest user message for relevance-aware memory boosting
 		const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
 		const userMessageText = lastUserMsg?.content ?? undefined;
-		const { memoryDeltaLines, taskDigestLines } = buildVolatileEnrichment(
+		const { memoryDeltaLines, taskDigestLines, graphCount, recencyCount } = buildVolatileEnrichment(
 			db,
 			enrichmentBaseline,
 			undefined,
@@ -1001,7 +1003,9 @@ Original output was too large for the context window. If you need the full conte
 		// Format and append enrichment, recording start/end indices
 		const memChangedCount = memoryDeltaLines.filter((l) => l.startsWith("- ")).length;
 		let memHeaderLine = `Memory: ${totalMemCount} entries`;
-		if (memChangedCount > 0) {
+		if (graphCount !== undefined && graphCount > 0) {
+			memHeaderLine += ` (${graphCount} via graph, ${recencyCount ?? 0} via recency)`;
+		} else if (memChangedCount > 0) {
 			memHeaderLine += ` (${memChangedCount} changed since your last turn in this thread)`;
 		}
 

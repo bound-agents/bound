@@ -33,7 +33,7 @@ describe("Database Schema", () => {
 		db.close();
 	});
 
-	it("applies schema successfully creating all 17 tables", () => {
+	it("applies schema successfully creating all 18 tables", () => {
 		const db = createDatabase(dbPath);
 		applySchema(db);
 
@@ -45,7 +45,7 @@ describe("Database Schema", () => {
 
 		const tableNames = tables.map((t) => t.name);
 
-		// Verify all 17 tables exist
+		// Verify all 18 tables exist
 		expect(tableNames).toContain("users");
 		expect(tableNames).toContain("threads");
 		expect(tableNames).toContain("messages");
@@ -57,6 +57,7 @@ describe("Database Schema", () => {
 		expect(tableNames).toContain("cluster_config");
 		expect(tableNames).toContain("advisories");
 		expect(tableNames).toContain("skills");
+		expect(tableNames).toContain("memory_edges");
 		expect(tableNames).toContain("change_log");
 		expect(tableNames).toContain("sync_state");
 		expect(tableNames).toContain("host_meta");
@@ -64,7 +65,7 @@ describe("Database Schema", () => {
 		expect(tableNames).toContain("relay_inbox");
 		expect(tableNames).toContain("relay_cycles");
 
-		expect(tableNames.length).toBe(17);
+		expect(tableNames.length).toBe(18);
 
 		db.close();
 	});
@@ -85,6 +86,9 @@ describe("Database Schema", () => {
 		expect(indexNames).toContain("idx_overlay_site_path");
 		expect(indexNames).toContain("idx_files_path");
 		expect(indexNames).toContain("idx_skills_name");
+		expect(indexNames).toContain("idx_edges_triple");
+		expect(indexNames).toContain("idx_edges_source");
+		expect(indexNames).toContain("idx_edges_target");
 		expect(indexNames).toContain("idx_changelog_seq");
 		expect(indexNames).toContain("idx_memory_modified");
 		expect(indexNames).toContain("idx_tasks_last_run");
@@ -126,8 +130,8 @@ describe("Database Schema", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		// Still exactly 17 tables
-		expect(tables.length).toBe(17);
+		// Still exactly 18 tables
+		expect(tables.length).toBe(18);
 
 		db.close();
 	});

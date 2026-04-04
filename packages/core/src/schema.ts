@@ -227,7 +227,32 @@ export function applySchema(db: Database): void {
 			WHERE deleted = 0
 	`);
 
-	// 12. change_log (non-replicated, local-only)
+	// 12. memory_edges (synced)
+	db.run(`
+		CREATE TABLE IF NOT EXISTS memory_edges (
+			id          TEXT PRIMARY KEY,
+			source_key  TEXT NOT NULL,
+			target_key  TEXT NOT NULL,
+			relation    TEXT NOT NULL,
+			weight      REAL DEFAULT 1.0,
+			created_at  TEXT NOT NULL,
+			modified_at TEXT NOT NULL,
+			deleted     INTEGER DEFAULT 0
+		) STRICT
+	`);
+
+	db.run(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_triple
+		ON memory_edges(source_key, target_key, relation) WHERE deleted = 0
+	`);
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_edges_source ON memory_edges(source_key) WHERE deleted = 0
+	`);
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_edges_target ON memory_edges(target_key) WHERE deleted = 0
+	`);
+
+	// 13. change_log (non-replicated, local-only)
 	db.run(`
 		CREATE TABLE IF NOT EXISTS change_log (
 			seq        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -243,7 +268,7 @@ export function applySchema(db: Database): void {
 		CREATE INDEX IF NOT EXISTS idx_changelog_seq ON change_log(seq)
 	`);
 
-	// 13. sync_state (non-replicated, local-only)
+	// 14. sync_state (non-replicated, local-only)
 	db.run(`
 		CREATE TABLE IF NOT EXISTS sync_state (
 			peer_site_id TEXT PRIMARY KEY,

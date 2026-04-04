@@ -52,6 +52,19 @@ describe("reducers", () => {
 				row_data TEXT NOT NULL
 			)
 		`);
+
+		db.run(`
+			CREATE TABLE memory_edges (
+				id          TEXT PRIMARY KEY,
+				source_key  TEXT NOT NULL,
+				target_key  TEXT NOT NULL,
+				relation    TEXT NOT NULL,
+				weight      REAL DEFAULT 1.0,
+				created_at  TEXT NOT NULL,
+				modified_at TEXT NOT NULL,
+				deleted     INTEGER DEFAULT 0
+			)
+		`);
 	});
 
 	afterEach(() => {
@@ -287,6 +300,118 @@ describe("reducers", () => {
 			>;
 			expect(row.value).toBe("new_value");
 			expect(row.source).toBe("original_source");
+		});
+
+		it("inserts new memory_edges row via LWW reducer", () => {
+			const event: ChangeLogEntry = {
+				seq: 1,
+				table_name: "memory_edges",
+				row_id: "edge-1",
+				site_id: "site-a",
+				timestamp: "2026-03-22T10:00:00Z",
+				row_data: JSON.stringify({
+					id: "edge-1",
+					source_key: "memory_a",
+					target_key: "memory_b",
+					relation: "depends_on",
+					weight: 1.0,
+					created_at: "2026-03-22T10:00:00Z",
+					modified_at: "2026-03-22T10:00:00Z",
+				}),
+			};
+
+			const result = applyLWWReducer(db, event);
+
+			expect(result.applied).toBe(true);
+			const row = db.query("SELECT * FROM memory_edges WHERE id = ?").get("edge-1") as Record<
+				string,
+				unknown
+			>;
+			expect(row).toBeDefined();
+			expect(row?.source_key).toBe("memory_a");
+			expect(row?.target_key).toBe("memory_b");
+			expect(row?.relation).toBe("depends_on");
+			expect(row?.weight).toBe(1.0);
+		});
+
+		it("applies LWW to memory_edges: later timestamp wins", () => {
+			// Insert initial edge with earlier timestamp
+			db.run(
+				`INSERT INTO memory_edges (id, source_key, target_key, relation, weight, created_at, modified_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[
+					"edge-1",
+					"memory_a",
+					"memory_b",
+					"depends_on",
+					1.0,
+					"2026-03-22T10:00:00Z",
+					"2026-03-22T10:00:00Z",
+				],
+			);
+
+			// Incoming event with later timestamp and different weight
+			const event: ChangeLogEntry = {
+				seq: 2,
+				table_name: "memory_edges",
+				row_id: "edge-1",
+				site_id: "site-b",
+				timestamp: "2026-03-22T10:05:00Z",
+				row_data: JSON.stringify({
+					id: "edge-1",
+					weight: 0.5,
+					modified_at: "2026-03-22T10:05:00Z",
+				}),
+			};
+
+			const result = applyLWWReducer(db, event);
+
+			expect(result.applied).toBe(true);
+			const row = db.query("SELECT * FROM memory_edges WHERE id = ?").get("edge-1") as Record<
+				string,
+				unknown
+			>;
+			expect(row.weight).toBe(0.5);
+		});
+
+		it("ignores earlier timestamp on memory_edges (LWW)", () => {
+			// Insert edge with later timestamp
+			db.run(
+				`INSERT INTO memory_edges (id, source_key, target_key, relation, weight, created_at, modified_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[
+					"edge-1",
+					"memory_a",
+					"memory_b",
+					"depends_on",
+					0.8,
+					"2026-03-22T10:10:00Z",
+					"2026-03-22T10:10:00Z",
+				],
+			);
+
+			// Incoming event with earlier timestamp (should be ignored)
+			const event: ChangeLogEntry = {
+				seq: 2,
+				table_name: "memory_edges",
+				row_id: "edge-1",
+				site_id: "site-b",
+				timestamp: "2026-03-22T10:00:00Z",
+				row_data: JSON.stringify({
+					id: "edge-1",
+					weight: 0.3,
+					modified_at: "2026-03-22T10:00:00Z",
+				}),
+			};
+
+			const result = applyLWWReducer(db, event);
+
+			expect(result.applied).toBe(false);
+			const row = db.query("SELECT * FROM memory_edges WHERE id = ?").get("edge-1") as Record<
+				string,
+				unknown
+			>;
+			expect(row.weight).toBe(0.8);
 		});
 	});
 
