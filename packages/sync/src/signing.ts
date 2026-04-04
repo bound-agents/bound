@@ -16,7 +16,7 @@ export async function signRequest(
 	siteId: string,
 	method: string,
 	path: string,
-	body: string,
+	body: string | Uint8Array,
 ): Promise<{
 	"X-Site-Id": string;
 	"X-Timestamp": string;
@@ -46,7 +46,7 @@ export async function verifyRequest(
 	method: string,
 	path: string,
 	headers: Record<string, string>,
-	body: string,
+	body: string | Uint8Array,
 ): Promise<Result<{ siteId: string; hostName: string }, SignatureError>> {
 	// Headers are case-insensitive; check both variants
 	const siteId = headers["X-Site-Id"] || headers["x-site-id"];
