@@ -1107,11 +1107,29 @@ export async function runStart(args: StartArgs): Promise<void> {
 	if (syncResult?.ok) {
 		const syncConfig = syncResult.value as { hub: string; sync_interval_seconds: number };
 		try {
-			const { SyncClient, startSyncLoop } = await import("@bound/sync");
+			const { SyncClient, startSyncLoop, KeyManager, SyncTransport } = await import("@bound/sync");
 			const keyringResult = appContext.optionalConfig.keyring;
 			const keyring = keyringResult?.ok
 				? (keyringResult.value as import("@bound/shared").KeyringConfig)
 				: { hosts: {} };
+
+			// Initialize KeyManager and SyncTransport if keyring has peers
+			let transport: import("@bound/sync").SyncTransport | undefined;
+			const hasKeyringPeers = Object.keys(keyring.hosts).length > 0;
+			if (hasKeyringPeers) {
+				const keyManager = new KeyManager(keypair, appContext.siteId);
+				try {
+					await keyManager.init(keyring);
+					appContext.logger.info(
+						`Encryption initialized: ${Object.keys(keyring.hosts).length} peers, local fingerprint ${keyManager.getLocalFingerprint()}`,
+					);
+					transport = new SyncTransport(keyManager, keypair.privateKey, appContext.siteId);
+				} catch (err) {
+					appContext.logger.error("Failed to initialize encryption key manager", { error: err });
+					process.exit(1);
+				}
+			}
+
 			const syncClient = new SyncClient(
 				appContext.db,
 				appContext.siteId,
@@ -1120,6 +1138,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				appContext.logger,
 				appContext.eventBus,
 				keyring,
+				transport,
 			);
 			syncLoopHandle = startSyncLoop(
 				syncClient,
