@@ -25,6 +25,7 @@ export class SyncTransport {
 	 * @param path URL path component for signature (e.g., "/sync/push")
 	 * @param body JSON string to encrypt and send
 	 * @param targetSiteId Site ID of the target host (for symmetric key lookup)
+	 * @param signal Optional AbortSignal for request timeout
 	 */
 	async send(
 		method: string,
@@ -32,6 +33,7 @@ export class SyncTransport {
 		path: string,
 		body: string,
 		targetSiteId: string,
+		signal?: AbortSignal,
 	): Promise<TransportResponse> {
 		const symmetricKey = this.keyManager.getSymmetricKey(targetSiteId);
 		if (!symmetricKey) {
@@ -57,6 +59,7 @@ export class SyncTransport {
 				...signHeaders,
 			},
 			body: Buffer.from(ciphertext),
+			signal,
 		});
 
 		// Decrypt response if encrypted

@@ -3,6 +3,7 @@ import { recordRelayCycle } from "@bound/core";
 import type { KeyringConfig, Logger, RelayInboxEntry } from "@bound/shared";
 import type { ReachabilityTracker } from "./reachability.js";
 import { signRequest } from "./signing.js";
+import type { SyncTransport } from "./transport.js";
 
 export interface EagerPushConfig {
 	privateKey: CryptoKey;
@@ -11,6 +12,7 @@ export interface EagerPushConfig {
 	keyring: KeyringConfig;
 	reachabilityTracker: ReachabilityTracker;
 	logger: Logger;
+	transport?: SyncTransport;
 }
 
 export async function eagerPushToSpoke(
@@ -36,23 +38,36 @@ export async function eagerPushToSpoke(
 	try {
 		const pushStartTime = Date.now();
 		const body = JSON.stringify({ entries });
-		const headers = await signRequest(
-			config.privateKey,
-			config.siteId,
-			"POST",
-			"/api/relay-deliver",
-			body,
-		);
+		let response: Response | import("./transport.js").TransportResponse;
 
-		const response = await fetch(`${host.sync_url}/api/relay-deliver`, {
-			method: "POST",
-			headers: { ...headers, "Content-Type": "application/json" },
-			body,
-			signal: AbortSignal.timeout(5000),
-		});
+		if (config.transport) {
+			response = await config.transport.send(
+				"POST",
+				`${host.sync_url}/api/relay-deliver`,
+				"/api/relay-deliver",
+				body,
+				targetSiteId,
+				AbortSignal.timeout(5000),
+			);
+		} else {
+			const headers = await signRequest(
+				config.privateKey,
+				config.siteId,
+				"POST",
+				"/api/relay-deliver",
+				body,
+			);
+
+			response = await fetch(`${host.sync_url}/api/relay-deliver`, {
+				method: "POST",
+				headers: { ...headers, "Content-Type": "application/json" },
+				body,
+				signal: AbortSignal.timeout(5000),
+			});
+		}
 
 		const pushLatencyMs = Date.now() - pushStartTime;
-		const pushSucceeded = response.ok;
+		const pushSucceeded = "ok" in response ? response.ok : response.status >= 200 && response.status < 300;
 
 		// Record relay cycle for this push batch
 		if (entries.length > 0) {
@@ -71,7 +86,7 @@ export async function eagerPushToSpoke(
 			}
 		}
 
-		if (response.ok) {
+		if (pushSucceeded) {
 			config.reachabilityTracker.recordSuccess(targetSiteId);
 			return true;
 		}

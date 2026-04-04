@@ -846,6 +846,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// Wire the factory into the relay processor so process relays run with full sandbox + tools.
 	relayProcessor.setAgentLoopFactory(agentLoopFactory);
 
+	// Declare transport here — will be initialized in sync section (14) if encryption is configured
+	let transport: import("@bound/sync").SyncTransport | undefined;
+
 	// 12. Web server
 	console.log("Starting web server...");
 	let webServer: Awaited<ReturnType<typeof createWebServer>> | null = null;
@@ -870,6 +873,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 						keyring,
 						reachabilityTracker,
 						logger: appContext.logger,
+						transport,
 					}
 				: undefined;
 
@@ -1140,7 +1144,6 @@ export async function runStart(args: StartArgs): Promise<void> {
 				: { hosts: {} };
 
 			// Initialize KeyManager and SyncTransport if keyring has peers
-			let transport: import("@bound/sync").SyncTransport | undefined;
 			const hasKeyringPeers = Object.keys(keyring.hosts).length > 0;
 			if (hasKeyringPeers) {
 				const keyManager = new KeyManager(keypair, appContext.siteId);
