@@ -163,10 +163,7 @@ describe("defineCommand implementations", () => {
 			});
 
 			it("stores source as taskId when ctx.taskId is set", async () => {
-				await memory.handler(
-					{ subcommand: "store", source: "source_task_key", target: "v" },
-					ctx,
-				);
+				await memory.handler({ subcommand: "store", source: "source_task_key", target: "v" }, ctx);
 				const source = getMemorySource("source_task_key");
 				expect(source).toBe(ctx.taskId);
 			});
@@ -222,9 +219,7 @@ describe("defineCommand implementations", () => {
 
 				// Step 2: Soft-delete it via forget
 				await memory.handler({ subcommand: "forget", source: key }, ctx);
-				const row2 = db
-					.query("SELECT deleted FROM semantic_memory WHERE id = ?")
-					.get(memoryId) as {
+				const row2 = db.query("SELECT deleted FROM semantic_memory WHERE id = ?").get(memoryId) as {
 					deleted: number;
 				};
 				expect(row2.deleted).toBe(1);
@@ -250,10 +245,7 @@ describe("defineCommand implementations", () => {
 
 		describe("forget subcommand", () => {
 			it("should soft-delete a semantic_memory entry", async () => {
-				await memory.handler(
-					{ subcommand: "store", source: "delete_me", target: "content" },
-					ctx,
-				);
+				await memory.handler({ subcommand: "store", source: "delete_me", target: "content" }, ctx);
 
 				const result = await memory.handler({ subcommand: "forget", source: "delete_me" }, ctx);
 
@@ -275,10 +267,7 @@ describe("defineCommand implementations", () => {
 					ctx,
 				);
 
-				const result = await memory.handler(
-					{ subcommand: "search", source: "scheduler" },
-					ctx,
-				);
+				const result = await memory.handler({ subcommand: "search", source: "scheduler" }, ctx);
 
 				expect(result.exitCode).toBe(0);
 				expect(result.stdout).toContain("scheduler_v3");
@@ -291,10 +280,7 @@ describe("defineCommand implementations", () => {
 					ctx,
 				);
 
-				const result = await memory.handler(
-					{ subcommand: "search", source: "interval" },
-					ctx,
-				);
+				const result = await memory.handler({ subcommand: "search", source: "interval" }, ctx);
 
 				expect(result.exitCode).toBe(0);
 				expect(result.stdout).toContain("timing_config");
@@ -311,20 +297,14 @@ describe("defineCommand implementations", () => {
 					ctx,
 				);
 
-				const result = await memory.handler(
-					{ subcommand: "search", source: "apple banana" },
-					ctx,
-				);
+				const result = await memory.handler({ subcommand: "search", source: "apple banana" }, ctx);
 
 				expect(result.exitCode).toBe(0);
 				expect(result.stdout).toContain("Found 2 memories");
 			});
 
 			it("should return message when query has only stop words", async () => {
-				const result = await memory.handler(
-					{ subcommand: "search", source: "the a an" },
-					ctx,
-				);
+				const result = await memory.handler({ subcommand: "search", source: "the a an" }, ctx);
 
 				expect(result.exitCode).toBe(0);
 				expect(result.stdout).toContain("No searchable keywords found");
@@ -341,10 +321,7 @@ describe("defineCommand implementations", () => {
 			});
 
 			it("should return message when less than 3 char keyword is filtered", async () => {
-				const result = await memory.handler(
-					{ subcommand: "search", source: "ab" },
-					ctx,
-				);
+				const result = await memory.handler({ subcommand: "search", source: "ab" }, ctx);
 
 				expect(result.exitCode).toBe(0);
 				expect(result.stdout).toContain("No searchable keywords found");
@@ -352,10 +329,7 @@ describe("defineCommand implementations", () => {
 		});
 
 		it("should return error for unknown subcommand", async () => {
-			const result = await memory.handler(
-				{ subcommand: "nonexistent" },
-				ctx,
-			);
+			const result = await memory.handler({ subcommand: "nonexistent" }, ctx);
 
 			expect(result.exitCode).toBe(1);
 			expect(result.stderr).toContain("unknown subcommand");

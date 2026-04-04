@@ -14,13 +14,72 @@ import { commandError, commandSuccess, handleCommandError } from "./helpers";
 // - neighbors:  source=key, dir=direction_filter
 
 const STOP_WORDS = new Set([
-	"the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-	"have", "has", "had", "do", "does", "did", "will", "would", "could",
-	"should", "may", "might", "shall", "can", "to", "of", "in", "for",
-	"on", "with", "at", "by", "from", "as", "into", "through", "about",
-	"it", "its", "this", "that", "these", "those", "i", "me", "my", "we",
-	"our", "you", "your", "he", "she", "they", "what", "how", "when",
-	"where", "why", "which", "who", "not", "no", "and", "or", "but", "if",
+	"the",
+	"a",
+	"an",
+	"is",
+	"are",
+	"was",
+	"were",
+	"be",
+	"been",
+	"being",
+	"have",
+	"has",
+	"had",
+	"do",
+	"does",
+	"did",
+	"will",
+	"would",
+	"could",
+	"should",
+	"may",
+	"might",
+	"shall",
+	"can",
+	"to",
+	"of",
+	"in",
+	"for",
+	"on",
+	"with",
+	"at",
+	"by",
+	"from",
+	"as",
+	"into",
+	"through",
+	"about",
+	"it",
+	"its",
+	"this",
+	"that",
+	"these",
+	"those",
+	"i",
+	"me",
+	"my",
+	"we",
+	"our",
+	"you",
+	"your",
+	"he",
+	"she",
+	"they",
+	"what",
+	"how",
+	"when",
+	"where",
+	"why",
+	"which",
+	"who",
+	"not",
+	"no",
+	"and",
+	"or",
+	"but",
+	"if",
 ]);
 
 function handleStore(args: Record<string, string>, ctx: CommandContext) {
@@ -134,18 +193,19 @@ function handleSearch(args: Record<string, string>, ctx: CommandContext) {
              ORDER BY modified_at DESC LIMIT 20`,
 		)
 		.all(...params) as Array<{
-			key: string;
-			value: string;
-			source: string | null;
-			modified_at: string;
-		}>;
+		key: string;
+		value: string;
+		source: string | null;
+		modified_at: string;
+	}>;
 
 	if (results.length === 0) {
 		return commandSuccess(`No memories matched: ${queryText}\n`);
 	}
 
 	const lines = results.map(
-		(r) => `- ${r.key}: ${r.value.substring(0, 100)}${r.value.length > 100 ? "..." : ""} [${r.source || "unknown"}]`,
+		(r) =>
+			`- ${r.key}: ${r.value.substring(0, 100)}${r.value.length > 100 ? "..." : ""} [${r.source || "unknown"}]`,
 	);
 	return commandSuccess(`Found ${results.length} memories:\n${lines.join("\n")}\n`);
 }
@@ -205,7 +265,11 @@ function handleDisconnect(args: Record<string, string>, ctx: CommandContext) {
 export const memory: CommandDefinition = {
 	name: "memory",
 	args: [
-		{ name: "subcommand", required: true, description: "Subcommand: store, forget, search, connect, disconnect" },
+		{
+			name: "subcommand",
+			required: true,
+			description: "Subcommand: store, forget, search, connect, disconnect",
+		},
 		{ name: "source", required: false, description: "First positional arg (key/source_key/query)" },
 		{ name: "target", required: false, description: "Second positional arg (value/target_key)" },
 		{ name: "relation", required: false, description: "Relation type (for connect/disconnect)" },

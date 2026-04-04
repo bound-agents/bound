@@ -181,7 +181,7 @@ export class AgentLoop {
 			// Use the resolved model's context window, not the default backend's.
 			// Falls back to default backend caps for remote models or resolution errors.
 			const contextWindow =
-				(resolvedCaps?.max_context) ||
+				resolvedCaps?.max_context ||
 				this.modelRouter.getDefault().capabilities().max_context ||
 				8000;
 

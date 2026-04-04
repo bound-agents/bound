@@ -47,10 +47,7 @@ describe("memory search command", () => {
 		);
 
 		// Search for the keyword that's in the key
-		const result = await memory.handler(
-			{ subcommand: "search", source: "scheduler" },
-			ctx,
-		);
+		const result = await memory.handler({ subcommand: "search", source: "scheduler" }, ctx);
 
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toContain("scheduler_v3");
@@ -65,10 +62,7 @@ describe("memory search command", () => {
 		);
 
 		// Search for the keyword that's in the value
-		const result = await memory.handler(
-			{ subcommand: "search", source: "interval" },
-			ctx,
-		);
+		const result = await memory.handler({ subcommand: "search", source: "interval" }, ctx);
 
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toContain("timing_config");
@@ -77,20 +71,11 @@ describe("memory search command", () => {
 
 	it("should return union of matches with multiple keywords", async () => {
 		// Seed multiple memories
-		await memory.handler(
-			{ subcommand: "store", source: "key_one", target: "apple fruit" },
-			ctx,
-		);
-		await memory.handler(
-			{ subcommand: "store", source: "key_two", target: "banana fruit" },
-			ctx,
-		);
+		await memory.handler({ subcommand: "store", source: "key_one", target: "apple fruit" }, ctx);
+		await memory.handler({ subcommand: "store", source: "key_two", target: "banana fruit" }, ctx);
 
 		// Search with multiple keywords
-		const result = await memory.handler(
-			{ subcommand: "search", source: "apple banana" },
-			ctx,
-		);
+		const result = await memory.handler({ subcommand: "search", source: "apple banana" }, ctx);
 
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toContain("key_one");
@@ -100,16 +85,10 @@ describe("memory search command", () => {
 
 	it("should filter keywords shorter than 3 characters", async () => {
 		// Seed a memory
-		await memory.handler(
-			{ subcommand: "store", source: "test_key", target: "test value" },
-			ctx,
-		);
+		await memory.handler({ subcommand: "store", source: "test_key", target: "test value" }, ctx);
 
 		// Search with only short keywords
-		const result = await memory.handler(
-			{ subcommand: "search", source: "ab cd ef" },
-			ctx,
-		);
+		const result = await memory.handler({ subcommand: "search", source: "ab cd ef" }, ctx);
 
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toContain("No searchable keywords found");
@@ -117,10 +96,7 @@ describe("memory search command", () => {
 
 	it("should filter stop words from query", async () => {
 		// Search with only stop words
-		const result = await memory.handler(
-			{ subcommand: "search", source: "the a an is are" },
-			ctx,
-		);
+		const result = await memory.handler({ subcommand: "search", source: "the a an is are" }, ctx);
 
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toContain("No searchable keywords found");
@@ -158,10 +134,7 @@ describe("memory search command", () => {
 			ctx,
 		);
 
-		const result = await memory.handler(
-			{ subcommand: "search", source: "search_keyword" },
-			ctx,
-		);
+		const result = await memory.handler({ subcommand: "search", source: "search_keyword" }, ctx);
 
 		expect(result.exitCode).toBe(0);
 		// The output should have second_item before first_item (reverse chronological)
@@ -183,10 +156,7 @@ describe("memory search command", () => {
 			);
 		}
 
-		const result = await memory.handler(
-			{ subcommand: "search", source: "search_target" },
-			ctx,
-		);
+		const result = await memory.handler({ subcommand: "search", source: "search_target" }, ctx);
 
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toContain("Found 20 memories");
@@ -203,10 +173,7 @@ describe("memory search command", () => {
 		await memory.handler({ subcommand: "forget", source: "soft_deleted_key" }, ctx);
 
 		// Search for it
-		const result = await memory.handler(
-			{ subcommand: "search", source: "search_term" },
-			ctx,
-		);
+		const result = await memory.handler({ subcommand: "search", source: "search_term" }, ctx);
 
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toContain("No memories matched");
@@ -224,10 +191,7 @@ describe("memory search command", () => {
 			ctx,
 		);
 
-		const result = await memory.handler(
-			{ subcommand: "search", source: "long_value_key" },
-			ctx,
-		);
+		const result = await memory.handler({ subcommand: "search", source: "long_value_key" }, ctx);
 
 		expect(result.exitCode).toBe(0);
 		// Result should truncate at 100 chars and add "..."
@@ -246,10 +210,7 @@ describe("memory search command", () => {
 			ctx,
 		);
 
-		const result = await memory.handler(
-			{ subcommand: "search", source: "sourced_key" },
-			ctx,
-		);
+		const result = await memory.handler({ subcommand: "search", source: "sourced_key" }, ctx);
 
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toContain("custom_source");
@@ -266,10 +227,7 @@ describe("memory search command", () => {
 		);
 
 		// Search with different case
-		const result = await memory.handler(
-			{ subcommand: "search", source: "casetestkey" },
-			ctx,
-		);
+		const result = await memory.handler({ subcommand: "search", source: "casetestkey" }, ctx);
 
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toContain("CaseTestKey");
