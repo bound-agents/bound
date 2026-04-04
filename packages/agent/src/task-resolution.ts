@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { Task, HeartbeatConfig } from "@bound/shared";
+import type { HeartbeatConfig, Task } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 
 // Cron expression parser - supports basic 5-field cron: minute hour day month weekday
@@ -282,7 +282,7 @@ export function seedCronTasks(
 export function seedHeartbeat(
 	db: Database,
 	heartbeatConfig: HeartbeatConfig | undefined,
-	siteId: string,
+	_siteId: string,
 ): void {
 	// Default: enabled with 30min interval
 	const config = heartbeatConfig ?? { enabled: true, interval_ms: 1_800_000 };
