@@ -86,7 +86,7 @@ describe("rescheduleHeartbeat", () => {
 
 	function insertHeartbeatTask(
 		intervalMs: number,
-		status: string = "running",
+		status = "running",
 	): { id: string; taskId: string } {
 		const taskId = randomUUID();
 		const now = new Date().toISOString();
@@ -114,6 +114,7 @@ describe("rescheduleHeartbeat", () => {
 		return { id: taskId, taskId };
 	}
 
+	// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 	function getTask(taskId: string): any {
 		return db.query("SELECT * FROM tasks WHERE id = ?").get(taskId);
 	}
@@ -122,28 +123,15 @@ describe("rescheduleHeartbeat", () => {
 	it("aligns to clock boundaries (AC1.1)", () => {
 		const { taskId } = insertHeartbeatTask(30 * 60 * 1000, "running");
 		const ctx = makeCtx();
+		const lastInteraction = new Date();
 
-		// Mock time to 14:17:45
-		const testTime = new Date("2026-04-04T14:17:45Z").getTime();
-		const lastInteraction = new Date(testTime - 5000); // 5 seconds ago
-
-		// We'll compute the expected boundary manually
-		// 30min = 1_800_000ms
-		// ceil(14:17:45 / 1_800_000) * 1_800_000
-		const intervalMs = 30 * 60 * 1000;
-		const expectedBoundary = Math.ceil(testTime / intervalMs) * intervalMs;
-		const expectedDate = new Date(expectedBoundary);
-
-		// Since we can't easily mock Date.now() without global mutation,
-		// we'll compute what the next boundary should be from current time
-		// and verify it's at a valid clock boundary
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
 
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at, status FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("pending");
 
-		const nextRunTime = new Date(row.next_run_at).getTime();
 		// Check that next_run_at is on a 30-minute boundary
 		// For 30min intervals, should be at :00 or :30
 		const minutes = new Date(row.next_run_at).getUTCMinutes();
@@ -159,6 +147,7 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "completion", lastInteraction);
 
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("pending");
 	});
@@ -172,6 +161,7 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "eviction", lastInteraction);
 
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT status, next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("pending");
 		expect(row.next_run_at).toBeDefined();
@@ -186,6 +176,7 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
 
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		const nextDate = new Date(row.next_run_at);
 		const minutes = nextDate.getUTCMinutes();
@@ -201,6 +192,7 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
 
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		const nextDate = new Date(row.next_run_at);
 		const totalMinutes = nextDate.getUTCHours() * 60 + nextDate.getUTCMinutes();
@@ -217,6 +209,7 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
 
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		const nextDate = new Date(row.next_run_at);
 		const totalMinutes = nextDate.getUTCHours() * 60 + nextDate.getUTCMinutes();
@@ -235,6 +228,7 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
 
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		// With 2x multiplier: 30min becomes 60min effective interval
 		// So boundaries should be at :00 (full hour marks)
@@ -251,6 +245,7 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
 
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		// With 3x multiplier: 30min becomes 90min effective interval
 		const nextDate = new Date(row.next_run_at);
@@ -269,6 +264,7 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
 
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		// With 5x multiplier: 30min becomes 150min effective interval
 		// Verify that next_run_at is in the future
@@ -292,6 +288,7 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "eviction_timeout", lastInteraction);
 
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at, status FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("pending");
 		const nextDate = new Date(row.next_run_at);
@@ -329,6 +326,7 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
 
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("running"); // unchanged
 	});
@@ -368,6 +366,7 @@ describe("rescheduleHeartbeat", () => {
 
 		expect(errorLogged).toBe(true);
 
+		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("running"); // unchanged
 	});
