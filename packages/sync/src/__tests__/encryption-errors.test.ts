@@ -56,7 +56,8 @@ describe("Encryption error handling and logging", () => {
 
 		// The middleware checks: if keyManager exists and no X-Encryption header,
 		// it returns the plaintext rejection error
-		const errorResult = await middleware(mockContext as any, async () => {});
+		// biome-ignore lint/suspicious/noExplicitAny: Mock context for unit test
+		const _errorResult = await middleware(mockContext as any, async () => {});
 
 		// Verify plaintext rejection was logged at WARN level
 		const warnLog = logs.find(
@@ -85,8 +86,8 @@ describe("Encryption error handling and logging", () => {
 				method: "POST",
 				path: "/sync/push",
 				raw: {
-					headers: new Map([
-						["x-encryption", undefined],
+					headers: new Headers([
+						["x-encryption", ""],
 						["x-nonce", "a".repeat(48)],
 					]),
 				},
@@ -97,6 +98,7 @@ describe("Encryption error handling and logging", () => {
 			json: (data: unknown, status?: number) => ({ status, data }),
 		};
 
+		// biome-ignore lint/suspicious/noExplicitAny: Mock context for unit test
 		await middleware(mockContext as any, async () => {});
 
 		// Verify malformed headers was logged at WARN level
@@ -140,6 +142,7 @@ describe("Encryption error handling and logging", () => {
 			json: (data: unknown, status?: number) => ({ status, data }),
 		};
 
+		// biome-ignore lint/suspicious/noExplicitAny: Mock context for unit test
 		await middleware(mockContext as any, async () => {});
 
 		// Verify fingerprint mismatch was logged at WARN level
@@ -151,31 +154,8 @@ describe("Encryption error handling and logging", () => {
 		expect(warnLog?.context?.received).toBe("wrong-fingerprint");
 	});
 
-	it("AC10.3: Decryption failure uses generic hint without oracle details (R-SE11)", async () => {
-		// This test verifies that decryption error responses are plaintext JSON
-		// with generic hints (no specific crypto error details)
-		// The actual full path testing is covered by encrypted-middleware.test.ts
-		// which uses real keypairs and signatures.
-
-		// Verify that logger properly handles error logging for decryption failures
-		const { logger, logs } = createCapturingLogger();
-
-		// Mock a decryption error logging call
-		logger.error("Decryption failed", {
-			siteId: "test-site-1",
-			endpoint: "/sync/push",
-			ciphertextLength: 32,
-		});
-
-		// Verify the error was logged
-		const errorLog = logs.find((l) => l.level === "error" && l.message === "Decryption failed");
-		expect(errorLog).toBeDefined();
-		expect(errorLog?.context?.endpoint).toBe("/sync/push");
-
-		// Verify no crypto-specific details are in the error context
-		expect(JSON.stringify(errorLog?.context)).not.toContain("authentication");
-		expect(JSON.stringify(errorLog?.context)).not.toContain("tag");
-	});
+	// AC10.3 (Decryption failure without oracle details) is tested in encrypted-middleware.test.ts
+	// with real keypairs and signatures. This file focuses on plaintext error taxonomy.
 
 	it("AC11.3: Log levels follow design (WARN/ERROR for failures)", async () => {
 		const { logger, logs } = createCapturingLogger();
@@ -205,6 +185,7 @@ describe("Encryption error handling and logging", () => {
 			json: (data: unknown, status?: number) => ({ status, data }),
 		};
 
+		// biome-ignore lint/suspicious/noExplicitAny: Mock context for unit test
 		await middleware(mockContext as any, async () => {});
 
 		let warnLog = logs.find(
@@ -234,6 +215,7 @@ describe("Encryption error handling and logging", () => {
 			json: (data: unknown, status?: number) => ({ status, data }),
 		};
 
+		// biome-ignore lint/suspicious/noExplicitAny: Mock context for unit test
 		await middleware(mockContext as any, async () => {});
 
 		warnLog = logs.find((l) => l.level === "warn" && l.message === "Key fingerprint mismatch");
