@@ -428,7 +428,13 @@ export class SyncClient {
 				}
 				relayResponse = JSON.parse(tr.body) as RelayResponse;
 			} else {
-				const headers = await signRequest(this.privateKey, this.siteId, "POST", "/sync/relay", body);
+				const headers = await signRequest(
+					this.privateKey,
+					this.siteId,
+					"POST",
+					"/sync/relay",
+					body,
+				);
 
 				const response = await fetch(`${this.hubUrl}/sync/relay`, {
 					method: "POST",

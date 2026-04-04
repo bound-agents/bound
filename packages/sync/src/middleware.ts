@@ -46,15 +46,22 @@ export function createSyncAuthMiddleware(
 						nonceLength: nonceHex?.length,
 					});
 					return c.json(
-						{ error: "malformed_encryption_headers", message: "X-Nonce present without X-Encryption" },
+						{
+							error: "malformed_encryption_headers",
+							message: "X-Nonce present without X-Encryption",
+						},
 						400,
 					);
 				}
-				logger?.warn("Plaintext sync request rejected", { siteId: headers["x-site-id"], endpoint: path });
+				logger?.warn("Plaintext sync request rejected", {
+					siteId: headers["x-site-id"],
+					endpoint: path,
+				});
 				return c.json(
 					{
 						error: "plaintext_rejected",
-						message: "Plaintext sync requests are not accepted. Upgrade to a version with sync encryption.",
+						message:
+							"Plaintext sync requests are not accepted. Upgrade to a version with sync encryption.",
 					},
 					400,
 				);
@@ -68,7 +75,10 @@ export function createSyncAuthMiddleware(
 					nonceLength: nonceHex?.length,
 				});
 				return c.json(
-					{ error: "malformed_encryption_headers", message: `Unsupported encryption: ${encryption}` },
+					{
+						error: "malformed_encryption_headers",
+						message: `Unsupported encryption: ${encryption}`,
+					},
 					400,
 				);
 			}
@@ -79,7 +89,10 @@ export function createSyncAuthMiddleware(
 					nonceLength: nonceHex?.length,
 				});
 				return c.json(
-					{ error: "malformed_encryption_headers", message: "X-Nonce must be 48 hex characters (24 bytes)" },
+					{
+						error: "malformed_encryption_headers",
+						message: "X-Nonce must be 48 hex characters (24 bytes)",
+					},
 					400,
 				);
 			}

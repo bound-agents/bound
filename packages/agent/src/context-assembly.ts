@@ -909,7 +909,10 @@ Original output was too large for the context window. If you need the full conte
 			);
 
 			// Platform-specific formatting constraints
-			if (platformContext.platform === "discord" || platformContext.platform === "discord-interaction") {
+			if (
+				platformContext.platform === "discord" ||
+				platformContext.platform === "discord-interaction"
+			) {
 				volatileLines.push(
 					"Discord formatting: **bold**, *italic*, __underline__, ~~strikethrough~~, " +
 						"`inline code`, ```code blocks```, > block quotes, >>> multi-line quotes, " +

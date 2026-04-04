@@ -733,9 +733,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 					);
 				} catch (err) {
 					// R-SE19: Key derivation failure is FATAL
-					appContext.logger.error("FATAL: Failed to initialize encryption key manager. Sync encryption requires valid Ed25519 keys.", {
-						error: err instanceof Error ? err.message : String(err),
-					});
+					appContext.logger.error(
+						"FATAL: Failed to initialize encryption key manager. Sync encryption requires valid Ed25519 keys.",
+						{
+							error: err instanceof Error ? err.message : String(err),
+						},
+					);
 					process.exit(1);
 				}
 			}
@@ -746,7 +749,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	if (process.env.BOUND_LOG_SYNC_PLAINTEXT === "1") {
 		appContext.logger.warn(
 			"BOUND_LOG_SYNC_PLAINTEXT=1 is set. Decrypted sync request bodies will be logged. " +
-			"This should only be used for debugging and NEVER in production.",
+				"This should only be used for debugging and NEVER in production.",
 		);
 	}
 
@@ -1163,12 +1166,20 @@ export async function runStart(args: StartArgs): Promise<void> {
 					appContext.logger.info(
 						`Encryption initialized: ${Object.keys(keyring.hosts).length} peers, local fingerprint ${keyManager.getLocalFingerprint()}`,
 					);
-					transport = new SyncTransport(keyManager, keypair.privateKey, appContext.siteId, appContext.logger);
+					transport = new SyncTransport(
+						keyManager,
+						keypair.privateKey,
+						appContext.siteId,
+						appContext.logger,
+					);
 				} catch (err) {
 					// R-SE19: Key derivation failure is FATAL
-					appContext.logger.error("FATAL: Failed to initialize encryption key manager. Sync encryption requires valid Ed25519 keys.", {
-						error: err instanceof Error ? err.message : String(err),
-					});
+					appContext.logger.error(
+						"FATAL: Failed to initialize encryption key manager. Sync encryption requires valid Ed25519 keys.",
+						{
+							error: err instanceof Error ? err.message : String(err),
+						},
+					);
 					process.exit(1);
 				}
 			}

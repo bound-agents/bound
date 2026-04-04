@@ -1,17 +1,21 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import type { Logger } from "@bound/shared";
-import { createSyncAuthMiddleware } from "../middleware.js";
 import type { KeyManager } from "../key-manager.js";
+import { createSyncAuthMiddleware } from "../middleware.js";
 
 // Mock logger setup
 function createCapturingLogger() {
 	const logs: { level: string; message: string; context?: Record<string, unknown> }[] = [];
 	return {
 		logger: {
-			debug: (msg: string, ctx?: Record<string, unknown>) => logs.push({ level: "debug", message: msg, context: ctx }),
-			info: (msg: string, ctx?: Record<string, unknown>) => logs.push({ level: "info", message: msg, context: ctx }),
-			warn: (msg: string, ctx?: Record<string, unknown>) => logs.push({ level: "warn", message: msg, context: ctx }),
-			error: (msg: string, ctx?: Record<string, unknown>) => logs.push({ level: "error", message: msg, context: ctx }),
+			debug: (msg: string, ctx?: Record<string, unknown>) =>
+				logs.push({ level: "debug", message: msg, context: ctx }),
+			info: (msg: string, ctx?: Record<string, unknown>) =>
+				logs.push({ level: "info", message: msg, context: ctx }),
+			warn: (msg: string, ctx?: Record<string, unknown>) =>
+				logs.push({ level: "warn", message: msg, context: ctx }),
+			error: (msg: string, ctx?: Record<string, unknown>) =>
+				logs.push({ level: "error", message: msg, context: ctx }),
 		} as Logger,
 		logs,
 	};
@@ -55,7 +59,9 @@ describe("Encryption error handling and logging", () => {
 		const errorResult = await middleware(mockContext as any, async () => {});
 
 		// Verify plaintext rejection was logged at WARN level
-		const warnLog = logs.find((l) => l.level === "warn" && l.message === "Plaintext sync request rejected");
+		const warnLog = logs.find(
+			(l) => l.level === "warn" && l.message === "Plaintext sync request rejected",
+		);
 		expect(warnLog).toBeDefined();
 		expect(warnLog?.context?.endpoint).toBe("/sync/push");
 	});
@@ -94,7 +100,9 @@ describe("Encryption error handling and logging", () => {
 		await middleware(mockContext as any, async () => {});
 
 		// Verify malformed headers was logged at WARN level
-		const warnLog = logs.find((l) => l.level === "warn" && l.message === "Malformed encryption headers");
+		const warnLog = logs.find(
+			(l) => l.level === "warn" && l.message === "Malformed encryption headers",
+		);
 		expect(warnLog).toBeDefined();
 		expect(warnLog?.context?.nonceLength).toBe(48);
 	});
@@ -103,7 +111,8 @@ describe("Encryption error handling and logging", () => {
 		const { logger, logs } = createCapturingLogger();
 
 		const mockKeyManager = {
-			getFingerprint: (siteId: string) => (siteId === "test-site-1" ? "expected-fingerprint-123" : null),
+			getFingerprint: (siteId: string) =>
+				siteId === "test-site-1" ? "expected-fingerprint-123" : null,
 			getSymmetricKey: () => null,
 			getLocalFingerprint: () => "local-fingerprint",
 			init: async () => {},
@@ -134,7 +143,9 @@ describe("Encryption error handling and logging", () => {
 		await middleware(mockContext as any, async () => {});
 
 		// Verify fingerprint mismatch was logged at WARN level
-		const warnLog = logs.find((l) => l.level === "warn" && l.message === "Key fingerprint mismatch");
+		const warnLog = logs.find(
+			(l) => l.level === "warn" && l.message === "Key fingerprint mismatch",
+		);
 		expect(warnLog).toBeDefined();
 		expect(warnLog?.context?.expected).toBe("expected-fingerprint-123");
 		expect(warnLog?.context?.received).toBe("wrong-fingerprint");
@@ -196,7 +207,9 @@ describe("Encryption error handling and logging", () => {
 
 		await middleware(mockContext as any, async () => {});
 
-		let warnLog = logs.find((l) => l.level === "warn" && l.message === "Plaintext sync request rejected");
+		let warnLog = logs.find(
+			(l) => l.level === "warn" && l.message === "Plaintext sync request rejected",
+		);
 		expect(warnLog).toBeDefined();
 
 		logs.length = 0; // Clear logs

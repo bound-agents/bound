@@ -57,9 +57,7 @@ function coerceArgsFromSchema(
 
 		// Enum case normalization: find case-insensitive match
 		if (propSchema.enum && propSchema.enum.length > 0) {
-			const match = propSchema.enum.find(
-				(e) => e.toLowerCase() === value.toLowerCase(),
-			);
+			const match = propSchema.enum.find((e) => e.toLowerCase() === value.toLowerCase());
 			if (match) coerced[key] = match;
 		}
 	}

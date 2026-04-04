@@ -417,12 +417,7 @@ describe("AgentLoop", () => {
 
 	it("should pass bash tool command directly to sandbox exec", async () => {
 		const mockBackend = new MockLLMBackend();
-		mockBackend.setToolThenTextResponse(
-			"tool-echo",
-			"bash",
-			{ command: "echo hello" },
-			"Done.",
-		);
+		mockBackend.setToolThenTextResponse("tool-echo", "bash", { command: "echo hello" }, "Done.");
 
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();

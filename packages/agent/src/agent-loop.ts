@@ -148,12 +148,16 @@ export class AgentLoop {
 						requestedModel: this.config.modelId,
 						fallbackModel: fallbackResolution.modelId,
 					});
-					insertThreadMessage(this.ctx.db, {
-						threadId: this.config.threadId,
-						role: "alert",
-						content: warningMsg,
-						hostOrigin: this.ctx.hostName,
-					}, this.ctx.siteId);
+					insertThreadMessage(
+						this.ctx.db,
+						{
+							threadId: this.config.threadId,
+							role: "alert",
+							content: warningMsg,
+							hostOrigin: this.ctx.hostName,
+						},
+						this.ctx.siteId,
+					);
 					this.lastModelResolution = fallbackResolution;
 				}
 			}
@@ -382,28 +386,33 @@ export class AgentLoop {
 								requirements,
 							);
 							if (newResolution.kind !== "error") {
-								const previousModelId = getResolvedModelId(
-									this.lastModelResolution,
-									backendId,
-								);
+								const previousModelId = getResolvedModelId(this.lastModelResolution, backendId);
 								const newModelId = newResolution.modelId;
 								this.lastModelResolution = newResolution;
 
 								if (previousModelId !== newModelId) {
 									const switchMsg = `Model switched from ${previousModelId} to ${newModelId} (rate limit on ${previousModelId})`;
 									llmMessages.push({ role: "system", content: switchMsg });
-									insertThreadMessage(this.ctx.db, {
-										threadId: this.config.threadId,
-										role: "system",
-										content: switchMsg,
-										hostOrigin: this.ctx.hostName,
-									}, this.ctx.siteId);
+									insertThreadMessage(
+										this.ctx.db,
+										{
+											threadId: this.config.threadId,
+											role: "system",
+											content: switchMsg,
+											hostOrigin: this.ctx.hostName,
+										},
+										this.ctx.siteId,
+									);
 									this.messagesCreated++;
 								}
 
 								this.ctx.logger.info(
 									"[agent-loop] Rate-limit fallback: re-resolved to alternative backend",
-									{ previousBackend: backendId, newBackend: newModelId, newKind: newResolution.kind },
+									{
+										previousBackend: backendId,
+										newBackend: newModelId,
+										newKind: newResolution.kind,
+									},
 								);
 								transportRetries = 0;
 								continue;
@@ -420,12 +429,16 @@ export class AgentLoop {
 					const errorMsg = formatError(error);
 					this.ctx.logger.error("LLM call failed", { error: errorMsg });
 
-					insertThreadMessage(this.ctx.db, {
-						threadId: this.config.threadId,
-						role: "alert",
-						content: `Error: ${errorMsg}`,
-						hostOrigin: this.ctx.hostName,
-					}, this.ctx.siteId);
+					insertThreadMessage(
+						this.ctx.db,
+						{
+							threadId: this.config.threadId,
+							role: "alert",
+							content: `Error: ${errorMsg}`,
+							hostOrigin: this.ctx.hostName,
+						},
+						this.ctx.siteId,
+					);
 
 					return {
 						messagesCreated: this.messagesCreated,
@@ -438,16 +451,20 @@ export class AgentLoop {
 				this.state = "PARSE_RESPONSE";
 				const parsed = this.parseResponseChunks(chunks);
 
-					// Aborted mid-stream with no done chunk — persist notice and exit
+				// Aborted mid-stream with no done chunk — persist notice and exit
 				if (this.aborted && parsed.usage.inputTokens === 0 && parsed.usage.outputTokens === 0) {
-					insertThreadMessage(this.ctx.db, {
-						threadId: this.config.threadId,
-						role: "system",
-						content:
-							"[Turn cancelled] The previous inference was cancelled before it could complete. " +
-							"No response was generated for the last user message.",
-						hostOrigin: this.ctx.hostName,
-					}, this.ctx.siteId);
+					insertThreadMessage(
+						this.ctx.db,
+						{
+							threadId: this.config.threadId,
+							role: "system",
+							content:
+								"[Turn cancelled] The previous inference was cancelled before it could complete. " +
+								"No response was generated for the last user message.",
+							hostOrigin: this.ctx.hostName,
+						},
+						this.ctx.siteId,
+					);
 					this.messagesCreated++;
 					break;
 				}
@@ -588,28 +605,36 @@ export class AgentLoop {
 						input: tc.input,
 					}));
 
-					insertThreadMessage(this.ctx.db, {
-						threadId: this.config.threadId,
-						role: "tool_call",
-						content: JSON.stringify(toolCallBlocks),
-						hostOrigin: this.ctx.hostName,
-						modelId: resolvedModelId,
-					}, this.ctx.siteId);
+					insertThreadMessage(
+						this.ctx.db,
+						{
+							threadId: this.config.threadId,
+							role: "tool_call",
+							content: JSON.stringify(toolCallBlocks),
+							hostOrigin: this.ctx.hostName,
+							modelId: resolvedModelId,
+						},
+						this.ctx.siteId,
+					);
 					this.messagesCreated++;
 
 					// In-memory context uses ContentBlock array (not JSON string)
 					llmMessages.push({ role: "tool_call", content: toolCallBlocks });
 
 					for (const { toolCall, content, exitCode } of toolResults) {
-						insertThreadMessage(this.ctx.db, {
-							threadId: this.config.threadId,
-							role: "tool_result",
-							content,
-							hostOrigin: this.ctx.hostName,
-							modelId: resolvedModelId,
-							toolName: toolCall.id,
-							exitCode,
-						}, this.ctx.siteId);
+						insertThreadMessage(
+							this.ctx.db,
+							{
+								threadId: this.config.threadId,
+								role: "tool_result",
+								content,
+								hostOrigin: this.ctx.hostName,
+								modelId: resolvedModelId,
+								toolName: toolCall.id,
+								exitCode,
+							},
+							this.ctx.siteId,
+						);
 						this.messagesCreated++;
 
 						llmMessages.push({
@@ -622,13 +647,17 @@ export class AgentLoop {
 					// Timestamp computed AFTER tool_result loop to sort after all results
 					// (avoids sub-ms collisions that break Bedrock tool_call pairing)
 					if (parsed.textContent) {
-						insertThreadMessage(this.ctx.db, {
-							threadId: this.config.threadId,
-							role: "assistant",
-							content: parsed.textContent,
-							hostOrigin: this.ctx.hostName,
-							modelId: resolvedModelId,
-						}, this.ctx.siteId);
+						insertThreadMessage(
+							this.ctx.db,
+							{
+								threadId: this.config.threadId,
+								role: "assistant",
+								content: parsed.textContent,
+								hostOrigin: this.ctx.hostName,
+								modelId: resolvedModelId,
+							},
+							this.ctx.siteId,
+						);
 						this.messagesCreated++;
 					}
 
@@ -652,13 +681,17 @@ export class AgentLoop {
 					parsed.textContent || (this.toolCallsMade > 0 ? "[turn complete]" : "");
 
 				if (assistantContent) {
-					insertThreadMessage(this.ctx.db, {
-						threadId: this.config.threadId,
-						role: "assistant",
-						content: assistantContent,
-						hostOrigin: this.ctx.hostName,
-						modelId: resolvedModelId,
-					}, this.ctx.siteId);
+					insertThreadMessage(
+						this.ctx.db,
+						{
+							threadId: this.config.threadId,
+							role: "assistant",
+							content: assistantContent,
+							hostOrigin: this.ctx.hostName,
+							modelId: resolvedModelId,
+						},
+						this.ctx.siteId,
+					);
 					this.messagesCreated++;
 				}
 
@@ -720,12 +753,16 @@ export class AgentLoop {
 			const errorMsg = formatError(error);
 
 			try {
-				insertThreadMessage(this.ctx.db, {
-					threadId: this.config.threadId,
-					role: "alert",
-					content: `Agent loop error: ${errorMsg}`,
-					hostOrigin: this.ctx.hostName,
-				}, this.ctx.siteId);
+				insertThreadMessage(
+					this.ctx.db,
+					{
+						threadId: this.config.threadId,
+						role: "alert",
+						content: `Agent loop error: ${errorMsg}`,
+						hostOrigin: this.ctx.hostName,
+					},
+					this.ctx.siteId,
+				);
 			} catch {
 				// DB itself may be the problem
 			}

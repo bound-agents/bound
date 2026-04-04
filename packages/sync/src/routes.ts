@@ -5,8 +5,8 @@ import type { KeyringConfig, Logger, RelayInboxEntry, TypedEventEmitter } from "
 import { Hono } from "hono";
 import { type RelayRequest, type RelayResponse, fetchInboundChangeset } from "./changeset.js";
 import { type EagerPushConfig, eagerPushToSpoke } from "./eager-push.js";
-import { createSyncAuthMiddleware } from "./middleware.js";
 import type { KeyManager } from "./key-manager.js";
+import { createSyncAuthMiddleware } from "./middleware.js";
 import { updatePeerCursor } from "./peer-cursor.js";
 import { replayEvents } from "./reducers.js";
 import { type RelayExecutor, noopRelayExecutor } from "./relay-executor.js";
