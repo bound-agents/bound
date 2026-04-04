@@ -85,6 +85,67 @@ describe("AnthropicDriver", () => {
 		expect(request.messages[0].content).toEqual([{ type: "text", text: "Hello, world!" }]);
 	});
 
+	it("should preserve image ContentBlocks in user messages", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-3-sonnet-20240229",
+			contextWindow: 200000,
+		});
+
+		const messages: LLMMessage[] = [
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: "What is in this image?" },
+					{
+						type: "image",
+						source: {
+							type: "base64",
+							media_type: "image/png",
+							data: "iVBORw0KGgo=",
+						},
+					},
+				],
+			},
+		];
+
+		let requestBody: string | null = null;
+
+		global.fetch = (async (url: string, options: RequestInit) => {
+			if (url.includes("anthropic.com")) {
+				requestBody = options.body as string;
+				const mockResponse = `data: ${JSON.stringify({
+					type: "message_start",
+					message: {
+						id: "msg-123",
+						type: "message",
+						role: "assistant",
+						content: [],
+						usage: { input_tokens: 10, output_tokens: 0 },
+					},
+				})}\n`;
+				return new Response(mockResponse, {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			}
+			return new Response("Not found", { status: 404 });
+		}) as typeof fetch;
+
+		for await (const _chunk of driver.chat({ model: "claude-3-sonnet-20240229", messages })) {
+			// consume
+		}
+
+		expect(requestBody).not.toBeNull();
+		const request = JSON.parse(requestBody!);
+		const userContent = request.messages[0].content;
+		expect(userContent.length).toBe(2);
+		expect(userContent[0]).toEqual({ type: "text", text: "What is in this image?" });
+		expect(userContent[1].type).toBe("image");
+		expect(userContent[1].source.type).toBe("base64");
+		expect(userContent[1].source.data).toBe("iVBORw0KGgo=");
+	});
+
 	it("should translate tool_call message correctly", async () => {
 		const driver = new AnthropicDriver({
 			apiKey: "test-key",

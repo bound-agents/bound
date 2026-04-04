@@ -734,11 +734,25 @@ Original output was too large for the context window. If you need the full conte
 			lastAssistantModel = m.model_id;
 		}
 
+		// Parse JSON ContentBlock[] strings back into arrays.
+		// The DB stores image/document messages as JSON-serialized ContentBlock[].
+		// Parse them here so Stage 5b substitution and drivers receive proper arrays.
+		let annotatedContent: string | ContentBlock[] = m.content;
+		if (typeof m.content === "string" && (m.role === "user" || m.role === "assistant")) {
+			try {
+				const parsed = JSON.parse(m.content);
+				if (Array.isArray(parsed) && parsed.length > 0 && parsed[0]?.type) {
+					annotatedContent = parsed as ContentBlock[];
+				}
+			} catch {
+				// Not JSON — keep as plain text string
+			}
+		}
+
 		// Annotate user and assistant messages with relative timestamps
 		// so the agent can detect session boundaries and temporal gaps.
 		// Tool messages are left as-is to avoid corrupting structured content.
 		// Only annotate when the message is >= 1 minute old (no value in "[just now]").
-		let annotatedContent = m.content;
 		if ((m.role === "user" || m.role === "assistant") && m.created_at) {
 			const ageMs = Date.now() - new Date(m.created_at).getTime();
 			if (ageMs >= 60_000 && typeof annotatedContent === "string") {

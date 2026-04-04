@@ -1676,6 +1676,64 @@ This skill reviews pull requests.`;
 		});
 	});
 
+	describe("Stage 5: ContentBlock[] parsing", () => {
+		it("parses JSON ContentBlock[] strings into arrays for image messages", () => {
+			const imgThreadId = randomUUID();
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[imgThreadId, userId, "web", "local", 0, "Image Test", null, null, null, null, new Date().toISOString(), new Date().toISOString(), new Date().toISOString(), 0],
+			);
+
+			const imageContent = JSON.stringify([
+				{ type: "text", text: "Check this image" },
+				{ type: "image", source: { type: "base64", media_type: "image/png", data: "abc123" }, description: "a screenshot" },
+			]);
+
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), imgThreadId, "user", imageContent, null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+			);
+
+			const { messages } = assembleContext({
+				db,
+				threadId: imgThreadId,
+				userId,
+			});
+
+			const userMsg = messages.find((m) => m.role === "user");
+			expect(userMsg).toBeDefined();
+			// Content should be parsed into ContentBlock[] array, not left as JSON string
+			expect(Array.isArray(userMsg!.content)).toBe(true);
+			const blocks = userMsg!.content as Array<{ type: string; [k: string]: unknown }>;
+			expect(blocks.length).toBe(2);
+			expect(blocks[0].type).toBe("text");
+			expect(blocks[1].type).toBe("image");
+		});
+
+		it("leaves plain text content as string", () => {
+			const plainThreadId = randomUUID();
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[plainThreadId, userId, "web", "local", 0, "Plain Test", null, null, null, null, new Date().toISOString(), new Date().toISOString(), new Date().toISOString(), 0],
+			);
+
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), plainThreadId, "user", "Just a normal message", null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+			);
+
+			const { messages } = assembleContext({
+				db,
+				threadId: plainThreadId,
+				userId,
+			});
+
+			const userMsg = messages.find((m) => m.role === "user");
+			expect(userMsg).toBeDefined();
+			expect(typeof userMsg!.content).toBe("string");
+		});
+	});
+
 	describe("Stage 5: timestamp annotations", () => {
 		it("annotates user messages with relative timestamps", () => {
 			const tsThreadId = randomUUID();

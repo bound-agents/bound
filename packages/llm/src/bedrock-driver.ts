@@ -3,7 +3,7 @@ import {
 	ConverseStreamCommand,
 	type ConverseStreamCommandOutput,
 } from "@aws-sdk/client-bedrock-runtime";
-import type { Message, SystemContentBlock, Tool } from "@aws-sdk/client-bedrock-runtime";
+import type { ContentBlock as BedrockContentBlock, Message, SystemContentBlock, Tool } from "@aws-sdk/client-bedrock-runtime";
 import { formatError } from "@bound/shared";
 import type { DocumentType } from "@smithy/types";
 import { withRetry } from "./retry";
@@ -109,8 +109,29 @@ function toBedrockMessages(messages: LLMMessage[]): Message[] {
 		// user / assistant with plain text or content blocks
 		const role = msg.role as "user" | "assistant";
 		if (Array.isArray(msg.content)) {
-			const text = extractTextFromBlocks(msg.content);
-			result.push({ role, content: [{ text }] });
+			const content: BedrockContentBlock[] = [];
+			for (const block of msg.content) {
+				if (block.type === "text" && block.text) {
+					content.push({ text: block.text });
+				} else if (block.type === "image" && block.source) {
+					const src = block.source;
+					if (src.type === "base64") {
+						const format = src.media_type.replace("image/", "") as "png" | "jpeg" | "gif" | "webp";
+						content.push({
+							image: {
+								format,
+								source: {
+									bytes: Uint8Array.from(atob(src.data), (c) => c.charCodeAt(0)),
+								},
+							},
+						});
+					}
+				}
+			}
+			if (content.length === 0) {
+				content.push({ text: extractTextFromBlocks(msg.content) || "" });
+			}
+			result.push({ role, content });
 		} else {
 			result.push({ role, content: [{ text: msg.content }] });
 		}

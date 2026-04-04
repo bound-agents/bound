@@ -8,17 +8,24 @@ import {
 } from "./stream-utils";
 import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
 
+interface AnthropicContentBlock {
+	type: "text" | "tool_use" | "tool_result" | "image";
+	text?: string;
+	id?: string;
+	name?: string;
+	input?: Record<string, unknown>;
+	tool_use_id?: string;
+	content?: Array<{ type: "text"; text: string }>;
+	source?: {
+		type: "base64";
+		media_type: string;
+		data: string;
+	};
+}
+
 interface AnthropicMessage {
 	role: "user" | "assistant";
-	content: Array<{
-		type: "text" | "tool_use" | "tool_result";
-		text?: string;
-		id?: string;
-		name?: string;
-		input?: Record<string, unknown>;
-		tool_use_id?: string;
-		content?: Array<{ type: "text"; text: string }>;
-	}>;
+	content: AnthropicContentBlock[];
 	cache_control?: { type: "ephemeral"; ttl?: "5m" | "1h" };
 }
 
@@ -123,12 +130,31 @@ function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] {
 					});
 				}
 			} else {
-				// Regular message with text content
-				const textContent = extractTextFromBlocks(msg.content);
-
+				// Regular message — preserve text, image, and document blocks
+				const content: AnthropicContentBlock[] = [];
+				for (const block of msg.content) {
+					if (block.type === "text" && block.text) {
+						content.push({ type: "text", text: block.text });
+					} else if (block.type === "image" && block.source) {
+						const src = block.source;
+						if (src.type === "base64") {
+							content.push({
+								type: "image",
+								source: {
+									type: "base64",
+									media_type: src.media_type,
+									data: src.data,
+								},
+							});
+						}
+					}
+				}
+				if (content.length === 0) {
+					content.push({ type: "text", text: "" });
+				}
 				result.push({
 					role: msg.role as "user" | "assistant",
-					content: [{ type: "text", text: textContent }],
+					content,
 				});
 			}
 		} else {

@@ -8,9 +8,13 @@ import {
 } from "./stream-utils";
 import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
 
+type OpenAIContentPart =
+	| { type: "text"; text: string }
+	| { type: "image_url"; image_url: { url: string; detail?: "auto" | "low" | "high" } };
+
 interface OpenAIMessage {
 	role: "user" | "assistant" | "tool" | "system";
-	content: string;
+	content: string | OpenAIContentPart[];
 	tool_calls?: Array<{
 		id: string;
 		type: "function";
@@ -102,13 +106,36 @@ function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 					tool_call_id: msg.tool_use_id,
 				});
 			} else {
-				// Regular message with text content
-				const textContent = extractTextFromBlocks(msg.content);
-
-				result.push({
-					role: msg.role as "user" | "assistant" | "system",
-					content: textContent,
-				});
+				// Regular message — preserve images as OpenAI vision content parts
+				const hasImages = msg.content.some((b) => b.type === "image");
+				if (hasImages) {
+					const parts: OpenAIContentPart[] = [];
+					for (const block of msg.content) {
+						if (block.type === "text" && block.text) {
+							parts.push({ type: "text", text: block.text });
+						} else if (block.type === "image" && block.source) {
+							const src = block.source;
+							if (src.type === "base64") {
+								parts.push({
+									type: "image_url",
+									image_url: {
+										url: `data:${src.media_type};base64,${src.data}`,
+									},
+								});
+							}
+						}
+					}
+					result.push({
+						role: msg.role as "user" | "assistant" | "system",
+						content: parts.length > 0 ? parts : extractTextFromBlocks(msg.content),
+					});
+				} else {
+					const textContent = extractTextFromBlocks(msg.content);
+					result.push({
+						role: msg.role as "user" | "assistant" | "system",
+						content: textContent,
+					});
+				}
 			}
 		} else {
 			// Handle string content
