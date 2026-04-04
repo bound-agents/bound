@@ -136,6 +136,7 @@ describe("Quiescence note injection", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
+	// biome-ignore lint/correctness/noUnusedVariables: Helper for potential future use
 	function makeCtx(): AppContext {
 		return {
 			db,
@@ -215,7 +216,10 @@ describe("Quiescence note injection", () => {
 		return { taskId, threadId: tid };
 	}
 
-	function insertCronTask(schedule: string, threadId?: string): { taskId: string; threadId: string } {
+	function insertCronTask(
+		schedule: string,
+		threadId?: string,
+	): { taskId: string; threadId: string } {
 		const taskId = randomUUID();
 		const tid = threadId || randomUUID();
 		const now = new Date().toISOString();
@@ -254,23 +258,19 @@ describe("Quiescence note injection", () => {
 		return { taskId, threadId: tid };
 	}
 
+	// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result
 	function getThreadMessages(threadId: string): Array<any> {
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result
-		return db.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC").all(threadId) as any[];
-	}
-
-	function hasQuiescenceNote(messages: Array<any>): boolean {
-		return messages.some((msg) => msg.content && msg.content.includes("Quiescence is active"));
-	}
-
-	function getQuiescenceNote(messages: Array<any>): any {
-		return messages.find((msg) => msg.content && msg.content.includes("Quiescence is active"));
+		return (
+			db
+				.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC")
+				// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result cast
+				.all(threadId) as any[]
+		);
 	}
 
 	// AC5.2: Heartbeat quiescence note
 	it("injects quiescence note for heartbeat tasks when idle > 30min (AC5.2)", () => {
-		const { taskId, threadId } = insertHeartbeatTask(30 * 60 * 1000);
-		const ctx = makeCtx();
+		const { threadId } = insertHeartbeatTask(30 * 60 * 1000);
 
 		// Simulate 2 hours idle (falls into tier 1: 3x)
 		const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
@@ -291,8 +291,7 @@ describe("Quiescence note injection", () => {
 
 	// AC5.3: Cron quiescence note
 	it("injects quiescence note for cron tasks when idle > 30min (AC5.3)", () => {
-		const { taskId, threadId } = insertCronTask("0 * * * *"); // Hourly
-		const ctx = makeCtx();
+		const { threadId } = insertCronTask("0 * * * *"); // Hourly
 
 		// Simulate 3 hours idle (falls into tier 1: 3x)
 		const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
@@ -306,8 +305,7 @@ describe("Quiescence note injection", () => {
 
 	// AC5.4: No quiescence note when system is active
 	it("does not inject quiescence note when idle < 30min (AC5.4)", () => {
-		const { taskId, threadId } = insertHeartbeatTask(30 * 60 * 1000);
-		const ctx = makeCtx();
+		const { threadId } = insertHeartbeatTask(30 * 60 * 1000);
 
 		// Simulate only 5 minutes idle (below QUIESCENCE_NOTE_THRESHOLD of 30 minutes)
 		const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
@@ -321,7 +319,8 @@ describe("Quiescence note injection", () => {
 
 	// Verify correct multiplier in heartbeat note
 	it("includes correct 2x multiplier for fresh interaction in heartbeat note", () => {
-		const { taskId, threadId } = insertHeartbeatTask(30 * 60 * 1000);
+		// biome-ignore lint/correctness/noUnusedVariables: Intentional test setup
+		const { threadId } = insertHeartbeatTask(30 * 60 * 1000);
 
 		// Just now (tier 0: 2x)
 		const now = new Date();
@@ -330,17 +329,19 @@ describe("Quiescence note injection", () => {
 	});
 
 	it("includes correct 3x multiplier for 2h idle in heartbeat note", () => {
-		const { taskId, threadId } = insertHeartbeatTask(30 * 60 * 1000);
+		// biome-ignore lint/correctness/noUnusedVariables: Intentional test setup
+		const { threadId } = insertHeartbeatTask(30 * 60 * 1000);
 
 		// 2 hours ago (tier 1: 3x)
 		const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
 		const idleMs = Date.now() - twoHoursAgo.getTime();
 		expect(idleMs).toBeGreaterThan(60 * 60 * 1000); // >= 1h
-		expect(idleMs).toBeLessThan(14.4 * 60 * 60 * 1000); // < 4h (so tier 1)
+		expect(idleMs).toBeLessThan(14_400_000); // < 4h (so tier 1)
 	});
 
 	it("includes correct 5x multiplier for 5h idle in heartbeat note", () => {
-		const { taskId, threadId } = insertHeartbeatTask(30 * 60 * 1000);
+		// biome-ignore lint/correctness/noUnusedVariables: Intentional test setup
+		const { threadId } = insertHeartbeatTask(30 * 60 * 1000);
 
 		// 5 hours ago (tier 2: 5x)
 		const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000);
@@ -350,7 +351,8 @@ describe("Quiescence note injection", () => {
 	});
 
 	it("includes correct 10x multiplier for 13h idle in heartbeat note", () => {
-		const { taskId, threadId } = insertHeartbeatTask(30 * 60 * 1000);
+		// biome-ignore lint/correctness/noUnusedVariables: Intentional test setup
+		const { threadId } = insertHeartbeatTask(30 * 60 * 1000);
 
 		// 13 hours ago (tier 3: 10x)
 		const thirteenHoursAgo = new Date(Date.now() - 13 * 60 * 60 * 1000);
@@ -360,7 +362,8 @@ describe("Quiescence note injection", () => {
 
 	// Verify note format and content
 	it("heartbeat note includes interval information", () => {
-		const { taskId, threadId } = insertHeartbeatTask(30 * 60 * 1000);
+		// biome-ignore lint/correctness/noUnusedVariables: Intentional test setup
+		const { threadId } = insertHeartbeatTask(30 * 60 * 1000);
 
 		// 2 hours idle (3x multiplier)
 		const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
@@ -376,8 +379,8 @@ describe("Quiescence note injection", () => {
 	});
 
 	it("cron note includes schedule information", () => {
-		const schedule = "0 * * * *";
-		const { taskId, threadId } = insertCronTask(schedule);
+		// biome-ignore lint/correctness/noUnusedVariables: Intentional test setup
+		const { threadId } = insertCronTask("0 * * * *");
 
 		// 3 hours idle (3x multiplier)
 		const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
@@ -391,7 +394,8 @@ describe("Quiescence note injection", () => {
 
 	// Edge cases
 	it("handles exactly 30min idle (boundary case - no note)", () => {
-		const { taskId, threadId } = insertHeartbeatTask(30 * 60 * 1000);
+		// biome-ignore lint/correctness/noUnusedVariables: Intentional test setup
+		const { threadId } = insertHeartbeatTask(30 * 60 * 1000);
 
 		// Exactly 30 minutes ago
 		const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000);
