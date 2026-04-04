@@ -41,7 +41,7 @@ const backendCapabilitiesOverrideSchema = z
 
 const modelBackendSchema = z.object({
 	id: z.string().min(1),
-	provider: z.enum(["ollama", "bedrock", "anthropic", "openai-compatible"]),
+	provider: z.enum(["ollama", "bedrock", "anthropic", "openai-compatible", "cerebras"]),
 	model: z.string().min(1),
 	base_url: z.string().url().optional(),
 	api_key: z.string().optional(),
@@ -86,6 +86,17 @@ export const modelBackendsSchema = z
 			});
 		},
 		{ message: "ollama and openai-compatible providers require base_url" },
+	)
+	.refine(
+		(data) => {
+			return data.backends.every((b) => {
+				if (b.provider === "cerebras" || b.provider === "anthropic") {
+					return b.api_key !== undefined;
+				}
+				return true;
+			});
+		},
+		{ message: "cerebras and anthropic providers require api_key" },
 	)
 	.refine(
 		(data) => {

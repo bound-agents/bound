@@ -9,6 +9,7 @@ export interface InitArgs {
 	ollama?: boolean;
 	anthropic?: boolean;
 	bedrock?: boolean;
+	cerebras?: boolean;
 	/** Hub-only mode: no local inference backends; the node relays inference to spokes. */
 	hub?: boolean;
 	region?: string;
@@ -36,7 +37,7 @@ export async function runInit(args: InitArgs): Promise<void> {
 	mkdirSync(configDir, { recursive: true });
 
 	const operatorName = args.name || process.env.USER || "operator";
-	let provider: "ollama" | "anthropic" | "bedrock" = "ollama";
+	let provider: "ollama" | "anthropic" | "bedrock" | "cerebras" = "ollama";
 	let baseUrl = "http://localhost:11434";
 	let apiKey: string | undefined;
 	let region: string | undefined;
@@ -66,6 +67,16 @@ export async function runInit(args: InitArgs): Promise<void> {
 		provider = "bedrock";
 		region = args.region || "us-east-1";
 		model = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+	} else if (args.cerebras) {
+		// Cerebras preset
+		provider = "cerebras";
+		baseUrl = "https://api.cerebras.ai/v1";
+		model = "llama-4-scout-17b-16e-instruct";
+		apiKey = process.env.CEREBRAS_API_KEY;
+
+		if (!apiKey) {
+			console.log("CEREBRAS_API_KEY not found in environment.");
+		}
 	}
 
 	// Generate deterministic UUID for operator
