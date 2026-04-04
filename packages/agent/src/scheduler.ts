@@ -126,7 +126,7 @@ const QUIESCENCE_NOTE_THRESHOLD = 1_800_000; // 30 minutes
  * Returns the multiplier from QUIESCENCE_TIERS based on how long
  * the system has been idle.
  */
-function computeQuiescenceMultiplier(lastUserInteractionAt: Date): number {
+export function computeQuiescenceMultiplier(lastUserInteractionAt: Date): number {
 	const inactivityMs = Date.now() - lastUserInteractionAt.getTime();
 	let multiplier = 1;
 	for (let i = QUIESCENCE_TIERS.length - 1; i >= 0; i--) {
@@ -143,7 +143,7 @@ function computeQuiescenceMultiplier(lastUserInteractionAt: Date): number {
  * Format idle duration in milliseconds to a human-readable string.
  * Examples: "30m", "2h 15m", "0m".
  */
-function formatIdleDuration(ms: number): string {
+export function formatIdleDuration(ms: number): string {
 	const hours = Math.floor(ms / 3_600_000);
 	const minutes = Math.floor((ms % 3_600_000) / 60_000);
 	if (hours > 0) return `${hours}h ${minutes}m`;
@@ -561,8 +561,8 @@ export class Scheduler {
 								effectiveInterval = `${30 * multiplier}min`;
 							}
 						} else {
-							// Cron tasks don't have a simple interval, use the schedule expression
-							baseInterval = task.trigger_spec;
+							// Cron tasks don't have a simple interval, extract and use the schedule expression
+							baseInterval = extractCronExpression(task.trigger_spec);
 							effectiveInterval = `schedule stretched by ${multiplier}x`;
 						}
 
