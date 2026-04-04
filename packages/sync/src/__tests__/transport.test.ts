@@ -1,30 +1,19 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rm } from "node:fs/promises";
-import type { KeyringConfig, Logger } from "@bound/shared";
+import type { KeyringConfig } from "@bound/shared";
 import { Hono } from "hono";
-import {
-	ensureKeypair,
-	exportPublicKey,
-	deriveSiteId,
-} from "../crypto.js";
+import { deriveSiteId, ensureKeypair, exportPublicKey } from "../crypto.js";
 import { decryptBody, encryptBody } from "../encryption.js";
 import { KeyManager } from "../key-manager.js";
-import { SyncTransport } from "../transport.js";
 import { verifyRequest } from "../signing.js";
+import { SyncTransport } from "../transport.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-const createMockLogger = (): Logger => ({
-	info: () => {},
-	warn: () => {},
-	error: () => {},
-	debug: () => {},
-});
 
 interface TransportTestPeer {
 	siteId: string;
@@ -188,7 +177,13 @@ describe("SyncTransport", () => {
 	it("sync-encryption.AC4.1: encrypts request body with XChaCha20-Poly1305", async () => {
 		const requestBody = JSON.stringify({ events: [], source_seq_end: 0 });
 
-		await transport.send("POST", `http://localhost:${serverPort}/sync/push`, "/sync/push", requestBody, hub.siteId);
+		await transport.send(
+			"POST",
+			`http://localhost:${serverPort}/sync/push`,
+			"/sync/push",
+			requestBody,
+			hub.siteId,
+		);
 
 		expect(capturedRequests.length).toBe(1);
 		const captured = capturedRequests[0];
@@ -231,10 +226,22 @@ describe("SyncTransport", () => {
 		const body1 = JSON.stringify({ events: [], source_seq_end: 0 });
 		const body2 = JSON.stringify({ events: [], source_seq_end: 1 });
 
-		await transport.send("POST", `http://localhost:${serverPort}/sync/push`, "/sync/push", body1, hub.siteId);
+		await transport.send(
+			"POST",
+			`http://localhost:${serverPort}/sync/push`,
+			"/sync/push",
+			body1,
+			hub.siteId,
+		);
 		const nonce1 = capturedRequests[0].headers["x-nonce"] || capturedRequests[0].headers["X-Nonce"];
 
-		await transport.send("POST", `http://localhost:${serverPort}/sync/push`, "/sync/push", body2, hub.siteId);
+		await transport.send(
+			"POST",
+			`http://localhost:${serverPort}/sync/push`,
+			"/sync/push",
+			body2,
+			hub.siteId,
+		);
 		const nonce2 = capturedRequests[1].headers["x-nonce"] || capturedRequests[1].headers["X-Nonce"];
 
 		// Nonces should differ
@@ -248,7 +255,13 @@ describe("SyncTransport", () => {
 	it("sync-encryption.AC4.3: empty body produces valid ciphertext", async () => {
 		const emptyBody = "";
 
-		await transport.send("POST", `http://localhost:${serverPort}/sync/push`, "/sync/push", emptyBody, hub.siteId);
+		await transport.send(
+			"POST",
+			`http://localhost:${serverPort}/sync/push`,
+			"/sync/push",
+			emptyBody,
+			hub.siteId,
+		);
 
 		expect(capturedRequests.length).toBe(1);
 		const captured = capturedRequests[0];
@@ -286,7 +299,13 @@ describe("SyncTransport", () => {
 	it("sync-encryption.AC5.1: includes X-Encryption: xchacha20 header", async () => {
 		const body = JSON.stringify({ events: [] });
 
-		await transport.send("POST", `http://localhost:${serverPort}/sync/push`, "/sync/push", body, hub.siteId);
+		await transport.send(
+			"POST",
+			`http://localhost:${serverPort}/sync/push`,
+			"/sync/push",
+			body,
+			hub.siteId,
+		);
 
 		expect(capturedRequests.length).toBe(1);
 		const captured = capturedRequests[0];
@@ -298,7 +317,13 @@ describe("SyncTransport", () => {
 	it("sync-encryption.AC5.2: X-Nonce is 48 hex characters (24 bytes)", async () => {
 		const body = JSON.stringify({ events: [] });
 
-		await transport.send("POST", `http://localhost:${serverPort}/sync/push`, "/sync/push", body, hub.siteId);
+		await transport.send(
+			"POST",
+			`http://localhost:${serverPort}/sync/push`,
+			"/sync/push",
+			body,
+			hub.siteId,
+		);
 
 		expect(capturedRequests.length).toBe(1);
 		const captured = capturedRequests[0];
@@ -311,7 +336,13 @@ describe("SyncTransport", () => {
 	it("sync-encryption.AC5.3: Content-Type set to application/octet-stream", async () => {
 		const body = JSON.stringify({ events: [] });
 
-		await transport.send("POST", `http://localhost:${serverPort}/sync/push`, "/sync/push", body, hub.siteId);
+		await transport.send(
+			"POST",
+			`http://localhost:${serverPort}/sync/push`,
+			"/sync/push",
+			body,
+			hub.siteId,
+		);
 
 		expect(capturedRequests.length).toBe(1);
 		const captured = capturedRequests[0];
@@ -323,7 +354,13 @@ describe("SyncTransport", () => {
 	it("sync-encryption.AC5.4: signature covers ciphertext, not plaintext", async () => {
 		const body = JSON.stringify({ events: [] });
 
-		await transport.send("POST", `http://localhost:${serverPort}/sync/push`, "/sync/push", body, hub.siteId);
+		await transport.send(
+			"POST",
+			`http://localhost:${serverPort}/sync/push`,
+			"/sync/push",
+			body,
+			hub.siteId,
+		);
 
 		expect(capturedRequests.length).toBe(1);
 		const captured = capturedRequests[0];
@@ -332,7 +369,13 @@ describe("SyncTransport", () => {
 		const headerRecord = captured.headers;
 
 		// Verify signature against ciphertext (not plaintext)
-		const result = await verifyRequest(hubKeyring, "POST", "/sync/push", headerRecord, captured.body);
+		const result = await verifyRequest(
+			hubKeyring,
+			"POST",
+			"/sync/push",
+			headerRecord,
+			captured.body,
+		);
 
 		expect(result.ok).toBe(true);
 		if (result.ok) {
@@ -424,11 +467,18 @@ describe("SyncTransport", () => {
 	it("includes X-Key-Fingerprint header", async () => {
 		const body = JSON.stringify({ events: [] });
 
-		await transport.send("POST", `http://localhost:${serverPort}/sync/push`, "/sync/push", body, hub.siteId);
+		await transport.send(
+			"POST",
+			`http://localhost:${serverPort}/sync/push`,
+			"/sync/push",
+			body,
+			hub.siteId,
+		);
 
 		expect(capturedRequests.length).toBe(1);
 		const captured = capturedRequests[0];
-		const fingerprint = captured.headers["x-key-fingerprint"] || captured.headers["X-Key-Fingerprint"];
+		const fingerprint =
+			captured.headers["x-key-fingerprint"] || captured.headers["X-Key-Fingerprint"];
 
 		expect(fingerprint).toBeDefined();
 		expect(fingerprint).toMatch(/^[0-9a-f]{16}$/); // 8 bytes = 16 hex chars

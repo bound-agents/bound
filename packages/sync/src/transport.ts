@@ -1,6 +1,6 @@
 import { decryptBody, encryptBody } from "./encryption.js";
-import { signRequest } from "./signing.js";
 import type { KeyManager } from "./key-manager.js";
+import { signRequest } from "./signing.js";
 
 export interface TransportResponse {
 	status: number;
@@ -43,13 +43,7 @@ export class SyncTransport {
 		const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
 
 		// Sign the ciphertext (R-SE6: signature covers ciphertext, not plaintext)
-		const signHeaders = await signRequest(
-			this.privateKey,
-			this.siteId,
-			method,
-			path,
-			ciphertext,
-		);
+		const signHeaders = await signRequest(this.privateKey, this.siteId, method, path, ciphertext);
 
 		// Fetch with encryption headers
 		const nonceHex = Buffer.from(nonce).toString("hex");
@@ -79,10 +73,7 @@ export class SyncTransport {
 	 * Decrypt response body if X-Encryption header is present.
 	 * If absent (e.g., plaintext error response per R-SE22), return raw text.
 	 */
-	private async decryptResponse(
-		response: Response,
-		targetSiteId: string,
-	): Promise<string> {
+	private async decryptResponse(response: Response, targetSiteId: string): Promise<string> {
 		const encryption = response.headers.get("X-Encryption");
 
 		if (!encryption) {
