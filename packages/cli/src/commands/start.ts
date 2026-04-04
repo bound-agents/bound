@@ -873,7 +873,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 						keyring,
 						reachabilityTracker,
 						logger: appContext.logger,
-						transport,
+						get transport() {
+							return transport;
+						},
 					}
 				: undefined;
 

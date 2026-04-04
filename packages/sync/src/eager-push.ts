@@ -67,7 +67,8 @@ export async function eagerPushToSpoke(
 		}
 
 		const pushLatencyMs = Date.now() - pushStartTime;
-		const pushSucceeded = "ok" in response ? response.ok : response.status >= 200 && response.status < 300;
+		const pushSucceeded =
+			"ok" in response ? response.ok : response.status >= 200 && response.status < 300;
 
 		// Record relay cycle for this push batch
 		if (entries.length > 0) {
