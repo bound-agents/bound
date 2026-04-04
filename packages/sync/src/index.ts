@@ -1,7 +1,15 @@
 // @bound/sync — Event-sourced sync protocol with Ed25519 authentication
 
 // Crypto and signing
-export { ensureKeypair } from "./crypto.js";
+export {
+	ensureKeypair,
+	generateKeypair,
+	deriveSiteId,
+	exportPublicKey,
+	exportPrivateKey,
+	importPublicKey,
+	importPrivateKey,
+} from "./crypto.js";
 export { signRequest } from "./signing.js";
 
 // Middleware

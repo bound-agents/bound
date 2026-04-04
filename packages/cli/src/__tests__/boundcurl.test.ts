@@ -1,9 +1,16 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import type { KeyringConfig } from "@bound/shared";
-import { KeyManager, decryptBody, encryptBody } from "@bound/sync";
-import { deriveSiteId, exportPublicKey, generateKeypair } from "../../../sync/src/crypto";
+import {
+	KeyManager,
+	decryptBody,
+	deriveSiteId,
+	encryptBody,
+	exportPublicKey,
+	generateKeypair,
+} from "@bound/sync";
+import { getArgValue, resolvePeerSiteId, splitNonceAndCiphertext } from "../boundcurl";
 
-describe("boundcurl decrypt functionality", () => {
+describe("boundcurl utility functions", () => {
 	let keyPairA: { publicKey: CryptoKey; privateKey: CryptoKey };
 	let keyPairB: { publicKey: CryptoKey; privateKey: CryptoKey };
 	let siteIdA: string;
@@ -31,6 +38,137 @@ describe("boundcurl decrypt functionality", () => {
 		};
 		keyManager = new KeyManager(keyPairA, siteIdA);
 		await keyManager.init(keyringA);
+	});
+
+	describe("getArgValue", () => {
+		it("extracts value for flag", () => {
+			const args = ["--peer", "abc123", "--config-dir", "myconfig"];
+			expect(getArgValue(args, "--peer")).toBe("abc123");
+			expect(getArgValue(args, "--config-dir")).toBe("myconfig");
+		});
+
+		it("returns undefined when flag not found", () => {
+			const args = ["--peer", "abc123"];
+			expect(getArgValue(args, "--nonexistent")).toBeUndefined();
+		});
+
+		it("returns undefined when flag is last argument", () => {
+			const args = ["--peer", "abc123", "--decrypt"];
+			expect(getArgValue(args, "--decrypt")).toBeUndefined();
+		});
+	});
+
+	describe("resolvePeerSiteId", () => {
+		const testKeyring: KeyringConfig = {
+			hosts: {
+				peer1: { public_key: pubKeyB, url: "http://hub.example.com" },
+				peer2: { public_key: pubKeyB, url: "http://spoke.example.com" },
+			},
+		};
+
+		it("uses explicit --peer flag when provided", () => {
+			const args = ["--peer", "peer1", "POST", "http://hub.example.com/sync/pull"];
+			const result = resolvePeerSiteId(args, "http://hub.example.com/sync/pull", testKeyring);
+			expect(result).toBe("peer1");
+		});
+
+		it("resolves peer from URL match in keyring", () => {
+			const args = ["POST", "http://hub.example.com/sync/pull"];
+			const result = resolvePeerSiteId(args, "http://hub.example.com/sync/pull", testKeyring);
+			expect(result).toBe("peer1");
+		});
+
+		it("prefers explicit --peer over URL resolution", () => {
+			const args = ["--peer", "peer2", "POST", "http://hub.example.com/sync/pull"];
+			const result = resolvePeerSiteId(args, "http://hub.example.com/sync/pull", testKeyring);
+			expect(result).toBe("peer2");
+		});
+
+		it("returns null when peer cannot be resolved", () => {
+			const args = ["POST", "http://unknown.example.com/sync/pull"];
+			const result = resolvePeerSiteId(args, "http://unknown.example.com/sync/pull", testKeyring);
+			expect(result).toBeNull();
+		});
+
+		it("returns null when no URL provided and no --peer", () => {
+			const args = ["POST"];
+			const result = resolvePeerSiteId(args, undefined, testKeyring);
+			expect(result).toBeNull();
+		});
+
+		it("handles keyring with multiple hosts", () => {
+			const manyHosts: KeyringConfig = {
+				hosts: {
+					host1: { public_key: pubKeyB, url: "http://a.local" },
+					host2: { public_key: pubKeyB, url: "http://b.local" },
+					host3: { public_key: pubKeyB, url: "http://c.local" },
+				},
+			};
+
+			const args = ["POST", "http://b.local/sync/pull"];
+			const result = resolvePeerSiteId(args, "http://b.local/sync/pull", manyHosts);
+			expect(result).toBe("host2");
+		});
+	});
+
+	describe("splitNonceAndCiphertext", () => {
+		it("extracts nonce from first 24 bytes when no explicit nonce", () => {
+			const plaintext = Buffer.from("hello world");
+			const symmetricKey = keyManager.getSymmetricKey(siteIdB);
+
+			if (!symmetricKey) {
+				throw new Error("symmetricKey should be defined");
+			}
+
+			const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
+			const prefixed = Buffer.concat([nonce, ciphertext]);
+
+			const result = splitNonceAndCiphertext(prefixed);
+			expect(result.nonce).toEqual(nonce);
+			expect(result.ciphertext).toEqual(ciphertext);
+		});
+
+		it("uses explicit nonce when provided", () => {
+			const plaintext = Buffer.from("test data");
+			const symmetricKey = keyManager.getSymmetricKey(siteIdB);
+
+			if (!symmetricKey) {
+				throw new Error("symmetricKey should be defined");
+			}
+
+			const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
+			const nonceHex = Buffer.from(nonce).toString("hex");
+
+			const result = splitNonceAndCiphertext(ciphertext, nonceHex);
+			expect(result.nonce).toEqual(nonce);
+			expect(result.ciphertext).toEqual(ciphertext);
+		});
+
+		it("throws when input too short without explicit nonce", () => {
+			const shortInput = Buffer.from("short");
+
+			expect(() => {
+				splitNonceAndCiphertext(shortInput);
+			}).toThrow("Input too short");
+		});
+
+		it("accepts exactly 24 bytes as valid nonce when no explicit nonce", () => {
+			const justNonce = Buffer.alloc(24);
+			justNonce.fill(0xaa);
+
+			const result = splitNonceAndCiphertext(justNonce);
+			expect(result.nonce).toEqual(justNonce);
+			expect(result.ciphertext.length).toBe(0);
+		});
+
+		it("handles empty ciphertext after 24-byte nonce", () => {
+			const nonce = Buffer.alloc(24);
+			nonce.fill(0xbb);
+
+			const result = splitNonceAndCiphertext(nonce);
+			expect(result.nonce).toEqual(nonce);
+			expect(result.ciphertext.length).toBe(0);
+		});
 	});
 
 	describe("AC13.2: Decrypt mode with explicit nonce", () => {
@@ -83,11 +221,11 @@ describe("boundcurl decrypt functionality", () => {
 			// Concatenate: 24-byte nonce + ciphertext (simulating nonce-prefixed input)
 			const prefixedInput = Buffer.concat([nonce, ciphertext]);
 
-			// Extract nonce from first 24 bytes
-			const extractedNonce = prefixedInput.slice(0, 24);
-			const extractedCiphertext = prefixedInput.slice(24);
+			// Use splitNonceAndCiphertext to extract
+			const { nonce: extractedNonce, ciphertext: extractedCiphertext } =
+				splitNonceAndCiphertext(prefixedInput);
 
-			// Verify nonce matches
+			// Verify extraction
 			expect(Buffer.from(extractedNonce)).toEqual(Buffer.from(nonce));
 
 			// Decrypt
@@ -96,49 +234,33 @@ describe("boundcurl decrypt functionality", () => {
 			expect(result).toBe('{"encrypted":"content"}');
 		});
 
-		it("fails gracefully if input is too short", async () => {
+		it("fails gracefully if input is too short (guards against <24 bytes)", async () => {
+			const shortInput = Buffer.from("short");
+
+			// The guard should trigger
+			expect(() => {
+				splitNonceAndCiphertext(shortInput);
+			}).toThrow("Input too short");
+		});
+
+		it("handles exactly 24 bytes as valid (nonce only, empty ciphertext)", () => {
+			const justNonce = Buffer.alloc(24);
+			justNonce.fill(0xcc);
+
+			const { nonce, ciphertext } = splitNonceAndCiphertext(justNonce);
+			expect(nonce.length).toBe(24);
+			expect(ciphertext.length).toBe(0);
+		});
+
+		it("decryption fails with ciphertext encrypted with wrong key", async () => {
+			const plaintext = Buffer.from("secret data");
 			const symmetricKey = keyManager.getSymmetricKey(siteIdB);
 
 			if (!symmetricKey) {
 				throw new Error("symmetricKey should be defined");
 			}
 
-			// Input shorter than 24 bytes
-			const shortInput = Buffer.from("short");
-
-			// Should fail when trying to extract 24-byte nonce
-			expect(() => {
-				shortInput.slice(0, 24); // This would only give us 5 bytes
-			}).not.toThrow();
-
-			// The error would occur at decode time
-			const tooShortNonce = shortInput.slice(0, 24);
-			const ciphertext = shortInput.slice(24);
-
-			// Decryption should fail with too-short ciphertext
-			expect(() => {
-				decryptBody(ciphertext, tooShortNonce, symmetricKey);
-			}).toThrow();
-		});
-	});
-
-	describe("Error handling", () => {
-		it("throws when peer not found in keyring", () => {
-			const unknownPeerId = "0000000000000000";
-
-			const symmetricKey = keyManager.getSymmetricKey(unknownPeerId);
-			expect(symmetricKey).toBeNull();
-		});
-
-		it("decryption fails with wrong symmetric key", async () => {
-			const plaintext = Buffer.from("secret data");
-			const correctKey = keyManager.getSymmetricKey(siteIdB);
-
-			if (!correctKey) {
-				throw new Error("correctKey should be defined");
-			}
-
-			const { ciphertext, nonce } = encryptBody(plaintext, correctKey);
+			const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
 
 			// Create wrong key
 			const wrongKey = new Uint8Array(32);
@@ -188,6 +310,25 @@ describe("boundcurl decrypt functionality", () => {
 			expect(() => {
 				decryptBody(ciphertext, wrongNonce, symmetricKey);
 			}).toThrow();
+		});
+	});
+
+	describe("Error handling", () => {
+		it("throws when peer not found in keyring", () => {
+			const unknownPeerId = "0000000000000000";
+
+			const symmetricKey = keyManager.getSymmetricKey(unknownPeerId);
+			expect(symmetricKey).toBeNull();
+		});
+
+		it("getArgValue returns undefined for invalid flag positions", () => {
+			const args = ["--config-dir"];
+			expect(getArgValue(args, "--config-dir")).toBeUndefined();
+		});
+
+		it("resolvePeerSiteId returns null with empty args and no URL", () => {
+			const result = resolvePeerSiteId([], undefined, { hosts: {} });
+			expect(result).toBeNull();
 		});
 	});
 
@@ -328,13 +469,128 @@ describe("boundcurl decrypt functionality", () => {
 			// Concatenate: nonce + ciphertext
 			const prefixed = Buffer.concat([nonce, ciphertext]);
 
-			// Extract and decrypt
-			const extractedNonce = prefixed.slice(0, 24);
-			const extractedCiphertext = prefixed.slice(24);
+			// Extract and decrypt using splitNonceAndCiphertext
+			const { nonce: extractedNonce, ciphertext: extractedCiphertext } =
+				splitNonceAndCiphertext(prefixed);
 			const decrypted = decryptBody(extractedCiphertext, extractedNonce, symmetricKey);
 
 			const result = new TextDecoder().decode(decrypted);
 			expect(result).toBe(originalData);
+		});
+	});
+
+	describe("AC13.1: Request mode peer resolution and setup", () => {
+		it("correctly resolves peer when URL matches keyring entry", () => {
+			const keyring: KeyringConfig = {
+				hosts: {
+					[siteIdB]: {
+						public_key: pubKeyB,
+						url: "http://localhost:3000",
+					},
+				},
+			};
+
+			const args = ["POST", "http://localhost:3000/sync/pull"];
+			const resolved = resolvePeerSiteId(args, "http://localhost:3000/sync/pull", keyring);
+
+			expect(resolved).toBe(siteIdB);
+		});
+
+		it("errors gracefully when target peer not found", () => {
+			const keyring: KeyringConfig = {
+				hosts: {
+					[siteIdB]: {
+						public_key: pubKeyB,
+						url: "http://localhost:3000",
+					},
+				},
+			};
+
+			const args = ["POST", "http://unknown:3000/sync/pull"];
+			const resolved = resolvePeerSiteId(args, "http://unknown:3000/sync/pull", keyring);
+
+			expect(resolved).toBeNull();
+		});
+
+		it("handles multiple keyring entries and resolves correct peer", () => {
+			const pubKeyA = pubKeyB; // Reuse for simplicity
+			const keyring: KeyringConfig = {
+				hosts: {
+					peer1: {
+						public_key: pubKeyA,
+						url: "http://hub1:3000",
+					},
+					peer2: {
+						public_key: pubKeyB,
+						url: "http://hub2:3000",
+					},
+					peer3: {
+						public_key: pubKeyA,
+						url: "http://hub3:3000",
+					},
+				},
+			};
+
+			// Test resolving peer1
+			const args1 = ["POST", "http://hub1:3000/sync/pull"];
+			expect(resolvePeerSiteId(args1, "http://hub1:3000/sync/pull", keyring)).toBe("peer1");
+
+			// Test resolving peer2
+			const args2 = ["POST", "http://hub2:3000/sync/pull"];
+			expect(resolvePeerSiteId(args2, "http://hub2:3000/sync/pull", keyring)).toBe("peer2");
+
+			// Test resolving peer3
+			const args3 = ["POST", "http://hub3:3000/sync/pull"];
+			expect(resolvePeerSiteId(args3, "http://hub3:3000/sync/pull", keyring)).toBe("peer3");
+		});
+
+		it("can construct SyncTransport for sending encrypted requests", async () => {
+			const { SyncTransport } = await import("@bound/sync");
+
+			// Create transport for peer A to communicate with B
+			const transport = new SyncTransport(keyManager, keyPairA.privateKey, siteIdA);
+
+			// Verify transport is instantiated with correct parameters
+			expect(transport).toBeDefined();
+
+			// Transport has methods for sending encrypted requests
+			expect(typeof transport.send).toBe("function");
+		});
+
+		it("verifies KeyManager shared secret derivation for encrypted communication", async () => {
+			// KeyManager derives shared secret from peer's public key
+			const symmetricKey = keyManager.getSymmetricKey(siteIdB);
+
+			expect(symmetricKey).toBeDefined();
+			expect(symmetricKey).toBeInstanceOf(Uint8Array);
+
+			// Shared secret should be 32 bytes (256-bit key)
+			if (symmetricKey) {
+				expect(symmetricKey.length).toBe(32);
+			}
+		});
+
+		it("correctly formats encrypted request with nonce and ciphertext", async () => {
+			const plaintext = Buffer.from(JSON.stringify({ request: "data" }));
+			const symmetricKey = keyManager.getSymmetricKey(siteIdB);
+
+			if (!symmetricKey) {
+				throw new Error("symmetricKey should be defined");
+			}
+
+			// Encrypt the request body
+			const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
+
+			// Verify encrypted format
+			expect(nonce).toBeDefined();
+			expect(nonce.length).toBe(24);
+			expect(ciphertext).toBeDefined();
+			expect(ciphertext.length).toBeGreaterThan(0);
+
+			// Can decrypt to verify it worked
+			const decrypted = decryptBody(ciphertext, nonce, symmetricKey);
+			const result = new TextDecoder().decode(decrypted);
+			expect(result).toBe('{"request":"data"}');
 		});
 	});
 });

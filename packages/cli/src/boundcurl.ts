@@ -8,9 +8,61 @@ import { ensureKeypair } from "@bound/sync";
 import { KeyManager, SyncTransport } from "@bound/sync";
 import { decryptBody } from "@bound/sync";
 
-function getArgValue(args: string[], flag: string): string | undefined {
+export function getArgValue(args: string[], flag: string): string | undefined {
 	const idx = args.indexOf(flag);
 	return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : undefined;
+}
+
+/**
+ * Resolves target peer siteId from --peer flag or by matching URL against keyring hosts.
+ * Returns the resolved siteId or null if not found.
+ */
+export function resolvePeerSiteId(
+	args: string[],
+	url: string | undefined,
+	keyring: KeyringConfig,
+): string | null {
+	const peer = getArgValue(args, "--peer");
+	let targetSiteId = peer || null;
+
+	if (!targetSiteId && url) {
+		// Try to find peer by URL match in keyring
+		for (const [hostId, hostConfig] of Object.entries(keyring.hosts)) {
+			if (url.startsWith((hostConfig as { url: string }).url)) {
+				targetSiteId = hostId;
+				break;
+			}
+		}
+	}
+
+	return targetSiteId;
+}
+
+/**
+ * Splits nonce and ciphertext from input buffer.
+ * If nonceHex is provided, uses explicit nonce and treats entire input as ciphertext.
+ * Otherwise, extracts first 24 bytes as nonce and remainder as ciphertext.
+ * Throws if input is too short for nonce-prefixed mode.
+ */
+export function splitNonceAndCiphertext(
+	input: Uint8Array,
+	nonceHex?: string,
+): { nonce: Uint8Array; ciphertext: Uint8Array } {
+	if (nonceHex) {
+		// Explicit nonce: entire input is ciphertext
+		const nonce = Buffer.from(nonceHex, "hex");
+		const ciphertext = input;
+		return { nonce, ciphertext };
+	}
+
+	// Nonce-prefixed: first 24 bytes are nonce, remainder is ciphertext
+	if (input.length < 24) {
+		throw new Error("Input too short: need at least 24 bytes for nonce");
+	}
+
+	const nonce = input.slice(0, 24);
+	const ciphertext = input.slice(24);
+	return { nonce, ciphertext };
 }
 
 async function main() {
@@ -58,7 +110,6 @@ async function requestMode(
 	const method = args.find((a) => !a.startsWith("-") && a === a.toUpperCase()) || "GET";
 	const url = args.find((a) => a.startsWith("http://") || a.startsWith("https://"));
 	const data = getArgValue(args, "--data") || getArgValue(args, "-d") || "";
-	const peer = getArgValue(args, "--peer");
 
 	if (!url) {
 		console.error(
@@ -68,16 +119,7 @@ async function requestMode(
 	}
 
 	// Resolve peer siteId — if not provided, try to resolve from URL and keyring
-	let targetSiteId = peer;
-	if (!targetSiteId) {
-		// Try to find peer by URL match in keyring
-		for (const [hostId, hostConfig] of Object.entries(keyring.hosts)) {
-			if (url.startsWith((hostConfig as { url: string }).url)) {
-				targetSiteId = hostId;
-				break;
-			}
-		}
-	}
+	const targetSiteId = resolvePeerSiteId(args, url, keyring);
 	if (!targetSiteId) {
 		console.error("Error: Could not resolve target peer. Use --peer SITE_ID.");
 		process.exit(1);
@@ -131,18 +173,13 @@ async function decryptMode(args: string[], keyManager: KeyManager) {
 	let nonce: Uint8Array;
 	let ciphertext: Uint8Array;
 
-	if (nonceHex) {
-		// Explicit nonce: stdin is pure ciphertext (AC13.2)
-		nonce = Buffer.from(nonceHex, "hex");
-		ciphertext = input;
-	} else {
-		// No explicit nonce: first 24 bytes of stdin are nonce (AC13.3)
-		if (input.length < 24) {
-			console.error("Error: Input too short. Need at least 24 bytes for nonce.");
-			process.exit(1);
-		}
-		nonce = input.slice(0, 24);
-		ciphertext = input.slice(24);
+	try {
+		const split = splitNonceAndCiphertext(input, nonceHex);
+		nonce = split.nonce;
+		ciphertext = split.ciphertext;
+	} catch (err) {
+		console.error("Error:", err instanceof Error ? err.message : err);
+		process.exit(1);
 	}
 
 	try {
@@ -185,7 +222,10 @@ Options:
   --help, -h          Show this help`);
 }
 
-main().catch((err) => {
-	console.error("Fatal:", err instanceof Error ? err.message : err);
-	process.exit(1);
-});
+// Only run main if this is the entry point (not imported as a module)
+if (import.meta.main) {
+	main().catch((err) => {
+		console.error("Fatal:", err instanceof Error ? err.message : err);
+		process.exit(1);
+	});
+}
