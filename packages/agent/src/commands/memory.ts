@@ -1,7 +1,13 @@
 import { insertRow, softDelete, updateRow } from "@bound/core";
 import type { CommandContext, CommandDefinition } from "@bound/sandbox";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
-import { cascadeDeleteEdges, getNeighbors, removeEdges, traverseGraph, upsertEdge } from "../graph-queries";
+import {
+	cascadeDeleteEdges,
+	getNeighbors,
+	removeEdges,
+	traverseGraph,
+	upsertEdge,
+} from "../graph-queries";
 import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
 // Positional arg mapping for the memory command (args are Record<string, string>):
