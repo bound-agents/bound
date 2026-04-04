@@ -1251,11 +1251,13 @@ export async function runStart(args: StartArgs): Promise<void> {
 				string,
 				{ schedule: string; payload?: string }
 			>;
-			const cronConfigs = Object.entries(cronSchedules).map(([name, cfg]) => ({
-				name,
-				cron: cfg.schedule,
-				payload: cfg.payload,
-			}));
+			const cronConfigs = Object.entries(cronSchedules)
+				.filter(([name]) => name !== "heartbeat")
+				.map(([name, cfg]) => ({
+					name,
+					cron: cfg.schedule,
+					payload: cfg.payload,
+				}));
 			try {
 				seedCronTasks(appContext.db, cronConfigs, appContext.siteId);
 				console.log(`[scheduler] Seeded ${cronConfigs.length} cron task(s)`);

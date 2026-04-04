@@ -679,7 +679,9 @@ export class Scheduler {
 
 		// Find matching schedule by expression or name
 		const schedules = cronResult.value as Record<string, { schedule: string; template?: string[] }>;
-		for (const [_name, schedule] of Object.entries(schedules)) {
+		for (const [name, schedule] of Object.entries(schedules)) {
+			// Skip non-cron entries (e.g., heartbeat config)
+			if (name === "heartbeat" || !schedule.schedule) continue;
 			if (schedule.schedule === cronSpec.expression && schedule.template) {
 				return schedule.template;
 			}
