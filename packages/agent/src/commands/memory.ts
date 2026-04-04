@@ -1,5 +1,5 @@
 import type { CommandContext, CommandDefinition } from "@bound/sandbox";
-import { upsertEdge, removeEdges } from "../graph-queries";
+import { removeEdges, upsertEdge } from "../graph-queries";
 import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
 // Positional arg mapping for the memory command:
@@ -50,7 +50,9 @@ function handleDisconnect(args: Record<string, string>, ctx: CommandContext) {
 
 	const count = removeEdges(ctx.db, src, tgt, rel, ctx.siteId);
 	if (count === 0) {
-		return commandError(`no edges found between ${src} and ${tgt}${rel ? ` with relation ${rel}` : ""}`);
+		return commandError(
+			`no edges found between ${src} and ${tgt}${rel ? ` with relation ${rel}` : ""}`,
+		);
 	}
 
 	return commandSuccess(`Removed ${count} edge(s) between ${src} and ${tgt}\n`);

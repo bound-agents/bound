@@ -1,7 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { insertRow, softDelete, updateRow } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
-import type { MemoryEdge } from "@bound/shared";
 
 /**
  * Compute the deterministic edge ID from the (source, target, relation) triple.
@@ -32,9 +31,10 @@ export function upsertEdge(
 	const now = new Date().toISOString();
 
 	// Check for existing edge (including soft-deleted) by deterministic ID
-	const existing = db
-		.prepare("SELECT id, deleted FROM memory_edges WHERE id = ?")
-		.get(id) as { id: string; deleted: number } | null;
+	const existing = db.prepare("SELECT id, deleted FROM memory_edges WHERE id = ?").get(id) as {
+		id: string;
+		deleted: number;
+	} | null;
 
 	if (existing) {
 		// Update existing (active or soft-deleted) — restores if deleted
@@ -89,9 +89,7 @@ export function removeEdges(
 	// Delete all edges between the two keys (source->target direction only,
 	// matching the design: disconnect <src> <tgt>)
 	const edges = db
-		.prepare(
-			"SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND deleted = 0",
-		)
+		.prepare("SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND deleted = 0")
 		.all(sourceKey, targetKey) as Array<{ id: string }>;
 
 	for (const edge of edges) {
@@ -107,9 +105,7 @@ export function removeEdges(
  */
 export function cascadeDeleteEdges(db: Database, memoryKey: string, siteId: string): number {
 	const edges = db
-		.prepare(
-			"SELECT id FROM memory_edges WHERE (source_key = ? OR target_key = ?) AND deleted = 0",
-		)
+		.prepare("SELECT id FROM memory_edges WHERE (source_key = ? OR target_key = ?) AND deleted = 0")
 		.all(memoryKey, memoryKey) as Array<{ id: string }>;
 
 	for (const edge of edges) {
