@@ -1,8 +1,10 @@
-import type { KeyringConfig } from "@bound/shared";
+import type { KeyringConfig, Logger } from "@bound/shared";
 import type { Context, MiddlewareHandler } from "hono";
 import { decryptBody, encryptBody } from "./encryption.js";
 import type { KeyManager } from "./key-manager.js";
 import { detectClockSkew, verifyRequest } from "./signing.js";
+
+const LOG_SYNC_PLAINTEXT = process.env.BOUND_LOG_SYNC_PLAINTEXT === "1";
 
 type AppContext = {
 	Variables: {
@@ -15,6 +17,7 @@ type AppContext = {
 export function createSyncAuthMiddleware(
 	keyring: KeyringConfig,
 	keyManager?: KeyManager,
+	logger?: Logger,
 ): MiddlewareHandler<AppContext> {
 	return async (c: Context<AppContext>, next) => {
 		const method = c.req.method;
@@ -37,11 +40,17 @@ export function createSyncAuthMiddleware(
 			if (!encryption) {
 				if (nonceHex) {
 					// X-Nonce without X-Encryption is ambiguous (R-SE21, AC8.2)
+					logger?.warn("Malformed encryption headers", {
+						siteId: headers["x-site-id"],
+						encryption,
+						nonceLength: nonceHex?.length,
+					});
 					return c.json(
 						{ error: "malformed_encryption_headers", message: "X-Nonce present without X-Encryption" },
 						400,
 					);
 				}
+				logger?.warn("Plaintext sync request rejected", { siteId: headers["x-site-id"], endpoint: path });
 				return c.json(
 					{
 						error: "plaintext_rejected",
@@ -53,12 +62,22 @@ export function createSyncAuthMiddleware(
 
 			// Step 2: Validate X-Encryption value and X-Nonce presence (R-SE21, AC8.3)
 			if (encryption !== "xchacha20") {
+				logger?.warn("Malformed encryption headers", {
+					siteId: headers["x-site-id"],
+					encryption,
+					nonceLength: nonceHex?.length,
+				});
 				return c.json(
 					{ error: "malformed_encryption_headers", message: `Unsupported encryption: ${encryption}` },
 					400,
 				);
 			}
 			if (!nonceHex || nonceHex.length !== 48) {
+				logger?.warn("Malformed encryption headers", {
+					siteId: headers["x-site-id"],
+					encryption,
+					nonceLength: nonceHex?.length,
+				});
 				return c.json(
 					{ error: "malformed_encryption_headers", message: "X-Nonce must be 48 hex characters (24 bytes)" },
 					400,
@@ -70,6 +89,11 @@ export function createSyncAuthMiddleware(
 			if (siteIdHeader && fingerprint) {
 				const expectedFingerprint = keyManager.getFingerprint(siteIdHeader);
 				if (expectedFingerprint && fingerprint !== expectedFingerprint) {
+					logger?.warn("Key fingerprint mismatch", {
+						siteId: siteIdHeader,
+						expected: expectedFingerprint,
+						received: fingerprint,
+					});
 					return c.json(
 						{
 							error: "key_mismatch",
@@ -102,6 +126,11 @@ export function createSyncAuthMiddleware(
 			// Step 5: Decrypt body (R-SE11, AC6.3)
 			const symmetricKey = keyManager.getSymmetricKey(result.value.siteId);
 			if (!symmetricKey) {
+				logger?.error("Decryption failed", {
+					siteId: result.value.siteId,
+					endpoint: path,
+					ciphertextLength: bodyBytes.length,
+				});
 				return c.json(
 					{
 						error: "decryption_failed",
@@ -115,8 +144,27 @@ export function createSyncAuthMiddleware(
 			try {
 				const nonce = Buffer.from(nonceHex, "hex");
 				const plaintext = decryptBody(bodyBytes, nonce, symmetricKey);
-				c.set("rawBody", new TextDecoder().decode(plaintext));
+				const decryptedBody = new TextDecoder().decode(plaintext);
+				c.set("rawBody", decryptedBody);
+				logger?.info("Encrypted request decrypted", {
+					siteId: result.value.siteId,
+					endpoint: path,
+					ciphertextLength: bodyBytes.length,
+					nonce: nonceHex,
+				});
+				if (LOG_SYNC_PLAINTEXT) {
+					logger?.debug("Decrypted request body (PLAINTEXT LOGGING ENABLED)", {
+						siteId: result.value.siteId,
+						endpoint: path,
+						body: decryptedBody,
+					});
+				}
 			} catch {
+				logger?.error("Decryption failed", {
+					siteId: result.value.siteId,
+					endpoint: path,
+					ciphertextLength: bodyBytes.length,
+				});
 				return c.json(
 					{
 						error: "decryption_failed",
@@ -172,6 +220,13 @@ export function createSyncAuthMiddleware(
 						spokeKey,
 					);
 					const responseNonceHex = Buffer.from(responseNonce).toString("hex");
+
+					logger?.info("Response encrypted", {
+						siteId: spokeSiteId,
+						endpoint: path,
+						ciphertextLength: responseCiphertext.length,
+						nonce: responseNonceHex,
+					});
 
 					c.res = new Response(responseCiphertext as BodyInit, {
 						status: c.res.status,
