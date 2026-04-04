@@ -1,12 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { generateKeypair, exportPublicKey } from "../crypto";
+import { beforeEach, describe, expect, it } from "bun:test";
+import { generateKeypair } from "../crypto";
 import {
-	encryptBody,
+	computeFingerprint,
 	decryptBody,
 	deriveSharedSecret,
-	ed25519ToX25519Public,
 	ed25519ToX25519Private,
-	computeFingerprint,
+	ed25519ToX25519Public,
+	encryptBody,
 	extractRawEd25519Keys,
 } from "../encryption";
 
@@ -181,9 +181,7 @@ describe("encryption module", () => {
 		});
 
 		it("encrypts JSON body and recovers it (AC4.1)", async () => {
-			const plaintext = new TextEncoder().encode(
-				JSON.stringify({ msg: "test", num: 42 })
-			);
+			const plaintext = new TextEncoder().encode(JSON.stringify({ msg: "test", num: 42 }));
 			const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
 			const decrypted = decryptBody(ciphertext, nonce, symmetricKey);
 
@@ -236,7 +234,7 @@ describe("encryption module", () => {
 
 		it("rejects decryption with wrong nonce", () => {
 			const plaintext = new TextEncoder().encode("secret");
-			const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
+			const { ciphertext } = encryptBody(plaintext, symmetricKey);
 
 			const wrongNonce = crypto.getRandomValues(new Uint8Array(24));
 			expect(() => decryptBody(ciphertext, wrongNonce, symmetricKey)).toThrow();

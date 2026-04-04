@@ -1,5 +1,5 @@
-import { ed25519, x25519 } from "@noble/curves/ed25519";
 import { xchacha20poly1305 } from "@noble/ciphers/chacha";
+import { ed25519, x25519 } from "@noble/curves/ed25519";
 import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha2";
 
@@ -11,9 +11,10 @@ const SYMMETRIC_KEY_LENGTH = 32;
  * Extract raw Ed25519 key bytes from CryptoKey objects via JWK export.
  * Returns 32-byte private seed (from JWK "d" field) and 32-byte public point (from JWK "x" field).
  */
-export async function extractRawEd25519Keys(
-	keypair: { publicKey: CryptoKey; privateKey: CryptoKey },
-): Promise<{ pubRaw: Uint8Array; privRaw: Uint8Array }> {
+export async function extractRawEd25519Keys(keypair: {
+	publicKey: CryptoKey;
+	privateKey: CryptoKey;
+}): Promise<{ pubRaw: Uint8Array; privRaw: Uint8Array }> {
 	const [pubJwk, privJwk] = await Promise.all([
 		crypto.subtle.exportKey("jwk", keypair.publicKey),
 		crypto.subtle.exportKey("jwk", keypair.privateKey),
