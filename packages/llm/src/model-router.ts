@@ -23,22 +23,34 @@ export interface PoolEntry {
 	pricePerMInput: number;
 }
 
+// Exponential backoff constants for pooled backend cooldowns
+const BACKOFF_BASE_MS = 30_000; // 30s initial cooldown
+const BACKOFF_MAX_MS = 4 * 3600_000; // 4h cap — prevents runaway backoff from degraded networks
+const BACKOFF_MULTIPLIER = 2;
+const BACKOFF_RESET_MS = 10 * 60_000; // 10min of success resets consecutive failure count
+
 /**
  * Wraps multiple backends under the same logical ID.
  * Sorted by tier (ascending, best first), then by input price (ascending, cheapest first).
- * On rate-limit errors (429/529), marks the sub-backend internally and falls through to the next.
- * If all sub-backends are exhausted, throws the last error.
+ * On rate-limit (429) or server errors (5xx), marks the sub-backend with exponential backoff
+ * and falls through to the next. Cooldown caps at BACKOFF_MAX_MS.
+ * Consecutive failure count resets after BACKOFF_RESET_MS of successful use.
  */
 export class PooledBackend implements LLMBackend {
 	private entries: PoolEntry[];
 	private rateLimited: Map<number, number>; // index → expiry timestamp (ms)
+	private consecutiveFailures: Map<number, number>; // index → failure count
+	private lastSuccess: Map<number, number>; // index → last success timestamp (ms)
 	private mergedCaps: BackendCapabilities;
 
 	constructor(entries: PoolEntry[]) {
 		if (entries.length === 0) throw new Error("PooledBackend requires at least one backend");
-		// Sort by tier ascending, then by price ascending within the same tier
-		this.entries = [...entries].sort((a, b) => a.tier - b.tier || a.pricePerMInput - b.pricePerMInput);
+		this.entries = [...entries].sort(
+			(a, b) => a.tier - b.tier || a.pricePerMInput - b.pricePerMInput,
+		);
 		this.rateLimited = new Map();
+		this.consecutiveFailures = new Map();
+		this.lastSuccess = new Map();
 		this.mergedCaps = this.mergeCaps();
 	}
 
@@ -52,6 +64,11 @@ export class PooledBackend implements LLMBackend {
 			vision: caps.some((c) => c.vision),
 			max_context: Math.max(...caps.map((c) => c.max_context)),
 		};
+	}
+
+	private computeBackoff(idx: number): number {
+		const failures = this.consecutiveFailures.get(idx) ?? 0;
+		return Math.min(BACKOFF_BASE_MS * BACKOFF_MULTIPLIER ** failures, BACKOFF_MAX_MS);
 	}
 
 	private getAvailable(): PoolEntry[] {
@@ -69,8 +86,17 @@ export class PooledBackend implements LLMBackend {
 		let lastError: unknown;
 
 		for (const entry of candidates) {
+			const idx = this.entries.indexOf(entry);
 			try {
 				yield* entry.backend.chat(params);
+				// Success — reset consecutive failures if enough time has passed,
+				// or record the success timestamp for future resets
+				const lastOk = this.lastSuccess.get(idx) ?? 0;
+				const now = Date.now();
+				if (now - lastOk >= BACKOFF_RESET_MS) {
+					this.consecutiveFailures.delete(idx);
+				}
+				this.lastSuccess.set(idx, now);
 				return;
 			} catch (error) {
 				lastError = error;
@@ -78,9 +104,11 @@ export class PooledBackend implements LLMBackend {
 					const isRateLimit = error.statusCode === 429;
 					const isServerError = error.statusCode >= 500;
 					if (isRateLimit || isServerError) {
-						const idx = this.entries.indexOf(entry);
-						const retryMs = error.retryAfterMs || (isRateLimit ? 60_000 : 30_000);
-						this.rateLimited.set(idx, Date.now() + retryMs);
+						const failures = (this.consecutiveFailures.get(idx) ?? 0) + 1;
+						this.consecutiveFailures.set(idx, failures);
+						// Use provider's Retry-After if available, otherwise exponential backoff
+						const cooldown = error.retryAfterMs || this.computeBackoff(idx);
+						this.rateLimited.set(idx, Date.now() + cooldown);
 						continue;
 					}
 				}
