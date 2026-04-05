@@ -591,4 +591,159 @@ describe("Scheduler Integration", () => {
 		// Execution thread must be DIFFERENT from origin thread
 		expect(updatedTask?.thread_id).not.toBe(originThreadId);
 	});
+
+	it("auto-retries failed deferred tasks up to DEFERRED_MAX_RETRIES", async () => {
+		const taskId = randomUUID();
+		const now = new Date();
+		const pastTime = new Date(now.getTime() - 60000).toISOString();
+		const nowStr = now.toISOString();
+
+		// Insert deferred task with 0 consecutive failures
+		db.exec(`
+			INSERT INTO tasks (
+				id, type, status, trigger_spec, payload, thread_id,
+				claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+				run_count, max_runs, requires, model_hint, no_history,
+				inject_mode, depends_on, require_success, alert_threshold,
+				consecutive_failures, event_depth, no_quiescence,
+				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+			) VALUES (
+				'${taskId}', 'deferred', 'pending', 'in 10m', NULL, NULL,
+				NULL, NULL, NULL, '${pastTime}', NULL,
+				0, NULL, NULL, NULL, 0,
+				'status', NULL, 0, 5,
+				0, 0, 0,
+				NULL, NULL, NULL, '${nowStr}', 'system', '${nowStr}', 0
+			)
+		`);
+
+		let runCount = 0;
+		const agentLoopFactory = (): { run: () => Promise<AgentLoopResult> } => ({
+			run: async (): Promise<AgentLoopResult> => {
+				runCount++;
+				// Fail on first attempt, succeed on second
+				if (runCount === 1) {
+					return {
+						messagesCreated: 0,
+						toolCallsMade: 0,
+						filesChanged: 0,
+						error: "LLM silence timeout: no chunk received for 60000ms",
+					};
+				}
+				return {
+					messagesCreated: 1,
+					toolCallsMade: 0,
+					filesChanged: 0,
+				};
+			},
+		});
+
+		const localCtx = {
+			...appContext,
+			config: {
+				allowlist: [],
+				modelBackends: { backends: [], default: "" },
+			},
+		};
+
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		const scheduler = new Scheduler(localCtx as any, agentLoopFactory);
+		const { stop } = scheduler.start(100);
+
+		// Wait for the task to complete (should fail once, retry, then succeed)
+		await waitFor(
+			() =>
+				(
+					db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as {
+						status: string;
+					} | null
+				)?.status === "completed",
+			{ message: "deferred task did not auto-retry and complete", timeoutMs: 15000 },
+		);
+		stop();
+
+		const finalTask = db
+			.query("SELECT status, run_count, consecutive_failures FROM tasks WHERE id = ?")
+			.get(taskId) as {
+			status: string;
+			run_count: number;
+			consecutive_failures: number;
+		} | null;
+
+		expect(finalTask).not.toBeNull();
+		expect(finalTask!.status).toBe("completed");
+		// Should have run twice (first fail + retry success)
+		expect(runCount).toBe(2);
+		// consecutive_failures resets to 0 on success
+		expect(finalTask!.consecutive_failures).toBe(0);
+	});
+
+	it("stops retrying deferred tasks after DEFERRED_MAX_RETRIES", async () => {
+		const taskId = randomUUID();
+		const now = new Date();
+		const pastTime = new Date(now.getTime() - 60000).toISOString();
+		const nowStr = now.toISOString();
+
+		// Insert deferred task already at max-1 consecutive failures
+		db.exec(`
+			INSERT INTO tasks (
+				id, type, status, trigger_spec, payload, thread_id,
+				claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+				run_count, max_runs, requires, model_hint, no_history,
+				inject_mode, depends_on, require_success, alert_threshold,
+				consecutive_failures, event_depth, no_quiescence,
+				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+			) VALUES (
+				'${taskId}', 'deferred', 'pending', 'in 10m', NULL, NULL,
+				NULL, NULL, NULL, '${pastTime}', NULL,
+				1, NULL, NULL, NULL, 0,
+				'status', NULL, 0, 5,
+				1, 0, 0,
+				NULL, NULL, NULL, '${nowStr}', 'system', '${nowStr}', 0
+			)
+		`);
+
+		const agentLoopFactory = (): { run: () => Promise<AgentLoopResult> } => ({
+			run: async (): Promise<AgentLoopResult> => ({
+				messagesCreated: 0,
+				toolCallsMade: 0,
+				filesChanged: 0,
+				error: "Some transient error",
+			}),
+		});
+
+		const localCtx = {
+			...appContext,
+			config: {
+				allowlist: [],
+				modelBackends: { backends: [], default: "" },
+			},
+		};
+
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		const scheduler = new Scheduler(localCtx as any, agentLoopFactory);
+		const { stop } = scheduler.start(100);
+
+		// Wait for the task to be marked as failed (should NOT retry since at max)
+		await waitFor(
+			() => {
+				const t = db
+					.query("SELECT status, consecutive_failures FROM tasks WHERE id = ?")
+					.get(taskId) as { status: string; consecutive_failures: number } | null;
+				// After this run, consecutive_failures will be 2 (was 1 + 1 from this failure)
+				// DEFERRED_MAX_RETRIES = 2, so it should stay failed
+				return t?.status === "failed" && t.consecutive_failures >= 2;
+			},
+			{ message: "task did not reach final failure state", timeoutMs: 10000 },
+		);
+		stop();
+
+		const finalTask = db
+			.query("SELECT status, consecutive_failures FROM tasks WHERE id = ?")
+			.get(taskId) as { status: string; consecutive_failures: number } | null;
+
+		expect(finalTask).not.toBeNull();
+		expect(finalTask!.status).toBe("failed");
+		expect(finalTask!.consecutive_failures).toBe(2);
+	});
 });

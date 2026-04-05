@@ -30,6 +30,8 @@ function extractCronExpression(triggerSpec: string): string {
 }
 const EVICTION_TIMEOUT = 300_000; // 5 minutes
 const CRON_THREAD_ROTATION_THRESHOLD = 200;
+const DEFERRED_MAX_RETRIES = 2;
+const DEFERRED_RETRY_BACKOFF_MS = 5_000; // 5 seconds per consecutive failure
 
 /**
  * Reschedules a cron task to its next run time and resets status to 'pending'.
@@ -55,6 +57,38 @@ function rescheduleCronTask(
 			error: formatError(cronError),
 			taskId: task.id,
 		});
+	}
+}
+
+/**
+ * Auto-retries a failed deferred task if consecutive_failures is below the retry limit.
+ * Uses linear backoff (30s * consecutive_failures). Returns true if retried.
+ */
+function retryDeferredTask(
+	db: AppContext["db"],
+	task: Task,
+	consecutiveFailures: number,
+	logger: AppContext["logger"],
+): boolean {
+	if (task.type !== "deferred") return false;
+	if (consecutiveFailures >= DEFERRED_MAX_RETRIES) return false;
+	try {
+		const backoffMs = DEFERRED_RETRY_BACKOFF_MS * consecutiveFailures;
+		const nextRunAt = new Date(Date.now() + backoffMs).toISOString();
+		db.query(
+			"UPDATE tasks SET status = 'pending', next_run_at = ?, claimed_by = NULL, claimed_at = NULL, lease_id = NULL WHERE id = ?",
+		).run(nextRunAt, task.id);
+		logger.info(`Retrying deferred task ${task.id} (attempt ${consecutiveFailures + 1}/${DEFERRED_MAX_RETRIES})`, {
+			taskId: task.id,
+			backoffMs,
+		});
+		return true;
+	} catch (retryError) {
+		logger.error("Failed to retry deferred task", {
+			error: formatError(retryError),
+			taskId: task.id,
+		});
+		return false;
 	}
 }
 
@@ -609,16 +643,17 @@ export class Scheduler {
 							if (newConsecutiveFailures === task.alert_threshold) {
 								this.triggerFailureAdvisory(task, errorMsg, newConsecutiveFailures);
 							}
+							// Cron tasks must still reschedule even when the model is temporarily unavailable
+							rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "model validation failure");
+							rescheduleHeartbeat(
+								this.ctx.db,
+								task,
+								this.ctx.logger,
+								"model validation failure",
+								this.lastUserInteractionAt,
+							);
+							retryDeferredTask(this.ctx.db, task, newConsecutiveFailures, this.ctx.logger);
 						}
-						// Cron tasks must still reschedule even when the model is temporarily unavailable
-						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "model validation failure");
-						rescheduleHeartbeat(
-							this.ctx.db,
-							task,
-							this.ctx.logger,
-							"model validation failure",
-							this.lastUserInteractionAt,
-						);
 						return; // exit runTask — agent loop is not created
 					}
 				}
@@ -669,6 +704,7 @@ export class Scheduler {
 							"soft error",
 							this.lastUserInteractionAt,
 						);
+						retryDeferredTask(this.ctx.db, task, newConsecutiveFailures, this.ctx.logger);
 					} else {
 						// Mark as completed and reset consecutive failure counter
 						this.ctx.db
@@ -756,6 +792,7 @@ export class Scheduler {
 						"hard error",
 						this.lastUserInteractionAt,
 					);
+					retryDeferredTask(this.ctx.db, task, newConsecutiveFailures, this.ctx.logger);
 				}
 			} finally {
 				this.runningTasks.delete(task.id);
