@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
-import { BedrockDriver } from "../bedrock-driver";
+import { BedrockDriver, toBedrockMessages } from "../bedrock-driver";
 import { LLMError } from "../types";
-import type { StreamChunk } from "../types";
+import type { LLMMessage, StreamChunk } from "../types";
 
 const shouldSkip = process.env.SKIP_BEDROCK === "1";
 
@@ -950,5 +950,47 @@ describe("BedrockDriver", () => {
 			expect(system[0]).toEqual({ text: "You are a helpful assistant." });
 			expect(system[1]).toEqual({ cachePoint: { type: "default" } });
 		});
+	});
+});
+
+describe("toBedrockMessages — blank text guard", () => {
+	it("replaces empty string content with placeholder for user messages", () => {
+		const messages: LLMMessage[] = [{ role: "user", content: "" }];
+		const result = toBedrockMessages(messages);
+		expect(result).toHaveLength(1);
+		const textBlock = result[0].content?.[0];
+		expect(textBlock).toBeDefined();
+		// The text field must NOT be blank — Bedrock rejects it
+		expect("text" in textBlock! && textBlock.text).toBeTruthy();
+	});
+
+	it("replaces empty ContentBlock[] text with placeholder for user messages", () => {
+		const messages: LLMMessage[] = [
+			{ role: "user", content: [{ type: "text", text: "" }] },
+		];
+		const result = toBedrockMessages(messages);
+		expect(result).toHaveLength(1);
+		const textBlock = result[0].content?.[0];
+		expect("text" in textBlock! && textBlock.text).toBeTruthy();
+	});
+
+	it("replaces empty tool_call fallback text with placeholder", () => {
+		const messages: LLMMessage[] = [
+			{ role: "tool_call", content: [] },
+		];
+		const result = toBedrockMessages(messages);
+		expect(result).toHaveLength(1);
+		const textBlock = result[0].content?.[0];
+		expect("text" in textBlock! && textBlock.text).toBeTruthy();
+	});
+
+	it("does not modify non-empty text content", () => {
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "Hello world" },
+		];
+		const result = toBedrockMessages(messages);
+		expect(result).toHaveLength(1);
+		const textBlock = result[0].content?.[0];
+		expect("text" in textBlock! && textBlock.text).toBe("Hello world");
 	});
 });

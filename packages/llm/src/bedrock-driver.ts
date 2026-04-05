@@ -16,7 +16,10 @@ import { extractTextFromBlocks } from "./stream-utils";
 import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
 import { LLMError } from "./types";
 
-function toBedrockMessages(messages: LLMMessage[]): Message[] {
+// Bedrock rejects blank text in content blocks. Use this placeholder for empty content.
+const EMPTY_TEXT_PLACEHOLDER = "(empty)";
+
+export function toBedrockMessages(messages: LLMMessage[]): Message[] {
 	const result: Message[] = [];
 
 	for (const msg of messages) {
@@ -76,7 +79,7 @@ function toBedrockMessages(messages: LLMMessage[]): Message[] {
 			}
 			result.push({
 				role: "assistant",
-				content: content.length > 0 ? content : [{ text: "" }],
+				content: content.length > 0 ? content : [{ text: EMPTY_TEXT_PLACEHOLDER }],
 			});
 			continue;
 		}
@@ -134,11 +137,11 @@ function toBedrockMessages(messages: LLMMessage[]): Message[] {
 				}
 			}
 			if (content.length === 0) {
-				content.push({ text: extractTextFromBlocks(msg.content) || "" });
+				content.push({ text: extractTextFromBlocks(msg.content) || EMPTY_TEXT_PLACEHOLDER });
 			}
 			result.push({ role, content });
 		} else {
-			result.push({ role, content: [{ text: msg.content }] });
+			result.push({ role, content: [{ text: msg.content || EMPTY_TEXT_PLACEHOLDER }] });
 		}
 	}
 
