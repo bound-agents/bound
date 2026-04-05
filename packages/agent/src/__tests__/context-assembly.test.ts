@@ -5,7 +5,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
-import { assembleContext, estimateContentLength } from "../context-assembly";
+import {
+	assembleContext,
+	estimateContentLength,
+	formatTimestamp,
+} from "../context-assembly";
 
 describe("Context Assembly Pipeline", () => {
 	let tmpDir: string;
@@ -1789,7 +1793,7 @@ This skill reviews pull requests.`;
 	});
 
 	describe("Stage 5: timestamp annotations", () => {
-		it("annotates user messages with relative timestamps", () => {
+		it("annotates user messages with absolute timestamps", () => {
 			const tsThreadId = randomUUID();
 			db.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1854,12 +1858,14 @@ This skill reviews pull requests.`;
 			const userMsgs = messages.filter((m) => m.role === "user");
 			expect(userMsgs.length).toBe(2);
 
-			// First message should have ~2h timestamp annotation
-			expect(userMsgs[0].content).toContain("[2h ago]");
+			// First message should have absolute timestamp annotation (not relative)
+			expect(userMsgs[0].content).toMatch(/^\[.*\d{1,2}:\d{2}\]/);
+			expect(userMsgs[0].content).not.toContain("ago");
 			expect(userMsgs[0].content).toContain("Hello from the past");
 
-			// Second message should have ~5m timestamp annotation
-			expect(userMsgs[1].content).toContain("[5m ago]");
+			// Second message should also have absolute timestamp annotation
+			expect(userMsgs[1].content).toMatch(/^\[.*\d{1,2}:\d{2}\]/);
+			expect(userMsgs[1].content).not.toContain("ago");
 			expect(userMsgs[1].content).toContain("Hello from recently");
 		});
 
@@ -4062,8 +4068,9 @@ This skill reviews pull requests.`;
 
 			// Insert 50 messages (alternating user/assistant, ~60 chars each ≈ 15 tokens).
 			// 50 × 15 = 750 history tokens. System overhead ≈ 300-500 tokens.
-			// With contextWindow: 800, truncation fires. Token-aware truncation
-			// should keep ~20 messages (300 tokens), well over the old hardcoded 10.
+			// Absolute timestamp annotations add ~15 chars each (e.g. "[Feb 1, 00:00]").
+			// With contextWindow: 1000, truncation fires. Token-aware truncation
+			// should keep ~20 messages, well over the old hardcoded 10.
 			for (let i = 0; i < 50; i++) {
 				const role = i % 2 === 0 ? "user" : "assistant";
 				const ts = new Date(nowBase.getTime() + i * 1000).toISOString();
@@ -4087,7 +4094,7 @@ This skill reviews pull requests.`;
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
-				contextWindow: 800,
+				contextWindow: 1000,
 			});
 
 			const historyMessages = messages.filter((m) => m.role !== "system");
@@ -5029,5 +5036,38 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
+	});
+});
+
+describe("formatTimestamp", () => {
+	it("formats timestamps as absolute short dates", () => {
+		// Absolute timestamps should be stable (not change between turns)
+		const ts = "2026-04-04T14:30:00.000Z";
+		const result = formatTimestamp(ts);
+		// Should contain the date and time, not relative "ago" format
+		expect(result).toMatch(/^\[.*\d{1,2}:\d{2}.*\]$/);
+		expect(result).not.toContain("ago");
+	});
+
+	it("produces identical output for the same input regardless of when called", () => {
+		const ts = "2026-04-04T14:30:00.000Z";
+		const result1 = formatTimestamp(ts);
+		const result2 = formatTimestamp(ts);
+		expect(result1).toBe(result2);
+	});
+
+	it("formats today's timestamps with time only", () => {
+		const now = new Date();
+		const ts = now.toISOString();
+		const result = formatTimestamp(ts);
+		// Should have hours and minutes
+		expect(result).toMatch(/\d{1,2}:\d{2}/);
+	});
+
+	it("formats older timestamps with date and time", () => {
+		const ts = "2026-01-15T09:45:00.000Z";
+		const result = formatTimestamp(ts);
+		// Should include month/day info
+		expect(result).toMatch(/Jan 15/);
 	});
 });

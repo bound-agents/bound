@@ -107,6 +107,7 @@ function loadPersona(configDir: string): string | null {
 /**
  * Formats a timestamp as a relative duration string for context annotations.
  * Returns e.g. "[5m ago]", "[2h ago]", "[3d ago]".
+ * @deprecated Use formatTimestamp instead — relative timestamps bust prompt cache.
  */
 export function formatRelativeTimestamp(isoTimestamp: string, now?: Date): string {
 	const then = new Date(isoTimestamp).getTime();
@@ -124,6 +125,29 @@ export function formatRelativeTimestamp(isoTimestamp: string, now?: Date): strin
 
 	const days = Math.floor(hours / 24);
 	return `[${days}d ago]`;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * Formats a timestamp as an absolute short date for context annotations.
+ * Cache-friendly: output is deterministic for a given input (never changes between turns).
+ * Same-year: "[Apr 4, 14:30]". Different year: "[Jan 15 '25, 09:45]".
+ */
+export function formatTimestamp(isoTimestamp: string): string {
+	const d = new Date(isoTimestamp);
+	const month = MONTHS[d.getUTCMonth()];
+	const day = d.getUTCDate();
+	const hours = String(d.getUTCHours()).padStart(2, "0");
+	const minutes = String(d.getUTCMinutes()).padStart(2, "0");
+
+	const currentYear = new Date().getUTCFullYear();
+	if (d.getUTCFullYear() !== currentYear) {
+		const yearShort = String(d.getUTCFullYear()).slice(-2);
+		return `[${month} ${day} '${yearShort}, ${hours}:${minutes}]`;
+	}
+
+	return `[${month} ${day}, ${hours}:${minutes}]`;
 }
 
 /**
@@ -751,14 +775,17 @@ Original output was too large for the context window. If you need the full conte
 			}
 		}
 
-		// Annotate user and assistant messages with relative timestamps
+		// Annotate user and assistant messages with absolute timestamps
 		// so the agent can detect session boundaries and temporal gaps.
+		// Uses absolute format (e.g. "[Apr 4, 14:30]") instead of relative
+		// (e.g. "[5m ago]") to avoid busting the LLM prompt cache prefix,
+		// which depends on message content remaining stable across turns.
 		// Tool messages are left as-is to avoid corrupting structured content.
-		// Only annotate when the message is >= 1 minute old (no value in "[just now]").
+		// Only annotate when the message is >= 1 minute old (no value for very recent).
 		if ((m.role === "user" || m.role === "assistant") && m.created_at) {
 			const ageMs = Date.now() - new Date(m.created_at).getTime();
 			if (ageMs >= 60_000 && typeof annotatedContent === "string") {
-				const ts = formatRelativeTimestamp(m.created_at);
+				const ts = formatTimestamp(m.created_at);
 				annotatedContent = `${ts} ${annotatedContent}`;
 			}
 		}
