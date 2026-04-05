@@ -149,7 +149,8 @@ const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 // Graduated quiescence tiers (idle duration in ms → multiplier)
 // Thresholds are the lower bound of each idle band
 const QUIESCENCE_TIERS: Array<{ threshold: number; multiplier: number }> = [
-	{ threshold: 0, multiplier: 2 }, // 0-1h idle: ×2
+	{ threshold: 0, multiplier: 1 }, // 0-30m idle: ×1 (active user, use configured interval)
+	{ threshold: 1_800_000, multiplier: 2 }, // 30m-1h idle: ×2
 	{ threshold: 3_600_000, multiplier: 3 }, // 1-4h idle: ×3
 	{ threshold: 14_400_000, multiplier: 5 }, // 4-12h idle: ×5
 	{ threshold: 43_200_000, multiplier: 10 }, // 12-24h idle: ×10

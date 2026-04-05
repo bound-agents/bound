@@ -25,37 +25,39 @@ import { TypedEventEmitter } from "@bound/shared";
 import { Scheduler, computeQuiescenceMultiplier, formatIdleDuration } from "../scheduler";
 
 describe("computeQuiescenceMultiplier", () => {
-	it("returns 2x for 0ms idle (tier 0 minimum)", () => {
+	it("returns 1x for active user (0ms idle)", () => {
 		const now = new Date();
 		const multiplier = computeQuiescenceMultiplier(now);
+		expect(multiplier).toBe(1);
+	});
+
+	it("returns 1x for 15min idle (still active tier)", () => {
+		const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
+		const multiplier = computeQuiescenceMultiplier(fifteenMinAgo);
+		expect(multiplier).toBe(1);
+	});
+
+	it("returns 2x for 45min idle (tier 1: 30min-1h)", () => {
+		const fortyFiveMinAgo = new Date(Date.now() - 45 * 60 * 1000);
+		const multiplier = computeQuiescenceMultiplier(fortyFiveMinAgo);
 		expect(multiplier).toBe(2);
 	});
 
-	it("returns 2x for 30min idle (still tier 0)", () => {
-		const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000);
-		const multiplier = computeQuiescenceMultiplier(thirtyMinAgo);
-		// 30min is below 1h threshold (tier 0)
-		expect(multiplier).toBe(2);
-	});
-
-	it("returns 3x for 2h idle (tier 1)", () => {
+	it("returns 3x for 2h idle (tier 2: 1-4h)", () => {
 		const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
 		const multiplier = computeQuiescenceMultiplier(twoHoursAgo);
-		// 2h falls into tier 1 (1-4h range)
 		expect(multiplier).toBe(3);
 	});
 
-	it("returns 5x for 5h idle (tier 2)", () => {
+	it("returns 5x for 5h idle (tier 3: 4-12h)", () => {
 		const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000);
 		const multiplier = computeQuiescenceMultiplier(fiveHoursAgo);
-		// 5h falls into tier 2 (4-12h range)
 		expect(multiplier).toBe(5);
 	});
 
-	it("returns 10x for 13h idle (tier 3)", () => {
+	it("returns 10x for 13h idle (tier 4: 12h+)", () => {
 		const thirteenHoursAgo = new Date(Date.now() - 13 * 60 * 60 * 1000);
 		const multiplier = computeQuiescenceMultiplier(thirteenHoursAgo);
-		// 13h falls into tier 3 (12h+ range)
 		expect(multiplier).toBe(10);
 	});
 });
