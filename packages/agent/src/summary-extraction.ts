@@ -384,7 +384,25 @@ export function buildVolatileEnrichment(
 	maxMemory = 25,
 	maxTasks = 5,
 	userMessage?: string,
+	threadSummary?: string,
 ): VolatileEnrichment {
+	// Helper: extract keywords from text, filtering stop words and short tokens
+	const extractKeywords = (text: string): string[] =>
+		text
+			.toLowerCase()
+			.replace(/[^a-z0-9_\s-]/g, " ")
+			.split(/\s+/)
+			.filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
+
+	// Merge keywords from user message (high priority) and thread summary (broader context).
+	// Message keywords come first; summary keywords are deduplicated against them.
+	const messageKeywords = extractKeywords(userMessage ?? "");
+	const messageKeywordSet = new Set(messageKeywords);
+	const summaryKeywords = extractKeywords(threadSummary ?? "").filter(
+		(w) => !messageKeywordSet.has(w),
+	);
+	const mergedKeywords = [...messageKeywords, ...summaryKeywords];
+
 	// Pinned/policy entries — always injected regardless of recency.
 	// These are critical operational instructions that should never fall out of context.
 	const pinnedRows = db
@@ -462,13 +480,9 @@ export function buildVolatileEnrichment(
 	let recencyCount: number | undefined;
 	const boostedKeys = new Set<string>();
 
-	if (hasGraphEdges && userMessage) {
-		// Extract keywords from user message for graph seeding
-		const keywords = userMessage
-			.toLowerCase()
-			.replace(/[^a-z0-9_\s-]/g, " ")
-			.split(/\s+/)
-			.filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
+	if (hasGraphEdges && mergedKeywords.length > 0) {
+		// Use merged keywords (message + thread summary) for graph seeding
+		const keywords = mergedKeywords;
 
 		if (keywords.length > 0) {
 			// Graph-seeded retrieval
@@ -572,13 +586,9 @@ export function buildVolatileEnrichment(
 			}
 		}
 	} else {
-		// No graph edges or no user message — existing delta+boost logic unchanged
-		if (userMessage && userMessage.length > 0) {
-			const keywords = userMessage
-				.toLowerCase()
-				.replace(/[^a-z0-9_\s-]/g, " ")
-				.split(/\s+/)
-				.filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
+		// No graph edges — use merged keywords (message + thread summary) for boosting
+		if (mergedKeywords.length > 0) {
+			const keywords = mergedKeywords;
 
 			if (keywords.length > 0) {
 				// Build LIKE conditions for key and value matching

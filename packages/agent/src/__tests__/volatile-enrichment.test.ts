@@ -443,6 +443,158 @@ describe("buildVolatileEnrichment — relevance boosting", () => {
 	});
 });
 
+describe("buildVolatileEnrichment — thread summary keyword seeding", () => {
+	const siteId = randomBytes(8).toString("hex");
+
+	it("surfaces entries matching thread summary keywords when user message has no matching keywords", () => {
+		// Memory about agent detection — only matches "agent" and "detection" keywords
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: randomBytes(8).toString("hex"),
+				key: "agent_detection_research",
+				value: "Agent detection techniques using behavioral fingerprinting",
+				source: null,
+				created_at: "2026-01-01T00:00:00.000Z",
+				modified_at: "2026-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		// Memory about MCP spec — only matches "mcp" and "protocol" keywords
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: randomBytes(8).toString("hex"),
+				key: "mcp_spec_notes",
+				value: "MCP protocol uses JSON-RPC for tool invocation",
+				source: null,
+				created_at: "2026-01-01T00:00:00.000Z",
+				modified_at: "2026-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		// User says "memory coherence check" — no keywords match agent/detection/mcp/protocol
+		// But thread summary mentions both topics
+		const enrichment = buildVolatileEnrichment(
+			db,
+			"2026-03-28T00:00:00.000Z",
+			10,
+			5,
+			"memory coherence check",
+			"We discussed agent detection techniques and MCP protocol implementation details",
+		);
+
+		const hasAgentDetection = enrichment.memoryDeltaLines.some((l) =>
+			l.includes("agent_detection_research"),
+		);
+		const hasMcpSpec = enrichment.memoryDeltaLines.some((l) =>
+			l.includes("mcp_spec_notes"),
+		);
+		expect(hasAgentDetection).toBe(true);
+		expect(hasMcpSpec).toBe(true);
+	});
+
+	it("deduplicates keywords — message keywords take priority over summary keywords", () => {
+		// Entry that matches "scheduler" — present in both message and summary
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: randomBytes(8).toString("hex"),
+				key: "scheduler_internals",
+				value: "Scheduler uses cron expressions for task timing",
+				source: null,
+				created_at: "2026-01-01T00:00:00.000Z",
+				modified_at: "2026-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		// Both message and summary mention "scheduler" — should not cause duplicates
+		const enrichment = buildVolatileEnrichment(
+			db,
+			"2026-03-28T00:00:00.000Z",
+			10,
+			5,
+			"How does the scheduler work?",
+			"We explored the scheduler implementation and sync protocol",
+		);
+
+		const schedulerLines = enrichment.memoryDeltaLines.filter((l) =>
+			l.includes("scheduler_internals"),
+		);
+		// Should appear exactly once, not duplicated
+		expect(schedulerLines.length).toBe(1);
+	});
+
+	it("works when threadSummary is undefined (backward compatible)", () => {
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: randomBytes(8).toString("hex"),
+				key: "basic_entry",
+				value: "Just a regular memory entry",
+				source: null,
+				created_at: new Date().toISOString(),
+				modified_at: "2026-03-29T12:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		// No threadSummary — should still work as before
+		const enrichment = buildVolatileEnrichment(
+			db,
+			"2026-03-28T00:00:00.000Z",
+			10,
+			5,
+			"some user message",
+		);
+
+		expect(enrichment.memoryDeltaLines.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("thread summary surfaces entries even when user message is empty", () => {
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: randomBytes(8).toString("hex"),
+				key: "bluesky_tooling",
+				value: "Bluesky AT Protocol uses DIDs for identity",
+				source: null,
+				created_at: "2026-01-01T00:00:00.000Z",
+				modified_at: "2026-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		// No user message but thread summary has relevant keywords
+		const enrichment = buildVolatileEnrichment(
+			db,
+			"2026-03-28T00:00:00.000Z",
+			10,
+			5,
+			undefined,
+			"Discussed bluesky tooling and AT protocol integration",
+		);
+
+		const hasBluesky = enrichment.memoryDeltaLines.some((l) =>
+			l.includes("bluesky_tooling"),
+		);
+		expect(hasBluesky).toBe(true);
+	});
+});
+
 describe("buildVolatileEnrichment — task digest", () => {
 	const baseline = "2026-03-01T00:00:00.000Z";
 	const siteId = randomBytes(8).toString("hex");
