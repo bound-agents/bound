@@ -212,6 +212,7 @@ export const heartbeatConfigSchema = z.object({
 		.int()
 		.min(60_000, "Heartbeat interval must be at least 60 seconds")
 		.default(1_800_000),
+	model_hint: z.string().optional(),
 });
 
 export type HeartbeatConfig = z.infer<typeof heartbeatConfigSchema>;

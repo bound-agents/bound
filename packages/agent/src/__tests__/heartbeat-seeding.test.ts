@@ -237,6 +237,33 @@ describe("seedHeartbeat", () => {
 		expect(count).toBe(1);
 	});
 
+	// Model hint from config
+	it("sets model_hint on heartbeat task when provided in config", () => {
+		const config: HeartbeatConfig = {
+			enabled: true,
+			interval_ms: 1_800_000,
+			model_hint: "glm-4.7",
+		};
+
+		seedHeartbeat(db, config, siteId);
+
+		const task = getHeartbeatTask();
+		expect(task).toBeDefined();
+		expect(task.model_hint).toBe("glm-4.7");
+	});
+
+	it("leaves model_hint null when not provided in config", () => {
+		const config: HeartbeatConfig = {
+			enabled: true,
+			interval_ms: 1_800_000,
+		};
+
+		seedHeartbeat(db, config, siteId);
+
+		const task = getHeartbeatTask();
+		expect(task.model_hint).toBeNull();
+	});
+
 	// Default values when config is empty object
 	it("handles partial config by using passed values", () => {
 		// When config is passed without interval_ms, we still need to provide it

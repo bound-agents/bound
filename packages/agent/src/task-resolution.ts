@@ -295,6 +295,7 @@ export function seedHeartbeat(
 	const nextBoundary = Math.ceil(now.getTime() / intervalMs) * intervalMs;
 	const nextRunAt = new Date(nextBoundary).toISOString();
 	const triggerSpec = JSON.stringify({ type: "heartbeat", interval_ms: intervalMs });
+	const modelHint = config.model_hint ?? null;
 
 	db.prepare(
 		`INSERT OR IGNORE INTO tasks (
@@ -306,9 +307,9 @@ export function seedHeartbeat(
 		) VALUES (
 			?, 'heartbeat', 'pending', ?, NULL, ?, 'system',
 			NULL, NULL, NULL, NULL, ?, NULL,
-			0, NULL, NULL, NULL, 0, 'status',
+			0, NULL, NULL, ?, 0, 'status',
 			NULL, 0, 5, 0,
 			0, 0, NULL, NULL, NULL, ?, 0
 		)`,
-	).run(id, triggerSpec, now.toISOString(), nextRunAt, now.toISOString());
+	).run(id, triggerSpec, now.toISOString(), nextRunAt, modelHint, now.toISOString());
 }
