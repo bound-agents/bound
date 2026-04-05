@@ -141,6 +141,8 @@ describe("renderMarkdown — fenced code blocks", () => {
 		expect(html).toMatch(/<code|<pre/);
 		// Must NOT have Shiki inline color styles
 		expect(html).not.toMatch(/style="[^"]*color:/);
+		// Must preserve the code content (not replace with empty string)
+		expect(html).toContain("some plain code");
 	});
 });
 

@@ -87,10 +87,11 @@ const markedInstance = new Marked(
 	markedHighlight({
 		async: true,
 		highlight: async (code: string, lang: string): Promise<string> => {
-			// No language specified: return "" so marked-highlight falls back to
-			// its default code block rendering (plain <pre><code>, no Shiki styles).
+			// No language specified: return the original code so marked-highlight
+			// leaves the token unmodified and renders a plain <pre><code> block.
+			// Returning "" would replace the code content with nothing (empty block).
 			if (!lang) {
-				return "";
+				return code;
 			}
 			const highlighter = await getHighlighter();
 			const supported = highlighter.getLoadedLanguages();
