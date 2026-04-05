@@ -11,6 +11,7 @@ import {
 	deriveCapabilityRequirements,
 	getResolvedModelId,
 	insertThreadMessage,
+	isTransientLLMError,
 } from "../agent-loop-utils";
 import type { ModelResolution } from "../model-resolution";
 
@@ -393,5 +394,52 @@ describe("insertThreadMessage", () => {
 		// biome-ignore lint/suspicious/noExplicitAny: DB row type
 		const countAfter = (db.query("SELECT COUNT(*) as c FROM change_log").get() as any).c;
 		expect(countAfter).toBe(countBefore + 1);
+	});
+});
+
+describe("isTransientLLMError", () => {
+	it("returns true for http2 connection errors", () => {
+		const err = new Error("http2 request did not get a response");
+		expect(isTransientLLMError(err)).toBe(true);
+	});
+
+	it("returns true for ECONNRESET", () => {
+		const err = new Error("ECONNRESET");
+		expect(isTransientLLMError(err)).toBe(true);
+	});
+
+	it("returns true for socket hang up", () => {
+		const err = new Error("socket hang up");
+		expect(isTransientLLMError(err)).toBe(true);
+	});
+
+	it("returns false for 'not valid JSON' — this is a 400 client error, not transient", () => {
+		const err = new Error(
+			"Bedrock request failed: The model returned the following errors: The request body is not valid JSON.",
+		);
+		expect(isTransientLLMError(err)).toBe(false);
+	});
+
+	it("returns false for LLMError with 4xx status code", () => {
+		const { LLMError } = require("@bound/llm");
+		const err = new LLMError("Bad request: blank text field", "bedrock", 400);
+		expect(isTransientLLMError(err)).toBe(false);
+	});
+
+	it("returns false for LLMError with 422 status code even with transport-like message", () => {
+		const { LLMError } = require("@bound/llm");
+		const err = new LLMError("socket hang up during http2 request", "openai", 422);
+		expect(isTransientLLMError(err)).toBe(false);
+	});
+
+	it("returns true for LLMError without status code and transport message", () => {
+		const { LLMError } = require("@bound/llm");
+		const err = new LLMError("http2 connection dropped", "bedrock", undefined);
+		expect(isTransientLLMError(err)).toBe(true);
+	});
+
+	it("returns false for generic non-transport errors", () => {
+		const err = new Error("Something went wrong");
+		expect(isTransientLLMError(err)).toBe(false);
 	});
 });

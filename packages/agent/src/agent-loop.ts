@@ -24,6 +24,7 @@ import {
 	deriveCapabilityRequirements,
 	getResolvedModelId,
 	insertThreadMessage,
+	isTransientLLMError,
 } from "./agent-loop-utils";
 import { assembleContext } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
@@ -356,13 +357,9 @@ export class AgentLoop {
 					}
 				} catch (error) {
 					// Transient transport errors (HTTP/2 drops, socket resets): retry
+					// Non-transient errors (4xx client errors like invalid JSON) are NOT retried.
 					const errMsg = error instanceof Error ? error.message : String(error);
-					const isTransportError =
-						errMsg.includes("http2") ||
-						errMsg.includes("ECONNRESET") ||
-						errMsg.includes("socket hang up") ||
-						errMsg.includes("not valid JSON");
-					if (isTransportError && transportRetries < MAX_SILENCE_RETRIES) {
+					if (isTransientLLMError(error) && transportRetries < MAX_SILENCE_RETRIES) {
 						transportRetries++;
 						this.ctx.logger.warn("[agent-loop] Transport error, retrying", {
 							attempt: transportRetries,

@@ -1,8 +1,31 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertRow } from "@bound/core";
-import type { CapabilityRequirements } from "@bound/llm";
+import { type CapabilityRequirements, LLMError } from "@bound/llm";
 import type { ModelResolution } from "./model-resolution";
+
+/**
+ * Determines whether an LLM error is a transient transport issue worth retrying.
+ * Returns false for client errors (4xx except 429) — these indicate a malformed
+ * request that will fail identically on retry.
+ */
+export function isTransientLLMError(error: unknown): boolean {
+	const errMsg = error instanceof Error ? error.message : String(error);
+
+	// If we have a status code, use it as the primary signal.
+	// 4xx errors (except 429 rate-limit) are client errors — not transient.
+	if (error instanceof LLMError && error.statusCode !== undefined) {
+		if (error.statusCode === 429) return false; // handled separately by rate-limit logic
+		if (error.statusCode >= 400 && error.statusCode < 500) return false;
+	}
+
+	// Pattern-match on known transient transport error messages
+	return (
+		errMsg.includes("http2") ||
+		errMsg.includes("ECONNRESET") ||
+		errMsg.includes("socket hang up")
+	);
+}
 
 /**
  * Finds the first user message in a thread that arrived after the last
