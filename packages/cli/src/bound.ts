@@ -4,7 +4,7 @@
 import "reflect-metadata";
 
 import { runInit } from "./commands/init.js";
-import { runStart } from "./commands/start.js";
+import { runStart } from "./commands/start/index.js";
 
 async function main() {
 	const args = process.argv.slice(2);
