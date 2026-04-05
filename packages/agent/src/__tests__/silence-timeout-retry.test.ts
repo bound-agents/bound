@@ -344,8 +344,9 @@ describe("Transport error retry", () => {
 		expect(alerts.length).toBe(1);
 	});
 
-	it("should retry on 'not valid JSON' Bedrock errors (body corruption)", async () => {
-		// Fail once with "not valid JSON" (Bedrock body corruption), then succeed
+	it("should NOT retry on 'not valid JSON' Bedrock errors (client 400, not transient)", async () => {
+		// "not valid JSON" is a 400 client error — the request body is malformed.
+		// Retrying the same malformed body is pointless.
 		const backend = new InvalidJsonErrorBackend(1);
 
 		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
@@ -355,14 +356,15 @@ describe("Transport error retry", () => {
 
 		const result = await loop.run();
 
-		expect(result.error).toBeUndefined();
-		expect(backend.getCallCount()).toBe(2);
+		expect(result.error).toBeDefined();
+		expect(result.error).toContain("not valid JSON");
+		expect(backend.getCallCount()).toBe(1); // NOT retried
 	});
 });
 
 /**
  * LLM backend that throws "not valid JSON" errors N times, then succeeds.
- * Simulates Bedrock body corruption from HTTP/2 transport issues.
+ * Used to verify non-transient errors are NOT retried.
  */
 class InvalidJsonErrorBackend implements LLMBackend {
 	private callCount = 0;
