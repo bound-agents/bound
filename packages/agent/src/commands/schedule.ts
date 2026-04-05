@@ -96,7 +96,7 @@ export const schedule: CommandDefinition = {
 			const injectMode = args.inject ? args.inject : "results";
 
 			// Parse alert_threshold from --alert-after flag
-			let alertThreshold = 1;
+			let alertThreshold = 3;
 			if (args["alert-after"]) {
 				const parsed = Number.parseInt(args["alert-after"], 10);
 				if (!Number.isNaN(parsed) && parsed > 0) {

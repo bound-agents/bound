@@ -101,7 +101,7 @@ export function applySchema(db: Database): void {
 			inject_mode     TEXT DEFAULT 'results',
 			depends_on      TEXT,
 			require_success INTEGER DEFAULT 0,
-			alert_threshold INTEGER DEFAULT 1,
+			alert_threshold INTEGER DEFAULT 3,
 			consecutive_failures INTEGER DEFAULT 0,
 			event_depth     INTEGER DEFAULT 0,
 			no_quiescence   INTEGER DEFAULT 0,

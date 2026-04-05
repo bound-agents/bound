@@ -206,6 +206,57 @@ describe("Database Schema", () => {
 		db.close();
 	});
 
+	it("defaults alert_threshold to 3 for new tasks", () => {
+		const db = createDatabase(dbPath);
+		applySchema(db);
+		const siteId = "test-site";
+		const now = new Date().toISOString();
+
+		insertRow(
+			db,
+			"tasks",
+			{
+				id: randomUUID(),
+				type: "deferred",
+				status: "pending",
+				trigger_spec: "in 10m",
+				payload: null,
+				thread_id: null,
+				origin_thread_id: null,
+				claimed_by: null,
+				claimed_at: null,
+				lease_id: null,
+				next_run_at: now,
+				last_run_at: null,
+				run_count: 0,
+				max_runs: null,
+				requires: null,
+				model_hint: null,
+				no_history: 0,
+				inject_mode: "status",
+				depends_on: null,
+				require_success: 0,
+				// alert_threshold intentionally omitted to test DEFAULT
+				consecutive_failures: 0,
+				event_depth: 0,
+				no_quiescence: 0,
+				heartbeat_at: null,
+				result: null,
+				error: null,
+				created_at: now,
+				created_by: "test",
+				modified_at: now,
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		const task = db.query("SELECT alert_threshold FROM tasks").get() as { alert_threshold: number };
+		expect(task.alert_threshold).toBe(3);
+
+		db.close();
+	});
+
 	it("verifies skills table has all required columns", () => {
 		const db = createDatabase(dbPath);
 		applySchema(db);
