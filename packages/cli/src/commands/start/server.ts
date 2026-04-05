@@ -104,12 +104,23 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 		const webPort = Number.parseInt(process.env.PORT || "3000", 10);
 		const webHost = process.env.BIND_HOST ?? "localhost";
+		// Deduplicate models by ID — pooled backends (same ID, multiple providers)
+		// should appear as a single entry. Use the first provider for display.
+		const seenIds = new Set<string>();
+		const uniqueModels: Array<{ id: string; provider: string }> = [];
+		for (const b of modelBackends.backends) {
+			if (!seenIds.has(b.id)) {
+				seenIds.add(b.id);
+				uniqueModels.push({ id: b.id, provider: b.provider });
+			}
+		}
+
 		webServer = await createWebServer(appContext.db, appContext.eventBus, {
 			port: webPort,
 			host: webHost,
 			hostName: appContext.hostName,
 			models: {
-				models: modelBackends.backends.map((b) => ({ id: b.id, provider: b.provider })),
+				models: uniqueModels,
 				default: modelBackends.default,
 			},
 			keyring,
