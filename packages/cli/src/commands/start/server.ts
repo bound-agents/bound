@@ -355,6 +355,29 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				}
 			}
 		});
+
+		// Recover: re-emit for any threads that have pending dispatch entries (from crash recovery)
+		const pendingThreads = appContext.db
+			.prepare(
+				`SELECT DISTINCT thread_id FROM dispatch_queue WHERE status = 'pending'`,
+			)
+			.all() as Array<{ thread_id: string }>;
+		for (const { thread_id } of pendingThreads) {
+			const firstPending = appContext.db
+				.prepare(
+					"SELECT dq.message_id FROM dispatch_queue dq WHERE dq.thread_id = ? AND dq.status = 'pending' ORDER BY dq.created_at ASC LIMIT 1",
+				)
+				.get(thread_id) as { message_id: string } | null;
+			if (firstPending) {
+				const msg = appContext.db
+					.prepare("SELECT * FROM messages WHERE id = ?")
+					.get(firstPending.message_id) as import("@bound/shared").Message | null;
+				if (msg) {
+					appContext.logger.info(`[recovery] Re-dispatching pending message for thread ${thread_id}`);
+					appContext.eventBus.emit("message:created", { message: msg, thread_id });
+				}
+			}
+		}
 	} catch (error) {
 		appContext.logger.warn("Web server failed to start", { error: formatError(error) });
 		appContext.logger.warn("Continuing without web UI. API will not be available.");

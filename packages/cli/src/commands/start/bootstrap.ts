@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { resolve } from "node:path";
 import { seedSkillAuthoring } from "@bound/agent";
 import type { AppContext } from "@bound/core";
-import { createAppContext, insertRow, updateRow, withChangeLog } from "@bound/core";
+import { createAppContext, insertRow, resetProcessing, updateRow, withChangeLog } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import { ensureKeypair } from "@bound/sync";
 
@@ -258,6 +258,12 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 			);
 		} else {
 			appContext.logger.info("[recovery] No crashed tasks found");
+		}
+
+		// Reset dispatch_queue entries left in 'processing' by a crashed inference
+		const dispatchReset = resetProcessing(appContext.db);
+		if (dispatchReset > 0) {
+			appContext.logger.info(`[recovery] Reset ${dispatchReset} in-flight dispatch(es) to pending`);
 		}
 
 		// Scan for interrupted tool-use per R-E13
