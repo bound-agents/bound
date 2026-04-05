@@ -799,6 +799,128 @@ describe("defineCommand implementations", () => {
 			expect(result.exitCode).toBe(1);
 			expect(result.stderr).toContain("title");
 		});
+
+		it("supports 'create' subcommand for advisory creation", async () => {
+			const ctx: CommandContext = {
+				db,
+				siteId: "test-site",
+				eventBus: new TypedEventEmitter(),
+				logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+			};
+
+			const result = await advisory.handler(
+				{ subcommand: "create", title: "Subcmd advisory", detail: "Created via subcommand" },
+				ctx,
+			);
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toMatch(/Advisory created/);
+
+			db.run("DELETE FROM advisories WHERE title = ?", ["Subcmd advisory"]);
+		});
+
+		it("supports 'dismiss' subcommand", async () => {
+			const ctx: CommandContext = {
+				db,
+				siteId: "test-site",
+				eventBus: new TypedEventEmitter(),
+				logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+			};
+
+			// Create an advisory first
+			await advisory.handler(
+				{ subcommand: "create", title: "To dismiss", detail: "Will be dismissed" },
+				ctx,
+			);
+			const row = db
+				.prepare("SELECT id FROM advisories WHERE title = ?")
+				.get("To dismiss") as { id: string };
+
+			const result = await advisory.handler({ subcommand: "dismiss", source: row.id }, ctx);
+			expect(result.exitCode).toBe(0);
+
+			const updated = db
+				.prepare("SELECT status FROM advisories WHERE id = ?")
+				.get(row.id) as { status: string };
+			expect(updated.status).toBe("dismissed");
+
+			db.run("DELETE FROM advisories WHERE id = ?", [row.id]);
+		});
+
+		it("supports 'approve' subcommand", async () => {
+			const ctx: CommandContext = {
+				db,
+				siteId: "test-site",
+				eventBus: new TypedEventEmitter(),
+				logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+			};
+
+			await advisory.handler(
+				{ subcommand: "create", title: "To approve", detail: "Will be approved" },
+				ctx,
+			);
+			const row = db
+				.prepare("SELECT id FROM advisories WHERE title = ?")
+				.get("To approve") as { id: string };
+
+			const result = await advisory.handler({ subcommand: "approve", source: row.id }, ctx);
+			expect(result.exitCode).toBe(0);
+
+			const updated = db
+				.prepare("SELECT status FROM advisories WHERE id = ?")
+				.get(row.id) as { status: string };
+			expect(updated.status).toBe("approved");
+
+			db.run("DELETE FROM advisories WHERE id = ?", [row.id]);
+		});
+
+		it("supports 'apply' subcommand on approved advisory", async () => {
+			const ctx: CommandContext = {
+				db,
+				siteId: "test-site",
+				eventBus: new TypedEventEmitter(),
+				logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+			};
+
+			await advisory.handler(
+				{ subcommand: "create", title: "To apply", detail: "Will be applied" },
+				ctx,
+			);
+			const row = db
+				.prepare("SELECT id FROM advisories WHERE title = ?")
+				.get("To apply") as { id: string };
+
+			// Must approve first
+			await advisory.handler({ subcommand: "approve", source: row.id }, ctx);
+			const result = await advisory.handler({ subcommand: "apply", source: row.id }, ctx);
+			expect(result.exitCode).toBe(0);
+
+			const updated = db
+				.prepare("SELECT status FROM advisories WHERE id = ?")
+				.get(row.id) as { status: string };
+			expect(updated.status).toBe("applied");
+
+			db.run("DELETE FROM advisories WHERE id = ?", [row.id]);
+		});
+
+		it("supports 'list' subcommand", async () => {
+			const ctx: CommandContext = {
+				db,
+				siteId: "test-site",
+				eventBus: new TypedEventEmitter(),
+				logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+			};
+
+			await advisory.handler(
+				{ subcommand: "create", title: "Listed advisory", detail: "Shows in list" },
+				ctx,
+			);
+
+			const result = await advisory.handler({ subcommand: "list" }, ctx);
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain("Listed advisory");
+
+			db.run("DELETE FROM advisories WHERE title = ?", ["Listed advisory"]);
+		});
 	});
 
 	describe("commands command", () => {
