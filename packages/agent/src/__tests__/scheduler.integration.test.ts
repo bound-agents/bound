@@ -26,7 +26,7 @@ describe("Scheduler Integration", () => {
 		appContext = {
 			db,
 			config: {
-				allowlist: [],
+				allowlist: { default_web_user: "test", users: { test: { display_name: "Test" } } },
 				modelBackends: { backends: [], default: "" },
 			},
 			optionalConfig: {
@@ -411,7 +411,7 @@ describe("Scheduler Integration", () => {
 		const localCtx = {
 			...appContext,
 			config: {
-				allowlist: [],
+				allowlist: { default_web_user: "test", users: { test: { display_name: "Test" } } },
 				modelBackends: { backends: [], default: "" },
 			},
 		};
@@ -556,7 +556,7 @@ describe("Scheduler Integration", () => {
 		const localCtx = {
 			...appContext,
 			config: {
-				allowlist: [],
+				allowlist: { default_web_user: "test", users: { test: { display_name: "Test" } } },
 				modelBackends: { backends: [], default: "" },
 			},
 		};

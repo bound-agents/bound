@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
 import { applySchema, createDatabase } from "@bound/core";
-import { BOUND_NAMESPACE, TypedEventEmitter, deterministicUUID } from "@bound/shared";
+import { TypedEventEmitter } from "@bound/shared";
 import type { Hono } from "hono";
 import { createApp } from "../index";
 
@@ -14,7 +14,7 @@ describe("API Routes", () => {
 		db = createDatabase(":memory:");
 		applySchema(db);
 		eventBus = new TypedEventEmitter();
-		app = await createApp(db, eventBus);
+		app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
 	});
 
 	describe("GET /api/threads", () => {
@@ -30,7 +30,7 @@ describe("API Routes", () => {
 	});
 
 	describe("POST /api/threads", () => {
-		it("creates a new thread", async () => {
+		it("creates a new thread with the configured operatorUserId", async () => {
 			const request = new Request("http://localhost:3000/api/threads", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -42,32 +42,13 @@ describe("API Routes", () => {
 			const thread = await response.json();
 			expect(thread.id).toBeDefined();
 			expect(thread.interface).toBe("web");
-		});
-
-		it("uses resolved operator UUID as user_id when operatorUserId is configured", async () => {
-			const operatorUserId = deterministicUUID(BOUND_NAMESPACE, "Kara");
-			const configuredApp = await createApp(db, eventBus, { operatorUserId });
-
-			const request = new Request("http://localhost:3000/api/threads", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({}),
-			});
-			const response = await configuredApp.fetch(request);
-
-			expect(response.status).toBe(201);
-			const thread = await response.json();
-			expect(thread.user_id).toBe(operatorUserId);
-			// Must NOT be the literal string "default_web_user"
+			expect(thread.user_id).toBe("test-operator");
 			expect(thread.user_id).not.toBe("default_web_user");
 		});
 
-		it("lists only threads belonging to the operator when operatorUserId is set", async () => {
-			const operatorUserId = deterministicUUID(BOUND_NAMESPACE, "Kara");
-			const configuredApp = await createApp(db, eventBus, { operatorUserId });
-
-			// Create a thread with the resolved operator ID
-			await configuredApp.fetch(
+		it("lists only threads belonging to the configured operator", async () => {
+			// Create a thread via the API (uses "test-operator" from beforeEach config)
+			await app.fetch(
 				new Request("http://localhost:3000/api/threads", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
@@ -75,19 +56,19 @@ describe("API Routes", () => {
 				}),
 			);
 
-			// Manually insert a thread with the old literal user_id
+			// Manually insert a thread with a different user_id
 			const now = new Date().toISOString();
 			db.run(
 				`INSERT INTO threads (id, user_id, interface, host_origin, color, title, created_at, last_message_at, modified_at, deleted)
-				 VALUES ('old-thread', 'default_web_user', 'web', 'localhost', 0, '', ?, ?, ?, 0)`,
+				 VALUES ('other-thread', 'someone-else', 'web', 'localhost', 0, '', ?, ?, ?, 0)`,
 				[now, now, now],
 			);
 
-			// GET should only return threads with the resolved operator ID
-			const response = await configuredApp.fetch(new Request("http://localhost:3000/api/threads"));
+			// GET should only return threads with the configured operator ID
+			const response = await app.fetch(new Request("http://localhost:3000/api/threads"));
 			const threads = await response.json();
 			expect(threads.length).toBe(1);
-			expect(threads[0].user_id).toBe(operatorUserId);
+			expect(threads[0].user_id).toBe("test-operator");
 		});
 	});
 

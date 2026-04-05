@@ -21,7 +21,7 @@ describe("/api/threads/{id}/status with status_forward cache (AC6.3)", () => {
 		statusForwardCache = new Map<string, StatusForwardPayload>();
 
 		// Create app with statusForwardCache
-		app = createThreadsRoutes(db, defaultModel, statusForwardCache);
+		app = createThreadsRoutes(db, "test-operator", defaultModel, statusForwardCache);
 
 		// Insert a test thread
 		const now = new Date().toISOString();

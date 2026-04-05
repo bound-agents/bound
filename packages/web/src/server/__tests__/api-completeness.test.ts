@@ -38,7 +38,7 @@ describe("API endpoint completeness", () => {
 
 		db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', ?)", [siteId]);
 
-		app = await createApp(db, eventBus);
+		app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
 
 		// Seed data so parameterised lookups do not 404 on missing *data*
 		// (we want to distinguish "route not found" from "resource not found").

@@ -8,13 +8,13 @@ import { Hono } from "hono";
 
 export function createThreadsRoutes(
 	db: Database,
+	operatorUserId: string,
 	defaultModel?: string,
 	statusForwardCache?: Map<string, StatusForwardPayload>,
 	activeLoops?: Set<string>,
-	operatorUserId?: string,
 ): Hono {
 	const app = new Hono();
-	const webUserId = operatorUserId || "default_web_user";
+	const webUserId = operatorUserId;
 
 	app.get("/", (c) => {
 		try {

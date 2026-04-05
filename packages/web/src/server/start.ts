@@ -10,7 +10,7 @@ export interface WebServerConfig {
 	port?: number;
 	host?: string;
 	hostName?: string;
-	operatorUserId?: string;
+	operatorUserId: string;
 	models?: ModelsConfig;
 	keyring?: KeyringConfig;
 	siteId?: string;
@@ -36,7 +36,7 @@ export interface WebServer {
 export async function createWebServer(
 	db: Database,
 	eventBus: TypedEventEmitter,
-	config: WebServerConfig = {},
+	config: WebServerConfig,
 ): Promise<WebServer> {
 	const port = config.port ?? 3000;
 	const host = config.host ?? "localhost";

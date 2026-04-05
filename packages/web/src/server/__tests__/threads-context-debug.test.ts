@@ -16,7 +16,7 @@ describe("GET /api/threads/:id/context-debug", () => {
 		applyMetricsSchema(db);
 
 		// Create app
-		app = createThreadsRoutes(db);
+		app = createThreadsRoutes(db, "test-operator");
 
 		// Insert a test thread
 		const now = new Date().toISOString();

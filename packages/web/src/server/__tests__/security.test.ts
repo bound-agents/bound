@@ -19,7 +19,7 @@ describe("API Security", () => {
 		applySchema(db);
 		applyMetricsSchema(db);
 		eventBus = new TypedEventEmitter();
-		app = await createApp(db, eventBus);
+		app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
 	});
 
 	async function createThread(): Promise<string> {

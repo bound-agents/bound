@@ -30,7 +30,7 @@ describe("R-O3: Task output delivered to original scheduling thread", () => {
 		ctx = {
 			db,
 			config: {
-				allowlist: { allowedUsers: [] },
+				allowlist: { default_web_user: "test", users: { test: { display_name: "Test" } } },
 				modelBackends: { models: [], default: "test-model" },
 			},
 			optionalConfig: {},

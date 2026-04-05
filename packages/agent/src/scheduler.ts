@@ -220,16 +220,9 @@ export class Scheduler {
 			exec?: (cmd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 		},
 	) {
-		// Resolve operator user ID so scheduler threads are visible in the operator's cross-thread digest
-		const operatorName =
-			ctx.config.allowlist &&
-			typeof ctx.config.allowlist === "object" &&
-			"default_web_user" in ctx.config.allowlist
-				? ctx.config.allowlist.default_web_user
-				: undefined;
-		this.operatorUserId = operatorName
-			? deterministicUUID(BOUND_NAMESPACE, operatorName)
-			: "system";
+		// Resolve operator user ID so scheduler threads are visible in the operator's cross-thread digest.
+		// allowlist is a required config — startup fails without it, so default_web_user is always present.
+		this.operatorUserId = deterministicUUID(BOUND_NAMESPACE, ctx.config.allowlist.default_web_user);
 
 		// Register event handler for all event types
 		ctx.eventBus.on("message:created", () => this.onUserInteraction());

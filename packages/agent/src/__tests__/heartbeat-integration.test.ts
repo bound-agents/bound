@@ -37,7 +37,7 @@ describe("Heartbeat Integration", () => {
 		appContext = {
 			db,
 			config: {
-				allowlist: [],
+				allowlist: { default_web_user: "test", users: { test: { display_name: "Test" } } },
 				modelBackends: { backends: [], default: "" },
 			},
 			optionalConfig: {

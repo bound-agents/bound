@@ -14,17 +14,13 @@ export interface RoutesConfig {
 	modelsConfig?: ModelsConfig;
 	hostName?: string;
 	siteId?: string;
-	operatorUserId?: string;
+	operatorUserId: string;
 	statusForwardCache?: Map<string, StatusForwardPayload>;
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	activeLoops?: Set<string>;
 }
 
-export function registerRoutes(
-	db: Database,
-	eventBus: TypedEventEmitter,
-	config: RoutesConfig = {},
-) {
+export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config: RoutesConfig) {
 	const {
 		modelsConfig,
 		hostName = "unknown",
@@ -38,10 +34,10 @@ export function registerRoutes(
 	return {
 		threads: createThreadsRoutes(
 			db,
+			operatorUserId,
 			modelsConfig?.default,
 			statusForwardCache,
 			activeLoops,
-			operatorUserId,
 		),
 		messages: createMessagesRoutes(db, eventBus),
 		files: createFilesRoutes(db),

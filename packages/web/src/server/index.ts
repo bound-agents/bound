@@ -24,7 +24,7 @@ export interface AppConfig {
 	modelsConfig?: ModelsConfig;
 	hostName?: string;
 	siteId?: string;
-	operatorUserId?: string;
+	operatorUserId: string;
 	keyring?: KeyringConfig;
 	logger?: Logger;
 	relayExecutor?: RelayExecutor;
@@ -47,11 +47,18 @@ export async function createApp(
 		? (appConfig as ModelsConfig)
 		: (appConfig as AppConfig | undefined)?.modelsConfig;
 	const typedAppConfig = appConfig && !isModelsConfig ? (appConfig as AppConfig) : undefined;
+	if (!typedAppConfig?.operatorUserId) {
+		throw new Error(
+			"operatorUserId is required in AppConfig. " +
+				"Resolve it from allowlist: deterministicUUID(BOUND_NAMESPACE, allowlist.default_web_user)",
+		);
+	}
+
 	const routesConfig: RoutesConfig = {
 		modelsConfig,
 		hostName: typedAppConfig?.hostName,
 		siteId: typedAppConfig?.siteId,
-		operatorUserId: typedAppConfig?.operatorUserId,
+		operatorUserId: typedAppConfig.operatorUserId,
 		statusForwardCache: typedAppConfig?.statusForwardCache,
 		activeDelegations: typedAppConfig?.activeDelegations,
 		activeLoops: typedAppConfig?.activeLoops,

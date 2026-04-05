@@ -15,7 +15,7 @@ describe("Redaction API Endpoints (R-E18)", () => {
 		db = createDatabase(":memory:");
 		applySchema(db);
 		eventBus = new TypedEventEmitter();
-		app = await createApp(db, eventBus);
+		app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
 	});
 
 	async function createThread(): Promise<string> {

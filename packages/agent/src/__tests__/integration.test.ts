@@ -143,7 +143,7 @@ describe("Agent Loop End-to-End Integration", () => {
 		const mockAppContext = {
 			db,
 			config: {
-				allowlist: [],
+				allowlist: { default_web_user: "test", users: { test: { display_name: "Test" } } },
 				modelBackends: { backends: [], default: "" },
 			},
 			optionalConfig: {
@@ -292,7 +292,7 @@ describe("Agent Loop End-to-End Integration", () => {
 		const mockAppContext = {
 			db,
 			config: {
-				allowlist: [],
+				allowlist: { default_web_user: "test", users: { test: { display_name: "Test" } } },
 				modelBackends: { backends: [], default: "" },
 			},
 			optionalConfig: {
@@ -421,7 +421,7 @@ describe("Agent Loop End-to-End Integration", () => {
 		const mockAppContext = {
 			db,
 			config: {
-				allowlist: [],
+				allowlist: { default_web_user: "test", users: { test: { display_name: "Test" } } },
 				modelBackends: { backends: [], default: "" },
 			},
 			optionalConfig: {

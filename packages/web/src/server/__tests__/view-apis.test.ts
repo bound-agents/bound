@@ -22,7 +22,7 @@ describe("R-U23/25/26: View APIs", () => {
 		siteId = getSiteId(db);
 
 		eventBus = new TypedEventEmitter();
-		app = await createApp(db, eventBus);
+		app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
 	});
 
 	describe("GET /api/tasks (R-U23: Timetable view)", () => {

@@ -14,7 +14,7 @@ describe("R-U18: Thread colors cycle sequentially 0-9", () => {
 		db = createDatabase(":memory:");
 		applySchema(db);
 		eventBus = new TypedEventEmitter();
-		app = await createApp(db, eventBus);
+		app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
 	});
 
 	it("first thread gets color 0", async () => {
