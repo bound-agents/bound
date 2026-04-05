@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { pruneRelayCycles } from "@bound/core";
+import { pruneAcknowledged, pruneRelayCycles } from "@bound/core";
 import type { Logger } from "@bound/shared";
 import { getMinConfirmedSeq } from "./peer-cursor.js";
 
@@ -92,6 +92,13 @@ export function startPruningLoop(
 			const relayCyclesPruned = pruneRelayCycles(db, 30);
 			if (relayCyclesPruned > 0) {
 				logger?.debug("Pruned relay cycles", { count: relayCyclesPruned });
+			}
+
+			// Prune acknowledged dispatch entries (1-hour retention)
+			const dispatchCutoff = new Date(Date.now() - 3_600_000).toISOString();
+			const dispatchPruned = pruneAcknowledged(db, dispatchCutoff);
+			if (dispatchPruned > 0) {
+				logger?.debug("Pruned dispatch_queue", { count: dispatchPruned });
 			}
 		}, intervalMs);
 	};

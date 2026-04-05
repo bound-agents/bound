@@ -5,13 +5,19 @@
 
 import {
 	createRelayOutboxEntry,
-	findPendingUserMessage,
 	generateThreadTitle,
 	getDelegationTarget,
 } from "@bound/agent";
 import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
 import type { AppContext } from "@bound/core";
-import { enqueueMessage, updateRow, writeOutbox } from "@bound/core";
+import {
+	acknowledgeBatch,
+	claimPending,
+	enqueueMessage,
+	pruneAcknowledged,
+	updateRow,
+	writeOutbox,
+} from "@bound/core";
 import type { ModelBackendsConfig, ModelRouter } from "@bound/llm";
 import type { KeyringConfig, ProcessPayload, StatusForwardPayload } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
@@ -226,6 +232,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			appContext.logger.info(`[agent] Processing message in thread ${thread_id}`);
 			activeLoops.add(thread_id);
 
+			// Claim all pending messages for this thread — marks them as 'processing'
+			const claimed = claimPending(appContext.db, thread_id, appContext.siteId);
+			const claimedIds = claimed.map((e) => e.message_id);
+
 			try {
 				const selectedModelId = message.model_id || undefined;
 				const activeModelId = selectedModelId || routerConfig.default;
@@ -307,19 +317,32 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			} finally {
 				activeLoops.delete(thread_id);
 
+				// Acknowledge the batch we just processed
+				if (claimedIds.length > 0) {
+					try {
+						acknowledgeBatch(appContext.db, claimedIds);
+					} catch {
+						// Non-fatal
+					}
+				}
+
 				// Notify platform connectors that the loop is done
 				if (platformRegistry?.notifyLoopComplete) {
 					platformRegistry.notifyLoopComplete(thread_id);
 				}
 
-				// Re-queue: if a user message arrived while this loop was active
+				// Re-queue: check dispatch_queue for messages that arrived during the loop
 				try {
-					const pendingMsg = findPendingUserMessage(appContext.db, thread_id);
-					if (pendingMsg) {
-						appContext.logger.info(`[agent] Re-queuing skipped message in thread ${thread_id}`);
+					const pendingRow = appContext.db
+						.prepare(
+							"SELECT dq.message_id FROM dispatch_queue dq WHERE dq.thread_id = ? AND dq.status = 'pending' ORDER BY dq.created_at ASC LIMIT 1",
+						)
+						.get(thread_id) as { message_id: string } | null;
+					if (pendingRow) {
+						appContext.logger.info(`[agent] Re-queuing pending message in thread ${thread_id}`);
 						const fullPendingMsg = appContext.db
 							.prepare("SELECT * FROM messages WHERE id = ? LIMIT 1")
-							.get(pendingMsg.id) as import("@bound/shared").Message | null;
+							.get(pendingRow.message_id) as import("@bound/shared").Message | null;
 						if (fullPendingMsg) {
 							appContext.eventBus.emit("message:created", {
 								message: fullPendingMsg,
