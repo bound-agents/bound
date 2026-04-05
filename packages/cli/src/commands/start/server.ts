@@ -85,8 +85,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	const statusForwardCache = new Map<string, StatusForwardPayload>();
 	const activeDelegations = new Map<string, { targetSiteId: string; processOutboxId: string }>();
 	const activeLoops = new Set<string>();
-	const debounceTimers = new Map<string, Timer>();
-	const DEBOUNCE_WINDOW_MS = 1500; // batch rapid-fire messages within this window
 
 	// Platform registry — declared here so message:created handler can reference it,
 	// populated in the platform connectors section below.
@@ -362,7 +360,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			}
 		};
 
-		// message:created handler — enqueue and debounce before dispatching
+		// message:created handler — enqueue and dispatch immediately
 		appContext.eventBus.on("message:created", ({ message, thread_id }) => {
 			if (message.role !== "user") return;
 
@@ -377,20 +375,12 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				return; // finally block's re-queue check will pick up the new pending message
 			}
 
-			// Debounce: reset the timer on each new message to batch rapid-fire inputs
-			const existingTimer = debounceTimers.get(thread_id);
-			if (existingTimer) clearTimeout(existingTimer);
-
-			const timer = setTimeout(() => {
-				debounceTimers.delete(thread_id);
-				dispatchThread(thread_id);
-			}, DEBOUNCE_WINDOW_MS);
-
-			debounceTimers.set(thread_id, timer);
+			// Dispatch immediately — no debounce. If the user sends another message
+			// before inference completes, cancel-and-redispatch handles batching.
+			dispatchThread(thread_id);
 		});
 
 		// Recover: dispatch any threads that have pending entries (from crash recovery)
-		// Call dispatchThread directly — skip debounce for recovery
 		const pendingThreads = appContext.db
 			.prepare(
 				`SELECT DISTINCT thread_id FROM dispatch_queue WHERE status = 'pending'`,
