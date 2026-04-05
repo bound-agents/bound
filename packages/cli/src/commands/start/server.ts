@@ -11,7 +11,7 @@ import {
 } from "@bound/agent";
 import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
 import type { AppContext } from "@bound/core";
-import { updateRow, writeOutbox } from "@bound/core";
+import { enqueueMessage, updateRow, writeOutbox } from "@bound/core";
 import type { ModelBackendsConfig, ModelRouter } from "@bound/llm";
 import type { KeyringConfig, ProcessPayload, StatusForwardPayload } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
@@ -210,6 +210,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 		appContext.eventBus.on("message:created", async ({ message, thread_id }) => {
 			if (message.role !== "user") return;
+
+			// Enqueue for dispatch tracking (idempotent — safe for re-emits)
+			enqueueMessage(appContext.db, message.id, thread_id);
+
 			if (!modelRouter) {
 				appContext.logger.warn("[agent] No model router configured, cannot process message");
 				return;
