@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { OpenAICompatibleDriver } from "../openai-driver";
+import { OpenAICompatibleDriver, toOpenAIMessages } from "../openai-driver";
 import type { LLMMessage, StreamChunk } from "../types";
 
 describe("OpenAICompatibleDriver", () => {
@@ -789,5 +789,67 @@ data: [DONE]
 		expect(ids[0]).not.toEqual(ids[1]);
 		expect(ids[0]).toMatch(/^openai-\d+-\d+$/);
 		expect(ids[1]).toMatch(/^openai-\d+-\d+$/);
+	});
+});
+
+describe("toOpenAIMessages — tool_call string content parsing", () => {
+	it("parses JSON string tool_call content into tool_calls array", () => {
+		const messages: LLMMessage[] = [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{
+						type: "tool_use",
+						id: "call_123",
+						name: "search",
+						input: { query: "test" },
+					},
+				]),
+			},
+		];
+		const result = toOpenAIMessages(messages);
+		expect(result).toHaveLength(1);
+		expect(result[0].role).toBe("assistant");
+		expect(result[0].tool_calls).toBeDefined();
+		expect(result[0].tool_calls).toHaveLength(1);
+		expect(result[0].tool_calls![0].id).toBe("call_123");
+		expect(result[0].tool_calls![0].function.name).toBe("search");
+		expect(result[0].tool_calls![0].function.arguments).toBe('{"query":"test"}');
+	});
+
+	it("falls back to plain content when JSON parse fails", () => {
+		const messages: LLMMessage[] = [
+			{ role: "tool_call", content: "I will help you with that." },
+		];
+		const result = toOpenAIMessages(messages);
+		expect(result).toHaveLength(1);
+		expect(result[0].role).toBe("assistant");
+		expect(result[0].content).toBe("I will help you with that.");
+		expect(result[0].tool_calls).toBeUndefined();
+	});
+
+	it("ensures tool_result following string tool_call has matching tool_calls", () => {
+		const messages: LLMMessage[] = [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "call_abc", name: "query", input: { sql: "SELECT 1" } },
+				]),
+			},
+			{
+				role: "tool_result",
+				content: "Result: 1",
+				tool_use_id: "call_abc",
+			},
+		];
+		const result = toOpenAIMessages(messages);
+		expect(result).toHaveLength(2);
+		// Assistant must have tool_calls for the tool result to be valid
+		expect(result[0].role).toBe("assistant");
+		expect(result[0].tool_calls).toBeDefined();
+		expect(result[0].tool_calls![0].id).toBe("call_abc");
+		// Tool result follows
+		expect(result[1].role).toBe("tool");
+		expect(result[1].tool_call_id).toBe("call_abc");
 	});
 });

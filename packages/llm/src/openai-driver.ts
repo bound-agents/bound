@@ -68,7 +68,7 @@ interface OpenAIStreamEvent {
 	} | null;
 }
 
-function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
+export function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 	const result: OpenAIMessage[] = [];
 
 	for (const msg of messages) {
@@ -140,9 +140,38 @@ function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 		} else {
 			// Handle string content
 			if (msg.role === "tool_call") {
+				// DB stores tool_call content as JSON string of ContentBlocks — try parsing
+				let toolCalls:
+					| Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>
+					| undefined;
+				let textContent = msg.content;
+				try {
+					const parsed = JSON.parse(msg.content);
+					if (Array.isArray(parsed)) {
+						const toolUseBlocks = parsed.filter(
+							(b: Record<string, unknown>) => b.type === "tool_use",
+						);
+						if (toolUseBlocks.length > 0) {
+							toolCalls = toolUseBlocks.map(
+								(b: { id?: string; name?: string; input?: unknown }) => ({
+									id: b.id ?? "",
+									type: "function" as const,
+									function: {
+										name: b.name ?? "",
+										arguments: JSON.stringify(b.input ?? {}),
+									},
+								}),
+							);
+							textContent = "";
+						}
+					}
+				} catch {
+					// Not JSON — use as plain content
+				}
 				result.push({
 					role: "assistant",
-					content: msg.content,
+					content: textContent,
+					tool_calls: toolCalls,
 				});
 			} else if (msg.role === "tool_result") {
 				result.push({
