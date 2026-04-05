@@ -343,4 +343,63 @@ describe("Transport error retry", () => {
 			.all(threadId) as Array<{ content: string }>;
 		expect(alerts.length).toBe(1);
 	});
+
+	it("should retry on 'not valid JSON' Bedrock errors (body corruption)", async () => {
+		// Fail once with "not valid JSON" (Bedrock body corruption), then succeed
+		const backend = new InvalidJsonErrorBackend(1);
+
+		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await loop.run();
+
+		expect(result.error).toBeUndefined();
+		expect(backend.getCallCount()).toBe(2);
+	});
 });
+
+/**
+ * LLM backend that throws "not valid JSON" errors N times, then succeeds.
+ * Simulates Bedrock body corruption from HTTP/2 transport issues.
+ */
+class InvalidJsonErrorBackend implements LLMBackend {
+	private callCount = 0;
+	constructor(private failCount: number) {}
+
+	getCallCount() {
+		return this.callCount;
+	}
+
+	async *chat(): AsyncGenerator<StreamChunk> {
+		this.callCount++;
+		if (this.callCount <= this.failCount) {
+			throw new Error(
+				"Bedrock request failed: The model returned the following errors: The request body is not valid JSON.",
+			);
+		}
+		yield { type: "text" as const, content: "Success after body corruption retry!" };
+		yield {
+			type: "done" as const,
+			usage: {
+				input_tokens: 10,
+				output_tokens: 5,
+				cache_write_tokens: null,
+				cache_read_tokens: null,
+				estimated: false,
+			},
+		};
+	}
+
+	capabilities() {
+		return {
+			streaming: true,
+			tool_use: true,
+			system_prompt: true,
+			prompt_caching: false,
+			vision: false,
+			max_context: 8000,
+		};
+	}
+}

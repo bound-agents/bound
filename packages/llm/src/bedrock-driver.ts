@@ -236,10 +236,15 @@ export class BedrockDriver implements LLMBackend {
 					abortSignal: params.signal,
 				});
 			} catch (error) {
+				// Extract HTTP status from AWS SDK $metadata when available
+				const metadata = (error as Record<string, unknown>)?.$metadata as
+					| { httpStatusCode?: number }
+					| undefined;
+				const statusCode = metadata?.httpStatusCode;
 				throw new LLMError(
 					`Bedrock request failed: ${formatError(error)}`,
 					"bedrock",
-					undefined,
+					statusCode,
 					error instanceof Error ? error : new Error(String(error)),
 				);
 			}

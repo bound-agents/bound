@@ -396,6 +396,30 @@ describe("BedrockDriver", () => {
 		expect((caught as LLMError).message).toContain("network failure");
 	});
 
+	it.skipIf(shouldSkip)("extracts HTTP status code from AWS SDK $metadata", async () => {
+		const awsError = new Error("The request body is not valid JSON.");
+		// AWS SDK errors carry $metadata with the HTTP status code
+		(awsError as any).$metadata = { httpStatusCode: 400 };
+		(awsError as any).name = "ValidationException";
+		sendSpy.mockImplementation(() => Promise.reject(awsError));
+
+		const driver = makeDriver();
+		let caught: unknown;
+		try {
+			await collectChunks(
+				driver.chat({
+					model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+					messages: [{ role: "user", content: "hello" }],
+				}),
+			);
+		} catch (err) {
+			caught = err;
+		}
+		expect(caught).toBeInstanceOf(LLMError);
+		expect((caught as LLMError).statusCode).toBe(400);
+		expect((caught as LLMError).message).toContain("not valid JSON");
+	});
+
 	it.skipIf(shouldSkip)("throws LLMError when stream throws mid-iteration", async () => {
 		sendSpy.mockImplementation(() =>
 			Promise.resolve(

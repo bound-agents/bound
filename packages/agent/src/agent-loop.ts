@@ -360,7 +360,8 @@ export class AgentLoop {
 					const isTransportError =
 						errMsg.includes("http2") ||
 						errMsg.includes("ECONNRESET") ||
-						errMsg.includes("socket hang up");
+						errMsg.includes("socket hang up") ||
+						errMsg.includes("not valid JSON");
 					if (isTransportError && transportRetries < MAX_SILENCE_RETRIES) {
 						transportRetries++;
 						this.ctx.logger.warn("[agent-loop] Transport error, retrying", {
