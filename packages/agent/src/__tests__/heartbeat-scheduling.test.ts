@@ -219,10 +219,10 @@ describe("rescheduleHeartbeat", () => {
 	});
 
 	// Quiescence multipliers
-	it("applies 2x multiplier for fresh interaction (multiplier=2 minimum)", () => {
+	it("applies 1x multiplier for fresh interaction (active user)", () => {
 		const { taskId } = insertHeartbeatTask(30 * 60 * 1000, "running");
 		const ctx = makeCtx();
-		// Just now
+		// Just now — active user gets 1x multiplier
 		const lastInteraction = new Date();
 
 		const task = getTask(taskId);
@@ -230,10 +230,9 @@ describe("rescheduleHeartbeat", () => {
 
 		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
-		// With 2x multiplier: 30min becomes 60min effective interval
-		// So boundaries should be at :00 (full hour marks)
+		// With 1x multiplier: 30min interval, boundaries at :00 and :30
 		const nextDate = new Date(row.next_run_at);
-		expect(nextDate.getUTCMinutes()).toBe(0);
+		expect(nextDate.getUTCMinutes() % 30).toBe(0);
 	});
 
 	it("applies 3x multiplier for 2h idle", () => {

@@ -127,11 +127,11 @@ describe("Scheduler features", () => {
 			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory());
 
 			// Immediately after creation, lastUserInteractionAt is "now",
-			// so idle time is ~0ms.  The lowest tier (0-1h) has multiplier 2.
+			// so idle time is ~0ms.  The lowest tier (0-30m) has multiplier 1.
 			const interval = scheduler.getEffectivePollInterval();
 
-			// Base POLL_INTERVAL is 5000, so with 2x multiplier we expect 10000
-			expect(interval).toBe(10_000);
+			// Base POLL_INTERVAL is 5000, with 1x multiplier (active user) we expect 5000
+			expect(interval).toBe(5_000);
 		});
 
 		it("returns base interval when a no_quiescence task exists", () => {
