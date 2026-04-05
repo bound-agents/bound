@@ -86,7 +86,7 @@ describe("Phase 1 Integration", () => {
 			)
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(20); // 16 main tables (incl. skills, memory_edges) + 3 relay + 2 metrics - 1 (host_meta is local) = 20
+		expect(tables.length).toBe(21); // 16 main tables (incl. skills, memory_edges) + 3 relay + dispatch_queue + 2 metrics - 1 (host_meta is local) = 21
 
 		const tableNames = tables.map((t) => t.name);
 		const expectedTables = [

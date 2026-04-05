@@ -33,7 +33,7 @@ describe("Database Schema", () => {
 		db.close();
 	});
 
-	it("applies schema successfully creating all 18 tables", () => {
+	it("applies schema successfully creating all 19 tables", () => {
 		const db = createDatabase(dbPath);
 		applySchema(db);
 
@@ -64,8 +64,9 @@ describe("Database Schema", () => {
 		expect(tableNames).toContain("relay_outbox");
 		expect(tableNames).toContain("relay_inbox");
 		expect(tableNames).toContain("relay_cycles");
+		expect(tableNames).toContain("dispatch_queue");
 
-		expect(tableNames.length).toBe(18);
+		expect(tableNames.length).toBe(19);
 
 		db.close();
 	});
@@ -130,8 +131,8 @@ describe("Database Schema", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		// Still exactly 18 tables
-		expect(tables.length).toBe(18);
+		// Still exactly 19 tables
+		expect(tables.length).toBe(19);
 
 		db.close();
 	});

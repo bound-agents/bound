@@ -53,3 +53,11 @@ export {
 	readInboxByStreamId,
 	PayloadTooLargeError,
 } from "./relay";
+export {
+	enqueueMessage,
+	claimPending,
+	acknowledgeBatch,
+	resetProcessing,
+	pruneAcknowledged,
+	type DispatchEntry,
+} from "./dispatch";
