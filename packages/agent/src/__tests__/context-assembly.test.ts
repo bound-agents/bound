@@ -5,11 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
-import {
-	assembleContext,
-	estimateContentLength,
-	formatTimestamp,
-} from "../context-assembly";
+import { assembleContext, estimateContentLength, formatTimestamp } from "../context-assembly";
 
 describe("Context Assembly Pipeline", () => {
 	let tmpDir: string;
@@ -1736,8 +1732,8 @@ This skill reviews pull requests.`;
 			const userMsg = messages.find((m) => m.role === "user");
 			expect(userMsg).toBeDefined();
 			// Content should be parsed into ContentBlock[] array, not left as JSON string
-			expect(Array.isArray(userMsg!.content)).toBe(true);
-			const blocks = userMsg!.content as Array<{ type: string; [k: string]: unknown }>;
+			expect(Array.isArray(userMsg?.content)).toBe(true);
+			const blocks = userMsg?.content as Array<{ type: string; [k: string]: unknown }>;
 			expect(blocks.length).toBe(2);
 			expect(blocks[0].type).toBe("text");
 			expect(blocks[1].type).toBe("image");
@@ -1788,7 +1784,7 @@ This skill reviews pull requests.`;
 
 			const userMsg = messages.find((m) => m.role === "user");
 			expect(userMsg).toBeDefined();
-			expect(typeof userMsg!.content).toBe("string");
+			expect(typeof userMsg?.content).toBe("string");
 		});
 	});
 
@@ -4972,11 +4968,21 @@ This skill reviews pull requests.`;
 			// Content with emoji at position 199 — .slice(0, 200) would split the
 			// surrogate pair of the emoji (U+1F60E = 😎), producing an orphaned
 			// high surrogate \uD83D that is invalid JSON/UTF-8.
-			const contentWithEmoji = "x".repeat(199) + "😎" + "y".repeat(5000);
+			const contentWithEmoji = `${"x".repeat(199)}😎${"y".repeat(5000)}`;
 			const resultId = randomUUID();
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[resultId, localThreadId, "tool_result", contentWithEmoji, toolId, now, now, "localhost", 0],
+				[
+					resultId,
+					localThreadId,
+					"tool_result",
+					contentWithEmoji,
+					toolId,
+					now,
+					now,
+					"localhost",
+					0,
+				],
 			);
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

@@ -264,17 +264,17 @@ describe("Encryption error handling and logging", () => {
 
 		// Create test server
 		const server = Bun.serve({ port: 0, fetch: app.fetch });
-		const port = server.port;
+		const _port = server.port;
 
 		try {
 			// Create a valid encrypted request
 			const { encryptBody } = await import("../encryption.js");
-			const { signRequest } = await import("../signing.js");
+			const _signing = await import("../signing.js");
 
 			const plaintext = new TextEncoder().encode(JSON.stringify({ test: "data" }));
-			const symmetricKey = new Uint8Array(32);
-			const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
-			const nonceHex = Buffer.from(nonce).toString("hex");
+			const _symmetricKey = new Uint8Array(32);
+			const { ciphertext: _ciphertext, nonce } = encryptBody(plaintext, _symmetricKey);
+			const _nonceHex = Buffer.from(nonce).toString("hex");
 
 			// Sign the ciphertext (for a real test, we'd need the actual private key)
 			// For this mock test, we'll verify the logging structure by directly checking logs
@@ -326,7 +326,7 @@ describe("Encryption error handling and logging", () => {
 		};
 
 		// biome-ignore lint/suspicious/noExplicitAny: Mock context for unit test
-		const result = await middleware(mockContext as any, async () => {});
+		const _result = await middleware(mockContext as any, async () => {});
 
 		// Should reject with plaintext_rejected, NOT a signature error
 		const warnLog = logs.find((l) => l.message === "Plaintext sync request rejected");

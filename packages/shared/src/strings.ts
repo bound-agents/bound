@@ -7,19 +7,19 @@
  */
 export function safeSlice(str: string, start: number, end: number): string {
 	// Clamp end to string length
-	if (end > str.length) end = str.length;
+	let clampedEnd = end > str.length ? str.length : end;
 
-	// If the character just before `end` is a high surrogate (U+D800–U+DBFF),
-	// the character at `end` would be its low surrogate — step back to keep
+	// If the character just before `clampedEnd` is a high surrogate (U+D800–U+DBFF),
+	// the character at `clampedEnd` would be its low surrogate — step back to keep
 	// the pair intact (by excluding it) rather than splitting it.
 	if (
-		end > start &&
-		end < str.length &&
-		str.charCodeAt(end - 1) >= 0xd800 &&
-		str.charCodeAt(end - 1) <= 0xdbff
+		clampedEnd > start &&
+		clampedEnd < str.length &&
+		str.charCodeAt(clampedEnd - 1) >= 0xd800 &&
+		str.charCodeAt(clampedEnd - 1) <= 0xdbff
 	) {
-		end--;
+		clampedEnd--;
 	}
 
-	return str.slice(start, end);
+	return str.slice(start, clampedEnd);
 }

@@ -831,16 +831,16 @@ describe("defineCommand implementations", () => {
 				{ subcommand: "create", title: "To dismiss", detail: "Will be dismissed" },
 				ctx,
 			);
-			const row = db
-				.prepare("SELECT id FROM advisories WHERE title = ?")
-				.get("To dismiss") as { id: string };
+			const row = db.prepare("SELECT id FROM advisories WHERE title = ?").get("To dismiss") as {
+				id: string;
+			};
 
 			const result = await advisory.handler({ subcommand: "dismiss", source: row.id }, ctx);
 			expect(result.exitCode).toBe(0);
 
-			const updated = db
-				.prepare("SELECT status FROM advisories WHERE id = ?")
-				.get(row.id) as { status: string };
+			const updated = db.prepare("SELECT status FROM advisories WHERE id = ?").get(row.id) as {
+				status: string;
+			};
 			expect(updated.status).toBe("dismissed");
 
 			db.run("DELETE FROM advisories WHERE id = ?", [row.id]);
@@ -858,16 +858,16 @@ describe("defineCommand implementations", () => {
 				{ subcommand: "create", title: "To approve", detail: "Will be approved" },
 				ctx,
 			);
-			const row = db
-				.prepare("SELECT id FROM advisories WHERE title = ?")
-				.get("To approve") as { id: string };
+			const row = db.prepare("SELECT id FROM advisories WHERE title = ?").get("To approve") as {
+				id: string;
+			};
 
 			const result = await advisory.handler({ subcommand: "approve", source: row.id }, ctx);
 			expect(result.exitCode).toBe(0);
 
-			const updated = db
-				.prepare("SELECT status FROM advisories WHERE id = ?")
-				.get(row.id) as { status: string };
+			const updated = db.prepare("SELECT status FROM advisories WHERE id = ?").get(row.id) as {
+				status: string;
+			};
 			expect(updated.status).toBe("approved");
 
 			db.run("DELETE FROM advisories WHERE id = ?", [row.id]);
@@ -885,18 +885,18 @@ describe("defineCommand implementations", () => {
 				{ subcommand: "create", title: "To apply", detail: "Will be applied" },
 				ctx,
 			);
-			const row = db
-				.prepare("SELECT id FROM advisories WHERE title = ?")
-				.get("To apply") as { id: string };
+			const row = db.prepare("SELECT id FROM advisories WHERE title = ?").get("To apply") as {
+				id: string;
+			};
 
 			// Must approve first
 			await advisory.handler({ subcommand: "approve", source: row.id }, ctx);
 			const result = await advisory.handler({ subcommand: "apply", source: row.id }, ctx);
 			expect(result.exitCode).toBe(0);
 
-			const updated = db
-				.prepare("SELECT status FROM advisories WHERE id = ?")
-				.get(row.id) as { status: string };
+			const updated = db.prepare("SELECT status FROM advisories WHERE id = ?").get(row.id) as {
+				status: string;
+			};
 			expect(updated.status).toBe("applied");
 
 			db.run("DELETE FROM advisories WHERE id = ?", [row.id]);

@@ -279,6 +279,8 @@ describe("Scheduler features", () => {
 			const now = new Date().toISOString();
 			const pastTime = new Date(Date.now() - 60_000).toISOString();
 
+			// Set consecutive_failures to 2 (= DEFERRED_MAX_RETRIES) so the task
+			// stays failed and isn't auto-retried back to pending.
 			db.run(
 				`INSERT INTO tasks (
 					id, type, status, trigger_spec, payload, thread_id,
@@ -292,7 +294,7 @@ describe("Scheduler features", () => {
 					NULL, NULL, NULL, ?, NULL,
 					0, NULL, NULL, NULL, 0,
 					'status', NULL, 0, 5,
-					0, 0, 0,
+					2, 0, 0,
 					NULL, NULL, NULL, ?, 'system', ?, 0
 				)`,
 				[taskId, pastTime, now, now],
@@ -319,8 +321,8 @@ describe("Scheduler features", () => {
 						db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as {
 							status: string;
 						} | null
-					)?.status !== "pending",
-				{ message: "task did not run/fail" },
+					)?.status === "failed",
+				{ message: "task did not fail" },
 			);
 			stop();
 
@@ -354,7 +356,7 @@ describe("Scheduler features", () => {
 				[threadId, userId, now, now, now],
 			);
 
-			// Insert a task that will fail
+			// Insert a task that will fail (cf=2 so it won't be auto-retried)
 			db.run(
 				`INSERT INTO tasks (
 					id, type, status, trigger_spec, payload, thread_id,
@@ -368,7 +370,7 @@ describe("Scheduler features", () => {
 					NULL, NULL, NULL, ?, NULL,
 					0, NULL, NULL, NULL, 0,
 					'status', NULL, 0, 5,
-					0, 0, 0,
+					2, 0, 0,
 					NULL, NULL, NULL, ?, 'system', ?, 0
 				)`,
 				[taskId, threadId, pastTime, now, now],
@@ -1194,6 +1196,8 @@ describe("Scheduler features", () => {
 		function insertTaskWithModelHint(id: string, modelHint: string, threadId?: string) {
 			const now = new Date().toISOString();
 			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			// Set consecutive_failures=2 (= DEFERRED_MAX_RETRIES) so failed tasks
+			// stay failed and aren't auto-retried back to pending.
 			db.run(
 				`INSERT INTO tasks (
 					id, type, status, trigger_spec, payload, thread_id,
@@ -1207,7 +1211,7 @@ describe("Scheduler features", () => {
 					NULL, NULL, NULL, ?, NULL,
 					0, NULL, NULL, ?, 0,
 					'status', NULL, 0, 5,
-					0, 0, 0,
+					2, 0, 0,
 					NULL, NULL, NULL, ?, 'system', ?, 0
 				)`,
 				[id, threadId ?? null, pastTime, modelHint, now, now],
@@ -1251,7 +1255,7 @@ describe("Scheduler features", () => {
 						db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as {
 							status: string;
 						} | null
-					)?.status !== "pending",
+					)?.status === "failed",
 				{ message: "task did not fail on invalid model hint" },
 			);
 			stop();

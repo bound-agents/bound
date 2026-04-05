@@ -78,10 +78,13 @@ function retryDeferredTask(
 		db.query(
 			"UPDATE tasks SET status = 'pending', next_run_at = ?, claimed_by = NULL, claimed_at = NULL, lease_id = NULL WHERE id = ?",
 		).run(nextRunAt, task.id);
-		logger.info(`Retrying deferred task ${task.id} (attempt ${consecutiveFailures + 1}/${DEFERRED_MAX_RETRIES})`, {
-			taskId: task.id,
-			backoffMs,
-		});
+		logger.info(
+			`Retrying deferred task ${task.id} (attempt ${consecutiveFailures + 1}/${DEFERRED_MAX_RETRIES})`,
+			{
+				taskId: task.id,
+				backoffMs,
+			},
+		);
 		return true;
 	} catch (retryError) {
 		logger.error("Failed to retry deferred task", {

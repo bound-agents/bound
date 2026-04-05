@@ -26,7 +26,7 @@ function titleFromPayload(content: string): string | null {
 		// Take the first sentence or clause, cap at 70 chars to leave room for label
 		let desc = description.replace(/\r?\n/g, " ").replace(/\s+/g, " ").trim();
 		if (desc.length > 70) {
-			desc = desc.substring(0, 67).trimEnd() + "...";
+			desc = `${desc.substring(0, 67).trimEnd()}...`;
 		}
 		return `[${label}] ${desc}`;
 	} catch {
@@ -107,7 +107,7 @@ ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
 
 		// Cap title length — LLMs sometimes return verbose multi-sentence "titles"
 		if (title.length > 80) {
-			title = title.substring(0, 77).trimEnd() + "...";
+			title = `${title.substring(0, 77).trimEnd()}...`;
 		}
 
 		// Fallback per spec R-E17: use first 50 chars of user message if LLM returned empty

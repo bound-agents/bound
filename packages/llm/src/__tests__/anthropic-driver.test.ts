@@ -137,6 +137,7 @@ describe("AnthropicDriver", () => {
 		}
 
 		expect(requestBody).not.toBeNull();
+		// biome-ignore lint/style/noNonNullAssertion: asserted above
 		const request = JSON.parse(requestBody!);
 		const userContent = request.messages[0].content;
 		expect(userContent.length).toBe(2);

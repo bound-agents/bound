@@ -163,8 +163,11 @@ describe("Scheduler Integration", () => {
 		// so check run_count instead of status to detect completion.
 		await waitFor(
 			() =>
-				((db.query("SELECT run_count FROM tasks WHERE id = ?").get(taskId) as { run_count: number } | null)
-					?.run_count ?? 0) > 0,
+				((
+					db.query("SELECT run_count FROM tasks WHERE id = ?").get(taskId) as {
+						run_count: number;
+					} | null
+				)?.run_count ?? 0) > 0,
 			{ message: "cron task did not complete" },
 		);
 		stop();
@@ -174,9 +177,9 @@ describe("Scheduler Integration", () => {
 			.get(taskId) as { status: string; next_run_at: string | null; run_count: number } | null;
 
 		expect(updatedTask).not.toBeNull();
-		expect(updatedTask!.run_count).toBeGreaterThan(0);
+		expect(updatedTask?.run_count).toBeGreaterThan(0);
 		// After completion, cron task is rescheduled to pending with new next_run_at
-		expect(updatedTask!.next_run_at).not.toBe(initialNextRun);
+		expect(updatedTask?.next_run_at).not.toBe(initialNextRun);
 	});
 
 	it("respects task dependencies", async () => {
@@ -657,11 +660,11 @@ describe("Scheduler Integration", () => {
 		} | null;
 
 		expect(finalTask).not.toBeNull();
-		expect(finalTask!.status).toBe("completed");
+		expect(finalTask?.status).toBe("completed");
 		// Should have run twice (first fail + retry success)
 		expect(runCount).toBe(2);
 		// consecutive_failures resets to 0 on success
-		expect(finalTask!.consecutive_failures).toBe(0);
+		expect(finalTask?.consecutive_failures).toBe(0);
 	});
 
 	it("stops retrying deferred tasks after DEFERRED_MAX_RETRIES", async () => {
@@ -721,7 +724,7 @@ describe("Scheduler Integration", () => {
 			.get(taskId) as { status: string; consecutive_failures: number } | null;
 
 		expect(finalTask).not.toBeNull();
-		expect(finalTask!.status).toBe("failed");
-		expect(finalTask!.consecutive_failures).toBe(2);
+		expect(finalTask?.status).toBe("failed");
+		expect(finalTask?.consecutive_failures).toBe(2);
 	});
 });

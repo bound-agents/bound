@@ -5,7 +5,6 @@ import {
 	createAdvisory,
 	deferAdvisory,
 	dismissAdvisory,
-	getPendingAdvisories,
 } from "../advisories";
 import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
@@ -125,7 +124,11 @@ export const advisory: CommandDefinition = {
 			required: false,
 			description: "Subcommand: create, dismiss, approve, apply, defer, list",
 		},
-		{ name: "source", required: false, description: "Advisory ID (for dismiss/approve/apply/defer) or title (for create)" },
+		{
+			name: "source",
+			required: false,
+			description: "Advisory ID (for dismiss/approve/apply/defer) or title (for create)",
+		},
 		{ name: "target", required: false, description: "Detail text (for create)" },
 		{ name: "title", required: false, description: "Short advisory title (create)" },
 		{ name: "detail", required: false, description: "Full description (create)" },
