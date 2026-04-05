@@ -85,6 +85,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	const statusForwardCache = new Map<string, StatusForwardPayload>();
 	const activeDelegations = new Map<string, { targetSiteId: string; processOutboxId: string }>();
 	const activeLoops = new Set<string>();
+	const cancelRequested = new Map<string, boolean>();
 
 	// Platform registry — declared here so message:created handler can reference it,
 	// populated in the platform connectors section below.
@@ -274,6 +275,13 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						modelId: activeModelId,
 						activeLoopAbortControllers,
 						agentLoopFactory,
+						shouldYield: () => {
+							if (cancelRequested.get(thread_id)) {
+								cancelRequested.delete(thread_id);
+								return true;
+							}
+							return false;
+						},
 					});
 
 					if (result.error) {
@@ -367,12 +375,13 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			// Enqueue for dispatch tracking (idempotent — safe for re-emits)
 			enqueueMessage(appContext.db, message.id, thread_id);
 
-			// If a loop is already active, cancel it so the new message gets included.
-			// The finally block will re-queue all pending messages (including this one).
+			// If a loop is already active, request cooperative cancellation.
+			// The loop checks shouldYield() at yield points and stops cleanly —
+			// no duplicate messages, no ghost completions, no cascade of inferences.
 			if (activeLoops.has(thread_id)) {
-				appContext.logger.info(`[agent] New message during active loop for ${thread_id}, cancelling`);
-				appContext.eventBus.emit("agent:cancel", { thread_id });
-				return; // finally block's re-queue check will pick up the new pending message
+				appContext.logger.info(`[agent] New message during active loop for ${thread_id}, requesting yield`);
+				cancelRequested.set(thread_id, true);
+				return; // loop will yield, finally block re-dispatches with full pending set
 			}
 
 			// Dispatch immediately — no debounce. If the user sends another message

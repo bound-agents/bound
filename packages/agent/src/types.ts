@@ -45,6 +45,13 @@ export interface AgentLoopConfig {
 			execute: (input: Record<string, unknown>) => Promise<string>;
 		}
 	>;
+	/**
+	 * Cooperative cancellation callback. Checked at yield points (before tool
+	 * execution, after tool result persistence). When it returns true, the loop
+	 * stops cleanly without executing further tool calls or writing completion
+	 * markers. Used by the dispatch system to coalesce rapid-fire messages.
+	 */
+	shouldYield?: () => boolean;
 }
 
 export interface AgentLoopResult {

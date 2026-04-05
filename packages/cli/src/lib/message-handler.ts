@@ -19,6 +19,8 @@ export interface RunLocalLoopParams {
 	agentLoopFactory: (config: AgentLoopConfig) => AgentLoop;
 	/** Override for the 5-minute LLM timeout (milliseconds). Defaults to 300_000. */
 	timeoutMs?: number;
+	/** Cooperative cancellation: checked at yield points in the agent loop. */
+	shouldYield?: () => boolean;
 }
 
 export interface RunLocalLoopResult {
@@ -44,6 +46,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 		activeLoopAbortControllers,
 		agentLoopFactory,
 		timeoutMs = 5 * 60 * 1000,
+		shouldYield,
 	} = params;
 
 	const abortController = new AbortController();
@@ -75,6 +78,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 			modelId,
 			abortSignal: abortController.signal,
 			onActivity: resetTimeout,
+			shouldYield,
 		});
 		const agentResult = await agentLoop.run();
 		return { agentResult, signal: abortController.signal };

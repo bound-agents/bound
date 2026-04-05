@@ -549,6 +549,12 @@ export class AgentLoop {
 				}
 
 				if (parsed.toolCalls.length > 0) {
+					// Cooperative cancellation: check before executing tools
+					if (this.config.shouldYield?.()) {
+						this.ctx.logger.info("[agent-loop] Yielding before tool execution (cooperative cancel)");
+						break;
+					}
+
 					this.state = "TOOL_EXECUTE";
 					const toolResults: Array<{
 						toolCall: ParsedToolCall;
@@ -673,6 +679,12 @@ export class AgentLoop {
 							});
 							break;
 						}
+					}
+
+					// Cooperative cancellation: check after tool results persisted
+					if (this.config.shouldYield?.()) {
+						this.ctx.logger.info("[agent-loop] Yielding after tool persistence (cooperative cancel)");
+						break;
 					}
 
 					continue;

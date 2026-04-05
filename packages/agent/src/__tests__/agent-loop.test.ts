@@ -1768,4 +1768,63 @@ describe("AgentLoop", () => {
 			expect(debug2.totalEstimated).toBeGreaterThanOrEqual(500);
 		});
 	});
+
+	describe("cooperative cancellation (shouldYield)", () => {
+		it("stops before executing tool call when shouldYield returns true", async () => {
+			const backend = new MockLLMBackend();
+
+			// LLM wants to call a tool, then produce text
+			backend.setToolThenTextResponse("tool-1", "query", { sql: "SELECT 1" }, "Done!");
+
+			const sandbox = createMockSandbox();
+
+			// shouldYield returns true after the first LLM call (before tool execution)
+			let llmCallCount = 0;
+			const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
+				threadId,
+				userId: "test-user",
+				shouldYield: () => {
+					// Yield after LLM returns tool_call but before tool executes
+					return llmCallCount > 0;
+				},
+			});
+
+			// Intercept LLM calls to track count
+			const origChat = backend.chat.bind(backend);
+			backend.chat = async function* (...args: [ChatParams]) {
+				llmCallCount++;
+				yield* origChat(...args);
+			};
+
+			const result = await loop.run();
+
+			// Tool should NOT have been executed
+			expect(sandbox.calls).toHaveLength(0);
+
+			// The loop should have yielded, not errored
+			expect(result.error).toBeUndefined();
+
+			// Only 1 LLM call (the one that requested the tool), not 2
+			expect(backend.getCallCount()).toBe(1);
+		});
+
+		it("does not interfere when shouldYield always returns false", async () => {
+			const backend = new MockLLMBackend();
+			backend.setToolThenTextResponse("tool-1", "query", { sql: "SELECT 1" }, "Done!");
+
+			const sandbox = createMockSandbox();
+
+			const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
+				threadId,
+				userId: "test-user",
+				shouldYield: () => false,
+			});
+
+			const result = await loop.run();
+
+			// Normal execution: tool was called, final text produced
+			expect(sandbox.calls.length).toBeGreaterThanOrEqual(1);
+			expect(backend.getCallCount()).toBe(2); // tool_call turn + final text turn
+		});
+	});
 });
