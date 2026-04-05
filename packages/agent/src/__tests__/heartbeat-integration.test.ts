@@ -38,7 +38,7 @@ describe("Heartbeat Integration", () => {
 			db,
 			config: {
 				allowlist: [],
-				model_backends: [],
+				modelBackends: { backends: [], default: "" },
 			},
 			optionalConfig: {
 				mcp_servers: [],

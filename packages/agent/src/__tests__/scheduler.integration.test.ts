@@ -27,7 +27,7 @@ describe("Scheduler Integration", () => {
 			db,
 			config: {
 				allowlist: [],
-				model_backends: [],
+				modelBackends: { backends: [], default: "" },
 			},
 			optionalConfig: {
 				mcp_servers: [],
@@ -101,27 +101,25 @@ describe("Scheduler Integration", () => {
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100); // Fast poll for testing
 
-		// Wait for scheduler to run the task
+		// Wait for scheduler to complete the task
 		await waitFor(
 			() =>
 				(
 					db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
 						| { status: string }
 						| undefined
-				)?.status !== "pending",
-			{ message: "deferred task did not run" },
+				)?.status === "completed",
+			{ message: "deferred task did not complete" },
 		);
 
 		stop();
 
-		// Check that the task was claimed and/or run
 		const updatedTask = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
 			| { status: string }
 			| undefined;
 
 		expect(updatedTask).toBeDefined();
-		// Task should have progressed from pending (claimed, running, or completed)
-		expect(["claimed", "running", "completed"]).toContain(updatedTask?.status);
+		expect(updatedTask?.status).toBe("completed");
 	});
 
 	it("computes next_run_at for cron tasks", async () => {
@@ -161,28 +159,24 @@ describe("Scheduler Integration", () => {
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100);
 
+		// Cron tasks complete fast and get rescheduled back to pending,
+		// so check run_count instead of status to detect completion.
 		await waitFor(
 			() =>
-				(db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | null)
-					?.status !== "pending",
-			{ message: "cron task not claimed/run" },
+				((db.query("SELECT run_count FROM tasks WHERE id = ?").get(taskId) as { run_count: number } | null)
+					?.run_count ?? 0) > 0,
+			{ message: "cron task did not complete" },
 		);
 		stop();
 
-		// After running, the task should have been claimed/run and next_run_at recomputed
 		const updatedTask = db
 			.query("SELECT status, next_run_at, run_count FROM tasks WHERE id = ?")
 			.get(taskId) as { status: string; next_run_at: string | null; run_count: number } | null;
 
 		expect(updatedTask).not.toBeNull();
-		// The task should have progressed — either completed with next_run_at updated,
-		// or at minimum been claimed/run
-		expect(["claimed", "running", "completed", "pending"]).toContain(updatedTask?.status);
-		// If task completed, next_run_at should be updated to next cron window
-		if (updatedTask?.status === "pending" && updatedTask?.run_count > 0) {
-			// Task completed and was reset to pending with new next_run_at
-			expect(updatedTask?.next_run_at).not.toBe(initialNextRun);
-		}
+		expect(updatedTask!.run_count).toBeGreaterThan(0);
+		// After completion, cron task is rescheduled to pending with new next_run_at
+		expect(updatedTask!.next_run_at).not.toBe(initialNextRun);
 	});
 
 	it("respects task dependencies", async () => {
@@ -638,16 +632,8 @@ describe("Scheduler Integration", () => {
 			},
 		});
 
-		const localCtx = {
-			...appContext,
-			config: {
-				allowlist: [],
-				modelBackends: { backends: [], default: "" },
-			},
-		};
-
 		// biome-ignore lint/suspicious/noExplicitAny: test mock
-		const scheduler = new Scheduler(localCtx as any, agentLoopFactory);
+		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100);
 
 		// Wait for the task to complete (should fail once, retry, then succeed)
@@ -712,16 +698,8 @@ describe("Scheduler Integration", () => {
 			}),
 		});
 
-		const localCtx = {
-			...appContext,
-			config: {
-				allowlist: [],
-				modelBackends: { backends: [], default: "" },
-			},
-		};
-
 		// biome-ignore lint/suspicious/noExplicitAny: test mock
-		const scheduler = new Scheduler(localCtx as any, agentLoopFactory);
+		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(100);
 
 		// Wait for the task to be marked as failed (should NOT retry since at max)

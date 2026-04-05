@@ -144,7 +144,7 @@ describe("Agent Loop End-to-End Integration", () => {
 			db,
 			config: {
 				allowlist: [],
-				model_backends: [],
+				modelBackends: { backends: [], default: "" },
 			},
 			optionalConfig: {
 				mcp_servers: [],
@@ -293,7 +293,7 @@ describe("Agent Loop End-to-End Integration", () => {
 			db,
 			config: {
 				allowlist: [],
-				model_backends: [],
+				modelBackends: { backends: [], default: "" },
 			},
 			optionalConfig: {
 				mcp_servers: [],
@@ -422,7 +422,7 @@ describe("Agent Loop End-to-End Integration", () => {
 			db,
 			config: {
 				allowlist: [],
-				model_backends: [],
+				modelBackends: { backends: [], default: "" },
 			},
 			optionalConfig: {
 				mcp_servers: [],
