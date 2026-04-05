@@ -7,9 +7,10 @@
 
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // Resolve paths relative to this script, not cwd
-const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname);
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(SCRIPT_DIR, "..");
 const DIST_DIR = join(ROOT, "packages/web/dist/client");
 const OUTPUT = join(ROOT, "packages/web/src/server/embedded-assets.ts");
