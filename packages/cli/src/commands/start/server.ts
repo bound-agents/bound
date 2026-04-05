@@ -85,6 +85,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	const statusForwardCache = new Map<string, StatusForwardPayload>();
 	const activeDelegations = new Map<string, { targetSiteId: string; processOutboxId: string }>();
 	const activeLoops = new Set<string>();
+	const debounceTimers = new Map<string, Timer>();
+	const DEBOUNCE_WINDOW_MS = 1500; // batch rapid-fire messages within this window
 
 	// Platform registry — declared here so message:created handler can reference it,
 	// populated in the platform connectors section below.
@@ -214,18 +216,15 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			activeDelegations.delete(threadId);
 		};
 
-		appContext.eventBus.on("message:created", async ({ message, thread_id }) => {
-			if (message.role !== "user") return;
-
-			// Enqueue for dispatch tracking (idempotent — safe for re-emits)
-			enqueueMessage(appContext.db, message.id, thread_id);
-
+		// Dispatch a thread: claim pending messages and run the agent loop.
+		// Extracted so both the debounce timer and recovery path can call it.
+		const dispatchThread = async (thread_id: string) => {
 			if (!modelRouter) {
 				appContext.logger.warn("[agent] No model router configured, cannot process message");
 				return;
 			}
 			if (activeLoops.has(thread_id)) {
-				appContext.logger.info(`[agent] Loop already active for thread ${thread_id}, skipping`);
+				// Will be picked up in the finally re-queue check
 				return;
 			}
 
@@ -237,7 +236,13 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			const claimedIds = claimed.map((e) => e.message_id);
 
 			try {
-				const selectedModelId = message.model_id || undefined;
+				// Resolve model from the most recent claimed message, or use default
+				const lastClaimedMsg = claimed.length > 0
+					? appContext.db
+						.prepare("SELECT model_id FROM messages WHERE id = ?")
+						.get(claimed[claimed.length - 1].message_id) as { model_id: string | null } | null
+					: null;
+				const selectedModelId = lastClaimedMsg?.model_id || undefined;
 				const activeModelId = selectedModelId || routerConfig.default;
 
 				// AC6.1: Check delegation conditions
@@ -259,8 +264,9 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 				if (delegationTarget) {
 					// Delegate entire loop to remote host
+					const delegateMessageId = claimedIds[0] ?? "";
 					appContext.logger.info(`[agent] Delegating to remote host ${delegationTarget.site_id}`);
-					await dispatchDelegation(delegationTarget, thread_id, message.id, userId);
+					await dispatchDelegation(delegationTarget, thread_id, delegateMessageId, userId);
 				} else {
 					// AC6.5: Run locally via extracted helper
 					const { agentResult: result } = await runLocalAgentLoop({
@@ -354,29 +360,40 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 					// Non-fatal — don't break cleanup on re-queue failure
 				}
 			}
+		};
+
+		// message:created handler — enqueue and debounce before dispatching
+		appContext.eventBus.on("message:created", ({ message, thread_id }) => {
+			if (message.role !== "user") return;
+
+			// Enqueue for dispatch tracking (idempotent — safe for re-emits)
+			enqueueMessage(appContext.db, message.id, thread_id);
+
+			// If a loop is already active, the finally re-queue check will pick this up
+			if (activeLoops.has(thread_id)) return;
+
+			// Debounce: reset the timer on each new message to batch rapid-fire inputs
+			const existingTimer = debounceTimers.get(thread_id);
+			if (existingTimer) clearTimeout(existingTimer);
+
+			const timer = setTimeout(() => {
+				debounceTimers.delete(thread_id);
+				dispatchThread(thread_id);
+			}, DEBOUNCE_WINDOW_MS);
+
+			debounceTimers.set(thread_id, timer);
 		});
 
-		// Recover: re-emit for any threads that have pending dispatch entries (from crash recovery)
+		// Recover: dispatch any threads that have pending entries (from crash recovery)
+		// Call dispatchThread directly — skip debounce for recovery
 		const pendingThreads = appContext.db
 			.prepare(
 				`SELECT DISTINCT thread_id FROM dispatch_queue WHERE status = 'pending'`,
 			)
 			.all() as Array<{ thread_id: string }>;
 		for (const { thread_id } of pendingThreads) {
-			const firstPending = appContext.db
-				.prepare(
-					"SELECT dq.message_id FROM dispatch_queue dq WHERE dq.thread_id = ? AND dq.status = 'pending' ORDER BY dq.created_at ASC LIMIT 1",
-				)
-				.get(thread_id) as { message_id: string } | null;
-			if (firstPending) {
-				const msg = appContext.db
-					.prepare("SELECT * FROM messages WHERE id = ?")
-					.get(firstPending.message_id) as import("@bound/shared").Message | null;
-				if (msg) {
-					appContext.logger.info(`[recovery] Re-dispatching pending message for thread ${thread_id}`);
-					appContext.eventBus.emit("message:created", { message: msg, thread_id });
-				}
-			}
+			appContext.logger.info(`[recovery] Re-dispatching pending messages for thread ${thread_id}`);
+			dispatchThread(thread_id);
 		}
 	} catch (error) {
 		appContext.logger.warn("Web server failed to start", { error: formatError(error) });
