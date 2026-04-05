@@ -184,7 +184,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	}
 
 	// 2. Ensure Ed25519 keypair via @bound/sync
-	console.log("Initializing cryptography...");
+	appContext.logger.info("Initializing cryptography...");
 	const keypair = await ensureKeypair(resolve("data"));
 	// Update site_id in host_meta to the value derived from the Ed25519 public key.
 	// On first startup, createAppContext generated a randomUUID placeholder because
@@ -196,15 +196,15 @@ export async function runStart(args: StartArgs): Promise<void> {
 	}
 
 	// 3. Create/open SQLite database and run migrations
-	console.log("Initializing database...");
+	appContext.logger.info("Initializing database...");
 	// Database initialized by createAppContext above
 
 	// 4. Create DI container
-	console.log("Setting up services...");
+	appContext.logger.info("Setting up services...");
 	// DI container bootstrapped by createAppContext above
 
 	// 5. User seeding
-	console.log("Seeding users from allowlist...");
+	appContext.logger.info("Seeding users from allowlist...");
 	{
 		const now = new Date().toISOString();
 		for (const [username, entry] of Object.entries(appContext.config.allowlist.users)) {
@@ -260,7 +260,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	}
 
 	// 6. Host registration (via outbox for sync compliance)
-	console.log("Registering host...");
+	appContext.logger.info("Registering host...");
 	{
 		const now = new Date().toISOString();
 		const existingHost = appContext.db
@@ -307,7 +307,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	}
 
 	// 7. Crash recovery scan
-	console.log("Scanning for crash recovery...");
+	appContext.logger.info("Scanning for crash recovery...");
 	{
 		const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
 		const staleRunning = appContext.db
@@ -326,9 +326,11 @@ export async function runStart(args: StartArgs): Promise<void> {
 					   AND (heartbeat_at IS NULL OR heartbeat_at < ?)`,
 				)
 				.run(staleThreshold);
-			console.log(`[recovery] Reset ${staleRunning.length} stale running task(s) to pending`);
+			appContext.logger.info(
+				`[recovery] Reset ${staleRunning.length} stale running task(s) to pending`,
+			);
 		} else {
-			console.log("[recovery] No crashed tasks found");
+			appContext.logger.info("[recovery] No crashed tasks found");
 		}
 
 		// Scan for interrupted tool-use per R-E13
@@ -370,20 +372,20 @@ export async function runStart(args: StartArgs): Promise<void> {
 						appContext.siteId,
 					);
 				} catch (error) {
-					console.warn(
-						`[recovery] Failed to insert interrupted tool message for thread ${thread_id}:`,
-						formatError(error),
+					appContext.logger.warn(
+						`[recovery] Failed to insert interrupted tool message for thread ${thread_id}`,
+						{ error: formatError(error) },
 					);
 				}
 			}
-			console.log(
+			appContext.logger.info(
 				`[recovery] Inserted interruption notices for ${interruptedThreads.length} thread(s)`,
 			);
 		}
 	}
 
 	// 8. MCP connections — build a named Map so the agent loop can look up clients by server name
-	console.log("Initializing MCP servers...");
+	appContext.logger.info("Initializing MCP servers...");
 	const mcpClientsMap = new Map<string, MCPClient>();
 	{
 		const mcpResult = appContext.optionalConfig.mcp;
@@ -400,7 +402,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				}>;
 			};
 
-			console.log(`[mcp] Found ${mcpConfig.servers.length} server(s) in config`);
+			appContext.logger.info(`[mcp] Found ${mcpConfig.servers.length} server(s) in config`);
 
 			for (const serverCfg of mcpConfig.servers) {
 				try {
@@ -408,15 +410,17 @@ export async function runStart(args: StartArgs): Promise<void> {
 					await client.connect();
 					mcpClientsMap.set(serverCfg.name, client);
 					const tools = await client.listTools();
-					console.log(
+					appContext.logger.info(
 						`[mcp] Connected to server: ${serverCfg.name} (${serverCfg.transport}), tools: ${tools.map((t) => t.name).join(", ") || "(none)"}`,
 					);
 				} catch (error) {
-					console.warn(`[mcp] Failed to connect to ${serverCfg.name}:`, formatError(error));
+					appContext.logger.warn(`[mcp] Failed to connect to ${serverCfg.name}`, {
+						error: formatError(error),
+					});
 				}
 			}
 		} else {
-			console.log("[mcp] No MCP servers configured");
+			appContext.logger.info("[mcp] No MCP servers configured");
 		}
 	}
 
@@ -444,7 +448,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		mcpClientsMap,
 		confirmGates,
 	);
-	console.log(`[mcp] Generated ${mcpCommands.length} MCP command definition(s)`);
+	appContext.logger.info(`[mcp] Generated ${mcpCommands.length} MCP command definition(s)`);
 
 	// Update hosts.mcp_tools with the connected server names so relay routing
 	// and delegation affinity work correctly for this host.
@@ -453,13 +457,13 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// Build LLM ToolDefinitions — one per server, using subcommand dispatch schema.
 	const mcpToolDefinitions = buildMcpToolDefinitions(mcpServerNames);
 	if (mcpToolDefinitions.length > 0) {
-		console.log(
+		appContext.logger.info(
 			`[mcp] Registered ${mcpToolDefinitions.length} server(s) for LLM: ${mcpToolDefinitions.map((t) => t.function.name).join(", ")}`,
 		);
 	}
 
 	// 8b. Relay processor setup (deferred until after modelRouter is initialized)
-	console.log("Initializing relay processor...");
+	appContext.logger.info("Initializing relay processor...");
 	let relayProcessorHandle: { stop: () => void } | null = null;
 	let relayExecutor: RelayExecutor | undefined;
 	let keyring: import("@bound/shared").KeyringConfig | undefined;
@@ -470,12 +474,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 			: undefined;
 
 		if (!keyring) {
-			console.log("[relay] No keyring configured, relay processor disabled");
+			appContext.logger.info("[relay] No keyring configured, relay processor disabled");
 		}
 	}
 
 	// 9. Sandbox setup
-	console.log("Setting up sandbox...");
+	appContext.logger.info("Setting up sandbox...");
 	let sandbox: Awaited<ReturnType<typeof createSandbox>> | null = null;
 	let clusterFsObj: ClusterFsResult | null = null;
 	let commandContext: Record<string, unknown> | null = null;
@@ -509,10 +513,10 @@ export async function runStart(args: StartArgs): Promise<void> {
 			clusterFs,
 			commands: registeredCommands,
 		});
-		console.log(
+		appContext.logger.info(
 			`[sandbox] ${builtinCommands.length} built-in + ${mcpCommands.length} MCP commands registered`,
 		);
-		console.log("[sandbox] Sandbox ready");
+		appContext.logger.info("[sandbox] Sandbox ready");
 
 		// Restore previously persisted VFS state from the files table.
 		// This runs once at startup; agents can then overwrite or append.
@@ -524,28 +528,30 @@ export async function runStart(args: StartArgs): Promise<void> {
 		// This is done inside the try block since clusterFs is scoped here.
 		// We store it in clusterFsObj which persists after the try block.
 	} catch (error) {
-		console.warn("[sandbox] Failed to create sandbox:", formatError(error));
+		appContext.logger.warn("[sandbox] Failed to create sandbox", { error: formatError(error) });
 	}
 
 	// 10. Persona loading
-	console.log("Loading persona...");
+	appContext.logger.info("Loading persona...");
 	let personaText: string | null = null;
 	{
 		const personaPath = resolve(configDir, "persona.md");
 		if (existsSync(personaPath)) {
 			try {
 				personaText = readFileSync(personaPath, "utf-8");
-				console.log(`[persona] Loaded persona (${personaText.length} chars)`);
+				appContext.logger.info(`[persona] Loaded persona (${personaText.length} chars)`);
 			} catch (error) {
-				console.warn("[persona] Failed to read persona.md:", formatError(error));
+				appContext.logger.warn("[persona] Failed to read persona.md:", {
+					error: formatError(error),
+				});
 			}
 		} else {
-			console.log("[persona] No persona configured");
+			appContext.logger.info("[persona] No persona configured");
 		}
 	}
 
 	// 11. LLM setup — use ModelRouter to support all configured backends
-	console.log("Initializing LLM...");
+	appContext.logger.info("Initializing LLM...");
 	const rawBackends = appContext.config.modelBackends;
 	const routerConfig: ModelBackendsConfig = {
 		backends: rawBackends.backends.map(
@@ -576,9 +582,11 @@ export async function runStart(args: StartArgs): Promise<void> {
 	try {
 		modelRouter = createModelRouter(routerConfig);
 		const ids = routerConfig.backends.map((b) => b.id).join(", ");
-		console.log(`[llm] Model router ready — backends: ${ids} (default: ${routerConfig.default})`);
+		appContext.logger.info(
+			`[llm] Model router ready — backends: ${ids} (default: ${routerConfig.default})`,
+		);
 	} catch (error) {
-		console.warn(`[llm] Failed to create model router: ${formatError(error)}`);
+		appContext.logger.warn("[llm] Failed to create model router", { error: formatError(error) });
 	}
 
 	// Inject modelRouter into the command context so schedule/model-hint can validate
@@ -633,7 +641,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			.all() as Array<{ id: string }>;
 
 		if (threadsNeedingSummary.length > 0) {
-			console.log(
+			appContext.logger.info(
 				`[recovery] Queued summary extraction for ${threadsNeedingSummary.length} thread(s)`,
 			);
 			// Process sequentially to avoid flooding the LLM backend with
@@ -648,10 +656,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 							appContext.siteId,
 						);
 					} catch (err: unknown) {
-						console.warn(
-							`[recovery] Summary extraction failed for ${id}:`,
-							formatError(err as Error),
-						);
+						appContext.logger.warn(`[recovery] Summary extraction failed for ${id}:`, {
+							error: formatError(err as Error),
+						});
 					}
 				}
 			})();
@@ -693,7 +700,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	}
 
 	relayProcessorHandle = relayProcessor.start();
-	console.log("[relay] Relay processor started");
+	appContext.logger.info("[relay] Relay processor started");
 
 	// Create the RelayExecutor callback for hub-local execution
 	relayExecutor = async (request, hubSiteId) => {
@@ -877,7 +884,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	let transport: import("@bound/sync").SyncTransport | undefined;
 
 	// 12. Web server
-	console.log("Starting web server...");
+	appContext.logger.info("Starting web server...");
 	let webServer: Awaited<ReturnType<typeof createWebServer>> | null = null;
 	const statusForwardCache = new Map<string, StatusForwardPayload>();
 	const activeDelegations = new Map<string, { targetSiteId: string; processOutboxId: string }>();
@@ -998,15 +1005,15 @@ export async function runStart(args: StartArgs): Promise<void> {
 		appContext.eventBus.on("message:created", async ({ message, thread_id }) => {
 			if (message.role !== "user") return;
 			if (!modelRouter) {
-				console.warn("[agent] No model router configured, cannot process message");
+				appContext.logger.warn("[agent] No model router configured, cannot process message");
 				return;
 			}
 			if (activeLoops.has(thread_id)) {
-				console.log(`[agent] Loop already active for thread ${thread_id}, skipping`);
+				appContext.logger.info(`[agent] Loop already active for thread ${thread_id}, skipping`);
 				return;
 			}
 
-			console.log(`[agent] Processing message in thread ${thread_id}`);
+			appContext.logger.info(`[agent] Processing message in thread ${thread_id}`);
 			activeLoops.add(thread_id);
 
 			try {
@@ -1032,7 +1039,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 				if (delegationTarget) {
 					// Delegate entire loop to remote host
-					console.log(`[agent] Delegating to remote host ${delegationTarget.site_id}`);
+					appContext.logger.info(`[agent] Delegating to remote host ${delegationTarget.site_id}`);
 					await dispatchDelegation(delegationTarget, thread_id, message.id, userId);
 					// Don't re-emit on delegation path to avoid stale message propagation
 				} else {
@@ -1048,9 +1055,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 					});
 
 					if (result.error) {
-						console.error(`[agent] Error: ${result.error}`);
+						appContext.logger.error(`[agent] Error: ${result.error}`);
 					} else {
-						console.log(
+						appContext.logger.info(
 							`[agent] Done: ${result.messagesCreated} messages, ${result.toolCallsMade} tool calls`,
 						);
 					}
@@ -1082,13 +1089,17 @@ export async function runStart(args: StartArgs): Promise<void> {
 					generateThreadTitle(appContext.db, thread_id, modelRouter.getDefault(), appContext.siteId)
 						.then((titleResult) => {
 							if (titleResult.ok) {
-								console.log(`[agent] Thread title: ${titleResult.value}`);
+								appContext.logger.info(`[agent] Thread title: ${titleResult.value}`);
 							}
 						})
-						.catch((err) => console.warn("[agent] Title generation failed:", formatError(err)));
+						.catch((err) =>
+							appContext.logger.warn("[agent] Title generation failed", {
+								error: formatError(err),
+							}),
+						);
 				}
 			} catch (error) {
-				console.error(`[agent] Error: ${formatError(error)}`);
+				appContext.logger.error(`[agent] Error: ${formatError(error)}`);
 			} finally {
 				activeLoops.delete(thread_id);
 
@@ -1103,7 +1114,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				try {
 					const pendingMsg = findPendingUserMessage(appContext.db, thread_id);
 					if (pendingMsg) {
-						console.log(`[agent] Re-queuing skipped message in thread ${thread_id}`);
+						appContext.logger.info(`[agent] Re-queuing skipped message in thread ${thread_id}`);
 						// Re-fetch the full message row to ensure all fields are present
 						const fullPendingMsg = appContext.db
 							.prepare("SELECT * FROM messages WHERE id = ? LIMIT 1")
@@ -1121,8 +1132,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 			}
 		});
 	} catch (error) {
-		console.warn("Web server failed to start:", formatError(error));
-		console.warn("Continuing without web UI. API will not be available.");
+		appContext.logger.warn("Web server failed to start", { error: formatError(error) });
+		appContext.logger.warn("Continuing without web UI. API will not be available.");
 	}
 
 	// 13. Platform connectors (if configured)
@@ -1140,7 +1151,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		// Wire into relay processor for platform-context process relays
 		// biome-ignore lint/suspicious/noExplicitAny: PlatformConnectorRegistry satisfies ConnectorRegistry structurally
 		relayProcessor.setPlatformConnectorRegistry(platformRegistry as any);
-		console.log("[platforms] Platform connector registry started");
+		appContext.logger.info("[platforms] Platform connector registry started");
 
 		// Advertise configured platform names in hosts.platforms so other nodes
 		// can route platform-context process relays back to this host.
@@ -1153,14 +1164,14 @@ export async function runStart(args: StartArgs): Promise<void> {
 				{ platforms: JSON.stringify(platformNames) },
 				appContext.siteId,
 			);
-			console.log(`[platforms] Advertised platforms: ${platformNames.join(", ")}`);
+			appContext.logger.info(`[platforms] Advertised platforms: ${platformNames.join(", ")}`);
 		}
 	} else {
-		console.log("[platforms] Not configured (no platforms.json)");
+		appContext.logger.info("[platforms] Not configured (no platforms.json)");
 	}
 
 	// 14. Sync (if configured)
-	console.log("Initializing sync loop...");
+	appContext.logger.info("Initializing sync loop...");
 	let syncLoopHandle: { stop: () => void } | null = null;
 	const syncResult = appContext.optionalConfig.sync;
 	if (syncResult?.ok) {
@@ -1198,12 +1209,14 @@ export async function runStart(args: StartArgs): Promise<void> {
 				syncConfig.sync_interval_seconds || 30,
 				appContext.eventBus,
 			);
-			console.log(`[sync] Sync loop started (${syncConfig.sync_interval_seconds}s interval)`);
+			appContext.logger.info(
+				`[sync] Sync loop started (${syncConfig.sync_interval_seconds}s interval)`,
+			);
 		} catch (error) {
-			console.warn(`[sync] Failed to start: ${formatError(error)}`);
+			appContext.logger.warn(`[sync] Failed to start: ${formatError(error)}`);
 		}
 	} else {
-		console.log("[sync] Not configured");
+		appContext.logger.info("[sync] Not configured");
 	}
 
 	// 14b. Change-log pruning (runs in both single-host and multi-host modes)
@@ -1211,13 +1224,13 @@ export async function runStart(args: StartArgs): Promise<void> {
 	try {
 		const { startPruningLoop } = await import("@bound/sync");
 		pruningHandle = startPruningLoop(appContext.db, 300_000, appContext.logger);
-		console.log("[sync] Change-log pruning started (5m interval)");
+		appContext.logger.info("[sync] Change-log pruning started (5m interval)");
 	} catch (error) {
-		console.warn(`[sync] Failed to start pruning: ${formatError(error)}`);
+		appContext.logger.warn(`[sync] Failed to start pruning: ${formatError(error)}`);
 	}
 
 	// 15. Overlay scanning (if configured)
-	console.log("Initializing overlay scanner...");
+	appContext.logger.info("Initializing overlay scanner...");
 	let overlayHandle: { stop: () => void } | null = null;
 	const overlayResult = appContext.optionalConfig.overlay;
 	if (overlayResult?.ok) {
@@ -1233,18 +1246,18 @@ export async function runStart(args: StartArgs): Promise<void> {
 				// biome-ignore lint/suspicious/noExplicitAny: OverlayOutbox uses string table names; core uses SyncedTableName
 				{ insertRow: insertRow as any, updateRow: updateRow as any, softDelete: softDelete as any },
 			);
-			console.log(
+			appContext.logger.info(
 				`[overlay] Scanner started (${Object.keys(overlayConfig.mounts).length} mount(s))`,
 			);
 		} catch (error) {
-			console.warn(`[overlay] Failed to start: ${formatError(error)}`);
+			appContext.logger.warn(`[overlay] Failed to start: ${formatError(error)}`);
 		}
 	} else {
-		console.log("[overlay] Not configured");
+		appContext.logger.info("[overlay] Not configured");
 	}
 
 	// 16. Seed cron tasks from config
-	console.log("Seeding cron tasks...");
+	appContext.logger.info("Seeding cron tasks...");
 	{
 		const cronResult = appContext.optionalConfig.cronSchedules;
 		if (cronResult?.ok) {
@@ -1261,12 +1274,14 @@ export async function runStart(args: StartArgs): Promise<void> {
 				}));
 			try {
 				seedCronTasks(appContext.db, cronConfigs, appContext.siteId);
-				console.log(`[scheduler] Seeded ${cronConfigs.length} cron task(s)`);
+				appContext.logger.info(`[scheduler] Seeded ${cronConfigs.length} cron task(s)`);
 			} catch (error) {
-				console.warn("[scheduler] Failed to seed cron tasks:", formatError(error));
+				appContext.logger.warn("[scheduler] Failed to seed cron tasks", {
+					error: formatError(error),
+				});
 			}
 		} else {
-			console.log("[scheduler] No cron schedules configured");
+			appContext.logger.info("[scheduler] No cron schedules configured");
 		}
 	}
 
@@ -1277,14 +1292,14 @@ export async function runStart(args: StartArgs): Promise<void> {
 		const heartbeatConfig = parsed?.heartbeat;
 		try {
 			seedHeartbeat(appContext.db, heartbeatConfig, appContext.siteId);
-			console.log("[scheduler] Heartbeat task seeded");
+			appContext.logger.info("[scheduler] Heartbeat task seeded");
 		} catch (error) {
-			console.warn("[scheduler] Failed to seed heartbeat:", formatError(error));
+			appContext.logger.warn("[scheduler] Failed to seed heartbeat", { error: formatError(error) });
 		}
 	}
 
 	// 17. Scheduler
-	console.log("Starting scheduler...");
+	appContext.logger.info("Starting scheduler...");
 	let schedulerHandle: { stop: () => void } | null = null;
 	try {
 		const scheduler = new Scheduler(
@@ -1315,7 +1330,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 									appContext.siteId,
 								);
 								if (result.ok) {
-									console.log(`[scheduler] Thread title: ${result.value}`);
+									appContext.logger.info(`[scheduler] Thread title: ${result.value}`);
 								}
 							}
 						: undefined,
@@ -1323,12 +1338,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 			sandbox?.bash,
 		);
 		schedulerHandle = scheduler.start(30_000);
-		console.log("[scheduler] Scheduler started (30s poll interval)");
+		appContext.logger.info("[scheduler] Scheduler started (30s poll interval)");
 	} catch (error) {
-		console.warn("[scheduler] Failed to start scheduler:", formatError(error));
+		appContext.logger.warn("[scheduler] Failed to start scheduler", { error: formatError(error) });
 	}
 
-	console.log(`
+	appContext.logger.info(`
 Bound is running!
 Operator: ${appContext.config.allowlist.default_web_user}
 
@@ -1340,7 +1355,7 @@ Press Ctrl+C to stop.
 	// Keep process alive until shutdown signal (web server keeps event loop active)
 	await new Promise<void>((resolve) => {
 		process.on("SIGINT", async () => {
-			console.log("\nShutting down gracefully...");
+			appContext.logger.info("\nShutting down gracefully...");
 			if (schedulerHandle) schedulerHandle.stop();
 			if (syncLoopHandle) syncLoopHandle.stop();
 			if (pruningHandle) pruningHandle.stop();
@@ -1350,7 +1365,7 @@ Press Ctrl+C to stop.
 				try {
 					platformRegistry.stop();
 				} catch (err) {
-					console.error("[platforms] Error stopping platform registry:", err);
+					appContext.logger.error("[platforms] Error stopping platform registry", { error: err });
 				}
 			}
 			// Disconnect MCP clients
@@ -1366,7 +1381,7 @@ Press Ctrl+C to stop.
 		});
 
 		process.on("SIGTERM", async () => {
-			console.log("\nTerminating...");
+			appContext.logger.info("\nTerminating...");
 			if (schedulerHandle) schedulerHandle.stop();
 			if (syncLoopHandle) syncLoopHandle.stop();
 			if (pruningHandle) pruningHandle.stop();
@@ -1376,7 +1391,7 @@ Press Ctrl+C to stop.
 				try {
 					platformRegistry.stop();
 				} catch (err) {
-					console.error("[platforms] Error stopping platform registry:", err);
+					appContext.logger.error("[platforms] Error stopping platform registry", { error: err });
 				}
 			}
 			for (const [, client] of mcpClientsMap) {
