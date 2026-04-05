@@ -815,6 +815,74 @@ describe("Scheduler features", () => {
 			}
 		});
 
+		it("creates scheduler threads with operator user_id instead of system", async () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'deferred', 'pending', 'manual', NULL, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, pastTime, now, now],
+			);
+
+			let capturedThreadId: string | undefined;
+			const factory = (config: { threadId: string }) => {
+				capturedThreadId = config.threadId;
+				return {
+					run: async (): Promise<AgentLoopResult> => ({
+						messagesCreated: 0,
+						toolCallsMade: 0,
+						filesChanged: 0,
+					}),
+				};
+			};
+
+			const ctx = makeCtx();
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			const scheduler = new Scheduler(ctx as any, factory as any);
+			const { stop } = scheduler.start(50);
+
+			await waitFor(() => capturedThreadId !== undefined, {
+				message: "agent loop factory not called with threadId",
+			});
+			stop();
+
+			expect(capturedThreadId).toBeDefined();
+
+			// The thread's user_id should be the operator's resolved UUID, NOT "system"
+			const threadId = capturedThreadId as string;
+			const thread = db.query("SELECT user_id FROM threads WHERE id = ?").get(threadId) as {
+				user_id: string;
+			} | null;
+
+			expect(thread).not.toBeNull();
+			// Operator UUID is deterministicUUID(BOUND_NAMESPACE, "test") since default_web_user = "test"
+			const { deterministicUUID, BOUND_NAMESPACE } = await import("@bound/shared");
+			const expectedUserId = deterministicUUID(BOUND_NAMESPACE, "test");
+			expect(thread?.user_id).toBe(expectedUserId);
+			expect(thread?.user_id).not.toBe("system");
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			if (capturedThreadId) {
+				db.run("DELETE FROM threads WHERE id = ?", [capturedThreadId]);
+				db.run("DELETE FROM messages WHERE thread_id = ?", [capturedThreadId]);
+			}
+		});
+
 		it("inserts task payload as first user message before running agent loop", async () => {
 			const taskId = randomUUID();
 			const now = new Date().toISOString();

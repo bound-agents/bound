@@ -10,6 +10,7 @@ export interface WebServerConfig {
 	port?: number;
 	host?: string;
 	hostName?: string;
+	operatorUserId?: string;
 	models?: ModelsConfig;
 	keyring?: KeyringConfig;
 	siteId?: string;
@@ -43,6 +44,7 @@ export async function createWebServer(
 	const appConfig: AppConfig = {
 		modelsConfig: config.models,
 		hostName: config.hostName,
+		operatorUserId: config.operatorUserId,
 		keyring: config.keyring,
 		siteId: config.siteId,
 		logger: config.logger,

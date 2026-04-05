@@ -24,6 +24,7 @@ export interface AppConfig {
 	modelsConfig?: ModelsConfig;
 	hostName?: string;
 	siteId?: string;
+	operatorUserId?: string;
 	keyring?: KeyringConfig;
 	logger?: Logger;
 	relayExecutor?: RelayExecutor;
@@ -40,16 +41,17 @@ export async function createApp(
 	eventBus: TypedEventEmitter,
 	appConfig?: AppConfig | ModelsConfig,
 ): Promise<Hono> {
-	const modelsConfig =
-		appConfig && "modelsConfig" in appConfig
-			? (appConfig as AppConfig).modelsConfig
-			: (appConfig as ModelsConfig | undefined);
-	const typedAppConfig =
-		appConfig && "hostName" in appConfig ? (appConfig as AppConfig) : undefined;
+	// Discriminate: ModelsConfig has "models" + "default"; AppConfig wraps it as "modelsConfig"
+	const isModelsConfig = appConfig && "models" in appConfig && "default" in appConfig;
+	const modelsConfig = isModelsConfig
+		? (appConfig as ModelsConfig)
+		: (appConfig as AppConfig | undefined)?.modelsConfig;
+	const typedAppConfig = appConfig && !isModelsConfig ? (appConfig as AppConfig) : undefined;
 	const routesConfig: RoutesConfig = {
 		modelsConfig,
 		hostName: typedAppConfig?.hostName,
 		siteId: typedAppConfig?.siteId,
+		operatorUserId: typedAppConfig?.operatorUserId,
 		statusForwardCache: typedAppConfig?.statusForwardCache,
 		activeDelegations: typedAppConfig?.activeDelegations,
 		activeLoops: typedAppConfig?.activeLoops,

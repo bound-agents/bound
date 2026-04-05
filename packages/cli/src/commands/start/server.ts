@@ -14,7 +14,7 @@ import type { AppContext } from "@bound/core";
 import { updateRow, writeOutbox } from "@bound/core";
 import type { ModelBackendsConfig, ModelRouter } from "@bound/llm";
 import type { KeyringConfig, ProcessPayload, StatusForwardPayload } from "@bound/shared";
-import { formatError } from "@bound/shared";
+import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import type { KeyManager, RelayExecutor, SyncTransport } from "@bound/sync";
 import type { ReachabilityTracker } from "@bound/sync";
 import { createWebServer } from "@bound/web";
@@ -115,10 +115,16 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			}
 		}
 
+		const operatorUserId = deterministicUUID(
+			BOUND_NAMESPACE,
+			appContext.config.allowlist.default_web_user,
+		);
+
 		webServer = await createWebServer(appContext.db, appContext.eventBus, {
 			port: webPort,
 			host: webHost,
 			hostName: appContext.hostName,
+			operatorUserId,
 			models: {
 				models: uniqueModels,
 				default: modelBackends.default,
@@ -233,7 +239,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				const threadRow = appContext.db
 					.query("SELECT user_id FROM threads WHERE id = ?")
 					.get(thread_id) as { user_id: string } | null;
-				const userId = threadRow?.user_id || appContext.config.allowlist.default_web_user;
+				const userId = threadRow?.user_id || operatorUserId;
 
 				let shouldReEmitMessage = false;
 

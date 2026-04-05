@@ -11,8 +11,10 @@ export function createThreadsRoutes(
 	defaultModel?: string,
 	statusForwardCache?: Map<string, StatusForwardPayload>,
 	activeLoops?: Set<string>,
+	operatorUserId?: string,
 ): Hono {
 	const app = new Hono();
+	const webUserId = operatorUserId || "default_web_user";
 
 	app.get("/", (c) => {
 		try {
@@ -24,7 +26,7 @@ export function createThreadsRoutes(
 				ORDER BY last_message_at DESC
 			`,
 				)
-				.all("default_web_user") as Thread[];
+				.all(webUserId) as Thread[];
 
 			return c.json(threads);
 		} catch (error) {
@@ -101,7 +103,7 @@ export function createThreadsRoutes(
 				"threads",
 				{
 					id: threadId,
-					user_id: "default_web_user",
+					user_id: webUserId,
 					interface: "web",
 					host_origin: "localhost:3000",
 					color: nextColor,

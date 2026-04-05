@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
 import { insertRow } from "@bound/core";
-import { formatError } from "@bound/shared";
+import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import type { Task } from "@bound/shared";
 import { createAdvisory } from "./advisories";
 import type { AgentLoop } from "./agent-loop";
@@ -210,6 +210,7 @@ export class Scheduler {
 	private lastUserInteractionAt = new Date();
 	private eventDepth = 0;
 	private runningTasks = new Map<string, { leaseId: string; startedAt: Date }>();
+	private operatorUserId: string;
 
 	constructor(
 		private ctx: AppContext,
@@ -219,6 +220,17 @@ export class Scheduler {
 			exec?: (cmd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 		},
 	) {
+		// Resolve operator user ID so scheduler threads are visible in the operator's cross-thread digest
+		const operatorName =
+			ctx.config.allowlist &&
+			typeof ctx.config.allowlist === "object" &&
+			"default_web_user" in ctx.config.allowlist
+				? ctx.config.allowlist.default_web_user
+				: undefined;
+		this.operatorUserId = operatorName
+			? deterministicUUID(BOUND_NAMESPACE, operatorName)
+			: "system";
+
 		// Register event handler for all event types
 		ctx.eventBus.on("message:created", () => this.onUserInteraction());
 	}
@@ -532,7 +544,7 @@ export class Scheduler {
 						"threads",
 						{
 							id: threadId,
-							user_id: "system",
+							user_id: this.operatorUserId,
 							interface: "scheduler",
 							host_origin: this.ctx.hostName,
 							color: 0,
