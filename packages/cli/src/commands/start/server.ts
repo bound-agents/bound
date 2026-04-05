@@ -369,8 +369,13 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			// Enqueue for dispatch tracking (idempotent — safe for re-emits)
 			enqueueMessage(appContext.db, message.id, thread_id);
 
-			// If a loop is already active, the finally re-queue check will pick this up
-			if (activeLoops.has(thread_id)) return;
+			// If a loop is already active, cancel it so the new message gets included.
+			// The finally block will re-queue all pending messages (including this one).
+			if (activeLoops.has(thread_id)) {
+				appContext.logger.info(`[agent] New message during active loop for ${thread_id}, cancelling`);
+				appContext.eventBus.emit("agent:cancel", { thread_id });
+				return; // finally block's re-queue check will pick up the new pending message
+			}
 
 			// Debounce: reset the timer on each new message to batch rapid-fire inputs
 			const existingTimer = debounceTimers.get(thread_id);
