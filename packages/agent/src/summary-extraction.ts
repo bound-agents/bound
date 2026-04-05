@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { insertRow, updateRow } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import type { CrossThreadSource, Result } from "@bound/shared";
+import { safeSlice } from "@bound/shared";
 import { graphSeededRetrieval } from "./graph-queries";
 
 /**
@@ -483,7 +484,7 @@ export function buildVolatileEnrichment(
 				const tag =
 					r.retrievalMethod === "seed" ? "[seed]" : `[depth ${r.depth}, ${r.viaRelation}]`;
 
-				const valueDisplay = r.value.length > 200 ? `${r.value.substring(0, 200)}...` : r.value;
+				const valueDisplay = r.value.length > 200 ? `${safeSlice(r.value, 0, 200)}...` : r.value;
 				memoryDeltaLines.push(`- ${r.key}: ${valueDisplay} ${tag}`);
 			}
 
@@ -525,7 +526,7 @@ export function buildVolatileEnrichment(
 					includedKeys.add(entry.key);
 
 					const valueDisplay =
-						entry.value.length > 200 ? `${entry.value.substring(0, 200)}...` : entry.value;
+						entry.value.length > 200 ? `${safeSlice(entry.value, 0, 200)}...` : entry.value;
 					const sourceLabel = resolveSource(
 						entry.task_name,
 						entry.thread_id,
@@ -560,7 +561,7 @@ export function buildVolatileEnrichment(
 				if (row.deleted) {
 					memoryDeltaLines.push(`- ${row.key}: [forgotten] (${relTime}, via ${sourceLabel})`);
 				} else {
-					const value = row.value.length > 200 ? `${row.value.slice(0, 200)}...` : row.value;
+					const value = row.value.length > 200 ? `${safeSlice(row.value, 0, 200)}...` : row.value;
 					memoryDeltaLines.push(`- ${row.key}: ${value} (${relTime}, via ${sourceLabel})`);
 				}
 			}
@@ -620,7 +621,7 @@ export function buildVolatileEnrichment(
 			if (row.deleted) {
 				memoryDeltaLines.push(`- ${row.key}: [forgotten] (${relTime}, via ${sourceLabel})`);
 			} else {
-				const value = row.value.length > 200 ? `${row.value.slice(0, 200)}...` : row.value;
+				const value = row.value.length > 200 ? `${safeSlice(row.value, 0, 200)}...` : row.value;
 				memoryDeltaLines.push(`- ${row.key}: ${value} (${relTime}, via ${sourceLabel})`);
 			}
 		}

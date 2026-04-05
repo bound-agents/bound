@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BackendCapabilities, ContentBlock, LLMMessage } from "@bound/llm";
 import type { ContextDebugInfo, ContextSection, CrossThreadSource, Message } from "@bound/shared";
-import { countContentTokens, countTokens } from "@bound/shared";
+import { countContentTokens, countTokens, safeSlice } from "@bound/shared";
 import { getFileThreadNotificationMessage, getLastThreadForFile } from "./file-thread-tracker";
 import {
 	buildCrossThreadDigest,
@@ -356,7 +356,7 @@ Original output was too large for the context window. If you need the full conte
 			const msg = messages[i];
 			if (msg.role === "tool_result" && msg.content.length > COLD_COMPACTION_THRESHOLD) {
 				const originalLength = msg.content.length;
-				const preview = msg.content.slice(0, 200).trimEnd();
+				const preview = safeSlice(msg.content, 0, 200).trimEnd();
 				msg.content = `[Result truncated from context — ${originalLength} chars. Retrieve with: query SELECT content FROM messages WHERE id='${msg.id}']\n${preview}`;
 			}
 		}

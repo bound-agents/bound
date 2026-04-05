@@ -4928,5 +4928,106 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
+
+		it("should not produce orphaned surrogates when truncating emoji at boundary", () => {
+			const localUserId = randomUUID();
+			const localThreadId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "TestUser", now, now, 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
+			);
+
+			const toolId = "tool_emoji_1";
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), localThreadId, "user", "search repos", now, now, "localhost", 0],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					localThreadId,
+					"tool_call",
+					JSON.stringify([{ type: "tool_use", id: toolId, name: "bash", input: {} }]),
+					now,
+					now,
+					"localhost",
+					0,
+				],
+			);
+
+			// Content with emoji at position 199 — .slice(0, 200) would split the
+			// surrogate pair of the emoji (U+1F60E = 😎), producing an orphaned
+			// high surrogate \uD83D that is invalid JSON/UTF-8.
+			const contentWithEmoji = "x".repeat(199) + "😎" + "y".repeat(5000);
+			const resultId = randomUUID();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[resultId, localThreadId, "tool_result", contentWithEmoji, toolId, now, now, "localhost", 0],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), localThreadId, "assistant", "done", now, now, "localhost", 0],
+			);
+
+			// Recent message
+			const recentTime = new Date(Date.now() + 1000).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), localThreadId, "user", "thanks!", recentTime, recentTime, "localhost", 0],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), localThreadId, "assistant", "ok", recentTime, recentTime, "localhost", 0],
+			);
+
+			const result = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				compactToolResults: true,
+				compactRecentWindow: 2,
+			});
+
+			const toolResult = result.messages.find(
+				(m) =>
+					m.role === "tool_result" &&
+					typeof m.content === "string" &&
+					m.content.includes("[Result truncated"),
+			);
+			expect(toolResult).toBeDefined();
+
+			// The compacted preview must not contain orphaned surrogates.
+			// Check by verifying JSON serialization succeeds (surrogates break JSON.stringify).
+			const content = toolResult?.content as string;
+			expect(() => {
+				const encoded = new TextEncoder().encode(JSON.stringify(content));
+				new TextDecoder("utf-8", { fatal: true }).decode(encoded);
+			}).not.toThrow();
+
+			// Also verify no lone surrogates directly
+			for (let i = 0; i < content.length; i++) {
+				const code = content.charCodeAt(i);
+				if (code >= 0xd800 && code <= 0xdfff) {
+					// If high surrogate, next must be low surrogate
+					if (code >= 0xd800 && code <= 0xdbff) {
+						const next = content.charCodeAt(i + 1);
+						expect(next).toBeGreaterThanOrEqual(0xdc00);
+						expect(next).toBeLessThanOrEqual(0xdfff);
+					}
+				}
+			}
+
+			// Clean up
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
 	});
 });

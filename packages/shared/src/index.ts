@@ -18,3 +18,6 @@ export * from "./config-schemas.js";
 
 // Token counting
 export * from "./tokens.js";
+
+// String utilities
+export * from "./strings.js";
