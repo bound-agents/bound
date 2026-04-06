@@ -328,6 +328,7 @@ export class AgentLoop {
 									system: systemPrompt || undefined,
 									tools: this.config.tools,
 									cache_breakpoints: cacheBreakpoints,
+									signal: this.config.abortSignal,
 								});
 								for await (const chunk of this.withSilenceTimeout(chatStream, SILENCE_TIMEOUT_MS)) {
 									if (this.aborted) break;

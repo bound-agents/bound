@@ -277,4 +277,56 @@ describe("ThreadExecutor", () => {
 			expect(executor.isActive(threadId)).toBe(false);
 		});
 	});
+
+	describe("runFn timeout", () => {
+		it("releases the lock when runFn exceeds the timeout", async () => {
+			const threadId = randomUUID();
+			enqueueMessage(db, randomUUID(), threadId);
+
+			let errorLogged = false;
+			const errorLogger: Logger = {
+				...noopLogger,
+				error(msg: string) {
+					if (msg.includes("timeout")) errorLogged = true;
+				},
+			};
+			const timeoutExecutor = new ThreadExecutor(db, errorLogger, {
+				runTimeoutMs: 100,
+			});
+
+			await timeoutExecutor.execute(threadId, async () => {
+				// Simulate a hung inference — never resolves within timeout
+				await new Promise((resolve) => setTimeout(resolve, 5000));
+				drainOnce(threadId);
+				return {};
+			});
+
+			expect(errorLogged).toBe(true);
+			expect(timeoutExecutor.isActive(threadId)).toBe(false);
+		});
+
+		it("resets processing entries on timeout so they can be re-claimed", async () => {
+			const threadId = randomUUID();
+			const msgId = randomUUID();
+			enqueueMessage(db, msgId, threadId);
+
+			const timeoutExecutor = new ThreadExecutor(db, noopLogger, {
+				runTimeoutMs: 100,
+			});
+
+			await timeoutExecutor.execute(threadId, async () => {
+				// Claim the message (sets to processing)
+				claimPending(db, threadId, siteId);
+				// Hang past the timeout
+				await new Promise((resolve) => setTimeout(resolve, 5000));
+				return {};
+			});
+
+			// The processing entry should have been reset to pending
+			const row = db.query("SELECT status FROM dispatch_queue WHERE message_id = ?").get(msgId) as {
+				status: string;
+			};
+			expect(row.status).toBe("pending");
+		});
+	});
 });
