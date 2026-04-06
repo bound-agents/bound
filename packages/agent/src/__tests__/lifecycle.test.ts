@@ -390,24 +390,26 @@ describe("AgentLoop lifecycle", () => {
 	});
 
 	// -----------------------------------------------------------------------
-	// agent:cancel event
+	// AbortSignal cancellation (replaces agent:cancel direct handler)
 	// -----------------------------------------------------------------------
-	it("listens for agent:cancel events and aborts the loop", async () => {
+	it("aborts the loop when AbortSignal fires during streaming", async () => {
 		const mockBackend = new MockLLMBackend();
 		// Yield 50 chunks with 50ms delay each (total ~2500ms if uninterrupted).
-		// Cancel fires at 100ms, so abort should be detected within a few chunks.
+		// Abort fires at 100ms, so abort should be detected within a few chunks.
 		mockBackend.setManyChunksResponse(50, 50);
 
+		const controller = new AbortController();
 		const ctx = makeCtx();
 		const agentLoop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			modelId: "mock",
+			abortSignal: controller.signal,
 		});
 
-		// Emit cancel shortly after the loop starts
+		// Abort shortly after the loop starts
 		setTimeout(() => {
-			eventBus.emit("agent:cancel", { thread_id: threadId });
+			controller.abort();
 		}, 100);
 
 		const startTime = Date.now();
@@ -417,29 +419,6 @@ describe("AgentLoop lifecycle", () => {
 		// The loop should have exited well before all 50 chunks were consumed
 		expect(elapsed).toBeLessThan(5000);
 		// No error because cancel is a controlled exit
-		expect(result.error).toBeUndefined();
-	});
-
-	it("ignores agent:cancel events for different thread_ids", async () => {
-		const mockBackend = new MockLLMBackend();
-		mockBackend.setTextResponse("Uninterrupted response.");
-
-		const ctx = makeCtx();
-		const agentLoop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
-			threadId,
-			userId: "test-user",
-			modelId: "mock",
-		});
-
-		// Emit cancel for a *different* thread
-		setTimeout(() => {
-			eventBus.emit("agent:cancel", { thread_id: randomUUID() });
-		}, 10);
-
-		const result = await agentLoop.run();
-
-		// Should complete normally
-		expect(result.messagesCreated).toBe(1);
 		expect(result.error).toBeUndefined();
 	});
 

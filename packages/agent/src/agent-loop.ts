@@ -105,12 +105,6 @@ export class AgentLoop {
 	}
 
 	async run(): Promise<AgentLoopResult> {
-		const cancelHandler = ({ thread_id }: { thread_id: string }) => {
-			if (thread_id === this.config.threadId) {
-				this.aborted = true;
-			}
-		};
-		this.ctx.eventBus.on("agent:cancel", cancelHandler);
 		try {
 			this.state = "HYDRATE_FS";
 			if (this.sandbox.capturePreSnapshot) {
@@ -803,7 +797,7 @@ export class AgentLoop {
 				error: errorMsg,
 			};
 		} finally {
-			this.ctx.eventBus.off("agent:cancel", cancelHandler);
+			// Cleanup reserved for future use (e.g. resource disposal).
 		}
 	}
 
