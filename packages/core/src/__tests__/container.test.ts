@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Message } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { createAppContext } from "../app-context";
 import { ConfigService, DatabaseService, EventBusService, bootstrapContainer } from "../container";
 
@@ -42,9 +43,9 @@ describe("DI Container", () => {
 		writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(backends));
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		try {
-			require("node:fs").rmSync(configDir, { recursive: true });
+			await cleanupTmpDir(configDir);
 		} catch {
 			// ignore
 		}
@@ -157,9 +158,9 @@ describe("AppContext", () => {
 		writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(backends));
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		try {
-			require("node:fs").rmSync(configDir, { recursive: true });
+			await cleanupTmpDir(configDir);
 		} catch {
 			// ignore
 		}

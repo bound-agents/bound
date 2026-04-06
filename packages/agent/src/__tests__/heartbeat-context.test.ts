@@ -8,10 +8,11 @@
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { buildHeartbeatContext } from "../heartbeat-context";
 
 describe("buildHeartbeatContext", () => {
@@ -36,9 +37,9 @@ describe("buildHeartbeatContext", () => {
 		db.run("DELETE FROM messages");
 	});
 
-	afterAll(() => {
+	afterAll(async () => {
 		db.close();
-		rmSync(tmpDir, { recursive: true, force: true });
+		await cleanupTmpDir(tmpDir);
 	});
 
 	// AC2.1: Standing instructions loaded from _heartbeat_instructions memory key

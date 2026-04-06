@@ -6,7 +6,7 @@
 		"useIgnoreFile": true
 	},
 	"files": {
-		"ignore": ["node_modules", "dist", "*.db", "*.db-wal", "*.db-shm"]
+		"ignore": ["node_modules", "dist", "*.db", "*.db-wal", "*.db-shm", ".claude"]
 	},
 	"formatter": {
 		"enabled": true,

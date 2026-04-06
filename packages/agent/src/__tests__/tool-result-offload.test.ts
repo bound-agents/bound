@@ -1,13 +1,14 @@
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { AgentLoop } from "../agent-loop";
 import {
 	TOOL_RESULT_OFFLOAD_THRESHOLD,
@@ -179,9 +180,9 @@ describe("AgentLoop tool result offloading", () => {
 		threadId = randomUUID();
 	});
 
-	afterAll(() => {
+	afterAll(async () => {
 		db.close();
-		if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+		if (tmpDir) await cleanupTmpDir(tmpDir);
 	});
 
 	function makeCtx(): AppContext {

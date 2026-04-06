@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import {
 	deriveSiteId,
 	ensureKeypair,
@@ -19,9 +20,9 @@ describe("crypto module", () => {
 		testDataDir = join(tmpdir(), `bound-test-${Date.now()}-${Math.random()}`);
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		if (existsSync(testDataDir)) {
-			rmSync(testDataDir, { recursive: true });
+			await cleanupTmpDir(testDataDir);
 		}
 	});
 

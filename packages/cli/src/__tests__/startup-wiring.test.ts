@@ -14,7 +14,7 @@
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -25,6 +25,7 @@ import {
 	withChangeLog,
 } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 
 describe("Startup Wiring", () => {
 	let tmpDir: string;
@@ -50,9 +51,9 @@ describe("Startup Wiring", () => {
 		db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', ?)", [siteId]);
 	});
 
-	afterAll(() => {
+	afterAll(async () => {
 		db.close();
-		rmSync(tmpDir, { recursive: true, force: true });
+		await cleanupTmpDir(tmpDir);
 	});
 
 	// -----------------------------------------------------------------------

@@ -1,0 +1,57 @@
+# Ensure consistent line endings across platforms.
+# The repository is authored on macOS/Linux; Windows contributors should not
+# see CRLF-mangled files just because `core.autocrlf=true` is their default.
+
+# Default: treat as text, normalize to LF in the index and working tree.
+* text=auto eol=lf
+
+# Explicit text files (redundant with text=auto, but documents intent).
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.js        text eol=lf
+*.jsx       text eol=lf
+*.mjs       text eol=lf
+*.cjs       text eol=lf
+*.json      text eol=lf
+*.jsonc     text eol=lf
+*.md        text eol=lf
+*.svelte    text eol=lf
+*.css       text eol=lf
+*.scss      text eol=lf
+*.html      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.toml      text eol=lf
+*.sql       text eol=lf
+*.sh        text eol=lf
+*.txt       text eol=lf
+Dockerfile  text eol=lf
+.gitignore  text eol=lf
+.gitattributes text eol=lf
+
+# Windows-only scripts keep CRLF.
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# Binary files — never touched.
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.webp      binary
+*.woff      binary
+*.woff2     binary
+*.ttf       binary
+*.otf       binary
+*.eot       binary
+*.pdf       binary
+*.zip       binary
+*.tar       binary
+*.gz        binary
+*.db        binary
+*.db-wal    binary
+*.db-shm    binary
+*.wasm      binary
+*.node      binary

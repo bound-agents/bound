@@ -5,6 +5,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Message } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { createAppContext } from "../app-context";
 import { insertRow } from "../change-log";
 
@@ -52,11 +53,9 @@ describe("Phase 1 Integration", () => {
 		writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(backends));
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		try {
-			// Dynamic require for cleanup since import is at top level
-			const fs = require("node:fs");
-			fs.rmSync(configDir, { recursive: true });
+			await cleanupTmpDir(configDir);
 		} catch {
 			// ignore
 		}

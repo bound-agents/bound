@@ -5,11 +5,12 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { SKILL_AUTHORING_FORMAT_REFERENCE_MD, SKILL_AUTHORING_SKILL_MD } from "../bundled-skills";
 import { seedSkillAuthoring } from "../seed-skills";
 
@@ -26,14 +27,14 @@ describe("seedSkillAuthoring", () => {
 		applySchema(db);
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		try {
 			db.close();
 		} catch {
 			// ignore
 		}
 		try {
-			rmSync(tmpDir, { recursive: true, force: true });
+			await cleanupTmpDir(tmpDir);
 		} catch {
 			// ignore
 		}

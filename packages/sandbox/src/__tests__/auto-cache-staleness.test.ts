@@ -1,9 +1,10 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { applySchema } from "@bound/core";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { type ClusterFsResult, createClusterFs } from "../cluster-fs";
 
 describe("ClusterFs auto-cache on overlay read", () => {
@@ -20,9 +21,9 @@ describe("ClusterFs auto-cache on overlay read", () => {
 		mkdirSync(tmpDir, { recursive: true });
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		try {
-			rmSync(tmpDir, { recursive: true, force: true });
+			await cleanupTmpDir(tmpDir);
 		} catch {
 			// Ignore cleanup failures
 		}
@@ -194,9 +195,9 @@ describe("ClusterFs staleness detection", () => {
 		mkdirSync(tmpDir, { recursive: true });
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		try {
-			rmSync(tmpDir, { recursive: true, force: true });
+			await cleanupTmpDir(tmpDir);
 		} catch {
 			// Ignore cleanup failures
 		}

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { runInit } from "../commands/init.js";
-import { runStart } from "../commands/start.js";
+import { runStart } from "../commands/start/index.js";
 
 describe("Bound CLI E2E Integration Test", () => {
 	let tempDir: string;
@@ -11,8 +12,8 @@ describe("Bound CLI E2E Integration Test", () => {
 		tempDir = mkdtempSync("bound-e2e-");
 	});
 
-	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true });
+	afterEach(async () => {
+		await cleanupTmpDir(tempDir);
 	});
 
 	it("initializes config files correctly", async () => {

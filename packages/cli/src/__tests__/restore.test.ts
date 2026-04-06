@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { runRestore } from "../commands/restore.js";
 
 describe("restore command", () => {
@@ -11,8 +12,8 @@ describe("restore command", () => {
 		tempDir = mkdtempSync("bound-restore-test-");
 	});
 
-	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true });
+	afterEach(async () => {
+		await cleanupTmpDir(tempDir);
 	});
 
 	function setupTestDB() {

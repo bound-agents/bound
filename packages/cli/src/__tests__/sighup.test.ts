@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { KeyringConfig, Logger } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import type { KeyManager } from "@bound/sync";
 
 // Test type for AppContext used in unit tests
@@ -44,8 +45,8 @@ describe("SIGHUP handler", () => {
 		testLogger = new TestLogger();
 	});
 
-	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true });
+	afterEach(async () => {
+		await cleanupTmpDir(tempDir);
 	});
 
 	it("AC12.1: reloads optional configs and updates appContext", async () => {

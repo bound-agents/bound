@@ -12,13 +12,14 @@
 import type { Database } from "bun:sqlite";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentLoopConfig, AgentLoopResult } from "@bound/agent";
 import { applyMetricsSchema, applySchema, createDatabase, recordTurn } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { Scheduler } from "../scheduler";
 import { seedCronTasks } from "../task-resolution";
 import { sleep, waitFor } from "./helpers";
@@ -52,9 +53,9 @@ describe("Scheduler features", () => {
 		db.run("DELETE FROM daily_summary");
 	});
 
-	afterAll(() => {
+	afterAll(async () => {
 		db.close();
-		rmSync(tmpDir, { recursive: true, force: true });
+		await cleanupTmpDir(tmpDir);
 	});
 
 	function makeCtx(overrides: Partial<AppContext> = {}): AppContext {

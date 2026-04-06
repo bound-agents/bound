@@ -8,12 +8,13 @@
 import type { Database } from "bun:sqlite";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import type { HeartbeatConfig } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { seedHeartbeat } from "../task-resolution";
 
 describe("seedHeartbeat", () => {
@@ -39,9 +40,9 @@ describe("seedHeartbeat", () => {
 		db.run("DELETE FROM tasks");
 	});
 
-	afterAll(() => {
+	afterAll(async () => {
 		db.close();
-		rmSync(tmpDir, { recursive: true, force: true });
+		await cleanupTmpDir(tmpDir);
 	});
 
 	// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite

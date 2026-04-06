@@ -239,18 +239,38 @@ export class Scheduler {
 
 		// Start heartbeat updates for running tasks
 		this.heartbeatInterval = setInterval(() => {
-			this.updateHeartbeats();
+			try {
+				this.updateHeartbeats();
+			} catch (err: unknown) {
+				if (err instanceof RangeError && String(err.message).includes("closed database")) {
+					this.running = false;
+					if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+					if (this.intervalId) clearTimeout(this.intervalId);
+					return;
+				}
+				throw err;
+			}
 		}, HEARTBEAT_INTERVAL);
 
 		// Start main scheduler loop with dynamic quiescence-based interval
 		const scheduleTick = () => {
 			if (!this.running) return;
 
-			this.tick();
+			try {
+				this.tick();
 
-			// Recalculate interval based on quiescence and reset timer
-			const effectiveInterval = this.getEffectivePollInterval();
-			this.intervalId = setTimeout(scheduleTick, effectiveInterval);
+				// Recalculate interval based on quiescence and reset timer
+				const effectiveInterval = this.getEffectivePollInterval();
+				this.intervalId = setTimeout(scheduleTick, effectiveInterval);
+			} catch (err: unknown) {
+				// Auto-stop on closed database — prevents leaked timers from
+				// crashing the process when a test closes the DB before stop().
+				if (err instanceof RangeError && String(err.message).includes("closed database")) {
+					this.running = false;
+					return;
+				}
+				throw err;
+			}
 		};
 
 		this.intervalId = setTimeout(scheduleTick, pollInterval);

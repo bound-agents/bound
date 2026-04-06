@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { allowlistSchema, modelBackendsSchema } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { expandEnvVars, loadConfigFile, loadRequiredConfigs } from "../config-loader";
 
 describe("Config Loader", () => {
@@ -14,9 +15,9 @@ describe("Config Loader", () => {
 		mkdirSync(configDir, { recursive: true });
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		try {
-			require("node:fs").rmSync(configDir, { recursive: true });
+			await cleanupTmpDir(configDir);
 		} catch {
 			// ignore
 		}

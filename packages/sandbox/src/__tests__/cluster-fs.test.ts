@@ -1,8 +1,9 @@
 import Database from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { applySchema, insertRow } from "@bound/core";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { InMemoryFs, MountableFs } from "just-bash";
 import {
 	createClusterFs,
@@ -179,7 +180,7 @@ describe("getInMemoryPaths", () => {
 			}
 		} finally {
 			// Cleanup
-			rmSync(tmpDir, { recursive: true });
+			await cleanupTmpDir(tmpDir);
 		}
 	});
 });

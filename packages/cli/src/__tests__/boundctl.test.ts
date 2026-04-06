@@ -1,7 +1,8 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { runConfigReload } from "../commands/config-reload.js";
 import { runDrain } from "../commands/drain.js";
 import { runSetHub } from "../commands/set-hub.js";
@@ -73,8 +74,8 @@ describe("boundctl commands", () => {
 		db.close();
 	});
 
-	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true });
+	afterEach(async () => {
+		await cleanupTmpDir(tempDir);
 	});
 
 	describe("config reload", () => {

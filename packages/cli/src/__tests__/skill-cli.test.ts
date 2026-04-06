@@ -1,9 +1,10 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { skillImport, skillList, skillRetire, skillView } from "../commands/skill.js";
 
 describe("boundctl skill commands", () => {
@@ -26,11 +27,11 @@ describe("boundctl skill commands", () => {
 		db.run("INSERT INTO host_meta (key, value) VALUES (?, ?)", ["site_id", siteId]);
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		if (db) {
 			db.close();
 		}
-		rmSync(tempDir, { recursive: true, force: true });
+		await cleanupTmpDir(tempDir);
 	});
 
 	describe("AC4.1: skillList outputs tabular data", () => {

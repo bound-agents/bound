@@ -1,11 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import type { BackendCapabilities, ContentBlock } from "@bound/llm";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { assembleContext } from "../context-assembly";
 
 /**
@@ -92,10 +93,10 @@ describe("context assembly content substitution", () => {
 		);
 	});
 
-	afterAll(() => {
+	afterAll(async () => {
 		db.close();
 		if (tmpDir) {
-			rmSync(tmpDir, { recursive: true, force: true });
+			await cleanupTmpDir(tmpDir);
 		}
 	});
 

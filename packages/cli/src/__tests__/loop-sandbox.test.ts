@@ -13,7 +13,7 @@
 import type Database from "bun:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
@@ -26,6 +26,7 @@ import {
 	snapshotWorkspace,
 } from "@bound/sandbox";
 import { TypedEventEmitter } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 
 /**
  * Build a loopSandbox wrapper from ClusterFsResult + dependencies.
@@ -94,9 +95,9 @@ describe("LoopSandbox", () => {
 		db.run("DELETE FROM change_log");
 	});
 
-	afterAll(() => {
+	afterAll(async () => {
 		db.close();
-		rmSync(tmpDir, { recursive: true, force: true });
+		await cleanupTmpDir(tmpDir);
 	});
 
 	describe("AC5.3: Files written to /tmp appear in files table", () => {

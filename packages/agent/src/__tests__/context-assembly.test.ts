@@ -1,10 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { assembleContext, estimateContentLength, formatTimestamp } from "../context-assembly";
 
 describe("Context Assembly Pipeline", () => {
@@ -52,10 +53,10 @@ describe("Context Assembly Pipeline", () => {
 		);
 	});
 
-	afterAll(() => {
+	afterAll(async () => {
 		db.close();
 		if (tmpDir) {
-			rmSync(tmpDir, { recursive: true, force: true });
+			await cleanupTmpDir(tmpDir);
 		}
 	});
 
@@ -1332,10 +1333,10 @@ describe("Context Assembly Pipeline", () => {
 			);
 		});
 
-		afterAll(() => {
+		afterAll(async () => {
 			db2.close();
 			if (tmpDir2) {
-				rmSync(tmpDir2, { recursive: true, force: true });
+				await cleanupTmpDir(tmpDir2);
 			}
 		});
 
@@ -1974,10 +1975,10 @@ This skill reviews pull requests.`;
 			);
 		});
 
-		afterAll(() => {
+		afterAll(async () => {
 			enrichTestDb.close();
 			if (enrichTestTmpDir) {
-				rmSync(enrichTestTmpDir, { recursive: true, force: true });
+				await cleanupTmpDir(enrichTestTmpDir);
 			}
 		});
 
@@ -3289,10 +3290,10 @@ This skill reviews pull requests.`;
 			);
 		});
 
-		afterAll(() => {
+		afterAll(async () => {
 			debugTestDb.close();
 			if (debugTestTmpDir) {
-				rmSync(debugTestTmpDir, { recursive: true, force: true });
+				await cleanupTmpDir(debugTestTmpDir);
 			}
 		});
 

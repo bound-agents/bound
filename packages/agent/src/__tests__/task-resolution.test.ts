@@ -1,11 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import type { Task } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import {
 	canRunHere,
 	computeNextRunAt,
@@ -26,9 +27,9 @@ describe("task-resolution", () => {
 		applySchema(db);
 	});
 
-	afterAll(() => {
+	afterAll(async () => {
 		db.close();
-		rmSync(tmpDir, { recursive: true });
+		await cleanupTmpDir(tmpDir);
 	});
 
 	describe("computeNextRunAt", () => {

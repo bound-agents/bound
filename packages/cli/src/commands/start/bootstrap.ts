@@ -117,8 +117,11 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 	try {
 		appContext = createAppContext(resolve(configDir), dbPath);
 	} catch (error) {
+		// Print a friendly message for the CLI path, then rethrow so callers
+		// (including tests) can observe the failure. The CLI entrypoint catches
+		// this and exits with code 1.
 		console.error("Configuration error:", formatError(error));
-		process.exit(1);
+		throw error;
 	}
 
 	// 2. Ensure Ed25519 keypair via @bound/sync

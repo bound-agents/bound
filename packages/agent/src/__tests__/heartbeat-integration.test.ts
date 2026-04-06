@@ -12,12 +12,13 @@
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, type createAppContext, createDatabase, insertRow } from "@bound/core";
 import { BOUND_NAMESPACE, TypedEventEmitter, deterministicUUID } from "@bound/shared";
 import type { HeartbeatConfig } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { buildHeartbeatContext } from "../heartbeat-context";
 import { seedHeartbeat } from "../task-resolution";
 
@@ -54,9 +55,9 @@ describe("Heartbeat Integration", () => {
 		};
 	});
 
-	afterAll(() => {
+	afterAll(async () => {
 		db.close();
-		rmSync(tmpDir, { recursive: true });
+		await cleanupTmpDir(tmpDir);
 	});
 
 	beforeEach(() => {

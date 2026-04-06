@@ -1,12 +1,13 @@
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentLoopResult } from "@bound/agent";
 import { applySchema, type createAppContext, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { Scheduler } from "../scheduler";
 import { sleep, waitFor } from "./helpers";
 
@@ -43,9 +44,9 @@ describe("Scheduler Integration", () => {
 		};
 	});
 
-	afterAll(() => {
+	afterAll(async () => {
 		db.close();
-		rmSync(tmpDir, { recursive: true });
+		await cleanupTmpDir(tmpDir);
 	});
 
 	it("runs deferred tasks with next_run_at in the past", async () => {

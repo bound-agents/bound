@@ -1,12 +1,13 @@
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import type { CommandContext } from "@bound/sandbox";
 import { TypedEventEmitter } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { archive } from "../commands/archive";
 import { cacheEvict } from "../commands/cache-evict";
 import { cachePin } from "../commands/cache-pin";
@@ -67,10 +68,10 @@ describe("Cache and runtime command implementations", () => {
 		);
 	});
 
-	afterAll(() => {
+	afterAll(async () => {
 		db.close();
 		if (tmpDir) {
-			rmSync(tmpDir, { recursive: true, force: true });
+			await cleanupTmpDir(tmpDir);
 		}
 	});
 

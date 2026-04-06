@@ -1,9 +1,11 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { Logger } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import type { KeyringConfig } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { Hono } from "hono";
 import { ensureKeypair } from "../crypto.js";
 import type { RelayExecutor } from "../relay-executor.js";
@@ -288,13 +290,13 @@ export async function createTestInstance(config: {
 		config;
 
 	// Ensure directory exists
-	const dir = dbPath.substring(0, dbPath.lastIndexOf("/"));
-	if (dir && !existsSync(dir)) {
+	const dir = dirname(dbPath);
+	if (!existsSync(dir)) {
 		await mkdir(dir, { recursive: true });
 	}
 
 	// Generate or load keypair for this instance
-	const effectiveKeypairPath = keypairPath ?? `${dir}/host-${name}`;
+	const effectiveKeypairPath = keypairPath ?? join(dir, `host-${name}`);
 	const keypair = await ensureKeypair(effectiveKeypairPath);
 	const siteId = keypair.siteId;
 
@@ -359,7 +361,7 @@ export async function createTestInstance(config: {
 			// Give the port time to be released
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			if (dir && existsSync(dir)) {
-				await rm(dir, { recursive: true, force: true });
+				await cleanupTmpDir(dir);
 			}
 		},
 	};

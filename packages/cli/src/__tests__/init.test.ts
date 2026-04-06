@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { runInit } from "../commands/init.js";
 
 describe("bound init", () => {
@@ -11,8 +12,8 @@ describe("bound init", () => {
 		tempDir = mkdtempSync("bound-test-");
 	});
 
-	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true });
+	afterEach(async () => {
+		await cleanupTmpDir(tempDir);
 	});
 
 	it("creates allowlist.json and model_backends.json with --ollama preset", async () => {
