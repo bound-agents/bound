@@ -21,6 +21,10 @@ export interface RunLocalLoopParams {
 	timeoutMs?: number;
 	/** Cooperative cancellation: checked at yield points in the agent loop. */
 	shouldYield?: () => boolean;
+	/** Platform identifier for platform-scoped threads (e.g. "discord"). */
+	platform?: string;
+	/** Platform-specific tools (e.g. discord_send_message). */
+	platformTools?: AgentLoopConfig["platformTools"];
 }
 
 export interface RunLocalLoopResult {
@@ -47,6 +51,8 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 		agentLoopFactory,
 		timeoutMs = 5 * 60 * 1000,
 		shouldYield,
+		platform,
+		platformTools,
 	} = params;
 
 	const abortController = new AbortController();
@@ -79,6 +85,8 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 			abortSignal: abortController.signal,
 			onActivity: resetTimeout,
 			shouldYield,
+			platform,
+			platformTools,
 		});
 		const agentResult = await agentLoop.run();
 		return { agentResult, signal: abortController.signal };

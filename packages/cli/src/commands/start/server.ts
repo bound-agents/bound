@@ -293,8 +293,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						);
 
 						const threadRow = appContext.db
-							.query("SELECT user_id FROM threads WHERE id = ?")
-							.get(thread_id) as { user_id: string } | null;
+							.query("SELECT user_id, interface FROM threads WHERE id = ?")
+							.get(thread_id) as { user_id: string; interface: string } | null;
 						const userId = threadRow?.user_id || operatorUserId;
 
 						if (delegationTarget) {
@@ -303,6 +303,37 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							);
 							await dispatchDelegation(delegationTarget, thread_id, claimedIds[0] ?? "", userId);
 						} else {
+							// Inject platform tools for non-web threads so the agent can
+							// send messages via discord_send_message, etc.
+							const threadInterface = threadRow?.interface;
+							let platformConfig:
+								| { platform: string; platformTools: AgentLoopConfig["platformTools"] }
+								| undefined;
+							if (
+								threadInterface &&
+								threadInterface !== "web" &&
+								threadInterface !== "scheduler" &&
+								threadInterface !== "mcp" &&
+								platformRegistry
+							) {
+								const connector = (
+									platformRegistry as {
+										getConnector?(p: string): {
+											getPlatformTools?(
+												threadId: string,
+												readFileFn?: (path: string) => Promise<Uint8Array>,
+											): AgentLoopConfig["platformTools"];
+										} | null;
+									}
+								).getConnector?.(threadInterface);
+								if (connector?.getPlatformTools) {
+									platformConfig = {
+										platform: threadInterface,
+										platformTools: connector.getPlatformTools(thread_id),
+									};
+								}
+							}
+
 							const { agentResult: result } = await runLocalAgentLoop({
 								eventBus: appContext.eventBus,
 								threadId: thread_id,
@@ -311,6 +342,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								activeLoopAbortControllers,
 								agentLoopFactory,
 								shouldYield,
+								platform: platformConfig?.platform,
+								platformTools: platformConfig?.platformTools,
 							});
 
 							if (result.yielded) {
