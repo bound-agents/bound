@@ -12,6 +12,7 @@ import { help, setCommandRegistry } from "./help";
 import { hostinfo } from "./hostinfo";
 import { memory } from "./memory";
 import { modelHint } from "./model-hint";
+import { notify } from "./notify";
 import { purge } from "./purge";
 import { query } from "./query";
 import { schedule } from "./schedule";
@@ -42,6 +43,7 @@ export function getAllCommands(): CommandDefinition[] {
 		modelHint,
 		archive,
 		hostinfo,
+		notify,
 		skillActivate,
 		skillList,
 		skillRead,
@@ -78,6 +80,7 @@ export {
 	modelHint,
 	archive,
 	hostinfo,
+	notify,
 	skillActivate,
 	skillList,
 	skillRead,
