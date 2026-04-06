@@ -82,6 +82,18 @@ export function resetProcessing(db: Database): number {
 }
 
 /**
+ * Check if a thread has any pending (unclaimed) messages in the dispatch queue.
+ */
+export function hasPending(db: Database, threadId: string): boolean {
+	const row = db
+		.prepare(
+			"SELECT COUNT(*) as c FROM dispatch_queue WHERE thread_id = ? AND status = 'pending'",
+		)
+		.get(threadId) as { c: number };
+	return row.c > 0;
+}
+
+/**
  * Prune acknowledged entries older than the given ISO cutoff timestamp.
  * Returns the number of entries pruned.
  */

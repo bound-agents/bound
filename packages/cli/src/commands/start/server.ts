@@ -14,6 +14,7 @@ import {
 	acknowledgeBatch,
 	claimPending,
 	enqueueMessage,
+	hasPending,
 	pruneAcknowledged,
 	updateRow,
 	writeOutbox,
@@ -85,7 +86,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	const statusForwardCache = new Map<string, StatusForwardPayload>();
 	const activeDelegations = new Map<string, { targetSiteId: string; processOutboxId: string }>();
 	const activeLoops = new Set<string>();
-	const cancelRequested = new Map<string, boolean>();
 
 	// Platform registry — declared here so message:created handler can reference it,
 	// populated in the platform connectors section below.
@@ -215,178 +215,151 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			activeDelegations.delete(threadId);
 		};
 
-		// Dispatch a thread: claim pending messages and run the agent loop.
-		// Extracted so both the debounce timer and recovery path can call it.
-		const dispatchThread = async (thread_id: string) => {
+		// Single-owner drain loop: one inference owner per thread.
+		// Loops claimPending → run inference → acknowledge → repeat until queue empty.
+		// Messages arriving during inference are picked up on the next iteration.
+		const handleThread = async (thread_id: string) => {
 			if (!modelRouter) {
 				appContext.logger.warn("[agent] No model router configured, cannot process message");
 				return;
 			}
-			if (activeLoops.has(thread_id)) {
-				// Will be picked up in the finally re-queue check
-				return;
-			}
-
-			appContext.logger.info(`[agent] Processing message in thread ${thread_id}`);
+			// Thread-exclusive lock — if already held, return.
+			// The active loop will pick up new messages on its next iteration.
+			if (activeLoops.has(thread_id)) return;
 			activeLoops.add(thread_id);
 
-			// Claim all pending messages for this thread — marks them as 'processing'
-			const claimed = claimPending(appContext.db, thread_id, appContext.siteId);
-			const claimedIds = claimed.map((e) => e.message_id);
-
 			try {
-				// Resolve model from the most recent claimed message, or use default
-				const lastClaimedMsg = claimed.length > 0
-					? appContext.db
-						.prepare("SELECT model_id FROM messages WHERE id = ?")
-						.get(claimed[claimed.length - 1].message_id) as { model_id: string | null } | null
-					: null;
-				const selectedModelId = lastClaimedMsg?.model_id || undefined;
-				const activeModelId = selectedModelId || routerConfig.default;
+				// Drain loop: keep processing until no pending messages remain
+				while (true) {
+					const claimed = claimPending(appContext.db, thread_id, appContext.siteId);
+					if (claimed.length === 0) break; // queue drained, done
 
-				// AC6.1: Check delegation conditions
-				const delegationTarget = getDelegationTarget(
-					appContext.db,
-					thread_id,
-					activeModelId,
-					modelRouter,
-					appContext.siteId,
-				);
+					const claimedIds = claimed.map((e) => e.message_id);
 
-				// Get thread user_id
-				const threadRow = appContext.db
-					.query("SELECT user_id FROM threads WHERE id = ?")
-					.get(thread_id) as { user_id: string } | null;
-				const userId = threadRow?.user_id || operatorUserId;
+					try {
+						// Resolve model from the most recent claimed message, or use default
+						const lastClaimedMsg = appContext.db
+							.prepare("SELECT model_id FROM messages WHERE id = ?")
+							.get(claimed[claimed.length - 1].message_id) as {
+							model_id: string | null;
+						} | null;
+						const activeModelId = lastClaimedMsg?.model_id || routerConfig.default;
 
-				let shouldReEmitMessage = false;
-
-				if (delegationTarget) {
-					// Delegate entire loop to remote host
-					const delegateMessageId = claimedIds[0] ?? "";
-					appContext.logger.info(`[agent] Delegating to remote host ${delegationTarget.site_id}`);
-					await dispatchDelegation(delegationTarget, thread_id, delegateMessageId, userId);
-				} else {
-					// AC6.5: Run locally via extracted helper
-					const { agentResult: result } = await runLocalAgentLoop({
-						eventBus: appContext.eventBus,
-						threadId: thread_id,
-						userId,
-						modelId: activeModelId,
-						activeLoopAbortControllers,
-						agentLoopFactory,
-						shouldYield: () => {
-							if (cancelRequested.get(thread_id)) {
-								cancelRequested.delete(thread_id);
-								return true;
-							}
-							return false;
-						},
-					});
-
-					if (result.error) {
-						appContext.logger.error(`[agent] Error: ${result.error}`);
-					} else {
-						appContext.logger.info(
-							`[agent] Done: ${result.messagesCreated} messages, ${result.toolCallsMade} tool calls`,
-						);
-					}
-
-					shouldReEmitMessage = !result.error && result.messagesCreated > 0;
-				}
-
-				// Push the last assistant message to WebSocket clients
-				if (shouldReEmitMessage) {
-					const lastMsg = appContext.db
-						.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
-						.get(thread_id);
-					if (lastMsg) {
-						appContext.eventBus.emit("message:broadcast", {
-							// biome-ignore lint/suspicious/noExplicitAny: db.query result is untyped at this callsite
-							message: lastMsg as any,
+						// Check delegation conditions
+						const delegationTarget = getDelegationTarget(
+							appContext.db,
 							thread_id,
-						});
-					}
-				}
-
-				// Fire-and-forget: generate thread title
-				const hasLocalBackend = modelRouter.listBackends().length > 0;
-				if (hasLocalBackend) {
-					generateThreadTitle(appContext.db, thread_id, modelRouter.getDefault(), appContext.siteId)
-						.then((titleResult) => {
-							if (titleResult.ok) {
-								appContext.logger.info(`[agent] Thread title: ${titleResult.value}`);
-							}
-						})
-						.catch((err) =>
-							appContext.logger.warn("[agent] Title generation failed", {
-								error: formatError(err),
-							}),
+							activeModelId,
+							modelRouter,
+							appContext.siteId,
 						);
-				}
-			} catch (error) {
-				appContext.logger.error(`[agent] Error: ${formatError(error)}`);
+
+						const threadRow = appContext.db
+							.query("SELECT user_id FROM threads WHERE id = ?")
+							.get(thread_id) as { user_id: string } | null;
+						const userId = threadRow?.user_id || operatorUserId;
+
+						if (delegationTarget) {
+							appContext.logger.info(
+								`[agent] Delegating to remote host ${delegationTarget.site_id}`,
+							);
+							await dispatchDelegation(
+								delegationTarget,
+								thread_id,
+								claimedIds[0] ?? "",
+								userId,
+							);
+						} else {
+							const { agentResult: result } = await runLocalAgentLoop({
+								eventBus: appContext.eventBus,
+								threadId: thread_id,
+								userId,
+								modelId: activeModelId,
+								activeLoopAbortControllers,
+								agentLoopFactory,
+								// Early exit: yield if new messages arrived during inference
+								shouldYield: () => hasPending(appContext.db, thread_id),
+							});
+
+							if (result.error) {
+								appContext.logger.error(`[agent] Error: ${result.error}`);
+							} else {
+								appContext.logger.info(
+									`[agent] Done: ${result.messagesCreated} messages, ${result.toolCallsMade} tool calls`,
+								);
+							}
+
+							// Push last assistant message to WebSocket clients
+							if (!result.error && result.messagesCreated > 0) {
+								const lastMsg = appContext.db
+									.query(
+										"SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
+									)
+									.get(thread_id);
+								if (lastMsg) {
+									appContext.eventBus.emit("message:broadcast", {
+										// biome-ignore lint/suspicious/noExplicitAny: db.query result is untyped
+										message: lastMsg as any,
+										thread_id,
+									});
+								}
+							}
+						}
+
+						// Acknowledge the batch we just processed
+						acknowledgeBatch(appContext.db, claimedIds);
+
+						// Fire-and-forget: generate thread title
+						const hasLocalBackend = modelRouter.listBackends().length > 0;
+						if (hasLocalBackend) {
+							generateThreadTitle(
+								appContext.db,
+								thread_id,
+								modelRouter.getDefault(),
+								appContext.siteId,
+							)
+								.then((titleResult) => {
+									if (titleResult.ok) {
+										appContext.logger.info(`[agent] Thread title: ${titleResult.value}`);
+									}
+								})
+								.catch((err) =>
+									appContext.logger.warn("[agent] Title generation failed", {
+										error: formatError(err),
+									}),
+								);
+						}
+					} catch (error) {
+						appContext.logger.error(`[agent] Error: ${formatError(error)}`);
+						// On error, acknowledge the failed batch so we don't infinite-loop.
+						// The error is logged; the user can retry by sending another message.
+						try {
+							acknowledgeBatch(appContext.db, claimedIds);
+						} catch {
+							// Non-fatal
+						}
+					}
+				} // end drain loop
 			} finally {
 				activeLoops.delete(thread_id);
-
-				// Acknowledge the batch we just processed
-				if (claimedIds.length > 0) {
-					try {
-						acknowledgeBatch(appContext.db, claimedIds);
-					} catch {
-						// Non-fatal
-					}
-				}
 
 				// Notify platform connectors that the loop is done
 				if (platformRegistry?.notifyLoopComplete) {
 					platformRegistry.notifyLoopComplete(thread_id);
 				}
-
-				// Re-queue: check dispatch_queue for messages that arrived during the loop
-				try {
-					const pendingRow = appContext.db
-						.prepare(
-							"SELECT dq.message_id FROM dispatch_queue dq WHERE dq.thread_id = ? AND dq.status = 'pending' ORDER BY dq.created_at ASC LIMIT 1",
-						)
-						.get(thread_id) as { message_id: string } | null;
-					if (pendingRow) {
-						appContext.logger.info(`[agent] Re-queuing pending message in thread ${thread_id}`);
-						const fullPendingMsg = appContext.db
-							.prepare("SELECT * FROM messages WHERE id = ? LIMIT 1")
-							.get(pendingRow.message_id) as import("@bound/shared").Message | null;
-						if (fullPendingMsg) {
-							appContext.eventBus.emit("message:created", {
-								message: fullPendingMsg,
-								thread_id,
-							});
-						}
-					}
-				} catch {
-					// Non-fatal — don't break cleanup on re-queue failure
-				}
 			}
 		};
 
-		// message:created handler — enqueue and dispatch immediately
+		// message:created handler — enqueue and dispatch
 		appContext.eventBus.on("message:created", ({ message, thread_id }) => {
 			if (message.role !== "user") return;
 
 			// Enqueue for dispatch tracking (idempotent — safe for re-emits)
 			enqueueMessage(appContext.db, message.id, thread_id);
 
-			// If a loop is already active, request cooperative cancellation.
-			// The loop checks shouldYield() at yield points and stops cleanly —
-			// no duplicate messages, no ghost completions, no cascade of inferences.
-			if (activeLoops.has(thread_id)) {
-				appContext.logger.info(`[agent] New message during active loop for ${thread_id}, requesting yield`);
-				cancelRequested.set(thread_id, true);
-				return; // loop will yield, finally block re-dispatches with full pending set
-			}
-
-			// Dispatch immediately — no debounce. If the user sends another message
-			// before inference completes, cancel-and-redispatch handles batching.
-			dispatchThread(thread_id);
+			// handleThread acquires the lock — if already held, returns immediately.
+			// The active drain loop will pick up the new message on its next iteration.
+			handleThread(thread_id);
 		});
 
 		// Recover: dispatch any threads that have pending entries (from crash recovery)
@@ -397,7 +370,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			.all() as Array<{ thread_id: string }>;
 		for (const { thread_id } of pendingThreads) {
 			appContext.logger.info(`[recovery] Re-dispatching pending messages for thread ${thread_id}`);
-			dispatchThread(thread_id);
+			handleThread(thread_id);
 		}
 	} catch (error) {
 		appContext.logger.warn("Web server failed to start", { error: formatError(error) });

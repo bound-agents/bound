@@ -11,6 +11,7 @@ import {
 	acknowledgeBatch,
 	resetProcessing,
 	pruneAcknowledged,
+	hasPending,
 } from "../dispatch";
 
 let db: ReturnType<typeof createDatabase>;
@@ -84,6 +85,33 @@ describe("enqueueMessage", () => {
 			.query("SELECT COUNT(*) as c FROM dispatch_queue WHERE message_id = ?")
 			.get(msgId) as { c: number };
 		expect(count.c).toBe(1);
+	});
+});
+
+describe("hasPending", () => {
+	it("returns true when pending messages exist for thread", () => {
+		const threadId = randomUUID();
+		const msgId = randomUUID();
+
+		enqueueMessage(db, msgId, threadId);
+
+		expect(hasPending(db, threadId)).toBe(true);
+	});
+
+	it("returns false when no pending messages exist", () => {
+		const threadId = randomUUID();
+		expect(hasPending(db, threadId)).toBe(false);
+	});
+
+	it("returns false when all messages are processing", () => {
+		const threadId = randomUUID();
+		const siteId = randomBytes(8).toString("hex");
+		const msgId = randomUUID();
+
+		enqueueMessage(db, msgId, threadId);
+		claimPending(db, threadId, siteId);
+
+		expect(hasPending(db, threadId)).toBe(false);
 	});
 });
 

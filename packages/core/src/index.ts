@@ -59,5 +59,6 @@ export {
 	acknowledgeBatch,
 	resetProcessing,
 	pruneAcknowledged,
+	hasPending,
 	type DispatchEntry,
 } from "./dispatch";
