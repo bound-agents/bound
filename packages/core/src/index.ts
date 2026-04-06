@@ -63,3 +63,4 @@ export {
 	hasPending,
 	type DispatchEntry,
 } from "./dispatch";
+export { ThreadExecutor, type ExecutorRunResult } from "./thread-executor";
