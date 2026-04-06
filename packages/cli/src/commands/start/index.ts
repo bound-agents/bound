@@ -9,6 +9,7 @@ export { buildMcpToolDefinitions } from "./mcp.js";
 import { createAgentLoopFactory } from "./agent-factory.js";
 import { initBootstrap } from "./bootstrap.js";
 import type { StartArgs } from "./bootstrap.js";
+import { ThreadExecutor } from "@bound/core";
 import { initInference } from "./inference.js";
 import { initMcp } from "./mcp.js";
 import { initRelay } from "./relay.js";
@@ -80,7 +81,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 					webServer: null,
 					statusForwardCache: new Map(),
 					activeDelegations: new Map(),
-					activeLoops: new Set<string>(),
+					threadExecutor: new ThreadExecutor(appContext.db, appContext.logger),
 					platformRegistry: null,
 				};
 

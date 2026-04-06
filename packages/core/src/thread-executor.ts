@@ -18,6 +18,14 @@ export class ThreadExecutor {
 	) {}
 
 	/**
+	 * Read-only view of currently active thread IDs.
+	 * Used by the web server to check loop status via `.has()`.
+	 */
+	get activeThreads(): ReadonlySet<string> {
+		return this.activeLocks;
+	}
+
+	/**
 	 * Check whether a thread currently has an active executor lock.
 	 */
 	isActive(threadId: string): boolean {

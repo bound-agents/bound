@@ -7,11 +7,10 @@ import { createRelayOutboxEntry, generateThreadTitle, getDelegationTarget } from
 import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
+	ThreadExecutor,
 	acknowledgeBatch,
 	claimPending,
 	enqueueMessage,
-	hasPending,
-	resetProcessingForThread,
 	updateRow,
 	writeOutbox,
 } from "@bound/core";
@@ -29,7 +28,7 @@ export interface ServerResult {
 	webServer: Awaited<ReturnType<typeof createWebServer>> | null;
 	statusForwardCache: Map<string, StatusForwardPayload>;
 	activeDelegations: Map<string, { targetSiteId: string; processOutboxId: string }>;
-	activeLoops: Set<string>;
+	threadExecutor: ThreadExecutor;
 	platformRegistry: {
 		start(): void;
 		stop(): void;
@@ -54,6 +53,7 @@ export interface ServerDeps {
 	relayProcessor: {
 		setPlatformConnectorRegistry(registry: unknown): void;
 		setAgentLoopFactory(factory: AgentLoopFactory): void;
+		setThreadExecutor?(executor: ThreadExecutor): void;
 	};
 }
 
@@ -81,7 +81,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	let webServer: Awaited<ReturnType<typeof createWebServer>> | null = null;
 	const statusForwardCache = new Map<string, StatusForwardPayload>();
 	const activeDelegations = new Map<string, { targetSiteId: string; processOutboxId: string }>();
-	const activeLoops = new Set<string>();
+	const threadExecutor = new ThreadExecutor(appContext.db, appContext.logger);
+
+	// Wire the executor into the relay processor for Discord/platform process relays.
+	relayProcessor.setThreadExecutor?.(threadExecutor);
 
 	// Platform registry — declared here so message:created handler can reference it,
 	// populated in the platform connectors section below.
@@ -140,7 +143,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			eagerPushConfig,
 			statusForwardCache,
 			activeDelegations,
-			activeLoops,
+			activeLoops: threadExecutor.activeThreads as Set<string>,
 			keyManager,
 		});
 		await webServer.start();
@@ -211,29 +214,24 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			activeDelegations.delete(threadId);
 		};
 
-		// Single-owner drain loop: one inference owner per thread.
-		// Loops claimPending → run inference → acknowledge → repeat until queue empty.
-		// Messages arriving during inference are picked up on the next iteration.
+		// handleThread delegates to the shared ThreadExecutor.
+		// The executor owns the thread-exclusive lock and drain loop.
 		const handleThread = async (thread_id: string) => {
 			if (!modelRouter) {
 				appContext.logger.warn("[agent] No model router configured, cannot process message");
 				return;
 			}
-			// Thread-exclusive lock — if already held, return.
-			// The active loop will pick up new messages on its next iteration.
-			if (activeLoops.has(thread_id)) return;
-			activeLoops.add(thread_id);
 
-			try {
-				// Drain loop: keep processing until no pending messages remain
-				while (true) {
+			await threadExecutor.execute(
+				thread_id,
+				// runFn: claim → resolve model → delegate or run local inference
+				async (shouldYield) => {
 					const claimed = claimPending(appContext.db, thread_id, appContext.siteId);
-					if (claimed.length === 0) break; // queue drained, done
+					if (claimed.length === 0) return {};
 
 					const claimedIds = claimed.map((e) => e.message_id);
 
 					try {
-						// Resolve model from the most recent claimed message, or use default
 						const lastClaimedMsg = appContext.db
 							.prepare("SELECT model_id FROM messages WHERE id = ?")
 							.get(claimed[claimed.length - 1].message_id) as {
@@ -241,7 +239,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						} | null;
 						const activeModelId = lastClaimedMsg?.model_id || routerConfig.default;
 
-						// Check delegation conditions
 						const delegationTarget = getDelegationTarget(
 							appContext.db,
 							thread_id,
@@ -259,7 +256,12 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							appContext.logger.info(
 								`[agent] Delegating to remote host ${delegationTarget.site_id}`,
 							);
-							await dispatchDelegation(delegationTarget, thread_id, claimedIds[0] ?? "", userId);
+							await dispatchDelegation(
+								delegationTarget,
+								thread_id,
+								claimedIds[0] ?? "",
+								userId,
+							);
 						} else {
 							const { agentResult: result } = await runLocalAgentLoop({
 								eventBus: appContext.eventBus,
@@ -268,17 +270,14 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								modelId: activeModelId,
 								activeLoopAbortControllers,
 								agentLoopFactory,
-								// Early exit: yield if new messages arrived during inference
-								shouldYield: () => hasPending(appContext.db, thread_id),
+								shouldYield,
 							});
 
-							// Cooperative yield: reset messages to pending, loop will re-claim
 							if (result.yielded) {
 								appContext.logger.info(
 									`[agent] Inference yielded for thread ${thread_id}, re-batching`,
 								);
-								resetProcessingForThread(appContext.db, thread_id);
-								continue; // next drain iteration picks up all pending
+								return { yielded: true, claimedIds };
 							}
 
 							if (result.error) {
@@ -308,46 +307,45 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 						// Acknowledge the batch we just processed
 						acknowledgeBatch(appContext.db, claimedIds);
-
-						// Fire-and-forget: generate thread title
-						const hasLocalBackend = modelRouter.listBackends().length > 0;
-						if (hasLocalBackend) {
-							generateThreadTitle(
-								appContext.db,
-								thread_id,
-								modelRouter.getDefault(),
-								appContext.siteId,
-							)
-								.then((titleResult) => {
-									if (titleResult.ok) {
-										appContext.logger.info(`[agent] Thread title: ${titleResult.value}`);
-									}
-								})
-								.catch((err) =>
-									appContext.logger.warn("[agent] Title generation failed", {
-										error: formatError(err),
-									}),
-								);
-						}
+						return { claimedIds };
 					} catch (error) {
 						appContext.logger.error(`[agent] Error: ${formatError(error)}`);
-						// On error, acknowledge the failed batch so we don't infinite-loop.
-						// The error is logged; the user can retry by sending another message.
 						try {
 							acknowledgeBatch(appContext.db, claimedIds);
 						} catch {
 							// Non-fatal
 						}
+						return {};
 					}
-				} // end drain loop
-			} finally {
-				activeLoops.delete(thread_id);
+				},
+				// onComplete: generate thread title, notify platforms
+				async () => {
+					const hasLocalBackend = modelRouter.listBackends().length > 0;
+					if (hasLocalBackend) {
+						generateThreadTitle(
+							appContext.db,
+							thread_id,
+							modelRouter.getDefault(),
+							appContext.siteId,
+						)
+							.then((titleResult) => {
+								if (titleResult.ok) {
+									appContext.logger.info(`[agent] Thread title: ${titleResult.value}`);
+								}
+							})
+							.catch((err) =>
+								appContext.logger.warn("[agent] Title generation failed", {
+									error: formatError(err),
+								}),
+							);
+					}
 
-				// Notify platform connectors that the loop is done
-				if (platformRegistry?.notifyLoopComplete) {
-					platformRegistry.notifyLoopComplete(thread_id);
-				}
-			}
+					// Notify platform connectors that the loop iteration is done
+					if (platformRegistry?.notifyLoopComplete) {
+						platformRegistry.notifyLoopComplete(thread_id);
+					}
+				},
+			);
 		};
 
 		// message:created handler — enqueue and dispatch
@@ -411,7 +409,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		webServer,
 		statusForwardCache,
 		activeDelegations,
-		activeLoops,
+		threadExecutor,
 		platformRegistry,
 	};
 }
