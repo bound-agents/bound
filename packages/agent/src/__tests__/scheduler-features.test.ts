@@ -962,8 +962,10 @@ describe("Scheduler features", () => {
 			expect(toolCallBlocks[0].name).toBe("retrieve_task");
 
 			// Third message: tool_result with the actual payload
+			// tool_name must be the toolCallId (not "retrieve_task") so Bedrock
+			// can match the tool_result to the tool_call by ID
 			expect(allMsgs[2].role).toBe("tool_result");
-			expect(allMsgs[2].tool_name).toBe("retrieve_task");
+			expect(allMsgs[2].tool_name).toBe(toolCallBlocks[0].id);
 			expect(allMsgs[2].content).toBe(payload);
 
 			if (capturedThreadId) {

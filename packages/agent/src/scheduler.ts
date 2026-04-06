@@ -662,7 +662,7 @@ export class Scheduler {
 						role: "tool_result",
 						content: taskContent,
 						model_id: null,
-						tool_name: "retrieve_task",
+						tool_name: toolCallId,
 						created_at: taskNow,
 						modified_at: taskNow,
 						host_origin: this.ctx.hostName,
