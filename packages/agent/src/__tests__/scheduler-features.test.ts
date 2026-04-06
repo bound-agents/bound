@@ -885,7 +885,7 @@ describe("Scheduler features", () => {
 			}
 		});
 
-		it("inserts task payload as system message with user stub for Bedrock", async () => {
+		it("inserts task payload as synthetic retrieve_task tool call", async () => {
 			const taskId = randomUUID();
 			const now = new Date().toISOString();
 			const pastTime = new Date(Date.now() - 60_000).toISOString();
@@ -936,28 +936,35 @@ describe("Scheduler features", () => {
 			});
 			stop();
 
-			// Two messages: system payload + user stub
-			expect(messagesAtRunTime).toBeGreaterThanOrEqual(2);
+			// Three messages: user "." + tool_call retrieve_task + tool_result with payload
+			expect(messagesAtRunTime).toBeGreaterThanOrEqual(3);
 
-			// System message contains the task payload
-			const sysMsg = db
+			// biome-ignore lint/style/noNonNullAssertion: verified by expect above
+			const allMsgs = db
 				.query(
-					"SELECT content, role FROM messages WHERE thread_id = ? AND role = 'system' ORDER BY created_at ASC LIMIT 1",
+					"SELECT role, content, tool_name FROM messages WHERE thread_id = ? ORDER BY rowid ASC",
 				)
-				// biome-ignore lint/style/noNonNullAssertion: verified by expect above
-				.get(capturedThreadId!) as { content: string; role: string } | null;
-			expect(sysMsg).not.toBeNull();
-			expect(sysMsg?.content).toBe(payload);
+				.all(capturedThreadId!) as {
+				role: string;
+				content: string;
+				tool_name: string | null;
+			}[];
 
-			// Minimal user stub satisfies Bedrock conversation requirement
-			const userMsg = db
-				.query(
-					"SELECT content FROM messages WHERE thread_id = ? AND role = 'user' ORDER BY created_at ASC LIMIT 1",
-				)
-				// biome-ignore lint/style/noNonNullAssertion: verified above
-				.get(capturedThreadId!) as { content: string } | null;
-			expect(userMsg).not.toBeNull();
-			expect(userMsg?.content).toBe(".");
+			// First message: minimal user stub for Bedrock
+			expect(allMsgs[0].role).toBe("user");
+			expect(allMsgs[0].content).toBe(".");
+
+			// Second message: synthetic assistant tool_call
+			expect(allMsgs[1].role).toBe("tool_call");
+			const toolCallBlocks = JSON.parse(allMsgs[1].content);
+			expect(Array.isArray(toolCallBlocks)).toBe(true);
+			expect(toolCallBlocks[0].type).toBe("tool_use");
+			expect(toolCallBlocks[0].name).toBe("retrieve_task");
+
+			// Third message: tool_result with the actual payload
+			expect(allMsgs[2].role).toBe("tool_result");
+			expect(allMsgs[2].tool_name).toBe("retrieve_task");
+			expect(allMsgs[2].content).toBe(payload);
 
 			if (capturedThreadId) {
 				db.run("DELETE FROM tasks WHERE id = ?", [taskId]);

@@ -595,33 +595,19 @@ export class Scheduler {
 					);
 				}
 
-				// Always inject a user message so the agent loop has something to work
-				// from. Bedrock (and any model that enforces "conversation must start
-				// with a user message") rejects requests where the first non-system
-				// message is not from the user. Insert the task payload as a system
-				// message (so the model treats it as operating instructions, not
-				// adversarial input), then a minimal "." user message to satisfy
-				// Bedrock's conversation structure requirement.
-				insertRow(
-					this.ctx.db,
-					"messages",
-					{
-						id: randomUUID(),
-						thread_id: threadId,
-						role: "system",
-						content:
-							task.type === "heartbeat"
-								? buildHeartbeatContext(this.ctx.db, task.last_run_at)
-								: (task.payload ?? "Execute scheduled task."),
-						model_id: null,
-						tool_name: null,
-						created_at: taskNow,
-						modified_at: taskNow,
-						host_origin: this.ctx.hostName,
-						deleted: 0,
-					},
-					this.ctx.siteId,
-				);
+				// Deliver the task payload as a synthetic retrieve_task tool call.
+				// The model treats tool results as factual context it retrieved,
+				// so it follows the instructions naturally (unlike system messages
+				// which it may ignore as background context). The conversation
+				// structure is: user(".") -> assistant(tool_call) -> tool_result(payload).
+				// The user stub satisfies Bedrock's "must start with user" requirement.
+				const toolCallId = `tooluse_${randomUUID().replace(/-/g, "").slice(0, 22)}`;
+				const taskContent =
+					task.type === "heartbeat"
+						? buildHeartbeatContext(this.ctx.db, task.last_run_at)
+						: (task.payload ?? "Execute scheduled task.");
+
+				// 1. Minimal user message (Bedrock requires conversation starts with user)
 				insertRow(
 					this.ctx.db,
 					"messages",
@@ -632,6 +618,51 @@ export class Scheduler {
 						content: ".",
 						model_id: null,
 						tool_name: null,
+						created_at: taskNow,
+						modified_at: taskNow,
+						host_origin: this.ctx.hostName,
+						deleted: 0,
+					},
+					this.ctx.siteId,
+				);
+
+				// 2. Synthetic assistant tool_call
+				insertRow(
+					this.ctx.db,
+					"messages",
+					{
+						id: randomUUID(),
+						thread_id: threadId,
+						role: "tool_call",
+						content: JSON.stringify([
+							{
+								type: "tool_use",
+								id: toolCallId,
+								name: "retrieve_task",
+								input: {},
+							},
+						]),
+						model_id: null,
+						tool_name: null,
+						created_at: taskNow,
+						modified_at: taskNow,
+						host_origin: this.ctx.hostName,
+						deleted: 0,
+					},
+					this.ctx.siteId,
+				);
+
+				// 3. Synthetic tool_result with task payload
+				insertRow(
+					this.ctx.db,
+					"messages",
+					{
+						id: randomUUID(),
+						thread_id: threadId,
+						role: "tool_result",
+						content: taskContent,
+						model_id: null,
+						tool_name: "retrieve_task",
 						created_at: taskNow,
 						modified_at: taskNow,
 						host_origin: this.ctx.hostName,
