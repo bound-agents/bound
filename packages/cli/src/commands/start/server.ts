@@ -27,12 +27,14 @@ import { runLocalAgentLoop } from "../../lib/message-handler";
 export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
 
 /** Format a notification payload as a human-readable message for the agent. */
-function formatNotification(payload: Record<string, unknown>): string {
+export function formatNotification(payload: Record<string, unknown>): string {
 	switch (payload.type) {
 		case "task_complete":
 			return `[notification] Task "${payload.task_name}" completed. Result: ${payload.result ?? "success"}`;
 		case "advisory_created":
 			return `[notification] New advisory: ${payload.title ?? "Untitled"}. ${payload.detail ?? ""}`.trim();
+		case "proactive":
+			return `[notification from background task] ${payload.content ?? ""}`.trim();
 		default:
 			return `[notification] ${JSON.stringify(payload)}`;
 	}
