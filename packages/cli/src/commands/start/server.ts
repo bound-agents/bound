@@ -3,6 +3,7 @@
  * delegation logic, and platform connector initialization.
  */
 
+import { randomUUID } from "node:crypto";
 import { createRelayOutboxEntry, generateThreadTitle, getDelegationTarget } from "@bound/agent";
 import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
 import type { AppContext } from "@bound/core";
@@ -256,11 +257,14 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 									const payload = JSON.parse(entry.event_payload);
 									const notifText = formatNotification(payload);
 									const now = new Date().toISOString();
+									// Use a fresh UUID — the dispatch entry message_id may
+									// already exist in messages from a prior retry (yield →
+									// reclaim cycle), causing a PK collision.
 									insertRow(
 										appContext.db,
 										"messages",
 										{
-											id: entry.message_id,
+											id: randomUUID(),
 											thread_id,
 											role: "user",
 											content: notifText,
@@ -273,8 +277,12 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 										},
 										appContext.siteId,
 									);
-								} catch {
-									// Non-fatal — notification context is best-effort
+								} catch (err) {
+									appContext.logger.error("[notify] Failed to inject notification message", {
+										messageId: entry.message_id,
+										threadId: thread_id,
+										error: formatError(err),
+									});
 								}
 							}
 						}
