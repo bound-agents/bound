@@ -204,6 +204,7 @@ describe("AgentLoop lifecycle", () => {
 		return {
 			db,
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},

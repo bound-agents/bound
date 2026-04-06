@@ -32,6 +32,7 @@ describe("notify command", () => {
 			siteId,
 			eventBus,
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},

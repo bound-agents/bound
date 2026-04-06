@@ -36,6 +36,7 @@ describe("R-O3: Task output delivered to original scheduling thread", () => {
 			optionalConfig: {},
 			eventBus: new TypedEventEmitter(),
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},

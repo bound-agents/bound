@@ -274,7 +274,7 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 		const mockSandbox = {};
 		const ctx = {
 			db,
-			logger: { info: () => {}, warn: () => {}, error: () => {} },
+			logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
 			eventBus: { on: () => {}, off: () => {}, emit: () => {} },
 			hostName: "test-host",
 			siteId: "test-site-id",

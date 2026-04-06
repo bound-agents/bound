@@ -368,6 +368,16 @@ export class Scheduler {
 			.all(evictionTime) as Task[];
 
 		if (tasksToEvict.length > 0) {
+			this.ctx.logger.warn("[scheduler] Evicting crashed tasks", {
+				count: tasksToEvict.length,
+				tasks: tasksToEvict.map((t) => ({
+					id: t.id,
+					name: t.name,
+					type: t.type,
+					consecutiveFailures: (t.consecutive_failures ?? 0) + 1,
+				})),
+			});
+
 			this.ctx.db
 				.query(
 					`UPDATE tasks SET status = 'failed', error = 'evicted due to heartbeat timeout',
@@ -503,6 +513,15 @@ export class Scheduler {
 		this.runningTasks.set(task.id, {
 			leaseId,
 			startedAt: new Date(),
+		});
+
+		this.ctx.logger.info("[scheduler] Task starting", {
+			taskId: task.id,
+			name: task.name,
+			type: task.type,
+			modelHint: task.model_hint ?? "default",
+			threadId: task.thread_id ?? null,
+			runCount: task.run_count ?? 0,
 		});
 
 		// Check if this is a cron task with a template (R-U28)
@@ -656,6 +675,12 @@ export class Scheduler {
 				if (task.model_hint && this.config.modelValidator) {
 					const validation = this.config.modelValidator(task.model_hint);
 					if (!validation.ok) {
+						this.ctx.logger.warn("[scheduler] Task model validation failed", {
+							taskId: task.id,
+							name: task.name,
+							modelHint: task.model_hint,
+							error: validation.error,
+						});
 						const errorMsg = validation.error;
 						const currentTask = this.ctx.db
 							.query("SELECT lease_id FROM tasks WHERE id = ?")
@@ -706,6 +731,15 @@ export class Scheduler {
 					const completedAt = new Date().toISOString();
 
 					if (result.error) {
+						this.ctx.logger.warn("[scheduler] Task soft-failed", {
+							taskId: task.id,
+							name: task.name,
+							type: task.type,
+							error: result.error,
+							messagesCreated: result.messagesCreated,
+							toolCallsMade: result.toolCallsMade,
+						});
+
 						// Soft error: run() returned normally but with an error field
 						const softUpdated = this.ctx.db
 							.query(
@@ -735,6 +769,15 @@ export class Scheduler {
 						);
 						retryDeferredTask(this.ctx.db, task, newConsecutiveFailures, this.ctx.logger);
 					} else {
+						this.ctx.logger.info("[scheduler] Task completed", {
+							taskId: task.id,
+							name: task.name,
+							type: task.type,
+							messagesCreated: result.messagesCreated,
+							toolCallsMade: result.toolCallsMade,
+							filesChanged: result.filesChanged,
+						});
+
 						// Mark as completed and reset consecutive failure counter
 						this.ctx.db
 							.query(
@@ -765,6 +808,14 @@ export class Scheduler {
 				}
 			} catch (error) {
 				const errorMsg = formatError(error);
+
+				this.ctx.logger.error("[scheduler] Task hard-failed", {
+					taskId: task.id,
+					name: task.name,
+					type: task.type,
+					error: errorMsg,
+				});
+
 				const currentTask = this.ctx.db
 					.query("SELECT lease_id FROM tasks WHERE id = ?")
 					.get(task.id) as { lease_id: string | null } | undefined;

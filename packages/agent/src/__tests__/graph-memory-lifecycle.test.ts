@@ -28,6 +28,7 @@ describe("Graph Memory Lifecycle - Sync and Edge Cascading", () => {
 			siteId,
 			eventBus,
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},

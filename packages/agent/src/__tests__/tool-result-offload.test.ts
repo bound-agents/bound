@@ -188,7 +188,7 @@ describe("AgentLoop tool result offloading", () => {
 	function makeCtx(): AppContext {
 		return {
 			db,
-			logger: { info: () => {}, warn: () => {}, error: () => {} },
+			logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
 			eventBus: { on: () => {}, off: () => {}, emit: () => {} },
 			hostName: "test-host",
 			siteId: "test-site-id",

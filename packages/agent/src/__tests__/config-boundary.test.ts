@@ -31,6 +31,7 @@ describe("R-U16: Agent cannot read config files", () => {
 			siteId,
 			eventBus,
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},

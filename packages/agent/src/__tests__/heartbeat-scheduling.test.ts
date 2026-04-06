@@ -52,6 +52,7 @@ describe("rescheduleHeartbeat", () => {
 		return {
 			db,
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},

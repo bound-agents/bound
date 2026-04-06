@@ -105,6 +105,19 @@ export class AgentLoop {
 	}
 
 	async run(): Promise<AgentLoopResult> {
+		const loopStartTime = Date.now();
+		let turnCount = 0;
+
+		this.ctx.logger.info("[agent-loop] Starting", {
+			threadId: this.config.threadId,
+			taskId: this.config.taskId ?? null,
+			userId: this.config.userId,
+			modelHint: this.config.modelId ?? "default",
+			platform: this.config.platform ?? null,
+			toolCount: this.config.tools?.length ?? 0,
+			hasPlatformTools: this.config.platformTools ? this.config.platformTools.size : 0,
+		});
+
 		try {
 			this.state = "HYDRATE_FS";
 			if (this.sandbox.capturePreSnapshot) {
@@ -127,6 +140,15 @@ export class AgentLoop {
 				this.ctx.siteId,
 				requirements,
 			);
+
+			this.ctx.logger.info("[agent-loop] Model resolved", {
+				kind: this.lastModelResolution.kind,
+				modelId:
+					this.lastModelResolution.kind !== "error" ? this.lastModelResolution.modelId : null,
+				error: this.lastModelResolution.kind === "error" ? this.lastModelResolution.error : null,
+				remoteHosts:
+					this.lastModelResolution.kind === "remote" ? this.lastModelResolution.hosts.length : 0,
+			});
 
 			if (this.lastModelResolution.kind === "error" && this.config.modelId !== undefined) {
 				const fallbackResolution = resolveModel(
@@ -216,6 +238,17 @@ export class AgentLoop {
 
 			this.lastContextDebug = contextDebug;
 
+			this.ctx.logger.info("[agent-loop] Context assembled", {
+				messageCount: contextMessages.length,
+				contextWindow,
+				toolTokenEstimate,
+				totalEstimatedTokens: contextDebug.totalEstimated,
+				headroom: contextWindow - contextDebug.totalEstimated - toolTokenEstimate,
+				budgetPressure: contextDebug.budgetPressure ?? false,
+				truncatedMessages: contextDebug.truncatedCount ?? 0,
+				sections: contextDebug.sections.map((s) => `${s.name}:${s.tokens}`).join(", "),
+			});
+
 			// Log once per thread when image blocks are stripped for a non-vision backend
 			if (resolvedCaps && !resolvedCaps.vision) {
 				const advisoryKey = `${this.config.threadId}::vision:false`;
@@ -240,13 +273,28 @@ export class AgentLoop {
 			let transportRetries = 0;
 
 			while (continueLoop) {
-				if (this.aborted) break;
+				if (this.aborted) {
+					this.ctx.logger.info("[agent-loop] Aborted before LLM call", {
+						threadId: this.config.threadId,
+						turn: turnCount,
+					});
+					break;
+				}
 
+				turnCount++;
+				const turnStartTime = Date.now();
 				this.state = "LLM_CALL";
 				const chunks: StreamChunk[] = [];
 				let currentTurnId: number | null = null;
 				let resolvedModelId: string | null = null;
 				const relayMetadataRef: { hostName?: string; firstChunkLatencyMs?: number } = {};
+
+				this.ctx.logger.info("[agent-loop] LLM call starting", {
+					turn: turnCount,
+					model: getResolvedModelId(this.lastModelResolution, this.config.modelId || "unknown"),
+					messageCount: llmMessages.length,
+					kind: this.lastModelResolution?.kind ?? "unknown",
+				});
 
 				try {
 					const systemMessages = llmMessages.filter((m) => m.role === "system");
@@ -432,7 +480,13 @@ export class AgentLoop {
 
 					this.state = "ERROR_PERSIST";
 					const errorMsg = formatError(error);
-					this.ctx.logger.error("LLM call failed", { error: errorMsg });
+					this.ctx.logger.error("[agent-loop] LLM call failed (non-retryable)", {
+						turn: turnCount,
+						error: errorMsg,
+						statusCode: error instanceof LLMError ? error.statusCode : null,
+						model: getResolvedModelId(this.lastModelResolution, this.config.modelId || "unknown"),
+						durationMs: Date.now() - turnStartTime,
+					});
 
 					insertThreadMessage(
 						this.ctx.db,
@@ -455,6 +509,21 @@ export class AgentLoop {
 
 				this.state = "PARSE_RESPONSE";
 				const parsed = this.parseResponseChunks(chunks);
+				const llmDurationMs = Date.now() - turnStartTime;
+
+				this.ctx.logger.info("[agent-loop] LLM response received", {
+					turn: turnCount,
+					durationMs: llmDurationMs,
+					inputTokens: parsed.usage.inputTokens,
+					outputTokens: parsed.usage.outputTokens,
+					cacheRead: parsed.usage.cacheReadTokens,
+					cacheWrite: parsed.usage.cacheWriteTokens,
+					estimated: parsed.usage.usageEstimated,
+					toolCalls: parsed.toolCalls.length,
+					toolNames:
+						parsed.toolCalls.length > 0 ? parsed.toolCalls.map((tc) => tc.name).join(", ") : null,
+					textLength: parsed.textContent.length,
+				});
 
 				// Aborted mid-stream with no done chunk — persist notice and exit
 				if (this.aborted && parsed.usage.inputTokens === 0 && parsed.usage.outputTokens === 0) {
@@ -571,6 +640,14 @@ export class AgentLoop {
 						this.toolCallsMade++;
 						let resultContent: string;
 						let exitCode = 0;
+						const toolStartTime = Date.now();
+
+						this.ctx.logger.debug("[agent-loop] Tool executing", {
+							turn: turnCount,
+							tool: toolCall.name,
+							toolCallId: toolCall.id,
+							argsLength: toolCall.argsJson.length,
+						});
 
 						try {
 							const result = await this.executeToolCall(toolCall);
@@ -587,6 +664,16 @@ export class AgentLoop {
 							exitCode = 1;
 						}
 
+						const toolDurationMs = Date.now() - toolStartTime;
+						this.ctx.logger.info("[agent-loop] Tool completed", {
+							turn: turnCount,
+							tool: toolCall.name,
+							durationMs: toolDurationMs,
+							exitCode,
+							resultLength: resultContent.length,
+							isError: exitCode !== 0,
+						});
+
 						toolResults.push({ toolCall, content: resultContent, exitCode });
 						this.config.onActivity?.();
 					}
@@ -596,12 +683,18 @@ export class AgentLoop {
 							if (result.content.length > TOOL_RESULT_OFFLOAD_THRESHOLD) {
 								const filePath = offloadToolResultPath(result.toolCall.id);
 								try {
+									const originalLength = result.content.length;
 									await this.sandbox.writeFile(filePath, result.content);
 									result.content = buildOffloadMessage(
 										filePath,
-										result.content.length,
+										originalLength,
 										result.toolCall.name,
 									);
+									this.ctx.logger.debug("[agent-loop] Tool result offloaded", {
+										tool: result.toolCall.name,
+										originalBytes: originalLength,
+										filePath,
+									});
 								} catch {
 									// If write fails, keep original content — better than losing it
 								}
@@ -736,6 +829,13 @@ export class AgentLoop {
 							}
 						}
 					}
+
+					if (persistResult.changes > 0) {
+						this.ctx.logger.info("[agent-loop] FS persisted", {
+							filesChanged: persistResult.changes,
+							paths: persistResult.changedPaths?.slice(0, 10) ?? [],
+						});
+					}
 				}
 			}
 
@@ -753,6 +853,19 @@ export class AgentLoop {
 			}
 
 			this.state = "IDLE";
+
+			const totalDurationMs = Date.now() - loopStartTime;
+			this.ctx.logger.info("[agent-loop] Completed", {
+				threadId: this.config.threadId,
+				taskId: this.config.taskId ?? null,
+				turns: turnCount,
+				messagesCreated: this.messagesCreated,
+				toolCallsMade: this.toolCallsMade,
+				filesChanged: this.filesChanged,
+				totalDurationMs,
+				yielded: this.yielded || false,
+				aborted: this.aborted,
+			});
 
 			extractSummaryAndMemories(
 				this.ctx.db,
@@ -775,6 +888,17 @@ export class AgentLoop {
 		} catch (error) {
 			this.state = "ERROR_PERSIST";
 			const errorMsg = formatError(error);
+			const totalDurationMs = Date.now() - loopStartTime;
+
+			this.ctx.logger.error("[agent-loop] Fatal error", {
+				threadId: this.config.threadId,
+				taskId: this.config.taskId ?? null,
+				turns: turnCount,
+				messagesCreated: this.messagesCreated,
+				toolCallsMade: this.toolCallsMade,
+				totalDurationMs,
+				error: errorMsg,
+			});
 
 			try {
 				insertThreadMessage(

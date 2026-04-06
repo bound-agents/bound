@@ -28,6 +28,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 			siteId,
 			eventBus,
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},

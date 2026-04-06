@@ -59,6 +59,7 @@ describe("defineCommand implementations", () => {
 			siteId,
 			eventBus,
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},
@@ -725,7 +726,12 @@ describe("defineCommand implementations", () => {
 				db,
 				siteId: "test-site",
 				eventBus: new TypedEventEmitter(),
-				logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+				logger: {
+					debug: () => {},
+					info: () => {},
+					warn: () => {},
+					error: () => {},
+				},
 			};
 
 			const result = await advisory.handler(
@@ -773,7 +779,12 @@ describe("defineCommand implementations", () => {
 				db,
 				siteId: "test-site",
 				eventBus: new TypedEventEmitter(),
-				logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+				logger: {
+					debug: () => {},
+					info: () => {},
+					warn: () => {},
+					error: () => {},
+				},
 			};
 
 			const result = await advisory.handler(
@@ -793,7 +804,12 @@ describe("defineCommand implementations", () => {
 				db,
 				siteId: "test-site",
 				eventBus: new TypedEventEmitter(),
-				logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+				logger: {
+					debug: () => {},
+					info: () => {},
+					warn: () => {},
+					error: () => {},
+				},
 			};
 
 			const result = await advisory.handler({ detail: "no title" }, ctx);
@@ -806,7 +822,12 @@ describe("defineCommand implementations", () => {
 				db,
 				siteId: "test-site",
 				eventBus: new TypedEventEmitter(),
-				logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+				logger: {
+					debug: () => {},
+					info: () => {},
+					warn: () => {},
+					error: () => {},
+				},
 			};
 
 			const result = await advisory.handler(
@@ -824,7 +845,12 @@ describe("defineCommand implementations", () => {
 				db,
 				siteId: "test-site",
 				eventBus: new TypedEventEmitter(),
-				logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+				logger: {
+					debug: () => {},
+					info: () => {},
+					warn: () => {},
+					error: () => {},
+				},
 			};
 
 			// Create an advisory first
@@ -852,7 +878,12 @@ describe("defineCommand implementations", () => {
 				db,
 				siteId: "test-site",
 				eventBus: new TypedEventEmitter(),
-				logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+				logger: {
+					debug: () => {},
+					info: () => {},
+					warn: () => {},
+					error: () => {},
+				},
 			};
 
 			await advisory.handler(
@@ -879,7 +910,12 @@ describe("defineCommand implementations", () => {
 				db,
 				siteId: "test-site",
 				eventBus: new TypedEventEmitter(),
-				logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+				logger: {
+					debug: () => {},
+					info: () => {},
+					warn: () => {},
+					error: () => {},
+				},
 			};
 
 			await advisory.handler(
@@ -908,7 +944,12 @@ describe("defineCommand implementations", () => {
 				db,
 				siteId: "test-site",
 				eventBus: new TypedEventEmitter(),
-				logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+				logger: {
+					debug: () => {},
+					info: () => {},
+					warn: () => {},
+					error: () => {},
+				},
 			};
 
 			await advisory.handler(

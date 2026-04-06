@@ -179,6 +179,7 @@ describe("AgentLoop", () => {
 		return {
 			db,
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},
@@ -968,7 +969,7 @@ describe("AgentLoop", () => {
 		// ctx with pricing: $3/M input, $15/M output (like claude-opus-4)
 		const ctx = {
 			db,
-			logger: { info: () => {}, warn: () => {}, error: () => {} },
+			logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
 			eventBus: { on: () => {}, off: () => {}, emit: () => {} },
 			hostName: "test-host",
 			siteId: "test-site-id",
@@ -1031,7 +1032,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = {
 			db,
-			logger: { info: () => {}, warn: () => {}, error: () => {} },
+			logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
 			eventBus: { on: () => {}, off: () => {}, emit: () => {} },
 			hostName: "test-host",
 			siteId: "test-site-id",

@@ -46,6 +46,7 @@ describe("Heartbeat Integration", () => {
 			},
 			eventBus: new TypedEventEmitter(),
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},

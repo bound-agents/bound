@@ -44,6 +44,7 @@ describe("Memory Threshold Check (R-W2)", () => {
 		return {
 			db,
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},

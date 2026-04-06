@@ -10,6 +10,7 @@ import type { MCPClient, MCPServerConfig, Prompt, Resource, Tool } from "../mcp-
 function createMockCommandContext(overrides?: Partial<CommandContext>): CommandContext {
 	const eventBus = new TypedEventEmitter();
 	const logger: Logger = {
+		debug: () => {},
 		info: () => {},
 		warn: () => {},
 		error: () => {},

@@ -84,6 +84,7 @@ describe("Concurrent agent loops with WAL serialization (R-U3)", () => {
 		return {
 			db,
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},

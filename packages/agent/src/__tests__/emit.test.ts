@@ -28,6 +28,7 @@ describe("platform-connectors Phase 4 — emit command broadcast", () => {
 			siteId,
 			eventBus,
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},

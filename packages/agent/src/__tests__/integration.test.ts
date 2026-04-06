@@ -152,6 +152,7 @@ describe("Agent Loop End-to-End Integration", () => {
 			},
 			eventBus,
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},
@@ -301,6 +302,7 @@ describe("Agent Loop End-to-End Integration", () => {
 			},
 			eventBus,
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},
@@ -430,6 +432,7 @@ describe("Agent Loop End-to-End Integration", () => {
 			},
 			eventBus,
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},

@@ -71,6 +71,7 @@ describe("model-hint command", () => {
 
 			const eventBus = new TypedEventEmitter();
 			const logger = {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},
@@ -112,6 +113,7 @@ describe("model-hint command", () => {
 
 			const eventBus = new TypedEventEmitter();
 			const logger = {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},
@@ -163,6 +165,7 @@ describe("model-hint command", () => {
 
 			const eventBus = new TypedEventEmitter();
 			const logger = {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},
@@ -201,6 +204,7 @@ describe("model-hint command", () => {
 
 			const eventBus = new TypedEventEmitter();
 			const logger = {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},
@@ -248,6 +252,7 @@ describe("model-hint command", () => {
 
 			const eventBus = new TypedEventEmitter();
 			const logger = {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},

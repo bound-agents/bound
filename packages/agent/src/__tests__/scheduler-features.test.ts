@@ -62,6 +62,7 @@ describe("Scheduler features", () => {
 		return {
 			db,
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},

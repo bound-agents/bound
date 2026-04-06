@@ -39,6 +39,7 @@ describe("Cache and runtime command implementations", () => {
 			siteId,
 			eventBus: new TypedEventEmitter(),
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},

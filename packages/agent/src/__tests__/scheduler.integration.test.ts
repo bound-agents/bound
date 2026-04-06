@@ -35,6 +35,7 @@ describe("Scheduler Integration", () => {
 			},
 			eventBus: new TypedEventEmitter(),
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},

@@ -132,6 +132,7 @@ describe("Quiescence note injection", () => {
 		return {
 			db,
 			logger: {
+				debug: () => {},
 				info: () => {},
 				warn: () => {},
 				error: () => {},
