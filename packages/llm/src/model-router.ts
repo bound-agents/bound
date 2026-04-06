@@ -32,7 +32,7 @@ const BACKOFF_RESET_MS = 10 * 60_000; // 10min of success resets consecutive fai
 /**
  * Wraps multiple backends under the same logical ID.
  * Sorted by tier (ascending, best first), then by input price (ascending, cheapest first).
- * On rate-limit (429) or server errors (5xx), marks the sub-backend with exponential backoff
+ * On rate-limit (429), payment required (402), or server errors (5xx), marks the sub-backend with exponential backoff
  * and falls through to the next. Cooldown caps at BACKOFF_MAX_MS.
  * Consecutive failure count resets after BACKOFF_RESET_MS of successful use.
  */
@@ -102,8 +102,9 @@ export class PooledBackend implements LLMBackend {
 				lastError = error;
 				if (error instanceof LLMError && error.statusCode !== undefined) {
 					const isRateLimit = error.statusCode === 429;
+					const isPaymentRequired = error.statusCode === 402;
 					const isServerError = error.statusCode >= 500;
-					if (isRateLimit || isServerError) {
+					if (isRateLimit || isPaymentRequired || isServerError) {
 						const failures = (this.consecutiveFailures.get(idx) ?? 0) + 1;
 						this.consecutiveFailures.set(idx, failures);
 						// Use provider's Retry-After if available, otherwise exponential backoff
@@ -112,7 +113,7 @@ export class PooledBackend implements LLMBackend {
 						continue;
 					}
 				}
-				throw error; // Client errors (4xx except 429) propagate immediately
+				throw error; // Client errors (4xx except 402/429) propagate immediately
 			}
 		}
 

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "bun:test";
-import { ModelRouter, createModelRouter } from "../model-router";
-import type { BackendCapabilities, LLMBackend, ModelBackendsConfig } from "../types";
+import { ModelRouter, PooledBackend, createModelRouter } from "../model-router";
+import type {
+	BackendCapabilities,
+	ChatParams,
+	LLMBackend,
+	ModelBackendsConfig,
+	StreamChunk,
+} from "../types";
+import { LLMError } from "../types";
 
 class MockBackend implements LLMBackend {
 	constructor(public id: string) {}
@@ -629,5 +636,126 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 			tool_use: true,
 		});
 		expect(earliest).toBeNull();
+	});
+});
+
+describe("PooledBackend", () => {
+	const defaultCaps: BackendCapabilities = {
+		streaming: true,
+		tool_use: true,
+		system_prompt: true,
+		prompt_caching: false,
+		vision: false,
+		max_context: 4096,
+	};
+
+	function createSuccessBackend(_id: string): LLMBackend & { chatCalled: boolean } {
+		const backend = {
+			chatCalled: false,
+			async *chat(): AsyncIterable<StreamChunk> {
+				backend.chatCalled = true;
+				yield {
+					type: "delta" as const,
+					text: "ok",
+				};
+			},
+			capabilities: () => defaultCaps,
+		};
+		return backend;
+	}
+
+	function createFailingBackend(
+		_id: string,
+		statusCode: number,
+	): LLMBackend & { chatCalled: boolean } {
+		const backend = {
+			chatCalled: false,
+			// biome-ignore lint/correctness/useYield: throwing before yield is intentional
+			async *chat(): AsyncIterable<StreamChunk> {
+				backend.chatCalled = true;
+				throw new LLMError(`HTTP ${statusCode}`, "test-provider", statusCode);
+			},
+			capabilities: () => defaultCaps,
+		};
+		return backend;
+	}
+
+	const mockParams: ChatParams = {
+		messages: [{ role: "user", content: "test" }],
+	};
+
+	it("falls through to next backend on 429 rate limit", async () => {
+		const backend1 = createFailingBackend("b1", 429);
+		const backend2 = createSuccessBackend("b2");
+		const pool = new PooledBackend([
+			{ backend: backend1, tier: 1, pricePerMInput: 0 },
+			{ backend: backend2, tier: 2, pricePerMInput: 0 },
+		]);
+
+		const chunks: StreamChunk[] = [];
+		for await (const chunk of pool.chat(mockParams)) {
+			chunks.push(chunk);
+		}
+
+		expect(backend1.chatCalled).toBe(true);
+		expect(backend2.chatCalled).toBe(true);
+		expect(chunks.length).toBeGreaterThan(0);
+	});
+
+	it("falls through to next backend on 500 server error", async () => {
+		const backend1 = createFailingBackend("b1", 500);
+		const backend2 = createSuccessBackend("b2");
+		const pool = new PooledBackend([
+			{ backend: backend1, tier: 1, pricePerMInput: 0 },
+			{ backend: backend2, tier: 2, pricePerMInput: 0 },
+		]);
+
+		const chunks: StreamChunk[] = [];
+		for await (const chunk of pool.chat(mockParams)) {
+			chunks.push(chunk);
+		}
+
+		expect(backend1.chatCalled).toBe(true);
+		expect(backend2.chatCalled).toBe(true);
+	});
+
+	it("propagates 400 client error immediately without fallback", async () => {
+		const backend1 = createFailingBackend("b1", 400);
+		const backend2 = createSuccessBackend("b2");
+		const pool = new PooledBackend([
+			{ backend: backend1, tier: 1, pricePerMInput: 0 },
+			{ backend: backend2, tier: 2, pricePerMInput: 0 },
+		]);
+
+		let caught: LLMError | null = null;
+		try {
+			for await (const _chunk of pool.chat(mockParams)) {
+				// should not reach here
+			}
+		} catch (error) {
+			caught = error as LLMError;
+		}
+
+		expect(caught).not.toBeNull();
+		expect(caught?.statusCode).toBe(400);
+		expect(backend2.chatCalled).toBe(false); // No fallback
+	});
+
+	it("falls through to next backend on 402 Payment Required", async () => {
+		const backend1 = createFailingBackend("b1", 402);
+		const backend2 = createSuccessBackend("b2");
+		const pool = new PooledBackend([
+			{ backend: backend1, tier: 1, pricePerMInput: 0 },
+			{ backend: backend2, tier: 2, pricePerMInput: 0 },
+		]);
+
+		const chunks: StreamChunk[] = [];
+		for await (const chunk of pool.chat(mockParams)) {
+			chunks.push(chunk);
+		}
+
+		expect(backend1.chatCalled).toBe(true);
+		expect(backend2.chatCalled).toBe(true);
+		expect(chunks.length).toBeGreaterThan(0);
 	});
 });
