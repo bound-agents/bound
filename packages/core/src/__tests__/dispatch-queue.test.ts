@@ -4,15 +4,16 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDatabase } from "../database";
-import { applySchema } from "../schema";
 import {
-	enqueueMessage,
-	claimPending,
 	acknowledgeBatch,
-	resetProcessing,
-	pruneAcknowledged,
+	claimPending,
+	enqueueMessage,
 	hasPending,
+	pruneAcknowledged,
+	resetProcessing,
+	resetProcessingForThread,
 } from "../dispatch";
+import { applySchema } from "../schema";
 
 let db: ReturnType<typeof createDatabase>;
 let dbPath: string;
@@ -35,9 +36,7 @@ afterEach(() => {
 describe("dispatch_queue schema", () => {
 	it("dispatch_queue table exists after applySchema", () => {
 		const tables = db
-			.query(
-				"SELECT name FROM sqlite_master WHERE type='table' AND name='dispatch_queue'",
-			)
+			.query("SELECT name FROM sqlite_master WHERE type='table' AND name='dispatch_queue'")
 			.all() as Array<{ name: string }>;
 		expect(tables).toHaveLength(1);
 	});
@@ -51,11 +50,12 @@ describe("dispatch_queue schema", () => {
 			[msgId, threadId, now, now],
 		);
 
-		const row = db
-			.query("SELECT * FROM dispatch_queue WHERE message_id = ?")
-			.get(msgId) as { message_id: string; status: string } | null;
+		const row = db.query("SELECT * FROM dispatch_queue WHERE message_id = ?").get(msgId) as {
+			message_id: string;
+			status: string;
+		} | null;
 		expect(row).not.toBeNull();
-		expect(row!.status).toBe("pending");
+		expect(row?.status).toBe("pending");
 	});
 });
 
@@ -66,12 +66,14 @@ describe("enqueueMessage", () => {
 
 		enqueueMessage(db, msgId, threadId);
 
-		const row = db
-			.query("SELECT * FROM dispatch_queue WHERE message_id = ?")
-			.get(msgId) as { message_id: string; thread_id: string; status: string } | null;
+		const row = db.query("SELECT * FROM dispatch_queue WHERE message_id = ?").get(msgId) as {
+			message_id: string;
+			thread_id: string;
+			status: string;
+		} | null;
 		expect(row).not.toBeNull();
-		expect(row!.thread_id).toBe(threadId);
-		expect(row!.status).toBe("pending");
+		expect(row?.thread_id).toBe(threadId);
+		expect(row?.status).toBe("pending");
 	});
 
 	it("is idempotent — duplicate message_id does not throw", () => {
@@ -159,10 +161,80 @@ describe("claimPending", () => {
 		expect(claimed[0].message_id).toBe(msg1);
 
 		// thread2's message should still be pending
-		const row = db
-			.query("SELECT status FROM dispatch_queue WHERE message_id = ?")
-			.get(msg2) as { status: string };
+		const row = db.query("SELECT status FROM dispatch_queue WHERE message_id = ?").get(msg2) as {
+			status: string;
+		};
 		expect(row.status).toBe("pending");
+	});
+
+	it("does not claim messages from other threads", () => {
+		const thread1 = randomUUID();
+		const thread2 = randomUUID();
+		const msg1 = randomUUID();
+		const msg2 = randomUUID();
+
+		enqueueMessage(db, msg1, thread1);
+		enqueueMessage(db, msg2, thread2);
+
+		const claimed = claimPending(db, thread1, "host-1");
+		expect(claimed).toHaveLength(1);
+		expect(claimed[0].message_id).toBe(msg1);
+
+		// thread2's message should still be pending
+		const row = db.query("SELECT status FROM dispatch_queue WHERE message_id = ?").get(msg2) as {
+			status: string;
+		};
+		expect(row.status).toBe("pending");
+	});
+});
+
+describe("resetProcessingForThread", () => {
+	it("only resets processing entries for the specified thread", () => {
+		const thread1 = randomUUID();
+		const thread2 = randomUUID();
+		const msg1 = randomUUID();
+		const msg2 = randomUUID();
+
+		enqueueMessage(db, msg1, thread1);
+		enqueueMessage(db, msg2, thread2);
+		claimPending(db, thread1, "host-1");
+		claimPending(db, thread2, "host-1");
+
+		// Both are processing
+		expect(
+			(
+				db.query("SELECT status FROM dispatch_queue WHERE message_id = ?").get(msg1) as {
+					status: string;
+				}
+			).status,
+		).toBe("processing");
+		expect(
+			(
+				db.query("SELECT status FROM dispatch_queue WHERE message_id = ?").get(msg2) as {
+					status: string;
+				}
+			).status,
+		).toBe("processing");
+
+		// Reset only thread1
+		const count = resetProcessingForThread(db, thread1);
+		expect(count).toBe(1);
+
+		// thread1 is pending, thread2 is still processing
+		expect(
+			(
+				db.query("SELECT status FROM dispatch_queue WHERE message_id = ?").get(msg1) as {
+					status: string;
+				}
+			).status,
+		).toBe("pending");
+		expect(
+			(
+				db.query("SELECT status FROM dispatch_queue WHERE message_id = ?").get(msg2) as {
+					status: string;
+				}
+			).status,
+		).toBe("processing");
 	});
 });
 
@@ -217,9 +289,9 @@ describe("resetProcessing", () => {
 		const count = resetProcessing(db);
 		expect(count).toBe(0);
 
-		const row = db
-			.query("SELECT status FROM dispatch_queue WHERE message_id = ?")
-			.get(msg1) as { status: string };
+		const row = db.query("SELECT status FROM dispatch_queue WHERE message_id = ?").get(msg1) as {
+			status: string;
+		};
 		expect(row.status).toBe("acknowledged");
 	});
 });
@@ -241,9 +313,7 @@ describe("pruneAcknowledged", () => {
 
 		expect(pruned).toBe(1);
 
-		const row = db
-			.query("SELECT * FROM dispatch_queue WHERE message_id = ?")
-			.get(msg1);
+		const row = db.query("SELECT * FROM dispatch_queue WHERE message_id = ?").get(msg1);
 		expect(row).toBeNull();
 	});
 

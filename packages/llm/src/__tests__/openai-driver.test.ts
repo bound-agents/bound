@@ -812,15 +812,13 @@ describe("toOpenAIMessages — tool_call string content parsing", () => {
 		expect(result[0].role).toBe("assistant");
 		expect(result[0].tool_calls).toBeDefined();
 		expect(result[0].tool_calls).toHaveLength(1);
-		expect(result[0].tool_calls![0].id).toBe("call_123");
-		expect(result[0].tool_calls![0].function.name).toBe("search");
-		expect(result[0].tool_calls![0].function.arguments).toBe('{"query":"test"}');
+		expect(result[0].tool_calls?.[0].id).toBe("call_123");
+		expect(result[0].tool_calls?.[0].function.name).toBe("search");
+		expect(result[0].tool_calls?.[0].function.arguments).toBe('{"query":"test"}');
 	});
 
 	it("falls back to plain content when JSON parse fails", () => {
-		const messages: LLMMessage[] = [
-			{ role: "tool_call", content: "I will help you with that." },
-		];
+		const messages: LLMMessage[] = [{ role: "tool_call", content: "I will help you with that." }];
 		const result = toOpenAIMessages(messages);
 		expect(result).toHaveLength(1);
 		expect(result[0].role).toBe("assistant");
@@ -847,7 +845,7 @@ describe("toOpenAIMessages — tool_call string content parsing", () => {
 		// Assistant must have tool_calls for the tool result to be valid
 		expect(result[0].role).toBe("assistant");
 		expect(result[0].tool_calls).toBeDefined();
-		expect(result[0].tool_calls![0].id).toBe("call_abc");
+		expect(result[0].tool_calls?.[0].id).toBe("call_abc");
 		// Tool result follows
 		expect(result[1].role).toBe("tool");
 		expect(result[1].tool_call_id).toBe("call_abc");

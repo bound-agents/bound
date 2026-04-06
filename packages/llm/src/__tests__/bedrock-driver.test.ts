@@ -961,36 +961,34 @@ describe("toBedrockMessages — blank text guard", () => {
 		const textBlock = result[0].content?.[0];
 		expect(textBlock).toBeDefined();
 		// The text field must NOT be blank — Bedrock rejects it
+		// biome-ignore lint/style/noNonNullAssertion: guarded by expect(textBlock).toBeDefined()
 		expect("text" in textBlock! && textBlock.text).toBeTruthy();
 	});
 
 	it("replaces empty ContentBlock[] text with placeholder for user messages", () => {
-		const messages: LLMMessage[] = [
-			{ role: "user", content: [{ type: "text", text: "" }] },
-		];
+		const messages: LLMMessage[] = [{ role: "user", content: [{ type: "text", text: "" }] }];
 		const result = toBedrockMessages(messages);
 		expect(result).toHaveLength(1);
 		const textBlock = result[0].content?.[0];
+		// biome-ignore lint/style/noNonNullAssertion: guarded by expect(textBlock).toBeDefined()
 		expect("text" in textBlock! && textBlock.text).toBeTruthy();
 	});
 
 	it("replaces empty tool_call fallback text with placeholder", () => {
-		const messages: LLMMessage[] = [
-			{ role: "tool_call", content: [] },
-		];
+		const messages: LLMMessage[] = [{ role: "tool_call", content: [] }];
 		const result = toBedrockMessages(messages);
 		expect(result).toHaveLength(1);
 		const textBlock = result[0].content?.[0];
+		// biome-ignore lint/style/noNonNullAssertion: guarded by expect(textBlock).toBeDefined()
 		expect("text" in textBlock! && textBlock.text).toBeTruthy();
 	});
 
 	it("does not modify non-empty text content", () => {
-		const messages: LLMMessage[] = [
-			{ role: "user", content: "Hello world" },
-		];
+		const messages: LLMMessage[] = [{ role: "user", content: "Hello world" }];
 		const result = toBedrockMessages(messages);
 		expect(result).toHaveLength(1);
 		const textBlock = result[0].content?.[0];
+		// biome-ignore lint/style/noNonNullAssertion: guarded by expect(textBlock).toBeDefined()
 		expect("text" in textBlock! && textBlock.text).toBe("Hello world");
 	});
 });

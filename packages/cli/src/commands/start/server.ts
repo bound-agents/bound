@@ -3,11 +3,7 @@
  * delegation logic, and platform connector initialization.
  */
 
-import {
-	createRelayOutboxEntry,
-	generateThreadTitle,
-	getDelegationTarget,
-} from "@bound/agent";
+import { createRelayOutboxEntry, generateThreadTitle, getDelegationTarget } from "@bound/agent";
 import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
@@ -15,8 +11,7 @@ import {
 	claimPending,
 	enqueueMessage,
 	hasPending,
-	pruneAcknowledged,
-	resetProcessing,
+	resetProcessingForThread,
 	updateRow,
 	writeOutbox,
 } from "@bound/core";
@@ -264,12 +259,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							appContext.logger.info(
 								`[agent] Delegating to remote host ${delegationTarget.site_id}`,
 							);
-							await dispatchDelegation(
-								delegationTarget,
-								thread_id,
-								claimedIds[0] ?? "",
-								userId,
-							);
+							await dispatchDelegation(delegationTarget, thread_id, claimedIds[0] ?? "", userId);
 						} else {
 							const { agentResult: result } = await runLocalAgentLoop({
 								eventBus: appContext.eventBus,
@@ -284,8 +274,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 							// Cooperative yield: reset messages to pending, loop will re-claim
 							if (result.yielded) {
-								appContext.logger.info(`[agent] Inference yielded for thread ${thread_id}, re-batching`);
-								resetProcessing(appContext.db);
+								appContext.logger.info(
+									`[agent] Inference yielded for thread ${thread_id}, re-batching`,
+								);
+								resetProcessingForThread(appContext.db, thread_id);
 								continue; // next drain iteration picks up all pending
 							}
 
@@ -367,18 +359,20 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 			// handleThread acquires the lock — if already held, returns immediately.
 			// The active drain loop will pick up the new message on its next iteration.
-			handleThread(thread_id);
+			handleThread(thread_id).catch((err) =>
+				appContext.logger.error("[agent] Unhandled dispatch error", { error: formatError(err) }),
+			);
 		});
 
 		// Recover: dispatch any threads that have pending entries (from crash recovery)
 		const pendingThreads = appContext.db
-			.prepare(
-				`SELECT DISTINCT thread_id FROM dispatch_queue WHERE status = 'pending'`,
-			)
+			.prepare(`SELECT DISTINCT thread_id FROM dispatch_queue WHERE status = 'pending'`)
 			.all() as Array<{ thread_id: string }>;
 		for (const { thread_id } of pendingThreads) {
 			appContext.logger.info(`[recovery] Re-dispatching pending messages for thread ${thread_id}`);
-			handleThread(thread_id);
+			handleThread(thread_id).catch((err) =>
+				appContext.logger.error("[recovery] Unhandled dispatch error", { error: formatError(err) }),
+			);
 		}
 	} catch (error) {
 		appContext.logger.warn("Web server failed to start", { error: formatError(error) });

@@ -12,7 +12,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,7 +27,6 @@ import {
 	insertRow,
 	resetProcessing,
 } from "@bound/core";
-import type { DispatchEntry } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 
 describe("Dispatch Queue Wiring", () => {
@@ -162,7 +161,10 @@ describe("Dispatch Queue Wiring", () => {
 			expect(countDispatch(threadId, "pending")).toBe(0);
 
 			// Acknowledge
-			acknowledgeBatch(db, claimed.map((e) => e.message_id));
+			acknowledgeBatch(
+				db,
+				claimed.map((e) => e.message_id),
+			);
 			expect(countDispatch(threadId, "acknowledged")).toBe(2);
 			expect(countDispatch(threadId, "processing")).toBe(0);
 		});
@@ -186,9 +188,7 @@ describe("Dispatch Queue Wiring", () => {
 			// Single claim picks up all three
 			const claimed = claimPending(db, threadId, siteId);
 			expect(claimed).toHaveLength(3);
-			expect(claimed.map((c) => c.message_id)).toEqual(
-				expect.arrayContaining([msg1, msg2, msg3]),
-			);
+			expect(claimed.map((c) => c.message_id)).toEqual(expect.arrayContaining([msg1, msg2, msg3]));
 		});
 
 		it("messages from different threads are independent", () => {
@@ -322,9 +322,10 @@ describe("Dispatch Queue Wiring", () => {
 			acknowledgeBatch(db, [msgAck]);
 
 			// Manually revert msgPend to pending (simulating it arrived after claim)
-			db.run("UPDATE dispatch_queue SET status = 'pending', claimed_by = NULL WHERE message_id = ?", [
-				msgPend,
-			]);
+			db.run(
+				"UPDATE dispatch_queue SET status = 'pending', claimed_by = NULL WHERE message_id = ?",
+				[msgPend],
+			);
 
 			const resetCount = resetProcessing(db);
 			expect(resetCount).toBe(0); // nothing was 'processing'

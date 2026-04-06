@@ -24,11 +24,7 @@ export function enqueueMessage(db: Database, messageId: string, threadId: string
  * Claim all pending messages for a thread. Returns the claimed entries and marks
  * them as 'processing' with the given host site ID.
  */
-export function claimPending(
-	db: Database,
-	threadId: string,
-	claimedBy: string,
-): DispatchEntry[] {
+export function claimPending(db: Database, threadId: string, claimedBy: string): DispatchEntry[] {
 	const now = new Date().toISOString();
 
 	const pending = db
@@ -82,13 +78,27 @@ export function resetProcessing(db: Database): number {
 }
 
 /**
+ * Reset 'processing' entries for a specific thread back to 'pending'.
+ * Used when the drain loop yields cooperatively — only resets the yielding
+ * thread's messages, not other threads' in-flight work.
+ */
+export function resetProcessingForThread(db: Database, threadId: string): number {
+	const now = new Date().toISOString();
+	db.prepare(
+		`UPDATE dispatch_queue
+		 SET status = 'pending', claimed_by = NULL, modified_at = ?
+		 WHERE status = 'processing' AND thread_id = ?`,
+	).run(now, threadId);
+	const row = db.query("SELECT changes() as c").get() as { c: number } | null;
+	return row?.c ?? 0;
+}
+
+/**
  * Check if a thread has any pending (unclaimed) messages in the dispatch queue.
  */
 export function hasPending(db: Database, threadId: string): boolean {
 	const row = db
-		.prepare(
-			"SELECT COUNT(*) as c FROM dispatch_queue WHERE thread_id = ? AND status = 'pending'",
-		)
+		.prepare("SELECT COUNT(*) as c FROM dispatch_queue WHERE thread_id = ? AND status = 'pending'")
 		.get(threadId) as { c: number };
 	return row.c > 0;
 }

@@ -58,6 +58,7 @@ export {
 	claimPending,
 	acknowledgeBatch,
 	resetProcessing,
+	resetProcessingForThread,
 	pruneAcknowledged,
 	hasPending,
 	type DispatchEntry,

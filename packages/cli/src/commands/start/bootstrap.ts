@@ -9,7 +9,13 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { resolve } from "node:path";
 import { seedSkillAuthoring } from "@bound/agent";
 import type { AppContext } from "@bound/core";
-import { createAppContext, insertRow, resetProcessing, updateRow, withChangeLog } from "@bound/core";
+import {
+	createAppContext,
+	insertRow,
+	resetProcessing,
+	updateRow,
+	withChangeLog,
+} from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import { ensureKeypair } from "@bound/sync";
 

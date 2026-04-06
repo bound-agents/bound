@@ -493,9 +493,7 @@ describe("buildVolatileEnrichment — thread summary keyword seeding", () => {
 		const hasAgentDetection = enrichment.memoryDeltaLines.some((l) =>
 			l.includes("agent_detection_research"),
 		);
-		const hasMcpSpec = enrichment.memoryDeltaLines.some((l) =>
-			l.includes("mcp_spec_notes"),
-		);
+		const hasMcpSpec = enrichment.memoryDeltaLines.some((l) => l.includes("mcp_spec_notes"));
 		expect(hasAgentDetection).toBe(true);
 		expect(hasMcpSpec).toBe(true);
 	});
@@ -588,9 +586,7 @@ describe("buildVolatileEnrichment — thread summary keyword seeding", () => {
 			"Discussed bluesky tooling and AT protocol integration",
 		);
 
-		const hasBluesky = enrichment.memoryDeltaLines.some((l) =>
-			l.includes("bluesky_tooling"),
-		);
+		const hasBluesky = enrichment.memoryDeltaLines.some((l) => l.includes("bluesky_tooling"));
 		expect(hasBluesky).toBe(true);
 	});
 });

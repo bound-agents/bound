@@ -21,9 +21,7 @@ export function isTransientLLMError(error: unknown): boolean {
 
 	// Pattern-match on known transient transport error messages
 	return (
-		errMsg.includes("http2") ||
-		errMsg.includes("ECONNRESET") ||
-		errMsg.includes("socket hang up")
+		errMsg.includes("http2") || errMsg.includes("ECONNRESET") || errMsg.includes("socket hang up")
 	);
 }
 

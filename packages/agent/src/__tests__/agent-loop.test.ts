@@ -1884,7 +1884,7 @@ describe("AgentLoop", () => {
 				shouldYield: () => false,
 			});
 
-			const result = await loop.run();
+			await loop.run();
 
 			// Normal execution: tool was called, final text produced
 			expect(sandbox.calls.length).toBeGreaterThanOrEqual(1);

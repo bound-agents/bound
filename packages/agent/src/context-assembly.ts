@@ -1013,9 +1013,9 @@ Original output was too large for the context window. If you need the full conte
 		const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
 		const userMessageText = lastUserMsg?.content ?? undefined;
 		// Query thread summary for broader keyword seeding
-		const threadRow = db
-			.prepare("SELECT summary FROM threads WHERE id = ?")
-			.get(threadId) as { summary: string | null } | null;
+		const threadRow = db.prepare("SELECT summary FROM threads WHERE id = ?").get(threadId) as {
+			summary: string | null;
+		} | null;
 		const threadSummary = threadRow?.summary ?? undefined;
 		const { memoryDeltaLines, taskDigestLines, graphCount, recencyCount } = buildVolatileEnrichment(
 			db,
