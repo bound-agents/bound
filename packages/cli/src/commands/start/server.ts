@@ -460,6 +460,13 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			);
 		});
 
+		// Notify command: dispatch inference for proactive notifications
+		appContext.eventBus.on("notify:enqueued", ({ thread_id }) => {
+			handleThread(thread_id).catch((err) =>
+				appContext.logger.error("[notify] Dispatch error", { error: formatError(err) }),
+			);
+		});
+
 		// Recover: dispatch any threads that have pending entries (from crash recovery)
 		const pendingThreads = appContext.db
 			.prepare(`SELECT DISTINCT thread_id FROM dispatch_queue WHERE status = 'pending'`)

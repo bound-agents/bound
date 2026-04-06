@@ -85,11 +85,6 @@ export async function runStart(args: StartArgs): Promise<void> {
 					platformRegistry: null,
 				};
 
-	// Inject threadExecutor into command context so notify command can trigger inference
-	if (commandContext && serverResult.threadExecutor) {
-		(commandContext as Record<string, unknown>).threadExecutor = serverResult.threadExecutor;
-	}
-
 	// Phase 8: Sync loop, pruning, overlay scanner
 	const { syncLoopHandle, pruningHandle, overlayHandle, transport } = await initSync(
 		appContext,

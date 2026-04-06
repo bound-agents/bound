@@ -231,22 +231,15 @@ describe("notify command", () => {
 		});
 	});
 
-	describe("threadExecutor integration", () => {
-		it("calls threadExecutor.execute when available", async () => {
+	describe("event emission", () => {
+		it("emits notify:enqueued event for each target thread", async () => {
 			const userId = seedUser(testUsername, { [testPlatform]: testPlatformUserId });
 			const threadId = seedThread(userId, testPlatform);
 
-			let executedThreadId: string | null = null;
-			const mockExecutor = {
-				execute: async (tid: string) => {
-					executedThreadId = tid;
-				},
-				isActive: () => false,
-				activeThreads: new Set<string>(),
-			};
-
-			// biome-ignore lint/suspicious/noExplicitAny: mock executor for testing
-			ctx.threadExecutor = mockExecutor as any;
+			const emittedThreadIds: string[] = [];
+			eventBus.on("notify:enqueued", ({ thread_id }) => {
+				emittedThreadIds.push(thread_id);
+			});
 
 			const result = await notify.handler(
 				{ user: testUsername, platform: testPlatform, message: "test" },
@@ -254,25 +247,27 @@ describe("notify command", () => {
 			);
 
 			expect(result.exitCode).toBe(0);
-			expect(executedThreadId).toBe(threadId);
+			expect(emittedThreadIds).toEqual([threadId]);
 		});
 
-		it("enqueues without error when threadExecutor is not available", async () => {
-			const userId = seedUser(testUsername, { [testPlatform]: testPlatformUserId });
-			const threadId = seedThread(userId, testPlatform);
+		it("emits notify:enqueued for each user in --all mode", async () => {
+			const user1Id = seedUser("alice", { discord: "111" });
+			const user2Id = seedUser("bob", { discord: "222" });
+			const thread1 = seedThread(user1Id, "discord");
+			const thread2 = seedThread(user2Id, "discord");
 
-			// No threadExecutor on ctx — command should still succeed
+			const emittedThreadIds: string[] = [];
+			eventBus.on("notify:enqueued", ({ thread_id }) => {
+				emittedThreadIds.push(thread_id);
+			});
+
 			const result = await notify.handler(
-				{ user: testUsername, platform: testPlatform, message: "test" },
+				{ all: "true", platform: "discord", message: "broadcast" },
 				ctx,
 			);
 
 			expect(result.exitCode).toBe(0);
-			// Notification is enqueued but execution is deferred
-			const entry = db
-				.query("SELECT * FROM dispatch_queue WHERE thread_id = ? AND event_type = 'notification'")
-				.get(threadId);
-			expect(entry).not.toBeNull();
+			expect(emittedThreadIds.sort()).toEqual([thread1, thread2].sort());
 		});
 	});
 });

@@ -48,24 +48,21 @@ function getAllUsers(db: CommandContext["db"]): UserRow[] {
 }
 
 /**
- * Enqueue a proactive notification and optionally trigger execution.
+ * Enqueue a proactive notification and signal the server to run inference.
  */
-async function enqueueAndExecute(
+function enqueueAndSignal(
 	ctx: CommandContext,
 	threadId: string,
 	sourceThreadId: string | undefined,
 	message: string,
-): Promise<void> {
+): void {
 	enqueueNotification(ctx.db, threadId, {
 		type: "proactive",
 		source_thread: sourceThreadId ?? null,
 		content: message,
 	});
 
-	if (ctx.threadExecutor) {
-		// Direct execution — the executor will drain the dispatch queue for this thread
-		await ctx.threadExecutor.execute(threadId, async () => ({ yielded: false }));
-	}
+	ctx.eventBus.emit("notify:enqueued", { thread_id: threadId });
 }
 
 export const notify: CommandDefinition = {
@@ -137,7 +134,7 @@ async function handleSingleUser(
 		return commandError(`No ${platform} thread found for user ${username}`);
 	}
 
-	await enqueueAndExecute(ctx, thread.id, sourceThreadId, message);
+	enqueueAndSignal(ctx, thread.id, sourceThreadId, message);
 	return commandSuccess(`Notification enqueued for ${username} on ${platform}.\n`);
 }
 
@@ -165,7 +162,7 @@ async function handleAll(
 			continue;
 		}
 
-		await enqueueAndExecute(ctx, thread.id, sourceThreadId, message);
+		enqueueAndSignal(ctx, thread.id, sourceThreadId, message);
 		delivered++;
 	}
 

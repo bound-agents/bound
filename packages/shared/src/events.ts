@@ -21,4 +21,5 @@ export interface EventMap {
 	"platform:deliver": PlatformDeliverPayload;
 	"platform:webhook": { platform: string; rawBody: string; headers: Record<string, string> };
 	"context:debug": { thread_id: string; turn_id: number; debug: ContextDebugInfo };
+	"notify:enqueued": { thread_id: string };
 }

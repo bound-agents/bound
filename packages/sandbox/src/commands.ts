@@ -1,7 +1,6 @@
 import type Database from "bun:sqlite";
 import { AsyncLocalStorage } from "node:async_hooks";
 
-import type { ThreadExecutor } from "@bound/core";
 import { formatError } from "@bound/shared";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
 
@@ -38,7 +37,6 @@ export interface CommandContext {
 	mcpClients?: Map<string, unknown>;
 	modelRouter?: unknown; // ModelRouter from @bound/llm, optional for backward compatibility
 	fs?: IFileSystem;
-	threadExecutor?: ThreadExecutor;
 }
 
 export interface CommandDefinition {
