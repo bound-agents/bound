@@ -712,13 +712,24 @@ Original output was too large for the context window. If you need the full conte
 
 	// Build a map from tool_call message ID to the tool_use IDs contained within,
 	// so we can propagate tool_use_id to the subsequent tool_result messages.
+	// Also collect all known tool_use IDs so we can validate tool_result.tool_name
+	// against actual IDs (tool_name may contain a tool name instead of an ID due
+	// to historical data from before the toolCallId fix).
 	const toolCallIdToToolUseId = new Map<string, string>();
+	const knownToolUseIds = new Set<string>();
 	for (const m of sanitized) {
 		if (m.role === "tool_call") {
 			try {
 				const blocks = JSON.parse(m.content);
-				if (Array.isArray(blocks) && blocks.length > 0 && blocks[0].id) {
-					toolCallIdToToolUseId.set(m.id, blocks[0].id);
+				if (Array.isArray(blocks)) {
+					for (const block of blocks) {
+						if (block.id) {
+							knownToolUseIds.add(block.id);
+						}
+					}
+					if (blocks.length > 0 && blocks[0].id) {
+						toolCallIdToToolUseId.set(m.id, blocks[0].id);
+					}
 				}
 			} catch {
 				// Content may not be JSON (e.g. synthetic tool_call)
@@ -798,10 +809,12 @@ Original output was too large for the context window. If you need the full conte
 		};
 
 		// Propagate tool_use_id for tool_result messages
-		// In the DB, tool_name stores the tool_use_id for tool_result messages
+		// In the DB, tool_name stores the tool_use_id for tool_result messages.
+		// Validate that tool_name is an actual tool_use ID (not a tool name like
+		// "retrieve_task" from historical data before the toolCallId fix).
 		if (m.role === "tool_result") {
 			const toolUseId =
-				m.tool_name ||
+				(m.tool_name && knownToolUseIds.has(m.tool_name) ? m.tool_name : null) ||
 				(lastToolCallMsgId ? toolCallIdToToolUseId.get(lastToolCallMsgId) : null) ||
 				`synthetic-${m.id}`;
 			msg.tool_use_id = toolUseId;
