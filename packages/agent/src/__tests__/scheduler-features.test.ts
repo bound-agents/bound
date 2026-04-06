@@ -939,11 +939,11 @@ describe("Scheduler features", () => {
 			// Three messages: user "." + tool_call retrieve_task + tool_result with payload
 			expect(messagesAtRunTime).toBeGreaterThanOrEqual(3);
 
-			// biome-ignore lint/style/noNonNullAssertion: verified by expect above
 			const allMsgs = db
 				.query(
 					"SELECT role, content, tool_name FROM messages WHERE thread_id = ? ORDER BY rowid ASC",
 				)
+				// biome-ignore lint/style/noNonNullAssertion: verified by expect above
 				.all(capturedThreadId!) as {
 				role: string;
 				content: string;
