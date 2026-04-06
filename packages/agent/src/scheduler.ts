@@ -372,7 +372,7 @@ export class Scheduler {
 				count: tasksToEvict.length,
 				tasks: tasksToEvict.map((t) => ({
 					id: t.id,
-					name: t.name,
+					triggerSpec: t.trigger_spec,
 					type: t.type,
 					consecutiveFailures: (t.consecutive_failures ?? 0) + 1,
 				})),
@@ -517,7 +517,7 @@ export class Scheduler {
 
 		this.ctx.logger.info("[scheduler] Task starting", {
 			taskId: task.id,
-			name: task.name,
+			triggerSpec: task.trigger_spec,
 			type: task.type,
 			modelHint: task.model_hint ?? "default",
 			threadId: task.thread_id ?? null,
@@ -725,7 +725,7 @@ export class Scheduler {
 					if (!validation.ok) {
 						this.ctx.logger.warn("[scheduler] Task model validation failed", {
 							taskId: task.id,
-							name: task.name,
+							triggerSpec: task.trigger_spec,
 							modelHint: task.model_hint,
 							error: validation.error,
 						});
@@ -781,7 +781,7 @@ export class Scheduler {
 					if (result.error) {
 						this.ctx.logger.warn("[scheduler] Task soft-failed", {
 							taskId: task.id,
-							name: task.name,
+							triggerSpec: task.trigger_spec,
 							type: task.type,
 							error: result.error,
 							messagesCreated: result.messagesCreated,
@@ -819,7 +819,7 @@ export class Scheduler {
 					} else {
 						this.ctx.logger.info("[scheduler] Task completed", {
 							taskId: task.id,
-							name: task.name,
+							triggerSpec: task.trigger_spec,
 							type: task.type,
 							messagesCreated: result.messagesCreated,
 							toolCallsMade: result.toolCallsMade,
@@ -859,7 +859,7 @@ export class Scheduler {
 
 				this.ctx.logger.error("[scheduler] Task hard-failed", {
 					taskId: task.id,
-					name: task.name,
+					triggerSpec: task.trigger_spec,
 					type: task.type,
 					error: errorMsg,
 				});

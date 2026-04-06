@@ -245,7 +245,7 @@ export class AgentLoop {
 				totalEstimatedTokens: contextDebug.totalEstimated,
 				headroom: contextWindow - contextDebug.totalEstimated - toolTokenEstimate,
 				budgetPressure: contextDebug.budgetPressure ?? false,
-				truncatedMessages: contextDebug.truncatedCount ?? 0,
+				truncatedMessages: contextDebug.truncated ?? 0,
 				sections: contextDebug.sections.map((s) => `${s.name}:${s.tokens}`).join(", "),
 			});
 
