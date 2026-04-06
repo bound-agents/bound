@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import { formatError } from "@bound/shared";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
+import type { ThreadExecutor } from "@bound/core";
 
 /**
  * Per-loop execution context injected by the agent loop factory.
@@ -37,6 +38,7 @@ export interface CommandContext {
 	mcpClients?: Map<string, unknown>;
 	modelRouter?: unknown; // ModelRouter from @bound/llm, optional for backward compatibility
 	fs?: IFileSystem;
+	threadExecutor?: ThreadExecutor;
 }
 
 export interface CommandDefinition {
