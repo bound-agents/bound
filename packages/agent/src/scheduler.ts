@@ -598,10 +598,11 @@ export class Scheduler {
 				// Always inject a user message so the agent loop has something to work
 				// from. Bedrock (and any model that enforces "conversation must start
 				// with a user message") rejects requests where the first non-system
-				// message is not from the user. When the task has no payload we use a
-				// neutral default rather than skipping the insert, which previously
-				// left empty threads or threads with only tool_call/assistant history
-				// that caused the Bedrock error on repeated no-payload cron runs.
+				// message is not from the user. Insert a neutral user message first,
+				// then the task payload as assistant prefill. This avoids the model
+				// treating the payload as adversarial external input (prompt injection
+				// pattern), since assistant-role content is seen as the model's own
+				// prior reasoning.
 				insertRow(
 					this.ctx.db,
 					"messages",
@@ -609,6 +610,23 @@ export class Scheduler {
 						id: randomUUID(),
 						thread_id: threadId,
 						role: "user",
+						content: ".",
+						model_id: null,
+						tool_name: null,
+						created_at: taskNow,
+						modified_at: taskNow,
+						host_origin: this.ctx.hostName,
+						deleted: 0,
+					},
+					this.ctx.siteId,
+				);
+				insertRow(
+					this.ctx.db,
+					"messages",
+					{
+						id: randomUUID(),
+						thread_id: threadId,
+						role: "assistant",
 						content:
 							task.type === "heartbeat"
 								? buildHeartbeatContext(this.ctx.db, task.last_run_at)
