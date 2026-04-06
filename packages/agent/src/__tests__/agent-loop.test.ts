@@ -1808,6 +1808,70 @@ describe("AgentLoop", () => {
 			expect(backend.getCallCount()).toBe(1);
 		});
 
+		it("yields during LLM streaming when shouldYield returns true", async () => {
+			const backend = new MockLLMBackend();
+
+			// LLM will produce a text response (slow streaming simulated by multiple chunks)
+			backend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Starting to " };
+				yield { type: "text" as const, content: "respond to " };
+				yield { type: "text" as const, content: "the user..." };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			});
+
+			const sandbox = createMockSandbox();
+
+			// shouldYield returns true after first chunk — simulates new message arriving mid-stream
+			let chunksSeen = 0;
+			const originalChat = backend.chat.bind(backend);
+			backend.chat = async function* (...args: [ChatParams]) {
+				for await (const chunk of originalChat(...args)) {
+					if (chunk.type === "text") chunksSeen++;
+					yield chunk;
+				}
+			};
+
+			const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
+				threadId,
+				userId: "test-user",
+				shouldYield: () => chunksSeen >= 2, // yield after 2 text chunks
+			});
+
+			const result = await loop.run();
+
+			// Loop should have yielded
+			expect(result.yielded).toBe(true);
+			// No error — yield is not an error condition
+			expect(result.error).toBeUndefined();
+		});
+
+		it("sets yielded=false on normal completion", async () => {
+			const backend = new MockLLMBackend();
+			backend.setTextResponse("Normal response");
+
+			const sandbox = createMockSandbox();
+
+			const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
+				threadId,
+				userId: "test-user",
+				shouldYield: () => false,
+			});
+
+			const result = await loop.run();
+
+			expect(result.yielded).toBeUndefined(); // not set or false
+			expect(result.error).toBeUndefined();
+		});
+
 		it("does not interfere when shouldYield always returns false", async () => {
 			const backend = new MockLLMBackend();
 			backend.setToolThenTextResponse("tool-1", "query", { sql: "SELECT 1" }, "Done!");

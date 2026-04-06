@@ -86,6 +86,7 @@ export class AgentLoop {
 	private toolCallsMade = 0;
 	private filesChanged = 0;
 	private aborted = false;
+	private yielded = false;
 	private lastModelResolution: ModelResolution | null = null;
 	private _visionAdvisoryEmitted?: Set<string>;
 	private lastContextDebug?: ContextDebugInfo;
@@ -336,6 +337,12 @@ export class AgentLoop {
 								});
 								for await (const chunk of this.withSilenceTimeout(chatStream, SILENCE_TIMEOUT_MS)) {
 									if (this.aborted) break;
+									// Cooperative yield: check on every chunk during streaming
+									if (this.config.shouldYield?.()) {
+										this.yielded = true;
+										this.aborted = true;
+										break;
+									}
 									chunks.push(chunk);
 								}
 								break; // Stream completed — exit retry loop
@@ -552,6 +559,7 @@ export class AgentLoop {
 					// Cooperative cancellation: check before executing tools
 					if (this.config.shouldYield?.()) {
 						this.ctx.logger.info("[agent-loop] Yielding before tool execution (cooperative cancel)");
+						this.yielded = true;
 						break;
 					}
 
@@ -684,6 +692,7 @@ export class AgentLoop {
 					// Cooperative cancellation: check after tool results persisted
 					if (this.config.shouldYield?.()) {
 						this.ctx.logger.info("[agent-loop] Yielding after tool persistence (cooperative cancel)");
+						this.yielded = true;
 						break;
 					}
 
@@ -762,6 +771,7 @@ export class AgentLoop {
 				messagesCreated: this.messagesCreated,
 				toolCallsMade: this.toolCallsMade,
 				filesChanged: this.filesChanged,
+				yielded: this.yielded || undefined,
 			};
 		} catch (error) {
 			this.state = "ERROR_PERSIST";

@@ -59,4 +59,6 @@ export interface AgentLoopResult {
 	toolCallsMade: number;
 	filesChanged: number;
 	error?: string;
+	/** True when the loop exited early due to shouldYield (cooperative cancellation). */
+	yielded?: boolean;
 }

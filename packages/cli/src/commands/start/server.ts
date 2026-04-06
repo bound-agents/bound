@@ -16,6 +16,7 @@ import {
 	enqueueMessage,
 	hasPending,
 	pruneAcknowledged,
+	resetProcessing,
 	updateRow,
 	writeOutbox,
 } from "@bound/core";
@@ -280,6 +281,13 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								// Early exit: yield if new messages arrived during inference
 								shouldYield: () => hasPending(appContext.db, thread_id),
 							});
+
+							// Cooperative yield: reset messages to pending, loop will re-claim
+							if (result.yielded) {
+								appContext.logger.info(`[agent] Inference yielded for thread ${thread_id}, re-batching`);
+								resetProcessing(appContext.db);
+								continue; // next drain iteration picks up all pending
+							}
 
 							if (result.error) {
 								appContext.logger.error(`[agent] Error: ${result.error}`);
