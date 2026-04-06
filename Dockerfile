@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- Builder ----
-FROM oven/bun:1.3 AS builder
+FROM oven/bun:1.3.7 AS builder
 WORKDIR /build
 
 # Copy manifests first for better layer caching
