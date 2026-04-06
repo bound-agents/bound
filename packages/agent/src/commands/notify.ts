@@ -1,5 +1,5 @@
-import type { CommandContext, CommandDefinition } from "@bound/sandbox";
 import { enqueueNotification } from "@bound/core";
+import type { CommandContext, CommandDefinition } from "@bound/sandbox";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
@@ -16,10 +16,7 @@ interface ThreadRow {
 /**
  * Resolve a bound username to a user ID and validate platform access.
  */
-function resolveUser(
-	db: CommandContext["db"],
-	username: string,
-): UserRow | null {
+function resolveUser(db: CommandContext["db"], username: string): UserRow | null {
 	const userId = deterministicUUID(BOUND_NAMESPACE, username);
 	return db
 		.query("SELECT id, display_name, platform_ids FROM users WHERE id = ? AND deleted = 0")
@@ -67,10 +64,7 @@ async function enqueueAndExecute(
 
 	if (ctx.threadExecutor) {
 		// Direct execution — the executor will drain the dispatch queue for this thread
-		await ctx.threadExecutor.execute(
-			threadId,
-			async () => ({ yielded: false }),
-		);
+		await ctx.threadExecutor.execute(threadId, async () => ({ yielded: false }));
 	}
 }
 
@@ -113,7 +107,13 @@ export const notify: CommandDefinition = {
 				return await handleAll(ctx, platform.trim(), message.trim(), sourceThreadId);
 			}
 
-			return await handleSingleUser(ctx, user!.trim(), platform.trim(), message.trim(), sourceThreadId);
+			return await handleSingleUser(
+				ctx,
+				(user as string).trim(),
+				platform.trim(),
+				message.trim(),
+				sourceThreadId,
+			);
 		} catch (error) {
 			return handleCommandError(error);
 		}
@@ -173,9 +173,8 @@ async function handleAll(
 		return commandError(`No ${platform} threads found for any users`);
 	}
 
+	const skipNote = skipped > 0 ? ` (${skipped} skipped — no thread)` : "";
 	return commandSuccess(
-		`Notification enqueued for ${delivered} user(s) on ${platform}` +
-			(skipped > 0 ? ` (${skipped} skipped — no thread)` : "") +
-			".\n",
+		`Notification enqueued for ${delivered} user(s) on ${platform}${skipNote}.\n`,
 	);
 }

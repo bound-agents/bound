@@ -1,9 +1,9 @@
 import type Database from "bun:sqlite";
 import { AsyncLocalStorage } from "node:async_hooks";
 
+import type { ThreadExecutor } from "@bound/core";
 import { formatError } from "@bound/shared";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
-import type { ThreadExecutor } from "@bound/core";
 
 /**
  * Per-loop execution context injected by the agent loop factory.

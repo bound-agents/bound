@@ -16,7 +16,6 @@ describe("notify command", () => {
 	let siteId: string;
 
 	const testUsername = "karashiiro";
-	const testDisplayName = "Kara";
 	const testPlatform = "discord";
 	const testPlatformUserId = "123456789";
 
@@ -71,19 +70,13 @@ describe("notify command", () => {
 
 	describe("argument validation", () => {
 		it("requires --platform flag", async () => {
-			const result = await notify.handler(
-				{ user: testUsername, message: "hello" },
-				ctx,
-			);
+			const result = await notify.handler({ user: testUsername, message: "hello" }, ctx);
 			expect(result.exitCode).toBe(1);
 			expect(result.stderr).toContain("--platform");
 		});
 
 		it("requires --user or --all", async () => {
-			const result = await notify.handler(
-				{ platform: testPlatform, message: "hello" },
-				ctx,
-			);
+			const result = await notify.handler({ platform: testPlatform, message: "hello" }, ctx);
 			expect(result.exitCode).toBe(1);
 			expect(result.stderr).toMatch(/--user|--all/);
 		});
@@ -99,10 +92,7 @@ describe("notify command", () => {
 
 		it("requires a message", async () => {
 			seedUser(testUsername, { [testPlatform]: testPlatformUserId });
-			const result = await notify.handler(
-				{ user: testUsername, platform: testPlatform },
-				ctx,
-			);
+			const result = await notify.handler({ user: testUsername, platform: testPlatform }, ctx);
 			expect(result.exitCode).toBe(1);
 			expect(result.stderr).toContain("message");
 		});
@@ -148,9 +138,7 @@ describe("notify command", () => {
 
 			// Verify dispatch_queue entry
 			const entries = db
-				.query(
-					"SELECT * FROM dispatch_queue WHERE thread_id = ? AND event_type = 'notification'",
-				)
+				.query("SELECT * FROM dispatch_queue WHERE thread_id = ? AND event_type = 'notification'")
 				.all(threadId) as Array<{
 				message_id: string;
 				thread_id: string;
@@ -195,9 +183,7 @@ describe("notify command", () => {
 
 			// Should target the newer thread
 			const entry = db
-				.query(
-					"SELECT thread_id FROM dispatch_queue WHERE event_type = 'notification'",
-				)
+				.query("SELECT thread_id FROM dispatch_queue WHERE event_type = 'notification'")
 				.get() as { thread_id: string };
 			expect(entry.thread_id).toBe(newThreadId);
 		});
@@ -259,6 +245,7 @@ describe("notify command", () => {
 				activeThreads: new Set<string>(),
 			};
 
+			// biome-ignore lint/suspicious/noExplicitAny: mock executor for testing
 			ctx.threadExecutor = mockExecutor as any;
 
 			const result = await notify.handler(
@@ -270,30 +257,20 @@ describe("notify command", () => {
 			expect(executedThreadId).toBe(threadId);
 		});
 
-		it("emits notify:pending when threadExecutor is not available", async () => {
+		it("enqueues without error when threadExecutor is not available", async () => {
 			const userId = seedUser(testUsername, { [testPlatform]: testPlatformUserId });
 			const threadId = seedThread(userId, testPlatform);
 
-			let emittedThreadId: string | null = null;
-			eventBus.on("task:triggered" as any, (data: any) => {
-				if (data?.notifyThreadId) {
-					emittedThreadId = data.notifyThreadId;
-				}
-			});
-
-			// No threadExecutor on ctx
+			// No threadExecutor on ctx — command should still succeed
 			const result = await notify.handler(
 				{ user: testUsername, platform: testPlatform, message: "test" },
 				ctx,
 			);
 
 			expect(result.exitCode).toBe(0);
-			// Without executor, the notification is enqueued but execution is deferred
-			// The command should still succeed — the dispatch entry exists
+			// Notification is enqueued but execution is deferred
 			const entry = db
-				.query(
-					"SELECT * FROM dispatch_queue WHERE thread_id = ? AND event_type = 'notification'",
-				)
+				.query("SELECT * FROM dispatch_queue WHERE thread_id = ? AND event_type = 'notification'")
 				.get(threadId);
 			expect(entry).not.toBeNull();
 		});
