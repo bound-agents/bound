@@ -23,6 +23,7 @@ import {
 	claimPending,
 	createDatabase,
 	enqueueMessage,
+	hasPending,
 	insertRow,
 	resetProcessing,
 } from "@bound/core";
@@ -425,6 +426,53 @@ describe("Dispatch Queue Wiring", () => {
 			eventBus.emit("agent:cancel", { thread_id: threadId });
 
 			expect(cancelledThreadId).toBe(threadId);
+		});
+	});
+
+	// -------------------------------------------------------------------
+	// Drain loop error recovery
+	// -------------------------------------------------------------------
+	describe("drain loop error recovery", () => {
+		it("error during inference acknowledges failed batch without releasing lock", () => {
+			// Simulates: inference fails mid-stream, batch is acknowledged,
+			// and the drain loop can continue to next iteration
+
+			const { threadId } = createThread();
+			const msg1 = insertUserMessage(threadId, "will fail");
+
+			enqueueMessage(db, msg1, threadId);
+			const claimed = claimPending(db, threadId, siteId);
+			expect(claimed).toHaveLength(1);
+
+			// Simulate: error occurs, catch block acknowledges
+			acknowledgeBatch(db, [msg1]);
+
+			// New message arrives after failure
+			const msg2 = insertUserMessage(threadId, "retry after failure");
+			enqueueMessage(db, msg2, threadId);
+
+			// Next iteration of drain loop picks it up
+			const nextClaimed = claimPending(db, threadId, siteId);
+			expect(nextClaimed).toHaveLength(1);
+			expect(nextClaimed[0].message_id).toBe(msg2);
+		});
+
+		it("hasPending returns true when new messages arrive during processing", () => {
+			const { threadId } = createThread();
+			const msg1 = insertUserMessage(threadId, "original");
+
+			enqueueMessage(db, msg1, threadId);
+			claimPending(db, threadId, siteId);
+
+			// msg1 is processing — hasPending should be false
+			expect(hasPending(db, threadId)).toBe(false);
+
+			// New message arrives
+			const msg2 = insertUserMessage(threadId, "new arrival");
+			enqueueMessage(db, msg2, threadId);
+
+			// Now hasPending should be true (shouldYield trigger)
+			expect(hasPending(db, threadId)).toBe(true);
 		});
 	});
 });
