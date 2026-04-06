@@ -8,6 +8,7 @@ import {
 	acknowledgeBatch,
 	claimPending,
 	enqueueMessage,
+	enqueueNotification,
 	hasPending,
 	pruneAcknowledged,
 	resetProcessing,
@@ -329,5 +330,62 @@ describe("pruneAcknowledged", () => {
 		const pruned = pruneAcknowledged(db, cutoff);
 
 		expect(pruned).toBe(0);
+	});
+});
+
+describe("enqueueNotification", () => {
+	it("inserts a pending entry with event_type and event_payload", () => {
+		const threadId = randomUUID();
+		const payload = { type: "task_complete", task_id: "abc", task_name: "Daily summary" };
+
+		const entryId = enqueueNotification(db, threadId, payload);
+
+		const row = db.query("SELECT * FROM dispatch_queue WHERE message_id = ?").get(entryId) as {
+			message_id: string;
+			thread_id: string;
+			status: string;
+			event_type: string;
+			event_payload: string;
+		} | null;
+
+		expect(row).not.toBeNull();
+		expect(row?.thread_id).toBe(threadId);
+		expect(row?.status).toBe("pending");
+		expect(row?.event_type).toBe("notification");
+		expect(JSON.parse(row?.event_payload ?? "{}")).toEqual(payload);
+	});
+
+	it("triggers hasPending for the thread", () => {
+		const threadId = randomUUID();
+
+		expect(hasPending(db, threadId)).toBe(false);
+		enqueueNotification(db, threadId, { type: "test" });
+		expect(hasPending(db, threadId)).toBe(true);
+	});
+
+	it("is claimed alongside user messages", () => {
+		const threadId = randomUUID();
+		const msgId = randomUUID();
+
+		enqueueMessage(db, msgId, threadId);
+		enqueueNotification(db, threadId, { type: "advisory_created" });
+
+		const claimed = claimPending(db, threadId, "host-1");
+		expect(claimed).toHaveLength(2);
+	});
+
+	it("default enqueueMessage has event_type user_message", () => {
+		const threadId = randomUUID();
+		const msgId = randomUUID();
+
+		enqueueMessage(db, msgId, threadId);
+
+		const row = db
+			.query("SELECT event_type FROM dispatch_queue WHERE message_id = ?")
+			.get(msgId) as {
+			event_type: string;
+		} | null;
+
+		expect(row?.event_type).toBe("user_message");
 	});
 });

@@ -11,6 +11,8 @@ import {
 	acknowledgeBatch,
 	claimPending,
 	enqueueMessage,
+	enqueueNotification,
+	insertRow,
 	updateRow,
 	writeOutbox,
 } from "@bound/core";
@@ -23,6 +25,18 @@ import { createWebServer } from "@bound/web";
 import { runLocalAgentLoop } from "../../lib/message-handler";
 
 export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
+
+/** Format a notification payload as a human-readable message for the agent. */
+function formatNotification(payload: Record<string, unknown>): string {
+	switch (payload.type) {
+		case "task_complete":
+			return `[notification] Task "${payload.task_name}" completed. Result: ${payload.result ?? "success"}`;
+		case "advisory_created":
+			return `[notification] New advisory: ${payload.title ?? "Untitled"}. ${payload.detail ?? ""}`.trim();
+		default:
+			return `[notification] ${JSON.stringify(payload)}`;
+	}
+}
 
 export interface ServerResult {
 	webServer: Awaited<ReturnType<typeof createWebServer>> | null;
@@ -224,7 +238,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 			await threadExecutor.execute(
 				thread_id,
-				// runFn: claim → resolve model → delegate or run local inference
+				// runFn: claim → inject notification messages → resolve model → run inference
 				async (shouldYield) => {
 					const claimed = claimPending(appContext.db, thread_id, appContext.siteId);
 					if (claimed.length === 0) return {};
@@ -232,6 +246,37 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 					const claimedIds = claimed.map((e) => e.message_id);
 
 					try {
+						// Inject notification context as system messages so the agent
+						// can see and respond to non-user events (task completions, etc.)
+						for (const entry of claimed) {
+							if (entry.event_type === "notification" && entry.event_payload) {
+								try {
+									const payload = JSON.parse(entry.event_payload);
+									const notifText = formatNotification(payload);
+									const now = new Date().toISOString();
+									insertRow(
+										appContext.db,
+										"messages",
+										{
+											id: entry.message_id,
+											thread_id,
+											role: "user",
+											content: notifText,
+											model_id: null,
+											tool_name: null,
+											created_at: now,
+											modified_at: now,
+											host_origin: appContext.hostName,
+											deleted: 0,
+										},
+										appContext.siteId,
+									);
+								} catch {
+									// Non-fatal — notification context is best-effort
+								}
+							}
+						}
+
 						const lastClaimedMsg = appContext.db
 							.prepare("SELECT model_id FROM messages WHERE id = ?")
 							.get(claimed[claimed.length - 1].message_id) as {
@@ -256,12 +301,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							appContext.logger.info(
 								`[agent] Delegating to remote host ${delegationTarget.site_id}`,
 							);
-							await dispatchDelegation(
-								delegationTarget,
-								thread_id,
-								claimedIds[0] ?? "",
-								userId,
-							);
+							await dispatchDelegation(delegationTarget, thread_id, claimedIds[0] ?? "", userId);
 						} else {
 							const { agentResult: result } = await runLocalAgentLoop({
 								eventBus: appContext.eventBus,
@@ -359,6 +399,29 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			// The active drain loop will pick up the new message on its next iteration.
 			handleThread(thread_id).catch((err) =>
 				appContext.logger.error("[agent] Unhandled dispatch error", { error: formatError(err) }),
+			);
+		});
+
+		// Proactive notifications: trigger inference for task completions
+		appContext.eventBus.on("task:completed", ({ task_id, result }) => {
+			const task = appContext.db
+				.query("SELECT id, name, thread_id FROM tasks WHERE id = ? AND deleted = 0")
+				.get(task_id) as { id: string; name: string; thread_id: string | null } | null;
+
+			if (!task?.thread_id) return; // No thread to notify
+
+			const notificationPayload = {
+				type: "task_complete",
+				task_id: task.id,
+				task_name: task.name,
+				result: result ?? "completed",
+			};
+
+			enqueueNotification(appContext.db, task.thread_id, notificationPayload);
+			handleThread(task.thread_id).catch((err) =>
+				appContext.logger.error("[notification] Task completion dispatch error", {
+					error: formatError(err),
+				}),
 			);
 		});
 

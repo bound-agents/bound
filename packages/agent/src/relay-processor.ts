@@ -1135,12 +1135,7 @@ export class RelayProcessor {
 					const claimedIds = claimed.map((e) => e.message_id);
 
 					try {
-						const result = await this.runDelegatedLoop(
-							entry,
-							payload,
-							delegatedCtx,
-							shouldYield,
-						);
+						const result = await this.runDelegatedLoop(entry, payload, delegatedCtx, shouldYield);
 
 						if (result.yielded) {
 							return { yielded: true };
@@ -1234,11 +1229,7 @@ export class RelayProcessor {
 		result: Record<string, unknown>,
 	): void {
 		if (result.error) {
-			this.writeResponse(
-				entry,
-				"error",
-				JSON.stringify({ error: result.error, retriable: false }),
-			);
+			this.writeResponse(entry, "error", JSON.stringify({ error: result.error, retriable: false }));
 			return;
 		}
 

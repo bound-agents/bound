@@ -6,10 +6,10 @@
 export { type StartArgs, ensureMcpUser } from "./bootstrap.js";
 export { buildMcpToolDefinitions } from "./mcp.js";
 
+import { ThreadExecutor } from "@bound/core";
 import { createAgentLoopFactory } from "./agent-factory.js";
 import { initBootstrap } from "./bootstrap.js";
 import type { StartArgs } from "./bootstrap.js";
-import { ThreadExecutor } from "@bound/core";
 import { initInference } from "./inference.js";
 import { initMcp } from "./mcp.js";
 import { initRelay } from "./relay.js";

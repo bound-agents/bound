@@ -55,6 +55,7 @@ export {
 } from "./relay";
 export {
 	enqueueMessage,
+	enqueueNotification,
 	claimPending,
 	acknowledgeBatch,
 	resetProcessing,

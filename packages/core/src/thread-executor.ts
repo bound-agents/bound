@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { Logger } from "@bound/shared";
-import { hasPending, resetProcessingForThread } from "./dispatch";
 import { formatError } from "@bound/shared";
+import { hasPending, resetProcessingForThread } from "./dispatch";
 
 export interface ExecutorRunResult {
 	yielded?: boolean;

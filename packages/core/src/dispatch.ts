@@ -1,10 +1,13 @@
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 
 export interface DispatchEntry {
 	message_id: string;
 	thread_id: string;
 	status: string;
 	claimed_by: string | null;
+	event_type: string;
+	event_payload: string | null;
 	created_at: string;
 	modified_at: string;
 }
@@ -18,6 +21,25 @@ export function enqueueMessage(db: Database, messageId: string, threadId: string
 		`INSERT OR IGNORE INTO dispatch_queue (message_id, thread_id, status, created_at, modified_at)
 		 VALUES (?, ?, 'pending', ?, ?)`,
 	).run(messageId, threadId, now, now);
+}
+
+/**
+ * Enqueue a notification for dispatch. Notifications are non-user events
+ * (task completions, advisories, etc.) that trigger agent inference.
+ * Returns the generated entry ID.
+ */
+export function enqueueNotification(
+	db: Database,
+	threadId: string,
+	payload: Record<string, unknown>,
+): string {
+	const entryId = randomUUID();
+	const now = new Date().toISOString();
+	db.prepare(
+		`INSERT INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, created_at, modified_at)
+		 VALUES (?, ?, 'pending', 'notification', ?, ?, ?)`,
+	).run(entryId, threadId, JSON.stringify(payload), now, now);
+	return entryId;
 }
 
 /**

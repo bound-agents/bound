@@ -493,14 +493,28 @@ export function applySchema(db: Database): void {
 	// NOT a synced table — dispatch state is local coordination only.
 	db.run(`
 		CREATE TABLE IF NOT EXISTS dispatch_queue (
-			message_id  TEXT PRIMARY KEY,
-			thread_id   TEXT NOT NULL,
-			status      TEXT NOT NULL DEFAULT 'pending',
-			claimed_by  TEXT,
-			created_at  TEXT NOT NULL,
-			modified_at TEXT NOT NULL
+			message_id    TEXT PRIMARY KEY,
+			thread_id     TEXT NOT NULL,
+			status        TEXT NOT NULL DEFAULT 'pending',
+			claimed_by    TEXT,
+			event_type    TEXT NOT NULL DEFAULT 'user_message',
+			event_payload TEXT,
+			created_at    TEXT NOT NULL,
+			modified_at   TEXT NOT NULL
 		) STRICT
 	`);
+
+	// Idempotent column additions for existing databases
+	try {
+		db.run("ALTER TABLE dispatch_queue ADD COLUMN event_type TEXT NOT NULL DEFAULT 'user_message'");
+	} catch {
+		// Column already exists
+	}
+	try {
+		db.run("ALTER TABLE dispatch_queue ADD COLUMN event_payload TEXT");
+	} catch {
+		// Column already exists
+	}
 
 	db.run(`
 		CREATE INDEX IF NOT EXISTS idx_dispatch_queue_pending
