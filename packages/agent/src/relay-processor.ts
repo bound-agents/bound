@@ -3,6 +3,10 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
 	type AppContext,
+	type ThreadExecutor,
+	acknowledgeBatch,
+	claimPending,
+	enqueueMessage,
 	insertInbox,
 	markDelivered,
 	markProcessed,
@@ -76,6 +80,7 @@ export class RelayProcessor {
 	private readonly threadAffinityMap: Map<string, string>;
 	private platformConnectorRegistry: ConnectorRegistry | null = null;
 	private fileReader?: (path: string) => Promise<Uint8Array>;
+	private threadExecutor: ThreadExecutor | null = null;
 
 	constructor(
 		private db: Database,
@@ -101,6 +106,11 @@ export class RelayProcessor {
 	/** Inject the platform connector registry after startup completes (avoids circular init order). */
 	setPlatformConnectorRegistry(registry: ConnectorRegistry): void {
 		this.platformConnectorRegistry = registry;
+	}
+
+	/** Inject the thread executor for dispatch queue integration (avoids circular init order). */
+	setThreadExecutor(executor: ThreadExecutor): void {
+		this.threadExecutor = executor;
 	}
 
 	/** Inject the file reader (e.g. ClusterFs.readFileBuffer) for virtual FS support in platform tools. */
@@ -1109,133 +1119,202 @@ export class RelayProcessor {
 
 		emitStatusForward("thinking", null, 0);
 
-		try {
-			// Use the provided factory (which has sandbox + tools) when available.
-			// Falls back to a sandbox-less loop for true cross-host delegation where
-			// this host intentionally runs without the originating host's sandbox.
-			const loopConfig: AgentLoopConfig = {
-				threadId: payload.thread_id,
-				userId: payload.user_id,
-				taskId: `delegated-${entry.id}`,
-			};
+		// When a ThreadExecutor is available, enqueue the message into the dispatch
+		// queue and delegate to the executor. This prevents N concurrent inferences
+		// when N rapid Discord messages arrive for the same thread.
+		if (this.threadExecutor) {
+			enqueueMessage(this.db, payload.message_id, payload.thread_id);
 
-			// Inject platform tools when running in a platform context
-			if (payload.platform && this.platformConnectorRegistry) {
-				const connector = this.platformConnectorRegistry.getConnector(payload.platform);
-				if (connector?.getPlatformTools) {
-					const platformTools = connector.getPlatformTools(payload.thread_id, this.fileReader);
-					loopConfig.platform = payload.platform;
-					loopConfig.platformTools = platformTools;
-				}
-			}
+			await this.threadExecutor.execute(
+				payload.thread_id,
+				// runFn: claim → run agent loop → acknowledge
+				async (shouldYield) => {
+					const claimed = claimPending(this.db, payload.thread_id, this.siteId);
+					if (claimed.length === 0) return {};
 
-			const agentLoop = this.agentLoopFactory
-				? this.agentLoopFactory(loopConfig)
-				: new AgentLoop(
-						delegatedCtx,
-						{
-							/* sandbox not available — no tools in context */
-						} as object,
-						this.modelRouter,
-						loopConfig,
-					);
+					const claimedIds = claimed.map((e) => e.message_id);
 
-			const result = await agentLoop.run();
-			emitStatusForward("idle", null, 0);
+					try {
+						const result = await this.runDelegatedLoop(
+							entry,
+							payload,
+							delegatedCtx,
+							shouldYield,
+						);
 
-			if (result.error) {
-				this.writeResponse(
-					entry,
-					"error",
-					JSON.stringify({ error: result.error, retriable: false }),
-				);
-			} else {
-				this.writeResponse(entry, "result", JSON.stringify({ success: true }));
-
-				// Look up thread interface once — used for both platform-context typing-stop
-				// and the legacy auto-deliver path.
-				const thread = this.db
-					.query<{ interface: string }, [string]>(
-						"SELECT interface FROM threads WHERE id = ? AND deleted = 0 LIMIT 1",
-					)
-					.get(payload.thread_id);
-
-				if (payload.platform) {
-					// Platform-context process: agent calls discord_send_message explicitly.
-					// Always emit platform:deliver with empty content to stop the typing
-					// indicator, regardless of whether the agent produced any text.
-					// deliver() calls stopTyping() before checking content, so an empty-
-					// content emit stops typing without sending a Discord message.
-					if (thread && thread.interface !== "web") {
-						this.deliverPlatformPayload(entry, {
-							platform: thread.interface,
-							thread_id: payload.thread_id,
-							message_id: payload.message_id,
-							content: "",
-						});
-					}
-				} else {
-					// Non-platform context (legacy auto-deliver): deliver the last assistant
-					// message text. Always emit platform:deliver even with empty content so the
-					// connector can call stopTyping() — deliver() checks content length before
-					// sending, so an empty emit stops typing without messaging the user.
-					if (thread && thread.interface !== "web") {
-						const lastAssistant = this.db
-							.query<{ id: string; content: string }, [string]>(
-								"SELECT id, content FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC, rowid DESC LIMIT 1",
-							)
-							.get(payload.thread_id);
-
-						// Extract text content if available; default to "" for typing-stop-only emit.
-						let textContent = "";
-						const messageId = lastAssistant?.id ?? payload.message_id;
-						if (lastAssistant) {
-							textContent = lastAssistant.content;
-							try {
-								const parsed = JSON.parse(lastAssistant.content);
-								if (Array.isArray(parsed)) {
-									textContent = parsed
-										.filter((b: { type: string; text?: string }) => b.type === "text")
-										.map((b: { text?: string }) => b.text ?? "")
-										.join("");
-								}
-							} catch {
-								// already a plain string
-							}
+						if (result.yielded) {
+							return { yielded: true };
 						}
 
-						this.deliverPlatformPayload(entry, {
-							platform: thread.interface,
-							thread_id: payload.thread_id,
-							message_id: messageId,
-							content: textContent,
-						});
+						acknowledgeBatch(this.db, claimedIds);
+						return result;
+					} catch (error) {
+						try {
+							acknowledgeBatch(this.db, claimedIds);
+						} catch {
+							// Non-fatal
+						}
+						throw error;
 					}
-				}
-			}
+				},
+				// onComplete: finalize relay response and platform delivery
+				async (result) => {
+					this.finalizeProcess(entry, payload, result);
+				},
+			);
+
+			emitStatusForward("idle", null, 0);
+			return;
+		}
+
+		// Fallback: no executor available (backward compat for tests or standalone relay).
+		try {
+			const result = await this.runDelegatedLoop(entry, payload, delegatedCtx);
+			this.finalizeProcess(entry, payload, result);
+			emitStatusForward("idle", null, 0);
 		} catch (err) {
 			emitStatusForward("idle", null, 0);
 			this.writeResponse(entry, "error", JSON.stringify({ error: String(err), retriable: false }));
-			// Stop typing indicator even on failure — same empty-content mechanism as success path.
-			if (payload.platform) {
-				try {
-					const errThread = this.db
-						.query<{ interface: string }, [string]>(
-							"SELECT interface FROM threads WHERE id = ? AND deleted = 0 LIMIT 1",
-						)
-						.get(payload.thread_id);
-					if (errThread && errThread.interface !== "web") {
-						this.deliverPlatformPayload(entry, {
-							platform: errThread.interface,
-							thread_id: payload.thread_id,
-							message_id: payload.message_id,
-							content: "",
-						});
-					}
-				} catch {
-					// ignore — already in error path
-				}
+			this.stopTypingOnError(entry, payload);
+		}
+	}
+
+	/**
+	 * Run a delegated agent loop. Extracted from executeProcess so both the
+	 * executor-backed and fallback paths can share the same inference logic.
+	 */
+	private async runDelegatedLoop(
+		entry: RelayInboxEntry,
+		payload: ProcessPayload,
+		delegatedCtx: AppContext,
+		shouldYield?: () => boolean,
+	): Promise<Record<string, unknown>> {
+		const loopConfig: AgentLoopConfig = {
+			threadId: payload.thread_id,
+			userId: payload.user_id,
+			taskId: `delegated-${entry.id}`,
+			shouldYield,
+		};
+
+		if (payload.platform && this.platformConnectorRegistry) {
+			const connector = this.platformConnectorRegistry.getConnector(payload.platform);
+			if (connector?.getPlatformTools) {
+				const platformTools = connector.getPlatformTools(payload.thread_id, this.fileReader);
+				loopConfig.platform = payload.platform;
+				loopConfig.platformTools = platformTools;
 			}
+		}
+
+		const agentLoop = this.agentLoopFactory
+			? this.agentLoopFactory(loopConfig)
+			: new AgentLoop(
+					delegatedCtx,
+					{
+						/* sandbox not available — no tools in context */
+					} as object,
+					// biome-ignore lint/style/noNonNullAssertion: modelRouter checked before entering executeProcess
+					this.modelRouter!,
+					loopConfig,
+				);
+
+		const result = await agentLoop.run();
+		return {
+			yielded: result.yielded,
+			error: result.error,
+			messagesCreated: result.messagesCreated,
+		};
+	}
+
+	/**
+	 * Finalize a process relay: write the response and deliver to platform.
+	 */
+	private finalizeProcess(
+		entry: RelayInboxEntry,
+		payload: ProcessPayload,
+		result: Record<string, unknown>,
+	): void {
+		if (result.error) {
+			this.writeResponse(
+				entry,
+				"error",
+				JSON.stringify({ error: result.error, retriable: false }),
+			);
+			return;
+		}
+
+		this.writeResponse(entry, "result", JSON.stringify({ success: true }));
+
+		const thread = this.db
+			.query<{ interface: string }, [string]>(
+				"SELECT interface FROM threads WHERE id = ? AND deleted = 0 LIMIT 1",
+			)
+			.get(payload.thread_id);
+
+		if (payload.platform) {
+			if (thread && thread.interface !== "web") {
+				this.deliverPlatformPayload(entry, {
+					platform: thread.interface,
+					thread_id: payload.thread_id,
+					message_id: payload.message_id,
+					content: "",
+				});
+			}
+		} else {
+			if (thread && thread.interface !== "web") {
+				const lastAssistant = this.db
+					.query<{ id: string; content: string }, [string]>(
+						"SELECT id, content FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+					)
+					.get(payload.thread_id);
+
+				let textContent = "";
+				const messageId = lastAssistant?.id ?? payload.message_id;
+				if (lastAssistant) {
+					textContent = lastAssistant.content;
+					try {
+						const parsed = JSON.parse(lastAssistant.content);
+						if (Array.isArray(parsed)) {
+							textContent = parsed
+								.filter((b: { type: string; text?: string }) => b.type === "text")
+								.map((b: { text?: string }) => b.text ?? "")
+								.join("");
+						}
+					} catch {
+						// already a plain string
+					}
+				}
+
+				this.deliverPlatformPayload(entry, {
+					platform: thread.interface,
+					thread_id: payload.thread_id,
+					message_id: messageId,
+					content: textContent,
+				});
+			}
+		}
+	}
+
+	/**
+	 * Stop the typing indicator on error — emits platform:deliver with empty content.
+	 */
+	private stopTypingOnError(entry: RelayInboxEntry, payload: ProcessPayload): void {
+		if (!payload.platform) return;
+		try {
+			const errThread = this.db
+				.query<{ interface: string }, [string]>(
+					"SELECT interface FROM threads WHERE id = ? AND deleted = 0 LIMIT 1",
+				)
+				.get(payload.thread_id);
+			if (errThread && errThread.interface !== "web") {
+				this.deliverPlatformPayload(entry, {
+					platform: errThread.interface,
+					thread_id: payload.thread_id,
+					message_id: payload.message_id,
+					content: "",
+				});
+			}
+		} catch {
+			// ignore — already in error path
 		}
 	}
 

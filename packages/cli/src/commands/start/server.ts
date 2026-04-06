@@ -53,7 +53,7 @@ export interface ServerDeps {
 	relayProcessor: {
 		setPlatformConnectorRegistry(registry: unknown): void;
 		setAgentLoopFactory(factory: AgentLoopFactory): void;
-		setThreadExecutor?(executor: ThreadExecutor): void;
+		setThreadExecutor(executor: ThreadExecutor): void;
 	};
 }
 
@@ -84,7 +84,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	const threadExecutor = new ThreadExecutor(appContext.db, appContext.logger);
 
 	// Wire the executor into the relay processor for Discord/platform process relays.
-	relayProcessor.setThreadExecutor?.(threadExecutor);
+	relayProcessor.setThreadExecutor(threadExecutor);
 
 	// Platform registry — declared here so message:created handler can reference it,
 	// populated in the platform connectors section below.
