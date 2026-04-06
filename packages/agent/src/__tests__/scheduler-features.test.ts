@@ -885,7 +885,7 @@ describe("Scheduler features", () => {
 			}
 		});
 
-		it("inserts task payload as assistant prefill with neutral user message", async () => {
+		it("inserts task payload as system-role message", async () => {
 			const taskId = randomUUID();
 			const now = new Date().toISOString();
 			const pastTime = new Date(Date.now() - 60_000).toISOString();
@@ -916,7 +916,6 @@ describe("Scheduler features", () => {
 				capturedThreadId = config.threadId;
 				return {
 					run: async (): Promise<AgentLoopResult> => {
-						// Count messages visible before run() body executes
 						const rows = db
 							.query("SELECT COUNT(*) as c FROM messages WHERE thread_id = ?")
 							// biome-ignore lint/style/noNonNullAssertion: verified by expect above
@@ -937,28 +936,24 @@ describe("Scheduler features", () => {
 			});
 			stop();
 
-			// Two messages: neutral user message + assistant prefill
-			expect(messagesAtRunTime).toBeGreaterThanOrEqual(2);
+			// Single system message with the task payload
+			expect(messagesAtRunTime).toBeGreaterThanOrEqual(1);
 
-			// First message is a neutral user message (satisfies Bedrock requirement)
+			const sysMsg = db
+				.query(
+					"SELECT content, role FROM messages WHERE thread_id = ? AND role = 'system' ORDER BY created_at ASC LIMIT 1",
+				)
+				// biome-ignore lint/style/noNonNullAssertion: verified by expect above
+				.get(capturedThreadId!) as { content: string; role: string } | null;
+			expect(sysMsg).not.toBeNull();
+			expect(sysMsg?.content).toBe(payload);
+
+			// No user or assistant messages inserted by scheduler
 			const userMsg = db
-				.query(
-					"SELECT content, role FROM messages WHERE thread_id = ? AND role = 'user' ORDER BY created_at ASC LIMIT 1",
-				)
-				// biome-ignore lint/style/noNonNullAssertion: verified by expect above
-				.get(capturedThreadId!) as { content: string; role: string } | null;
-			expect(userMsg).not.toBeNull();
-			expect(userMsg?.content).toBe(".");
-
-			// Second message is the task payload as assistant prefill
-			const assistantMsg = db
-				.query(
-					"SELECT content, role FROM messages WHERE thread_id = ? AND role = 'assistant' ORDER BY created_at ASC LIMIT 1",
-				)
-				// biome-ignore lint/style/noNonNullAssertion: verified by expect above
-				.get(capturedThreadId!) as { content: string; role: string } | null;
-			expect(assistantMsg).not.toBeNull();
-			expect(assistantMsg?.content).toBe(payload);
+				.query("SELECT COUNT(*) as c FROM messages WHERE thread_id = ? AND role = 'user'")
+				// biome-ignore lint/style/noNonNullAssertion: verified above
+				.get(capturedThreadId!) as { c: number };
+			expect(userMsg.c).toBe(0);
 
 			if (capturedThreadId) {
 				db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
