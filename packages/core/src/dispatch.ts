@@ -27,25 +27,42 @@ export function enqueueMessage(db: Database, messageId: string, threadId: string
 export function claimPending(db: Database, threadId: string, claimedBy: string): DispatchEntry[] {
 	const now = new Date().toISOString();
 
-	const pending = db
-		.prepare(
-			`SELECT * FROM dispatch_queue
-			 WHERE thread_id = ? AND status = 'pending'
-			 ORDER BY created_at ASC`,
-		)
-		.all(threadId) as DispatchEntry[];
+	// Atomic SELECT + UPDATE inside BEGIN IMMEDIATE to prevent TOCTOU races
+	// in multi-process deployments. IMMEDIATE acquires a write lock before the
+	// SELECT, so no other process can claim the same entries concurrently.
+	db.exec("BEGIN IMMEDIATE");
+	try {
+		const pending = db
+			.prepare(
+				`SELECT * FROM dispatch_queue
+				 WHERE thread_id = ? AND status = 'pending'
+				 ORDER BY created_at ASC`,
+			)
+			.all(threadId) as DispatchEntry[];
 
-	if (pending.length === 0) return [];
+		if (pending.length === 0) {
+			db.exec("COMMIT");
+			return [];
+		}
 
-	const ids = pending.map((r) => r.message_id);
-	const placeholders = ids.map(() => "?").join(",");
-	db.prepare(
-		`UPDATE dispatch_queue
-		 SET status = 'processing', claimed_by = ?, modified_at = ?
-		 WHERE message_id IN (${placeholders})`,
-	).run(claimedBy, now, ...ids);
+		const ids = pending.map((r) => r.message_id);
+		const placeholders = ids.map(() => "?").join(",");
+		db.prepare(
+			`UPDATE dispatch_queue
+			 SET status = 'processing', claimed_by = ?, modified_at = ?
+			 WHERE message_id IN (${placeholders})`,
+		).run(claimedBy, now, ...ids);
 
-	return pending;
+		db.exec("COMMIT");
+		return pending;
+	} catch (error) {
+		try {
+			db.exec("ROLLBACK");
+		} catch {
+			// ROLLBACK may fail if transaction was already rolled back
+		}
+		throw error;
+	}
 }
 
 /**
