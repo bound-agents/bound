@@ -161,7 +161,6 @@ function handleForget(args: Record<string, string>, ctx: CommandContext) {
 		return commandError("usage: memory forget <key> [--prefix P]");
 	}
 
-	const memoryId = deterministicUUID(BOUND_NAMESPACE, key);
 	// bun:sqlite .get() returns null (not undefined) when no row found
 	const existing = ctx.db
 		.prepare("SELECT id FROM semantic_memory WHERE key = ? AND deleted = 0")
@@ -171,7 +170,9 @@ function handleForget(args: Record<string, string>, ctx: CommandContext) {
 		return commandError(`Memory not found: ${key}`);
 	}
 
-	softDelete(ctx.db, "semantic_memory", memoryId, ctx.siteId);
+	// Use existing.id — not deterministicUUID — because entries created by
+	// thread fact extraction, heartbeat, or research evaluator use random UUIDs.
+	softDelete(ctx.db, "semantic_memory", existing.id, ctx.siteId);
 
 	// Cascade: soft-delete all edges referencing this key (as source or target)
 	const edgesCascaded = cascadeDeleteEdges(ctx.db, key, ctx.siteId);

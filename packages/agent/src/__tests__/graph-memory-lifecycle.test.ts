@@ -376,4 +376,77 @@ describe("Graph Memory Lifecycle - Sync and Edge Cascading", () => {
 			expect(memory?.deleted).toBe(0);
 		});
 	});
+
+	describe("memory forget with non-deterministic IDs", () => {
+		it("deletes entries created with random UUIDs (not deterministicUUID)", async () => {
+			const key = "thread_fact_user_preference";
+			const randomId = randomUUID(); // simulates thread fact extraction
+			const now = new Date().toISOString();
+
+			// Insert with a random UUID — NOT deterministicUUID(BOUND_NAMESPACE, key)
+			insertRow(
+				db,
+				"semantic_memory",
+				{
+					id: randomId,
+					key,
+					value: "User prefers dark mode",
+					source: "extraction",
+					created_at: now,
+					modified_at: now,
+					deleted: 0,
+				},
+				siteId,
+			);
+
+			// Import and call memory command's forget handler
+			const { memory } = await import("../commands/memory");
+			const result = await memory.handler({ subcommand: "forget", key }, ctx);
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain("Memory deleted");
+
+			// THE BUG: softDelete targets deterministicUUID(BOUND_NAMESPACE, key)
+			// which is different from randomId. The row should be deleted but isn't.
+			const row = db.prepare("SELECT deleted FROM semantic_memory WHERE key = ?").get(key) as {
+				deleted: number;
+			} | null;
+
+			expect(row).not.toBeNull();
+			expect(row?.deleted).toBe(1);
+		});
+
+		it("still deletes entries created with deterministicUUID (regression check)", async () => {
+			const key = "user_stored_memory";
+			const detId = deterministicUUID(BOUND_NAMESPACE, key);
+			const now = new Date().toISOString();
+
+			insertRow(
+				db,
+				"semantic_memory",
+				{
+					id: detId,
+					key,
+					value: "Something the user stored",
+					source: "agent",
+					created_at: now,
+					modified_at: now,
+					deleted: 0,
+				},
+				siteId,
+			);
+
+			const { memory } = await import("../commands/memory");
+			const result = await memory.handler({ subcommand: "forget", key }, ctx);
+
+			expect(result.exitCode).toBe(0);
+
+			const row = db.prepare("SELECT deleted FROM semantic_memory WHERE key = ?").get(key) as {
+				deleted: number;
+			} | null;
+
+			expect(row).not.toBeNull();
+			expect(row?.deleted).toBe(1);
+		});
+	});
 });
