@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { applySchema, createDatabase, getSiteId, insertRow } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Hono } from "hono";
-import { createApp } from "../index";
+import { createWebApp } from "../index";
 
 describe("R-U23/25/26: View APIs", () => {
 	let db: Database;
@@ -22,7 +22,7 @@ describe("R-U23/25/26: View APIs", () => {
 		siteId = getSiteId(db);
 
 		eventBus = new TypedEventEmitter();
-		app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+		app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 	});
 
 	describe("GET /api/tasks (R-U23: Timetable view)", () => {

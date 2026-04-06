@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import { applySchema, createDatabase } from "@bound/core";
 import { BOUND_NAMESPACE, TypedEventEmitter, deterministicUUID } from "@bound/shared";
 import type { Hono } from "hono";
-import { createApp } from "../index";
+import { createWebApp } from "../index";
 
 describe("POST /api/mcp/threads", () => {
 	let db: Database;
@@ -13,7 +13,7 @@ describe("POST /api/mcp/threads", () => {
 		db = createDatabase(":memory:");
 		applySchema(db);
 		const eventBus = new TypedEventEmitter();
-		app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+		app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 	});
 
 	it("mcp-server.AC6.1: returns 201 with thread_id", async () => {

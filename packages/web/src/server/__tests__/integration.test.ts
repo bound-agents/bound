@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { applySchema, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
-import { createApp } from "../index";
+import { createWebApp } from "../index";
 
 describe("Server Integration", () => {
 	let db: ReturnType<typeof createDatabase>;
@@ -15,7 +15,7 @@ describe("Server Integration", () => {
 
 	describe("HTTP Routes", () => {
 		it("serves API routes at /api/status", async () => {
-			const app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+			const app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 			const request = new Request("http://localhost:3000/api/status");
 			const response = await app.fetch(request);
 
@@ -27,7 +27,7 @@ describe("Server Integration", () => {
 		});
 
 		it("serves /api/threads endpoint", async () => {
-			const app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+			const app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 			const request = new Request("http://localhost:3000/api/threads");
 			const response = await app.fetch(request);
 
@@ -38,7 +38,7 @@ describe("Server Integration", () => {
 		});
 
 		it("handles POST /api/threads to create a thread", async () => {
-			const app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+			const app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 			const request = new Request("http://localhost:3000/api/threads", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -53,7 +53,7 @@ describe("Server Integration", () => {
 		});
 
 		it("handles GET /api/tasks", async () => {
-			const app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+			const app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 			const request = new Request("http://localhost:3000/api/tasks");
 			const response = await app.fetch(request);
 
@@ -63,7 +63,7 @@ describe("Server Integration", () => {
 		});
 
 		it("handles GET /api/files", async () => {
-			const app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+			const app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 			const request = new Request("http://localhost:3000/api/files");
 			const response = await app.fetch(request);
 
@@ -73,7 +73,7 @@ describe("Server Integration", () => {
 		});
 
 		it("serves static assets (SPA fallback)", async () => {
-			const app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+			const app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 			// Note: This assumes dist/client/index.html exists from the build
 			const request = new Request("http://localhost:3000/");
 			const response = await app.fetch(request);
@@ -86,7 +86,7 @@ describe("Server Integration", () => {
 
 	describe("API error handling", () => {
 		it("returns 404 for non-existent threads", async () => {
-			const app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+			const app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 			const request = new Request("http://localhost:3000/api/threads/nonexistent");
 			const response = await app.fetch(request);
 
@@ -96,7 +96,7 @@ describe("Server Integration", () => {
 		});
 
 		it("returns consistent error format", async () => {
-			const app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+			const app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 			const request = new Request("http://localhost:3000/api/threads/invalid-id");
 			const response = await app.fetch(request);
 

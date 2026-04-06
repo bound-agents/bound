@@ -20,66 +20,63 @@ async function loadEmbeddedAssets(): Promise<AssetMap> {
 
 export type { ModelsConfig };
 
-export interface AppConfig {
+export interface WebAppConfig {
 	modelsConfig?: ModelsConfig;
 	hostName?: string;
 	siteId?: string;
 	operatorUserId: string;
-	keyring?: KeyringConfig;
-	logger?: Logger;
-	relayExecutor?: RelayExecutor;
-	hubSiteId?: string;
-	eagerPushConfig?: EagerPushConfig;
 	statusForwardCache?: Map<string, StatusForwardPayload>;
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	activeLoops?: Set<string>;
+}
+
+export interface SyncAppConfig {
+	siteId: string;
+	keyring: KeyringConfig;
+	logger: Logger;
+	relayExecutor?: RelayExecutor;
+	hubSiteId?: string;
+	eagerPushConfig?: EagerPushConfig;
 	keyManager?: KeyManager;
 }
 
-export async function createApp(
+/**
+ * Create the web/API Hono app: API routes, webhook routes, static assets, DNS-rebinding protection.
+ * Does NOT include sync routes — those live on a separate listener via createSyncApp().
+ */
+export async function createWebApp(
 	db: Database,
 	eventBus: TypedEventEmitter,
-	appConfig?: AppConfig | ModelsConfig,
+	config: WebAppConfig,
 ): Promise<Hono> {
-	// Discriminate: ModelsConfig has "models" + "default"; AppConfig wraps it as "modelsConfig"
-	const isModelsConfig = appConfig && "models" in appConfig && "default" in appConfig;
-	const modelsConfig = isModelsConfig
-		? (appConfig as ModelsConfig)
-		: (appConfig as AppConfig | undefined)?.modelsConfig;
-	const typedAppConfig = appConfig && !isModelsConfig ? (appConfig as AppConfig) : undefined;
-	if (!typedAppConfig?.operatorUserId) {
+	if (!config.operatorUserId) {
 		throw new Error(
-			"operatorUserId is required in AppConfig. " +
+			"operatorUserId is required in WebAppConfig. " +
 				"Resolve it from allowlist: deterministicUUID(BOUND_NAMESPACE, allowlist.default_web_user)",
 		);
 	}
 
 	const routesConfig: RoutesConfig = {
-		modelsConfig,
-		hostName: typedAppConfig?.hostName,
-		siteId: typedAppConfig?.siteId,
-		operatorUserId: typedAppConfig.operatorUserId,
-		statusForwardCache: typedAppConfig?.statusForwardCache,
-		activeDelegations: typedAppConfig?.activeDelegations,
-		activeLoops: typedAppConfig?.activeLoops,
+		modelsConfig: config.modelsConfig,
+		hostName: config.hostName,
+		siteId: config.siteId,
+		operatorUserId: config.operatorUserId,
+		statusForwardCache: config.statusForwardCache,
+		activeDelegations: config.activeDelegations,
+		activeLoops: config.activeLoops,
 	};
 
 	const app = new Hono();
 	const routes = registerRoutes(db, eventBus, routesConfig);
 
 	// Host header validation middleware — DNS-rebinding protection for unauthenticated routes.
-	// /sync/* and /api/relay-deliver are exempt: they carry Ed25519 signature auth and must be
-	// reachable by remote spokes connecting to a hub through a reverse proxy.
 	app.use("*", async (c, next) => {
 		const host = c.req.header("host");
 		if (host) {
 			const hostName = host.split(":")[0];
 			const allowedHosts = ["localhost", "127.0.0.1", "[::1]"];
 			if (!allowedHosts.includes(hostName)) {
-				const path = new URL(c.req.url).pathname;
-				if (!path.startsWith("/sync/") && path !== "/api/relay-deliver") {
-					return c.json({ error: "Invalid Host header" }, 400);
-				}
+				return c.json({ error: "Invalid Host header" }, 400);
 			}
 		}
 		return next();
@@ -96,34 +93,6 @@ export async function createApp(
 
 	// Webhook routes
 	app.route("/hooks", createWebhookRoutes(eventBus));
-
-	// Mount sync routes if siteId, keyring, and logger are available
-	if (
-		appConfig &&
-		"siteId" in appConfig &&
-		appConfig.siteId &&
-		appConfig.keyring &&
-		appConfig.logger
-	) {
-		try {
-			const { createSyncRoutes } = await import("@bound/sync");
-			const syncRoutes = createSyncRoutes(
-				db,
-				appConfig.siteId,
-				appConfig.keyring,
-				eventBus,
-				appConfig.logger,
-				appConfig.relayExecutor,
-				appConfig.hubSiteId,
-				appConfig.eagerPushConfig,
-				undefined,
-				appConfig.keyManager,
-			);
-			app.route("/", syncRoutes);
-		} catch (error) {
-			console.warn("[web] Sync routes unavailable:", formatError(error));
-		}
-	}
 
 	// Serve static Svelte SPA assets
 	const assets = await loadEmbeddedAssets();
@@ -147,4 +116,36 @@ export async function createApp(
 	}
 
 	return app;
+}
+
+/**
+ * Create the sync Hono app: sync routes + relay-deliver with Ed25519 auth.
+ * Served on the primary port, externally accessible for hub-spoke replication.
+ */
+export async function createSyncApp(
+	db: Database,
+	eventBus: TypedEventEmitter,
+	config: SyncAppConfig,
+): Promise<Hono | null> {
+	try {
+		const { createSyncRoutes } = await import("@bound/sync");
+		const syncRoutes = createSyncRoutes(
+			db,
+			config.siteId,
+			config.keyring,
+			eventBus,
+			config.logger,
+			config.relayExecutor,
+			config.hubSiteId,
+			config.eagerPushConfig,
+			undefined,
+			config.keyManager,
+		);
+		const app = new Hono();
+		app.route("/", syncRoutes);
+		return app;
+	} catch (error) {
+		console.warn("[sync] Sync routes unavailable:", formatError(error));
+		return null;
+	}
 }

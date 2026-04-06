@@ -19,8 +19,9 @@ async function main() {
 
 		// Create and start web server
 		const webServer = await createWebServer(ctx.db, eventBus, {
-			port: 3000,
+			port: 3001,
 			host: "localhost",
+			operatorUserId: "test-operator",
 		});
 
 		await webServer.start();

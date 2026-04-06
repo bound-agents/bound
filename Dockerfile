@@ -49,9 +49,10 @@ USER bound
 # data/   — SQLite database (bound.db) and Ed25519 keypair (host.key / host.pub)
 VOLUME ["/app/config", "/app/data"]
 
-# The server binds to localhost by default (DNS-rebinding protection).
-# To expose outside the container use --network host, or front with a
-# reverse proxy (nginx, Caddy) that forwards to 127.0.0.1:3000.
-EXPOSE 3000
+# Two listeners: sync (PORT, default 3000) and web UI (WEB_PORT, default 3001).
+# Sync port handles hub-spoke replication (Ed25519 authenticated).
+# Web port serves the UI and API (DNS-rebinding protected, bind to localhost).
+# In production, expose only the sync port externally.
+EXPOSE 3000 3001
 
 ENTRYPOINT ["bound", "start", "--config-dir", "/app/config"]

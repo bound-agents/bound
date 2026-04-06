@@ -9,7 +9,7 @@ function getBaseUrl(argv: string[], env: Record<string, string | undefined>): st
 	if (urlIdx !== -1 && args[urlIdx + 1]) {
 		return args[urlIdx + 1];
 	}
-	return env.BOUND_URL ?? "http://localhost:3000";
+	return env.BOUND_URL ?? "http://localhost:3001";
 }
 
 describe("bound-mcp bound_chat schema", () => {
@@ -51,9 +51,9 @@ describe("bound-mcp URL configuration", () => {
 		expect(url).toBe("http://myhost:4000");
 	});
 
-	it("mcp-server.AC3.3: defaults to http://localhost:3000 when neither provided", () => {
+	it("mcp-server.AC3.3: defaults to http://localhost:3001 when neither provided", () => {
 		const url = getBaseUrl(["bun", "server.ts"], {});
-		expect(url).toBe("http://localhost:3000");
+		expect(url).toBe("http://localhost:3001");
 	});
 
 	it("--url takes precedence over BOUND_URL", () => {

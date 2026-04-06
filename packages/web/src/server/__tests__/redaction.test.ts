@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { applySchema, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Hono } from "hono";
-import { createApp } from "../index";
+import { createWebApp } from "../index";
 
 describe("Redaction API Endpoints (R-E18)", () => {
 	let db: Database;
@@ -15,7 +15,7 @@ describe("Redaction API Endpoints (R-E18)", () => {
 		db = createDatabase(":memory:");
 		applySchema(db);
 		eventBus = new TypedEventEmitter();
-		app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+		app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 	});
 
 	async function createThread(): Promise<string> {

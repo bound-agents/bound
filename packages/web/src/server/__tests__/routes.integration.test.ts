@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import { applySchema, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Hono } from "hono";
-import { createApp } from "../index";
+import { createWebApp } from "../index";
 
 describe("API Routes", () => {
 	let db: Database;
@@ -14,7 +14,7 @@ describe("API Routes", () => {
 		db = createDatabase(":memory:");
 		applySchema(db);
 		eventBus = new TypedEventEmitter();
-		app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+		app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 	});
 
 	describe("GET /api/threads", () => {

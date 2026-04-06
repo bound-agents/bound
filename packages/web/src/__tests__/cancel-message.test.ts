@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
-import { createApp } from "../server/index";
+import { createWebApp } from "../server/index";
 
 describe("R-E14: Cancel persists system cancellation message with host name", () => {
 	let dbPath: string;
@@ -62,7 +62,7 @@ describe("R-E14: Cancel persists system cancellation message with host name", ()
 	});
 
 	it("persists a system message with host name when cancelling", async () => {
-		const app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+		const app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 
 		// POST to cancel endpoint
 		const res = await app.request(`/api/status/cancel/${threadId}`, {
@@ -99,7 +99,7 @@ describe("R-E14: Cancel persists system cancellation message with host name", ()
 	});
 
 	it("returns 404 when thread not found", async () => {
-		const app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+		const app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 
 		const fakeThreadId = randomUUID();
 		const res = await app.request(`/api/status/cancel/${fakeThreadId}`, {
@@ -116,7 +116,7 @@ describe("R-E14: Cancel persists system cancellation message with host name", ()
 	});
 
 	it("emits agent:cancel event", async () => {
-		const app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+		const app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 
 		let emittedEvent: { thread_id: string } | null = null;
 		eventBus.once("agent:cancel", (payload) => {

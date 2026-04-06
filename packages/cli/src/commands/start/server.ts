@@ -22,7 +22,7 @@ import type { KeyringConfig, ProcessPayload, StatusForwardPayload } from "@bound
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import type { KeyManager, RelayExecutor, SyncTransport } from "@bound/sync";
 import type { ReachabilityTracker } from "@bound/sync";
-import { createWebServer } from "@bound/web";
+import { createSyncServer, createWebServer } from "@bound/web";
 import { runLocalAgentLoop } from "../../lib/message-handler";
 
 export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
@@ -43,6 +43,7 @@ export function formatNotification(payload: Record<string, unknown>): string {
 
 export interface ServerResult {
 	webServer: Awaited<ReturnType<typeof createWebServer>> | null;
+	syncServer: Awaited<ReturnType<typeof createSyncServer>> | null;
 	statusForwardCache: Map<string, StatusForwardPayload>;
 	activeDelegations: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	threadExecutor: ThreadExecutor;
@@ -93,9 +94,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	// Wire the factory into the relay processor so process relays run with full sandbox + tools.
 	relayProcessor.setAgentLoopFactory(agentLoopFactory);
 
-	// 12. Web server
-	appContext.logger.info("Starting web server...");
+	// 12. Web + sync servers
+	appContext.logger.info("Starting servers...");
 	let webServer: Awaited<ReturnType<typeof createWebServer>> | null = null;
+	let syncServer: Awaited<ReturnType<typeof createSyncServer>> | null = null;
 	const statusForwardCache = new Map<string, StatusForwardPayload>();
 	const activeDelegations = new Map<string, { targetSiteId: string; processOutboxId: string }>();
 	const threadExecutor = new ThreadExecutor(appContext.db, appContext.logger);
@@ -125,8 +127,14 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 					}
 				: undefined;
 
-		const webPort = Number.parseInt(process.env.PORT || "3000", 10);
-		const webHost = process.env.BIND_HOST ?? "localhost";
+		// Sync server: primary port, externally accessible for hub-spoke replication
+		const syncPort = Number.parseInt(process.env.PORT || "3000", 10);
+		const syncHost = process.env.BIND_HOST ?? "localhost";
+
+		// Web server: internal management interface
+		const webPort = Number.parseInt(process.env.WEB_PORT || "3001", 10);
+		const webHost = process.env.WEB_BIND_HOST ?? "localhost";
+
 		// Deduplicate models by ID — pooled backends (same ID, multiple providers)
 		// should appear as a single entry. Use the first provider for display.
 		const seenIds = new Set<string>();
@@ -152,18 +160,30 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				models: uniqueModels,
 				default: modelBackends.default,
 			},
-			keyring,
 			siteId: appContext.siteId,
-			logger: appContext.logger,
-			relayExecutor,
-			hubSiteId,
-			eagerPushConfig,
 			statusForwardCache,
 			activeDelegations,
 			activeLoops: threadExecutor.activeThreads as Set<string>,
-			keyManager,
 		});
 		await webServer.start();
+
+		// Start sync server if sync prerequisites are available
+		if (appContext.siteId && keyring && appContext.logger) {
+			syncServer = await createSyncServer(appContext.db, appContext.eventBus, {
+				port: syncPort,
+				host: syncHost,
+				siteId: appContext.siteId,
+				keyring,
+				logger: appContext.logger,
+				relayExecutor,
+				hubSiteId,
+				eagerPushConfig,
+				keyManager,
+			});
+			if (syncServer) {
+				await syncServer.start();
+			}
+		}
 
 		// Wire message:created events to the agent loop
 		const activeLoopAbortControllers = new Map<string, AbortController>();
@@ -520,6 +540,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 	return {
 		webServer,
+		syncServer,
 		statusForwardCache,
 		activeDelegations,
 		threadExecutor,

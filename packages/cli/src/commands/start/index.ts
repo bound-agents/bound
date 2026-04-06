@@ -79,6 +79,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				})
 			: {
 					webServer: null,
+					syncServer: null,
 					statusForwardCache: new Map(),
 					activeDelegations: new Map(),
 					threadExecutor: new ThreadExecutor(appContext.db, appContext.logger),
@@ -99,11 +100,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 		? initScheduler(appContext, agentLoopFactory, modelRouter, sandbox)
 		: { schedulerHandle: null };
 
+	const webPort = process.env.WEB_PORT || "3001";
 	appContext.logger.info(`
 Bound is running!
 Operator: ${appContext.config.allowlist.default_web_user}
 
-Open http://localhost:3000 in your browser to start chatting.
+Open http://localhost:${webPort} in your browser to start chatting.
 
 Press Ctrl+C to stop.
 `);
@@ -118,5 +120,6 @@ Press Ctrl+C to stop.
 		platformRegistry: serverResult.platformRegistry,
 		mcpClientsMap,
 		webServer: serverResult.webServer,
+		syncServer: serverResult.syncServer,
 	});
 }

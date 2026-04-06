@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Hono } from "hono";
-import { createApp } from "../index";
+import { createWebApp } from "../index";
 
 /**
  * Security regression tests for API endpoints.
@@ -19,7 +19,7 @@ describe("API Security", () => {
 		applySchema(db);
 		applyMetricsSchema(db);
 		eventBus = new TypedEventEmitter();
-		app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+		app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 	});
 
 	async function createThread(): Promise<string> {

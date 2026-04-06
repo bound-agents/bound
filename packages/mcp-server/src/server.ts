@@ -10,7 +10,7 @@ function getBaseUrl(): string {
 	if (urlIdx !== -1 && args[urlIdx + 1]) {
 		return args[urlIdx + 1];
 	}
-	return process.env.BOUND_URL ?? "http://localhost:3000";
+	return process.env.BOUND_URL ?? "http://localhost:3001";
 }
 
 async function main(): Promise<void> {

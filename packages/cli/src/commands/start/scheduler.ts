@@ -32,6 +32,7 @@ export interface ShutdownHandles {
 	platformRegistry: { start(): void; stop(): void } | null;
 	mcpClientsMap: Map<string, MCPClient>;
 	webServer: { stop(): Promise<void> } | null;
+	syncServer: { stop(): Promise<void> } | null;
 }
 
 export function initScheduler(
@@ -171,6 +172,7 @@ export function setupGracefulShutdown(
 				}
 			}
 			if (handles.webServer) await handles.webServer.stop();
+			if (handles.syncServer) await handles.syncServer.stop();
 			resolve();
 		};
 

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import { applySchema, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Hono } from "hono";
-import { createApp } from "../index";
+import { createWebApp } from "../index";
 
 describe("R-U18: Thread colors cycle sequentially 0-9", () => {
 	let db: Database;
@@ -14,7 +14,7 @@ describe("R-U18: Thread colors cycle sequentially 0-9", () => {
 		db = createDatabase(":memory:");
 		applySchema(db);
 		eventBus = new TypedEventEmitter();
-		app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+		app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 	});
 
 	it("first thread gets color 0", async () => {

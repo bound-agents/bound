@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
-import type { KeyringConfig, Logger, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
-import type { EagerPushConfig, KeyManager, RelayExecutor } from "@bound/sync";
-import { type AppConfig, type ModelsConfig, createApp } from "./index";
+import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
+import type { ModelsConfig, SyncAppConfig, WebAppConfig } from "./index";
+import { createSyncApp, createWebApp } from "./index";
 import { createWebSocketHandler } from "./websocket";
 
 export type { ModelsConfig };
@@ -12,16 +12,15 @@ export interface WebServerConfig {
 	hostName?: string;
 	operatorUserId: string;
 	models?: ModelsConfig;
-	keyring?: KeyringConfig;
 	siteId?: string;
-	logger?: Logger;
-	relayExecutor?: RelayExecutor;
-	hubSiteId?: string;
-	eagerPushConfig?: EagerPushConfig;
 	statusForwardCache?: Map<string, StatusForwardPayload>;
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	activeLoops?: Set<string>;
-	keyManager?: KeyManager;
+}
+
+export interface SyncServerConfig extends SyncAppConfig {
+	port?: number;
+	host?: string;
 }
 
 export interface WebServer {
@@ -31,34 +30,28 @@ export interface WebServer {
 }
 
 /**
- * Create and start the web server with Hono API routes, WebSocket support, and static asset serving
+ * Create the web server: API routes, WebSocket, static assets, DNS-rebinding protection.
+ * Binds to WEB_PORT (default 3001) on WEB_BIND_HOST (default localhost).
  */
 export async function createWebServer(
 	db: Database,
 	eventBus: TypedEventEmitter,
 	config: WebServerConfig,
 ): Promise<WebServer> {
-	const port = config.port ?? 3000;
+	const port = config.port ?? 3001;
 	const host = config.host ?? "localhost";
 
-	const appConfig: AppConfig = {
+	const webAppConfig: WebAppConfig = {
 		modelsConfig: config.models,
 		hostName: config.hostName,
 		operatorUserId: config.operatorUserId,
-		keyring: config.keyring,
 		siteId: config.siteId,
-		logger: config.logger,
-		relayExecutor: config.relayExecutor,
-		hubSiteId: config.hubSiteId,
-		eagerPushConfig: config.eagerPushConfig,
 		statusForwardCache: config.statusForwardCache,
 		activeDelegations: config.activeDelegations,
 		activeLoops: config.activeLoops,
-		keyManager: config.keyManager,
 	};
 
-	// Create the Hono app with all routes (loads embedded assets if available)
-	const app = await createApp(db, eventBus, appConfig);
+	const app = await createWebApp(db, eventBus, webAppConfig);
 
 	// Request logging middleware
 	app.use("*", async (c, next) => {
@@ -71,7 +64,6 @@ export async function createWebServer(
 	// Create WebSocket handler
 	const wsHandler = createWebSocketHandler(eventBus);
 
-	// Start the server with Bun.serve
 	let server: ReturnType<typeof Bun.serve> | null = null;
 
 	return {
@@ -80,7 +72,6 @@ export async function createWebServer(
 				port,
 				hostname: host,
 				fetch(request: Request, server) {
-					// Check for WebSocket upgrade on /ws path
 					const url = new URL(request.url);
 					if (url.pathname === "/ws" && request.headers.get("upgrade") === "websocket") {
 						if (server.upgrade(request, { data: undefined })) {
@@ -88,7 +79,6 @@ export async function createWebServer(
 						}
 						return new Response("WebSocket upgrade failed", { status: 500 });
 					}
-					// Pass to Hono (no extra args — Bun server object confuses Hono's Env)
 					return app.fetch(request);
 				},
 				websocket: wsHandler,
@@ -99,6 +89,58 @@ export async function createWebServer(
 
 		async stop(): Promise<void> {
 			wsHandler.cleanup();
+			if (server) {
+				server.stop(true);
+				server = null;
+			}
+		},
+
+		address(): string {
+			return `http://${host}:${port}`;
+		},
+	};
+}
+
+/**
+ * Create the sync server: sync routes + relay-deliver with Ed25519 auth.
+ * Binds to PORT (default 3000) on BIND_HOST (default localhost).
+ * Returns null if sync prerequisites are missing.
+ */
+export async function createSyncServer(
+	db: Database,
+	eventBus: TypedEventEmitter,
+	config: SyncServerConfig,
+): Promise<WebServer | null> {
+	const port = config.port ?? 3000;
+	const host = config.host ?? "localhost";
+
+	const app = await createSyncApp(db, eventBus, config);
+	if (!app) return null;
+
+	// Request logging middleware
+	app.use("*", async (c, next) => {
+		const method = c.req.method;
+		const path = new URL(c.req.url).pathname;
+		console.log(`[sync] ${method} ${path}`);
+		return next();
+	});
+
+	let server: ReturnType<typeof Bun.serve> | null = null;
+
+	return {
+		async start(): Promise<void> {
+			server = Bun.serve({
+				port,
+				hostname: host,
+				fetch(request: Request) {
+					return app.fetch(request);
+				},
+			});
+
+			console.log(`Sync server listening on http://${host}:${port}`);
+		},
+
+		async stop(): Promise<void> {
 			if (server) {
 				server.stop(true);
 				server = null;

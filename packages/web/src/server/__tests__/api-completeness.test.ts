@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Hono } from "hono";
-import { createApp } from "../../server/index";
+import { createWebApp } from "../../server/index";
 
 describe("API endpoint completeness", () => {
 	let db: Database;
@@ -38,7 +38,7 @@ describe("API endpoint completeness", () => {
 
 		db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', ?)", [siteId]);
 
-		app = await createApp(db, eventBus, { operatorUserId: "test-operator" });
+		app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 
 		// Seed data so parameterised lookups do not 404 on missing *data*
 		// (we want to distinguish "route not found" from "resource not found").
