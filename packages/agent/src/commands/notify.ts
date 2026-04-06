@@ -134,6 +134,12 @@ async function handleSingleUser(
 		return commandError(`No ${platform} thread found for user ${username}`);
 	}
 
+	if (sourceThreadId && thread.id === sourceThreadId) {
+		return commandError(
+			"Cannot notify the current thread. Run notify from a background task to deliver to this thread.",
+		);
+	}
+
 	enqueueAndSignal(ctx, thread.id, sourceThreadId, message);
 	return commandSuccess(`Notification enqueued for ${username} on ${platform}.\n`);
 }

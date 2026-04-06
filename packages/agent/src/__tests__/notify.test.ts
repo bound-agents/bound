@@ -231,6 +231,43 @@ describe("notify command", () => {
 		});
 	});
 
+	describe("self-target guard", () => {
+		it("rejects notification targeting the current thread", async () => {
+			const userId = seedUser(testUsername, { [testPlatform]: testPlatformUserId });
+			const threadId = seedThread(userId, testPlatform);
+
+			// Set ctx.threadId to the SAME thread that would be resolved
+			ctx.threadId = threadId;
+
+			const result = await notify.handler(
+				{ user: testUsername, platform: testPlatform, message: "hello self" },
+				ctx,
+			);
+
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain("current thread");
+
+			// Verify no dispatch entry was created
+			const entries = db.query("SELECT * FROM dispatch_queue WHERE thread_id = ?").all(threadId);
+			expect(entries).toHaveLength(0);
+		});
+
+		it("allows notification when source and target threads differ", async () => {
+			const userId = seedUser(testUsername, { [testPlatform]: testPlatformUserId });
+			seedThread(userId, testPlatform);
+
+			// Source thread is different from target
+			ctx.threadId = "different-source-thread";
+
+			const result = await notify.handler(
+				{ user: testUsername, platform: testPlatform, message: "hello" },
+				ctx,
+			);
+
+			expect(result.exitCode).toBe(0);
+		});
+	});
+
 	describe("event emission", () => {
 		it("emits notify:enqueued event for each target thread", async () => {
 			const userId = seedUser(testUsername, { [testPlatform]: testPlatformUserId });
