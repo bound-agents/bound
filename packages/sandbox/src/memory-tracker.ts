@@ -1,6 +1,6 @@
 import type { IFileSystem } from "just-bash";
 
-const DEFAULT_MEMORY_THRESHOLD_BYTES = 50 * 1024 * 1024; // 50MB
+const DEFAULT_MEMORY_THRESHOLD_BYTES = 500 * 1024 * 1024; // 500MB
 
 export interface MemoryThresholdResult {
 	overThreshold: boolean;

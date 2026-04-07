@@ -62,7 +62,7 @@ describe("MemoryTracker", () => {
 
 	test("defaults to 50MB threshold", () => {
 		const tracker = new MemoryTracker();
-		expect(tracker.getThresholdBytes()).toBe(50 * 1024 * 1024);
+		expect(tracker.getThresholdBytes()).toBe(500 * 1024 * 1024);
 	});
 
 	test("tracks Uint8Array content correctly", () => {

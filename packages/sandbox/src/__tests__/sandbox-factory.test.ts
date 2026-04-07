@@ -138,6 +138,6 @@ describe("Sandbox Factory", () => {
 		const sandbox = await createSandbox(config);
 		const result = sandbox.checkMemoryThreshold();
 
-		expect(result.thresholdBytes).toBe(50 * 1024 * 1024);
+		expect(result.thresholdBytes).toBe(500 * 1024 * 1024);
 	});
 });
