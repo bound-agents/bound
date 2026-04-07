@@ -8,6 +8,31 @@ import {
 } from "../advisories";
 import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
+/**
+ * Resolve a (possibly prefix-truncated) advisory ID to the full UUID.
+ * handleList displays IDs as `id.slice(0, 8)`, so agents typically pass
+ * short prefixes. Returns the full ID or an error message.
+ */
+function resolveAdvisoryId(
+	db: import("bun:sqlite").Database,
+	prefix: string,
+): { ok: true; id: string } | { ok: false; error: string } {
+	const trimmed = prefix.trim();
+	const rows = db
+		.prepare("SELECT id FROM advisories WHERE id LIKE ? AND deleted = 0 LIMIT 2")
+		.all(`${trimmed}%`) as Array<{ id: string }>;
+	if (rows.length === 0) {
+		return { ok: false, error: `No advisory found matching "${trimmed}"` };
+	}
+	if (rows.length > 1) {
+		return {
+			ok: false,
+			error: `Ambiguous prefix "${trimmed}" — matches multiple advisories. Use a longer prefix.`,
+		};
+	}
+	return { ok: true, id: rows[0].id };
+}
+
 function handleCreate(args: Record<string, string>, ctx: CommandContext) {
 	const title = args.title || args.source;
 	const detail = args.detail || args.target;
@@ -37,52 +62,68 @@ function handleCreate(args: Record<string, string>, ctx: CommandContext) {
 }
 
 function handleDismiss(args: Record<string, string>, ctx: CommandContext) {
-	const id = args.source || args.id;
-	if (!id?.trim()) {
+	const rawId = args.source || args.id;
+	if (!rawId?.trim()) {
 		return commandError("usage: advisory dismiss <id>");
 	}
-	const result = dismissAdvisory(ctx.db, id.trim(), ctx.siteId);
+	const resolved = resolveAdvisoryId(ctx.db, rawId);
+	if (!resolved.ok) {
+		return commandError(resolved.error);
+	}
+	const result = dismissAdvisory(ctx.db, resolved.id, ctx.siteId);
 	if (!result.ok) {
 		return commandError(`Failed to dismiss advisory: ${result.error.message}`);
 	}
-	return commandSuccess(`Advisory ${id} dismissed.\n`);
+	return commandSuccess(`Advisory ${resolved.id} dismissed.\n`);
 }
 
 function handleApprove(args: Record<string, string>, ctx: CommandContext) {
-	const id = args.source || args.id;
-	if (!id?.trim()) {
+	const rawId = args.source || args.id;
+	if (!rawId?.trim()) {
 		return commandError("usage: advisory approve <id>");
 	}
-	const result = approveAdvisory(ctx.db, id.trim(), ctx.siteId);
+	const resolved = resolveAdvisoryId(ctx.db, rawId);
+	if (!resolved.ok) {
+		return commandError(resolved.error);
+	}
+	const result = approveAdvisory(ctx.db, resolved.id, ctx.siteId);
 	if (!result.ok) {
 		return commandError(`Failed to approve advisory: ${result.error.message}`);
 	}
-	return commandSuccess(`Advisory ${id} approved.\n`);
+	return commandSuccess(`Advisory ${resolved.id} approved.\n`);
 }
 
 function handleApply(args: Record<string, string>, ctx: CommandContext) {
-	const id = args.source || args.id;
-	if (!id?.trim()) {
+	const rawId = args.source || args.id;
+	if (!rawId?.trim()) {
 		return commandError("usage: advisory apply <id>");
 	}
-	const result = applyAdvisory(ctx.db, id.trim(), ctx.siteId);
+	const resolved = resolveAdvisoryId(ctx.db, rawId);
+	if (!resolved.ok) {
+		return commandError(resolved.error);
+	}
+	const result = applyAdvisory(ctx.db, resolved.id, ctx.siteId);
 	if (!result.ok) {
 		return commandError(`Failed to apply advisory: ${result.error.message}`);
 	}
-	return commandSuccess(`Advisory ${id} applied.\n`);
+	return commandSuccess(`Advisory ${resolved.id} applied.\n`);
 }
 
 function handleDefer(args: Record<string, string>, ctx: CommandContext) {
-	const id = args.source || args.id;
-	if (!id?.trim()) {
+	const rawId = args.source || args.id;
+	if (!rawId?.trim()) {
 		return commandError("usage: advisory defer <id>");
 	}
+	const resolved = resolveAdvisoryId(ctx.db, rawId);
+	if (!resolved.ok) {
+		return commandError(resolved.error);
+	}
 	const deferUntil = args.until || new Date(Date.now() + 24 * 3600_000).toISOString();
-	const result = deferAdvisory(ctx.db, id.trim(), deferUntil, ctx.siteId);
+	const result = deferAdvisory(ctx.db, resolved.id, deferUntil, ctx.siteId);
 	if (!result.ok) {
 		return commandError(`Failed to defer advisory: ${result.error.message}`);
 	}
-	return commandSuccess(`Advisory ${id} deferred.\n`);
+	return commandSuccess(`Advisory ${resolved.id} deferred.\n`);
 }
 
 function handleList(args: Record<string, string>, ctx: CommandContext) {
