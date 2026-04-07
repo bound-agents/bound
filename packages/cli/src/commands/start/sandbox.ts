@@ -62,6 +62,11 @@ export async function initSandbox(
 		setCommandRegistry(allDefinitions, mcpServerNames);
 		// biome-ignore lint/suspicious/noExplicitAny: commandContext is typed as Record for late modelRouter injection
 		const registeredCommands = createDefineCommands(allDefinitions, commandContext as any);
+		// Restore previously persisted VFS state from the files table BEFORE
+		// creating the sandbox, so that hydrated files are not counted against
+		// the memory threshold (which only limits new agent-written content).
+		await hydrateWorkspace(clusterFs, appContext.db);
+
 		sandbox = await createSandbox({
 			clusterFs,
 			commands: registeredCommands,
@@ -70,9 +75,6 @@ export async function initSandbox(
 			`[sandbox] ${builtinCommands.length} built-in + ${mcpCommands.length} MCP commands registered`,
 		);
 		appContext.logger.info("[sandbox] Sandbox ready");
-
-		// Restore previously persisted VFS state from the files table.
-		await hydrateWorkspace(clusterFs, appContext.db);
 	} catch (error) {
 		appContext.logger.warn("[sandbox] Failed to create sandbox", { error: formatError(error) });
 	}
