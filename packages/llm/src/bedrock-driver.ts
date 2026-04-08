@@ -12,7 +12,7 @@ import type {
 import { formatError } from "@bound/shared";
 import type { DocumentType } from "@smithy/types";
 import { withRetry } from "./retry";
-import { extractTextFromBlocks } from "./stream-utils";
+import { extractTextFromBlocks, sanitizeToolName } from "./stream-utils";
 import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
 import { LLMError } from "./types";
 
@@ -48,7 +48,7 @@ export function toBedrockMessages(messages: LLMMessage[]): Message[] {
 						content.push({
 							toolUse: {
 								toolUseId: block.id,
-								name: block.name,
+								name: sanitizeToolName(block.name),
 								input: block.input as DocumentType,
 							},
 						});
@@ -66,7 +66,7 @@ export function toBedrockMessages(messages: LLMMessage[]): Message[] {
 								content.push({
 									toolUse: {
 										toolUseId: block.id ?? "",
-										name: block.name ?? "",
+										name: sanitizeToolName(block.name ?? ""),
 										input: (block.input ?? {}) as DocumentType,
 									},
 								});

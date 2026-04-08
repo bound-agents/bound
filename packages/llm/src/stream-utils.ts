@@ -37,3 +37,12 @@ export function extractTextFromBlocks(content: ContentBlock[]): string {
 		.map((b) => b.text || "")
 		.join("\n");
 }
+
+/**
+ * Sanitize a tool name for LLM APIs (Anthropic, Bedrock).
+ * Both validate against /^[a-zA-Z0-9_-]{1,64}$/.
+ * Replaces invalid chars with `_`, truncates to 64, falls back to "unknown".
+ */
+export function sanitizeToolName(name: string): string {
+	return name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64) || "unknown";
+}

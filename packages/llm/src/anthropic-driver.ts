@@ -5,6 +5,7 @@ import {
 	SSE_DONE_SENTINEL,
 	extractTextFromBlocks,
 	parseStreamLines,
+	sanitizeToolName,
 } from "./stream-utils";
 import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
 
@@ -95,7 +96,7 @@ function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] {
 						content.push({
 							type: "tool_use",
 							id: block.id,
-							name: block.name,
+							name: sanitizeToolName(block.name),
 							input: block.input,
 						});
 					} else if (block.type === "text" && block.text) {
@@ -170,7 +171,7 @@ function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] {
 								content.push({
 									type: "tool_use",
 									id: block.id,
-									name: block.name,
+									name: sanitizeToolName(block.name),
 									input: block.input,
 								});
 							}
