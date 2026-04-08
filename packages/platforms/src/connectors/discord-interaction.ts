@@ -16,6 +16,55 @@ const INTERACTION_TTL_MS = 14 * 60 * 1000;
 /** Discord's message content limit. */
 const DISCORD_MAX_LENGTH = 2000;
 
+/** Max chars to inline from a text file. Larger files get a preview + path reference. */
+const MAX_INLINE_TEXT_CHARS = 50_000;
+
+/** MIME types whose content can be inlined as text for the LLM to read */
+const TEXT_READABLE_TYPES = new Set([
+	"text/plain",
+	"text/markdown",
+	"text/html",
+	"text/csv",
+	"text/xml",
+	"application/json",
+	"application/yaml",
+	"application/x-yaml",
+	"application/xml",
+	"application/javascript",
+	"application/typescript",
+]);
+
+/** File extensions treated as text-readable when MIME type is ambiguous */
+const TEXT_EXTENSIONS = new Set([
+	".md",
+	".txt",
+	".json",
+	".csv",
+	".py",
+	".ts",
+	".js",
+	".yaml",
+	".yml",
+	".toml",
+	".xml",
+	".html",
+	".css",
+	".sh",
+	".bash",
+	".zsh",
+	".rs",
+	".go",
+	".java",
+	".kt",
+	".c",
+	".cpp",
+	".h",
+	".hpp",
+	".rb",
+	".lua",
+	".sql",
+]);
+
 /** Polling interval for agent response. Matches bound-mcp pattern. */
 const POLL_INTERVAL_MS = 500;
 
@@ -382,7 +431,12 @@ export class DiscordInteractionConnector implements PlatformConnector {
 		}
 
 		// Download and store non-image file attachments
-		const storedFiles: Array<{ name: string; path: string; contentType: string }> = [];
+		const storedFiles: Array<{
+			name: string;
+			path: string;
+			contentType: string;
+			inlineContent?: string;
+		}> = [];
 		for (const att of targetMessage.attachments
 			.filter(
 				(a: { contentType?: string | null }) =>
@@ -416,10 +470,18 @@ export class DiscordInteractionConnector implements PlatformConnector {
 				const safeName =
 					a.name.replace(/\.\./g, "").replace(/[/\\]/g, "_").replace(/^_+/, "") || "unnamed";
 				const filePath = `/home/user/uploads/${safeName}`;
-				const isText = a.contentType.startsWith("text/");
-				const content = isText
-					? new TextDecoder().decode(bytes)
-					: Buffer.from(bytes).toString("base64");
+
+				// Determine if the file content is text-readable
+				const ext = a.name.includes(".") ? `.${a.name.split(".").pop()?.toLowerCase()}` : "";
+				const baseContentType = a.contentType.split(";")[0].trim();
+				const isTextReadable =
+					TEXT_READABLE_TYPES.has(baseContentType) ||
+					baseContentType.startsWith("text/") ||
+					TEXT_EXTENSIONS.has(ext);
+
+				const textContent = isTextReadable ? new TextDecoder().decode(bytes) : null;
+				const storedContent = textContent ?? Buffer.from(bytes).toString("base64");
+
 				const fileId = randomUUID();
 				insertRow(
 					this.db,
@@ -427,8 +489,8 @@ export class DiscordInteractionConnector implements PlatformConnector {
 					{
 						id: fileId,
 						path: filePath,
-						content,
-						is_binary: isText ? 0 : 1,
+						content: storedContent,
+						is_binary: textContent ? 0 : 1,
 						size_bytes: bytes.byteLength,
 						created_at: now,
 						modified_at: now,
@@ -438,7 +500,12 @@ export class DiscordInteractionConnector implements PlatformConnector {
 					},
 					this.siteId,
 				);
-				storedFiles.push({ name: a.name, path: filePath, contentType: a.contentType });
+				storedFiles.push({
+					name: a.name,
+					path: filePath,
+					contentType: a.contentType,
+					inlineContent: textContent ?? undefined,
+				});
 			} catch (err) {
 				this.logger.warn("[discord-interaction] Error downloading file attachment, skipping", {
 					name: a.name,
@@ -464,9 +531,23 @@ export class DiscordInteractionConnector implements PlatformConnector {
 		}
 		if (storedFiles.length > 0) {
 			if (targetMessage.content || imageUrls.length > 0) filingPromptParts.push("");
-			filingPromptParts.push(
-				...storedFiles.map((f, i) => `[File ${i + 1}]: ${f.name} (${f.contentType}) ${f.path}`),
-			);
+			for (let i = 0; i < storedFiles.length; i++) {
+				const f = storedFiles[i];
+				if (f.inlineContent) {
+					if (f.inlineContent.length <= MAX_INLINE_TEXT_CHARS) {
+						filingPromptParts.push(`[File ${i + 1}: ${f.name}]\n\n${f.inlineContent}`);
+					} else {
+						const preview = f.inlineContent.slice(0, MAX_INLINE_TEXT_CHARS);
+						filingPromptParts.push(
+							`[File ${i + 1}: ${f.name} — ${f.inlineContent.length} chars, showing first ${MAX_INLINE_TEXT_CHARS}]\n\n${preview}\n\n[... truncated, full file at ${f.path}]`,
+						);
+					}
+				} else {
+					filingPromptParts.push(
+						`[File ${i + 1}]: ${f.name} (${f.contentType}) stored at ${f.path}`,
+					);
+				}
+			}
 		}
 
 		const filingPrompt = filingPromptParts.join("\n");
