@@ -39,6 +39,9 @@ const TEXT_READABLE_TYPES = new Set([
 	"application/typescript",
 ]);
 
+/** Max chars to inline from a text file. Larger files are stored but referenced by path only. */
+const MAX_INLINE_TEXT_CHARS = 50_000;
+
 /** File extensions treated as text-readable when MIME type is ambiguous */
 const TEXT_EXTENSIONS = new Set([
 	".md",
@@ -445,10 +448,19 @@ export class DiscordConnector implements PlatformConnector {
 
 					if (isTextReadable) {
 						const textContent = buffer.toString("utf-8");
-						contentBlocks.push({
-							type: "text",
-							text: `[Attached file: ${attachment.name}]\n\n${textContent}`,
-						});
+						if (textContent.length <= MAX_INLINE_TEXT_CHARS) {
+							contentBlocks.push({
+								type: "text",
+								text: `[Attached file: ${attachment.name}]\n\n${textContent}`,
+							});
+						} else {
+							// Too large to inline — include a preview + path reference
+							const preview = textContent.slice(0, MAX_INLINE_TEXT_CHARS);
+							contentBlocks.push({
+								type: "text",
+								text: `[Attached file: ${attachment.name} — ${textContent.length} chars, showing first ${MAX_INLINE_TEXT_CHARS}]\n\n${preview}\n\n[... truncated, full file stored at ${filePath}]`,
+							});
+						}
 					} else {
 						contentBlocks.push({
 							type: "text",
