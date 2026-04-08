@@ -259,11 +259,11 @@ describe("Discord attachment ingestion", () => {
 		expect(message.content).toBe("plain text");
 	});
 
-	it("message with non-image attachments skips them gracefully", async () => {
+	it("binary file attachment stored in files table with path reference", async () => {
 		// Mock fetch
 		(global as { fetch: typeof fetch }).fetch = async (url: string | URL | Request) => {
 			if (String(url).includes("cdn.discordapp.com")) {
-				return new Response(new Uint8Array([0, 0, 0, 0]), {
+				return new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46]), {
 					headers: { "Content-Type": "application/pdf" },
 				});
 			}
@@ -304,14 +304,98 @@ describe("Discord attachment ingestion", () => {
 
 		await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(mockMessage);
 
+		// File should be stored in files table
+		const fileRows = db
+			.query("SELECT id, path FROM files WHERE path LIKE ? LIMIT 1")
+			.all("discord-attachments/att3/%");
+		expect(fileRows.length).toBe(1);
+
 		const messages = db
 			.query("SELECT content FROM messages WHERE role = ? ORDER BY created_at DESC LIMIT 1")
 			.all("user");
 		expect(messages.length).toBeGreaterThan(0);
 
 		const message = messages[0] as { content: string };
-		// PDF should be skipped, so content is plain text
-		expect(message.content).toBe("check this doc");
+		// Binary file should produce structured content with path reference
+		const blocks = JSON.parse(message.content);
+		expect(Array.isArray(blocks)).toBe(true);
+
+		const fileBlock = blocks.find(
+			(b: { type: string; text?: string }) => b.type === "text" && b.text?.includes("document.pdf"),
+		);
+		expect(fileBlock).toBeDefined();
+		expect(fileBlock.text).toContain("stored at");
+	});
+
+	it("text file attachment inlined as ContentBlock text", async () => {
+		const textContent = "# Hello World\n\nThis is a markdown file.";
+
+		// Mock fetch
+		(global as { fetch: typeof fetch }).fetch = async (url: string | URL | Request) => {
+			if (String(url).includes("cdn.discordapp.com")) {
+				return new Response(textContent, {
+					headers: { "Content-Type": "text/markdown" },
+				});
+			}
+			return originalFetch(url as RequestInfo | URL, undefined);
+		};
+
+		const connector = new DiscordConnector(
+			config,
+			db,
+			"site-1",
+			eventBus,
+			mockLogger,
+			createMockClientManager(),
+		);
+
+		const attachment = {
+			id: "att-md",
+			name: "notes.md",
+			size: textContent.length,
+			contentType: "text/markdown",
+			url: "https://cdn.discordapp.com/notes.md",
+		};
+
+		const mockMessage = {
+			id: "msg-md",
+			author: {
+				id: "user123",
+				bot: false,
+				username: "alice",
+				displayName: "Alice",
+			},
+			channel: { type: 1, sendTyping: async () => {} },
+			content: "check my notes",
+			attachments: {
+				values: () => [attachment],
+			},
+		};
+
+		await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(mockMessage);
+
+		const messages = db
+			.query("SELECT content FROM messages WHERE role = ? ORDER BY created_at DESC LIMIT 1")
+			.all("user");
+		expect(messages.length).toBeGreaterThan(0);
+
+		const message = messages[0] as { content: string };
+		const blocks = JSON.parse(message.content);
+		expect(Array.isArray(blocks)).toBe(true);
+
+		// Should have the user's text + the inlined file content
+		const fileBlock = blocks.find(
+			(b: { type: string; text?: string }) => b.type === "text" && b.text?.includes("Hello World"),
+		);
+		expect(fileBlock).toBeDefined();
+		expect(fileBlock.text).toContain("[Attached file: notes.md]");
+		expect(fileBlock.text).toContain("This is a markdown file.");
+
+		// File should also be in files table
+		const fileRows = db
+			.query("SELECT id FROM files WHERE path LIKE ? LIMIT 1")
+			.all("discord-attachments/att-md/%");
+		expect(fileRows.length).toBe(1);
 	});
 
 	it("attachment metadata included in intake payload", async () => {

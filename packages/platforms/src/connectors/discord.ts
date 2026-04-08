@@ -24,6 +24,52 @@ const ATTACHMENT_FILE_REF_THRESHOLD = 1024 * 1024; // 1 MB
 /** Discord image MIME types supported as ContentBlock image variants */
 const DISCORD_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
+/** MIME types whose content can be inlined as text for the LLM to read */
+const TEXT_READABLE_TYPES = new Set([
+	"text/plain",
+	"text/markdown",
+	"text/html",
+	"text/csv",
+	"text/xml",
+	"application/json",
+	"application/yaml",
+	"application/x-yaml",
+	"application/xml",
+	"application/javascript",
+	"application/typescript",
+]);
+
+/** File extensions treated as text-readable when MIME type is ambiguous */
+const TEXT_EXTENSIONS = new Set([
+	".md",
+	".txt",
+	".json",
+	".csv",
+	".py",
+	".ts",
+	".js",
+	".yaml",
+	".yml",
+	".toml",
+	".xml",
+	".html",
+	".css",
+	".sh",
+	".bash",
+	".zsh",
+	".rs",
+	".go",
+	".java",
+	".kt",
+	".c",
+	".cpp",
+	".h",
+	".hpp",
+	".rb",
+	".lua",
+	".sql",
+]);
+
 /**
  * Platform connector for Discord DM-based conversations.
  *
@@ -339,11 +385,99 @@ export class DiscordConnector implements PlatformConnector {
 			}
 		}
 
+		// Process non-image attachments (text files, PDFs, etc.)
+		if (msg.attachments?.values) {
+			for (const attachment of msg.attachments.values()) {
+				const contentType = attachment.contentType ?? "";
+				if (DISCORD_IMAGE_TYPES.has(contentType)) continue; // Already handled above
+
+				if (attachment.size > MAX_FILE_STORAGE_BYTES) {
+					this.logger.warn("[discord] File attachment exceeds size limit, skipping", {
+						attachmentId: attachment.id,
+						filename: attachment.name,
+						size: attachment.size,
+						limit: MAX_FILE_STORAGE_BYTES,
+					});
+					continue;
+				}
+
+				try {
+					const response = await fetch(attachment.url, {
+						signal: AbortSignal.timeout(30_000),
+					});
+					if (!response.ok) {
+						this.logger.warn("[discord] Failed to download file attachment", {
+							url: attachment.url,
+							status: response.status,
+						});
+						continue;
+					}
+
+					const bytes = await response.bytes();
+					const buffer = Buffer.from(bytes);
+					const filePath = `discord-attachments/${attachment.id}/${attachment.name}`;
+
+					// Store in files table so the VFS can access it
+					const fileId = randomUUID();
+					insertRow(
+						this.db,
+						"files",
+						{
+							id: fileId,
+							path: filePath,
+							content: buffer.toString("base64"),
+							is_binary: 1,
+							size_bytes: attachment.size,
+							created_at: now,
+							modified_at: now,
+							host_origin: this.siteId,
+							deleted: 0,
+							created_by: user.id,
+						},
+						this.siteId,
+					);
+
+					// Determine if the file content can be inlined as text
+					const ext = attachment.name.includes(".")
+						? `.${attachment.name.split(".").pop()?.toLowerCase()}`
+						: "";
+					const isTextReadable = TEXT_READABLE_TYPES.has(contentType) || TEXT_EXTENSIONS.has(ext);
+
+					if (isTextReadable) {
+						const textContent = buffer.toString("utf-8");
+						contentBlocks.push({
+							type: "text",
+							text: `[Attached file: ${attachment.name}]\n\n${textContent}`,
+						});
+					} else {
+						contentBlocks.push({
+							type: "text",
+							text: `[Attached file: ${attachment.name}] stored at ${filePath}`,
+						});
+					}
+
+					this.logger.info("[discord] Saved file attachment", {
+						filename: attachment.name,
+						path: filePath,
+						size: attachment.size,
+						textInlined: isTextReadable,
+					});
+				} catch (err) {
+					this.logger.warn("[discord] Error processing file attachment, skipping", {
+						attachmentId: attachment.id,
+						filename: attachment.name,
+						error: String(err),
+					});
+				}
+			}
+		}
+
 		// Determine the stored content format
 		// - If no attachments were processed: store plain text (backward-compatible)
-		// - If image blocks were added: store as JSON ContentBlock[]
-		const hasImageBlocks = contentBlocks.some((b) => b.type === "image");
-		const messageContent = hasImageBlocks ? JSON.stringify(contentBlocks) : msg.content;
+		// - If structured content (images or file attachments): store as JSON ContentBlock[]
+		const hasStructuredContent =
+			contentBlocks.length > 1 || contentBlocks.some((b) => b.type === "image");
+		const messageContent = hasStructuredContent ? JSON.stringify(contentBlocks) : msg.content;
 
 		// Persist the incoming message via insertRow (AC6.2)
 		const messageId = randomUUID();
