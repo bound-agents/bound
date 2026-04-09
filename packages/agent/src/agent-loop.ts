@@ -406,6 +406,8 @@ export class AgentLoop {
 										this.aborted = true;
 										break;
 									}
+									// Reset the inactivity timeout — the LLM is producing output
+									this.config.onActivity?.();
 									chunks.push(chunk);
 								}
 								break; // Stream completed — exit retry loop
@@ -415,6 +417,8 @@ export class AgentLoop {
 								if (isSilenceTimeout && silenceRetries < MAX_SILENCE_RETRIES) {
 									silenceRetries++;
 									chunks.length = 0; // Clear any partial chunks
+									// Reset inactivity timeout — we're actively retrying, not stalled
+									this.config.onActivity?.();
 									this.ctx.logger.warn("[agent-loop] Silence timeout, retrying", {
 										attempt: silenceRetries,
 										max: MAX_SILENCE_RETRIES,
