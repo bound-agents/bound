@@ -160,6 +160,18 @@ export async function extractSummaryAndMemories(
 		}
 
 		// Extract key facts as memories by asking the LLM for a bullet-point list.
+		// Skip if seed facts already exist — regenerating them wastes LLM calls and
+		// produces ~1260 redundant updateRow operations per day across active threads.
+		const existingFacts = db
+			.prepare("SELECT COUNT(*) as count FROM semantic_memory WHERE key LIKE ? AND deleted = 0")
+			.get(`thread_${threadId}_fact_%`) as { count: number };
+		if (existingFacts.count > 0) {
+			return {
+				ok: true,
+				value: { summaryGenerated: summary.length > 0, memoriesExtracted: 0 },
+			};
+		}
+
 		// Bug #5: previously stored the literal placeholder "Extracted from conversation".
 		const factChunks: string[] = [];
 		try {

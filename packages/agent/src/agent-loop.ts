@@ -42,6 +42,18 @@ import type { AgentLoopConfig, AgentLoopResult, AgentLoopState } from "./types";
 export const SILENCE_TIMEOUT_MS = 60_000;
 export const MAX_SILENCE_RETRIES = 10;
 
+/**
+ * Scale silence timeout based on estimated context size.
+ * Bedrock opus with 200k+ token contexts can legitimately take >60s
+ * to produce the first streaming chunk. Add 1s per 10k tokens over 50k.
+ */
+export function scaledSilenceTimeout(baseMs: number, estimatedTokens: number): number {
+	if (estimatedTokens <= 50_000) return baseMs;
+	const extraTokens = estimatedTokens - 50_000;
+	const extraMs = Math.floor(extraTokens / 10_000) * 1_000;
+	return baseMs + extraMs;
+}
+
 const textEncoder = new TextEncoder();
 
 interface BashLike {
@@ -368,6 +380,11 @@ export class AgentLoop {
 						const cacheBreakpoints: number[] | undefined =
 							nonSystemMessages.length >= 2 ? [nonSystemMessages.length - 2] : undefined;
 
+						const effectiveSilenceTimeout = scaledSilenceTimeout(
+							SILENCE_TIMEOUT_MS,
+							contextDebug.totalEstimated + toolTokenEstimate,
+						);
+
 						let silenceRetries = 0;
 						for (;;) {
 							try {
@@ -378,7 +395,10 @@ export class AgentLoop {
 									cache_breakpoints: cacheBreakpoints,
 									signal: this.config.abortSignal,
 								});
-								for await (const chunk of this.withSilenceTimeout(chatStream, SILENCE_TIMEOUT_MS)) {
+								for await (const chunk of this.withSilenceTimeout(
+									chatStream,
+									effectiveSilenceTimeout,
+								)) {
 									if (this.aborted) break;
 									// Cooperative yield: check on every chunk during streaming
 									if (this.config.shouldYield?.()) {
