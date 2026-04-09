@@ -425,7 +425,7 @@ export function buildVolatileEnrichment(
 			 LEFT JOIN tasks   t_src  ON m.source = t_src.id
 			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
 			 WHERE  m.deleted = 0
-			   AND  (m.key LIKE '\\_policy%' ESCAPE '\\' OR m.key LIKE '\\_pinned%' ESCAPE '\\' OR m.key LIKE '\\_standing%' ESCAPE '\\')
+			   AND  (m.key LIKE '\\_policy%' ESCAPE '\\' OR m.key LIKE '\\_pinned%' ESCAPE '\\' OR m.key LIKE '\\_standing%' ESCAPE '\\' OR m.key LIKE '\\_feedback%' ESCAPE '\\')
 			 ORDER  BY m.key ASC`,
 		)
 		.all() as Array<{
@@ -455,6 +455,7 @@ export function buildVolatileEnrichment(
 			   AND  m.key NOT LIKE '\\_policy%' ESCAPE '\\'
 			   AND  m.key NOT LIKE '\\_pinned%' ESCAPE '\\'
 			   AND  m.key NOT LIKE '\\_standing%' ESCAPE '\\'
+			   AND  m.key NOT LIKE '\\_feedback%' ESCAPE '\\'
 			 ORDER  BY m.modified_at DESC
 			 LIMIT  ?`,
 		)
@@ -533,6 +534,7 @@ export function buildVolatileEnrichment(
 						   AND m.key NOT LIKE '\\_policy%' ESCAPE '\\'
 						   AND m.key NOT LIKE '\\_pinned%' ESCAPE '\\'
 						   AND m.key NOT LIKE '\\_standing%' ESCAPE '\\'
+						   AND m.key NOT LIKE '\\_feedback%' ESCAPE '\\'
 						 ORDER BY m.modified_at DESC
 						 LIMIT ?`,
 					)
@@ -620,6 +622,7 @@ export function buildVolatileEnrichment(
 						   AND  m.key NOT LIKE '\\_policy%' ESCAPE '\\'
 						   AND  m.key NOT LIKE '\\_pinned%' ESCAPE '\\'
 						   AND  m.key NOT LIKE '\\_standing%' ESCAPE '\\'
+			   AND  m.key NOT LIKE '\\_feedback%' ESCAPE '\\'
 						   AND  (${likeConditions.join(" OR ")})
 						 ORDER  BY m.modified_at DESC
 						 LIMIT  ?`,
