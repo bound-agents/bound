@@ -311,7 +311,7 @@ export function graphSeededRetrieval(
 			`SELECT key, value, source, modified_at
 			 FROM semantic_memory
 			 WHERE deleted = 0
-			   AND key NOT LIKE '_policy%' AND key NOT LIKE '_pinned%'
+			   AND key NOT LIKE '_policy%' AND key NOT LIKE '_pinned%' AND key NOT LIKE '_standing%'
 			   AND (${likeConditions.join(" OR ")})
 			 ORDER BY modified_at DESC
 			 LIMIT 10`,

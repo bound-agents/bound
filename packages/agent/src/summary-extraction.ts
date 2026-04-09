@@ -331,6 +331,15 @@ function relativeTime(isoString: string): string {
 	return `${diffDays}d ago`;
 }
 
+/** Staleness caveat for memory entries older than 24h. */
+function stalenessTag(isoString: string): string {
+	const diffMs = Date.now() - new Date(isoString).getTime();
+	const diffDays = diffMs / (1000 * 60 * 60 * 24);
+	if (diffDays > 7) return " ⚠️ may be outdated (>7d old)";
+	if (diffDays > 1) return " (may have changed)";
+	return "";
+}
+
 /**
  * Computes the baseline timestamp (ISO string) for delta queries.
  * Implements the R-MV4 fallback chain:
@@ -416,7 +425,7 @@ export function buildVolatileEnrichment(
 			 LEFT JOIN tasks   t_src  ON m.source = t_src.id
 			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
 			 WHERE  m.deleted = 0
-			   AND  (m.key LIKE '\\_policy%' ESCAPE '\\' OR m.key LIKE '\\_pinned%' ESCAPE '\\')
+			   AND  (m.key LIKE '\\_policy%' ESCAPE '\\' OR m.key LIKE '\\_pinned%' ESCAPE '\\' OR m.key LIKE '\\_standing%' ESCAPE '\\')
 			 ORDER  BY m.key ASC`,
 		)
 		.all() as Array<{
@@ -445,6 +454,7 @@ export function buildVolatileEnrichment(
 			 WHERE  m.modified_at > ?
 			   AND  m.key NOT LIKE '\\_policy%' ESCAPE '\\'
 			   AND  m.key NOT LIKE '\\_pinned%' ESCAPE '\\'
+			   AND  m.key NOT LIKE '\\_standing%' ESCAPE '\\'
 			 ORDER  BY m.modified_at DESC
 			 LIMIT  ?`,
 		)
@@ -499,7 +509,8 @@ export function buildVolatileEnrichment(
 					r.retrievalMethod === "seed" ? "[seed]" : `[depth ${r.depth}, ${r.viaRelation}]`;
 
 				const valueDisplay = r.value.length > 200 ? `${safeSlice(r.value, 0, 200)}...` : r.value;
-				memoryDeltaLines.push(`- ${r.key}: ${valueDisplay} ${tag}`);
+				const stale = stalenessTag(r.modifiedAt);
+				memoryDeltaLines.push(`- ${r.key}: ${valueDisplay} ${tag}${stale}`);
 			}
 
 			const graphResultsWithoutPinned = graphResults.filter((r) => !pinnedKeys.has(r.key));
@@ -521,6 +532,7 @@ export function buildVolatileEnrichment(
 						 WHERE m.deleted = 0
 						   AND m.key NOT LIKE '\\_policy%' ESCAPE '\\'
 						   AND m.key NOT LIKE '\\_pinned%' ESCAPE '\\'
+						   AND m.key NOT LIKE '\\_standing%' ESCAPE '\\'
 						 ORDER BY m.modified_at DESC
 						 LIMIT ?`,
 					)
@@ -548,8 +560,9 @@ export function buildVolatileEnrichment(
 						entry.source,
 					);
 					const relTime = relativeTime(entry.modified_at);
+					const stale = stalenessTag(entry.modified_at);
 					memoryDeltaLines.push(
-						`- ${entry.key}: ${valueDisplay} (${relTime}, via ${sourceLabel}) [recency]`,
+						`- ${entry.key}: ${valueDisplay} (${relTime}, via ${sourceLabel}) [recency]${stale}`,
 					);
 
 					addedRecency++;
@@ -576,7 +589,8 @@ export function buildVolatileEnrichment(
 					memoryDeltaLines.push(`- ${row.key}: [forgotten] (${relTime}, via ${sourceLabel})`);
 				} else {
 					const value = row.value.length > 200 ? `${safeSlice(row.value, 0, 200)}...` : row.value;
-					memoryDeltaLines.push(`- ${row.key}: ${value} (${relTime}, via ${sourceLabel})`);
+					const stale = stalenessTag(row.modified_at);
+					memoryDeltaLines.push(`- ${row.key}: ${value} (${relTime}, via ${sourceLabel})${stale}`);
 				}
 			}
 			if (hasMoreMemory) {
@@ -605,6 +619,7 @@ export function buildVolatileEnrichment(
 						 WHERE  m.deleted = 0
 						   AND  m.key NOT LIKE '\\_policy%' ESCAPE '\\'
 						   AND  m.key NOT LIKE '\\_pinned%' ESCAPE '\\'
+						   AND  m.key NOT LIKE '\\_standing%' ESCAPE '\\'
 						   AND  (${likeConditions.join(" OR ")})
 						 ORDER  BY m.modified_at DESC
 						 LIMIT  ?`,
@@ -618,7 +633,8 @@ export function buildVolatileEnrichment(
 				for (const row of boostedRows) {
 					if (deltaKeys.has(row.key) || pinnedKeys.has(row.key)) continue;
 					boostedKeys.add(row.key);
-					memoryDeltaLines.push(`- ${row.key}: ${row.value} [relevant]`);
+					const stale = stalenessTag(row.modified_at);
+					memoryDeltaLines.push(`- ${row.key}: ${row.value} [relevant]${stale}`);
 				}
 			}
 		}
@@ -632,7 +648,8 @@ export function buildVolatileEnrichment(
 				memoryDeltaLines.push(`- ${row.key}: [forgotten] (${relTime}, via ${sourceLabel})`);
 			} else {
 				const value = row.value.length > 200 ? `${safeSlice(row.value, 0, 200)}...` : row.value;
-				memoryDeltaLines.push(`- ${row.key}: ${value} (${relTime}, via ${sourceLabel})`);
+				const stale = stalenessTag(row.modified_at);
+				memoryDeltaLines.push(`- ${row.key}: ${value} (${relTime}, via ${sourceLabel})${stale}`);
 			}
 		}
 		if (hasMoreMemory) {
