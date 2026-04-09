@@ -53,12 +53,19 @@ export class ThreadExecutor {
 	 * @param runFn - Inference callback; receives shouldYield and returns result
 	 * @param onComplete - Called after each successful (non-yielded) iteration
 	 */
+	/**
+	 * Execute the drain loop for a thread. If the thread is already locked,
+	 * returns immediately (the active loop will pick up new messages).
+	 *
+	 * Returns true if pending entries remain after the lock is released,
+	 * signaling the caller should re-trigger dispatch.
+	 */
 	async execute(
 		threadId: string,
 		runFn: (shouldYield: () => boolean) => Promise<ExecutorRunResult>,
 		onComplete?: (result: ExecutorRunResult) => Promise<void>,
-	): Promise<void> {
-		if (this.activeLocks.has(threadId)) return;
+	): Promise<boolean> {
+		if (this.activeLocks.has(threadId)) return false;
 		this.activeLocks.add(threadId);
 
 		try {
@@ -85,6 +92,10 @@ export class ThreadExecutor {
 		} finally {
 			this.activeLocks.delete(threadId);
 		}
+
+		// Check if entries accumulated during the run that weren't drained.
+		// Caller should re-trigger dispatch if true.
+		return hasPending(this.db, threadId);
 	}
 
 	/**

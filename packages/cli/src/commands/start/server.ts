@@ -259,7 +259,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				return;
 			}
 
-			await threadExecutor.execute(
+			const needsRetrigger = await threadExecutor.execute(
 				thread_id,
 				// runFn: claim → inject notification messages → resolve model → run inference
 				async (shouldYield) => {
@@ -449,6 +449,15 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 					}
 				},
 			);
+
+			// Re-trigger if entries accumulated during the drain loop and weren't processed.
+			// Without this, messages arriving while a loop is active become orphaned after
+			// the executor releases the lock (no new message:created fires to re-dispatch).
+			if (needsRetrigger) {
+				appContext.logger.info(`[agent] Re-triggering dispatch for thread ${thread_id}`);
+				// Use setImmediate to avoid holding the current call stack
+				setTimeout(() => handleThread(thread_id).catch(() => {}), 0);
+			}
 		};
 
 		// message:created handler — enqueue and dispatch

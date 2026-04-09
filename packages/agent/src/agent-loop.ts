@@ -545,21 +545,25 @@ export class AgentLoop {
 					textLength: parsed.textContent.length,
 				});
 
-				// Aborted mid-stream with no done chunk — persist notice and exit
+				// Aborted mid-stream with no done chunk — persist notice and exit.
+				// Skip the notice if this was a cooperative yield (shouldYield) — the
+				// executor will retry the loop and the message will be processed.
 				if (this.aborted && parsed.usage.inputTokens === 0 && parsed.usage.outputTokens === 0) {
-					insertThreadMessage(
-						this.ctx.db,
-						{
-							threadId: this.config.threadId,
-							role: "system",
-							content:
-								"[Turn cancelled] The previous inference was cancelled before it could complete. " +
-								"No response was generated for the last user message.",
-							hostOrigin: this.ctx.hostName,
-						},
-						this.ctx.siteId,
-					);
-					this.messagesCreated++;
+					if (!this.yielded) {
+						insertThreadMessage(
+							this.ctx.db,
+							{
+								threadId: this.config.threadId,
+								role: "system",
+								content:
+									"[Turn cancelled] The previous inference was cancelled before it could complete. " +
+									"No response was generated for the last user message.",
+								hostOrigin: this.ctx.hostName,
+							},
+							this.ctx.siteId,
+						);
+						this.messagesCreated++;
+					}
 					break;
 				}
 
