@@ -44,14 +44,22 @@ export const MAX_SILENCE_RETRIES = 10;
 
 /**
  * Scale silence timeout based on estimated context size.
- * Bedrock opus with 200k+ token contexts can legitimately take >60s
- * to produce the first streaming chunk. Add 1s per 10k tokens over 50k.
+ * Bedrock cold-cache processing at 200k+ tokens can take 2-3+ minutes
+ * for the first streaming chunk. Use tiered scaling:
+ *   <= 50k: base (60s)
+ *   50k-100k: base + 2s per 10k over 50k
+ *   100k+: minimum 180s + 3s per 10k over 100k
  */
 export function scaledSilenceTimeout(baseMs: number, estimatedTokens: number): number {
 	if (estimatedTokens <= 50_000) return baseMs;
-	const extraTokens = estimatedTokens - 50_000;
-	const extraMs = Math.floor(extraTokens / 10_000) * 1_000;
-	return baseMs + extraMs;
+	if (estimatedTokens <= 100_000) {
+		const extraMs = Math.floor((estimatedTokens - 50_000) / 10_000) * 2_000;
+		return baseMs + extraMs;
+	}
+	// Large context tier: 180s floor + 3s per 10k over 100k
+	const largeBaseMs = 180_000;
+	const extraMs = Math.floor((estimatedTokens - 100_000) / 10_000) * 3_000;
+	return Math.max(largeBaseMs, baseMs) + extraMs;
 }
 
 const textEncoder = new TextEncoder();
