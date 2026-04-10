@@ -9,6 +9,7 @@ import {
 	buildCrossThreadDigest,
 	buildVolatileEnrichment,
 	computeBaseline,
+	type TieredEnrichment,
 } from "./summary-extraction.js";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
 
@@ -314,6 +315,7 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 	let enrichmentMessageIndex = -1;
 	let enrichmentStartIdx = -1; // Index in volatileLines where enrichment section starts
 	let enrichmentEndIdx = -1; // Index in volatileLines just after enrichment section ends
+	let enrichmentTiers: TieredEnrichment | undefined; // Tiered enrichment result for Phase 5 budget shedding
 	let allVolatileLines: string[] = []; // Full volatile content for budget pressure rebuild
 	let totalMemCount = 0;
 
@@ -1030,7 +1032,7 @@ Original output was too large for the context window. If you need the full conte
 			summary: string | null;
 		} | null;
 		const threadSummary = threadRow?.summary ?? undefined;
-		const { memoryDeltaLines, taskDigestLines, graphCount, recencyCount } = buildVolatileEnrichment(
+		const { memoryDeltaLines, taskDigestLines, tiers: enrichmentTiersL1, graphCount, recencyCount } = buildVolatileEnrichment(
 			db,
 			enrichmentBaseline,
 			undefined,
@@ -1038,6 +1040,7 @@ Original output was too large for the context window. If you need the full conte
 			userMessageText,
 			threadSummary,
 		);
+		enrichmentTiers = enrichmentTiersL1;
 
 		// Query total memory count for the header line
 		totalMemCount = (
@@ -1227,10 +1230,11 @@ Original output was too large for the context window. If you need the full conte
 	// Stage 5.5 (noHistory path): Inject enrichment as standalone system message for autonomous tasks
 	if (noHistory) {
 		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, true);
-		const { memoryDeltaLines: noHistDelta, taskDigestLines: noHistTasks } = buildVolatileEnrichment(
+		const { memoryDeltaLines: noHistDelta, taskDigestLines: noHistTasks, tiers: enrichmentTiersL2 } = buildVolatileEnrichment(
 			db,
 			enrichmentBaseline,
 		);
+		enrichmentTiers = enrichmentTiersL2;
 
 		if (noHistDelta.length > 0 || noHistTasks.length > 0) {
 			totalMemCount = (
@@ -1287,8 +1291,9 @@ Original output was too large for the context window. If you need the full conte
 
 		if (headroom < 2000) {
 			budgetPressure = true;
-			const { memoryDeltaLines: shortDelta, taskDigestLines: shortDigest } =
+			const { memoryDeltaLines: shortDelta, taskDigestLines: shortDigest, tiers: enrichmentTiersL3 } =
 				buildVolatileEnrichment(db, enrichmentBaseline, 3, 3);
+			enrichmentTiers = enrichmentTiersL3;
 
 			const shortMemChangedCount = shortDelta.filter((l) => l.startsWith("- ")).length;
 			let shortMemHeader = `Memory: ${totalMemCount} entries`;
