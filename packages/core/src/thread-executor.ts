@@ -3,8 +3,10 @@ import type { Logger } from "@bound/shared";
 import { formatError } from "@bound/shared";
 import { hasPending, resetProcessingForThread } from "./dispatch";
 
-/** Default timeout for a single runFn invocation (10 minutes). */
-const DEFAULT_RUN_TIMEOUT_MS = 10 * 60 * 1000;
+/** Default timeout for a single runFn invocation (30 minutes).
+ *  Must accommodate large cold-cache contexts (200k+ tokens) where
+ *  the silence timeout retry loop alone can take 10+ minutes. */
+const DEFAULT_RUN_TIMEOUT_MS = 30 * 60 * 1000;
 
 export interface ExecutorRunResult {
 	yielded?: boolean;
