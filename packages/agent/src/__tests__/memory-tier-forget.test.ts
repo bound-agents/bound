@@ -1,11 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import Database from "bun:sqlite";
-import { applySchema, insertRow, updateRow } from "@bound/core";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomBytes } from "node:crypto";
+import { applySchema, insertRow } from "@bound/core";
 import type { CommandContext } from "@bound/sandbox";
-import { memory } from "../commands/memory";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import { memory } from "../commands/memory";
 import { upsertEdge } from "../graph-queries";
-import { randomBytes } from "crypto";
 
 describe("memory forget tier transitions (AC2.1-AC2.2)", () => {
 	let db: Database;
@@ -83,14 +83,14 @@ describe("memory forget tier transitions (AC2.1-AC2.2)", () => {
 		createSummarizesEdge("summary_entry", "child2");
 
 		// Verify children start as detail
-		let child1 = db
-			.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
-			.get("child1") as { tier: string };
+		let child1 = db.prepare("SELECT tier FROM semantic_memory WHERE key = ?").get("child1") as {
+			tier: string;
+		};
 		expect(child1.tier).toBe("detail");
 
-		let child2 = db
-			.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
-			.get("child2") as { tier: string };
+		let child2 = db.prepare("SELECT tier FROM semantic_memory WHERE key = ?").get("child2") as {
+			tier: string;
+		};
 		expect(child2.tier).toBe("detail");
 
 		// Forget the summary
@@ -105,14 +105,14 @@ describe("memory forget tier transitions (AC2.1-AC2.2)", () => {
 		expect(result.exitCode).toBe(0);
 
 		// Verify children promoted to default
-		child1 = db
-			.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
-			.get("child1") as { tier: string };
+		child1 = db.prepare("SELECT tier FROM semantic_memory WHERE key = ?").get("child1") as {
+			tier: string;
+		};
 		expect(child1.tier).toBe("default");
 
-		child2 = db
-			.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
-			.get("child2") as { tier: string };
+		child2 = db.prepare("SELECT tier FROM semantic_memory WHERE key = ?").get("child2") as {
+			tier: string;
+		};
 		expect(child2.tier).toBe("default");
 	});
 
@@ -194,14 +194,14 @@ describe("memory forget tier transitions (AC2.1-AC2.2)", () => {
 		expect(result.exitCode).toBe(0);
 
 		// Verify children remain detail (not promoted because default is not a summary)
-		const child1 = db
-			.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
-			.get("child1") as { tier: string };
+		const child1 = db.prepare("SELECT tier FROM semantic_memory WHERE key = ?").get("child1") as {
+			tier: string;
+		};
 		expect(child1.tier).toBe("detail");
 
-		const child2 = db
-			.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
-			.get("child2") as { tier: string };
+		const child2 = db.prepare("SELECT tier FROM semantic_memory WHERE key = ?").get("child2") as {
+			tier: string;
+		};
 		expect(child2.tier).toBe("detail");
 	});
 
@@ -263,9 +263,9 @@ describe("memory forget tier transitions (AC2.1-AC2.2)", () => {
 		expect(child.tier).toBe("default");
 
 		// Pinned child should remain pinned (not promoted)
-		child = db
-			.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
-			.get("pinned_child") as { tier: string };
+		child = db.prepare("SELECT tier FROM semantic_memory WHERE key = ?").get("pinned_child") as {
+			tier: string;
+		};
 		expect(child.tier).toBe("pinned");
 	});
 });

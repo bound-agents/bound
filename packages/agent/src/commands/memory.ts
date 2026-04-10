@@ -1,6 +1,6 @@
 import { insertRow, softDelete, updateRow } from "@bound/core";
 import type { CommandContext, CommandDefinition } from "@bound/sandbox";
-import { BOUND_NAMESPACE, deterministicUUID, type MemoryTier } from "@bound/shared";
+import { BOUND_NAMESPACE, type MemoryTier, deterministicUUID } from "@bound/shared";
 import {
 	cascadeDeleteEdges,
 	getNeighbors,
@@ -105,17 +105,13 @@ function handleStore(args: Record<string, string>, ctx: CommandContext) {
 	// Determine tier: apply rules in priority order
 	// 1. Check for pinned prefixes — always pin
 	let resolvedTier: MemoryTier = "default";
-	const hasPinnedPrefix = PINNED_PREFIXES.some((prefix) =>
-		key.startsWith(`${prefix}:`),
-	);
+	const hasPinnedPrefix = PINNED_PREFIXES.some((prefix) => key.startsWith(`${prefix}:`));
 	if (hasPinnedPrefix) {
 		resolvedTier = "pinned";
 	} else if (args.tier) {
 		// 2. Explicit --tier argument
 		if (!VALID_TIERS.includes(args.tier as MemoryTier)) {
-			return commandError(
-				`invalid tier: ${args.tier}. Must be one of: ${VALID_TIERS.join(", ")}`,
-			);
+			return commandError(`invalid tier: ${args.tier}. Must be one of: ${VALID_TIERS.join(", ")}`);
 		}
 		resolvedTier = args.tier as MemoryTier;
 	}
@@ -129,8 +125,7 @@ function handleStore(args: Record<string, string>, ctx: CommandContext) {
 
 	if (existing) {
 		// Updating existing entry: preserve tier unless explicitly overridden
-		const tierForUpdate =
-			args.tier && !hasPinnedPrefix ? resolvedTier : existing.tier;
+		const tierForUpdate = args.tier && !hasPinnedPrefix ? resolvedTier : existing.tier;
 		updateRow(
 			ctx.db,
 			"semantic_memory",
@@ -206,19 +201,11 @@ function handleForget(args: Record<string, string>, ctx: CommandContext) {
 
 		for (const child of children) {
 			const childRow = ctx.db
-				.prepare(
-					"SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0",
-				)
+				.prepare("SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0")
 				.get(child.target_key) as { id: string; tier: MemoryTier } | null;
 
 			if (childRow && childRow.tier === "detail") {
-				updateRow(
-					ctx.db,
-					"semantic_memory",
-					childRow.id,
-					{ tier: "default" },
-					ctx.siteId,
-				);
+				updateRow(ctx.db, "semantic_memory", childRow.id, { tier: "default" }, ctx.siteId);
 			}
 		}
 	}

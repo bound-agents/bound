@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import Database from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomBytes } from "node:crypto";
 import { applySchema } from "@bound/core";
 import type { CommandContext } from "@bound/sandbox";
 import { memory } from "../commands/memory";
-import { randomBytes } from "crypto";
 
 describe("memory store --tier (AC1.1-AC1.6)", () => {
 	let db: Database;
@@ -47,9 +47,9 @@ describe("memory store --tier (AC1.1-AC1.6)", () => {
 		);
 
 		expect(result.exitCode).toBe(0);
-		const row = db
-			.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
-			.get("test_key") as { tier: string };
+		const row = db.prepare("SELECT tier FROM semantic_memory WHERE key = ?").get("test_key") as {
+			tier: string;
+		};
 		expect(row.tier).toBe("summary");
 	});
 
@@ -66,9 +66,9 @@ describe("memory store --tier (AC1.1-AC1.6)", () => {
 		);
 
 		expect(result.exitCode).toBe(0);
-		const row = db
-			.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
-			.get("test_key") as { tier: string };
+		const row = db.prepare("SELECT tier FROM semantic_memory WHERE key = ?").get("test_key") as {
+			tier: string;
+		};
 		expect(row.tier).toBe("default");
 	});
 
@@ -137,9 +137,9 @@ describe("memory store --tier (AC1.1-AC1.6)", () => {
 		);
 
 		expect(result.exitCode).toBe(0);
-		const row = db
-			.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
-			.get("test_key") as { tier: string };
+		const row = db.prepare("SELECT tier FROM semantic_memory WHERE key = ?").get("test_key") as {
+			tier: string;
+		};
 		expect(row.tier).toBe("detail");
 	});
 
@@ -170,9 +170,9 @@ describe("memory store --tier (AC1.1-AC1.6)", () => {
 		);
 
 		expect(result.exitCode).toBe(0);
-		const row = db
-			.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
-			.get("test_key") as { tier: string };
+		const row = db.prepare("SELECT tier FROM semantic_memory WHERE key = ?").get("test_key") as {
+			tier: string;
+		};
 		expect(row.tier).toBe("default");
 	});
 
