@@ -844,3 +844,111 @@ export function loadSummaryEntries(db: Database, excludeKeys: Set<string>): Stag
 
 	return { entries, exclusionSet: newExclusion };
 }
+
+/**
+ * Stage L2: Load graph-seeded entries, applying tier and exclusion filters.
+ * Returns only `default` tier entries (plus orphaned detail entries).
+ * Respects excludeKeys from L0+L1 and expands the exclusion set.
+ */
+export function loadGraphEntries(
+	db: Database,
+	excludeKeys: Set<string>,
+	keywords: string[],
+	maxSlots: number,
+): StageResult {
+	if (keywords.length === 0 || maxSlots <= 0) {
+		return { entries: [], exclusionSet: new Set(excludeKeys) };
+	}
+
+	const graphResults = graphSeededRetrieval(db, keywords, maxSlots + excludeKeys.size, 2, excludeKeys);
+
+	const entries: StageEntry[] = [];
+	const newExclusion = new Set(excludeKeys);
+
+	for (const r of graphResults) {
+		if (newExclusion.has(r.key)) continue;
+		if (entries.length >= maxSlots) break;
+
+		const tag =
+			r.retrievalMethod === "seed"
+				? "[seed]"
+				: `[depth ${r.depth}, ${r.viaRelation}]`;
+
+		// Preserve the original tier (default or orphaned detail)
+		const tier = r.tier ? (r.tier as MemoryTier) : "default";
+
+		entries.push({
+			key: r.key,
+			value: r.value,
+			source: r.source,
+			modifiedAt: r.modifiedAt,
+			tier,
+			tag,
+		});
+		newExclusion.add(r.key);
+	}
+
+	return { entries, exclusionSet: newExclusion };
+}
+
+/**
+ * Stage L3: Load recency-based entries, applying same tier/exclusion filters as L2.
+ * Returns entries ordered by recency, limited to maxSlots.
+ * Respects excludeKeys from L0+L1+L2 and expands the exclusion set.
+ */
+export function loadRecencyEntries(
+	db: Database,
+	excludeKeys: Set<string>,
+	baseline: string,
+	maxSlots: number,
+): StageResult {
+	if (maxSlots <= 0) {
+		return { entries: [], exclusionSet: new Set(excludeKeys) };
+	}
+
+	// Query recent entries, excluding pinned/summary/detail tiers
+	// (same filter as L2 — orphaned details also pass through)
+	const rows = db
+		.prepare(
+			`SELECT m.key, m.value, m.source, m.modified_at, m.tier
+			 FROM semantic_memory m
+			 WHERE m.deleted = 0
+			   AND m.modified_at > ?
+			   AND (
+			     m.tier NOT IN ('detail', 'pinned', 'summary')
+			     OR (m.tier = 'detail' AND NOT EXISTS (
+			       SELECT 1 FROM memory_edges e
+			       WHERE e.target_key = m.key AND e.relation = 'summarizes' AND e.deleted = 0
+			     ))
+			   )
+			 ORDER BY m.modified_at DESC
+			 LIMIT ?`,
+		)
+		.all(baseline, maxSlots + excludeKeys.size) as Array<{
+		key: string;
+		value: string;
+		source: string | null;
+		modified_at: string;
+		tier: string;
+	}>;
+
+	const entries: StageEntry[] = [];
+	const newExclusion = new Set(excludeKeys);
+
+	for (const row of rows) {
+		if (newExclusion.has(row.key)) continue;
+		if (entries.length >= maxSlots) break;
+
+		entries.push({
+			key: row.key,
+			value: row.value,
+			source: row.source,
+			modifiedAt: row.modified_at,
+			tier: (row.tier || "default") as MemoryTier,
+			tag: "[recency]",
+		});
+		newExclusion.add(row.key);
+	}
+
+	return { entries, exclusionSet: newExclusion };
+}
