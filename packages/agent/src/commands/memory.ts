@@ -298,6 +298,18 @@ function handleConnect(args: Record<string, string>, ctx: CommandContext) {
 	}
 
 	const id = upsertEdge(ctx.db, src, tgt, rel, weight, ctx.siteId);
+
+	// AC2.3-AC2.5: Handle tier transitions for summarizes edges
+	if (rel === "summarizes") {
+		const target = ctx.db
+			.prepare("SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0")
+			.get(tgt) as { id: string; tier: MemoryTier } | null;
+		if (target && target.tier === "default") {
+			updateRow(ctx.db, "semantic_memory", target.id, { tier: "detail" }, ctx.siteId);
+		}
+		// pinned and summary targets are NOT demoted (AC2.4, AC2.5)
+	}
+
 	return commandSuccess(`Edge created: ${src} --[${rel}]--> ${tgt} (weight=${weight}, id=${id})\n`);
 }
 
@@ -315,6 +327,26 @@ function handleDisconnect(args: Record<string, string>, ctx: CommandContext) {
 		return commandError(
 			`no edges found between ${src} and ${tgt}${rel ? ` with relation ${rel}` : ""}`,
 		);
+	}
+
+	// AC2.6-AC2.7: Handle orphan promotion for summarizes edges
+	// Check if this was (or could have been) a summarizes edge
+	if (rel === "summarizes" || !rel) {
+		// Check if target has any remaining incoming summarizes edges
+		const remaining = ctx.db
+			.prepare(
+				"SELECT COUNT(*) as cnt FROM memory_edges WHERE target_key = ? AND relation = 'summarizes' AND deleted = 0",
+			)
+			.get(tgt) as { cnt: number };
+
+		if (remaining.cnt === 0) {
+			const target = ctx.db
+				.prepare("SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0")
+				.get(tgt) as { id: string; tier: MemoryTier } | null;
+			if (target && target.tier === "detail") {
+				updateRow(ctx.db, "semantic_memory", target.id, { tier: "default" }, ctx.siteId);
+			}
+		}
 	}
 
 	return commandSuccess(`Removed ${count} edge(s) between ${src} and ${tgt}\n`);
