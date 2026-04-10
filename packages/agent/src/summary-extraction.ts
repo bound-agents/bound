@@ -388,6 +388,7 @@ export function computeBaseline(
 export interface VolatileEnrichment {
 	memoryDeltaLines: string[];
 	taskDigestLines: string[];
+	tiers?: TieredEnrichment; // L0→L1→L2→L3 tiered entries (optional in Task 1, required in Task 2)
 	graphCount?: number; // entries retrieved via graph (seed + traversal)
 	recencyCount?: number; // entries retrieved via recency fallback
 }
@@ -860,7 +861,13 @@ export function loadGraphEntries(
 		return { entries: [], exclusionSet: new Set(excludeKeys) };
 	}
 
-	const graphResults = graphSeededRetrieval(db, keywords, maxSlots + excludeKeys.size, 2, excludeKeys);
+	const graphResults = graphSeededRetrieval(
+		db,
+		keywords,
+		maxSlots + excludeKeys.size,
+		2,
+		excludeKeys,
+	);
 
 	const entries: StageEntry[] = [];
 	const newExclusion = new Set(excludeKeys);
@@ -869,10 +876,7 @@ export function loadGraphEntries(
 		if (newExclusion.has(r.key)) continue;
 		if (entries.length >= maxSlots) break;
 
-		const tag =
-			r.retrievalMethod === "seed"
-				? "[seed]"
-				: `[depth ${r.depth}, ${r.viaRelation}]`;
+		const tag = r.retrievalMethod === "seed" ? "[seed]" : `[depth ${r.depth}, ${r.viaRelation}]`;
 
 		// Preserve the original tier (default or orphaned detail)
 		const tier = r.tier ? (r.tier as MemoryTier) : "default";
