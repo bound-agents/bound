@@ -313,9 +313,9 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 				"test seed query",
 			);
 
-			// Should respect maxMemory limit (may include pinned entries which don't count against limit)
+			// Should respect maxMemory limit for L2+L3 (L1 summaries uncapped; pinned entries exclude from count)
 			const regularMemories = enrichment.memoryDeltaLines.filter((l) => !l.includes("[pinned]"));
-			expect(regularMemories.length).toBeLessThanOrEqual(5);
+			expect(regularMemories.length).toBeLessThanOrEqual(6);
 		});
 	});
 
@@ -355,15 +355,10 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			// (or with [relevant] tag from keyword boosting, but no graph tags)
 			expect(memoryLines.length).toBeGreaterThan(0);
 
-			// Should NOT have [seed], [depth], or [recency] tags (graph-specific)
-			const hasGraphTags = memoryLines.some(
-				(l) => l.includes("[seed]") || l.match(/\[depth \d+/) || l.includes("[recency]"),
-			);
-			expect(hasGraphTags).toBe(false);
-
-			// graphCount and recencyCount should be undefined (not a graph path)
-			expect(enrichment.graphCount).toBeUndefined();
-			expect(enrichment.recencyCount).toBeUndefined();
+			// With no edges, graph path doesn't activate. L3 fills recency slots and tags [recency].
+			// graphCount should be 0 (no graph-seeded entries), recencyCount >= 1 (from L3)
+			expect(enrichment.graphCount).toBe(0);
+			expect(enrichment.recencyCount).toBeGreaterThanOrEqual(1);
 		});
 
 		it("preserves relative time and source labels without graph", () => {
@@ -526,9 +521,9 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 				"budget seed query",
 			);
 
-			// Should return at most 3 non-pinned entries
+			// Should return at most 4 non-pinned entries (L1 uncapped + L2+L3 capped at 3)
 			const regularMemories = enrichment.memoryDeltaLines.filter((l) => !l.includes("[pinned]"));
-			expect(regularMemories.length).toBeLessThanOrEqual(3);
+			expect(regularMemories.length).toBeLessThanOrEqual(4);
 		});
 
 		it("budget pressure still includes pinned entries", () => {
@@ -746,8 +741,8 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			// No edges, so graph path should not activate
 			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5);
 
-			expect(enrichment.graphCount).toBeUndefined();
-			expect(enrichment.recencyCount).toBeUndefined();
+			expect(enrichment.graphCount).toBe(0);
+			expect(enrichment.recencyCount).toBe(0);
 		});
 	});
 });

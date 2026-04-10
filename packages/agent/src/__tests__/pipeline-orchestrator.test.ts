@@ -5,7 +5,7 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
-import { buildVolatileEnrichment, loadPinnedEntries, loadSummaryEntries, loadGraphEntries, loadRecencyEntries } from "../summary-extraction.js";
+import { buildVolatileEnrichment } from "../summary-extraction.js";
 
 let db: Database;
 let dbPath: string;
@@ -51,7 +51,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 					deleted: 0,
 					tier: "pinned",
 				},
-				siteId
+				siteId,
 			);
 		}
 
@@ -70,7 +70,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 					deleted: 0,
 					tier: "default",
 				},
-				siteId
+				siteId,
 			);
 		}
 
@@ -122,7 +122,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				deleted: 0,
 				tier: "summary",
 			},
-			siteId
+			siteId,
 		);
 
 		// Create 2 child entries (non-stale: modified_at <= summary modified_at)
@@ -139,7 +139,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				deleted: 0,
 				tier: "detail",
 			},
-			siteId
+			siteId,
 		);
 
 		insertRow(
@@ -155,7 +155,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				deleted: 0,
 				tier: "detail",
 			},
-			siteId
+			siteId,
 		);
 
 		// Create summarizes edges
@@ -171,7 +171,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				modified_at: "2026-03-20T12:00:00.000Z",
 				deleted: 0,
 			},
-			siteId
+			siteId,
 		);
 
 		insertRow(
@@ -186,7 +186,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				modified_at: "2026-03-20T12:00:00.000Z",
 				deleted: 0,
 			},
-			siteId
+			siteId,
 		);
 
 		const result = buildVolatileEnrichment(db, baseline, 25, 5);
@@ -239,7 +239,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				deleted: 0,
 				tier: "summary",
 			},
-			siteId
+			siteId,
 		);
 
 		// Create a stale child entry (modified after the summary at T2)
@@ -256,7 +256,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				deleted: 0,
 				tier: "detail",
 			},
-			siteId
+			siteId,
 		);
 
 		// Create summarizes edge
@@ -272,7 +272,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				modified_at: "2026-03-20T12:00:00.000Z",
 				deleted: 0,
 			},
-			siteId
+			siteId,
 		);
 
 		const result = buildVolatileEnrichment(db, baseline, 25, 5);
@@ -326,7 +326,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				deleted: 0,
 				tier: "pinned",
 			},
-			siteId
+			siteId,
 		);
 
 		const result = buildVolatileEnrichment(db, baseline, 25, 5);
@@ -372,7 +372,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				deleted: 0,
 				tier: "pinned",
 			},
-			siteId
+			siteId,
 		);
 		insertRow(
 			db,
@@ -387,7 +387,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				deleted: 0,
 				tier: "pinned",
 			},
-			siteId
+			siteId,
 		);
 
 		// Create 1 summary
@@ -404,7 +404,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				deleted: 0,
 				tier: "summary",
 			},
-			siteId
+			siteId,
 		);
 
 		// Create 10 default entries with recent timestamps
@@ -422,7 +422,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 					deleted: 0,
 					tier: "default",
 				},
-				siteId
+				siteId,
 			);
 		}
 
@@ -463,7 +463,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				deleted: 0,
 				tier: "pinned",
 			},
-			siteId
+			siteId,
 		);
 
 		// Create L1: summary
@@ -480,7 +480,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				deleted: 0,
 				tier: "summary",
 			},
-			siteId
+			siteId,
 		);
 
 		// Create L2: default entry (will be retrieved via recency since no graph)
@@ -493,11 +493,11 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				value: "L2/L3 default",
 				source: null,
 				created_at: "2026-03-21T12:00:00.000Z",
-				modified_at: `2026-03-21T12:00:00.000Z`,
+				modified_at: "2026-03-21T12:00:00.000Z",
 				deleted: 0,
 				tier: "default",
 			},
-			siteId
+			siteId,
 		);
 
 		const result = buildVolatileEnrichment(db, baseline, 25, 5);
@@ -536,7 +536,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				deleted: 0,
 				tier: "pinned",
 			},
-			siteId
+			siteId,
 		);
 
 		const result = buildVolatileEnrichment(db, baseline, 25, 5);
@@ -545,7 +545,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 		expect(result.tiers).toBeDefined();
 
 		// Verify L0 has tier annotation
-		if (result.tiers?.L0.length ?? 0 > 0) {
+		if ((result.tiers?.L0.length ?? 0) > 0) {
 			expect(result.tiers?.L0[0].tier).toBe("pinned");
 		}
 	});
@@ -569,7 +569,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 				deleted: 0,
 				tier: "pinned",
 			},
-			siteId
+			siteId,
 		);
 
 		const result = buildVolatileEnrichment(db, baseline, 25, 5);

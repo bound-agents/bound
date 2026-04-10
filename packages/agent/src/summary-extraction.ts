@@ -490,21 +490,21 @@ export function buildVolatileEnrichment(
 		if (entry.tag === "[pinned]") {
 			// L0: pinned entries - minimal format
 			return `- ${entry.key}: ${valueDisplay} ${entry.tag}`;
-		} else if (entry.tag === "[summary]" || entry.tag === "[stale-detail]") {
+		}
+		if (entry.tag === "[summary]" || entry.tag === "[stale-detail]") {
 			// L1: summary and stale-detail entries
 			return `- ${entry.key}: ${valueDisplay} ${entry.tag}`;
-		} else {
-			// L2 and L3 entries include source and relative time
-			// Resolve source using taskName/threadId/threadTitle if available, else use source id
-			const sourceLabel = resolveSource(
-				entry.taskName ?? null,
-				entry.threadId ?? null,
-				entry.threadTitle ?? null,
-				entry.source,
-			);
-			const relTime = relativeTime(entry.modifiedAt);
-			return `- ${entry.key}: ${valueDisplay} (${relTime}, via ${sourceLabel}) ${entry.tag}${stale}`;
 		}
+		// L2 and L3 entries include source and relative time
+		// Resolve source using taskName/threadId/threadTitle if available, else use source id
+		const sourceLabel = resolveSource(
+			entry.taskName ?? null,
+			entry.threadId ?? null,
+			entry.threadTitle ?? null,
+			entry.source,
+		);
+		const relTime = relativeTime(entry.modifiedAt);
+		return `- ${entry.key}: ${valueDisplay} (${relTime}, via ${sourceLabel}) ${entry.tag}${stale}`;
 	};
 
 	// Inject L0 entries (pinned)
@@ -556,9 +556,7 @@ export function buildVolatileEnrichment(
 
 		if (countMore.cnt > allExcluded.size) {
 			const moreCount = countMore.cnt - allExcluded.size;
-			memoryDeltaLines.push(
-				`... and ${moreCount} more (query semantic_memory for full list)`,
-			);
+			memoryDeltaLines.push(`... and ${moreCount} more (query semantic_memory for full list)`);
 		}
 	}
 
