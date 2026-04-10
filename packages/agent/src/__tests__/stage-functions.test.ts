@@ -1,8 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { Database as BunDatabase } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import type { StageEntry, StageResult } from "../summary-extraction";
 import { loadPinnedEntries, loadSummaryEntries } from "../summary-extraction";
 
 describe("Stage Functions - L0 Pinned Entries", () => {
@@ -57,7 +56,16 @@ describe("Stage Functions - L0 Pinned Entries", () => {
 		db.prepare(
 			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run("mem1", "user_preference_1", "User prefers verbose responses", "pinned", now, now, now, 0);
+		).run(
+			"mem1",
+			"user_preference_1",
+			"User prefers verbose responses",
+			"pinned",
+			now,
+			now,
+			now,
+			0,
+		);
 
 		// Verify the entry was inserted
 		const row = db
@@ -112,9 +120,9 @@ describe("Stage Functions - L0 Pinned Entries", () => {
 			     OR key LIKE '\\_policy%' ESCAPE '\\'
 			     OR key LIKE '\\_pinned%' ESCAPE '\\')`,
 			)
-			.all();
+			.all() as Array<{ key: string }>;
 
-		const matchingRows = rows.filter((r: any) => r.key === "_pinned_core_rule");
+		const matchingRows = rows.filter((r) => r.key === "_pinned_core_rule");
 		expect(matchingRows.length).toBe(1);
 	});
 
@@ -138,9 +146,9 @@ describe("Stage Functions - L0 Pinned Entries", () => {
 			     OR key LIKE '\\_policy%' ESCAPE '\\'
 			     OR key LIKE '\\_pinned%' ESCAPE '\\')`,
 			)
-			.all();
+			.all() as Array<{ key: string }>;
 
-		const matchingRows = rows.filter((r: any) => r.key === "deleted_pinned_entry");
+		const matchingRows = rows.filter((r) => r.key === "deleted_pinned_entry");
 		expect(matchingRows.length).toBe(0);
 	});
 });
@@ -197,18 +205,45 @@ describe("Stage Functions - L1 Summary Entries", () => {
 		db.prepare(
 			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run("summary1", "project_alpha_summary", "Project alpha is about building the thing", "summary", now, now, now, 0);
+		).run(
+			"summary1",
+			"project_alpha_summary",
+			"Project alpha is about building the thing",
+			"summary",
+			now,
+			now,
+			now,
+			0,
+		);
 
 		// Create children
 		db.prepare(
 			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run("detail1", "project_alpha_detail_1", "Detail about the architecture", "detail", now, now, now, 0);
+		).run(
+			"detail1",
+			"project_alpha_detail_1",
+			"Detail about the architecture",
+			"detail",
+			now,
+			now,
+			now,
+			0,
+		);
 
 		db.prepare(
 			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run("detail2", "project_alpha_detail_2", "Detail about the timeline", "detail", now, now, now, 0);
+		).run(
+			"detail2",
+			"project_alpha_detail_2",
+			"Detail about the timeline",
+			"detail",
+			now,
+			now,
+			now,
+			0,
+		);
 
 		// Create edges
 		db.prepare(
@@ -245,13 +280,31 @@ describe("Stage Functions - L1 Summary Entries", () => {
 		db.prepare(
 			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run("summary2", "meeting_summary", "Discussion about the new feature", "summary", baseTime, baseTime, baseTime, 0);
+		).run(
+			"summary2",
+			"meeting_summary",
+			"Discussion about the new feature",
+			"summary",
+			baseTime,
+			baseTime,
+			baseTime,
+			0,
+		);
 
 		// Child updated AFTER summary (stale)
 		db.prepare(
 			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run("detail3", "meeting_detail_stale", "Updated meeting detail", "detail", baseTime, laterTime, laterTime, 0);
+		).run(
+			"detail3",
+			"meeting_detail_stale",
+			"Updated meeting detail",
+			"detail",
+			baseTime,
+			laterTime,
+			laterTime,
+			0,
+		);
 
 		// Create edge
 		db.prepare(
@@ -261,10 +314,10 @@ describe("Stage Functions - L1 Summary Entries", () => {
 
 		// Query to verify stale detection
 		const summary = db
-			.prepare(`SELECT modified_at FROM semantic_memory WHERE key = ?`)
+			.prepare("SELECT modified_at FROM semantic_memory WHERE key = ?")
 			.get("meeting_summary");
 		const detail = db
-			.prepare(`SELECT modified_at FROM semantic_memory WHERE key = ?`)
+			.prepare("SELECT modified_at FROM semantic_memory WHERE key = ?")
 			.get("meeting_detail_stale");
 
 		expect(detail.modified_at > summary.modified_at).toBe(true);
@@ -278,29 +331,72 @@ describe("Stage Functions - L1 Summary Entries", () => {
 		db.prepare(
 			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run("summary3", "project_summary", "Project overview", "summary", baseTime, baseTime, baseTime, 0);
+		).run(
+			"summary3",
+			"project_summary",
+			"Project overview",
+			"summary",
+			baseTime,
+			baseTime,
+			baseTime,
+			0,
+		);
 
 		// Two stale children
 		db.prepare(
 			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run("detail4", "project_detail_stale_1", "First stale detail", "detail", baseTime, laterTime, laterTime, 0);
+		).run(
+			"detail4",
+			"project_detail_stale_1",
+			"First stale detail",
+			"detail",
+			baseTime,
+			laterTime,
+			laterTime,
+			0,
+		);
 
 		db.prepare(
 			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run("detail5", "project_detail_stale_2", "Second stale detail", "detail", baseTime, laterTime, laterTime, 0);
+		).run(
+			"detail5",
+			"project_detail_stale_2",
+			"Second stale detail",
+			"detail",
+			baseTime,
+			laterTime,
+			laterTime,
+			0,
+		);
 
 		// Create edges
 		db.prepare(
 			`INSERT INTO memory_edges (id, source_key, target_key, relation, created_at, modified_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		).run("edge4", "project_summary", "project_detail_stale_1", "summarizes", baseTime, baseTime, 0);
+		).run(
+			"edge4",
+			"project_summary",
+			"project_detail_stale_1",
+			"summarizes",
+			baseTime,
+			baseTime,
+			0,
+		);
 
 		db.prepare(
 			`INSERT INTO memory_edges (id, source_key, target_key, relation, created_at, modified_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		).run("edge5", "project_summary", "project_detail_stale_2", "summarizes", baseTime, baseTime, 0);
+		).run(
+			"edge5",
+			"project_summary",
+			"project_detail_stale_2",
+			"summarizes",
+			baseTime,
+			baseTime,
+			0,
+		);
 
 		// Query to verify both children are stale
 		const staleChildren = db
@@ -362,8 +458,8 @@ describe("loadPinnedEntries function", () => {
 		expect(result.entries.length).toBeGreaterThan(0);
 		const pinned = result.entries.find((e) => e.key === "user_pref");
 		expect(pinned).toBeDefined();
-		expect(pinned!.tier).toBe("pinned");
-		expect(pinned!.tag).toBe("[pinned]");
+		expect(pinned?.tier).toBe("pinned");
+		expect(pinned?.tag).toBe("[pinned]");
 	});
 
 	it("AC3.1: loadPinnedEntries returns prefix-matched entries", () => {
@@ -378,7 +474,7 @@ describe("loadPinnedEntries function", () => {
 
 		const standing = result.entries.find((e) => e.key === "_standing_morning_routine");
 		expect(standing).toBeDefined();
-		expect(standing!.tag).toBe("[pinned]");
+		expect(standing?.tag).toBe("[pinned]");
 	});
 
 	it("AC3.1: loadPinnedEntries adds keys to exclusion set", () => {
@@ -480,7 +576,7 @@ describe("loadSummaryEntries function", () => {
 		// Should have summary + 2 non-stale children
 		const summaryEntry = result.entries.find((e) => e.key === "project_summary");
 		expect(summaryEntry).toBeDefined();
-		expect(summaryEntry!.tag).toBe("[summary]");
+		expect(summaryEntry?.tag).toBe("[summary]");
 
 		// All three keys should be in exclusion set
 		expect(result.exclusionSet.has("project_summary")).toBe(true);
@@ -524,7 +620,7 @@ describe("loadSummaryEntries function", () => {
 		// Should have summary + stale child
 		const staleEntry = result.entries.find((e) => e.key === "meeting_detail_stale");
 		expect(staleEntry).toBeDefined();
-		expect(staleEntry!.tag).toBe("[stale-detail]");
+		expect(staleEntry?.tag).toBe("[stale-detail]");
 	});
 
 	it("AC3.4: loadSummaryEntries loads ALL stale children", () => {
