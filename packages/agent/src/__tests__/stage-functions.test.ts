@@ -2,7 +2,12 @@ import type { Database } from "bun:sqlite";
 import { Database as BunDatabase } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { loadGraphEntries, loadPinnedEntries, loadRecencyEntries, loadSummaryEntries } from "../summary-extraction";
+import {
+	loadGraphEntries,
+	loadPinnedEntries,
+	loadRecencyEntries,
+	loadSummaryEntries,
+} from "../summary-extraction";
 
 describe("Stage Functions - L0 Pinned Entries", () => {
 	let db: Database;
@@ -731,7 +736,16 @@ describe("Stage Functions - L2 Graph Entries", () => {
 		db.prepare(
 			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run("def1", "default_entry", "This is default tier", "default", baseTime, baseTime, baseTime, 0);
+		).run(
+			"def1",
+			"default_entry",
+			"This is default tier",
+			"default",
+			baseTime,
+			baseTime,
+			baseTime,
+			0,
+		);
 
 		// Create a detail entry WITH a summarizes edge (non-orphaned, should be excluded)
 		db.prepare(
@@ -742,13 +756,31 @@ describe("Stage Functions - L2 Graph Entries", () => {
 		db.prepare(
 			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run("det1", "detail_entry_summarized", "This detail is summarized", "detail", baseTime, baseTime, baseTime, 0);
+		).run(
+			"det1",
+			"detail_entry_summarized",
+			"This detail is summarized",
+			"detail",
+			baseTime,
+			baseTime,
+			baseTime,
+			0,
+		);
 
 		// Edge: summary -> detail (summarizes relation) — makes detail non-orphaned
 		db.prepare(
 			`INSERT INTO memory_edges (id, source_key, target_key, relation, weight, created_at, modified_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run("edge0", "summary_entry", "detail_entry_summarized", "summarizes", 1.0, baseTime, baseTime, 0);
+		).run(
+			"edge0",
+			"summary_entry",
+			"detail_entry_summarized",
+			"summarizes",
+			1.0,
+			baseTime,
+			baseTime,
+			0,
+		);
 
 		db.prepare(
 			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
@@ -846,13 +878,31 @@ describe("Stage Functions - L2 Graph Entries", () => {
 		db.prepare(
 			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run("sum2", "test_summary", "Summary of something", "summary", baseTime, baseTime, baseTime, 0);
+		).run(
+			"sum2",
+			"test_summary",
+			"Summary of something",
+			"summary",
+			baseTime,
+			baseTime,
+			baseTime,
+			0,
+		);
 
 		// Create a detail entry WITH incoming summarizes edge (not orphaned)
 		db.prepare(
 			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run("det2", "summarized_detail", "This is summarized", "detail", baseTime, baseTime, baseTime, 0);
+		).run(
+			"det2",
+			"summarized_detail",
+			"This is summarized",
+			"detail",
+			baseTime,
+			baseTime,
+			baseTime,
+			0,
+		);
 
 		// Edge: summary -> detail (summarizes relation)
 		db.prepare(
@@ -864,7 +914,16 @@ describe("Stage Functions - L2 Graph Entries", () => {
 		db.prepare(
 			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run("def5", "related_to_sum", "Related to summary", "default", baseTime, baseTime, baseTime, 0);
+		).run(
+			"def5",
+			"related_to_sum",
+			"Related to summary",
+			"default",
+			baseTime,
+			baseTime,
+			baseTime,
+			0,
+		);
 
 		const result = loadGraphEntries(db, new Set(), ["summary", "detail"], 10);
 
