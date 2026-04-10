@@ -124,8 +124,8 @@ function handleStore(args: Record<string, string>, ctx: CommandContext) {
 		.get(key) as { id: string; deleted: number; tier: MemoryTier } | null;
 
 	if (existing) {
-		// Updating existing entry: preserve tier unless explicitly overridden
-		const tierForUpdate = args.tier && !hasPinnedPrefix ? resolvedTier : existing.tier;
+		// Updating existing entry: pinned prefixes always correct to "pinned", else preserve tier unless explicitly overridden
+		const tierForUpdate = hasPinnedPrefix ? "pinned" : args.tier ? resolvedTier : existing.tier;
 		updateRow(
 			ctx.db,
 			"semantic_memory",

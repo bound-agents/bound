@@ -214,4 +214,95 @@ describe("memory store --tier (AC1.1-AC1.6)", () => {
 			.get("_pinned:important") as { tier: string };
 		expect(row.tier).toBe("pinned");
 	});
+
+	// CRITICAL FIX: Update path must correct corrupted tier on pinned prefix entries
+	it("update pinned prefix entry with corrupted tier corrects to pinned", async () => {
+		const ctx = createContext();
+
+		// Step 1: Create entry with pinned prefix (correctly set to pinned)
+		let result = await memory.handler(
+			{
+				subcommand: "store",
+				source: "_standing:corrupted",
+				target: "initial_value",
+			},
+			ctx,
+		);
+		expect(result.exitCode).toBe(0);
+
+		// Verify initial state
+		let row = db
+			.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
+			.get("_standing:corrupted") as { tier: string };
+		expect(row.tier).toBe("pinned");
+
+		// Step 2: Manually corrupt the tier in the database (simulating a corrupted entry)
+		db.prepare("UPDATE semantic_memory SET tier = ? WHERE key = ?").run(
+			"detail",
+			"_standing:corrupted",
+		);
+
+		// Verify corruption
+		row = db
+			.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
+			.get("_standing:corrupted") as { tier: string };
+		expect(row.tier).toBe("detail");
+
+		// Step 3: Update the entry without --tier (should auto-correct to pinned)
+		result = await memory.handler(
+			{
+				subcommand: "store",
+				source: "_standing:corrupted",
+				target: "updated_value",
+			},
+			ctx,
+		);
+		expect(result.exitCode).toBe(0);
+
+		// Step 4: Verify corruption was corrected
+		row = db
+			.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
+			.get("_standing:corrupted") as { tier: string };
+		expect(row.tier).toBe("pinned");
+	});
+
+	// Additional test: update pinned prefix with explicit --tier should still enforce pinned
+	it("update pinned prefix entry with --tier default still sets to pinned", async () => {
+		const ctx = createContext();
+
+		// Create entry with pinned prefix
+		let result = await memory.handler(
+			{
+				subcommand: "store",
+				source: "_feedback:explicit",
+				target: "initial_value",
+			},
+			ctx,
+		);
+		expect(result.exitCode).toBe(0);
+
+		// Manually corrupt it to summary
+		db.prepare("UPDATE semantic_memory SET tier = ? WHERE key = ?").run(
+			"summary",
+			"_feedback:explicit",
+		);
+
+		// Update with explicit --tier default (should still enforce pinned)
+		result = await memory.handler(
+			{
+				subcommand: "store",
+				source: "_feedback:explicit",
+				target: "updated_value",
+				tier: "default",
+			},
+			ctx,
+		);
+		expect(result.exitCode).toBe(0);
+
+		// Verify pinned prefix wins
+		const row = db
+			.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
+			.get("_feedback:explicit") as { tier: string };
+		expect(row.tier).toBe("pinned");
+	});
 });
