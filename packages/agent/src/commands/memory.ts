@@ -1,6 +1,6 @@
 import { insertRow, softDelete, updateRow } from "@bound/core";
 import type { CommandContext, CommandDefinition } from "@bound/sandbox";
-import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import { BOUND_NAMESPACE, deterministicUUID, type MemoryTier } from "@bound/shared";
 import {
 	cascadeDeleteEdges,
 	getNeighbors,
@@ -18,6 +18,10 @@ import { commandError, commandSuccess, handleCommandError } from "./helpers";
 // - disconnect: source=src_key, target=tgt_key, relation=optional_filter
 // - traverse:   source=start_key, depth=max_depth, relation=optional_filter
 // - neighbors:  source=key, dir=direction_filter
+
+const VALID_TIERS: MemoryTier[] = ["pinned", "summary", "default", "detail"];
+
+const PINNED_PREFIXES = ["_standing", "_feedback", "_policy", "_pinned"];
 
 const STOP_WORDS = new Set([
 	"the",
@@ -92,25 +96,46 @@ function handleStore(args: Record<string, string>, ctx: CommandContext) {
 	const key = args.key || args.source; // 'source' positional becomes 'key' in subcommand context
 	const value = args.value || args.target; // positional mapping
 	if (!key || !value) {
-		return commandError("usage: memory store <key> <value> [--source_tag S]");
+		return commandError("usage: memory store <key> <value> [--source_tag S] [--tier TIER]");
 	}
 	const source = args.source_tag || ctx.taskId || ctx.threadId || "agent";
 	const memoryId = deterministicUUID(BOUND_NAMESPACE, key);
 	const now = new Date().toISOString();
 
+	// Determine tier: apply rules in priority order
+	// 1. Check for pinned prefixes — always pin
+	let resolvedTier: MemoryTier = "default";
+	const hasPinnedPrefix = PINNED_PREFIXES.some((prefix) =>
+		key.startsWith(`${prefix}:`),
+	);
+	if (hasPinnedPrefix) {
+		resolvedTier = "pinned";
+	} else if (args.tier) {
+		// 2. Explicit --tier argument
+		if (!VALID_TIERS.includes(args.tier as MemoryTier)) {
+			return commandError(
+				`invalid tier: ${args.tier}. Must be one of: ${VALID_TIERS.join(", ")}`,
+			);
+		}
+		resolvedTier = args.tier as MemoryTier;
+	}
+
 	// bun:sqlite .get() returns null (not undefined) when no row found.
 	// Note: The existing memorize.ts incorrectly typed .get() as `| undefined`.
 	// We correct this to `| null` per the bun:sqlite invariant documented in CLAUDE.md.
 	const existing = ctx.db
-		.prepare("SELECT id, deleted FROM semantic_memory WHERE key = ?")
-		.get(key) as { id: string; deleted: number } | null;
+		.prepare("SELECT id, deleted, tier FROM semantic_memory WHERE key = ?")
+		.get(key) as { id: string; deleted: number; tier: MemoryTier } | null;
 
 	if (existing) {
+		// Updating existing entry: preserve tier unless explicitly overridden
+		const tierForUpdate =
+			args.tier && !hasPinnedPrefix ? resolvedTier : existing.tier;
 		updateRow(
 			ctx.db,
 			"semantic_memory",
 			memoryId,
-			{ value, source, last_accessed_at: now, deleted: 0 },
+			{ value, source, last_accessed_at: now, deleted: 0, tier: tierForUpdate },
 			ctx.siteId,
 		);
 	} else {
@@ -126,6 +151,7 @@ function handleStore(args: Record<string, string>, ctx: CommandContext) {
 				modified_at: now,
 				last_accessed_at: now,
 				deleted: 0,
+				tier: resolvedTier,
 			},
 			ctx.siteId,
 		);
@@ -349,6 +375,7 @@ export const memory: CommandDefinition = {
 		{ name: "source_tag", required: false, description: "Source tag for store provenance" },
 		{ name: "depth", required: false, description: "Traversal depth (1-3, default 2)" },
 		{ name: "dir", required: false, description: "Neighbor direction: out, in, or both" },
+		{ name: "tier", required: false, description: "Memory tier: pinned, summary, default, detail" },
 	],
 	handler: async (args: Record<string, string>, ctx: CommandContext) => {
 		try {
