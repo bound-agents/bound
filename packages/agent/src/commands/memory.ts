@@ -189,11 +189,38 @@ function handleForget(args: Record<string, string>, ctx: CommandContext) {
 
 	// bun:sqlite .get() returns null (not undefined) when no row found
 	const existing = ctx.db
-		.prepare("SELECT id FROM semantic_memory WHERE key = ? AND deleted = 0")
-		.get(key) as { id: string } | null;
+		.prepare("SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0")
+		.get(key) as { id: string; tier: MemoryTier } | null;
 
 	if (!existing) {
 		return commandError(`Memory not found: ${key}`);
+	}
+
+	// AC2.1: If forgetting a summary, promote detail children to default
+	if (existing.tier === "summary") {
+		const children = ctx.db
+			.prepare(
+				"SELECT target_key FROM memory_edges WHERE source_key = ? AND relation = 'summarizes' AND deleted = 0",
+			)
+			.all(key) as Array<{ target_key: string }>;
+
+		for (const child of children) {
+			const childRow = ctx.db
+				.prepare(
+					"SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0",
+				)
+				.get(child.target_key) as { id: string; tier: MemoryTier } | null;
+
+			if (childRow && childRow.tier === "detail") {
+				updateRow(
+					ctx.db,
+					"semantic_memory",
+					childRow.id,
+					{ tier: "default" },
+					ctx.siteId,
+				);
+			}
+		}
 	}
 
 	// Use existing.id — not deterministicUUID — because entries created by
@@ -201,6 +228,7 @@ function handleForget(args: Record<string, string>, ctx: CommandContext) {
 	softDelete(ctx.db, "semantic_memory", existing.id, ctx.siteId);
 
 	// Cascade: soft-delete all edges referencing this key (as source or target)
+	// This satisfies AC2.2: all outgoing summarizes edges are tombstoned
 	const edgesCascaded = cascadeDeleteEdges(ctx.db, key, ctx.siteId);
 
 	return commandSuccess(
