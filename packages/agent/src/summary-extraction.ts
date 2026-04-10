@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertRow, updateRow } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
-import type { CrossThreadSource, Result } from "@bound/shared";
+import type { CrossThreadSource, MemoryTier, Result } from "@bound/shared";
 import { safeSlice } from "@bound/shared";
 import { graphSeededRetrieval } from "./graph-queries";
 
@@ -392,6 +392,27 @@ export interface VolatileEnrichment {
 	recencyCount?: number; // entries retrieved via recency fallback
 }
 
+export interface StageEntry {
+	key: string;
+	value: string;
+	source: string | null;
+	modifiedAt: string;
+	tier: MemoryTier;
+	tag: string; // e.g., "[pinned]", "[summary]", "[stale-detail]", "[seed]", "[recency]"
+}
+
+export interface StageResult {
+	entries: StageEntry[];
+	exclusionSet: Set<string>;
+}
+
+export interface TieredEnrichment {
+	L0: StageEntry[];
+	L1: StageEntry[];
+	L2: StageEntry[];
+	L3: StageEntry[];
+}
+
 /**
  * Queries the database for memory entries and tasks that changed since
  * the given baseline timestamp. Returns formatted line arrays for
@@ -710,4 +731,116 @@ export function buildVolatileEnrichment(
 	}
 
 	return { memoryDeltaLines, taskDigestLines, graphCount, recencyCount };
+}
+
+/**
+ * Stage L0: Load pinned entries using dual detection (tier='pinned' OR prefix match)
+ * Returns loaded entries plus an exclusion set for downstream stages.
+ */
+export function loadPinnedEntries(db: Database): StageResult {
+	// IMPORTANT: ESCAPE syntax must match summary-extraction.ts lines 467-470 exactly.
+	// Copy the escape sequence from the existing codebase, do NOT derive from scratch.
+	const rows = db
+		.prepare(
+			`SELECT key, value, source, modified_at, tier FROM semantic_memory
+			 WHERE deleted = 0
+			   AND (tier = 'pinned'
+			     OR key LIKE '\\_standing%' ESCAPE '\\'
+			     OR key LIKE '\\_feedback%' ESCAPE '\\'
+			     OR key LIKE '\\_policy%' ESCAPE '\\'
+			     OR key LIKE '\\_pinned%' ESCAPE '\\')`,
+		)
+		.all() as Array<{
+		key: string;
+		value: string;
+		source: string | null;
+		modified_at: string;
+		tier: string;
+	}>;
+
+	const entries: StageEntry[] = rows.map((r) => ({
+		key: r.key,
+		value: r.value,
+		source: r.source,
+		modifiedAt: r.modified_at,
+		tier: (r.tier || "pinned") as MemoryTier,
+		tag: "[pinned]",
+	}));
+
+	const exclusionSet = new Set(entries.map((e) => e.key));
+
+	return { entries, exclusionSet };
+}
+
+/**
+ * Stage L1: Load summary entries and their children, detecting staleness.
+ * All children are added to the exclusion set regardless of staleness.
+ * Stale children (modified after the summary) are loaded with [stale-detail] tag.
+ */
+export function loadSummaryEntries(db: Database, excludeKeys: Set<string>): StageResult {
+	// Load all summary entries not already in exclusion set
+	const summaries = db
+		.prepare(
+			`SELECT key, value, source, modified_at, tier FROM semantic_memory
+			 WHERE tier = 'summary' AND deleted = 0`,
+		)
+		.all() as Array<{
+		key: string;
+		value: string;
+		source: string | null;
+		modified_at: string;
+		tier: string;
+	}>;
+
+	const entries: StageEntry[] = [];
+	const newExclusion = new Set(excludeKeys);
+
+	for (const summary of summaries) {
+		if (excludeKeys.has(summary.key)) continue;
+
+		entries.push({
+			key: summary.key,
+			value: summary.value,
+			source: summary.source,
+			modifiedAt: summary.modified_at,
+			tier: "summary",
+			tag: "[summary]",
+		});
+		newExclusion.add(summary.key);
+
+		// Find all children via outgoing summarizes edges
+		const children = db
+			.prepare(
+				`SELECT m.key, m.value, m.source, m.modified_at, m.tier
+				 FROM memory_edges e
+				 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
+				 WHERE e.source_key = ? AND e.relation = 'summarizes' AND e.deleted = 0`,
+			)
+			.all(summary.key) as Array<{
+			key: string;
+			value: string;
+			source: string | null;
+			modified_at: string;
+			tier: string;
+		}>;
+
+		for (const child of children) {
+			// ALL children go into exclusion set — stale or not
+			newExclusion.add(child.key);
+
+			// Stale children: modified after the summary
+			if (child.modified_at > summary.modified_at) {
+				entries.push({
+					key: child.key,
+					value: child.value,
+					source: child.source,
+					modifiedAt: child.modified_at,
+					tier: child.tier as MemoryTier,
+					tag: "[stale-detail]",
+				});
+			}
+		}
+	}
+
+	return { entries, exclusionSet: newExclusion };
 }
