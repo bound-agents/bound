@@ -62,6 +62,21 @@ export function scaledSilenceTimeout(baseMs: number, estimatedTokens: number): n
 	return Math.max(largeBaseMs, baseMs) + extraMs;
 }
 
+/**
+ * Scale max silence retries based on context size.
+ * For large cold-cache contexts, each retry resends the full context
+ * and has the same chance of timing out. Retrying 10 times at 210s
+ * each wastes 35 minutes. Use fewer retries for larger contexts.
+ *   <= 100k: 10 retries (standard)
+ *   100k-150k: 5 retries
+ *   150k+: 3 retries
+ */
+export function scaledMaxRetries(estimatedTokens: number): number {
+	if (estimatedTokens <= 100_000) return MAX_SILENCE_RETRIES;
+	if (estimatedTokens <= 150_000) return 5;
+	return 3;
+}
+
 const textEncoder = new TextEncoder();
 
 interface BashLike {
@@ -388,10 +403,12 @@ export class AgentLoop {
 						const cacheBreakpoints: number[] | undefined =
 							nonSystemMessages.length >= 2 ? [nonSystemMessages.length - 2] : undefined;
 
+						const totalEstimatedTokens = contextDebug.totalEstimated + toolTokenEstimate;
 						const effectiveSilenceTimeout = scaledSilenceTimeout(
 							SILENCE_TIMEOUT_MS,
-							contextDebug.totalEstimated + toolTokenEstimate,
+							totalEstimatedTokens,
 						);
+						const effectiveMaxRetries = scaledMaxRetries(totalEstimatedTokens);
 
 						let silenceRetries = 0;
 						for (;;) {
@@ -422,14 +439,14 @@ export class AgentLoop {
 							} catch (silenceErr) {
 								const isSilenceTimeout =
 									silenceErr instanceof Error && silenceErr.message.includes("silence timeout");
-								if (isSilenceTimeout && silenceRetries < MAX_SILENCE_RETRIES) {
+								if (isSilenceTimeout && silenceRetries < effectiveMaxRetries) {
 									silenceRetries++;
 									chunks.length = 0; // Clear any partial chunks
 									// Reset inactivity timeout — we're actively retrying, not stalled
 									this.config.onActivity?.();
 									this.ctx.logger.warn("[agent-loop] Silence timeout, retrying", {
 										attempt: silenceRetries,
-										max: MAX_SILENCE_RETRIES,
+										max: effectiveMaxRetries,
 									});
 									continue;
 								}
