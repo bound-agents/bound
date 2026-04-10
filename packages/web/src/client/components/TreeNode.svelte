@@ -11,7 +11,7 @@ interface Props {
 	toggleExpanded: (path: string) => void;
 	formatFileSize: (bytes: number) => string;
 	getFileIcon: (name: string) => Component;
-	downloadFile: (fileId: string) => void;
+	downloadFile: (path: string) => void;
 	selectedPath: string;
 	onSelectDirectory: (path: string) => void;
 	level?: number;
@@ -46,7 +46,7 @@ function handleClick() {
 function handleDownload(e: Event) {
 	e.stopPropagation();
 	if (node.file) {
-		downloadFile(node.file.id);
+		downloadFile(node.file.path);
 	}
 }
 </script>

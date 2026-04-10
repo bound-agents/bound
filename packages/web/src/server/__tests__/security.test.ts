@@ -139,7 +139,9 @@ describe("API Security", () => {
 			const uploaded = await uploadRes.json();
 
 			const res = await app.fetch(
-				new Request(`http://localhost:3000/api/files/download/${uploaded.id}`),
+				new Request(
+					`http://localhost:3000/api/files/download?path=${encodeURIComponent(uploaded.path)}`,
+				),
 			);
 			const disposition = res.headers.get("Content-Disposition") ?? "";
 
@@ -169,7 +171,9 @@ describe("API Security", () => {
 			);
 
 			const res = await app.fetch(
-				new Request("http://localhost:3000/api/files/download/crlf-file"),
+				new Request(
+					`http://localhost:3000/api/files/download?path=${encodeURIComponent("/home/user/uploads/file\r\nX-Injected: true")}`,
+				),
 			);
 			const disposition = res.headers.get("Content-Disposition") ?? "";
 

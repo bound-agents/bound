@@ -151,18 +151,22 @@ export function createFilesRoutes(db: Database): Hono {
 		}
 	});
 
-	app.get("/download/:id", (c) => {
+	app.get("/download", (c) => {
 		try {
-			const fileId = c.req.param("id");
+			const filePath = c.req.query("path");
+
+			if (!filePath) {
+				return c.json({ error: "Missing required query parameter: path" }, 400);
+			}
 
 			const file = db
 				.query(
 					`
 				SELECT * FROM files
-				WHERE id = ? AND deleted = 0
+				WHERE path = ? AND deleted = 0
 			`,
 				)
-				.get(fileId) as AgentFile | null;
+				.get(filePath) as AgentFile | null;
 
 			if (!file) {
 				return c.json(

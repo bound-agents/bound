@@ -145,8 +145,8 @@ function relativeTime(iso: string | null): string {
 	return `${days}d ago`;
 }
 
-function downloadFile(fileId: string): void {
-	window.location.href = `/api/files/download/${fileId}`;
+function downloadFile(path: string): void {
+	window.location.href = `/api/files/download?path=${encodeURIComponent(path)}`;
 }
 
 let unsubscribe: (() => void) | null = null;

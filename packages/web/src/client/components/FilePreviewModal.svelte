@@ -136,7 +136,7 @@ function handleKeydown(e: KeyboardEvent): void {
 }
 
 function download(): void {
-	window.location.href = `/api/files/download/${file.id}`;
+	window.location.href = `/api/files/download?path=${encodeURIComponent(file.path)}`;
 }
 </script>
 

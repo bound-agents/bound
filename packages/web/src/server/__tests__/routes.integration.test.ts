@@ -208,9 +208,20 @@ describe("API Routes", () => {
 		});
 	});
 
-	describe("GET /api/files/download/:id", () => {
-		it("returns 404 for unknown file id", async () => {
-			const request = new Request("http://localhost:3000/api/files/download/unknown-id");
+	describe("GET /api/files/download?path=", () => {
+		it("returns 400 when path query param is missing", async () => {
+			const request = new Request("http://localhost:3000/api/files/download");
+			const response = await app.fetch(request);
+
+			expect(response.status).toBe(400);
+			const error = await response.json();
+			expect(error.error).toBe("Missing required query parameter: path");
+		});
+
+		it("returns 404 for unknown file path", async () => {
+			const request = new Request(
+				"http://localhost:3000/api/files/download?path=/nonexistent/file.txt",
+			);
 			const response = await app.fetch(request);
 
 			expect(response.status).toBe(404);
@@ -226,12 +237,13 @@ describe("API Routes", () => {
 				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
 			);
 			const file = await uploadRes.json();
-			const fileId = file.id;
 
 			// Mark as deleted
-			db.exec("UPDATE files SET deleted = 1 WHERE id = ?", [fileId]);
+			db.exec("UPDATE files SET deleted = 1 WHERE id = ?", [file.id]);
 
-			const request = new Request(`http://localhost:3000/api/files/download/${fileId}`);
+			const request = new Request(
+				`http://localhost:3000/api/files/download?path=${encodeURIComponent(file.path)}`,
+			);
 			const response = await app.fetch(request);
 
 			expect(response.status).toBe(404);
@@ -240,11 +252,12 @@ describe("API Routes", () => {
 		it("returns 404 when content is null", async () => {
 			// Insert a file with null content directly
 			const fileId = "test-null-content";
+			const filePath = "/test-null.txt";
 			db.exec(
 				"INSERT INTO files (id, path, content, is_binary, size_bytes, created_at, modified_at, deleted, created_by, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				[
 					fileId,
-					"/test.txt",
+					filePath,
 					null,
 					0,
 					0,
@@ -256,7 +269,9 @@ describe("API Routes", () => {
 				],
 			);
 
-			const request = new Request(`http://localhost:3000/api/files/download/${fileId}`);
+			const request = new Request(
+				`http://localhost:3000/api/files/download?path=${encodeURIComponent(filePath)}`,
+			);
 			const response = await app.fetch(request);
 
 			expect(response.status).toBe(404);
@@ -274,7 +289,9 @@ describe("API Routes", () => {
 			);
 			const file = await uploadRes.json();
 
-			const request = new Request(`http://localhost:3000/api/files/download/${file.id}`);
+			const request = new Request(
+				`http://localhost:3000/api/files/download?path=${encodeURIComponent(file.path)}`,
+			);
 			const response = await app.fetch(request);
 
 			expect(response.status).toBe(200);
@@ -296,7 +313,9 @@ describe("API Routes", () => {
 			);
 			const file = await uploadRes.json();
 
-			const request = new Request(`http://localhost:3000/api/files/download/${file.id}`);
+			const request = new Request(
+				`http://localhost:3000/api/files/download?path=${encodeURIComponent(file.path)}`,
+			);
 			const response = await app.fetch(request);
 
 			expect(response.status).toBe(200);
@@ -319,7 +338,9 @@ describe("API Routes", () => {
 			);
 			const file = await uploadRes.json();
 
-			const request = new Request(`http://localhost:3000/api/files/download/${file.id}`);
+			const request = new Request(
+				`http://localhost:3000/api/files/download?path=${encodeURIComponent(file.path)}`,
+			);
 			const response = await app.fetch(request);
 
 			expect(response.status).toBe(200);
