@@ -28,7 +28,7 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 		console.log("PREVIEW MODE - No changes will be made\n");
 	}
 	try {
-		const db = openBoundDB(args.configDir);
+		const db = openBoundDB();
 		const safeTimestamp = new Date(args.before);
 		if (Number.isNaN(safeTimestamp.getTime())) {
 			console.error("Invalid timestamp format. Use ISO 8601 (e.g., 2024-01-01T12:00:00Z)");

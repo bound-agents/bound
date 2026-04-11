@@ -11,7 +11,7 @@ export async function runStop(args: StopResumeArgs): Promise<void> {
 	console.log("Setting emergency stop flag...");
 	try {
 		// Open database
-		const db = openBoundDB(args.configDir);
+		const db = openBoundDB();
 		// Get site_id from host_meta for change-log
 		const siteId = getSiteId(db);
 		if (siteId === "unknown") {
@@ -54,7 +54,7 @@ export async function runResume(args: StopResumeArgs): Promise<void> {
 	const _dbPath = resolve(configDir, "bound.db");
 	console.log("Clearing emergency stop flag...");
 	try {
-		const db = openBoundDB(args.configDir);
+		const db = openBoundDB();
 		const siteId = getSiteId(db);
 		if (siteId === "unknown") {
 			console.error("Failed to read site_id from database. Database may not be initialized.");

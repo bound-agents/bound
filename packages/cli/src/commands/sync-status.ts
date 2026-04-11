@@ -24,11 +24,11 @@ interface HostRow {
 	online_at: string | null;
 }
 
-export async function runSyncStatus(args: SyncStatusArgs): Promise<void> {
+export async function runSyncStatus(_args: SyncStatusArgs): Promise<void> {
 	console.log("Checking sync status...\n");
 
 	try {
-		const db = openBoundDB(args.configDir);
+		const db = openBoundDB();
 
 		// Get local site_id
 		const localSiteId = getSiteId(db);

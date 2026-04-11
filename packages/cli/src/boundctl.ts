@@ -193,7 +193,7 @@ EXAMPLES:
 
 	if (command === "sync-status") {
 		const syncStatusArgs = {
-			configDir: getArgValue(args, "--config-dir") || "data",
+			configDir: getArgValue(args, "--config-dir") || "config",
 		};
 
 		try {
@@ -216,7 +216,7 @@ EXAMPLES:
 		const drainArgs = {
 			newHub,
 			timeout: timeoutStr ? Number.parseInt(timeoutStr, 10) : undefined,
-			configDir: getArgValue(args, "--config-dir") || "data",
+			configDir: getArgValue(args, "--config-dir") || "config",
 		};
 
 		try {
@@ -230,8 +230,8 @@ EXAMPLES:
 
 	if (command === "skill") {
 		const subcommand = args[1];
-		const configDir = getArgValue(args, "--config-dir") || "data";
-		const db = openBoundDB(configDir);
+		const dataDir = getArgValue(args, "--data-dir") || "data";
+		const db = openBoundDB(dataDir);
 
 		try {
 			if (subcommand === "list") {

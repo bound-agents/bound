@@ -22,7 +22,7 @@ export async function runDrain(args: DrainArgs): Promise<void> {
 	console.log(`Draining current hub and switching to: ${args.newHub}`);
 	console.log(`Timeout: ${timeoutSeconds}s\n`);
 	try {
-		const db = openBoundDB(args.configDir);
+		const db = openBoundDB();
 		// Get site_id from host_meta for change-log
 		const siteId = getSiteId(db);
 		if (siteId === "unknown") {

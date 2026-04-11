@@ -35,7 +35,7 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 	const configDir = args.configDir || "data";
 	console.log(`Setting cluster hub to: ${args.hostName}`);
 	try {
-		const db = openBoundDB(args.configDir);
+		const db = openBoundDB();
 		// Get site_id for change_log
 		const siteId = getSiteId(db);
 		if (siteId === "unknown") {
