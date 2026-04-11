@@ -65,6 +65,18 @@ describe("reducers", () => {
 				deleted     INTEGER DEFAULT 0
 			)
 		`);
+
+		db.run(`
+			CREATE TABLE hosts (
+				site_id      TEXT PRIMARY KEY,
+				host_name    TEXT NOT NULL,
+				version      TEXT,
+				sync_url     TEXT,
+				online_at    TEXT,
+				modified_at  TEXT NOT NULL,
+				deleted      INTEGER DEFAULT 0
+			)
+		`);
 	});
 
 	afterEach(() => {
@@ -596,6 +608,233 @@ describe("reducers", () => {
 				row_data: "broken",
 			});
 			expect(result.applied).toBe(false);
+		});
+	});
+
+	describe("malformed row_data edge cases", () => {
+		const baseEvent: Omit<ChangeLogEntry, "row_data"> = {
+			hlc: "2026-03-22T10:00:00.000Z_0001_test",
+			table_name: "semantic_memory",
+			row_id: "mem-1",
+			site_id: "site-a",
+			timestamp: "2026-03-22T10:00:00Z",
+		};
+
+		it("LWW skips null row_data", () => {
+			const result = applyLWWReducer(db, { ...baseEvent, row_data: "null" });
+			expect(result.applied).toBe(false);
+		});
+
+		it("LWW skips array row_data", () => {
+			const result = applyLWWReducer(db, { ...baseEvent, row_data: "[1,2,3]" });
+			expect(result.applied).toBe(false);
+		});
+
+		it("LWW skips string row_data", () => {
+			const result = applyLWWReducer(db, { ...baseEvent, row_data: '"hello"' });
+			expect(result.applied).toBe(false);
+		});
+
+		it("LWW skips number row_data", () => {
+			const result = applyLWWReducer(db, { ...baseEvent, row_data: "42" });
+			expect(result.applied).toBe(false);
+		});
+
+		it("LWW skips boolean row_data", () => {
+			const result = applyLWWReducer(db, { ...baseEvent, row_data: "false" });
+			expect(result.applied).toBe(false);
+		});
+
+		it("append-only skips null row_data", () => {
+			const result = applyAppendOnlyReducer(db, {
+				...baseEvent,
+				table_name: "messages",
+				row_data: "null",
+			});
+			expect(result.applied).toBe(false);
+		});
+
+		it("append-only skips array row_data", () => {
+			const result = applyAppendOnlyReducer(db, {
+				...baseEvent,
+				table_name: "messages",
+				row_data: "[1]",
+			});
+			expect(result.applied).toBe(false);
+		});
+	});
+
+	describe("partial row_data for NOT NULL columns", () => {
+		it("LWW INSERT skips partial hosts row missing host_name", () => {
+			// Simulates the platform heartbeat bug: only site_id + modified_at
+			const result = applyLWWReducer(db, {
+				hlc: "2026-03-22T10:00:00.000Z_0001_test",
+				table_name: "hosts",
+				row_id: "site-abc",
+				site_id: "site-a",
+				timestamp: "2026-03-22T10:00:00Z",
+				row_data: JSON.stringify({
+					site_id: "site-abc",
+					modified_at: "2026-03-22T10:00:00Z",
+				}),
+			});
+			expect(result.applied).toBe(false);
+
+			// Verify no row was inserted
+			const row = db.query("SELECT * FROM hosts WHERE site_id = ?").get("site-abc");
+			expect(row).toBeNull();
+		});
+
+		it("LWW INSERT succeeds then partial UPDATE succeeds (only updates provided columns)", () => {
+			// First: full INSERT
+			applyLWWReducer(db, {
+				hlc: "2026-03-22T10:00:00.000Z_0001_test",
+				table_name: "hosts",
+				row_id: "site-abc",
+				site_id: "site-a",
+				timestamp: "2026-03-22T10:00:00Z",
+				row_data: JSON.stringify({
+					site_id: "site-abc",
+					host_name: "my-host",
+					modified_at: "2026-03-22T10:00:00Z",
+					deleted: 0,
+				}),
+			});
+
+			// Then: partial UPDATE (heartbeat-style, only modified_at)
+			const result = applyLWWReducer(db, {
+				hlc: "2026-03-22T10:01:00.000Z_0001_test",
+				table_name: "hosts",
+				row_id: "site-abc",
+				site_id: "site-a",
+				timestamp: "2026-03-22T10:01:00Z",
+				row_data: JSON.stringify({
+					site_id: "site-abc",
+					modified_at: "2026-03-22T10:01:00Z",
+				}),
+			});
+			expect(result.applied).toBe(true);
+
+			// Verify host_name preserved
+			const row = db.query("SELECT * FROM hosts WHERE site_id = ?").get("site-abc") as Record<
+				string,
+				unknown
+			>;
+			expect(row.host_name).toBe("my-host");
+			expect(row.modified_at).toBe("2026-03-22T10:01:00Z");
+		});
+
+		it("LWW empty object row_data skips gracefully", () => {
+			const result = applyLWWReducer(db, {
+				hlc: "2026-03-22T10:00:00.000Z_0001_test",
+				table_name: "hosts",
+				row_id: "site-abc",
+				site_id: "site-a",
+				timestamp: "2026-03-22T10:00:00Z",
+				row_data: "{}",
+			});
+			expect(result.applied).toBe(false);
+		});
+	});
+
+	describe("replayEvents mixed batch scenarios", () => {
+		it("continues past failed events and applies good ones", () => {
+			const events: ChangeLogEntry[] = [
+				// Event 1: partial hosts INSERT — will fail NOT NULL constraint
+				{
+					hlc: "2026-03-22T10:00:00.000Z_0001_test",
+					table_name: "hosts",
+					row_id: "site-abc",
+					site_id: "site-a",
+					timestamp: "2026-03-22T10:00:00Z",
+					row_data: JSON.stringify({ site_id: "site-abc", modified_at: "2026-03-22T10:00:00Z" }),
+				},
+				// Event 2: null row_data — will be skipped
+				{
+					hlc: "2026-03-22T10:00:01.000Z_0001_test",
+					table_name: "semantic_memory",
+					row_id: "mem-1",
+					site_id: "site-a",
+					timestamp: "2026-03-22T10:00:01Z",
+					row_data: "null",
+				},
+				// Event 3: malformed JSON — will be skipped
+				{
+					hlc: "2026-03-22T10:00:02.000Z_0001_test",
+					table_name: "semantic_memory",
+					row_id: "mem-2",
+					site_id: "site-a",
+					timestamp: "2026-03-22T10:00:02Z",
+					row_data: "broken{json",
+				},
+				// Event 4: valid full hosts INSERT — should succeed
+				{
+					hlc: "2026-03-22T10:00:03.000Z_0001_test",
+					table_name: "hosts",
+					row_id: "site-abc",
+					site_id: "site-a",
+					timestamp: "2026-03-22T10:00:03Z",
+					row_data: JSON.stringify({
+						site_id: "site-abc",
+						host_name: "my-host",
+						modified_at: "2026-03-22T10:00:03Z",
+						deleted: 0,
+					}),
+				},
+				// Event 5: valid memory — should succeed
+				{
+					hlc: "2026-03-22T10:00:04.000Z_0001_test",
+					table_name: "semantic_memory",
+					row_id: "mem-3",
+					site_id: "site-a",
+					timestamp: "2026-03-22T10:00:04Z",
+					row_data: JSON.stringify({
+						id: "mem-3",
+						key: "test",
+						value: "data",
+						source: "agent",
+						created_at: "2026-03-22T10:00:04Z",
+						modified_at: "2026-03-22T10:00:04Z",
+						last_accessed_at: "2026-03-22T10:00:04Z",
+						deleted: 0,
+					}),
+				},
+			];
+
+			const result = replayEvents(db, events);
+			expect(result.applied).toBe(2); // events 4 and 5
+			expect(result.skipped).toBe(3); // events 1, 2, 3
+
+			// Verify the good events landed
+			const host = db.query("SELECT * FROM hosts WHERE site_id = ?").get("site-abc");
+			expect(host).not.toBeNull();
+			const mem = db.query("SELECT * FROM semantic_memory WHERE id = ?").get("mem-3");
+			expect(mem).not.toBeNull();
+		});
+
+		it("all events fail gracefully without crashing", () => {
+			const events: ChangeLogEntry[] = [
+				{
+					hlc: "2026-03-22T10:00:00.000Z_0001_test",
+					table_name: "hosts",
+					row_id: "x",
+					site_id: "site-a",
+					timestamp: "2026-03-22T10:00:00Z",
+					row_data: "null",
+				},
+				{
+					hlc: "2026-03-22T10:00:01.000Z_0001_test",
+					table_name: "hosts",
+					row_id: "y",
+					site_id: "site-a",
+					timestamp: "2026-03-22T10:00:01Z",
+					row_data: "broken",
+				},
+			];
+
+			const result = replayEvents(db, events);
+			expect(result.applied).toBe(0);
+			expect(result.skipped).toBe(2);
 		});
 	});
 });
