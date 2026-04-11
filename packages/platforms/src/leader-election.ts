@@ -91,10 +91,11 @@ export class PlatformLeaderElection {
 				const ts = new Date().toISOString();
 				this.db.transaction(() => {
 					this.db.run("UPDATE hosts SET modified_at = ? WHERE site_id = ?", [ts, this.siteId]);
-					createChangeLogEntry(this.db, "hosts", this.siteId, this.siteId, {
-						site_id: this.siteId,
-						modified_at: ts,
-					});
+					// Read full row for changelog — partial row_data breaks LWW INSERT on peers
+					const fullRow = this.db
+						.query("SELECT * FROM hosts WHERE site_id = ?")
+						.get(this.siteId) as Record<string, unknown>;
+					createChangeLogEntry(this.db, "hosts", this.siteId, this.siteId, fullRow);
 				})();
 			} catch {
 				// DB write failure is non-fatal — next heartbeat will retry

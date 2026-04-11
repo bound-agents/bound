@@ -144,19 +144,26 @@ export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied:
 		.query(`SELECT * FROM ${event.table_name} WHERE ${pkColumn} = ?`)
 		.get(pkValue) as Record<string, unknown> | null;
 
-	// If row doesn't exist, do a simple insert with all provided columns
+	// If row doesn't exist, do a simple insert with all provided columns.
+	// Partial row_data (e.g. heartbeat-only updates missing NOT NULL fields) may fail —
+	// skip gracefully since a later event with full data will succeed.
 	if (!existing) {
 		const columnsToInsert = Object.keys(rowData).filter(
 			(col) => validateColumnName(col) && schemaColumns.includes(col),
 		);
 		const valuesToInsert = columnsToInsert.map((col) => rowData[col]);
-		db.run(
-			`INSERT INTO ${event.table_name} (${columnsToInsert.join(", ")})
-			VALUES (${columnsToInsert.map(() => "?").join(", ")})`,
-			valuesToInsert,
-		);
-		const changes = db.query("SELECT changes() as count").get() as Record<string, number>;
-		return { applied: changes.count > 0 };
+		try {
+			db.run(
+				`INSERT INTO ${event.table_name} (${columnsToInsert.join(", ")})
+				VALUES (${columnsToInsert.map(() => "?").join(", ")})`,
+				valuesToInsert,
+			);
+			const changes = db.query("SELECT changes() as count").get() as Record<string, number>;
+			return { applied: changes.count > 0 };
+		} catch {
+			// Partial row_data missing NOT NULL columns — skip, a later event will have full data
+			return { applied: false };
+		}
 	}
 
 	// Row exists - apply LWW: only update if incoming modified_at > existing modified_at
