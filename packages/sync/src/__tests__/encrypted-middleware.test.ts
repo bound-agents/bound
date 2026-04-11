@@ -305,7 +305,10 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		);
 		await keyManager.init(spokeKeyring);
 
-		const requestJson = JSON.stringify({ events: [], source_hlc_end: "2026-04-01T00:00:00.042Z_0001_hub" });
+		const requestJson = JSON.stringify({
+			events: [],
+			source_hlc_end: "2026-04-01T00:00:00.042Z_0001_hub",
+		});
 		const plaintext = new TextEncoder().encode(requestJson);
 		const symmetricKey = keyManager.getSymmetricKey(hub.siteId);
 		if (!symmetricKey) {
@@ -360,7 +363,10 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		);
 		await keyManager.init(spokeKeyring);
 
-		const requestJson = JSON.stringify({ events: [], source_hlc_end: "2026-04-01T00:00:00.042Z_0001_hub" });
+		const requestJson = JSON.stringify({
+			events: [],
+			source_hlc_end: "2026-04-01T00:00:00.042Z_0001_hub",
+		});
 		const plaintext = new TextEncoder().encode(requestJson);
 		const symmetricKey = keyManager.getSymmetricKey(hub.siteId);
 		if (!symmetricKey) {
@@ -410,7 +416,10 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		);
 		await keyManager.init(spokeKeyring);
 
-		const requestJson = JSON.stringify({ events: [], source_hlc_end: "2026-04-01T00:00:00.099Z_0001_hub" });
+		const requestJson = JSON.stringify({
+			events: [],
+			source_hlc_end: "2026-04-01T00:00:00.099Z_0001_hub",
+		});
 
 		const response = await transport.send(
 			"POST",

@@ -184,8 +184,16 @@ describe("signing module", () => {
 		it("successfully signs and verifies multiple requests", async () => {
 			const requests = [
 				{ method: "POST", path: "/sync/push", body: '{"events":[]}' },
-				{ method: "POST", path: "/sync/pull", body: '{"since_hlc":"2026-04-01T00:00:00.005Z_0001_siteA"}' },
-				{ method: "POST", path: "/sync/ack", body: '{"last_received":"2026-04-01T00:00:00.010Z_0001_siteA"}' },
+				{
+					method: "POST",
+					path: "/sync/pull",
+					body: '{"since_hlc":"2026-04-01T00:00:00.005Z_0001_siteA"}',
+				},
+				{
+					method: "POST",
+					path: "/sync/ack",
+					body: '{"last_received":"2026-04-01T00:00:00.010Z_0001_siteA"}',
+				},
 			];
 
 			for (const req of requests) {

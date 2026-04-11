@@ -1,7 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { HLC_ZERO } from "@bound/shared";
-import { getMinConfirmedHlc } from "../peer-cursor.js";
 import { determinePruningMode, pruneChangeLog } from "../pruning.js";
 
 describe("pruning", () => {

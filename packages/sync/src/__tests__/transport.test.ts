@@ -224,7 +224,10 @@ describe("SyncTransport", () => {
 
 	it("sync-encryption.AC4.2: generates random 192-bit nonce per message", async () => {
 		const body1 = JSON.stringify({ events: [], source_hlc_end: "" });
-		const body2 = JSON.stringify({ events: [], source_hlc_end: "2026-04-01T00:00:00.000Z_0001_hub" });
+		const body2 = JSON.stringify({
+			events: [],
+			source_hlc_end: "2026-04-01T00:00:00.000Z_0001_hub",
+		});
 
 		await transport.send(
 			"POST",

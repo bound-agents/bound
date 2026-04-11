@@ -1,3 +1,4 @@
+import type { Database } from "bun:sqlite";
 /**
  * Hub-spoke E2E integration test: new-hub replication flow.
  *
@@ -14,7 +15,6 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import { writeOutbox } from "@bound/core";
 import type { KeyringConfig } from "@bound/shared";
 import { generateHlc } from "@bound/shared";
@@ -34,7 +34,9 @@ function insertChangeLog(
 	timestamp: string,
 	rowData: Record<string, unknown> | string,
 ): void {
-	const lastHlcRow = db.query("SELECT hlc FROM change_log ORDER BY hlc DESC LIMIT 1").get() as { hlc: string } | null;
+	const lastHlcRow = db.query("SELECT hlc FROM change_log ORDER BY hlc DESC LIMIT 1").get() as {
+		hlc: string;
+	} | null;
 	const hlc = generateHlc(timestamp, lastHlcRow?.hlc ?? null, siteId);
 
 	const rowDataStr = typeof rowData === "string" ? rowData : JSON.stringify(rowData);
@@ -112,18 +114,18 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 			.run(userId, "Alice", now, now);
 		insertChangeLog(
 			spoke.db,
-				"users",
-				userId,
-				spoke.siteId,
-				now,
-				JSON.stringify({
-					id: userId,
-					display_name: "Alice",
-					first_seen_at: now,
-					modified_at: now,
-					deleted: 0,
-				}),
-			);
+			"users",
+			userId,
+			spoke.siteId,
+			now,
+			JSON.stringify({
+				id: userId,
+				display_name: "Alice",
+				first_seen_at: now,
+				modified_at: now,
+				deleted: 0,
+			}),
+		);
 
 		// 2. Thread
 		const threadId = `thread-${randomBytes(4).toString("hex")}`;
@@ -135,23 +137,23 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 			.run(threadId, userId, now, now, now);
 		insertChangeLog(
 			spoke.db,
-				"threads",
-				threadId,
-				spoke.siteId,
-				now,
-				JSON.stringify({
-					id: threadId,
-					user_id: userId,
-					interface: "web",
-					host_origin: "spoke-host",
-					color: 0,
-					title: "Test Thread",
-					created_at: now,
-					modified_at: now,
-					last_message_at: now,
-					deleted: 0,
-				}),
-			);
+			"threads",
+			threadId,
+			spoke.siteId,
+			now,
+			JSON.stringify({
+				id: threadId,
+				user_id: userId,
+				interface: "web",
+				host_origin: "spoke-host",
+				color: 0,
+				title: "Test Thread",
+				created_at: now,
+				modified_at: now,
+				last_message_at: now,
+				deleted: 0,
+			}),
+		);
 
 		// 3. Message
 		const messageId = `msg-${randomBytes(4).toString("hex")}`;
@@ -163,19 +165,19 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 			.run(messageId, threadId, now);
 		insertChangeLog(
 			spoke.db,
-				"messages",
-				messageId,
-				spoke.siteId,
-				now,
-				JSON.stringify({
-					id: messageId,
-					thread_id: threadId,
-					role: "user",
-					content: "Hello from spoke",
-					created_at: now,
-					host_origin: "spoke-host",
-				}),
-			);
+			"messages",
+			messageId,
+			spoke.siteId,
+			now,
+			JSON.stringify({
+				id: messageId,
+				thread_id: threadId,
+				role: "user",
+				content: "Hello from spoke",
+				created_at: now,
+				host_origin: "spoke-host",
+			}),
+		);
 
 		// 4. Semantic memory
 		const memId = `mem-${randomBytes(4).toString("hex")}`;
@@ -187,21 +189,21 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 			.run(memId, "cluster-setup", "Hub+spoke topology configured", "test", now, now, now);
 		insertChangeLog(
 			spoke.db,
-				"semantic_memory",
-				memId,
-				spoke.siteId,
-				now,
-				JSON.stringify({
-					id: memId,
-					key: "cluster-setup",
-					value: "Hub+spoke topology configured",
-					source: "test",
-					created_at: now,
-					modified_at: now,
-					last_accessed_at: now,
-					deleted: 0,
-				}),
-			);
+			"semantic_memory",
+			memId,
+			spoke.siteId,
+			now,
+			JSON.stringify({
+				id: memId,
+				key: "cluster-setup",
+				value: "Hub+spoke topology configured",
+				source: "test",
+				created_at: now,
+				modified_at: now,
+				last_accessed_at: now,
+				deleted: 0,
+			}),
+		);
 
 		// 5. Skill
 		const skillId = `skill-${randomBytes(4).toString("hex")}`;
@@ -213,21 +215,21 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 			.run(skillId, "hub-spoke-skill", "A skill for testing hub-spoke sync", now);
 		insertChangeLog(
 			spoke.db,
-				"skills",
-				skillId,
-				spoke.siteId,
-				now,
-				JSON.stringify({
-					id: skillId,
-					name: "hub-spoke-skill",
-					description: "A skill for testing hub-spoke sync",
-					status: "active",
-					skill_root: "/home/user/skills/test",
-					activation_count: 0,
-					modified_at: now,
-					deleted: 0,
-				}),
-			);
+			"skills",
+			skillId,
+			spoke.siteId,
+			now,
+			JSON.stringify({
+				id: skillId,
+				name: "hub-spoke-skill",
+				description: "A skill for testing hub-spoke sync",
+				status: "active",
+				skill_root: "/home/user/skills/test",
+				activation_count: 0,
+				modified_at: now,
+				deleted: 0,
+			}),
+		);
 
 		// 6. Host advertisement (spoke advertises its model capabilities)
 		spoke.db
@@ -244,21 +246,21 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 			);
 		insertChangeLog(
 			spoke.db,
-				"hosts",
-				spoke.siteId,
-				spoke.siteId,
-				now,
-				JSON.stringify({
-					site_id: spoke.siteId,
-					host_name: "spoke-host",
-					version: "1.0.0",
-					sync_url: `http://localhost:${spoke.port}`,
-					models: JSON.stringify([{ id: "claude", tier: 2 }]),
-					online_at: now,
-					modified_at: now,
-					deleted: 0,
-				}),
-			);
+			"hosts",
+			spoke.siteId,
+			spoke.siteId,
+			now,
+			JSON.stringify({
+				site_id: spoke.siteId,
+				host_name: "spoke-host",
+				version: "1.0.0",
+				sync_url: `http://localhost:${spoke.port}`,
+				models: JSON.stringify([{ id: "claude", tier: 2 }]),
+				online_at: now,
+				modified_at: now,
+				deleted: 0,
+			}),
+		);
 
 		// --- First sync: spoke pushes all pre-existing data to hub ---
 		const syncResult =
@@ -400,12 +402,12 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 			.run(configKey, "hub-managed", now);
 		insertChangeLog(
 			hub.db,
-				"cluster_config",
-				configKey,
-				hub.siteId,
-				now,
-				JSON.stringify({ key: configKey, value: "hub-managed", modified_at: now }),
-			);
+			"cluster_config",
+			configKey,
+			hub.siteId,
+			now,
+			JSON.stringify({ key: configKey, value: "hub-managed", modified_at: now }),
+		);
 
 		// First sync: spoke pushes (nothing new) and pulls hub's cluster_config
 		const syncResult =
@@ -433,20 +435,20 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 			.run(hub.siteId, JSON.stringify([{ id: "claude-opus", tier: 1 }]), now, now);
 		insertChangeLog(
 			hub.db,
-				"hosts",
-				hub.siteId,
-				hub.siteId,
-				now,
-				JSON.stringify({
-					site_id: hub.siteId,
-					host_name: "hub-node",
-					version: "1.0.0",
-					models: JSON.stringify([{ id: "claude-opus", tier: 1 }]),
-					online_at: now,
-					modified_at: now,
-					deleted: 0,
-				}),
-			);
+			"hosts",
+			hub.siteId,
+			hub.siteId,
+			now,
+			JSON.stringify({
+				site_id: hub.siteId,
+				host_name: "hub-node",
+				version: "1.0.0",
+				models: JSON.stringify([{ id: "claude-opus", tier: 1 }]),
+				online_at: now,
+				modified_at: now,
+				deleted: 0,
+			}),
+		);
 
 		// Spoke syncs — push phase sends spoke data, pull phase fetches hub's hosts row
 		const syncResult =
@@ -477,20 +479,20 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 			.run(hub.siteId, JSON.stringify(["discord"]), now, now);
 		insertChangeLog(
 			hub.db,
-				"hosts",
-				hub.siteId,
-				hub.siteId,
-				now,
-				JSON.stringify({
-					site_id: hub.siteId,
-					host_name: "hub-node",
-					version: "1.0.0",
-					platforms: JSON.stringify(["discord"]),
-					online_at: now,
-					modified_at: now,
-					deleted: 0,
-				}),
-			);
+			"hosts",
+			hub.siteId,
+			hub.siteId,
+			now,
+			JSON.stringify({
+				site_id: hub.siteId,
+				host_name: "hub-node",
+				version: "1.0.0",
+				platforms: JSON.stringify(["discord"]),
+				online_at: now,
+				modified_at: now,
+				deleted: 0,
+			}),
+		);
 
 		// Spoke syncs — pull phase fetches hub's hosts row including platforms column
 		const syncResult =

@@ -120,7 +120,9 @@ async function insertRawRow(
 	const now = new Date().toISOString();
 
 	// Get the last HLC from the change_log to generate the next one
-	const lastHlcRow = db.query("SELECT hlc FROM change_log ORDER BY hlc DESC LIMIT 1").get() as { hlc: string } | null;
+	const lastHlcRow = db.query("SELECT hlc FROM change_log ORDER BY hlc DESC LIMIT 1").get() as {
+		hlc: string;
+	} | null;
 	const hlc = generateHlc(now, lastHlcRow?.hlc ?? null, siteId);
 
 	const txFn = db.transaction(() => {

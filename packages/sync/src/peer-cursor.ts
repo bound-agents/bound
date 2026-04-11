@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { type SyncState, HLC_ZERO } from "@bound/shared";
+import { HLC_ZERO, type SyncState } from "@bound/shared";
 
 export function getPeerCursor(db: Database, peerSiteId: string): SyncState | null {
 	const result = db
@@ -25,7 +25,10 @@ export function updatePeerCursor(
 	const setClauses = [...updateKeys.map((key) => `${key} = ?`), "last_sync_at = ?"];
 	const setValues: (number | string)[] = [
 		...updateKeys.map(
-			(key) => (updates[key as keyof typeof updates] ?? (key === "sync_errors" ? 0 : HLC_ZERO)) as number | string,
+			(key) =>
+				(updates[key as keyof typeof updates] ?? (key === "sync_errors" ? 0 : HLC_ZERO)) as
+					| number
+					| string,
 		),
 		now,
 	];
