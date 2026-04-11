@@ -541,7 +541,15 @@ export function startSyncLoop(
 
 		if (!result.ok) {
 			consecutiveFailures++;
+			// Log sync failures — syncCycle returns Result.err without logging
+			// for push/pull/ack phase errors (only unexpected exceptions get logged)
+			console.error(
+				`[sync] Cycle failed (phase=${result.error.phase}, status=${result.error.status ?? "n/a"}): ${result.error.message}`,
+			);
 		} else {
+			if (consecutiveFailures > 0) {
+				console.log(`[sync] Cycle recovered after ${consecutiveFailures} failure(s)`);
+			}
 			consecutiveFailures = 0;
 		}
 
