@@ -62,6 +62,9 @@ export function applyAppendOnlyReducer(db: Database, event: ChangeLogEntry): { a
 	} catch {
 		return { applied: false };
 	}
+	if (!rowData || typeof rowData !== "object") {
+		return { applied: false };
+	}
 	const hasModifiedAt = rowData.modified_at !== null && rowData.modified_at !== undefined;
 
 	const columns = Object.keys(rowData);
@@ -130,6 +133,9 @@ export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied:
 	try {
 		rowData = JSON.parse(event.row_data);
 	} catch {
+		return { applied: false };
+	}
+	if (!rowData || typeof rowData !== "object") {
 		return { applied: false };
 	}
 	const schemaColumns = getTableColumns(db, event.table_name);
