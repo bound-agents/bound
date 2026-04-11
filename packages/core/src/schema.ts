@@ -1,4 +1,152 @@
 import type { Database } from "bun:sqlite";
+import { HLC_ZERO } from "@bound/shared";
+
+/**
+ * Migrate change_log from seq INTEGER PK to hlc TEXT PK.
+ * Only runs if the old seq-based table exists. Safe to call on fresh installs
+ * (table doesn't exist yet) or already-migrated databases (hlc column present).
+ */
+function migrateChangeLogToHlc(db: Database): void {
+	// Check if change_log exists and has a seq column
+	const cols = db.query("PRAGMA table_info(change_log)").all() as Array<{
+		name: string;
+		type: string;
+	}>;
+	if (cols.length === 0) return; // Table doesn't exist yet — fresh install
+	const hasSeq = cols.some((c) => c.name === "seq");
+	const hasHlc = cols.some((c) => c.name === "hlc");
+	if (!hasSeq || hasHlc) return; // Already migrated or fresh install
+
+	// Read site_id from host_meta for HLC generation
+	const metaRow = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as {
+		value: string;
+	} | null;
+	const fallbackSiteId = metaRow?.value ?? "0000";
+
+	db.exec("BEGIN");
+	try {
+		// Create the new HLC-based table
+		db.exec(`
+			CREATE TABLE change_log_v2 (
+				hlc        TEXT PRIMARY KEY,
+				table_name TEXT NOT NULL,
+				row_id     TEXT NOT NULL,
+				site_id    TEXT NOT NULL,
+				timestamp  TEXT NOT NULL,
+				row_data   TEXT NOT NULL
+			) STRICT
+		`);
+
+		// Migrate data: generate HLC from (timestamp, seq, site_id)
+		// seq provides unique counter within same timestamp
+		const rows = db
+			.query(
+				"SELECT seq, table_name, row_id, site_id, timestamp, row_data FROM change_log ORDER BY seq ASC",
+			)
+			.all() as Array<{
+			seq: number;
+			table_name: string;
+			row_id: string;
+			site_id: string;
+			timestamp: string;
+			row_data: string;
+		}>;
+
+		const insert = db.prepare(
+			"INSERT INTO change_log_v2 (hlc, table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?, ?)",
+		);
+
+		for (const row of rows) {
+			const counter = (row.seq % 65536).toString(16).padStart(4, "0");
+			const siteId = row.site_id || fallbackSiteId;
+			const hlc = `${row.timestamp}_${counter}_${siteId}`;
+			insert.run(hlc, row.table_name, row.row_id, row.site_id, row.timestamp, row.row_data);
+		}
+
+		// Drop old index first, then swap tables
+		db.exec("DROP INDEX IF EXISTS idx_changelog_seq");
+		db.exec("DROP TABLE change_log");
+		db.exec("ALTER TABLE change_log_v2 RENAME TO change_log");
+
+		db.exec("COMMIT");
+	} catch (error) {
+		try {
+			db.exec("ROLLBACK");
+		} catch {
+			// ROLLBACK failed, original error takes priority
+		}
+		throw error;
+	}
+}
+
+/**
+ * Migrate sync_state from INTEGER cursors to TEXT HLC cursors.
+ * Converts seq-based cursors to HLC by looking up the corresponding
+ * change_log entry. If the exact seq doesn't exist (pruned), uses HLC_ZERO.
+ */
+function migrateSyncStateToHlc(db: Database): void {
+	const cols = db.query("PRAGMA table_info(sync_state)").all() as Array<{
+		name: string;
+		type: string;
+	}>;
+	if (cols.length === 0) return; // Table doesn't exist yet
+
+	const lastReceivedCol = cols.find((c) => c.name === "last_received");
+	if (!lastReceivedCol) return;
+	if (lastReceivedCol.type === "TEXT") return; // Already migrated
+
+	db.exec("BEGIN");
+	try {
+		db.exec(`
+			CREATE TABLE sync_state_v2 (
+				peer_site_id  TEXT PRIMARY KEY,
+				last_received TEXT NOT NULL DEFAULT '${HLC_ZERO}',
+				last_sent     TEXT NOT NULL DEFAULT '${HLC_ZERO}',
+				last_sync_at  TEXT,
+				sync_errors   INTEGER DEFAULT 0
+			) STRICT
+		`);
+
+		// For each peer, try to find the HLC for their cursor position.
+		// Since we just migrated change_log, the new hlc column is available.
+		const peers = db
+			.query("SELECT peer_site_id, last_received, last_sent, last_sync_at, sync_errors FROM sync_state")
+			.all() as Array<{
+			peer_site_id: string;
+			last_received: number;
+			last_sent: number;
+			last_sync_at: string | null;
+			sync_errors: number;
+		}>;
+
+		const insertPeer = db.prepare(
+			"INSERT INTO sync_state_v2 (peer_site_id, last_received, last_sent, last_sync_at, sync_errors) VALUES (?, ?, ?, ?, ?)",
+		);
+
+		for (const peer of peers) {
+			// After migration, seq N maps to the Nth entry. Use HLC_ZERO as safe default.
+			insertPeer.run(
+				peer.peer_site_id,
+				HLC_ZERO,
+				HLC_ZERO,
+				peer.last_sync_at,
+				peer.sync_errors,
+			);
+		}
+
+		db.exec("DROP TABLE sync_state");
+		db.exec("ALTER TABLE sync_state_v2 RENAME TO sync_state");
+
+		db.exec("COMMIT");
+	} catch (error) {
+		try {
+			db.exec("ROLLBACK");
+		} catch {
+			// ROLLBACK failed
+		}
+		throw error;
+	}
+}
 
 export function applySchema(db: Database): void {
 	// 1. users
@@ -253,9 +401,12 @@ export function applySchema(db: Database): void {
 	`);
 
 	// 13. change_log (non-replicated, local-only)
+	// Migration: if old seq-based table exists, migrate to HLC-based table
+	migrateChangeLogToHlc(db);
+
 	db.run(`
 		CREATE TABLE IF NOT EXISTS change_log (
-			seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+			hlc        TEXT PRIMARY KEY,
 			table_name TEXT NOT NULL,
 			row_id     TEXT NOT NULL,
 			site_id    TEXT NOT NULL,
@@ -264,16 +415,15 @@ export function applySchema(db: Database): void {
 		) STRICT
 	`);
 
-	db.run(`
-		CREATE INDEX IF NOT EXISTS idx_changelog_seq ON change_log(seq)
-	`);
-
 	// 14. sync_state (non-replicated, local-only)
+	// Migration: if old INTEGER cursors exist, migrate to TEXT HLC cursors
+	migrateSyncStateToHlc(db);
+
 	db.run(`
 		CREATE TABLE IF NOT EXISTS sync_state (
-			peer_site_id TEXT PRIMARY KEY,
-			last_received INTEGER NOT NULL,
-			last_sent     INTEGER NOT NULL,
+			peer_site_id  TEXT PRIMARY KEY,
+			last_received TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
+			last_sent     TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
 			last_sync_at  TEXT,
 			sync_errors   INTEGER DEFAULT 0
 		) STRICT

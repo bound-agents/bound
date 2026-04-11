@@ -190,7 +190,7 @@ export interface ClusterConfigEntry {
 }
 
 export interface ChangeLogEntry {
-	seq: number;
+	hlc: string;
 	table_name: SyncedTableName;
 	row_id: string;
 	site_id: string;
@@ -200,8 +200,8 @@ export interface ChangeLogEntry {
 
 export interface SyncState {
 	peer_site_id: string;
-	last_received: number;
-	last_sent: number;
+	last_received: string;
+	last_sent: string;
 	last_sync_at: string | null;
 	sync_errors: number;
 }

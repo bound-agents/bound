@@ -90,7 +90,7 @@ describe("Database Schema", () => {
 		expect(indexNames).toContain("idx_edges_triple");
 		expect(indexNames).toContain("idx_edges_source");
 		expect(indexNames).toContain("idx_edges_target");
-		expect(indexNames).toContain("idx_changelog_seq");
+		// idx_changelog_seq removed in HLC migration — hlc is TEXT PRIMARY KEY
 		expect(indexNames).toContain("idx_memory_modified");
 		expect(indexNames).toContain("idx_tasks_last_run");
 
@@ -357,7 +357,7 @@ describe("Database Schema", () => {
 		);
 
 		const entries = db
-			.query("SELECT * FROM change_log WHERE row_id = ? ORDER BY seq")
+			.query("SELECT * FROM change_log WHERE row_id = ? ORDER BY hlc")
 			.all(skillId) as Array<Record<string, unknown>>;
 		expect(entries).toHaveLength(2);
 		expect(entries[1].table_name).toBe("skills");

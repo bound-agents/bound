@@ -120,7 +120,7 @@ describe("Change Log Producer", () => {
 
 		// Check that change_log has 2 entries (insert + update)
 		const entries = db
-			.query("SELECT * FROM change_log WHERE row_id = ? ORDER BY seq")
+			.query("SELECT * FROM change_log WHERE row_id = ? ORDER BY hlc")
 			.all(userId) as Array<Record<string, unknown>>;
 
 		expect(entries.length).toBe(2);
@@ -158,7 +158,7 @@ describe("Change Log Producer", () => {
 
 		// Change log should have delete entry
 		const entries = db
-			.query("SELECT * FROM change_log WHERE row_id = ? ORDER BY seq")
+			.query("SELECT * FROM change_log WHERE row_id = ? ORDER BY hlc")
 			.all(userId) as Array<Record<string, unknown>>;
 
 		expect(entries.length).toBe(2); // insert + delete
@@ -169,7 +169,7 @@ describe("Change Log Producer", () => {
 		expect(rowData.deleted).toBe(1);
 	});
 
-	it("auto-increments change log sequence number", () => {
+	it("generates monotonically increasing HLC values", () => {
 		const user1Id = randomUUID();
 		const user2Id = randomUUID();
 		const now = new Date().toISOString();
@@ -193,13 +193,12 @@ describe("Change Log Producer", () => {
 		insertRow(db, "users", user1, siteId);
 		insertRow(db, "users", user2, siteId);
 
-		const entries = db.query("SELECT seq FROM change_log ORDER BY seq").all() as Array<{
-			seq: number;
+		const entries = db.query("SELECT hlc FROM change_log ORDER BY hlc").all() as Array<{
+			hlc: string;
 		}>;
 
 		expect(entries.length).toBe(2);
-		expect(entries[0].seq).toBe(1);
-		expect(entries[1].seq).toBe(2);
+		expect(entries[1].hlc > entries[0].hlc).toBe(true);
 	});
 
 	it("preserves originating site_id in change log", () => {

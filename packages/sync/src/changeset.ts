@@ -5,8 +5,8 @@ import { err, ok } from "@bound/shared";
 export interface Changeset {
 	events: ChangeLogEntry[];
 	source_site_id: string;
-	source_seq_start: number;
-	source_seq_end: number;
+	source_hlc_start: string;
+	source_hlc_end: string;
 }
 
 export interface RelayRequest {

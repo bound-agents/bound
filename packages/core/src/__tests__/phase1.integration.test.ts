@@ -305,7 +305,7 @@ describe("Phase 1 Integration", () => {
 
 		// Verify change_log has entries for all changes
 		const changeLogEntries = ctx.db
-			.query("SELECT table_name FROM change_log ORDER BY seq")
+			.query("SELECT table_name FROM change_log ORDER BY hlc")
 			.all() as Array<{ table_name: string }>;
 
 		expect(changeLogEntries.length).toBeGreaterThanOrEqual(5); // 2 users + 1 thread + 2 messages

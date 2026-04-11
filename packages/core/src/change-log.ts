@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import type { SyncedTableName } from "@bound/shared";
+import { type SyncedTableName, generateHlc, mergeHlc } from "@bound/shared";
 
 // Validate column names to prevent SQL injection
 // Only allow lowercase letters, numbers, and underscores
@@ -28,14 +28,27 @@ export function createChangeLogEntry(
 	rowId: string,
 	siteId: string,
 	rowData: Record<string, unknown>,
+	remoteHlc?: string,
 ): void {
 	const now = new Date().toISOString();
 	const rowDataJson = JSON.stringify(rowData);
 
+	// Get last HLC for monotonicity
+	const lastRow = db.query("SELECT hlc FROM change_log ORDER BY hlc DESC LIMIT 1").get() as {
+		hlc: string;
+	} | null;
+
+	let hlc: string;
+	if (remoteHlc) {
+		hlc = mergeHlc(lastRow?.hlc ?? "0000-00-00T00:00:00.000Z_0000_0000", remoteHlc, siteId);
+	} else {
+		hlc = generateHlc(now, lastRow?.hlc ?? null, siteId);
+	}
+
 	db.run(
-		`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
-		VALUES (?, ?, ?, ?, ?)`,
-		[tableName, rowId, siteId, now, rowDataJson],
+		`INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		[hlc, tableName, rowId, siteId, now, rowDataJson],
 	);
 }
 
