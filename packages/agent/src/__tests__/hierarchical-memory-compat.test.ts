@@ -4,10 +4,9 @@ import { randomBytes } from "node:crypto";
 import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, createDatabase, insertRow, softDelete, updateRow } from "@bound/core";
+import { applySchema, createDatabase, insertRow, updateRow } from "@bound/core";
+import { upsertEdge } from "../graph-queries.js";
 import { buildVolatileEnrichment } from "../summary-extraction.js";
-import { upsertEdge, removeEdges } from "../graph-queries.js";
-import { handleStore } from "../commands/memory.js";
 
 let db: Database;
 let dbPath: string;
@@ -129,7 +128,7 @@ describe("AC4.1: Backward compatibility — zero summaries produces identical ou
 	});
 
 	it("pinned entries appear first regardless of recency", () => {
-		const userId = randomBytes(8).toString("hex");
+		const _userId = randomBytes(8).toString("hex");
 
 		insertRow(
 			db,
@@ -199,7 +198,7 @@ describe("AC4.1: Backward compatibility — zero summaries produces identical ou
 		expect(line).toContain("...");
 		// Formatted line includes prefix/suffix, but the value should be truncated
 		// Just verify the "..." is there indicating truncation happened
-		const valueContent = line!.split(":").slice(1).join(":"); // Get everything after key:
+		const valueContent = line?.split(":").slice(1).join(":"); // Get everything after key:
 		expect(valueContent.length).toBeLessThan(longValue.length + 100); // Slack for formatting tags
 	});
 
@@ -379,7 +378,14 @@ describe("AC3.6: Edge cases — orphaned details, exclusion cascade, detail pres
 			);
 
 			// Create summarizes edge
-			upsertEdge(db, "summary_neural_concepts", "detail_neural_forward_pass", "summarizes", 1.0, siteId);
+			upsertEdge(
+				db,
+				"summary_neural_concepts",
+				"detail_neural_forward_pass",
+				"summarizes",
+				1.0,
+				siteId,
+			);
 
 			// Build enrichment with matching keyword
 			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, "forward");
@@ -433,14 +439,7 @@ describe("AC3.6: Edge cases — orphaned details, exclusion cascade, detail pres
 			);
 
 			// Create graph edge from other entry to pinned entry
-			upsertEdge(
-				db,
-				"other_entry_referencing",
-				"_pinned_core_concept",
-				"related_to",
-				1.0,
-				siteId,
-			);
+			upsertEdge(db, "other_entry_referencing", "_pinned_core_concept", "related_to", 1.0, siteId);
 
 			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, "core");
 
@@ -456,7 +455,7 @@ describe("AC3.6: Edge cases — orphaned details, exclusion cascade, detail pres
 
 	describe("Detail preservation on update", () => {
 		it("detail tier preserved when updating entry value via handleStore", () => {
-			const userId = randomBytes(8).toString("hex");
+			const _userId = randomBytes(8).toString("hex");
 
 			// Insert initial entry with detail tier
 			const memKey = "detail_entry_key";
@@ -492,9 +491,9 @@ describe("AC3.6: Edge cases — orphaned details, exclusion cascade, detail pres
 			);
 
 			// Verify: tier is still detail
-			const updated = db
-				.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
-				.get(memKey) as { tier: string };
+			const updated = db.prepare("SELECT tier FROM semantic_memory WHERE key = ?").get(memKey) as {
+				tier: string;
+			};
 			expect(updated.tier).toBe("detail");
 		});
 	});

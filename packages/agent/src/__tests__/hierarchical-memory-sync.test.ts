@@ -4,8 +4,8 @@ import { randomBytes } from "node:crypto";
 import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, createDatabase, insertRow, updateRow, softDelete } from "@bound/core";
-import { upsertEdge, removeEdges } from "../graph-queries.js";
+import { applySchema, createDatabase, insertRow, updateRow } from "@bound/core";
+import { removeEdges, upsertEdge } from "../graph-queries.js";
 
 let db: Database;
 let dbPath: string;
@@ -50,11 +50,13 @@ describe("AC6.5: Tier changelog propagation", () => {
 
 		// Read the changelog entry created by insertRow
 		let changeLogEntry = db
-			.prepare("SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'semantic_memory' ORDER BY seq DESC LIMIT 1")
+			.prepare(
+				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'semantic_memory' ORDER BY seq DESC LIMIT 1",
+			)
 			.get(memoryId) as { row_data: string } | null;
 
 		expect(changeLogEntry).toBeDefined();
-		const initialData = JSON.parse(changeLogEntry!.row_data);
+		const initialData = JSON.parse(changeLogEntry?.row_data);
 		expect(initialData.tier).toBe("default");
 
 		// Update entry's tier to 'pinned' via updateRow (which triggers changelog)
@@ -74,7 +76,7 @@ describe("AC6.5: Tier changelog propagation", () => {
 			.get(memoryId) as { row_data: string } | null;
 
 		expect(changeLogEntry).toBeDefined();
-		const updatedData = JSON.parse(changeLogEntry!.row_data);
+		const updatedData = JSON.parse(changeLogEntry?.row_data);
 		expect(updatedData.tier).toBe("pinned");
 	});
 
@@ -109,7 +111,7 @@ describe("AC6.5: Tier changelog propagation", () => {
 			.get(memoryId) as { row_data: string } | null;
 
 		expect(changeLogEntry).toBeDefined();
-		const rowData = JSON.parse(changeLogEntry!.row_data);
+		const rowData = JSON.parse(changeLogEntry?.row_data);
 		expect(rowData.tier).toBe("detail");
 	});
 
@@ -171,11 +173,11 @@ describe("AC6.6: Summarizes edge sync via memory_edges changelog", () => {
 
 		// Query the edge ID deterministically
 		const edgeId = (
-			db.prepare("SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?").get(
-				sourceKey,
-				targetKey,
-				"summarizes",
-			) as { id: string } | null
+			db
+				.prepare(
+					"SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?",
+				)
+				.get(sourceKey, targetKey, "summarizes") as { id: string } | null
 		)?.id;
 
 		expect(edgeId).toBeDefined();
@@ -188,7 +190,7 @@ describe("AC6.6: Summarizes edge sync via memory_edges changelog", () => {
 			.get(edgeId) as { row_data: string } | null;
 
 		expect(changeLogEntry).toBeDefined();
-		const rowData = JSON.parse(changeLogEntry!.row_data);
+		const rowData = JSON.parse(changeLogEntry?.row_data);
 		expect(rowData.relation).toBe("summarizes");
 		expect(rowData.source_key).toBe(sourceKey);
 		expect(rowData.target_key).toBe(targetKey);
@@ -203,11 +205,11 @@ describe("AC6.6: Summarizes edge sync via memory_edges changelog", () => {
 
 		// Get the edge ID
 		const edgeId = (
-			db.prepare("SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?").get(
-				sourceKey,
-				targetKey,
-				"summarizes",
-			) as { id: string } | null
+			db
+				.prepare(
+					"SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?",
+				)
+				.get(sourceKey, targetKey, "summarizes") as { id: string } | null
 		)?.id;
 
 		expect(edgeId).toBeDefined();
@@ -223,7 +225,7 @@ describe("AC6.6: Summarizes edge sync via memory_edges changelog", () => {
 			.get(edgeId) as { row_data: string } | null;
 
 		expect(changeLogEntry).toBeDefined();
-		const rowData = JSON.parse(changeLogEntry!.row_data);
+		const rowData = JSON.parse(changeLogEntry?.row_data);
 		expect(rowData.deleted).toBe(1);
 	});
 
@@ -256,11 +258,11 @@ describe("AC6.6: Summarizes edge sync via memory_edges changelog", () => {
 
 		// Get edge ID
 		const edgeId = (
-			db.prepare("SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?").get(
-				sourceKey,
-				targetKey,
-				"related_to",
-			) as { id: string } | null
+			db
+				.prepare(
+					"SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?",
+				)
+				.get(sourceKey, targetKey, "related_to") as { id: string } | null
 		)?.id;
 
 		expect(edgeId).toBeDefined();
@@ -276,7 +278,7 @@ describe("AC6.6: Summarizes edge sync via memory_edges changelog", () => {
 			.get(edgeId) as { row_data: string } | null;
 
 		expect(changeLogEntry).toBeDefined();
-		const rowData = JSON.parse(changeLogEntry!.row_data);
+		const rowData = JSON.parse(changeLogEntry?.row_data);
 		expect(rowData.weight).toBe(2.5);
 	});
 
@@ -292,19 +294,19 @@ describe("AC6.6: Summarizes edge sync via memory_edges changelog", () => {
 
 		// Get both edge IDs
 		const summEdgeId = (
-			db.prepare("SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?").get(
-				summaryKey,
-				detailKey,
-				"summarizes",
-			) as { id: string } | null
+			db
+				.prepare(
+					"SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?",
+				)
+				.get(summaryKey, detailKey, "summarizes") as { id: string } | null
 		)?.id;
 
-		const relEdgeId = (
-			db.prepare("SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?").get(
-				detailKey,
-				"other_entry",
-				"related_to",
-			) as { id: string } | null
+		const _relEdgeId = (
+			db
+				.prepare(
+					"SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?",
+				)
+				.get(detailKey, "other_entry", "related_to") as { id: string } | null
 		)?.id;
 
 		// Remove summarizes edge cascade
@@ -318,7 +320,7 @@ describe("AC6.6: Summarizes edge sync via memory_edges changelog", () => {
 			.get(summEdgeId) as { row_data: string } | null;
 
 		expect(summEntry).toBeDefined();
-		const summData = JSON.parse(summEntry!.row_data);
+		const summData = JSON.parse(summEntry?.row_data);
 		expect(summData.deleted).toBe(1);
 	});
 });
