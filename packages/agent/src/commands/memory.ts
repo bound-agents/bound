@@ -1,6 +1,6 @@
 import { insertRow, softDelete, updateRow } from "@bound/core";
 import type { CommandContext, CommandDefinition } from "@bound/sandbox";
-import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import { BOUND_NAMESPACE, type MemoryTier, deterministicUUID } from "@bound/shared";
 import {
 	cascadeDeleteEdges,
 	getNeighbors,
@@ -18,6 +18,10 @@ import { commandError, commandSuccess, handleCommandError } from "./helpers";
 // - disconnect: source=src_key, target=tgt_key, relation=optional_filter
 // - traverse:   source=start_key, depth=max_depth, relation=optional_filter
 // - neighbors:  source=key, dir=direction_filter
+
+const VALID_TIERS: MemoryTier[] = ["pinned", "summary", "default", "detail"];
+
+const PINNED_PREFIXES = ["_standing", "_feedback", "_policy", "_pinned"];
 
 const STOP_WORDS = new Set([
 	"the",
@@ -92,25 +96,41 @@ function handleStore(args: Record<string, string>, ctx: CommandContext) {
 	const key = args.key || args.source; // 'source' positional becomes 'key' in subcommand context
 	const value = args.value || args.target; // positional mapping
 	if (!key || !value) {
-		return commandError("usage: memory store <key> <value> [--source_tag S]");
+		return commandError("usage: memory store <key> <value> [--source_tag S] [--tier TIER]");
 	}
 	const source = args.source_tag || ctx.taskId || ctx.threadId || "agent";
 	const memoryId = deterministicUUID(BOUND_NAMESPACE, key);
 	const now = new Date().toISOString();
 
+	// Determine tier: apply rules in priority order
+	// 1. Check for pinned prefixes — always pin
+	let resolvedTier: MemoryTier = "default";
+	const hasPinnedPrefix = PINNED_PREFIXES.some((prefix) => key.startsWith(`${prefix}:`));
+	if (hasPinnedPrefix) {
+		resolvedTier = "pinned";
+	} else if (args.tier) {
+		// 2. Explicit --tier argument
+		if (!VALID_TIERS.includes(args.tier as MemoryTier)) {
+			return commandError(`invalid tier: ${args.tier}. Must be one of: ${VALID_TIERS.join(", ")}`);
+		}
+		resolvedTier = args.tier as MemoryTier;
+	}
+
 	// bun:sqlite .get() returns null (not undefined) when no row found.
 	// Note: The existing memorize.ts incorrectly typed .get() as `| undefined`.
 	// We correct this to `| null` per the bun:sqlite invariant documented in CLAUDE.md.
 	const existing = ctx.db
-		.prepare("SELECT id, deleted FROM semantic_memory WHERE key = ?")
-		.get(key) as { id: string; deleted: number } | null;
+		.prepare("SELECT id, deleted, tier FROM semantic_memory WHERE key = ?")
+		.get(key) as { id: string; deleted: number; tier: MemoryTier } | null;
 
 	if (existing) {
+		// Updating existing entry: pinned prefixes always correct to "pinned", else preserve tier unless explicitly overridden
+		const tierForUpdate = hasPinnedPrefix ? "pinned" : args.tier ? resolvedTier : existing.tier;
 		updateRow(
 			ctx.db,
 			"semantic_memory",
 			memoryId,
-			{ value, source, last_accessed_at: now, deleted: 0 },
+			{ value, source, last_accessed_at: now, deleted: 0, tier: tierForUpdate },
 			ctx.siteId,
 		);
 	} else {
@@ -126,6 +146,7 @@ function handleStore(args: Record<string, string>, ctx: CommandContext) {
 				modified_at: now,
 				last_accessed_at: now,
 				deleted: 0,
+				tier: resolvedTier,
 			},
 			ctx.siteId,
 		);
@@ -163,11 +184,30 @@ function handleForget(args: Record<string, string>, ctx: CommandContext) {
 
 	// bun:sqlite .get() returns null (not undefined) when no row found
 	const existing = ctx.db
-		.prepare("SELECT id FROM semantic_memory WHERE key = ? AND deleted = 0")
-		.get(key) as { id: string } | null;
+		.prepare("SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0")
+		.get(key) as { id: string; tier: MemoryTier } | null;
 
 	if (!existing) {
 		return commandError(`Memory not found: ${key}`);
+	}
+
+	// AC2.1: If forgetting a summary, promote detail children to default
+	if (existing.tier === "summary") {
+		const children = ctx.db
+			.prepare(
+				"SELECT target_key FROM memory_edges WHERE source_key = ? AND relation = 'summarizes' AND deleted = 0",
+			)
+			.all(key) as Array<{ target_key: string }>;
+
+		for (const child of children) {
+			const childRow = ctx.db
+				.prepare("SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0")
+				.get(child.target_key) as { id: string; tier: MemoryTier } | null;
+
+			if (childRow && childRow.tier === "detail") {
+				updateRow(ctx.db, "semantic_memory", childRow.id, { tier: "default" }, ctx.siteId);
+			}
+		}
 	}
 
 	// Use existing.id — not deterministicUUID — because entries created by
@@ -175,6 +215,7 @@ function handleForget(args: Record<string, string>, ctx: CommandContext) {
 	softDelete(ctx.db, "semantic_memory", existing.id, ctx.siteId);
 
 	// Cascade: soft-delete all edges referencing this key (as source or target)
+	// This satisfies AC2.2: all outgoing summarizes edges are tombstoned
 	const edgesCascaded = cascadeDeleteEdges(ctx.db, key, ctx.siteId);
 
 	return commandSuccess(
@@ -257,6 +298,18 @@ function handleConnect(args: Record<string, string>, ctx: CommandContext) {
 	}
 
 	const id = upsertEdge(ctx.db, src, tgt, rel, weight, ctx.siteId);
+
+	// AC2.3-AC2.5: Handle tier transitions for summarizes edges
+	if (rel === "summarizes") {
+		const target = ctx.db
+			.prepare("SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0")
+			.get(tgt) as { id: string; tier: MemoryTier } | null;
+		if (target && target.tier === "default") {
+			updateRow(ctx.db, "semantic_memory", target.id, { tier: "detail" }, ctx.siteId);
+		}
+		// pinned and summary targets are NOT demoted (AC2.4, AC2.5)
+	}
+
 	return commandSuccess(`Edge created: ${src} --[${rel}]--> ${tgt} (weight=${weight}, id=${id})\n`);
 }
 
@@ -274,6 +327,26 @@ function handleDisconnect(args: Record<string, string>, ctx: CommandContext) {
 		return commandError(
 			`no edges found between ${src} and ${tgt}${rel ? ` with relation ${rel}` : ""}`,
 		);
+	}
+
+	// AC2.6-AC2.7: Handle orphan promotion for summarizes edges
+	// Check if this was (or could have been) a summarizes edge
+	if (rel === "summarizes" || !rel) {
+		// Check if target has any remaining incoming summarizes edges
+		const remaining = ctx.db
+			.prepare(
+				"SELECT COUNT(*) as cnt FROM memory_edges WHERE target_key = ? AND relation = 'summarizes' AND deleted = 0",
+			)
+			.get(tgt) as { cnt: number };
+
+		if (remaining.cnt === 0) {
+			const target = ctx.db
+				.prepare("SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0")
+				.get(tgt) as { id: string; tier: MemoryTier } | null;
+			if (target && target.tier === "detail") {
+				updateRow(ctx.db, "semantic_memory", target.id, { tier: "default" }, ctx.siteId);
+			}
+		}
 	}
 
 	return commandSuccess(`Removed ${count} edge(s) between ${src} and ${tgt}\n`);
@@ -349,6 +422,7 @@ export const memory: CommandDefinition = {
 		{ name: "source_tag", required: false, description: "Source tag for store provenance" },
 		{ name: "depth", required: false, description: "Traversal depth (1-3, default 2)" },
 		{ name: "dir", required: false, description: "Neighbor direction: out, in, or both" },
+		{ name: "tier", required: false, description: "Memory tier: pinned, summary, default, detail" },
 	],
 	handler: async (args: Record<string, string>, ctx: CommandContext) => {
 		try {

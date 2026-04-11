@@ -123,6 +123,7 @@ export interface TraversalResult {
 	viaWeight: number | null;
 	modifiedAt: string;
 	source: string | null;
+	tier?: string; // Added for L2 stage tier filtering
 }
 
 export interface NeighborResult {
@@ -168,7 +169,7 @@ export function traverseGraph(
 				  AND (? IS NULL OR e.relation = ?)
 			)
 			SELECT r.key, r.depth, r.via_relation, r.via_weight,
-				   m.value, m.modified_at, m.source
+				   m.value, m.modified_at, m.source, m.tier
 			FROM reachable r
 			JOIN semantic_memory m ON m.key = r.key AND m.deleted = 0
 			WHERE r.depth > 0
@@ -182,6 +183,7 @@ export function traverseGraph(
 		value: string;
 		modified_at: string;
 		source: string | null;
+		tier: string;
 	}>;
 
 	// Deduplicate results by key, keeping the shallowest depth version
@@ -195,6 +197,7 @@ export function traverseGraph(
 			viaWeight: r.via_weight,
 			modifiedAt: r.modified_at,
 			source: r.source,
+			tier: r.tier,
 		};
 		if (
 			!seenKeys.has(r.key) ||
@@ -283,6 +286,7 @@ export interface GraphRetrievalResult {
 	retrievalMethod: "seed" | "graph" | "recency";
 	depth?: number;
 	viaRelation?: string;
+	tier?: string; // Added for L2 stage to preserve tier information
 }
 
 /**
@@ -291,27 +295,44 @@ export interface GraphRetrievalResult {
  * 2. Run depth-2 traversal from each seed
  * 3. Deduplicate and cap at maxResults
  * 4. Return results tagged with retrieval method
+ *
+ * @param excludeKeys - Optional set of keys to exclude from results (used for L2 stage)
+ *                      When provided, also filters to only retrieve `default` tier entries
+ *                      and includes orphaned detail entries (detail tier with no incoming summarizes edge)
  */
 export function graphSeededRetrieval(
 	db: Database,
 	keywords: string[],
 	maxResults: number,
 	depth = 2,
+	excludeKeys?: Set<string>,
 ): GraphRetrievalResult[] {
 	if (keywords.length === 0) return [];
 
 	// Step 1: Find seed memories via keyword matching
+	// When excludeKeys is provided (L2 stage), filter to default tier and orphaned details
 	const likeConditions = keywords.map(
 		() => "(LOWER(key) LIKE '%' || ? || '%' OR LOWER(value) LIKE '%' || ? || '%')",
 	);
 	const params = keywords.flatMap((kw) => [kw.toLowerCase(), kw.toLowerCase()]);
 
+	const tierFilter = excludeKeys
+		? `AND (
+		  m.tier NOT IN ('detail', 'pinned', 'summary')
+		  OR (m.tier = 'detail' AND NOT EXISTS (
+		    SELECT 1 FROM memory_edges e
+		    WHERE e.target_key = m.key AND e.relation = 'summarizes' AND e.deleted = 0
+		  ))
+		)`
+		: "";
+
 	const seeds = db
 		.prepare(
-			`SELECT key, value, source, modified_at
-			 FROM semantic_memory
+			`SELECT key, value, source, modified_at, tier
+			 FROM semantic_memory m
 			 WHERE deleted = 0
 			   AND key NOT LIKE '_policy%' AND key NOT LIKE '_pinned%' AND key NOT LIKE '_standing%' AND key NOT LIKE '_feedback%'
+			   ${tierFilter}
 			   AND (${likeConditions.join(" OR ")})
 			 ORDER BY modified_at DESC
 			 LIMIT 10`,
@@ -321,6 +342,7 @@ export function graphSeededRetrieval(
 		value: string;
 		source: string | null;
 		modified_at: string;
+		tier: string;
 	}>;
 
 	if (seeds.length === 0) return [];
@@ -329,9 +351,10 @@ export function graphSeededRetrieval(
 	const seen = new Set<string>();
 	const results: GraphRetrievalResult[] = [];
 
-	// Add seeds first
+	// Add seeds first (excluding keys already in the exclusion set)
 	for (const seed of seeds) {
 		if (seen.has(seed.key)) continue;
+		if (excludeKeys?.has(seed.key)) continue;
 		seen.add(seed.key);
 		results.push({
 			key: seed.key,
@@ -339,6 +362,7 @@ export function graphSeededRetrieval(
 			source: seed.source,
 			modifiedAt: seed.modified_at,
 			retrievalMethod: "seed",
+			tier: seed.tier,
 		});
 	}
 
@@ -349,6 +373,28 @@ export function graphSeededRetrieval(
 		const traversed = traverseGraph(db, seed.key, depth);
 		for (const t of traversed) {
 			if (seen.has(t.key)) continue;
+			if (excludeKeys?.has(t.key)) continue;
+
+			// Apply tier filtering for L2 stage
+			if (excludeKeys) {
+				// Only include default tier or orphaned detail
+				if (
+					t.tier !== "default" &&
+					!(
+						t.tier === "detail" &&
+						!db
+							.prepare(
+								`SELECT 1 FROM memory_edges e
+							 WHERE e.target_key = ? AND e.relation = 'summarizes' AND e.deleted = 0
+							 LIMIT 1`,
+							)
+							.get(t.key)
+					)
+				) {
+					continue;
+				}
+			}
+
 			seen.add(t.key);
 
 			results.push({
@@ -359,6 +405,7 @@ export function graphSeededRetrieval(
 				retrievalMethod: "graph",
 				depth: t.depth,
 				viaRelation: t.viaRelation ?? undefined,
+				tier: t.tier,
 			});
 
 			if (results.length >= maxResults) break;

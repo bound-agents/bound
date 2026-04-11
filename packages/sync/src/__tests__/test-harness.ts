@@ -80,6 +80,7 @@ const FULL_SCHEMA = `
 		created_at TEXT NOT NULL,
 		modified_at TEXT NOT NULL,
 		last_accessed_at TEXT NOT NULL,
+		tier TEXT DEFAULT 'default',
 		deleted INTEGER NOT NULL DEFAULT 0
 	);
 

@@ -521,4 +521,31 @@ export function applySchema(db: Database): void {
 		ON dispatch_queue(thread_id, status)
 		WHERE status = 'pending'
 	`);
+
+	// Hierarchical memory: add tier column for retrieval priority classification
+	try {
+		db.run("ALTER TABLE semantic_memory ADD COLUMN tier TEXT DEFAULT 'default'");
+	} catch {
+		/* already exists */
+	}
+
+	// Partial index on tier for efficient tier-filtered queries (only non-deleted rows)
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_memory_tier ON semantic_memory(tier)
+		WHERE deleted = 0
+	`);
+
+	// Backfill: prefix-keyed entries → pinned tier (idempotent — only updates default tier)
+	// IMPORTANT: Use the EXACT same ESCAPE syntax as summary-extraction.ts lines 467-470.
+	// Do NOT derive the escaping from scratch — copy the pattern from the existing codebase.
+	// The correct escape sequence depends on the string context (template literal vs prepare()).
+	// Reference: summary-extraction.ts uses LIKE '\\_standing%' ESCAPE '\\' inside prepare().
+	db.run(`
+		UPDATE semantic_memory SET tier = 'pinned'
+		WHERE (key LIKE '\\_standing%' ESCAPE '\\'
+			OR key LIKE '\\_feedback%' ESCAPE '\\'
+			OR key LIKE '\\_policy%' ESCAPE '\\'
+			OR key LIKE '\\_pinned%' ESCAPE '\\')
+			AND tier = 'default' AND deleted = 0
+	`);
 }

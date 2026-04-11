@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertRow, updateRow } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
-import type { CrossThreadSource, Result } from "@bound/shared";
+import type { CrossThreadSource, MemoryTier, Result } from "@bound/shared";
 import { safeSlice } from "@bound/shared";
 import { graphSeededRetrieval } from "./graph-queries";
 
@@ -388,8 +388,79 @@ export function computeBaseline(
 export interface VolatileEnrichment {
 	memoryDeltaLines: string[];
 	taskDigestLines: string[];
+	tiers: TieredEnrichment; // L0→L1→L2→L3 tiered entries (now required after Task 2 rewrite)
 	graphCount?: number; // entries retrieved via graph (seed + traversal)
 	recencyCount?: number; // entries retrieved via recency fallback
+}
+
+export interface StageEntry {
+	key: string;
+	value: string;
+	source: string | null;
+	modifiedAt: string;
+	tier: MemoryTier;
+	tag: string; // e.g., "[pinned]", "[summary]", "[stale-detail]", "[seed]", "[recency]"
+	taskName?: string | null; // resolved via LEFT JOIN tasks WHERE source = t.id
+	threadId?: string | null; // resolved via LEFT JOIN threads WHERE source = th.id
+	threadTitle?: string | null; // resolved via LEFT JOIN threads
+	deleted?: number; // 0 or 1, indicates soft-deleted entries (for [forgotten] rendering)
+}
+
+export interface StageResult {
+	entries: StageEntry[];
+	exclusionSet: Set<string>;
+}
+
+export interface TieredEnrichment {
+	L0: StageEntry[];
+	L1: StageEntry[];
+	L2: StageEntry[];
+	L3: StageEntry[];
+}
+
+/**
+ * Formats a single StageEntry for display in memory delta output.
+ * Handles tier-aware formatting: L0 is minimal, L1 includes tier tag,
+ * L2/L3 include source attribution and relative time.
+ *
+ * Exported for use in budget pressure shedding (memory-shedding.ts).
+ */
+export function formatMemoryEntry(entry: StageEntry): string {
+	const valueDisplay =
+		entry.value.length > 200 ? `${safeSlice(entry.value, 0, 200)}...` : entry.value;
+	const stale = stalenessTag(entry.modifiedAt);
+
+	// Handle soft-deleted entries specially (rendered as [forgotten])
+	if (entry.deleted) {
+		const sourceLabel = resolveSource(
+			entry.taskName ?? null,
+			entry.threadId ?? null,
+			entry.threadTitle ?? null,
+			entry.source,
+		);
+		const relTime = relativeTime(entry.modifiedAt);
+		return `- ${entry.key}: [forgotten] (${relTime}, via ${sourceLabel})`;
+	}
+
+	// Different formatting for each tier
+	if (entry.tag === "[pinned]") {
+		// L0: pinned entries - minimal format
+		return `- ${entry.key}: ${valueDisplay} ${entry.tag}`;
+	}
+	if (entry.tag === "[summary]" || entry.tag === "[stale-detail]") {
+		// L1: summary and stale-detail entries
+		return `- ${entry.key}: ${valueDisplay} ${entry.tag}`;
+	}
+	// L2 and L3 entries include source and relative time
+	// Resolve source using taskName/threadId/threadTitle if available, else use source id
+	const sourceLabel = resolveSource(
+		entry.taskName ?? null,
+		entry.threadId ?? null,
+		entry.threadTitle ?? null,
+		entry.source,
+	);
+	const relTime = relativeTime(entry.modifiedAt);
+	return `- ${entry.key}: ${valueDisplay} (${relTime}, via ${sourceLabel}) ${entry.tag}${stale}`;
 }
 
 /**
@@ -424,253 +495,74 @@ export function buildVolatileEnrichment(
 	);
 	const mergedKeywords = [...messageKeywords, ...summaryKeywords];
 
-	// Pinned/policy entries — always injected regardless of recency.
-	// These are critical operational instructions that should never fall out of context.
-	const pinnedRows = db
-		.prepare(
-			`SELECT m.key, m.value, m.modified_at, m.deleted,
-			        t_src.trigger_spec AS task_name,
-			        th_src.id          AS thread_id,
-			        th_src.title       AS thread_title,
-			        m.source
-			 FROM   semantic_memory m
-			 LEFT JOIN tasks   t_src  ON m.source = t_src.id
-			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
-			 WHERE  m.deleted = 0
-			   AND  (m.key LIKE '\\_policy%' ESCAPE '\\' OR m.key LIKE '\\_pinned%' ESCAPE '\\' OR m.key LIKE '\\_standing%' ESCAPE '\\' OR m.key LIKE '\\_feedback%' ESCAPE '\\')
-			 ORDER  BY m.key ASC`,
-		)
-		.all() as Array<{
-		key: string;
-		value: string;
-		modified_at: string;
-		deleted: number;
-		task_name: string | null;
-		thread_id: string | null;
-		thread_title: string | null;
-		source: string | null;
-	}>;
-	const pinnedKeys = new Set(pinnedRows.map((r) => r.key));
+	// Run the L0→L1→L2→L3 pipeline
+	const l0 = loadPinnedEntries(db);
+	const l1 = loadSummaryEntries(db, l0.exclusionSet);
+	const l2 = loadGraphEntries(db, l1.exclusionSet, mergedKeywords, maxMemory);
+	const remainingSlots = Math.max(0, maxMemory - l2.entries.length);
+	const l3 = loadRecencyEntries(db, l2.exclusionSet, baseline, remainingSlots);
 
-	// Memory delta query — fetch maxMemory+1 to detect overflow, excluding pinned entries
-	const memoryRows = db
-		.prepare(
-			`SELECT m.key, m.value, m.modified_at, m.deleted,
-			        t_src.trigger_spec AS task_name,
-			        th_src.id          AS thread_id,
-			        th_src.title       AS thread_title,
-			        m.source
-			 FROM   semantic_memory m
-			 LEFT JOIN tasks   t_src  ON m.source = t_src.id
-			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
-			 WHERE  m.modified_at > ?
-			   AND  m.key NOT LIKE '\\_policy%' ESCAPE '\\'
-			   AND  m.key NOT LIKE '\\_pinned%' ESCAPE '\\'
-			   AND  m.key NOT LIKE '\\_standing%' ESCAPE '\\'
-			   AND  m.key NOT LIKE '\\_feedback%' ESCAPE '\\'
-			 ORDER  BY m.modified_at DESC
-			 LIMIT  ?`,
-		)
-		.all(baseline, maxMemory + 1) as Array<{
-		key: string;
-		value: string;
-		modified_at: string;
-		deleted: number;
-		task_name: string | null;
-		thread_id: string | null;
-		thread_title: string | null;
-		source: string | null;
-	}>;
+	// Build tiers structure
+	const tiers: TieredEnrichment = {
+		L0: l0.entries,
+		L1: l1.entries,
+		L2: l2.entries,
+		L3: l3.entries,
+	};
 
-	const hasMoreMemory = memoryRows.length > maxMemory;
-	const visibleMemoryRows = hasMoreMemory ? memoryRows.slice(0, maxMemory) : memoryRows;
-
+	// Format memoryDeltaLines in L0→L1→L2→L3 order
 	const memoryDeltaLines: string[] = [];
-	const deltaKeys = new Set(visibleMemoryRows.map((r) => r.key));
 
-	// Inject pinned entries first (always visible, no truncation — these are critical)
-	for (const row of pinnedRows) {
-		memoryDeltaLines.push(`- ${row.key}: ${row.value} [pinned]`);
+	// Inject L0 entries (pinned)
+	for (const entry of l0.entries) {
+		memoryDeltaLines.push(formatMemoryEntry(entry));
 	}
 
-	// Check if graph edges exist — if so, use graph-seeded retrieval
-	const edgeCount = db
-		.prepare("SELECT COUNT(*) AS cnt FROM memory_edges WHERE deleted = 0")
-		.get() as { cnt: number };
-	const hasGraphEdges = edgeCount.cnt > 0;
+	// Inject L1 entries (summary + stale-detail)
+	for (const entry of l1.entries) {
+		memoryDeltaLines.push(formatMemoryEntry(entry));
+	}
 
-	let graphCount: number | undefined;
-	let recencyCount: number | undefined;
-	const boostedKeys = new Set<string>();
+	// Inject L2 entries (graph-seeded)
+	for (const entry of l2.entries) {
+		memoryDeltaLines.push(formatMemoryEntry(entry));
+	}
 
-	if (hasGraphEdges && mergedKeywords.length > 0) {
-		// Use merged keywords (message + thread summary) for graph seeding
-		const keywords = mergedKeywords;
+	// Inject L3 entries (recency)
+	for (const entry of l3.entries) {
+		memoryDeltaLines.push(formatMemoryEntry(entry));
+	}
 
-		if (keywords.length > 0) {
-			// Graph-seeded retrieval
-			const graphResults = graphSeededRetrieval(db, keywords, maxMemory);
+	// Detect overflow: if L2+L3 was capped by maxMemory, check if more entries exist
+	const totalL23Entries = l2.entries.length + l3.entries.length;
+	if (totalL23Entries >= maxMemory) {
+		// More entries may exist beyond maxMemory cap — add overflow indicator
+		// Query to check if there are more default entries after L0+L1+L2+L3
+		const allExcluded = new Set<string>([
+			...l0.entries.map((e) => e.key),
+			...l1.entries.map((e) => e.key),
+			...l2.entries.map((e) => e.key),
+			...l3.entries.map((e) => e.key),
+		]);
 
-			// Track keys we've already included (pinned + graph)
-			const includedKeys = new Set<string>(pinnedKeys);
+		const countMore = db
+			.prepare(
+				`SELECT COUNT(*) AS cnt FROM semantic_memory m
+				 WHERE m.deleted = 0
+				   AND m.modified_at > ?
+				   AND (
+				     m.tier NOT IN ('detail', 'pinned', 'summary')
+				     OR (m.tier = 'detail' AND NOT EXISTS (
+				       SELECT 1 FROM memory_edges e
+				       WHERE e.target_key = m.key AND e.relation = 'summarizes' AND e.deleted = 0
+				     ))
+				   )`,
+			)
+			.get(baseline) as { cnt: number };
 
-			for (const r of graphResults) {
-				if (includedKeys.has(r.key)) continue;
-				includedKeys.add(r.key);
-
-				const tag =
-					r.retrievalMethod === "seed" ? "[seed]" : `[depth ${r.depth}, ${r.viaRelation}]`;
-
-				const valueDisplay = r.value.length > 200 ? `${safeSlice(r.value, 0, 200)}...` : r.value;
-				const stale = stalenessTag(r.modifiedAt);
-				memoryDeltaLines.push(`- ${r.key}: ${valueDisplay} ${tag}${stale}`);
-			}
-
-			const graphResultsWithoutPinned = graphResults.filter((r) => !pinnedKeys.has(r.key));
-			graphCount = graphResultsWithoutPinned.length;
-
-			// Recency fallback: fill remaining slots
-			const remaining = maxMemory - graphResultsWithoutPinned.length;
-			if (remaining > 0) {
-				// Use same LEFT JOIN pattern to resolve source labels
-				const recencyEntries = db
-					.prepare(
-						`SELECT m.key, m.value, m.source, m.modified_at,
-						        t_src.trigger_spec AS task_name,
-						        th_src.id AS thread_id,
-						        th_src.title AS thread_title
-						 FROM semantic_memory m
-						 LEFT JOIN tasks t_src ON m.source = t_src.id
-						 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
-						 WHERE m.deleted = 0
-						   AND m.key NOT LIKE '\\_policy%' ESCAPE '\\'
-						   AND m.key NOT LIKE '\\_pinned%' ESCAPE '\\'
-						   AND m.key NOT LIKE '\\_standing%' ESCAPE '\\'
-						   AND m.key NOT LIKE '\\_feedback%' ESCAPE '\\'
-						 ORDER BY m.modified_at DESC
-						 LIMIT ?`,
-					)
-					.all(remaining + includedKeys.size) as Array<{
-					key: string;
-					value: string;
-					source: string | null;
-					modified_at: string;
-					task_name: string | null;
-					thread_id: string | null;
-					thread_title: string | null;
-				}>;
-
-				let addedRecency = 0;
-				for (const entry of recencyEntries) {
-					if (includedKeys.has(entry.key)) continue;
-					includedKeys.add(entry.key);
-
-					const valueDisplay =
-						entry.value.length > 200 ? `${safeSlice(entry.value, 0, 200)}...` : entry.value;
-					const sourceLabel = resolveSource(
-						entry.task_name,
-						entry.thread_id,
-						entry.thread_title,
-						entry.source,
-					);
-					const relTime = relativeTime(entry.modified_at);
-					const stale = stalenessTag(entry.modified_at);
-					memoryDeltaLines.push(
-						`- ${entry.key}: ${valueDisplay} (${relTime}, via ${sourceLabel}) [recency]${stale}`,
-					);
-
-					addedRecency++;
-					if (memoryDeltaLines.length >= maxMemory + pinnedRows.length) break;
-				}
-
-				recencyCount = addedRecency;
-			}
-		} else {
-			// No keywords extracted — fall back to pure recency (AC4.6)
-			// Skip the boost query entirely when no keywords; go straight to delta entries
-
-			// Then delta entries (recency-based)
-			for (const row of visibleMemoryRows) {
-				if (pinnedKeys.has(row.key) || boostedKeys.has(row.key)) continue;
-				const sourceLabel = resolveSource(
-					row.task_name,
-					row.thread_id,
-					row.thread_title,
-					row.source,
-				);
-				const relTime = relativeTime(row.modified_at);
-				if (row.deleted) {
-					memoryDeltaLines.push(`- ${row.key}: [forgotten] (${relTime}, via ${sourceLabel})`);
-				} else {
-					const value = row.value.length > 200 ? `${safeSlice(row.value, 0, 200)}...` : row.value;
-					const stale = stalenessTag(row.modified_at);
-					memoryDeltaLines.push(`- ${row.key}: ${value} (${relTime}, via ${sourceLabel})${stale}`);
-				}
-			}
-			if (hasMoreMemory) {
-				memoryDeltaLines.push(
-					`... and ${memoryRows.length - maxMemory} more (query semantic_memory for full list)`,
-				);
-			}
-		}
-	} else {
-		// No graph edges — use merged keywords (message + thread summary) for boosting
-		if (mergedKeywords.length > 0) {
-			const keywords = mergedKeywords;
-
-			if (keywords.length > 0) {
-				// Build LIKE conditions for key and value matching
-				const likeConditions = keywords.map(
-					() => `(LOWER(m.key) LIKE '%' || ? || '%' OR LOWER(m.value) LIKE '%' || ? || '%')`,
-				);
-				const params = keywords.flatMap((kw) => [kw, kw]);
-				const MAX_BOOSTED = 5;
-
-				const boostedRows = db
-					.prepare(
-						`SELECT m.key, m.value, m.modified_at
-						 FROM   semantic_memory m
-						 WHERE  m.deleted = 0
-						   AND  m.key NOT LIKE '\\_policy%' ESCAPE '\\'
-						   AND  m.key NOT LIKE '\\_pinned%' ESCAPE '\\'
-						   AND  m.key NOT LIKE '\\_standing%' ESCAPE '\\'
-			   AND  m.key NOT LIKE '\\_feedback%' ESCAPE '\\'
-						   AND  (${likeConditions.join(" OR ")})
-						 ORDER  BY m.modified_at DESC
-						 LIMIT  ?`,
-					)
-					.all(...params, MAX_BOOSTED) as Array<{
-					key: string;
-					value: string;
-					modified_at: string;
-				}>;
-
-				for (const row of boostedRows) {
-					if (deltaKeys.has(row.key) || pinnedKeys.has(row.key)) continue;
-					boostedKeys.add(row.key);
-					const stale = stalenessTag(row.modified_at);
-					memoryDeltaLines.push(`- ${row.key}: ${row.value} [relevant]${stale}`);
-				}
-			}
-		}
-
-		// Then delta entries (recency-based)
-		for (const row of visibleMemoryRows) {
-			if (pinnedKeys.has(row.key) || boostedKeys.has(row.key)) continue;
-			const sourceLabel = resolveSource(row.task_name, row.thread_id, row.thread_title, row.source);
-			const relTime = relativeTime(row.modified_at);
-			if (row.deleted) {
-				memoryDeltaLines.push(`- ${row.key}: [forgotten] (${relTime}, via ${sourceLabel})`);
-			} else {
-				const value = row.value.length > 200 ? `${safeSlice(row.value, 0, 200)}...` : row.value;
-				const stale = stalenessTag(row.modified_at);
-				memoryDeltaLines.push(`- ${row.key}: ${value} (${relTime}, via ${sourceLabel})${stale}`);
-			}
-		}
-		if (hasMoreMemory) {
-			memoryDeltaLines.push(
-				`... and ${memoryRows.length - maxMemory} more (query semantic_memory for full list)`,
-			);
+		if (countMore.cnt > allExcluded.size) {
+			const moreCount = countMore.cnt - allExcluded.size;
+			memoryDeltaLines.push(`... and ${moreCount} more (query semantic_memory for full list)`);
 		}
 	}
 
@@ -709,5 +601,327 @@ export function buildVolatileEnrichment(
 		taskDigestLines.push(`... and ${taskRows.length - maxTasks} more (query tasks for full list)`);
 	}
 
-	return { memoryDeltaLines, taskDigestLines, graphCount, recencyCount };
+	return {
+		memoryDeltaLines,
+		taskDigestLines,
+		tiers,
+		graphCount: l2.entries.length,
+		recencyCount: l3.entries.length,
+	};
+}
+
+/**
+ * Stage L0: Load pinned entries using dual detection (tier='pinned' OR prefix match)
+ * Returns loaded entries plus an exclusion set for downstream stages.
+ */
+export function loadPinnedEntries(db: Database): StageResult {
+	// IMPORTANT: ESCAPE syntax must match summary-extraction.ts lines 467-470 exactly.
+	// Copy the escape sequence from the existing codebase, do NOT derive from scratch.
+	const rows = db
+		.prepare(
+			`SELECT m.key, m.value, m.source, m.modified_at, m.tier,
+			        t_src.trigger_spec AS task_name,
+			        th_src.id          AS thread_id,
+			        th_src.title       AS thread_title
+			 FROM semantic_memory m
+			 LEFT JOIN tasks   t_src  ON m.source = t_src.id
+			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
+			 WHERE m.deleted = 0
+			   AND (m.tier = 'pinned'
+			     OR m.key LIKE '\\_standing%' ESCAPE '\\'
+			     OR m.key LIKE '\\_feedback%' ESCAPE '\\'
+			     OR m.key LIKE '\\_policy%' ESCAPE '\\'
+			     OR m.key LIKE '\\_pinned%' ESCAPE '\\')`,
+		)
+		.all() as Array<{
+		key: string;
+		value: string;
+		source: string | null;
+		modified_at: string;
+		tier: string;
+		task_name: string | null;
+		thread_id: string | null;
+		thread_title: string | null;
+	}>;
+
+	const entries: StageEntry[] = rows.map((r) => ({
+		key: r.key,
+		value: r.value,
+		source: r.source,
+		modifiedAt: r.modified_at,
+		tier: (r.tier || "pinned") as MemoryTier,
+		tag: "[pinned]",
+		taskName: r.task_name,
+		threadId: r.thread_id,
+		threadTitle: r.thread_title,
+	}));
+
+	const exclusionSet = new Set(entries.map((e) => e.key));
+
+	return { entries, exclusionSet };
+}
+
+/**
+ * Stage L1: Load summary entries and their children, detecting staleness.
+ * All children are added to the exclusion set regardless of staleness.
+ * Stale children (modified after the summary) are loaded with [stale-detail] tag.
+ */
+export function loadSummaryEntries(db: Database, excludeKeys: Set<string>): StageResult {
+	// Load all summary entries not already in exclusion set
+	const summaries = db
+		.prepare(
+			`SELECT m.key, m.value, m.source, m.modified_at, m.tier,
+			        t_src.trigger_spec AS task_name,
+			        th_src.id          AS thread_id,
+			        th_src.title       AS thread_title
+			 FROM semantic_memory m
+			 LEFT JOIN tasks   t_src  ON m.source = t_src.id
+			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
+			 WHERE m.tier = 'summary' AND m.deleted = 0`,
+		)
+		.all() as Array<{
+		key: string;
+		value: string;
+		source: string | null;
+		modified_at: string;
+		tier: string;
+		task_name: string | null;
+		thread_id: string | null;
+		thread_title: string | null;
+	}>;
+
+	const entries: StageEntry[] = [];
+	const newExclusion = new Set(excludeKeys);
+
+	for (const summary of summaries) {
+		if (excludeKeys.has(summary.key)) continue;
+
+		entries.push({
+			key: summary.key,
+			value: summary.value,
+			source: summary.source,
+			modifiedAt: summary.modified_at,
+			tier: "summary",
+			tag: "[summary]",
+			taskName: summary.task_name,
+			threadId: summary.thread_id,
+			threadTitle: summary.thread_title,
+		});
+		newExclusion.add(summary.key);
+
+		// Find all children via outgoing summarizes edges
+		const children = db
+			.prepare(
+				`SELECT m.key, m.value, m.source, m.modified_at, m.tier,
+				        t_src.trigger_spec AS task_name,
+				        th_src.id          AS thread_id,
+				        th_src.title       AS thread_title
+				 FROM memory_edges e
+				 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
+				 LEFT JOIN tasks   t_src  ON m.source = t_src.id
+				 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
+				 WHERE e.source_key = ? AND e.relation = 'summarizes' AND e.deleted = 0`,
+			)
+			.all(summary.key) as Array<{
+			key: string;
+			value: string;
+			source: string | null;
+			modified_at: string;
+			tier: string;
+			task_name: string | null;
+			thread_id: string | null;
+			thread_title: string | null;
+		}>;
+
+		for (const child of children) {
+			// ALL children go into exclusion set — stale or not
+			newExclusion.add(child.key);
+
+			// Stale children: modified after the summary
+			if (child.modified_at > summary.modified_at) {
+				entries.push({
+					key: child.key,
+					value: child.value,
+					source: child.source,
+					modifiedAt: child.modified_at,
+					tier: child.tier as MemoryTier,
+					tag: "[stale-detail]",
+					taskName: child.task_name,
+					threadId: child.thread_id,
+					threadTitle: child.thread_title,
+				});
+			}
+		}
+	}
+
+	return { entries, exclusionSet: newExclusion };
+}
+
+/**
+ * Stage L2: Load graph-seeded entries, applying tier and exclusion filters.
+ * Returns only `default` tier entries (plus orphaned detail entries).
+ * Respects excludeKeys from L0+L1 and expands the exclusion set.
+ */
+export function loadGraphEntries(
+	db: Database,
+	excludeKeys: Set<string>,
+	keywords: string[],
+	maxSlots: number,
+): StageResult {
+	if (keywords.length === 0 || maxSlots <= 0) {
+		return { entries: [], exclusionSet: new Set(excludeKeys) };
+	}
+
+	const graphResults = graphSeededRetrieval(
+		db,
+		keywords,
+		maxSlots + excludeKeys.size,
+		2,
+		excludeKeys,
+	);
+
+	const entries: StageEntry[] = [];
+	const newExclusion = new Set(excludeKeys);
+
+	// Build a map of key -> source resolution info from a single query
+	const sourceInfoMap = new Map<
+		string,
+		{ taskName: string | null; threadId: string | null; threadTitle: string | null }
+	>();
+
+	if (graphResults.length > 0) {
+		const keys = graphResults.map((r) => r.key);
+		const placeholders = keys.map(() => "?").join(",");
+		const sourceInfoRows = db
+			.prepare(
+				`SELECT m.key,
+				        t_src.trigger_spec AS task_name,
+				        th_src.id          AS thread_id,
+				        th_src.title       AS thread_title
+				 FROM semantic_memory m
+				 LEFT JOIN tasks   t_src  ON m.source = t_src.id
+				 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
+				 WHERE m.key IN (${placeholders})`,
+			)
+			.all(...keys) as Array<{
+			key: string;
+			task_name: string | null;
+			thread_id: string | null;
+			thread_title: string | null;
+		}>;
+
+		for (const row of sourceInfoRows) {
+			sourceInfoMap.set(row.key, {
+				taskName: row.task_name,
+				threadId: row.thread_id,
+				threadTitle: row.thread_title,
+			});
+		}
+	}
+
+	for (const r of graphResults) {
+		if (newExclusion.has(r.key)) continue;
+		if (entries.length >= maxSlots) break;
+
+		const tag = r.retrievalMethod === "seed" ? "[seed]" : `[depth ${r.depth}, ${r.viaRelation}]`;
+
+		// Preserve the original tier (default or orphaned detail)
+		const tier = r.tier ? (r.tier as MemoryTier) : "default";
+
+		const sourceInfo = sourceInfoMap.get(r.key) || {
+			taskName: null,
+			threadId: null,
+			threadTitle: null,
+		};
+
+		entries.push({
+			key: r.key,
+			value: r.value,
+			source: r.source,
+			modifiedAt: r.modifiedAt,
+			tier,
+			tag,
+			taskName: sourceInfo.taskName,
+			threadId: sourceInfo.threadId,
+			threadTitle: sourceInfo.threadTitle,
+		});
+		newExclusion.add(r.key);
+	}
+
+	return { entries, exclusionSet: newExclusion };
+}
+
+/**
+ * Stage L3: Load recency-based entries, applying same tier/exclusion filters as L2.
+ * Returns entries ordered by recency, limited to maxSlots.
+ * Respects excludeKeys from L0+L1+L2 and expands the exclusion set.
+ */
+export function loadRecencyEntries(
+	db: Database,
+	excludeKeys: Set<string>,
+	baseline: string,
+	maxSlots: number,
+): StageResult {
+	if (maxSlots <= 0) {
+		return { entries: [], exclusionSet: new Set(excludeKeys) };
+	}
+
+	// Query recent entries, excluding pinned/summary/detail tiers
+	// (same filter as L2 — orphaned details also pass through)
+	// Include deleted entries (deleted=1) so they can be rendered with [forgotten] tag
+	const rows = db
+		.prepare(
+			`SELECT m.key, m.value, m.source, m.modified_at, m.tier, m.deleted,
+			        t_src.trigger_spec AS task_name,
+			        th_src.id          AS thread_id,
+			        th_src.title       AS thread_title
+			 FROM semantic_memory m
+			 LEFT JOIN tasks   t_src  ON m.source = t_src.id
+			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
+			 WHERE m.modified_at > ?
+			   AND (
+			     m.tier NOT IN ('detail', 'pinned', 'summary')
+			     OR (m.tier = 'detail' AND NOT EXISTS (
+			       SELECT 1 FROM memory_edges e
+			       WHERE e.target_key = m.key AND e.relation = 'summarizes' AND e.deleted = 0
+			     ))
+			   )
+			 ORDER BY m.modified_at DESC
+			 LIMIT ?`,
+		)
+		.all(baseline, maxSlots + excludeKeys.size) as Array<{
+		key: string;
+		value: string;
+		source: string | null;
+		modified_at: string;
+		tier: string;
+		deleted: number;
+		task_name: string | null;
+		thread_id: string | null;
+		thread_title: string | null;
+	}>;
+
+	const entries: StageEntry[] = [];
+	const newExclusion = new Set(excludeKeys);
+
+	for (const row of rows) {
+		if (newExclusion.has(row.key)) continue;
+		if (entries.length >= maxSlots) break;
+
+		entries.push({
+			key: row.key,
+			value: row.value,
+			source: row.source,
+			modifiedAt: row.modified_at,
+			tier: (row.tier || "default") as MemoryTier,
+			tag: "[recency]",
+			taskName: row.task_name,
+			threadId: row.thread_id,
+			threadTitle: row.thread_title,
+			deleted: row.deleted,
+		});
+		newExclusion.add(row.key);
+	}
+
+	return { entries, exclusionSet: newExclusion };
 }

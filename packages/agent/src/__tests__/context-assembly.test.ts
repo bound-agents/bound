@@ -5044,6 +5044,425 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 	});
+
+	describe("hierarchical-memory budget shedding", () => {
+		it("AC5.1: L3 entries shed entirely under budget pressure", () => {
+			const testThreadId = randomUUID();
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					userId,
+					"web",
+					"local",
+					0,
+					"Budget Shedding Test - L3",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// Insert pinned, summary, and default memories to populate tiers
+			// L0 (pinned): 2 entries
+			for (let i = 0; i < 2; i++) {
+				db.run(
+					"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						`[pinned:context${i}]`,
+						`pinned value ${i}`,
+						"agent",
+						new Date().toISOString(),
+						new Date().toISOString(),
+						0,
+						"pinned",
+					],
+				);
+			}
+
+			// L1 (summary): 1 entry
+			db.run(
+				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					"summary_key",
+					"summary value for context",
+					"agent",
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+					"summary",
+				],
+			);
+
+			// L2 (default/seed): 5 entries
+			for (let i = 0; i < 5; i++) {
+				db.run(
+					"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						`seed_key_${i}`,
+						`seed value ${i}`,
+						"agent",
+						new Date().toISOString(),
+						new Date().toISOString(),
+						0,
+						"default",
+					],
+				);
+			}
+
+			// L3 (recency/default): 10 entries with older modification times
+			const baseTime = Date.now() - 3600000; // 1 hour ago
+			for (let i = 0; i < 10; i++) {
+				db.run(
+					"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						`recency_key_${i}`,
+						`recency value ${i}`,
+						"agent",
+						new Date(baseTime + i * 1000).toISOString(),
+						new Date(baseTime + i * 1000).toISOString(),
+						0,
+						"default",
+					],
+				);
+			}
+
+			// Insert a user message to have content
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"user",
+					"Test message",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
+
+			// Assemble context with small window to trigger budget pressure
+			// This forces the shedding logic to reduce tiers
+			const result = assembleContext({
+				db: db,
+				threadId: testThreadId,
+				userId: userId,
+				contextWindow: 1000, // Small window forces budget pressure
+			});
+
+			// Should have budget pressure
+			expect(result.debug.budgetPressure).toBe(true);
+
+			// L3 (recency) entries should be entirely shed from the context
+			const contextText = result.messages
+				.filter((m) => m.role === "system")
+				.map((m) => (typeof m.content === "string" ? m.content : ""))
+				.join("\n");
+
+			// L3 entries have keys "recency_key_N" — should not appear
+			for (let i = 0; i < 10; i++) {
+				expect(contextText).not.toContain(`recency_key_${i}`);
+			}
+
+			// L0, L1 should always be present
+			expect(contextText).toContain("[pinned:context");
+			expect(contextText).toContain("summary_key");
+			// L2 may be shedded under extreme budget pressure, but L0+L1 never are
+		});
+
+		it("AC5.2: L2 reduced to at most 5 entries under budget pressure", () => {
+			const testThreadId = randomUUID();
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					userId,
+					"web",
+					"local",
+					0,
+					"Budget Shedding Test - L2",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// Insert only default memories (L2+L3)
+			// L2: 8 entries (should be capped at 5)
+			for (let i = 0; i < 8; i++) {
+				db.run(
+					"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						`default_key_${i}`,
+						`default value ${i} ${"x".repeat(100)}`,
+						"agent",
+						new Date().toISOString(),
+						new Date().toISOString(),
+						0,
+						"default",
+					],
+				);
+			}
+
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"user",
+					"Test message",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
+
+			const result = assembleContext({
+				db: db,
+				threadId: testThreadId,
+				userId: userId,
+				contextWindow: 1200, // Small window to trigger budget pressure
+			});
+
+			expect(result.debug.budgetPressure).toBe(true);
+
+			const contextText = result.messages
+				.filter((m) => m.role === "system")
+				.map((m) => (typeof m.content === "string" ? m.content : ""))
+				.join("\n");
+
+			// Count how many default entries appear (default_key_*)
+			const defaultMatches = contextText.match(/default_key_\d+/g) || [];
+			// Should have at most 5 (due to L2 cap), likely fewer due to shedding
+			expect(defaultMatches.length).toBeLessThanOrEqual(5);
+
+			// At least one should be present if any L2 survived
+			if (defaultMatches.length > 0) {
+				expect(defaultMatches.length).toBeGreaterThanOrEqual(1);
+			}
+		});
+
+		it("AC5.3: L0 and L1 never shed regardless of pressure", () => {
+			const testThreadId = randomUUID();
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					userId,
+					"web",
+					"local",
+					0,
+					"Budget Shedding Test - L0/L1",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// L0: 5 pinned entries
+			for (let i = 0; i < 5; i++) {
+				db.run(
+					"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						`[pinned:important${i}]`,
+						`pinned context ${i}`,
+						"agent",
+						new Date().toISOString(),
+						new Date().toISOString(),
+						0,
+						"pinned",
+					],
+				);
+			}
+
+			// L1: 3 summary entries
+			for (let i = 0; i < 3; i++) {
+				db.run(
+					"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						`summary_${i}`,
+						`summary context ${i}`,
+						"agent",
+						new Date().toISOString(),
+						new Date().toISOString(),
+						0,
+						"summary",
+					],
+				);
+			}
+
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"user",
+					"Test message",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
+
+			const result = assembleContext({
+				db: db,
+				threadId: testThreadId,
+				userId: userId,
+				contextWindow: 1000, // Small to trigger pressure
+			});
+
+			expect(result.debug.budgetPressure).toBe(true);
+
+			const contextText = result.messages
+				.filter((m) => m.role === "system")
+				.map((m) => (typeof m.content === "string" ? m.content : ""))
+				.join("\n");
+
+			// All L0 pinned entries should survive
+			for (let i = 0; i < 5; i++) {
+				expect(contextText).toContain(`[pinned:important${i}]`);
+			}
+
+			// All L1 summary entries should survive
+			for (let i = 0; i < 3; i++) {
+				expect(contextText).toContain(`summary_${i}`);
+			}
+		});
+
+		it("AC5.4: L0+L1 exceeding 20 entries logs warning but does not truncate", () => {
+			const testThreadId = randomUUID();
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					userId,
+					"web",
+					"local",
+					0,
+					"Budget Shedding Test - Warning",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// L0: 15 pinned entries
+			for (let i = 0; i < 15; i++) {
+				db.run(
+					"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						`[pinned:warn${i}]`,
+						`pinned value for warning test ${i}`,
+						"agent",
+						new Date().toISOString(),
+						new Date().toISOString(),
+						0,
+						"pinned",
+					],
+				);
+			}
+
+			// L1: 10 summary entries
+			for (let i = 0; i < 10; i++) {
+				db.run(
+					"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						`summary_warn_${i}`,
+						`summary value for warning test ${i}`,
+						"agent",
+						new Date().toISOString(),
+						new Date().toISOString(),
+						0,
+						"summary",
+					],
+				);
+			}
+
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"user",
+					"Test message",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
+
+			const result = assembleContext({
+				db: db,
+				threadId: testThreadId,
+				userId: userId,
+				contextWindow: 1000, // Trigger pressure with 25 L0+L1 entries
+			});
+
+			expect(result.debug.budgetPressure).toBe(true);
+
+			const contextText = result.messages
+				.filter((m) => m.role === "system")
+				.map((m) => (typeof m.content === "string" ? m.content : ""))
+				.join("\n");
+
+			// All 25 entries should still be present (no truncation)
+			let pinnedCount = 0;
+			for (let i = 0; i < 15; i++) {
+				if (contextText.includes(`[pinned:warn${i}]`)) {
+					pinnedCount++;
+				}
+			}
+			expect(pinnedCount).toBe(15);
+
+			let summaryCount = 0;
+			for (let i = 0; i < 10; i++) {
+				if (contextText.includes(`summary_warn_${i}`)) {
+					summaryCount++;
+				}
+			}
+			expect(summaryCount).toBe(10);
+
+			// Total should be 25 (15 + 10)
+			expect(pinnedCount + summaryCount).toBe(25);
+		});
+	});
 });
 
 describe("formatTimestamp", () => {

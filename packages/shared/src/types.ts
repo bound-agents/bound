@@ -19,6 +19,8 @@ export type AdvisoryStatus = "proposed" | "approved" | "dismissed" | "deferred" 
 
 export type SkillStatus = "active" | "retired";
 
+export type MemoryTier = "pinned" | "summary" | "default" | "detail";
+
 export type SyncedTableName =
 	| "users"
 	| "threads"
@@ -82,6 +84,7 @@ export interface SemanticMemory {
 	created_at: string;
 	modified_at: string;
 	last_accessed_at: string | null;
+	tier: MemoryTier;
 	deleted: number;
 }
 
