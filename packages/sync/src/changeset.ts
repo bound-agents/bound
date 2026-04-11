@@ -78,8 +78,8 @@ export function fetchInboundChangeset(
 	};
 }
 
-/** Default max chunk size in bytes (50 MB plaintext, well under Bun's 128 MB default). */
-export const DEFAULT_MAX_CHUNK_BYTES = 50 * 1024 * 1024;
+/** Default max chunk size in bytes (10 MB plaintext — safe for Cloudflare/proxy limits). */
+export const DEFAULT_MAX_CHUNK_BYTES = 10 * 1024 * 1024;
 
 /**
  * Split a changeset into smaller chunks that each serialize under maxBytes.
