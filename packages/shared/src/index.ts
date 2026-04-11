@@ -21,3 +21,6 @@ export * from "./tokens.js";
 
 // String utilities
 export * from "./strings.js";
+
+// Hybrid Logical Clocks
+export * from "./hlc.js";
