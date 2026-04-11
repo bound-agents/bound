@@ -12,6 +12,7 @@ import {
 	type Changeset,
 	type RelayRequest,
 	type RelayResponse,
+	chunkChangeset,
 	deserializeChangeset,
 	fetchOutboundChangeset,
 	serializeChangeset,
@@ -91,15 +92,24 @@ export class SyncClient {
 		const peerSiteId = this.hubSiteId ?? this.siteId;
 
 		try {
-			// PUSH: send outbound events to hub
+			// PUSH: send outbound events to hub (chunked for large changesets)
 			const outbound = fetchOutboundChangeset(this.db, peerSiteId, this.siteId);
 			if (outbound.events.length > 0) {
-				const pushResult = await this.push(outbound);
-				if (!pushResult.ok) {
-					return pushResult;
+				const chunks = chunkChangeset(outbound);
+				if (chunks.length > 1) {
+					this.logger.info(
+						`Chunking push: ${outbound.events.length} events into ${chunks.length} chunks`,
+					);
 				}
-				pushed = outbound.events.length;
-				updatePeerCursor(this.db, peerSiteId, { last_sent: outbound.source_hlc_end });
+				for (const chunk of chunks) {
+					const pushResult = await this.push(chunk);
+					if (!pushResult.ok) {
+						return pushResult;
+					}
+					pushed += chunk.events.length;
+					// Advance cursor after each chunk so partial failure is resumable
+					updatePeerCursor(this.db, peerSiteId, { last_sent: chunk.source_hlc_end });
+				}
 			}
 
 			// PULL: fetch inbound events from hub

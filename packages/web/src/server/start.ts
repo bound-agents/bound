@@ -132,6 +132,7 @@ export async function createSyncServer(
 			server = Bun.serve({
 				port,
 				hostname: host,
+				maxRequestBodySize: 128 * 1024 * 1024, // 128 MB — chunked push keeps payloads well under this
 				fetch(request: Request) {
 					return app.fetch(request);
 				},
