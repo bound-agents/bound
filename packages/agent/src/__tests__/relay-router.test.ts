@@ -334,39 +334,25 @@ describe("Relay Router", () => {
 			}
 		});
 
-		it("filters out stale hosts (online_at older than 5 min) (AC2.5)", () => {
+		it("filters out stale hosts (modified_at older than 5 min) (AC2.5)", () => {
 			const now = new Date();
 			const freshTime = new Date(now.getTime() - 2 * 60 * 1000).toISOString(); // 2 min ago
 			const staleTime = new Date(now.getTime() - 6 * 60 * 1000).toISOString(); // 6 min ago
 
-			// Fresh host with model
+			// Fresh host with model (modified_at is recent — heartbeat keeps this fresh)
 			db.run(
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"fresh-host",
-					"Fresh Host",
-					JSON.stringify(["claude-opus"]),
-					0,
-					freshTime,
-					new Date().toISOString(),
-				],
+				["fresh-host", "Fresh Host", JSON.stringify(["claude-opus"]), 0, freshTime, freshTime],
 			);
 
-			// Stale host with same model
+			// Stale host: both online_at and modified_at are old
 			db.run(
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"stale-host",
-					"Stale Host",
-					JSON.stringify(["claude-opus"]),
-					0,
-					staleTime,
-					new Date().toISOString(),
-				],
+				["stale-host", "Stale Host", JSON.stringify(["claude-opus"]), 0, staleTime, staleTime],
 			);
 
 			const result = findEligibleHostsByModel(db, "claude-opus", "local-site");
@@ -384,14 +370,7 @@ describe("Relay Router", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"stale-host",
-					"Stale Host",
-					JSON.stringify(["claude-opus"]),
-					0,
-					staleTime,
-					new Date().toISOString(),
-				],
+				["stale-host", "Stale Host", JSON.stringify(["claude-opus"]), 0, staleTime, staleTime],
 			);
 
 			const result = findEligibleHostsByModel(db, "claude-opus", "local-site");
@@ -401,30 +380,50 @@ describe("Relay Router", () => {
 			}
 		});
 
-		it("excludes hosts with null online_at (AC2.5)", () => {
-			const now = new Date().toISOString();
+		it("considers host fresh when modified_at is recent even if online_at is stale (AC2.5)", () => {
+			const now = new Date();
+			const bootTime = new Date(now.getTime() - 10 * 60 * 1000).toISOString(); // 10 min ago
+			const heartbeatTime = new Date(now.getTime() - 1 * 60 * 1000).toISOString(); // 1 min ago
 
-			// Host with null online_at
+			// Host booted 10 min ago (stale online_at) but heartbeat bumped modified_at 1 min ago
 			db.run(
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				["no-sync-host", "Never Synced", JSON.stringify(["claude-opus"]), 0, null, now],
-			);
-
-			// Host with valid online_at
-			db.run(
-				`INSERT INTO hosts (
-					site_id, host_name, models, deleted, online_at, modified_at
-				) VALUES (?, ?, ?, ?, ?, ?)`,
-				["synced-host", "Synced Host", JSON.stringify(["claude-opus"]), 0, now, now],
+				[
+					"heartbeat-host",
+					"Heartbeat Host",
+					JSON.stringify(["claude-opus"]),
+					0,
+					bootTime,
+					heartbeatTime,
+				],
 			);
 
 			const result = findEligibleHostsByModel(db, "claude-opus", "local-site");
 			expect(result.ok).toBe(true);
 			if (result.ok) {
 				expect(result.hosts.length).toBe(1);
-				expect(result.hosts[0].site_id).toBe("synced-host");
+				expect(result.hosts[0].site_id).toBe("heartbeat-host");
+			}
+		});
+
+		it("includes host with null online_at but fresh modified_at (AC2.5)", () => {
+			const now = new Date().toISOString();
+
+			// Host with null online_at but fresh modified_at (heartbeat-only, never set online_at)
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				["heartbeat-only", "Heartbeat Only", JSON.stringify(["claude-opus"]), 0, null, now],
+			);
+
+			const result = findEligibleHostsByModel(db, "claude-opus", "local-site");
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.hosts.length).toBe(1);
+				expect(result.hosts[0].site_id).toBe("heartbeat-only");
 			}
 		});
 

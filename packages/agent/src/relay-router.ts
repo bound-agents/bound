@@ -38,6 +38,13 @@ export interface RelayRoutingError {
 
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 
+/** Check staleness using modified_at (kept fresh by heartbeat), falling back to online_at. */
+function hostAge(row: { modified_at: string | null; online_at: string | null }): number | null {
+	const ts = row.modified_at ?? row.online_at;
+	if (!ts) return null;
+	return Date.now() - new Date(ts).getTime();
+}
+
 export function findEligibleHosts(
 	db: Database,
 	toolCommandName: string,
@@ -45,7 +52,7 @@ export function findEligibleHosts(
 ): RelayRoutingResult | RelayRoutingError {
 	const rows = db
 		.query(
-			`SELECT site_id, host_name, sync_url, mcp_tools, online_at
+			`SELECT site_id, host_name, sync_url, mcp_tools, online_at, modified_at
 			 FROM hosts
 			 WHERE deleted = 0 AND site_id != ?`,
 		)
@@ -55,6 +62,7 @@ export function findEligibleHosts(
 		sync_url: string | null;
 		mcp_tools: string | null;
 		online_at: string | null;
+		modified_at: string | null;
 	}>;
 
 	const eligible: EligibleHost[] = [];
@@ -103,7 +111,7 @@ export function findEligibleHostsByModel(
 ): RelayRoutingResult | RelayRoutingError {
 	const rows = db
 		.query(
-			`SELECT site_id, host_name, sync_url, models, online_at
+			`SELECT site_id, host_name, sync_url, models, online_at, modified_at
 			 FROM hosts
 			 WHERE deleted = 0 AND site_id != ?`,
 		)
@@ -113,6 +121,7 @@ export function findEligibleHostsByModel(
 		sync_url: string | null;
 		models: string | null;
 		online_at: string | null;
+		modified_at: string | null;
 	}>;
 
 	const verified: EligibleHost[] = [];
@@ -120,13 +129,9 @@ export function findEligibleHostsByModel(
 
 	for (const row of rows) {
 		if (!row.models) continue;
-		// Stale hosts are excluded (online_at older than STALE_THRESHOLD_MS)
-		if (row.online_at) {
-			const age = Date.now() - new Date(row.online_at).getTime();
-			if (age > STALE_THRESHOLD_MS) continue;
-		} else {
-			continue; // No online_at means never seen — skip
-		}
+		// Stale hosts are excluded (modified_at or online_at older than STALE_THRESHOLD_MS)
+		const age = hostAge(row);
+		if (age === null || age > STALE_THRESHOLD_MS) continue;
 
 		let rawModels: unknown;
 		try {
@@ -237,7 +242,7 @@ export function findAnyRemoteModel(
 ): (RelayRoutingResult & { modelId: string }) | RelayRoutingError {
 	const rows = db
 		.query(
-			`SELECT site_id, host_name, sync_url, models, online_at
+			`SELECT site_id, host_name, sync_url, models, online_at, modified_at
 			 FROM hosts
 			 WHERE deleted = 0 AND site_id != ?`,
 		)
@@ -247,14 +252,15 @@ export function findAnyRemoteModel(
 		sync_url: string | null;
 		models: string | null;
 		online_at: string | null;
+		modified_at: string | null;
 	}>;
 
 	const candidates: Array<EligibleHost & { modelId: string }> = [];
 
 	for (const row of rows) {
-		if (!row.models || !row.online_at) continue;
-		const age = Date.now() - new Date(row.online_at).getTime();
-		if (age > STALE_THRESHOLD_MS) continue;
+		if (!row.models) continue;
+		const age = hostAge(row);
+		if (age === null || age > STALE_THRESHOLD_MS) continue;
 
 		let rawModels: unknown;
 		try {
