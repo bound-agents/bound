@@ -2,6 +2,7 @@ import { openBoundDB } from "../lib/db";
 
 import { resolve } from "node:path";
 import { createChangeLogEntry, getSiteId, validateColumnName } from "@bound/core";
+import type { SyncedTableName } from "@bound/shared";
 const APPEND_ONLY_TABLES = new Set(["messages"]);
 export interface RestoreArgs {
 	before: string;
@@ -130,7 +131,7 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 							ON CONFLICT(id) DO UPDATE SET ${updateClause}`,
 						).run(...(values as Array<string | number | null>));
 						// Write change_log entry for outbox compliance
-						createChangeLogEntry(db, table_name, row_id, siteId, rowData);
+						createChangeLogEntry(db, table_name as SyncedTableName, row_id, siteId, rowData);
 					}
 					restoredCount++;
 				} else {
@@ -148,7 +149,7 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 							.query(`SELECT * FROM ${table_name} WHERE id = ?`)
 							.get(row_id) as Record<string, unknown> | null;
 						if (deletedRow) {
-							createChangeLogEntry(db, table_name, row_id, siteId, deletedRow);
+							createChangeLogEntry(db, table_name as SyncedTableName, row_id, siteId, deletedRow);
 						}
 					}
 					tombstonedCount++;

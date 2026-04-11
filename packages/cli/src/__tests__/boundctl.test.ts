@@ -2,7 +2,6 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createChangeLogEntry } from "@bound/core";
 import { generateHlc } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { runConfigReload } from "../commands/config-reload.js";

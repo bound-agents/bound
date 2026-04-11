@@ -40,7 +40,7 @@ export function generateHlc(wallClock: string, lastHlc: string | null, siteId: s
 	}
 
 	// Wall clock hasn't advanced (equal or behind) — increment counter
-	const newCounter = (parseInt(lastCounter, 16) + 1).toString(16).padStart(4, "0");
+	const newCounter = (Number.parseInt(lastCounter, 16) + 1).toString(16).padStart(4, "0");
 	return `${lastTs}_${newCounter}_${siteId}`;
 }
 
@@ -53,15 +53,15 @@ export function mergeHlc(localHlc: string, remoteHlc: string, siteId: string): s
 	const [localTs, localCounter] = parseHlc(localHlc);
 	const [remoteTs, remoteCounter] = parseHlc(remoteHlc);
 
-	const maxTs = [now, localTs, remoteTs].sort().pop()!;
+	const maxTs = [now, localTs, remoteTs].sort().pop() as string;
 
 	if (maxTs === now && now > localTs && now > remoteTs) {
 		return `${now}_0000_${siteId}`;
 	}
 
 	const maxCounter = Math.max(
-		parseInt(localCounter, 16),
-		parseInt(remoteCounter, 16),
+		Number.parseInt(localCounter, 16),
+		Number.parseInt(remoteCounter, 16),
 	);
 	const newCounter = (maxCounter + 1).toString(16).padStart(4, "0");
 	return `${maxTs}_${newCounter}_${siteId}`;

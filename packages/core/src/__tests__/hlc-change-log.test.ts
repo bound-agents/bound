@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseHlc } from "@bound/shared";
-import { createChangeLogEntry, insertRow, updateRow } from "../change-log";
+import { createChangeLogEntry, insertRow } from "../change-log";
 import { createDatabase } from "../database";
 import { applySchema } from "../schema";
 
@@ -137,9 +137,9 @@ describe("HLC Change Log", () => {
 			);
 		}
 
-		const entries = db
-			.query("SELECT row_id FROM change_log ORDER BY hlc ASC")
-			.all() as Array<{ row_id: string }>;
+		const entries = db.query("SELECT row_id FROM change_log ORDER BY hlc ASC").all() as Array<{
+			row_id: string;
+		}>;
 
 		expect(entries.map((e) => e.row_id)).toEqual(ids);
 	});
@@ -153,8 +153,8 @@ describe("HLC Change Log", () => {
 
 		const hlcCol = tableInfo.find((c) => c.name === "hlc");
 		expect(hlcCol).toBeDefined();
-		expect(hlcCol!.type).toBe("TEXT");
-		expect(hlcCol!.pk).toBe(1);
+		expect(hlcCol?.type).toBe("TEXT");
+		expect(hlcCol?.pk).toBe(1);
 
 		const seqCol = tableInfo.find((c) => c.name === "seq");
 		expect(seqCol).toBeUndefined();
@@ -168,11 +168,11 @@ describe("HLC Change Log", () => {
 
 		const lastReceived = tableInfo.find((c) => c.name === "last_received");
 		expect(lastReceived).toBeDefined();
-		expect(lastReceived!.type).toBe("TEXT");
+		expect(lastReceived?.type).toBe("TEXT");
 
 		const lastSent = tableInfo.find((c) => c.name === "last_sent");
 		expect(lastSent).toBeDefined();
-		expect(lastSent!.type).toBe("TEXT");
+		expect(lastSent?.type).toBe("TEXT");
 	});
 
 	it("createChangeLogEntry with remoteHlc produces HLC greater than remote", () => {

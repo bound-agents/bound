@@ -110,7 +110,9 @@ function migrateSyncStateToHlc(db: Database): void {
 		// For each peer, try to find the HLC for their cursor position.
 		// Since we just migrated change_log, the new hlc column is available.
 		const peers = db
-			.query("SELECT peer_site_id, last_received, last_sent, last_sync_at, sync_errors FROM sync_state")
+			.query(
+				"SELECT peer_site_id, last_received, last_sent, last_sync_at, sync_errors FROM sync_state",
+			)
 			.all() as Array<{
 			peer_site_id: string;
 			last_received: number;
@@ -125,13 +127,7 @@ function migrateSyncStateToHlc(db: Database): void {
 
 		for (const peer of peers) {
 			// After migration, seq N maps to the Nth entry. Use HLC_ZERO as safe default.
-			insertPeer.run(
-				peer.peer_site_id,
-				HLC_ZERO,
-				HLC_ZERO,
-				peer.last_sync_at,
-				peer.sync_errors,
-			);
+			insertPeer.run(peer.peer_site_id, HLC_ZERO, HLC_ZERO, peer.last_sync_at, peer.sync_errors);
 		}
 
 		db.exec("DROP TABLE sync_state");

@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { KeyringConfig } from "@bound/shared";
-import { generateHlc, HLC_ZERO } from "@bound/shared";
+import { HLC_ZERO, generateHlc } from "@bound/shared";
 import { ensureKeypair, exportPublicKey } from "../crypto.js";
 import { createTestInstance } from "./test-harness.js";
 import type { TestInstance } from "./test-harness.js";
@@ -18,7 +18,9 @@ function insertChangeLog(
 	timestamp: string,
 	rowData: Record<string, unknown> | string,
 ): void {
-	const lastHlcRow = db.query("SELECT hlc FROM change_log ORDER BY hlc DESC LIMIT 1").get() as { hlc: string } | null;
+	const lastHlcRow = db.query("SELECT hlc FROM change_log ORDER BY hlc DESC LIMIT 1").get() as {
+		hlc: string;
+	} | null;
 	const hlc = generateHlc(timestamp, lastHlcRow?.hlc ?? null, siteId);
 
 	const rowDataStr = typeof rowData === "string" ? rowData : JSON.stringify(rowData);
@@ -103,23 +105,16 @@ describe("multi-instance sync", () => {
 			.run("mem-1", "test_key", "test_value", "site-a", now, now, now);
 
 		// Record this as a change_log entry on A
-		insertChangeLog(
-			instanceA.db,
-			"semantic_memory",
-			"mem-1",
-			instanceA.siteId,
-			now,
-			{
-				id: "mem-1",
-				key: "test_key",
-				value: "test_value",
-				source: "site-a",
-				created_at: now,
-				modified_at: now,
-				last_accessed_at: now,
-				deleted: 0,
-			},
-		);
+		insertChangeLog(instanceA.db, "semantic_memory", "mem-1", instanceA.siteId, now, {
+			id: "mem-1",
+			key: "test_key",
+			value: "test_value",
+			source: "site-a",
+			created_at: now,
+			modified_at: now,
+			last_accessed_at: now,
+			deleted: 0,
+		});
 
 		// Run sync from Instance B (pull from A)
 		const result = await instanceB.syncClient.syncCycle();
@@ -145,21 +140,21 @@ describe("multi-instance sync", () => {
 
 		insertChangeLog(
 			instanceA.db,
-				"semantic_memory",
-				"mem-a",
-				instanceA.siteId,
-				now,
-				JSON.stringify({
-					id: "mem-a",
-					key: "key_a",
-					value: "value_a",
-					source: "site-a",
-					created_at: now,
-					modified_at: now,
-					last_accessed_at: now,
-					deleted: 0,
-				}),
-			);
+			"semantic_memory",
+			"mem-a",
+			instanceA.siteId,
+			now,
+			JSON.stringify({
+				id: "mem-a",
+				key: "key_a",
+				value: "value_a",
+				source: "site-a",
+				created_at: now,
+				modified_at: now,
+				last_accessed_at: now,
+				deleted: 0,
+			}),
+		);
 
 		// Insert on Instance B
 		instanceB.db
@@ -170,21 +165,21 @@ describe("multi-instance sync", () => {
 
 		insertChangeLog(
 			instanceB.db,
-				"semantic_memory",
-				"mem-b",
-				instanceB.siteId,
-				now,
-				JSON.stringify({
-					id: "mem-b",
-					key: "key_b",
-					value: "value_b",
-					source: "site-b",
-					created_at: now,
-					modified_at: now,
-					last_accessed_at: now,
-					deleted: 0,
-				}),
-			);
+			"semantic_memory",
+			"mem-b",
+			instanceB.siteId,
+			now,
+			JSON.stringify({
+				id: "mem-b",
+				key: "key_b",
+				value: "value_b",
+				source: "site-b",
+				created_at: now,
+				modified_at: now,
+				last_accessed_at: now,
+				deleted: 0,
+			}),
+		);
 
 		// B pushes to A (via sync cycle)
 		const result = await instanceB.syncClient.syncCycle();
@@ -223,40 +218,40 @@ describe("multi-instance sync", () => {
 		// Record on A with later timestamp
 		insertChangeLog(
 			instanceA.db,
-				"semantic_memory",
-				"mem-conflict",
-				instanceA.siteId,
-				time2,
-				JSON.stringify({
-					id: "mem-conflict",
-					key: "key",
-					value: "value_from_a",
-					source: "site-a",
-					created_at: time1,
-					modified_at: time2,
-					last_accessed_at: time2,
-					deleted: 0,
-				}),
-			);
+			"semantic_memory",
+			"mem-conflict",
+			instanceA.siteId,
+			time2,
+			JSON.stringify({
+				id: "mem-conflict",
+				key: "key",
+				value: "value_from_a",
+				source: "site-a",
+				created_at: time1,
+				modified_at: time2,
+				last_accessed_at: time2,
+				deleted: 0,
+			}),
+		);
 
 		// Record on B with earlier timestamp
 		insertChangeLog(
 			instanceB.db,
-				"semantic_memory",
-				"mem-conflict",
-				instanceB.siteId,
-				time1,
-				JSON.stringify({
-					id: "mem-conflict",
-					key: "key",
-					value: "value_from_b",
-					source: "site-b",
-					created_at: time1,
-					modified_at: time1,
-					last_accessed_at: time1,
-					deleted: 0,
-				}),
-			);
+			"semantic_memory",
+			"mem-conflict",
+			instanceB.siteId,
+			time1,
+			JSON.stringify({
+				id: "mem-conflict",
+				key: "key",
+				value: "value_from_b",
+				source: "site-b",
+				created_at: time1,
+				modified_at: time1,
+				last_accessed_at: time1,
+				deleted: 0,
+			}),
+		);
 
 		// Sync: B pulls A's update
 		const result = await instanceB.syncClient.syncCycle();
@@ -289,35 +284,35 @@ describe("multi-instance sync", () => {
 		// Record on both
 		insertChangeLog(
 			instanceA.db,
-				"messages",
-				sameId,
-				instanceA.siteId,
-				now,
-				JSON.stringify({
-					id: sameId,
-					thread_id: "thread-1",
-					role: "user",
-					content: "hello",
-					created_at: now,
-					host_origin: "laptop",
-				}),
-			);
+			"messages",
+			sameId,
+			instanceA.siteId,
+			now,
+			JSON.stringify({
+				id: sameId,
+				thread_id: "thread-1",
+				role: "user",
+				content: "hello",
+				created_at: now,
+				host_origin: "laptop",
+			}),
+		);
 
 		insertChangeLog(
 			instanceB.db,
-				"messages",
-				sameId,
-				instanceB.siteId,
-				now,
-				JSON.stringify({
-					id: sameId,
-					thread_id: "thread-1",
-					role: "user",
-					content: "hello",
-					created_at: now,
-					host_origin: "cloud-vm",
-				}),
-			);
+			"messages",
+			sameId,
+			instanceB.siteId,
+			now,
+			JSON.stringify({
+				id: sameId,
+				thread_id: "thread-1",
+				role: "user",
+				content: "hello",
+				created_at: now,
+				host_origin: "cloud-vm",
+			}),
+		);
 
 		// Sync
 		const result = await instanceB.syncClient.syncCycle();
@@ -344,20 +339,15 @@ describe("multi-instance sync", () => {
 
 		// Create events
 		for (let i = 1; i <= 5; i++) {
-			insertChangeLog(
-				instanceA.db,
-				"semantic_memory",
-				`mem-${i}`,
-				instanceA.siteId,
-				now,
-				"{}",
-			);
+			insertChangeLog(instanceA.db, "semantic_memory", `mem-${i}`, instanceA.siteId, now, "{}");
 		}
 
 		// Set up peer cursor showing B has confirmed through the last HLC
 		// Get the last HLC we just inserted
-		const lastHlcRow = instanceA.db.query("SELECT hlc FROM change_log ORDER BY hlc DESC LIMIT 1").get() as { hlc: string } | null;
-		const confirmedHlc = lastHlcRow!.hlc;
+		const lastHlcRow = instanceA.db
+			.query("SELECT hlc FROM change_log ORDER BY hlc DESC LIMIT 1")
+			.get() as { hlc: string } | null;
+		const confirmedHlc = (lastHlcRow as { hlc: string }).hlc;
 		instanceA.db
 			.query("INSERT INTO sync_state (peer_site_id, last_received) VALUES (?, ?)")
 			.run(instanceB.siteId, confirmedHlc);
@@ -388,21 +378,21 @@ describe("multi-instance sync", () => {
 
 		insertChangeLog(
 			instanceA.db,
-				"semantic_memory",
-				"mem-new",
-				instanceA.siteId,
-				now,
-				JSON.stringify({
-					id: "mem-new",
-					key: "key_new",
-					value: "value_new",
-					source: "site-a",
-					created_at: now,
-					modified_at: now,
-					last_accessed_at: now,
-					deleted: 0,
-				}),
-			);
+			"semantic_memory",
+			"mem-new",
+			instanceA.siteId,
+			now,
+			JSON.stringify({
+				id: "mem-new",
+				key: "key_new",
+				value: "value_new",
+				source: "site-a",
+				created_at: now,
+				modified_at: now,
+				last_accessed_at: now,
+				deleted: 0,
+			}),
+		);
 
 		// Sync and verify new data is received
 		const syncResult = await instanceB.syncClient.syncCycle();
@@ -480,21 +470,21 @@ describe("multi-instance sync", () => {
 
 		insertChangeLog(
 			instanceA.db,
-				"semantic_memory",
-				"mem-initial",
-				instanceA.siteId,
-				now,
-				JSON.stringify({
-					id: "mem-initial",
-					key: "key",
-					value: "initial_value",
-					source: "site-a",
-					created_at: now,
-					modified_at: now,
-					last_accessed_at: now,
-					deleted: 0,
-				}),
-			);
+			"semantic_memory",
+			"mem-initial",
+			instanceA.siteId,
+			now,
+			JSON.stringify({
+				id: "mem-initial",
+				key: "key",
+				value: "initial_value",
+				source: "site-a",
+				created_at: now,
+				modified_at: now,
+				last_accessed_at: now,
+				deleted: 0,
+			}),
+		);
 
 		// First sync: B pulls from A
 		const syncResult = await instanceB.syncClient.syncCycle();
@@ -543,21 +533,21 @@ describe("multi-instance sync", () => {
 		// Record in change_log for replication
 		insertChangeLog(
 			instanceA.db,
-				"skills",
-				skillId,
-				instanceA.siteId,
-				now,
-				JSON.stringify({
-					id: skillId,
-					name: "test-skill",
-					description: "A test skill",
-					status: "active",
-					skill_root: "/home/user/skills/test-skill",
-					activation_count: 0,
-					modified_at: now,
-					deleted: 0,
-				}),
-			);
+			"skills",
+			skillId,
+			instanceA.siteId,
+			now,
+			JSON.stringify({
+				id: skillId,
+				name: "test-skill",
+				description: "A test skill",
+				status: "active",
+				skill_root: "/home/user/skills/test-skill",
+				activation_count: 0,
+				modified_at: now,
+				deleted: 0,
+			}),
+		);
 
 		// Sync from B to A (pulls A's skills row)
 		const result = await instanceB.syncClient.syncCycle();

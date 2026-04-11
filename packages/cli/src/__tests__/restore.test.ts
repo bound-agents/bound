@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
-import { applySchema, createChangeLogEntry, createDatabase } from "@bound/core";
-import { generateHlc } from "@bound/shared";
+import { applySchema, createDatabase } from "@bound/core";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { runRestore } from "../commands/restore.js";
 

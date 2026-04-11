@@ -1,11 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-	HLC_ZERO,
-	generateHlc,
-	hlcToDate,
-	mergeHlc,
-	parseHlc,
-} from "../hlc.js";
+import { HLC_ZERO, generateHlc, hlcToDate, mergeHlc, parseHlc } from "../hlc.js";
 
 const SITE_A = "aaaa1111aaaa1111aaaa1111aaaa1111";
 const SITE_B = "bbbb2222bbbb2222bbbb2222bbbb2222";
