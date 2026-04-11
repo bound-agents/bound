@@ -11,6 +11,7 @@ import {
 	buildVolatileEnrichment,
 	computeBaseline,
 } from "./summary-extraction.js";
+import { shedMemoryTiers } from "./memory-shedding.js";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
 
 export interface ContextParams {
@@ -315,9 +316,10 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 	let enrichmentMessageIndex = -1;
 	let enrichmentStartIdx = -1; // Index in volatileLines where enrichment section starts
 	let enrichmentEndIdx = -1; // Index in volatileLines just after enrichment section ends
-	let _enrichmentTiers: TieredEnrichment | undefined; // Will be consumed in Phase 5 budget pressure tier-aware degradation
+	let enrichmentTiers: TieredEnrichment | undefined; // Consumed in Phase 5 budget pressure tier-aware degradation
 	let allVolatileLines: string[] = []; // Full volatile content for budget pressure rebuild
 	let totalMemCount = 0;
+	let taskDigestLinesSnapshot: string[] = []; // Captured from initial enrichment for budget pressure shedding
 
 	// Stage 1: MESSAGE_RETRIEVAL
 	const messages: Message[] = [];
@@ -1046,7 +1048,8 @@ Original output was too large for the context window. If you need the full conte
 			userMessageText,
 			threadSummary,
 		);
-		_enrichmentTiers = enrichmentTiersL1;
+		enrichmentTiers = enrichmentTiersL1;
+	taskDigestLinesSnapshot = taskDigestLines;
 
 		// Query total memory count for the header line
 		totalMemCount = (
@@ -1241,7 +1244,8 @@ Original output was too large for the context window. If you need the full conte
 			taskDigestLines: noHistTasks,
 			tiers: enrichmentTiersL2,
 		} = buildVolatileEnrichment(db, enrichmentBaseline);
-		_enrichmentTiers = enrichmentTiersL2;
+		enrichmentTiers = enrichmentTiersL2;
+		taskDigestLinesSnapshot = noHistTasks;
 
 		if (noHistDelta.length > 0 || noHistTasks.length > 0) {
 			totalMemCount = (
@@ -1298,88 +1302,173 @@ Original output was too large for the context window. If you need the full conte
 
 		if (headroom < 2000) {
 			budgetPressure = true;
-			const {
-				memoryDeltaLines: shortDelta,
-				taskDigestLines: shortDigest,
-				tiers: enrichmentTiersL3,
-			} = buildVolatileEnrichment(db, enrichmentBaseline, 3, 3);
-			_enrichmentTiers = enrichmentTiersL3;
 
-			const shortMemChangedCount = shortDelta.filter((l) => l.startsWith("- ")).length;
-			let shortMemHeader = `Memory: ${totalMemCount} entries`;
-			if (shortMemChangedCount > 0) {
-				shortMemHeader += !params.noHistory
-					? ` (${shortMemChangedCount} changed since your last turn in this thread)`
-					: ` (${shortMemChangedCount} changed since your last run)`;
-			}
+			if (enrichmentTiers) {
+				// Tier-aware shedding (Phase 5) — operates on structured data, no DB call
+				const shedResult = shedMemoryTiers(enrichmentTiers, taskDigestLinesSnapshot);
+				const shortDelta = shedResult.memoryDeltaLines;
+				const shortDigest = shedResult.taskDigestLines;
 
-			// Build reduced enrichment lines
-			const shortEnrichmentLines: string[] = ["", shortMemHeader];
-			if (shortDelta.length > 0) {
-				shortEnrichmentLines.push(...shortDelta);
-			}
-			if (shortDigest.length > 0) {
-				shortEnrichmentLines.push("");
-				shortEnrichmentLines.push(...shortDigest);
-			}
-
-			if (!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0) {
-				// Splice the reduced enrichment into the full volatile array, preserving
-				// all post-enrichment content (cross-thread digest, file notifications, skill index, etc.)
-				const rebuiltVolatile = [
-					...allVolatileLines.slice(0, enrichmentStartIdx),
-					...shortEnrichmentLines,
-					...allVolatileLines.slice(enrichmentEndIdx),
-				];
-				if (enrichmentMessageIndex < assembled.length) {
-					assembled[enrichmentMessageIndex] = {
-						role: "system",
-						content: rebuiltVolatile.join("\n"),
-					};
+				const shortMemChangedCount = shortDelta.filter((l) => l.startsWith("- ")).length;
+				let shortMemHeader = `Memory: ${totalMemCount} entries`;
+				if (shortMemChangedCount > 0) {
+					shortMemHeader += !params.noHistory
+						? ` (${shortMemChangedCount} changed since your last turn in this thread)`
+						: ` (${shortMemChangedCount} changed since your last run)`;
 				}
-			} else if (params.noHistory) {
-				// For noHistory path, standalone message — just replace with reduced
-				const shortStandaloneLines: string[] = [shortMemHeader];
+
+				// Build reduced enrichment lines
+				const shortEnrichmentLines: string[] = ["", shortMemHeader];
 				if (shortDelta.length > 0) {
-					shortStandaloneLines.push(...shortDelta);
+					shortEnrichmentLines.push(...shortDelta);
 				}
 				if (shortDigest.length > 0) {
-					shortStandaloneLines.push("");
-					shortStandaloneLines.push(...shortDigest);
+					shortEnrichmentLines.push("");
+					shortEnrichmentLines.push(...shortDigest);
 				}
-				if (enrichmentMessageIndex < assembled.length) {
-					assembled[enrichmentMessageIndex] = {
-						role: "system",
-						content: shortStandaloneLines.join("\n"),
-					};
+
+				if (!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0) {
+					// Splice the reduced enrichment into the full volatile array, preserving
+					// all post-enrichment content (cross-thread digest, file notifications, skill index, etc.)
+					const rebuiltVolatile = [
+						...allVolatileLines.slice(0, enrichmentStartIdx),
+						...shortEnrichmentLines,
+						...allVolatileLines.slice(enrichmentEndIdx),
+					];
+					if (enrichmentMessageIndex < assembled.length) {
+						assembled[enrichmentMessageIndex] = {
+							role: "system",
+							content: rebuiltVolatile.join("\n"),
+						};
+					}
+				} else if (params.noHistory) {
+					// For noHistory path, standalone message — just replace with reduced
+					const shortStandaloneLines: string[] = [shortMemHeader];
+					if (shortDelta.length > 0) {
+						shortStandaloneLines.push(...shortDelta);
+					}
+					if (shortDigest.length > 0) {
+						shortStandaloneLines.push("");
+						shortStandaloneLines.push(...shortDigest);
+					}
+					if (enrichmentMessageIndex < assembled.length) {
+						assembled[enrichmentMessageIndex] = {
+							role: "system",
+							content: shortStandaloneLines.join("\n"),
+						};
+					}
 				}
-			}
 
-			// Re-count memory and task-digest sections after budget pressure rebuild
-			// Find and update the memory, task-digest, and volatile-other entries in sections
-			const shortMemTokens = shortDelta.length > 0 ? countTokens(shortDelta.join("\n")) : 0;
-			const shortTaskTokens = shortDigest.length > 0 ? countTokens(shortDigest.join("\n")) : 0;
-			const preEnrichmentTokens =
-				enrichmentStartIdx > 0
-					? countTokens(allVolatileLines.slice(0, enrichmentStartIdx).join("\n"))
-					: 0;
-			const postEnrichmentTokens =
-				enrichmentEndIdx < allVolatileLines.length
-					? countTokens(allVolatileLines.slice(enrichmentEndIdx).join("\n"))
-					: 0;
-			const shortVolatileOtherTokens =
-				!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0
-					? Math.max(0, preEnrichmentTokens + postEnrichmentTokens)
-					: 0;
+				// Re-count memory and task-digest sections after budget pressure rebuild
+				// Find and update the memory, task-digest, and volatile-other entries in sections
+				const shortMemTokens = shortDelta.length > 0 ? countTokens(shortDelta.join("\n")) : 0;
+				const shortTaskTokens = shortDigest.length > 0 ? countTokens(shortDigest.join("\n")) : 0;
+				const preEnrichmentTokens =
+					enrichmentStartIdx > 0
+						? countTokens(allVolatileLines.slice(0, enrichmentStartIdx).join("\n"))
+						: 0;
+				const postEnrichmentTokens =
+					enrichmentEndIdx < allVolatileLines.length
+						? countTokens(allVolatileLines.slice(enrichmentEndIdx).join("\n"))
+						: 0;
+				const shortVolatileOtherTokens =
+					!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0
+						? Math.max(0, preEnrichmentTokens + postEnrichmentTokens)
+						: 0;
 
-			// Update sections array to reflect new token counts
-			for (let i = 0; i < sections.length; i++) {
-				if (sections[i].name === "memory") {
-					sections[i] = { ...sections[i], tokens: shortMemTokens };
-				} else if (sections[i].name === "task-digest") {
-					sections[i] = { ...sections[i], tokens: shortTaskTokens };
-				} else if (sections[i].name === "volatile-other") {
-					sections[i] = { ...sections[i], tokens: shortVolatileOtherTokens };
+				// Update sections array to reflect new token counts
+				for (let i = 0; i < sections.length; i++) {
+					if (sections[i].name === "memory") {
+						sections[i] = { ...sections[i], tokens: shortMemTokens };
+					} else if (sections[i].name === "task-digest") {
+						sections[i] = { ...sections[i], tokens: shortTaskTokens };
+					} else if (sections[i].name === "volatile-other") {
+						sections[i] = { ...sections[i], tokens: shortVolatileOtherTokens };
+					}
+				}
+			} else {
+				// Fallback: no tiers available (shouldn't happen after Phase 4, but defensive)
+				const {
+					memoryDeltaLines: shortDelta,
+					taskDigestLines: shortDigest,
+				} = buildVolatileEnrichment(db, enrichmentBaseline, 3, 3);
+
+				const shortMemChangedCount = shortDelta.filter((l) => l.startsWith("- ")).length;
+				let shortMemHeader = `Memory: ${totalMemCount} entries`;
+				if (shortMemChangedCount > 0) {
+					shortMemHeader += !params.noHistory
+						? ` (${shortMemChangedCount} changed since your last turn in this thread)`
+						: ` (${shortMemChangedCount} changed since your last run)`;
+				}
+
+				// Build reduced enrichment lines
+				const shortEnrichmentLines: string[] = ["", shortMemHeader];
+				if (shortDelta.length > 0) {
+					shortEnrichmentLines.push(...shortDelta);
+				}
+				if (shortDigest.length > 0) {
+					shortEnrichmentLines.push("");
+					shortEnrichmentLines.push(...shortDigest);
+				}
+
+				if (!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0) {
+					// Splice the reduced enrichment into the full volatile array, preserving
+					// all post-enrichment content (cross-thread digest, file notifications, skill index, etc.)
+					const rebuiltVolatile = [
+						...allVolatileLines.slice(0, enrichmentStartIdx),
+						...shortEnrichmentLines,
+						...allVolatileLines.slice(enrichmentEndIdx),
+					];
+					if (enrichmentMessageIndex < assembled.length) {
+						assembled[enrichmentMessageIndex] = {
+							role: "system",
+							content: rebuiltVolatile.join("\n"),
+						};
+					}
+				} else if (params.noHistory) {
+					// For noHistory path, standalone message — just replace with reduced
+					const shortStandaloneLines: string[] = [shortMemHeader];
+					if (shortDelta.length > 0) {
+						shortStandaloneLines.push(...shortDelta);
+					}
+					if (shortDigest.length > 0) {
+						shortStandaloneLines.push("");
+						shortStandaloneLines.push(...shortDigest);
+					}
+					if (enrichmentMessageIndex < assembled.length) {
+						assembled[enrichmentMessageIndex] = {
+							role: "system",
+							content: shortStandaloneLines.join("\n"),
+						};
+					}
+				}
+
+				// Re-count memory and task-digest sections after budget pressure rebuild
+				// Find and update the memory, task-digest, and volatile-other entries in sections
+				const shortMemTokens = shortDelta.length > 0 ? countTokens(shortDelta.join("\n")) : 0;
+				const shortTaskTokens = shortDigest.length > 0 ? countTokens(shortDigest.join("\n")) : 0;
+				const preEnrichmentTokens =
+					enrichmentStartIdx > 0
+						? countTokens(allVolatileLines.slice(0, enrichmentStartIdx).join("\n"))
+						: 0;
+				const postEnrichmentTokens =
+					enrichmentEndIdx < allVolatileLines.length
+						? countTokens(allVolatileLines.slice(enrichmentEndIdx).join("\n"))
+						: 0;
+				const shortVolatileOtherTokens =
+					!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0
+						? Math.max(0, preEnrichmentTokens + postEnrichmentTokens)
+						: 0;
+
+				// Update sections array to reflect new token counts
+				for (let i = 0; i < sections.length; i++) {
+					if (sections[i].name === "memory") {
+						sections[i] = { ...sections[i], tokens: shortMemTokens };
+					} else if (sections[i].name === "task-digest") {
+						sections[i] = { ...sections[i], tokens: shortTaskTokens };
+					} else if (sections[i].name === "volatile-other") {
+						sections[i] = { ...sections[i], tokens: shortVolatileOtherTokens };
+					}
 				}
 			}
 		}
