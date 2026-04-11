@@ -1,7 +1,7 @@
 import { openBoundDB } from "../lib/db";
 
 import { resolve } from "node:path";
-import { getSiteId, validateColumnName } from "@bound/core";
+import { createChangeLogEntry, getSiteId, validateColumnName } from "@bound/core";
 const APPEND_ONLY_TABLES = new Set(["messages"]);
 export interface RestoreArgs {
 	before: string;
@@ -86,7 +86,7 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 						`SELECT table_name, row_id, timestamp, row_data
 						FROM change_log
 						WHERE table_name = ? AND row_id = ? AND timestamp <= ?
-						ORDER BY seq DESC
+						ORDER BY hlc DESC
 						LIMIT 1`,
 					)
 					.get(table_name, row_id, safeIso) as ChangeLogRow | null;
@@ -130,11 +130,7 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 							ON CONFLICT(id) DO UPDATE SET ${updateClause}`,
 						).run(...(values as Array<string | number | null>));
 						// Write change_log entry for outbox compliance
-						const now = new Date().toISOString();
-						db.query(
-							`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
-							VALUES (?, ?, ?, ?, ?)`,
-						).run(table_name, row_id, siteId, now, JSON.stringify(rowData));
+						createChangeLogEntry(db, table_name, row_id, siteId, rowData);
 					}
 					restoredCount++;
 				} else {
@@ -152,10 +148,7 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 							.query(`SELECT * FROM ${table_name} WHERE id = ?`)
 							.get(row_id) as Record<string, unknown> | null;
 						if (deletedRow) {
-							db.query(
-								`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
-								VALUES (?, ?, ?, ?, ?)`,
-							).run(table_name, row_id, siteId, now, JSON.stringify(deletedRow));
+							createChangeLogEntry(db, table_name, row_id, siteId, deletedRow);
 						}
 					}
 					tombstonedCount++;

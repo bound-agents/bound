@@ -2,6 +2,8 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createChangeLogEntry } from "@bound/core";
+import { generateHlc } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { runConfigReload } from "../commands/config-reload.js";
 import { runDrain } from "../commands/drain.js";
@@ -35,13 +37,13 @@ describe("boundctl commands", () => {
 			);
 
 			CREATE TABLE IF NOT EXISTS change_log (
-				seq INTEGER PRIMARY KEY AUTOINCREMENT,
+				hlc TEXT PRIMARY KEY,
 				table_name TEXT NOT NULL,
 				row_id TEXT NOT NULL,
 				site_id TEXT NOT NULL,
 				timestamp TEXT NOT NULL,
 				row_data TEXT NOT NULL
-			);
+			) STRICT;
 
 			CREATE TABLE IF NOT EXISTS sync_state (
 				peer_site_id TEXT PRIMARY KEY,
@@ -161,9 +163,10 @@ describe("boundctl commands", () => {
 			// Add some test data
 			const db = new Database(dbPath);
 
+			const hlc = generateHlc();
 			db.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			).run("test_table", "row1", "test-site-id", new Date().toISOString(), "{}");
+				"INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?, ?)",
+			).run(hlc, "test_table", "row1", "test-site-id", new Date().toISOString(), "{}");
 
 			db.query(
 				"INSERT INTO hosts (site_id, host_name, online_at, deleted) VALUES (?, ?, ?, ?)",

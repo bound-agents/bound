@@ -65,7 +65,7 @@ describe("routes", () => {
 
 		db.run(`
 			CREATE TABLE change_log (
-				seq INTEGER PRIMARY KEY AUTOINCREMENT,
+				hlc TEXT PRIMARY KEY,
 				table_name TEXT NOT NULL,
 				row_id TEXT NOT NULL,
 				site_id TEXT NOT NULL,
@@ -77,8 +77,8 @@ describe("routes", () => {
 		db.run(`
 			CREATE TABLE sync_state (
 				peer_site_id TEXT PRIMARY KEY,
-				last_received INTEGER NOT NULL DEFAULT 0,
-				last_sent INTEGER NOT NULL DEFAULT 0,
+				last_received TEXT NOT NULL DEFAULT '',
+				last_sent TEXT NOT NULL DEFAULT '',
 				last_sync_at TEXT,
 				sync_errors INTEGER NOT NULL DEFAULT 0
 			)
@@ -145,7 +145,7 @@ describe("routes", () => {
 			const changeset = {
 				events: [
 					{
-						seq: 1,
+						hlc: "2026-03-22T10:00:00.000Z_0001_" + spokeSiteId.slice(0, 8),
 						table_name: "semantic_memory",
 						row_id: "mem-1",
 						site_id: spokeSiteId,
@@ -163,8 +163,8 @@ describe("routes", () => {
 					},
 				],
 				source_site_id: spokeSiteId,
-				source_seq_start: 1,
-				source_seq_end: 1,
+				source_hlc_start: "2026-03-22T10:00:00.000Z_0001_" + spokeSiteId.slice(0, 8),
+				source_hlc_end: "2026-03-22T10:00:00.000Z_0001_" + spokeSiteId.slice(0, 8),
 			};
 
 			const body = JSON.stringify(changeset);
@@ -206,14 +206,28 @@ describe("routes", () => {
 
 			// Insert some events in the change log
 			db.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			).run("semantic_memory", "mem-1", spokeSiteId, "2026-03-22T10:00:00Z", "{}");
+				"INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?, ?)",
+			).run(
+				"2026-03-22T10:00:00.000Z_0001_" + spokeSiteId.slice(0, 8),
+				"semantic_memory",
+				"mem-1",
+				spokeSiteId,
+				"2026-03-22T10:00:00Z",
+				"{}",
+			);
 
 			db.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			).run("semantic_memory", "mem-2", "other-site", "2026-03-22T10:01:00Z", "{}");
+				"INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?, ?)",
+			).run(
+				"2026-03-22T10:01:00.000Z_0001_othersite",
+				"semantic_memory",
+				"mem-2",
+				"other-site",
+				"2026-03-22T10:01:00Z",
+				"{}",
+			);
 
-			const body = JSON.stringify({ since_seq: 0 });
+			const body = JSON.stringify({ since_hlc: "" });
 			const headers = await signRequest(spokePrivateKey, spokeSiteId, "POST", "/sync/pull", body);
 
 			const response = await app.request("/sync/pull", {
@@ -247,7 +261,9 @@ describe("routes", () => {
 				createMockLogger(),
 			);
 
-			const body = JSON.stringify({ last_received: 10 });
+			const body = JSON.stringify({
+				last_received: "2026-03-22T10:00:10.000Z_0001_" + spokeSiteId.slice(0, 8),
+			});
 			const headers = await signRequest(spokePrivateKey, spokeSiteId, "POST", "/sync/ack", body);
 
 			const response = await app.request("/sync/ack", {
@@ -269,7 +285,7 @@ describe("routes", () => {
 				| Record<string, unknown>
 				| undefined;
 			expect(state).toBeDefined();
-			expect(state?.last_sent).toBe(10);
+			expect(state?.last_sent).toBe("2026-03-22T10:00:10.000Z_0001_" + spokeSiteId.slice(0, 8));
 		});
 	});
 

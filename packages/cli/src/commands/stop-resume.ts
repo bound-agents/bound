@@ -1,7 +1,7 @@
 import { openBoundDB } from "../lib/db";
 
 import { resolve } from "node:path";
-import { getSiteId } from "@bound/core";
+import { createChangeLogEntry, getSiteId } from "@bound/core";
 export interface StopResumeArgs {
 	configDir?: string;
 }
@@ -39,10 +39,7 @@ export async function runStop(args: StopResumeArgs): Promise<void> {
 			}
 			// Write change_log entry (row_id is the key field for cluster_config)
 			const rowData = { key: "emergency_stop", value: now, modified_at: now };
-			db.query(
-				`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
-				 VALUES (?, ?, ?, ?, ?)`,
-			).run("cluster_config", "emergency_stop", siteId, now, JSON.stringify(rowData));
+			createChangeLogEntry(db, "cluster_config", "emergency_stop", siteId, rowData);
 		});
 		txFn();
 		console.log("Emergency stop set. All hosts will halt autonomous operations on next sync.");
@@ -72,10 +69,7 @@ export async function runResume(args: StopResumeArgs): Promise<void> {
 		const txFn = db.transaction(() => {
 			db.query("DELETE FROM cluster_config WHERE key = ?").run("emergency_stop");
 			// Write change_log entry with empty value to signal deletion
-			db.query(
-				`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
-				 VALUES (?, ?, ?, ?, ?)`,
-			).run("cluster_config", "emergency_stop", siteId, now, JSON.stringify(rowData));
+			createChangeLogEntry(db, "cluster_config", "emergency_stop", siteId, rowData);
 		});
 		txFn();
 		console.log("Emergency stop cleared. Normal operations resume.");

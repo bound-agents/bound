@@ -1,7 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { pruneAcknowledged, pruneRelayCycles } from "@bound/core";
+import { HLC_ZERO } from "@bound/shared";
 import type { Logger } from "@bound/shared";
-import { getMinConfirmedSeq } from "./peer-cursor.js";
+import { getMinConfirmedHlc } from "./peer-cursor.js";
 
 export function determinePruningMode(db: Database): "multi-host" | "single-host" {
 	const row = db.query("SELECT COUNT(*) as count FROM sync_state").get() as
@@ -35,11 +36,11 @@ export function pruneChangeLog(
 
 		// Keep the most recent MAX_SINGLE_HOST_ENTRIES, delete the rest
 		const cutoffRow = db
-			.query("SELECT seq FROM change_log ORDER BY seq DESC LIMIT 1 OFFSET ?")
-			.get(MAX_SINGLE_HOST_ENTRIES) as { seq: number } | null;
+			.query("SELECT hlc FROM change_log ORDER BY hlc DESC LIMIT 1 OFFSET ?")
+			.get(MAX_SINGLE_HOST_ENTRIES) as { hlc: string } | null;
 		if (!cutoffRow) return { deleted: 0 };
 
-		db.query("DELETE FROM change_log WHERE seq <= ?").run(cutoffRow.seq);
+		db.query("DELETE FROM change_log WHERE hlc <= ?").run(cutoffRow.hlc);
 		const deletedRow = db.query("SELECT changes() as count").get() as { count: number } | undefined;
 		const deleted = deletedRow?.count ?? 0;
 
@@ -52,20 +53,20 @@ export function pruneChangeLog(
 	}
 
 	// Multi-host mode: only delete confirmed events
-	const minSeq = getMinConfirmedSeq(db);
+	const minHlc = getMinConfirmedHlc(db);
 
-	if (minSeq <= 0) {
+	if (minHlc === HLC_ZERO) {
 		return { deleted: 0 };
 	}
 
-	// Delete all events up to and including minSeq
-	db.query("DELETE FROM change_log WHERE seq <= ?").run(minSeq);
+	// Delete all events up to and including minHlc
+	db.query("DELETE FROM change_log WHERE hlc <= ?").run(minHlc);
 
 	const countResult = db.query("SELECT changes() as count").get() as { count: number } | undefined;
 	const deleted = countResult?.count ?? 0;
 
 	if (deleted > 0) {
-		logger?.info(`Pruned ${deleted} change_log entries through seq ${minSeq} in multi-host mode`);
+		logger?.info(`Pruned ${deleted} change_log entries through hlc ${minHlc} in multi-host mode`);
 	}
 
 	return { deleted };

@@ -63,7 +63,7 @@ describe("Graph Memory Lifecycle - Sync and Edge Cascading", () => {
 			// Verify changelog entry exists
 			const changelog = db
 				.prepare(
-					"SELECT * FROM change_log WHERE table_name = ? AND site_id = ? ORDER BY seq DESC LIMIT 1",
+					"SELECT * FROM change_log WHERE table_name = ? AND site_id = ? ORDER BY hlc DESC LIMIT 1",
 				)
 				.get("memory_edges", siteId) as Record<string, unknown> | undefined;
 
@@ -95,7 +95,7 @@ describe("Graph Memory Lifecycle - Sync and Edge Cascading", () => {
 			// Verify changelog entry exists for deletion
 			const changelog = db
 				.prepare(
-					"SELECT * FROM change_log WHERE table_name = ? AND site_id = ? ORDER BY seq DESC LIMIT 1",
+					"SELECT * FROM change_log WHERE table_name = ? AND site_id = ? ORDER BY hlc DESC LIMIT 1",
 				)
 				.get("memory_edges", siteId) as Record<string, unknown> | undefined;
 

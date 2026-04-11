@@ -1,7 +1,7 @@
 import { openBoundDB } from "../lib/db";
 
 import { resolve } from "node:path";
-import { getSiteId } from "@bound/core";
+import { createChangeLogEntry, getSiteId } from "@bound/core";
 export interface DrainArgs {
 	newHub: string;
 	timeout?: number;
@@ -53,10 +53,7 @@ export async function runDrain(args: DrainArgs): Promise<void> {
 			}
 			// Write change_log entry
 			const rowData = { key: emergencyStopKey, value: "drain", modified_at: now };
-			db.query(
-				`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
-				 VALUES (?, ?, ?, ?, ?)`,
-			).run("cluster_config", emergencyStopKey, siteId, now, JSON.stringify(rowData));
+			createChangeLogEntry(db, "cluster_config", emergencyStopKey, siteId, rowData);
 		});
 		setDrainTx();
 		console.log("Drain mode enabled.\n");
@@ -101,10 +98,7 @@ export async function runDrain(args: DrainArgs): Promise<void> {
 			}
 			// Write change_log entry
 			const rowData = { key: hubKey, value: args.newHub, modified_at: hubTimestamp };
-			db.query(
-				`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
-				 VALUES (?, ?, ?, ?, ?)`,
-			).run("cluster_config", hubKey, siteId, hubTimestamp, JSON.stringify(rowData));
+			createChangeLogEntry(db, "cluster_config", hubKey, siteId, rowData);
 		});
 		setHubTx();
 		console.log("Hub updated.\n");
@@ -115,10 +109,7 @@ export async function runDrain(args: DrainArgs): Promise<void> {
 			db.query("DELETE FROM cluster_config WHERE key = ?").run(emergencyStopKey);
 			// Write change_log entry with empty value to signal deletion
 			const rowData = { key: emergencyStopKey, value: "", modified_at: clearTimestamp };
-			db.query(
-				`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
-				 VALUES (?, ?, ?, ?, ?)`,
-			).run("cluster_config", emergencyStopKey, siteId, clearTimestamp, JSON.stringify(rowData));
+			createChangeLogEntry(db, "cluster_config", emergencyStopKey, siteId, rowData);
 		});
 		clearTx();
 		console.log("Emergency stop cleared.\n");

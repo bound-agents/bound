@@ -134,7 +134,7 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 
 	// AC6.1: Hub decrypts incoming request and provides plaintext JSON to handlers
 	it("sync-encryption.AC6.1: decrypts incoming request body and provides plaintext JSON to route handlers", async () => {
-		const requestData = { events: [], source_seq_end: 42 };
+		const requestData = { events: [], source_hlc_end: "2026-04-01T00:00:00.042Z_0001_hub" };
 		const requestJson = JSON.stringify(requestData);
 
 		const response = await transport.send(
@@ -152,7 +152,7 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 
 	// AC6.3: Corrupted ciphertext rejected with HTTP 400
 	it("sync-encryption.AC6.3: rejects corrupted ciphertext with HTTP 400 and generic hint", async () => {
-		const requestData = { events: [], source_seq_end: 0 };
+		const requestData = { events: [], source_hlc_end: "" };
 		const requestJson = JSON.stringify(requestData);
 
 		// We need to manually craft a corrupt request
@@ -305,7 +305,7 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		);
 		await keyManager.init(spokeKeyring);
 
-		const requestJson = JSON.stringify({ events: [], source_seq_end: 42 });
+		const requestJson = JSON.stringify({ events: [], source_hlc_end: "2026-04-01T00:00:00.042Z_0001_hub" });
 		const plaintext = new TextEncoder().encode(requestJson);
 		const symmetricKey = keyManager.getSymmetricKey(hub.siteId);
 		if (!symmetricKey) {
@@ -360,7 +360,7 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		);
 		await keyManager.init(spokeKeyring);
 
-		const requestJson = JSON.stringify({ events: [], source_seq_end: 42 });
+		const requestJson = JSON.stringify({ events: [], source_hlc_end: "2026-04-01T00:00:00.042Z_0001_hub" });
 		const plaintext = new TextEncoder().encode(requestJson);
 		const symmetricKey = keyManager.getSymmetricKey(hub.siteId);
 		if (!symmetricKey) {
@@ -410,7 +410,7 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		);
 		await keyManager.init(spokeKeyring);
 
-		const requestJson = JSON.stringify({ events: [], source_seq_end: 99 });
+		const requestJson = JSON.stringify({ events: [], source_hlc_end: "2026-04-01T00:00:00.099Z_0001_hub" });
 
 		const response = await transport.send(
 			"POST",
@@ -423,7 +423,7 @@ describe("createSyncAuthMiddleware (encryption)", () => {
 		expect(response.status).toBe(200);
 		const responseData = JSON.parse(response.body);
 		// Verify the response contains the expected echo
-		expect(responseData.echo.source_seq_end).toBe(99);
+		expect(responseData.echo.source_hlc_end).toBe("2026-04-01T00:00:00.099Z_0001_hub");
 	});
 
 	// AC7.4: Plaintext error responses for encryption-layer errors

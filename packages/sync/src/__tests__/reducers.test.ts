@@ -44,7 +44,7 @@ describe("reducers", () => {
 
 		db.run(`
 			CREATE TABLE change_log (
-				seq INTEGER PRIMARY KEY AUTOINCREMENT,
+				hlc TEXT PRIMARY KEY,
 				table_name TEXT NOT NULL,
 				row_id TEXT NOT NULL,
 				site_id TEXT NOT NULL,
@@ -74,7 +74,7 @@ describe("reducers", () => {
 	describe("applyAppendOnlyReducer", () => {
 		it("inserts new message", () => {
 			const event: ChangeLogEntry = {
-				seq: 1,
+				hlc: "2026-03-22T10:00:00.000Z_0001_test",
 				table_name: "messages",
 				row_id: "msg-1",
 				site_id: "site-a",
@@ -101,7 +101,7 @@ describe("reducers", () => {
 
 		it("skips duplicate message (ON CONFLICT DO NOTHING)", () => {
 			const event: ChangeLogEntry = {
-				seq: 1,
+				hlc: "2026-03-22T10:00:00.000Z_0001_test",
 				table_name: "messages",
 				row_id: "msg-1",
 				site_id: "site-a",
@@ -137,7 +137,7 @@ describe("reducers", () => {
 
 			// Redaction event (same id, modified_at is later)
 			const redactionEvent: ChangeLogEntry = {
-				seq: 2,
+				hlc: "2026-03-22T10:01:00.000Z_0002_test",
 				table_name: "messages",
 				row_id: "msg-1",
 				site_id: "site-a",
@@ -164,7 +164,7 @@ describe("reducers", () => {
 	describe("applyLWWReducer", () => {
 		it("inserts new row", () => {
 			const event: ChangeLogEntry = {
-				seq: 1,
+				hlc: "2026-03-22T10:00:00.000Z_0001_sitea",
 				table_name: "semantic_memory",
 				row_id: "mem-1",
 				site_id: "site-a",
@@ -208,7 +208,7 @@ describe("reducers", () => {
 
 			// Incoming event with later timestamp
 			const event: ChangeLogEntry = {
-				seq: 2,
+				hlc: "2026-03-22T10:01:00.000Z_0002_test",
 				table_name: "semantic_memory",
 				row_id: "mem-1",
 				site_id: "site-b",
@@ -233,7 +233,7 @@ describe("reducers", () => {
 
 		it("ignores extra columns not in schema", () => {
 			const event: ChangeLogEntry = {
-				seq: 1,
+				hlc: "2026-03-22T10:00:00.000Z_0001_sitea",
 				table_name: "semantic_memory",
 				row_id: "mem-1",
 				site_id: "site-a",
@@ -279,7 +279,7 @@ describe("reducers", () => {
 
 			// Incoming event updates only value, not source
 			const event: ChangeLogEntry = {
-				seq: 2,
+				hlc: "2026-03-22T10:01:00.000Z_0002_test",
 				table_name: "semantic_memory",
 				row_id: "mem-1",
 				site_id: "site-b",
@@ -304,7 +304,7 @@ describe("reducers", () => {
 
 		it("inserts new memory_edges row via LWW reducer", () => {
 			const event: ChangeLogEntry = {
-				seq: 1,
+				hlc: "2026-03-22T10:00:00.000Z_0001_test",
 				table_name: "memory_edges",
 				row_id: "edge-1",
 				site_id: "site-a",
@@ -352,7 +352,7 @@ describe("reducers", () => {
 
 			// Incoming event with later timestamp and different weight
 			const event: ChangeLogEntry = {
-				seq: 2,
+				hlc: "2026-03-22T10:01:00.000Z_0002_test",
 				table_name: "memory_edges",
 				row_id: "edge-1",
 				site_id: "site-b",
@@ -392,7 +392,7 @@ describe("reducers", () => {
 
 			// Incoming event with earlier timestamp (should be ignored)
 			const event: ChangeLogEntry = {
-				seq: 2,
+				hlc: "2026-03-22T10:01:00.000Z_0002_test",
 				table_name: "memory_edges",
 				row_id: "edge-1",
 				site_id: "site-b",
@@ -418,7 +418,7 @@ describe("reducers", () => {
 	describe("applyEvent", () => {
 		it("dispatches to append-only reducer for messages", () => {
 			const event: ChangeLogEntry = {
-				seq: 1,
+				hlc: "2026-03-22T10:00:00.000Z_0001_test",
 				table_name: "messages",
 				row_id: "msg-1",
 				site_id: "site-a",
@@ -442,7 +442,7 @@ describe("reducers", () => {
 
 		it("dispatches to LWW reducer for semantic_memory", () => {
 			const event: ChangeLogEntry = {
-				seq: 1,
+				hlc: "2026-03-22T10:00:00.000Z_0001_sitea",
 				table_name: "semantic_memory",
 				row_id: "mem-1",
 				site_id: "site-a",
@@ -468,7 +468,7 @@ describe("reducers", () => {
 		it("replays multiple events and tracks counts", () => {
 			const events: ChangeLogEntry[] = [
 				{
-					seq: 1,
+					hlc: "2026-03-22T10:00:00.000Z_0001_test",
 					table_name: "semantic_memory",
 					row_id: "mem-1",
 					site_id: "site-a",
@@ -484,7 +484,7 @@ describe("reducers", () => {
 					}),
 				},
 				{
-					seq: 2,
+					hlc: "2026-03-22T10:01:00.000Z_0002_test",
 					table_name: "semantic_memory",
 					row_id: "mem-2",
 					site_id: "site-a",
@@ -509,7 +509,7 @@ describe("reducers", () => {
 
 		it("tracks skipped duplicates", () => {
 			const event: ChangeLogEntry = {
-				seq: 1,
+				hlc: "2026-03-22T10:00:00.000Z_0001_test",
 				table_name: "messages",
 				row_id: "msg-1",
 				site_id: "site-a",
@@ -532,7 +532,7 @@ describe("reducers", () => {
 
 		it("preserves original site_id in change_log", () => {
 			const event: ChangeLogEntry = {
-				seq: 1,
+				hlc: "2026-03-22T10:00:00.000Z_0001_test",
 				table_name: "semantic_memory",
 				row_id: "mem-1",
 				site_id: "remote-site",
@@ -561,7 +561,7 @@ describe("reducers", () => {
 	describe("malformed JSON handling", () => {
 		it("does not crash on malformed row_data in replayEvents", () => {
 			const badEvent = {
-				seq: 1,
+				hlc: "2026-03-22T10:00:00.000Z_0001_test",
 				table_name: "semantic_memory",
 				row_id: "bad-1",
 				site_id: "remote-site",
@@ -576,7 +576,7 @@ describe("reducers", () => {
 
 		it("returns applied:false for malformed JSON in applyAppendOnlyReducer", () => {
 			const result = applyAppendOnlyReducer(db, {
-				seq: 1,
+				hlc: "2026-03-22T10:00:00.000Z_0001_test",
 				table_name: "messages",
 				row_id: "bad",
 				site_id: "x",
@@ -588,7 +588,7 @@ describe("reducers", () => {
 
 		it("returns applied:false for malformed JSON in applyLWWReducer", () => {
 			const result = applyLWWReducer(db, {
-				seq: 1,
+				hlc: "2026-03-22T10:00:00.000Z_0001_test",
 				table_name: "threads",
 				row_id: "bad",
 				site_id: "x",

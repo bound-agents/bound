@@ -8,14 +8,14 @@ export interface SyncStatusArgs {
 interface SyncStateRow {
 	peer_site_id: string;
 	last_sync_at: string | null;
-	last_sent: number | null;
-	last_received: number | null;
+	last_sent: string | null;
+	last_received: string | null;
 	sync_errors: number;
 }
 
 interface ChangeLogRow {
 	total: number;
-	latest: number | null;
+	latest: string | null;
 }
 
 interface HostRow {
@@ -41,11 +41,11 @@ export async function runSyncStatus(args: SyncStatusArgs): Promise<void> {
 
 		// Query change_log for total entries
 		const changeLogRow = db
-			.query("SELECT COUNT(*) as total, MAX(seq) as latest FROM change_log")
+			.query("SELECT COUNT(*) as total, MAX(hlc) as latest FROM change_log")
 			.get() as ChangeLogRow;
 
 		console.log(
-			`Change log: ${changeLogRow.total} entries, latest seq: ${changeLogRow.latest ?? "none"}\n`,
+			`Change log: ${changeLogRow.total} entries, latest hlc: ${changeLogRow.latest ?? "none"}\n`,
 		);
 
 		// Query hosts
@@ -85,10 +85,14 @@ export async function runSyncStatus(args: SyncStatusArgs): Promise<void> {
 				const lastSync = state.last_sync_at
 					? new Date(state.last_sync_at).toLocaleString()
 					: "never";
-				const pending =
-					changeLogRow.latest !== null && state.last_sent !== null
-						? Math.max(0, changeLogRow.latest - state.last_sent)
-						: "?";
+				// With HLC cursors, count pending events by querying change_log
+				let pending: string | number = "?";
+				if (state.last_sent !== null) {
+					const pendingRow = db
+						.query("SELECT COUNT(*) as count FROM change_log WHERE hlc > ?")
+						.get(state.last_sent) as { count: number } | undefined;
+					pending = pendingRow?.count ?? 0;
+				}
 				const errors = state.sync_errors || 0;
 
 				console.log(

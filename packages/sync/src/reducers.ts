@@ -226,7 +226,8 @@ export function replayEvents(
 			if (result.applied) {
 				applied++;
 				// Create a change_log entry preserving the original site_id
-				createChangeLogEntry(db, event.table_name, event.row_id, event.site_id, rowData);
+				// Pass remoteHlc so the local HLC advances past the remote event
+				createChangeLogEntry(db, event.table_name, event.row_id, event.site_id, rowData, event.hlc);
 			} else {
 				skipped++;
 			}

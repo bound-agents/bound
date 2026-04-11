@@ -51,7 +51,7 @@ describe("AC6.5: Tier changelog propagation", () => {
 		// Read the changelog entry created by insertRow
 		let changeLogEntry = db
 			.prepare(
-				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'semantic_memory' ORDER BY seq DESC LIMIT 1",
+				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'semantic_memory' ORDER BY hlc DESC LIMIT 1",
 			)
 			.get(memoryId) as { row_data: string } | null;
 
@@ -71,7 +71,7 @@ describe("AC6.5: Tier changelog propagation", () => {
 		// Read the updated changelog entry
 		changeLogEntry = db
 			.prepare(
-				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'semantic_memory' ORDER BY seq DESC LIMIT 1",
+				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'semantic_memory' ORDER BY hlc DESC LIMIT 1",
 			)
 			.get(memoryId) as { row_data: string } | null;
 
@@ -106,7 +106,7 @@ describe("AC6.5: Tier changelog propagation", () => {
 		// Verify changelog entry has tier='detail'
 		const changeLogEntry = db
 			.prepare(
-				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'semantic_memory' ORDER BY seq DESC LIMIT 1",
+				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'semantic_memory' ORDER BY hlc DESC LIMIT 1",
 			)
 			.get(memoryId) as { row_data: string } | null;
 
@@ -147,7 +147,7 @@ describe("AC6.5: Tier changelog propagation", () => {
 		// Verify all tier values appear in changelog
 		const entries = db
 			.prepare(
-				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'semantic_memory' ORDER BY seq",
+				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'semantic_memory' ORDER BY hlc",
 			)
 			.all(memoryId) as Array<{ row_data: string }>;
 
@@ -185,7 +185,7 @@ describe("AC6.6: Summarizes edge sync via memory_edges changelog", () => {
 		// Verify changelog entry for memory_edges table
 		const changeLogEntry = db
 			.prepare(
-				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'memory_edges' ORDER BY seq DESC LIMIT 1",
+				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'memory_edges' ORDER BY hlc DESC LIMIT 1",
 			)
 			.get(edgeId) as { row_data: string } | null;
 
@@ -220,7 +220,7 @@ describe("AC6.6: Summarizes edge sync via memory_edges changelog", () => {
 		// Verify changelog entry has deleted=1
 		const changeLogEntry = db
 			.prepare(
-				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'memory_edges' ORDER BY seq DESC LIMIT 1",
+				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'memory_edges' ORDER BY hlc DESC LIMIT 1",
 			)
 			.get(edgeId) as { row_data: string } | null;
 
@@ -273,7 +273,7 @@ describe("AC6.6: Summarizes edge sync via memory_edges changelog", () => {
 		// Verify latest changelog entry has updated weight
 		const changeLogEntry = db
 			.prepare(
-				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'memory_edges' ORDER BY seq DESC LIMIT 1",
+				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'memory_edges' ORDER BY hlc DESC LIMIT 1",
 			)
 			.get(edgeId) as { row_data: string } | null;
 
@@ -315,7 +315,7 @@ describe("AC6.6: Summarizes edge sync via memory_edges changelog", () => {
 		// Verify changelog for both edges shows deletion
 		const summEntry = db
 			.prepare(
-				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'memory_edges' ORDER BY seq DESC LIMIT 1",
+				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'memory_edges' ORDER BY hlc DESC LIMIT 1",
 			)
 			.get(summEdgeId) as { row_data: string } | null;
 

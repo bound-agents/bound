@@ -772,7 +772,7 @@ describe("MCP Bridge", () => {
 			.query(
 				`SELECT * FROM change_log
 				WHERE table_name = 'hosts' AND row_id = ?
-				ORDER BY seq DESC LIMIT 1`,
+				ORDER BY hlc DESC LIMIT 1`,
 			)
 			.get(siteId) as { table_name: string; row_id: string; row_data: string } | null;
 

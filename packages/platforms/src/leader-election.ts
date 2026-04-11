@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { createChangeLogEntry } from "@bound/core";
 import type { PlatformConnectorConfig } from "@bound/shared";
 import type { PlatformConnector } from "./connector.js";
 
@@ -71,17 +72,11 @@ export class PlatformLeaderElection {
 				"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, modified_at = excluded.modified_at",
 				[leaderKey, this.siteId, now],
 			);
-			// Insert change_log entry to propagate the leadership claim via sync.
-			// change_log columns: table_name, row_id, site_id, timestamp, row_data
-			this.db.run(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES ('cluster_config', ?, ?, ?, ?)",
-				[
-					leaderKey,
-					this.siteId,
-					now,
-					JSON.stringify({ key: leaderKey, value: this.siteId, modified_at: now }),
-				],
-			);
+			createChangeLogEntry(this.db, "cluster_config", leaderKey, this.siteId, {
+				key: leaderKey,
+				value: this.siteId,
+				modified_at: now,
+			});
 		})();
 
 		this.isLeaderFlag = true;
@@ -96,15 +91,10 @@ export class PlatformLeaderElection {
 				const ts = new Date().toISOString();
 				this.db.transaction(() => {
 					this.db.run("UPDATE hosts SET modified_at = ? WHERE site_id = ?", [ts, this.siteId]);
-					this.db.run(
-						"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES ('hosts', ?, ?, ?, ?)",
-						[
-							this.siteId,
-							this.siteId,
-							ts,
-							JSON.stringify({ site_id: this.siteId, modified_at: ts }),
-						],
-					);
+					createChangeLogEntry(this.db, "hosts", this.siteId, this.siteId, {
+						site_id: this.siteId,
+						modified_at: ts,
+					});
 				})();
 			} catch {
 				// DB write failure is non-fatal — next heartbeat will retry

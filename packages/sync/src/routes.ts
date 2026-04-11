@@ -53,8 +53,8 @@ export function createSyncRoutes(
 
 			// Update peer cursor to mark events as received
 			if (events.length > 0) {
-				const lastSeq = events[events.length - 1].seq;
-				updatePeerCursor(db, pusherSiteId, { last_received: lastSeq });
+				const lastHlc = events[events.length - 1].hlc;
+				updatePeerCursor(db, pusherSiteId, { last_received: lastHlc });
 			}
 
 			// Reset reachability tracking on successful sync
@@ -75,16 +75,16 @@ export function createSyncRoutes(
 	app.post("/sync/pull", async (c) => {
 		try {
 			const body = c.get("rawBody") as string;
-			const request = JSON.parse(body) as { since_seq?: number };
-			const sinceSeq = request.since_seq ?? 0;
+			const request = JSON.parse(body) as { since_hlc?: string };
+			const sinceHlc = request.since_hlc ?? "0000-00-00T00:00:00.000Z_0000_0000";
 
 			const requesterSiteId = c.get("siteId") as string;
 
 			// Fetch inbound changeset with echo suppression
-			const changeset = fetchInboundChangeset(db, requesterSiteId, sinceSeq);
+			const changeset = fetchInboundChangeset(db, requesterSiteId, sinceHlc);
 
 			logger.info(
-				`Pulling ${changeset.events.length} events for ${requesterSiteId} since seq ${sinceSeq}`,
+				`Pulling ${changeset.events.length} events for ${requesterSiteId} since hlc ${sinceHlc}`,
 			);
 
 			return c.json(changeset);
@@ -98,7 +98,7 @@ export function createSyncRoutes(
 	app.post("/sync/ack", async (c) => {
 		try {
 			const body = c.get("rawBody") as string;
-			const request = JSON.parse(body) as { last_received: number };
+			const request = JSON.parse(body) as { last_received: string };
 			const lastReceived = request.last_received;
 
 			const ackingSiteId = c.get("siteId") as string;
@@ -106,7 +106,7 @@ export function createSyncRoutes(
 			// Update peer cursor to mark events as sent
 			updatePeerCursor(db, ackingSiteId, { last_sent: lastReceived });
 
-			logger.info(`ACK from ${ackingSiteId}: confirmed through seq ${lastReceived}`);
+			logger.info(`ACK from ${ackingSiteId}: confirmed through hlc ${lastReceived}`);
 
 			return c.json({ ok: true });
 		} catch (error) {

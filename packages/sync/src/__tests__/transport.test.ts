@@ -136,7 +136,7 @@ describe("SyncTransport", () => {
 			capturedRequests.push({ headers: headerRecord, body });
 
 			// For pull, return encrypted response
-			const responseData = { events: [], source_seq_end: 0 };
+			const responseData = { events: [], source_hlc_start: "", source_hlc_end: "" };
 			const responseJson = JSON.stringify(responseData);
 			const plaintext = new TextEncoder().encode(responseJson);
 
@@ -175,7 +175,7 @@ describe("SyncTransport", () => {
 	});
 
 	it("sync-encryption.AC4.1: encrypts request body with XChaCha20-Poly1305", async () => {
-		const requestBody = JSON.stringify({ events: [], source_seq_end: 0 });
+		const requestBody = JSON.stringify({ events: [], source_hlc_end: "" });
 
 		await transport.send(
 			"POST",
@@ -223,8 +223,8 @@ describe("SyncTransport", () => {
 	});
 
 	it("sync-encryption.AC4.2: generates random 192-bit nonce per message", async () => {
-		const body1 = JSON.stringify({ events: [], source_seq_end: 0 });
-		const body2 = JSON.stringify({ events: [], source_seq_end: 1 });
+		const body1 = JSON.stringify({ events: [], source_hlc_end: "" });
+		const body2 = JSON.stringify({ events: [], source_hlc_end: "2026-04-01T00:00:00.000Z_0001_hub" });
 
 		await transport.send(
 			"POST",
@@ -396,7 +396,7 @@ describe("SyncTransport", () => {
 	});
 
 	it("decrypts encrypted response with X-Encryption header", async () => {
-		const body = JSON.stringify({ since_seq: 0 });
+		const body = JSON.stringify({ since_hlc: "" });
 
 		const response = await transport.send(
 			"POST",
@@ -410,7 +410,7 @@ describe("SyncTransport", () => {
 		// Response body should be decrypted JSON
 		const parsed = JSON.parse(response.body);
 		expect(parsed.events).toBeDefined();
-		expect(parsed.source_seq_end).toBe(0);
+		expect(parsed.source_hlc_end).toBeDefined();
 	});
 
 	it("handles plaintext error response (no X-Encryption header)", async () => {

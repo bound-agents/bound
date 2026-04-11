@@ -1,7 +1,8 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { HLC_ZERO } from "@bound/shared";
 import {
-	getMinConfirmedSeq,
+	getMinConfirmedHlc,
 	getPeerCursor,
 	incrementSyncErrors,
 	resetSyncErrors,
@@ -18,8 +19,8 @@ describe("peer-cursor", () => {
 		db.run(`
 			CREATE TABLE sync_state (
 				peer_site_id TEXT PRIMARY KEY,
-				last_received INTEGER NOT NULL DEFAULT 0,
-				last_sent INTEGER NOT NULL DEFAULT 0,
+				last_received TEXT NOT NULL DEFAULT '${HLC_ZERO}',
+				last_sent TEXT NOT NULL DEFAULT '${HLC_ZERO}',
 				last_sync_at TEXT,
 				sync_errors INTEGER NOT NULL DEFAULT 0
 			)
@@ -40,15 +41,15 @@ describe("peer-cursor", () => {
 			db.run(
 				`INSERT INTO sync_state (peer_site_id, last_received, last_sent, sync_errors)
 				VALUES (?, ?, ?, ?)`,
-				["peer-a", 10, 5, 0],
+				["peer-a", "2026-04-10T10:00:00.000Z_0000_0000", "2026-04-10T09:00:00.000Z_0000_0000", 0],
 			);
 
 			const cursor = getPeerCursor(db, "peer-a");
 
 			expect(cursor).not.toBeNull();
 			if (cursor) {
-				expect(cursor.last_received).toBe(10);
-				expect(cursor.last_sent).toBe(5);
+				expect(cursor.last_received).toBe("2026-04-10T10:00:00.000Z_0000_0000");
+				expect(cursor.last_sent).toBe("2026-04-10T09:00:00.000Z_0000_0000");
 				expect(cursor.sync_errors).toBe(0);
 			}
 		});
@@ -56,14 +57,17 @@ describe("peer-cursor", () => {
 
 	describe("updatePeerCursor", () => {
 		it("creates new entry if peer not exists", () => {
-			updatePeerCursor(db, "new-peer", { last_received: 5, last_sent: 3 });
+			updatePeerCursor(db, "new-peer", {
+				last_received: "2026-04-10T10:00:00.000Z_0000_0005",
+				last_sent: "2026-04-10T10:00:00.000Z_0000_0003",
+			});
 
 			const cursor = getPeerCursor(db, "new-peer");
 
 			expect(cursor).not.toBeNull();
 			if (cursor) {
-				expect(cursor.last_received).toBe(5);
-				expect(cursor.last_sent).toBe(3);
+				expect(cursor.last_received).toBe("2026-04-10T10:00:00.000Z_0000_0005");
+				expect(cursor.last_sent).toBe("2026-04-10T10:00:00.000Z_0000_0003");
 				expect(cursor.last_sync_at).not.toBeNull();
 			}
 		});
@@ -72,23 +76,26 @@ describe("peer-cursor", () => {
 			db.run(
 				`INSERT INTO sync_state (peer_site_id, last_received, last_sent)
 				VALUES (?, ?, ?)`,
-				["peer-b", 5, 3],
+				["peer-b", "2026-04-10T09:00:00.000Z_0000_0005", "2026-04-10T09:00:00.000Z_0000_0003"],
 			);
 
-			updatePeerCursor(db, "peer-b", { last_received: 10, last_sent: 8 });
+			updatePeerCursor(db, "peer-b", {
+				last_received: "2026-04-10T10:00:00.000Z_0000_0010",
+				last_sent: "2026-04-10T10:00:00.000Z_0000_0008",
+			});
 
 			const cursor = getPeerCursor(db, "peer-b");
 
 			expect(cursor).not.toBeNull();
 			if (cursor) {
-				expect(cursor.last_received).toBe(10);
-				expect(cursor.last_sent).toBe(8);
+				expect(cursor.last_received).toBe("2026-04-10T10:00:00.000Z_0000_0010");
+				expect(cursor.last_sent).toBe("2026-04-10T10:00:00.000Z_0000_0008");
 			}
 		});
 
 		it("sets last_sync_at to current timestamp", () => {
 			const before = new Date().toISOString();
-			updatePeerCursor(db, "peer-c", { last_received: 1 });
+			updatePeerCursor(db, "peer-c", { last_received: "2026-04-10T10:00:00.000Z_0000_0001" });
 			const after = new Date().toISOString();
 
 			const cursor = getPeerCursor(db, "peer-c");
@@ -139,47 +146,47 @@ describe("peer-cursor", () => {
 		});
 	});
 
-	describe("getMinConfirmedSeq", () => {
-		it("returns 0 when no peers", () => {
-			const minSeq = getMinConfirmedSeq(db);
-			expect(minSeq).toBe(0);
+	describe("getMinConfirmedHlc", () => {
+		it("returns HLC_ZERO when no peers", () => {
+			const minHlc = getMinConfirmedHlc(db);
+			expect(minHlc).toBe(HLC_ZERO);
 		});
 
 		it("returns minimum last_received across all peers", () => {
 			db.run(
 				`INSERT INTO sync_state (peer_site_id, last_received)
 				VALUES (?, ?)`,
-				["peer-1", 10],
+				["peer-1", "2026-04-10T10:00:00.000Z_0000_0010"],
 			);
 			db.run(
 				`INSERT INTO sync_state (peer_site_id, last_received)
 				VALUES (?, ?)`,
-				["peer-2", 5],
+				["peer-2", "2026-04-10T09:00:00.000Z_0000_0005"],
 			);
 			db.run(
 				`INSERT INTO sync_state (peer_site_id, last_received)
 				VALUES (?, ?)`,
-				["peer-3", 15],
+				["peer-3", "2026-04-10T11:00:00.000Z_0000_0015"],
 			);
 
-			const minSeq = getMinConfirmedSeq(db);
-			expect(minSeq).toBe(5);
+			const minHlc = getMinConfirmedHlc(db);
+			expect(minHlc).toBe("2026-04-10T09:00:00.000Z_0000_0005");
 		});
 
-		it("returns minimum even with default 0 values", () => {
+		it("returns minimum even with HLC_ZERO values", () => {
 			db.run(
 				`INSERT INTO sync_state (peer_site_id, last_received)
 				VALUES (?, ?)`,
-				["peer-4", 0],
+				["peer-4", HLC_ZERO],
 			);
 			db.run(
 				`INSERT INTO sync_state (peer_site_id, last_received)
 				VALUES (?, ?)`,
-				["peer-5", 10],
+				["peer-5", "2026-04-10T10:00:00.000Z_0000_0010"],
 			);
 
-			const minSeq = getMinConfirmedSeq(db);
-			expect(minSeq).toBe(0);
+			const minHlc = getMinConfirmedHlc(db);
+			expect(minHlc).toBe(HLC_ZERO);
 		});
 	});
 });

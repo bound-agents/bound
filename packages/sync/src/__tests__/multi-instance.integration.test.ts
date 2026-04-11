@@ -1,8 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import type { Database } from "bun:sqlite";
 import type { KeyringConfig } from "@bound/shared";
+import { generateHlc, HLC_ZERO } from "@bound/shared";
 import { ensureKeypair, exportPublicKey } from "../crypto.js";
 import { createTestInstance } from "./test-harness.js";
 import type { TestInstance } from "./test-harness.js";
+
+/**
+ * Helper to insert a change_log entry with proper HLC generation.
+ * Accepts either an object or a JSON string for rowData.
+ */
+function insertChangeLog(
+	db: Database,
+	tableName: string,
+	rowId: string,
+	siteId: string,
+	timestamp: string,
+	rowData: Record<string, unknown> | string,
+): void {
+	const lastHlcRow = db.query("SELECT hlc FROM change_log ORDER BY hlc DESC LIMIT 1").get() as { hlc: string } | null;
+	const hlc = generateHlc(timestamp, lastHlcRow?.hlc ?? null, siteId);
+
+	const rowDataStr = typeof rowData === "string" ? rowData : JSON.stringify(rowData);
+	db.query(
+		"INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?, ?)",
+	).run(hlc, tableName, rowId, siteId, timestamp, rowDataStr);
+}
 
 describe("multi-instance sync", () => {
 	let instanceA: TestInstance;
@@ -80,26 +103,23 @@ describe("multi-instance sync", () => {
 			.run("mem-1", "test_key", "test_value", "site-a", now, now, now);
 
 		// Record this as a change_log entry on A
-		instanceA.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
-				"semantic_memory",
-				"mem-1",
-				instanceA.siteId,
-				now,
-				JSON.stringify({
-					id: "mem-1",
-					key: "test_key",
-					value: "test_value",
-					source: "site-a",
-					created_at: now,
-					modified_at: now,
-					last_accessed_at: now,
-					deleted: 0,
-				}),
-			);
+		insertChangeLog(
+			instanceA.db,
+			"semantic_memory",
+			"mem-1",
+			instanceA.siteId,
+			now,
+			{
+				id: "mem-1",
+				key: "test_key",
+				value: "test_value",
+				source: "site-a",
+				created_at: now,
+				modified_at: now,
+				last_accessed_at: now,
+				deleted: 0,
+			},
+		);
 
 		// Run sync from Instance B (pull from A)
 		const result = await instanceB.syncClient.syncCycle();
@@ -123,11 +143,8 @@ describe("multi-instance sync", () => {
 			)
 			.run("mem-a", "key_a", "value_a", "site-a", now, now, now);
 
-		instanceA.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			instanceA.db,
 				"semantic_memory",
 				"mem-a",
 				instanceA.siteId,
@@ -151,11 +168,8 @@ describe("multi-instance sync", () => {
 			)
 			.run("mem-b", "key_b", "value_b", "site-b", now, now, now);
 
-		instanceB.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			instanceB.db,
 				"semantic_memory",
 				"mem-b",
 				instanceB.siteId,
@@ -207,11 +221,8 @@ describe("multi-instance sync", () => {
 			.run("mem-conflict", "key", "value_from_b", "site-b", time1, time1, time1);
 
 		// Record on A with later timestamp
-		instanceA.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			instanceA.db,
 				"semantic_memory",
 				"mem-conflict",
 				instanceA.siteId,
@@ -229,11 +240,8 @@ describe("multi-instance sync", () => {
 			);
 
 		// Record on B with earlier timestamp
-		instanceB.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			instanceB.db,
 				"semantic_memory",
 				"mem-conflict",
 				instanceB.siteId,
@@ -279,11 +287,8 @@ describe("multi-instance sync", () => {
 			.run(sameId, "thread-1", "user", "hello", now, "cloud-vm");
 
 		// Record on both
-		instanceA.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			instanceA.db,
 				"messages",
 				sameId,
 				instanceA.siteId,
@@ -298,11 +303,8 @@ describe("multi-instance sync", () => {
 				}),
 			);
 
-		instanceB.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			instanceB.db,
 				"messages",
 				sameId,
 				instanceB.siteId,
@@ -342,17 +344,23 @@ describe("multi-instance sync", () => {
 
 		// Create events
 		for (let i = 1; i <= 5; i++) {
-			instanceA.db
-				.query(
-					"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-				)
-				.run("semantic_memory", `mem-${i}`, instanceA.siteId, now, "{}");
+			insertChangeLog(
+				instanceA.db,
+				"semantic_memory",
+				`mem-${i}`,
+				instanceA.siteId,
+				now,
+				"{}",
+			);
 		}
 
-		// Set up peer cursor showing B has confirmed through seq 5
+		// Set up peer cursor showing B has confirmed through the last HLC
+		// Get the last HLC we just inserted
+		const lastHlcRow = instanceA.db.query("SELECT hlc FROM change_log ORDER BY hlc DESC LIMIT 1").get() as { hlc: string } | null;
+		const confirmedHlc = lastHlcRow!.hlc;
 		instanceA.db
 			.query("INSERT INTO sync_state (peer_site_id, last_received) VALUES (?, ?)")
-			.run(instanceB.siteId, 5);
+			.run(instanceB.siteId, confirmedHlc);
 
 		// Prune on A
 		const countBefore = instanceA.db.query("SELECT COUNT(*) as count FROM change_log").get() as {
@@ -378,11 +386,8 @@ describe("multi-instance sync", () => {
 			)
 			.run("mem-new", "key_new", "value_new", "site-a", now, now, now);
 
-		instanceA.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			instanceA.db,
 				"semantic_memory",
 				"mem-new",
 				instanceA.siteId,
@@ -421,26 +426,23 @@ describe("multi-instance sync", () => {
 				)
 				.run(`mem-${i}`, `key_${i}`, `value_${i}`, "site-a", now, now, now);
 
-			instanceA.db
-				.query(
-					"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-				)
-				.run(
-					"semantic_memory",
-					`mem-${i}`,
-					instanceA.siteId,
-					now,
-					JSON.stringify({
-						id: `mem-${i}`,
-						key: `key_${i}`,
-						value: `value_${i}`,
-						source: "site-a",
-						created_at: now,
-						modified_at: now,
-						last_accessed_at: now,
-						deleted: 0,
-					}),
-				);
+			insertChangeLog(
+				instanceA.db,
+				"semantic_memory",
+				`mem-${i}`,
+				instanceA.siteId,
+				now,
+				JSON.stringify({
+					id: `mem-${i}`,
+					key: `key_${i}`,
+					value: `value_${i}`,
+					source: "site-a",
+					created_at: now,
+					modified_at: now,
+					last_accessed_at: now,
+					deleted: 0,
+				}),
+			);
 		}
 
 		// Now B reconnects and syncs
@@ -460,7 +462,9 @@ describe("multi-instance sync", () => {
 		const syncState = instanceB.db
 			.query("SELECT * FROM sync_state WHERE peer_site_id = ?")
 			.get(instanceA.siteId) as Record<string, unknown> | undefined;
-		expect(syncState?.last_received).toBeGreaterThan(0);
+		const lastReceived = syncState?.last_received as string;
+		expect(lastReceived).toBeTruthy();
+		expect(lastReceived).not.toBe(HLC_ZERO);
 	});
 
 	it("scenario 7: hub promotion", async () => {
@@ -474,11 +478,8 @@ describe("multi-instance sync", () => {
 			)
 			.run("mem-initial", "key", "initial_value", "site-a", now, now, now);
 
-		instanceA.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			instanceA.db,
 				"semantic_memory",
 				"mem-initial",
 				instanceA.siteId,
@@ -540,11 +541,8 @@ describe("multi-instance sync", () => {
 			.run(skillId, "test-skill", "A test skill", "active", "/home/user/skills/test-skill", now);
 
 		// Record in change_log for replication
-		instanceA.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			instanceA.db,
 				"skills",
 				skillId,
 				instanceA.siteId,

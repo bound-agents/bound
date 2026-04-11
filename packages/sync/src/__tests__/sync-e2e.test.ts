@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, insertRow, softDelete, updateRow } from "@bound/core";
 import type { KeyringConfig, Logger } from "@bound/shared";
-import { TypedEventEmitter } from "@bound/shared";
+import { HLC_ZERO, TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
 import { ensureKeypair, exportPublicKey } from "../crypto.js";
 import { clearColumnCache } from "../reducers.js";
@@ -104,26 +104,33 @@ function tempKeypairDir(label: string): string {
  * Write a row directly to a table with a manual change_log entry.
  * Required for tables whose PK is NOT `id` (hosts, cluster_config).
  */
-function insertRawRow(
+async function insertRawRow(
 	db: Database,
 	tableName: string,
 	rowData: Record<string, unknown>,
 	pkColumn: string,
 	siteId: string,
-): void {
+): Promise<void> {
 	const columns = Object.keys(rowData);
 	const placeholders = columns.map(() => "?").join(", ");
 	const values = columns.map((c) => rowData[c] ?? null);
+
+	const { generateHlc } = await import("@bound/shared");
+	const rowId = String(rowData[pkColumn]);
+	const now = new Date().toISOString();
+
+	// Get the last HLC from the change_log to generate the next one
+	const lastHlcRow = db.query("SELECT hlc FROM change_log ORDER BY hlc DESC LIMIT 1").get() as { hlc: string } | null;
+	const hlc = generateHlc(now, lastHlcRow?.hlc ?? null, siteId);
 
 	const txFn = db.transaction(() => {
 		db.run(
 			`INSERT INTO ${tableName} (${columns.join(", ")}) VALUES (${placeholders})`,
 			values as (string | number | null)[],
 		);
-		const rowId = String(rowData[pkColumn]);
 		db.run(
-			"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			[tableName, rowId, siteId, new Date().toISOString(), JSON.stringify(rowData)],
+			"INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?, ?)",
+			[hlc, tableName, rowId, siteId, now, JSON.stringify(rowData)],
 		);
 	});
 	txFn();
@@ -435,7 +442,7 @@ describe("sync E2E", () => {
 	it("5. hosts table: registration syncs via site_id PK", async () => {
 		const now = new Date().toISOString();
 
-		insertRawRow(
+		await insertRawRow(
 			hostA.db,
 			"hosts",
 			{
@@ -472,7 +479,7 @@ describe("sync E2E", () => {
 	it("6. cluster_config: emergency_stop replicates from A to B", async () => {
 		const now = new Date().toISOString();
 
-		insertRawRow(
+		await insertRawRow(
 			hostA.db,
 			"cluster_config",
 			{
@@ -1214,7 +1221,7 @@ describe("sync E2E", () => {
 		const unknownDir = tempKeypairDir("unknown");
 		const unknownKp = await ensureKeypair(unknownDir);
 
-		const body = JSON.stringify({ since_seq: 0 });
+		const body = JSON.stringify({ since_hlc: "" });
 		const headers = await signRequest(
 			unknownKp.privateKey,
 			unknownKp.siteId,
@@ -1240,7 +1247,7 @@ describe("sync E2E", () => {
 	// -----------------------------------------------------------------------
 
 	it("23. invalid signature is rejected with 401", async () => {
-		const body = JSON.stringify({ since_seq: 0 });
+		const body = JSON.stringify({ since_hlc: "" });
 
 		// Use a valid site_id from the keyring but sign with a DIFFERENT key
 		const rogueDir = tempKeypairDir("rogue");
@@ -1335,8 +1342,9 @@ describe("sync E2E", () => {
 			.query("SELECT * FROM sync_state WHERE peer_site_id = ?")
 			.get(hostA.siteId) as Record<string, unknown> | null;
 		expect(state1).not.toBeNull();
-		const lastReceived1 = state1?.last_received as number;
-		expect(lastReceived1).toBeGreaterThan(0);
+		const lastReceived1 = state1?.last_received as string;
+		expect(lastReceived1).not.toBe(HLC_ZERO);
+		expect(lastReceived1).toBeTruthy();
 
 		// Cycle 2: another row
 		insertRow(
@@ -1360,8 +1368,10 @@ describe("sync E2E", () => {
 		const state2 = hostB.db
 			.query("SELECT * FROM sync_state WHERE peer_site_id = ?")
 			.get(hostA.siteId) as Record<string, unknown> | null;
-		const lastReceived2 = state2?.last_received as number;
-		expect(lastReceived2).toBeGreaterThan(lastReceived1);
+		const lastReceived2 = state2?.last_received as string;
+		expect(lastReceived2).toBeTruthy();
+		// HLC strings compare lexicographically - later HLC > earlier HLC
+		expect(lastReceived2 > lastReceived1).toBe(true);
 
 		// Both rows should exist on B
 		expect(
@@ -1480,7 +1490,7 @@ describe("sync E2E", () => {
 			hostA.siteId,
 		);
 
-		insertRawRow(
+		await insertRawRow(
 			hostA.db,
 			"cluster_config",
 			{ key: "mixed-cfg", value: "cfg-val", modified_at: now },

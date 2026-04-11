@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { ChangeLogEntry, RelayInboxEntry, RelayOutboxEntry, Result } from "@bound/shared";
-import { err, ok } from "@bound/shared";
+import { HLC_ZERO, err, ok } from "@bound/shared";
 
 export interface Changeset {
 	events: ChangeLogEntry[];
@@ -24,57 +24,57 @@ export function fetchOutboundChangeset(
 	peerSiteId: string,
 	siteId: string,
 ): Changeset {
-	// Get last_sent for this peer (defaults to 0 if no record exists)
+	// Get last_sent for this peer (defaults to HLC_ZERO if no record exists)
 	const cursor = db
 		.query("SELECT last_sent FROM sync_state WHERE peer_site_id = ?")
-		.get(peerSiteId) as { last_sent: number } | undefined;
+		.get(peerSiteId) as { last_sent: string } | undefined;
 
-	const lastSent = cursor?.last_sent ?? 0;
+	const lastSent = cursor?.last_sent ?? HLC_ZERO;
 
-	// Fetch all events where seq > lastSent (from ALL sites, not just local)
+	// Fetch all events where hlc > lastSent (from ALL sites, not just local)
 	const events = db
 		.query(
-			`SELECT seq, table_name, row_id, site_id, timestamp, row_data
+			`SELECT hlc, table_name, row_id, site_id, timestamp, row_data
 			FROM change_log
-			WHERE seq > ?
-			ORDER BY seq ASC`,
+			WHERE hlc > ?
+			ORDER BY hlc ASC`,
 		)
 		.all(lastSent) as ChangeLogEntry[];
 
-	const sourceSeqStart = events.length > 0 ? events[0].seq : lastSent + 1;
-	const sourceSeqEnd = events.length > 0 ? events[events.length - 1].seq : lastSent;
+	const sourceHlcStart = events.length > 0 ? events[0].hlc : lastSent;
+	const sourceHlcEnd = events.length > 0 ? events[events.length - 1].hlc : lastSent;
 
 	return {
 		events,
 		source_site_id: siteId,
-		source_seq_start: sourceSeqStart,
-		source_seq_end: sourceSeqEnd,
+		source_hlc_start: sourceHlcStart,
+		source_hlc_end: sourceHlcEnd,
 	};
 }
 
 export function fetchInboundChangeset(
 	db: Database,
 	requesterSiteId: string,
-	sinceSeq: number,
+	sinceHlc: string,
 ): Changeset {
 	// Fetch events with echo suppression: exclude requester's own site_id
 	const events = db
 		.query(
-			`SELECT seq, table_name, row_id, site_id, timestamp, row_data
+			`SELECT hlc, table_name, row_id, site_id, timestamp, row_data
 			FROM change_log
-			WHERE seq > ? AND site_id != ?
-			ORDER BY seq ASC`,
+			WHERE hlc > ? AND site_id != ?
+			ORDER BY hlc ASC`,
 		)
-		.all(sinceSeq, requesterSiteId) as ChangeLogEntry[];
+		.all(sinceHlc, requesterSiteId) as ChangeLogEntry[];
 
-	const sourceSeqStart = events.length > 0 ? events[0].seq : sinceSeq + 1;
-	const sourceSeqEnd = events.length > 0 ? events[events.length - 1].seq : sinceSeq;
+	const sourceHlcStart = events.length > 0 ? events[0].hlc : sinceHlc;
+	const sourceHlcEnd = events.length > 0 ? events[events.length - 1].hlc : sinceHlc;
 
 	return {
 		events,
 		source_site_id: "",
-		source_seq_start: sourceSeqStart,
-		source_seq_end: sourceSeqEnd,
+		source_hlc_start: sourceHlcStart,
+		source_hlc_end: sourceHlcEnd,
 	};
 }
 

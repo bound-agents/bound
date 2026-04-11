@@ -24,7 +24,7 @@ describe("sync-loop", () => {
 
 		db.run(`
 			CREATE TABLE change_log (
-				seq INTEGER PRIMARY KEY AUTOINCREMENT,
+				hlc TEXT PRIMARY KEY,
 				table_name TEXT NOT NULL,
 				row_id TEXT NOT NULL,
 				site_id TEXT NOT NULL,
@@ -36,8 +36,8 @@ describe("sync-loop", () => {
 		db.run(`
 			CREATE TABLE sync_state (
 				peer_site_id TEXT PRIMARY KEY,
-				last_received INTEGER NOT NULL DEFAULT 0,
-				last_sent INTEGER NOT NULL DEFAULT 0,
+				last_received TEXT NOT NULL DEFAULT '',
+				last_sent TEXT NOT NULL DEFAULT '',
 				last_sync_at TEXT,
 				sync_errors INTEGER NOT NULL DEFAULT 0
 			)
@@ -163,8 +163,8 @@ describe("sync-loop", () => {
 						JSON.stringify({
 							events: [],
 							source_site_id: "hub",
-							source_seq_start: 0,
-							source_seq_end: 0,
+							source_hlc_start: "",
+							source_hlc_end: "",
 						}),
 						{ status: 200 },
 					);

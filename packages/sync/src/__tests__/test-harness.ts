@@ -221,7 +221,7 @@ const FULL_SCHEMA = `
 	);
 
 	CREATE TABLE change_log (
-		seq INTEGER PRIMARY KEY AUTOINCREMENT,
+		hlc TEXT PRIMARY KEY,
 		table_name TEXT NOT NULL,
 		row_id TEXT NOT NULL,
 		site_id TEXT NOT NULL,
@@ -231,8 +231,8 @@ const FULL_SCHEMA = `
 
 	CREATE TABLE sync_state (
 		peer_site_id TEXT PRIMARY KEY,
-		last_received INTEGER NOT NULL DEFAULT 0,
-		last_sent INTEGER NOT NULL DEFAULT 0,
+		last_received TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
+		last_sent TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
 		last_sync_at TEXT,
 		sync_errors INTEGER NOT NULL DEFAULT 0
 	);

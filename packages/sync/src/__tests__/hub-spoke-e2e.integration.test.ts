@@ -14,11 +14,34 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
+import type { Database } from "bun:sqlite";
 import { writeOutbox } from "@bound/core";
 import type { KeyringConfig } from "@bound/shared";
+import { generateHlc } from "@bound/shared";
 import { ensureKeypair, exportPublicKey } from "../crypto.js";
 import { createTestInstance } from "./test-harness.js";
 import type { TestInstance } from "./test-harness.js";
+
+/**
+ * Helper to insert a change_log entry with proper HLC generation.
+ * Accepts either an object or a JSON string for rowData.
+ */
+function insertChangeLog(
+	db: Database,
+	tableName: string,
+	rowId: string,
+	siteId: string,
+	timestamp: string,
+	rowData: Record<string, unknown> | string,
+): void {
+	const lastHlcRow = db.query("SELECT hlc FROM change_log ORDER BY hlc DESC LIMIT 1").get() as { hlc: string } | null;
+	const hlc = generateHlc(timestamp, lastHlcRow?.hlc ?? null, siteId);
+
+	const rowDataStr = typeof rowData === "string" ? rowData : JSON.stringify(rowData);
+	db.query(
+		"INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?, ?)",
+	).run(hlc, tableName, rowId, siteId, timestamp, rowDataStr);
+}
 
 describe("hub-spoke E2E: new-hub replication flow", () => {
 	let hub: TestInstance;
@@ -87,11 +110,8 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, 0)",
 			)
 			.run(userId, "Alice", now, now);
-		spoke.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			spoke.db,
 				"users",
 				userId,
 				spoke.siteId,
@@ -113,11 +133,8 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 				 VALUES (?, ?, 'web', 'spoke-host', 0, 'Test Thread', ?, ?, ?, 0)`,
 			)
 			.run(threadId, userId, now, now, now);
-		spoke.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			spoke.db,
 				"threads",
 				threadId,
 				spoke.siteId,
@@ -144,11 +161,8 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 				 VALUES (?, ?, 'user', 'Hello from spoke', ?, 'spoke-host')`,
 			)
 			.run(messageId, threadId, now);
-		spoke.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			spoke.db,
 				"messages",
 				messageId,
 				spoke.siteId,
@@ -171,11 +185,8 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 				 VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
 			)
 			.run(memId, "cluster-setup", "Hub+spoke topology configured", "test", now, now, now);
-		spoke.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			spoke.db,
 				"semantic_memory",
 				memId,
 				spoke.siteId,
@@ -200,11 +211,8 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 				 VALUES (?, ?, ?, 'active', '/home/user/skills/test', 0, ?, 0)`,
 			)
 			.run(skillId, "hub-spoke-skill", "A skill for testing hub-spoke sync", now);
-		spoke.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			spoke.db,
 				"skills",
 				skillId,
 				spoke.siteId,
@@ -234,11 +242,8 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 				now,
 				now,
 			);
-		spoke.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			spoke.db,
 				"hosts",
 				spoke.siteId,
 				spoke.siteId,
@@ -393,11 +398,8 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 				"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, modified_at = excluded.modified_at",
 			)
 			.run(configKey, "hub-managed", now);
-		hub.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			hub.db,
 				"cluster_config",
 				configKey,
 				hub.siteId,
@@ -429,11 +431,8 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 				 VALUES (?, 'hub-node', '1.0.0', ?, ?, ?, 0)`,
 			)
 			.run(hub.siteId, JSON.stringify([{ id: "claude-opus", tier: 1 }]), now, now);
-		hub.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			hub.db,
 				"hosts",
 				hub.siteId,
 				hub.siteId,
@@ -476,11 +475,8 @@ describe("hub-spoke E2E: new-hub replication flow", () => {
 				 VALUES (?, 'hub-node', '1.0.0', ?, ?, ?, 0)`,
 			)
 			.run(hub.siteId, JSON.stringify(["discord"]), now, now);
-		hub.db
-			.query(
-				"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-			)
-			.run(
+		insertChangeLog(
+			hub.db,
 				"hosts",
 				hub.siteId,
 				hub.siteId,

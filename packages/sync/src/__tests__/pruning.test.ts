@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { HLC_ZERO } from "@bound/shared";
+import { getMinConfirmedHlc } from "../peer-cursor.js";
 import { determinePruningMode, pruneChangeLog } from "../pruning.js";
 
 describe("pruning", () => {
@@ -11,7 +13,7 @@ describe("pruning", () => {
 
 		db.run(`
 			CREATE TABLE change_log (
-				seq INTEGER PRIMARY KEY AUTOINCREMENT,
+				hlc TEXT PRIMARY KEY,
 				table_name TEXT NOT NULL,
 				row_id TEXT NOT NULL,
 				site_id TEXT NOT NULL,
@@ -23,8 +25,8 @@ describe("pruning", () => {
 		db.run(`
 			CREATE TABLE sync_state (
 				peer_site_id TEXT PRIMARY KEY,
-				last_received INTEGER NOT NULL DEFAULT 0,
-				last_sent INTEGER NOT NULL DEFAULT 0,
+				last_received TEXT NOT NULL DEFAULT '${HLC_ZERO}',
+				last_sent TEXT NOT NULL DEFAULT '${HLC_ZERO}',
 				last_sync_at TEXT,
 				sync_errors INTEGER NOT NULL DEFAULT 0
 			)
@@ -44,7 +46,7 @@ describe("pruning", () => {
 		it("returns multi-host when sync_state has entries", () => {
 			db.query("INSERT INTO sync_state (peer_site_id, last_received) VALUES (?, ?)").run(
 				"peer-1",
-				5,
+				"2026-04-01T00:00:00.000Z_0005_testsite",
 			);
 
 			const mode = determinePruningMode(db);
@@ -56,9 +58,11 @@ describe("pruning", () => {
 		it("retains all events in single-host mode for future sync enablement", () => {
 			// Insert test events
 			for (let i = 1; i <= 10; i++) {
+				const counter = i.toString(16).padStart(4, "0");
+				const hlc = `2026-03-22T10:00:00.000Z_${counter}_site-a`;
 				db.query(
-					"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-				).run("semantic_memory", `row-${i}`, "site-a", "2026-03-22T10:00:00Z", "{}");
+					"INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?, ?)",
+				).run(hlc, "semantic_memory", `row-${i}`, "site-a", "2026-03-22T10:00:00Z", "{}");
 			}
 
 			const result = pruneChangeLog(db, "single-host");
@@ -74,22 +78,24 @@ describe("pruning", () => {
 		it("deletes confirmed events in multi-host mode", () => {
 			// Insert test events
 			for (let i = 1; i <= 10; i++) {
+				const counter = i.toString(16).padStart(4, "0");
+				const hlc = `2026-03-22T10:00:00.000Z_${counter}_site-a`;
 				db.query(
-					"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-				).run("semantic_memory", `row-${i}`, "site-a", "2026-03-22T10:00:00Z", "{}");
+					"INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?, ?)",
+				).run(hlc, "semantic_memory", `row-${i}`, "site-a", "2026-03-22T10:00:00Z", "{}");
 			}
 
-			// Set up peer cursors showing confirmation through seq 5
+			// Set up peer cursors showing confirmation through HLC 5
 			db.query("INSERT INTO sync_state (peer_site_id, last_received) VALUES (?, ?)").run(
 				"peer-1",
-				5,
+				"2026-03-22T10:00:00.000Z_0005_site-a",
 			);
 			db.query("INSERT INTO sync_state (peer_site_id, last_received) VALUES (?, ?)").run(
 				"peer-2",
-				10,
+				"2026-03-22T10:00:00.000Z_000a_site-a",
 			);
 
-			// Min confirmed seq is 5 (minimum of 5 and 10)
+			// Min confirmed HLC is 0005 (minimum of 0005 and 000a)
 			const result = pruneChangeLog(db, "multi-host");
 
 			// Should delete events 1-5
@@ -101,17 +107,23 @@ describe("pruning", () => {
 			};
 			expect(remaining.count).toBe(5);
 
-			const remainingSeqs = db.query("SELECT seq FROM change_log ORDER BY seq").all() as Array<{
-				seq: number;
+			const remainingHlcs = db.query("SELECT hlc FROM change_log ORDER BY hlc").all() as Array<{
+				hlc: string;
 			}>;
-			expect(remainingSeqs.map((r) => r.seq)).toEqual([6, 7, 8, 9, 10]);
+			expect(remainingHlcs.map((r) => r.hlc)).toEqual([
+				"2026-03-22T10:00:00.000Z_0006_site-a",
+				"2026-03-22T10:00:00.000Z_0007_site-a",
+				"2026-03-22T10:00:00.000Z_0008_site-a",
+				"2026-03-22T10:00:00.000Z_0009_site-a",
+				"2026-03-22T10:00:00.000Z_000a_site-a",
+			]);
 		});
 
 		it("returns 0 deleted when no events to prune in multi-host", () => {
-			// Set up peer cursors at seq 0
+			// Set up peer cursors at HLC_ZERO
 			db.query("INSERT INTO sync_state (peer_site_id, last_received) VALUES (?, ?)").run(
 				"peer-1",
-				0,
+				HLC_ZERO,
 			);
 
 			const result = pruneChangeLog(db, "multi-host");
@@ -121,34 +133,43 @@ describe("pruning", () => {
 		it("preserves new events after pruning", () => {
 			// Insert initial events
 			for (let i = 1; i <= 5; i++) {
+				const counter = i.toString(16).padStart(4, "0");
+				const hlc = `2026-03-22T10:00:00.000Z_${counter}_site-a`;
 				db.query(
-					"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-				).run("semantic_memory", `row-${i}`, "site-a", "2026-03-22T10:00:00Z", "{}");
+					"INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?, ?)",
+				).run(hlc, "semantic_memory", `row-${i}`, "site-a", "2026-03-22T10:00:00Z", "{}");
 			}
 
-			// Set up peer confirming through seq 3
+			// Set up peer confirming through HLC 3
 			db.query("INSERT INTO sync_state (peer_site_id, last_received) VALUES (?, ?)").run(
 				"peer-1",
-				3,
+				"2026-03-22T10:00:00.000Z_0003_site-a",
 			);
 
 			pruneChangeLog(db, "multi-host");
 
 			// Add new events after pruning
 			for (let i = 6; i <= 8; i++) {
+				const counter = i.toString(16).padStart(4, "0");
+				const hlc = `2026-03-22T11:00:00.000Z_${counter}_site-a`;
 				db.query(
-					"INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?)",
-				).run("semantic_memory", `row-${i}`, "site-a", "2026-03-22T11:00:00Z", "{}");
+					"INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?, ?)",
+				).run(hlc, "semantic_memory", `row-${i}`, "site-a", "2026-03-22T11:00:00Z", "{}");
 			}
 
-			// Verify new events have correct seq numbers (6, 7, 8 if AUTOINCREMENT continues)
-			const seqs = db.query("SELECT seq FROM change_log ORDER BY seq").all() as Array<{
-				seq: number;
+			// Verify we have the expected events
+			const hlcs = db.query("SELECT hlc FROM change_log ORDER BY hlc").all() as Array<{
+				hlc: string;
 			}>;
-			expect(seqs.length).toBeGreaterThanOrEqual(5);
+			expect(hlcs.length).toBeGreaterThanOrEqual(5);
 
 			// Events 4, 5 should remain from original set, plus new events 6, 7, 8
-			expect(seqs[seqs.length - 1].seq).toBeGreaterThan(5);
+			const allHlcs = hlcs.map((h) => h.hlc);
+			expect(allHlcs).toContain("2026-03-22T10:00:00.000Z_0004_site-a");
+			expect(allHlcs).toContain("2026-03-22T10:00:00.000Z_0005_site-a");
+			expect(allHlcs).toContain("2026-03-22T11:00:00.000Z_0006_site-a");
+			expect(allHlcs).toContain("2026-03-22T11:00:00.000Z_0007_site-a");
+			expect(allHlcs).toContain("2026-03-22T11:00:00.000Z_0008_site-a");
 		});
 	});
 });

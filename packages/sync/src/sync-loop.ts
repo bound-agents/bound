@@ -99,23 +99,23 @@ export class SyncClient {
 					return pushResult;
 				}
 				pushed = outbound.events.length;
-				updatePeerCursor(this.db, peerSiteId, { last_sent: outbound.source_seq_end });
+				updatePeerCursor(this.db, peerSiteId, { last_sent: outbound.source_hlc_end });
 			}
 
 			// PULL: fetch inbound events from hub
 			const syncState = this.db
 				.query("SELECT last_received FROM sync_state WHERE peer_site_id = ?")
-				.get(peerSiteId) as { last_received: number } | undefined;
-			const sinceSeq = syncState?.last_received ?? 0;
+				.get(peerSiteId) as { last_received: string } | undefined;
+			const sinceHlc = syncState?.last_received ?? "0000-00-00T00:00:00.000Z_0000_0000";
 
-			const pullResult = await this.pull(sinceSeq);
+			const pullResult = await this.pull(sinceHlc);
 			if (!pullResult.ok) {
 				return pullResult;
 			}
 
 			const inbound = pullResult.value;
 			pulled = inbound.events.length;
-			const newLastReceived = inbound.events.length > 0 ? inbound.source_seq_end : sinceSeq;
+			const newLastReceived = inbound.events.length > 0 ? inbound.source_hlc_end : sinceHlc;
 
 			// REPLAY: apply inbound events to local database
 			if (inbound.events.length > 0) {
@@ -270,9 +270,9 @@ export class SyncClient {
 		}
 	}
 
-	private async pull(sinceSeq: number): Promise<Result<Changeset, SyncError>> {
+	private async pull(sinceHlc: string): Promise<Result<Changeset, SyncError>> {
 		try {
-			const body = JSON.stringify({ since_seq: sinceSeq });
+			const body = JSON.stringify({ since_hlc: sinceHlc });
 
 			if (this.transport && this.hubSiteId) {
 				const tr = await this.transport.send(
@@ -338,7 +338,7 @@ export class SyncClient {
 		}
 	}
 
-	private async ack(lastReceived: number): Promise<Result<void, SyncError>> {
+	private async ack(lastReceived: string): Promise<Result<void, SyncError>> {
 		try {
 			const body = JSON.stringify({ last_received: lastReceived });
 

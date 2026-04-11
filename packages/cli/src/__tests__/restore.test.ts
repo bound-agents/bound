@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
-import { applySchema, createDatabase } from "@bound/core";
+import { applySchema, createChangeLogEntry, createDatabase } from "@bound/core";
+import { generateHlc } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { runRestore } from "../commands/restore.js";
 
@@ -36,27 +37,29 @@ describe("restore command", () => {
 		const now = new Date().toISOString();
 
 		// Insert a malicious row entry at the safeTime (this will be found as "prior entry")
-		const maliciousRowData = JSON.stringify({
+		const maliciousRowData = {
 			id: "test-1",
 			deleted: 0,
 			"deleted; DROP TABLE users; --": 0, // SQL injection attempt in column name
-		});
+		};
 
+		const hlc1 = `${safeTime}_0000_test`;
 		db.query(
-			`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
-			VALUES (?, ?, ?, ?, ?)`,
-		).run("users", "test-1", "test-site", safeTime, maliciousRowData);
+			`INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+		).run(hlc1, "users", "test-1", "test-site", safeTime, JSON.stringify(maliciousRowData));
 
 		// Create a clean row after safe timestamp to flag this row as "affected"
-		const cleanRowData = JSON.stringify({
+		const cleanRowData = {
 			id: "test-1",
 			deleted: 0,
-		});
+		};
 
+		const hlc2 = `${now}_0000_test`;
 		db.query(
-			`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
-			VALUES (?, ?, ?, ?, ?)`,
-		).run("users", "test-1", "test-site", now, cleanRowData);
+			`INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+		).run(hlc2, "users", "test-1", "test-site", now, JSON.stringify(cleanRowData));
 
 		db.close();
 
@@ -95,9 +98,10 @@ describe("restore command", () => {
 
 		// Manually insert into change_log with malicious table name
 		// (bypassing normal SQL to get it into the DB for testing the restore parsing)
+		const hlc = `${now}_0000_test`;
 		db.exec(`
-			INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
-			VALUES ('users; DROP TABLE users; --', 'test-1', 'test-site', '${now}', '${rowData}')
+			INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data)
+			VALUES ('${hlc}', 'users; DROP TABLE users; --', 'test-1', 'test-site', '${now}', '${rowData}')
 		`);
 
 		db.close();
@@ -126,22 +130,24 @@ describe("restore command", () => {
 		const beforeTime = new Date(Date.now() - 60000).toISOString();
 
 		// Insert an entry with corrupted JSON
+		const hlc1 = `${now}_0000_test`;
 		db.query(
-			`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
-			VALUES (?, ?, ?, ?, ?)`,
-		).run("users", "test-1", "test-site", now, "{ invalid json }");
+			`INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+		).run(hlc1, "users", "test-1", "test-site", now, "{ invalid json }");
 
 		// Also insert a good entry for the same row before the cutoff
-		const goodRowData = JSON.stringify({
+		const goodRowData = {
 			id: "test-1",
 			name: "original",
 			deleted: 0,
-		});
+		};
 
+		const hlc2 = `${beforeTime}_0000_test`;
 		db.query(
-			`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
-			VALUES (?, ?, ?, ?, ?)`,
-		).run("users", "test-1", "test-site", beforeTime, goodRowData);
+			`INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+		).run(hlc2, "users", "test-1", "test-site", beforeTime, JSON.stringify(goodRowData));
 
 		db.close();
 

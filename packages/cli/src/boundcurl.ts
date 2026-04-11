@@ -205,7 +205,7 @@ Usage:
   boundcurl --decrypt --peer ID [options]  Decrypt captured traffic
 
 Request mode:
-  boundcurl POST http://hub:3000/sync/pull --data '{"since_seq":0}'
+  boundcurl POST http://hub:3000/sync/pull --data '{"since_hlc":""}'
   boundcurl POST http://hub:3000/sync/push --data '...' --peer abc123
 
 Decrypt mode:

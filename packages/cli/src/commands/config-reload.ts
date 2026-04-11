@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { getSiteId } from "@bound/core";
+import { createChangeLogEntry, getSiteId } from "@bound/core";
 import { mcpSchema } from "@bound/shared";
 import { openBoundDB } from "../lib/db";
 export interface ConfigReloadArgs {
@@ -90,10 +90,7 @@ export async function runConfigReload(args: ConfigReloadArgs): Promise<void> {
 			}
 			// Write change_log entry
 			const rowData = { key, value: now, modified_at: now };
-			db.query(
-				`INSERT INTO change_log (table_name, row_id, site_id, timestamp, row_data)
-				 VALUES (?, ?, ?, ?, ?)`,
-			).run("cluster_config", key, siteId, now, JSON.stringify(rowData));
+			createChangeLogEntry(db, "cluster_config", key, siteId, rowData);
 		});
 		txFn();
 		console.log("Configuration reload requested successfully.");
