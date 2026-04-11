@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach } from "bun:test";
-import type { TieredEnrichment, StageEntry } from "../summary-extraction";
-import { shedMemoryTiers, type SheddingResult } from "../memory-shedding";
+import { beforeEach, describe, expect, it } from "bun:test";
+import { type SheddingResult, shedMemoryTiers } from "../memory-shedding";
+import type { StageEntry, TieredEnrichment } from "../summary-extraction";
 
 describe("shedMemoryTiers", () => {
 	let mockLogger: { warn: (msg: string) => void; warnings: string[] };
@@ -49,9 +49,7 @@ describe("shedMemoryTiers", () => {
 					createEntry("seed4", "seed", 6),
 					createEntry("seed5", "seed", 7),
 				],
-				L3: Array.from({ length: 10 }, (_, i) =>
-					createEntry(`recency${i + 1}`, "recency", i + 8),
-				),
+				L3: Array.from({ length: 10 }, (_, i) => createEntry(`recency${i + 1}`, "recency", i + 8)),
 			};
 
 			const result = shedMemoryTiers(tiers, ["Task summary"], mockLogger);
@@ -116,12 +114,8 @@ describe("shedMemoryTiers", () => {
 	describe("hierarchical-memory.AC5.3: Never shed L0+L1", () => {
 		it("should preserve all L0 and L1 entries regardless of pressure", () => {
 			const tiers: TieredEnrichment = {
-				L0: Array.from({ length: 5 }, (_, i) =>
-					createEntry(`pinned${i + 1}`, "pinned", i),
-				),
-				L1: Array.from({ length: 3 }, (_, i) =>
-					createEntry(`summary${i + 1}`, "summary", i + 5),
-				),
+				L0: Array.from({ length: 5 }, (_, i) => createEntry(`pinned${i + 1}`, "pinned", i)),
+				L1: Array.from({ length: 3 }, (_, i) => createEntry(`summary${i + 1}`, "summary", i + 5)),
 				L2: [],
 				L3: [],
 			};
@@ -144,12 +138,8 @@ describe("shedMemoryTiers", () => {
 	describe("hierarchical-memory.AC5.4: Log warning when L0+L1 exceed 20", () => {
 		it("should log warning but not truncate when L0+L1 alone exceed 20 entries", () => {
 			const tiers: TieredEnrichment = {
-				L0: Array.from({ length: 15 }, (_, i) =>
-					createEntry(`pinned${i + 1}`, "pinned", i),
-				),
-				L1: Array.from({ length: 10 }, (_, i) =>
-					createEntry(`summary${i + 1}`, "summary", i + 15),
-				),
+				L0: Array.from({ length: 15 }, (_, i) => createEntry(`pinned${i + 1}`, "pinned", i)),
+				L1: Array.from({ length: 10 }, (_, i) => createEntry(`summary${i + 1}`, "summary", i + 15)),
 				L2: [],
 				L3: [],
 			};

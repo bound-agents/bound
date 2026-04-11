@@ -419,6 +419,51 @@ export interface TieredEnrichment {
 }
 
 /**
+ * Formats a single StageEntry for display in memory delta output.
+ * Handles tier-aware formatting: L0 is minimal, L1 includes tier tag,
+ * L2/L3 include source attribution and relative time.
+ *
+ * Exported for use in budget pressure shedding (memory-shedding.ts).
+ */
+export function formatMemoryEntry(entry: StageEntry): string {
+	const valueDisplay =
+		entry.value.length > 200 ? `${safeSlice(entry.value, 0, 200)}...` : entry.value;
+	const stale = stalenessTag(entry.modifiedAt);
+
+	// Handle soft-deleted entries specially (rendered as [forgotten])
+	if (entry.deleted) {
+		const sourceLabel = resolveSource(
+			entry.taskName ?? null,
+			entry.threadId ?? null,
+			entry.threadTitle ?? null,
+			entry.source,
+		);
+		const relTime = relativeTime(entry.modifiedAt);
+		return `- ${entry.key}: [forgotten] (${relTime}, via ${sourceLabel})`;
+	}
+
+	// Different formatting for each tier
+	if (entry.tag === "[pinned]") {
+		// L0: pinned entries - minimal format
+		return `- ${entry.key}: ${valueDisplay} ${entry.tag}`;
+	}
+	if (entry.tag === "[summary]" || entry.tag === "[stale-detail]") {
+		// L1: summary and stale-detail entries
+		return `- ${entry.key}: ${valueDisplay} ${entry.tag}`;
+	}
+	// L2 and L3 entries include source and relative time
+	// Resolve source using taskName/threadId/threadTitle if available, else use source id
+	const sourceLabel = resolveSource(
+		entry.taskName ?? null,
+		entry.threadId ?? null,
+		entry.threadTitle ?? null,
+		entry.source,
+	);
+	const relTime = relativeTime(entry.modifiedAt);
+	return `- ${entry.key}: ${valueDisplay} (${relTime}, via ${sourceLabel}) ${entry.tag}${stale}`;
+}
+
+/**
  * Queries the database for memory entries and tasks that changed since
  * the given baseline timestamp. Returns formatted line arrays for
  * injection into the volatile context block.
@@ -468,63 +513,24 @@ export function buildVolatileEnrichment(
 	// Format memoryDeltaLines in L0→L1→L2→L3 order
 	const memoryDeltaLines: string[] = [];
 
-	// Helper to format a single entry for output
-	const formatEntry = (entry: StageEntry): string => {
-		const valueDisplay =
-			entry.value.length > 200 ? `${safeSlice(entry.value, 0, 200)}...` : entry.value;
-		const stale = stalenessTag(entry.modifiedAt);
-
-		// Handle soft-deleted entries specially (rendered as [forgotten])
-		if (entry.deleted) {
-			const sourceLabel = resolveSource(
-				entry.taskName ?? null,
-				entry.threadId ?? null,
-				entry.threadTitle ?? null,
-				entry.source,
-			);
-			const relTime = relativeTime(entry.modifiedAt);
-			return `- ${entry.key}: [forgotten] (${relTime}, via ${sourceLabel})`;
-		}
-
-		// Different formatting for each tier
-		if (entry.tag === "[pinned]") {
-			// L0: pinned entries - minimal format
-			return `- ${entry.key}: ${valueDisplay} ${entry.tag}`;
-		}
-		if (entry.tag === "[summary]" || entry.tag === "[stale-detail]") {
-			// L1: summary and stale-detail entries
-			return `- ${entry.key}: ${valueDisplay} ${entry.tag}`;
-		}
-		// L2 and L3 entries include source and relative time
-		// Resolve source using taskName/threadId/threadTitle if available, else use source id
-		const sourceLabel = resolveSource(
-			entry.taskName ?? null,
-			entry.threadId ?? null,
-			entry.threadTitle ?? null,
-			entry.source,
-		);
-		const relTime = relativeTime(entry.modifiedAt);
-		return `- ${entry.key}: ${valueDisplay} (${relTime}, via ${sourceLabel}) ${entry.tag}${stale}`;
-	};
-
 	// Inject L0 entries (pinned)
 	for (const entry of l0.entries) {
-		memoryDeltaLines.push(formatEntry(entry));
+		memoryDeltaLines.push(formatMemoryEntry(entry));
 	}
 
 	// Inject L1 entries (summary + stale-detail)
 	for (const entry of l1.entries) {
-		memoryDeltaLines.push(formatEntry(entry));
+		memoryDeltaLines.push(formatMemoryEntry(entry));
 	}
 
 	// Inject L2 entries (graph-seeded)
 	for (const entry of l2.entries) {
-		memoryDeltaLines.push(formatEntry(entry));
+		memoryDeltaLines.push(formatMemoryEntry(entry));
 	}
 
 	// Inject L3 entries (recency)
 	for (const entry of l3.entries) {
-		memoryDeltaLines.push(formatEntry(entry));
+		memoryDeltaLines.push(formatMemoryEntry(entry));
 	}
 
 	// Detect overflow: if L2+L3 was capped by maxMemory, check if more entries exist

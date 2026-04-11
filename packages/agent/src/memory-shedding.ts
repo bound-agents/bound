@@ -1,5 +1,5 @@
-import { safeSlice } from "@bound/shared";
-import type { TieredEnrichment, StageEntry } from "./summary-extraction.js";
+import type { TieredEnrichment } from "./summary-extraction.js";
+import { formatMemoryEntry } from "./summary-extraction.js";
 
 const L2_PRESSURE_CAP = 5;
 const L0_L1_WARNING_THRESHOLD = 20;
@@ -9,18 +9,6 @@ export interface SheddingResult {
 	memoryDeltaLines: string[];
 	taskDigestLines: string[];
 	warning?: string; // set when L0+L1 alone exceed what budget can accommodate
-}
-
-/**
- * Formats a single StageEntry for output in the memory delta section.
- * Uses the same conventions as buildVolatileEnrichment.
- */
-function formatEntry(entry: StageEntry): string {
-	const valueDisplay =
-		entry.value.length > 200 ? `${safeSlice(entry.value, 0, 200)}...` : entry.value;
-
-	// All tiers include the tag for context shedding
-	return `- ${entry.key}: ${valueDisplay} ${entry.tag}`;
 }
 
 /**
@@ -43,12 +31,12 @@ export function shedMemoryTiers(
 
 	// Step 1: Always format L0 entries (pinned)
 	for (const entry of tiers.L0) {
-		memoryDeltaLines.push(formatEntry(entry));
+		memoryDeltaLines.push(formatMemoryEntry(entry));
 	}
 
 	// Step 2: Always format L1 entries (summary, stale-detail)
 	for (const entry of tiers.L1) {
-		memoryDeltaLines.push(formatEntry(entry));
+		memoryDeltaLines.push(formatMemoryEntry(entry));
 	}
 
 	// Check if L0+L1 alone exceed warning threshold
@@ -62,7 +50,7 @@ export function shedMemoryTiers(
 	// Step 3: Reduce L2 to at most L2_PRESSURE_CAP
 	const keptL2 = tiers.L2.slice(0, L2_PRESSURE_CAP);
 	for (const entry of keptL2) {
-		memoryDeltaLines.push(formatEntry(entry));
+		memoryDeltaLines.push(formatMemoryEntry(entry));
 	}
 
 	// Step 4: L3 is shed entirely (no entries added)
