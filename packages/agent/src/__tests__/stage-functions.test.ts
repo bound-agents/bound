@@ -42,6 +42,18 @@ describe("Stage Functions - L0 Pinned Entries", () => {
 				modified_at TEXT NOT NULL,
 				deleted INTEGER DEFAULT 0
 			);
+
+			CREATE TABLE tasks (
+				id TEXT PRIMARY KEY,
+				trigger_spec TEXT,
+				deleted INTEGER DEFAULT 0
+			);
+
+			CREATE TABLE threads (
+				id TEXT PRIMARY KEY,
+				title TEXT,
+				deleted INTEGER DEFAULT 0
+			);
 		`);
 	});
 
@@ -189,6 +201,18 @@ describe("Stage Functions - L1 Summary Entries", () => {
 				relation TEXT NOT NULL,
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
+				deleted INTEGER DEFAULT 0
+			);
+
+			CREATE TABLE tasks (
+				id TEXT PRIMARY KEY,
+				trigger_spec TEXT,
+				deleted INTEGER DEFAULT 0
+			);
+
+			CREATE TABLE threads (
+				id TEXT PRIMARY KEY,
+				title TEXT,
 				deleted INTEGER DEFAULT 0
 			);
 		`);
@@ -438,6 +462,18 @@ describe("loadPinnedEntries function", () => {
 				last_accessed_at TEXT NOT NULL,
 				deleted INTEGER DEFAULT 0
 			);
+
+			CREATE TABLE tasks (
+				id TEXT PRIMARY KEY,
+				trigger_spec TEXT,
+				deleted INTEGER DEFAULT 0
+			);
+
+			CREATE TABLE threads (
+				id TEXT PRIMARY KEY,
+				title TEXT,
+				deleted INTEGER DEFAULT 0
+			);
 		`);
 	});
 
@@ -531,6 +567,18 @@ describe("loadSummaryEntries function", () => {
 				relation TEXT NOT NULL,
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
+				deleted INTEGER DEFAULT 0
+			);
+
+			CREATE TABLE tasks (
+				id TEXT PRIMARY KEY,
+				trigger_spec TEXT,
+				deleted INTEGER DEFAULT 0
+			);
+
+			CREATE TABLE threads (
+				id TEXT PRIMARY KEY,
+				title TEXT,
 				deleted INTEGER DEFAULT 0
 			);
 		`);
@@ -715,6 +763,18 @@ describe("Stage Functions - L2 Graph Entries", () => {
 				weight REAL DEFAULT 1.0,
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
+				deleted INTEGER DEFAULT 0
+			);
+
+			CREATE TABLE tasks (
+				id TEXT PRIMARY KEY,
+				trigger_spec TEXT,
+				deleted INTEGER DEFAULT 0
+			);
+
+			CREATE TABLE threads (
+				id TEXT PRIMARY KEY,
+				title TEXT,
 				deleted INTEGER DEFAULT 0
 			);
 		`);
@@ -970,13 +1030,14 @@ describe("Stage Functions - L3 Recency Entries", () => {
 
 			CREATE TABLE tasks (
 				id TEXT PRIMARY KEY,
-				trigger_spec TEXT NOT NULL,
-				last_run_at TEXT
+				trigger_spec TEXT,
+				deleted INTEGER DEFAULT 0
 			);
 
 			CREATE TABLE threads (
 				id TEXT PRIMARY KEY,
-				title TEXT
+				title TEXT,
+				deleted INTEGER DEFAULT 0
 			);
 		`);
 	});
