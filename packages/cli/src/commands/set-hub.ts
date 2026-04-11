@@ -43,7 +43,8 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 			db.close();
 			process.exit(1);
 		}
-		// Ensure cluster_config table exists
+
+		// Ensure tables exist — boundctl may run before the main process
 		db.exec(`
 			CREATE TABLE IF NOT EXISTS cluster_config (
 				key TEXT PRIMARY KEY,
@@ -51,15 +52,6 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 				modified_at TEXT NOT NULL
 			)
 		`);
-
-		// Ensure host_meta table exists
-		db.exec(`
-			CREATE TABLE IF NOT EXISTS host_meta (
-				key TEXT PRIMARY KEY,
-				value TEXT NOT NULL
-			)
-		`);
-
 		// Ensure relay_outbox table exists
 		db.exec(`
 			CREATE TABLE IF NOT EXISTS relay_outbox (
