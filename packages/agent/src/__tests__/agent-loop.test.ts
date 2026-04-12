@@ -1786,7 +1786,18 @@ describe("AgentLoop", () => {
 					siteId,
 					"remote-hub",
 					"http://hub:3000",
-					JSON.stringify([{ id: "claude-opus", tier: 1, capabilities: { max_context: 200000, streaming: true, tool_use: true, system_prompt: true } }]),
+					JSON.stringify([
+						{
+							id: "claude-opus",
+							tier: 1,
+							capabilities: {
+								max_context: 200000,
+								streaming: true,
+								tool_use: true,
+								system_prompt: true,
+							},
+						},
+					]),
 					null,
 					null,
 					now,
@@ -1798,7 +1809,7 @@ describe("AgentLoop", () => {
 		it("should not crash on context window calculation when model resolves to remote", async () => {
 			// On a spoke with no local backends, getDefault() throws.
 			// The context window calculation must use remote host capabilities instead.
-			const remoteSiteId = "remote-site-" + randomUUID().slice(0, 8);
+			const remoteSiteId = `remote-site-${randomUUID().slice(0, 8)}`;
 			insertRemoteHost(remoteSiteId);
 
 			const controller = new AbortController();
@@ -1820,7 +1831,7 @@ describe("AgentLoop", () => {
 		it("should not crash on summary extraction when no local backend available", async () => {
 			// After the loop completes, extractSummaryAndMemories is called with getDefault()
 			// which throws on spoke nodes. It must gracefully skip or handle missing backends.
-			const remoteSiteId = "remote-site-" + randomUUID().slice(0, 8);
+			const remoteSiteId = `remote-site-${randomUUID().slice(0, 8)}`;
 			insertRemoteHost(remoteSiteId);
 
 			const controller = new AbortController();

@@ -926,9 +926,7 @@ export class AgentLoop {
 
 			// Summary extraction requires a local LLM backend. On spoke nodes with no local
 			// backends, skip extraction — it will be handled by the hub or a node that has one.
-			const extractionBackend = this.modelRouter.tryGetBackend(
-				this.modelRouter.getDefaultId(),
-			);
+			const extractionBackend = this.modelRouter.tryGetBackend(this.modelRouter.getDefaultId());
 			if (extractionBackend) {
 				extractSummaryAndMemories(
 					this.ctx.db,
