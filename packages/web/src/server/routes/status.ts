@@ -196,6 +196,7 @@ export function createStatusRoutes(
 			if (delegation) {
 				const cancelEntry = createRelayOutboxEntry(
 					delegation.targetSiteId,
+					siteId,
 					"cancel",
 					JSON.stringify({}),
 					30_000,
