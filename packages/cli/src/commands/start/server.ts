@@ -218,6 +218,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			};
 			const outboxEntry = createRelayOutboxEntry(
 				targetHost.site_id,
+				appContext.siteId,
 				"process",
 				JSON.stringify(processPayload),
 				5 * 60 * 1000, // 5 minute timeout for delegated loop
