@@ -231,12 +231,16 @@ export class AgentLoop {
 					? this.modelRouter.getEffectiveCapabilities(this.lastModelResolution.modelId)
 					: undefined;
 
-			// Use the resolved model's context window, not the default backend's.
-			// Falls back to default backend caps for remote models or resolution errors.
-			const contextWindow =
-				resolvedCaps?.max_context ||
-				this.modelRouter.getDefault().capabilities().max_context ||
-				8000;
+			// Resolve max_context from local capabilities, remote host, or safe fallback.
+			// On spoke nodes with no local backends, getDefault() would throw, so we
+			// read max_context from the remote host's advertised capabilities instead.
+			let resolvedMaxContext: number | undefined;
+			if (this.lastModelResolution?.kind === "local") {
+				resolvedMaxContext = resolvedCaps?.max_context;
+			} else if (this.lastModelResolution?.kind === "remote") {
+				resolvedMaxContext = this.lastModelResolution.hosts[0]?.capabilities?.max_context;
+			}
+			const contextWindow = resolvedMaxContext || 200_000;
 
 			const toolTokenEstimate = this.config.tools
 				? countTokens(JSON.stringify(this.config.tools))
@@ -920,17 +924,28 @@ export class AgentLoop {
 				aborted: this.aborted,
 			});
 
-			extractSummaryAndMemories(
-				this.ctx.db,
-				this.config.threadId,
-				this.modelRouter.getDefault(),
-				this.ctx.siteId,
-			).catch((err) => {
-				this.ctx.logger.warn("Summary/memory extraction failed", {
-					threadId: this.config.threadId,
-					error: formatError(err),
+			// Summary extraction requires a local LLM backend. On spoke nodes with no local
+			// backends, skip extraction — it will be handled by the hub or a node that has one.
+			const extractionBackend = this.modelRouter.tryGetBackend(
+				this.modelRouter.getDefaultId(),
+			);
+			if (extractionBackend) {
+				extractSummaryAndMemories(
+					this.ctx.db,
+					this.config.threadId,
+					extractionBackend,
+					this.ctx.siteId,
+				).catch((err) => {
+					this.ctx.logger.warn("Summary/memory extraction failed", {
+						threadId: this.config.threadId,
+						error: formatError(err),
+					});
 				});
-			});
+			} else {
+				this.ctx.logger.info("Skipping summary extraction — no local backend available", {
+					threadId: this.config.threadId,
+				});
+			}
 
 			return {
 				messagesCreated: this.messagesCreated,
