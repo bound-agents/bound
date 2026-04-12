@@ -335,6 +335,7 @@ export function buildIdempotencyKey(
 
 export function createRelayOutboxEntry(
 	targetSiteId: string,
+	sourceSiteId: string,
 	kind: string,
 	payload: string,
 	timeoutMs: number,
@@ -345,7 +346,7 @@ export function createRelayOutboxEntry(
 	const now = new Date();
 	return {
 		id: crypto.randomUUID(),
-		source_site_id: null,
+		source_site_id: sourceSiteId,
 		target_site_id: targetSiteId,
 		kind,
 		ref_id: refId ?? null,

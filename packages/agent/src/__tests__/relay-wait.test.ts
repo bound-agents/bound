@@ -210,6 +210,7 @@ describe("RELAY_WAIT polling and failover logic", () => {
 
 		const cancelEntry = createRelayOutboxEntry(
 			currentHost.site_id,
+			"local-site",
 			"cancel",
 			JSON.stringify({}),
 			30_000,
@@ -249,6 +250,7 @@ describe("RELAY_WAIT polling and failover logic", () => {
 
 		const cancelEntry = createRelayOutboxEntry(
 			currentHost.site_id,
+			"local-site",
 			"cancel",
 			JSON.stringify({}),
 			30_000,
@@ -416,6 +418,7 @@ describe("RELAY_WAIT polling and failover logic", () => {
 		// 1. Create and write cancel entry (as agent loop would do on abort)
 		const cancelEntry = createRelayOutboxEntry(
 			hostId,
+			"local-site",
 			"cancel",
 			JSON.stringify({}),
 			30_000,

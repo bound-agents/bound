@@ -863,12 +863,14 @@ describe("Relay Router", () => {
 		it("creates relay outbox entry with all required fields", () => {
 			const entry = createRelayOutboxEntry(
 				"target-site",
+				"source-site",
 				"tool_call",
 				JSON.stringify({ test: "payload" }),
 				30_000,
 			);
 
 			expect(entry.target_site_id).toBe("target-site");
+			expect(entry.source_site_id).toBe("source-site");
 			expect(entry.kind).toBe("tool_call");
 			expect(entry.id).toBeDefined();
 			expect(entry.created_at).toBeDefined();
@@ -877,7 +879,13 @@ describe("Relay Router", () => {
 		});
 
 		it("sets expires_at to created_at + timeoutMs", () => {
-			const entry = createRelayOutboxEntry("target-site", "tool_call", "payload", 30_000);
+			const entry = createRelayOutboxEntry(
+				"target-site",
+				"source-site",
+				"tool_call",
+				"payload",
+				30_000,
+			);
 
 			const createdTime = new Date(entry.created_at).getTime();
 			const expiresTime = new Date(entry.expires_at).getTime();
@@ -890,7 +898,14 @@ describe("Relay Router", () => {
 
 		it("uses provided refId if given", () => {
 			const refId = "custom-ref-id";
-			const entry = createRelayOutboxEntry("target-site", "tool_call", "payload", 30_000, refId);
+			const entry = createRelayOutboxEntry(
+				"target-site",
+				"source-site",
+				"tool_call",
+				"payload",
+				30_000,
+				refId,
+			);
 			expect(entry.ref_id).toBe(refId);
 		});
 
@@ -898,6 +913,7 @@ describe("Relay Router", () => {
 			const key = "custom-key";
 			const entry = createRelayOutboxEntry(
 				"target-site",
+				"source-site",
 				"tool_call",
 				"payload",
 				30_000,
@@ -908,7 +924,13 @@ describe("Relay Router", () => {
 		});
 
 		it("generates UUID for id field", () => {
-			const entry = createRelayOutboxEntry("target-site", "tool_call", "payload", 30_000);
+			const entry = createRelayOutboxEntry(
+				"target-site",
+				"source-site",
+				"tool_call",
+				"payload",
+				30_000,
+			);
 			// UUID v4 format check
 			expect(entry.id).toMatch(
 				/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,

@@ -1028,6 +1028,7 @@ export class AgentLoop {
 				const currentHost = eligibleHosts[currentHostIndex];
 				const cancelEntry = createRelayOutboxEntry(
 					currentHost.site_id,
+					this.ctx.siteId,
 					"cancel",
 					JSON.stringify({}),
 					30_000,
@@ -1106,6 +1107,7 @@ export class AgentLoop {
 				});
 				const nextEntry = createRelayOutboxEntry(
 					nextHost.site_id,
+					this.ctx.siteId,
 					"tool_call",
 					nextPayload,
 					timeoutMs,
@@ -1151,6 +1153,7 @@ export class AgentLoop {
 				const serializedPayload = JSON.stringify(payload);
 				const outboxEntry = createRelayOutboxEntry(
 					host.site_id,
+					this.ctx.siteId,
 					"inference",
 					serializedPayload,
 					PER_HOST_TIMEOUT_MS,
@@ -1183,6 +1186,7 @@ export class AgentLoop {
 					if (this.aborted) {
 						const cancelEntry = createRelayOutboxEntry(
 							host.site_id,
+							this.ctx.siteId,
 							"cancel",
 							JSON.stringify({}),
 							30_000,
