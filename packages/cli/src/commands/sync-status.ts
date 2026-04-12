@@ -22,6 +22,7 @@ interface HostRow {
 	site_id: string;
 	host_name: string;
 	online_at: string | null;
+	modified_at: string | null;
 }
 
 export async function runSyncStatus(_args: SyncStatusArgs): Promise<void> {
@@ -50,15 +51,18 @@ export async function runSyncStatus(_args: SyncStatusArgs): Promise<void> {
 
 		// Query hosts
 		const hosts = db
-			.query("SELECT site_id, host_name, online_at FROM hosts WHERE deleted = 0")
+			.query("SELECT site_id, host_name, online_at, modified_at FROM hosts WHERE deleted = 0")
 			.all() as HostRow[];
 
 		if (hosts.length > 0) {
 			console.log("Registered hosts:");
 			for (const host of hosts) {
 				const siteIdShort = host.site_id.substring(0, 8);
-				const onlineStatus = host.online_at ? new Date(host.online_at).toLocaleString() : "never";
-				console.log(`  ${host.host_name} (${siteIdShort}...) - last online: ${onlineStatus}`);
+				const startedAt = host.online_at ? new Date(host.online_at).toLocaleString() : "never";
+				const lastSeen = host.modified_at ? new Date(host.modified_at).toLocaleString() : "never";
+				console.log(
+					`  ${host.host_name} (${siteIdShort}...) - last seen: ${lastSeen}, started: ${startedAt}`,
+				);
 			}
 			console.log();
 		} else {
