@@ -209,13 +209,13 @@ describe("Quiescence note injection", () => {
 				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
 			) VALUES (
 				?, 'heartbeat', 'claimed', ?, NULL, ?,
-				'test-host', ?, NULL, NULL, NULL,
+				?, ?, NULL, NULL, NULL,
 				0, NULL, NULL, NULL, 0,
 				'status', NULL, 0, 5,
 				0, 0, 0,
 				NULL, NULL, NULL, ?, 'system', ?, 0
 			)`,
-			[taskId, triggerSpec, tid, now, now, now],
+			[taskId, triggerSpec, tid, siteId, now, now, now],
 		);
 
 		return { taskId, threadId: tid };
@@ -251,13 +251,13 @@ describe("Quiescence note injection", () => {
 				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
 			) VALUES (
 				?, 'cron', 'claimed', ?, NULL, ?,
-				'test-host', ?, NULL, ?, NULL,
+				?, ?, NULL, ?, NULL,
 				0, NULL, NULL, NULL, 0,
 				'status', NULL, 0, 5,
 				0, 0, 0,
 				NULL, NULL, NULL, ?, 'system', ?, 0
 			)`,
-			[taskId, triggerSpec, tid, now, now, now, now],
+			[taskId, triggerSpec, tid, siteId, now, now, now, now],
 		);
 
 		return { taskId, threadId: tid };
@@ -567,13 +567,13 @@ describe("Quiescence note injection", () => {
 				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
 			) VALUES (
 				?, 'heartbeat', 'claimed', ?, NULL, ?,
-				'test-host', ?, NULL, NULL, NULL,
+				?, ?, NULL, NULL, NULL,
 				0, NULL, NULL, NULL, 0,
 				'status', NULL, 0, 5,
 				0, 0, 0,
 				NULL, NULL, NULL, ?, 'system', ?, 0
 			)`,
-			[taskId, "invalid json", tid, now, now, now],
+			[taskId, "invalid json", tid, siteId, now, now, now],
 		);
 
 		// Simulate 2 hours idle

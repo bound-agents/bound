@@ -1979,4 +1979,33 @@ describe("AgentLoop", () => {
 			expect(backend.getCallCount()).toBe(2); // tool_call turn + final text turn
 		});
 	});
+
+	it("persists messages with siteId as host_origin, not hostName", async () => {
+		// After this fix, host_origin should be the stable site_id (survives
+		// container restarts) rather than the ephemeral hostname.
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("Hello from stable origin.");
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+		// ctx has hostName: "test-host" and siteId: "test-site-id"
+
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		await agentLoop.run();
+
+		const msgs = db
+			.query("SELECT host_origin FROM messages WHERE thread_id = ?")
+			.all(threadId) as Array<{ host_origin: string }>;
+
+		expect(msgs.length).toBeGreaterThan(0);
+		for (const msg of msgs) {
+			// Must be site_id, NOT hostname
+			expect(msg.host_origin).toBe("test-site-id");
+			expect(msg.host_origin).not.toBe("test-host");
+		}
+	});
 });

@@ -90,7 +90,7 @@ describe("R-O3: Task output delivered to original scheduling thread", () => {
 				now,
 				now,
 				now,
-				"test-host",
+				"test-site-123",
 				now,
 				null,
 				null,
@@ -249,7 +249,7 @@ describe("R-O3: Task output delivered to original scheduling thread", () => {
 		// Update task to be claimed
 		const now = new Date().toISOString();
 		db.run("UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ?", [
-			"test-host",
+			"test-site-123",
 			now,
 			taskId,
 		]);

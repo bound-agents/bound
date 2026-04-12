@@ -425,7 +425,7 @@ export class Scheduler {
 					.query(
 						"UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ? AND status = 'pending'",
 					)
-					.run(this.ctx.hostName, claimedAt, task.id);
+					.run(this.ctx.siteId, claimedAt, task.id);
 				if (result.changes === 0) {
 					this.ctx.logger.info("[scheduler] Task already claimed by another host", {
 						taskId: task.id,
@@ -441,7 +441,7 @@ export class Scheduler {
 				`SELECT * FROM tasks WHERE status = 'claimed' AND claimed_by = ?
 			 ORDER BY created_at ASC LIMIT 10`,
 			)
-			.all(this.ctx.hostName) as Task[];
+			.all(this.ctx.siteId) as Task[];
 
 		for (const task of claimedTasks) {
 			// Check daily budget for autonomous tasks (R-U35)
@@ -499,7 +499,7 @@ export class Scheduler {
 			.query(
 				"UPDATE tasks SET status = 'running', lease_id = ?, heartbeat_at = ? WHERE id = ? AND status = 'claimed' AND claimed_by = ?",
 			)
-			.run(leaseId, now, task.id, this.ctx.hostName);
+			.run(leaseId, now, task.id, this.ctx.siteId);
 		const runChanges = this.ctx.db.query("SELECT changes() as count").get() as {
 			count: number;
 		};
@@ -579,7 +579,7 @@ export class Scheduler {
 							id: threadId,
 							user_id: this.operatorUserId,
 							interface: "scheduler",
-							host_origin: this.ctx.hostName,
+							host_origin: this.ctx.siteId,
 							color: 0,
 							title: null,
 							summary: null,
@@ -620,7 +620,7 @@ export class Scheduler {
 						tool_name: null,
 						created_at: taskNow,
 						modified_at: taskNow,
-						host_origin: this.ctx.hostName,
+						host_origin: this.ctx.siteId,
 						deleted: 0,
 					},
 					this.ctx.siteId,
@@ -646,7 +646,7 @@ export class Scheduler {
 						tool_name: null,
 						created_at: taskNow,
 						modified_at: taskNow,
-						host_origin: this.ctx.hostName,
+						host_origin: this.ctx.siteId,
 						deleted: 0,
 					},
 					this.ctx.siteId,
@@ -665,7 +665,7 @@ export class Scheduler {
 						tool_name: toolCallId,
 						created_at: taskNow,
 						modified_at: taskNow,
-						host_origin: this.ctx.hostName,
+						host_origin: this.ctx.siteId,
 						deleted: 0,
 					},
 					this.ctx.siteId,
@@ -710,7 +710,7 @@ export class Scheduler {
 								tool_name: null,
 								created_at: taskNow,
 								modified_at: taskNow,
-								host_origin: this.ctx.hostName,
+								host_origin: this.ctx.siteId,
 								deleted: 0,
 							},
 							this.ctx.siteId,
@@ -899,7 +899,7 @@ export class Scheduler {
 									tool_name: null,
 									created_at: now,
 									modified_at: now,
-									host_origin: this.ctx.hostName,
+									host_origin: this.ctx.siteId,
 									deleted: 0,
 								},
 								this.ctx.siteId,
@@ -952,7 +952,7 @@ export class Scheduler {
 						.query(
 							"UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ? AND status = 'pending'",
 						)
-						.run(this.ctx.hostName, claimedAt, task.id);
+						.run(this.ctx.siteId, claimedAt, task.id);
 				}
 			}
 		} finally {

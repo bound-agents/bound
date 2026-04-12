@@ -205,7 +205,7 @@ export class AgentLoop {
 							threadId: this.config.threadId,
 							role: "alert",
 							content: warningMsg,
-							hostOrigin: this.ctx.hostName,
+							hostOrigin: this.ctx.siteId,
 						},
 						this.ctx.siteId,
 					);
@@ -382,7 +382,7 @@ export class AgentLoop {
 									modified_at: new Date().toISOString(),
 									deleted: 0,
 									created_by: this.config.userId,
-									host_origin: this.ctx.hostName,
+									host_origin: this.ctx.siteId,
 								},
 								this.ctx.siteId,
 							);
@@ -505,7 +505,7 @@ export class AgentLoop {
 											threadId: this.config.threadId,
 											role: "system",
 											content: switchMsg,
-											hostOrigin: this.ctx.hostName,
+											hostOrigin: this.ctx.siteId,
 										},
 										this.ctx.siteId,
 									);
@@ -547,7 +547,7 @@ export class AgentLoop {
 							threadId: this.config.threadId,
 							role: "alert",
 							content: `Error: ${errorMsg}`,
-							hostOrigin: this.ctx.hostName,
+							hostOrigin: this.ctx.siteId,
 						},
 						this.ctx.siteId,
 					);
@@ -591,7 +591,7 @@ export class AgentLoop {
 								content:
 									"[Turn cancelled] The previous inference was cancelled before it could complete. " +
 									"No response was generated for the last user message.",
-								hostOrigin: this.ctx.hostName,
+								hostOrigin: this.ctx.siteId,
 							},
 							this.ctx.siteId,
 						);
@@ -775,7 +775,7 @@ export class AgentLoop {
 							threadId: this.config.threadId,
 							role: "tool_call",
 							content: JSON.stringify(toolCallBlocks),
-							hostOrigin: this.ctx.hostName,
+							hostOrigin: this.ctx.siteId,
 							modelId: resolvedModelId,
 						},
 						this.ctx.siteId,
@@ -792,7 +792,7 @@ export class AgentLoop {
 								threadId: this.config.threadId,
 								role: "tool_result",
 								content,
-								hostOrigin: this.ctx.hostName,
+								hostOrigin: this.ctx.siteId,
 								modelId: resolvedModelId,
 								toolName: toolCall.id,
 								exitCode,
@@ -817,7 +817,7 @@ export class AgentLoop {
 								threadId: this.config.threadId,
 								role: "assistant",
 								content: parsed.textContent,
-								hostOrigin: this.ctx.hostName,
+								hostOrigin: this.ctx.siteId,
 								modelId: resolvedModelId,
 							},
 							this.ctx.siteId,
@@ -860,7 +860,7 @@ export class AgentLoop {
 							threadId: this.config.threadId,
 							role: "assistant",
 							content: assistantContent,
-							hostOrigin: this.ctx.hostName,
+							hostOrigin: this.ctx.siteId,
 							modelId: resolvedModelId,
 						},
 						this.ctx.siteId,
@@ -973,7 +973,7 @@ export class AgentLoop {
 						threadId: this.config.threadId,
 						role: "alert",
 						content: `Agent loop error: ${errorMsg}`,
-						hostOrigin: this.ctx.hostName,
+						hostOrigin: this.ctx.siteId,
 					},
 					this.ctx.siteId,
 				);
