@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { readUndelivered, readUnprocessed, writeOutbox } from "@bound/core";
+import { readInboxByStreamId, readUndelivered, readUnprocessed, writeOutbox } from "@bound/core";
 import type { KeyringConfig } from "@bound/shared";
 import { ensureKeypair, exportPublicKey } from "../crypto.js";
 import type { RelayExecutor } from "../relay-executor.js";
@@ -522,6 +522,159 @@ describe("relay integration tests", () => {
 		// Verify no duplicate was inserted
 		inboxB = readUnprocessed(instanceB.db);
 		expect(inboxB.length).toBe(initialCount);
+	});
+
+	it("response-kind entries targeting hub are inserted into hub relay_inbox (not executed)", async () => {
+		// Regression: Before fix, stream_chunk/stream_end/result entries targeting the hub
+		// were routed through executeImmediate() which doesn't handle response kinds,
+		// causing them to be silently dropped. The hub's polling loop (RELAY_STREAM,
+		// RELAY_WAIT) reads from relay_inbox and would never see the chunks.
+		expect(instanceB.syncClient).toBeDefined();
+
+		const streamId = crypto.randomUUID();
+		const now = new Date().toISOString();
+		const expiresAt = new Date(Date.now() + 60000).toISOString();
+
+		// Spoke writes stream_chunk targeting the HUB (not another spoke)
+		writeOutbox(instanceB.db, {
+			id: crypto.randomUUID(),
+			source_site_id: instanceB.siteId,
+			target_site_id: instanceA.siteId, // hub's siteId
+			kind: "stream_chunk",
+			ref_id: null,
+			idempotency_key: null,
+			stream_id: streamId,
+			payload: JSON.stringify({ chunks: [{ type: "text", content: "hello" }], seq: 0 }),
+			created_at: now,
+			expires_at: expiresAt,
+		});
+
+		// Also write a stream_end
+		writeOutbox(instanceB.db, {
+			id: crypto.randomUUID(),
+			source_site_id: instanceB.siteId,
+			target_site_id: instanceA.siteId,
+			kind: "stream_end",
+			ref_id: null,
+			idempotency_key: null,
+			stream_id: streamId,
+			payload: JSON.stringify({
+				chunks: [{ type: "done", usage: { input_tokens: 10, output_tokens: 5 } }],
+				seq: 1,
+			}),
+			created_at: now,
+			expires_at: expiresAt,
+		});
+
+		// Spoke syncs — hub should store entries in relay_inbox, not execute them
+		const syncResult = await instanceB.syncClient?.syncCycle();
+		expect(syncResult?.ok).toBe(true);
+
+		// Verify spoke's outbox is empty (delivered)
+		expect(readUndelivered(instanceB.db)).toHaveLength(0);
+
+		// Critical assertion: entries must be in hub's relay_inbox with matching stream_id
+		const hubInbox = readInboxByStreamId(instanceA.db, streamId);
+		expect(hubInbox.length).toBe(2);
+
+		const chunkEntry = hubInbox.find((e) => e.kind === "stream_chunk");
+		const endEntry = hubInbox.find((e) => e.kind === "stream_end");
+		expect(chunkEntry).toBeDefined();
+		expect(endEntry).toBeDefined();
+		expect(chunkEntry?.stream_id).toBe(streamId);
+		expect(endEntry?.stream_id).toBe(streamId);
+		expect(chunkEntry?.source_site_id).toBe(instanceB.siteId);
+
+		// Verify the payload is preserved
+		const chunkPayload = JSON.parse(chunkEntry?.payload ?? "");
+		expect(chunkPayload.chunks[0].content).toBe("hello");
+	});
+
+	it("result and error entries targeting hub are inserted into hub relay_inbox", async () => {
+		// Covers the same routing fix for non-streaming response kinds
+		expect(instanceB.syncClient).toBeDefined();
+
+		const now = new Date().toISOString();
+		const expiresAt = new Date(Date.now() + 60000).toISOString();
+		const refId = crypto.randomUUID();
+
+		// Spoke writes a "result" entry targeting the hub
+		writeOutbox(instanceB.db, {
+			id: crypto.randomUUID(),
+			source_site_id: instanceB.siteId,
+			target_site_id: instanceA.siteId,
+			kind: "result",
+			ref_id: refId,
+			idempotency_key: null,
+			stream_id: null,
+			payload: JSON.stringify({ data: "tool result from spoke" }),
+			created_at: now,
+			expires_at: expiresAt,
+		});
+
+		const syncResult = await instanceB.syncClient?.syncCycle();
+		expect(syncResult?.ok).toBe(true);
+
+		// Hub's relay_inbox should contain the result
+		const hubInbox = readUnprocessed(instanceA.db);
+		const resultEntry = hubInbox.find((e) => e.kind === "result" && e.ref_id === refId);
+		expect(resultEntry).toBeDefined();
+		expect(resultEntry?.source_site_id).toBe(instanceB.siteId);
+		expect(JSON.parse(resultEntry?.payload ?? "").data).toBe("tool result from spoke");
+	});
+
+	it("request-kind entries targeting hub still go through executor (not inbox)", async () => {
+		// Verify the fix didn't break hub-local execution of request kinds.
+		// Request kinds (tool_call, etc.) targeting the hub must still be executed.
+		const executorCalls: string[] = [];
+		const executor: RelayExecutor = async (request, hubSiteId) => {
+			executorCalls.push(request.kind);
+			return [
+				{
+					id: crypto.randomUUID(),
+					source_site_id: hubSiteId,
+					kind: "result",
+					ref_id: request.id,
+					idempotency_key: null,
+					stream_id: null,
+					payload: JSON.stringify({ executed: true }),
+					expires_at: request.expires_at,
+					received_at: new Date().toISOString(),
+					processed: 0,
+				},
+			];
+		};
+
+		await instanceA.cleanup();
+		await instanceB.cleanup();
+		await setupInstances(executor);
+
+		const now = new Date().toISOString();
+		const expiresAt = new Date(Date.now() + 60000).toISOString();
+
+		writeOutbox(instanceB.db, {
+			id: crypto.randomUUID(),
+			source_site_id: instanceB.siteId,
+			target_site_id: instanceA.siteId,
+			kind: "tool_call",
+			ref_id: null,
+			idempotency_key: null,
+			stream_id: null,
+			payload: JSON.stringify({ tool: "test", args: {} }),
+			created_at: now,
+			expires_at: expiresAt,
+		});
+
+		const syncResult = await instanceB.syncClient?.syncCycle();
+		expect(syncResult?.ok).toBe(true);
+
+		// Executor was called for request kind
+		expect(executorCalls).toContain("tool_call");
+
+		// Spoke receives result via inboxForRequester (not hub's relay_inbox)
+		const spokeInbox = readUnprocessed(instanceB.db);
+		const resultEntry = spokeInbox.find((e) => e.kind === "result");
+		expect(resultEntry).toBeDefined();
 	});
 
 	it("stream_id round-trip - spoke writes outbox with stream_id, hub routes to target, target receives with same stream_id", async () => {

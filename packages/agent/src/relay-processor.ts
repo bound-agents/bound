@@ -991,6 +991,9 @@ export class RelayProcessor {
 			chunkBuffer = [];
 			bufferBytes = 0;
 			lastFlushTime = Date.now();
+			// Trigger sync immediately so chunks reach the requester without waiting
+			// for the next scheduled sync cycle (up to 60s delay otherwise).
+			this.eventBus?.emit("sync:trigger", { reason: "inference-stream-flush" });
 		};
 
 		try {

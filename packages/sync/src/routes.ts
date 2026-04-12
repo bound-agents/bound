@@ -1,7 +1,13 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertInbox, markDelivered, readUndelivered, writeOutbox } from "@bound/core";
-import type { KeyringConfig, Logger, RelayInboxEntry, TypedEventEmitter } from "@bound/shared";
+import {
+	type KeyringConfig,
+	type Logger,
+	RELAY_RESPONSE_KINDS,
+	type RelayInboxEntry,
+	type TypedEventEmitter,
+} from "@bound/shared";
 import { Hono } from "hono";
 import { type RelayRequest, type RelayResponse, fetchInboundChangeset } from "./changeset.js";
 import { type EagerPushConfig, eagerPushToSpoke } from "./eager-push.js";
@@ -174,10 +180,29 @@ export function createSyncRoutes(
 					}
 				}
 				if (entry.target_site_id === siteId) {
-					// Hub-local execution
-					const results = await executor(entry, siteId);
-					for (const result of results) {
-						inboxForRequester.push(result);
+					// Response kinds (stream_chunk, stream_end, result, error, status_forward)
+					// targeting the hub must go into the hub's relay_inbox so the polling loop
+					// (e.g. RELAY_STREAM, RELAY_WAIT) can read them — NOT through the executor.
+					if ((RELAY_RESPONSE_KINDS as readonly string[]).includes(entry.kind)) {
+						const inboxEntry: RelayInboxEntry = {
+							id: randomUUID(),
+							source_site_id: requesterSiteId,
+							kind: entry.kind,
+							ref_id: entry.ref_id ?? entry.id,
+							idempotency_key: entry.idempotency_key,
+							stream_id: entry.stream_id ?? null,
+							payload: entry.payload,
+							expires_at: entry.expires_at,
+							received_at: new Date().toISOString(),
+							processed: 0,
+						};
+						insertInbox(db, inboxEntry);
+					} else {
+						// Hub-local execution for request kinds
+						const results = await executor(entry, siteId);
+						for (const result of results) {
+							inboxForRequester.push(result);
+						}
 					}
 				} else {
 					// Store for target spoke — write to hub's own outbox for delivery
