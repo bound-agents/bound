@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { insertRow, writeOutbox } from "@bound/core";
 import type { ContentBlock, ToolDefinition } from "@bound/llm";
 import {
@@ -688,6 +690,36 @@ export class DiscordConnector implements PlatformConnector {
 				"SELECT value FROM cluster_config WHERE key = 'cluster_hub' LIMIT 1",
 			)
 			.get();
-		return hub?.value ?? this.siteId; // Fall back to self in single-host mode
+		if (!hub?.value) return this.siteId; // Single-host mode
+
+		const hubValue = hub.value;
+
+		// Check if the value is already a valid site_id (direct lookup)
+		const directHost = this.db
+			.query<{ site_id: string }, [string]>(
+				"SELECT site_id FROM hosts WHERE site_id = ? AND deleted = 0 LIMIT 1",
+			)
+			.get(hubValue);
+		if (directHost) return directHost.site_id;
+
+		// cluster_hub stores a URL (e.g. "https://host.example.com"), not a site_id.
+		// Resolve by reading keyring.json and matching the URL to a site_id.
+		try {
+			const keyringPath = resolve("config", "keyring.json");
+			if (existsSync(keyringPath)) {
+				const keyring = JSON.parse(readFileSync(keyringPath, "utf-8")) as {
+					hosts: Record<string, { url: string }>;
+				};
+				for (const [siteId, hostConfig] of Object.entries(keyring.hosts)) {
+					if (hostConfig.url === hubValue) return siteId;
+				}
+			}
+		} catch {
+			// Non-fatal: keyring read failure
+		}
+
+		// Last resort: self (intake will be processed locally)
+		this.logger.warn("Could not resolve hub site_id from cluster_hub", { hubValue });
+		return this.siteId;
 	}
 }
