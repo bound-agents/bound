@@ -6,7 +6,7 @@
 export { type StartArgs, ensureMcpUser } from "./bootstrap.js";
 export { buildMcpToolDefinitions } from "./mcp.js";
 
-import { ThreadExecutor } from "@bound/core";
+import { ThreadExecutor, startHostHeartbeat } from "@bound/core";
 import { createAgentLoopFactory } from "./agent-factory.js";
 import { initBootstrap } from "./bootstrap.js";
 import type { StartArgs } from "./bootstrap.js";
@@ -95,7 +95,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// Back-patch the transport reference for eager push
 	transportRef = transport;
 
-	// Phase 9: Cron seeding, heartbeat, scheduler
+	// Phase 9: Host heartbeat, cron seeding, scheduler
+	const heartbeatHandle = startHostHeartbeat(appContext.db, appContext.siteId);
 	const { schedulerHandle } = agentLoopFactory
 		? initScheduler(appContext, agentLoopFactory, modelRouter, sandbox)
 		: { schedulerHandle: null };
@@ -112,6 +113,7 @@ Press Ctrl+C to stop.
 
 	// Keep process alive until shutdown signal
 	await setupGracefulShutdown(appContext, {
+		heartbeatHandle,
 		schedulerHandle,
 		syncLoopHandle,
 		pruningHandle,

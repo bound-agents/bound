@@ -190,54 +190,8 @@ describe("PlatformLeaderElection", () => {
 		});
 	});
 
-	describe("AC5.4: Leader writes heartbeat to hosts.modified_at", () => {
-		it("should update hosts.modified_at periodically", async () => {
-			const config: PlatformConnectorConfig = {
-				platform: "discord",
-				failover_threshold_ms: 50,
-				allowed_users: [],
-			};
-
-			const siteId = "site-1";
-			const now = new Date().toISOString();
-
-			// Pre-insert host row
-			db.run(
-				"INSERT INTO hosts (site_id, host_name, sync_url, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[siteId, "host-1", "https://localhost:3000", now, 0],
-			);
-
-			const election = new PlatformLeaderElection(mockConnector, config, db, siteId);
-
-			await election.start();
-			expect(election.isLeader()).toBe(true);
-
-			// Record initial modified_at
-			const initial = db
-				.query<{ modified_at: string }, [string]>(
-					"SELECT modified_at FROM hosts WHERE site_id = ? LIMIT 1",
-				)
-				.get(siteId);
-			expect(initial).toBeDefined();
-			const initialTime = new Date(initial?.modified_at || "").getTime();
-
-			// Wait for heartbeat interval (failover_threshold_ms / 3 + buffer)
-			await new Promise((resolve) => setTimeout(resolve, 100));
-
-			// Check that modified_at has been updated
-			const updated = db
-				.query<{ modified_at: string }, [string]>(
-					"SELECT modified_at FROM hosts WHERE site_id = ? LIMIT 1",
-				)
-				.get(siteId);
-			expect(updated).toBeDefined();
-			const updatedTime = new Date(updated?.modified_at || "").getTime();
-
-			expect(updatedTime).toBeGreaterThan(initialTime);
-
-			election.stop();
-		});
-	});
+	// AC5.4 (hosts.modified_at heartbeat) is now handled by startHostHeartbeat() in @bound/core.
+	// See packages/core/src/__tests__/host-heartbeat.test.ts for coverage.
 
 	describe("stop() cleanup", () => {
 		it("should clear timers and call disconnect() on stop", async () => {

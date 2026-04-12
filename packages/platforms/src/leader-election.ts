@@ -3,6 +3,9 @@ import { createChangeLogEntry } from "@bound/core";
 import type { PlatformConnectorConfig } from "@bound/shared";
 import type { PlatformConnector } from "./connector.js";
 
+// NOTE: Host heartbeat (hosts.modified_at) is handled by startHostHeartbeat() in @bound/core.
+// This class only manages platform leader election via cluster_config.
+
 /**
  * Manages which host is the active connector leader for one platform.
  *
@@ -11,12 +14,11 @@ import type { PlatformConnector } from "./connector.js";
  *   - If this host is already leader, it reclaims (idempotent).
  *   - If another host is leader, enter standby and poll for staleness.
  *
- * Heartbeat: leader bumps hosts.modified_at every failover_threshold_ms / 3.
  * Failover: standby promotes if leader's modified_at is older than failover_threshold_ms.
+ * (Host heartbeat is handled separately by startHostHeartbeat in @bound/core.)
  */
 export class PlatformLeaderElection {
 	private isLeaderFlag = false;
-	private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 	private stalenessTimer: ReturnType<typeof setInterval> | null = null;
 
 	constructor(
@@ -41,10 +43,6 @@ export class PlatformLeaderElection {
 	}
 
 	stop(): void {
-		if (this.heartbeatTimer) {
-			clearInterval(this.heartbeatTimer);
-			this.heartbeatTimer = null;
-		}
 		if (this.stalenessTimer) {
 			clearInterval(this.stalenessTimer);
 			this.stalenessTimer = null;
@@ -81,26 +79,6 @@ export class PlatformLeaderElection {
 
 		this.isLeaderFlag = true;
 		await this.connector.connect(this.hostBaseUrl);
-
-		// Heartbeat: bump hosts.modified_at every failover_threshold_ms / 3.
-		// The hosts table PK is site_id (not id), so updateRow() cannot be used.
-		// Use manual SQL + change_log entry following the same pattern as claimLeadership().
-		const heartbeatInterval = Math.floor(this.config.failover_threshold_ms / 3);
-		this.heartbeatTimer = setInterval(() => {
-			try {
-				const ts = new Date().toISOString();
-				this.db.transaction(() => {
-					this.db.run("UPDATE hosts SET modified_at = ? WHERE site_id = ?", [ts, this.siteId]);
-					// Read full row for changelog — partial row_data breaks LWW INSERT on peers
-					const fullRow = this.db
-						.query("SELECT * FROM hosts WHERE site_id = ?")
-						.get(this.siteId) as Record<string, unknown>;
-					createChangeLogEntry(this.db, "hosts", this.siteId, this.siteId, fullRow);
-				})();
-			} catch {
-				// DB write failure is non-fatal — next heartbeat will retry
-			}
-		}, heartbeatInterval);
 	}
 
 	private startStalenessCheck(leaderKey: string): void {

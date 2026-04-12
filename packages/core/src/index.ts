@@ -65,3 +65,4 @@ export {
 	type DispatchEntry,
 } from "./dispatch";
 export { ThreadExecutor, type ExecutorRunResult, type ExecutorOptions } from "./thread-executor";
+export { startHostHeartbeat, type HeartbeatOptions } from "./host-heartbeat";
