@@ -21,12 +21,15 @@ export function createThreadsRoutes(
 			const threads = db
 				.query(
 					`
-				SELECT * FROM threads
-				WHERE deleted = 0 AND user_id = ?
-				ORDER BY last_message_at DESC
+				SELECT t.*,
+					(SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id AND m.deleted = 0) as messageCount,
+					(SELECT tu.model_id FROM turns tu WHERE tu.thread_id = t.id ORDER BY tu.id DESC LIMIT 1) as lastModel
+				FROM threads t
+				WHERE t.deleted = 0 AND t.user_id = ?
+				ORDER BY t.last_message_at DESC
 			`,
 				)
-				.all(webUserId) as Thread[];
+				.all(webUserId) as Array<Thread & { messageCount: number; lastModel: string | null }>;
 
 			return c.json(threads);
 		} catch (error) {
