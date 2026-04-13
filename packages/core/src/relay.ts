@@ -22,6 +22,9 @@ export function writeOutbox(
 	entry: Omit<RelayOutboxEntry, "delivered">,
 	maxPayloadBytes: number = MAX_PAYLOAD_BYTES_DEFAULT,
 ): void {
+	if (!entry.source_site_id) {
+		throw new Error("writeOutbox: source_site_id is required for relay routing");
+	}
 	enforcePayloadLimit(entry.payload, maxPayloadBytes);
 	// INSERT OR IGNORE: when idempotency_key + target_site_id matches an
 	// existing row (via idx_relay_outbox_idempotency), the duplicate is

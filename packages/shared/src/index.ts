@@ -24,3 +24,9 @@ export * from "./strings.js";
 
 // Hybrid Logical Clocks
 export * from "./hlc.js";
+
+// Type safety utilities
+export * from "./assert-never.js";
+export * from "./branded-types.js";
+export * from "./parse-json.js";
+export * from "./relay-schemas.js";

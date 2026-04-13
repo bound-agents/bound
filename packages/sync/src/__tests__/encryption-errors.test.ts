@@ -113,10 +113,9 @@ describe("Encryption error handling and logging", () => {
 		const { logger, logs } = createCapturingLogger();
 
 		const mockKeyManager = {
-			getFingerprint: (siteId: string) =>
-				siteId === "test-site-1" ? "expected-fingerprint-123" : null,
+			getFingerprint: (siteId: string) => (siteId === "test-site-1" ? "abcdef1234567890" : null),
 			getSymmetricKey: () => null,
-			getLocalFingerprint: () => "local-fingerprint",
+			getLocalFingerprint: () => "1234567890abcdef",
 			init: async () => {},
 		} as unknown as KeyManager;
 
@@ -132,7 +131,7 @@ describe("Encryption error handling and logging", () => {
 						["x-site-id", "test-site-1"],
 						["x-encryption", "xchacha20"],
 						["x-nonce", "a".repeat(48)],
-						["x-key-fingerprint", "wrong-fingerprint"],
+						["x-key-fingerprint", "fedcba0987654321"],
 					]),
 				},
 				arrayBuffer: async () => new Uint8Array(),
@@ -150,8 +149,8 @@ describe("Encryption error handling and logging", () => {
 			(l) => l.level === "warn" && l.message === "Key fingerprint mismatch",
 		);
 		expect(warnLog).toBeDefined();
-		expect(warnLog?.context?.expected).toBe("expected-fingerprint-123");
-		expect(warnLog?.context?.received).toBe("wrong-fingerprint");
+		expect(warnLog?.context?.expected).toBe("abcdef1234567890");
+		expect(warnLog?.context?.received).toBe("fedcba0987654321");
 	});
 
 	// AC10.3 (Decryption failure without oracle details) is tested in encrypted-middleware.test.ts
@@ -161,9 +160,9 @@ describe("Encryption error handling and logging", () => {
 		const { logger, logs } = createCapturingLogger();
 
 		const mockKeyManager = {
-			getFingerprint: () => "fingerprint-1",
+			getFingerprint: () => "1234567890abcdef",
 			getSymmetricKey: () => null,
-			getLocalFingerprint: () => "local-fingerprint",
+			getLocalFingerprint: () => "fedcba0987654321",
 			init: async () => {},
 		} as unknown as KeyManager;
 
@@ -205,7 +204,7 @@ describe("Encryption error handling and logging", () => {
 						["x-site-id", "test-site-1"],
 						["x-encryption", "xchacha20"],
 						["x-nonce", "d".repeat(48)],
-						["x-key-fingerprint", "wrong-fingerprint"],
+						["x-key-fingerprint", "abcdef0123456789"],
 					]),
 				},
 				arrayBuffer: async () => new Uint8Array(),
@@ -340,12 +339,12 @@ describe("Encryption error handling and logging", () => {
 		const mockKeyManager = {
 			getFingerprint: (siteId: string) => {
 				if (siteId === "test-site-1") {
-					return "expected-fingerprint";
+					return "abcdef0123456789";
 				}
 				return null;
 			},
 			getSymmetricKey: () => null,
-			getLocalFingerprint: () => "local-fingerprint",
+			getLocalFingerprint: () => "fedcba9876543210",
 			init: async () => {},
 		} as unknown as KeyManager;
 
@@ -362,7 +361,7 @@ describe("Encryption error handling and logging", () => {
 						["x-site-id", "test-site-1"],
 						["x-encryption", "xchacha20"],
 						["x-nonce", "a".repeat(48)],
-						["x-key-fingerprint", "wrong-fingerprint"],
+						["x-key-fingerprint", "1234567890fedcba"],
 						["x-signature", "will-not-check-due-to-fingerprint-mismatch"],
 						["x-timestamp", new Date().toISOString()],
 					]),
@@ -381,8 +380,8 @@ describe("Encryption error handling and logging", () => {
 		// before attempting signature verification
 		const warnLog = logs.find((l) => l.message === "Key fingerprint mismatch");
 		expect(warnLog).toBeDefined();
-		expect(warnLog?.context?.expected).toBe("expected-fingerprint");
-		expect(warnLog?.context?.received).toBe("wrong-fingerprint");
+		expect(warnLog?.context?.expected).toBe("abcdef0123456789");
+		expect(warnLog?.context?.received).toBe("1234567890fedcba");
 	});
 
 	// AC6.2: Malformed nonce rejected before signature verification

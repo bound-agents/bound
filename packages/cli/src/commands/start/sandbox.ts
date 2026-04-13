@@ -20,7 +20,14 @@ import { formatError } from "@bound/shared";
 export interface SandboxResult {
 	sandbox: Awaited<ReturnType<typeof createSandbox>> | null;
 	clusterFsObj: ClusterFsResult | null;
-	commandContext: Record<string, unknown> | null;
+	commandContext: {
+		db: AppContext["db"];
+		siteId: string;
+		eventBus: AppContext["eventBus"];
+		logger: AppContext["logger"];
+		mcpClients: Map<string, MCPClient>;
+		fs: ClusterFsResult["fs"];
+	} | null;
 	personaText: string | null;
 }
 
@@ -35,27 +42,25 @@ export async function initSandbox(
 	appContext.logger.info("Setting up sandbox...");
 	let sandbox: Awaited<ReturnType<typeof createSandbox>> | null = null;
 	let clusterFsObj: ClusterFsResult | null = null;
-	let commandContext: Record<string, unknown> | null = null;
+	let commandContext: SandboxResult["commandContext"] = null;
 	try {
-		const clusterFsRaw = createClusterFs({
+		// When db and siteId are provided, createClusterFs returns ClusterFsResult (not MountableFs).
+		// TypeScript can't infer this from the overloaded signature, so we cast through unknown.
+		clusterFsObj = createClusterFs({
 			hostName: appContext.hostName,
 			syncEnabled: false,
 			db: appContext.db,
 			siteId: appContext.siteId,
-		});
-		// Extract the MountableFs from either a MountableFs directly or ClusterFsResult
-		// biome-ignore lint/suspicious/noExplicitAny: MountableFs type lives in just-bash, not re-exported from @bound/sandbox
-		const clusterFs = ("fs" in clusterFsRaw ? clusterFsRaw.fs : clusterFsRaw) as any;
-		// With db and siteId provided, createClusterFs always returns ClusterFsResult
-		clusterFsObj = clusterFsRaw as unknown as ClusterFsResult;
+		}) as unknown as ClusterFsResult;
+		// Extract the MountableFs from ClusterFsResult
+		const clusterFs = clusterFsObj.fs;
 		commandContext = {
 			db: appContext.db,
 			siteId: appContext.siteId,
 			eventBus: appContext.eventBus,
 			logger: appContext.logger,
 			mcpClients: mcpClientsMap,
-			// biome-ignore lint/suspicious/noExplicitAny: MountableFs satisfies IFileSystem; cross-package type not importable here
-			fs: clusterFs as any,
+			fs: clusterFs,
 		};
 		const builtinCommands = getAllCommands();
 
@@ -74,8 +79,7 @@ export async function initSandbox(
 
 		const allDefinitions = [...builtinCommands, ...mcpCommands, ...remoteMcpCommands];
 		setCommandRegistry(allDefinitions, mcpServerNames, remoteServerNames);
-		// biome-ignore lint/suspicious/noExplicitAny: commandContext is typed as Record for late modelRouter injection
-		const registeredCommands = createDefineCommands(allDefinitions, commandContext as any);
+		const registeredCommands = createDefineCommands(allDefinitions, commandContext);
 		// Restore previously persisted VFS state from the files table BEFORE
 		// creating the sandbox, so that hydrated files are not counted against
 		// the memory threshold (which only limits new agent-written content).

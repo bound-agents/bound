@@ -3,6 +3,7 @@
  * and overlay scanner.
  */
 
+import type { Database } from "bun:sqlite";
 import type { AppContext } from "@bound/core";
 import type { KeyringConfig } from "@bound/shared";
 import { formatError } from "@bound/shared";
@@ -83,19 +84,31 @@ export async function initSync(
 		try {
 			const { startOverlayScanLoop } = await import("@bound/sandbox");
 			const { insertRow, updateRow, softDelete } = await import("@bound/core");
+			// Adapter: OverlayOutbox expects string table names, core outbox expects SyncedTableName.
+			// overlay_index is a synced table, so this cast is safe.
+			const outboxAdapter = {
+				insertRow: (
+					db: Database,
+					table: string,
+					row: Record<string, unknown>,
+					siteId: string,
+				): void => insertRow(db, table as "overlay_index", row, siteId),
+				updateRow: (
+					db: Database,
+					table: string,
+					id: string,
+					changes: Record<string, unknown>,
+					siteId: string,
+				): void => updateRow(db, table as "overlay_index", id, changes, siteId),
+				softDelete: (db: Database, table: string, id: string, siteId: string): void =>
+					softDelete(db, table as "overlay_index", id, siteId),
+			};
 			overlayHandle = startOverlayScanLoop(
 				appContext.db,
 				appContext.siteId,
 				overlayConfig.mounts,
 				undefined,
-				{
-					// biome-ignore lint/suspicious/noExplicitAny: OverlayOutbox uses string table names; core uses SyncedTableName
-					insertRow: insertRow as any,
-					// biome-ignore lint/suspicious/noExplicitAny: same as above
-					updateRow: updateRow as any,
-					// biome-ignore lint/suspicious/noExplicitAny: same as above
-					softDelete: softDelete as any,
-				},
+				outboxAdapter,
 			);
 			appContext.logger.info(
 				`[overlay] Scanner started (${Object.keys(overlayConfig.mounts).length} mount(s))`,

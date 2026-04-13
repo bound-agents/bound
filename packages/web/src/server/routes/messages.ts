@@ -6,6 +6,13 @@ import { redactMessage, redactThread } from "@bound/agent";
 import { insertRow } from "@bound/core";
 import type { Message, TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
+import { z } from "zod";
+
+const createMessageSchema = z.object({
+	content: z.string(),
+	file_ids: z.array(z.unknown()).optional(),
+	model_id: z.string().optional(),
+});
 
 export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter): Hono {
 	const app = new Hono();
@@ -52,19 +59,20 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 		try {
 			const { threadId } = c.req.param();
 			console.log(`[web] POST /api/threads/${threadId}/messages - message received`);
-			const body = await c.req.json();
 
-			const MAX_CONTENT_LENGTH = 512 * 1024; // 512KB
-
-			if (typeof body.content !== "string") {
+			const parseResult = createMessageSchema.safeParse(await c.req.json());
+			if (!parseResult.success) {
 				return c.json(
 					{
 						error: "Invalid request body",
-						details: "content must be a string",
+						details: parseResult.error.message,
 					},
 					400,
 				);
 			}
+			const body = parseResult.data;
+
+			const MAX_CONTENT_LENGTH = 512 * 1024; // 512KB
 
 			if (!body.content.trim()) {
 				return c.json(

@@ -60,6 +60,15 @@ export async function verifyRequest(
 		});
 	}
 
+	// Validate signature format (hex string)
+	const HEX_REGEX = /^[0-9a-f]+$/i;
+	if (!HEX_REGEX.test(signature)) {
+		return err({
+			code: "invalid_signature",
+			message: "X-Signature must be a hex string",
+		});
+	}
+
 	// Find host by siteId
 	let hostName: string | null = null;
 	let publicKeyEncoded: string | null = null;

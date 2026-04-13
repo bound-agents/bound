@@ -228,8 +228,13 @@ export async function snapshotWorkspace(
 			const content = await fs.readFile(path);
 			const hash = createHash("sha256").update(content).digest("hex");
 			snapshot.set(path, hash);
-		} catch (_error) {
-			// Ignore directories and other non-readable entries
+		} catch (err: unknown) {
+			const code = (err as NodeJS.ErrnoException)?.code;
+			if (code !== "ENOENT" && code !== "EISDIR") {
+				// Re-throw unexpected errors (permission denied, etc.)
+				throw err;
+			}
+			// Expected: file doesn't exist or is a directory
 		}
 	}
 
@@ -255,8 +260,13 @@ export async function diffWorkspaceAsync(
 				try {
 					content = await fs.readFile(path);
 					sizeBytes = Buffer.byteLength(content);
-				} catch (_error) {
-					// Content not available
+				} catch (err: unknown) {
+					const code = (err as NodeJS.ErrnoException)?.code;
+					if (code !== "ENOENT" && code !== "EISDIR") {
+						// Re-throw unexpected errors (permission denied, etc.)
+						throw err;
+					}
+					// Expected: file doesn't exist or is a directory
 				}
 			}
 			changes.push({
@@ -277,8 +287,13 @@ export async function diffWorkspaceAsync(
 				try {
 					content = await fs.readFile(path);
 					sizeBytes = Buffer.byteLength(content);
-				} catch (_error) {
-					// Content not available
+				} catch (err: unknown) {
+					const code = (err as NodeJS.ErrnoException)?.code;
+					if (code !== "ENOENT" && code !== "EISDIR") {
+						// Re-throw unexpected errors (permission denied, etc.)
+						throw err;
+					}
+					// Expected: file doesn't exist or is a directory
 				}
 			}
 			changes.push({

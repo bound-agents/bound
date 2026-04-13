@@ -9,6 +9,7 @@ import type { DiscordClientManager } from "./discord-client-manager.js";
 
 // Discord.js types — imported dynamically in connect()
 type DiscordInteraction = import("discord.js").Interaction;
+type DiscordAttachment = import("discord.js").Attachment;
 
 /** Interaction token expires in 15 min; use 14 min for safety margin. */
 const INTERACTION_TTL_MS = 14 * 60 * 1000;
@@ -427,7 +428,8 @@ export class DiscordInteractionConnector implements PlatformConnector {
 		for (const att of targetMessage.attachments
 			.filter((a: { contentType?: string | null }) => a.contentType?.startsWith("image/") ?? false)
 			.values()) {
-			imageUrls.push((att as unknown as { url: string }).url);
+			const discordAtt = att as DiscordAttachment;
+			imageUrls.push(discordAtt.url);
 		}
 
 		// Download and store non-image file attachments
@@ -443,12 +445,7 @@ export class DiscordInteractionConnector implements PlatformConnector {
 					a.contentType != null && !a.contentType.startsWith("image/"),
 			)
 			.values()) {
-			const a = att as unknown as {
-				name: string;
-				url: string;
-				contentType: string;
-				size: number;
-			};
+			const a = att as DiscordAttachment;
 			if (a.size > MAX_FILE_STORAGE_BYTES) {
 				this.logger.warn("[discord-interaction] File attachment exceeds size limit, skipping", {
 					name: a.name,
@@ -473,7 +470,8 @@ export class DiscordInteractionConnector implements PlatformConnector {
 
 				// Determine if the file content is text-readable
 				const ext = a.name.includes(".") ? `.${a.name.split(".").pop()?.toLowerCase()}` : "";
-				const baseContentType = a.contentType.split(";")[0].trim();
+				const contentType = a.contentType ?? "application/octet-stream";
+				const baseContentType = contentType.split(";")[0].trim();
 				const isTextReadable =
 					TEXT_READABLE_TYPES.has(baseContentType) ||
 					baseContentType.startsWith("text/") ||
@@ -503,7 +501,7 @@ export class DiscordInteractionConnector implements PlatformConnector {
 				storedFiles.push({
 					name: a.name,
 					path: filePath,
-					contentType: a.contentType,
+					contentType: contentType,
 					inlineContent: textContent ?? undefined,
 				});
 			} catch (err) {

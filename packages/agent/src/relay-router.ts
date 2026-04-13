@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import type { CapabilityRequirements } from "@bound/llm";
-import type { HostModelEntry, RelayOutboxEntry } from "@bound/shared";
+import type { HostModelEntry, RelayKind, RelayOutboxEntry } from "@bound/shared";
 
 export interface EligibleHost {
 	site_id: string;
@@ -336,7 +336,7 @@ export function buildIdempotencyKey(
 export function createRelayOutboxEntry(
 	targetSiteId: string,
 	sourceSiteId: string,
-	kind: string,
+	kind: RelayKind,
 	payload: string,
 	timeoutMs: number,
 	refId?: string,

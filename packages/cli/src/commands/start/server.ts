@@ -436,13 +436,22 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							if (!result.error && result.messagesCreated > 0) {
 								const lastMsg = appContext.db
 									.query(
-										"SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
+										"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
 									)
-									.get(thread_id);
+									.get(thread_id) as {
+									id: string;
+									thread_id: string;
+									role: "user" | "assistant" | "system";
+									content: string;
+									model_id: string | null;
+									tool_name: string | null;
+									created_at: string;
+									modified_at: string | null;
+									host_origin: string;
+								} | null;
 								if (lastMsg) {
 									appContext.eventBus.emit("message:broadcast", {
-										// biome-ignore lint/suspicious/noExplicitAny: db.query result is untyped
-										message: lastMsg as any,
+										message: lastMsg,
 										thread_id,
 									});
 								}
@@ -567,9 +576,14 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		const platformsConfig = platformsResult.value as import("@bound/shared").PlatformsConfig;
 		platformRegistry = new PlatformConnectorRegistry(appContext, platformsConfig);
 		platformRegistry.start();
-		// Wire into relay processor for platform-context process relays
-		// biome-ignore lint/suspicious/noExplicitAny: PlatformConnectorRegistry satisfies ConnectorRegistry structurally
-		relayProcessor.setPlatformConnectorRegistry(platformRegistry as any);
+		// Wire into relay processor for platform-context process relays.
+		// PlatformConnectorRegistry structurally satisfies the minimal ConnectorRegistry interface
+		// (has getConnector method with compatible signature).
+		relayProcessor.setPlatformConnectorRegistry(
+			platformRegistry as unknown as Parameters<
+				typeof relayProcessor.setPlatformConnectorRegistry
+			>[0],
+		);
 		appContext.logger.info("[platforms] Platform connector registry started");
 
 		// Advertise configured platform names in hosts.platforms

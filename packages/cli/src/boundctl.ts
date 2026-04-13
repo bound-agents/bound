@@ -86,10 +86,20 @@ EXAMPLES:
 		}
 
 		const timeoutStr = getArgValue(args, "--timeout");
+		let timeout: number | undefined;
+		if (timeoutStr) {
+			const parsed = Number.parseInt(timeoutStr, 10);
+			if (Number.isNaN(parsed) || parsed <= 0) {
+				console.error("Error: --timeout must be a positive integer");
+				process.exit(1);
+			}
+			timeout = parsed;
+		}
+
 		const setHubArgs = {
 			hostName,
 			wait: args.includes("--wait"),
-			timeout: timeoutStr ? Number.parseInt(timeoutStr, 10) : undefined,
+			timeout,
 			configDir: getArgValue(args, "--config-dir") || "config",
 		};
 
@@ -213,9 +223,19 @@ EXAMPLES:
 		}
 
 		const timeoutStr = getArgValue(args, "--timeout");
+		let timeout: number | undefined;
+		if (timeoutStr) {
+			const parsed = Number.parseInt(timeoutStr, 10);
+			if (Number.isNaN(parsed) || parsed <= 0) {
+				console.error("Error: --timeout must be a positive integer");
+				process.exit(1);
+			}
+			timeout = parsed;
+		}
+
 		const drainArgs = {
 			newHub,
-			timeout: timeoutStr ? Number.parseInt(timeoutStr, 10) : undefined,
+			timeout,
 			configDir: getArgValue(args, "--config-dir") || "config",
 		};
 

@@ -2,11 +2,14 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertInbox, markDelivered, readUndelivered, writeOutbox } from "@bound/core";
 import {
+	type ChangeLogEntry,
 	type KeyringConfig,
 	type Logger,
 	RELAY_RESPONSE_KINDS,
 	type RelayInboxEntry,
+	type RelayResponseKind,
 	type TypedEventEmitter,
+	parseJsonUntyped,
 } from "@bound/shared";
 import { Hono } from "hono";
 import { type RelayRequest, type RelayResponse, fetchInboundChangeset } from "./changeset.js";
@@ -49,7 +52,12 @@ export function createSyncRoutes(
 	app.post("/sync/push", async (c) => {
 		try {
 			const body = c.get("rawBody") as string;
-			const changeset = JSON.parse(body);
+			const parseResult = parseJsonUntyped(body, "sync/push");
+			if (!parseResult.ok) {
+				logger.error(`Push JSON parse error: ${parseResult.error}`);
+				return c.json({ error: "Malformed request body" }, 400);
+			}
+			const changeset = parseResult.value as { events?: ChangeLogEntry[] };
 
 			const events = changeset.events || [];
 			const pusherSiteId = c.get("siteId") as string;
@@ -59,7 +67,8 @@ export function createSyncRoutes(
 
 			// Update peer cursor to mark events as received
 			if (events.length > 0) {
-				const lastHlc = events[events.length - 1].hlc;
+				const lastEvent = events[events.length - 1];
+				const lastHlc = lastEvent.hlc;
 				updatePeerCursor(db, pusherSiteId, { last_received: lastHlc });
 			}
 
@@ -81,7 +90,12 @@ export function createSyncRoutes(
 	app.post("/sync/pull", async (c) => {
 		try {
 			const body = c.get("rawBody") as string;
-			const request = JSON.parse(body) as { since_hlc?: string };
+			const parseResult = parseJsonUntyped(body, "sync/pull");
+			if (!parseResult.ok) {
+				logger.error(`Pull JSON parse error: ${parseResult.error}`);
+				return c.json({ error: "Malformed request body" }, 400);
+			}
+			const request = parseResult.value as { since_hlc?: string };
 			const sinceHlc = request.since_hlc ?? "0000-00-00T00:00:00.000Z_0000_0000";
 
 			const requesterSiteId = c.get("siteId") as string;
@@ -104,7 +118,12 @@ export function createSyncRoutes(
 	app.post("/sync/ack", async (c) => {
 		try {
 			const body = c.get("rawBody") as string;
-			const request = JSON.parse(body) as { last_received: string };
+			const parseResult = parseJsonUntyped(body, "sync/ack");
+			if (!parseResult.ok) {
+				logger.error(`Ack JSON parse error: ${parseResult.error}`);
+				return c.json({ error: "Malformed request body" }, 400);
+			}
+			const request = parseResult.value as { last_received: string };
 			const lastReceived = request.last_received;
 
 			const ackingSiteId = c.get("siteId") as string;
@@ -124,7 +143,13 @@ export function createSyncRoutes(
 	// POST /sync/relay - Process relay messages
 	app.post("/sync/relay", async (c) => {
 		try {
-			const body = JSON.parse(c.get("rawBody")) as RelayRequest;
+			const bodyStr = c.get("rawBody");
+			const parseResult = parseJsonUntyped(bodyStr, "sync/relay");
+			if (!parseResult.ok) {
+				logger.error(`Relay JSON parse error: ${parseResult.error}`);
+				return c.json({ error: "Malformed request body" }, 400);
+			}
+			const body = parseResult.value as RelayRequest;
 			const requesterSiteId = c.get("siteId") as string;
 			const executor = relayExecutor ?? noopRelayExecutor;
 
@@ -170,20 +195,22 @@ export function createSyncRoutes(
 				}
 				// Update thread-affinity map when a status_forward passes through
 				if (entry.kind === "status_forward" && threadAffinityMap) {
-					try {
-						const sfPayload = JSON.parse(entry.payload) as { thread_id?: string };
+					const sfParseResult = parseJsonUntyped(entry.payload, "status_forward");
+					if (sfParseResult.ok) {
+						const sfPayload = sfParseResult.value as { thread_id?: string };
 						if (sfPayload.thread_id) {
 							threadAffinityMap.set(sfPayload.thread_id, requesterSiteId);
 						}
-					} catch {
-						// Malformed payload — ignore, affinity is best-effort
 					}
+					// Malformed payload — ignore, affinity is best-effort
 				}
 				if (entry.target_site_id === siteId) {
 					// Response kinds (stream_chunk, stream_end, result, error, status_forward)
 					// targeting the hub must go into the hub's relay_inbox so the polling loop
 					// (e.g. RELAY_STREAM, RELAY_WAIT) can read them — NOT through the executor.
-					if ((RELAY_RESPONSE_KINDS as readonly string[]).includes(entry.kind)) {
+					const isResponseKind = (kind: string): kind is RelayResponseKind =>
+						RELAY_RESPONSE_KINDS.includes(kind as RelayResponseKind);
+					if (isResponseKind(entry.kind)) {
 						const inboxEntry: RelayInboxEntry = {
 							id: randomUUID(),
 							source_site_id: requesterSiteId,
@@ -299,7 +326,13 @@ export function createSyncRoutes(
 				return c.json({ ok: false, error: "Not from current hub" }, 403);
 			}
 
-			const body = JSON.parse(c.get("rawBody")) as { entries: RelayInboxEntry[] };
+			const bodyStr = c.get("rawBody");
+			const parseResult = parseJsonUntyped(bodyStr, "relay-deliver");
+			if (!parseResult.ok) {
+				logger.error(`Relay deliver JSON parse error: ${parseResult.error}`);
+				return c.json({ error: "Malformed request body" }, 400);
+			}
+			const body = parseResult.value as { entries: RelayInboxEntry[] };
 			let received = 0;
 			for (const entry of body.entries) {
 				const inserted = insertInbox(db, entry);

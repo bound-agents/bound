@@ -68,6 +68,7 @@ export function createSyncAuthMiddleware(
 			}
 
 			// Step 2: Validate X-Encryption value and X-Nonce presence (R-SE21, AC8.3)
+			const HEX_REGEX = /^[0-9a-f]+$/i;
 			if (encryption !== "xchacha20") {
 				logger?.warn("Malformed encryption headers", {
 					siteId: headers["x-site-id"],
@@ -82,7 +83,7 @@ export function createSyncAuthMiddleware(
 					400,
 				);
 			}
-			if (!nonceHex || nonceHex.length !== 48) {
+			if (!nonceHex || nonceHex.length !== 48 || !HEX_REGEX.test(nonceHex)) {
 				logger?.warn("Malformed encryption headers", {
 					siteId: headers["x-site-id"],
 					encryption,
@@ -100,6 +101,20 @@ export function createSyncAuthMiddleware(
 			// Step 3: Fingerprint validation (R-SE12, AC3.3)
 			const siteIdHeader = headers["x-site-id"];
 			if (siteIdHeader && fingerprint) {
+				// Validate fingerprint format (16 hex chars)
+				if (fingerprint.length !== 16 || !HEX_REGEX.test(fingerprint)) {
+					logger?.warn("Malformed fingerprint", {
+						siteId: siteIdHeader,
+						fingerprint,
+					});
+					return c.json(
+						{
+							error: "malformed_encryption_headers",
+							message: "X-Key-Fingerprint must be 16 hex characters (8 bytes)",
+						},
+						400,
+					);
+				}
 				const expectedFingerprint = keyManager.getFingerprint(siteIdHeader);
 				if (expectedFingerprint && fingerprint !== expectedFingerprint) {
 					logger?.warn("Key fingerprint mismatch", {

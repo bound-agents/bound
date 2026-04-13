@@ -1,6 +1,8 @@
+import { z } from "zod";
+
 export class BoundNotRunningError extends Error {
-	constructor(url: string) {
-		super(`Bound agent is not running at ${url}.`);
+	constructor(url: string, options?: { cause?: unknown }) {
+		super(`Bound agent is not running at ${url}.`, options);
 		this.name = "BoundNotRunningError";
 	}
 }
@@ -23,6 +25,30 @@ export interface BoundMessage {
 	host_origin: string;
 }
 
+const createThreadResponseSchema = z.object({
+	thread_id: z.string(),
+});
+
+const threadStatusSchema = z.object({
+	active: z.boolean(),
+	state: z.string().nullable(),
+	detail: z.string().nullable(),
+});
+
+const boundMessageSchema = z.object({
+	id: z.string(),
+	thread_id: z.string(),
+	role: z.string(),
+	content: z.string(),
+	model_id: z.string().nullable(),
+	tool_name: z.string().nullable(),
+	created_at: z.string(),
+	modified_at: z.string().nullable(),
+	host_origin: z.string(),
+});
+
+const messagesResponseSchema = z.array(boundMessageSchema);
+
 export class BoundClient {
 	constructor(private readonly baseUrl: string) {}
 
@@ -30,10 +56,11 @@ export class BoundClient {
 		try {
 			const res = await fetch(`${this.baseUrl}/api/mcp/threads`, { method: "POST" });
 			if (!res.ok) throw new BoundNotRunningError(this.baseUrl);
-			return (await res.json()) as { thread_id: string };
+			const data = createThreadResponseSchema.parse(await res.json());
+			return data;
 		} catch (e) {
 			if (e instanceof BoundNotRunningError) throw e;
-			throw new BoundNotRunningError(this.baseUrl);
+			throw new BoundNotRunningError(this.baseUrl, { cause: e });
 		}
 	}
 
@@ -47,7 +74,7 @@ export class BoundClient {
 			if (!res.ok) throw new BoundNotRunningError(this.baseUrl);
 		} catch (e) {
 			if (e instanceof BoundNotRunningError) throw e;
-			throw new BoundNotRunningError(this.baseUrl);
+			throw new BoundNotRunningError(this.baseUrl, { cause: e });
 		}
 	}
 
@@ -55,10 +82,11 @@ export class BoundClient {
 		try {
 			const res = await fetch(`${this.baseUrl}/api/threads/${threadId}/status`);
 			if (!res.ok) throw new BoundNotRunningError(this.baseUrl);
-			return (await res.json()) as ThreadStatus;
+			const data = threadStatusSchema.parse(await res.json());
+			return data;
 		} catch (e) {
 			if (e instanceof BoundNotRunningError) throw e;
-			throw new BoundNotRunningError(this.baseUrl);
+			throw new BoundNotRunningError(this.baseUrl, { cause: e });
 		}
 	}
 
@@ -66,10 +94,11 @@ export class BoundClient {
 		try {
 			const res = await fetch(`${this.baseUrl}/api/threads/${threadId}/messages`);
 			if (!res.ok) throw new BoundNotRunningError(this.baseUrl);
-			return (await res.json()) as BoundMessage[];
+			const data = messagesResponseSchema.parse(await res.json());
+			return data;
 		} catch (e) {
 			if (e instanceof BoundNotRunningError) throw e;
-			throw new BoundNotRunningError(this.baseUrl);
+			throw new BoundNotRunningError(this.baseUrl, { cause: e });
 		}
 	}
 }

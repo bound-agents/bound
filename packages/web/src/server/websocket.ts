@@ -1,10 +1,11 @@
 import type { TypedEventEmitter } from "@bound/shared";
 import type { ServerWebSocket } from "bun";
+import { z } from "zod";
 
-interface WebSocketMessage {
-	subscribe?: string[];
-	unsubscribe?: string[];
-}
+const wsMessageSchema = z.object({
+	subscribe: z.array(z.string()).optional(),
+	unsubscribe: z.array(z.string()).optional(),
+});
 
 interface ClientConnection {
 	ws: ServerWebSocket<unknown>;
@@ -136,28 +137,30 @@ export function createWebSocketHandler(
 				return;
 			}
 
+			const conn = clients.get(ws);
+			if (!conn) return;
+
 			try {
-				const message = JSON.parse(rawMessage) as WebSocketMessage;
-				const conn = clients.get(ws);
+				const parsed = wsMessageSchema.safeParse(JSON.parse(rawMessage));
+				if (!parsed.success) {
+					// Invalid message schema, ignore
+					return;
+				}
+				const message = parsed.data;
 
-				if (!conn) return;
-
-				if (Array.isArray(message.subscribe)) {
+				if (message.subscribe) {
 					for (const threadId of message.subscribe) {
-						if (typeof threadId === "string") {
-							conn.subscriptions.add(threadId);
-						}
+						conn.subscriptions.add(threadId);
 					}
 				}
 
-				if (Array.isArray(message.unsubscribe)) {
+				if (message.unsubscribe) {
 					for (const threadId of message.unsubscribe) {
-						if (typeof threadId === "string") {
-							conn.subscriptions.delete(threadId);
-						}
+						conn.subscriptions.delete(threadId);
 					}
 				}
 			} catch (error) {
+				// Invalid JSON, ignore
 				console.error("WebSocket message error:", error);
 			}
 		},

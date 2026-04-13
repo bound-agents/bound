@@ -124,7 +124,10 @@ export function updateRow(
 		const updatedRow = db.query(`SELECT * FROM ${table} WHERE ${pkColumn} = ?`).get(id) as Record<
 			string,
 			unknown
-		>;
+		> | null;
+		if (!updatedRow) {
+			throw new Error(`updateRow: Row ${id} disappeared from ${table} after update`);
+		}
 
 		createChangeLogEntry(db, table, id, siteId, updatedRow);
 	});
@@ -143,7 +146,10 @@ export function softDelete(db: Database, table: SyncedTableName, id: string, sit
 		const deletedRow = db.query(`SELECT * FROM ${table} WHERE ${pkColumn} = ?`).get(id) as Record<
 			string,
 			unknown
-		>;
+		> | null;
+		if (!deletedRow) {
+			throw new Error(`softDelete: Row ${id} disappeared from ${table} after update`);
+		}
 
 		createChangeLogEntry(db, table, id, siteId, deletedRow);
 	});

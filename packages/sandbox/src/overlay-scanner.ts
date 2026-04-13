@@ -97,7 +97,7 @@ export function scanOverlayIndex(
 			// Check if entry exists
 			const existing = db
 				.prepare("SELECT content_hash FROM overlay_index WHERE id = ? AND deleted = 0")
-				.get(id) as { content_hash: string } | undefined;
+				.get(id) as { content_hash: string } | null;
 
 			if (!existing) {
 				// New file

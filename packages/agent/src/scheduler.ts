@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
 import { insertRow } from "@bound/core";
-import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
+import { BOUND_NAMESPACE, deterministicUUID, formatError, parseJsonUntyped } from "@bound/shared";
 import type { Task } from "@bound/shared";
 import { createAdvisory } from "./advisories";
 import type { AgentLoop } from "./agent-loop";
@@ -18,14 +18,14 @@ const LEASE_DURATION = 300000; // 5 minutes
  * This helper handles both formats.
  */
 function extractCronExpression(triggerSpec: string): string {
-	try {
-		const parsed = JSON.parse(triggerSpec);
-		if (parsed && typeof parsed.expression === "string") {
-			return parsed.expression;
+	const result = parseJsonUntyped(triggerSpec, "trigger_spec");
+	if (result.ok && typeof result.value === "object" && result.value !== null) {
+		const obj = result.value as Record<string, unknown>;
+		if (typeof obj.expression === "string") {
+			return obj.expression;
 		}
-	} catch {
-		// Not JSON — treat as raw cron expression
 	}
+	// Not JSON or no expression field — treat as raw cron expression
 	return triggerSpec;
 }
 const EVICTION_TIMEOUT = 300_000; // 5 minutes
@@ -109,18 +109,18 @@ export function rescheduleHeartbeat(
 ): void {
 	if (task.type !== "heartbeat") return;
 
-	let intervalMs: number;
-	try {
-		const spec = JSON.parse(task.trigger_spec);
-		intervalMs = spec.interval_ms;
-		if (!intervalMs || intervalMs < 60_000) {
-			logger.error(`[@bound/agent/scheduler] Invalid heartbeat interval_ms: ${intervalMs}`);
-			return;
-		}
-	} catch {
-		logger.error(
-			`[@bound/agent/scheduler] Failed to parse heartbeat trigger_spec: ${task.trigger_spec}`,
-		);
+	const specResult = parseJsonUntyped(task.trigger_spec, "heartbeat trigger_spec");
+	if (!specResult.ok) {
+		logger.error("[@bound/agent/scheduler] Failed to parse heartbeat trigger_spec", {
+			error: specResult.error,
+		});
+		return;
+	}
+
+	const spec = specResult.value as Record<string, unknown>;
+	const intervalMs = typeof spec.interval_ms === "number" ? spec.interval_ms : 0;
+	if (!intervalMs || intervalMs < 60_000) {
+		logger.error(`[@bound/agent/scheduler] Invalid heartbeat interval_ms: ${intervalMs}`);
 		return;
 	}
 
@@ -681,15 +681,20 @@ export class Scheduler {
 						let baseInterval: string;
 						let effectiveInterval: string;
 						if (task.type === "heartbeat") {
-							try {
-								const spec = JSON.parse(task.trigger_spec);
-								const baseMs = spec.interval_ms ?? 1_800_000;
-								baseInterval = `${Math.round(baseMs / 60_000)}min`;
-								effectiveInterval = `${Math.round((baseMs * multiplier) / 60_000)}min`;
-							} catch {
-								baseInterval = "30min";
-								effectiveInterval = `${30 * multiplier}min`;
+							const specResult = parseJsonUntyped(task.trigger_spec, "heartbeat trigger_spec");
+							let baseMs = 1_800_000;
+							if (
+								specResult.ok &&
+								typeof specResult.value === "object" &&
+								specResult.value !== null
+							) {
+								const spec = specResult.value as Record<string, unknown>;
+								if (typeof spec.interval_ms === "number") {
+									baseMs = spec.interval_ms;
+								}
 							}
+							baseInterval = `${Math.round(baseMs / 60_000)}min`;
+							effectiveInterval = `${Math.round((baseMs * multiplier) / 60_000)}min`;
 						} else {
 							// Cron tasks don't have a simple interval, extract and use the schedule expression
 							baseInterval = extractCronExpression(task.trigger_spec);
@@ -995,12 +1000,11 @@ export class Scheduler {
 		}
 
 		// Parse trigger_spec to get cron expression
-		let cronSpec: { type: string; expression?: string; name?: string };
-		try {
-			cronSpec = JSON.parse(task.trigger_spec);
-		} catch {
+		const specResult = parseJsonUntyped(task.trigger_spec, "cron trigger_spec");
+		if (!specResult.ok || typeof specResult.value !== "object" || specResult.value === null) {
 			return null;
 		}
+		const cronSpec = specResult.value as { type?: string; expression?: string; name?: string };
 
 		// Look up in cron_schedules config if available
 		const cronResult = this.ctx.optionalConfig.cronSchedules;

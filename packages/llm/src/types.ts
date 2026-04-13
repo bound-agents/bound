@@ -4,7 +4,13 @@ export interface LLMBackend {
 }
 
 export interface ChatParams {
-	/** Backend-specific model identifier. If omitted, the driver uses the model from its constructor config. */
+	/**
+	 * Backend-specific model identifier. If omitted, the driver uses the model
+	 * from its constructor config.
+	 *
+	 * WARNING: This must match the provider's model ID format (e.g., Bedrock ARN).
+	 * Do NOT pass logical aliases like "opus" — the ModelRouter handles alias resolution.
+	 */
 	model?: string;
 	messages: LLMMessage[];
 	tools?: ToolDefinition[];
@@ -12,7 +18,11 @@ export interface ChatParams {
 	temperature?: number;
 	system?: string;
 	cache_breakpoints?: number[];
-	/** Cache TTL hint for providers that support explicit TTL (Anthropic, Bedrock). */
+	/**
+	 * Cache TTL hint. Currently UNIMPLEMENTED — do not set.
+	 * Adding TTL to cache_control breaks caching on both Anthropic and Bedrock.
+	 * @deprecated Unimplemented. Will be removed or implemented in a future version.
+	 */
 	cache_ttl?: "5m" | "1h";
 	signal?: AbortSignal;
 }

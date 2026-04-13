@@ -95,7 +95,7 @@ describe("RELAY_WAIT polling and failover logic", () => {
 		// Write original outbox entry (first host - will timeout)
 		writeOutbox(db, {
 			id: originalRequestId,
-			source_site_id: null,
+			source_site_id: "local-site-id-00",
 			target_site_id: host1Id,
 			kind: "tool_call",
 			ref_id: null,
@@ -110,7 +110,7 @@ describe("RELAY_WAIT polling and failover logic", () => {
 		const failoverRequestId = "failover-request-1";
 		writeOutbox(db, {
 			id: failoverRequestId,
-			source_site_id: null,
+			source_site_id: "local-site-id-00",
 			target_site_id: host2Id,
 			kind: "tool_call",
 			ref_id: null,
@@ -391,7 +391,7 @@ describe("RELAY_WAIT polling and failover logic", () => {
 		// Set up initial outbox entry (as if we're in RELAY_WAIT)
 		writeOutbox(db, {
 			id: originalRequestId,
-			source_site_id: null,
+			source_site_id: "local-site-id-00",
 			target_site_id: hostId,
 			kind: "tool_call",
 			ref_id: null,

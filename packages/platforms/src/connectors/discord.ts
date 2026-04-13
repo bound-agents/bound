@@ -675,7 +675,13 @@ export class DiscordConnector implements PlatformConnector {
 			.get(thread.user_id);
 		if (!user?.platform_ids) return null;
 
-		const platformIds = JSON.parse(user.platform_ids) as Record<string, string>;
+		let platformIds: Record<string, string>;
+		try {
+			platformIds = JSON.parse(user.platform_ids) as Record<string, string>;
+		} catch {
+			this.logger.warn("Invalid platform_ids JSON", { userId: thread.user_id });
+			return null;
+		}
 		const discordId = platformIds.discord;
 		if (!discordId) return null;
 
@@ -714,8 +720,10 @@ export class DiscordConnector implements PlatformConnector {
 					if (hostConfig.url === hubValue) return siteId;
 				}
 			}
-		} catch {
-			// Non-fatal: keyring read failure
+		} catch (err) {
+			this.logger.warn("Keyring read failed, falling back to self", {
+				error: err instanceof Error ? err.message : String(err),
+			});
 		}
 
 		// Last resort: self (intake will be processed locally)

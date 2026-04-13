@@ -43,7 +43,13 @@ export class PlatformConnectorRegistry {
 		// Route platform:deliver to the correct connector (leader only)
 		this.ctx.eventBus.on("platform:deliver", (payload) => {
 			const entry = this.connectorsByPlatform.get(payload.platform);
-			if (!entry) return;
+			if (!entry) {
+				this.ctx.logger.warn("Unknown platform in deliver payload", {
+					platform: payload.platform,
+					available: Array.from(this.connectorsByPlatform.keys()),
+				});
+				return;
+			}
 			const election = this.elections.get(entry.electionKey);
 			if (!election?.isLeader()) return;
 			entry.connector

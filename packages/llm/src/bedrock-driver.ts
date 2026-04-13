@@ -19,6 +19,12 @@ import { LLMError } from "./types";
 // Bedrock rejects blank text in content blocks. Use this placeholder for empty content.
 const EMPTY_TEXT_PLACEHOLDER = "(empty)";
 
+// CachePointBlock represents an undocumented Bedrock caching feature.
+// This extends the official SDK types for prompt caching support.
+interface CachePointBlock {
+	cachePoint: { type: "default" };
+}
+
 export function toBedrockMessages(messages: LLMMessage[]): Message[] {
 	const result: Message[] = [];
 
@@ -181,21 +187,16 @@ export class BedrockDriver implements LLMBackend {
 		if (params.cache_breakpoints && params.cache_breakpoints.length > 0 && messages.length >= 2) {
 			const idx = messages.length - 2;
 			if (Array.isArray(messages[idx].content)) {
-				// biome-ignore lint/suspicious/noExplicitAny: Bedrock SDK types don't include cachePoint yet
-				(messages[idx].content as any[]).push({
+				(messages[idx].content as Array<unknown>).push({
 					cachePoint: { type: "default" },
-				});
+				} as CachePointBlock);
 			}
 		}
 
 		// When cache breakpoints are present, also cache the system prompt.
 		const systemBlocks: SystemContentBlock[] | undefined = params.system
 			? params.cache_breakpoints?.length
-				? [
-						{ text: params.system },
-						// biome-ignore lint/suspicious/noExplicitAny: Bedrock SDK types don't include cachePoint yet
-						{ cachePoint: { type: "default" } } as any,
-					]
+				? [{ text: params.system }, { cachePoint: { type: "default" } } as CachePointBlock]
 				: [{ text: params.system }]
 			: undefined;
 

@@ -101,8 +101,9 @@ export class SyncTransport {
 			return text;
 		}
 
+		const HEX_REGEX = /^[0-9a-f]+$/i;
 		const nonceHex = response.headers.get("X-Nonce");
-		if (!nonceHex || nonceHex.length !== 48) {
+		if (!nonceHex || nonceHex.length !== 48 || !HEX_REGEX.test(nonceHex)) {
 			throw new Error(
 				`Invalid X-Nonce in response: expected 48 hex chars, got ${nonceHex?.length ?? "null"}`,
 			);

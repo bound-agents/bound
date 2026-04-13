@@ -21,9 +21,7 @@ import type { ModelRouter } from "@bound/llm";
 import type {
 	CacheWarmPayload,
 	ErrorPayload,
-	EventBroadcastPayload,
 	EventMap,
-	IntakePayload,
 	Logger,
 	Message,
 	PlatformDeliverPayload,
@@ -38,7 +36,20 @@ import type {
 	ToolCallPayload,
 	TypedEventEmitter,
 } from "@bound/shared";
-import { RELAY_REQUEST_KINDS, RELAY_RESPONSE_KINDS } from "@bound/shared";
+import {
+	RELAY_REQUEST_KINDS,
+	RELAY_RESPONSE_KINDS,
+	eventBroadcastPayloadSchema,
+	hostMcpToolsSchema,
+	hostModelsSchema,
+	inferenceRequestPayloadSchema,
+	intakePayloadSchema,
+	parseJsonSafe,
+	parseJsonUntyped,
+	platformDeliverPayloadSchema,
+	processPayloadSchema,
+	statusForwardPayloadSchema,
+} from "@bound/shared";
 import { AgentLoop } from "./agent-loop.js";
 import type { MCPClient } from "./mcp-client.js";
 import type { AgentLoopConfig } from "./types.js";
@@ -269,54 +280,185 @@ export class RelayProcessor {
 			try {
 				switch (entry.kind) {
 					case "tool_call": {
-						const payload = JSON.parse(entry.payload) as ToolCallPayload;
-						response = await this.executeToolCall(payload);
+						const payloadResult = parseJsonUntyped(entry.payload, entry.kind);
+						if (!payloadResult.ok) {
+							this.logger.error("Invalid relay payload", {
+								kind: entry.kind,
+								error: payloadResult.error,
+								entryId: entry.id,
+							});
+							this.writeResponse(
+								entry,
+								"error",
+								JSON.stringify({
+									error: `Invalid payload: ${payloadResult.error}`,
+									retriable: false,
+								}),
+							);
+							markProcessed(this.db, [entry.id]);
+							return;
+						}
+						response = await this.executeToolCall(payloadResult.value as ToolCallPayload);
 						break;
 					}
 					case "resource_read": {
-						const payload = JSON.parse(entry.payload) as ResourceReadPayload;
-						response = await this.executeResourceRead(payload);
+						const payloadResult = parseJsonUntyped(entry.payload, entry.kind);
+						if (!payloadResult.ok) {
+							this.logger.error("Invalid relay payload", {
+								kind: entry.kind,
+								error: payloadResult.error,
+								entryId: entry.id,
+							});
+							this.writeResponse(
+								entry,
+								"error",
+								JSON.stringify({
+									error: `Invalid payload: ${payloadResult.error}`,
+									retriable: false,
+								}),
+							);
+							markProcessed(this.db, [entry.id]);
+							return;
+						}
+						response = await this.executeResourceRead(payloadResult.value as ResourceReadPayload);
 						break;
 					}
 					case "prompt_invoke": {
-						const payload = JSON.parse(entry.payload) as PromptInvokePayload;
-						response = await this.executePromptInvoke(payload);
+						const payloadResult = parseJsonUntyped(entry.payload, entry.kind);
+						if (!payloadResult.ok) {
+							this.logger.error("Invalid relay payload", {
+								kind: entry.kind,
+								error: payloadResult.error,
+								entryId: entry.id,
+							});
+							this.writeResponse(
+								entry,
+								"error",
+								JSON.stringify({
+									error: `Invalid payload: ${payloadResult.error}`,
+									retriable: false,
+								}),
+							);
+							markProcessed(this.db, [entry.id]);
+							return;
+						}
+						response = await this.executePromptInvoke(payloadResult.value as PromptInvokePayload);
 						break;
 					}
 					case "cache_warm": {
-						const payload = JSON.parse(entry.payload) as CacheWarmPayload;
-						response = await this.executeCacheWarm(entry, payload);
+						const payloadResult = parseJsonUntyped(entry.payload, entry.kind);
+						if (!payloadResult.ok) {
+							this.logger.error("Invalid relay payload", {
+								kind: entry.kind,
+								error: payloadResult.error,
+								entryId: entry.id,
+							});
+							this.writeResponse(
+								entry,
+								"error",
+								JSON.stringify({
+									error: `Invalid payload: ${payloadResult.error}`,
+									retriable: false,
+								}),
+							);
+							markProcessed(this.db, [entry.id]);
+							return;
+						}
+						response = await this.executeCacheWarm(entry, payloadResult.value as CacheWarmPayload);
 						break;
 					}
 					case "inference": {
-						const inferencePayload = JSON.parse(entry.payload) as InferenceRequestPayload;
+						const payloadResult = parseJsonSafe(
+							inferenceRequestPayloadSchema,
+							entry.payload,
+							entry.kind,
+						);
+						if (!payloadResult.ok) {
+							this.logger.error("Invalid relay payload", {
+								kind: entry.kind,
+								error: payloadResult.error,
+								entryId: entry.id,
+							});
+							this.writeResponse(
+								entry,
+								"error",
+								JSON.stringify({
+									error: `Invalid payload: ${payloadResult.error}`,
+									retriable: false,
+								}),
+							);
+							markProcessed(this.db, [entry.id]);
+							return;
+						}
 						// inference is handled asynchronously — executeInference() writes
 						// stream_chunk/stream_end outbox entries directly and returns null
-						this.executeInference(entry, inferencePayload).catch((err) => {
-							this.logger.error("executeInference failed", { error: err, entryId: entry.id });
-						});
+						this.executeInference(entry, payloadResult.value as InferenceRequestPayload).catch(
+							(err) => {
+								this.logger.error("executeInference failed", { error: err, entryId: entry.id });
+							},
+						);
 						// Return null to skip the single writeResponse() call below
 						response = null;
 						break;
 					}
 					case "process": {
-						const processPayload = JSON.parse(entry.payload) as ProcessPayload;
+						const payloadResult = parseJsonSafe(processPayloadSchema, entry.payload, entry.kind);
+						if (!payloadResult.ok) {
+							this.logger.error("Invalid relay payload", {
+								kind: entry.kind,
+								error: payloadResult.error,
+								entryId: entry.id,
+							});
+							this.writeResponse(
+								entry,
+								"error",
+								JSON.stringify({
+									error: `Invalid payload: ${payloadResult.error}`,
+									retriable: false,
+								}),
+							);
+							markProcessed(this.db, [entry.id]);
+							return;
+						}
 						// Fire-and-forget: executeProcess() runs the agent loop asynchronously
-						this.executeProcess(entry, processPayload).catch((err) => {
+						this.executeProcess(entry, payloadResult.value).catch((err) => {
 							this.logger.error("executeProcess failed", { error: err, entryId: entry.id });
 						});
 						response = null; // Chunks written directly
 						break;
 					}
 					case "status_forward": {
-						const fwdPayload = JSON.parse(entry.payload) as StatusForwardPayload;
+						const payloadResult = parseJsonSafe(
+							statusForwardPayloadSchema,
+							entry.payload,
+							entry.kind,
+						);
+						if (!payloadResult.ok) {
+							this.logger.error("Invalid relay payload", {
+								kind: entry.kind,
+								error: payloadResult.error,
+								entryId: entry.id,
+							});
+							markProcessed(this.db, [entry.id]);
+							return;
+						}
 						// Emit locally so the web server can cache and serve it.
-						this.eventBus.emit("status:forward", fwdPayload);
+						this.eventBus.emit("status:forward", payloadResult.value);
 						response = null;
 						break;
 					}
 					case "intake": {
-						const payload = JSON.parse(entry.payload) as IntakePayload;
+						const payloadResult = parseJsonSafe(intakePayloadSchema, entry.payload, entry.kind);
+						if (!payloadResult.ok) {
+							this.logger.error("Invalid relay payload", {
+								kind: entry.kind,
+								error: payloadResult.error,
+								entryId: entry.id,
+							});
+							markProcessed(this.db, [entry.id]);
+							return;
+						}
+						const payload = payloadResult.value;
 						this.logger.info("[relay] Intake received", {
 							platform: payload.platform,
 							threadId: payload.thread_id,
@@ -385,14 +527,41 @@ export class RelayProcessor {
 					}
 
 					case "platform_deliver": {
-						const payload = JSON.parse(entry.payload) as PlatformDeliverPayload;
-						this.eventBus.emit("platform:deliver", payload);
+						const payloadResult = parseJsonSafe(
+							platformDeliverPayloadSchema,
+							entry.payload,
+							entry.kind,
+						);
+						if (!payloadResult.ok) {
+							this.logger.error("Invalid relay payload", {
+								kind: entry.kind,
+								error: payloadResult.error,
+								entryId: entry.id,
+							});
+							markProcessed(this.db, [entry.id]);
+							return;
+						}
+						this.eventBus.emit("platform:deliver", payloadResult.value as PlatformDeliverPayload);
 						response = null;
 						break;
 					}
 
 					case "event_broadcast": {
-						const payload = JSON.parse(entry.payload) as EventBroadcastPayload;
+						const payloadResult = parseJsonSafe(
+							eventBroadcastPayloadSchema,
+							entry.payload,
+							entry.kind,
+						);
+						if (!payloadResult.ok) {
+							this.logger.error("Invalid relay payload", {
+								kind: entry.kind,
+								error: payloadResult.error,
+								entryId: entry.id,
+							});
+							markProcessed(this.db, [entry.id]);
+							return;
+						}
+						const payload = payloadResult.value;
 						// Fire the named event locally. Include __relay_event_depth field for relay tracking.
 						this.eventBus.emit(
 							payload.event_name as keyof EventMap,
@@ -405,8 +574,13 @@ export class RelayProcessor {
 						break;
 					}
 
-					default:
-						throw new Error(`Unknown request kind: ${entry.kind}`);
+					default: {
+						// Unknown relay kind at runtime — log and skip. TypeScript exhaustiveness
+						// is checked separately via the relay kind type definition.
+						this.logger.warn("Unknown relay kind", { kind: entry.kind });
+						markProcessed(this.db, [entry.id]);
+						return;
+					}
 				}
 			} catch (executionError) {
 				// Step 5b: Handle execution errors
@@ -703,13 +877,20 @@ export class RelayProcessor {
 					)
 					.all();
 				for (const host of hosts) {
-					let models: string[];
-					try {
-						models = JSON.parse(host.models) as string[];
-					} catch {
-						continue; // Skip host with corrupted models JSON
+					const modelsResult = parseJsonSafe(hostModelsSchema, host.models, "Tier 2 models");
+					if (!modelsResult.ok) {
+						this.logger.warn(
+							`selectIntakeHost Tier 2: Skipping host ${host.site_id} with corrupted models`,
+							{ error: modelsResult.error },
+						);
+						continue;
 					}
-					if (models.includes(lastModel.model_id)) return host.site_id;
+					const models = modelsResult.value;
+					// Check if any model entry matches (handle both string[] and HostModelEntry[] formats)
+					const hasMatch = models.some((m) =>
+						typeof m === "string" ? m === lastModel.model_id : m.id === lastModel.model_id,
+					);
+					if (hasMatch) return host.site_id;
 				}
 			}
 		} catch {
@@ -744,15 +925,15 @@ export class RelayProcessor {
 			let bestScore = 0;
 			for (const host of hosts) {
 				if (!host.mcp_tools) continue;
-				let hostToolNames: string[];
-				try {
-					hostToolNames = JSON.parse(host.mcp_tools);
-				} catch {
+				const toolsResult = parseJsonSafe(hostMcpToolsSchema, host.mcp_tools, "Tier 3 mcp_tools");
+				if (!toolsResult.ok) {
 					this.logger.warn(
 						`selectIntakeHost Tier 3: Skipping host ${host.site_id} with corrupted mcp_tools`,
+						{ error: toolsResult.error },
 					);
 					continue;
 				}
+				const hostToolNames = toolsResult.value;
 				const score = threadTools.filter((t) => hostToolNames.includes(t)).length;
 				if (score > bestScore) {
 					bestScore = score;
@@ -839,27 +1020,68 @@ export class RelayProcessor {
 			try {
 				switch (request.kind) {
 					case "tool_call": {
-						const payload = JSON.parse(request.payload) as ToolCallPayload;
-						response = await this.executeToolCall(payload);
+						const payloadResult = parseJsonUntyped(request.payload, request.kind);
+						if (!payloadResult.ok) {
+							const errorResponse: ErrorPayload = {
+								error: `Invalid payload: ${payloadResult.error}`,
+								retriable: false,
+							};
+							results.push(this.createResultEntry(request, "error", JSON.stringify(errorResponse)));
+							return results;
+						}
+						response = await this.executeToolCall(payloadResult.value as ToolCallPayload);
 						break;
 					}
 					case "resource_read": {
-						const payload = JSON.parse(request.payload) as ResourceReadPayload;
-						response = await this.executeResourceRead(payload);
+						const payloadResult = parseJsonUntyped(request.payload, request.kind);
+						if (!payloadResult.ok) {
+							const errorResponse: ErrorPayload = {
+								error: `Invalid payload: ${payloadResult.error}`,
+								retriable: false,
+							};
+							results.push(this.createResultEntry(request, "error", JSON.stringify(errorResponse)));
+							return results;
+						}
+						response = await this.executeResourceRead(payloadResult.value as ResourceReadPayload);
 						break;
 					}
 					case "prompt_invoke": {
-						const payload = JSON.parse(request.payload) as PromptInvokePayload;
-						response = await this.executePromptInvoke(payload);
+						const payloadResult = parseJsonUntyped(request.payload, request.kind);
+						if (!payloadResult.ok) {
+							const errorResponse: ErrorPayload = {
+								error: `Invalid payload: ${payloadResult.error}`,
+								retriable: false,
+							};
+							results.push(this.createResultEntry(request, "error", JSON.stringify(errorResponse)));
+							return results;
+						}
+						response = await this.executePromptInvoke(payloadResult.value as PromptInvokePayload);
 						break;
 					}
 					case "cache_warm": {
-						const payload = JSON.parse(request.payload) as CacheWarmPayload;
-						response = await this.executeCacheWarm(request, payload);
+						const payloadResult = parseJsonUntyped(request.payload, request.kind);
+						if (!payloadResult.ok) {
+							const errorResponse: ErrorPayload = {
+								error: `Invalid payload: ${payloadResult.error}`,
+								retriable: false,
+							};
+							results.push(this.createResultEntry(request, "error", JSON.stringify(errorResponse)));
+							return results;
+						}
+						response = await this.executeCacheWarm(
+							request,
+							payloadResult.value as CacheWarmPayload,
+						);
 						break;
 					}
-					default:
-						throw new Error(`Unknown request kind: ${request.kind}`);
+					default: {
+						const errorResponse: ErrorPayload = {
+							error: `Unknown request kind: ${request.kind}`,
+							retriable: false,
+						};
+						results.push(this.createResultEntry(request, "error", JSON.stringify(errorResponse)));
+						return results;
+					}
 				}
 			} catch (executionError) {
 				// Step 5b: Handle execution errors

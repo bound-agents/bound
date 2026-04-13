@@ -69,6 +69,9 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 		`);
 
 		// Step 1: Set drain flag
+		// TODO: For multi-hub clusters, this should be in cluster_config (synced) so all
+		// hubs see the drain signal. Currently in host_meta (local-only), which works for
+		// single-hub deployments where the draining hub is the one running this command.
 		db.query("INSERT OR REPLACE INTO host_meta (key, value) VALUES (?, ?)").run(
 			"relay_draining",
 			"true",

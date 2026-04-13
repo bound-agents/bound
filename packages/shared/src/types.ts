@@ -306,9 +306,9 @@ export type RelayKind = (typeof RELAY_KINDS)[number];
 
 export interface RelayOutboxEntry {
 	id: string;
-	source_site_id: string | null;
+	source_site_id: string;
 	target_site_id: string;
-	kind: string;
+	kind: RelayKind;
 	ref_id: string | null;
 	idempotency_key: string | null;
 	stream_id: string | null;
@@ -321,7 +321,7 @@ export interface RelayOutboxEntry {
 export interface RelayInboxEntry {
 	id: string;
 	source_site_id: string;
-	kind: string;
+	kind: RelayKind;
 	ref_id: string | null;
 	idempotency_key: string | null;
 	stream_id: string | null;
@@ -335,7 +335,7 @@ export interface RelayMessage {
 	id: string;
 	target_site_id: string;
 	source_site_id: string;
-	kind: string;
+	kind: RelayKind;
 	ref_id: string | null;
 	idempotency_key: string | null;
 	stream_id: string | null;

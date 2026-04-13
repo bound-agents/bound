@@ -4,7 +4,7 @@ import { getSiteId, writeOutbox } from "@bound/core";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertRow } from "@bound/core";
-import type { TypedEventEmitter } from "@bound/shared";
+import { type TypedEventEmitter, hostModelsSchema, parseJsonSafe } from "@bound/shared";
 import { Hono } from "hono";
 
 export interface ModelInfo {
@@ -117,12 +117,17 @@ export function createStatusRoutes(
 
 		const remoteModels: ClusterModelInfo[] = [];
 		for (const host of remoteHosts) {
-			let modelIds: string[];
-			try {
-				modelIds = JSON.parse(host.models);
-			} catch {
+			const modelsResult = parseJsonSafe(hostModelsSchema, host.models, "host.models");
+			if (!modelsResult.ok) {
+				console.warn(`Invalid host models JSON for ${host.host_name}: ${modelsResult.error}`);
 				continue;
 			}
+
+			// Extract model IDs from HostModelEntry array or legacy string array
+			const modelIds = modelsResult.value.map((entry) =>
+				typeof entry === "string" ? entry : entry.id,
+			);
+
 			// AC5.3: Annotate stale models with "offline?"
 			const isStale =
 				!host.online_at || Date.now() - new Date(host.online_at).getTime() > STALE_THRESHOLD_MS;

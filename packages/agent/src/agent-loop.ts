@@ -17,7 +17,14 @@ import type { ModelRouter, StreamChunk } from "@bound/llm";
 import type { InferenceRequestPayload, StreamChunkPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
 import type { ContextDebugInfo, SyncConfig } from "@bound/shared";
-import { countTokens, formatError } from "@bound/shared";
+import {
+	countTokens,
+	errorPayloadSchema,
+	formatError,
+	parseJsonSafe,
+	parseJsonUntyped,
+	resultPayloadSchema,
+} from "@bound/shared";
 
 import {
 	buildCommandOutput,
@@ -362,115 +369,120 @@ export class AgentLoop {
 						throw new Error("Model resolution not available");
 					}
 
-					if (resolution.kind === "error") {
-						throw new Error(resolution.error);
-					}
+					switch (resolution.kind) {
+						case "error":
+							throw new Error(resolution.error);
 
-					if (resolution.kind === "remote") {
-						let inferencePayload: InferenceRequestPayload = {
-							model: resolution.modelId,
-							messages: nonSystemMessages,
-							tools: this.config.tools,
-							system: systemPrompt || undefined,
-							max_tokens: undefined,
-							temperature: undefined,
-							cache_breakpoints: undefined,
-							timeout_ms: this.inferenceTimeoutMs,
-						};
-						const MAX_INLINE_BYTES = 2 * 1024 * 1024;
-						const serialized = JSON.stringify(inferencePayload);
-						const payloadBytes = textEncoder.encode(serialized).byteLength;
-
-						if (payloadBytes > MAX_INLINE_BYTES) {
-							const fileRef = `cluster/relay/inference-${randomUUID()}.json`;
-							const messagesJson = JSON.stringify(inferencePayload.messages);
-							insertRow(
-								this.ctx.db,
-								"files",
-								{
-									id: randomUUID(),
-									path: fileRef,
-									content: messagesJson,
-									is_binary: 0,
-									size_bytes: textEncoder.encode(messagesJson).byteLength,
-									created_at: new Date().toISOString(),
-									modified_at: new Date().toISOString(),
-									deleted: 0,
-									created_by: this.config.userId,
-									host_origin: this.ctx.siteId,
-								},
-								this.ctx.siteId,
-							);
-							this.ctx.eventBus.emit("sync:trigger", { reason: "relay-large-prompt" });
-							inferencePayload = {
-								...inferencePayload,
-								messages: [], // Clear inline messages
-								messages_file_ref: fileRef,
+						case "remote": {
+							let inferencePayload: InferenceRequestPayload = {
+								model: resolution.modelId,
+								messages: nonSystemMessages,
+								tools: this.config.tools,
+								system: systemPrompt || undefined,
+								max_tokens: undefined,
+								temperature: undefined,
+								cache_breakpoints: undefined,
+								timeout_ms: this.inferenceTimeoutMs,
 							};
-						}
+							const MAX_INLINE_BYTES = 2 * 1024 * 1024;
+							const serialized = JSON.stringify(inferencePayload);
+							const payloadBytes = textEncoder.encode(serialized).byteLength;
 
-						for await (const chunk of this.relayStream(
-							inferencePayload,
-							resolution.hosts,
-							relayMetadataRef,
-						)) {
-							if (this.aborted) break;
-							chunks.push(chunk);
-						}
-					} else {
-						// Place cache breakpoint at second-to-last message for prompt-cache reuse
-						const cacheBreakpoints: number[] | undefined =
-							nonSystemMessages.length >= 2 ? [nonSystemMessages.length - 2] : undefined;
-
-						const totalEstimatedTokens = contextDebug.totalEstimated + toolTokenEstimate;
-						const effectiveSilenceTimeout = scaledSilenceTimeout(
-							SILENCE_TIMEOUT_MS,
-							totalEstimatedTokens,
-						);
-						const effectiveMaxRetries = scaledMaxRetries(totalEstimatedTokens);
-
-						let silenceRetries = 0;
-						for (;;) {
-							try {
-								const chatStream = resolution.backend.chat({
-									messages: nonSystemMessages,
-									system: systemPrompt || undefined,
-									tools: this.config.tools,
-									cache_breakpoints: cacheBreakpoints,
-									signal: this.config.abortSignal,
-								});
-								for await (const chunk of this.withSilenceTimeout(
-									chatStream,
-									effectiveSilenceTimeout,
-								)) {
-									if (this.aborted) break;
-									// Cooperative yield: check on every chunk during streaming
-									if (this.config.shouldYield?.()) {
-										this.yielded = true;
-										this.aborted = true;
-										break;
-									}
-									// Reset the inactivity timeout — the LLM is producing output
-									this.config.onActivity?.();
-									chunks.push(chunk);
-								}
-								break; // Stream completed — exit retry loop
-							} catch (silenceErr) {
-								const isSilenceTimeout =
-									silenceErr instanceof Error && silenceErr.message.includes("silence timeout");
-								if (isSilenceTimeout && silenceRetries < effectiveMaxRetries) {
-									silenceRetries++;
-									chunks.length = 0; // Clear any partial chunks
-									// Reset inactivity timeout — we're actively retrying, not stalled
-									this.config.onActivity?.();
-									this.ctx.logger.warn("[agent-loop] Silence timeout, retrying", {
-										attempt: silenceRetries,
-										max: effectiveMaxRetries,
-									});
-									continue;
-								}
-								throw silenceErr; // Exhausted retries or non-silence error
+							if (payloadBytes > MAX_INLINE_BYTES) {
+								const fileRef = `cluster/relay/inference-${randomUUID()}.json`;
+								const messagesJson = JSON.stringify(inferencePayload.messages);
+								insertRow(
+									this.ctx.db,
+									"files",
+									{
+										id: randomUUID(),
+										path: fileRef,
+										content: messagesJson,
+										is_binary: 0,
+										size_bytes: textEncoder.encode(messagesJson).byteLength,
+										created_at: new Date().toISOString(),
+										modified_at: new Date().toISOString(),
+										deleted: 0,
+										created_by: this.config.userId,
+										host_origin: this.ctx.siteId,
+									},
+									this.ctx.siteId,
+								);
+								this.ctx.eventBus.emit("sync:trigger", { reason: "relay-large-prompt" });
+								inferencePayload = {
+									...inferencePayload,
+									messages: [], // Clear inline messages
+									messages_file_ref: fileRef,
+								};
 							}
+
+							for await (const chunk of this.relayStream(
+								inferencePayload,
+								resolution.hosts,
+								relayMetadataRef,
+							)) {
+								if (this.aborted) break;
+								chunks.push(chunk);
+							}
+							break;
+						}
+
+						case "local": {
+							// Place cache breakpoint at second-to-last message for prompt-cache reuse
+							const cacheBreakpoints: number[] | undefined =
+								nonSystemMessages.length >= 2 ? [nonSystemMessages.length - 2] : undefined;
+
+							const totalEstimatedTokens = contextDebug.totalEstimated + toolTokenEstimate;
+							const effectiveSilenceTimeout = scaledSilenceTimeout(
+								SILENCE_TIMEOUT_MS,
+								totalEstimatedTokens,
+							);
+							const effectiveMaxRetries = scaledMaxRetries(totalEstimatedTokens);
+
+							let silenceRetries = 0;
+							for (;;) {
+								try {
+									const chatStream = resolution.backend.chat({
+										messages: nonSystemMessages,
+										system: systemPrompt || undefined,
+										tools: this.config.tools,
+										cache_breakpoints: cacheBreakpoints,
+										signal: this.config.abortSignal,
+									});
+									for await (const chunk of this.withSilenceTimeout(
+										chatStream,
+										effectiveSilenceTimeout,
+									)) {
+										if (this.aborted) break;
+										// Cooperative yield: check on every chunk during streaming
+										if (this.config.shouldYield?.()) {
+											this.yielded = true;
+											this.aborted = true;
+											break;
+										}
+										// Reset the inactivity timeout — the LLM is producing output
+										this.config.onActivity?.();
+										chunks.push(chunk);
+									}
+									break; // Stream completed — exit retry loop
+								} catch (silenceErr) {
+									const isSilenceTimeout =
+										silenceErr instanceof Error && silenceErr.message.includes("silence timeout");
+									if (isSilenceTimeout && silenceRetries < effectiveMaxRetries) {
+										silenceRetries++;
+										chunks.length = 0; // Clear any partial chunks
+										// Reset inactivity timeout — we're actively retrying, not stalled
+										this.config.onActivity?.();
+										this.ctx.logger.warn("[agent-loop] Silence timeout, retrying", {
+											attempt: silenceRetries,
+											max: effectiveMaxRetries,
+										});
+										continue;
+									}
+									throw silenceErr; // Exhausted retries or non-silence error
+								}
+							}
+							break;
 						}
 					}
 				} catch (error) {
@@ -1077,30 +1089,25 @@ export class AgentLoop {
 				}
 
 				if (response.kind === "error") {
-					try {
-						const payload = JSON.parse(response.payload) as { error?: string };
-						markProcessed(this.ctx.db, [response.id]);
-						return `Remote error: ${payload.error || response.payload}`;
-					} catch {
-						markProcessed(this.ctx.db, [response.id]);
+					const payloadResult = parseJsonSafe(errorPayloadSchema, response.payload, response.kind);
+					markProcessed(this.ctx.db, [response.id]);
+					if (!payloadResult.ok) {
 						return `Remote error: ${response.payload}`;
 					}
+					return `Remote error: ${payloadResult.value.error || response.payload}`;
 				}
 
 				if (response.kind === "result") {
-					try {
-						const payload = JSON.parse(response.payload) as {
-							stdout?: string;
-							stderr?: string;
-							exitCode?: number;
-							complete?: boolean;
-						};
-						markProcessed(this.ctx.db, [response.id]);
-						return buildCommandOutput(payload.stdout, payload.stderr, payload.exitCode);
-					} catch {
-						markProcessed(this.ctx.db, [response.id]);
+					const payloadResult = parseJsonSafe(resultPayloadSchema, response.payload, response.kind);
+					markProcessed(this.ctx.db, [response.id]);
+					if (!payloadResult.ok) {
 						return `Remote result: ${response.payload}`;
 					}
+					return buildCommandOutput(
+						payloadResult.value.stdout,
+						payloadResult.value.stderr,
+						payloadResult.value.exit_code,
+					);
 				}
 
 				markProcessed(this.ctx.db, [response.id]);
@@ -1235,15 +1242,16 @@ export class AgentLoop {
 
 					const errorEntry = inboxEntries.find((e) => e.kind === "error");
 					if (errorEntry) {
-						let parsedError: string;
-						try {
-							const errPayload = JSON.parse(errorEntry.payload) as { error?: string };
-							parsedError = errPayload.error ?? "Remote inference error";
-						} catch {
-							parsedError = `Remote inference error: ${errorEntry.payload}`;
-						}
+						const errResult = parseJsonSafe(
+							errorPayloadSchema,
+							errorEntry.payload,
+							errorEntry.kind,
+						);
 						markProcessed(this.ctx.db, [errorEntry.id]);
-						throw new Error(parsedError);
+						if (!errResult.ok) {
+							throw new Error(`Remote inference error: ${errorEntry.payload}`);
+						}
+						throw new Error(errResult.value.error ?? "Remote inference error");
 					}
 
 					// Buffer all received stream_chunk and stream_end entries by seq
@@ -1251,14 +1259,14 @@ export class AgentLoop {
 					const chunkEntries = inboxEntries.filter((e) => e.kind === "stream_chunk");
 
 					for (const entry of [...chunkEntries, ...(streamEndEntry ? [streamEndEntry] : [])]) {
-						try {
-							const chunkPayload = JSON.parse(entry.payload) as StreamChunkPayload;
-							if (!buffer.has(chunkPayload.seq)) {
-								buffer.set(chunkPayload.seq, chunkPayload);
-							}
-							markProcessed(this.ctx.db, [entry.id]);
-						} catch {
-							markProcessed(this.ctx.db, [entry.id]);
+						const chunkResult = parseJsonUntyped(entry.payload, entry.kind);
+						markProcessed(this.ctx.db, [entry.id]);
+						if (!chunkResult.ok) {
+							continue;
+						}
+						const chunkPayload = chunkResult.value as StreamChunkPayload;
+						if (!buffer.has(chunkPayload.seq)) {
+							buffer.set(chunkPayload.seq, chunkPayload);
 						}
 					}
 

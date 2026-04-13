@@ -59,15 +59,23 @@ type AnthropicEventType =
 	| "ping"
 	| "error";
 
+interface AnthropicStreamDelta {
+	type?: string;
+	text?: string;
+	partial_json?: string;
+}
+
+interface AnthropicToolUseBlock {
+	type?: string;
+	id?: string;
+	name?: string;
+}
+
 interface AnthropicStreamEvent {
 	type: AnthropicEventType;
 	index?: number;
-	content_block?: { type: string };
-	delta?: {
-		type: string;
-		text?: string;
-		stop_reason?: string;
-	};
+	content_block?: AnthropicToolUseBlock;
+	delta?: AnthropicStreamDelta;
 	usage?: {
 		input_tokens?: number;
 		output_tokens?: number;
@@ -273,8 +281,7 @@ async function* parseAnthropicStream(
 
 		// Handle tool_use input_json_delta
 		if (event.type === "content_block_delta" && event.delta?.type === "input_json_delta") {
-			// biome-ignore lint/suspicious/noExplicitAny: Anthropic API returns untyped delta with partial_json property
-			const delta = event.delta as any;
+			const delta = event.delta as AnthropicStreamDelta;
 
 			if (delta.partial_json) {
 				currentToolArgs += delta.partial_json;
@@ -283,8 +290,7 @@ async function* parseAnthropicStream(
 
 		// Handle tool_use block start
 		if (event.type === "content_block_start" && event.content_block?.type === "tool_use") {
-			// biome-ignore lint/suspicious/noExplicitAny: Anthropic API returns untyped content_block with id and name properties
-			const block = event.content_block as any;
+			const block = event.content_block as AnthropicToolUseBlock;
 			if (block.id) {
 				currentToolId = block.id;
 				currentToolArgs = "";

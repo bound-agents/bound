@@ -129,9 +129,9 @@ export function recordContextDebug(db: Database, turnId: number, debug: ContextD
 }
 
 export function getDailySpend(db: Database, date: string): number {
-	const result = db.prepare("SELECT total_cost_usd FROM daily_summary WHERE date = ?").get(date) as
-		| { total_cost_usd: number }
-		| undefined;
+	const result = db
+		.prepare("SELECT total_cost_usd FROM daily_summary WHERE date = ?")
+		.get(date) as { total_cost_usd: number } | null;
 
 	return result?.total_cost_usd || 0;
 }

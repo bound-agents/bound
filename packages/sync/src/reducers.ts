@@ -1,7 +1,7 @@
 import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { createChangeLogEntry } from "@bound/core";
 import type { ChangeLogEntry, SyncedTableName } from "@bound/shared";
-import { TABLE_REDUCER_MAP } from "@bound/shared";
+import { TABLE_REDUCER_MAP, parseJsonUntyped } from "@bound/shared";
 
 type RowData = Record<string, SQLQueryBindings>;
 
@@ -56,15 +56,15 @@ export function applyAppendOnlyReducer(db: Database, event: ChangeLogEntry): { a
 		return { applied: false };
 	}
 
-	let rowData: RowData;
-	try {
-		rowData = JSON.parse(event.row_data);
-	} catch {
+	const parseResult = parseJsonUntyped(event.row_data, `${event.table_name}.${event.row_id}`);
+	if (!parseResult.ok) {
 		return { applied: false };
 	}
-	if (!rowData || typeof rowData !== "object") {
+	const value = parseResult.value;
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		return { applied: false };
 	}
+	const rowData = value as RowData;
 	const hasModifiedAt = rowData.modified_at !== null && rowData.modified_at !== undefined;
 
 	const columns = Object.keys(rowData);
@@ -129,15 +129,15 @@ export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied:
 		return { applied: false };
 	}
 
-	let rowData: RowData;
-	try {
-		rowData = JSON.parse(event.row_data);
-	} catch {
+	const parseResult = parseJsonUntyped(event.row_data, `${event.table_name}.${event.row_id}`);
+	if (!parseResult.ok) {
 		return { applied: false };
 	}
-	if (!rowData || typeof rowData !== "object") {
+	const value = parseResult.value;
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		return { applied: false };
 	}
+	const rowData = value as RowData;
 	const schemaColumns = getTableColumns(db, event.table_name);
 
 	// Determine primary key column from schema (most tables use 'id', but some don't)
@@ -226,13 +226,17 @@ export function replayEvents(
 	db.exec("BEGIN");
 	try {
 		for (const event of events) {
-			let rowData: RowData;
-			try {
-				rowData = JSON.parse(event.row_data);
-			} catch {
+			const parseResult = parseJsonUntyped(event.row_data, `${event.table_name}.${event.row_id}`);
+			if (!parseResult.ok) {
 				skipped++;
 				continue; // Skip malformed events rather than crashing the batch
 			}
+			const value = parseResult.value;
+			if (!value || typeof value !== "object" || Array.isArray(value)) {
+				skipped++;
+				continue;
+			}
+			const rowData = value as RowData;
 
 			const result = applyEvent(db, event);
 
