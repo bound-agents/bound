@@ -16,6 +16,14 @@ import type { Logger, TypedEventEmitter } from "@bound/shared";
 export const loopContextStorage = new AsyncLocalStorage<{
 	threadId?: string;
 	taskId?: string;
+	/**
+	 * Side-channel for relay requests from remote MCP proxy commands.
+	 * just-bash normalizes custom command return values to { stdout, stderr, exitCode, env },
+	 * stripping extra fields like outboxEntryId. Command handlers that need to signal a relay
+	 * request set this field; the agent loop checks it after sandbox.exec returns.
+	 */
+	// biome-ignore lint/suspicious/noExplicitAny: relay request type lives in @bound/agent, avoid circular dep
+	relayRequest?: any;
 }>();
 
 import type { CustomCommand, IFileSystem } from "just-bash";

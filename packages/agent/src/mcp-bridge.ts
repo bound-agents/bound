@@ -12,6 +12,7 @@ import type { Database } from "bun:sqlite";
 
 import { updateRow, writeOutbox } from "@bound/core";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
+import { loopContextStorage } from "@bound/sandbox";
 import { formatError } from "@bound/shared";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
@@ -601,8 +602,11 @@ export function generateRemoteMCPProxyCommands(
 				writeOutbox(ctx.db, outboxEntry);
 				ctx.eventBus.emit("sync:trigger", { reason: "remote-mcp-tool-call" });
 
-				// Return RelayToolCallRequest — the agent loop checks isRelayRequest()
-				// and enters RELAY_WAIT to poll for the response.
+				// Build RelayToolCallRequest. just-bash normalizes custom command
+				// return values to { stdout, stderr, exitCode, env }, stripping
+				// extra fields like outboxEntryId. Store the full request in
+				// loopContextStorage so the agent loop can retrieve it after
+				// sandbox.exec returns.
 				const result: RelayToolCallRequest = {
 					outboxEntryId: outboxEntry.id,
 					targetSiteId: targetHost.site_id,
@@ -614,6 +618,10 @@ export function generateRemoteMCPProxyCommands(
 					stderr: "",
 					exitCode: 0,
 				};
+				const store = loopContextStorage.getStore();
+				if (store) {
+					store.relayRequest = result;
+				}
 				return result;
 			},
 		};
