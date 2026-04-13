@@ -591,6 +591,8 @@ describe("Scheduler Integration", () => {
 		expect(updatedTask?.thread_id).not.toBe(originThreadId);
 	});
 
+	// DEFERRED_RETRY_BACKOFF_MS is 5s per consecutive failure — these tests need > 5s wall time.
+	// bun:test default timeout is 5s, so we extend to 20s.
 	it("auto-retries failed deferred tasks up to DEFERRED_MAX_RETRIES", async () => {
 		const taskId = randomUUID();
 		const now = new Date();
@@ -667,7 +669,7 @@ describe("Scheduler Integration", () => {
 		expect(runCount).toBe(2);
 		// consecutive_failures resets to 0 on success
 		expect(finalTask?.consecutive_failures).toBe(0);
-	});
+	}, 20_000);
 
 	it("stops retrying deferred tasks after DEFERRED_MAX_RETRIES", async () => {
 		const taskId = randomUUID();
@@ -728,5 +730,5 @@ describe("Scheduler Integration", () => {
 		expect(finalTask).not.toBeNull();
 		expect(finalTask?.status).toBe("failed");
 		expect(finalTask?.consecutive_failures).toBe(2);
-	});
+	}, 20_000);
 });
