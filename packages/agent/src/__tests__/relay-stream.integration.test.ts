@@ -1088,8 +1088,19 @@ describe("relay-stream integration tests", () => {
 		requester.db.run(
 			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			[target.siteId, "target-host", "1.0", null, null, null,
-				JSON.stringify(["slow-model"]), null, now, now, 0],
+			[
+				target.siteId,
+				"target-host",
+				"1.0",
+				null,
+				null,
+				null,
+				JSON.stringify(["slow-model"]),
+				null,
+				now,
+				now,
+				0,
+			],
 		);
 
 		// Target generates 8 chunks with 50ms delays between each
@@ -1187,8 +1198,19 @@ describe("relay-stream integration tests", () => {
 		requester.db.run(
 			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			[target.siteId, "target-host", "1.0", null, null, null,
-				JSON.stringify(["retransmit-model"]), null, now, now, 0],
+			[
+				target.siteId,
+				"target-host",
+				"1.0",
+				null,
+				null,
+				null,
+				JSON.stringify(["retransmit-model"]),
+				null,
+				now,
+				now,
+				0,
+			],
 		);
 
 		const targetDb = target.db;
@@ -1251,7 +1273,9 @@ describe("relay-stream integration tests", () => {
 			// After target has flushed stream chunks (cycle ~3-5), force retransmission
 			if (!retransmissionInjected && syncCycleCount >= 3) {
 				const undelivered = target.db
-					.query("SELECT count(*) as cnt FROM relay_outbox WHERE delivered = 1 AND kind IN ('stream_chunk', 'stream_end')")
+					.query(
+						"SELECT count(*) as cnt FROM relay_outbox WHERE delivered = 1 AND kind IN ('stream_chunk', 'stream_end')",
+					)
 					.get() as { cnt: number };
 				if (undelivered.cnt > 0) {
 					// Simulate response loss: un-mark stream chunks as delivered
@@ -1285,7 +1309,9 @@ describe("relay-stream integration tests", () => {
 		// Verify hub's relay_inbox doesn't have duplicates for this stream
 		// (dedup should prevent duplicate entries even after retransmission)
 		const hubInboxStreams = hub.db
-			.query("SELECT stream_id, count(*) as cnt FROM relay_inbox WHERE kind = 'stream_end' GROUP BY stream_id HAVING cnt > 1")
+			.query(
+				"SELECT stream_id, count(*) as cnt FROM relay_inbox WHERE kind = 'stream_end' GROUP BY stream_id HAVING cnt > 1",
+			)
 			.all() as Array<{ stream_id: string; cnt: number }>;
 		expect(hubInboxStreams.length).toBe(0); // No stream should have duplicate stream_end entries
 	}, 25000);

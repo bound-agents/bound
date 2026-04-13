@@ -75,6 +75,12 @@ describe("relay stream delivery", () => {
 		await spoke.cleanup();
 	});
 
+	/** Non-null sync client accessor (spoke always has one in this test suite). */
+	function spokeSync() {
+		if (!spoke.syncClient) throw new Error("spoke.syncClient is null");
+		return spoke.syncClient;
+	}
+
 	/**
 	 * Helper: write stream chunks to spoke's relay_outbox targeting the hub.
 	 * Returns the outbox entry IDs for verification.
@@ -111,16 +117,6 @@ describe("relay stream delivery", () => {
 	}
 
 	/**
-	 * Helper: count unprocessed relay_inbox entries on hub for a given stream_id.
-	 */
-	function hubInboxCount(streamId: string): number {
-		const row = hub.db
-			.query("SELECT count(*) as cnt FROM relay_inbox WHERE stream_id = ? AND processed = 0")
-			.get(streamId) as { cnt: number };
-		return row.cnt;
-	}
-
-	/**
 	 * Helper: count ALL relay_inbox entries on hub for a given stream_id (including processed).
 	 */
 	function hubInboxTotal(streamId: string): number {
@@ -145,7 +141,7 @@ describe("relay stream delivery", () => {
 		writeStreamChunks(streamId, [0, 1, 2, 3], 3);
 
 		// Sync: spoke pushes to hub
-		const result = await spoke.syncClient!.syncCycle();
+		const result = await spokeSync().syncCycle();
 		expect(result.ok).toBe(true);
 
 		// All 4 entries should be in hub's relay_inbox
@@ -158,7 +154,7 @@ describe("relay stream delivery", () => {
 		const outboxIds = writeStreamChunks(streamId, [0, 1, 2], 2);
 
 		// First sync: all chunks delivered
-		const result1 = await spoke.syncClient!.syncCycle();
+		const result1 = await spokeSync().syncCycle();
 		expect(result1.ok).toBe(true);
 		expect(hubInboxTotal(streamId)).toBe(3);
 
@@ -169,7 +165,7 @@ describe("relay stream delivery", () => {
 		);
 
 		// Second sync: same chunks retransmitted
-		const result2 = await spoke.syncClient!.syncCycle();
+		const result2 = await spokeSync().syncCycle();
 		expect(result2.ok).toBe(true);
 
 		// Hub should still have exactly 3 entries (no duplicates)
@@ -212,7 +208,7 @@ describe("relay stream delivery", () => {
 		}
 
 		// Single sync delivers all
-		const result = await spoke.syncClient!.syncCycle();
+		const result = await spokeSync().syncCycle();
 		expect(result.ok).toBe(true);
 
 		// Each stream has exactly 3 entries, no cross-contamination
@@ -227,13 +223,13 @@ describe("relay stream delivery", () => {
 
 		// First batch: seq 0-1
 		writeStreamChunks(streamId, [0, 1]);
-		const result1 = await spoke.syncClient!.syncCycle();
+		const result1 = await spokeSync().syncCycle();
 		expect(result1.ok).toBe(true);
 		expect(hubInboxTotal(streamId)).toBe(2);
 
 		// Second batch: seq 2-3 (stream_end)
 		writeStreamChunks(streamId, [2, 3], 3);
-		const result2 = await spoke.syncClient!.syncCycle();
+		const result2 = await spokeSync().syncCycle();
 		expect(result2.ok).toBe(true);
 
 		// All 4 entries present, in order
@@ -246,7 +242,7 @@ describe("relay stream delivery", () => {
 		const outboxIds = writeStreamChunks(streamId, [0, 1, 2, 3], 3);
 
 		// First sync: delivers all 4
-		const result1 = await spoke.syncClient!.syncCycle();
+		const result1 = await spokeSync().syncCycle();
 		expect(result1.ok).toBe(true);
 		expect(hubInboxTotal(streamId)).toBe(4);
 
@@ -257,7 +253,7 @@ describe("relay stream delivery", () => {
 		]);
 
 		// Second sync: retransmits seq 2 and 3
-		const result2 = await spoke.syncClient!.syncCycle();
+		const result2 = await spokeSync().syncCycle();
 		expect(result2.ok).toBe(true);
 
 		// Still exactly 4 entries (seq 2 and 3 deduped by original outbox ID)
@@ -270,7 +266,7 @@ describe("relay stream delivery", () => {
 		const outboxIds = writeStreamChunks(streamId, [0, 1, 2, 3, 4], 4);
 
 		// First sync
-		await spoke.syncClient!.syncCycle();
+		await spokeSync().syncCycle();
 		expect(hubInboxTotal(streamId)).toBe(5);
 
 		// Mark ALL as undelivered (total response loss)
@@ -280,7 +276,7 @@ describe("relay stream delivery", () => {
 		);
 
 		// Retransmit everything
-		await spoke.syncClient!.syncCycle();
+		await spokeSync().syncCycle();
 
 		// Still exactly 5 entries
 		expect(hubInboxTotal(streamId)).toBe(5);
@@ -308,7 +304,7 @@ describe("relay stream delivery", () => {
 		});
 
 		// Sync delivers hub-targeted chunks and routes other-target entry
-		const result = await spoke.syncClient!.syncCycle();
+		const result = await spokeSync().syncCycle();
 		expect(result.ok).toBe(true);
 
 		// Hub's relay_inbox has the stream chunks
@@ -328,9 +324,9 @@ describe("relay stream delivery", () => {
 
 		// Fire 3 sync cycles in rapid succession (simulating rapid sync:trigger)
 		const results = await Promise.all([
-			spoke.syncClient!.syncCycle(),
-			spoke.syncClient!.syncCycle(),
-			spoke.syncClient!.syncCycle(),
+			spokeSync().syncCycle(),
+			spokeSync().syncCycle(),
+			spokeSync().syncCycle(),
 		]);
 
 		// At least one should succeed
@@ -339,7 +335,7 @@ describe("relay stream delivery", () => {
 
 		// Write second batch and sync again
 		writeStreamChunks(streamId, [2, 3], 3);
-		await spoke.syncClient!.syncCycle();
+		await spokeSync().syncCycle();
 
 		// All chunks should have arrived (no lost chunks from racing)
 		expect(hubInboxTotal(streamId)).toBe(4);

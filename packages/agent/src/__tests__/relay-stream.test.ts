@@ -1078,36 +1078,75 @@ describe("relayStream() streaming generator", () => {
 			db.run(
 				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[randomUUID(), host.site_id, "stream_chunk", null, null, generatedStreamId,
+				[
+					randomUUID(),
+					host.site_id,
+					"stream_chunk",
+					null,
+					null,
+					generatedStreamId,
 					JSON.stringify({ seq: 0, chunks: [{ type: "text", content: "hello" }] }),
-					expires, now, 0],
+					expires,
+					now,
+					0,
+				],
 			);
 
 			// Insert seq 1 with a specific id
 			db.run(
 				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[dupeId, host.site_id, "stream_chunk", null, null, generatedStreamId,
+				[
+					dupeId,
+					host.site_id,
+					"stream_chunk",
+					null,
+					null,
+					generatedStreamId,
 					JSON.stringify({ seq: 1, chunks: [{ type: "text", content: "world" }] }),
-					expires, now, 0],
+					expires,
+					now,
+					0,
+				],
 			);
 
 			// Try to insert duplicate of seq 1 with SAME id — should be silently ignored
 			db.run(
 				`INSERT OR IGNORE INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[dupeId, host.site_id, "stream_chunk", null, null, generatedStreamId,
+				[
+					dupeId,
+					host.site_id,
+					"stream_chunk",
+					null,
+					null,
+					generatedStreamId,
 					JSON.stringify({ seq: 1, chunks: [{ type: "text", content: "world-dupe" }] }),
-					expires, now, 0],
+					expires,
+					now,
+					0,
+				],
 			);
 
 			// Insert stream_end
 			db.run(
 				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[randomUUID(), host.site_id, "stream_end", null, null, generatedStreamId,
-					JSON.stringify({ seq: 2, chunks: [{ type: "done", usage: { input_tokens: 10, output_tokens: 5 } }] }),
-					expires, now, 0],
+				[
+					randomUUID(),
+					host.site_id,
+					"stream_end",
+					null,
+					null,
+					generatedStreamId,
+					JSON.stringify({
+						seq: 2,
+						chunks: [{ type: "done", usage: { input_tokens: 10, output_tokens: 5 } }],
+					}),
+					expires,
+					now,
+					0,
+				],
 			);
 		}
 
@@ -1169,9 +1208,18 @@ describe("relayStream() streaming generator", () => {
 				db.run(
 					`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-					[randomUUID(), host.site_id, "stream_chunk", null, null, generatedStreamId,
+					[
+						randomUUID(),
+						host.site_id,
+						"stream_chunk",
+						null,
+						null,
+						generatedStreamId,
 						JSON.stringify({ seq, chunks: [{ type: "text", content: `chunk-${seq}` }] }),
-						expires, now, 0],
+						expires,
+						now,
+						0,
+					],
 				);
 			}
 
@@ -1184,9 +1232,18 @@ describe("relayStream() streaming generator", () => {
 				db.run(
 					`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-					[randomUUID(), host.site_id, "stream_chunk", null, null, generatedStreamId,
+					[
+						randomUUID(),
+						host.site_id,
+						"stream_chunk",
+						null,
+						null,
+						generatedStreamId,
 						JSON.stringify({ seq, chunks: [{ type: "text", content: `stale-${seq}` }] }),
-						expires, now, 0],
+						expires,
+						now,
+						0,
+					],
 				);
 			}
 
@@ -1197,9 +1254,21 @@ describe("relayStream() streaming generator", () => {
 			db.run(
 				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[randomUUID(), host.site_id, "stream_end", null, null, generatedStreamId,
-					JSON.stringify({ seq: 3, chunks: [{ type: "done", usage: { input_tokens: 10, output_tokens: 5 } }] }),
-					expires, now, 0],
+				[
+					randomUUID(),
+					host.site_id,
+					"stream_end",
+					null,
+					null,
+					generatedStreamId,
+					JSON.stringify({
+						seq: 3,
+						chunks: [{ type: "done", usage: { input_tokens: 10, output_tokens: 5 } }],
+					}),
+					expires,
+					now,
+					0,
+				],
 			);
 		}
 
@@ -1264,9 +1333,18 @@ describe("relayStream() streaming generator", () => {
 			db.run(
 				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[randomUUID(), host.site_id, "stream_chunk", null, null, generatedStreamId,
+				[
+					randomUUID(),
+					host.site_id,
+					"stream_chunk",
+					null,
+					null,
+					generatedStreamId,
 					JSON.stringify({ seq: 0, chunks: [{ type: "text", content: "A" }] }),
-					expires, now, 0],
+					expires,
+					now,
+					0,
+				],
 			);
 
 			// Wait for seq 0 to be consumed
@@ -1276,16 +1354,34 @@ describe("relayStream() streaming generator", () => {
 			db.run(
 				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[randomUUID(), host.site_id, "stream_chunk", null, null, generatedStreamId,
+				[
+					randomUUID(),
+					host.site_id,
+					"stream_chunk",
+					null,
+					null,
+					generatedStreamId,
 					JSON.stringify({ seq: 2, chunks: [{ type: "text", content: "C" }] }),
-					expires, now, 0],
+					expires,
+					now,
+					0,
+				],
 			);
 			db.run(
 				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[randomUUID(), host.site_id, "stream_chunk", null, null, generatedStreamId,
+				[
+					randomUUID(),
+					host.site_id,
+					"stream_chunk",
+					null,
+					null,
+					generatedStreamId,
 					JSON.stringify({ seq: 3, chunks: [{ type: "text", content: "D" }] }),
-					expires, now, 0],
+					expires,
+					now,
+					0,
+				],
 			);
 
 			// Wait a bit (but LESS than MAX_GAP_CYCLES * POLL_INTERVAL = 6 * 5ms = 30ms)
@@ -1295,18 +1391,39 @@ describe("relayStream() streaming generator", () => {
 			db.run(
 				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[randomUUID(), host.site_id, "stream_chunk", null, null, generatedStreamId,
+				[
+					randomUUID(),
+					host.site_id,
+					"stream_chunk",
+					null,
+					null,
+					generatedStreamId,
 					JSON.stringify({ seq: 1, chunks: [{ type: "text", content: "B" }] }),
-					expires, now, 0],
+					expires,
+					now,
+					0,
+				],
 			);
 
 			// Insert stream_end
 			db.run(
 				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[randomUUID(), host.site_id, "stream_end", null, null, generatedStreamId,
-					JSON.stringify({ seq: 4, chunks: [{ type: "done", usage: { input_tokens: 10, output_tokens: 5 } }] }),
-					expires, now, 0],
+				[
+					randomUUID(),
+					host.site_id,
+					"stream_end",
+					null,
+					null,
+					generatedStreamId,
+					JSON.stringify({
+						seq: 4,
+						chunks: [{ type: "done", usage: { input_tokens: 10, output_tokens: 5 } }],
+					}),
+					expires,
+					now,
+					0,
+				],
 			);
 		}
 
@@ -1367,9 +1484,18 @@ describe("relayStream() streaming generator", () => {
 				db.run(
 					`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-					[randomUUID(), host.site_id, "stream_chunk", null, null, generatedStreamId,
+					[
+						randomUUID(),
+						host.site_id,
+						"stream_chunk",
+						null,
+						null,
+						generatedStreamId,
 						JSON.stringify({ seq, chunks: [{ type: "text", content: `original-${seq}` }] }),
-						expires, now, 0],
+						expires,
+						now,
+						0,
+					],
 				);
 			}
 
@@ -1382,16 +1508,37 @@ describe("relayStream() streaming generator", () => {
 			db.run(
 				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[randomUUID(), host.site_id, "stream_chunk", null, null, generatedStreamId,
+				[
+					randomUUID(),
+					host.site_id,
+					"stream_chunk",
+					null,
+					null,
+					generatedStreamId,
 					JSON.stringify({ seq: 1, chunks: [{ type: "text", content: "STALE" }] }),
-					expires, now, 0],
+					expires,
+					now,
+					0,
+				],
 			);
 			db.run(
 				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[randomUUID(), host.site_id, "stream_end", null, null, generatedStreamId,
-					JSON.stringify({ seq: 3, chunks: [{ type: "done", usage: { input_tokens: 10, output_tokens: 5 } }] }),
-					expires, now, 0],
+				[
+					randomUUID(),
+					host.site_id,
+					"stream_end",
+					null,
+					null,
+					generatedStreamId,
+					JSON.stringify({
+						seq: 3,
+						chunks: [{ type: "done", usage: { input_tokens: 10, output_tokens: 5 } }],
+					}),
+					expires,
+					now,
+					0,
+				],
 			);
 		}
 
@@ -1452,16 +1599,34 @@ describe("relayStream() streaming generator", () => {
 			db.run(
 				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[randomUUID(), host.site_id, "stream_chunk", null, null, generatedStreamId,
+				[
+					randomUUID(),
+					host.site_id,
+					"stream_chunk",
+					null,
+					null,
+					generatedStreamId,
 					JSON.stringify({ seq: 0, chunks: [{ type: "text", content: "zero" }] }),
-					expires, now, 0],
+					expires,
+					now,
+					0,
+				],
 			);
 			db.run(
 				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[randomUUID(), host.site_id, "stream_chunk", null, null, generatedStreamId,
+				[
+					randomUUID(),
+					host.site_id,
+					"stream_chunk",
+					null,
+					null,
+					generatedStreamId,
 					JSON.stringify({ seq: 2, chunks: [{ type: "text", content: "two" }] }),
-					expires, now, 0],
+					expires,
+					now,
+					0,
+				],
 			);
 
 			// Wait for gap detection to kick in (6 cycles * 5ms = 30ms, add margin)
@@ -1471,9 +1636,21 @@ describe("relayStream() streaming generator", () => {
 			db.run(
 				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[randomUUID(), host.site_id, "stream_end", null, null, generatedStreamId,
-					JSON.stringify({ seq: 3, chunks: [{ type: "done", usage: { input_tokens: 10, output_tokens: 5 } }] }),
-					expires, now, 0],
+				[
+					randomUUID(),
+					host.site_id,
+					"stream_end",
+					null,
+					null,
+					generatedStreamId,
+					JSON.stringify({
+						seq: 3,
+						chunks: [{ type: "done", usage: { input_tokens: 10, output_tokens: 5 } }],
+					}),
+					expires,
+					now,
+					0,
+				],
 			);
 		}
 

@@ -544,7 +544,13 @@ describe("routes", () => {
 			};
 
 			const body1 = JSON.stringify(relayRequest1);
-			const headers1 = await signRequest(spokePrivateKey, spokeSiteId, "POST", "/sync/relay", body1);
+			const headers1 = await signRequest(
+				spokePrivateKey,
+				spokeSiteId,
+				"POST",
+				"/sync/relay",
+				body1,
+			);
 
 			const response1 = await app.request("/sync/relay", {
 				method: "POST",
@@ -565,7 +571,13 @@ describe("routes", () => {
 
 			// Second delivery: spoke retransmits the same entry (sync response was lost)
 			const body2 = JSON.stringify(relayRequest1);
-			const headers2 = await signRequest(spokePrivateKey, spokeSiteId, "POST", "/sync/relay", body2);
+			const headers2 = await signRequest(
+				spokePrivateKey,
+				spokeSiteId,
+				"POST",
+				"/sync/relay",
+				body2,
+			);
 
 			const response2 = await app.request("/sync/relay", {
 				method: "POST",
