@@ -9,7 +9,8 @@ permissions:
   packages: write
 
 jobs:
-  # Build native binaries on each target architecture
+  # Build native binaries and per-platform Docker image on each target architecture.
+  # No QEMU — each runner builds natively for its own platform.
   build:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
@@ -19,9 +20,11 @@ jobs:
           - target: linux-amd64
             runner: ubuntu-latest
             arch: amd64
+            platform: linux/amd64
           - target: linux-arm64
             runner: ubuntu-24.04-arm
             arch: arm64
+            platform: linux/arm64
 
     steps:
       - uses: actions/checkout@v4
@@ -41,18 +44,40 @@ jobs:
       - name: Build
         run: bun run build
 
-      # Upload original binaries for Docker (keyed by arch)
-      - name: Upload Docker binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-${{ matrix.arch }}
-          path: |
-            dist/bound
-            dist/boundctl
-            dist/bound-mcp
-            dist/boundcurl
-          if-no-files-found: error
+      # Stage binaries for Docker context
+      - name: Stage binaries for Docker
+        run: |
+          mkdir -p binaries/${{ matrix.arch }}
+          cp dist/bound dist/boundctl dist/bound-mcp dist/boundcurl binaries/${{ matrix.arch }}/
 
+      # Build and push per-platform Docker image (native, no QEMU)
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+
+      - name: Build and push platform image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}-${{ matrix.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,scope=${{ matrix.target }},mode=max
+
+      # Upload binaries for GitHub release
       - name: Rename binaries for release
         run: |
           for bin in bound boundctl bound-mcp boundcurl; do
@@ -66,34 +91,12 @@ jobs:
           path: dist/*-${{ matrix.target }}
           if-no-files-found: error
 
-  # Multi-platform Docker image pushed to GHCR
-  # Uses pre-built native binaries — no compilation inside Docker, no QEMU overhead.
-  docker:
-    name: Docker
+  # Combine per-platform images into multi-arch manifest
+  docker-manifest:
+    name: Docker Manifest
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Download amd64 binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-amd64
-          path: binaries/amd64
-
-      - name: Download arm64 binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-arm64
-          path: binaries/arm64
-
-      - name: Make binaries executable
-        run: chmod +x binaries/amd64/* binaries/arm64/*
-
-      - uses: docker/setup-qemu-action@v3
-
-      - uses: docker/setup-buildx-action@v3
-
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -111,16 +114,20 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create and push multi-arch manifests
+        run: |
+          REPO="ghcr.io/${{ github.repository }}"
+          VERSION="${{ github.ref_name }}"
+          AMD64="${REPO}:${VERSION}-amd64"
+          ARM64="${REPO}:${VERSION}-arm64"
+
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            docker manifest create "$tag" "$AMD64" "$ARM64"
+            docker manifest push "$tag"
+          done <<< "$TAGS"
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
 
   # Create GitHub release and attach all binaries
   release:
