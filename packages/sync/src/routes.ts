@@ -68,7 +68,7 @@ export function createSyncRoutes(
 				eagerPushConfig.reachabilityTracker.recordSuccess(pusherSiteId);
 			}
 
-			logger.info(`Received ${events.length} events from ${pusherSiteId}`);
+			logger.debug(`Received ${events.length} events from ${pusherSiteId}`);
 
 			return c.json({ ok: true, received: result.applied });
 		} catch (error) {
@@ -89,7 +89,7 @@ export function createSyncRoutes(
 			// Fetch inbound changeset with echo suppression
 			const changeset = fetchInboundChangeset(db, requesterSiteId, sinceHlc);
 
-			logger.info(
+			logger.debug(
 				`Pulling ${changeset.events.length} events for ${requesterSiteId} since hlc ${sinceHlc}`,
 			);
 
@@ -112,7 +112,7 @@ export function createSyncRoutes(
 			// Update peer cursor to mark events as sent
 			updatePeerCursor(db, ackingSiteId, { last_sent: lastReceived });
 
-			logger.info(`ACK from ${ackingSiteId}: confirmed through hlc ${lastReceived}`);
+			logger.debug(`ACK from ${ackingSiteId}: confirmed through hlc ${lastReceived}`);
 
 			return c.json({ ok: true });
 		} catch (error) {

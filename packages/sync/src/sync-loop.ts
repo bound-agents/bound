@@ -99,7 +99,7 @@ export class SyncClient {
 			if (outbound.events.length > 0) {
 				const chunks = chunkChangeset(outbound);
 				if (chunks.length > 1) {
-					this.logger.info(
+					this.logger.debug(
 						`Chunking push: ${outbound.events.length} events into ${chunks.length} chunks`,
 					);
 				}

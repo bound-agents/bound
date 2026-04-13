@@ -40,7 +40,11 @@ export type {
 	ResourceContent,
 	PromptResult,
 } from "./mcp-client";
-export { generateMCPCommands, updateHostMCPInfo } from "./mcp-bridge";
+export {
+	generateMCPCommands,
+	generateRemoteMCPProxyCommands,
+	updateHostMCPInfo,
+} from "./mcp-bridge";
 
 // Export advisories
 export {

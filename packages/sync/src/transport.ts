@@ -51,7 +51,7 @@ export class SyncTransport {
 
 		// Log sending of encrypted request
 		const nonceHex = Buffer.from(nonce).toString("hex");
-		this.logger?.info("Sending encrypted request", {
+		this.logger?.debug("Sending encrypted request", {
 			endpoint: path,
 			targetSiteId,
 			ciphertextLength: ciphertext.length,

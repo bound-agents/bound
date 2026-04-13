@@ -159,7 +159,7 @@ export function createSyncAuthMiddleware(
 				const plaintext = decryptBody(bodyBytes, nonce, symmetricKey);
 				const decryptedBody = new TextDecoder().decode(plaintext);
 				c.set("rawBody", decryptedBody);
-				logger?.info("Encrypted request decrypted", {
+				logger?.debug("Encrypted request decrypted", {
 					siteId: result.value.siteId,
 					endpoint: path,
 					ciphertextLength: bodyBytes.length,
@@ -234,7 +234,7 @@ export function createSyncAuthMiddleware(
 					);
 					const responseNonceHex = Buffer.from(responseNonce).toString("hex");
 
-					logger?.info("Response encrypted", {
+					logger?.debug("Response encrypted", {
 						siteId: spokeSiteId,
 						endpoint: path,
 						ciphertextLength: responseCiphertext.length,

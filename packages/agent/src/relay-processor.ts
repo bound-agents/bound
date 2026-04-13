@@ -317,6 +317,12 @@ export class RelayProcessor {
 					}
 					case "intake": {
 						const payload = JSON.parse(entry.payload) as IntakePayload;
+						this.logger.info("[relay] Intake received", {
+							platform: payload.platform,
+							threadId: payload.thread_id,
+							messageId: payload.message_id,
+							source: entry.source_site_id,
+						});
 						const idempotencyKey = `intake:${payload.platform}:${payload.platform_event_id}`;
 
 						// Dedup: check idempotency cache (same cache already used by other relay kinds)
@@ -345,6 +351,13 @@ export class RelayProcessor {
 							response = null;
 							break;
 						}
+
+						this.logger.info("[relay] Intake routed", {
+							platform: payload.platform,
+							threadId: payload.thread_id,
+							targetSiteId,
+							isLocal: targetSiteId === this.siteId,
+						});
 
 						// Write process signal to the selected host
 						const processOutboxId = randomUUID();
@@ -466,6 +479,10 @@ export class RelayProcessor {
 		// The subcommand is dispatched to the appropriate MCP server.
 
 		const serverName = payload.tool;
+		this.logger.info("[relay] Tool call executing", {
+			server: serverName,
+			subcommand: payload.args.subcommand,
+		});
 		const client = this.mcpClients.get(serverName);
 		if (!client) {
 			throw new Error(`MCP server not found: ${serverName}`);
@@ -884,6 +901,13 @@ export class RelayProcessor {
 		entry: RelayInboxEntry,
 		payload: InferenceRequestPayload,
 	): Promise<void> {
+		this.logger.info("[relay] Inference started", {
+			model: payload.model,
+			source: entry.source_site_id,
+			streamId: entry.stream_id,
+			messageCount: payload.messages?.length ?? 0,
+			hasTools: !!payload.tools?.length,
+		});
 		const FLUSH_INTERVAL_MS = 200;
 		const FLUSH_BUFFER_BYTES = 4096;
 
@@ -977,6 +1001,14 @@ export class RelayProcessor {
 		const flush = (isFinal: boolean): void => {
 			if (chunkBuffer.length === 0 && !isFinal) return;
 			const kind = isFinal ? "stream_end" : "stream_chunk";
+			this.logger.info("[relay] Inference flush", {
+				kind,
+				seq,
+				chunks: chunkBuffer.length,
+				bytes: bufferBytes,
+				streamId,
+				elapsedMs: Date.now() - inferenceStartTime,
+			});
 			this.writeStreamChunk(entry, kind, streamId, seq, [...chunkBuffer]);
 			// Record relay cycle for each flush
 			try {
@@ -1062,6 +1094,12 @@ export class RelayProcessor {
 	}
 
 	private async executeProcess(entry: RelayInboxEntry, payload: ProcessPayload): Promise<void> {
+		this.logger.info("[relay] Process delegation started", {
+			threadId: payload.thread_id,
+			messageId: payload.message_id,
+			platform: payload.platform ?? null,
+			source: entry.source_site_id,
+		});
 		if (!this.modelRouter) {
 			this.writeResponse(
 				entry,
@@ -1208,6 +1246,12 @@ export class RelayProcessor {
 				const platformTools = connector.getPlatformTools(payload.thread_id, this.fileReader);
 				loopConfig.platform = payload.platform;
 				loopConfig.platformTools = platformTools;
+				this.logger.info("[relay] Platform tools injected", {
+					platform: payload.platform,
+					threadId: payload.thread_id,
+					toolCount: platformTools.size,
+					tools: Array.from(platformTools.keys()),
+				});
 			}
 		}
 

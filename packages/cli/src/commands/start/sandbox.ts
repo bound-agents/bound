@@ -4,7 +4,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { getAllCommands, setCommandRegistry } from "@bound/agent";
+import { generateRemoteMCPProxyCommands, getAllCommands, setCommandRegistry } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import type { CommandDefinition } from "@bound/sandbox";
@@ -58,8 +58,22 @@ export async function initSandbox(
 			fs: clusterFs as any,
 		};
 		const builtinCommands = getAllCommands();
-		const allDefinitions = [...builtinCommands, ...mcpCommands];
-		setCommandRegistry(allDefinitions, mcpServerNames);
+
+		// Discover remote MCP servers from the hosts table and create proxy commands
+		// that relay tool calls to the remote host via the sync outbox.
+		const { commands: remoteMcpCommands, remoteServerNames } = generateRemoteMCPProxyCommands(
+			appContext.db,
+			appContext.siteId,
+			mcpServerNames,
+		);
+		if (remoteMcpCommands.length > 0) {
+			appContext.logger.info(
+				`[mcp] Registered ${remoteMcpCommands.length} remote server proxy(s): ${Array.from(remoteServerNames).join(", ")}`,
+			);
+		}
+
+		const allDefinitions = [...builtinCommands, ...mcpCommands, ...remoteMcpCommands];
+		setCommandRegistry(allDefinitions, mcpServerNames, remoteServerNames);
 		// biome-ignore lint/suspicious/noExplicitAny: commandContext is typed as Record for late modelRouter injection
 		const registeredCommands = createDefineCommands(allDefinitions, commandContext as any);
 		// Restore previously persisted VFS state from the files table BEFORE

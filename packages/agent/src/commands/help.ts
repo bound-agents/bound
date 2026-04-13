@@ -6,11 +6,19 @@ import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sa
  */
 let commandRegistry: CommandDefinition[] = [];
 let serverNamesRegistry: Set<string> = new Set();
+let remoteServerNamesRegistry: Set<string> = new Set();
 
-export function setCommandRegistry(commands: CommandDefinition[], serverNames?: Set<string>): void {
+export function setCommandRegistry(
+	commands: CommandDefinition[],
+	serverNames?: Set<string>,
+	remoteServerNames?: Set<string>,
+): void {
 	commandRegistry = commands;
 	if (serverNames) {
 		serverNamesRegistry = serverNames;
+	}
+	if (remoteServerNames) {
+		remoteServerNamesRegistry = remoteServerNames;
 	}
 }
 
@@ -33,8 +41,8 @@ export const help: CommandDefinition = {
 				};
 			}
 
-			// For MCP server commands, delegate to the handler's built-in --help output
-			if (serverNamesRegistry.has(target)) {
+			// For MCP server commands (local or remote), delegate to the handler's built-in help
+			if (serverNamesRegistry.has(target) || remoteServerNamesRegistry.has(target)) {
 				return cmd.handler({ help: "true" }, ctx);
 			}
 
@@ -66,11 +74,14 @@ export const help: CommandDefinition = {
 		// List all commands
 		let output = "Available commands:\n\n";
 
-		const builtins = commandRegistry.filter((c) => !serverNamesRegistry.has(c.name));
+		const builtins = commandRegistry.filter(
+			(c) => !serverNamesRegistry.has(c.name) && !remoteServerNamesRegistry.has(c.name),
+		);
 		const localMcp = commandRegistry.filter((c) => serverNamesRegistry.has(c.name));
 
-		// Get remote MCP server names from hosts table
-		const remoteServerNames = new Set<string>();
+		// Get remote MCP server names from hosts table (includes servers discovered
+		// after startup that don't have registered proxy commands yet)
+		const remoteServerNames = new Set<string>(remoteServerNamesRegistry);
 		const serverToHostName = new Map<string, string>();
 		try {
 			const hosts = ctx.db

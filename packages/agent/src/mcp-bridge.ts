@@ -10,13 +10,13 @@
 
 import type { Database } from "bun:sqlite";
 
-import { updateRow } from "@bound/core";
+import { updateRow, writeOutbox } from "@bound/core";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 import { formatError } from "@bound/shared";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 import type { MCPClient } from "./mcp-client";
-import type { EligibleHost } from "./relay-router";
+import { type EligibleHost, createRelayOutboxEntry, findEligibleHosts } from "./relay-router";
 
 /**
  * Coerce string argument values to the types declared in an MCP tool's input schema.
@@ -479,6 +479,147 @@ function createPromptCommand(clients: Map<string, MCPClient>): CommandDefinition
 			}
 		},
 	};
+}
+
+/**
+ * Result type for generateRemoteMCPProxyCommands.
+ */
+export interface RemoteMCPCommandsResult {
+	commands: CommandDefinition[];
+	remoteServerNames: Set<string>;
+}
+
+/**
+ * Generate proxy CommandDefinition entries for MCP servers available on remote hosts
+ * but not locally. When the LLM invokes one of these commands, the handler writes a
+ * `tool_call` relay outbox entry and returns a RelayToolCallRequest, causing the agent
+ * loop to enter RELAY_WAIT until the remote host responds.
+ *
+ * @param db Database handle for querying hosts table
+ * @param siteId This host's site ID (excluded from eligible hosts)
+ * @param localServerNames Server names already registered locally (skipped)
+ */
+export function generateRemoteMCPProxyCommands(
+	db: Database,
+	siteId: string,
+	localServerNames: Set<string>,
+): RemoteMCPCommandsResult {
+	const commands: CommandDefinition[] = [];
+	const remoteServerNames = new Set<string>();
+
+	// Discover remote MCP server names from the hosts table
+	const remoteServers = new Map<string, { hostName: string; siteId: string }>();
+	try {
+		const rows = db
+			.prepare(
+				"SELECT site_id, host_name, mcp_tools FROM hosts WHERE deleted = 0 AND mcp_tools IS NOT NULL AND site_id != ?",
+			)
+			.all(siteId) as Array<{ site_id: string; host_name: string; mcp_tools: string }>;
+
+		for (const row of rows) {
+			try {
+				const serverNames = JSON.parse(row.mcp_tools) as string[];
+				for (const serverName of serverNames) {
+					if (!localServerNames.has(serverName) && !remoteServers.has(serverName)) {
+						remoteServers.set(serverName, {
+							hostName: row.host_name,
+							siteId: row.site_id,
+						});
+					}
+				}
+			} catch {
+				// Skip unparseable hosts
+			}
+		}
+	} catch {
+		// hosts table may not exist yet — return empty
+		return { commands, remoteServerNames };
+	}
+
+	// Create a proxy command for each remote server
+	for (const [serverName, _hostInfo] of remoteServers) {
+		remoteServerNames.add(serverName);
+
+		const command: CommandDefinition = {
+			name: serverName,
+			args: [
+				{
+					name: "subcommand",
+					required: false,
+					description: "Subcommand to run on the remote MCP server",
+				},
+			],
+			handler: async (
+				args: Record<string, string>,
+				ctx: CommandContext,
+			): Promise<CommandResult> => {
+				const subcommand = args.subcommand;
+
+				// Help: show that this is a remote server
+				if (!subcommand || subcommand === "help") {
+					// Dynamically check which host(s) have this server
+					const routing = findEligibleHosts(ctx.db, serverName, ctx.siteId);
+					const hostList = routing.ok
+						? routing.hosts.map((h) => `  ${h.host_name} (${h.site_id.slice(0, 8)}…)`).join("\n")
+						: "  (no reachable hosts)";
+					return {
+						stdout: `${serverName} — remote MCP server (via relay)\n\nAvailable on:\n${hostList}\n\nUsage: ${serverName} <subcommand> [--key value ...]\nCalls are forwarded to the remote host via relay.\n`,
+						stderr: "",
+						exitCode: 0,
+					};
+				}
+
+				// Route to eligible remote host
+				const routing = findEligibleHosts(ctx.db, serverName, ctx.siteId);
+				if (!routing.ok) {
+					return {
+						stdout: "",
+						stderr: `No remote host with server "${serverName}" is reachable: ${routing.error}\n`,
+						exitCode: 1,
+					};
+				}
+
+				const eligibleHosts = routing.hosts;
+				const targetHost = eligibleHosts[0];
+
+				// Build relay payload — matches ToolCallPayload consumed by RelayProcessor.executeToolCall
+				const payload = JSON.stringify({
+					tool: serverName,
+					args: args as Record<string, unknown>,
+					timeout_ms: 30_000,
+				});
+
+				const outboxEntry = createRelayOutboxEntry(
+					targetHost.site_id,
+					ctx.siteId,
+					"tool_call",
+					payload,
+					30_000, // 30s timeout
+				);
+				writeOutbox(ctx.db, outboxEntry);
+				ctx.eventBus.emit("sync:trigger", { reason: "remote-mcp-tool-call" });
+
+				// Return RelayToolCallRequest — the agent loop checks isRelayRequest()
+				// and enters RELAY_WAIT to poll for the response.
+				const result: RelayToolCallRequest = {
+					outboxEntryId: outboxEntry.id,
+					targetSiteId: targetHost.site_id,
+					targetHostName: targetHost.host_name,
+					toolName: serverName,
+					eligibleHosts,
+					currentHostIndex: 0,
+					stdout: "",
+					stderr: "",
+					exitCode: 0,
+				};
+				return result;
+			},
+		};
+
+		commands.push(command);
+	}
+
+	return { commands, remoteServerNames };
 }
 
 /**
