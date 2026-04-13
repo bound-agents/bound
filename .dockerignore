@@ -5,8 +5,14 @@ packages/web/dist/
 .git/
 .github/
 .claude/
+.worktrees/
 e2e/
 docs/
+data/
+packages/
+scripts/
 **/.DS_Store
 *.md
-!packages/*/package.json
+*.lock
+*.json
+tsconfig.*

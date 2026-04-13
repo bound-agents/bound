@@ -161,4 +161,7 @@ test-results/
 # Auto-generated build metadata
 packages/cli/src/build-info.ts
 
+# Docker build artifacts (pre-built binaries staged for COPY)
+binaries/
+
 .DS_Store
