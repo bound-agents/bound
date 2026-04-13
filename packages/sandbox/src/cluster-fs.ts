@@ -3,6 +3,18 @@ import { createHash } from "node:crypto";
 import { insertRow, updateRow } from "@bound/core";
 import { type IFileSystem, InMemoryFs, MountableFs, OverlayFs } from "just-bash";
 
+/**
+ * Check whether an error is an expected filesystem error (ENOENT or EISDIR).
+ * just-bash's VFS throws Error objects without the Node.js `.code` property,
+ * so we also inspect `.message` for the error code strings.
+ */
+function isExpectedFsError(err: unknown): boolean {
+	const code = (err as NodeJS.ErrnoException)?.code;
+	if (code === "ENOENT" || code === "EISDIR") return true;
+	const msg = err instanceof Error ? err.message : "";
+	return msg.startsWith("ENOENT:") || msg.startsWith("EISDIR:");
+}
+
 export interface ClusterFsConfig {
 	hostName: string;
 	overlayMounts?: Record<string, string>;
@@ -229,8 +241,7 @@ export async function snapshotWorkspace(
 			const hash = createHash("sha256").update(content).digest("hex");
 			snapshot.set(path, hash);
 		} catch (err: unknown) {
-			const code = (err as NodeJS.ErrnoException)?.code;
-			if (code !== "ENOENT" && code !== "EISDIR") {
+			if (!isExpectedFsError(err)) {
 				// Re-throw unexpected errors (permission denied, etc.)
 				throw err;
 			}
