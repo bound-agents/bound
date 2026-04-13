@@ -19,10 +19,11 @@ import {
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import { ensureKeypair } from "@bound/sync";
 
-// Build metadata (generated at compile time)
+// Build metadata (generated at compile time, gitignored)
 let COMMIT_HASH = "dev";
 let BUILD_TIME = "unknown";
 try {
+	// @ts-ignore build-info.ts is generated at build time and gitignored
 	const buildInfo = await import("../../build-info.js");
 	COMMIT_HASH = buildInfo.COMMIT_HASH;
 	BUILD_TIME = buildInfo.BUILD_TIME;
