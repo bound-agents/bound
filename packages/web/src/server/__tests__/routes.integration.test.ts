@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
-import { applySchema, createDatabase, applyMetricsSchema } from "@bound/core";
+import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Hono } from "hono";
 import { createWebApp } from "../index";
@@ -47,16 +47,7 @@ describe("API Routes", () => {
 				db.run(
 					`INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted)
 					 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-					[
-						`msg-${i}`,
-						thread.id,
-						"user",
-						`message ${i}`,
-						now,
-						now,
-						"localhost",
-						0,
-					],
+					[`msg-${i}`, thread.id, "user", `message ${i}`, now, now, "localhost", 0],
 				);
 			}
 

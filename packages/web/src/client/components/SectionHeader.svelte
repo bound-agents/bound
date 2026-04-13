@@ -1,13 +1,13 @@
 <script lang="ts">
-	import type { Snippet } from "svelte";
+import type { Snippet } from "svelte";
 
-	interface Props {
-		title: string;
-		subtitle?: string;
-		actions?: Snippet;
-	}
+interface Props {
+	title: string;
+	subtitle?: string;
+	actions?: Snippet;
+}
 
-	let { title, subtitle, actions }: Props = $props();
+let { title, subtitle, actions }: Props = $props();
 </script>
 
 <div class="section-header">
