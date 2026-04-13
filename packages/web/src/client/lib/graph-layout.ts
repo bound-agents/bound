@@ -1,5 +1,5 @@
-import { getLineColor } from "./metro-lines";
 import type { MemoryGraphEdge, MemoryGraphNode } from "./api";
+import { getLineColor } from "./metro-lines";
 
 export interface PositionedNode {
 	key: string;
@@ -26,20 +26,14 @@ export interface GraphLayoutResult {
 	positionedEdges: PositionedEdge[];
 }
 
-const TIER_Y_POSITIONS: Record<
-	"pinned" | "summary" | "default" | "detail",
-	number
-> = {
+const TIER_Y_POSITIONS: Record<"pinned" | "summary" | "default" | "detail", number> = {
 	pinned: 40,
 	summary: 160,
 	default: 280,
 	detail: 360,
 };
 
-const TIER_RADIUS: Record<
-	"pinned" | "summary" | "default" | "detail",
-	number
-> = {
+const TIER_RADIUS: Record<"pinned" | "summary" | "default" | "detail", number> = {
 	pinned: 12,
 	summary: 8,
 	default: 6,
@@ -61,10 +55,7 @@ export function computeGraphLayout(
 		};
 	}
 
-	const nodesByTier = new Map<
-		"pinned" | "summary" | "default" | "detail",
-		MemoryGraphNode[]
-	>();
+	const nodesByTier = new Map<"pinned" | "summary" | "default" | "detail", MemoryGraphNode[]>();
 	nodesByTier.set("pinned", []);
 	nodesByTier.set("summary", []);
 	nodesByTier.set("default", []);
@@ -80,11 +71,7 @@ export function computeGraphLayout(
 
 	// Sort each tier by modifiedAt descending
 	for (const tierNodes of nodesByTier.values()) {
-		tierNodes.sort(
-			(a, b) =>
-				new Date(b.modifiedAt).getTime() -
-				new Date(a.modifiedAt).getTime(),
-		);
+		tierNodes.sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
 	}
 
 	// Build positioned nodes
@@ -106,10 +93,7 @@ export function computeGraphLayout(
 				? Math.max(MIN_SPACING, canvasWidth / Math.max(1, nodesInTier.length - 1))
 				: MIN_SPACING;
 
-		const totalWidth =
-			nodesInTier.length === 1
-				? 0
-				: (nodesInTier.length - 1) * spacing;
+		const totalWidth = nodesInTier.length === 1 ? 0 : (nodesInTier.length - 1) * spacing;
 		const startX = (canvasWidth - totalWidth) / 2;
 
 		for (let i = 0; i < nodesInTier.length; i++) {
@@ -123,10 +107,9 @@ export function computeGraphLayout(
 			if (selectedThreadId && node.lineIndex !== null) {
 				// Get line color for comparison
 				const nodeColor = getLineColor(node.lineIndex);
-				const selectedLineColor = getLineColor(parseInt(selectedThreadId) || 0);
+				const selectedLineColor = getLineColor(Number.parseInt(selectedThreadId) || 0);
 				opacity =
-					nodeColor === selectedLineColor ||
-					node.lineIndex.toString() === selectedThreadId
+					nodeColor === selectedLineColor || node.lineIndex.toString() === selectedThreadId
 						? 1.0
 						: 0.2;
 			}
@@ -136,10 +119,7 @@ export function computeGraphLayout(
 				x,
 				y,
 				tier,
-				color:
-					node.lineIndex !== null
-						? getLineColor(node.lineIndex)
-						: "var(--text-muted)",
+				color: node.lineIndex !== null ? getLineColor(node.lineIndex) : "var(--text-muted)",
 				opacity,
 				radius,
 			});
@@ -163,9 +143,7 @@ export function computeGraphLayout(
 		if (sourceNode && targetNode) {
 			const sourceData = sourceNodeMap.get(edge.sourceKey);
 			const opacity =
-				selectedThreadId && sourceData && sourceData.lineIndex !== null
-					? sourceNode.opacity
-					: 1.0;
+				selectedThreadId && sourceData && sourceData.lineIndex !== null ? sourceNode.opacity : 1.0;
 
 			positionedEdges.push({
 				x1: sourceNode.x,
