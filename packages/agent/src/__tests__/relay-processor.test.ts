@@ -1244,6 +1244,105 @@ describe("RelayProcessor", () => {
 			expect(processEntries.length).toBe(1);
 		});
 
+		it("platform affinity: intake with platform routes to self when connector is available", async () => {
+			// Regression: Before fix, intake always routed via selectIntakeHost which
+			// picks the spoke (has models) over the hub (no models). But the spoke
+			// doesn't have the Discord connector, so platform tools were never injected.
+			// The fix: when this host has the platform connector, route to self.
+			const mcpClients = new Map<string, MCPClient>();
+			const keyringSiteIds = new Set(["requester-site"]);
+			const processor = new RelayProcessor(
+				db,
+				"hub-site", // this host
+				mcpClients,
+				createMockModelRouter(),
+				keyringSiteIds,
+				createMockLogger(),
+				createMockEventBus(),
+				createMockModelRouter(),
+				undefined,
+				new Map(),
+			);
+
+			// Register a mock platform connector registry that has "discord"
+			processor.setPlatformConnectorRegistry({
+				getConnector(platform: string) {
+					if (platform === "discord") {
+						return { getPlatformTools: () => new Map() } as unknown as ReturnType<
+							typeof processor.setPlatformConnectorRegistry extends (r: infer R) => void
+								? R extends { getConnector(p: string): infer C }
+									? (p: string) => C
+									: never
+								: never
+						>;
+					}
+					return undefined;
+				},
+			} as Parameters<typeof processor.setPlatformConnectorRegistry>[0]);
+
+			// Setup: create a DIFFERENT host (spoke) that selectIntakeHost would normally pick
+			const hostTimestamp = new Date().toISOString();
+			db.run("INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)", [
+				"spoke-site",
+				"Spoke",
+				0,
+				hostTimestamp,
+			]);
+
+			const now = new Date();
+			const intakeEntry: RelayInboxEntry = {
+				id: "intake-platform-affinity",
+				source_site_id: "requester-site",
+				kind: "intake",
+				ref_id: null,
+				idempotency_key: null,
+				payload: JSON.stringify({
+					platform: "discord",
+					platform_event_id: "event-platform",
+					thread_id: "thread-platform",
+					user_id: "user-1",
+					message_id: "msg-platform",
+					content: "Test",
+				} as IntakePayload),
+				expires_at: new Date(now.getTime() + 60000).toISOString(),
+				received_at: now.toISOString(),
+				processed: 0,
+				stream_id: null,
+			};
+
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					intakeEntry.id,
+					intakeEntry.source_site_id,
+					intakeEntry.kind,
+					intakeEntry.ref_id,
+					intakeEntry.idempotency_key,
+					intakeEntry.payload,
+					intakeEntry.expires_at,
+					intakeEntry.received_at,
+					intakeEntry.processed,
+					intakeEntry.stream_id,
+				],
+			);
+
+			const handle = processor.start(50);
+			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
+			handle.stop();
+
+			// The process relay must target this host (hub-site), not the spoke
+			const processEntries = db
+				.query("SELECT * FROM relay_outbox WHERE kind = ?")
+				.all("process") as RelayOutboxEntry[];
+			expect(processEntries.length).toBe(1);
+			expect(processEntries[0].target_site_id).toBe("hub-site");
+
+			// Verify platform is preserved in the payload
+			const processPayload = JSON.parse(processEntries[0].payload) as { platform: string };
+			expect(processPayload.platform).toBe("discord");
+		});
+
 		// AC3.2: Duplicate intake is discarded via idempotency
 		it("AC3.2: duplicate intake with same platform+platform_event_id is discarded", async () => {
 			const mcpClients = new Map<string, MCPClient>();

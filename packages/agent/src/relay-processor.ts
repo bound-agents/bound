@@ -331,8 +331,13 @@ export class RelayProcessor {
 							expiresAt: Date.now() + IDEMPOTENCY_TTL_MS,
 						});
 
-						// Select routing target
-						const targetSiteId = this.selectIntakeHost(payload.thread_id);
+						// Platform affinity: if this host has the platform connector, process
+						// locally so platform tools (e.g., discord_send_message) are available.
+						// The agent loop uses RELAY_STREAM for inference if no local models exist.
+						const targetSiteId =
+							payload.platform && this.platformConnectorRegistry?.getConnector(payload.platform)
+								? this.siteId
+								: this.selectIntakeHost(payload.thread_id);
 						if (!targetSiteId) {
 							this.logger.warn("relay-processor", {
 								msg: "intake: no eligible host found, dropping",
