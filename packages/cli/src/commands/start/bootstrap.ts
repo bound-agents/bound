@@ -19,6 +19,17 @@ import {
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import { ensureKeypair } from "@bound/sync";
 
+// Build metadata (generated at compile time)
+let COMMIT_HASH = "dev";
+let BUILD_TIME = "unknown";
+try {
+	const buildInfo = await import("../../build-info.js");
+	COMMIT_HASH = buildInfo.COMMIT_HASH;
+	BUILD_TIME = buildInfo.BUILD_TIME;
+} catch {
+	// Running from source without build — use dev values
+}
+
 export interface StartArgs {
 	configDir?: string;
 }
@@ -58,7 +69,7 @@ export function ensureMcpUser(db: Database, siteId: string): void {
 export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 	const configDir = args.configDir || "config";
 
-	console.log("Starting Bound orchestrator...");
+	console.log(`Starting Bound orchestrator (commit ${COMMIT_HASH}, built ${BUILD_TIME})...`);
 
 	// 1. Load and validate all config files
 	console.log("Loading configuration...");

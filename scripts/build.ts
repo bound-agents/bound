@@ -8,6 +8,14 @@ import { existsSync, statSync } from "node:fs";
 async function build() {
 	console.log("Building Bound...\n");
 
+	// Step 0: Generate build metadata (commit hash, timestamp)
+	console.log("0. Generating build metadata...");
+	try {
+		execSync("bun run scripts/generate-build-info.ts", { stdio: "inherit" });
+	} catch {
+		console.warn("Warning: Failed to generate build info (non-fatal)");
+	}
+
 	// Step 1: Build web assets + embed for binary
 	console.log("1. Building web UI...");
 	try {

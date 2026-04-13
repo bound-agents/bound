@@ -5,6 +5,24 @@ export interface SyncStatusArgs {
 	configDir?: string;
 }
 
+function formatAge(ms: number): string {
+	const seconds = Math.floor(ms / 1000);
+	const minutes = Math.floor(seconds / 60);
+	const hours = Math.floor(minutes / 60);
+	const days = Math.floor(hours / 24);
+
+	if (days > 0) {
+		return `${days}d ago`;
+	}
+	if (hours > 0) {
+		return `${hours}h ago`;
+	}
+	if (minutes > 0) {
+		return `${minutes}m ago`;
+	}
+	return `${seconds}s ago`;
+}
+
 interface SyncStateRow {
 	peer_site_id: string;
 	last_sync_at: string | null;
@@ -23,6 +41,16 @@ interface HostRow {
 	host_name: string;
 	online_at: string | null;
 	modified_at: string | null;
+}
+
+interface RelayOutboxRow {
+	kind: string;
+	target_site_id: string;
+	created_at: string;
+}
+
+interface RelayCountRow {
+	count: number;
 }
 
 export async function runSyncStatus(_args: SyncStatusArgs): Promise<void> {
@@ -105,6 +133,67 @@ export async function runSyncStatus(_args: SyncStatusArgs): Promise<void> {
 			}
 
 			console.log("└────────────┴──────────────────────┴────────────┴─────────────────┘");
+			console.log();
+		}
+
+		// Query relay status
+		const outboxPending = db
+			.query("SELECT COUNT(*) as count FROM relay_outbox WHERE delivered = 0")
+			.get() as RelayCountRow;
+		const outboxDelivered = db
+			.query("SELECT COUNT(*) as count FROM relay_outbox WHERE delivered = 1")
+			.get() as RelayCountRow;
+		const inboxUnprocessed = db
+			.query("SELECT COUNT(*) as count FROM relay_inbox WHERE processed = 0")
+			.get() as RelayCountRow;
+		const inboxProcessed = db
+			.query("SELECT COUNT(*) as count FROM relay_inbox WHERE processed = 1")
+			.get() as RelayCountRow;
+
+		// Count stale entries (older than 1 hour)
+		const oneHourAgo = new Date(Date.now() - 3600_000).toISOString();
+		const stalePending = db
+			.query("SELECT COUNT(*) as count FROM relay_outbox WHERE delivered = 0 AND created_at < ?")
+			.get(oneHourAgo) as RelayCountRow;
+
+		console.log("Relay:");
+		const staleNote = stalePending.count > 0 ? ` (${stalePending.count} stale ⚠️)` : "";
+		console.log(
+			`  outbox: ${outboxPending.count} pending${staleNote}, ${outboxDelivered.count} delivered`,
+		);
+		console.log(
+			`  inbox:  ${inboxUnprocessed.count} unprocessed, ${inboxProcessed.count} processed`,
+		);
+
+		// Show detail for pending outbox entries
+		if (outboxPending.count > 0) {
+			console.log();
+			console.log("  Pending outbox:");
+			const pendingEntries = db
+				.query(
+					"SELECT kind, target_site_id, created_at FROM relay_outbox WHERE delivered = 0 ORDER BY created_at ASC",
+				)
+				.all() as RelayOutboxRow[];
+
+			for (const entry of pendingEntries) {
+				const targetShort = entry.target_site_id.substring(0, 8);
+				const age = Date.now() - new Date(entry.created_at).getTime();
+				const ageStr = formatAge(age);
+
+				const isStale = entry.created_at < oneHourAgo;
+				const isInvalidTarget = !/^[0-9a-f]+$/.test(entry.target_site_id);
+
+				const flags = [];
+				if (isStale) {
+					flags.push("⚠️ STALE");
+				}
+				if (isInvalidTarget) {
+					flags.push("⚠️ INVALID TARGET");
+				}
+				const flagStr = flags.length > 0 ? ` ${flags.join(" ")}` : "";
+
+				console.log(`    ${entry.kind} → ${targetShort}.. (${ageStr})${flagStr}`);
+			}
 		}
 
 		db.close();
