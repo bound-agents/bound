@@ -27,13 +27,14 @@ export interface OverlayOutbox {
 	softDelete: (db: Database, table: string, id: string, siteId: string) => void;
 }
 
-function computeContentHash(filePath: string): string {
+function computeContentHash(filePath: string): string | null {
 	try {
 		const content = readFileSync(filePath);
 		return createHash("sha256").update(content).digest("hex");
 	} catch {
-		// Return empty hash if file cannot be read (permissions, deletion race, etc.)
-		return "";
+		// Return null when file cannot be read (permissions, deletion race, etc.)
+		// Caller should skip this file rather than treating it as changed
+		return null;
 	}
 }
 
@@ -59,12 +60,12 @@ function walkDirectory(dir: string, prefix = ""): Array<{ path: string; fullPath
 				} else if (stat.isFile()) {
 					entries.push({ path: relativePath, fullPath });
 				}
-			} catch {
-				// Skip files we can't stat (permissions, symlink loops, etc.)
-			}
+			} catch {}
 		}
 	} catch {
-		// Skip directories we can't read (permissions, deleted during scan, etc.)
+		// Expected: directory deleted during scan (TOCTOU race)
+		// Unexpected: permission errors
+		// Silent skip is acceptable — overlay scanner is best-effort
 	}
 
 	return entries;
@@ -93,6 +94,11 @@ export function scanOverlayIndex(
 			const now = new Date().toISOString();
 			const stat = statSync(entry.fullPath);
 			const contentHash = computeContentHash(entry.fullPath);
+
+			// Skip files that cannot be read (permissions, etc.)
+			if (contentHash === null) {
+				continue;
+			}
 
 			// Check if entry exists
 			const existing = db

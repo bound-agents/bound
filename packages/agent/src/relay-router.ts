@@ -71,8 +71,9 @@ export function findEligibleHosts(
 		let tools: string[];
 		try {
 			tools = JSON.parse(row.mcp_tools);
-		} catch {
-			continue; // Skip hosts with corrupted mcp_tools
+		} catch (_error) {
+			// Skip hosts with corrupted mcp_tools — no logger available in this context
+			continue;
 		}
 		if (!Array.isArray(tools) || !tools.includes(toolCommandName)) continue;
 		eligible.push({
@@ -136,8 +137,9 @@ export function findEligibleHostsByModel(
 		let rawModels: unknown;
 		try {
 			rawModels = JSON.parse(row.models);
-		} catch {
-			continue; // Malformed JSON — skip host
+		} catch (_error) {
+			// Malformed JSON — skip host (no logger available in this context)
+			continue;
 		}
 
 		if (!Array.isArray(rawModels)) continue;
@@ -265,7 +267,8 @@ export function findAnyRemoteModel(
 		let rawModels: unknown;
 		try {
 			rawModels = JSON.parse(row.models);
-		} catch {
+		} catch (_error) {
+			// Malformed JSON — skip host (no logger available in this context)
 			continue;
 		}
 		if (!Array.isArray(rawModels)) continue;

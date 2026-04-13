@@ -96,7 +96,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 	transportRef = transport;
 
 	// Phase 9: Host heartbeat, cron seeding, scheduler
-	const heartbeatHandle = startHostHeartbeat(appContext.db, appContext.siteId);
+	const heartbeatHandle = startHostHeartbeat(appContext.db, appContext.siteId, {
+		logger: appContext.logger,
+	});
 	const { schedulerHandle } = agentLoopFactory
 		? initScheduler(appContext, agentLoopFactory, modelRouter, sandbox)
 		: { schedulerHandle: null };

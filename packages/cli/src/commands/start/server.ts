@@ -465,8 +465,11 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						appContext.logger.error(`[agent] Error: ${formatError(error)}`);
 						try {
 							acknowledgeBatch(appContext.db, claimedIds);
-						} catch {
-							// Non-fatal
+						} catch (ackError) {
+							appContext.logger.error("Failed to acknowledge message batch", {
+								error: ackError instanceof Error ? ackError.message : String(ackError),
+								claimedIds,
+							});
 						}
 						return {};
 					}
@@ -506,7 +509,15 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			if (needsRetrigger) {
 				appContext.logger.info(`[agent] Re-triggering dispatch for thread ${thread_id}`);
 				// Use setImmediate to avoid holding the current call stack
-				setTimeout(() => handleThread(thread_id).catch(() => {}), 0);
+				setTimeout(
+					() =>
+						handleThread(thread_id).catch((err) =>
+							appContext.logger.warn("Background re-trigger failed", {
+								error: formatError(err),
+							}),
+						),
+					0,
+				);
 			}
 		};
 

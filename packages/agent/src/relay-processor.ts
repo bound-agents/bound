@@ -603,8 +603,12 @@ export class RelayProcessor {
 						expired: false,
 						success: false,
 					});
-				} catch {
-					// Non-fatal if metrics recording fails
+				} catch (error) {
+					this.logger.warn("Failed to record relay metrics", {
+						kind: entry.kind,
+						direction: "inbound",
+						error: error instanceof Error ? error.message : String(error),
+					});
 				}
 				return;
 			}
@@ -637,8 +641,12 @@ export class RelayProcessor {
 					expired: false,
 					success: true,
 				});
-			} catch {
-				// Non-fatal if metrics recording fails
+			} catch (error) {
+				this.logger.warn("Failed to record relay metrics", {
+					kind: entry.kind,
+					direction: "inbound",
+					error: error instanceof Error ? error.message : String(error),
+				});
 			}
 		} catch (error) {
 			this.logger.error("Error processing relay entry", { error, entryId: entry.id });
@@ -1207,8 +1215,12 @@ export class RelayProcessor {
 				expired: false,
 				success: true,
 			});
-		} catch {
-			// Non-fatal
+		} catch (error) {
+			this.logger.warn("Failed to record relay metrics", {
+				kind: "inference",
+				direction: "inbound",
+				error: error instanceof Error ? error.message : String(error),
+			});
 		}
 		// Set up AbortController for cancel support (AC3.4)
 		const abortController = new AbortController();
@@ -1243,8 +1255,12 @@ export class RelayProcessor {
 					expired: false,
 					success: true,
 				});
-			} catch {
-				// Non-fatal
+			} catch (error) {
+				this.logger.warn("Failed to record relay metrics", {
+					kind,
+					direction: "inbound",
+					error: error instanceof Error ? error.message : String(error),
+				});
 			}
 			seq++;
 			chunkBuffer = [];
@@ -1307,8 +1323,12 @@ export class RelayProcessor {
 					expired: false,
 					success: false,
 				});
-			} catch {
-				// Non-fatal
+			} catch (error) {
+				this.logger.warn("Failed to record relay metrics", {
+					kind: "inference",
+					direction: "inbound",
+					error: error instanceof Error ? error.message : String(error),
+				});
 			}
 		} finally {
 			this.activeInferenceStreams.delete(entry.id);
@@ -1383,8 +1403,11 @@ export class RelayProcessor {
 			try {
 				writeOutbox(this.db, outboxEntry);
 				this.eventBus.emit("sync:trigger", { reason: "status-forward" });
-			} catch {
-				// Non-fatal
+			} catch (error) {
+				this.logger.warn("Failed to write status forward outbox entry", {
+					threadId: payload.thread_id,
+					error: error instanceof Error ? error.message : String(error),
+				});
 			}
 		};
 
@@ -1417,8 +1440,11 @@ export class RelayProcessor {
 					} catch (error) {
 						try {
 							acknowledgeBatch(this.db, claimedIds);
-						} catch {
-							// Non-fatal
+						} catch (ackError) {
+							this.logger.warn("Failed to acknowledge batch after error", {
+								claimedIds: claimedIds.length,
+								error: ackError instanceof Error ? ackError.message : String(ackError),
+							});
 						}
 						throw error;
 					}
@@ -1581,8 +1607,12 @@ export class RelayProcessor {
 					content: "",
 				});
 			}
-		} catch {
-			// ignore — already in error path
+		} catch (error) {
+			this.logger.warn("Failed to stop typing indicator on error", {
+				platform: payload.platform,
+				threadId: payload.thread_id,
+				error: error instanceof Error ? error.message : String(error),
+			});
 		}
 	}
 

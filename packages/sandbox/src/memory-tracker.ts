@@ -105,7 +105,9 @@ export function wrapWithMemoryTracking(fs: IFileSystem, tracker: MemoryTracker):
 			const fullContent = await fs.readFile(path);
 			tracker.trackWrite(path, fullContent);
 		} catch {
-			// If read fails, track the appended content as-is
+			// File read failed after append — track appended content length as approximation
+			// This underestimates total size for existing files but is acceptable for memory budgeting
+			// Expected causes: permission changes, concurrent deletion, filesystem errors
 			tracker.trackWrite(path, content);
 		}
 	};
@@ -122,6 +124,9 @@ export function wrapWithMemoryTracking(fs: IFileSystem, tracker: MemoryTracker):
 					}
 				}
 			} catch {
+				// getAllPaths() failed — fallback to tracking only the requested path
+				// This underestimates freed memory for recursive deletes but prevents tracking corruption
+				// Expected causes: filesystem implementation errors, concurrent modifications
 				tracker.trackRemove(path);
 			}
 		} else {

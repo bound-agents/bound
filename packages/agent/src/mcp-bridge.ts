@@ -126,7 +126,9 @@ export async function generateMCPCommands(
 		let toolsList: Tool[] = [];
 		try {
 			toolsList = await client.listTools();
-		} catch {
+		} catch (_error) {
+			// Failed to list tools from MCP server during startup — skip this server
+			// No logger available in this context, silently continue
 			continue;
 		}
 

@@ -215,8 +215,11 @@ export class SyncClient {
 						},
 						this.siteId,
 					);
-				} catch {
-					// Non-fatal
+				} catch (error) {
+					this.logger.warn("Failed to write sync advisory", {
+						title: "System Alerts",
+						error: error instanceof Error ? error.message : String(error),
+					});
 				}
 			}
 
@@ -485,8 +488,10 @@ export class SyncClient {
 						expired: false,
 						success: true,
 					});
-				} catch {
-					// Non-fatal if metrics recording fails
+				} catch (error) {
+					this.logger.warn("Failed to record outbound relay cycle metrics", {
+						error: error instanceof Error ? error.message : String(error),
+					});
 				}
 			}
 
@@ -506,8 +511,10 @@ export class SyncClient {
 						expired: false,
 						success: true,
 					});
-				} catch {
-					// Non-fatal if metrics recording fails
+				} catch (error) {
+					this.logger.warn("Failed to record inbound relay cycle metrics", {
+						error: error instanceof Error ? error.message : String(error),
+					});
 				}
 			}
 
@@ -531,6 +538,7 @@ export function startSyncLoop(
 	client: SyncClient,
 	intervalSeconds: number,
 	eventBus?: TypedEventEmitter,
+	logger?: Logger,
 ): { stop: () => void } {
 	let timerId: Timer | null = null;
 	let stopped = false;
@@ -548,14 +556,26 @@ export function startSyncLoop(
 		let useRelayFastInterval = false;
 		if (!result.ok) {
 			consecutiveFailures++;
-			// Log sync failures — syncCycle returns Result.err without logging
-			// for push/pull/ack phase errors (only unexpected exceptions get logged)
-			console.error(
-				`[sync] Cycle failed (phase=${result.error.phase}, status=${result.error.status ?? "n/a"}): ${result.error.message}`,
-			);
+			if (logger) {
+				logger.error("Sync cycle failed", {
+					phase: result.error.phase,
+					status: result.error.status ?? "n/a",
+					message: result.error.message,
+				});
+			} else {
+				console.error(
+					`[sync] Cycle failed (phase=${result.error.phase}, status=${result.error.status ?? "n/a"}): ${result.error.message}`,
+				);
+			}
 		} else {
 			if (consecutiveFailures > 0) {
-				console.log(`[sync] Cycle recovered after ${consecutiveFailures} failure(s)`);
+				if (logger) {
+					logger.info("Sync cycle recovered after failures", {
+						consecutiveFailures,
+					});
+				} else {
+					console.log(`[sync] Cycle recovered after ${consecutiveFailures} failure(s)`);
+				}
 			}
 			consecutiveFailures = 0;
 

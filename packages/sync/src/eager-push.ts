@@ -82,8 +82,10 @@ export async function eagerPushToSpoke(
 					expired: false,
 					success: pushSucceeded,
 				});
-			} catch {
-				// Non-fatal if metrics recording fails
+			} catch (error) {
+				config.logger.warn("Failed to record eager push relay cycle metrics", {
+					error: error instanceof Error ? error.message : String(error),
+				});
 			}
 		}
 
@@ -93,7 +95,16 @@ export async function eagerPushToSpoke(
 		}
 		config.reachabilityTracker.recordFailure(targetSiteId);
 		return false;
-	} catch {
+	} catch (error) {
+		config.logger.warn("Eager push delivery failed", {
+			targetSiteId,
+			error: error instanceof Error ? error.message : String(error),
+			errorCode:
+				error instanceof Error && "code" in error
+					? (error as NodeJS.ErrnoException).code
+					: undefined,
+			entryCount: entries.length,
+		});
 		config.reachabilityTracker.recordFailure(targetSiteId);
 		return false;
 	}

@@ -117,8 +117,17 @@ export class DiscordInteractionConnector implements PlatformConnector {
 
 		// Register interaction listener
 		this.onInteractionCreate = (interaction) => {
-			this.handleInteraction(interaction).catch((err) => {
+			this.handleInteraction(interaction).catch(async (err) => {
 				this.logger.error("Interaction handler error", { error: String(err) });
+				if (interaction.isMessageContextMenuCommand()) {
+					try {
+						await interaction.editReply({
+							content: "Sorry, something went wrong processing your request.",
+						});
+					} catch {
+						// Best effort — interaction may have expired
+					}
+				}
 			});
 		};
 		client.on("interactionCreate", this.onInteractionCreate);
@@ -174,7 +183,11 @@ export class DiscordInteractionConnector implements PlatformConnector {
 			await stored.interaction.editReply({ content: truncated });
 		} catch (err) {
 			// Discord may reject if token actually expired (race with TTL check)
-			this.logger.warn("editReply failed", { threadId, error: String(err) });
+			this.logger.error("[discord-interaction] Failed to deliver agent response", {
+				threadId,
+				messageLength: content.length,
+				error: String(err),
+			});
 		} finally {
 			this.interactions.delete(threadId);
 		}
@@ -508,6 +521,13 @@ export class DiscordInteractionConnector implements PlatformConnector {
 				this.logger.warn("[discord-interaction] Error downloading file attachment, skipping", {
 					name: a.name,
 					error: String(err),
+				});
+				// Inject a note so the agent knows an attachment was lost
+				storedFiles.push({
+					name: a.name,
+					path: "[failed to download]",
+					contentType: a.contentType ?? "application/octet-stream",
+					inlineContent: `[Attachment "${a.name}" failed to download: ${err instanceof Error ? err.message : String(err)}]`,
 				});
 			}
 		}

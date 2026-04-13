@@ -103,7 +103,8 @@ function buildTaskSection(db: Database, lastRunAt: string | null): string {
 			try {
 				const spec = JSON.parse(t.trigger_spec);
 				name = spec.type ?? t.trigger_spec;
-			} catch {
+			} catch (_error) {
+				// Malformed trigger_spec JSON — use raw string
 				name = t.trigger_spec;
 			}
 			const errorSnippet = t.error ? ` - Error: ${t.error.slice(0, 150)}` : "";

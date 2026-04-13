@@ -648,8 +648,11 @@ export class AgentLoop {
 						cost_usd,
 						created_at: new Date().toISOString(),
 					});
-				} catch {
-					// Non-fatal — don't break the loop over metrics
+				} catch (error) {
+					this.ctx.logger.warn("Failed to record turn metrics", {
+						threadId: this.config.threadId,
+						error: error instanceof Error ? error.message : String(error),
+					});
 				}
 
 				if (
@@ -664,8 +667,12 @@ export class AgentLoop {
 							relayMetadataRef.hostName,
 							relayMetadataRef.firstChunkLatencyMs,
 						);
-					} catch {
-						// Non-fatal
+					} catch (error) {
+						this.ctx.logger.warn("Failed to record turn relay metrics", {
+							threadId: this.config.threadId,
+							turnId: currentTurnId,
+							error: error instanceof Error ? error.message : String(error),
+						});
 					}
 				}
 
@@ -698,8 +705,12 @@ export class AgentLoop {
 							turn_id: currentTurnId,
 							debug: this.lastContextDebug,
 						});
-					} catch {
-						// Non-fatal
+					} catch (error) {
+						this.ctx.logger.warn("Failed to record context debug", {
+							threadId: this.config.threadId,
+							turnId: currentTurnId,
+							error: error instanceof Error ? error.message : String(error),
+						});
 					}
 				}
 
@@ -908,8 +919,12 @@ export class AgentLoop {
 						for (const filePath of persistResult.changedPaths) {
 							try {
 								trackFilePath(this.ctx.db, filePath, this.config.threadId, this.ctx.siteId);
-							} catch {
-								// Non-fatal
+							} catch (error) {
+								this.ctx.logger.warn("Failed to track file path", {
+									filePath,
+									threadId: this.config.threadId,
+									error: error instanceof Error ? error.message : String(error),
+								});
 							}
 						}
 					}
@@ -932,8 +947,11 @@ export class AgentLoop {
 					{ last_message_at: new Date().toISOString() },
 					this.ctx.siteId,
 				);
-			} catch {
-				// Non-fatal
+			} catch (error) {
+				this.ctx.logger.warn("Failed to update thread last_message_at", {
+					threadId: this.config.threadId,
+					error: error instanceof Error ? error.message : String(error),
+				});
 			}
 
 			this.state = "IDLE";
@@ -1064,8 +1082,11 @@ export class AgentLoop {
 				try {
 					writeOutbox(this.ctx.db, cancelEntry);
 					this.ctx.eventBus.emit("sync:trigger", { reason: "relay-cancel" });
-				} catch {
-					// Non-fatal if cancel write fails
+				} catch (error) {
+					this.ctx.logger.warn("Failed to write relay cancel outbox entry in RELAY_WAIT", {
+						refId: outboxEntryId,
+						error: error instanceof Error ? error.message : String(error),
+					});
 				}
 				return "Cancelled: relay request was cancelled by user";
 			}
@@ -1083,8 +1104,12 @@ export class AgentLoop {
 				if (currentTurnId !== null) {
 					try {
 						recordTurnRelayMetrics(this.ctx.db, currentTurnId, currentHost.host_name, latencyMs);
-					} catch {
-						// Non-fatal
+					} catch (error) {
+						this.ctx.logger.warn("Failed to record turn relay metrics", {
+							threadId: this.config.threadId,
+							turnId: currentTurnId,
+							error: error instanceof Error ? error.message : String(error),
+						});
 					}
 				}
 
@@ -1217,8 +1242,11 @@ export class AgentLoop {
 						try {
 							writeOutbox(this.ctx.db, cancelEntry);
 							this.ctx.eventBus.emit("sync:trigger", { reason: "relay-cancel" });
-						} catch {
-							// Non-fatal if cancel write fails
+						} catch (error) {
+							this.ctx.logger.warn("Failed to write relay cancel outbox entry in RELAY_STREAM", {
+								streamId,
+								error: error instanceof Error ? error.message : String(error),
+							});
 						}
 						return;
 					}

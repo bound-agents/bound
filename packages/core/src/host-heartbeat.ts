@@ -1,9 +1,12 @@
 import type { Database } from "bun:sqlite";
+import type { Logger } from "@bound/shared";
 import { createChangeLogEntry } from "./change-log";
 
 export interface HeartbeatOptions {
 	/** Heartbeat interval in milliseconds. Defaults to 120_000 (2 minutes). */
 	intervalMs?: number;
+	/** Logger for warning messages when heartbeat fails. */
+	logger?: Logger;
 }
 
 /**
@@ -41,8 +44,10 @@ export function startHostHeartbeat(
 				>;
 				createChangeLogEntry(db, "hosts", siteId, siteId, fullRow);
 			})();
-		} catch {
-			// DB write failure is non-fatal — next heartbeat will retry
+		} catch (error) {
+			options?.logger?.warn("Host heartbeat DB write failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
 		}
 	};
 

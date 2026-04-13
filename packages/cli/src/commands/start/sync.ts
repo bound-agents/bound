@@ -54,6 +54,7 @@ export async function initSync(
 				syncClient,
 				syncConfig.sync_interval_seconds || 30,
 				appContext.eventBus,
+				appContext.logger,
 			);
 			appContext.logger.info(
 				`[sync] Sync loop started (${syncConfig.sync_interval_seconds}s interval)`,

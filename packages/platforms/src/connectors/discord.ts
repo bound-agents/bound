@@ -129,8 +129,13 @@ export class DiscordConnector implements PlatformConnector {
 		this.onMessageCreate = (msg) => {
 			if (msg.author.bot) return;
 			if (msg.channel.type !== ChannelType.DM) return;
-			this.onMessage(msg).catch((err) => {
-				this.logger.error("onMessage error", { error: String(err) });
+			this.onMessage(msg).catch(async (err) => {
+				this.logger.error("[discord] onMessage error", { error: String(err) });
+				try {
+					await msg.reply("Sorry, something went wrong processing your message.");
+				} catch {
+					// Best effort — channel may be unavailable
+				}
 			});
 		};
 
@@ -386,6 +391,11 @@ export class DiscordConnector implements PlatformConnector {
 						attachmentId: attachment.id,
 						error: String(err),
 					});
+					// Inject a note so the agent knows an attachment was lost
+					contentBlocks.push({
+						type: "text",
+						text: `[Attachment "${attachment.name}" failed to download: ${err instanceof Error ? err.message : String(err)}]`,
+					});
 				}
 			}
 		}
@@ -481,6 +491,11 @@ export class DiscordConnector implements PlatformConnector {
 						attachmentId: attachment.id,
 						filename: attachment.name,
 						error: String(err),
+					});
+					// Inject a note so the agent knows an attachment was lost
+					contentBlocks.push({
+						type: "text",
+						text: `[Attached file: ${attachment.name}] failed to download: ${err instanceof Error ? err.message : String(err)}`,
 					});
 				}
 			}

@@ -96,7 +96,9 @@ function loadPersona(configDir: string): string | null {
 			personaCachePath = configDir;
 			personaCache = content;
 			return content;
-		} catch {
+		} catch (_error) {
+			// persona.md exists but cannot be read — no logger available in this context
+			// This is logged elsewhere if needed
 			return null;
 		}
 	}
@@ -410,8 +412,9 @@ Original output was too large for the context window. If you need the full conte
 					purgeIdToSummary.set(id, summary);
 				}
 			}
-		} catch {
-			// Ignore parse errors
+		} catch (_error) {
+			// Ignore purge metadata parse errors — no logger available in this context
+			// Malformed purge messages are silently skipped
 		}
 	}
 
@@ -553,8 +556,9 @@ Original output was too large for the context window. If you need the full conte
 						}
 					}
 				}
-			} catch {
-				// Non-parseable content — fall back to unlimited scan
+			} catch (_error) {
+				// Non-parseable tool_call content — fall back to unlimited scan
+				// No logger available in this context
 			}
 
 			for (let j = i + 1; j < messagesFiltered.length; j++) {
@@ -735,8 +739,9 @@ Original output was too large for the context window. If you need the full conte
 						toolCallIdToToolUseId.set(m.id, blocks[0].id);
 					}
 				}
-			} catch {
+			} catch (_error) {
 				// Content may not be JSON (e.g. synthetic tool_call)
+				// No logger available in this context
 			}
 		}
 	}
@@ -785,8 +790,9 @@ Original output was too large for the context window. If you need the full conte
 				if (Array.isArray(parsed) && parsed.length > 0 && parsed[0]?.type) {
 					annotatedContent = parsed as ContentBlock[];
 				}
-			} catch {
+			} catch (_error) {
 				// Not JSON — keep as plain text string
+				// No logger available in this context
 			}
 		}
 
@@ -891,8 +897,9 @@ Original output was too large for the context window. If you need the full conte
 				let taskPayload: unknown;
 				try {
 					taskPayload = JSON.parse(taskRow.payload);
-				} catch {
-					// Malformed payload — skip skill injection
+				} catch (_error) {
+					// Malformed task payload — skip skill injection
+					// No logger available in this context
 				}
 
 				if (
@@ -926,8 +933,9 @@ Original output was too large for the context window. If you need the full conte
 					}
 				}
 			}
-		} catch {
+		} catch (_error) {
 			// Non-fatal: skip skill body injection on any error
+			// No logger available in this context
 		}
 	}
 
@@ -1115,8 +1123,9 @@ Original output was too large for the context window. If you need the full conte
 					fileNotifCount++;
 				}
 			}
-		} catch {
-			// Non-fatal
+		} catch (_error) {
+			// Non-fatal: file thread notification query failed
+			// No logger available in this context
 		}
 
 		// Inject active skill index (AC3.1, AC3.2)
@@ -1134,8 +1143,9 @@ Original output was too large for the context window. If you need the full conte
 					volatileLines.push(`  ${s.name} — ${s.description}`);
 				}
 			}
-		} catch {
-			// Non-fatal
+		} catch (_error) {
+			// Non-fatal: active skills query failed
+			// No logger available in this context
 		}
 
 		// Inject operator retirement notifications (24h window) (AC3.6, AC3.7)
@@ -1158,8 +1168,9 @@ Original output was too large for the context window. If you need the full conte
 					`[Skill notification] Skill '${s.name}' was retired by operator: ${reason}.`,
 				);
 			}
-		} catch {
-			// Non-fatal
+		} catch (_error) {
+			// Non-fatal: retired skills query failed
+			// No logger available in this context
 		}
 
 		// Inject advisory resolution notifications (24h window, capped at 5, deduped by title).
@@ -1200,8 +1211,9 @@ Original output was too large for the context window. If you need the full conte
 					);
 					notifCount++;
 				}
-			} catch {
-				// Non-fatal
+			} catch (_error) {
+				// Non-fatal: resolved advisories query failed
+				// No logger available in this context
 			}
 		}
 
