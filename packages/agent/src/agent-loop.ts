@@ -1187,7 +1187,7 @@ export class AgentLoop {
 	): AsyncGenerator<StreamChunk> {
 		const POLL_INTERVAL_MS = options?.pollIntervalMs ?? 500;
 		const PER_HOST_TIMEOUT_MS = options?.perHostTimeoutMs ?? this.inferenceTimeoutMs;
-		const MAX_GAP_CYCLES = 2;
+		const MAX_GAP_CYCLES = 6; // ~3s at 500ms poll — allow time for sync-based delivery
 		const previousState = this.state;
 		this.state = "RELAY_STREAM";
 

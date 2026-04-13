@@ -543,6 +543,8 @@ export function startSyncLoop(
 	let timerId: Timer | null = null;
 	let stopped = false;
 	let consecutiveFailures = 0;
+	let syncing = false; // re-entry guard: true while a sync cycle is in-flight
+	let pendingTrigger = false; // coalesce triggers that arrive during an in-flight cycle
 	const maxIntervalMs = 5 * 60 * 1000; // 5 minutes per spec §8.6
 
 	// When relay activity is detected, use a tight interval for fast relay exchange.
@@ -550,52 +552,71 @@ export function startSyncLoop(
 
 	const scheduleNext = async () => {
 		if (stopped) return;
+		if (syncing) {
+			// Another cycle is already in-flight. Mark pending so it re-runs
+			// after the current cycle completes (coalesces rapid triggers).
+			pendingTrigger = true;
+			return;
+		}
+		syncing = true;
 
-		const result = await client.syncCycle();
+		try {
+			const result = await client.syncCycle();
 
-		let useRelayFastInterval = false;
-		if (!result.ok) {
-			consecutiveFailures++;
-			if (logger) {
-				logger.error("Sync cycle failed", {
-					phase: result.error.phase,
-					status: result.error.status ?? "n/a",
-					message: result.error.message,
-				});
-			} else {
-				console.error(
-					`[sync] Cycle failed (phase=${result.error.phase}, status=${result.error.status ?? "n/a"}): ${result.error.message}`,
-				);
-			}
-		} else {
-			if (consecutiveFailures > 0) {
+			let useRelayFastInterval = false;
+			if (!result.ok) {
+				consecutiveFailures++;
 				if (logger) {
-					logger.info("Sync cycle recovered after failures", {
-						consecutiveFailures,
+					logger.error("Sync cycle failed", {
+						phase: result.error.phase,
+						status: result.error.status ?? "n/a",
+						message: result.error.message,
 					});
 				} else {
-					console.log(`[sync] Cycle recovered after ${consecutiveFailures} failure(s)`);
+					console.error(
+						`[sync] Cycle failed (phase=${result.error.phase}, status=${result.error.status ?? "n/a"}): ${result.error.message}`,
+					);
+				}
+			} else {
+				if (consecutiveFailures > 0) {
+					if (logger) {
+						logger.info("Sync cycle recovered after failures", {
+							consecutiveFailures,
+						});
+					} else {
+						console.log(`[sync] Cycle recovered after ${consecutiveFailures} failure(s)`);
+					}
+				}
+				consecutiveFailures = 0;
+
+				// Re-sync quickly when relay entries were received (need to deliver
+				// responses promptly) or the hub flagged more entries pending.
+				const relay = result.value.relay;
+				if (relay && (relay.received > 0 || relay.pending)) {
+					useRelayFastInterval = true;
 				}
 			}
-			consecutiveFailures = 0;
 
-			// Re-sync quickly when relay entries were received (need to deliver
-			// responses promptly) or the hub flagged more entries pending.
-			const relay = result.value.relay;
-			if (relay && (relay.received > 0 || relay.pending)) {
-				useRelayFastInterval = true;
+			// Calculate backoff: min(initialInterval * 2^failures, 300000ms)
+			const baseIntervalMs = intervalSeconds * 1000;
+			const backoffMultiplier = 2 ** consecutiveFailures;
+			const normalIntervalMs = Math.min(baseIntervalMs * backoffMultiplier, maxIntervalMs);
+
+			const nextIntervalMs = useRelayFastInterval ? RELAY_FAST_INTERVAL_MS : normalIntervalMs;
+
+			// If a trigger arrived while we were syncing, run again immediately
+			// instead of waiting for the next interval (coalesced rapid triggers).
+			if (pendingTrigger) {
+				pendingTrigger = false;
+				timerId = setTimeout(scheduleNext, 0);
+				return;
 			}
+
+			// Use setTimeout recursion instead of setInterval to support dynamic intervals
+			timerId = setTimeout(scheduleNext, nextIntervalMs);
+		} finally {
+			syncing = false;
 		}
-
-		// Calculate backoff: min(initialInterval * 2^failures, 300000ms)
-		const baseIntervalMs = intervalSeconds * 1000;
-		const backoffMultiplier = 2 ** consecutiveFailures;
-		const normalIntervalMs = Math.min(baseIntervalMs * backoffMultiplier, maxIntervalMs);
-
-		const nextIntervalMs = useRelayFastInterval ? RELAY_FAST_INTERVAL_MS : normalIntervalMs;
-
-		// Use setTimeout recursion instead of setInterval to support dynamic intervals
-		timerId = setTimeout(scheduleNext, nextIntervalMs);
 	};
 
 	// Listen for immediate sync trigger event
