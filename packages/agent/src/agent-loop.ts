@@ -26,6 +26,7 @@ import {
 	resultPayloadSchema,
 } from "@bound/shared";
 
+import { loopContextStorage } from "@bound/sandbox";
 import {
 	buildCommandOutput,
 	calculateTurnCost,
@@ -1398,6 +1399,18 @@ export class AgentLoop {
 		}
 
 		const result = await this.sandbox.exec(toolCall.input.command as string);
+
+		// Check for relay request via side-channel. just-bash normalizes custom
+		// command return values to { stdout, stderr, exitCode, env }, stripping
+		// extra fields like outboxEntryId that isRelayRequest() checks.
+		// Remote MCP proxy commands store the full RelayToolCallRequest in
+		// loopContextStorage so we can retrieve it here.
+		const store = loopContextStorage.getStore();
+		if (store?.relayRequest && isRelayRequest(store.relayRequest)) {
+			const relayReq = store.relayRequest as RelayToolCallRequest;
+			store.relayRequest = undefined; // consume the request
+			return relayReq;
+		}
 
 		if (isRelayRequest(result)) {
 			return result;
