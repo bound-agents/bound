@@ -2,7 +2,7 @@ import type { BoundClient, BoundMessage } from "./bound-client";
 import { BoundNotRunningError } from "./bound-client";
 
 const POLL_INTERVAL_MS = 500;
-const MAX_POLL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_POLL_MS = 30 * 60 * 1000; // 30 minutes
 
 export interface ToolResult {
 	[key: string]: unknown;
@@ -33,7 +33,7 @@ export function createBoundChatHandler(
 						content: [
 							{
 								type: "text",
-								text: "Timed out waiting for bound agent to respond after 5 minutes.",
+								text: "Timed out waiting for bound agent to respond after 30 minutes.",
 							},
 						],
 					};

@@ -117,18 +117,18 @@ describe("createBoundChatHandler", () => {
 		});
 	});
 
-	describe("mcp-server.AC5.2: returns isError on 5-minute poll timeout", () => {
+	describe("mcp-server.AC5.2: returns isError on 30-minute poll timeout", () => {
 		it("returns isError:true when agent stays active past timeout", async () => {
 			// Always returns active=true to simulate stuck agent.
 			// Override the MAX_POLL_MS by making Date.now() advance past limit
 			// on the second status call.
 			let callCount = 0;
 			const startDate = Date.now();
-			// Inject a Date.now that jumps 6 minutes after first poll check
+			// Inject a Date.now that jumps 31 minutes after first poll check
 			const mockedNow = mock(() => {
 				callCount++;
-				// After first call (setup), jump past 5 min threshold
-				if (callCount > 2) return startDate + 6 * 60 * 1000;
+				// After first call (setup), jump past 30 min threshold
+				if (callCount > 2) return startDate + 31 * 60 * 1000;
 				return startDate;
 			});
 			const originalDateNow = Date.now;
@@ -143,7 +143,7 @@ describe("createBoundChatHandler", () => {
 				const result = await handler({ message: "Hello", thread_id: "t-1" });
 
 				expect(result.isError).toBe(true);
-				expect(result.content[0].text).toContain("5 minutes");
+				expect(result.content[0].text).toContain("30 minutes");
 			} finally {
 				Date.now = originalDateNow;
 			}
