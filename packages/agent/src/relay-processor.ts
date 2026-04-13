@@ -1002,8 +1002,11 @@ export class RelayProcessor {
 		};
 
 		try {
+			// Do not pass payload.model to chat() — it's a logical ID (e.g., "opus")
+			// that the model router already resolved to this backend. The backend has
+			// its own configured model identifier (e.g., the full Bedrock ARN).
+			// Passing the alias would override the ARN and cause Bedrock to reject it.
 			const chatStream = backend.chat({
-				model: payload.model,
 				messages,
 				tools: payload.tools,
 				system: payload.system,
