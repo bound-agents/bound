@@ -183,7 +183,7 @@ describe("RelayProcessor - executeInference", () => {
 			],
 		);
 
-		const handle = processor.start(50);
+		const handle = processor.start(10);
 		await waitFor(
 			() =>
 				(
@@ -238,6 +238,7 @@ describe("RelayProcessor - executeInference", () => {
 
 		mockBackend.pushResponse(async function* () {
 			yield { type: "text" as const, content: "small" };
+			// Must be > 200ms to trigger the 200ms flush timer before next chunk arrives
 			await new Promise((resolve) => setTimeout(resolve, 250));
 			yield { type: "text" as const, content: "delayed" };
 			yield {
@@ -302,7 +303,7 @@ describe("RelayProcessor - executeInference", () => {
 			],
 		);
 
-		const handle = processor.start(50);
+		const handle = processor.start(10);
 		await waitFor(
 			() =>
 				(
@@ -391,7 +392,7 @@ describe("RelayProcessor - executeInference", () => {
 			],
 		);
 
-		const handle = processor.start(50);
+		const handle = processor.start(10);
 		await waitFor(
 			() =>
 				(
@@ -466,7 +467,7 @@ describe("RelayProcessor - executeInference", () => {
 			],
 		);
 
-		const handle = processor.start(50);
+		const handle = processor.start(10);
 		await waitFor(
 			() =>
 				(
@@ -502,7 +503,7 @@ describe("RelayProcessor - executeInference", () => {
 
 		mockBackend.pushResponse(async function* () {
 			yield { type: "text" as const, content: "chunk1" };
-			await new Promise((resolve) => setTimeout(resolve, 500));
+			await new Promise((resolve) => setTimeout(resolve, 50));
 			yield { type: "text" as const, content: "chunk2" };
 			yield {
 				type: "done" as const,
@@ -566,7 +567,7 @@ describe("RelayProcessor - executeInference", () => {
 			],
 		);
 
-		const handle = processor.start(50);
+		const handle = processor.start(10);
 		// Wait for the inference entry to be dispatched (fire-and-forget) before inserting cancel
 		await waitFor(
 			() =>
@@ -682,7 +683,7 @@ describe("RelayProcessor - executeInference", () => {
 			],
 		);
 
-		const handle = processor.start(50);
+		const handle = processor.start(10);
 		// Wait for the expired entry to be processed (discarded) — no outbox entries expected
 		await waitFor(
 			() =>
@@ -814,7 +815,7 @@ describe("RelayProcessor - executeInference", () => {
 			);
 		}
 
-		const handle = processor.start(50);
+		const handle = processor.start(10);
 		await waitFor(
 			() =>
 				streamIds.every(
@@ -923,7 +924,7 @@ describe("RelayProcessor - executeInference", () => {
 			],
 		);
 
-		const handle = processor.start(50);
+		const handle = processor.start(10);
 		await waitFor(
 			() =>
 				(

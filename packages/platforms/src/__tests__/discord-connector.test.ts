@@ -476,7 +476,7 @@ describe("DiscordConnector", () => {
 			}
 
 			// Wait for async onMessage calls to settle
-			await new Promise((r) => setTimeout(r, 50));
+			await new Promise((r) => setTimeout(r, 10));
 
 			const intakes = db.query("SELECT * FROM relay_outbox WHERE kind = 'intake'").all();
 			expect(intakes.length).toBe(1);

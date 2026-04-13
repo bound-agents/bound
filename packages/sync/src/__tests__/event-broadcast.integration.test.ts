@@ -188,8 +188,8 @@ describe("platform-connectors Phase 7 — event broadcast integration", () => {
 			spokeBEventBus,
 		);
 
-		const processorHandle = spokeBProcessor.start(50);
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		const processorHandle = spokeBProcessor.start(10);
+		await new Promise((resolve) => setTimeout(resolve, 50));
 		processorHandle.stop();
 
 		// Assert: "test:custom-event" was fired on spokeB's eventBus

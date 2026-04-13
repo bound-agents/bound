@@ -159,7 +159,7 @@ describe("relayStream() streaming generator", () => {
 		})();
 
 		// Wait briefly for outbox entry to be written
-		await new Promise((r) => setTimeout(r, 50));
+		await new Promise((r) => setTimeout(r, 10));
 
 		// Read the generated stream_id from relay_outbox
 		const outboxEntry = db
@@ -282,7 +282,7 @@ describe("relayStream() streaming generator", () => {
 		})();
 
 		// Wait for outbox entry
-		await new Promise((r) => setTimeout(r, 50));
+		await new Promise((r) => setTimeout(r, 10));
 
 		const outboxEntry = db
 			.query(
@@ -387,7 +387,7 @@ describe("relayStream() streaming generator", () => {
 			}
 		})();
 
-		await new Promise((r) => setTimeout(r, 50));
+		await new Promise((r) => setTimeout(r, 10));
 
 		const outboxEntry = db
 			.query(
@@ -532,7 +532,7 @@ describe("relayStream() streaming generator", () => {
 			}
 		})();
 
-		await new Promise((r) => setTimeout(r, 50));
+		await new Promise((r) => setTimeout(r, 10));
 
 		const outboxEntry = db
 			.query(
@@ -711,7 +711,7 @@ describe("relayStream() streaming generator", () => {
 			}
 		})();
 
-		await new Promise((r) => setTimeout(r, 50));
+		await new Promise((r) => setTimeout(r, 10));
 
 		const outboxEntry = db
 			.query(
@@ -786,7 +786,7 @@ describe("relayStream() streaming generator", () => {
 			}
 		})();
 
-		await new Promise((r) => setTimeout(r, 50));
+		await new Promise((r) => setTimeout(r, 10));
 
 		const outboxEntry = db
 			.query(
@@ -820,7 +820,7 @@ describe("relayStream() streaming generator", () => {
 			);
 
 			// Wait a couple of poll cycles then insert seq=2 (gap in seq=1)
-			await new Promise((r) => setTimeout(r, 50));
+			await new Promise((r) => setTimeout(r, 10));
 
 			db.run(
 				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
@@ -966,7 +966,7 @@ describe("relayStream() streaming generator", () => {
 			}
 		})();
 
-		await new Promise((r) => setTimeout(r, 50));
+		await new Promise((r) => setTimeout(r, 10));
 
 		const outboxEntry = db
 			.query(
@@ -1060,7 +1060,7 @@ describe("relayStream() streaming generator", () => {
 			}
 		})();
 
-		await new Promise((r) => setTimeout(r, 50));
+		await new Promise((r) => setTimeout(r, 10));
 
 		const outboxEntry = db
 			.query(
@@ -1190,7 +1190,7 @@ describe("relayStream() streaming generator", () => {
 			}
 		})();
 
-		await new Promise((r) => setTimeout(r, 50));
+		await new Promise((r) => setTimeout(r, 10));
 
 		const outboxEntry = db
 			.query(
@@ -1224,7 +1224,7 @@ describe("relayStream() streaming generator", () => {
 			}
 
 			// Wait for seq 0-2 to be consumed
-			await new Promise((r) => setTimeout(r, 100));
+			await new Promise((r) => setTimeout(r, 20));
 
 			// Now insert "stale duplicates" with seq 0 and 1 (as if retransmitted)
 			// These should be discarded by the backwards-jump guard
@@ -1248,7 +1248,7 @@ describe("relayStream() streaming generator", () => {
 			}
 
 			// Wait for gap detection to process the stale entries
-			await new Promise((r) => setTimeout(r, 200));
+			await new Promise((r) => setTimeout(r, 30));
 
 			// Now insert seq 3 (stream_end) to complete the stream
 			db.run(
@@ -1316,7 +1316,7 @@ describe("relayStream() streaming generator", () => {
 			}
 		})();
 
-		await new Promise((r) => setTimeout(r, 50));
+		await new Promise((r) => setTimeout(r, 10));
 
 		const outboxEntry = db
 			.query(
@@ -1466,7 +1466,7 @@ describe("relayStream() streaming generator", () => {
 			}
 		})();
 
-		await new Promise((r) => setTimeout(r, 50));
+		await new Promise((r) => setTimeout(r, 10));
 
 		const outboxEntry = db
 			.query(
@@ -1500,7 +1500,7 @@ describe("relayStream() streaming generator", () => {
 			}
 
 			// Wait for consumption
-			await new Promise((r) => setTimeout(r, 50));
+			await new Promise((r) => setTimeout(r, 10));
 
 			// Retransmission: stale seq 1 duplicate + fresh seq 3 (stream_end)
 			// The stale seq 1 has a DIFFERENT id (simulating hub creating new inbox entry
@@ -1582,7 +1582,7 @@ describe("relayStream() streaming generator", () => {
 			}
 		})();
 
-		await new Promise((r) => setTimeout(r, 50));
+		await new Promise((r) => setTimeout(r, 10));
 
 		const outboxEntry = db
 			.query(
@@ -1630,7 +1630,7 @@ describe("relayStream() streaming generator", () => {
 			);
 
 			// Wait for gap detection to kick in (6 cycles * 5ms = 30ms, add margin)
-			await new Promise((r) => setTimeout(r, 60));
+			await new Promise((r) => setTimeout(r, 45));
 
 			// Now insert stream_end at seq 3
 			db.run(

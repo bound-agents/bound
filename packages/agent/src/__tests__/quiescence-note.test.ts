@@ -304,7 +304,7 @@ describe("Quiescence note injection", () => {
 				// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 				(scheduler as any).runningTasks = originalRunningTasks;
 				resolve();
-			}, 100);
+			}, 20);
 		});
 
 		// Verify quiescence note was injected
@@ -345,7 +345,7 @@ describe("Quiescence note injection", () => {
 				// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 				(scheduler as any).runningTasks = originalRunningTasks;
 				resolve();
-			}, 100);
+			}, 20);
 		});
 
 		// Verify quiescence note was injected with cron expression
@@ -386,7 +386,7 @@ describe("Quiescence note injection", () => {
 				// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 				(scheduler as any).runningTasks = originalRunningTasks;
 				resolve();
-			}, 100);
+			}, 20);
 		});
 
 		// Verify NO quiescence note was injected
@@ -422,7 +422,7 @@ describe("Quiescence note injection", () => {
 				// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 				(scheduler as any).runningTasks = originalRunningTasks;
 				resolve();
-			}, 100);
+			}, 20);
 		});
 
 		const messages = getThreadMessages(threadId);
@@ -458,7 +458,7 @@ describe("Quiescence note injection", () => {
 				// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 				(scheduler as any).runningTasks = originalRunningTasks;
 				resolve();
-			}, 100);
+			}, 20);
 		});
 
 		const messages = getThreadMessages(threadId);
@@ -495,7 +495,7 @@ describe("Quiescence note injection", () => {
 				// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 				(scheduler as any).runningTasks = originalRunningTasks;
 				resolve();
-			}, 100);
+			}, 20);
 		});
 
 		const messages = getThreadMessages(threadId);
@@ -530,7 +530,7 @@ describe("Quiescence note injection", () => {
 				// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 				(scheduler as any).runningTasks = originalRunningTasks;
 				resolve();
-			}, 100);
+			}, 20);
 		});
 
 		const messages = getThreadMessages(threadId);
@@ -600,7 +600,7 @@ describe("Quiescence note injection", () => {
 				// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 				(scheduler as any).runningTasks = originalRunningTasks;
 				resolve();
-			}, 100);
+			}, 20);
 		});
 
 		// Should have injected a note with fallback values

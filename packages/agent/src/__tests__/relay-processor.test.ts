@@ -147,7 +147,7 @@ describe("RelayProcessor", () => {
 				createMockEventBus(),
 			);
 
-			const handle = processor.start(100);
+			const handle = processor.start(10);
 			expect(handle).toBeDefined();
 			expect(handle.stop).toBeDefined();
 			expect(typeof handle.stop).toBe("function");
@@ -201,7 +201,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 
 			// Wait for processor to pick up the entry
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
@@ -227,7 +227,7 @@ describe("RelayProcessor", () => {
 				createMockEventBus(),
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await sleep(50);
 			handle.stop();
 
@@ -282,7 +282,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -338,7 +338,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -403,7 +403,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -464,7 +464,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -532,7 +532,7 @@ describe("RelayProcessor", () => {
 					],
 				);
 
-				const handle = processor.start(50);
+				const handle = processor.start(10);
 				await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 				handle.stop();
 
@@ -623,7 +623,7 @@ describe("RelayProcessor", () => {
 			);
 
 			// Process first request
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 
 			const callCountAfterFirst = callCount;
@@ -738,7 +738,7 @@ describe("RelayProcessor", () => {
 			);
 
 			// Process first request
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 
 			const callCountAfterFirst = callCount;
@@ -830,7 +830,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle2 = processor.start(50);
+			const handle2 = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle2.stop();
 
@@ -920,7 +920,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -981,7 +981,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 
 			// Now insert cancel after tool execution
@@ -1073,7 +1073,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -1141,7 +1141,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -1233,7 +1233,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -1327,7 +1327,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -1456,7 +1456,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -1543,7 +1543,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -1629,7 +1629,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -1729,7 +1729,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -1836,7 +1836,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -1907,7 +1907,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -1979,7 +1979,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -2053,7 +2053,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -2151,7 +2151,7 @@ describe("RelayProcessor", () => {
 					],
 				);
 
-				const handle = processor.start(50);
+				const handle = processor.start(10);
 				await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 				handle.stop();
 
@@ -2283,7 +2283,7 @@ describe("RelayProcessor", () => {
 			);
 
 			// Run processor to execute the process entry
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await sleep(100);
 			handle.stop();
 
@@ -2389,7 +2389,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await sleep(100);
 			handle.stop();
 
@@ -2491,7 +2491,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await sleep(100);
 			handle.stop();
 
@@ -2619,7 +2619,7 @@ describe("RelayProcessor", () => {
 			);
 
 			// Run processor to execute the process entry
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await sleep(100);
 			handle.stop();
 
@@ -2759,7 +2759,7 @@ describe("RelayProcessor", () => {
 			);
 
 			// Run processor
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await sleep(100);
 			handle.stop();
 
@@ -2918,7 +2918,7 @@ describe("RelayProcessor", () => {
 				);
 
 				// Run processor to execute the process entry
-				const handle = processor.start(50);
+				const handle = processor.start(10);
 				await sleep(100);
 				handle.stop();
 
@@ -3051,7 +3051,7 @@ describe("RelayProcessor", () => {
 				);
 
 				// Run processor to execute the process entry
-				const handle = processor.start(50);
+				const handle = processor.start(10);
 				await sleep(100);
 				handle.stop();
 
@@ -3177,7 +3177,7 @@ describe("RelayProcessor", () => {
 				);
 
 				// Run processor to execute the process entry
-				const handle = processor.start(50);
+				const handle = processor.start(10);
 				await sleep(100);
 				handle.stop();
 
@@ -3305,7 +3305,7 @@ describe("RelayProcessor", () => {
 				);
 
 				// Run processor to execute the process entry
-				const handle = processor.start(50);
+				const handle = processor.start(10);
 				await sleep(100);
 				handle.stop();
 
@@ -3404,7 +3404,7 @@ describe("RelayProcessor", () => {
 					],
 				);
 
-				const handle = processor.start(50);
+				const handle = processor.start(10);
 				await sleep(100);
 				handle.stop();
 
@@ -3495,7 +3495,7 @@ describe("RelayProcessor", () => {
 					],
 				);
 
-				const handle = processor.start(50);
+				const handle = processor.start(10);
 				await sleep(100);
 				handle.stop();
 
@@ -3571,7 +3571,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -3634,7 +3634,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -3692,7 +3692,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
@@ -3857,7 +3857,7 @@ describe("RelayProcessor", () => {
 			);
 
 			// Run processor to execute the process entry
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await sleep(100);
 			handle.stop();
 
@@ -3973,7 +3973,7 @@ describe("RelayProcessor", () => {
 				],
 			);
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, {
 				message: "process entry not handled",
 			});
@@ -4027,7 +4027,7 @@ describe("RelayProcessor", () => {
 			});
 
 			// Start processor and wait for it to process
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await sleep(300);
 			handle.stop();
 
@@ -4086,7 +4086,7 @@ describe("RelayProcessor", () => {
 				processed: 0,
 			});
 
-			const handle = processor.start(50);
+			const handle = processor.start(10);
 			await sleep(300);
 			handle.stop();
 
