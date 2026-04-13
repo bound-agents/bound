@@ -9,13 +9,14 @@ import {
 	recordContextDebug,
 	recordTurn,
 	recordTurnRelayMetrics,
+	resolveRelayConfig,
 	updateRow,
 	writeOutbox,
 } from "@bound/core";
 import type { ModelRouter, StreamChunk } from "@bound/llm";
 import type { InferenceRequestPayload, StreamChunkPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
-import type { ContextDebugInfo } from "@bound/shared";
+import type { ContextDebugInfo, SyncConfig } from "@bound/shared";
 import { countTokens, formatError } from "@bound/shared";
 
 import {
@@ -126,6 +127,9 @@ export class AgentLoop {
 	private _visionAdvisoryEmitted?: Set<string>;
 	private lastContextDebug?: ContextDebugInfo;
 
+	/** Resolved inference relay timeout from sync.relay config, cached on first access. */
+	private _inferenceTimeoutMs: number | null = null;
+
 	constructor(
 		private ctx: AppContext,
 		private sandbox: BashLike,
@@ -137,6 +141,17 @@ export class AgentLoop {
 				this.aborted = true;
 			});
 		}
+	}
+
+	/** Read inference_timeout_ms from relay config (default 300s). */
+	private get inferenceTimeoutMs(): number {
+		if (this._inferenceTimeoutMs === null) {
+			const syncResult = this.ctx.optionalConfig?.sync;
+			const syncConfig = syncResult?.ok ? (syncResult.value as SyncConfig) : undefined;
+			const relayConfig = resolveRelayConfig(syncConfig);
+			this._inferenceTimeoutMs = relayConfig.inference_timeout_ms;
+		}
+		return this._inferenceTimeoutMs;
 	}
 
 	async run(): Promise<AgentLoopResult> {
@@ -360,7 +375,7 @@ export class AgentLoop {
 							max_tokens: undefined,
 							temperature: undefined,
 							cache_breakpoints: undefined,
-							timeout_ms: 120_000,
+							timeout_ms: this.inferenceTimeoutMs,
 						};
 						const MAX_INLINE_BYTES = 2 * 1024 * 1024;
 						const serialized = JSON.stringify(inferencePayload);
@@ -1139,7 +1154,7 @@ export class AgentLoop {
 		options?: { pollIntervalMs?: number; perHostTimeoutMs?: number },
 	): AsyncGenerator<StreamChunk> {
 		const POLL_INTERVAL_MS = options?.pollIntervalMs ?? 500;
-		const PER_HOST_TIMEOUT_MS = options?.perHostTimeoutMs ?? 120_000; // inference_timeout_ms default
+		const PER_HOST_TIMEOUT_MS = options?.perHostTimeoutMs ?? this.inferenceTimeoutMs;
 		const MAX_GAP_CYCLES = 2;
 		const previousState = this.state;
 		this.state = "RELAY_STREAM";
