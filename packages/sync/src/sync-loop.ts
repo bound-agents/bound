@@ -143,7 +143,15 @@ export class SyncClient {
 			// RELAY: exchange relay messages with hub
 			const relayPhaseResult = await this.relay();
 			if (!relayPhaseResult.ok) {
-				this.logger.warn("Relay phase failed", { error: relayPhaseResult.error });
+				const pendingOutbox = readUndelivered(this.db);
+				const pendingStream = pendingOutbox.filter(
+					(e) => e.kind === "stream_chunk" || e.kind === "stream_end",
+				);
+				this.logger.warn("Relay phase failed", {
+					error: relayPhaseResult.error,
+					pendingOutbox: pendingOutbox.length,
+					pendingStreamEntries: pendingStream.length,
+				});
 				// Relay failure is non-fatal — sync still succeeds
 			} else {
 				relayResult = relayPhaseResult.value;
@@ -408,6 +416,19 @@ export class SyncClient {
 		try {
 			const outbox = readUndelivered(this.db);
 
+			// Log relay activity when there are stream entries to deliver
+			const streamEntries = outbox.filter(
+				(e) => e.kind === "stream_chunk" || e.kind === "stream_end",
+			);
+			if (streamEntries.length > 0) {
+				const streamIds = [...new Set(streamEntries.map((e) => e.stream_id))];
+				this.logger.info("[sync] Relay sending stream entries", {
+					total: outbox.length,
+					streamEntries: streamEntries.length,
+					streamIds: streamIds.map((s) => s?.slice(0, 8)),
+				});
+			}
+
 			// Filter outbox entries based on relay_draining flag (AC4.2, AC4.3)
 			let entriesToSend = outbox;
 			if (this.relayDraining) {
@@ -474,6 +495,21 @@ export class SyncClient {
 			// Mark delivered
 			if (relayResponse.relay_delivered.length > 0) {
 				markDelivered(this.db, relayResponse.relay_delivered);
+			}
+
+			// Log delivery result when stream entries were sent
+			if (streamEntries.length > 0) {
+				// Check how many stream entries are STILL undelivered after this cycle
+				const stillUndelivered = readUndelivered(this.db).filter(
+					(e) => e.kind === "stream_chunk" || e.kind === "stream_end",
+				);
+				this.logger.info("[sync] Relay stream delivery result", {
+					sent: entriesToSend.length,
+					delivered: relayResponse.relay_delivered.length,
+					received: relayResponse.relay_inbox.length,
+					stillUndelivered: stillUndelivered.length,
+					pending: relayResponse.relay_pending,
+				});
 			}
 
 			// Record outbound relay cycles
@@ -593,6 +629,13 @@ export function startSyncLoop(
 				// responses promptly) or the hub flagged more entries pending.
 				const relay = result.value.relay;
 				if (relay && (relay.received > 0 || relay.pending)) {
+					useRelayFastInterval = true;
+				}
+
+				// Also use fast interval when relay sent entries but not all were
+				// delivered, or when relay was null (failed non-fatally) and we
+				// might have entries that need retrying.
+				if (!useRelayFastInterval && relay && relay.sent > 0) {
 					useRelayFastInterval = true;
 				}
 			}
