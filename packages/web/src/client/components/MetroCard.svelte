@@ -10,7 +10,7 @@ interface Props {
 let { accentColor, interactive = false, children }: Props = $props();
 </script>
 
-<div class="metro-card" class:interactive style={accentColor ? `--accent-color: ${accentColor}` : ""}>
+<div class="metro-card" class:interactive class:accented={!!accentColor} style={accentColor ? `--accent-color: ${accentColor}` : ""}>
 	{@render children()}
 </div>
 
@@ -23,7 +23,7 @@ let { accentColor, interactive = false, children }: Props = $props();
 		transition: background 0.15s ease;
 	}
 
-	.metro-card[style*="--accent-color"] {
+	.metro-card.accented {
 		border-left: 3px solid var(--accent-color);
 	}
 

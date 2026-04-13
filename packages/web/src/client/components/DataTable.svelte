@@ -76,7 +76,7 @@ const gridTemplate = $derived(columns.map((col) => col.width || "1fr").join(" ")
 		</div>
 
 		<div class="body">
-			{#each sortedRows as row (row.id || rows.indexOf(row))}
+			{#each sortedRows as row, i (row.id ?? i)}
 				{@const accentColor = rowAccent?.(row)}
 				<div
 					class="data-row"
@@ -96,7 +96,7 @@ const gridTemplate = $derived(columns.map((col) => col.width || "1fr").join(" ")
 				</div>
 
 				{#if expandable && expandedRowId === String(row.id ?? "")}
-					<div class="expanded-row" style="grid-column: 1 / -1">
+					<div class="expanded-row">
 						{#if expandedContent}
 							{@render expandedContent(row)}
 						{/if}

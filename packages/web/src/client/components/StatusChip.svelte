@@ -1,42 +1,42 @@
 <script lang="ts">
-	type StatusType =
-		| "active"
-		| "running"
-		| "pending"
-		| "failed"
-		| "idle"
-		| "cancelled"
-		| "delayed"
-		| "overdue"
-		| "healthy"
-		| "degraded"
-		| "unreachable";
+type StatusType =
+	| "active"
+	| "running"
+	| "pending"
+	| "failed"
+	| "idle"
+	| "cancelled"
+	| "delayed"
+	| "overdue"
+	| "healthy"
+	| "degraded"
+	| "unreachable";
 
-	interface Props {
-		status: StatusType;
-		label?: string;
-		animate?: boolean;
-	}
+interface Props {
+	status: StatusType;
+	label?: string;
+	animate?: boolean;
+}
 
-	let { status, label, animate = true }: Props = $props();
+let { status, label, animate = true }: Props = $props();
 
-	const STATUS_COLORS: Record<StatusType, string> = {
-		active: "var(--status-active)",
-		running: "var(--status-active)",
-		healthy: "var(--status-active)",
-		pending: "var(--alert-warning)",
-		delayed: "var(--alert-warning)",
-		failed: "var(--alert-disruption)",
-		overdue: "var(--alert-disruption)",
-		unreachable: "var(--alert-disruption)",
-		idle: "var(--text-muted)",
-		cancelled: "var(--text-muted)",
-		degraded: "var(--text-muted)",
-	};
+const STATUS_COLORS: Record<StatusType, string> = {
+	active: "var(--status-active)",
+	running: "var(--status-active)",
+	healthy: "var(--status-active)",
+	pending: "var(--alert-warning)",
+	delayed: "var(--alert-warning)",
+	failed: "var(--alert-disruption)",
+	overdue: "var(--alert-disruption)",
+	unreachable: "var(--alert-disruption)",
+	idle: "var(--text-muted)",
+	cancelled: "var(--text-muted)",
+	degraded: "var(--text-muted)",
+};
 
-	const color = STATUS_COLORS[status];
-	const displayLabel = label ?? status.toUpperCase();
-	const shouldAnimate = animate && (status === "active" || status === "running");
+const color = $derived(STATUS_COLORS[status]);
+const displayLabel = $derived(label ?? status.toUpperCase());
+const shouldAnimate = $derived(animate && (status === "active" || status === "running"));
 </script>
 
 <span class="status-chip" class:animate={shouldAnimate} style="--dot-color: {color}">

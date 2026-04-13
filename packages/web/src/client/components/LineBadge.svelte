@@ -8,10 +8,10 @@ interface Props {
 
 let { lineIndex, size = "standard" }: Props = $props();
 
-const code = getLineCode(lineIndex);
-const color = getLineColor(lineIndex);
-const diameter = size === "compact" ? 20 : 32;
-const fontSize = size === "compact" ? 10 : 14;
+const code = $derived(getLineCode(lineIndex));
+const color = $derived(getLineColor(lineIndex));
+const diameter = $derived(size === "compact" ? 20 : 32);
+const fontSize = $derived(size === "compact" ? 10 : 14);
 </script>
 
 <span
