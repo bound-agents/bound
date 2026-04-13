@@ -1029,4 +1029,189 @@ describe("relayStream() streaming generator", () => {
 			expect(relayMetadataRef.firstChunkLatencyMs).toBeGreaterThanOrEqual(0);
 		}
 	});
+
+	it("duplicate stream chunks with same id are ignored via INSERT OR IGNORE", async () => {
+		const ctx = makeCtx();
+		const mockBackend = new MockLLMBackend();
+		const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+			threadId,
+			userId,
+			modelId: "test-model",
+		});
+
+		const host = makeMockHost("relay-host-dedup");
+		const eligibleHosts = [host];
+		const payload = { model: "test-model", messages: [], tools: [] };
+
+		const chunks: StreamChunk[] = [];
+		let generatedStreamId: string | null = null;
+
+		// biome-ignore lint/suspicious/noExplicitAny: testing private method
+		const gen = (loop as any).relayStream(
+			payload,
+			eligibleHosts,
+			{},
+			{ pollIntervalMs: 5, perHostTimeoutMs: 2000 },
+		);
+
+		const consumerPromise = (async () => {
+			for await (const chunk of gen) {
+				chunks.push(chunk);
+			}
+		})();
+
+		await new Promise((r) => setTimeout(r, 50));
+
+		const outboxEntry = db
+			.query(
+				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+			)
+			.get() as { stream_id: string } | null;
+
+		if (outboxEntry) {
+			generatedStreamId = outboxEntry.stream_id;
+			const now = new Date().toISOString();
+			const expires = new Date(Date.now() + 60_000).toISOString();
+			const dupeId = randomUUID(); // same id for duplicate entries
+
+			// Insert seq 0
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[randomUUID(), host.site_id, "stream_chunk", null, null, generatedStreamId,
+					JSON.stringify({ seq: 0, chunks: [{ type: "text", content: "hello" }] }),
+					expires, now, 0],
+			);
+
+			// Insert seq 1 with a specific id
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[dupeId, host.site_id, "stream_chunk", null, null, generatedStreamId,
+					JSON.stringify({ seq: 1, chunks: [{ type: "text", content: "world" }] }),
+					expires, now, 0],
+			);
+
+			// Try to insert duplicate of seq 1 with SAME id — should be silently ignored
+			db.run(
+				`INSERT OR IGNORE INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[dupeId, host.site_id, "stream_chunk", null, null, generatedStreamId,
+					JSON.stringify({ seq: 1, chunks: [{ type: "text", content: "world-dupe" }] }),
+					expires, now, 0],
+			);
+
+			// Insert stream_end
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[randomUUID(), host.site_id, "stream_end", null, null, generatedStreamId,
+					JSON.stringify({ seq: 2, chunks: [{ type: "done", usage: { input_tokens: 10, output_tokens: 5 } }] }),
+					expires, now, 0],
+			);
+		}
+
+		await consumerPromise;
+
+		// "world" should appear exactly once (not "world-dupe")
+		const textChunks = chunks.filter((c) => c.type === "text");
+		const worldChunks = textChunks.filter((c) => c.content === "world");
+		const dupeChunks = textChunks.filter((c) => c.content === "world-dupe");
+		expect(worldChunks.length).toBe(1);
+		expect(dupeChunks.length).toBe(0);
+	});
+
+	it("backwards seq jumps from stale duplicates are discarded, not reprocessed", async () => {
+		const ctx = makeCtx();
+		const mockBackend = new MockLLMBackend();
+		const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+			threadId,
+			userId,
+			modelId: "test-model",
+		});
+
+		const host = makeMockHost("relay-host-backwards");
+		const eligibleHosts = [host];
+		const payload = { model: "test-model", messages: [], tools: [] };
+
+		const chunks: StreamChunk[] = [];
+		let generatedStreamId: string | null = null;
+
+		// biome-ignore lint/suspicious/noExplicitAny: testing private method
+		const gen = (loop as any).relayStream(
+			payload,
+			eligibleHosts,
+			{},
+			{ pollIntervalMs: 5, perHostTimeoutMs: 2000 },
+		);
+
+		const consumerPromise = (async () => {
+			for await (const chunk of gen) {
+				chunks.push(chunk);
+			}
+		})();
+
+		await new Promise((r) => setTimeout(r, 50));
+
+		const outboxEntry = db
+			.query(
+				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+			)
+			.get() as { stream_id: string } | null;
+
+		if (outboxEntry) {
+			generatedStreamId = outboxEntry.stream_id;
+			const now = new Date().toISOString();
+			const expires = new Date(Date.now() + 60_000).toISOString();
+
+			// Insert seq 0, 1, 2 in order
+			for (let seq = 0; seq < 3; seq++) {
+				db.run(
+					`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[randomUUID(), host.site_id, "stream_chunk", null, null, generatedStreamId,
+						JSON.stringify({ seq, chunks: [{ type: "text", content: `chunk-${seq}` }] }),
+						expires, now, 0],
+				);
+			}
+
+			// Wait for seq 0-2 to be consumed
+			await new Promise((r) => setTimeout(r, 100));
+
+			// Now insert "stale duplicates" with seq 0 and 1 (as if retransmitted)
+			// These should be discarded by the backwards-jump guard
+			for (let seq = 0; seq < 2; seq++) {
+				db.run(
+					`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[randomUUID(), host.site_id, "stream_chunk", null, null, generatedStreamId,
+						JSON.stringify({ seq, chunks: [{ type: "text", content: `stale-${seq}` }] }),
+						expires, now, 0],
+				);
+			}
+
+			// Wait for gap detection to process the stale entries
+			await new Promise((r) => setTimeout(r, 200));
+
+			// Now insert seq 3 (stream_end) to complete the stream
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[randomUUID(), host.site_id, "stream_end", null, null, generatedStreamId,
+					JSON.stringify({ seq: 3, chunks: [{ type: "done", usage: { input_tokens: 10, output_tokens: 5 } }] }),
+					expires, now, 0],
+			);
+		}
+
+		await consumerPromise;
+
+		// Verify: stale chunks should NOT appear in output
+		const textChunks = chunks.filter((c) => c.type === "text");
+		const staleChunks = textChunks.filter((c) => c.content?.startsWith("stale-"));
+		expect(staleChunks.length).toBe(0);
+
+		// Original chunks should appear exactly once each
+		const originals = textChunks.filter((c) => c.content?.startsWith("chunk-"));
+		expect(originals.length).toBe(3);
+	});
 });

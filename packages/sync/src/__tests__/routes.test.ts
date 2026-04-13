@@ -99,6 +99,29 @@ describe("routes", () => {
 			)
 		`);
 
+		db.run(`
+			CREATE TABLE relay_outbox (
+				id TEXT PRIMARY KEY,
+				source_site_id TEXT,
+				target_site_id TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				ref_id TEXT,
+				idempotency_key TEXT,
+				stream_id TEXT,
+				payload TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				delivered INTEGER NOT NULL DEFAULT 0
+			)
+		`);
+
+		db.run(`
+			CREATE TABLE host_meta (
+				key TEXT PRIMARY KEY,
+				value TEXT NOT NULL
+			)
+		`);
+
 		// Generate keypairs for hub and spoke with random paths
 		const hubDir = join(tmpdir(), `bound-test-hub-routes-${randomBytes(4).toString("hex")}`);
 		const spokeDir = join(tmpdir(), `bound-test-spoke-routes-${randomBytes(4).toString("hex")}`);
@@ -482,6 +505,84 @@ describe("routes", () => {
 			expect(response2.status).toBe(200);
 			const result2 = await response2.json();
 			expect(result2.received).toBe(0); // No new insertions
+		});
+	});
+
+	describe("POST /sync/relay — stream_chunk dedup", () => {
+		it("deduplicates retransmitted stream_chunk entries using original outbox entry ID", async () => {
+			// Hub receives relay from spoke — stream_chunk entries target the hub
+			const app = createSyncRoutes(
+				db,
+				hubSiteId, // This hub is also the siteId
+				keyring,
+				createMockEventBus(),
+				createMockLogger(),
+				undefined,
+				undefined, // no hubSiteId param — this IS the hub
+			);
+
+			const chunkOutboxId = "outbox-chunk-001"; // spoke's outbox entry ID
+			const streamId = "stream-test-dedup";
+
+			// First delivery: spoke sends stream_chunk targeting the hub
+			const relayRequest1 = {
+				relay_outbox: [
+					{
+						id: chunkOutboxId,
+						source_site_id: spokeSiteId,
+						target_site_id: hubSiteId,
+						kind: "stream_chunk",
+						ref_id: null,
+						idempotency_key: null,
+						stream_id: streamId,
+						payload: JSON.stringify({ seq: 0, chunks: [{ type: "text", content: "hello" }] }),
+						created_at: new Date().toISOString(),
+						expires_at: new Date(Date.now() + 60_000).toISOString(),
+						delivered: 0,
+					},
+				],
+			};
+
+			const body1 = JSON.stringify(relayRequest1);
+			const headers1 = await signRequest(spokePrivateKey, spokeSiteId, "POST", "/sync/relay", body1);
+
+			const response1 = await app.request("/sync/relay", {
+				method: "POST",
+				headers: { "Content-Type": "application/json", ...headers1 },
+				body: body1,
+			});
+
+			expect(response1.status).toBe(200);
+			const result1 = (await response1.json()) as { relay_delivered: string[] };
+			expect(result1.relay_delivered).toContain(chunkOutboxId);
+
+			// Verify entry was inserted
+			const inserted = db
+				.query("SELECT id, payload FROM relay_inbox WHERE stream_id = ?")
+				.all(streamId) as Array<{ id: string; payload: string }>;
+			expect(inserted.length).toBe(1);
+			expect(inserted[0].id).toBe(chunkOutboxId); // Uses original outbox entry ID
+
+			// Second delivery: spoke retransmits the same entry (sync response was lost)
+			const body2 = JSON.stringify(relayRequest1);
+			const headers2 = await signRequest(spokePrivateKey, spokeSiteId, "POST", "/sync/relay", body2);
+
+			const response2 = await app.request("/sync/relay", {
+				method: "POST",
+				headers: { "Content-Type": "application/json", ...headers2 },
+				body: body2,
+			});
+
+			expect(response2.status).toBe(200);
+			const result2 = (await response2.json()) as { relay_delivered: string[] };
+			// Entry should still be in relay_delivered (spoke needs confirmation)
+			expect(result2.relay_delivered).toContain(chunkOutboxId);
+
+			// Verify NO duplicate was created
+			const afterRetransmit = db
+				.query("SELECT id FROM relay_inbox WHERE stream_id = ?")
+				.all(streamId) as Array<{ id: string }>;
+			expect(afterRetransmit.length).toBe(1);
 		});
 	});
 });
