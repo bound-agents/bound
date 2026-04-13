@@ -17,6 +17,8 @@ export interface RelayResponse {
 	relay_inbox: RelayInboxEntry[];
 	relay_delivered: string[];
 	relay_draining: boolean;
+	/** True when the hub has additional pending relay entries for this spoke. */
+	relay_pending?: boolean;
 }
 
 export function fetchOutboundChangeset(

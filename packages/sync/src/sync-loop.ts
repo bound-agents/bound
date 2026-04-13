@@ -31,6 +31,8 @@ export interface RelayResult {
 	sent: number;
 	received: number;
 	draining: boolean;
+	/** Hub signaled that more relay entries are pending for this spoke. */
+	pending: boolean;
 }
 
 export interface SyncResult {
@@ -513,6 +515,7 @@ export class SyncClient {
 				sent: entriesToSend.length,
 				received,
 				draining: relayResponse.relay_draining,
+				pending: relayResponse.relay_pending ?? false,
 			});
 		} catch (error) {
 			const message = formatError(error);
@@ -534,11 +537,15 @@ export function startSyncLoop(
 	let consecutiveFailures = 0;
 	const maxIntervalMs = 5 * 60 * 1000; // 5 minutes per spec §8.6
 
+	// When relay activity is detected, use a tight interval for fast relay exchange.
+	const RELAY_FAST_INTERVAL_MS = 1_000;
+
 	const scheduleNext = async () => {
 		if (stopped) return;
 
 		const result = await client.syncCycle();
 
+		let useRelayFastInterval = false;
 		if (!result.ok) {
 			consecutiveFailures++;
 			// Log sync failures — syncCycle returns Result.err without logging
@@ -551,12 +558,21 @@ export function startSyncLoop(
 				console.log(`[sync] Cycle recovered after ${consecutiveFailures} failure(s)`);
 			}
 			consecutiveFailures = 0;
+
+			// Re-sync quickly when relay entries were received (need to deliver
+			// responses promptly) or the hub flagged more entries pending.
+			const relay = result.value.relay;
+			if (relay && (relay.received > 0 || relay.pending)) {
+				useRelayFastInterval = true;
+			}
 		}
 
 		// Calculate backoff: min(initialInterval * 2^failures, 300000ms)
 		const baseIntervalMs = intervalSeconds * 1000;
 		const backoffMultiplier = 2 ** consecutiveFailures;
-		const nextIntervalMs = Math.min(baseIntervalMs * backoffMultiplier, maxIntervalMs);
+		const normalIntervalMs = Math.min(baseIntervalMs * backoffMultiplier, maxIntervalMs);
+
+		const nextIntervalMs = useRelayFastInterval ? RELAY_FAST_INTERVAL_MS : normalIntervalMs;
 
 		// Use setTimeout recursion instead of setInterval to support dynamic intervals
 		timerId = setTimeout(scheduleNext, nextIntervalMs);

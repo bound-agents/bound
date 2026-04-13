@@ -270,10 +270,16 @@ export function createSyncRoutes(
 				.query("SELECT value FROM host_meta WHERE key = ?")
 				.get("relay_draining") as { value: string } | null;
 
+			// Check if hub has more pending relay entries for this spoke.
+			// This can happen when new entries arrive between the readUndelivered
+			// call above and now (e.g., from concurrent agent loops or relay routing).
+			const stillPending = readUndelivered(db, requesterSiteId);
+
 			const response: RelayResponse = {
 				relay_inbox: inboxForRequester,
 				relay_delivered: deliveredIds,
 				relay_draining: drainState?.value === "true",
+				relay_pending: stillPending.length > 0,
 			};
 
 			return c.json(response);
