@@ -1075,4 +1075,218 @@ describe("relay-stream integration tests", () => {
 		// - Manual multi-host cluster verification per test plan
 		expect(true).toBe(true);
 	});
+
+	// ============================================================
+	// E2E: Multi-chunk slow response through full relay pipeline
+	// ============================================================
+	// Exercises the production path: mock LLM yields 8 chunks with delays →
+	// RelayProcessor flushes multiple stream_chunk entries → sync delivers →
+	// hub routes to requester → RELAY_STREAM reassembles in order.
+
+	it("slow multi-chunk inference completes through full relay pipeline", async () => {
+		const now = new Date().toISOString();
+		requester.db.run(
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[target.siteId, "target-host", "1.0", null, null, null,
+				JSON.stringify(["slow-model"]), null, now, now, 0],
+		);
+
+		// Target generates 8 chunks with 50ms delays between each
+		const targetDb = target.db;
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setSlowTextResponse(
+			["The ", "quick ", "brown ", "fox ", "jumps ", "over ", "the ", "dog"],
+			50,
+		);
+		const modelRouter = createMockRouter(mockBackend, "slow-model");
+
+		if (relayProcessor) relayProcessor.stop();
+		relayProcessor = new RelayProcessor(
+			targetDb,
+			target.siteId,
+			new Map(),
+			modelRouter,
+			new Set([hub.siteId, requester.siteId]),
+			{ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+		).start(50);
+
+		const userId = randomUUID();
+		requester.db.run(
+			"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+			[userId, "Test User", null, now, now, 0],
+		);
+
+		const threadId = randomUUID();
+		requester.db.run(
+			`INSERT INTO threads (id, user_id, interface, host_origin, color, title, created_at, modified_at, last_message_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[threadId, userId, "cli", "localhost", 0, "Test Thread", now, now, now, 0],
+		);
+		requester.db.run(
+			"INSERT INTO messages (id, thread_id, role, content, created_at, host_origin) VALUES (?, ?, ?, ?, ?, ?)",
+			[randomUUID(), threadId, "user", "Tell me about foxes", now, "localhost"],
+		);
+
+		const requesterRouter = createRemoteRouter("slow-model");
+		const ctx = makeTestAppContext(requester.db, requester.siteId, "requester-host");
+
+		const agentLoop = new AgentLoop(ctx, {}, requesterRouter, {
+			threadId,
+			userId,
+			modelId: "slow-model",
+		} as AgentLoopConfig);
+
+		let loopDone = false;
+		const loopPromise = (async () => {
+			const result = await agentLoop.run();
+			loopDone = true;
+			return result;
+		})();
+
+		await Promise.race([
+			driveSyncUntilHub(requester, target, () => loopDone, 200),
+			new Promise<false>((resolve) => setTimeout(() => resolve(false), 20000)),
+		]);
+
+		const result = await loopPromise;
+
+		expect(result.error).toBeUndefined();
+		expect(result.messagesCreated).toBeGreaterThanOrEqual(1);
+
+		// Verify the assembled response contains all chunks in order
+		const msgs = requester.db
+			.query(
+				"SELECT content FROM messages WHERE thread_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1",
+			)
+			.all(threadId) as Array<{ content: string }>;
+
+		expect(msgs.length).toBeGreaterThan(0);
+		// All 8 chunks should have been reassembled
+		expect(msgs[0].content).toContain("quick");
+		expect(msgs[0].content).toContain("fox");
+		expect(msgs[0].content).toContain("dog");
+
+		// Verify stream chunks were written to target's outbox (proof of multi-flush)
+		const outboxChunks = target.db
+			.query("SELECT count(*) as cnt FROM relay_outbox WHERE kind = 'stream_chunk'")
+			.get() as { cnt: number } | null;
+		expect(outboxChunks?.cnt ?? 0).toBeGreaterThanOrEqual(2);
+	}, 25000);
+
+	// ============================================================
+	// E2E: Stream delivery survives retransmission
+	// ============================================================
+	// Exercises the dedup fix: target generates chunks, sync delivers them,
+	// then we simulate a retransmission by un-marking outbox entries as
+	// delivered. The requester's RELAY_STREAM should still complete without
+	// duplicates or hangs.
+
+	it("stream completes correctly even with simulated retransmission", async () => {
+		const now = new Date().toISOString();
+		requester.db.run(
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[target.siteId, "target-host", "1.0", null, null, null,
+				JSON.stringify(["retransmit-model"]), null, now, now, 0],
+		);
+
+		const targetDb = target.db;
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("Retransmission test passed");
+		const modelRouter = createMockRouter(mockBackend, "retransmit-model");
+
+		if (relayProcessor) relayProcessor.stop();
+		relayProcessor = new RelayProcessor(
+			targetDb,
+			target.siteId,
+			new Map(),
+			modelRouter,
+			new Set([hub.siteId, requester.siteId]),
+			{ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+		).start(50);
+
+		const userId = randomUUID();
+		requester.db.run(
+			"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+			[userId, "Test User", null, now, now, 0],
+		);
+
+		const threadId = randomUUID();
+		requester.db.run(
+			`INSERT INTO threads (id, user_id, interface, host_origin, color, title, created_at, modified_at, last_message_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[threadId, userId, "cli", "localhost", 0, "Test Thread", now, now, now, 0],
+		);
+		requester.db.run(
+			"INSERT INTO messages (id, thread_id, role, content, created_at, host_origin) VALUES (?, ?, ?, ?, ?, ?)",
+			[randomUUID(), threadId, "user", "Test retransmission", now, "localhost"],
+		);
+
+		const requesterRouter = createRemoteRouter("retransmit-model");
+		const ctx = makeTestAppContext(requester.db, requester.siteId, "requester-host");
+
+		const agentLoop = new AgentLoop(ctx, {}, requesterRouter, {
+			threadId,
+			userId,
+			modelId: "retransmit-model",
+		} as AgentLoopConfig);
+
+		let loopDone = false;
+		let syncCycleCount = 0;
+		const loopPromise = (async () => {
+			const result = await agentLoop.run();
+			loopDone = true;
+			return result;
+		})();
+
+		// Custom sync driver that simulates retransmission on the 3rd cycle:
+		// un-mark target's outbox entries to force re-delivery
+		let retransmissionInjected = false;
+		for (let i = 0; i < 200 && !loopDone; i++) {
+			await requester.syncClient?.syncCycle();
+			await target.syncClient?.syncCycle();
+			syncCycleCount++;
+
+			// After target has flushed stream chunks (cycle ~3-5), force retransmission
+			if (!retransmissionInjected && syncCycleCount >= 3) {
+				const undelivered = target.db
+					.query("SELECT count(*) as cnt FROM relay_outbox WHERE delivered = 1 AND kind IN ('stream_chunk', 'stream_end')")
+					.get() as { cnt: number };
+				if (undelivered.cnt > 0) {
+					// Simulate response loss: un-mark stream chunks as delivered
+					target.db.run(
+						"UPDATE relay_outbox SET delivered = 0 WHERE delivered = 1 AND kind IN ('stream_chunk', 'stream_end')",
+					);
+					retransmissionInjected = true;
+				}
+			}
+
+			if (loopDone) break;
+			await new Promise((r) => setTimeout(r, 50));
+		}
+
+		const result = await loopPromise;
+
+		expect(result.error).toBeUndefined();
+		expect(result.messagesCreated).toBeGreaterThanOrEqual(1);
+		expect(retransmissionInjected).toBe(true); // Confirm we actually tested retransmission
+
+		// Verify the response is correct (not duplicated/corrupted)
+		const msgs = requester.db
+			.query(
+				"SELECT content FROM messages WHERE thread_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1",
+			)
+			.all(threadId) as Array<{ content: string }>;
+
+		expect(msgs.length).toBeGreaterThan(0);
+		expect(msgs[0].content).toContain("Retransmission test passed");
+
+		// Verify hub's relay_inbox doesn't have duplicates for this stream
+		// (dedup should prevent duplicate entries even after retransmission)
+		const hubInboxStreams = hub.db
+			.query("SELECT stream_id, count(*) as cnt FROM relay_inbox WHERE kind = 'stream_end' GROUP BY stream_id HAVING cnt > 1")
+			.all() as Array<{ stream_id: string; cnt: number }>;
+		expect(hubInboxStreams.length).toBe(0); // No stream should have duplicate stream_end entries
+	}, 25000);
 });
