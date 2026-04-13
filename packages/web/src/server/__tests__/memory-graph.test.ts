@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
-import { applySchema, createDatabase } from "@bound/core";
 import { randomUUID } from "node:crypto";
+import { applySchema, createDatabase } from "@bound/core";
 import type { Hono } from "hono";
 import { createMemoryRoutes } from "../routes/memory";
 
