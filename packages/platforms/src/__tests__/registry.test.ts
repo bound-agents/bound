@@ -192,7 +192,7 @@ describe("PlatformConnectorRegistry", () => {
 			eventBus.emit("platform:deliver", payload);
 
 			// Give event handler time to process
-			await new Promise((resolve) => setTimeout(resolve, 50));
+			await new Promise((resolve) => setTimeout(resolve, 10));
 
 			// Verify the mock's deliver() was called with correct arguments (AC5.5)
 			expect(mockConnector.deliverCalls.length).toBe(1);
@@ -220,7 +220,7 @@ describe("PlatformConnectorRegistry", () => {
 			registry.start();
 
 			// Give leader election time to complete
-			await new Promise((resolve) => setTimeout(resolve, 150));
+			await new Promise((resolve) => setTimeout(resolve, 30));
 
 			// Emit a deliver event for a different platform
 			const payload: PlatformDeliverPayload = {
@@ -299,7 +299,7 @@ describe("PlatformConnectorRegistry", () => {
 			const registry = new PlatformConnectorRegistry(mockAppContext, platformsConfig);
 			registry.start();
 
-			await new Promise((resolve) => setTimeout(resolve, 150));
+			await new Promise((resolve) => setTimeout(resolve, 30));
 
 			registry.stop();
 		});
@@ -320,7 +320,7 @@ describe("PlatformConnectorRegistry", () => {
 			const registry = new PlatformConnectorRegistry(mockAppContext, platformsConfig);
 			registry.start();
 
-			await new Promise((resolve) => setTimeout(resolve, 150));
+			await new Promise((resolve) => setTimeout(resolve, 30));
 
 			// Emit webhook event
 			const payload = {
@@ -332,7 +332,7 @@ describe("PlatformConnectorRegistry", () => {
 			// Should not throw
 			eventBus.emit("platform:webhook", payload);
 
-			await new Promise((resolve) => setTimeout(resolve, 50));
+			await new Promise((resolve) => setTimeout(resolve, 10));
 
 			registry.stop();
 		});
@@ -400,7 +400,7 @@ describe("PlatformConnectorRegistry", () => {
 			registry.start();
 
 			// Wait for leader election
-			await new Promise((resolve) => setTimeout(resolve, 150));
+			await new Promise((resolve) => setTimeout(resolve, 30));
 
 			// Verify getConnector returns DiscordConnector for "discord"
 			const dmConnector = registry.getConnector("discord");
@@ -627,7 +627,7 @@ describe("PlatformConnectorRegistry", () => {
 			registry.start();
 
 			// Wait for leader election and initialization
-			await new Promise((resolve) => setTimeout(resolve, 150));
+			await new Promise((resolve) => setTimeout(resolve, 30));
 
 			// Get connectors after they've been created
 			const dmConnector = registry.getConnector("discord");
@@ -665,7 +665,7 @@ describe("PlatformConnectorRegistry", () => {
 				content: "Test DM",
 			};
 			eventBus.emit("platform:deliver", payload);
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			await new Promise((resolve) => setTimeout(resolve, 20));
 
 			// Verify DM connector received the call
 			expect(dmDeliverCalls.length).toBe(1);
@@ -690,7 +690,7 @@ describe("PlatformConnectorRegistry", () => {
 			registry.start();
 
 			// Wait for leader election and initialization
-			await new Promise((resolve) => setTimeout(resolve, 150));
+			await new Promise((resolve) => setTimeout(resolve, 30));
 
 			// Get connectors after they've been created
 			const dmConnector = registry.getConnector("discord");
@@ -728,7 +728,7 @@ describe("PlatformConnectorRegistry", () => {
 				content: "Test Interaction",
 			};
 			eventBus.emit("platform:deliver", payload);
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			await new Promise((resolve) => setTimeout(resolve, 20));
 
 			// Verify interaction connector received the call
 			expect(interactionDeliverCalls.length).toBe(1);
@@ -753,7 +753,7 @@ describe("PlatformConnectorRegistry", () => {
 			registry.start();
 
 			// Wait for leader election
-			await new Promise((resolve) => setTimeout(resolve, 150));
+			await new Promise((resolve) => setTimeout(resolve, 30));
 
 			// Get both connectors
 			const dmConnector = registry.getConnector("discord");

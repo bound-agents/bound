@@ -31,7 +31,7 @@ function extractCronExpression(triggerSpec: string): string {
 const EVICTION_TIMEOUT = 300_000; // 5 minutes
 const CRON_THREAD_ROTATION_THRESHOLD = 200;
 const DEFERRED_MAX_RETRIES = 2;
-const DEFERRED_RETRY_BACKOFF_MS = 5_000; // 5 seconds per consecutive failure
+const DEFERRED_RETRY_BACKOFF_MS_DEFAULT = 5_000; // 5 seconds per consecutive failure
 
 /**
  * Reschedules a cron task to its next run time and resets status to 'pending'.
@@ -69,11 +69,12 @@ function retryDeferredTask(
 	task: Task,
 	consecutiveFailures: number,
 	logger: AppContext["logger"],
+	retryBackoffMs: number = DEFERRED_RETRY_BACKOFF_MS_DEFAULT,
 ): boolean {
 	if (task.type !== "deferred") return false;
 	if (consecutiveFailures >= DEFERRED_MAX_RETRIES) return false;
 	try {
-		const backoffMs = DEFERRED_RETRY_BACKOFF_MS * consecutiveFailures;
+		const backoffMs = retryBackoffMs * consecutiveFailures;
 		const nextRunAt = new Date(Date.now() + backoffMs).toISOString();
 		db.query(
 			"UPDATE tasks SET status = 'pending', next_run_at = ?, claimed_by = NULL, claimed_at = NULL, lease_id = NULL WHERE id = ?",
@@ -202,6 +203,10 @@ interface SchedulerConfig {
 	 * Called with the thread ID; fire-and-forget (errors are logged, not propagated).
 	 */
 	generateTitle?: (threadId: string) => Promise<void>;
+	/** Override deferred retry backoff (default 5000ms). Useful for tests. */
+	retryBackoffMs?: number;
+	/** Override base poll interval for getEffectivePollInterval (default 5000ms). Useful for tests. */
+	basePollIntervalMs?: number;
 }
 
 export class Scheduler {
@@ -759,7 +764,13 @@ export class Scheduler {
 								"model validation failure",
 								this.lastUserInteractionAt,
 							);
-							retryDeferredTask(this.ctx.db, task, newConsecutiveFailures, this.ctx.logger);
+							retryDeferredTask(
+								this.ctx.db,
+								task,
+								newConsecutiveFailures,
+								this.ctx.logger,
+								this.config.retryBackoffMs,
+							);
 						}
 						return; // exit runTask — agent loop is not created
 					}
@@ -820,7 +831,13 @@ export class Scheduler {
 							"soft error",
 							this.lastUserInteractionAt,
 						);
-						retryDeferredTask(this.ctx.db, task, newConsecutiveFailures, this.ctx.logger);
+						retryDeferredTask(
+							this.ctx.db,
+							task,
+							newConsecutiveFailures,
+							this.ctx.logger,
+							this.config.retryBackoffMs,
+						);
 					} else {
 						this.ctx.logger.info("[scheduler] Task completed", {
 							taskId: task.id,
@@ -925,7 +942,13 @@ export class Scheduler {
 						"hard error",
 						this.lastUserInteractionAt,
 					);
-					retryDeferredTask(this.ctx.db, task, newConsecutiveFailures, this.ctx.logger);
+					retryDeferredTask(
+						this.ctx.db,
+						task,
+						newConsecutiveFailures,
+						this.ctx.logger,
+						this.config.retryBackoffMs,
+					);
 				}
 			} finally {
 				this.runningTasks.delete(task.id);
@@ -1107,6 +1130,8 @@ export class Scheduler {
 
 	// Get current quiescence-adjusted poll interval using 4-tier graduated table
 	getEffectivePollInterval(): number {
+		const baseInterval = this.config.basePollIntervalMs ?? POLL_INTERVAL;
+
 		// Check if any pending tasks have no_quiescence set
 		const noQuiescenceTasks = this.ctx.db
 			.query("SELECT COUNT(*) as count FROM tasks WHERE status = 'pending' AND no_quiescence = 1")
@@ -1114,12 +1139,12 @@ export class Scheduler {
 
 		// If any task requires immediate attention, use base interval
 		if (noQuiescenceTasks && noQuiescenceTasks.count > 0) {
-			return POLL_INTERVAL;
+			return baseInterval;
 		}
 
 		// Compute quiescence multiplier using the shared helper
 		const multiplier = computeQuiescenceMultiplier(this.lastUserInteractionAt);
 
-		return POLL_INTERVAL * multiplier;
+		return baseInterval * multiplier;
 	}
 }

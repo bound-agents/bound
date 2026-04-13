@@ -249,10 +249,10 @@ describe("Scheduler features", () => {
 
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, factory as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 
 			// Budget exceeded — task should stay pending; wait enough cycles to confirm
-			await sleep(300);
+			await sleep(50);
 			stop();
 
 			// The task should NOT have been run because the budget was exceeded.
@@ -315,7 +315,7 @@ describe("Scheduler features", () => {
 			const ctx = makeCtx();
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, softErrorFactory as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 
 			await waitFor(
 				() =>
@@ -381,7 +381,7 @@ describe("Scheduler features", () => {
 			const ctx = makeCtx();
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeFailingAgentLoopFactory() as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 
 			await waitFor(
 				() =>
@@ -478,7 +478,7 @@ describe("Scheduler features", () => {
 			const ctx = makeCtx();
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, softErrorFactory() as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 			await waitFor(
 				() =>
 					((
@@ -505,7 +505,7 @@ describe("Scheduler features", () => {
 			const ctx = makeCtx();
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, softErrorFactory() as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 			await waitFor(
 				() =>
 					(
@@ -534,7 +534,7 @@ describe("Scheduler features", () => {
 			const ctx = makeCtx();
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeFailingAgentLoopFactory() as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 			await waitFor(
 				() =>
 					(
@@ -562,7 +562,7 @@ describe("Scheduler features", () => {
 			const ctx = makeCtx();
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, softErrorFactory() as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 			await waitFor(
 				() =>
 					((
@@ -604,7 +604,7 @@ describe("Scheduler features", () => {
 			const ctx = makeCtx();
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, factory as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 			await waitFor(
 				() =>
 					((
@@ -640,7 +640,7 @@ describe("Scheduler features", () => {
 			const ctx = makeCtx();
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 			await waitFor(
 				() =>
 					(
@@ -735,7 +735,7 @@ describe("Scheduler features", () => {
 
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, agentLoopFactory as any, {}, sandbox);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 			await waitFor(() => execCalls.length > 0, { message: "cron template not executed" });
 			stop();
 
@@ -793,7 +793,7 @@ describe("Scheduler features", () => {
 			const ctx = makeCtx();
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, factory as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 
 			await waitFor(() => capturedThreadId !== undefined, {
 				message: "agent loop factory not called with threadId",
@@ -856,7 +856,7 @@ describe("Scheduler features", () => {
 			const ctx = makeCtx();
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, factory as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 
 			await waitFor(() => capturedThreadId !== undefined, {
 				message: "agent loop factory not called with threadId",
@@ -929,7 +929,7 @@ describe("Scheduler features", () => {
 			const ctx = makeCtx();
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, factory as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 
 			await waitFor(() => messagesAtRunTime > 0, {
 				message: "payload not injected before agent loop",
@@ -1008,7 +1008,7 @@ describe("Scheduler features", () => {
 			const ctx = makeCtx();
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeFailingAgentLoopFactory() as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 
 			// Wait for the task to be processed (it will throw, then should reschedule)
 			await waitFor(
@@ -1087,7 +1087,7 @@ describe("Scheduler features", () => {
 					}),
 				},
 			);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 
 			// Wait for the task to be processed — should reschedule despite model failure
 			await waitFor(
@@ -1177,7 +1177,7 @@ describe("Scheduler features", () => {
 				{},
 				failingSandbox,
 			);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 
 			await waitFor(
 				() => {
@@ -1243,7 +1243,7 @@ describe("Scheduler features", () => {
 			const ctx = makeCtx();
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 
 			await waitFor(
 				() =>
@@ -1338,7 +1338,7 @@ describe("Scheduler features", () => {
 					}),
 				},
 			);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 			await waitFor(
 				() =>
 					(
@@ -1390,7 +1390,7 @@ describe("Scheduler features", () => {
 					modelValidator: (_modelId: string) => ({ ok: true }),
 				},
 			);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 			await waitFor(() => agentLoopCalled, { message: "agent loop not called" });
 			stop();
 
@@ -1455,7 +1455,7 @@ describe("Scheduler features", () => {
 					}),
 				},
 			);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 			await waitFor(() => agentLoopCalled, { message: "agent loop not called" });
 			stop();
 
@@ -1573,7 +1573,7 @@ describe("Scheduler features", () => {
 			const ctx = makeCtx();
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 
 			await waitFor(
 				() =>
@@ -1644,7 +1644,7 @@ describe("Scheduler features", () => {
 					titleGenCalls.push(threadId);
 				},
 			});
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 
 			await waitFor(
 				() =>
@@ -1727,7 +1727,7 @@ describe("Scheduler features", () => {
 			const ctx = makeCtx();
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, factory as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 
 			await waitFor(() => capturedConfig !== null, {
 				message: "agent loop factory not called",
@@ -1806,7 +1806,7 @@ describe("Scheduler features", () => {
 			const ctx = makeCtx();
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, factory as any);
-			const { stop } = scheduler.start(50);
+			const { stop } = scheduler.start(10);
 
 			await waitFor(() => capturedConfig !== null, {
 				message: "agent loop factory not called",

@@ -303,7 +303,7 @@ describe("relay transport E2E integration tests", () => {
 			});
 
 			// Give eager push a moment to attempt delivery
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await new Promise((resolve) => setTimeout(resolve, 50));
 
 			// Spoke should have received via eager push (even before sync)
 			const inboxBefore = readUnprocessed(spoke.db);

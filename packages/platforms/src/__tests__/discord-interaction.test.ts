@@ -892,7 +892,7 @@ describe("DiscordInteractionConnector", () => {
 				await connector.connect();
 				await onInteractionCreateHandlers[0]?.(mockInteraction);
 				// The handler is fire-and-forget; flush microtasks so fetch completes
-				await new Promise((r) => setTimeout(r, 50));
+				await new Promise((r) => setTimeout(r, 10));
 
 				// Should NOT have rejected with "no extractable content"
 				const errorReply = editReplyCalls.find((c) => c.content.includes("no extractable content"));
@@ -1245,7 +1245,7 @@ describe("DiscordInteractionConnector", () => {
 
 				await connector.connect();
 				await onInteractionCreateHandlers[0]?.(mockInteraction);
-				await new Promise((r) => setTimeout(r, 50));
+				await new Promise((r) => setTimeout(r, 10));
 
 				const messages = db.query("SELECT * FROM messages WHERE role = 'user'").all() as unknown[];
 				expect(messages.length).toBe(1);
@@ -1641,7 +1641,7 @@ describe("DiscordInteractionConnector", () => {
 				eventBus,
 				mockLogger,
 				createMockClientManagerWithClient(mockClient),
-				1000, // 1 second timeout for testing
+				200, // 200ms timeout for testing
 			);
 
 			await connector.connect();
@@ -1680,7 +1680,7 @@ describe("DiscordInteractionConnector", () => {
 					if (editReplyCalls.length > 0) {
 						resolve();
 					} else {
-						setTimeout(checkEditReply, 50);
+						setTimeout(checkEditReply, 10);
 					}
 				};
 				checkEditReply();
@@ -1701,7 +1701,7 @@ describe("DiscordInteractionConnector", () => {
 				eventBus,
 				mockLogger,
 				createMockClientManagerWithClient(mockClient),
-				2000, // 2 second timeout for testing
+				1000, // 1s timeout for testing
 			);
 
 			await connector.connect();
@@ -1715,7 +1715,7 @@ describe("DiscordInteractionConnector", () => {
 			}>;
 			const threadId = threads[0].id;
 
-			// Simulate delayed response insertion (600ms delay)
+			// Simulate delayed response insertion (200ms delay)
 			setTimeout(() => {
 				const responseTime = new Date().toISOString();
 				db.run(
@@ -1733,7 +1733,7 @@ describe("DiscordInteractionConnector", () => {
 						0,
 					],
 				);
-			}, 600);
+			}, 200);
 
 			// Wait for polling to complete
 			await new Promise<void>((resolve) => {
@@ -1741,7 +1741,7 @@ describe("DiscordInteractionConnector", () => {
 					if (editReplyCalls.length > 0) {
 						resolve();
 					} else {
-						setTimeout(checkEditReply, 50);
+						setTimeout(checkEditReply, 10);
 					}
 				};
 				checkEditReply();
@@ -1762,7 +1762,7 @@ describe("DiscordInteractionConnector", () => {
 				eventBus,
 				mockLogger,
 				createMockClientManagerWithClient(mockClient),
-				500, // 500ms timeout for testing
+				300, // 300ms timeout for testing
 			);
 
 			await connector.connect();
@@ -1774,7 +1774,7 @@ describe("DiscordInteractionConnector", () => {
 
 			// Wait for timeout to occur (poll timeout + some buffer)
 			await new Promise<void>((resolve) => {
-				setTimeout(() => resolve(), 1000);
+				setTimeout(() => resolve(), 600);
 			});
 
 			// Should have called editReply with timeout message
@@ -1795,7 +1795,7 @@ describe("DiscordInteractionConnector", () => {
 				eventBus,
 				mockLogger,
 				createMockClientManagerWithClient(mockClient),
-				1000, // 1 second timeout
+				200, // 200ms timeout
 			);
 
 			await connector.connect();
@@ -1834,7 +1834,7 @@ describe("DiscordInteractionConnector", () => {
 					if (editReplyCalls.length > 0) {
 						resolve();
 					} else {
-						setTimeout(checkEditReply, 50);
+						setTimeout(checkEditReply, 10);
 					}
 				};
 				checkEditReply();

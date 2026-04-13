@@ -101,7 +101,7 @@ describe("Scheduler Integration", () => {
 
 		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
-		const { stop } = scheduler.start(100); // Fast poll for testing
+		const { stop } = scheduler.start(20); // Fast poll for testing
 
 		// Wait for scheduler to complete the task
 		await waitFor(
@@ -159,7 +159,7 @@ describe("Scheduler Integration", () => {
 
 		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
-		const { stop } = scheduler.start(100);
+		const { stop } = scheduler.start(20);
 
 		// Cron tasks complete fast and get rescheduled back to pending,
 		// so check run_count instead of status to detect completion.
@@ -257,7 +257,7 @@ describe("Scheduler Integration", () => {
 
 		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
-		const { stop } = scheduler.start(100);
+		const { stop } = scheduler.start(20);
 
 		await waitFor(
 			() =>
@@ -314,10 +314,10 @@ describe("Scheduler Integration", () => {
 
 		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
-		const { stop } = scheduler.start(100);
+		const { stop } = scheduler.start(20);
 
 		// Let a few ticks pass
-		await sleep(300);
+		await sleep(60);
 		stop();
 
 		const task = db.query("SELECT status, claimed_by FROM tasks WHERE id = ?").get(taskId) as {
@@ -363,10 +363,10 @@ describe("Scheduler Integration", () => {
 
 		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
-		const { stop } = scheduler.start(100);
+		const { stop } = scheduler.start(20);
 
 		// Host affinity mismatch — task stays pending; wait enough cycles to confirm
-		await sleep(300);
+		await sleep(60);
 		stop();
 
 		const task = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
@@ -420,7 +420,7 @@ describe("Scheduler Integration", () => {
 
 		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(localCtx as any, agentLoopFactory);
-		const { stop } = scheduler.start(100);
+		const { stop } = scheduler.start(20);
 
 		// Wait for the task to complete (run_count > 0 means it ran)
 		await waitFor(
@@ -487,7 +487,7 @@ describe("Scheduler Integration", () => {
 
 		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
-		const { stop } = scheduler.start(100);
+		const { stop } = scheduler.start(20);
 
 		// Wait for eviction to happen (phase0 runs every tick)
 		await waitFor(
@@ -565,7 +565,7 @@ describe("Scheduler Integration", () => {
 
 		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(localCtx as any, agentLoopFactory);
-		const { stop } = scheduler.start(100);
+		const { stop } = scheduler.start(20);
 
 		await waitFor(
 			() =>
@@ -598,6 +598,16 @@ describe("Scheduler Integration", () => {
 		const now = new Date();
 		const pastTime = new Date(now.getTime() - 60000).toISOString();
 		const nowStr = now.toISOString();
+
+		// Ensure operator user exists (scheduler creates threads referencing this user)
+		const operatorUserId = require("@bound/shared").deterministicUUID(
+			require("@bound/shared").BOUND_NAMESPACE,
+			"test",
+		);
+		db.exec(`
+			INSERT OR IGNORE INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted)
+			VALUES ('${operatorUserId}', 'Test Operator', NULL, '${nowStr}', '${nowStr}', 0)
+		`);
 
 		// Insert deferred task with 0 consecutive failures
 		db.exec(`
@@ -640,8 +650,11 @@ describe("Scheduler Integration", () => {
 		});
 
 		// biome-ignore lint/suspicious/noExplicitAny: test mock
-		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
-		const { stop } = scheduler.start(100);
+		const scheduler = new Scheduler(appContext as any, agentLoopFactory, {
+			retryBackoffMs: 50,
+			basePollIntervalMs: 20,
+		});
+		const { stop } = scheduler.start(20);
 
 		// Wait for the task to complete (should fail once, retry, then succeed)
 		await waitFor(
@@ -651,7 +664,7 @@ describe("Scheduler Integration", () => {
 						status: string;
 					} | null
 				)?.status === "completed",
-			{ message: "deferred task did not auto-retry and complete", timeoutMs: 15000 },
+			{ message: "deferred task did not auto-retry and complete", timeoutMs: 3000 },
 		);
 		stop();
 
@@ -669,7 +682,7 @@ describe("Scheduler Integration", () => {
 		expect(runCount).toBe(2);
 		// consecutive_failures resets to 0 on success
 		expect(finalTask?.consecutive_failures).toBe(0);
-	}, 20_000);
+	}, 5_000);
 
 	it("stops retrying deferred tasks after DEFERRED_MAX_RETRIES", async () => {
 		const taskId = randomUUID();
@@ -706,8 +719,11 @@ describe("Scheduler Integration", () => {
 		});
 
 		// biome-ignore lint/suspicious/noExplicitAny: test mock
-		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
-		const { stop } = scheduler.start(100);
+		const scheduler = new Scheduler(appContext as any, agentLoopFactory, {
+			retryBackoffMs: 50,
+			basePollIntervalMs: 20,
+		});
+		const { stop } = scheduler.start(20);
 
 		// Wait for the task to be marked as failed (should NOT retry since at max)
 		await waitFor(
@@ -719,7 +735,7 @@ describe("Scheduler Integration", () => {
 				// DEFERRED_MAX_RETRIES = 2, so it should stay failed
 				return t?.status === "failed" && t.consecutive_failures >= 2;
 			},
-			{ message: "task did not reach final failure state", timeoutMs: 10000 },
+			{ message: "task did not reach final failure state", timeoutMs: 3000 },
 		);
 		stop();
 
@@ -730,5 +746,5 @@ describe("Scheduler Integration", () => {
 		expect(finalTask).not.toBeNull();
 		expect(finalTask?.status).toBe("failed");
 		expect(finalTask?.consecutive_failures).toBe(2);
-	}, 20_000);
+	}, 5_000);
 });

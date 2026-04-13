@@ -47,7 +47,7 @@ describe("Host Heartbeat", () => {
 		const handle = startHostHeartbeat(db, siteId, { intervalMs: 30 });
 
 		// Wait for at least one tick
-		await new Promise((resolve) => setTimeout(resolve, 80));
+		await new Promise((resolve) => setTimeout(resolve, 40));
 
 		handle.stop();
 
@@ -63,7 +63,7 @@ describe("Host Heartbeat", () => {
 	it("creates change_log entries with full row data", async () => {
 		const handle = startHostHeartbeat(db, siteId, { intervalMs: 30 });
 
-		await new Promise((resolve) => setTimeout(resolve, 80));
+		await new Promise((resolve) => setTimeout(resolve, 40));
 
 		handle.stop();
 
@@ -86,7 +86,7 @@ describe("Host Heartbeat", () => {
 	it("stop() clears the timer and prevents further updates", async () => {
 		const handle = startHostHeartbeat(db, siteId, { intervalMs: 30 });
 
-		await new Promise((resolve) => setTimeout(resolve, 80));
+		await new Promise((resolve) => setTimeout(resolve, 40));
 		handle.stop();
 
 		const afterStop = db
@@ -95,7 +95,7 @@ describe("Host Heartbeat", () => {
 		const stoppedTime = new Date(afterStop?.modified_at ?? "").getTime();
 
 		// Wait another interval — should NOT update
-		await new Promise((resolve) => setTimeout(resolve, 80));
+		await new Promise((resolve) => setTimeout(resolve, 40));
 
 		const afterWait = db
 			.query<{ modified_at: string }, [string]>("SELECT modified_at FROM hosts WHERE site_id = ?")
@@ -112,7 +112,7 @@ describe("Host Heartbeat", () => {
 		db.run("DROP TABLE hosts");
 
 		// Wait for a tick — should not throw
-		await new Promise((resolve) => setTimeout(resolve, 80));
+		await new Promise((resolve) => setTimeout(resolve, 40));
 
 		// Should still be stoppable without error
 		expect(() => handle.stop()).not.toThrow();
@@ -122,7 +122,7 @@ describe("Host Heartbeat", () => {
 		const fakeSiteId = "nonexistent-site";
 		const handle = startHostHeartbeat(db, fakeSiteId, { intervalMs: 30 });
 
-		await new Promise((resolve) => setTimeout(resolve, 80));
+		await new Promise((resolve) => setTimeout(resolve, 40));
 
 		// No change_log entries for the fake site
 		const entries = db

@@ -120,8 +120,8 @@ describe("platform-connectors Phase 7 — intake pipeline integration", () => {
 		);
 
 		// Process one tick
-		const handle = hubProcessor.start(50);
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		const handle = hubProcessor.start(10);
+		await new Promise((resolve) => setTimeout(resolve, 50));
 		handle.stop();
 
 		// Verify intake was marked processed on hub

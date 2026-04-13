@@ -360,7 +360,7 @@ export async function createTestInstance(config: {
 			server.stop();
 			db.close();
 			// Give the port time to be released
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			await new Promise((resolve) => setTimeout(resolve, 10));
 			if (dir && existsSync(dir)) {
 				await cleanupTmpDir(dir);
 			}

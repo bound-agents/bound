@@ -117,7 +117,7 @@ async function driveSyncUntilHub(
 		await target.syncClient?.syncCycle();
 		if (predicate()) return true;
 		// Give background tasks time to process
-		await new Promise((r) => setTimeout(r, 50));
+		await new Promise((r) => setTimeout(r, 10));
 	}
 	return false;
 }
@@ -286,7 +286,7 @@ describe("relay-stream integration tests", () => {
 		await requester.cleanup();
 		await hub.cleanup();
 		// Give ports time to be released
-		await new Promise((r) => setTimeout(r, 500));
+		await new Promise((r) => setTimeout(r, 50));
 	});
 
 	// ============================================================
@@ -393,7 +393,7 @@ describe("relay-stream integration tests", () => {
 		// Drive sync until loop completes or timeout
 		await Promise.race([
 			driveSyncUntilHub(requester, target, () => loopDone, 100),
-			new Promise<false>((resolve) => setTimeout(() => resolve(false), 15000)),
+			new Promise<false>((resolve) => setTimeout(() => resolve(false), 3000)),
 		]);
 
 		const result = await loopPromise;
@@ -534,7 +534,7 @@ describe("relay-stream integration tests", () => {
 				},
 				100,
 			),
-			new Promise<false>((resolve) => setTimeout(() => resolve(false), 10000)),
+			new Promise<false>((resolve) => setTimeout(() => resolve(false), 3000)),
 		]);
 
 		const result = await loopPromise;
@@ -597,7 +597,7 @@ describe("relay-stream integration tests", () => {
 		);
 
 		// Wait for RelayProcessor to process it
-		await new Promise((r) => setTimeout(r, 100));
+		await new Promise((r) => setTimeout(r, 80));
 
 		// Verify error response was written to outbox
 		const outboxEntries = target.db
@@ -653,7 +653,7 @@ describe("relay-stream integration tests", () => {
 
 		// Manually call RelayProcessor.processPendingEntries via the relay processor's tick
 		// Wait a bit for the RelayProcessor to process it
-		await new Promise((r) => setTimeout(r, 100));
+		await new Promise((r) => setTimeout(r, 80));
 
 		// Verify no stream_chunk in target's outbox
 		const outboxEntries = target.db
@@ -722,9 +722,9 @@ describe("relay-stream integration tests", () => {
 						clearInterval(interval);
 						resolve(true);
 					}
-				}, 50);
+				}, 10);
 			}),
-			new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5000)),
+			new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000)),
 		]);
 
 		const result = await loopPromise;
@@ -862,7 +862,7 @@ describe("relay-stream integration tests", () => {
 		// Drive sync while loops run
 		await Promise.race([
 			driveSyncUntilHub(requester, target, () => allDone, 100),
-			new Promise<false>((resolve) => setTimeout(() => resolve(false), 15000)),
+			new Promise<false>((resolve) => setTimeout(() => resolve(false), 3000)),
 		]);
 
 		const results = await allLoopsPromise;
@@ -1001,7 +1001,7 @@ describe("relay-stream integration tests", () => {
 		// Drive sync with more cycles since large prompt test is slower
 		const syncCompleted = await Promise.race([
 			driveSyncUntilHub(requester, target, () => loopDone, 150),
-			new Promise<false>((resolve) => setTimeout(() => resolve(false), 20000)),
+			new Promise<false>((resolve) => setTimeout(() => resolve(false), 8000)),
 		]);
 
 		if (!syncCompleted && !loopDone) {
@@ -1157,7 +1157,7 @@ describe("relay-stream integration tests", () => {
 
 		await Promise.race([
 			driveSyncUntilHub(requester, target, () => loopDone, 200),
-			new Promise<false>((resolve) => setTimeout(() => resolve(false), 20000)),
+			new Promise<false>((resolve) => setTimeout(() => resolve(false), 8000)),
 		]);
 
 		const result = await loopPromise;
@@ -1183,7 +1183,7 @@ describe("relay-stream integration tests", () => {
 			.query("SELECT count(*) as cnt FROM relay_outbox WHERE kind = 'stream_chunk'")
 			.get() as { cnt: number } | null;
 		expect(outboxChunks?.cnt ?? 0).toBeGreaterThanOrEqual(2);
-	}, 25000);
+	}, 10000);
 
 	// ============================================================
 	// E2E: Stream delivery survives retransmission
@@ -1265,7 +1265,7 @@ describe("relay-stream integration tests", () => {
 		// Custom sync driver that simulates retransmission on the 3rd cycle:
 		// un-mark target's outbox entries to force re-delivery
 		let retransmissionInjected = false;
-		for (let i = 0; i < 200 && !loopDone; i++) {
+		for (let i = 0; i < 100 && !loopDone; i++) {
 			await requester.syncClient?.syncCycle();
 			await target.syncClient?.syncCycle();
 			syncCycleCount++;
@@ -1287,7 +1287,7 @@ describe("relay-stream integration tests", () => {
 			}
 
 			if (loopDone) break;
-			await new Promise((r) => setTimeout(r, 50));
+			await new Promise((r) => setTimeout(r, 10));
 		}
 
 		const result = await loopPromise;
@@ -1314,5 +1314,5 @@ describe("relay-stream integration tests", () => {
 			)
 			.all() as Array<{ stream_id: string; cnt: number }>;
 		expect(hubInboxStreams.length).toBe(0); // No stream should have duplicate stream_end entries
-	}, 25000);
+	}, 10000);
 });
