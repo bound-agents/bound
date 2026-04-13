@@ -1226,6 +1226,7 @@ export class AgentLoop {
 				const buffer = new Map<number, StreamChunkPayload>();
 				let gapCyclesWaited = 0;
 				let hostSucceeded = false;
+				let streamEndConsumed = false; // persistent flag: true once stream_end chunks are yielded
 
 				// Polling loop for this host attempt
 				while (true) {
@@ -1285,6 +1286,7 @@ export class AgentLoop {
 					// Buffer all received stream_chunk and stream_end entries by seq
 					const streamEndEntry = inboxEntries.find((e) => e.kind === "stream_end");
 					const chunkEntries = inboxEntries.filter((e) => e.kind === "stream_chunk");
+					let streamEndSeq: number | null = null;
 
 					for (const entry of [...chunkEntries, ...(streamEndEntry ? [streamEndEntry] : [])]) {
 						const chunkResult = parseJsonUntyped(entry.payload, entry.kind);
@@ -1295,6 +1297,9 @@ export class AgentLoop {
 						const chunkPayload = chunkResult.value as StreamChunkPayload;
 						if (!buffer.has(chunkPayload.seq)) {
 							buffer.set(chunkPayload.seq, chunkPayload);
+						}
+						if (entry.kind === "stream_end") {
+							streamEndSeq = chunkPayload.seq;
 						}
 					}
 
@@ -1321,12 +1326,17 @@ export class AgentLoop {
 							lastActivityTime = Date.now(); // reset mid-stream silence timer
 							yield chunk;
 						}
+						// Track when stream_end's seq has been consumed
+						if (streamEndSeq !== null && nextExpectedSeq > streamEndSeq) {
+							streamEndConsumed = true;
+						}
 						gapCyclesWaited = 0; // Gap resolved
 					}
 
-					// Check if stream_end was the last contiguous chunk (buffer empty after draining)
-					if (streamEndEntry && buffer.size === 0 && !buffer.has(nextExpectedSeq)) {
-						// Stream complete — all chunks yielded including stream_end's chunks
+					// Stream complete when stream_end has been consumed and buffer has no
+					// forward entries. Use persistent flag so completion survives stale-entry
+					// cleanup that may empty the buffer on a later poll cycle.
+					if (streamEndConsumed && buffer.size === 0) {
 						hostSucceeded = true;
 						break;
 					}
