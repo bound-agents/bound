@@ -1335,13 +1335,21 @@ export class AgentLoop {
 					if (buffer.size > 0) {
 						gapCyclesWaited++;
 						if (gapCyclesWaited >= MAX_GAP_CYCLES) {
+							const sortedSeqs = Array.from(buffer.keys()).sort((a, b) => a - b);
+							const lowestBuffered = sortedSeqs[0];
 							this.ctx.logger.warn("RELAY_STREAM: seq gap detected, skipping", {
 								expectedSeq: nextExpectedSeq,
-								bufferedSeqs: Array.from(buffer.keys()).sort(),
+								bufferedSeqs: sortedSeqs,
 							});
-							// Skip the gap by advancing nextExpectedSeq to lowest buffered seq
-							const lowestBuffered = Math.min(...buffer.keys());
-							nextExpectedSeq = lowestBuffered;
+							if (lowestBuffered < nextExpectedSeq) {
+								// Stale duplicate chunks — discard them instead of jumping backwards
+								for (const seq of sortedSeqs) {
+									if (seq < nextExpectedSeq) buffer.delete(seq);
+								}
+							} else {
+								// Forward gap — skip missing seqs and advance
+								nextExpectedSeq = lowestBuffered;
+							}
 							gapCyclesWaited = 0;
 						}
 					}

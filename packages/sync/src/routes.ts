@@ -211,8 +211,10 @@ export function createSyncRoutes(
 					const isResponseKind = (kind: string): kind is RelayResponseKind =>
 						RELAY_RESPONSE_KINDS.includes(kind as RelayResponseKind);
 					if (isResponseKind(entry.kind)) {
+						// Use the original outbox entry ID so INSERT OR IGNORE
+						// deduplicates retransmissions (at-least-once delivery).
 						const inboxEntry: RelayInboxEntry = {
-							id: randomUUID(),
+							id: entry.id,
 							source_site_id: requesterSiteId,
 							kind: entry.kind,
 							ref_id: entry.ref_id ?? entry.id,
@@ -234,8 +236,9 @@ export function createSyncRoutes(
 				} else {
 					// Store for target spoke — write to hub's own outbox for delivery
 					// Preserve source_site_id so target knows who sent the request
+					// Use original outbox entry ID for dedup on retransmission.
 					const inboxEntry: RelayInboxEntry = {
-						id: crypto.randomUUID(),
+						id: entry.id,
 						source_site_id: requesterSiteId,
 						kind: entry.kind,
 						ref_id: entry.ref_id ?? entry.id,
