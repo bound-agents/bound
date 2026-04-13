@@ -43,6 +43,7 @@ export type {
 export {
 	generateMCPCommands,
 	generateRemoteMCPProxyCommands,
+	isRelayRequest,
 	updateHostMCPInfo,
 } from "./mcp-bridge";
 

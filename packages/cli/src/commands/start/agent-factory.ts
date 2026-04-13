@@ -5,6 +5,7 @@
 
 import { AgentLoop } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
+import { isRelayRequest } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import type { ModelRouter, ToolDefinition } from "@bound/llm";
 import {
@@ -53,11 +54,29 @@ export function createAgentLoopFactory(
 			// Delegate exec to the underlying sandbox, wrapping the call in
 			// loopContextStorage.run so that command handlers can access the
 			// per-loop threadId and taskId via ctx.threadId / ctx.taskId.
+			// The store object is checked after .run() returns: if a command
+			// handler set store.relayRequest (remote MCP proxy commands do this),
+			// return the relay request instead of the stripped just-bash result.
+			// just-bash normalizes return values to {stdout, stderr, exitCode, env},
+			// discarding extra fields like outboxEntryId that isRelayRequest() needs.
 			exec: sandbox
-				? (cmd: string, opts?: Record<string, unknown>) =>
-						loopContextStorage.run({ threadId: config.threadId, taskId: config.taskId }, () =>
-							sandbox.bash.exec(cmd, opts),
-						)
+				? async (cmd: string, opts?: Record<string, unknown>) => {
+						const store = {
+							threadId: config.threadId,
+							taskId: config.taskId,
+							relayRequest: undefined as unknown,
+						};
+						const result = await loopContextStorage.run(store, () => sandbox.bash.exec(cmd, opts));
+						if (
+							store.relayRequest &&
+							isRelayRequest(store.relayRequest as Record<string, unknown>)
+						) {
+							const req = store.relayRequest;
+							store.relayRequest = undefined;
+							return req;
+						}
+						return result;
+					}
 				: undefined,
 			checkMemoryThreshold: sandbox ? () => sandbox.checkMemoryThreshold() : undefined,
 

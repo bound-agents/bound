@@ -87,9 +87,10 @@ export interface RelayToolCallRequest {
  * Type guard to check if a command result is actually a relay request.
  */
 export function isRelayRequest(
-	result: CommandResult | RelayToolCallRequest,
+	// biome-ignore lint/suspicious/noExplicitAny: called from agent-factory with opaque store value
+	result: CommandResult | RelayToolCallRequest | any,
 ): result is RelayToolCallRequest {
-	return "outboxEntryId" in result;
+	return result != null && typeof result === "object" && "outboxEntryId" in result;
 }
 
 /**

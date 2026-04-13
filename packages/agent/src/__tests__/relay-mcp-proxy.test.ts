@@ -114,11 +114,15 @@ describe("Remote MCP proxy commands via relay", () => {
 		expect(outbox[0].kind).toBe("tool_call");
 	});
 
-	it("relay request is available via loopContextStorage after sandbox.exec", async () => {
-		// This is the CRITICAL test. just-bash strips extra fields from custom command
-		// return values, so isRelayRequest(result) fails on the direct return value.
-		// The fix: the proxy handler stores the full RelayToolCallRequest in
-		// loopContextStorage, and the agent loop reads it from there.
+	it("exec wrapper propagates relay request via store object reference", async () => {
+		// This tests the ACTUAL production flow. The exec wrapper in agent-factory.ts
+		// creates its own loopContextStorage.run() scope. The command handler stores the
+		// relay request in that scope's store. After .run() returns, the store is no
+		// longer active via getStore(), but the store OBJECT is still mutated because
+		// JS objects are passed by reference.
+		//
+		// The exec wrapper must check store.relayRequest after .run() returns and
+		// propagate it as the return value.
 		const { commands } = generateRemoteMCPProxyCommands(db, "local-hub-site", new Set());
 		const ctx = createTestContext();
 		const customCommands = createDefineCommands(commands, ctx);
@@ -126,27 +130,34 @@ describe("Remote MCP proxy commands via relay", () => {
 		const fs = new InMemoryFs();
 		const bash = new Bash({ fs, customCommands });
 
-		let capturedRelayRequest: (CommandResult & Record<string, unknown>) | undefined;
+		// Simulate the agent-factory exec wrapper pattern:
+		// Creates a store, runs sandbox.exec inside .run(), then checks the store.
+		const store = {
+			threadId: "test-thread",
+			taskId: undefined,
+			relayRequest: undefined as unknown,
+		};
+		const result = await loopContextStorage.run(store, () =>
+			bash.exec("github list_commits --owner karashiiro --repo bound"),
+		);
 
-		await loopContextStorage.run({ threadId: "test-thread", taskId: undefined }, async () => {
-			await bash.exec("github list_commits --owner karashiiro --repo bound");
-
-			// The relay request should be stored in the context
-			const store = loopContextStorage.getStore();
-			capturedRelayRequest = store?.relayRequest;
-		});
-
-		// The relay request should be available via the side-channel
-		expect(capturedRelayRequest).toBeDefined();
-		expect(isRelayRequest(capturedRelayRequest as CommandResult)).toBe(true);
-		const relayReq = capturedRelayRequest as unknown as RelayToolCallRequest;
+		// After .run() returns, the store object still has relayRequest set
+		// because the command handler mutated the same JS object.
+		expect(store.relayRequest).toBeDefined();
+		expect(isRelayRequest(store.relayRequest as CommandResult)).toBe(true);
+		const relayReq = store.relayRequest as unknown as RelayToolCallRequest;
 		expect(relayReq.outboxEntryId).toBeDefined();
 		expect(relayReq.targetSiteId).toBe("remote-spoke-1");
 		expect(relayReq.toolName).toBe("github");
+
+		// The just-bash result itself should NOT have the relay fields (this is the original bug)
+		expect(isRelayRequest(result)).toBe(false);
 	});
 
-	it("relay request is consumed and does not leak to subsequent commands", async () => {
-		// Ensure the relay request doesn't leak across tool calls
+	it("exec wrapper returns relay request instead of empty result", async () => {
+		// This is the end-to-end test matching the production exec wrapper.
+		// The wrapper should detect store.relayRequest and return it as the result,
+		// overriding the stripped just-bash result.
 		const { commands } = generateRemoteMCPProxyCommands(db, "local-hub-site", new Set());
 		const ctx = createTestContext();
 		const customCommands = createDefineCommands(commands, ctx);
@@ -154,18 +165,27 @@ describe("Remote MCP proxy commands via relay", () => {
 		const fs = new InMemoryFs();
 		const bash = new Bash({ fs, customCommands });
 
-		await loopContextStorage.run({ threadId: "test-thread", taskId: undefined }, async () => {
-			// First call: relay request should be stored
-			await bash.exec("github list_commits --owner karashiiro --repo bound");
-			const store = loopContextStorage.getStore();
-			expect(store?.relayRequest).toBeDefined();
+		// Replicate the production exec wrapper from agent-factory.ts
+		const execWithRelay = async (cmd: string) => {
+			const store = {
+				threadId: "test-thread",
+				taskId: undefined,
+				relayRequest: undefined as unknown,
+			};
+			const result = await loopContextStorage.run(store, () => bash.exec(cmd));
+			// The wrapper should detect and return the relay request
+			if (store.relayRequest && isRelayRequest(store.relayRequest as CommandResult)) {
+				const req = store.relayRequest;
+				store.relayRequest = undefined;
+				return req;
+			}
+			return result;
+		};
 
-			// Simulate the agent loop consuming the relay request
-			if (store) store.relayRequest = undefined;
-
-			// Second call (non-relay): relay request should NOT be set
-			await bash.exec("echo hello");
-			expect(store?.relayRequest).toBeUndefined();
-		});
+		const result = await execWithRelay("github list_commits --owner karashiiro --repo bound");
+		expect(isRelayRequest(result as CommandResult)).toBe(true);
+		const relayReq = result as unknown as RelayToolCallRequest;
+		expect(relayReq.outboxEntryId).toBeDefined();
+		expect(relayReq.targetSiteId).toBe("remote-spoke-1");
 	});
 });
