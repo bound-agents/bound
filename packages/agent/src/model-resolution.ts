@@ -37,6 +37,31 @@ function getUnmetCapabilities(
 }
 
 /**
+ * Attempts to find a same-tier local fallback when the originally-requested model
+ * is unavailable. Returns a ModelResolution if a cost-equivalent alternative exists,
+ * or null if none found.
+ *
+ * Excludes the originally-requested model from candidates.
+ */
+export function resolveSameTierFallback(
+	failedModelId: string,
+	modelRouter: ModelRouter,
+	db: Database,
+	localSiteId: string,
+	tier: number,
+	requirements?: CapabilityRequirements,
+): ModelResolution | null {
+	const candidates = modelRouter.listEligibleByTier(tier, requirements);
+	const alternative = candidates.find((b) => b.id !== failedModelId);
+	if (!alternative) return null;
+
+	const backend = modelRouter.tryGetBackend(alternative.id);
+	if (!backend) return null;
+
+	return { kind: "local", backend, modelId: alternative.id, reResolved: true };
+}
+
+/**
  * Resolves a model ID through a three-phase pipeline: identify → qualify → dispatch.
  *
  * Phase 1 (identify): Check local backends first, then remote hosts.

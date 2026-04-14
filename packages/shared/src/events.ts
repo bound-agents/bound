@@ -22,4 +22,12 @@ export interface EventMap {
 	"platform:webhook": { platform: string; rawBody: string; headers: Record<string, string> };
 	"context:debug": { thread_id: string; turn_id: number; debug: ContextDebugInfo };
 	"notify:enqueued": { thread_id: string };
+	"model:fallback": {
+		requested_model: string;
+		fallback_model: string;
+		tier: number;
+		thread_id: string;
+		task_id?: string;
+		reason: string;
+	};
 }

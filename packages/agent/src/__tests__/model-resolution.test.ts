@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema } from "@bound/core";
 import { ModelRouter } from "@bound/llm";
-import { type ModelResolution, resolveModel } from "../model-resolution";
+import { type ModelResolution, resolveModel, resolveSameTierFallback } from "../model-resolution";
 
 // Test database setup
 let db: Database;
@@ -957,6 +957,100 @@ describe("resolveModel — hub-only mode (empty default)", () => {
 			expect(resolution.error).toMatch(/no remote inference backends/i);
 		}
 	});
+
+describe("resolveSameTierFallback", () => {
+	const makeMockBackend = (caps?: Partial<{ vision: boolean; tool_use: boolean }>) => ({
+		chat: async function* () {
+			yield { type: "text" as const, text: "test" };
+		},
+		capabilities: () => ({
+			streaming: true,
+			tool_use: caps?.tool_use ?? true,
+			system_prompt: true,
+			prompt_caching: false,
+			vision: caps?.vision ?? false,
+			max_context: 200000,
+		}),
+	});
+
+	it("returns a same-tier alternative when requested model is unavailable", () => {
+		const backendA = makeMockBackend();
+		const backendB = makeMockBackend();
+
+		const backends = new Map([
+			["glm", backendA],
+			["phi3", backendB],
+		]);
+		const tiers = new Map([
+			["glm", 1],
+			["phi3", 1],
+		]);
+		const router = new ModelRouter(backends, "glm", undefined, tiers);
+
+		// "deepseek" doesn't exist, but we tell the fallback it was tier 1
+		const result = resolveSameTierFallback("deepseek", router, db, "local-site", 1);
+
+		expect(result).not.toBeNull();
+		if (result) {
+			expect(result.kind).toBe("local");
+			if (result.kind === "local") {
+				// Should pick one of the tier-1 backends
+				expect(["glm", "phi3"]).toContain(result.modelId);
+			}
+		}
+	});
+
+	it("returns null when no same-tier alternative exists", () => {
+		const backendA = makeMockBackend();
+
+		const backends = new Map([["opus", backendA]]);
+		const tiers = new Map([["opus", 5]]);
+		const router = new ModelRouter(backends, "opus", undefined, tiers);
+
+		// Looking for tier 1 alternatives, but only tier 5 exists
+		const result = resolveSameTierFallback("glm", router, db, "local-site", 1);
+
+		expect(result).toBeNull();
+	});
+
+	it("excludes the originally-requested model from fallback candidates", () => {
+		const backendA = makeMockBackend();
+
+		const backends = new Map([["glm", backendA]]);
+		const tiers = new Map([["glm", 1]]);
+		const router = new ModelRouter(backends, "glm", undefined, tiers);
+
+		// "glm" itself is the only tier-1 backend, but it's the one that failed
+		const result = resolveSameTierFallback("glm", router, db, "local-site", 1);
+
+		expect(result).toBeNull();
+	});
+
+	it("respects capability requirements when finding fallback", () => {
+		const visionBackend = makeMockBackend({ vision: true });
+		const noVisionBackend = makeMockBackend({ vision: false });
+
+		const backends = new Map([
+			["llava", visionBackend],
+			["phi3", noVisionBackend],
+		]);
+		const tiers = new Map([
+			["llava", 1],
+			["phi3", 1],
+		]);
+		const router = new ModelRouter(backends, "phi3", undefined, tiers);
+
+		// Requesting vision, only llava has it
+		const result = resolveSameTierFallback("deepseek", router, db, "local-site", 1, {
+			vision: true,
+		});
+
+		expect(result).not.toBeNull();
+		if (result && result.kind === "local") {
+			expect(result.modelId).toBe("llava");
+		}
+	});
+});
 
 	it("normalizes literal 'default' model hint to the actual default backend", () => {
 		const mockBackend = {
