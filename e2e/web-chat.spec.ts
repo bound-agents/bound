@@ -130,9 +130,7 @@ test.describe("Web Chat E2E", () => {
 		expect([true, false]).toContain(wsAvailable);
 	});
 
-	test("should render split-view SystemMap with thread list and memory graph", async ({
-		page,
-	}) => {
+	test("should render split-view SystemMap with thread list and memory graph", async ({ page }) => {
 		await page.goto("/");
 
 		// Verify SystemMap section header exists
@@ -159,9 +157,7 @@ test.describe("Web Chat E2E", () => {
 		await page.goto("/");
 
 		// Find the "Hide Map" or "Show Map" button
-		const toggleButton = page.locator(
-			"button:has-text('Hide Map'), button:has-text('Show Map')",
-		);
+		const toggleButton = page.locator("button:has-text('Hide Map'), button:has-text('Show Map')");
 		const buttonCount = await toggleButton.count();
 
 		if (buttonCount > 0) {

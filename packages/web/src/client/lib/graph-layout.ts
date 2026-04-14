@@ -104,14 +104,9 @@ export function computeGraphLayout(
 
 			// Determine opacity
 			let opacity = 1.0;
-			if (selectedThreadId && node.lineIndex !== null) {
-				// Get line color for comparison
-				const nodeColor = getLineColor(node.lineIndex);
-				const selectedLineColor = getLineColor(Number.parseInt(selectedThreadId) || 0);
-				opacity =
-					nodeColor === selectedLineColor || node.lineIndex.toString() === selectedThreadId
-						? 1.0
-						: 0.2;
+			if (selectedThreadId && node.source !== null) {
+				// Compare against thread ID directly
+				opacity = node.source === selectedThreadId ? 1.0 : 0.2;
 			}
 
 			positionedNodesMap.set(node.key, {

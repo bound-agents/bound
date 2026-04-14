@@ -84,9 +84,9 @@ function handleThreadKeydown(e: KeyboardEvent, threadId: string) {
 				<div
 					class="thread-item"
 					class:selected={selectedThreadId === thread.id}
-					on:click={() => handleThreadClick(thread.id)}
-					on:dblclick={() => handleThreadDoubleClick(thread.id)}
-					on:keydown={(e) => handleThreadKeydown(e, thread.id)}
+					onclick={() => handleThreadClick(thread.id)}
+					ondblclick={() => handleThreadDoubleClick(thread.id)}
+					onkeydown={(e) => handleThreadKeydown(e, thread.id)}
 					role="button"
 					tabindex="0"
 				>

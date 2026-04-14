@@ -100,7 +100,7 @@ describe("computeGraphLayout", () => {
 			const node2 = result.positionedNodes.find((n) => n.key === "node-2");
 
 			expect(node1 && node2).toBeTruthy();
-			const distance = Math.abs(node1!.x - node2!.x);
+			const distance = Math.abs((node1?.x ?? 0) - (node2?.x ?? 0));
 			expect(distance).toBeGreaterThanOrEqual(60);
 		});
 
@@ -346,12 +346,13 @@ describe("computeGraphLayout", () => {
 		});
 
 		it("sets opacity to 1.0 for nodes matching selectedThreadId, 0.2 for others", () => {
+			const selectedThreadUuid = "thread-uuid-123";
 			const nodes: MemoryGraphNode[] = [
 				{
 					key: "node-1",
 					value: "value",
 					tier: "default",
-					source: null,
+					source: selectedThreadUuid,
 					sourceThreadTitle: null,
 					lineIndex: 2,
 					modifiedAt: new Date().toISOString(),
@@ -360,14 +361,14 @@ describe("computeGraphLayout", () => {
 					key: "node-2",
 					value: "value",
 					tier: "default",
-					source: null,
+					source: "other-thread-uuid",
 					sourceThreadTitle: null,
 					lineIndex: 3,
 					modifiedAt: new Date().toISOString(),
 				},
 			];
 
-			const result = computeGraphLayout(nodes, [], 500, "2");
+			const result = computeGraphLayout(nodes, [], 500, selectedThreadUuid);
 
 			const node1 = result.positionedNodes.find((n) => n.key === "node-1");
 			const node2 = result.positionedNodes.find((n) => n.key === "node-2");

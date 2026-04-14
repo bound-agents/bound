@@ -1,5 +1,4 @@
 <script lang="ts">
-import { onMount } from "svelte";
 import { api } from "../lib/api";
 import type { MemoryGraphResponse } from "../lib/api";
 import { computeGraphLayout } from "../lib/graph-layout";
@@ -47,6 +46,10 @@ $effect(() => {
 		},
 		selectedThreadId ? 200 : 0,
 	);
+
+	return () => {
+		if (debounceTimer) clearTimeout(debounceTimer);
+	};
 });
 
 function handleNodeHover(nodeKey: string, event: MouseEvent) {
@@ -96,7 +99,7 @@ const layout = $derived.by(() => {
 		<button
 			class="refresh-btn"
 			title="Refresh memory graph"
-			on:click={() => fetchMemoryGraph()}
+			onclick={() => fetchMemoryGraph()}
 			disabled={loading}
 		>
 			↻
@@ -116,7 +119,7 @@ const layout = $derived.by(() => {
 		{:else if error}
 			<div class="error-state">
 				<p>{error}</p>
-				<button on:click={() => fetchMemoryGraph()}>Retry</button>
+				<button onclick={() => fetchMemoryGraph()}>Retry</button>
 			</div>
 		{:else if !graphData || graphData.nodes.length === 0}
 			<div class="empty-state">
@@ -157,9 +160,9 @@ const layout = $derived.by(() => {
 						fill={node.color}
 						opacity={node.opacity}
 						class="node {node.tier}"
-						on:mouseenter={(e) => handleNodeHover(node.key, e)}
-						on:mouseleave={handleNodeLeave}
-						on:click={() => handleNodeClick(node.key)}
+						onmouseenter={(e) => handleNodeHover(node.key, e)}
+						onmouseleave={handleNodeLeave}
+						onclick={() => handleNodeClick(node.key)}
 					/>
 				{/each}
 			</svg>
@@ -200,17 +203,17 @@ const layout = $derived.by(() => {
 				{#if nodeData}
 					<div
 						class="popover-overlay"
-						on:click={closePopover}
+						onclick={closePopover}
 					>
 						<div
 							class="popover"
-							on:click={handlePopoverClick}
+							onclick={handlePopoverClick}
 						>
 							<div class="popover-header">
 								<h4>{nodeData.key}</h4>
 								<button
 									class="close-btn"
-									on:click={closePopover}
+									onclick={closePopover}
 								>
 									×
 								</button>

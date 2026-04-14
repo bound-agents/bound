@@ -1,11 +1,11 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
+import MemoryGraph from "../components/MemoryGraph.svelte";
+import SectionHeader from "../components/SectionHeader.svelte";
+import ThreadList from "../components/ThreadList.svelte";
 import { api } from "../lib/api";
 import type { Thread } from "../lib/api";
 import { navigateTo } from "../lib/router";
-import ThreadList from "../components/ThreadList.svelte";
-import MemoryGraph from "../components/MemoryGraph.svelte";
-import SectionHeader from "../components/SectionHeader.svelte";
 
 interface ThreadStatus {
 	active: boolean;
@@ -103,14 +103,14 @@ onDestroy(() => {
 		{#snippet actions()}
 			<button
 				class="header-btn"
-				on:click={toggleMap}
+				onclick={toggleMap}
 				title={mapCollapsed ? "Show map" : "Hide map"}
 			>
 				{mapCollapsed ? "Show Map" : "Hide Map"}
 			</button>
 			<button
 				class="header-btn"
-				on:click={newThread}
+				onclick={newThread}
 				disabled={creating}
 				title="Create new thread"
 			>
@@ -119,7 +119,7 @@ onDestroy(() => {
 		{/snippet}
 	</SectionHeader>
 
-	<div class="split-view" class:map-collapsed={mapCollapsed} style="grid-template-columns: {(panelRatio * 100).toFixed(1)}% 4px 1fr">
+	<div class="split-view" class:map-collapsed={mapCollapsed} style={mapCollapsed ? '' : `grid-template-columns: ${(panelRatio * 100).toFixed(1)}% 4px 1fr`}>
 		<div class="thread-panel">
 			<ThreadList
 				{threads}
@@ -133,7 +133,7 @@ onDestroy(() => {
 		{#if !mapCollapsed}
 			<div
 				class="resizer"
-				on:pointerdown={handlePointerDown}
+				onpointerdown={handlePointerDown}
 				role="separator"
 				aria-orientation="vertical"
 				aria-valuenow={Math.round(panelRatio * 100)}
