@@ -46,9 +46,16 @@ interface Props {
 	waiting?: boolean;
 	emptyText?: string | null;
 	turnRange?: TurnRange | null;
+	threadColor?: number;
 }
 
-const { messages, waiting = false, emptyText = null, turnRange = null }: Props = $props();
+const {
+	messages,
+	waiting = false,
+	emptyText = null,
+	turnRange = null,
+	threadColor = 0,
+}: Props = $props();
 
 // --- Auto-scroll logic ---
 let scrollContainer = $state<HTMLDivElement | null>(null);
@@ -281,6 +288,9 @@ let displayItems = $derived.by((): DisplayItem[] => {
 							toolName={item.msg.tool_name}
 							modelId={item.msg.model_id}
 							exitCode={item.msg.exit_code}
+							{threadColor}
+							data-message-id={item.msg.id}
+							data-message-role={item.msg.role}
 						/>
 					{/if}
 				</div>

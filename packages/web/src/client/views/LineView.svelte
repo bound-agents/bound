@@ -3,8 +3,10 @@ import { ChevronLeft, Paperclip, Send, Settings, X } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
 import DebugPanelWrapper from "../components/DebugPanelWrapper.svelte";
 import MessageList from "../components/MessageList.svelte";
+import { LineBadge, StatusChip, TurnIndicator } from "../components/shared";
 import { api } from "../lib/api";
 import type { Thread } from "../lib/api";
+import { getLineColor } from "../lib/metro-lines";
 import { modelStore } from "../lib/modelStore";
 import { navigateTo } from "../lib/router";
 import {
@@ -28,9 +30,11 @@ let fileInput = $state<HTMLInputElement | null>(null);
 let uploadStatus = $state<string | null>(null);
 let pendingFileId = $state<string | null>(null);
 let thread = $state<Thread | null>(null);
+let turnBoundaryOffsets = $state<number[]>([]);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let statusPollInterval: ReturnType<typeof setInterval> | null = null;
+let messageListElement = $state<HTMLDivElement | null>(null);
 
 // Subscribe to WebSocket events and append new messages
 const unsubscribeWs = wsEvents.subscribe((events) => {
@@ -195,6 +199,43 @@ function viewTitle(): string {
 	}
 	return "Conversation";
 }
+
+function computeTurnBoundaries(): void {
+	if (!messageListElement) return;
+
+	const offsets: number[] = [];
+	let currentY = 0;
+	let lastWasUser = false;
+
+	const childElements = messageListElement.querySelectorAll("[data-message-id]");
+	for (const el of childElements) {
+		const role = el.getAttribute("data-message-role");
+		if (role === "user" && !lastWasUser) {
+			// Start of a new turn (user message)
+			const rect = el.getBoundingClientRect();
+			const listRect = messageListElement?.getBoundingClientRect();
+			if (listRect) {
+				currentY = rect.top - listRect.top + (messageListElement?.scrollTop ?? 0);
+				offsets.push(currentY);
+				lastWasUser = true;
+			}
+		} else if (role === "assistant") {
+			lastWasUser = false;
+		}
+	}
+
+	turnBoundaryOffsets = offsets;
+}
+
+$effect(() => {
+	// Recompute boundaries when messages change
+	if (messages.length > 0) {
+		// Use tick to allow DOM to update first
+		import("svelte").then(({ tick }) => {
+			tick().then(computeTurnBoundaries);
+		});
+	}
+});
 </script>
 
 <DebugPanelWrapper {threadId} {wsEvents}>
@@ -205,7 +246,13 @@ function viewTitle(): string {
 				<ChevronLeft size={16} />
 				Map
 			</button>
+			{#if thread}
+				<LineBadge lineIndex={thread.color} />
+			{/if}
 			<h1>{viewTitle()}</h1>
+			{#if thread}
+				<StatusChip active={agentActive} />
+			{/if}
 			{#if agentActive}
 				<span class="thinking-indicator">
 					<span class="thinking-dot"></span>
@@ -218,7 +265,17 @@ function viewTitle(): string {
 			</button>
 		</div>
 
-	<MessageList {messages} {waiting} {turnRange} />
+	<div class="line-content">
+		<div class="message-container" bind:this={messageListElement}>
+			<TurnIndicator
+				turnCount={turnBoundaryOffsets.length}
+				lineColor={thread ? getLineColor(thread.color) : "#999"}
+				isActive={agentActive}
+				{turnBoundaryOffsets}
+			/>
+			<MessageList {messages} {waiting} {turnRange} threadColor={thread?.color ?? 0} />
+		</div>
+	</div>
 
 	<div class="bottom-area">
 		<div class="file-upload-area">
@@ -286,7 +343,6 @@ function viewTitle(): string {
 	}
 
 	h1 {
-		flex: 1;
 		margin: 0;
 		color: var(--text-primary);
 		font-family: var(--font-display);
@@ -295,6 +351,21 @@ function viewTitle(): string {
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
+	}
+
+	.line-content {
+		max-width: 800px;
+		margin: 0 auto;
+		width: 100%;
+		flex: 1;
+		min-height: 0;
+	}
+
+	.message-container {
+		position: relative;
+		flex: 1;
+		min-height: 0;
+		padding-left: 32px;
 	}
 
 	.back-button {
