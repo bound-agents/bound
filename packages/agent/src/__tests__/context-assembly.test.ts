@@ -1091,7 +1091,7 @@ describe("Context Assembly Pipeline", () => {
 
 	describe("Relay Info Injection (AC5.4)", () => {
 		it("should inject relay location line when relayInfo is provided", () => {
-			const { messages } = assembleContext({
+			const result = assembleContext({
 				db,
 				threadId,
 				userId,
@@ -1102,30 +1102,27 @@ describe("Context Assembly Pipeline", () => {
 					provider: "remote",
 				},
 			});
+			const { systemSuffix } = result;
 
-			// Find volatile context system message (should contain relay info)
-			const volatileMsg = messages.find(
-				(m) => m.role === "system" && m.content.includes("You are:"),
-			);
-			expect(volatileMsg).toBeDefined();
-			expect(volatileMsg?.content).toContain("claude-3-5-sonnet");
-			expect(volatileMsg?.content).toContain("remote-host-1");
-			expect(volatileMsg?.content).toContain("via remote on host");
-			expect(volatileMsg?.content).toContain("relayed from local-host");
+			// Relay info should be in systemSuffix
+			expect(systemSuffix).toBeDefined();
+			expect(systemSuffix).toContain("claude-3-5-sonnet");
+			expect(systemSuffix).toContain("remote-host-1");
+			expect(systemSuffix).toContain("via remote on host");
+			expect(systemSuffix).toContain("relayed from local-host");
 		});
 
 		it("should not inject relay location line when relayInfo is not provided", () => {
-			const { messages } = assembleContext({
+			const result = assembleContext({
 				db,
 				threadId,
 				userId,
 			});
+			const { systemSuffix } = result;
 
-			// Find volatile context system message and ensure no relay info
-			const volatileMsg = messages.find(
-				(m) => m.role === "system" && m.content.includes("via remote on host"),
-			);
-			expect(volatileMsg).toBeUndefined();
+			// Ensure no relay info in systemSuffix
+			expect(systemSuffix).toBeDefined();
+			expect(systemSuffix).not.toContain("via remote on host");
 		});
 	});
 
@@ -1229,23 +1226,19 @@ describe("Context Assembly Pipeline", () => {
 
 	describe("platformContext injection", () => {
 		it("includes platform system message when platformContext is set (AC5.1)", () => {
-			const { messages } = assembleContext({
+			const result = assembleContext({
 				db,
 				threadId,
 				userId,
 				platformContext: { platform: "discord", toolNames: ["discord_send_message"] },
 			});
+			const { systemSuffix } = result;
 
-			// Find the system message containing the silence semantics
-			const systemMessages = messages.filter((m) => m.role === "system");
-			const platformMsg = systemMessages.find(
-				(m) => typeof m.content === "string" && m.content.includes("discord_send_message"),
-			);
-
-			expect(platformMsg).toBeDefined();
-			expect(platformMsg?.content).toContain("discord_send_message");
+			// Platform context should be in systemSuffix
+			expect(systemSuffix).toBeDefined();
+			expect(systemSuffix).toContain("discord_send_message");
 			// Should mention silence/invisibility semantics
-			expect(platformMsg?.content).toMatch(/sees nothing|silence|cannot see/i);
+			expect(systemSuffix).toMatch(/sees nothing|silence|cannot see/i);
 		});
 
 		it("no platform system message when platformContext is absent (AC5.2)", () => {
@@ -1268,23 +1261,19 @@ describe("Context Assembly Pipeline", () => {
 			// Bug: when a second platform (e.g. Telegram) is added, the context message hardcodes
 			// "discord_send_message" even for Telegram threads. Fix: toolNames in platformContext
 			// should be referenced dynamically.
-			const { messages } = assembleContext({
+			const result = assembleContext({
 				db,
 				threadId,
 				userId,
 				platformContext: { platform: "telegram", toolNames: ["telegram_send_message"] },
 			});
+			const { systemSuffix } = result;
 
-			const systemMessages = messages.filter((m) => m.role === "system");
-			const platformMsg = systemMessages.find(
-				(m) => typeof m.content === "string" && m.content.includes("Platform Context"),
-			);
-
-			expect(platformMsg).toBeDefined();
+			expect(systemSuffix).toBeDefined();
 			// Tool name should be from platformContext.toolNames, not hardcoded
-			expect(platformMsg?.content).toContain("telegram_send_message");
-			expect(platformMsg?.content).not.toContain("discord_send_message");
-			expect(platformMsg?.content).toMatch(/sees nothing|silence|cannot see/i);
+			expect(systemSuffix).toContain("telegram_send_message");
+			expect(systemSuffix).not.toContain("discord_send_message");
+			expect(systemSuffix).toMatch(/sees nothing|silence|cannot see/i);
 		});
 	});
 
@@ -1365,36 +1354,32 @@ describe("Context Assembly Pipeline", () => {
 				],
 			);
 
-			const { messages } = assembleContext({
+			const result = assembleContext({
 				db: db2,
 				threadId: threadId2,
 				userId: userId2,
 			});
+			const { systemSuffix } = result;
 
-			// Find the volatile context system message (last system message)
-			const systemMessages = messages.filter((m) => m.role === "system");
-			const volatileMsg = systemMessages[systemMessages.length - 1];
-
-			expect(volatileMsg).toBeDefined();
-			expect(volatileMsg.content).toContain("SKILLS (1 active):");
-			expect(volatileMsg.content).toContain("pr-review — Review GitHub PRs");
+			// Skill index should be in systemSuffix
+			expect(systemSuffix).toBeDefined();
+			expect(systemSuffix).toContain("SKILLS (1 active):");
+			expect(systemSuffix).toContain("pr-review — Review GitHub PRs");
 		});
 
 		it("AC3.2: should not inject SKILLS block when no active skills exist", () => {
 			cleanupTestData();
 			// Ensure no active skills exist (test database is clean)
-			const { messages } = assembleContext({
+			const result = assembleContext({
 				db: db2,
 				threadId: threadId2,
 				userId: userId2,
 			});
+			const { systemSuffix } = result;
 
-			// Find the volatile context system message
-			const systemMessages = messages.filter((m) => m.role === "system");
-			const volatileMsg = systemMessages[systemMessages.length - 1];
-
-			expect(volatileMsg).toBeDefined();
-			expect(volatileMsg.content).not.toContain("SKILLS (");
+			// Should not contain SKILLS block
+			expect(systemSuffix).toBeDefined();
+			expect(systemSuffix).not.toContain("SKILLS (");
 		});
 
 		it("AC3.3: should inject task-referenced skill body when skill is active", () => {
@@ -1453,12 +1438,13 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const { messages } = assembleContext({
+			const result = assembleContext({
 				db: db2,
 				threadId: threadId2,
 				userId: userId2,
 				taskId,
 			});
+			const { messages, systemSuffix } = result;
 
 			// Find the skill body system message (should be before history)
 			const systemMessages = messages.filter((m) => m.role === "system");
@@ -1468,12 +1454,9 @@ This skill reviews pull requests.`;
 			expect(skillBodyMsg).toBeDefined();
 			expect(skillBodyMsg?.content).toContain(skillMdContent);
 
-			// The skill body should appear before the volatile context
-			if (!skillBodyMsg) throw new Error("expected skillBodyMsg");
-			const skillBodyIndex = messages.indexOf(skillBodyMsg);
-			const volatileMsg = systemMessages[systemMessages.length - 1];
-			const volatileIndex = messages.indexOf(volatileMsg);
-			expect(skillBodyIndex).toBeLessThan(volatileIndex);
+			// The skill index should appear in systemSuffix
+			expect(systemSuffix).toBeDefined();
+			expect(systemSuffix).toContain("SKILLS (1 active):");
 		});
 
 		it("AC3.4: should inject inactive skill reference note when skill is not active", () => {
@@ -1510,28 +1493,26 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const { messages } = assembleContext({
+			const result = assembleContext({
 				db: db2,
 				threadId: threadId2,
 				userId: userId2,
 				taskId,
 			});
+			const { messages, systemSuffix } = result;
 
-			// Find the volatile context system message
+			// Find system messages
 			const systemMessages = messages.filter((m) => m.role === "system");
-			const volatileMsg = systemMessages[systemMessages.length - 1];
 
-			// No SKILL.md should be injected
+			// No SKILL.md should be injected as a system message
 			const skillBodyMsg = systemMessages.find(
-				(m) =>
-					m.content.includes("Review GitHub PRs") &&
-					m !== volatileMsg &&
-					!m.content.includes("SKILLS ("),
+				(m) => m.content.includes("Review GitHub PRs") && !m.content.includes("SKILLS ("),
 			);
 			expect(skillBodyMsg).toBeUndefined();
 
-			// But the inactive reference note should appear
-			expect(volatileMsg.content).toContain("Referenced skill 'pr-review' is not active.");
+			// But the inactive reference note should appear in systemSuffix
+			expect(systemSuffix).toBeDefined();
+			expect(systemSuffix).toContain("Referenced skill 'pr-review' is not active.");
 		});
 
 		it("AC3.5: should inject task-referenced skill body even when noHistory = true", () => {
@@ -1625,18 +1606,15 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const { messages } = assembleContext({
+			const result = assembleContext({
 				db: db2,
 				threadId: threadId2,
 				userId: userId2,
 			});
+			const { systemSuffix } = result;
 
-			// Find the volatile context system message
-			const systemMessages = messages.filter((m) => m.role === "system");
-			const volatileMsg = systemMessages[systemMessages.length - 1];
-
-			expect(volatileMsg).toBeDefined();
-			expect(volatileMsg.content).toContain(
+			expect(systemSuffix).toBeDefined();
+			expect(systemSuffix).toContain(
 				"[Skill notification] Skill 'deploy-monitor' was retired by operator: \"Too aggressive\".",
 			);
 		});
@@ -2013,22 +1991,18 @@ This skill reviews pull requests.`;
 				[randomUUID(), "test_key", "test_value", null, recentTime, recentTime, 0],
 			);
 
-			const { messages } = assembleContext({
+			const result = assembleContext({
 				db: enrichTestDb,
 				threadId: testThreadId,
 				userId: enrichTestUserId,
 			});
+			const { systemSuffix } = result;
 
-			// Find the system message containing "Memory:"
-			const volatileMsg = messages.find(
-				(m) =>
-					m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
-			);
-
-			expect(volatileMsg).toBeDefined();
-			expect(volatileMsg?.content).toContain("changed since your last turn");
-			expect(volatileMsg?.content).toContain("test_key");
-			expect(volatileMsg?.content).toContain("1 entries");
+			// Memory delta should be in systemSuffix
+			expect(systemSuffix).toBeDefined();
+			expect(systemSuffix).toContain("changed since your last turn");
+			expect(systemSuffix).toContain("test_key");
+			expect(systemSuffix).toContain("1 entries");
 		});
 
 		it("AC8.2: does not include raw 'Semantic Memory:' format in any assembled message", () => {
@@ -2128,20 +2102,17 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const { messages } = assembleContext({
+			const result = assembleContext({
 				db: enrichTestDb,
 				threadId: testThreadId,
 				userId: enrichTestUserId,
 			});
+			const { systemSuffix } = result;
 
-			const volatileMsg = messages.find(
-				(m) =>
-					m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
-			);
-
-			expect(volatileMsg).toBeDefined();
-			expect(volatileMsg?.content).toContain("daily_check");
-			expect(volatileMsg?.content).toContain(" ran ");
+			// Task digest should be in systemSuffix
+			expect(systemSuffix).toBeDefined();
+			expect(systemSuffix).toContain("daily_check");
+			expect(systemSuffix).toContain(" ran ");
 		});
 
 		it("AC1.3: noHistory=true: pushes standalone enrichment system message when delta is non-empty", () => {
@@ -2370,23 +2341,20 @@ This skill reviews pull requests.`;
 			}
 
 			// Use a very small contextWindow to force budget pressure
-			const { messages } = assembleContext({
+			const result = assembleContext({
 				db: enrichTestDb,
 				threadId: testThreadId,
 				userId: enrichTestUserId,
 				contextWindow: 500,
 			});
+			const { systemSuffix } = result;
 
-			// Find the system message containing "Memory:"
-			const volatileMsg = messages.find(
-				(m) =>
-					m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
-			);
-
-			expect(volatileMsg).toBeDefined();
+			// Memory should be in systemSuffix
+			expect(systemSuffix).toBeDefined();
+			expect(systemSuffix).toContain("Memory:");
 
 			// Count memory entry lines ONLY (lines that are part of the memory delta, starting with "- " but before any blank line that separates memory from tasks)
-			const lines = (volatileMsg?.content as string)?.split("\n") ?? [];
+			const lines = systemSuffix.split("\n");
 			let memoryCount = 0;
 			let inMemorySection = false;
 
@@ -2916,25 +2884,20 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const { messages } = assembleContext({
+			const result = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
 				siteId: localSiteId,
 				contextWindow: 200000,
 			});
+			const { systemSuffix } = result;
 
-			const volatileMsg = messages.find(
-				(m) =>
-					m.role === "system" &&
-					typeof m.content === "string" &&
-					m.content.includes("Advisory notification"),
-			);
-
-			expect(volatileMsg).toBeDefined();
-			const content = volatileMsg?.content as string;
-			expect(content).toContain("Test advisory");
-			expect(content).toContain("applied");
+			// Advisory notification should be in systemSuffix
+			expect(systemSuffix).toBeDefined();
+			expect(systemSuffix).toContain("Advisory notification");
+			expect(systemSuffix).toContain("Test advisory");
+			expect(systemSuffix).toContain("applied");
 
 			// Cleanup
 			db.run("DELETE FROM advisories WHERE id = ?", [advisoryId]);
@@ -3075,25 +3038,18 @@ This skill reviews pull requests.`;
 				);
 			}
 
-			const { messages } = assembleContext({
+			const result = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
 				siteId: localSiteId,
 				contextWindow: 200000,
 			});
+			const { systemSuffix } = result;
 
 			// All 5 should be collapsed into a single notification line (with count)
-			const volatileMsg = messages.find(
-				(m) =>
-					m.role === "system" &&
-					typeof m.content === "string" &&
-					m.content.includes("Advisory notification"),
-			);
-			expect(volatileMsg).toBeDefined();
-			const lines = (volatileMsg?.content as string)
-				.split("\n")
-				.filter((l) => l.includes("Advisory notification"));
+			expect(systemSuffix).toBeDefined();
+			const lines = systemSuffix.split("\n").filter((l) => l.includes("Advisory notification"));
 			expect(lines.length).toBe(1);
 			// The single line must reference all 5 (via count)
 			expect(lines[0]).toContain("5");
@@ -3161,24 +3117,17 @@ This skill reviews pull requests.`;
 				);
 			}
 
-			const { messages } = assembleContext({
+			const result = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
 				siteId: localSiteId,
 				contextWindow: 200000,
 			});
+			const { systemSuffix } = result;
 
-			const volatileMsg = messages.find(
-				(m) =>
-					m.role === "system" &&
-					typeof m.content === "string" &&
-					m.content.includes("Advisory notification"),
-			);
-			expect(volatileMsg).toBeDefined();
-			const notifLines = (volatileMsg?.content as string)
-				.split("\n")
-				.filter((l) => l.includes("Advisory notification"));
+			expect(systemSuffix).toBeDefined();
+			const notifLines = systemSuffix.split("\n").filter((l) => l.includes("Advisory notification"));
 			expect(notifLines.length).toBeLessThanOrEqual(5);
 
 			// Cleanup
@@ -5165,10 +5114,12 @@ This skill reviews pull requests.`;
 			expect(result.debug.budgetPressure).toBe(true);
 
 			// L3 (recency) entries should be entirely shed from the context
-			const contextText = result.messages
+			// Check both system messages and systemSuffix
+			const systemText = result.messages
 				.filter((m) => m.role === "system")
 				.map((m) => (typeof m.content === "string" ? m.content : ""))
 				.join("\n");
+			const contextText = systemText + "\n" + (result.systemSuffix || "");
 
 			// L3 entries have keys "recency_key_N" — should not appear
 			for (let i = 0; i < 10; i++) {
@@ -5245,10 +5196,11 @@ This skill reviews pull requests.`;
 
 			expect(result.debug.budgetPressure).toBe(true);
 
-			const contextText = result.messages
+			const systemText = result.messages
 				.filter((m) => m.role === "system")
 				.map((m) => (typeof m.content === "string" ? m.content : ""))
 				.join("\n");
+			const contextText = systemText + "\n" + (result.systemSuffix || "");
 
 			// Count how many default entries appear (default_key_*)
 			const defaultMatches = contextText.match(/default_key_\d+/g) || [];
@@ -5341,10 +5293,11 @@ This skill reviews pull requests.`;
 
 			expect(result.debug.budgetPressure).toBe(true);
 
-			const contextText = result.messages
+			const systemText = result.messages
 				.filter((m) => m.role === "system")
 				.map((m) => (typeof m.content === "string" ? m.content : ""))
 				.join("\n");
+			const contextText = systemText + "\n" + (result.systemSuffix || "");
 
 			// All L0 pinned entries should survive
 			for (let i = 0; i < 5; i++) {
@@ -5358,6 +5311,9 @@ This skill reviews pull requests.`;
 		});
 
 		it("AC5.4: L0+L1 exceeding 20 entries logs warning but does not truncate", () => {
+			// Clean up any leftover semantic_memory entries from previous tests
+			db.run("DELETE FROM semantic_memory");
+
 			const testThreadId = randomUUID();
 			db.run(
 				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -5437,10 +5393,11 @@ This skill reviews pull requests.`;
 
 			expect(result.debug.budgetPressure).toBe(true);
 
-			const contextText = result.messages
+			const systemText = result.messages
 				.filter((m) => m.role === "system")
 				.map((m) => (typeof m.content === "string" ? m.content : ""))
 				.join("\n");
+			const contextText = systemText + "\n" + (result.systemSuffix || "");
 
 			// All 25 entries should still be present (no truncation)
 			let pinnedCount = 0;
@@ -5495,5 +5452,166 @@ describe("formatTimestamp", () => {
 		const result = formatTimestamp(ts);
 		// Should include month/day info
 		expect(result).toMatch(/Jan 15/);
+	});
+});
+
+describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
+	let tmpDir: string;
+	let db: Database;
+	let threadId: string;
+	let userId: string;
+
+	beforeAll(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "cache-split-test-"));
+		const dbPath = join(tmpDir, "test.db");
+		db = createDatabase(dbPath);
+		applySchema(db);
+
+		userId = randomUUID();
+		threadId = randomUUID();
+
+		db.run(
+			"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+			[userId, "Test User", null, new Date().toISOString(), new Date().toISOString(), 0],
+		);
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				threadId,
+				userId,
+				"web",
+				"local",
+				0,
+				"Test Thread",
+				null,
+				null,
+				null,
+				null,
+				new Date().toISOString(),
+				new Date().toISOString(),
+				new Date().toISOString(),
+				0,
+			],
+		);
+
+		// Add a user message so we have history
+		db.run(
+			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[randomUUID(), threadId, "user", "Hello!", null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+		);
+	});
+
+	afterAll(async () => {
+		db.close();
+		if (tmpDir) await cleanupTmpDir(tmpDir);
+	});
+
+	it("does not include Current Model in orientation system message", () => {
+		const { messages } = assembleContext({
+			db,
+			threadId,
+			userId,
+			currentModel: "opus",
+		});
+
+		const systemMessages = messages.filter((m) => m.role === "system");
+		const orientationMsg = systemMessages.find(
+			(m) => typeof m.content === "string" && m.content.includes("## Orientation"),
+		);
+		expect(orientationMsg).toBeDefined();
+		expect(typeof orientationMsg!.content === "string" && orientationMsg!.content).not.toContain(
+			"### Current Model",
+		);
+	});
+
+	it("returns systemSuffix containing current model and thread identifiers", () => {
+		const result = assembleContext({
+			db,
+			threadId,
+			userId,
+			currentModel: "opus",
+			hostName: "test-host",
+			siteId: "test-site",
+		});
+
+		expect(result.systemSuffix).toBeDefined();
+		expect(result.systemSuffix).toContain("Current Model: opus");
+		expect(result.systemSuffix).toContain(`Thread ID: ${threadId}`);
+	});
+
+	it("stable system messages do not contain per-thread varying content", () => {
+		const result = assembleContext({
+			db,
+			threadId,
+			userId,
+			currentModel: "opus",
+		});
+
+		// Check no system message contains the model identifier
+		const allSystemText = result.messages
+			.filter((m) => m.role === "system")
+			.map((m) => (typeof m.content === "string" ? m.content : ""))
+			.join("\n");
+
+		expect(allSystemText).not.toContain("Current Model: opus");
+		expect(allSystemText).not.toContain(`User ID: ${userId}, Thread ID: ${threadId}`);
+	});
+
+	it("returns identical system messages for different threads with same memory", () => {
+		// Create a second thread
+		const threadId2 = randomUUID();
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				threadId2,
+				userId,
+				"web",
+				"local",
+				0,
+				"Thread 2",
+				null,
+				null,
+				null,
+				null,
+				new Date().toISOString(),
+				new Date().toISOString(),
+				new Date().toISOString(),
+				0,
+			],
+		);
+		db.run(
+			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[randomUUID(), threadId2, "user", "Different message", null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+		);
+
+		const result1 = assembleContext({
+			db,
+			threadId,
+			userId,
+			currentModel: "opus",
+			hostName: "test-host",
+			siteId: "test-site",
+		});
+		const result2 = assembleContext({
+			db,
+			threadId: threadId2,
+			userId,
+			currentModel: "opus",
+			hostName: "test-host",
+			siteId: "test-site",
+		});
+
+		// System messages should be identical across threads
+		const sys1 = result1.messages
+			.filter((m) => m.role === "system")
+			.map((m) => (typeof m.content === "string" ? m.content : ""));
+		const sys2 = result2.messages
+			.filter((m) => m.role === "system")
+			.map((m) => (typeof m.content === "string" ? m.content : ""));
+
+		expect(sys1).toEqual(sys2);
+
+		// But suffixes should differ (different thread IDs)
+		expect(result1.systemSuffix).not.toEqual(result2.systemSuffix);
 	});
 });

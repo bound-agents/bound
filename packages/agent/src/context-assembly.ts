@@ -56,6 +56,13 @@ export interface ContextParams {
 export interface ContextAssemblyResult {
 	messages: LLMMessage[];
 	debug: ContextDebugInfo;
+	/**
+	 * Per-thread varying system context that should be placed AFTER the cached
+	 * system prefix. Contains: model identifier, user/thread IDs, L2/L3 memory,
+	 * cross-thread digest, file notifications, task digest.
+	 * Undefined when noHistory is true (autonomous tasks use standalone enrichment).
+	 */
+	systemSuffix?: string;
 }
 
 /**
@@ -870,8 +877,6 @@ Original output was too large for the context window. If you need the full conte
 		"",
 		"Run `commands` to list all commands (including MCP tools), or `commands <name>` for detailed syntax.",
 		"",
-		`### Current Model\n${currentModel || "default"}`,
-		"",
 		`### Host Identity\nHost: ${hostName || "unknown"}\nSite ID: ${siteId || "unknown"}`,
 	];
 	assembled.push({
@@ -979,15 +984,19 @@ Original output was too large for the context window. If you need the full conte
 		children: historyChildren.length > 0 ? historyChildren : undefined,
 	});
 
-	// Add volatile context at the end per spec R-U30
+	// Add volatile context — split into stable system message (cached) and varying suffix (uncached)
+	// The suffix is returned separately so the LLM driver can place it after the cache boundary,
+	// enabling cross-thread prompt cache reuse for cron tasks in the same 5-minute window.
 	let crossThreadSources: CrossThreadSource[] | undefined;
+	let suffixContent: string | undefined;
 	if (!noHistory) {
-		const volatileLines: string[] = [];
-		volatileLines.push(`User ID: ${userId}, Thread ID: ${threadId}`);
+		// --- VARYING SUFFIX: per-thread content that busts the cache ---
+		const suffixLines: string[] = [];
+		suffixLines.push(`User ID: ${userId}, Thread ID: ${threadId}`);
 
 		// AC5.4: Model location when inference is relayed
 		if (relayInfo) {
-			volatileLines.push(
+			suffixLines.push(
 				`You are: ${relayInfo.model} (via ${relayInfo.provider} on host ${relayInfo.remoteHost}, relayed from ${relayInfo.localHost})`,
 			);
 		}
@@ -998,15 +1007,15 @@ Original output was too large for the context window. If you need the full conte
 				platformContext.toolNames && platformContext.toolNames.length > 0
 					? platformContext.toolNames.map((n) => `\`${n}\``).join(" or ")
 					: "the platform send tool";
-			volatileLines.push("");
-			volatileLines.push(`## Platform Context: ${platformContext.platform}`);
-			volatileLines.push(
+			suffixLines.push("");
+			suffixLines.push(`## Platform Context: ${platformContext.platform}`);
+			suffixLines.push(
 				"The user of this conversation is on an external platform and cannot see your responses directly.",
 			);
-			volatileLines.push(
+			suffixLines.push(
 				`To send a message to the user, call ${toolRef}. If you do not call it, the user sees nothing (silence).`,
 			);
-			volatileLines.push(
+			suffixLines.push(
 				"Each call to the tool produces one separate message to the user. " +
 					"Multiple calls are allowed and delivered in order.",
 			);
@@ -1016,7 +1025,7 @@ Original output was too large for the context window. If you need the full conte
 				platformContext.platform === "discord" ||
 				platformContext.platform === "discord-interaction"
 			) {
-				volatileLines.push(
+				suffixLines.push(
 					"Discord formatting: **bold**, *italic*, __underline__, ~~strikethrough~~, " +
 						"`inline code`, ```code blocks```, > block quotes, >>> multi-line quotes, " +
 						"# ## ### headers, -# subtext, [masked links](url), ||spoilers||, " +
@@ -1027,9 +1036,9 @@ Original output was too large for the context window. If you need the full conte
 			}
 		}
 
-		// Include current model name
+		// Include current model name (moved out of orientation for cache stability)
 		if (currentModel) {
-			volatileLines.push(`Current Model: ${currentModel}`);
+			suffixLines.push(`Current Model: ${currentModel}`);
 		}
 
 		// Stage 5.5: VOLATILE ENRICHMENT (replaces raw memory dump)
@@ -1075,25 +1084,25 @@ Original output was too large for the context window. If you need the full conte
 			memHeaderLine += ` (${memChangedCount} changed since your last turn in this thread)`;
 		}
 
-		// Record where enrichment section begins
-		enrichmentStartIdx = volatileLines.length;
-		volatileLines.push("");
-		volatileLines.push(memHeaderLine);
+		// Record where enrichment section begins (in suffixLines)
+		enrichmentStartIdx = suffixLines.length;
+		suffixLines.push("");
+		suffixLines.push(memHeaderLine);
 		if (memoryDeltaLines.length > 0) {
-			volatileLines.push(...memoryDeltaLines);
+			suffixLines.push(...memoryDeltaLines);
 		}
 		if (taskDigestLines.length > 0) {
-			volatileLines.push("");
-			volatileLines.push(...taskDigestLines);
+			suffixLines.push("");
+			suffixLines.push(...taskDigestLines);
 		}
 		// Record where enrichment section ends
-		enrichmentEndIdx = volatileLines.length;
+		enrichmentEndIdx = suffixLines.length;
 
 		// Include cross-thread digest
 		const crossThreadResult = buildCrossThreadDigest(db, userId, threadId);
 		if (crossThreadResult.text) {
-			volatileLines.push("");
-			volatileLines.push(crossThreadResult.text);
+			suffixLines.push("");
+			suffixLines.push(crossThreadResult.text);
 		}
 		if (crossThreadResult.sources.length > 0) {
 			crossThreadSources = crossThreadResult.sources;
@@ -1114,12 +1123,12 @@ Original output was too large for the context window. If you need the full conte
 				const filePath = key.replace("_internal.file_thread.", "");
 				const lastThread = getLastThreadForFile(db, filePath);
 				if (lastThread && lastThread !== threadId) {
-					const threadRow = db.query("SELECT title FROM threads WHERE id = ?").get(lastThread) as {
+					const threadRow2 = db.query("SELECT title FROM threads WHERE id = ?").get(lastThread) as {
 						title: string | null;
 					} | null;
-					const threadTitle = threadRow?.title || lastThread;
-					volatileLines.push("");
-					volatileLines.push(getFileThreadNotificationMessage(filePath, threadTitle));
+					const threadTitle = threadRow2?.title || lastThread;
+					suffixLines.push("");
+					suffixLines.push(getFileThreadNotificationMessage(filePath, threadTitle));
 					fileNotifCount++;
 				}
 			}
@@ -1137,10 +1146,10 @@ Original output was too large for the context window. If you need the full conte
 				.all() as Array<{ name: string; description: string }>;
 
 			if (activeSkills.length > 0) {
-				volatileLines.push("");
-				volatileLines.push(`SKILLS (${activeSkills.length} active):`);
+				suffixLines.push("");
+				suffixLines.push(`SKILLS (${activeSkills.length} active):`);
 				for (const s of activeSkills) {
-					volatileLines.push(`  ${s.name} — ${s.description}`);
+					suffixLines.push(`  ${s.name} — ${s.description}`);
 				}
 			}
 		} catch (_error) {
@@ -1163,8 +1172,8 @@ Original output was too large for the context window. If you need the full conte
 
 			for (const s of retiredByOperator) {
 				const reason = s.retired_reason ? `"${s.retired_reason}"` : "no reason given";
-				volatileLines.push("");
-				volatileLines.push(
+				suffixLines.push("");
+				suffixLines.push(
 					`[Skill notification] Skill '${s.name}' was retired by operator: ${reason}.`,
 				);
 			}
@@ -1205,8 +1214,8 @@ Original output was too large for the context window. If you need the full conte
 				for (const [title, { status, count }] of titleGroups) {
 					if (notifCount >= ADVISORY_NOTIF_CAP) break;
 					const countStr = count > 1 ? ` (×${count})` : "";
-					volatileLines.push("");
-					volatileLines.push(
+					suffixLines.push("");
+					suffixLines.push(
 						`[Advisory notification] Advisory '${title}' was ${status} by operator${countStr}.`,
 					);
 					notifCount++;
@@ -1219,27 +1228,24 @@ Original output was too large for the context window. If you need the full conte
 
 		// Inject inactive skill reference note (AC3.4)
 		if (inactiveSkillRef) {
-			volatileLines.push("");
-			volatileLines.push(`Referenced skill '${inactiveSkillRef}' is not active.`);
+			suffixLines.push("");
+			suffixLines.push(`Referenced skill '${inactiveSkillRef}' is not active.`);
 		}
 
-		// Capture full volatile content before adding to assembled
-		allVolatileLines = [...volatileLines];
-		enrichmentMessageIndex = assembled.length;
-		assembled.push({
-			role: "system",
-			content: volatileLines.join("\n"),
-		});
+		// Capture full suffix content for budget pressure rebuild
+		allVolatileLines = [...suffixLines];
+		suffixContent = suffixLines.join("\n");
 
 		// Track volatile section tokens (memory, task-digest, volatile-other)
-		const memoryLines = volatileLines.slice(enrichmentStartIdx, enrichmentEndIdx);
+		// These now live in the suffix but are still tracked for debug
+		const memoryLines = suffixLines.slice(enrichmentStartIdx, enrichmentEndIdx);
 		const memoryTokens = memoryLines.length > 0 ? countTokens(memoryLines.join("\n")) : 0;
 
 		const taskDigestTokens =
 			taskDigestLines.length > 0 ? countTokens(taskDigestLines.join("\n")) : 0;
 
 		const totalVolatileTokens =
-			volatileLines.length > 0 ? countTokens(volatileLines.join("\n")) : 0;
+			suffixLines.length > 0 ? countTokens(suffixLines.join("\n")) : 0;
 		const volatileOtherTokens = totalVolatileTokens - memoryTokens - taskDigestTokens;
 
 		if (memoryTokens > 0) sections.push({ name: "memory", tokens: memoryTokens });
@@ -1306,7 +1312,7 @@ Original output was too large for the context window. If you need the full conte
 	// fixed-size context (system prompt, volatile enrichment, tools) genuinely
 	// crowds the window.
 
-	// Helper to apply reduced enrichment to the assembled context
+	// Helper to apply reduced enrichment to the assembled context or suffix
 	const applyReducedEnrichment = (shortDelta: string[], shortDigest: string[]): void => {
 		const shortMemChangedCount = shortDelta.filter((l) => l.startsWith("- ")).length;
 		let shortMemHeader = `Memory: ${totalMemCount} entries`;
@@ -1327,19 +1333,14 @@ Original output was too large for the context window. If you need the full conte
 		}
 
 		if (!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0) {
-			// Splice the reduced enrichment into the full volatile array, preserving
+			// Splice the reduced enrichment into the suffix content, preserving
 			// all post-enrichment content (cross-thread digest, file notifications, skill index, etc.)
-			const rebuiltVolatile = [
+			const rebuiltSuffix = [
 				...allVolatileLines.slice(0, enrichmentStartIdx),
 				...shortEnrichmentLines,
 				...allVolatileLines.slice(enrichmentEndIdx),
 			];
-			if (enrichmentMessageIndex < assembled.length) {
-				assembled[enrichmentMessageIndex] = {
-					role: "system",
-					content: rebuiltVolatile.join("\n"),
-				};
-			}
+			suffixContent = rebuiltSuffix.join("\n");
 		} else if (params.noHistory) {
 			// For noHistory path, standalone message — just replace with reduced
 			const shortStandaloneLines: string[] = [shortMemHeader];
@@ -1387,11 +1388,12 @@ Original output was too large for the context window. If you need the full conte
 		}
 	};
 
-	if (enrichmentBaseline !== undefined && enrichmentMessageIndex >= 0) {
-		const nonHistoryTokens =
-			assembled
-				.filter((m) => m.role === "system")
-				.reduce((sum, m) => sum + countContentTokens(m.content), 0) + toolTokens;
+	if (enrichmentBaseline !== undefined && (suffixContent !== undefined || enrichmentMessageIndex >= 0)) {
+		const systemTokens = assembled
+			.filter((m) => m.role === "system")
+			.reduce((sum, m) => sum + countContentTokens(m.content), 0);
+		const suffixTokens = suffixContent ? countTokens(suffixContent) : 0;
+		const nonHistoryTokens = systemTokens + suffixTokens + toolTokens;
 		const headroom = contextWindow - nonHistoryTokens;
 
 		if (headroom < 2000) {
@@ -1412,10 +1414,12 @@ Original output was too large for the context window. If you need the full conte
 		}
 	}
 
-	// Token count estimate via tiktoken cl100k_base encoding
-	const totalTokens = assembled.reduce((sum, msg) => {
-		return sum + countContentTokens(msg.content);
-	}, 0);
+	// Token count estimate via tiktoken cl100k_base encoding (includes suffix)
+	const suffixTokensForBudget = suffixContent ? countTokens(suffixContent) : 0;
+	const totalTokens =
+		assembled.reduce((sum, msg) => {
+			return sum + countContentTokens(msg.content);
+		}, 0) + suffixTokensForBudget;
 
 	if (totalTokens > contextWindow) {
 		// Truncate history from front — token-aware backward fill.
@@ -1442,7 +1446,11 @@ Original output was too large for the context window. If you need the full conte
 				0,
 			);
 			const toolTokens = params.toolTokenEstimate ?? 0;
-			const historyBudget = Math.max(0, truncationTarget - systemTokens - toolTokens);
+			const suffixTokensForTrunc = suffixContent ? countTokens(suffixContent) : 0;
+			const historyBudget = Math.max(
+				0,
+				truncationTarget - systemTokens - toolTokens - suffixTokensForTrunc,
+			);
 
 			// Walk backwards from end, accumulating tokens until we exceed budget
 			let accumulatedTokens = 0;
@@ -1561,6 +1569,7 @@ Original output was too large for the context window. If you need the full conte
 
 	return {
 		messages: assembled,
+		...(suffixContent ? { systemSuffix: suffixContent } : {}),
 		debug: {
 			contextWindow: contextWindow,
 			totalEstimated,
