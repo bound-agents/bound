@@ -52,6 +52,7 @@ import {
 } from "@bound/shared";
 import { AgentLoop } from "./agent-loop.js";
 import type { MCPClient } from "./mcp-client.js";
+import { resolveModel } from "./model-resolution.js";
 import type { AgentLoopConfig } from "./types.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 500;
@@ -1482,10 +1483,42 @@ export class RelayProcessor {
 		delegatedCtx: AppContext,
 		shouldYield?: () => boolean,
 	): Promise<Record<string, unknown>> {
+		// Resolve thread's preferred model: check the last message with a model_id
+		// so /model slash command preferences and model continuity are respected.
+		let threadModelId: string | undefined;
+		if (this.modelRouter) {
+			const lastThreadModel = this.db
+				.prepare(
+					`SELECT model_id FROM messages
+					 WHERE thread_id = ? AND model_id IS NOT NULL
+					   AND role IN ('assistant', 'tool_call', 'system')
+					 ORDER BY created_at DESC LIMIT 1`,
+				)
+				.get(payload.thread_id) as { model_id: string } | null;
+			if (lastThreadModel?.model_id) {
+				const resolution = resolveModel(
+					lastThreadModel.model_id,
+					this.modelRouter,
+					this.db,
+					this.siteId,
+				);
+				if (resolution.kind !== "error") {
+					threadModelId = lastThreadModel.model_id;
+				} else {
+					this.logger.warn("[relay] Thread model unavailable, using node default", {
+						threadId: payload.thread_id,
+						threadModel: lastThreadModel.model_id,
+						reason: resolution.error,
+					});
+				}
+			}
+		}
+
 		const loopConfig: AgentLoopConfig = {
 			threadId: payload.thread_id,
 			userId: payload.user_id,
 			taskId: `delegated-${entry.id}`,
+			modelId: threadModelId,
 			shouldYield,
 		};
 
