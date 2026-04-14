@@ -3,7 +3,12 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema } from "@bound/core";
 import { ModelRouter } from "@bound/llm";
-import { type ModelResolution, resolveModel, resolveSameTierFallback } from "../model-resolution";
+import {
+	type ModelResolution,
+	resolveModel,
+	resolveModelTier,
+	resolveSameTierFallback,
+} from "../model-resolution";
 
 // Test database setup
 let db: Database;
@@ -1075,6 +1080,184 @@ describe("resolveSameTierFallback", () => {
 		expect(resolution.kind).toBe("local");
 		if (resolution.kind === "local") {
 			expect(resolution.modelId).toBe("opus");
+		}
+	});
+});
+
+describe("resolveModelTier", () => {
+	it("returns local tier when model is in the local router", () => {
+		const backend = {
+			chat: async function* () {
+				yield { type: "text" as const, text: "test" };
+			},
+			capabilities: () => ({
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: false,
+				vision: false,
+				max_context: 4096,
+			}),
+		};
+
+		const backends = new Map([["glm-4.7", backend]]);
+		const tiers = new Map([["glm-4.7", 2]]);
+		const router = new ModelRouter(backends, "glm-4.7", undefined, tiers);
+
+		const tier = resolveModelTier("glm-4.7", router, db, "local-site");
+		expect(tier).toBe(2);
+	});
+
+	it("returns remote tier from hosts table when model not in local router", () => {
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at)
+			 VALUES (?, ?, ?, 0, ?, ?)`,
+			[
+				"remote-spoke",
+				"Remote Spoke",
+				JSON.stringify([{ id: "glm-4.7", tier: 2, capabilities: {} }]),
+				now,
+				now,
+			],
+		);
+
+		// Empty router — hub-only node
+		const router = new ModelRouter(new Map(), "");
+
+		const tier = resolveModelTier("glm-4.7", router, db, "hub-site");
+		expect(tier).toBe(2);
+	});
+
+	it("returns null when model not found anywhere", () => {
+		const router = new ModelRouter(new Map(), "");
+		const tier = resolveModelTier("nonexistent", router, db, "local-site");
+		expect(tier).toBeNull();
+	});
+
+	it("returns lowest tier when multiple remote hosts advertise same model at different tiers", () => {
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at)
+			 VALUES (?, ?, ?, 0, ?, ?)`,
+			[
+				"spoke-a",
+				"Spoke A",
+				JSON.stringify([{ id: "glm-4.7", tier: 3, capabilities: {} }]),
+				now,
+				now,
+			],
+		);
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at)
+			 VALUES (?, ?, ?, 0, ?, ?)`,
+			[
+				"spoke-b",
+				"Spoke B",
+				JSON.stringify([{ id: "glm-4.7", tier: 2, capabilities: {} }]),
+				now,
+				now,
+			],
+		);
+
+		const router = new ModelRouter(new Map(), "");
+		const tier = resolveModelTier("glm-4.7", router, db, "hub-site");
+		expect(tier).toBe(2);
+	});
+});
+
+describe("resolveSameTierFallback — remote hosts", () => {
+	it("finds a remote same-tier alternative when no local backends exist", () => {
+		const now = new Date().toISOString();
+		// Remote host has sonnet at tier 2
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at)
+			 VALUES (?, ?, ?, 0, ?, ?)`,
+			[
+				"spoke-with-sonnet",
+				"Sonnet Spoke",
+				JSON.stringify([{ id: "sonnet", tier: 2, capabilities: { tool_use: true } }]),
+				now,
+				now,
+			],
+		);
+
+		// Empty local router (hub-only)
+		const router = new ModelRouter(new Map(), "");
+
+		// glm-4.7 at tier 2 failed, looking for same-tier alternative
+		const result = resolveSameTierFallback("glm-4.7", router, db, "hub-site", 2);
+
+		expect(result).not.toBeNull();
+		if (result) {
+			expect(result.kind).toBe("remote");
+			if (result.kind === "remote") {
+				expect(result.modelId).toBe("sonnet");
+				expect(result.hosts[0].site_id).toBe("spoke-with-sonnet");
+			}
+		}
+	});
+
+	it("excludes the failed model from remote candidates", () => {
+		const now = new Date().toISOString();
+		// Remote host only has glm-4.7 (the model that failed)
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at)
+			 VALUES (?, ?, ?, 0, ?, ?)`,
+			[
+				"spoke-glm-only",
+				"GLM Spoke",
+				JSON.stringify([{ id: "glm-4.7", tier: 2, capabilities: {} }]),
+				now,
+				now,
+			],
+		);
+
+		const router = new ModelRouter(new Map(), "");
+
+		const result = resolveSameTierFallback("glm-4.7", router, db, "hub-site", 2);
+		expect(result).toBeNull();
+	});
+
+	it("prefers local backends over remote hosts", () => {
+		const now = new Date().toISOString();
+		// Remote host has sonnet at tier 2
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at)
+			 VALUES (?, ?, ?, 0, ?, ?)`,
+			[
+				"spoke-remote",
+				"Remote Spoke",
+				JSON.stringify([{ id: "sonnet", tier: 2, capabilities: {} }]),
+				now,
+				now,
+			],
+		);
+
+		// Local router also has a tier-2 backend
+		const localBackend = {
+			chat: async function* () {
+				yield { type: "text" as const, text: "test" };
+			},
+			capabilities: () => ({
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: false,
+				vision: false,
+				max_context: 200000,
+			}),
+		};
+		const backends = new Map([["local-sonnet", localBackend]]);
+		const tiers = new Map([["local-sonnet", 2]]);
+		const router = new ModelRouter(backends, "local-sonnet", undefined, tiers);
+
+		const result = resolveSameTierFallback("glm-4.7", router, db, "local-site", 2);
+
+		expect(result).not.toBeNull();
+		if (result) {
+			// Should prefer local
+			expect(result.kind).toBe("local");
 		}
 	});
 });

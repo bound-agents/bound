@@ -7,6 +7,7 @@ import {
 	Scheduler,
 	generateThreadTitle,
 	resolveModel,
+	resolveModelTier,
 	seedCronTasks,
 	seedHeartbeat,
 } from "@bound/agent";
@@ -110,7 +111,8 @@ export function initScheduler(
 						}
 					: undefined,
 				modelTierResolver: modelRouter
-					? (modelId: string) => modelRouter.getBackendTier(modelId)
+					? (modelId: string) =>
+							resolveModelTier(modelId, modelRouter, appContext.db, appContext.siteId)
 					: undefined,
 				generateTitle:
 					modelRouter && modelRouter.listBackends().length > 0

@@ -4,7 +4,7 @@ export type { ContextParams } from "./context-assembly";
 export type { ModelResolution } from "./model-resolution";
 
 // Export model resolution
-export { resolveModel } from "./model-resolution";
+export { resolveModel, resolveModelTier, resolveSameTierFallback } from "./model-resolution";
 
 // Export delegation
 export { getDelegationTarget, getRecentToolCalls } from "./delegation";

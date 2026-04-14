@@ -6,6 +6,8 @@ import type {
 	ModelRouter,
 } from "@bound/llm";
 
+import type { HostModelEntry } from "@bound/shared";
+
 import { type EligibleHost, findAnyRemoteModel, findEligibleHostsByModel } from "./relay-router";
 
 export type ModelResolution =
@@ -37,8 +39,52 @@ function getUnmetCapabilities(
 }
 
 /**
- * Attempts to find a same-tier local fallback when the originally-requested model
- * is unavailable. Returns a ModelResolution if a cost-equivalent alternative exists,
+ * Resolves the tier for a model by checking the local router first, then the hosts table.
+ * Returns null if the model is not found anywhere.
+ */
+export function resolveModelTier(
+	modelId: string,
+	modelRouter: ModelRouter,
+	db: Database,
+	localSiteId: string,
+): number | null {
+	// Check local router first
+	const localTier = modelRouter.getBackendTier(modelId);
+	if (localTier !== null) return localTier;
+
+	// Fall back to hosts table (remote models)
+	const rows = db
+		.query(
+			`SELECT models FROM hosts WHERE deleted = 0 AND site_id != ?`,
+		)
+		.all(localSiteId) as Array<{ models: string | null }>;
+
+	let bestTier: number | null = null;
+	for (const row of rows) {
+		if (!row.models) continue;
+		let rawModels: unknown;
+		try {
+			rawModels = JSON.parse(row.models);
+		} catch {
+			continue;
+		}
+		if (!Array.isArray(rawModels)) continue;
+		for (const entry of rawModels) {
+			if (entry && typeof entry === "object" && (entry as HostModelEntry).id === modelId) {
+				const tier = (entry as HostModelEntry).tier;
+				if (tier !== undefined && (bestTier === null || tier < bestTier)) {
+					bestTier = tier;
+				}
+			}
+		}
+	}
+	return bestTier;
+}
+
+/**
+ * Attempts to find a same-tier fallback when the originally-requested model
+ * is unavailable. Checks local backends first, then remote hosts.
+ * Returns a ModelResolution if a cost-equivalent alternative exists,
  * or null if none found.
  *
  * Excludes the originally-requested model from candidates.
@@ -51,14 +97,90 @@ export function resolveSameTierFallback(
 	tier: number,
 	requirements?: CapabilityRequirements,
 ): ModelResolution | null {
-	const candidates = modelRouter.listEligibleByTier(tier, requirements);
-	const alternative = candidates.find((b) => b.id !== failedModelId);
-	if (!alternative) return null;
+	// Try local backends first
+	const localCandidates = modelRouter.listEligibleByTier(tier, requirements);
+	const localAlt = localCandidates.find((b) => b.id !== failedModelId);
+	if (localAlt) {
+		const backend = modelRouter.tryGetBackend(localAlt.id);
+		if (backend) {
+			return { kind: "local", backend, modelId: localAlt.id, reResolved: true };
+		}
+	}
 
-	const backend = modelRouter.tryGetBackend(alternative.id);
-	if (!backend) return null;
+	// Fall back to remote hosts with a same-tier, different model
+	const rows = db
+		.query(
+			`SELECT site_id, host_name, sync_url, models, online_at, modified_at
+			 FROM hosts WHERE deleted = 0 AND site_id != ?`,
+		)
+		.all(localSiteId) as Array<{
+		site_id: string;
+		host_name: string;
+		sync_url: string | null;
+		models: string | null;
+		online_at: string | null;
+		modified_at: string | null;
+	}>;
 
-	return { kind: "local", backend, modelId: alternative.id, reResolved: true };
+	const STALE_THRESHOLD_MS = 5 * 60 * 1000;
+	const remoteHosts: Array<EligibleHost & { modelId: string }> = [];
+
+	for (const row of rows) {
+		if (!row.models) continue;
+		const ts = row.modified_at ?? row.online_at;
+		if (!ts || Date.now() - new Date(ts).getTime() > STALE_THRESHOLD_MS) continue;
+
+		let rawModels: unknown;
+		try {
+			rawModels = JSON.parse(row.models);
+		} catch {
+			continue;
+		}
+		if (!Array.isArray(rawModels)) continue;
+
+		for (const entry of rawModels) {
+			if (!entry || typeof entry !== "object") continue;
+			const hostEntry = entry as HostModelEntry;
+			if (!hostEntry.id || hostEntry.id === failedModelId) continue;
+			if (hostEntry.tier !== tier) continue;
+
+			// Apply capability requirements if provided
+			if (requirements && hostEntry.capabilities) {
+				const caps = hostEntry.capabilities;
+				if (requirements.vision && !caps.vision) continue;
+				if (requirements.tool_use && !caps.tool_use) continue;
+				if (requirements.system_prompt && !caps.system_prompt) continue;
+				if (requirements.prompt_caching && !caps.prompt_caching) continue;
+			}
+
+			remoteHosts.push({
+				site_id: row.site_id,
+				host_name: row.host_name,
+				sync_url: row.sync_url,
+				online_at: row.online_at,
+				tier: hostEntry.tier,
+				modelId: hostEntry.id,
+			});
+		}
+	}
+
+	if (remoteHosts.length === 0) return null;
+
+	// Sort by online_at (most recent first)
+	remoteHosts.sort((a, b) => {
+		if (!a.online_at && !b.online_at) return 0;
+		if (!a.online_at) return 1;
+		if (!b.online_at) return -1;
+		return new Date(b.online_at).getTime() - new Date(a.online_at).getTime();
+	});
+
+	const best = remoteHosts[0];
+	return {
+		kind: "remote",
+		hosts: remoteHosts.map(({ modelId: _, ...host }) => host),
+		modelId: best.modelId,
+		reResolved: true,
+	};
 }
 
 /**
