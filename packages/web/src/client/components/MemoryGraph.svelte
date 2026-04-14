@@ -153,17 +153,30 @@ const layout = $derived.by(() => {
 
 				<!-- Nodes -->
 				{#each layout.positionedNodes as node}
-					<circle
-						cx={node.x}
-						cy={node.y}
-						r={node.radius}
-						fill={node.color}
-						opacity={node.opacity}
-						class="node {node.tier}"
+					<g
+						class="node-group"
 						onmouseenter={(e) => handleNodeHover(node.key, e)}
 						onmouseleave={handleNodeLeave}
 						onclick={() => handleNodeClick(node.key)}
-					/>
+					>
+						<circle
+							cx={node.x}
+							cy={node.y}
+							r={node.radius}
+							fill={node.color}
+							opacity={node.opacity}
+							class="node {node.tier}"
+						/>
+						<text
+							x={node.x}
+							y={node.y - node.radius - 4}
+							class="node-label"
+							text-anchor="middle"
+							opacity={node.opacity}
+						>
+							{node.key.length > 16 ? node.key.slice(0, 14) + "…" : node.key}
+						</text>
+					</g>
 				{/each}
 			</svg>
 
@@ -284,6 +297,7 @@ const layout = $derived.by(() => {
 		height: 28px;
 		border: 1px solid var(--bg-surface);
 		background: var(--bg-secondary);
+		color: var(--text-secondary);
 		border-radius: 4px;
 		cursor: pointer;
 		font-size: 14px;
@@ -291,7 +305,7 @@ const layout = $derived.by(() => {
 	}
 
 	.refresh-btn:hover:not(:disabled) {
-		background: rgba(15, 52, 96, 0.3);
+		background: rgba(42, 48, 68, 0.3);
 	}
 
 	.refresh-btn:disabled {
@@ -306,6 +320,8 @@ const layout = $derived.by(() => {
 		align-items: center;
 		justify-content: center;
 		padding: 16px;
+		min-height: 0;
+		position: relative;
 	}
 
 	.loading-state,
@@ -362,7 +378,7 @@ const layout = $derived.by(() => {
 	}
 
 	.error-state button:hover {
-		background: rgba(15, 52, 96, 0.3);
+		background: rgba(42, 48, 68, 0.3);
 	}
 
 	.graph-svg {
@@ -380,7 +396,6 @@ const layout = $derived.by(() => {
 	}
 
 	.node {
-		cursor: pointer;
 		transition: all 0.2s ease;
 		stroke: var(--bg-secondary);
 		stroke-width: 1;
@@ -402,8 +417,19 @@ const layout = $derived.by(() => {
 		stroke-width: 1;
 	}
 
-	.node:hover {
+	.node-group {
+		cursor: pointer;
+	}
+
+	.node-group:hover .node {
 		filter: brightness(1.2);
+	}
+
+	.node-label {
+		font-size: 8px;
+		font-family: var(--font-display);
+		fill: var(--text-secondary);
+		pointer-events: none;
 	}
 
 	.tooltip {
@@ -551,14 +577,14 @@ const layout = $derived.by(() => {
 	}
 
 	.source-link {
-		color: #0066ff;
+		color: var(--line-3);
 		text-decoration: none;
 		cursor: pointer;
 		transition: color 0.2s ease;
 	}
 
 	.source-link:hover {
-		color: #004499;
+		color: var(--line-0);
 	}
 
 	.meta-item .date {

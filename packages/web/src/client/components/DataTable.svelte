@@ -173,7 +173,7 @@ const gridTemplate = $derived(columns.map((col) => col.width || "1fr").join(" ")
 	}
 
 	.data-row:hover {
-		background: rgba(15, 52, 96, 0.15);
+		background: rgba(42, 48, 68, 0.15);
 	}
 
 	.data-cell {
@@ -192,7 +192,7 @@ const gridTemplate = $derived(columns.map((col) => col.width || "1fr").join(" ")
 	}
 
 	.expanded-row {
-		background: rgba(15, 52, 96, 0.1);
+		background: rgba(42, 48, 68, 0.1);
 		border-bottom: 1px solid var(--bg-surface);
 		padding: 12px 8px;
 		grid-column: 1 / -1;

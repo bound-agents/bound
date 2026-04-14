@@ -17,9 +17,22 @@ let selectedThreadId: string | null = $state(null);
 let mapCollapsed = $state(false);
 let creating = $state(false);
 let resizing = $state(false);
+let searchQuery = $state("");
 let panelRatio = $state(0.4);
 
 let containerEl: HTMLDivElement | null = null;
+
+const filteredThreads = $derived(
+	searchQuery.trim()
+		? threads.filter((t) => {
+				const q = searchQuery.toLowerCase();
+				return (
+					(t.title?.toLowerCase().includes(q) ?? false) ||
+					(t.summary?.toLowerCase().includes(q) ?? false)
+				);
+			})
+		: threads,
+);
 
 async function loadThreads(): Promise<void> {
 	try {
@@ -101,6 +114,12 @@ onDestroy(() => {
 <div class="system-map" bind:this={containerEl}>
 	<SectionHeader title="System Map">
 		{#snippet actions()}
+			<input
+				class="search-input"
+				type="text"
+				placeholder="Search threads..."
+				bind:value={searchQuery}
+			/>
 			<button
 				class="header-btn"
 				onclick={toggleMap}
@@ -122,7 +141,7 @@ onDestroy(() => {
 	<div class="split-view" class:map-collapsed={mapCollapsed} style={mapCollapsed ? '' : `grid-template-columns: ${(panelRatio * 100).toFixed(1)}% 4px 1fr`}>
 		<div class="thread-panel">
 			<ThreadList
-				{threads}
+				threads={filteredThreads}
 				{threadStatuses}
 				{selectedThreadId}
 				onSelectThread={(id) => (selectedThreadId = id)}
@@ -157,6 +176,27 @@ onDestroy(() => {
 		gap: 16px;
 	}
 
+	.search-input {
+		padding: 8px 12px;
+		background: var(--bg-secondary);
+		color: var(--text-primary);
+		border: 1px solid var(--bg-surface);
+		border-radius: 6px;
+		font-family: var(--font-body);
+		font-size: var(--text-sm);
+		width: 180px;
+		transition: border-color 0.2s ease;
+	}
+
+	.search-input:focus {
+		outline: none;
+		border-color: var(--line-0);
+	}
+
+	.search-input::placeholder {
+		color: var(--text-muted);
+	}
+
 	.header-btn {
 		padding: 8px 16px;
 		background: var(--bg-surface);
@@ -171,7 +211,7 @@ onDestroy(() => {
 	}
 
 	.header-btn:hover:not(:disabled) {
-		background: rgba(15, 52, 96, 0.3);
+		background: rgba(42, 48, 68, 0.3);
 		border-color: var(--line-0);
 	}
 

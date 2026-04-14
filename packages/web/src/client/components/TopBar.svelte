@@ -153,7 +153,7 @@ onDestroy(() => {
 	}
 
 	.nav-btn:hover {
-		background: rgba(15, 52, 96, 0.5);
+		background: rgba(42, 48, 68, 0.5);
 		color: var(--text-primary);
 	}
 
@@ -211,7 +211,7 @@ onDestroy(() => {
 	}
 
 	.indicators:hover {
-		background: rgba(15, 52, 96, 0.5);
+		background: rgba(42, 48, 68, 0.5);
 		color: var(--text-primary);
 	}
 

@@ -15,6 +15,22 @@ interface Props {
 let { threads, threadStatuses, selectedThreadId, onSelectThread, onNavigateThread }: Props =
 	$props();
 
+function sanitizeTitle(title: string | null): string {
+	if (!title || title.trim() === "" || title === ".") return "Untitled";
+	let clean = title
+		.replace(/<tool_call>[\s\S]*/g, "") // strip tool_call blocks
+		.replace(/<\/?[^>]+>/g, "") // strip XML/HTML tags
+		.replace(/#+\s+/g, " ") // strip markdown header markers (inline too)
+		.replace(/\*\*/g, "") // strip bold markers
+		.replace(/\*([^*]*)\*/g, "$1") // strip italic markers
+		.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1") // strip markdown links
+		.replace(/`([^`]*)`/g, "$1") // strip inline code
+		.replace(/\s+/g, " ") // collapse whitespace
+		.trim();
+	if (!clean || clean === ".") return "Untitled";
+	return clean;
+}
+
 // Enhanced threads with message count and last model (can be added if API supports)
 interface EnhancedThread extends Thread {
 	messageCount?: number;
@@ -58,14 +74,12 @@ const threadGroups = $derived.by(() => {
 
 function handleThreadClick(threadId: string) {
 	onSelectThread?.(threadId);
-}
-
-function handleThreadDoubleClick(threadId: string) {
 	onNavigateThread?.(threadId);
 }
 
 function handleThreadKeydown(e: KeyboardEvent, threadId: string) {
 	if (e.key === "Enter") {
+		onSelectThread?.(threadId);
 		onNavigateThread?.(threadId);
 	}
 }
@@ -85,7 +99,6 @@ function handleThreadKeydown(e: KeyboardEvent, threadId: string) {
 					class="thread-item"
 					class:selected={selectedThreadId === thread.id}
 					onclick={() => handleThreadClick(thread.id)}
-					ondblclick={() => handleThreadDoubleClick(thread.id)}
 					onkeydown={(e) => handleThreadKeydown(e, thread.id)}
 					role="button"
 					tabindex="0"
@@ -104,9 +117,9 @@ function handleThreadKeydown(e: KeyboardEvent, threadId: string) {
 									<div class="thread-title-area">
 										<h3
 											class="thread-title"
-											title={thread.title ?? "Untitled"}
+											title={sanitizeTitle(thread.title)}
 										>
-											{thread.title ?? "Untitled"}
+											{sanitizeTitle(thread.title)}
 										</h3>
 									</div>
 								</div>
@@ -259,7 +272,7 @@ function handleThreadKeydown(e: KeyboardEvent, threadId: string) {
 	}
 
 	.thread-item.selected :global(.metro-card) {
-		background: rgba(15, 52, 96, 0.5);
+		background: rgba(42, 48, 68, 0.5);
 	}
 
 	.empty-state {

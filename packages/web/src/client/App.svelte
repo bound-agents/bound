@@ -54,13 +54,13 @@ onMount(() => {
 		--line-8: #9C5E31;   /* Fukutoshin (F)   — brown    */
 		--line-9: #B6007A;   /* Oedo (E)         — ruby     */
 
-		/* Surface */
-		--bg-primary: #1A1A2E;
-		--bg-secondary: #16213E;
-		--bg-surface: #0F3460;
-		--text-primary: #E8E8E8;
-		--text-secondary: #A0A0B0;
-		--text-muted: #6B6B80;
+		/* Surface — warm slate to let metro colors pop */
+		--bg-primary: #191C24;
+		--bg-secondary: #1E2230;
+		--bg-surface: #2A3044;
+		--text-primary: #F0ECE6;
+		--text-secondary: #ADA8A0;
+		--text-muted: #706B66;
 
 		/* Semantic */
 		--alert-disruption: #FF1744;
@@ -112,7 +112,7 @@ onMount(() => {
 	}
 
 	:global(::-webkit-scrollbar-thumb:hover) {
-		background: #1a4a8a;
+		background: #3a4060;
 	}
 
 	:global(*) {
