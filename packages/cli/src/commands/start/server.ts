@@ -4,7 +4,12 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { createRelayOutboxEntry, generateThreadTitle, getDelegationTarget } from "@bound/agent";
+import {
+	createRelayOutboxEntry,
+	generateThreadTitle,
+	getDelegationTarget,
+	resolveModel,
+} from "@bound/agent";
 import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
@@ -350,9 +355,9 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 						// Resolve the model for this thread: prefer the model that was
 						// previously in use (from the last assistant message) over the
-						// node's default. This prevents silent model switches when a
-						// thread's usual model is unavailable via relay and the local
-						// default differs (e.g., hub default=glm-4.7 but thread used opus).
+						// node's default. This ensures threads recover to their established
+						// model when the host comes back online (e.g., opus via relay),
+						// while gracefully degrading to the node's default when unavailable.
 						const lastThreadModel = appContext.db
 							.prepare(
 								`SELECT model_id FROM messages
@@ -361,7 +366,29 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								 ORDER BY created_at DESC LIMIT 1`,
 							)
 							.get(thread_id) as { model_id: string } | null;
-						const activeModelId = lastThreadModel?.model_id || routerConfig.default;
+						let activeModelId = routerConfig.default;
+						if (lastThreadModel?.model_id && lastThreadModel.model_id !== routerConfig.default) {
+							// Thread was using a different model — check if it's still reachable
+							const threadModelResolution = resolveModel(
+								lastThreadModel.model_id,
+								modelRouter,
+								appContext.db,
+								appContext.siteId,
+							);
+							if (threadModelResolution.kind !== "error") {
+								activeModelId = lastThreadModel.model_id;
+							} else {
+								appContext.logger.warn(
+									"[agent] Thread model unavailable, degrading to node default",
+									{
+										threadId: thread_id,
+										threadModel: lastThreadModel.model_id,
+										nodeDefault: routerConfig.default,
+										reason: threadModelResolution.error,
+									},
+								);
+							}
+						}
 
 						const delegationTarget = getDelegationTarget(
 							appContext.db,
