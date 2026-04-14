@@ -208,31 +208,22 @@ export class AgentLoop {
 			});
 
 			if (this.lastModelResolution.kind === "error" && this.config.modelId !== undefined) {
-				const fallbackResolution = resolveModel(
-					undefined,
-					this.modelRouter,
+				const errorMsg = `Failed to resolve requested model "${this.config.modelId}": ${this.lastModelResolution.error}`;
+				this.ctx.logger.warn("[agent-loop] Model hint failed, aborting task", {
+					requestedModel: this.config.modelId,
+					reason: this.lastModelResolution.reason,
+				});
+				insertThreadMessage(
 					this.ctx.db,
+					{
+						threadId: this.config.threadId,
+						role: "alert",
+						content: errorMsg,
+						hostOrigin: this.ctx.siteId,
+					},
 					this.ctx.siteId,
-					requirements,
 				);
-				if (fallbackResolution.kind !== "error") {
-					const warningMsg = `Model "${this.config.modelId}" is unavailable (${this.lastModelResolution.error}). Falling back to default model "${fallbackResolution.modelId}".`;
-					this.ctx.logger.warn("[agent-loop] Model hint unavailable, falling back to default", {
-						requestedModel: this.config.modelId,
-						fallbackModel: fallbackResolution.modelId,
-					});
-					insertThreadMessage(
-						this.ctx.db,
-						{
-							threadId: this.config.threadId,
-							role: "alert",
-							content: warningMsg,
-							hostOrigin: this.ctx.siteId,
-						},
-						this.ctx.siteId,
-					);
-					this.lastModelResolution = fallbackResolution;
-				}
+				throw new Error(errorMsg);
 			}
 
 			let relayInfo:

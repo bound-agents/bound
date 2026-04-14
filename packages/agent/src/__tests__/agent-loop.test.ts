@@ -1137,10 +1137,10 @@ describe("AgentLoop", () => {
 		}
 	});
 
-	// Model unavailability: when a model_hint can't be resolved, fall back to default
-	it("falls back to default model when model-hint is unavailable, persisting a warning alert", async () => {
+	// Model unavailability: when a model_hint can't be resolved, fail the task
+	it("fails the task when model-hint is unavailable instead of silently falling back", async () => {
 		const mockBackend = new MockLLMBackend();
-		mockBackend.setTextResponse("Completed with fallback model.");
+		mockBackend.setTextResponse("Should not be called.");
 
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
@@ -1154,11 +1154,12 @@ describe("AgentLoop", () => {
 
 		const result = await agentLoop.run();
 
-		// Should succeed via fallback — no error
-		expect(result.error).toBeUndefined();
-		expect(result.messagesCreated).toBeGreaterThan(0);
+		// Should fail — no silent fallback to default model
+		expect(result.error).toBeDefined();
+		expect(result.error).toContain("nonexistent-model");
+		expect(result.messagesCreated).toBe(0);
 
-		// A warning alert should have been persisted describing the fallback
+		// An alert should have been persisted describing the failure
 		const alerts = db
 			.query(
 				"SELECT content FROM messages WHERE thread_id = ? AND role = 'alert' ORDER BY created_at ASC",
@@ -1167,7 +1168,7 @@ describe("AgentLoop", () => {
 
 		expect(alerts.length).toBeGreaterThan(0);
 		expect(alerts[0].content).toContain("nonexistent-model");
-		expect(alerts[0].content).toContain("claude-opus");
+		expect(alerts[0].content).toContain("Failed to resolve");
 	});
 
 	it("should dispatch to platformTools when tool name matches (AC3.1)", async () => {
