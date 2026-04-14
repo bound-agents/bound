@@ -3,6 +3,7 @@ import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import { createAdvisoriesRoutes } from "./advisories";
 import { createFilesRoutes } from "./files";
 import { createMcpRoutes } from "./mcp";
+import { createMemoryRoutes } from "./memory";
 import { createMessagesRoutes } from "./messages";
 import { type ModelsConfig, createStatusRoutes } from "./status";
 import { createTasksRoutes } from "./tasks";
@@ -41,6 +42,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		),
 		messages: createMessagesRoutes(db, eventBus),
 		files: createFilesRoutes(db),
+		memory: createMemoryRoutes(db),
 		status: createStatusRoutes(db, eventBus, hostName, siteId, modelsConfig, activeDelegations),
 		tasks: createTasksRoutes(db),
 		advisories: createAdvisoriesRoutes(db),

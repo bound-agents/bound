@@ -38,6 +38,28 @@ export interface Task {
 	error: string | null;
 }
 
+export interface MemoryGraphNode {
+	key: string;
+	value: string;
+	tier: "pinned" | "summary" | "default" | "detail";
+	source: string | null;
+	sourceThreadTitle: string | null;
+	lineIndex: number | null;
+	modifiedAt: string;
+}
+
+export interface MemoryGraphEdge {
+	sourceKey: string;
+	targetKey: string;
+	relation: string;
+	modifiedAt: string;
+}
+
+export interface MemoryGraphResponse {
+	nodes: MemoryGraphNode[];
+	edges: MemoryGraphEdge[];
+}
+
 export interface ContextDebugTurn {
 	turn_id: number;
 	model_id: string;
@@ -124,9 +146,7 @@ export const api = {
 		return fetchJson<ContextDebugTurn[]>(`/api/threads/${threadId}/context-debug`);
 	},
 
-	async getInterchange(): Promise<Record<string, Array<{ threadId: string; color: number }>>> {
-		return fetchJson<Record<string, Array<{ threadId: string; color: number }>>>(
-			"/api/threads/interchange",
-		);
+	async getMemoryGraph(): Promise<MemoryGraphResponse> {
+		return fetchJson<MemoryGraphResponse>("/api/memory/graph");
 	},
 };

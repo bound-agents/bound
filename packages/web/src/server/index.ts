@@ -86,6 +86,7 @@ export async function createWebApp(
 	app.route("/api/threads", routes.threads);
 	app.route("/api/threads", routes.messages);
 	app.route("/api/files", routes.files);
+	app.route("/api/memory", routes.memory);
 	app.route("/api/status", routes.status);
 	app.route("/api/tasks", routes.tasks);
 	app.route("/api/advisories", routes.advisories);

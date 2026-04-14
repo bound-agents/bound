@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
-import { applySchema, createDatabase } from "@bound/core";
+import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Hono } from "hono";
 import { createWebApp } from "../index";
@@ -13,6 +13,7 @@ describe("API Routes", () => {
 	beforeEach(async () => {
 		db = createDatabase(":memory:");
 		applySchema(db);
+		applyMetricsSchema(db);
 		eventBus = new TypedEventEmitter();
 		app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
 	});
@@ -26,6 +27,133 @@ describe("API Routes", () => {
 			const data = await response.json();
 			expect(Array.isArray(data)).toBe(true);
 			expect(data.length).toBe(0);
+		});
+	});
+
+	describe("GET /api/threads - enhanced fields", () => {
+		it("includes messageCount for threads with messages", async () => {
+			// Create a thread via API
+			const createRequest = new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({}),
+			});
+			const createResponse = await app.fetch(createRequest);
+			const thread = await createResponse.json();
+
+			// Insert 3 messages for the thread
+			const now = new Date().toISOString();
+			for (let i = 0; i < 3; i++) {
+				db.run(
+					`INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+					[`msg-${i}`, thread.id, "user", `message ${i}`, now, now, "localhost", 0],
+				);
+			}
+
+			// Fetch threads list
+			const request = new Request("http://localhost:3000/api/threads");
+			const response = await app.fetch(request);
+			const threads = await response.json();
+
+			expect(threads.length).toBe(1);
+			expect(threads[0].messageCount).toBe(3);
+		});
+
+		it("returns messageCount as 0 for threads with no messages", async () => {
+			// Create a thread via API (without inserting messages)
+			const createRequest = new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({}),
+			});
+			await app.fetch(createRequest);
+
+			// Fetch threads list
+			const request = new Request("http://localhost:3000/api/threads");
+			const response = await app.fetch(request);
+			const threads = await response.json();
+
+			expect(threads.length).toBe(1);
+			expect(threads[0].messageCount).toBe(0);
+		});
+
+		it("includes lastModel from most recent turn", async () => {
+			// Create a thread via API
+			const createRequest = new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({}),
+			});
+			const createResponse = await app.fetch(createRequest);
+			const thread = await createResponse.json();
+
+			// Insert a turn with model_id = "opus"
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, created_at)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[thread.id, "opus", 100, 50, now],
+			);
+
+			// Fetch threads list
+			const request = new Request("http://localhost:3000/api/threads");
+			const response = await app.fetch(request);
+			const threads = await response.json();
+
+			expect(threads.length).toBe(1);
+			expect(threads[0].lastModel).toBe("opus");
+		});
+
+		it("returns lastModel as null for threads with no turns", async () => {
+			// Create a thread via API (without inserting turns)
+			const createRequest = new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({}),
+			});
+			await app.fetch(createRequest);
+
+			// Fetch threads list
+			const request = new Request("http://localhost:3000/api/threads");
+			const response = await app.fetch(request);
+			const threads = await response.json();
+
+			expect(threads.length).toBe(1);
+			expect(threads[0].lastModel).toBeNull();
+		});
+
+		it("returns lastModel from most recent turn when multiple turns exist", async () => {
+			// Create a thread via API
+			const createRequest = new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({}),
+			});
+			const createResponse = await app.fetch(createRequest);
+			const thread = await createResponse.json();
+
+			// Insert multiple turns with different models
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, created_at)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[thread.id, "gpt-4", 100, 50, now],
+			);
+			db.run(
+				`INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, created_at)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[thread.id, "claude", 200, 100, now],
+			);
+
+			// Fetch threads list
+			const request = new Request("http://localhost:3000/api/threads");
+			const response = await app.fetch(request);
+			const threads = await response.json();
+
+			expect(threads.length).toBe(1);
+			// Should be "claude" since it has the highest id (most recent)
+			expect(threads[0].lastModel).toBe("claude");
 		});
 	});
 

@@ -233,9 +233,9 @@ function download(): void {
 	.modal-panel {
 		position: relative;
 		z-index: 1;
-		background: var(--bg-primary);
-		border: 1px solid rgba(0, 155, 191, 0.2);
-		border-radius: 12px;
+		background: var(--bg-secondary);
+		border: 1px solid var(--bg-surface);
+		border-radius: 8px;
 		width: 100%;
 		max-width: 900px;
 		max-height: calc(100vh - 80px);
@@ -243,6 +243,7 @@ function download(): void {
 		flex-direction: column;
 		overflow: hidden;
 		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+		padding: 0;
 	}
 
 	.modal-panel:focus {
@@ -253,8 +254,8 @@ function download(): void {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: 16px 24px;
-		border-bottom: 1px solid rgba(0, 155, 191, 0.15);
+		padding: 16px;
+		border-bottom: 1px solid var(--bg-surface);
 		flex-shrink: 0;
 	}
 
@@ -281,8 +282,8 @@ function download(): void {
 		align-items: center;
 		gap: 6px;
 		padding: 6px 12px;
-		background: transparent;
-		border: 1px solid rgba(0, 155, 191, 0.2);
+		background: var(--bg-surface);
+		border: 1px solid var(--bg-surface);
 		border-radius: 6px;
 		color: var(--text-secondary);
 		font-family: var(--font-display);
@@ -308,8 +309,8 @@ function download(): void {
 		justify-content: center;
 		width: 32px;
 		height: 32px;
-		background: transparent;
-		border: 1px solid transparent;
+		background: var(--bg-surface);
+		border: 1px solid var(--bg-surface);
 		border-radius: 6px;
 		color: var(--text-muted);
 		cursor: pointer;

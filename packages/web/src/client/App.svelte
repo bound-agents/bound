@@ -6,7 +6,6 @@ import FilesView from "./views/FilesView.svelte";
 import LineView from "./views/LineView.svelte";
 import NetworkStatus from "./views/NetworkStatus.svelte";
 import SystemMap from "./views/SystemMap.svelte";
-import TaskDetailView from "./views/TaskDetailView.svelte";
 import Timetable from "./views/Timetable.svelte";
 
 let route = $state(window.location.hash.slice(1) || "/");
@@ -26,8 +25,6 @@ onMount(() => {
 				<SystemMap />
 			{:else if route.startsWith("/line/")}
 				<LineView threadId={route.split("/")[2]} />
-			{:else if route.startsWith("/task/")}
-				<TaskDetailView taskId={route.split("/")[2]} />
 			{:else if route === "/timetable"}
 				<Timetable />
 			{:else if route === "/network"}

@@ -1,35 +1,30 @@
 <script lang="ts">
+import type { Advisory } from "@bound/shared";
 import { ChevronDown } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
-
-interface Advisory {
-	id: string;
-	type: string;
-	status: string;
-	title: string;
-	detail: string;
-	action: string | null;
-	impact: string | null;
-	evidence: string | null;
-	proposed_at: string;
-	defer_until: string | null;
-	resolved_at: string | null;
-	created_by: string | null;
-	modified_at: string;
-}
+import { LineBadge, MetroCard, SectionHeader, StatusChip } from "../components/shared";
+import { type DedupedAdvisory, deduplicateAdvisories } from "../lib/advisory-utils";
 
 let advisories: Advisory[] = $state([]);
 let loading = $state(true);
 let expandedId = $state<string | null>(null);
-let filterStatus = $state("");
+let resolvedExpanded = $state(false);
 let actionInProgress = $state<string | null>(null);
+let hostNameMap = $state<Map<string, string>>(new Map());
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
+const deduped = $derived(deduplicateAdvisories(advisories));
+const unresolved = $derived(
+	deduped.filter((a) => ["proposed", "approved"].includes(a.representative.status)),
+);
+const resolved = $derived(
+	deduped.filter((a) => !["proposed", "approved"].includes(a.representative.status)),
+);
+
 async function loadAdvisories(): Promise<void> {
 	try {
-		const url = filterStatus ? `/api/advisories?status=${filterStatus}` : "/api/advisories";
-		const response = await fetch(url);
+		const response = await fetch("/api/advisories");
 		if (response.ok) {
 			advisories = await response.json();
 		}
@@ -39,19 +34,35 @@ async function loadAdvisories(): Promise<void> {
 	loading = false;
 }
 
+async function loadNetworkStatus(): Promise<void> {
+	try {
+		const response = await fetch("/api/status/network");
+		if (response.ok) {
+			const data = await response.json();
+			if (Array.isArray(data.hosts)) {
+				const map = new Map<string, string>();
+				for (const host of data.hosts) {
+					if (host.site_id && host.host_name) {
+						map.set(host.site_id, host.host_name);
+					}
+				}
+				hostNameMap = map;
+			}
+		}
+	} catch (error) {
+		console.error("Failed to load network status:", error);
+	}
+}
+
 onMount(() => {
 	loadAdvisories();
+	loadNetworkStatus();
 	pollInterval = setInterval(loadAdvisories, 5000);
 });
 
 onDestroy(() => {
 	if (pollInterval !== null) clearInterval(pollInterval);
 });
-
-function handleFilterChange(): void {
-	loading = true;
-	loadAdvisories();
-}
 
 async function performAction(id: string, action: string): Promise<void> {
 	actionInProgress = `${id}:${action}`;
@@ -74,51 +85,6 @@ function toggleExpand(id: string): void {
 	expandedId = expandedId === id ? null : id;
 }
 
-function statusClass(status: string): string {
-	switch (status) {
-		case "proposed":
-			return "badge-proposed";
-		case "approved":
-			return "badge-approved";
-		case "dismissed":
-			return "badge-dismissed";
-		case "deferred":
-			return "badge-deferred";
-		case "applied":
-			return "badge-applied";
-		default:
-			return "badge-unknown";
-	}
-}
-
-function typeIcon(type: string): string {
-	switch (type) {
-		case "cost":
-			return "$";
-		case "frequency":
-			return "~";
-		case "memory":
-			return "M";
-		case "model":
-			return "A";
-		case "general":
-			return "*";
-		default:
-			return "?";
-	}
-}
-
-function relativeTime(iso: string): string {
-	const diff = Date.now() - new Date(iso).getTime();
-	const mins = Math.floor(diff / 60_000);
-	if (mins < 0 || mins < 1) return "just now";
-	if (mins < 60) return `${mins}m ago`;
-	const hours = Math.floor(mins / 60);
-	if (hours < 24) return `${hours}h ago`;
-	const days = Math.floor(hours / 24);
-	return `${days}d ago`;
-}
-
 function isActionInProgress(id: string, action: string): boolean {
 	return actionInProgress === `${id}:${action}`;
 }
@@ -139,27 +105,65 @@ function canApply(status: string): boolean {
 	return status === "approved";
 }
 
-const proposedCount = $derived(advisories.filter((a) => a.status === "proposed").length);
+function relativeTime(iso: string): string {
+	const diff = Date.now() - new Date(iso).getTime();
+	const mins = Math.floor(diff / 60_000);
+	if (mins < 0 || mins < 1) return "just now";
+	if (mins < 60) return `${mins}m ago`;
+	const hours = Math.floor(mins / 60);
+	if (hours < 24) return `${hours}h ago`;
+	const days = Math.floor(hours / 24);
+	return `${days}d ago`;
+}
+
+function getLineIndex(siteId: string | null): number {
+	if (!siteId) return 0;
+	const hash = siteId.split("").reduce((h, c) => h + c.charCodeAt(0), 0);
+	return hash % 10;
+}
+
+function getSourceBadgeLabel(advisory: Advisory): string {
+	const hostName = advisory.created_by ? hostNameMap.get(advisory.created_by) : null;
+	return hostName || "unknown";
+}
+
+function getStatusColor(status: string): string {
+	switch (status) {
+		case "proposed":
+			return "var(--alert-warning)";
+		case "approved":
+			return "var(--status-active)";
+		case "dismissed":
+			return "var(--text-muted)";
+		case "deferred":
+			return "var(--line-3)";
+		case "applied":
+			return "var(--line-6)";
+		default:
+			return "var(--text-muted)";
+	}
+}
+
+function getSeverityBandClass(status: string): string {
+	switch (status) {
+		case "proposed":
+			return "severity-band-proposed";
+		case "approved":
+			return "severity-band-approved";
+		case "dismissed":
+			return "severity-band-dismissed";
+		case "deferred":
+			return "severity-band-deferred";
+		case "applied":
+			return "severity-band-applied";
+		default:
+			return "";
+	}
+}
 </script>
 
 <div class="advisory-view">
-	<div class="advisory-header">
-		<h1>Advisories</h1>
-		<span class="subtitle">Service Notices</span>
-		{#if proposedCount > 0}
-			<span class="pending-count">{proposedCount} pending</span>
-		{/if}
-		<div class="filter-area">
-			<select bind:value={filterStatus} onchange={handleFilterChange} class="filter-select" aria-label="Filter by status">
-				<option value="">All Statuses</option>
-				<option value="proposed">Proposed</option>
-				<option value="approved">Approved</option>
-				<option value="dismissed">Dismissed</option>
-				<option value="deferred">Deferred</option>
-				<option value="applied">Applied</option>
-			</select>
-		</div>
-	</div>
+	<SectionHeader title="Advisories" subtitle="Service Notices" />
 
 	{#if loading}
 		<div class="loading-state">
@@ -176,124 +180,278 @@ const proposedCount = $derived(advisories.filter((a) => a.status === "proposed")
 			<p>No advisories found.</p>
 		</div>
 	{:else}
-		<div class="advisory-list">
-			{#each advisories as advisory}
-				<div class="advisory-card" class:card-proposed={advisory.status === "proposed"} class:card-expanded={expandedId === advisory.id}>
-					<button
-						class="card-main"
-						onclick={() => toggleExpand(advisory.id)}
-					>
-						<div class="card-left">
-							<div class="type-badge" title={advisory.type}>
-								<span class="type-icon">{typeIcon(advisory.type)}</span>
-							</div>
-							<div class="card-info">
-								<span class="card-title">{advisory.title}</span>
-								<span class="card-meta">
-									<span class="status-badge {statusClass(advisory.status)}">{advisory.status}</span>
-									<span class="card-time">{relativeTime(advisory.proposed_at)}</span>
-									{#if advisory.created_by}
-										<span class="card-author">by {advisory.created_by}</span>
+		<div class="advisory-sections">
+			{#if unresolved.length > 0}
+				<div class="section">
+					<h2 class="section-title">Unresolved</h2>
+					<div class="advisory-list">
+						{#each unresolved as dedup (dedup.representative.id)}
+							<div class={getSeverityBandClass(dedup.representative.status)}>
+								<MetroCard>
+									<button
+										class="card-main"
+										onclick={() => toggleExpand(dedup.representative.id)}
+									>
+										<div class="card-left">
+											<LineBadge
+												lineIndex={getLineIndex(dedup.representative.created_by)}
+												size="standard"
+											/>
+											<div class="card-info">
+												<div class="card-title-row">
+													<span class="card-title">{dedup.representative.title}</span>
+													{#if dedup.count > 1}
+														<span class="count-badge">×{dedup.count}</span>
+													{/if}
+												</div>
+												<div class="card-meta">
+													<StatusChip
+														status={dedup.representative.status}
+														label={dedup.representative.status.toUpperCase()}
+													/>
+													<span class="card-time">{relativeTime(dedup.representative.proposed_at)}</span>
+													<span class="card-source">
+														from {getSourceBadgeLabel(dedup.representative)}
+													</span>
+												</div>
+											</div>
+										</div>
+										<div class="card-right">
+											<span class="expand-icon" class:rotated={expandedId === dedup.representative.id}>
+												<ChevronDown size={12} />
+											</span>
+										</div>
+									</button>
+
+									{#if expandedId === dedup.representative.id}
+										<div class="card-expanded-content">
+											<div class="detail-section">
+												<h4>Detail</h4>
+												<p class="detail-text">{dedup.representative.detail}</p>
+											</div>
+
+											{#if dedup.representative.action}
+												<div class="detail-section">
+													<h4>Recommended Action</h4>
+													<p class="detail-text">{dedup.representative.action}</p>
+												</div>
+											{/if}
+
+											{#if dedup.representative.impact}
+												<div class="detail-section">
+													<h4>Impact</h4>
+													<p class="detail-text">{dedup.representative.impact}</p>
+												</div>
+											{/if}
+
+											{#if dedup.representative.evidence}
+												<div class="detail-section">
+													<h4>Evidence</h4>
+													<pre class="evidence-block">{dedup.representative.evidence}</pre>
+												</div>
+											{/if}
+
+											{#if dedup.representative.defer_until}
+												<div class="detail-section">
+													<h4>Deferred Until</h4>
+													<p class="detail-text">
+														{new Date(dedup.representative.defer_until).toLocaleString()}
+													</p>
+												</div>
+											{/if}
+
+											{#if dedup.count > 1}
+												<div class="detail-section">
+													<h4>Sources ({dedup.count})</h4>
+													<div class="sources-list">
+														{#each dedup.sources as source}
+															<div class="source-item">
+																<span class="source-time">
+																	{relativeTime(source.proposed_at)}
+																</span>
+																{#if source.created_by && hostNameMap.has(source.created_by)}
+																	<span class="source-host">
+																		{hostNameMap.get(source.created_by)}
+																	</span>
+																{/if}
+															</div>
+														{/each}
+													</div>
+												</div>
+											{/if}
+
+											<div class="action-bar">
+												{#if canApprove(dedup.representative.status)}
+													<button
+														class="action-btn"
+														onclick={() => performAction(dedup.representative.id, "approve")}
+														disabled={actionInProgress !== null}
+													>
+														{isActionInProgress(dedup.representative.id, "approve") ? "..." : "Approve"}
+													</button>
+												{/if}
+												{#if canDismiss(dedup.representative.status)}
+													<button
+														class="action-btn"
+														onclick={() => performAction(dedup.representative.id, "dismiss")}
+														disabled={actionInProgress !== null}
+													>
+														{isActionInProgress(dedup.representative.id, "dismiss") ? "..." : "Dismiss"}
+													</button>
+												{/if}
+												{#if canDefer(dedup.representative.status)}
+													<button
+														class="action-btn"
+														onclick={() => performAction(dedup.representative.id, "defer")}
+														disabled={actionInProgress !== null}
+													>
+														{isActionInProgress(dedup.representative.id, "defer") ? "..." : "Defer"}
+													</button>
+												{/if}
+												{#if canApply(dedup.representative.status)}
+													<button
+														class="action-btn"
+														onclick={() => performAction(dedup.representative.id, "apply")}
+														disabled={actionInProgress !== null}
+													>
+														{isActionInProgress(dedup.representative.id, "apply") ? "..." : "Apply"}
+													</button>
+												{/if}
+											</div>
+
+											<div class="card-footer-meta">
+												<span class="footer-id" title={dedup.representative.id}>
+													ID: {dedup.representative.id.substring(0, 8)}
+												</span>
+												<span class="footer-modified">
+													Modified: {relativeTime(dedup.representative.modified_at)}
+												</span>
+											</div>
+										</div>
 									{/if}
-								</span>
+								</MetroCard>
 							</div>
-						</div>
-						<div class="card-right">
-							<span class="expand-icon" class:rotated={expandedId === advisory.id}>
-								<ChevronDown size={12} />
-							</span>
-						</div>
+						{/each}
+					</div>
+				</div>
+			{/if}
+
+			{#if resolved.length > 0}
+				<div class="section resolved-section">
+					<button class="section-toggle" onclick={() => (resolvedExpanded = !resolvedExpanded)}>
+						<h2 class="section-title">
+							Resolved ({resolved.length})
+						</h2>
+						<span class="toggle-icon" class:rotated={resolvedExpanded}>
+							<ChevronDown size={16} />
+						</span>
 					</button>
 
-					{#if expandedId === advisory.id}
-						<div class="card-expanded-content">
-							<div class="detail-section">
-								<h4>Detail</h4>
-								<p class="detail-text">{advisory.detail}</p>
-							</div>
+					{#if resolvedExpanded}
+						<div class="advisory-list">
+							{#each resolved as dedup (dedup.representative.id)}
+								<div class={getSeverityBandClass(dedup.representative.status)}>
+									<MetroCard>
+										<button
+											class="card-main"
+											onclick={() => toggleExpand(dedup.representative.id)}
+										>
+											<div class="card-left">
+												<LineBadge
+													lineIndex={getLineIndex(dedup.representative.created_by)}
+													size="standard"
+												/>
+												<div class="card-info">
+													<div class="card-title-row">
+														<span class="card-title">{dedup.representative.title}</span>
+														{#if dedup.count > 1}
+															<span class="count-badge">×{dedup.count}</span>
+														{/if}
+													</div>
+													<div class="card-meta">
+														<StatusChip
+															status={dedup.representative.status}
+															label={dedup.representative.status.toUpperCase()}
+														/>
+														<span class="card-time">{relativeTime(dedup.representative.proposed_at)}</span>
+														<span class="card-source">
+															from {getSourceBadgeLabel(dedup.representative)}
+														</span>
+													</div>
+												</div>
+											</div>
+											<div class="card-right">
+												<span class="expand-icon" class:rotated={expandedId === dedup.representative.id}>
+													<ChevronDown size={12} />
+												</span>
+											</div>
+										</button>
 
-							{#if advisory.action}
-								<div class="detail-section">
-									<h4>Recommended Action</h4>
-									<p class="detail-text">{advisory.action}</p>
+										{#if expandedId === dedup.representative.id}
+											<div class="card-expanded-content">
+												<div class="detail-section">
+													<h4>Detail</h4>
+													<p class="detail-text">{dedup.representative.detail}</p>
+												</div>
+
+												{#if dedup.representative.action}
+													<div class="detail-section">
+														<h4>Recommended Action</h4>
+														<p class="detail-text">{dedup.representative.action}</p>
+													</div>
+												{/if}
+
+												{#if dedup.representative.impact}
+													<div class="detail-section">
+														<h4>Impact</h4>
+														<p class="detail-text">{dedup.representative.impact}</p>
+													</div>
+												{/if}
+
+												{#if dedup.representative.evidence}
+													<div class="detail-section">
+														<h4>Evidence</h4>
+														<pre class="evidence-block">{dedup.representative.evidence}</pre>
+													</div>
+												{/if}
+
+												{#if dedup.representative.resolved_at}
+													<div class="detail-section">
+														<h4>Resolved At</h4>
+														<p class="detail-text">
+															{new Date(dedup.representative.resolved_at).toLocaleString()}
+														</p>
+													</div>
+												{/if}
+
+												{#if dedup.count > 1}
+													<div class="detail-section">
+														<h4>Sources ({dedup.count})</h4>
+														<div class="sources-list">
+															{#each dedup.sources as source}
+																<div class="source-item">
+																	<span class="source-time">
+																		{relativeTime(source.proposed_at)}
+																	</span>
+																	{#if source.created_by && hostNameMap.has(source.created_by)}
+																		<span class="source-host">
+																			{hostNameMap.get(source.created_by)}
+																		</span>
+																	{/if}
+																</div>
+															{/each}
+														</div>
+													</div>
+												{/if}
+											</div>
+										{/if}
+									</MetroCard>
 								</div>
-							{/if}
-
-							{#if advisory.impact}
-								<div class="detail-section">
-									<h4>Impact</h4>
-									<p class="detail-text">{advisory.impact}</p>
-								</div>
-							{/if}
-
-							{#if advisory.evidence}
-								<div class="detail-section">
-									<h4>Evidence</h4>
-									<pre class="evidence-block">{advisory.evidence}</pre>
-								</div>
-							{/if}
-
-							{#if advisory.defer_until}
-								<div class="detail-section">
-									<h4>Deferred Until</h4>
-									<p class="detail-text">{new Date(advisory.defer_until).toLocaleString()}</p>
-								</div>
-							{/if}
-
-							{#if advisory.resolved_at}
-								<div class="detail-section">
-									<h4>Resolved At</h4>
-									<p class="detail-text">{new Date(advisory.resolved_at).toLocaleString()}</p>
-								</div>
-							{/if}
-
-							<div class="action-bar">
-								{#if canApprove(advisory.status)}
-									<button
-										class="action-btn approve-btn"
-										onclick={() => performAction(advisory.id, "approve")}
-										disabled={actionInProgress !== null}
-									>
-										{isActionInProgress(advisory.id, "approve") ? "..." : "Approve"}
-									</button>
-								{/if}
-								{#if canDismiss(advisory.status)}
-									<button
-										class="action-btn dismiss-btn"
-										onclick={() => performAction(advisory.id, "dismiss")}
-										disabled={actionInProgress !== null}
-									>
-										{isActionInProgress(advisory.id, "dismiss") ? "..." : "Dismiss"}
-									</button>
-								{/if}
-								{#if canDefer(advisory.status)}
-									<button
-										class="action-btn defer-btn"
-										onclick={() => performAction(advisory.id, "defer")}
-										disabled={actionInProgress !== null}
-									>
-										{isActionInProgress(advisory.id, "defer") ? "..." : "Defer"}
-									</button>
-								{/if}
-								{#if canApply(advisory.status)}
-									<button
-										class="action-btn apply-btn"
-										onclick={() => performAction(advisory.id, "apply")}
-										disabled={actionInProgress !== null}
-									>
-										{isActionInProgress(advisory.id, "apply") ? "..." : "Apply"}
-									</button>
-								{/if}
-							</div>
-
-							<div class="card-footer-meta">
-								<span class="footer-id" title={advisory.id}>ID: {advisory.id.substring(0, 8)}</span>
-								<span class="footer-modified">Modified: {relativeTime(advisory.modified_at)}</span>
-							</div>
+							{/each}
 						</div>
 					{/if}
 				</div>
-			{/each}
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -306,67 +464,6 @@ const proposedCount = $derived(advisories.filter((a) => a.status === "proposed")
 		flex: 1;
 		overflow-y: auto;
 		min-height: 0;
-	}
-
-	.advisory-header {
-		display: flex;
-		align-items: baseline;
-		gap: 16px;
-		margin-bottom: 32px;
-		flex-wrap: wrap;
-	}
-
-	h1 {
-		margin: 0;
-		color: var(--text-primary);
-		font-family: var(--font-display);
-		font-size: var(--text-xl);
-		font-weight: 700;
-	}
-
-	.subtitle {
-		font-family: var(--font-display);
-		font-size: var(--text-sm);
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-	}
-
-	.pending-count {
-		font-family: var(--font-mono);
-		font-size: var(--text-xs);
-		font-weight: 700;
-		color: var(--alert-warning);
-		background: rgba(255, 145, 0, 0.1);
-		border: 1px solid rgba(255, 145, 0, 0.3);
-		padding: 2px 10px;
-		border-radius: 10px;
-	}
-
-	.filter-area {
-		margin-left: auto;
-	}
-
-	.filter-select {
-		padding: 6px 12px;
-		border-radius: 6px;
-		border: 1px solid var(--bg-surface);
-		background: var(--bg-primary);
-		color: var(--text-secondary);
-		font-family: var(--font-mono);
-		font-size: 12px;
-		cursor: pointer;
-		transition: border-color 0.2s ease;
-		appearance: auto;
-	}
-
-	.filter-select:hover {
-		border-color: var(--line-5);
-	}
-
-	.filter-select:focus {
-		outline: none;
-		border-color: var(--line-5);
 	}
 
 	.loading-state {
@@ -399,8 +496,12 @@ const proposedCount = $derived(advisories.filter((a) => a.status === "proposed")
 	}
 
 	@keyframes loadingSlide {
-		0% { left: -40%; }
-		100% { left: 100%; }
+		0% {
+			left: -40%;
+		}
+		100% {
+			left: 100%;
+		}
 	}
 
 	.loading-state p,
@@ -419,31 +520,102 @@ const proposedCount = $derived(advisories.filter((a) => a.status === "proposed")
 		text-align: center;
 	}
 
-	/* Advisory list */
+	.advisory-sections {
+		display: flex;
+		flex-direction: column;
+		gap: 24px;
+	}
+
+	.section {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.section-title {
+		margin: 0;
+		font-family: var(--font-display);
+		font-size: var(--text-sm);
+		font-weight: 700;
+		color: var(--text-primary);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		padding: 0 4px;
+	}
+
+	.resolved-section {
+		gap: 8px;
+	}
+
+	.section-toggle {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		background: transparent;
+		border: none;
+		cursor: pointer;
+		padding: 0;
+		color: inherit;
+		font-family: inherit;
+		text-align: left;
+	}
+
+	.section-toggle:hover .section-title {
+		color: var(--line-5);
+	}
+
+	.toggle-icon {
+		flex-shrink: 0;
+		color: var(--text-muted);
+		transition: transform 0.2s ease;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.toggle-icon.rotated {
+		transform: rotate(180deg);
+	}
+
 	.advisory-list {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
 	}
 
-	.advisory-card {
-		background: var(--bg-secondary);
-		border: 1px solid var(--bg-surface);
+	.severity-band-proposed,
+	.severity-band-approved,
+	.severity-band-dismissed,
+	.severity-band-deferred,
+	.severity-band-applied {
 		border-radius: 8px;
 		overflow: hidden;
-		transition: all 0.2s ease;
 	}
 
-	.advisory-card:hover {
-		border-color: rgba(193, 164, 112, 0.4);
+	.severity-band-proposed {
+		--band-color: var(--alert-warning);
 	}
 
-	.advisory-card.card-proposed {
-		border-left: 3px solid var(--alert-warning);
+	.severity-band-approved {
+		--band-color: var(--status-active);
 	}
 
-	.advisory-card.card-expanded {
-		box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+	.severity-band-dismissed {
+		opacity: 0.6;
+	}
+
+	.severity-band-deferred {
+		opacity: 0.6;
+	}
+
+	.severity-band-applied {
+		--band-color: var(--line-6);
+	}
+
+	.severity-band-proposed :global(.metro-card),
+	.severity-band-approved :global(.metro-card),
+	.severity-band-applied :global(.metro-card) {
+		border-top: 4px solid var(--band-color);
 	}
 
 	.card-main {
@@ -451,7 +623,7 @@ const proposedCount = $derived(advisories.filter((a) => a.status === "proposed")
 		align-items: center;
 		justify-content: space-between;
 		width: 100%;
-		padding: 16px 20px;
+		padding: 12px;
 		background: transparent;
 		border: none;
 		cursor: pointer;
@@ -469,28 +641,9 @@ const proposedCount = $derived(advisories.filter((a) => a.status === "proposed")
 	.card-left {
 		display: flex;
 		align-items: center;
-		gap: 16px;
+		gap: 12px;
 		flex: 1;
 		min-width: 0;
-	}
-
-	.type-badge {
-		flex-shrink: 0;
-		width: 32px;
-		height: 32px;
-		border-radius: 6px;
-		background: rgba(193, 164, 112, 0.12);
-		border: 1px solid rgba(193, 164, 112, 0.25);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-	}
-
-	.type-icon {
-		font-family: var(--font-mono);
-		font-size: 14px;
-		font-weight: 700;
-		color: var(--line-5);
 	}
 
 	.card-info {
@@ -498,6 +651,12 @@ const proposedCount = $derived(advisories.filter((a) => a.status === "proposed")
 		flex-direction: column;
 		gap: 4px;
 		min-width: 0;
+	}
+
+	.card-title-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 	}
 
 	.card-title {
@@ -510,22 +669,32 @@ const proposedCount = $derived(advisories.filter((a) => a.status === "proposed")
 		text-overflow: ellipsis;
 	}
 
+	.count-badge {
+		font-family: var(--font-mono);
+		font-size: 10px;
+		font-weight: 700;
+		color: var(--text-muted);
+		background: rgba(107, 107, 128, 0.1);
+		padding: 2px 6px;
+		border-radius: 3px;
+		flex-shrink: 0;
+	}
+
 	.card-meta {
 		display: flex;
 		align-items: center;
-		gap: 10px;
+		gap: 8px;
+		font-size: 11px;
 	}
 
 	.card-time {
-		font-family: var(--font-mono);
-		font-size: 11px;
 		color: var(--text-muted);
+		font-family: var(--font-mono);
 	}
 
-	.card-author {
-		font-family: var(--font-mono);
-		font-size: 11px;
+	.card-source {
 		color: var(--text-muted);
+		font-family: var(--font-mono);
 	}
 
 	.card-right {
@@ -541,55 +710,13 @@ const proposedCount = $derived(advisories.filter((a) => a.status === "proposed")
 		transform: rotate(180deg);
 	}
 
-	/* Status badges */
-	.status-badge {
-		font-family: var(--font-display);
-		font-size: 10px;
-		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-		padding: 2px 8px;
-		border-radius: 3px;
-	}
-
-	.badge-proposed {
-		color: var(--alert-warning);
-		background: rgba(255, 145, 0, 0.1);
-	}
-
-	.badge-approved {
-		color: var(--status-active);
-		background: rgba(105, 240, 174, 0.1);
-	}
-
-	.badge-dismissed {
-		color: var(--text-muted);
-		background: rgba(107, 107, 128, 0.1);
-	}
-
-	.badge-deferred {
-		color: var(--line-3);
-		background: rgba(0, 155, 191, 0.1);
-	}
-
-	.badge-applied {
-		color: var(--line-6);
-		background: rgba(143, 118, 214, 0.1);
-	}
-
-	.badge-unknown {
-		color: var(--text-muted);
-		background: rgba(107, 107, 128, 0.08);
-	}
-
-	/* Expanded content */
 	.card-expanded-content {
-		padding: 0 20px 20px;
-		border-top: 1px solid rgba(15, 52, 96, 0.4);
+		padding: 12px;
+		border-top: 1px solid var(--bg-surface);
 	}
 
 	.detail-section {
-		margin-top: 16px;
+		margin-top: 12px;
 	}
 
 	.detail-section h4 {
@@ -613,7 +740,7 @@ const proposedCount = $derived(advisories.filter((a) => a.status === "proposed")
 		margin: 0;
 		padding: 12px;
 		background: rgba(10, 10, 20, 0.6);
-		border: 1px solid rgba(15, 52, 96, 0.4);
+		border: 1px solid var(--bg-surface);
 		border-radius: 6px;
 		font-family: var(--font-mono);
 		font-size: 12px;
@@ -624,26 +751,54 @@ const proposedCount = $derived(advisories.filter((a) => a.status === "proposed")
 		overflow-x: auto;
 	}
 
-	/* Action bar */
+	.sources-list {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.source-item {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 11px;
+		color: var(--text-muted);
+		font-family: var(--font-mono);
+	}
+
+	.source-time {
+		flex-shrink: 0;
+	}
+
+	.source-host {
+		color: var(--text-secondary);
+	}
+
 	.action-bar {
 		display: flex;
-		gap: 8px;
-		margin-top: 20px;
-		padding-top: 16px;
-		border-top: 1px solid rgba(15, 52, 96, 0.3);
+		gap: 6px;
+		margin-top: 12px;
+		padding-top: 12px;
+		border-top: 1px solid var(--bg-surface);
+		flex-wrap: wrap;
 	}
 
 	.action-btn {
-		padding: 8px 16px;
-		border-radius: 6px;
-		font-family: var(--font-display);
+		background: transparent;
+		border: 1px solid var(--text-muted);
+		border-radius: 4px;
+		padding: 4px 12px;
 		font-size: var(--text-xs);
-		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
+		font-weight: 600;
+		color: var(--text-primary);
 		cursor: pointer;
 		transition: all 0.2s ease;
-		border: 1px solid transparent;
+		font-family: var(--font-display);
+	}
+
+	.action-btn:hover:not(:disabled) {
+		border-color: var(--line-5);
+		color: var(--line-5);
 	}
 
 	.action-btn:disabled {
@@ -651,59 +806,18 @@ const proposedCount = $derived(advisories.filter((a) => a.status === "proposed")
 		cursor: not-allowed;
 	}
 
-	.approve-btn {
-		background: rgba(105, 240, 174, 0.1);
-		border-color: rgba(105, 240, 174, 0.3);
-		color: var(--status-active);
-	}
-
-	.approve-btn:hover:not(:disabled) {
-		background: rgba(105, 240, 174, 0.2);
-	}
-
-	.dismiss-btn {
-		background: rgba(107, 107, 128, 0.1);
-		border-color: rgba(107, 107, 128, 0.3);
-		color: var(--text-muted);
-	}
-
-	.dismiss-btn:hover:not(:disabled) {
-		background: rgba(107, 107, 128, 0.2);
-	}
-
-	.defer-btn {
-		background: rgba(0, 155, 191, 0.1);
-		border-color: rgba(0, 155, 191, 0.3);
-		color: var(--line-3);
-	}
-
-	.defer-btn:hover:not(:disabled) {
-		background: rgba(0, 155, 191, 0.2);
-	}
-
-	.apply-btn {
-		background: rgba(143, 118, 214, 0.1);
-		border-color: rgba(143, 118, 214, 0.3);
-		color: var(--line-6);
-	}
-
-	.apply-btn:hover:not(:disabled) {
-		background: rgba(143, 118, 214, 0.2);
-	}
-
-	/* Footer meta */
 	.card-footer-meta {
 		display: flex;
 		justify-content: space-between;
-		margin-top: 12px;
+		margin-top: 8px;
 		padding-top: 8px;
+		font-size: 11px;
+		color: var(--text-muted);
+		font-family: var(--font-mono);
 	}
 
 	.footer-id,
 	.footer-modified {
-		font-family: var(--font-mono);
-		font-size: 11px;
-		color: var(--text-muted);
 		opacity: 0.6;
 	}
 
@@ -712,7 +826,8 @@ const proposedCount = $derived(advisories.filter((a) => a.status === "proposed")
 			animation: none;
 		}
 
-		.expand-icon {
+		.expand-icon,
+		.toggle-icon {
 			transition: none;
 		}
 	}

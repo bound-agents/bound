@@ -1,90 +1,31 @@
 <script lang="ts">
-import { onDestroy, onMount, tick } from "svelte";
+import { onDestroy, onMount } from "svelte";
+import { SectionHeader } from "../components/shared";
+import MemoryGraph from "../components/MemoryGraph.svelte";
+import ThreadList from "../components/ThreadList.svelte";
 import { api } from "../lib/api";
 import type { Thread } from "../lib/api";
-import { LINE_CODES, LINE_COLORS, getLineColor } from "../lib/metro-lines";
 import { navigateTo } from "../lib/router";
 
 interface ThreadStatus {
 	active: boolean;
-	state: string | null;
-}
-
-interface RawSpline {
-	sourceX: number;
-	sourceY: number;
-	targetX: number;
-	targetY: number;
-	sourceColor: string;
-	targetColor: string;
-	gradientId: string;
-	sourceThreadId: string;
-	targetThreadId: string;
 }
 
 let threads: Thread[] = $state([]);
-let creating = $state(false);
-let hoveredIdx = $state(-1);
 let threadStatuses: Map<string, ThreadStatus> = $state(new Map());
-let alertThreads: Set<string> = $state(new Set());
-let rawSplines = $state<RawSpline[]>([]);
-let threadListEl = $state<HTMLDivElement | null>(null);
-let svgHeight = $state(0);
-let interchange: Record<string, Array<{ threadId: string; color: number }>> = {};
+let selectedThreadId: string | null = $state(null);
+let mapCollapsed = $state(false);
+let creating = $state(false);
+let resizing = $state(false);
+let panelRatio = $state(0.4);
 
-// Derive which thread IDs are connected: only sources that contributed TO the hovered thread
-const connectedThreadIds = $derived.by(() => {
-	if (hoveredIdx < 0 || hoveredIdx >= threads.length) return new Set<string>();
-	const hoveredId = threads[hoveredIdx].id;
-	const connected = new Set<string>();
-	connected.add(hoveredId);
-	const sources = interchange[hoveredId];
-	if (sources) {
-		for (const s of sources) connected.add(s.threadId);
-	}
-	return connected;
-});
-
-// Derive final spline paths — recomputes when hoveredIdx changes to shift target endpoints
-let interchangeSplines = $derived.by(() => {
-	const hoveredId = hoveredIdx >= 0 && hoveredIdx < threads.length ? threads[hoveredIdx].id : null;
-	return rawSplines.map((s) => {
-		// Shift target X by 2px when target row is hovered (matches CSS translateX)
-		const txShift = hoveredId === s.targetThreadId ? 2 : 0;
-		const sxShift = hoveredId === s.sourceThreadId ? 2 : 0;
-		const sx = s.sourceX + sxShift;
-		const tx = s.targetX + txShift;
-		const dy = s.targetY - s.sourceY;
-		const dx = tx - sx;
-
-		const path =
-			Math.abs(dx) < 2
-				? `M ${sx} ${s.sourceY} L ${tx} ${s.targetY}`
-				: `M ${sx} ${s.sourceY} C ${sx} ${s.sourceY + dy * 0.4}, ${tx} ${s.targetY - dy * 0.4}, ${tx} ${s.targetY}`;
-
-		return { ...s, path };
-	});
-});
-
-async function createThread(): Promise<void> {
-	creating = true;
-	try {
-		const thread = await api.createThread();
-		window.location.hash = `#/line/${thread.id}`;
-	} catch (error) {
-		console.error("Failed to create thread:", error);
-		creating = false;
-	}
-}
-
-let pollInterval: ReturnType<typeof setInterval> | null = null;
+let containerEl: HTMLDivElement | null = null;
 
 async function loadThreads(): Promise<void> {
 	try {
 		threads = await api.listThreads();
-		// Fetch status for each thread to detect active agent loops
+
 		const statusMap = new Map<string, ThreadStatus>();
-		const alerts = new Set<string>();
 		await Promise.all(
 			threads.map(async (t) => {
 				try {
@@ -96,321 +37,131 @@ async function loadThreads(): Promise<void> {
 				} catch {
 					// Ignore individual status fetch failures
 				}
-				// Check for unread alerts in this thread
-				try {
-					const msgs = await api.listMessages(t.id);
-					const hasAlert = msgs.some((m: { role: string }) => m.role === "alert");
-					if (hasAlert) alerts.add(t.id);
-				} catch {
-					// Ignore
-				}
 			}),
 		);
 		threadStatuses = statusMap;
-		alertThreads = alerts;
-		// Fetch interchange data
-		try {
-			interchange = await api.getInterchange();
-		} catch {
-			interchange = {};
-		}
 	} catch (error) {
 		console.error("Failed to load threads:", error);
 	}
-
-	// Recompute splines after DOM updates
-	await tick();
-	computeSplines();
 }
 
-function computeSplines(): void {
-	if (!threadListEl || threads.length === 0) {
-		interchangeSplines = [];
-		svgHeight = 0;
-		return;
+async function newThread(): Promise<void> {
+	creating = true;
+	try {
+		const thread = await api.createThread();
+		navigateTo(`/line/${thread.id}`);
+	} catch (error) {
+		console.error("Failed to create thread:", error);
+		creating = false;
 	}
-
-	svgHeight = threadListEl.scrollHeight;
-
-	// Helper: get X position of an element relative to threadListEl
-	function getRelativeX(el: HTMLElement): number {
-		let left = el.offsetLeft + el.offsetWidth / 2;
-		let parent = el.offsetParent as HTMLElement | null;
-		while (parent && parent !== threadListEl) {
-			left += parent.offsetLeft;
-			parent = parent.offsetParent as HTMLElement | null;
-		}
-		return left;
-	}
-
-	// Build thread position data: Y center, station X positions, terminus X
-	const threadPositions = new Map<string, { y: number; stations: number[]; terminusX: number }>();
-	for (const thread of threads) {
-		const rowEl = threadListEl.querySelector(
-			`[data-thread-id="${thread.id}"]`,
-		) as HTMLElement | null;
-		if (!rowEl) continue;
-
-		const y = rowEl.offsetTop + rowEl.offsetHeight / 2;
-
-		const stationEls = rowEl.querySelectorAll(".track-station");
-		const stations: number[] = [];
-		for (const st of stationEls) {
-			stations.push(getRelativeX(st as HTMLElement));
-		}
-
-		// Terminus = the "future" dot at the far right end of the track
-		const terminusEl = rowEl.querySelector(".track-terminus") as HTMLElement | null;
-		const terminusX = terminusEl ? getRelativeX(terminusEl) : (stations[stations.length - 1] ?? 0);
-
-		threadPositions.set(thread.id, { y, stations, terminusX });
-	}
-
-	// Build raw spline data: sources converge on target's terminus dot
-	const splines: RawSpline[] = [];
-	let gradIdx = 0;
-
-	for (const [targetId, sources] of Object.entries(interchange)) {
-		const targetPos = threadPositions.get(targetId);
-		if (!targetPos) continue;
-
-		const targetThread = threads.find((t) => t.id === targetId);
-		if (!targetThread) continue;
-
-		const targetX = targetPos.terminusX;
-		const targetY = targetPos.y;
-
-		const maxSources = Math.min(sources.length, 5);
-		for (let si = 0; si < maxSources; si++) {
-			const source = sources[si];
-			const sourcePos = threadPositions.get(source.threadId);
-			if (!sourcePos || sourcePos.stations.length === 0) continue;
-
-			const sourceStationIdx = Math.min(
-				Math.floor((si / maxSources) * sourcePos.stations.length),
-				sourcePos.stations.length - 1,
-			);
-			const sourceX = sourcePos.stations[sourceStationIdx];
-			const sourceY = sourcePos.y;
-
-			splines.push({
-				sourceX,
-				sourceY,
-				targetX,
-				targetY,
-				sourceColor: getLineColor(source.color),
-				targetColor: getLineColor(targetThread.color),
-				gradientId: `interchange-${gradIdx++}`,
-				sourceThreadId: source.threadId,
-				targetThreadId: targetId,
-			});
-		}
-	}
-
-	rawSplines = splines;
 }
+
+function toggleMap(): void {
+	mapCollapsed = !mapCollapsed;
+}
+
+function handlePointerDown(): void {
+	resizing = true;
+}
+
+function handlePointerMove(event: PointerEvent): void {
+	if (!resizing || !containerEl) return;
+
+	const rect = containerEl.getBoundingClientRect();
+	const newRatio = (event.clientX - rect.left) / rect.width;
+	panelRatio = Math.max(0.2, Math.min(0.8, newRatio));
+}
+
+function handlePointerUp(): void {
+	resizing = false;
+}
+
+let pollInterval: ReturnType<typeof setInterval> | null = null;
 
 onMount(async () => {
 	await loadThreads();
 	pollInterval = setInterval(loadThreads, 5000);
+
+	window.addEventListener("pointermove", handlePointerMove);
+	window.addEventListener("pointerup", handlePointerUp);
+
+	return () => {
+		window.removeEventListener("pointermove", handlePointerMove);
+		window.removeEventListener("pointerup", handlePointerUp);
+	};
 });
 
 onDestroy(() => {
 	if (pollInterval !== null) clearInterval(pollInterval);
+	window.removeEventListener("pointermove", handlePointerMove);
+	window.removeEventListener("pointerup", handlePointerUp);
 });
-
-function threadLabel(thread: Thread, idx: number): string {
-	if (thread.title && thread.title.trim().length > 0) {
-		const t = thread.title.trim();
-		return t.length > 32 ? `${t.substring(0, 30)}…` : t;
-	}
-	return `Thread ${idx + 1}`;
-}
-
-function relativeTime(iso: string): string {
-	const diff = Date.now() - new Date(iso).getTime();
-	const mins = Math.floor(diff / 60_000);
-	if (mins < 1) return "just now";
-	if (mins < 60) return `${mins}m ago`;
-	const hours = Math.floor(mins / 60);
-	if (hours < 24) return `${hours}h ago`;
-	const days = Math.floor(hours / 24);
-	return `${days}d ago`;
-}
-
-function isAgentActive(threadId: string): boolean {
-	const status = threadStatuses.get(threadId);
-	return status?.active ?? false;
-}
-
-function hasAlert(threadId: string): boolean {
-	return alertThreads.has(threadId);
-}
 </script>
 
-<div class="system-map">
-	<div class="map-header">
-		<h1>System Map</h1>
-		<button class="new-thread-btn" onclick={createThread} disabled={creating}>
-			<span class="btn-icon">+</span>
-			{creating ? "Creating..." : "New Line"}
-		</button>
+<div class="system-map" bind:this={containerEl}>
+	<SectionHeader title="System Map">
+		{#snippet actions()}
+			<button
+				class="header-btn"
+				onclick={toggleMap}
+				title={mapCollapsed ? "Show map" : "Hide map"}
+			>
+				{mapCollapsed ? "Show Map" : "Hide Map"}
+			</button>
+			<button
+				class="header-btn"
+				onclick={newThread}
+				disabled={creating}
+				title="Create new thread"
+			>
+				+ New Line
+			</button>
+		{/snippet}
+	</SectionHeader>
+
+	<div class="split-view" class:map-collapsed={mapCollapsed} style={mapCollapsed ? '' : `grid-template-columns: ${(panelRatio * 100).toFixed(1)}% 4px 1fr`}>
+		<div class="thread-panel">
+			<ThreadList
+				{threads}
+				{threadStatuses}
+				{selectedThreadId}
+				onSelectThread={(id) => (selectedThreadId = id)}
+				onNavigateThread={(id) => navigateTo(`/line/${id}`)}
+			/>
+		</div>
+
+		{#if !mapCollapsed}
+			<div
+				class="resizer"
+				onpointerdown={handlePointerDown}
+				role="separator"
+				aria-orientation="vertical"
+				aria-valuenow={Math.round(panelRatio * 100)}
+			>
+				<!-- drag handle -->
+			</div>
+			<div class="map-panel">
+				<MemoryGraph {selectedThreadId} />
+			</div>
+		{/if}
 	</div>
-
-	{#if threads.length === 0}
-		<div class="empty-state">
-			<svg width="120" height="80" viewBox="0 0 120 80">
-				<line x1="10" y1="40" x2="110" y2="40" stroke="var(--text-muted)" stroke-width="4" stroke-linecap="round" stroke-dasharray="8 6" opacity="0.4" />
-				<circle cx="30" cy="40" r="6" fill="none" stroke="var(--text-muted)" stroke-width="2" opacity="0.4" />
-				<circle cx="60" cy="40" r="6" fill="none" stroke="var(--text-muted)" stroke-width="2" opacity="0.4" />
-				<circle cx="90" cy="40" r="6" fill="none" stroke="var(--text-muted)" stroke-width="2" opacity="0.4" />
-			</svg>
-			<p>No active lines. Start a conversation to open a new line.</p>
-		</div>
-	{:else}
-		<div class="thread-list" bind:this={threadListEl}>
-			<!-- Interchange spline SVG overlay -->
-			{#if interchangeSplines.length > 0}
-				<svg class="interchange-overlay" width="100%" height={svgHeight}>
-					<defs>
-						{#each interchangeSplines as spline}
-							<linearGradient
-								id={spline.gradientId}
-								gradientUnits="userSpaceOnUse"
-								x1="0" y1={spline.sourceY}
-								x2="0" y2={spline.targetY}
-							>
-								<stop offset="0%" stop-color={spline.sourceColor} />
-								<stop offset="100%" stop-color={spline.targetColor} />
-							</linearGradient>
-						{/each}
-					</defs>
-					{#each interchangeSplines as spline}
-						{@const gradRef = `url(#${spline.gradientId})`}
-						{@const isConnected = hoveredIdx >= 0 && connectedThreadIds.has(spline.sourceThreadId) && connectedThreadIds.has(spline.targetThreadId)}
-						{@const isHovering = hoveredIdx >= 0}
-						<path
-							class="interchange-spline"
-							class:flowing={isConnected}
-							d={spline.path}
-							fill="none"
-							stroke={gradRef}
-							stroke-width={isConnected ? 3 : 2}
-							stroke-linecap="round"
-							stroke-dasharray={isConnected ? "8 4" : "6 4"}
-							opacity={isHovering ? (isConnected ? 0.85 : 0.15) : 0.5}
-							style="transition: opacity 0.2s, stroke-width 0.2s"
-						/>
-					{/each}
-				</svg>
-			{/if}
-			{#each threads as thread, idx}
-				{@const color = LINE_COLORS[thread.color % LINE_COLORS.length]}
-				{@const code = LINE_CODES[thread.color % LINE_CODES.length]}
-				{@const active = isAgentActive(thread.id)}
-				{@const alert = hasAlert(thread.id)}
-				{@const dimmed = hoveredIdx >= 0 && !connectedThreadIds.has(thread.id)}
-				<button
-					class="thread-row"
-					data-thread-id={thread.id}
-					class:hovered={hoveredIdx === idx}
-					class:dimmed
-					onclick={() => navigateTo(`/line/${thread.id}`)}
-					onmouseenter={() => hoveredIdx = idx}
-					onmouseleave={() => hoveredIdx = -1}
-				>
-					<!-- Hover background glow — positioned behind everything -->
-					<div class="row-bg" style="--line-color: {color}"></div>
-
-					<!-- Line badge -->
-					<div class="line-badge" style="background: {color}">
-						<span class="badge-inner"></span>
-						<span class="badge-code">{code}</span>
-					</div>
-
-					<!-- Thread info -->
-					<div class="thread-info">
-						<div class="thread-name-row">
-							<span class="thread-name">{threadLabel(thread, idx)}</span>
-							{#if active}
-								<span class="active-badge">LIVE</span>
-							{/if}
-							{#if alert}
-								<span class="alert-badge-sm">!</span>
-							{/if}
-						</div>
-						<span class="thread-meta">{relativeTime(thread.last_message_at)}</span>
-					</div>
-
-					<!-- Metro line decoration (pure CSS — no SVG stretching) -->
-					<div class="line-track" style="--line-color: {color}">
-						<div class="track-rail" class:thick={hoveredIdx === idx}></div>
-						{#if alert}
-							<div class="track-station alert-station"></div>
-						{:else}
-							<div class="track-station"></div>
-						{/if}
-						<div class="track-station"></div>
-						<div class="track-station"></div>
-						<div class="track-station"></div>
-						{#if active}
-							<div class="train-indicator" style="--line-color: {color}">
-								<div class="train-body"></div>
-							</div>
-						{/if}
-						<div class="track-terminus" class:terminus-active={active}></div>
-					</div>
-				</button>
-			{/each}
-		</div>
-	{/if}
 </div>
 
 <style>
 	.system-map {
-		padding: 32px 40px;
-		overflow: hidden;
-	}
-
-	.map-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		margin-bottom: 32px;
-	}
-
-	h1 {
-		margin: 0;
-		color: var(--text-primary);
-		font-family: var(--font-display);
-		font-size: var(--text-xl);
-		font-weight: 700;
-		letter-spacing: 0.02em;
-	}
-
-	.empty-state {
 		display: flex;
 		flex-direction: column;
-		align-items: center;
-		justify-content: center;
-		padding: 64px 32px;
-		gap: 24px;
+		height: 100%;
+		overflow: hidden;
+		padding: 32px 40px;
+		gap: 16px;
 	}
 
-	.empty-state p {
-		color: var(--text-muted);
-		font-size: var(--text-sm);
-		margin: 0;
-	}
-
-	.new-thread-btn {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 10px 20px;
+	.header-btn {
+		padding: 8px 16px;
 		background: var(--bg-surface);
 		color: var(--text-primary);
-		border: 1px solid var(--line-0);
+		border: 1px solid var(--bg-surface);
 		border-radius: 6px;
 		cursor: pointer;
 		font-family: var(--font-display);
@@ -419,345 +170,84 @@ function hasAlert(threadId: string): boolean {
 		transition: all 0.2s ease;
 	}
 
-	.new-thread-btn:hover:not(:disabled) {
-		background: #1a4a8a;
+	.header-btn:hover:not(:disabled) {
+		background: rgba(15, 52, 96, 0.3);
 		border-color: var(--line-0);
-		box-shadow: 0 0 12px rgba(243, 151, 0, 0.15);
 	}
 
-	.new-thread-btn:disabled {
+	.header-btn:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
 
-	.btn-icon {
-		font-size: 18px;
-		font-weight: 700;
-		line-height: 1;
-	}
-
-	/* Thread list */
-	.thread-list {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		max-height: calc(100vh - 180px);
-		overflow-y: auto;
-		position: relative;
-	}
-
-	.interchange-overlay {
-		position: absolute;
-		top: 0;
-		left: 0;
-		pointer-events: none;
-		z-index: 0;
-	}
-
-	.interchange-spline.flowing {
-		animation: spline-flow 1.2s linear infinite;
-	}
-
-	.thread-row {
-		position: relative;
-		display: flex;
-		align-items: center;
-		gap: 16px;
-		padding: 14px 16px;
-		border: none;
-		border-radius: 8px;
-		background: transparent;
-		cursor: pointer;
-		text-align: left;
-		width: 100%;
-		font-family: inherit;
-		color: inherit;
-		transition: transform 0.15s ease;
-	}
-
-	.thread-row:hover,
-	.thread-row.hovered {
-		transform: translateX(2px);
-	}
-
-	.thread-row.dimmed {
-		opacity: 0.3;
-		transition: opacity 0.2s ease;
-	}
-
-	.thread-row:not(.dimmed) {
-		transition: opacity 0.2s ease;
-	}
-
-	/* Hover background glow — sits behind all content */
-	.row-bg {
-		position: absolute;
-		inset: 0;
-		border-radius: 8px;
-		opacity: 0;
-		background: linear-gradient(
-			90deg,
-			color-mix(in srgb, var(--line-color) 12%, transparent) 0%,
-			color-mix(in srgb, var(--line-color) 6%, transparent) 60%,
-			transparent 100%
-		);
-		border-left: 3px solid var(--line-color);
-		transition: opacity 0.2s ease;
-		pointer-events: none;
-	}
-
-	.thread-row:hover .row-bg,
-	.thread-row.hovered .row-bg {
-		opacity: 1;
-	}
-
-	.thread-row:focus-visible {
-		outline: 2px solid var(--line-0);
-		outline-offset: 2px;
-	}
-
-	/* Line badge (circle with letter) */
-	.line-badge {
-		flex-shrink: 0;
-		width: 36px;
-		height: 36px;
-		border-radius: 50%;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		position: relative;
-		z-index: 1;
-	}
-
-	.badge-inner {
-		position: absolute;
-		width: 24px;
-		height: 24px;
-		border-radius: 50%;
-		background: #fff;
-	}
-
-	.badge-code {
-		color: #000;
-		font-family: var(--font-display);
-		font-size: 14px;
-		font-weight: 700;
-		line-height: 1;
-		position: relative;
-		z-index: 1;
-	}
-
-	/* Thread info column */
-	.thread-info {
-		flex-shrink: 0;
-		width: 200px;
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-		position: relative;
-		z-index: 1;
-	}
-
-	.thread-name-row {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-
-	.thread-name {
-		font-family: var(--font-display);
-		font-size: var(--text-sm);
-		font-weight: 600;
-		color: var(--text-primary);
-		white-space: nowrap;
+	.split-view {
+		display: grid;
+		grid-template-columns: 40% 4px 1fr;
+		gap: 0;
+		height: calc(100vh - 200px);
 		overflow: hidden;
-		text-overflow: ellipsis;
 	}
 
-	.active-badge {
-		flex-shrink: 0;
-		font-family: var(--font-mono);
-		font-size: 10px;
-		font-weight: 700;
-		color: var(--status-active);
-		background: rgba(105, 240, 174, 0.12);
-		border: 1px solid rgba(105, 240, 174, 0.3);
-		padding: 1px 6px;
-		border-radius: 3px;
-		letter-spacing: 0.06em;
-		animation: badge-pulse 2s ease-in-out infinite;
+	.split-view.map-collapsed {
+		grid-template-columns: 1fr;
 	}
 
-	@keyframes spline-flow {
-		to {
-			stroke-dashoffset: -12;
-		}
+	.thread-panel {
+		overflow-y: auto;
+		background: var(--bg-primary);
+		border-right: 1px solid var(--bg-surface);
+		padding-right: 12px;
 	}
 
-	@keyframes badge-pulse {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.6; }
-	}
-
-	.alert-badge-sm {
-		flex-shrink: 0;
-		width: 18px;
-		height: 18px;
-		border-radius: 50%;
-		background: var(--alert-disruption);
-		color: #fff;
-		font-family: var(--font-display);
-		font-size: 11px;
-		font-weight: 700;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		animation: alert-pulse 1.5s ease-in-out infinite;
-	}
-
-	@keyframes alert-pulse {
-		0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 23, 68, 0.4); }
-		50% { transform: scale(1.1); box-shadow: 0 0 8px 2px rgba(255, 23, 68, 0.3); }
-	}
-
-	.thread-meta {
-		font-family: var(--font-mono);
-		font-size: var(--text-xs);
-		color: var(--text-muted);
-	}
-
-	/* Metro line track decoration */
-	.line-track {
-		flex: 1;
-		min-width: 0;
-		height: 20px;
-		position: relative;
-		z-index: 1;
-		display: flex;
-		align-items: center;
-		justify-content: space-evenly;
-		padding: 0 8px;
-	}
-
-	/* The horizontal rail line — positioned behind stations */
-	.track-rail {
-		position: absolute;
-		left: 0;
-		right: 0;
-		top: 50%;
-		height: 3.5px;
-		transform: translateY(-50%);
-		background: var(--line-color);
-		border-radius: 2px;
-		transition: height 0.2s ease;
-	}
-
-	.track-rail.thick {
-		height: 5px;
-	}
-
-	/* Station dots — white fill with colored border (Beck style) */
-	.track-station {
-		width: 10px;
-		height: 10px;
-		border-radius: 50%;
-		background: #fff;
-		border: 2.5px solid var(--line-color);
-		position: relative;
-		z-index: 1;
-		flex-shrink: 0;
-	}
-
-	/* Pulsing red alert station */
-	.track-station.alert-station {
-		background: var(--alert-disruption);
-		border-color: var(--alert-disruption);
-		box-shadow: 0 0 6px rgba(255, 23, 68, 0.5);
-		animation: station-alert 1.5s ease-in-out infinite;
-	}
-
-	@keyframes station-alert {
-		0%, 100% { box-shadow: 0 0 4px rgba(255, 23, 68, 0.4); transform: scale(1); }
-		50% { box-shadow: 0 0 10px rgba(255, 23, 68, 0.7); transform: scale(1.2); }
-	}
-
-	/* Animated train indicator sliding along the track */
-	.train-indicator {
-		position: relative;
-		z-index: 2;
-		flex-shrink: 0;
-		animation: train-slide 3s ease-in-out infinite;
-	}
-
-	.train-body {
-		width: 20px;
-		height: 8px;
-		background: var(--line-color);
-		border-radius: 4px;
-		box-shadow: 0 0 8px color-mix(in srgb, var(--line-color) 60%, transparent);
-		position: relative;
-	}
-
-	.train-body::before {
-		content: "";
-		position: absolute;
-		right: -2px;
-		top: 1px;
+	.resizer {
+		cursor: col-resize;
+		background: var(--bg-surface);
 		width: 4px;
-		height: 6px;
-		background: #fff;
-		border-radius: 0 2px 2px 0;
-		opacity: 0.9;
+		user-select: none;
+		transition: background 0.2s ease;
 	}
 
-	@keyframes train-slide {
-		0% { transform: translateX(-8px); }
-		50% { transform: translateX(8px); }
-		100% { transform: translateX(-8px); }
+	.resizer:hover {
+		background: var(--line-0);
 	}
 
-	/* Terminus — filled circle with pulse */
-	.track-terminus {
-		width: 12px;
-		height: 12px;
-		border-radius: 50%;
-		background: var(--line-color);
-		position: relative;
-		z-index: 1;
-		flex-shrink: 0;
-		animation: train-pulse 2.5s ease-in-out infinite;
+	.map-panel {
+		overflow: hidden;
+		background: var(--bg-primary);
+		display: flex;
+		flex-direction: column;
 	}
 
-	.track-terminus.terminus-active {
-		box-shadow: 0 0 10px color-mix(in srgb, var(--line-color) 50%, transparent);
-		animation: terminus-active-pulse 1.5s ease-in-out infinite;
-	}
+	@media (max-width: 900px) {
+		.system-map {
+			padding: 16px 24px;
+		}
 
-	@keyframes train-pulse {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.6; }
-	}
+		.split-view {
+			grid-template-columns: 1fr;
+			height: auto;
+		}
 
-	@keyframes terminus-active-pulse {
-		0%, 100% { transform: scale(1); box-shadow: 0 0 6px color-mix(in srgb, var(--line-color) 40%, transparent); }
-		50% { transform: scale(1.3); box-shadow: 0 0 14px color-mix(in srgb, var(--line-color) 60%, transparent); }
+		.thread-panel {
+			border-right: none;
+			border-bottom: 1px solid var(--bg-surface);
+			padding-right: 0;
+			padding-bottom: 12px;
+			max-height: 60vh;
+		}
+
+		.resizer {
+			display: none;
+		}
+
+		.map-panel {
+			max-height: 50vh;
+		}
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.track-terminus,
-		.track-terminus.terminus-active,
-		.train-indicator,
-		.active-badge,
-		.alert-badge-sm,
-		.track-station.alert-station {
-			animation: none;
-		}
-
-		.thread-row {
-			transition: none;
-		}
-
-		.row-bg {
+		.header-btn,
+		.resizer {
 			transition: none;
 		}
 	}

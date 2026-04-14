@@ -1,96 +1,76 @@
 <script lang="ts">
-import { X } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
+import DepartureBoard from "../components/DepartureBoard.svelte";
+import { LineBadge, SectionHeader, StatusChip } from "../components/shared";
 import { navigateTo } from "../lib/router";
+import { sortTasks } from "../lib/task-sort";
 
-interface Task {
+interface EnhancedTask {
 	id: string;
 	type: string;
-	status: string;
-	trigger_spec: string;
-	payload: string | null;
-	thread_id: string | null;
-	claimed_by: string | null;
+	displayName: string;
+	schedule: string;
+	status: "running" | "failed" | "pending" | "claimed" | "cancelled" | "completed";
 	next_run_at: string | null;
 	last_run_at: string | null;
-	run_count: number;
-	max_runs: number | null;
-	created_at: string;
-	created_by: string | null;
+	hostName: string | null;
+	lastDurationMs: number | null;
+	payload: string | null;
+	thread_id: string | null;
 	error: string | null;
+	run_count: number;
+	consecutive_failures: number;
 }
 
-let tasks: Task[] = $state([]);
+let allTasks: EnhancedTask[] = $state([]);
 let loading = $state(true);
-let filterStatus = $state("");
+let activeFilters = $state<Set<string>>(new Set());
+let expandedTaskId = $state<string | null>(null);
 
-async function loadTasks(): Promise<void> {
-	try {
-		const url = filterStatus ? `/api/tasks?status=${filterStatus}` : "/api/tasks";
-		const response = await fetch(url);
-		tasks = await response.json();
-	} catch (error) {
-		console.error("Failed to load tasks:", error);
-	}
-	loading = false;
+// Sorted tasks
+const sortedTasks = $derived(sortTasks(allTasks));
+
+// Filtered tasks based on active filter chips
+const filteredTasks = $derived(
+	sortedTasks.filter((t) => activeFilters.size === 0 || activeFilters.has(t.status)),
+);
+
+// Separate active and inactive tasks
+const activeTasks = $derived(
+	filteredTasks.filter(
+		(t) =>
+			t.status === "running" ||
+			t.status === "claimed" ||
+			t.status === "failed" ||
+			t.status === "pending",
+	),
+);
+
+const inactiveTasks = $derived(
+	filteredTasks.filter((t) => t.status === "cancelled" || t.status === "completed"),
+);
+
+// Type to line index mapping
+const TYPE_TO_LINE: Record<string, number> = {
+	cron: 0, // Ginza (orange)
+	heartbeat: 7, // Namboku (emerald)
+	deferred: 3, // Tozai (sky blue)
+	event: 6, // Hanzomon (purple)
+};
+
+function getLineIndex(type: string): number {
+	return TYPE_TO_LINE[type] ?? 0;
 }
 
-let pollInterval: ReturnType<typeof setInterval> | null = null;
-
-onMount(() => {
-	loadTasks();
-	pollInterval = setInterval(loadTasks, 5000);
-});
-
-onDestroy(() => {
-	if (pollInterval !== null) clearInterval(pollInterval);
-});
-
-function handleFilterChange(): void {
-	loading = true;
-	loadTasks();
-}
-
-function getStatusBadgeClass(status: string): string {
-	switch (status) {
-		case "completed":
-			return "status-completed";
-		case "running":
-		case "claimed":
-			return "status-running";
-		case "failed":
-			return "status-failed";
-		case "pending":
-			return "status-pending";
-		case "cancelled":
-			return "status-cancelled";
-		default:
-			return "status-unknown";
-	}
-}
-
-function getStatusIcon(status: string): string {
-	switch (status) {
-		case "completed":
-			return "OK";
-		case "running":
-		case "claimed":
-			return ">>";
-		case "failed":
-			return "!!";
-		case "pending":
-			return "..";
-		case "cancelled":
-			return "XX";
-		default:
-			return "--";
-	}
-}
-
-function formatTrigger(spec: string): string {
-	if (!spec) return "--";
-	if (spec.length > 24) return `${spec.substring(0, 22)}...`;
-	return spec;
+function formatDuration(ms: number | null): string {
+	if (!ms) return "--";
+	if (ms < 1000) return `${Math.round(ms)}ms`;
+	const secs = ms / 1000;
+	if (secs < 60) return `${secs.toFixed(1)}s`;
+	const mins = secs / 60;
+	if (mins < 60) return `${mins.toFixed(1)}m`;
+	const hours = mins / 60;
+	return `${hours.toFixed(1)}h`;
 }
 
 function formatTime(iso: string | null): string {
@@ -98,7 +78,8 @@ function formatTime(iso: string | null): string {
 	const d = new Date(iso);
 	const now = Date.now();
 	const diff = d.getTime() - now;
-	// For future times, show relative
+
+	// Future times
 	if (diff > 0) {
 		const mins = Math.floor(diff / 60_000);
 		if (mins < 1) return "< 1m";
@@ -107,6 +88,7 @@ function formatTime(iso: string | null): string {
 		if (hours < 24) return `in ${hours}h`;
 		return d.toLocaleDateString();
 	}
+
 	// Past times
 	const elapsed = Math.abs(diff);
 	const mins = Math.floor(elapsed / 60_000);
@@ -117,10 +99,26 @@ function formatTime(iso: string | null): string {
 	return d.toLocaleDateString();
 }
 
-function formatHost(claimedBy: string | null): string {
-	if (!claimedBy) return "--";
-	if (claimedBy.length > 12) return `${claimedBy.substring(0, 10)}...`;
-	return claimedBy;
+function toggleFilter(status: string): void {
+	if (activeFilters.has(status)) {
+		activeFilters.delete(status);
+	} else {
+		activeFilters.add(status);
+	}
+}
+
+function toggleTaskExpansion(taskId: string): void {
+	expandedTaskId = expandedTaskId === taskId ? null : taskId;
+}
+
+async function loadTasks(): Promise<void> {
+	try {
+		const response = await fetch("/api/tasks");
+		allTasks = await response.json();
+	} catch (error) {
+		console.error("Failed to load tasks:", error);
+	}
+	loading = false;
 }
 
 async function cancelTask(taskId: string): Promise<void> {
@@ -135,81 +133,249 @@ async function cancelTask(taskId: string): Promise<void> {
 function canCancel(status: string): boolean {
 	return status === "pending" || status === "running" || status === "claimed";
 }
+
+let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+onMount(() => {
+	loadTasks();
+	pollInterval = setInterval(loadTasks, 5000);
+});
+
+onDestroy(() => {
+	if (pollInterval !== null) clearInterval(pollInterval);
+});
 </script>
 
 <div class="timetable">
-	<div class="timetable-header">
-		<h1>Timetable</h1>
-		<span class="subtitle">Departures & Arrivals</span>
-		<div class="filter-area">
-			<select bind:value={filterStatus} onchange={handleFilterChange} class="filter-select" aria-label="Filter by status">
-				<option value="">All Services</option>
-				<option value="pending">Pending</option>
-				<option value="running">Running</option>
-				<option value="completed">Completed</option>
-				<option value="failed">Failed</option>
-				<option value="cancelled">Cancelled</option>
-			</select>
-		</div>
-	</div>
+	<SectionHeader
+		title="Timetable"
+		subtitle="DEPARTURES & ARRIVALS"
+	>
+		{#snippet actions()}
+			<div class="filter-area">
+				{#each ["pending", "running", "failed", "cancelled"] as status}
+					<button
+						class="filter-chip"
+						class:active={activeFilters.has(status)}
+						onclick={() => toggleFilter(status)}
+					>
+						{status.charAt(0).toUpperCase() + status.slice(1)}
+					</button>
+				{/each}
+			</div>
+		{/snippet}
+	</SectionHeader>
 
 	{#if loading}
 		<div class="loading-state">
 			<div class="loading-bar"></div>
 			<p>Loading schedule...</p>
 		</div>
-	{:else if tasks.length === 0}
+	{:else if allTasks.length === 0}
 		<div class="empty-state">
-			<svg width="80" height="48" viewBox="0 0 80 48">
-				<rect x="4" y="20" width="72" height="8" rx="4" fill="none" stroke="var(--text-muted)" stroke-width="1.5" opacity="0.3" stroke-dasharray="4 3" />
-			</svg>
-			<p>No scheduled departures.</p>
+			<p>No scheduled tasks.</p>
 		</div>
 	{:else}
-		<div class="board">
-			<div class="board-header">
+		<DepartureBoard tasks={allTasks} />
+
+		<div class="task-list">
+			<div class="task-list-header">
 				<span class="col-status">Status</span>
-				<span class="col-id">ID</span>
-				<span class="col-type">Service</span>
-				<span class="col-trigger">Trigger</span>
+				<span class="col-name">Name</span>
+				<span class="col-type">Type</span>
+				<span class="col-schedule">Schedule</span>
 				<span class="col-next">Next Run</span>
 				<span class="col-last">Last Run</span>
+				<span class="col-duration">Duration</span>
 				<span class="col-host">Host</span>
 				<span class="col-actions">Actions</span>
 			</div>
-			{#each tasks as task}
-				<div class="board-row" class:row-running={task.status === "running" || task.status === "claimed"} class:row-failed={task.status === "failed"} role="button" tabindex={0} onclick={() => navigateTo(`/task/${task.id}`)} onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigateTo(`/task/${task.id}`); } }}>
-					<span class="col-status">
-						<span class="status-chip {getStatusBadgeClass(task.status)}">
-							<span class="status-icon">{getStatusIcon(task.status)}</span>
-							{task.status}
+
+			{#if activeTasks.length > 0}
+				{#each activeTasks as task (task.id)}
+					<div
+						class="task-row"
+						class:expanded={expandedTaskId === task.id}
+						class:running={task.status === "running" || task.status === "claimed"}
+						class:failed={task.status === "failed"}
+						onclick={() => toggleTaskExpansion(task.id)}
+					>
+						<span class="col-status">
+							<StatusChip
+								status={task.status === "running" || task.status === "claimed"
+									? "running"
+									: task.status === "failed"
+										? "failed"
+										: task.status === "pending"
+											? "pending"
+											: "idle"}
+							/>
 						</span>
-					</span>
-					<span class="col-id task-id" title={task.id}>{task.id.substring(0, 8)}</span>
-					<span class="col-type">
-						<span class="type-label">{task.type}</span>
-						{#if task.run_count > 0}
-							<span class="run-count">x{task.run_count}{task.max_runs ? `/${task.max_runs}` : ""}</span>
-						{/if}
-					</span>
-					<span class="col-trigger" title={task.trigger_spec}>{formatTrigger(task.trigger_spec)}</span>
-					<span class="col-next">{formatTime(task.next_run_at)}</span>
-					<span class="col-last">{formatTime(task.last_run_at)}</span>
-					<span class="col-host" title={task.claimed_by ?? ""}>{formatHost(task.claimed_by)}</span>
-					<span class="col-actions">
-						{#if canCancel(task.status)}
-							<button class="cancel-btn" onclick={(e) => { e.stopPropagation(); cancelTask(task.id); }} title="Cancel task">
-								<X size={12} />
-							</button>
-						{:else if task.status === "failed" && task.error}
-							<span class="error-hint" title={task.error}>err</span>
-						{/if}
-					</span>
+						<span class="col-name">{task.displayName}</span>
+						<span class="col-type">
+							<LineBadge lineIndex={getLineIndex(task.type)} size="compact" />
+							<span>{task.type}</span>
+						</span>
+						<span class="col-schedule">{task.schedule}</span>
+						<span class="col-next">{formatTime(task.next_run_at)}</span>
+						<span class="col-last">{formatTime(task.last_run_at)}</span>
+						<span class="col-duration">{formatDuration(task.lastDurationMs)}</span>
+						<span class="col-host">{task.hostName ?? "--"}</span>
+						<span class="col-actions">
+							{#if canCancel(task.status)}
+								<button
+									class="action-btn"
+									title="Cancel task"
+									onclick={(e) => {
+										e.stopPropagation();
+										cancelTask(task.id);
+									}}
+								>
+									Cancel
+								</button>
+							{:else if task.status === "failed" && task.error}
+								<span class="error-badge" title={task.error}>ERR</span>
+							{/if}
+						</span>
+					</div>
+
+					{#if expandedTaskId === task.id}
+						<div class="task-expanded">
+							<div class="detail-section">
+								<div class="detail-row">
+									<span class="label">ID</span>
+									<code>{task.id}</code>
+								</div>
+								<div class="detail-row">
+									<span class="label">Status</span>
+									<span>{task.status.toUpperCase()}</span>
+								</div>
+								<div class="detail-row">
+									<span class="label">Run Count</span>
+									<span>
+										{task.run_count}
+										{task.consecutive_failures > 0
+											? `(${task.consecutive_failures} failures)`
+											: ""}
+									</span>
+								</div>
+								{#if task.error}
+									<div class="detail-row">
+										<span class="label">Error</span>
+										<code class="error">{task.error}</code>
+									</div>
+								{/if}
+								{#if task.payload}
+									<div class="detail-row">
+										<span class="label">Payload</span>
+										<pre class="payload">{JSON.stringify(
+											JSON.parse(task.payload),
+											null,
+											2
+										)}</pre>
+									</div>
+								{/if}
+								{#if task.thread_id}
+									<div class="detail-row">
+										<span class="label">Thread</span>
+										<button
+											class="thread-link"
+											onclick={() => navigateTo(`/line/${task.thread_id}`)}
+										>
+											View thread
+										</button>
+									</div>
+								{/if}
+							</div>
+						</div>
+					{/if}
+				{/each}
+			{/if}
+
+			{#if inactiveTasks.length > 0}
+				<div class="separator-row">
+					<span>INACTIVE</span>
 				</div>
-			{/each}
+				{#each inactiveTasks as task (task.id)}
+					<div
+						class="task-row"
+						class:expanded={expandedTaskId === task.id}
+						onclick={() => toggleTaskExpansion(task.id)}
+					>
+						<span class="col-status">
+							<StatusChip status={task.status === "cancelled" ? "cancelled" : "idle"} />
+						</span>
+						<span class="col-name">{task.displayName}</span>
+						<span class="col-type">
+							<LineBadge lineIndex={getLineIndex(task.type)} size="compact" />
+							<span>{task.type}</span>
+						</span>
+						<span class="col-schedule">{task.schedule}</span>
+						<span class="col-next">{formatTime(task.next_run_at)}</span>
+						<span class="col-last">{formatTime(task.last_run_at)}</span>
+						<span class="col-duration">{formatDuration(task.lastDurationMs)}</span>
+						<span class="col-host">{task.hostName ?? "--"}</span>
+						<span class="col-actions"></span>
+					</div>
+
+					{#if expandedTaskId === task.id}
+						<div class="task-expanded">
+							<div class="detail-section">
+								<div class="detail-row">
+									<span class="label">ID</span>
+									<code>{task.id}</code>
+								</div>
+								<div class="detail-row">
+									<span class="label">Status</span>
+									<span>{task.status.toUpperCase()}</span>
+								</div>
+								<div class="detail-row">
+									<span class="label">Run Count</span>
+									<span>
+										{task.run_count}
+										{task.consecutive_failures > 0
+											? `(${task.consecutive_failures} failures)`
+											: ""}
+									</span>
+								</div>
+								{#if task.error}
+									<div class="detail-row">
+										<span class="label">Error</span>
+										<code class="error">{task.error}</code>
+									</div>
+								{/if}
+								{#if task.payload}
+									<div class="detail-row">
+										<span class="label">Payload</span>
+										<pre class="payload">{JSON.stringify(
+											JSON.parse(task.payload),
+											null,
+											2
+										)}</pre>
+									</div>
+								{/if}
+								{#if task.thread_id}
+									<div class="detail-row">
+										<span class="label">Thread</span>
+										<button
+											class="thread-link"
+											onclick={() => navigateTo(`/line/${task.thread_id}`)}
+										>
+											View thread
+										</button>
+									</div>
+								{/if}
+							</div>
+						</div>
+					{/if}
+				{/each}
+			{/if}
 		</div>
+
 		<div class="board-footer">
-			<span class="task-count">{tasks.length} task{tasks.length !== 1 ? "s" : ""}</span>
+			<span class="task-count"
+				>{allTasks.length} task{allTasks.length !== 1 ? "s" : ""}</span
+			>
 			<span class="auto-refresh">Auto-refresh: 5s</span>
 		</div>
 	{/if}
@@ -227,53 +393,34 @@ function canCancel(status: string): boolean {
 		overflow: hidden;
 	}
 
-	.timetable-header {
-		display: flex;
-		align-items: baseline;
-		gap: 16px;
-		margin-bottom: 32px;
-	}
-
-	h1 {
-		margin: 0;
-		color: var(--text-primary);
-		font-family: var(--font-display);
-		font-size: var(--text-xl);
-		font-weight: 700;
-	}
-
-	.subtitle {
-		font-family: var(--font-display);
-		font-size: var(--text-sm);
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-	}
-
 	.filter-area {
-		margin-left: auto;
+		display: flex;
+		gap: 8px;
 	}
 
-	.filter-select {
+	.filter-chip {
 		padding: 6px 12px;
 		border-radius: 6px;
 		border: 1px solid var(--bg-surface);
 		background: var(--bg-primary);
 		color: var(--text-secondary);
-		font-family: var(--font-mono);
-		font-size: 12px;
+		font-family: var(--font-display);
+		font-size: var(--text-xs);
+		font-weight: 500;
 		cursor: pointer;
-		transition: border-color 0.2s ease;
-		appearance: auto;
+		transition: all 0.2s ease;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
 	}
 
-	.filter-select:hover {
+	.filter-chip:hover {
 		border-color: var(--line-3);
 	}
 
-	.filter-select:focus {
-		outline: none;
+	.filter-chip.active {
+		background: var(--line-3);
 		border-color: var(--line-3);
+		color: var(--text-primary);
 	}
 
 	.loading-state {
@@ -306,27 +453,24 @@ function canCancel(status: string): boolean {
 	}
 
 	@keyframes loadingSlide {
-		0% { left: -40%; }
-		100% { left: 100%; }
-	}
-
-	.loading-state p,
-	.empty-state p {
-		color: var(--text-muted);
-		font-size: var(--text-sm);
-		margin: 0;
+		0% {
+			left: -40%;
+		}
+		100% {
+			left: 100%;
+		}
 	}
 
 	.empty-state {
 		display: flex;
-		flex-direction: column;
 		align-items: center;
-		gap: 16px;
+		justify-content: center;
 		padding: 48px 0;
-		text-align: center;
+		color: var(--text-muted);
+		font-size: var(--text-sm);
 	}
 
-	.board {
+	.task-list {
 		background: rgba(10, 10, 20, 0.5);
 		border: 1px solid var(--bg-surface);
 		border-radius: 8px;
@@ -335,9 +479,9 @@ function canCancel(status: string): boolean {
 		min-height: 0;
 	}
 
-	.board-header {
+	.task-list-header {
 		display: grid;
-		grid-template-columns: 120px 80px 130px 140px 100px 100px 100px 70px;
+		grid-template-columns: 100px 1fr 100px 120px 100px 100px 80px 120px 70px;
 		padding: 14px 20px;
 		background: var(--bg-secondary);
 		border-bottom: 2px solid var(--bg-surface);
@@ -347,75 +491,54 @@ function canCancel(status: string): boolean {
 		color: var(--text-secondary);
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
+		gap: 12px;
+		position: sticky;
+		top: 0;
+		z-index: 10;
 	}
 
-	.board-row {
+	.task-row {
 		display: grid;
-		grid-template-columns: 120px 80px 130px 140px 100px 100px 100px 70px;
+		grid-template-columns: 100px 1fr 100px 120px 100px 100px 80px 120px 70px;
 		padding: 12px 20px;
 		border-bottom: 1px solid rgba(15, 52, 96, 0.4);
+		gap: 12px;
 		align-items: center;
 		transition: background 0.15s ease;
 		cursor: pointer;
 	}
 
-	.board-row:last-child {
-		border-bottom: none;
-	}
-
-	.board-row:hover {
+	.task-row:hover {
 		background: rgba(15, 52, 96, 0.3);
 	}
 
-	.board-row.row-running {
+	.task-row.running {
 		border-left: 3px solid var(--status-active);
 		padding-left: 17px;
 	}
 
-	.board-row.row-failed {
+	.task-row.failed {
 		border-left: 3px solid var(--alert-disruption);
 		padding-left: 17px;
 	}
 
-	.task-id {
-		font-family: var(--font-mono);
-		font-size: 12px;
-		color: var(--text-muted);
-	}
-
 	.col-type {
 		display: flex;
-		flex-direction: column;
-		gap: 2px;
-	}
-
-	.type-label {
-		font-family: var(--font-display);
+		align-items: center;
+		gap: 6px;
 		font-size: var(--text-sm);
-		color: var(--text-primary);
-		font-weight: 600;
 	}
 
-	.run-count {
-		font-family: var(--font-mono);
-		font-size: 11px;
-		color: var(--text-muted);
-	}
-
-	.col-trigger {
+	.col-schedule,
+	.col-next,
+	.col-last,
+	.col-duration {
 		font-family: var(--font-mono);
 		font-size: 12px;
 		color: var(--text-secondary);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-
-	.col-next,
-	.col-last {
-		font-family: var(--font-mono);
-		font-size: 12px;
-		color: var(--text-secondary);
 	}
 
 	.col-host {
@@ -433,26 +556,26 @@ function canCancel(status: string): boolean {
 		justify-content: center;
 	}
 
-	.cancel-btn {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 28px;
-		height: 28px;
-		background: rgba(255, 23, 68, 0.08);
-		border: 1px solid rgba(255, 23, 68, 0.3);
+	.action-btn {
+		padding: 4px 8px;
 		border-radius: 4px;
+		border: 1px solid rgba(255, 23, 68, 0.3);
+		background: rgba(255, 23, 68, 0.08);
 		color: var(--alert-disruption);
+		font-size: var(--text-xs);
+		font-weight: 600;
 		cursor: pointer;
 		transition: all 0.2s ease;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
 	}
 
-	.cancel-btn:hover {
+	.action-btn:hover {
 		background: rgba(255, 23, 68, 0.18);
 		border-color: var(--alert-disruption);
 	}
 
-	.error-hint {
+	.error-badge {
 		font-family: var(--font-mono);
 		font-size: 10px;
 		font-weight: 700;
@@ -465,68 +588,100 @@ function canCancel(status: string): boolean {
 		letter-spacing: 0.05em;
 	}
 
-	.status-chip {
-		display: inline-flex;
+	.separator-row {
+		display: flex;
 		align-items: center;
-		gap: 6px;
-		padding: 4px 10px;
-		border-radius: 4px;
-		font-family: var(--font-display);
+		justify-content: center;
+		padding: 12px 20px;
+		background: rgba(107, 107, 128, 0.1);
 		font-size: var(--text-xs);
-		font-weight: 600;
+		font-weight: 700;
+		color: var(--text-muted);
 		text-transform: uppercase;
-		letter-spacing: 0.04em;
+		letter-spacing: 0.06em;
+		border-bottom: 1px solid rgba(15, 52, 96, 0.4);
 	}
 
-	.status-icon {
+	.task-expanded {
+		padding: 12px 20px 12px 32px;
+		background: rgba(15, 52, 96, 0.2);
+		border-bottom: 1px solid rgba(15, 52, 96, 0.4);
+		grid-column: 1 / -1;
+	}
+
+	.detail-section {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.detail-row {
+		display: flex;
+		gap: 16px;
+		align-items: flex-start;
+		font-size: var(--text-sm);
+	}
+
+	.label {
+		font-weight: 600;
+		color: var(--text-secondary);
+		min-width: 100px;
+	}
+
+	code {
 		font-family: var(--font-mono);
 		font-size: 11px;
-		font-weight: 700;
+		color: var(--text-secondary);
+		background: rgba(15, 52, 96, 0.5);
+		padding: 2px 6px;
+		border-radius: 3px;
+		overflow-x: auto;
+		max-width: 500px;
 	}
 
-	.status-completed {
-		color: var(--status-active);
-		background: rgba(105, 240, 174, 0.08);
-	}
-
-	.status-running {
-		color: var(--line-7);
-		background: rgba(0, 172, 155, 0.1);
-	}
-
-	.status-running .status-icon {
-		animation: blink 1s step-end infinite;
-	}
-
-	@keyframes blink {
-		50% { opacity: 0; }
-	}
-
-	.status-failed {
+	code.error {
 		color: var(--alert-disruption);
 		background: rgba(255, 23, 68, 0.08);
 	}
 
-	.status-pending {
-		color: var(--alert-warning);
-		background: rgba(255, 145, 0, 0.08);
+	pre.payload {
+		font-family: var(--font-mono);
+		font-size: 11px;
+		color: var(--text-secondary);
+		background: rgba(15, 52, 96, 0.5);
+		padding: 8px;
+		border-radius: 3px;
+		overflow-x: auto;
+		max-width: 500px;
+		margin: 0;
 	}
 
-	.status-cancelled {
-		color: var(--text-muted);
-		background: rgba(107, 107, 128, 0.08);
+	.thread-link {
+		padding: 4px 8px;
+		border-radius: 4px;
+		border: 1px solid var(--line-3);
+		background: rgba(0, 155, 191, 0.08);
+		color: var(--line-3);
+		font-size: var(--text-xs);
+		font-weight: 600;
+		cursor: pointer;
+		transition: all 0.2s ease;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
 	}
 
-	.status-unknown {
-		color: var(--text-muted);
-		background: rgba(107, 107, 128, 0.08);
+	.thread-link:hover {
+		background: rgba(0, 155, 191, 0.18);
+		border-color: var(--line-3);
 	}
 
 	.board-footer {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
-		padding: 12px 4px;
+		padding: 12px 0;
+		margin-top: 12px;
+		border-top: 1px solid var(--bg-surface);
 	}
 
 	.task-count {
@@ -543,8 +698,7 @@ function canCancel(status: string): boolean {
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.loading-bar::after,
-		.status-running .status-icon {
+		.loading-bar::after {
 			animation: none;
 		}
 	}

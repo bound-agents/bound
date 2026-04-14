@@ -1,5 +1,7 @@
 <script lang="ts">
 import { renderMarkdown } from "../lib/markdown";
+import { getLineColor } from "../lib/metro-lines";
+import { MetroCard } from "./shared";
 
 const {
 	role,
@@ -7,15 +9,28 @@ const {
 	toolName = null,
 	modelId = null,
 	exitCode = null,
+	threadColor = 0,
 } = $props<{
 	role: "user" | "assistant" | "tool_call" | "tool_result" | "alert" | "system";
 	content: string;
 	toolName?: string | null;
 	modelId?: string | null;
 	exitCode?: number | null;
+	threadColor?: number;
 }>();
 
 const isError = $derived(role === "tool_result" && exitCode !== null && exitCode !== 0);
+
+// Compute accent color based on role
+const accentColor = $derived.by(() => {
+	if (role === "user") {
+		return "var(--line-7)"; // Emerald
+	}
+	if (role === "assistant") {
+		return getLineColor(threadColor);
+	}
+	return undefined;
+});
 
 let rendered = $state("");
 
@@ -51,20 +66,23 @@ $effect(() => {
 		<div class="content system-text">{content}</div>
 	</div>
 {:else}
-	<div class="message-bubble {role}">
-		<div class="role-badge">
-			{#if role === "assistant" && modelId}
-				<span class="model-pill">{modelId}</span>
-			{:else}
+	<MetroCard {accentColor}>
+		<div class="message-content {role}">
+			<div class="role-badge">
 				{role}
+			</div>
+			{#if rendered}
+				<div class="content md-content">{@html rendered}</div>
+			{:else}
+				<div class="content">{content}</div>
+			{/if}
+			{#if role === "assistant" && modelId}
+				<div class="metadata">
+					<span class="model-pill">{modelId}</span>
+				</div>
 			{/if}
 		</div>
-		{#if rendered}
-			<div class="content md-content">{@html rendered}</div>
-		{:else}
-			<div class="content">{content}</div>
-		{/if}
-	</div>
+	</MetroCard>
 {/if}
 
 <style>
@@ -78,16 +96,19 @@ $effect(() => {
 		line-height: 1.55;
 	}
 
-	/* User messages: teal/green tint, Namboku emerald accent */
-	.user {
-		background: rgba(0, 172, 155, 0.1);
-		border-left-color: var(--line-7);
+	.message-content {
+		padding: 10px 14px;
+		line-height: 1.55;
 	}
 
-	/* Assistant messages: warm tone, Ginza orange accent */
-	.assistant {
+	/* User messages: teal/green tint */
+	.message-content.user {
+		background: rgba(0, 172, 155, 0.1);
+	}
+
+	/* Assistant messages: warm tone */
+	.message-content.assistant {
 		background: rgba(243, 151, 0, 0.08);
-		border-left-color: var(--line-0);
 	}
 
 	/* Tool results: Chiyoda green accent */
@@ -125,6 +146,12 @@ $effect(() => {
 		margin-bottom: 6px;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
+	}
+
+	.metadata {
+		margin-top: 8px;
+		padding-top: 8px;
+		border-top: 1px solid rgba(255, 255, 255, 0.08);
 	}
 
 	.model-pill {

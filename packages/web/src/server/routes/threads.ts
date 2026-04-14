@@ -21,12 +21,15 @@ export function createThreadsRoutes(
 			const threads = db
 				.query(
 					`
-				SELECT * FROM threads
-				WHERE deleted = 0 AND user_id = ?
-				ORDER BY last_message_at DESC
+				SELECT t.*,
+					(SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id AND m.deleted = 0) as messageCount,
+					(SELECT tu.model_id FROM turns tu WHERE tu.thread_id = t.id ORDER BY tu.id DESC LIMIT 1) as lastModel
+				FROM threads t
+				WHERE t.deleted = 0 AND t.user_id = ?
+				ORDER BY t.last_message_at DESC
 			`,
 				)
-				.all(webUserId) as Thread[];
+				.all(webUserId) as Array<Thread & { messageCount: number; lastModel: string | null }>;
 
 			return c.json(threads);
 		} catch (error) {
@@ -38,47 +41,6 @@ export function createThreadsRoutes(
 				},
 				500,
 			);
-		}
-	});
-
-	// Cross-thread context interchange map — returns which threads drew context from which others
-	app.get("/interchange", (c) => {
-		try {
-			// For each non-deleted thread, get the most recent turn's crossThreadSources
-			const rows = db
-				.query(
-					`SELECT t.thread_id, t.context_debug
-					FROM turns t
-					INNER JOIN (
-						SELECT thread_id, MAX(id) as max_id
-						FROM turns
-						WHERE context_debug IS NOT NULL AND thread_id IS NOT NULL
-						GROUP BY thread_id
-					) latest ON t.id = latest.max_id
-					INNER JOIN threads th ON th.id = t.thread_id AND th.deleted = 0`,
-				)
-				.all() as Array<{ thread_id: string; context_debug: string }>;
-
-			const interchange: Record<string, Array<{ threadId: string; color: number }>> = {};
-			for (const row of rows) {
-				try {
-					const debug = JSON.parse(row.context_debug);
-					const sources = debug?.crossThreadSources;
-					if (Array.isArray(sources) && sources.length > 0) {
-						interchange[row.thread_id] = sources.map((s: { threadId: string; color: number }) => ({
-							threadId: s.threadId,
-							color: s.color,
-						}));
-					}
-				} catch {
-					// Skip malformed JSON
-				}
-			}
-
-			return c.json(interchange);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json({ error: "Failed to get interchange data", details: message }, 500);
 		}
 	});
 
