@@ -1244,8 +1244,7 @@ Original output was too large for the context window. If you need the full conte
 		const taskDigestTokens =
 			taskDigestLines.length > 0 ? countTokens(taskDigestLines.join("\n")) : 0;
 
-		const totalVolatileTokens =
-			suffixLines.length > 0 ? countTokens(suffixLines.join("\n")) : 0;
+		const totalVolatileTokens = suffixLines.length > 0 ? countTokens(suffixLines.join("\n")) : 0;
 		const volatileOtherTokens = totalVolatileTokens - memoryTokens - taskDigestTokens;
 
 		if (memoryTokens > 0) sections.push({ name: "memory", tokens: memoryTokens });
@@ -1388,7 +1387,10 @@ Original output was too large for the context window. If you need the full conte
 		}
 	};
 
-	if (enrichmentBaseline !== undefined && (suffixContent !== undefined || enrichmentMessageIndex >= 0)) {
+	if (
+		enrichmentBaseline !== undefined &&
+		(suffixContent !== undefined || enrichmentMessageIndex >= 0)
+	) {
 		const systemTokens = assembled
 			.filter((m) => m.role === "system")
 			.reduce((sum, m) => sum + countContentTokens(m.content), 0);
@@ -1549,6 +1551,7 @@ Original output was too large for the context window. If you need the full conte
 
 			return {
 				messages: truncatedMessages,
+				...(suffixContent !== undefined ? { systemSuffix: suffixContent } : {}),
 				debug: {
 					contextWindow: contextWindow,
 					totalEstimated,
@@ -1569,7 +1572,7 @@ Original output was too large for the context window. If you need the full conte
 
 	return {
 		messages: assembled,
-		...(suffixContent ? { systemSuffix: suffixContent } : {}),
+		...(suffixContent !== undefined ? { systemSuffix: suffixContent } : {}),
 		debug: {
 			contextWindow: contextWindow,
 			totalEstimated,

@@ -3127,7 +3127,9 @@ This skill reviews pull requests.`;
 			const { systemSuffix } = result;
 
 			expect(systemSuffix).toBeDefined();
-			const notifLines = systemSuffix.split("\n").filter((l) => l.includes("Advisory notification"));
+			const notifLines = systemSuffix
+				.split("\n")
+				.filter((l) => l.includes("Advisory notification"));
 			expect(notifLines.length).toBeLessThanOrEqual(5);
 
 			// Cleanup
@@ -5119,7 +5121,7 @@ This skill reviews pull requests.`;
 				.filter((m) => m.role === "system")
 				.map((m) => (typeof m.content === "string" ? m.content : ""))
 				.join("\n");
-			const contextText = systemText + "\n" + (result.systemSuffix || "");
+			const contextText = `${systemText}\n${result.systemSuffix || ""}`;
 
 			// L3 entries have keys "recency_key_N" — should not appear
 			for (let i = 0; i < 10; i++) {
@@ -5200,7 +5202,7 @@ This skill reviews pull requests.`;
 				.filter((m) => m.role === "system")
 				.map((m) => (typeof m.content === "string" ? m.content : ""))
 				.join("\n");
-			const contextText = systemText + "\n" + (result.systemSuffix || "");
+			const contextText = `${systemText}\n${result.systemSuffix || ""}`;
 
 			// Count how many default entries appear (default_key_*)
 			const defaultMatches = contextText.match(/default_key_\d+/g) || [];
@@ -5297,7 +5299,7 @@ This skill reviews pull requests.`;
 				.filter((m) => m.role === "system")
 				.map((m) => (typeof m.content === "string" ? m.content : ""))
 				.join("\n");
-			const contextText = systemText + "\n" + (result.systemSuffix || "");
+			const contextText = `${systemText}\n${result.systemSuffix || ""}`;
 
 			// All L0 pinned entries should survive
 			for (let i = 0; i < 5; i++) {
@@ -5311,8 +5313,12 @@ This skill reviews pull requests.`;
 		});
 
 		it("AC5.4: L0+L1 exceeding 20 entries logs warning but does not truncate", () => {
-			// Clean up any leftover semantic_memory entries from previous tests
+			// Thorough cleanup: clear all tables that contribute to volatile context size
 			db.run("DELETE FROM semantic_memory");
+			db.run("DELETE FROM memory_edges");
+			db.run("DELETE FROM tasks");
+			db.run("DELETE FROM skills");
+			db.run("DELETE FROM advisories");
 
 			const testThreadId = randomUUID();
 			db.run(
@@ -5392,12 +5398,13 @@ This skill reviews pull requests.`;
 			});
 
 			expect(result.debug.budgetPressure).toBe(true);
+			expect(result.systemSuffix).toBeDefined();
 
 			const systemText = result.messages
 				.filter((m) => m.role === "system")
 				.map((m) => (typeof m.content === "string" ? m.content : ""))
 				.join("\n");
-			const contextText = systemText + "\n" + (result.systemSuffix || "");
+			const contextText = `${systemText}\n${result.systemSuffix || ""}`;
 
 			// All 25 entries should still be present (no truncation)
 			let pinnedCount = 0;
@@ -5497,7 +5504,17 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		// Add a user message so we have history
 		db.run(
 			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[randomUUID(), threadId, "user", "Hello!", null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+			[
+				randomUUID(),
+				threadId,
+				"user",
+				"Hello!",
+				null,
+				null,
+				new Date().toISOString(),
+				new Date().toISOString(),
+				"local",
+			],
 		);
 	});
 
@@ -5519,9 +5536,9 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			(m) => typeof m.content === "string" && m.content.includes("## Orientation"),
 		);
 		expect(orientationMsg).toBeDefined();
-		expect(typeof orientationMsg!.content === "string" && orientationMsg!.content).not.toContain(
-			"### Current Model",
-		);
+		const orientationContent = orientationMsg?.content;
+		expect(typeof orientationContent).toBe("string");
+		expect(orientationContent as string).not.toContain("### Current Model");
 	});
 
 	it("returns systemSuffix containing current model and thread identifiers", () => {
@@ -5581,7 +5598,17 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		);
 		db.run(
 			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[randomUUID(), threadId2, "user", "Different message", null, null, new Date().toISOString(), new Date().toISOString(), "local"],
+			[
+				randomUUID(),
+				threadId2,
+				"user",
+				"Different message",
+				null,
+				null,
+				new Date().toISOString(),
+				new Date().toISOString(),
+				"local",
+			],
 		);
 
 		const result1 = assembleContext({
