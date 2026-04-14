@@ -194,10 +194,24 @@ export class BedrockDriver implements LLMBackend {
 		}
 
 		// When cache breakpoints are present, also cache the system prompt.
-		const systemBlocks: SystemContentBlock[] | undefined = params.system
+		// If system_suffix is present, place cachePoint between stable prefix and
+		// varying suffix so only the prefix is cached.
+		const effectiveSystem = params.system_suffix
 			? params.cache_breakpoints?.length
-				? [{ text: params.system }, { cachePoint: { type: "default" } } as CachePointBlock]
-				: [{ text: params.system }]
+				? params.system // Keep separate for three-block layout below
+				: `${params.system}\n\n${params.system_suffix}` // Append when no caching
+			: params.system;
+
+		const systemBlocks: SystemContentBlock[] | undefined = effectiveSystem
+			? params.cache_breakpoints?.length
+				? params.system_suffix
+					? [
+							{ text: effectiveSystem },
+							{ cachePoint: { type: "default" } } as CachePointBlock,
+							{ text: params.system_suffix },
+						]
+					: [{ text: effectiveSystem }, { cachePoint: { type: "default" } } as CachePointBlock]
+				: [{ text: effectiveSystem }]
 			: undefined;
 
 		const toolConfig =

@@ -17,6 +17,13 @@ export interface ChatParams {
 	max_tokens?: number;
 	temperature?: number;
 	system?: string;
+	/**
+	 * Varying system context placed AFTER the cached system prefix.
+	 * When cache_breakpoints are provided, this content is sent as a separate
+	 * uncached system block so it doesn't bust the prompt cache.
+	 * Without cache_breakpoints, it's appended to the system string.
+	 */
+	system_suffix?: string;
 	cache_breakpoints?: number[];
 	/**
 	 * Cache TTL hint. Currently UNIMPLEMENTED — do not set.

@@ -992,3 +992,108 @@ describe("toBedrockMessages — blank text guard", () => {
 		expect("text" in textBlock! && textBlock.text).toBe("Hello world");
 	});
 });
+
+describe("BedrockDriver system_suffix", () => {
+	let sendSpy: ReturnType<typeof spyOn<BedrockRuntimeClient, "send">>;
+
+	beforeEach(() => {
+		sendSpy = spyOn(BedrockRuntimeClient.prototype, "send");
+	});
+
+	afterEach(() => {
+		sendSpy.mockRestore();
+	});
+
+	it.skipIf(shouldSkip)(
+		"places cachePoint between stable system and suffix when cache_breakpoints provided",
+		async () => {
+			let capturedInput: Record<string, unknown> | undefined;
+			sendSpy.mockImplementation((command: unknown) => {
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+				capturedInput = (command as any).input;
+				return Promise.resolve(
+					createMockStream([
+						{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "OK" } } },
+						{
+							metadata: {
+								usage: {
+									inputTokens: 100,
+									outputTokens: 5,
+									cacheWriteInputTokens: 50,
+									cacheReadInputTokens: 0,
+								},
+							},
+						},
+					]),
+				);
+			});
+
+			const driver = makeDriver();
+			await collectChunks(
+				driver.chat({
+					messages: [
+						{ role: "user", content: "msg 1" },
+						{ role: "assistant", content: "resp 1" },
+						{ role: "user", content: "msg 2" },
+					],
+					system: "You are a helpful assistant.",
+					system_suffix: "Current Model: opus\nThread ID: abc-123",
+					cache_breakpoints: [1],
+				}),
+			);
+
+			const system = capturedInput?.system as Array<Record<string, unknown>>;
+			expect(system).toBeDefined();
+			expect(system).toHaveLength(3);
+			// First block: stable system text
+			expect(system[0]).toEqual({ text: "You are a helpful assistant." });
+			// Second block: cachePoint marker (cache boundary)
+			expect(system[1]).toEqual({ cachePoint: { type: "default" } });
+			// Third block: uncached varying suffix
+			expect(system[2]).toEqual({ text: "Current Model: opus\nThread ID: abc-123" });
+		},
+	);
+
+	it.skipIf(shouldSkip)(
+		"appends system_suffix as plain text when no cache_breakpoints provided",
+		async () => {
+			let capturedInput: Record<string, unknown> | undefined;
+			sendSpy.mockImplementation((command: unknown) => {
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+				capturedInput = (command as any).input;
+				return Promise.resolve(
+					createMockStream([
+						{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "OK" } } },
+						{
+							metadata: {
+								usage: {
+									inputTokens: 100,
+									outputTokens: 5,
+									cacheWriteInputTokens: 0,
+									cacheReadInputTokens: 0,
+								},
+							},
+						},
+					]),
+				);
+			});
+
+			const driver = makeDriver();
+			await collectChunks(
+				driver.chat({
+					messages: [{ role: "user", content: "Hello" }],
+					system: "You are a helpful assistant.",
+					system_suffix: "Current Model: opus",
+				}),
+			);
+
+			const system = capturedInput?.system as Array<Record<string, unknown>>;
+			expect(system).toBeDefined();
+			// Without cache_breakpoints, suffix is just appended as another text block
+			expect(system).toHaveLength(1);
+			expect(system[0]).toEqual({
+				text: "You are a helpful assistant.\n\nCurrent Model: opus",
+			});
+		},
+	);
+});
