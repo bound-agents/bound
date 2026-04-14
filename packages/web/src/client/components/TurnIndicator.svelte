@@ -3,12 +3,13 @@ interface Props {
 	lineColor: string;
 	isActive: boolean;
 	turnBoundaryOffsets?: number[];
+	scrollHeight?: number;
 }
 
-let { lineColor, isActive, turnBoundaryOffsets = [] }: Props = $props();
+let { lineColor, isActive, turnBoundaryOffsets = [], scrollHeight = 0 }: Props = $props();
 </script>
 
-<div class="turn-indicator">
+<div class="turn-indicator" style={scrollHeight > 0 ? `height: ${scrollHeight}px` : ''}>
 	<!-- Vertical line -->
 	<div
 		class="indicator-line"
@@ -46,12 +47,12 @@ let { lineColor, isActive, turnBoundaryOffsets = [] }: Props = $props();
 		left: 0;
 		top: 0;
 		bottom: 0;
-		width: 24px;
+		width: 30px;
 	}
 
 	.indicator-line {
 		position: absolute;
-		left: 11px;
+		left: 14px;
 		top: 0;
 		bottom: 0;
 		width: 2px;
@@ -61,12 +62,13 @@ let { lineColor, isActive, turnBoundaryOffsets = [] }: Props = $props();
 
 	.station-dot {
 		position: absolute;
-		left: 9px;
-		width: 6px;
-		height: 6px;
+		left: 15px;
+		width: 10px;
+		height: 10px;
 		border-radius: 50%;
 		border: 2px solid;
 		transform: translate(-50%, -50%);
+		z-index: 1;
 	}
 
 	.station-dot.latest {
@@ -75,7 +77,7 @@ let { lineColor, isActive, turnBoundaryOffsets = [] }: Props = $props();
 
 	.active-thinking {
 		position: absolute;
-		left: 11px;
+		left: 14px;
 		width: 2px;
 		height: 60px;
 		border-left: 2px dashed;

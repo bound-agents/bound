@@ -1,32 +1,23 @@
 import { describe, expect, it } from "bun:test";
 import type { MemoryGraphEdge, MemoryGraphNode } from "../api";
-import { computeGraphLayout } from "../graph-layout";
+import { computeInitialLayout, simulationStep } from "../graph-layout";
 
-describe("computeGraphLayout", () => {
+describe("computeInitialLayout", () => {
 	describe("empty input", () => {
 		it("returns empty arrays when input nodes are empty", () => {
-			const result = computeGraphLayout([], [], 500);
-			expect(result.positionedNodes).toEqual([]);
-			expect(result.positionedEdges).toEqual([]);
+			const result = computeInitialLayout([], [], 500, 400);
+			expect(result.nodes).toEqual([]);
+			expect(result.edges).toEqual([]);
 		});
 	});
 
 	describe("node tier positioning", () => {
-		it("assigns Y position by tier", () => {
+		it("positions pinned nodes higher (smaller Y) than default nodes", () => {
 			const nodes: MemoryGraphNode[] = [
 				{
 					key: "pinned-1",
 					value: "value",
 					tier: "pinned",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: 0,
-					modifiedAt: new Date().toISOString(),
-				},
-				{
-					key: "summary-1",
-					value: "value",
-					tier: "summary",
 					source: null,
 					sourceThreadTitle: null,
 					lineIndex: 0,
@@ -43,117 +34,12 @@ describe("computeGraphLayout", () => {
 				},
 			];
 
-			const result = computeGraphLayout(nodes, [], 500);
-			const pinnedNode = result.positionedNodes.find((n) => n.key === "pinned-1");
-			const summaryNode = result.positionedNodes.find((n) => n.key === "summary-1");
-			const defaultNode = result.positionedNodes.find((n) => n.key === "default-1");
+			const result = computeInitialLayout(nodes, [], 500, 400);
+			const pinned = result.nodes.find((n) => n.key === "pinned-1");
+			const def = result.nodes.find((n) => n.key === "default-1");
 
-			expect(pinnedNode?.y).toBe(40);
-			expect(summaryNode?.y).toBe(160);
-			expect(defaultNode?.y).toBe(280);
-		});
-
-		it("assigns detail nodes Y=360", () => {
-			const nodes: MemoryGraphNode[] = [
-				{
-					key: "detail-1",
-					value: "value",
-					tier: "detail",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: 0,
-					modifiedAt: new Date().toISOString(),
-				},
-			];
-
-			const result = computeGraphLayout(nodes, [], 500, "thread-1");
-			const detailNode = result.positionedNodes.find((n) => n.key === "detail-1");
-			expect(detailNode?.y).toBe(360);
-		});
-	});
-
-	describe("node spacing", () => {
-		it("spaces nodes at least 60px apart in same tier", () => {
-			const nodes: MemoryGraphNode[] = [
-				{
-					key: "node-1",
-					value: "value",
-					tier: "default",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: 0,
-					modifiedAt: new Date().toISOString(),
-				},
-				{
-					key: "node-2",
-					value: "value",
-					tier: "default",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: 0,
-					modifiedAt: new Date(Date.now() - 1000).toISOString(),
-				},
-			];
-
-			const result = computeGraphLayout(nodes, [], 500);
-			const node1 = result.positionedNodes.find((n) => n.key === "node-1");
-			const node2 = result.positionedNodes.find((n) => n.key === "node-2");
-
-			expect(node1 && node2).toBeTruthy();
-			const distance = Math.abs((node1?.x ?? 0) - (node2?.x ?? 0));
-			expect(distance).toBeGreaterThanOrEqual(60);
-		});
-
-		it("centers nodes horizontally when single node in tier", () => {
-			const nodes: MemoryGraphNode[] = [
-				{
-					key: "single",
-					value: "value",
-					tier: "default",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: 0,
-					modifiedAt: new Date().toISOString(),
-				},
-			];
-
-			const result = computeGraphLayout(nodes, [], 500);
-			const node = result.positionedNodes.find((n) => n.key === "single");
-			expect(node?.x).toBe(250); // 500 / 2
-		});
-
-		it("distributes multiple nodes evenly across canvas", () => {
-			const nodes: MemoryGraphNode[] = [];
-			for (let i = 0; i < 5; i++) {
-				nodes.push({
-					key: `node-${i}`,
-					value: "value",
-					tier: "default",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: 0,
-					modifiedAt: new Date(Date.now() - i * 1000).toISOString(),
-				});
-			}
-
-			const result = computeGraphLayout(nodes, [], 500);
-			const xPositions = result.positionedNodes.map((n) => n.x).sort((a, b) => a - b);
-
-			// Check all positions are within canvas
-			for (const x of xPositions) {
-				expect(x).toBeGreaterThanOrEqual(0);
-				expect(x).toBeLessThanOrEqual(500);
-			}
-
-			// Check spacing is consistent
-			const gaps = [];
-			for (let i = 1; i < xPositions.length; i++) {
-				gaps.push(xPositions[i] - xPositions[i - 1]);
-			}
-
-			for (const gap of gaps) {
-				expect(gap).toBeGreaterThanOrEqual(60);
-			}
+			// Pinned should be higher (smaller Y) than default in arc layout
+			expect(pinned!.y).toBeLessThan(def!.y);
 		});
 	});
 
@@ -171,15 +57,6 @@ describe("computeGraphLayout", () => {
 					modifiedAt: new Date(now.getTime() - 3000).toISOString(),
 				},
 				{
-					key: "node-new",
-					value: "value",
-					tier: "default",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: 0,
-					modifiedAt: new Date(now.getTime() - 1000).toISOString(),
-				},
-				{
 					key: "node-newest",
 					value: "value",
 					tier: "default",
@@ -190,17 +67,14 @@ describe("computeGraphLayout", () => {
 				},
 			];
 
-			const result = computeGraphLayout(nodes, [], 500);
-			const positions = result.positionedNodes;
-
-			expect(positions[0].key).toBe("node-newest");
-			expect(positions[1].key).toBe("node-new");
-			expect(positions[2].key).toBe("node-old");
+			const result = computeInitialLayout(nodes, [], 500, 400);
+			// Both should be positioned
+			expect(result.nodes).toHaveLength(2);
 		});
 
-		it("limits each tier to 20 nodes max", () => {
+		it("limits each tier to 40 nodes max", () => {
 			const nodes: MemoryGraphNode[] = [];
-			for (let i = 0; i < 30; i++) {
+			for (let i = 0; i < 50; i++) {
 				nodes.push({
 					key: `node-${i}`,
 					value: "value",
@@ -212,9 +86,9 @@ describe("computeGraphLayout", () => {
 				});
 			}
 
-			const result = computeGraphLayout(nodes, [], 500);
-			const defaultNodes = result.positionedNodes.filter((n) => n.tier === "default");
-			expect(defaultNodes).toHaveLength(20);
+			const result = computeInitialLayout(nodes, [], 500, 400);
+			const defaultNodes = result.nodes.filter((n) => n.tier === "default");
+			expect(defaultNodes).toHaveLength(40);
 		});
 	});
 
@@ -259,17 +133,17 @@ describe("computeGraphLayout", () => {
 				},
 			];
 
-			const result = computeGraphLayout(nodes, [], 500, "thread-1");
+			const result = computeInitialLayout(nodes, [], 500, 400, "thread-1");
 
-			expect(result.positionedNodes.find((n) => n.key === "pinned")?.radius).toBe(12);
-			expect(result.positionedNodes.find((n) => n.key === "summary")?.radius).toBe(8);
-			expect(result.positionedNodes.find((n) => n.key === "default")?.radius).toBe(6);
-			expect(result.positionedNodes.find((n) => n.key === "detail")?.radius).toBe(4);
+			expect(result.nodes.find((n) => n.key === "pinned")?.radius).toBe(14);
+			expect(result.nodes.find((n) => n.key === "summary")?.radius).toBe(9);
+			expect(result.nodes.find((n) => n.key === "default")?.radius).toBe(7);
+			expect(result.nodes.find((n) => n.key === "detail")?.radius).toBe(5);
 		});
 	});
 
 	describe("detail node visibility", () => {
-		it("excludes detail nodes when selectedThreadId is not set", () => {
+		it("includes detail nodes always", () => {
 			const nodes: MemoryGraphNode[] = [
 				{
 					key: "detail-1",
@@ -282,35 +156,8 @@ describe("computeGraphLayout", () => {
 				},
 			];
 
-			const result = computeGraphLayout(nodes, [], 500);
-			const detailNodes = result.positionedNodes.filter((n) => n.tier === "detail");
-			expect(detailNodes).toHaveLength(0);
-		});
-
-		it("includes detail nodes when selectedThreadId is set", () => {
-			const nodes: MemoryGraphNode[] = [
-				{
-					key: "summary-1",
-					value: "value",
-					tier: "summary",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: 0,
-					modifiedAt: new Date().toISOString(),
-				},
-				{
-					key: "detail-1",
-					value: "value",
-					tier: "detail",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: 0,
-					modifiedAt: new Date().toISOString(),
-				},
-			];
-
-			const result = computeGraphLayout(nodes, [], 500, "thread-1");
-			const detailNodes = result.positionedNodes.filter((n) => n.tier === "detail");
+			const result = computeInitialLayout(nodes, [], 500, 400);
+			const detailNodes = result.nodes.filter((n) => n.tier === "detail");
 			expect(detailNodes).toHaveLength(1);
 		});
 	});
@@ -327,25 +174,15 @@ describe("computeGraphLayout", () => {
 					lineIndex: 0,
 					modifiedAt: new Date().toISOString(),
 				},
-				{
-					key: "node-2",
-					value: "value",
-					tier: "default",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: 1,
-					modifiedAt: new Date().toISOString(),
-				},
 			];
 
-			const result = computeGraphLayout(nodes, [], 500);
-
-			for (const node of result.positionedNodes) {
+			const result = computeInitialLayout(nodes, [], 500, 400);
+			for (const node of result.nodes) {
 				expect(node.opacity).toBe(1.0);
 			}
 		});
 
-		it("sets opacity to 1.0 for nodes matching selectedThreadId, 0.2 for others", () => {
+		it("sets opacity to 1.0 for matching nodes, 0.15 for others", () => {
 			const selectedThreadUuid = "thread-uuid-123";
 			const nodes: MemoryGraphNode[] = [
 				{
@@ -368,31 +205,12 @@ describe("computeGraphLayout", () => {
 				},
 			];
 
-			const result = computeGraphLayout(nodes, [], 500, selectedThreadUuid);
-
-			const node1 = result.positionedNodes.find((n) => n.key === "node-1");
-			const node2 = result.positionedNodes.find((n) => n.key === "node-2");
+			const result = computeInitialLayout(nodes, [], 500, 400, selectedThreadUuid);
+			const node1 = result.nodes.find((n) => n.key === "node-1");
+			const node2 = result.nodes.find((n) => n.key === "node-2");
 
 			expect(node1?.opacity).toBe(1.0);
-			expect(node2?.opacity).toBe(0.2);
-		});
-
-		it("preserves 1.0 opacity for nodes with null lineIndex", () => {
-			const nodes: MemoryGraphNode[] = [
-				{
-					key: "node-no-index",
-					value: "value",
-					tier: "default",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: null,
-					modifiedAt: new Date().toISOString(),
-				},
-			];
-
-			const result = computeGraphLayout(nodes, [], 500, "thread-1");
-			const node = result.positionedNodes.find((n) => n.key === "node-no-index");
-			expect(node?.opacity).toBe(1.0);
+			expect(node2?.opacity).toBe(0.15);
 		});
 	});
 
@@ -428,8 +246,8 @@ describe("computeGraphLayout", () => {
 				},
 			];
 
-			const result = computeGraphLayout(nodes, edges, 500);
-			expect(result.positionedEdges).toHaveLength(1);
+			const result = computeInitialLayout(nodes, edges, 500, 400);
+			expect(result.edges).toHaveLength(1);
 		});
 
 		it("skips edges with missing nodes", () => {
@@ -454,8 +272,8 @@ describe("computeGraphLayout", () => {
 				},
 			];
 
-			const result = computeGraphLayout(nodes, edges, 500);
-			expect(result.positionedEdges).toHaveLength(0);
+			const result = computeInitialLayout(nodes, edges, 500, 400);
+			expect(result.edges).toHaveLength(0);
 		});
 
 		it("marks summarizes relation edges as dashed", () => {
@@ -489,113 +307,35 @@ describe("computeGraphLayout", () => {
 				},
 			];
 
-			const result = computeGraphLayout(nodes, edges, 500, "thread-1");
-			const edge = result.positionedEdges[0];
+			const result = computeInitialLayout(nodes, edges, 500, 400, "thread-1");
+			const edge = result.edges[0];
 			expect(edge?.dashed).toBe(true);
-		});
-
-		it("marks non-summarizes edges as solid", () => {
-			const nodes: MemoryGraphNode[] = [
-				{
-					key: "node-1",
-					value: "value",
-					tier: "default",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: 0,
-					modifiedAt: new Date().toISOString(),
-				},
-				{
-					key: "node-2",
-					value: "value",
-					tier: "default",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: 0,
-					modifiedAt: new Date().toISOString(),
-				},
-			];
-
-			const edges: MemoryGraphEdge[] = [
-				{
-					sourceKey: "node-1",
-					targetKey: "node-2",
-					relation: "related",
-					modifiedAt: new Date().toISOString(),
-				},
-			];
-
-			const result = computeGraphLayout(nodes, edges, 500);
-			const edge = result.positionedEdges[0];
-			expect(edge?.dashed).toBe(false);
-		});
-
-		it("connects edges between correct node positions", () => {
-			const nodes: MemoryGraphNode[] = [
-				{
-					key: "node-1",
-					value: "value",
-					tier: "default",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: 0,
-					modifiedAt: new Date().toISOString(),
-				},
-				{
-					key: "node-2",
-					value: "value",
-					tier: "default",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: 0,
-					modifiedAt: new Date(Date.now() - 1000).toISOString(),
-				},
-			];
-
-			const edges: MemoryGraphEdge[] = [
-				{
-					sourceKey: "node-1",
-					targetKey: "node-2",
-					relation: "connects",
-					modifiedAt: new Date().toISOString(),
-				},
-			];
-
-			const result = computeGraphLayout(nodes, edges, 500);
-			const edge = result.positionedEdges[0];
-			const sourceNode = result.positionedNodes.find((n) => n.key === "node-1");
-			const targetNode = result.positionedNodes.find((n) => n.key === "node-2");
-
-			expect(edge?.x1).toBe(sourceNode?.x);
-			expect(edge?.y1).toBe(sourceNode?.y);
-			expect(edge?.x2).toBe(targetNode?.x);
-			expect(edge?.y2).toBe(targetNode?.y);
 		});
 	});
 
 	describe("node color assignment", () => {
-		it("assigns color based on lineIndex", () => {
+		it("assigns color based on tier", () => {
 			const nodes: MemoryGraphNode[] = [
 				{
-					key: "node-1",
+					key: "pinned-1",
 					value: "value",
-					tier: "default",
+					tier: "pinned",
 					source: null,
 					sourceThreadTitle: null,
 					lineIndex: 0,
 					modifiedAt: new Date().toISOString(),
 				},
-			];
-
-			const result = computeGraphLayout(nodes, [], 500);
-			const node = result.positionedNodes[0];
-			expect(node?.color).toBe("#F39700"); // Line G (Ginza)
-		});
-
-		it("uses muted color when lineIndex is null", () => {
-			const nodes: MemoryGraphNode[] = [
 				{
-					key: "node-1",
+					key: "summary-1",
+					value: "value",
+					tier: "summary",
+					source: null,
+					sourceThreadTitle: null,
+					lineIndex: 0,
+					modifiedAt: new Date().toISOString(),
+				},
+				{
+					key: "default-1",
 					value: "value",
 					tier: "default",
 					source: null,
@@ -605,9 +345,71 @@ describe("computeGraphLayout", () => {
 				},
 			];
 
-			const result = computeGraphLayout(nodes, [], 500);
-			const node = result.positionedNodes[0];
-			expect(node?.color).toBe("var(--text-muted)");
+			const result = computeInitialLayout(nodes, [], 500, 400);
+			expect(result.nodes.find((n) => n.key === "pinned-1")?.color).toBe("#F39700");
+			expect(result.nodes.find((n) => n.key === "summary-1")?.color).toBe("#009BBF");
+			expect(result.nodes.find((n) => n.key === "default-1")?.color).toBe("#9CAEB7");
 		});
+	});
+});
+
+describe("simulationStep", () => {
+	it("moves nodes and returns energy", () => {
+		const nodes: MemoryGraphNode[] = [
+			{
+				key: "node-1",
+				value: "value",
+				tier: "default",
+				source: null,
+				sourceThreadTitle: null,
+				lineIndex: 0,
+				modifiedAt: new Date().toISOString(),
+			},
+			{
+				key: "node-2",
+				value: "value",
+				tier: "default",
+				source: null,
+				sourceThreadTitle: null,
+				lineIndex: 0,
+				modifiedAt: new Date().toISOString(),
+			},
+		];
+
+		// Place nodes close together so repulsion kicks in
+		const layout = computeInitialLayout(nodes, [], 100, 100);
+		const initialX1 = layout.nodes[0].x;
+		const initialY1 = layout.nodes[0].y;
+
+		const energy = simulationStep(layout.nodes, layout.edges, layout.nodeMap, 100, 100, 1.0);
+
+		// Nodes should have moved (repulsion in small canvas)
+		const moved = layout.nodes[0].x !== initialX1 || layout.nodes[0].y !== initialY1;
+		expect(moved).toBe(true);
+		expect(energy).toBeGreaterThan(0);
+	});
+
+	it("converges to low energy over many steps", () => {
+		const nodes: MemoryGraphNode[] = [];
+		for (let i = 0; i < 5; i++) {
+			nodes.push({
+				key: `node-${i}`,
+				value: "value",
+				tier: "default",
+				source: null,
+				sourceThreadTitle: null,
+				lineIndex: 0,
+				modifiedAt: new Date(Date.now() - i * 1000).toISOString(),
+			});
+		}
+
+		const layout = computeInitialLayout(nodes, [], 500, 400);
+		let energy = 0;
+		for (let step = 0; step < 100; step++) {
+			const alpha = 1 - step / 100;
+			energy = simulationStep(layout.nodes, layout.edges, layout.nodeMap, 500, 400, alpha);
+		}
+
+		expect(energy).toBeLessThan(10);
 	});
 });

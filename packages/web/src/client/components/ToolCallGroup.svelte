@@ -15,15 +15,22 @@ interface TurnRange {
 	to: string | null;
 }
 
+type ToolGroupSegment =
+	| { kind: "tools"; entries: ToolEntry[] }
+	| { kind: "reasoning"; text: string };
+
 const {
-	entries,
-	reasoning = [],
+	segments = [],
 	turnRange = null,
 } = $props<{
-	entries: ToolEntry[];
-	reasoning?: string[];
+	segments?: ToolGroupSegment[];
 	turnRange?: TurnRange | null;
 }>();
+
+// Flatten all tool entries for summary
+const allEntries = $derived(
+	segments.flatMap((s) => (s.kind === "tools" ? s.entries : [])),
+);
 
 function entryInRange(entry: ToolEntry): boolean {
 	if (!turnRange || !entry.timestamp) return true;
@@ -56,12 +63,12 @@ function formatInput(input: unknown): string {
 }
 
 function summaryLabel(): string {
-	const names = [...new Set(entries.map((e) => e.name))];
+	const names = [...new Set(allEntries.map((e) => e.name))];
 	if (names.length <= 3) return names.join(", ");
 	return `${names.slice(0, 2).join(", ")} +${names.length - 2} more`;
 }
 
-const doneCount = $derived(entries.filter((e) => e.result !== undefined).length);
+const doneCount = $derived(allEntries.filter((e) => e.result !== undefined).length);
 </script>
 
 <div class="tool-group">
@@ -75,49 +82,51 @@ const doneCount = $derived(entries.filter((e) => e.result !== undefined).length)
 		<span class="tg-icon"><Cog size={14} /></span>
 		<span class="tg-summary">{summaryLabel()}</span>
 		<span class="tg-count">
-			{entries.length} call{entries.length > 1 ? "s" : ""}
-			{#if doneCount === entries.length}<Check size={12} class="tg-check" />{/if}
+			{allEntries.length} call{allEntries.length > 1 ? "s" : ""}
+			{#if doneCount === allEntries.length}<Check size={12} class="tg-check" />{/if}
 		</span>
 		<span class="tg-toggle">{#if groupExpanded}<ChevronUp size={12} />{:else}<ChevronDown size={12} />{/if}</span>
 	</div>
 
-	{#if reasoning.length > 0}
-		<div class="reasoning-strip">
-			{#each reasoning as text}
-				<p class="reasoning-text">{text}</p>
-			{/each}
-		</div>
-	{/if}
-
 	{#if groupExpanded}
-		<div class="tool-list">
-			{#each entries as entry, idx}
-				<div class="tool-row" class:tool-row-expanded={expandedTools.has(idx)} class:tool-row-dimmed={turnRange !== null && !entryInRange(entry)}>
-					<div
-						class="tool-row-header"
-						onclick={() => toggleTool(idx)}
-						onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") toggleTool(idx); }}
-						role="button"
-						tabindex={0}
-					>
-						<span class="tr-icon"><Wrench size={12} /></span>
-						<span class="tr-name">{entry.name}</span>
-						{#if entry.result !== undefined}
-							<span class="tr-done" class:tr-error={entry.exitCode != null && entry.exitCode !== 0}><Check size={11} /></span>
-						{/if}
-						<span class="tr-toggle">{#if expandedTools.has(idx)}<ChevronUp size={11} />{:else}<ChevronDown size={11} />{/if}</span>
-					</div>
-
-					{#if expandedTools.has(idx)}
-						<pre class="tr-input">{formatInput(entry.input)}</pre>
-						{#if entry.result !== undefined}
-							<div class="tr-divider"></div>
-							<pre class="tr-output" class:tr-output-error={entry.exitCode != null && entry.exitCode !== 0}>{entry.result}</pre>
-						{/if}
-					{/if}
+		{@const globalIdx = { value: 0 }}
+		{#each segments as segment}
+			{#if segment.kind === "reasoning"}
+				<div class="reasoning-bubble">
+					<p class="reasoning-text">{segment.text}</p>
 				</div>
-			{/each}
-		</div>
+			{:else}
+				<div class="tool-list">
+					{#each segment.entries as entry}
+						{@const idx = globalIdx.value++}
+						<div class="tool-row" class:tool-row-expanded={expandedTools.has(idx)} class:tool-row-dimmed={turnRange !== null && !entryInRange(entry)}>
+							<div
+								class="tool-row-header"
+								onclick={() => toggleTool(idx)}
+								onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") toggleTool(idx); }}
+								role="button"
+								tabindex={0}
+							>
+								<span class="tr-icon"><Wrench size={12} /></span>
+								<span class="tr-name">{entry.name}</span>
+								{#if entry.result !== undefined}
+									<span class="tr-done" class:tr-error={entry.exitCode != null && entry.exitCode !== 0}><Check size={11} /></span>
+								{/if}
+								<span class="tr-toggle">{#if expandedTools.has(idx)}<ChevronUp size={11} />{:else}<ChevronDown size={11} />{/if}</span>
+							</div>
+
+							{#if expandedTools.has(idx)}
+								<pre class="tr-input">{formatInput(entry.input)}</pre>
+								{#if entry.result !== undefined}
+									<div class="tr-divider"></div>
+									<pre class="tr-output" class:tr-output-error={entry.exitCode != null && entry.exitCode !== 0}>{entry.result}</pre>
+								{/if}
+							{/if}
+						</div>
+					{/each}
+				</div>
+			{/if}
+		{/each}
 	{/if}
 </div>
 
@@ -167,9 +176,6 @@ const doneCount = $derived(entries.filter((e) => e.result !== undefined).length)
 		font-size: 11px;
 		color: var(--text-muted);
 		flex-shrink: 0;
-	}
-
-	.tg-count {
 		display: flex;
 		align-items: center;
 		gap: 4px;
@@ -181,31 +187,26 @@ const doneCount = $derived(entries.filter((e) => e.result !== undefined).length)
 		align-items: center;
 	}
 
-	/* Reasoning text from assistant messages between tool turns */
-	.reasoning-strip {
-		margin-top: 6px;
-		padding: 4px 8px;
-		border-left: 2px solid rgba(193, 164, 112, 0.25);
-		background: rgba(193, 164, 112, 0.04);
-		border-radius: 0 4px 4px 0;
+	/* Reasoning text — nested bubble between tool segments */
+	.reasoning-bubble {
+		margin: 6px 0;
+		padding: 6px 10px;
+		background: rgba(243, 151, 0, 0.06);
+		border: 1px solid rgba(243, 151, 0, 0.12);
+		border-radius: 6px;
 	}
 
 	.reasoning-text {
 		margin: 0;
 		font-family: var(--font-body);
-		font-size: 12px;
-		color: var(--text-muted);
+		font-size: var(--text-sm);
+		color: var(--text-secondary);
 		line-height: 1.5;
-		font-style: italic;
-	}
-
-	.reasoning-text + .reasoning-text {
-		margin-top: 4px;
 	}
 
 	/* Level 1: tool list */
 	.tool-list {
-		margin-top: 6px;
+		margin-top: 4px;
 	}
 
 	.tool-row {

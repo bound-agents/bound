@@ -30,7 +30,6 @@ let fileInput = $state<HTMLInputElement | null>(null);
 let uploadStatus = $state<string | null>(null);
 let pendingFileId = $state<string | null>(null);
 let thread = $state<Thread | null>(null);
-let turnBoundaryOffsets = $state<number[]>([]);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let statusPollInterval: ReturnType<typeof setInterval> | null = null;
@@ -200,40 +199,6 @@ function viewTitle(): string {
 	return "Conversation";
 }
 
-function computeTurnBoundaries(): void {
-	if (!messageListElement) return;
-
-	const offsets: number[] = [];
-	let currentY = 0;
-	let lastWasUser = false;
-
-	const childElements = messageListElement.querySelectorAll("[data-message-id]");
-	for (const el of childElements) {
-		const role = el.getAttribute("data-message-role");
-		if (role === "user" && !lastWasUser) {
-			// Start of a new turn (user message)
-			const rect = el.getBoundingClientRect();
-			const listRect = messageListElement?.getBoundingClientRect();
-			if (listRect) {
-				currentY = rect.top - listRect.top + (messageListElement?.scrollTop ?? 0);
-				offsets.push(currentY);
-				lastWasUser = true;
-			}
-		} else if (role === "assistant") {
-			lastWasUser = false;
-		}
-	}
-
-	turnBoundaryOffsets = offsets;
-}
-
-$effect(() => {
-	// Recompute boundaries when messages change
-	if (messages.length > 0) {
-		// Use tick to allow DOM to update first
-		tick().then(computeTurnBoundaries);
-	}
-});
 </script>
 
 <DebugPanelWrapper {threadId} {wsEvents}>
@@ -270,7 +235,6 @@ $effect(() => {
 				{waiting}
 				{turnRange}
 				threadColor={thread?.color ?? 0}
-				turnBoundaryOffsets={turnBoundaryOffsets}
 				lineColor={thread ? getLineColor(thread.color) : "#999"}
 				isAgentActive={agentActive}
 			/>
@@ -326,7 +290,7 @@ $effect(() => {
 		flex-direction: column;
 		flex: 1;
 		min-height: 0;
-		max-width: 52rem;
+		max-width: 72rem;
 		width: 100%;
 		margin: 0 auto;
 		padding: 24px;
@@ -354,7 +318,7 @@ $effect(() => {
 	}
 
 	.line-content {
-		max-width: 800px;
+		max-width: 1100px;
 		margin: 0 auto;
 		width: 100%;
 		flex: 1;
@@ -367,7 +331,9 @@ $effect(() => {
 		position: relative;
 		flex: 1;
 		min-height: 0;
-		padding-left: 32px;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
 	}
 
 	.back-button {
@@ -437,7 +403,7 @@ $effect(() => {
 		flex-shrink: 0;
 		padding-top: 10px;
 		border-top: 1px solid var(--bg-surface);
-		max-width: 800px;
+		max-width: 1100px;
 		margin: 0 auto;
 		width: 100%;
 	}

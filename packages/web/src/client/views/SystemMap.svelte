@@ -14,6 +14,7 @@ interface ThreadStatus {
 let threads: Thread[] = $state([]);
 let threadStatuses: Map<string, ThreadStatus> = $state(new Map());
 let selectedThreadId: string | null = $state(null);
+let hoveredThreadId: string | null = $state(null);
 let mapCollapsed = $state(false);
 let creating = $state(false);
 let resizing = $state(false);
@@ -146,6 +147,7 @@ onDestroy(() => {
 				{selectedThreadId}
 				onSelectThread={(id) => (selectedThreadId = id)}
 				onNavigateThread={(id) => navigateTo(`/line/${id}`)}
+				onHoverThread={(id) => (hoveredThreadId = id)}
 			/>
 		</div>
 
@@ -160,7 +162,7 @@ onDestroy(() => {
 				<!-- drag handle -->
 			</div>
 			<div class="map-panel">
-				<MemoryGraph {selectedThreadId} />
+				<MemoryGraph selectedThreadId={hoveredThreadId} />
 			</div>
 		{/if}
 	</div>

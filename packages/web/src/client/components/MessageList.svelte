@@ -24,17 +24,21 @@ interface ToolEntry {
 interface ToolCallItem {
 	content: string;
 	toolResults?: Message[];
+	reasoning?: string[];
 	earliest: string;
 }
+
+type ToolGroupSegment =
+	| { kind: "tools"; entries: ToolEntry[] }
+	| { kind: "reasoning"; text: string };
 
 type DisplayItem =
 	| { kind: "message"; msg: Message; earliest: string }
 	| {
 			kind: "toolGroup";
-			entries: ToolEntry[];
+			segments: ToolGroupSegment[];
 			earliest: string;
 			timestamps: string[];
-			reasoning: string[];
 	  };
 
 interface TurnRange {
@@ -48,7 +52,6 @@ interface Props {
 	emptyText?: string | null;
 	turnRange?: TurnRange | null;
 	threadColor?: number;
-	turnBoundaryOffsets?: number[];
 	lineColor?: string;
 	isAgentActive?: boolean;
 }
@@ -59,7 +62,6 @@ const {
 	emptyText = null,
 	turnRange = null,
 	threadColor = 0,
-	turnBoundaryOffsets = [],
 	lineColor = "#999",
 	isAgentActive = false,
 }: Props = $props();
@@ -90,6 +92,7 @@ function scrollToBottom(smooth = true): void {
 
 function handleScroll(): void {
 	isAtBottom = checkIsAtBottom();
+	updateScrollMetrics();
 }
 
 // Scroll to bottom on mount (case 2: opening a thread)
@@ -112,6 +115,39 @@ $effect(() => {
 	}
 
 	prevMessageCount = count;
+});
+
+// --- Scroll height + turn boundary tracking ---
+let contentScrollHeight = $state(0);
+let computedTurnOffsets = $state<number[]>([]);
+
+function updateScrollMetrics(): void {
+	if (!scrollContainer) return;
+	contentScrollHeight = scrollContainer.scrollHeight;
+
+	// Compute turn boundaries relative to scroll container content
+	const offsets: number[] = [];
+	let lastWasUser = false;
+	const items = scrollContainer.querySelectorAll("[data-message-role]");
+	for (const el of items) {
+		const role = el.getAttribute("data-message-role");
+		if (role === "user" && !lastWasUser) {
+			// offsetTop relative to scroll container
+			const offset = (el as HTMLElement).offsetTop;
+			offsets.push(offset);
+			lastWasUser = true;
+		} else if (role === "assistant") {
+			lastWasUser = false;
+		}
+	}
+	computedTurnOffsets = offsets;
+}
+
+// Update metrics when messages change
+$effect(() => {
+	if (messages.length > 0) {
+		tick().then(updateScrollMetrics);
+	}
 });
 
 // --- Turn range highlighting + scroll ---
@@ -197,7 +233,9 @@ function parseToolCallEntries(item: ToolCallItem): ToolEntry[] {
 }
 
 let displayItems = $derived.by((): DisplayItem[] => {
-	// Pass 1: pair tool_call with consecutive tool_results
+	// Pass 1: pair tool_call with nearby tool_results.
+	// Skips over assistant/system messages between tool_call and tool_result,
+	// since LLMs may emit reasoning text mid-tool-turn.
 	const pass1: Array<{ kind: "message"; msg: Message } | { kind: "toolCall"; item: ToolCallItem }> =
 		[];
 	let i = 0;
@@ -205,16 +243,32 @@ let displayItems = $derived.by((): DisplayItem[] => {
 		const msg = messages[i];
 		if (msg.role === "tool_call") {
 			const results: Message[] = [];
+			const inlineReasoning: string[] = [];
 			let j = i + 1;
-			while (j < messages.length && messages[j].role === "tool_result") {
-				results.push(messages[j]);
-				j++;
+			while (j < messages.length) {
+				const next = messages[j];
+				if (next.role === "tool_result") {
+					results.push(next);
+					j++;
+				} else if (
+					(next.role === "assistant" || next.role === "system") &&
+					j + 1 < messages.length &&
+					(messages[j + 1].role === "tool_result" || messages[j + 1].role === "tool_call")
+				) {
+					// Collect reasoning/system between tool messages
+					const text = next.content?.trim();
+					if (text) inlineReasoning.push(text);
+					j++;
+				} else {
+					break;
+				}
 			}
 			pass1.push({
 				kind: "toolCall",
 				item: {
 					content: msg.content,
 					toolResults: results.length > 0 ? results : undefined,
+					reasoning: inlineReasoning.length > 0 ? inlineReasoning : undefined,
 					earliest: msg.created_at ?? "",
 				},
 			});
@@ -225,20 +279,30 @@ let displayItems = $derived.by((): DisplayItem[] => {
 		}
 	}
 
-	// Pass 2: merge consecutive toolCall items into groups.
-	// Assistant messages between tool turns (thinking-out-loud text the LLM emits
-	// alongside tool calls) are collected as reasoning and displayed in the group.
+	// Pass 2: merge consecutive toolCall items into groups with interleaved reasoning.
 	const items: DisplayItem[] = [];
 	let k = 0;
 	while (k < pass1.length) {
 		const entry = pass1[k];
 		if (entry.kind === "toolCall") {
-			const batch: ToolCallItem[] = [];
-			const reasoning: string[] = [];
+			const segments: ToolGroupSegment[] = [];
+			const timestamps: string[] = [];
+			let earliest = "";
+
 			while (k < pass1.length) {
 				const cur = pass1[k];
 				if (cur.kind === "toolCall") {
-					batch.push(cur.item);
+					if (!earliest) earliest = cur.item.earliest;
+					timestamps.push(cur.item.earliest);
+					// Add inline reasoning from Pass 1 (between tool_call and tool_result)
+					if (cur.item.reasoning && cur.item.reasoning.length > 0) {
+						for (const text of cur.item.reasoning) {
+							segments.push({ kind: "reasoning", text });
+						}
+					}
+					// Add tool entries
+					const entries = parseToolCallEntries(cur.item);
+					segments.push({ kind: "tools", entries });
 					k++;
 				} else if (
 					cur.kind === "message" &&
@@ -246,22 +310,19 @@ let displayItems = $derived.by((): DisplayItem[] => {
 					k + 1 < pass1.length &&
 					pass1[k + 1].kind === "toolCall"
 				) {
-					// Collect assistant reasoning between tool turns
+					// Reasoning between tool turns — add as separate segment
 					const text = cur.msg.content?.trim();
-					if (text) reasoning.push(text);
+					if (text) segments.push({ kind: "reasoning", text });
 					k++;
 				} else {
 					break;
 				}
 			}
-			const allEntries = batch.flatMap(parseToolCallEntries);
-			const timestamps = batch.map((b) => b.earliest).filter(Boolean);
 			items.push({
 				kind: "toolGroup",
-				entries: allEntries,
-				earliest: batch[0].earliest,
-				timestamps,
-				reasoning,
+				segments,
+				earliest,
+				timestamps: timestamps.filter(Boolean),
 			});
 		} else {
 			items.push({ kind: "message", msg: entry.msg, earliest: entry.earliest });
@@ -277,7 +338,8 @@ let displayItems = $derived.by((): DisplayItem[] => {
 		<TurnIndicator
 			{lineColor}
 			isActive={isAgentActive}
-			{turnBoundaryOffsets}
+			turnBoundaryOffsets={computedTurnOffsets}
+			scrollHeight={contentScrollHeight}
 		/>
 		{#if messages.length === 0 && emptyText}
 			<div class="empty-state">
@@ -294,7 +356,7 @@ let displayItems = $derived.by((): DisplayItem[] => {
 					data-message-role={item.kind === "message" ? item.msg.role : undefined}
 				>
 					{#if item.kind === "toolGroup"}
-						<ToolCallGroup entries={item.entries} reasoning={item.reasoning} {turnRange} />
+						<ToolCallGroup segments={item.segments} {turnRange} />
 					{:else}
 						<MessageBubble
 							role={item.msg.role}
@@ -335,7 +397,7 @@ let displayItems = $derived.by((): DisplayItem[] => {
 	.messages {
 		flex: 1;
 		overflow-y: auto;
-		padding: 12px 12px 0 12px;
+		padding: 12px 12px 0 36px;
 		min-height: 0;
 		position: relative;
 	}
@@ -349,6 +411,7 @@ let displayItems = $derived.by((): DisplayItem[] => {
 
 	.display-item {
 		transition: opacity 0.3s ease;
+		margin-bottom: 8px;
 	}
 
 	.display-item.dimmed {

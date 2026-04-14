@@ -101,14 +101,14 @@ $effect(() => {
 		line-height: 1.55;
 	}
 
-	/* User messages: teal/green tint */
+	/* User messages */
 	.message-content.user {
-		background: rgba(0, 172, 155, 0.1);
+		/* Tint applied via MetroCard accent border */
 	}
 
-	/* Assistant messages: warm tone */
+	/* Assistant messages */
 	.message-content.assistant {
-		background: rgba(243, 151, 0, 0.08);
+		/* Tint applied via MetroCard accent border */
 	}
 
 	/* Tool results: Chiyoda green accent */

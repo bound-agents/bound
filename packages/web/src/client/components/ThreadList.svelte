@@ -10,9 +10,10 @@ interface Props {
 	selectedThreadId?: string | null;
 	onSelectThread?: (threadId: string) => void;
 	onNavigateThread?: (threadId: string) => void;
+	onHoverThread?: (threadId: string | null) => void;
 }
 
-let { threads, threadStatuses, selectedThreadId, onSelectThread, onNavigateThread }: Props =
+let { threads, threadStatuses, selectedThreadId, onSelectThread, onNavigateThread, onHoverThread }: Props =
 	$props();
 
 function sanitizeTitle(title: string | null): string {
@@ -99,6 +100,8 @@ function handleThreadKeydown(e: KeyboardEvent, threadId: string) {
 					class="thread-item"
 					class:selected={selectedThreadId === thread.id}
 					onclick={() => handleThreadClick(thread.id)}
+					onmouseenter={() => onHoverThread?.(thread.id)}
+					onmouseleave={() => onHoverThread?.(null)}
 					onkeydown={(e) => handleThreadKeydown(e, thread.id)}
 					role="button"
 					tabindex="0"
