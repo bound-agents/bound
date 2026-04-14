@@ -277,32 +277,80 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 
 // --- Relay transport types (local-only, not synced) ---
 
-export const RELAY_REQUEST_KINDS = [
-	"tool_call",
-	"resource_read",
-	"prompt_invoke",
-	"cache_warm",
-	"cancel",
-	"inference",
-	"process",
-	"intake",
-	"platform_deliver",
-	"event_broadcast",
-] as const;
+/**
+ * Relay dispatch modes (CQRS-inspired):
+ *
+ * - "sync":     Query-like. Returns results in the same HTTP response during
+ *               the sync relay phase. Only used for MCP-style request/response
+ *               tool calls. Handled by executeImmediate() on the hub.
+ *
+ * - "async":    Command-like. Fire-and-forget. Inserted into relay_inbox and
+ *               processed by the relay processor's periodic tick via
+ *               processEntry(). Results (if any) travel back as separate
+ *               response-kind entries.
+ *
+ * - "response": Callback from a prior request. Inserted into relay_inbox for
+ *               the polling loop (RELAY_WAIT / RELAY_STREAM) to consume.
+ *               Never executed — just stored and read.
+ *
+ * Adding a new kind? Pick the right dispatch mode here and the routing in
+ * routes.ts + relay-processor.ts derives automatically. If you need a handler,
+ * add it to RelayProcessor.processEntry() — the exhaustive switch will remind
+ * you at compile time if you forget.
+ */
+export type RelayDispatch = "sync" | "async" | "response";
 
-export const RELAY_RESPONSE_KINDS = [
-	"result",
-	"error",
-	"stream_chunk",
-	"stream_end",
-	"status_forward",
-] as const;
+export interface RelayKindMeta {
+	readonly dispatch: RelayDispatch;
+}
 
-export const RELAY_KINDS = [...RELAY_REQUEST_KINDS, ...RELAY_RESPONSE_KINDS] as const;
+/** Single source of truth for relay kind definitions and their dispatch mode. */
+export const RELAY_KIND_REGISTRY = {
+	// Sync request kinds — hub can return results in the same sync response
+	tool_call: { dispatch: "sync" },
+	resource_read: { dispatch: "sync" },
+	prompt_invoke: { dispatch: "sync" },
+	cache_warm: { dispatch: "sync" },
 
-export type RelayRequestKind = (typeof RELAY_REQUEST_KINDS)[number];
-export type RelayResponseKind = (typeof RELAY_RESPONSE_KINDS)[number];
-export type RelayKind = (typeof RELAY_KINDS)[number];
+	// Async request kinds — fire-and-forget, processed via relay_inbox
+	cancel: { dispatch: "async" },
+	inference: { dispatch: "async" },
+	process: { dispatch: "async" },
+	intake: { dispatch: "async" },
+	platform_deliver: { dispatch: "async" },
+	event_broadcast: { dispatch: "async" },
+
+	// Response kinds — stored in relay_inbox for polling loops
+	result: { dispatch: "response" },
+	error: { dispatch: "response" },
+	stream_chunk: { dispatch: "response" },
+	stream_end: { dispatch: "response" },
+	status_forward: { dispatch: "response" },
+} as const satisfies Record<string, RelayKindMeta>;
+
+export type RelayKind = keyof typeof RELAY_KIND_REGISTRY;
+
+// Derived arrays and types — kept for backward compat with existing code
+export const RELAY_REQUEST_KINDS = (
+	Object.entries(RELAY_KIND_REGISTRY) as [RelayKind, RelayKindMeta][]
+)
+	.filter(([, meta]) => meta.dispatch !== "response")
+	.map(([kind]) => kind);
+
+export const RELAY_RESPONSE_KINDS = (
+	Object.entries(RELAY_KIND_REGISTRY) as [RelayKind, RelayKindMeta][]
+)
+	.filter(([, meta]) => meta.dispatch === "response")
+	.map(([kind]) => kind);
+
+export const RELAY_KINDS = Object.keys(RELAY_KIND_REGISTRY) as RelayKind[];
+
+export type RelayRequestKind = {
+	[K in RelayKind]: (typeof RELAY_KIND_REGISTRY)[K]["dispatch"] extends "response" ? never : K;
+}[RelayKind];
+export type RelayResponseKind = {
+	[K in RelayKind]: (typeof RELAY_KIND_REGISTRY)[K]["dispatch"] extends "response" ? K : never;
+}[RelayKind];
 
 export interface RelayOutboxEntry {
 	id: string;

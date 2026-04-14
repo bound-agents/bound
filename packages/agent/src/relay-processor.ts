@@ -480,13 +480,13 @@ export class RelayProcessor {
 							expiresAt: Date.now() + IDEMPOTENCY_TTL_MS,
 						});
 
-						// Platform affinity: if this host has the platform connector, process
-						// locally so platform tools (e.g., discord_send_message) are available.
-						// The agent loop uses RELAY_STREAM for inference if no local models exist.
-						const targetSiteId =
-							payload.platform && this.platformConnectorRegistry?.getConnector(payload.platform)
-								? this.siteId
-								: this.selectIntakeHost(payload.thread_id);
+						// Platform affinity is handled inside selectIntakeHost (Tier 0)
+						// via findPlatformHost(), which queries hosts.platforms — the synced
+						// cluster-wide metadata — instead of the in-process connector registry.
+						const targetSiteId = this.selectIntakeHost(
+							payload.thread_id,
+							payload.platform ?? undefined,
+						);
 						if (!targetSiteId) {
 							this.logger.warn("relay-processor", {
 								msg: "intake: no eligible host found, dropping",
@@ -851,10 +851,47 @@ export class RelayProcessor {
 	}
 
 	/**
-	 * Select the best host to process an intake message.
-	 * Tiers (in order): thread affinity → model match → tool match → least-loaded fallback.
+	 * Look up which host runs a given platform connector by querying the synced
+	 * hosts.platforms column. Returns the site_id or null if no host advertises
+	 * that platform. This is the single source of truth for cross-host platform
+	 * routing — all intake, process, and deliver paths call this instead of
+	 * checking the in-process connector registry.
 	 */
-	private selectIntakeHost(threadId: string): string | null {
+	private findPlatformHost(platform: string): string | null {
+		try {
+			const rows = this.db
+				.query<{ site_id: string; platforms: string }, []>(
+					"SELECT site_id, platforms FROM hosts WHERE deleted = 0 AND platforms IS NOT NULL",
+				)
+				.all();
+			for (const row of rows) {
+				try {
+					const platforms = JSON.parse(row.platforms) as string[];
+					if (Array.isArray(platforms) && platforms.includes(platform)) {
+						return row.site_id;
+					}
+				} catch {
+					// Corrupted JSON — skip this host
+				}
+			}
+		} catch {
+			// Table missing or other DB error — fall through
+		}
+		return null;
+	}
+
+	/**
+	 * Select the best host to process an intake message.
+	 * Tiers (in order): platform affinity → thread affinity → model match → tool match → least-loaded fallback.
+	 */
+	private selectIntakeHost(threadId: string, platform?: string): string | null {
+		// Tier 0: Platform affinity — if the intake specifies a platform, route to
+		// the host that advertises it so platform tools are available locally.
+		if (platform) {
+			const platformHost = this.findPlatformHost(platform);
+			if (platformHost) return platformHost;
+		}
+
 		// Tier 1: Thread affinity — use host that most recently processed this thread
 		const affinityHost = this.threadAffinityMap.get(threadId);
 		if (affinityHost) {
@@ -1664,21 +1701,25 @@ export class RelayProcessor {
 		entry: RelayInboxEntry,
 		deliverPayload: PlatformDeliverPayload,
 	): void {
-		// Local connector exists (or no registry configured — single-host / backward compat):
-		// deliver on this node's event bus.
-		if (
-			!this.platformConnectorRegistry ||
-			this.platformConnectorRegistry.getConnector(deliverPayload.platform)
-		) {
+		// Fast path: this node has the connector locally — emit on event bus.
+		if (this.platformConnectorRegistry?.getConnector(deliverPayload.platform)) {
 			this.eventBus.emit("platform:deliver", deliverPayload);
 			return;
 		}
 
-		// Registry is configured but this node doesn't have the connector —
-		// route back to the node that delegated this loop.
-		const targetSiteId = entry.source_site_id;
-		if (!targetSiteId) {
-			// No source to route back to (shouldn't happen in practice) — fall back locally.
+		// No connector registry at all → single-host mode / backward compat.
+		// Emit locally so the event bus can still route to any listeners.
+		if (!this.platformConnectorRegistry) {
+			this.eventBus.emit("platform:deliver", deliverPayload);
+			return;
+		}
+
+		// Registry exists but doesn't have this platform — look up which remote
+		// host advertises it via the synced hosts.platforms column.
+		const platformHost = this.findPlatformHost(deliverPayload.platform);
+		const targetSiteId = platformHost ?? entry.source_site_id;
+		if (!targetSiteId || targetSiteId === this.siteId) {
+			// No remote host found — emit locally as last resort.
 			this.eventBus.emit("platform:deliver", deliverPayload);
 			return;
 		}

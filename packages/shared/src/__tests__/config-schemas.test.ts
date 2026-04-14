@@ -13,7 +13,13 @@ import {
 	syncSchema,
 	userEntrySchema,
 } from "../config-schemas.js";
-import { RELAY_REQUEST_KINDS } from "../types.js";
+import {
+	RELAY_KINDS,
+	RELAY_KIND_REGISTRY,
+	RELAY_REQUEST_KINDS,
+	RELAY_RESPONSE_KINDS,
+	type RelayDispatch,
+} from "../types.js";
 
 describe("Config schemas", () => {
 	describe("allowlistSchema", () => {
@@ -647,5 +653,49 @@ describe("platform-connectors.AC3.1 — new relay kinds exist", () => {
 
 	it("AC3.1: RELAY_REQUEST_KINDS contains event_broadcast", () => {
 		expect(RELAY_REQUEST_KINDS).toContain("event_broadcast");
+	});
+});
+
+// RELAY_KIND_REGISTRY completeness tests — ensures the registry is the
+// single source of truth and derived arrays stay consistent.
+describe("RELAY_KIND_REGISTRY completeness", () => {
+	it("every kind in the registry has a valid dispatch mode", () => {
+		const validModes: RelayDispatch[] = ["sync", "async", "response"];
+		for (const [_kind, meta] of Object.entries(RELAY_KIND_REGISTRY)) {
+			expect(validModes).toContain(meta.dispatch);
+		}
+	});
+
+	it("derived RELAY_KINDS covers all registry entries", () => {
+		const registryKinds = Object.keys(RELAY_KIND_REGISTRY).sort();
+		const derivedKinds = [...RELAY_KINDS].sort();
+		expect(derivedKinds).toEqual(registryKinds);
+	});
+
+	it("derived RELAY_REQUEST_KINDS matches non-response registry entries", () => {
+		const expected = Object.entries(RELAY_KIND_REGISTRY)
+			.filter(([, meta]) => meta.dispatch !== "response")
+			.map(([kind]) => kind)
+			.sort();
+		const actual = [...RELAY_REQUEST_KINDS].sort();
+		expect(actual).toEqual(expected);
+	});
+
+	it("derived RELAY_RESPONSE_KINDS matches response registry entries", () => {
+		const expected = Object.entries(RELAY_KIND_REGISTRY)
+			.filter(([, meta]) => meta.dispatch === "response")
+			.map(([kind]) => kind)
+			.sort();
+		const actual = [...RELAY_RESPONSE_KINDS].sort();
+		expect(actual).toEqual(expected);
+	});
+
+	it("every sync kind is also a request kind (not response)", () => {
+		const syncKinds = Object.entries(RELAY_KIND_REGISTRY)
+			.filter(([, meta]) => meta.dispatch === "sync")
+			.map(([kind]) => kind);
+		for (const kind of syncKinds) {
+			expect(RELAY_REQUEST_KINDS).toContain(kind);
+		}
 	});
 });

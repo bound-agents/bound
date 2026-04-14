@@ -1280,8 +1280,12 @@ describe("RelayProcessor", () => {
 				},
 			} as Parameters<typeof processor.setPlatformConnectorRegistry>[0]);
 
-			// Setup: create a DIFFERENT host (spoke) that selectIntakeHost would normally pick
+			// Setup: register hub-site with platforms and a spoke without
 			const hostTimestamp = new Date().toISOString();
+			db.run(
+				"INSERT INTO hosts (site_id, host_name, platforms, deleted, modified_at) VALUES (?, ?, ?, ?, ?)",
+				["hub-site", "Hub", JSON.stringify(["discord"]), 0, hostTimestamp],
+			);
 			db.run("INSERT INTO hosts (site_id, host_name, deleted, modified_at) VALUES (?, ?, ?, ?)", [
 				"spoke-site",
 				"Spoke",

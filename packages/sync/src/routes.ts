@@ -5,9 +5,9 @@ import {
 	type ChangeLogEntry,
 	type KeyringConfig,
 	type Logger,
-	RELAY_RESPONSE_KINDS,
+	RELAY_KIND_REGISTRY,
 	type RelayInboxEntry,
-	type RelayResponseKind,
+	type RelayKind,
 	type TypedEventEmitter,
 	parseJsonUntyped,
 } from "@bound/shared";
@@ -205,14 +205,19 @@ export function createSyncRoutes(
 					// Malformed payload — ignore, affinity is best-effort
 				}
 				if (entry.target_site_id === siteId) {
-					// Response kinds (stream_chunk, stream_end, result, error, status_forward)
-					// targeting the hub must go into the hub's relay_inbox so the polling loop
-					// (e.g. RELAY_STREAM, RELAY_WAIT) can read them — NOT through the executor.
-					const isResponseKind = (kind: string): kind is RelayResponseKind =>
-						RELAY_RESPONSE_KINDS.includes(kind as RelayResponseKind);
-					if (isResponseKind(entry.kind)) {
-						// Use the original outbox entry ID so INSERT OR IGNORE
-						// deduplicates retransmissions (at-least-once delivery).
+					// Dispatch mode is derived from RELAY_KIND_REGISTRY — the single
+					// source of truth for relay kind semantics. "sync" kinds return
+					// results in the same HTTP response; everything else goes through
+					// relay_inbox for async processing by RelayProcessor.processEntry().
+					const meta = RELAY_KIND_REGISTRY[entry.kind as RelayKind];
+					if (meta?.dispatch === "sync") {
+						// Hub-local synchronous execution (MCP tool calls)
+						const results = await executor(entry, siteId);
+						for (const result of results) {
+							inboxForRequester.push(result);
+						}
+					} else {
+						// Async request kinds + response kinds → relay_inbox
 						const inboxEntry: RelayInboxEntry = {
 							id: entry.id,
 							source_site_id: requesterSiteId,
@@ -226,12 +231,6 @@ export function createSyncRoutes(
 							processed: 0,
 						};
 						insertInbox(db, inboxEntry);
-					} else {
-						// Hub-local execution for request kinds
-						const results = await executor(entry, siteId);
-						for (const result of results) {
-							inboxForRequester.push(result);
-						}
 					}
 				} else {
 					// Store for target spoke — write to hub's own outbox for delivery
