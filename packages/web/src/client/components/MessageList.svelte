@@ -2,6 +2,7 @@
 import { onMount, tick } from "svelte";
 import MessageBubble from "./MessageBubble.svelte";
 import ToolCallGroup from "./ToolCallGroup.svelte";
+import TurnIndicator from "./TurnIndicator.svelte";
 
 interface Message {
 	role: string;
@@ -47,6 +48,9 @@ interface Props {
 	emptyText?: string | null;
 	turnRange?: TurnRange | null;
 	threadColor?: number;
+	turnBoundaryOffsets?: number[];
+	lineColor?: string;
+	isAgentActive?: boolean;
 }
 
 const {
@@ -55,6 +59,9 @@ const {
 	emptyText = null,
 	turnRange = null,
 	threadColor = 0,
+	turnBoundaryOffsets = [],
+	lineColor = "#999",
+	isAgentActive = false,
 }: Props = $props();
 
 // --- Auto-scroll logic ---
@@ -267,6 +274,11 @@ let displayItems = $derived.by((): DisplayItem[] => {
 
 <div class="board">
 	<div class="messages" bind:this={scrollContainer} onscroll={handleScroll}>
+		<TurnIndicator
+			{lineColor}
+			isActive={isAgentActive}
+			{turnBoundaryOffsets}
+		/>
 		{#if messages.length === 0 && emptyText}
 			<div class="empty-state">
 				<p>{emptyText}</p>
@@ -278,6 +290,8 @@ let displayItems = $derived.by((): DisplayItem[] => {
 					class="display-item"
 					class:dimmed={turnRange !== null && !active}
 					data-turn-active={active && turnRange ? "" : undefined}
+					data-message-id={item.kind === "message" ? item.msg.id : undefined}
+					data-message-role={item.kind === "message" ? item.msg.role : undefined}
 				>
 					{#if item.kind === "toolGroup"}
 						<ToolCallGroup entries={item.entries} reasoning={item.reasoning} {turnRange} />
@@ -289,8 +303,6 @@ let displayItems = $derived.by((): DisplayItem[] => {
 							modelId={item.msg.model_id}
 							exitCode={item.msg.exit_code}
 							{threadColor}
-							data-message-id={item.msg.id}
-							data-message-role={item.msg.role}
 						/>
 					{/if}
 				</div>

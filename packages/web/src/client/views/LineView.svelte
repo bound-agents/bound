@@ -1,9 +1,9 @@
 <script lang="ts">
 import { ChevronLeft, Paperclip, Send, Settings, X } from "lucide-svelte";
-import { onDestroy, onMount } from "svelte";
+import { onDestroy, onMount, tick } from "svelte";
 import DebugPanelWrapper from "../components/DebugPanelWrapper.svelte";
 import MessageList from "../components/MessageList.svelte";
-import { LineBadge, StatusChip, TurnIndicator } from "../components/shared";
+import { LineBadge, StatusChip } from "../components/shared";
 import { api } from "../lib/api";
 import type { Thread } from "../lib/api";
 import { getLineColor } from "../lib/metro-lines";
@@ -231,9 +231,7 @@ $effect(() => {
 	// Recompute boundaries when messages change
 	if (messages.length > 0) {
 		// Use tick to allow DOM to update first
-		import("svelte").then(({ tick }) => {
-			tick().then(computeTurnBoundaries);
-		});
+		tick().then(computeTurnBoundaries);
 	}
 });
 </script>
@@ -251,7 +249,7 @@ $effect(() => {
 			{/if}
 			<h1>{viewTitle()}</h1>
 			{#if thread}
-				<StatusChip active={agentActive} />
+				<StatusChip status={agentActive ? "active" : "idle"} />
 			{/if}
 			{#if agentActive}
 				<span class="thinking-indicator">
@@ -267,13 +265,15 @@ $effect(() => {
 
 	<div class="line-content">
 		<div class="message-container" bind:this={messageListElement}>
-			<TurnIndicator
-				turnCount={turnBoundaryOffsets.length}
+			<MessageList
+				{messages}
+				{waiting}
+				{turnRange}
+				threadColor={thread?.color ?? 0}
+				turnBoundaryOffsets={turnBoundaryOffsets}
 				lineColor={thread ? getLineColor(thread.color) : "#999"}
-				isActive={agentActive}
-				{turnBoundaryOffsets}
+				isAgentActive={agentActive}
 			/>
-			<MessageList {messages} {waiting} {turnRange} threadColor={thread?.color ?? 0} />
 		</div>
 	</div>
 
@@ -359,6 +359,8 @@ $effect(() => {
 		width: 100%;
 		flex: 1;
 		min-height: 0;
+		display: flex;
+		flex-direction: column;
 	}
 
 	.message-container {
@@ -435,6 +437,9 @@ $effect(() => {
 		flex-shrink: 0;
 		padding-top: 10px;
 		border-top: 1px solid var(--bg-surface);
+		max-width: 800px;
+		margin: 0 auto;
+		width: 100%;
 	}
 
 	.file-upload-area {

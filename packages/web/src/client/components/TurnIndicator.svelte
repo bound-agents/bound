@@ -1,12 +1,11 @@
 <script lang="ts">
 interface Props {
-	turnCount: number;
 	lineColor: string;
 	isActive: boolean;
 	turnBoundaryOffsets?: number[];
 }
 
-let { turnCount, lineColor, isActive, turnBoundaryOffsets = [] }: Props = $props();
+let { lineColor, isActive, turnBoundaryOffsets = [] }: Props = $props();
 </script>
 
 <div class="turn-indicator">

@@ -46,8 +46,12 @@ test.describe("Web Chat E2E", () => {
 		const appElement = page.locator("#app, main, [role='main']").first();
 
 		// Check that at least one of these elements exists
-		const count = await appElement.count();
-		expect([0, 1]).toContain(count);
+		await expect(appElement)
+			.toBeVisible()
+			.catch(() => {
+				// If not visible, at least verify one exists
+				expect(appElement.count()).resolves.toBeGreaterThan(0);
+			});
 
 		// Try to verify the page is interactive
 		const response = await page.evaluate(() => document.readyState);
@@ -282,8 +286,8 @@ test.describe("Web Chat E2E", () => {
 			const turnIndicator = page.locator(".turn-indicator");
 			const turnIndicatorCount = await turnIndicator.count();
 
-			// Turn indicator should exist (may be empty for threads without messages)
-			expect([0, 1]).toContain(turnIndicatorCount);
+			// Turn indicator should exist
+			expect(turnIndicatorCount).toBeGreaterThanOrEqual(1);
 		}
 	});
 
@@ -306,10 +310,9 @@ test.describe("Web Chat E2E", () => {
 
 			// Check if LineBadge-like element exists in header (div with inline style and role='img')
 			const headerBadge = page.locator("div[role='img'][style*='border-radius: 50%']").first();
-			const headerBadgeCount = await headerBadge.count();
 
 			// LineBadge should exist in the header
-			expect([0, 1]).toContain(headerBadgeCount);
+			await expect(headerBadge).toBeVisible();
 		}
 	});
 });
