@@ -147,7 +147,7 @@ function handleDownload(e: Event) {
 	}
 
 	.node-row:hover {
-		background: rgba(15, 52, 96, 0.3);
+		background: rgba(42, 48, 68, 0.3);
 	}
 
 	.node-row.node-selected {

@@ -44,9 +44,25 @@ export function extractSchedule(task: Task): string | null {
 	}
 
 	if (task.type === "cron" || task.type === "heartbeat") {
-		const spec = task.trigger_spec;
+		let spec = task.trigger_spec;
 		if (!spec) {
 			return null;
+		}
+
+		// trigger_spec may be a JSON string wrapping the cron expression
+		if (spec.startsWith("{")) {
+			try {
+				const parsed = JSON.parse(spec) as Record<string, unknown>;
+				if (typeof parsed.expression === "string") {
+					spec = parsed.expression;
+				} else if (typeof parsed.cron === "string") {
+					spec = parsed.cron;
+				} else if (typeof parsed.schedule === "string") {
+					spec = parsed.schedule;
+				}
+			} catch {
+				// Not valid JSON, treat as raw cron expression
+			}
 		}
 
 		return humanReadableCron(spec);

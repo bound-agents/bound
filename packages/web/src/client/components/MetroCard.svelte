@@ -32,6 +32,6 @@ let { accentColor, interactive = false, children }: Props = $props();
 	}
 
 	.metro-card.interactive:hover {
-		background: rgba(15, 52, 96, 0.3);
+		background: rgba(42, 48, 68, 0.3);
 	}
 </style>

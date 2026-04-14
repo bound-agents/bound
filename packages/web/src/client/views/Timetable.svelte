@@ -100,11 +100,13 @@ function formatTime(iso: string | null): string {
 }
 
 function toggleFilter(status: string): void {
-	if (activeFilters.has(status)) {
-		activeFilters.delete(status);
+	const next = new Set(activeFilters);
+	if (next.has(status)) {
+		next.delete(status);
 	} else {
-		activeFilters.add(status);
+		next.add(status);
 	}
+	activeFilters = next;
 }
 
 function toggleTaskExpansion(taskId: string): void {
@@ -180,6 +182,7 @@ onDestroy(() => {
 
 		<div class="task-list">
 			<div class="task-list-header">
+				<span class="col-expand"></span>
 				<span class="col-status">Status</span>
 				<span class="col-name">Name</span>
 				<span class="col-type">Type</span>
@@ -200,6 +203,9 @@ onDestroy(() => {
 						class:failed={task.status === "failed"}
 						onclick={() => toggleTaskExpansion(task.id)}
 					>
+						<span class="col-expand">
+								<span class="chevron" class:open={expandedTaskId === task.id}>›</span>
+							</span>
 						<span class="col-status">
 							<StatusChip
 								status={task.status === "running" || task.status === "claimed"
@@ -302,6 +308,9 @@ onDestroy(() => {
 						class:expanded={expandedTaskId === task.id}
 						onclick={() => toggleTaskExpansion(task.id)}
 					>
+						<span class="col-expand">
+								<span class="chevron" class:open={expandedTaskId === task.id}>›</span>
+							</span>
 						<span class="col-status">
 							<StatusChip status={task.status === "cancelled" ? "cancelled" : "idle"} />
 						</span>
@@ -418,9 +427,10 @@ onDestroy(() => {
 	}
 
 	.filter-chip.active {
-		background: var(--line-3);
+		background: rgba(0, 155, 191, 0.2);
 		border-color: var(--line-3);
-		color: var(--text-primary);
+		color: var(--line-3);
+		box-shadow: 0 0 6px rgba(0, 155, 191, 0.15);
 	}
 
 	.loading-state {
@@ -481,7 +491,7 @@ onDestroy(() => {
 
 	.task-list-header {
 		display: grid;
-		grid-template-columns: 100px 1fr 100px 120px 100px 100px 80px 120px 70px;
+		grid-template-columns: 24px 100px 1fr 100px 120px 100px 100px 80px 120px 70px;
 		padding: 14px 20px;
 		background: var(--bg-secondary);
 		border-bottom: 2px solid var(--bg-surface);
@@ -499,9 +509,9 @@ onDestroy(() => {
 
 	.task-row {
 		display: grid;
-		grid-template-columns: 100px 1fr 100px 120px 100px 100px 80px 120px 70px;
+		grid-template-columns: 24px 100px 1fr 100px 120px 100px 100px 80px 120px 70px;
 		padding: 12px 20px;
-		border-bottom: 1px solid rgba(15, 52, 96, 0.4);
+		border-bottom: 1px solid rgba(42, 48, 68, 0.4);
 		gap: 12px;
 		align-items: center;
 		transition: background 0.15s ease;
@@ -509,7 +519,7 @@ onDestroy(() => {
 	}
 
 	.task-row:hover {
-		background: rgba(15, 52, 96, 0.3);
+		background: rgba(42, 48, 68, 0.3);
 	}
 
 	.task-row.running {
@@ -520,6 +530,24 @@ onDestroy(() => {
 	.task-row.failed {
 		border-left: 3px solid var(--alert-disruption);
 		padding-left: 17px;
+	}
+
+	.col-expand {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.chevron {
+		font-size: 14px;
+		color: var(--text-muted);
+		transition: transform 0.15s ease;
+		display: inline-block;
+	}
+
+	.chevron.open {
+		transform: rotate(90deg);
+		color: var(--text-secondary);
 	}
 
 	.col-type {
@@ -599,13 +627,13 @@ onDestroy(() => {
 		color: var(--text-muted);
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
-		border-bottom: 1px solid rgba(15, 52, 96, 0.4);
+		border-bottom: 1px solid rgba(42, 48, 68, 0.4);
 	}
 
 	.task-expanded {
 		padding: 12px 20px 12px 32px;
-		background: rgba(15, 52, 96, 0.2);
-		border-bottom: 1px solid rgba(15, 52, 96, 0.4);
+		background: rgba(42, 48, 68, 0.2);
+		border-bottom: 1px solid rgba(42, 48, 68, 0.4);
 		grid-column: 1 / -1;
 	}
 
@@ -632,7 +660,7 @@ onDestroy(() => {
 		font-family: var(--font-mono);
 		font-size: 11px;
 		color: var(--text-secondary);
-		background: rgba(15, 52, 96, 0.5);
+		background: rgba(42, 48, 68, 0.5);
 		padding: 2px 6px;
 		border-radius: 3px;
 		overflow-x: auto;
@@ -648,7 +676,7 @@ onDestroy(() => {
 		font-family: var(--font-mono);
 		font-size: 11px;
 		color: var(--text-secondary);
-		background: rgba(15, 52, 96, 0.5);
+		background: rgba(42, 48, 68, 0.5);
 		padding: 8px;
 		border-radius: 3px;
 		overflow-x: auto;

@@ -33,6 +33,7 @@ interface NetworkData {
 	hosts: HostInfo[];
 	hub: { siteId: string; hostName: string } | null;
 	syncState: SyncStateInfo[];
+	localSiteId: string;
 }
 
 const ONLINE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
@@ -69,7 +70,13 @@ onDestroy(() => {
 	if (pollInterval !== null) clearInterval(pollInterval);
 });
 
+function isLocal(host: HostInfo): boolean {
+	return networkData?.localSiteId === host.site_id;
+}
+
 function isOnline(host: HostInfo): boolean {
+	// Local host is always online — it's serving this page
+	if (isLocal(host)) return true;
 	if (!host.online_at) return false;
 	const lastSeen = new Date(host.online_at).getTime();
 	return Date.now() - lastSeen < ONLINE_THRESHOLD_MS;
@@ -224,6 +231,9 @@ const syncMeshColumns = [
 								<div class="header-text">
 									<div class="host-title">
 										<h3>{host.host_name}</h3>
+										{#if isLocal(host)}
+											<span class="local-badge">LOCAL</span>
+										{/if}
 										{#if isHub}
 											<span class="hub-badge">HUB</span>
 										{/if}
@@ -260,14 +270,16 @@ const syncMeshColumns = [
 									</div>
 								{/if}
 
-								<div class="detail-row">
-									<span class="detail-label">Sync Status</span>
-									<div class="sync-status">
-										<StatusChip status={health} animate={false} />
+								{#if !isLocal(host)}
+									<div class="detail-row">
+										<span class="detail-label">Sync Status</span>
+										<div class="sync-status">
+											<StatusChip status={health} animate={false} />
+										</div>
 									</div>
-								</div>
+								{/if}
 
-								{#if syncState?.last_sync_at}
+								{#if syncState?.last_sync_at && !isLocal(host)}
 									<div class="detail-row">
 										<span class="detail-label">Last Sync</span>
 										<span class="detail-value mono-value">{relativeTime(syncState.last_sync_at)}</span>
@@ -331,6 +343,9 @@ const syncMeshColumns = [
 		padding: 32px 40px;
 		max-width: 1400px;
 		margin: 0 auto;
+		flex: 1;
+		overflow-y: auto;
+		min-height: 0;
 	}
 
 	.loading-state {
@@ -424,6 +439,17 @@ const syncMeshColumns = [
 		font-size: var(--text-lg);
 		color: var(--text-primary);
 		font-weight: 700;
+	}
+
+	.local-badge {
+		font-size: 10px;
+		font-weight: 700;
+		color: var(--line-0);
+		background: rgba(243, 151, 0, 0.12);
+		border: 1px solid rgba(243, 151, 0, 0.3);
+		padding: 2px 6px;
+		border-radius: 3px;
+		letter-spacing: 0.06em;
 	}
 
 	.hub-badge {
@@ -524,7 +550,7 @@ const syncMeshColumns = [
 	}
 
 	.pill-overflow {
-		background: rgba(15, 52, 96, 0.4);
+		background: rgba(42, 48, 68, 0.4);
 		color: var(--text-muted);
 		border-color: var(--bg-surface);
 	}

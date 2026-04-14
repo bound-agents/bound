@@ -77,10 +77,13 @@ export function createStatusRoutes(
 				Record<string, unknown>
 			>;
 
+			const localSiteId = getSiteId(db);
+
 			return c.json({
 				hosts,
 				hub,
 				syncState,
+				localSiteId,
 			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";

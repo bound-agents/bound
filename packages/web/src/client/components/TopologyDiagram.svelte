@@ -20,7 +20,7 @@ const HUB_CY = 75;
 const SPOKE_Y = 130;
 
 const viewBoxWidth = $derived(Math.max(300, Math.min(600, 300 + SPOKE_COUNT * 40)));
-const viewBoxHeight = 160;
+const viewBoxHeight = 175;
 
 // Calculate spoke positions across horizontal line
 const spokePositions = $derived(
@@ -70,18 +70,18 @@ function getHealthColor(hostSiteId: string): string {
 	{#each hosts as host, idx}
 		{@const spokeX = spokePositions[idx]}
 		{@const color = getLineColor(idx)}
+		{@const shortName = host.host_name.length > 8 ? host.host_name.slice(0, 6) + "…" : host.host_name}
 		<circle cx={spokeX} cy={SPOKE_Y} r="12" fill={color} />
 		<text
 			x={spokeX}
-			y={SPOKE_Y}
-			font-size="9"
-			font-weight="700"
-			fill="white"
+			y={SPOKE_Y + 24}
+			font-size="8"
+			font-weight="600"
+			fill="var(--text-secondary)"
 			text-anchor="middle"
-			dominant-baseline="central"
-			font-family="var(--font-display)"
+			font-family="var(--font-mono)"
 		>
-			{String.fromCharCode(65 + idx)}
+			{shortName}
 		</text>
 	{/each}
 </svg>
