@@ -348,12 +348,20 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							}
 						}
 
-						const lastClaimedMsg = appContext.db
-							.prepare("SELECT model_id FROM messages WHERE id = ?")
-							.get(claimed[claimed.length - 1].message_id) as {
-							model_id: string | null;
-						} | null;
-						const activeModelId = lastClaimedMsg?.model_id || routerConfig.default;
+						// Resolve the model for this thread: prefer the model that was
+						// previously in use (from the last assistant message) over the
+						// node's default. This prevents silent model switches when a
+						// thread's usual model is unavailable via relay and the local
+						// default differs (e.g., hub default=glm-4.7 but thread used opus).
+						const lastThreadModel = appContext.db
+							.prepare(
+								`SELECT model_id FROM messages
+								 WHERE thread_id = ? AND model_id IS NOT NULL
+								   AND role IN ('assistant', 'tool_call')
+								 ORDER BY created_at DESC LIMIT 1`,
+							)
+							.get(thread_id) as { model_id: string } | null;
+						const activeModelId = lastThreadModel?.model_id || routerConfig.default;
 
 						const delegationTarget = getDelegationTarget(
 							appContext.db,
