@@ -1280,6 +1280,7 @@ export class RelayProcessor {
 				messages,
 				tools: payload.tools,
 				system: payload.system,
+				system_suffix: payload.system_suffix,
 				max_tokens: payload.max_tokens,
 				temperature: payload.temperature,
 				cache_breakpoints: payload.cache_breakpoints,

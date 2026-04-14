@@ -131,6 +131,7 @@ export interface InferenceRequestPayload {
 	messages: LLMMessage[];
 	tools?: ToolDefinition[];
 	system?: string;
+	system_suffix?: string;
 	max_tokens?: number;
 	temperature?: number;
 	cache_breakpoints?: number[];

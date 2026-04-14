@@ -1687,6 +1687,29 @@ describe("AgentLoop", () => {
 					(params.cache_breakpoints as number[]).length === 0,
 			).toBe(true);
 		});
+
+		it("passes system_suffix from context assembly to backend", async () => {
+			const localThreadId = randomUUID();
+			const ctx = makeCtx();
+			const backend = new CaptureParamsBackend();
+			const router = new ModelRouter(new Map([["test-model", backend]]), "test-model");
+
+			const agentLoop = new AgentLoop(ctx, createMockSandbox(), router, {
+				threadId: localThreadId,
+				userId: "test-user",
+				modelId: "test-model",
+			});
+
+			await agentLoop.run();
+
+			expect(backend.capturedParams.length).toBeGreaterThan(0);
+			const params = backend.capturedParams[0];
+			// system_suffix should contain per-thread volatile context
+			expect(params.system_suffix).toBeDefined();
+			expect(typeof params.system_suffix).toBe("string");
+			// Should contain thread ID (per-thread varying content)
+			expect(params.system_suffix).toContain(localThreadId);
+		});
 	});
 
 	describe("context_debug freshness per turn", () => {
