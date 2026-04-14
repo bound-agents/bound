@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema, readUndelivered } from "@bound/core";
 import { createDefineCommands, loopContextStorage } from "@bound/sandbox";
-import type { CommandContext, CommandResult } from "@bound/sandbox";
+import type { CommandContext } from "@bound/sandbox";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Logger } from "@bound/shared";
 import { Bash, InMemoryFs } from "just-bash";
@@ -144,8 +144,8 @@ describe("Remote MCP proxy commands via relay", () => {
 		// After .run() returns, the store object still has relayRequest set
 		// because the command handler mutated the same JS object.
 		expect(store.relayRequest).toBeDefined();
-		expect(isRelayRequest(store.relayRequest as CommandResult)).toBe(true);
-		const relayReq = store.relayRequest as unknown as RelayToolCallRequest;
+		expect(isRelayRequest(store.relayRequest)).toBe(true);
+		const relayReq = store.relayRequest as RelayToolCallRequest;
 		expect(relayReq.outboxEntryId).toBeDefined();
 		expect(relayReq.targetSiteId).toBe("remote-spoke-1");
 		expect(relayReq.toolName).toBe("github");
@@ -174,7 +174,7 @@ describe("Remote MCP proxy commands via relay", () => {
 			};
 			const result = await loopContextStorage.run(store, () => bash.exec(cmd));
 			// The wrapper should detect and return the relay request
-			if (store.relayRequest && isRelayRequest(store.relayRequest as CommandResult)) {
+			if (store.relayRequest && isRelayRequest(store.relayRequest)) {
 				const req = store.relayRequest;
 				store.relayRequest = undefined;
 				return req;
@@ -183,8 +183,8 @@ describe("Remote MCP proxy commands via relay", () => {
 		};
 
 		const result = await execWithRelay("github list_commits --owner karashiiro --repo bound");
-		expect(isRelayRequest(result as CommandResult)).toBe(true);
-		const relayReq = result as unknown as RelayToolCallRequest;
+		expect(isRelayRequest(result)).toBe(true);
+		const relayReq = result as RelayToolCallRequest;
 		expect(relayReq.outboxEntryId).toBeDefined();
 		expect(relayReq.targetSiteId).toBe("remote-spoke-1");
 	});

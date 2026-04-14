@@ -64,13 +64,10 @@ export function createAgentLoopFactory(
 						const store = {
 							threadId: config.threadId,
 							taskId: config.taskId,
-							relayRequest: undefined as unknown,
+							relayRequest: undefined as unknown | undefined,
 						};
 						const result = await loopContextStorage.run(store, () => sandbox.bash.exec(cmd, opts));
-						if (
-							store.relayRequest &&
-							isRelayRequest(store.relayRequest as Record<string, unknown>)
-						) {
+						if (store.relayRequest && isRelayRequest(store.relayRequest)) {
 							const req = store.relayRequest;
 							store.relayRequest = undefined;
 							return req;
