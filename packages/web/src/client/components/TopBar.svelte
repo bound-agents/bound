@@ -17,10 +17,10 @@ function isActive(hash: string): boolean {
 // Navigation items with their metro line color associations
 const navItems = [
 	{ hash: "#/", label: "System Map", color: "var(--line-0)" },
-	{ hash: "#/timetable", label: "Timetable", color: "var(--line-3)" },
+	{ hash: "#/timetable", label: "Timetable", color: "var(--line-1)" },
 	{ hash: "#/network", label: "Network", color: "var(--line-4)" },
 	{ hash: "#/files", label: "Files", color: "var(--line-3)" },
-	{ hash: "#/advisories", label: "Advisories", color: "var(--line-5)" },
+	{ hash: "#/advisories", label: "Advisories", color: "var(--line-9)" },
 ];
 
 let advisoryCount = $state(0);
