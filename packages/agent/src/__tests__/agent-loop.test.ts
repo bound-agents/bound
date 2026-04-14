@@ -1171,6 +1171,85 @@ describe("AgentLoop", () => {
 		expect(alerts[0].content).toContain("Failed to resolve");
 	});
 
+	it("falls back to a same-tier model when model-hint fails and alternative exists", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("Completed on fallback model.");
+
+		const mockBash = createMockSandbox();
+		const emittedEvents: Array<{ event: string; payload: unknown }> = [];
+		const ctx = makeCtx();
+		// Spy on eventBus.emit
+		(ctx.eventBus as any).emit = (event: string, payload: unknown) => {
+			emittedEvents.push({ event, payload });
+		};
+
+		// Router with two tier-1 backends: "glm" and "phi3"
+		// We'll request "glm" but it won't be in the router — only "phi3" is
+		const backends = new Map<string, LLMBackend>([["phi3", mockBackend]]);
+		const tiers = new Map([["phi3", 1]]);
+		const router = new ModelRouter(backends, "phi3", undefined, tiers);
+
+		const agentLoop = new AgentLoop(ctx, mockBash, router, {
+			threadId,
+			userId: "test-user",
+			modelId: "glm",
+			modelTier: 1, // Caller knows the tier of the requested model
+		});
+
+		const result = await agentLoop.run();
+
+		// Should succeed via same-tier fallback
+		expect(result.error).toBeUndefined();
+		expect(result.messagesCreated).toBeGreaterThan(0);
+
+		// Alert should describe the tier-equivalent fallback
+		const alerts = db
+			.query(
+				"SELECT content FROM messages WHERE thread_id = ? AND role = 'alert' ORDER BY created_at ASC",
+			)
+			.all(threadId) as Array<{ content: string }>;
+
+		expect(alerts.length).toBeGreaterThan(0);
+		expect(alerts[0].content).toContain("glm");
+		expect(alerts[0].content).toContain("phi3");
+		expect(alerts[0].content).toContain("tier");
+
+		// model:fallback event should have been emitted
+		const fallbackEvent = emittedEvents.find((e) => e.event === "model:fallback");
+		expect(fallbackEvent).toBeDefined();
+		const payload = fallbackEvent!.payload as Record<string, unknown>;
+		expect(payload.requested_model).toBe("glm");
+		expect(payload.fallback_model).toBe("phi3");
+		expect(payload.tier).toBe(1);
+	});
+
+	it("fails when model-hint fails and no same-tier alternative exists", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("Should not be called.");
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		// Router with only a tier-5 backend; we request a tier-1 model
+		const backends = new Map<string, LLMBackend>([["opus", mockBackend]]);
+		const tiers = new Map([["opus", 5]]);
+		const router = new ModelRouter(backends, "opus", undefined, tiers);
+
+		const agentLoop = new AgentLoop(ctx, mockBash, router, {
+			threadId,
+			userId: "test-user",
+			modelId: "glm",
+			modelTier: 1,
+		});
+
+		const result = await agentLoop.run();
+
+		// Should fail — no same-tier alternative
+		expect(result.error).toBeDefined();
+		expect(result.error).toContain("glm");
+		expect(result.messagesCreated).toBe(0);
+	});
+
 	it("should dispatch to platformTools when tool name matches (AC3.1)", async () => {
 		const mockBackend = new MockLLMBackend();
 		mockBackend.setToolThenTextResponse(

@@ -21,6 +21,9 @@ export interface AgentLoopConfig {
 	taskId?: string;
 	userId: string;
 	modelId?: string;
+	/** Tier of the requested model (1-5). When set alongside modelId, enables
+	 *  cost-equivalent fallback to a same-tier alternative on resolution failure. */
+	modelTier?: number;
 	abortSignal?: AbortSignal;
 	/** Called after each tool execution to signal the loop is still active. */
 	onActivity?: () => void;

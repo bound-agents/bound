@@ -37,7 +37,7 @@ import {
 import { assembleContext } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
-import { type ModelResolution, resolveModel } from "./model-resolution";
+import { type ModelResolution, resolveModel, resolveSameTierFallback } from "./model-resolution";
 import { type EligibleHost, createRelayOutboxEntry } from "./relay-router";
 import { extractSummaryAndMemories } from "./summary-extraction";
 import {
@@ -208,22 +208,66 @@ export class AgentLoop {
 			});
 
 			if (this.lastModelResolution.kind === "error" && this.config.modelId !== undefined) {
-				const errorMsg = `Failed to resolve requested model "${this.config.modelId}": ${this.lastModelResolution.error}`;
-				this.ctx.logger.warn("[agent-loop] Model hint failed, aborting task", {
-					requestedModel: this.config.modelId,
-					reason: this.lastModelResolution.reason,
-				});
-				insertThreadMessage(
-					this.ctx.db,
-					{
-						threadId: this.config.threadId,
-						role: "alert",
-						content: errorMsg,
-						hostOrigin: this.ctx.siteId,
-					},
-					this.ctx.siteId,
-				);
-				throw new Error(errorMsg);
+				// Try cost-equivalent fallback if caller provided a tier hint
+				if (this.config.modelTier !== undefined) {
+					const tierFallback = resolveSameTierFallback(
+						this.config.modelId,
+						this.modelRouter,
+						this.ctx.db,
+						this.ctx.siteId,
+						this.config.modelTier,
+						requirements,
+					);
+					if (tierFallback) {
+						const fallbackModelId =
+							tierFallback.kind !== "error" ? tierFallback.modelId : undefined;
+						const alertMsg = `Model "${this.config.modelId}" unavailable. Using same-tier (${this.config.modelTier}) alternative "${fallbackModelId}".`;
+						this.ctx.logger.warn("[agent-loop] Model hint failed, using same-tier fallback", {
+							requestedModel: this.config.modelId,
+							fallbackModel: fallbackModelId,
+							tier: this.config.modelTier,
+						});
+						insertThreadMessage(
+							this.ctx.db,
+							{
+								threadId: this.config.threadId,
+								role: "alert",
+								content: alertMsg,
+								hostOrigin: this.ctx.siteId,
+							},
+							this.ctx.siteId,
+						);
+						this.ctx.eventBus.emit("model:fallback", {
+							requested_model: this.config.modelId,
+							fallback_model: fallbackModelId ?? "unknown",
+							tier: this.config.modelTier,
+							thread_id: this.config.threadId,
+							task_id: this.config.taskId,
+							reason: this.lastModelResolution.error,
+						});
+						this.lastModelResolution = tierFallback;
+					}
+				}
+
+				// If still an error after tier fallback attempt, fail the task
+				if (this.lastModelResolution.kind === "error") {
+					const errorMsg = `Failed to resolve requested model "${this.config.modelId}": ${this.lastModelResolution.error}`;
+					this.ctx.logger.warn("[agent-loop] Model hint failed, aborting task", {
+						requestedModel: this.config.modelId,
+						reason: this.lastModelResolution.reason,
+					});
+					insertThreadMessage(
+						this.ctx.db,
+						{
+							threadId: this.config.threadId,
+							role: "alert",
+							content: errorMsg,
+							hostOrigin: this.ctx.siteId,
+						},
+						this.ctx.siteId,
+					);
+					throw new Error(errorMsg);
+				}
 			}
 
 			let relayInfo:

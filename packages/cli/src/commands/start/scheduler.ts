@@ -109,6 +109,9 @@ export function initScheduler(
 							return { ok: true as const };
 						}
 					: undefined,
+				modelTierResolver: modelRouter
+					? (modelId: string) => modelRouter.getBackendTier(modelId)
+					: undefined,
 				generateTitle:
 					modelRouter && modelRouter.listBackends().length > 0
 						? async (threadId: string) => {

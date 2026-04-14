@@ -198,6 +198,9 @@ interface SchedulerConfig {
 	 * When absent, model hints are not validated at run time (existing behaviour).
 	 */
 	modelValidator?: (modelId: string) => { ok: true } | { ok: false; error: string };
+	/** Optional tier resolver for cost-equivalent fallback. Returns the tier (1-5)
+	 *  for a model ID, or null if the model is not in the local router. */
+	modelTierResolver?: (modelId: string) => number | null;
 	/**
 	 * Optional callback to generate a thread title after a task's agent loop completes.
 	 * Called with the thread ID; fire-and-forget (errors are logged, not propagated).
@@ -776,11 +779,17 @@ export class Scheduler {
 					}
 				}
 
+				const modelId = task.model_hint || undefined;
+				const modelTier = modelId && this.config.modelTierResolver
+					? this.config.modelTierResolver(modelId) ?? undefined
+					: undefined;
+
 				const agentLoop = this.agentLoopFactory({
 					threadId,
 					taskId: task.id,
 					userId: "system",
-					modelId: task.model_hint || undefined,
+					modelId,
+					modelTier,
 				});
 
 				const result = await agentLoop.run();
