@@ -631,7 +631,8 @@ export function loadPinnedEntries(db: Database): StageResult {
 			     OR m.key LIKE '\\_standing%' ESCAPE '\\'
 			     OR m.key LIKE '\\_feedback%' ESCAPE '\\'
 			     OR m.key LIKE '\\_policy%' ESCAPE '\\'
-			     OR m.key LIKE '\\_pinned%' ESCAPE '\\')`,
+			     OR m.key LIKE '\\_pinned%' ESCAPE '\\')
+			 ORDER BY m.key ASC`,
 		)
 		.all() as Array<{
 		key: string;
@@ -677,7 +678,8 @@ export function loadSummaryEntries(db: Database, excludeKeys: Set<string>): Stag
 			 FROM semantic_memory m
 			 LEFT JOIN tasks   t_src  ON m.source = t_src.id
 			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
-			 WHERE m.tier = 'summary' AND m.deleted = 0`,
+			 WHERE m.tier = 'summary' AND m.deleted = 0
+			 ORDER BY m.key ASC`,
 		)
 		.all() as Array<{
 		key: string;
@@ -720,7 +722,8 @@ export function loadSummaryEntries(db: Database, excludeKeys: Set<string>): Stag
 				 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
 				 LEFT JOIN tasks   t_src  ON m.source = t_src.id
 				 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
-				 WHERE e.source_key = ? AND e.relation = 'summarizes' AND e.deleted = 0`,
+				 WHERE e.source_key = ? AND e.relation = 'summarizes' AND e.deleted = 0
+				 ORDER BY m.key ASC`,
 			)
 			.all(summary.key) as Array<{
 			key: string;

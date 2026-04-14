@@ -1165,3 +1165,110 @@ describe("Stage Functions - L3 Recency Entries", () => {
 		expect(nonOrphanEntry).toBeUndefined();
 	});
 });
+
+describe("Deterministic ordering for cross-thread cache reuse", () => {
+	let db: Database;
+	let dbPath: string;
+
+	beforeEach(() => {
+		const randId = randomBytes(4).toString("hex");
+		dbPath = `/tmp/stage-order-test-${randId}.db`;
+		db = new BunDatabase(dbPath);
+
+		db.exec(`
+			CREATE TABLE semantic_memory (
+				id TEXT PRIMARY KEY,
+				key TEXT UNIQUE NOT NULL,
+				value TEXT NOT NULL,
+				source TEXT,
+				tier TEXT DEFAULT 'default',
+				created_at TEXT NOT NULL,
+				modified_at TEXT NOT NULL,
+				last_accessed_at TEXT NOT NULL,
+				deleted INTEGER DEFAULT 0
+			);
+
+			CREATE TABLE memory_edges (
+				id TEXT PRIMARY KEY,
+				source_key TEXT NOT NULL,
+				target_key TEXT NOT NULL,
+				relation TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				modified_at TEXT NOT NULL,
+				deleted INTEGER DEFAULT 0
+			);
+
+			CREATE TABLE tasks (
+				id TEXT PRIMARY KEY,
+				trigger_spec TEXT,
+				deleted INTEGER DEFAULT 0
+			);
+
+			CREATE TABLE threads (
+				id TEXT PRIMARY KEY,
+				title TEXT,
+				deleted INTEGER DEFAULT 0
+			);
+		`);
+	});
+
+	afterEach(() => {
+		db.close();
+		try {
+			require("node:fs").unlinkSync(dbPath);
+		} catch (_e) {
+			/* ignore */
+		}
+	});
+
+	it("L0 pinned entries are sorted by key ASC", () => {
+		const now = new Date().toISOString();
+		// Insert in reverse alphabetical order to ensure DB insertion order ≠ key order
+		db.prepare(
+			"INSERT INTO semantic_memory (id, key, value, source, tier, created_at, modified_at, last_accessed_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+		).run("3", "_standing:zzz_third", "val3", null, "pinned", now, now, now);
+		db.prepare(
+			"INSERT INTO semantic_memory (id, key, value, source, tier, created_at, modified_at, last_accessed_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+		).run("1", "_feedback:aaa_first", "val1", null, "pinned", now, now, now);
+		db.prepare(
+			"INSERT INTO semantic_memory (id, key, value, source, tier, created_at, modified_at, last_accessed_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+		).run("2", "_pinned:mmm_second", "val2", null, "pinned", now, now, now);
+
+		const result = loadPinnedEntries(db);
+		const keys = result.entries.map((e) => e.key);
+		expect(keys).toEqual(["_feedback:aaa_first", "_pinned:mmm_second", "_standing:zzz_third"]);
+	});
+
+	it("L1 summary entries are sorted by key ASC", () => {
+		const now = new Date().toISOString();
+		// Insert summaries in reverse order
+		db.prepare(
+			"INSERT INTO semantic_memory (id, key, value, source, tier, created_at, modified_at, last_accessed_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+		).run("2", "summary_zzz", "val2", null, "summary", now, now, now);
+		db.prepare(
+			"INSERT INTO semantic_memory (id, key, value, source, tier, created_at, modified_at, last_accessed_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+		).run("1", "summary_aaa", "val1", null, "summary", now, now, now);
+
+		const result = loadSummaryEntries(db, new Set());
+		const keys = result.entries.map((e) => e.key);
+		expect(keys).toEqual(["summary_aaa", "summary_zzz"]);
+	});
+
+	it("L0 ordering is deterministic across repeated calls", () => {
+		const now = new Date().toISOString();
+		for (let i = 0; i < 10; i++) {
+			const letter = String.fromCharCode(106 - i); // j, i, h, g, f, e, d, c, b, a
+			db.prepare(
+				"INSERT INTO semantic_memory (id, key, value, source, tier, created_at, modified_at, last_accessed_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+			).run(`id-${i}`, `_standing:${letter}`, `val-${i}`, null, "pinned", now, now, now);
+		}
+
+		const result1 = loadPinnedEntries(db);
+		const result2 = loadPinnedEntries(db);
+		const keys1 = result1.entries.map((e) => e.key);
+		const keys2 = result2.entries.map((e) => e.key);
+		expect(keys1).toEqual(keys2);
+		// Verify actually sorted
+		expect(keys1).toEqual([...keys1].sort());
+	});
+});
