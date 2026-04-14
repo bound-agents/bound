@@ -26,7 +26,7 @@ export * from "./strings.js";
 export * from "./hlc.js";
 
 // Type safety utilities
-export * from "./assert-never.js";
+export * from "./assert.js";
 export * from "./branded-types.js";
 export * from "./parse-json.js";
 export * from "./relay-schemas.js";

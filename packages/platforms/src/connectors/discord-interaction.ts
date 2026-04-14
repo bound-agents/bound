@@ -4,6 +4,7 @@ import { insertRow, writeOutbox } from "@bound/core";
 import { MAX_FILE_STORAGE_BYTES } from "@bound/shared";
 import type { IntakePayload, Thread, User } from "@bound/shared";
 import type { Logger, PlatformConnectorConfig, TypedEventEmitter } from "@bound/shared";
+import type { ChatInputCommandInteraction } from "discord.js";
 import type { PlatformConnector } from "../connector.js";
 import type { DiscordClientManager } from "./discord-client-manager.js";
 
@@ -391,7 +392,7 @@ export class DiscordInteractionConnector implements PlatformConnector {
 
 	private async handleInteraction(interaction: DiscordInteraction): Promise<void> {
 		// Route slash commands
-		if ("isChatInputCommand" in interaction && (interaction as any).isChatInputCommand()) {
+		if ("isChatInputCommand" in interaction && interaction.isChatInputCommand()) {
 			await this.handleSlashCommand(interaction);
 			return;
 		}
@@ -655,17 +656,13 @@ export class DiscordInteractionConnector implements PlatformConnector {
 		await this.pollForResponse(thread.id, now);
 	}
 
-	private async handleSlashCommand(interaction: DiscordInteraction): Promise<void> {
-		const cmd = interaction as any;
+	private async handleSlashCommand(cmd: ChatInputCommandInteraction): Promise<void> {
 		if (cmd.commandName !== "model") return;
 
 		await cmd.deferReply({ flags: 64 }); // ephemeral
 
 		// Allowlist check
-		if (
-			this.config.allowed_users.length > 0 &&
-			!this.config.allowed_users.includes(cmd.user.id)
-		) {
+		if (this.config.allowed_users.length > 0 && !this.config.allowed_users.includes(cmd.user.id)) {
 			await cmd.editReply({ content: "Error: You are not authorized to use this command." });
 			return;
 		}

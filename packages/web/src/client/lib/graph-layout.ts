@@ -45,24 +45,27 @@ const TIER_COLOR_MAP: Record<"pinned" | "summary" | "default" | "detail", string
 
 // Tier Y-band targets (fraction of height)
 const TIER_Y_FRACTION: Record<"pinned" | "summary" | "default" | "detail", number> = {
-	pinned: 0.10,
+	pinned: 0.1,
 	summary: 0.35,
 	default: 0.58,
-	detail: 0.80,
+	detail: 0.8,
 };
 
 const ARC_CENTER = Math.PI / 2; // upward-facing arc
 
 // Per-tier arc configuration: span (angle), radius scale, simulation strength
-const TIER_ARC: Record<"pinned" | "summary" | "default" | "detail", {
-	span: number;
-	radiusScale: number;
-	simStrength: number;
-}> = {
-	pinned:  { span: Math.PI * 0.35, radiusScale: 0.45, simStrength: 0.15 },
-	summary: { span: Math.PI * 0.55, radiusScale: 0.90, simStrength: 0.02 },
-	default: { span: Math.PI * 0.65, radiusScale: 1.20, simStrength: 0.008 },
-	detail:  { span: Math.PI * 0.55, radiusScale: 1.50, simStrength: 0.004 },
+const TIER_ARC: Record<
+	"pinned" | "summary" | "default" | "detail",
+	{
+		span: number;
+		radiusScale: number;
+		simStrength: number;
+	}
+> = {
+	pinned: { span: Math.PI * 0.35, radiusScale: 0.45, simStrength: 0.15 },
+	summary: { span: Math.PI * 0.55, radiusScale: 0.9, simStrength: 0.02 },
+	default: { span: Math.PI * 0.65, radiusScale: 1.2, simStrength: 0.008 },
+	detail: { span: Math.PI * 0.55, radiusScale: 1.5, simStrength: 0.004 },
 };
 
 /** Compute a point on an arc given parameter t in [0, 1] */

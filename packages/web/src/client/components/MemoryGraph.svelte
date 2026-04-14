@@ -3,7 +3,7 @@ import { onMount, untrack } from "svelte";
 import { api } from "../lib/api";
 import type { MemoryGraphResponse } from "../lib/api";
 import { computeInitialLayout, simulationStep, updateOpacity } from "../lib/graph-layout";
-import type { PositionedNode, PositionedEdge, GraphLayoutResult } from "../lib/graph-layout";
+import type { GraphLayoutResult, PositionedEdge, PositionedNode } from "../lib/graph-layout";
 
 interface Props {
 	selectedThreadId?: string | null;
@@ -138,7 +138,14 @@ function startSimulation() {
 
 		// Alpha decays from 1 to 0 over the simulation
 		const alpha = 1 - frame / maxFrames;
-		const energy = simulationStep(simNodes, simEdges, simNodeMap, containerWidth, containerHeight, alpha);
+		const energy = simulationStep(
+			simNodes,
+			simEdges,
+			simNodeMap,
+			containerWidth,
+			containerHeight,
+			alpha,
+		);
 
 		// Force reactivity by reassigning both nodes and nodeMap
 		simNodes = [...simNodes];
@@ -180,9 +187,15 @@ function handleNodeClick(nodeKey: string) {
 	onNodeClick?.(nodeKey);
 }
 
-function closePopover() { activePopoverNode = null; }
-function handlePopoverClick(e: Event) { e.stopPropagation(); }
-function getNodeData(key: string) { return graphData?.nodes.find((n) => n.key === key); }
+function closePopover() {
+	activePopoverNode = null;
+}
+function handlePopoverClick(e: Event) {
+	e.stopPropagation();
+}
+function getNodeData(key: string) {
+	return graphData?.nodes.find((n) => n.key === key);
+}
 
 // Pan handlers
 function handlePointerDown(e: PointerEvent) {
@@ -223,7 +236,9 @@ function handleWheel(e: WheelEvent) {
 }
 
 function resetView() {
-	viewX = 0; viewY = 0; zoom = 1;
+	viewX = 0;
+	viewY = 0;
+	zoom = 1;
 }
 
 const viewBox = $derived.by(() => {

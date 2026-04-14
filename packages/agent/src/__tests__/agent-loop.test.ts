@@ -8,6 +8,8 @@ import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
+import type { EventMap } from "@bound/shared";
+import { assert } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { AgentLoop } from "../agent-loop";
 
@@ -1179,8 +1181,9 @@ describe("AgentLoop", () => {
 		const emittedEvents: Array<{ event: string; payload: unknown }> = [];
 		const ctx = makeCtx();
 		// Spy on eventBus.emit
-		(ctx.eventBus as any).emit = (event: string, payload: unknown) => {
+		ctx.eventBus.emit = <K extends keyof EventMap>(event: K, payload: EventMap[K]): boolean => {
 			emittedEvents.push({ event, payload });
+			return true;
 		};
 
 		// Router with two tier-1 backends: "glm" and "phi3"
@@ -1216,8 +1219,8 @@ describe("AgentLoop", () => {
 
 		// model:fallback event should have been emitted
 		const fallbackEvent = emittedEvents.find((e) => e.event === "model:fallback");
-		expect(fallbackEvent).toBeDefined();
-		const payload = fallbackEvent!.payload as Record<string, unknown>;
+		assert(fallbackEvent);
+		const payload = fallbackEvent.payload as Record<string, unknown>;
 		expect(payload.requested_model).toBe("glm");
 		expect(payload.fallback_model).toBe("phi3");
 		expect(payload.tier).toBe(1);

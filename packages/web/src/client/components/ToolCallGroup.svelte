@@ -19,18 +19,13 @@ type ToolGroupSegment =
 	| { kind: "tools"; entries: ToolEntry[] }
 	| { kind: "reasoning"; text: string };
 
-const {
-	segments = [],
-	turnRange = null,
-} = $props<{
+const { segments = [], turnRange = null } = $props<{
 	segments?: ToolGroupSegment[];
 	turnRange?: TurnRange | null;
 }>();
 
 // Flatten all tool entries for summary
-const allEntries = $derived(
-	segments.flatMap((s) => (s.kind === "tools" ? s.entries : [])),
-);
+const allEntries = $derived(segments.flatMap((s) => (s.kind === "tools" ? s.entries : [])));
 
 function entryInRange(entry: ToolEntry): boolean {
 	if (!turnRange || !entry.timestamp) return true;

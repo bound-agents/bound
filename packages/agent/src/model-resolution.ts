@@ -54,9 +54,7 @@ export function resolveModelTier(
 
 	// Fall back to hosts table (remote models)
 	const rows = db
-		.query(
-			`SELECT models FROM hosts WHERE deleted = 0 AND site_id != ?`,
-		)
+		.query("SELECT models FROM hosts WHERE deleted = 0 AND site_id != ?")
 		.all(localSiteId) as Array<{ models: string | null }>;
 
 	let bestTier: number | null = null;

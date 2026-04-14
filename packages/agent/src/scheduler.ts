@@ -780,9 +780,10 @@ export class Scheduler {
 				}
 
 				const modelId = task.model_hint || undefined;
-				const modelTier = modelId && this.config.modelTierResolver
-					? this.config.modelTierResolver(modelId) ?? undefined
-					: undefined;
+				const modelTier =
+					modelId && this.config.modelTierResolver
+						? (this.config.modelTierResolver(modelId) ?? undefined)
+						: undefined;
 
 				const agentLoop = this.agentLoopFactory({
 					threadId,

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { assert } from "@bound/shared";
 import type { MemoryGraphEdge, MemoryGraphNode } from "../api";
 import { computeInitialLayout, simulationStep } from "../graph-layout";
 
@@ -39,7 +40,9 @@ describe("computeInitialLayout", () => {
 			const def = result.nodes.find((n) => n.key === "default-1");
 
 			// Pinned should be higher (smaller Y) than default in arc layout
-			expect(pinned!.y).toBeLessThan(def!.y);
+			assert(pinned);
+			assert(def);
+			expect(pinned.y).toBeLessThan(def.y);
 		});
 	});
 

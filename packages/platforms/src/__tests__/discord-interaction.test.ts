@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { applySchema } from "@bound/core";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
-import { TypedEventEmitter } from "@bound/shared";
+import { assert, TypedEventEmitter } from "@bound/shared";
 import type { DiscordClientManager } from "../connectors/discord-client-manager.js";
 import { DiscordInteractionConnector } from "../connectors/discord-interaction.js";
 
@@ -1965,10 +1965,10 @@ describe("DiscordInteractionConnector", () => {
 					"SELECT role, model_id, content FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
 				)
 				.get(threadId) as { role: string; model_id: string; content: string } | null;
-			expect(msg).not.toBeNull();
-			expect(msg!.model_id).toBe("opus");
-			expect(msg!.role).toBe("system");
-			expect(msg!.content).toContain("opus");
+			assert(msg);
+			expect(msg.model_id).toBe("opus");
+			expect(msg.role).toBe("system");
+			expect(msg.content).toContain("opus");
 		});
 
 		it("replies with error when user has no DM thread", async () => {

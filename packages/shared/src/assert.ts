@@ -15,3 +15,12 @@
 export function assertNever(value: never, message?: string): never {
 	throw new Error(message ?? `Unexpected value: ${JSON.stringify(value)}`);
 }
+
+/**
+ * Asserts that the provided condition is truthy.
+ */
+export function assert(condition: unknown, message?: string): asserts condition {
+	if (!condition) {
+		throw new Error(message ?? `Condition failed: ${JSON.stringify(condition)}`);
+	}
+}

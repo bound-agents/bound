@@ -13,8 +13,14 @@ interface Props {
 	onHoverThread?: (threadId: string | null) => void;
 }
 
-let { threads, threadStatuses, selectedThreadId, onSelectThread, onNavigateThread, onHoverThread }: Props =
-	$props();
+let {
+	threads,
+	threadStatuses,
+	selectedThreadId,
+	onSelectThread,
+	onNavigateThread,
+	onHoverThread,
+}: Props = $props();
 
 function sanitizeTitle(title: string | null): string {
 	if (!title || title.trim() === "" || title === ".") return "Untitled";

@@ -198,7 +198,6 @@ function viewTitle(): string {
 	}
 	return "Conversation";
 }
-
 </script>
 
 <DebugPanelWrapper {threadId} {wsEvents}>
