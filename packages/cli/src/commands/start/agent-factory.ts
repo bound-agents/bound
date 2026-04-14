@@ -111,7 +111,7 @@ export function createAgentLoopFactory(
 					undefined,
 					clusterFsObj.fs,
 				);
-				preSnapshot = null;
+				preSnapshot = postSnapshot;
 				if (!result.ok) {
 					return { changes: 0 };
 				}

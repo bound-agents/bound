@@ -60,7 +60,7 @@ function makeLoopSandbox(
 				undefined,
 				clusterFsObj.fs,
 			);
-			preSnapshot = null;
+			preSnapshot = postSnapshot;
 			if (!result.ok) return { changes: 0 };
 			return { changes: result.value.changes, changedPaths };
 		},
@@ -274,6 +274,115 @@ describe("LoopSandbox", () => {
 				.get("/tmp/big.txt") as { content: string } | null;
 
 			expect(row).toBeNull();
+		});
+	});
+
+	describe("Multi-turn FS persistence", () => {
+		it("persists files written in the second turn of a multi-turn loop", async () => {
+			const clusterFsResult = createClusterFs({
+				hostName: "test-host",
+				syncEnabled: false,
+				db,
+				siteId,
+			});
+			const loopSandbox = makeLoopSandbox(clusterFsResult, db, siteId, eventBus);
+
+			// HYDRATE_FS: capture pre-snapshot once (like agent-loop.ts does)
+			await loopSandbox.capturePreSnapshot();
+
+			// --- Turn 1: write a file, persist ---
+			await clusterFsResult.fs.writeFile("/home/user/turn1.txt", "first turn content");
+			const turn1Result = await loopSandbox.persistFs();
+			expect(turn1Result.changes).toBe(1);
+
+			// --- Turn 2: write another file, persist ---
+			// In the real agent loop, capturePreSnapshot is NOT called again.
+			// persistFs must still detect changes from turn 2.
+			await clusterFsResult.fs.writeFile(
+				"/home/user/design-docs/cross-thread-prompt-caching.md",
+				"# Cross-Thread Prompt Cache Reuse",
+			);
+			const turn2Result = await loopSandbox.persistFs();
+
+			expect(turn2Result.changes).toBe(1);
+			expect(turn2Result.changedPaths).toContain(
+				"/home/user/design-docs/cross-thread-prompt-caching.md",
+			);
+
+			// Verify it's actually in the database
+			const row = db
+				.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
+				.get("/home/user/design-docs/cross-thread-prompt-caching.md") as {
+				content: string;
+			} | null;
+			expect(row).not.toBeNull();
+			expect(row?.content).toBe("# Cross-Thread Prompt Cache Reuse");
+		});
+
+		it("persists files across three turns without re-capturing snapshot", async () => {
+			const clusterFsResult = createClusterFs({
+				hostName: "test-host",
+				syncEnabled: false,
+				db,
+				siteId,
+			});
+			const loopSandbox = makeLoopSandbox(clusterFsResult, db, siteId, eventBus);
+
+			await loopSandbox.capturePreSnapshot();
+
+			// Turn 1
+			await clusterFsResult.fs.writeFile("/home/user/a.txt", "aaa");
+			const r1 = await loopSandbox.persistFs();
+			expect(r1.changes).toBe(1);
+
+			// Turn 2
+			await clusterFsResult.fs.writeFile("/home/user/b.txt", "bbb");
+			const r2 = await loopSandbox.persistFs();
+			expect(r2.changes).toBe(1);
+
+			// Turn 3
+			await clusterFsResult.fs.writeFile("/home/user/c.txt", "ccc");
+			const r3 = await loopSandbox.persistFs();
+			expect(r3.changes).toBe(1);
+
+			// All three files should be in the database
+			for (const [path, content] of [
+				["/home/user/a.txt", "aaa"],
+				["/home/user/b.txt", "bbb"],
+				["/home/user/c.txt", "ccc"],
+			]) {
+				const row = db
+					.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
+					.get(path) as { content: string } | null;
+				expect(row).not.toBeNull();
+				expect(row?.content).toBe(content);
+			}
+		});
+
+		it("detects modifications in later turns to files written in earlier turns", async () => {
+			const clusterFsResult = createClusterFs({
+				hostName: "test-host",
+				syncEnabled: false,
+				db,
+				siteId,
+			});
+			const loopSandbox = makeLoopSandbox(clusterFsResult, db, siteId, eventBus);
+
+			await loopSandbox.capturePreSnapshot();
+
+			// Turn 1: create file
+			await clusterFsResult.fs.writeFile("/home/user/doc.md", "v1");
+			await loopSandbox.persistFs();
+
+			// Turn 2: modify same file
+			await clusterFsResult.fs.writeFile("/home/user/doc.md", "v2 updated");
+			const r2 = await loopSandbox.persistFs();
+			expect(r2.changes).toBe(1);
+
+			const row = db
+				.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
+				.get("/home/user/doc.md") as { content: string } | null;
+			expect(row?.content).toBe("v2 updated");
 		});
 	});
 
