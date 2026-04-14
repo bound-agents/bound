@@ -105,7 +105,7 @@ export class DiscordInteractionConnector implements PlatformConnector {
 
 		const client = this.clientManager.getClient();
 
-		// Register "File for Later" context menu command (idempotent upsert — AC1.1, AC1.2)
+		// Register commands (idempotent upsert — AC1.1, AC1.2)
 		if (!client.application) {
 			throw new Error("DiscordInteractionConnector: client.application not available");
 		}
@@ -113,7 +113,20 @@ export class DiscordInteractionConnector implements PlatformConnector {
 			name: "File for Later",
 			type: 3, // ApplicationCommandType.Message
 		});
-		this.logger.info("Registered 'File for Later' context menu command");
+		await client.application.commands.create({
+			name: "model",
+			description: "Set the model for your DM thread with the agent",
+			type: 1, // ApplicationCommandType.ChatInput
+			options: [
+				{
+					name: "model",
+					description: "Model ID (e.g. opus, sonnet, glm-4.7)",
+					type: 3, // ApplicationCommandOptionType.String
+					required: true,
+				},
+			],
+		});
+		this.logger.info("Registered interaction commands (File for Later, /model)");
 
 		// Register interaction listener
 		this.onInteractionCreate = (interaction) => {
@@ -377,6 +390,12 @@ export class DiscordInteractionConnector implements PlatformConnector {
 	}
 
 	private async handleInteraction(interaction: DiscordInteraction): Promise<void> {
+		// Route slash commands
+		if ("isChatInputCommand" in interaction && (interaction as any).isChatInputCommand()) {
+			await this.handleSlashCommand(interaction);
+			return;
+		}
+
 		// AC2.5: Only handle message context menu commands named "File for Later"
 		if (!interaction.isMessageContextMenuCommand()) return;
 		if (interaction.commandName !== "File for Later") return;
@@ -634,5 +653,85 @@ export class DiscordInteractionConnector implements PlatformConnector {
 		// Phase 4: Poll for agent response and deliver
 		// Use the user message's created_at as the "after" boundary
 		await this.pollForResponse(thread.id, now);
+	}
+
+	private async handleSlashCommand(interaction: DiscordInteraction): Promise<void> {
+		const cmd = interaction as any;
+		if (cmd.commandName !== "model") return;
+
+		await cmd.deferReply({ flags: 64 }); // ephemeral
+
+		// Allowlist check
+		if (
+			this.config.allowed_users.length > 0 &&
+			!this.config.allowed_users.includes(cmd.user.id)
+		) {
+			await cmd.editReply({ content: "Error: You are not authorized to use this command." });
+			return;
+		}
+
+		const modelId: string | null = cmd.options.getString("model");
+		if (!modelId) {
+			await cmd.editReply({ content: "Error: model option is required." });
+			return;
+		}
+
+		// Find the user in the DB
+		const user = this.db
+			.query<{ id: string }, [string]>(
+				"SELECT id FROM users WHERE json_extract(platform_ids, '$.discord') = ? AND deleted = 0 LIMIT 1",
+			)
+			.get(cmd.user.id);
+
+		if (!user) {
+			await cmd.editReply({
+				content: "No DM thread found. Send a DM to the agent first to create a thread.",
+			});
+			return;
+		}
+
+		// Find the user's DM thread (interface="discord")
+		const thread = this.db
+			.query<{ id: string }, [string]>(
+				"SELECT id FROM threads WHERE user_id = ? AND interface = 'discord' AND deleted = 0 LIMIT 1",
+			)
+			.get(user.id);
+
+		if (!thread) {
+			await cmd.editReply({
+				content: "No DM thread found. Send a DM to the agent first to create a thread.",
+			});
+			return;
+		}
+
+		// Insert a system notification message with the desired model_id
+		const now = new Date().toISOString();
+		insertRow(
+			this.db,
+			"messages",
+			{
+				id: randomUUID(),
+				thread_id: thread.id,
+				role: "system",
+				content: `Model preference set to "${modelId}" by operator via /model command.`,
+				model_id: modelId,
+				tool_name: null,
+				created_at: now,
+				modified_at: now,
+				host_origin: this.siteId,
+				deleted: 0,
+			},
+			this.siteId,
+		);
+
+		this.logger.info("/model command processed", {
+			userId: cmd.user.id,
+			threadId: thread.id,
+			modelId,
+		});
+
+		await cmd.editReply({
+			content: `Model for your DM thread set to **${modelId}**. The next message will use this model.`,
+		});
 	}
 }

@@ -126,10 +126,17 @@ describe("DiscordInteractionConnector", () => {
 
 			await connector.connect();
 
-			expect(createCalls.length).toBe(1);
-			const call = createCalls[0] as Record<string, unknown>;
-			expect(call.name).toBe("File for Later");
-			expect(call.type).toBe(3); // ApplicationCommandType.Message
+			expect(createCalls.length).toBe(2);
+			const fileCmd = createCalls.find(
+				(c) => (c as Record<string, unknown>).name === "File for Later",
+			) as Record<string, unknown>;
+			expect(fileCmd).toBeDefined();
+			expect(fileCmd.type).toBe(3); // ApplicationCommandType.Message
+			const modelCmd = createCalls.find(
+				(c) => (c as Record<string, unknown>).name === "model",
+			) as Record<string, unknown>;
+			expect(modelCmd).toBeDefined();
+			expect(modelCmd.type).toBe(1); // ApplicationCommandType.ChatInput
 		});
 	});
 
@@ -157,13 +164,13 @@ describe("DiscordInteractionConnector", () => {
 				createMockClientManagerWithClient(mockClient),
 			);
 
-			// First connect
-			await connector.connect();
-			expect(createCalls.length).toBe(1);
-
-			// Second connect (simulating reconnect)
+			// First connect (registers 2 commands: File for Later + /model)
 			await connector.connect();
 			expect(createCalls.length).toBe(2);
+
+			// Second connect (simulating reconnect — registers both again)
+			await connector.connect();
+			expect(createCalls.length).toBe(4);
 		});
 	});
 
@@ -1843,6 +1850,182 @@ describe("DiscordInteractionConnector", () => {
 			expect(editReplyCalls.length).toBe(1);
 			// Verify truncation to exactly 2000 chars
 			expect(editReplyCalls[0]?.content).toBe("x".repeat(2000));
+		});
+	});
+
+	describe("/model slash command", () => {
+		function createSlashCommandInteraction(
+			commandName: string,
+			userId: string,
+			options: Record<string, string> = {},
+		) {
+			const deferReplyCalls: Array<Record<string, unknown>> = [];
+			const editReplyCalls: Array<{ content: string }> = [];
+			return {
+				interaction: {
+					isMessageContextMenuCommand: () => false,
+					isChatInputCommand: () => true,
+					commandName,
+					options: {
+						getString: (name: string) => options[name] ?? null,
+					},
+					user: { id: userId, displayName: "Test User", username: "testuser" },
+					deferReply: async (opts: Record<string, unknown>) => {
+						deferReplyCalls.push(opts);
+					},
+					editReply: async (opts: { content: string }) => {
+						editReplyCalls.push(opts);
+					},
+				},
+				deferReplyCalls,
+				editReplyCalls,
+			};
+		}
+
+		function createMockClientWithHandlers() {
+			const handlers: ((interaction: unknown) => void)[] = [];
+			const createCalls: unknown[] = [];
+			const client = {
+				application: {
+					commands: {
+						create: async (opts: unknown) => {
+							createCalls.push(opts);
+						},
+					},
+				},
+				on: (event: string, handler: (interaction: unknown) => void) => {
+					if (event === "interactionCreate") handlers.push(handler);
+				},
+				off: () => {},
+			};
+			return { client, handlers, createCalls };
+		}
+
+		it("registers the /model slash command on connect()", async () => {
+			const { client, createCalls } = createMockClientWithHandlers();
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(client),
+			);
+			await connector.connect();
+
+			// Should register both "File for Later" and "model"
+			expect(createCalls.length).toBe(2);
+			const modelCmd = createCalls.find(
+				(c) => (c as Record<string, unknown>).name === "model",
+			) as Record<string, unknown>;
+			expect(modelCmd).toBeDefined();
+			expect(modelCmd.type).toBe(1); // ChatInputCommand
+		});
+
+		it("inserts a system message with the specified model_id into the user's DM thread", async () => {
+			const { client, handlers } = createMockClientWithHandlers();
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(client),
+			);
+			await connector.connect();
+
+			// Pre-create a user and their DM thread (interface="discord")
+			const userId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
+				[userId, "Test User", JSON.stringify({ discord: "discord-user-123" }), now, now],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, 'discord', 'site-1', 0, ?, ?, ?, 0)",
+				[threadId, userId, now, now, now],
+			);
+
+			const { interaction, editReplyCalls } = createSlashCommandInteraction(
+				"model",
+				"discord-user-123",
+				{ model: "opus" },
+			);
+
+			await handlers[0]?.(interaction);
+
+			// Should have replied with confirmation
+			expect(editReplyCalls.length).toBe(1);
+			expect(editReplyCalls[0]?.content).toContain("opus");
+
+			// Should have inserted a system message with model_id = "opus"
+			const msg = db
+				.query(
+					"SELECT role, model_id, content FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
+				)
+				.get(threadId) as { role: string; model_id: string; content: string } | null;
+			expect(msg).not.toBeNull();
+			expect(msg!.model_id).toBe("opus");
+			expect(msg!.role).toBe("system");
+			expect(msg!.content).toContain("opus");
+		});
+
+		it("replies with error when user has no DM thread", async () => {
+			const { client, handlers } = createMockClientWithHandlers();
+			const connector = new DiscordInteractionConnector(
+				config,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(client),
+			);
+			await connector.connect();
+
+			// Create user but no DM thread
+			const userId = randomUUID();
+			const now = new Date().toISOString();
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
+				[userId, "Test User", JSON.stringify({ discord: "discord-user-456" }), now, now],
+			);
+
+			const { interaction, editReplyCalls } = createSlashCommandInteraction(
+				"model",
+				"discord-user-456",
+				{ model: "opus" },
+			);
+
+			await handlers[0]?.(interaction);
+
+			expect(editReplyCalls.length).toBe(1);
+			expect(editReplyCalls[0]?.content).toContain("No DM thread");
+		});
+
+		it("respects allowlist for /model command", async () => {
+			const restrictedConfig = { ...config, allowed_users: ["allowed-user"] };
+			const { client, handlers } = createMockClientWithHandlers();
+			const connector = new DiscordInteractionConnector(
+				restrictedConfig,
+				db,
+				"site-1",
+				eventBus,
+				mockLogger,
+				createMockClientManagerWithClient(client),
+			);
+			await connector.connect();
+
+			const { interaction, editReplyCalls } = createSlashCommandInteraction(
+				"model",
+				"not-allowed-user",
+				{ model: "opus" },
+			);
+
+			await handlers[0]?.(interaction);
+
+			expect(editReplyCalls.length).toBe(1);
+			expect(editReplyCalls[0]?.content).toContain("not authorized");
 		});
 	});
 });

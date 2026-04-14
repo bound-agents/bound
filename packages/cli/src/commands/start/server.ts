@@ -362,7 +362,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							.prepare(
 								`SELECT model_id FROM messages
 								 WHERE thread_id = ? AND model_id IS NOT NULL
-								   AND role IN ('assistant', 'tool_call')
+								   AND role IN ('assistant', 'tool_call', 'system')
 								 ORDER BY created_at DESC LIMIT 1`,
 							)
 							.get(thread_id) as { model_id: string } | null;
