@@ -508,6 +508,7 @@ onDestroy(() => {
 	}
 
 	.task-row {
+		position: relative;
 		display: grid;
 		grid-template-columns: 24px 100px 1fr 100px 120px 100px 100px 80px 120px 70px;
 		padding: 12px 20px;
@@ -522,14 +523,28 @@ onDestroy(() => {
 		background: rgba(42, 48, 68, 0.3);
 	}
 
-	.task-row.running {
-		border-left: 3px solid var(--status-active);
-		padding-left: 17px;
+	/* Ticket stripe on running tasks — spans Status column (56px offset, 100px wide) */
+	.task-row.running::after {
+		content: "";
+		position: absolute;
+		top: 0;
+		left: 56px;
+		width: 100px;
+		height: 2px;
+		background: var(--status-active);
+		border-radius: 0 0 1px 1px;
 	}
 
-	.task-row.failed {
-		border-left: 3px solid var(--alert-disruption);
-		padding-left: 17px;
+	/* Ticket stripe on failed tasks — spans Status column (56px offset, 100px wide) */
+	.task-row.failed::after {
+		content: "";
+		position: absolute;
+		top: 0;
+		left: 56px;
+		width: 100px;
+		height: 2px;
+		background: var(--alert-disruption);
+		border-radius: 0 0 1px 1px;
 	}
 
 	.col-expand {

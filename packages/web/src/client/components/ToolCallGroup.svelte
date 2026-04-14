@@ -132,11 +132,24 @@ const doneCount = $derived(allEntries.filter((e) => e.result !== undefined).leng
 
 <style>
 	.tool-group {
+		position: relative;
 		margin: 6px 0;
 		padding: 8px 12px;
 		border-radius: 8px;
 		background: rgba(143, 118, 214, 0.06);
-		border-left: 2px dashed var(--line-6);
+		border: 1px solid var(--bg-surface);
+	}
+
+	/* Hanzomon purple ticket stripe — 32px to match MetroCard siblings in chat */
+	.tool-group::after {
+		content: "";
+		position: absolute;
+		top: 0;
+		left: 12px;
+		width: 32px;
+		height: 2px;
+		background: var(--line-6);
+		border-radius: 0 0 1px 1px;
 	}
 
 	.tool-group-header {

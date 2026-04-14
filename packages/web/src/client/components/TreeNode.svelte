@@ -133,6 +133,7 @@ function handleDownload(e: Event) {
 	}
 
 	.node-row {
+		position: relative;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -150,14 +151,24 @@ function handleDownload(e: Event) {
 		background: rgba(42, 48, 68, 0.3);
 	}
 
+	/* Ticket stripe on selected directory */
 	.node-row.node-selected {
-		background: rgba(0, 155, 191, 0.15);
-		border-left: 3px solid var(--line-3);
-		padding-left: calc(9px + var(--indent));
+		background: rgba(0, 155, 191, 0.1);
+	}
+
+	.node-row.node-selected::after {
+		content: "";
+		position: absolute;
+		top: 0;
+		left: calc(12px + var(--indent));
+		width: 32px;
+		height: 2px;
+		background: var(--line-3);
+		border-radius: 0 0 1px 1px;
 	}
 
 	.node-row.node-selected:hover {
-		background: rgba(0, 155, 191, 0.2);
+		background: rgba(0, 155, 191, 0.15);
 	}
 
 	.node-row.node-dir {

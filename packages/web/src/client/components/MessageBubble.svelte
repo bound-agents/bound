@@ -87,13 +87,27 @@ $effect(() => {
 
 <style>
 	.message-bubble {
+		position: relative;
 		padding: 10px 14px;
 		margin: 6px 0;
 		border-radius: 8px;
 		background: var(--bg-secondary);
-		border-left: 2px solid var(--bg-surface);
+		border: 1px solid var(--bg-surface);
 		transition: background 0.15s ease;
 		line-height: 1.55;
+		--bubble-accent: transparent;
+	}
+
+	/* Ticket stripe on message bubbles — 32px to match MetroCard siblings in chat */
+	.message-bubble:not(.system)::after {
+		content: "";
+		position: absolute;
+		top: 0;
+		left: 12px;
+		width: 32px;
+		height: 2px;
+		background: var(--bubble-accent);
+		border-radius: 0 0 1px 1px;
 	}
 
 	.message-content {
@@ -103,37 +117,36 @@ $effect(() => {
 
 	/* User messages */
 	.message-content.user {
-		/* Tint applied via MetroCard accent border */
+		/* Ticket stripe applied via MetroCard */
 	}
 
 	/* Assistant messages */
 	.message-content.assistant {
-		/* Tint applied via MetroCard accent border */
+		/* Ticket stripe applied via MetroCard */
 	}
 
-	/* Tool results: Chiyoda green accent */
+	/* Tool results: Chiyoda green stripe */
 	.tool_result {
 		background: rgba(0, 153, 68, 0.06);
-		border-left-color: var(--line-4);
+		--bubble-accent: var(--line-4);
 	}
 
-	/* Failed tool results: disruption red accent */
+	/* Failed tool results: disruption red stripe */
 	.tool_error {
 		background: rgba(255, 23, 68, 0.06);
-		border-left-color: var(--alert-disruption);
+		--bubble-accent: var(--alert-disruption);
 	}
 
-	/* Alerts: disruption red */
+	/* Alerts: disruption red stripe */
 	.alert {
 		background: rgba(255, 23, 68, 0.08);
-		border-left-color: var(--alert-disruption);
-		box-shadow: 0 0 12px rgba(255, 23, 68, 0.08);
+		--bubble-accent: var(--alert-disruption);
 	}
 
-	/* System: subtle, centered */
+	/* System: subtle, centered, no stripe */
 	.system {
 		background: transparent;
-		border-left: none;
+		border: none;
 		text-align: center;
 		padding: 6px 18px;
 	}

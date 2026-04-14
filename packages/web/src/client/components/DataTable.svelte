@@ -82,7 +82,8 @@ const gridTemplate = $derived(columns.map((col) => col.width || "1fr").join(" ")
 					class="data-row"
 					class:expandable
 					style="grid-template-columns: {gridTemplate};
-					{accentColor ? `border-left: 3px solid ${accentColor}` : ''}"
+					{accentColor ? `--row-accent: ${accentColor}` : ''}"
+					class:accented={!!accentColor}
 					onclick={() => {
 						onRowClick?.(row);
 						if (expandable) toggleRowExpansion(row);
@@ -162,10 +163,23 @@ const gridTemplate = $derived(columns.map((col) => col.width || "1fr").join(" ")
 	}
 
 	.data-row {
+		position: relative;
 		display: grid;
 		gap: 0;
 		border-bottom: 1px solid var(--bg-surface);
 		transition: background 0.15s ease;
+	}
+
+	/* Ticket stripe on accented rows — aligned with first cell padding */
+	.data-row.accented::after {
+		content: "";
+		position: absolute;
+		top: 0;
+		left: 8px;
+		width: 32px;
+		height: 2px;
+		background: var(--row-accent);
+		border-radius: 0 0 1px 1px;
 	}
 
 	.data-row.expandable {

@@ -187,7 +187,7 @@ function getSeverityBandClass(status: string): string {
 					<div class="advisory-list">
 						{#each unresolved as dedup (dedup.representative.id)}
 							<div class={getSeverityBandClass(dedup.representative.status)}>
-								<MetroCard>
+								<MetroCard accentColor={getStatusColor(dedup.representative.status)}>
 									<button
 										class="card-main"
 										onclick={() => toggleExpand(dedup.representative.id)}
@@ -351,7 +351,7 @@ function getSeverityBandClass(status: string): string {
 						<div class="advisory-list">
 							{#each resolved as dedup (dedup.representative.id)}
 								<div class={getSeverityBandClass(dedup.representative.status)}>
-									<MetroCard>
+									<MetroCard accentColor={getStatusColor(dedup.representative.status)}>
 										<button
 											class="card-main"
 											onclick={() => toggleExpand(dedup.representative.id)}
@@ -592,14 +592,6 @@ function getSeverityBandClass(status: string): string {
 		overflow: hidden;
 	}
 
-	.severity-band-proposed {
-		--band-color: var(--alert-warning);
-	}
-
-	.severity-band-approved {
-		--band-color: var(--status-active);
-	}
-
 	.severity-band-dismissed {
 		opacity: 0.6;
 	}
@@ -608,15 +600,7 @@ function getSeverityBandClass(status: string): string {
 		opacity: 0.6;
 	}
 
-	.severity-band-applied {
-		--band-color: var(--line-6);
-	}
-
-	.severity-band-proposed :global(.metro-card),
-	.severity-band-approved :global(.metro-card),
-	.severity-band-applied :global(.metro-card) {
-		border-top: 4px solid var(--band-color);
-	}
+	/* Atmosphere accent handled by MetroCard accentColor prop */
 
 	.card-main {
 		display: flex;
