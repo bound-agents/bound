@@ -114,6 +114,8 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
 
+      - uses: docker/setup-buildx-action@v3
+
       - name: Create and push multi-arch manifests
         run: |
           REPO="ghcr.io/${{ github.repository }}"
@@ -123,8 +125,7 @@ jobs:
 
           while IFS= read -r tag; do
             [ -z "$tag" ] && continue
-            docker manifest create "$tag" "$AMD64" "$ARM64"
-            docker manifest push "$tag"
+            docker buildx imagetools create -t "$tag" "$AMD64" "$ARM64"
           done <<< "$TAGS"
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
