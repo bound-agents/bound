@@ -639,6 +639,152 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 	});
 });
 
+describe("ModelRouter tier awareness", () => {
+	it("getBackendTier returns the tier for a registered backend", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "cheap",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					pricePerMInput: 0,
+				},
+				{
+					id: "expensive",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 5,
+					pricePerMInput: 15,
+				},
+			],
+			default: "cheap",
+		});
+
+		expect(router.getBackendTier("cheap")).toBe(1);
+		expect(router.getBackendTier("expensive")).toBe(5);
+	});
+
+	it("getBackendTier returns null for unknown backend", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "test",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+			],
+			default: "test",
+		});
+
+		expect(router.getBackendTier("nonexistent")).toBeNull();
+	});
+
+	it("listEligibleByTier returns only backends matching the requested tier", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "cheap-a",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+				{
+					id: "cheap-b",
+					provider: "ollama",
+					model: "phi3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+				{
+					id: "expensive",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 5,
+				},
+			],
+			default: "cheap-a",
+		});
+
+		const tier1 = router.listEligibleByTier(1);
+		expect(tier1.map((b) => b.id)).toEqual(["cheap-a", "cheap-b"]);
+
+		const tier5 = router.listEligibleByTier(5);
+		expect(tier5.map((b) => b.id)).toEqual(["expensive"]);
+
+		const tier3 = router.listEligibleByTier(3);
+		expect(tier3).toHaveLength(0);
+	});
+
+	it("listEligibleByTier respects capability requirements", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "vision-cheap",
+					provider: "ollama",
+					model: "llava",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: true },
+				},
+				{
+					id: "no-vision-cheap",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+			],
+			default: "no-vision-cheap",
+		});
+
+		const eligible = router.listEligibleByTier(1, { vision: true });
+		expect(eligible.map((b) => b.id)).toEqual(["vision-cheap"]);
+	});
+
+	it("listEligibleByTier excludes rate-limited backends", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "a",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+				{
+					id: "b",
+					provider: "ollama",
+					model: "phi3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+				},
+			],
+			default: "a",
+		});
+
+		router.markRateLimited("a", 60_000);
+		const eligible = router.listEligibleByTier(1);
+		expect(eligible.map((b) => b.id)).toEqual(["b"]);
+	});
+});
+
 describe("PooledBackend", () => {
 	const defaultCaps: BackendCapabilities = {
 		streaming: true,

@@ -130,11 +130,13 @@ export class ModelRouter {
 	private defaultId: string;
 	private effectiveCaps: Map<string, BackendCapabilities>;
 	private rateLimits: Map<string, number>; // backendId → expiry timestamp (ms)
+	private tiers: Map<string, number>; // backendId → tier number
 
 	constructor(
 		backends: Map<string, LLMBackend>,
 		defaultId: string,
 		effectiveCaps?: Map<string, BackendCapabilities>,
+		tiers?: Map<string, number>,
 	) {
 		this.backends = backends;
 		this.defaultId = defaultId;
@@ -142,6 +144,7 @@ export class ModelRouter {
 			effectiveCaps ??
 			new Map(Array.from(backends.entries()).map(([id, b]) => [id, b.capabilities()]));
 		this.rateLimits = new Map();
+		this.tiers = tiers ?? new Map();
 	}
 
 	getBackend(modelId?: string): LLMBackend {
@@ -274,6 +277,19 @@ export class ModelRouter {
 		}
 		return earliest;
 	}
+
+	/** Returns the tier for a backend ID, or null if not registered. */
+	getBackendTier(id: string): number | null {
+		return this.tiers.get(id) ?? null;
+	}
+
+	/**
+	 * Returns all backends matching the given tier that are not rate-limited and
+	 * satisfy the given capability requirements.
+	 */
+	listEligibleByTier(tier: number, requirements?: CapabilityRequirements): BackendInfo[] {
+		return this.listEligible(requirements).filter((b) => this.tiers.get(b.id) === tier);
+	}
 }
 
 function createBackendFromConfig(config: BackendConfig): LLMBackend {
@@ -397,8 +413,13 @@ export function createModelRouter(config: ModelBackendsConfig): ModelRouter {
 	// Build final maps — pool backends with shared IDs
 	const backends = new Map<string, LLMBackend>();
 	const effectiveCaps = new Map<string, BackendCapabilities>();
+	const tiers = new Map<string, number>();
 
 	for (const [id, group] of groups) {
+		// Use the best (lowest) tier among pooled entries
+		const bestTier = Math.min(...group.entries.map((e) => e.tier));
+		tiers.set(id, bestTier);
+
 		if (group.entries.length === 1) {
 			backends.set(id, group.entries[0].backend);
 			effectiveCaps.set(id, group.caps[0]);
@@ -414,7 +435,7 @@ export function createModelRouter(config: ModelBackendsConfig): ModelRouter {
 	// Hub-only mode: empty backends array is valid (inference proxied to spokes).
 	// In this case the default is "" and no local backends are available.
 	if (config.backends.length === 0) {
-		return new ModelRouter(backends, "", effectiveCaps);
+		return new ModelRouter(backends, "", effectiveCaps, tiers);
 	}
 
 	// Verify default backend exists
@@ -423,5 +444,5 @@ export function createModelRouter(config: ModelBackendsConfig): ModelRouter {
 		throw new LLMError(`Default backend "${config.default}" not found in backends`, "router");
 	}
 
-	return new ModelRouter(backends, config.default, effectiveCaps);
+	return new ModelRouter(backends, config.default, effectiveCaps, tiers);
 }
