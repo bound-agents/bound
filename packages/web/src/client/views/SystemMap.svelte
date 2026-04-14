@@ -1,7 +1,7 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
+import { SectionHeader } from "../components/shared";
 import MemoryGraph from "../components/MemoryGraph.svelte";
-import SectionHeader from "../components/SectionHeader.svelte";
 import ThreadList from "../components/ThreadList.svelte";
 import { api } from "../lib/api";
 import type { Thread } from "../lib/api";

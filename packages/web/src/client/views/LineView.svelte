@@ -467,7 +467,7 @@ $effect(() => {
 	}
 
 	.file-label:hover {
-		background: #1a4a8a;
+		background: var(--bg-surface);
 		color: var(--text-primary);
 	}
 
@@ -536,7 +536,7 @@ $effect(() => {
 	}
 
 	.send-button:hover:not(:disabled) {
-		background: #00c9b0;
+		background: var(--line-7);
 		box-shadow: 0 0 16px rgba(0, 172, 155, 0.25);
 	}
 
