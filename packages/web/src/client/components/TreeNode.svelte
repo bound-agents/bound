@@ -200,6 +200,10 @@ function handleDownload(e: Event) {
 		color: var(--text-secondary);
 	}
 
+	.node-dir .node-icon {
+		color: var(--line-5);
+	}
+
 	.node-name {
 		overflow: hidden;
 		text-overflow: ellipsis;
