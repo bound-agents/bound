@@ -32,7 +32,15 @@ let reloadInProgress = false;
  * Concurrent reloads are prevented by reloadInProgress flag (AC12.6).
  */
 export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> {
-	const { appContext, configDir, keyManager, onMcpConfigChanged, onWsConfigChanged, logger, delayMs } = config;
+	const {
+		appContext,
+		configDir,
+		keyManager,
+		onMcpConfigChanged,
+		onWsConfigChanged,
+		logger,
+		delayMs,
+	} = config;
 
 	// Yield control to allow concurrent calls to be scheduled.
 	// Use setTimeout to ensure the check happens in the next event loop tick.
@@ -63,7 +71,9 @@ export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> 
 			? (oldMcpResult.value as McpConfig)
 			: null;
 		const oldSyncResult = appContext.optionalConfig.sync;
-		const oldSyncConfig = oldSyncResult?.ok ? (oldSyncResult.value as Record<string, unknown>) : null;
+		const oldSyncConfig = oldSyncResult?.ok
+			? (oldSyncResult.value as Record<string, unknown>)
+			: null;
 
 		// Track what changed for logging
 		const changes: string[] = [];

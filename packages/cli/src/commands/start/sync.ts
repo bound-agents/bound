@@ -72,7 +72,9 @@ export async function initSync(
 						);
 					} else {
 						// Read WS config if present, use defaults otherwise
-						const wsConfig = (syncConfig as Record<string, unknown>).ws as Record<string, unknown> | undefined;
+						const wsConfig = (syncConfig as Record<string, unknown>).ws as
+							| Record<string, unknown>
+							| undefined;
 						const reconnectMaxInterval = (wsConfig?.reconnect_max_interval as number) ?? 60;
 						const backpressureLimit = (wsConfig?.backpressure_limit as number) ?? 2097152;
 

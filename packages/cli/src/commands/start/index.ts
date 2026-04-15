@@ -39,14 +39,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 	const { modelRouter, routerConfig } = await initInference(appContext, commandContext);
 
 	// Phase 5: Relay processor, KeyManager
-	const {
-		relayProcessor,
-		relayProcessorHandle,
-		relayExecutor,
-		keyManager,
-		hubSiteId,
-		keyring,
-	} = await initRelay(appContext, keypair, mcpClientsMap, modelRouter, clusterFsObj);
+	const { relayProcessor, relayProcessorHandle, relayExecutor, keyManager, hubSiteId, keyring } =
+		await initRelay(appContext, keypair, mcpClientsMap, modelRouter, clusterFsObj);
 
 	// Phase 5b: Register SIGHUP handler for config hot-reload (needs all subsystem refs)
 	registerSighupHandler({
