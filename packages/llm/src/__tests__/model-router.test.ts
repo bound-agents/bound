@@ -907,3 +907,77 @@ describe("PooledBackend", () => {
 		expect(chunks.length).toBeGreaterThan(0);
 	});
 });
+
+describe("ModelRouter thinking config", () => {
+	it("getThinkingConfig returns undefined when no thinking config on backend", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "test",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+				},
+			],
+			default: "test",
+		});
+		expect(router.getThinkingConfig("test")).toBeUndefined();
+	});
+
+	it("getThinkingConfig returns enabled config when thinking: true (boolean shorthand)", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "claude",
+					provider: "anthropic",
+					model: "claude-sonnet-4-20250514",
+					apiKey: "test-key",
+					contextWindow: 200000,
+					thinking: true,
+				},
+			],
+			default: "claude",
+		});
+		const config = router.getThinkingConfig("claude");
+		expect(config).toBeDefined();
+		expect(config?.type).toBe("enabled");
+		expect(config?.budget_tokens).toBe(10000);
+	});
+
+	it("getThinkingConfig returns config with custom budget when thinking: { budget_tokens: N }", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "claude",
+					provider: "anthropic",
+					model: "claude-sonnet-4-20250514",
+					apiKey: "test-key",
+					contextWindow: 200000,
+					thinking: { budget_tokens: 20000 },
+				},
+			],
+			default: "claude",
+		});
+		const config = router.getThinkingConfig("claude");
+		expect(config).toBeDefined();
+		expect(config?.type).toBe("enabled");
+		expect(config?.budget_tokens).toBe(20000);
+	});
+
+	it("getThinkingConfig returns null for unknown backend ID", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "test",
+					provider: "ollama",
+					model: "llama3",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+				},
+			],
+			default: "test",
+		});
+		expect(router.getThinkingConfig("nonexistent")).toBeUndefined();
+	});
+});

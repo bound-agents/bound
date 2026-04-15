@@ -132,12 +132,14 @@ export class ModelRouter {
 	private effectiveCaps: Map<string, BackendCapabilities>;
 	private rateLimits: Map<string, number>; // backendId → expiry timestamp (ms)
 	private tiers: Map<string, number>; // backendId → tier number
+	private backendConfigs: Map<string, BackendConfig>; // backendId → raw config
 
 	constructor(
 		backends: Map<string, LLMBackend>,
 		defaultId: string,
 		effectiveCaps?: Map<string, BackendCapabilities>,
 		tiers?: Map<string, number>,
+		backendConfigs?: Map<string, BackendConfig>,
 	) {
 		this.backends = backends;
 		this.defaultId = defaultId;
@@ -146,6 +148,7 @@ export class ModelRouter {
 			new Map(Array.from(backends.entries()).map(([id, b]) => [id, b.capabilities()]));
 		this.rateLimits = new Map();
 		this.tiers = tiers ?? new Map();
+		this.backendConfigs = backendConfigs ?? new Map();
 	}
 
 	getBackend(modelId?: string): LLMBackend {
@@ -286,6 +289,29 @@ export class ModelRouter {
 	}
 
 	/**
+	 * Extracts thinking configuration from a backend's config.
+	 * Returns undefined if no thinking config exists or the backend is not found.
+	 *
+	 * Supports two config styles:
+	 * - `thinking: true` → enable with default budget (10000 tokens)
+	 * - `thinking: { budget_tokens: N }` → enable with custom budget
+	 */
+	getThinkingConfig(backendId: string): ChatParams["thinking"] | undefined {
+		const config = this.backendConfigs.get(backendId);
+		if (!config) return undefined;
+		if (config.thinking === true) {
+			return { type: "enabled", budget_tokens: 10000 };
+		}
+		if (typeof config.thinking === "object" && config.thinking !== null) {
+			return {
+				type: "enabled",
+				budget_tokens: (config.thinking as { budget_tokens?: number }).budget_tokens ?? 10000,
+			};
+		}
+		return undefined;
+	}
+
+	/**
 	 * Returns all backends matching the given tier that are not rate-limited and
 	 * satisfy the given capability requirements.
 	 */
@@ -416,11 +442,17 @@ export function createModelRouter(config: ModelBackendsConfig): ModelRouter {
 	const backends = new Map<string, LLMBackend>();
 	const effectiveCaps = new Map<string, BackendCapabilities>();
 	const tiers = new Map<string, number>();
+	const backendConfigs = new Map<string, BackendConfig>();
 
 	for (const [id, group] of groups) {
 		// Use the best (lowest) tier among pooled entries
 		const bestTier = Math.min(...group.entries.map((e) => e.tier));
 		tiers.set(id, bestTier);
+		// Store the first backend config for thinking config extraction
+		if (!backendConfigs.has(id)) {
+			const firstConfig = config.backends.find((b) => b.id === id);
+			if (firstConfig) backendConfigs.set(id, firstConfig);
+		}
 
 		if (group.entries.length === 1) {
 			backends.set(id, group.entries[0].backend);
@@ -437,7 +469,7 @@ export function createModelRouter(config: ModelBackendsConfig): ModelRouter {
 	// Hub-only mode: empty backends array is valid (inference proxied to spokes).
 	// In this case the default is "" and no local backends are available.
 	if (config.backends.length === 0) {
-		return new ModelRouter(backends, "", effectiveCaps, tiers);
+		return new ModelRouter(backends, "", effectiveCaps, tiers, backendConfigs);
 	}
 
 	// Verify default backend exists
@@ -446,5 +478,5 @@ export function createModelRouter(config: ModelBackendsConfig): ModelRouter {
 		throw new LLMError(`Default backend "${config.default}" not found in backends`, "router");
 	}
 
-	return new ModelRouter(backends, config.default, effectiveCaps, tiers);
+	return new ModelRouter(backends, config.default, effectiveCaps, tiers, backendConfigs);
 }
