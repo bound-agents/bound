@@ -77,3 +77,6 @@ export {
 	type WsConnectionData,
 	type WsServerConfig,
 } from "./ws-server.js";
+
+// WebSocket client
+export { WsSyncClient, type WsClientConfig } from "./ws-client.js";
