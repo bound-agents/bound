@@ -11,7 +11,13 @@ import type { HostModelEntry } from "@bound/shared";
 import { type EligibleHost, findAnyRemoteModel, findEligibleHostsByModel } from "./relay-router";
 
 export type ModelResolution =
-	| { kind: "local"; backend: LLMBackend; modelId: string; reResolved?: boolean }
+	| {
+			kind: "local";
+			backend: LLMBackend;
+			modelId: string;
+			reResolved?: boolean;
+			thinkingConfig?: { type: "enabled"; budget_tokens: number };
+	  }
 	| { kind: "remote"; hosts: EligibleHost[]; modelId: string; reResolved?: boolean }
 	| {
 			kind: "error";
@@ -101,7 +107,13 @@ export function resolveSameTierFallback(
 	if (localAlt) {
 		const backend = modelRouter.tryGetBackend(localAlt.id);
 		if (backend) {
-			return { kind: "local", backend, modelId: localAlt.id, reResolved: true };
+			return {
+				kind: "local",
+				backend,
+				modelId: localAlt.id,
+				reResolved: true,
+				thinkingConfig: modelRouter.getThinkingConfig(localAlt.id),
+			};
 		}
 	}
 
@@ -221,7 +233,13 @@ export function resolveModel(
 					const altBackend = modelRouter.tryGetBackend(altId);
 					if (altBackend) {
 						// Phase 3: Dispatch (re-routed local)
-						return { kind: "local", backend: altBackend, modelId: altId, reResolved: true };
+						return {
+							kind: "local",
+							backend: altBackend,
+							modelId: altId,
+							reResolved: true,
+							thinkingConfig: modelRouter.getThinkingConfig(altId),
+						};
 					}
 				}
 
@@ -250,7 +268,12 @@ export function resolveModel(
 		}
 
 		// Phase 3: Dispatch (local, qualification passed)
-		return { kind: "local", backend: localBackend, modelId: effectiveModelId };
+		return {
+			kind: "local",
+			backend: localBackend,
+			modelId: effectiveModelId,
+			thinkingConfig: modelRouter.getThinkingConfig(effectiveModelId),
+		};
 	}
 
 	// Hub-only mode: if effectiveModelId is empty (no local backends, no user-specified model),
