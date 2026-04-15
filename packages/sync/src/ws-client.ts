@@ -1,6 +1,8 @@
 import type { Logger } from "@bound/shared";
 import type { KeyManager } from "./key-manager.js";
 import { signRequest } from "./signing.js";
+import type { ChangelogAckPayload, ChangelogPushPayload } from "./ws-frames.js";
+import { WsMessageType, decodeFrame } from "./ws-frames.js";
 
 export interface WsClientConfig {
 	hubUrl: string; // e.g., "https://polaris.karashiiro.moe"
@@ -8,6 +10,21 @@ export interface WsClientConfig {
 	siteId: string;
 	keyManager: KeyManager;
 	hubSiteId: string;
+	wsTransport?: {
+		addPeer: (
+			peerSiteId: string,
+			sendFrame: (frame: Uint8Array) => boolean,
+			symmetricKey: Uint8Array,
+		) => void;
+		removePeer: (peerSiteId: string) => void;
+		handleChangelogPush: (
+			peerSiteId: string,
+			payload: ChangelogPushPayload,
+			symmetricKey: Uint8Array,
+		) => void;
+		handleChangelogAck: (peerSiteId: string, payload: ChangelogAckPayload) => void;
+		drainChangelog: (peerSiteId: string) => void;
+	};
 	logger?: Logger;
 	reconnectMaxInterval?: number; // seconds, default 60
 	backpressureLimit?: number; // bytes, default 2097152
@@ -171,6 +188,19 @@ export class WsSyncClient {
 		this.reconnectInterval = 1;
 		this.sendState = "ready";
 
+		// Wire up WsTransport peer
+		if (this.config.wsTransport && this.symmetricKey) {
+			const sendFrame = (frame: Uint8Array): boolean => {
+				if (this.sendState === "pressured") {
+					return false;
+				}
+				return this.send(frame);
+			};
+
+			this.config.wsTransport.addPeer(this.config.hubSiteId, sendFrame, this.symmetricKey);
+			this.config.wsTransport.drainChangelog(this.config.hubSiteId);
+		}
+
 		this.onConnected?.();
 	}
 
@@ -189,6 +219,33 @@ export class WsSyncClient {
 
 		if (data) {
 			this.config.logger?.debug("WsSyncClient: received binary frame", { size: data.length });
+
+			// Decode frame and dispatch to WsTransport handlers
+			if (this.symmetricKey) {
+				const decodeResult = decodeFrame(data, this.symmetricKey);
+				if (!decodeResult.ok) {
+					this.config.logger?.warn("WsSyncClient: frame decode failed", {
+						error: decodeResult.error,
+					});
+					return;
+				}
+
+				const decodedFrame = decodeResult.value;
+
+				// Dispatch to WsTransport handlers
+				if (this.config.wsTransport) {
+					if (decodedFrame.type === WsMessageType.CHANGELOG_PUSH) {
+						this.config.wsTransport.handleChangelogPush(
+							this.config.hubSiteId,
+							decodedFrame.payload,
+							this.symmetricKey,
+						);
+					} else if (decodedFrame.type === WsMessageType.CHANGELOG_ACK) {
+						this.config.wsTransport.handleChangelogAck(this.config.hubSiteId, decodedFrame.payload);
+					}
+				}
+			}
+
 			this.onMessage?.(data);
 		}
 	}
@@ -196,6 +253,11 @@ export class WsSyncClient {
 	private handleClose(): void {
 		this.config.logger?.debug("WsSyncClient: connection closed");
 		this.ws = null;
+
+		// Remove WsTransport peer
+		if (this.config.wsTransport) {
+			this.config.wsTransport.removePeer(this.config.hubSiteId);
+		}
 
 		this.onDisconnected?.();
 

@@ -2,6 +2,8 @@ import type { KeyringConfig, Logger, Result } from "@bound/shared";
 import { err, ok } from "@bound/shared";
 import type { KeyManager } from "./key-manager.js";
 import { verifyRequest } from "./signing.js";
+import type { ChangelogAckPayload, ChangelogPushPayload } from "./ws-frames.js";
+import { WsMessageType, decodeFrame } from "./ws-frames.js";
 
 /**
  * Per-connection metadata attached to a WebSocket connection.
@@ -161,6 +163,21 @@ export interface WsServerConfig {
 	connectionManager: WsConnectionManager;
 	keyring: KeyringConfig;
 	keyManager: KeyManager;
+	wsTransport?: {
+		addPeer: (
+			peerSiteId: string,
+			sendFrame: (frame: Uint8Array) => boolean,
+			symmetricKey: Uint8Array,
+		) => void;
+		removePeer: (peerSiteId: string) => void;
+		handleChangelogPush: (
+			peerSiteId: string,
+			payload: ChangelogPushPayload,
+			symmetricKey: Uint8Array,
+		) => void;
+		handleChangelogAck: (peerSiteId: string, payload: ChangelogAckPayload) => void;
+		drainChangelog: (peerSiteId: string) => void;
+	};
 	logger?: Logger;
 	idleTimeout?: number; // seconds, default 120
 	backpressureLimit?: number; // bytes, default 2097152 (2MB)
@@ -206,6 +223,24 @@ export function createWsHandlers(config: WsServerConfig): {
 		open(ws) {
 			logger?.debug("WS connection opened", { siteId: ws.data.siteId });
 			connectionManager.add(ws.data.siteId, ws);
+
+			// Wire up WsTransport peer
+			if (config.wsTransport) {
+				const sendFrame = (frame: Uint8Array): boolean => {
+					if (ws.data.sendState === "pressured") {
+						return false;
+					}
+					try {
+						ws.send(frame, true);
+						return true;
+					} catch {
+						return false;
+					}
+				};
+
+				config.wsTransport.addPeer(ws.data.siteId, sendFrame, ws.data.symmetricKey);
+				config.wsTransport.drainChangelog(ws.data.siteId);
+			}
 		},
 
 		message(ws, message) {
@@ -224,7 +259,31 @@ export function createWsHandlers(config: WsServerConfig): {
 				siteId: ws.data.siteId,
 				size: frame.length,
 			});
-			// Frame dispatch to handlers comes in Phase 4/5
+
+			// Decode frame
+			const decodeResult = decodeFrame(frame, ws.data.symmetricKey);
+			if (!decodeResult.ok) {
+				logger?.warn("WS frame decode failed", {
+					siteId: ws.data.siteId,
+					error: decodeResult.error,
+				});
+				return;
+			}
+
+			const decodedFrame = decodeResult.value;
+
+			// Dispatch to WsTransport handlers
+			if (config.wsTransport) {
+				if (decodedFrame.type === WsMessageType.CHANGELOG_PUSH) {
+					config.wsTransport.handleChangelogPush(
+						ws.data.siteId,
+						decodedFrame.payload,
+						ws.data.symmetricKey,
+					);
+				} else if (decodedFrame.type === WsMessageType.CHANGELOG_ACK) {
+					config.wsTransport.handleChangelogAck(ws.data.siteId, decodedFrame.payload);
+				}
+			}
 		},
 
 		close(ws, code, reason) {
@@ -233,6 +292,12 @@ export function createWsHandlers(config: WsServerConfig): {
 				code,
 				reason,
 			});
+
+			// Remove WsTransport peer
+			if (config.wsTransport) {
+				config.wsTransport.removePeer(ws.data.siteId);
+			}
+
 			connectionManager.remove(ws.data.siteId);
 		},
 

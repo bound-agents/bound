@@ -8,12 +8,14 @@ import type { AppContext } from "@bound/core";
 import type { KeyringConfig } from "@bound/shared";
 import { formatError } from "@bound/shared";
 import type { KeyManager, SyncTransport } from "@bound/sync";
+import type { WsTransport as WsTransportType } from "@bound/sync";
 
 export interface SyncResult {
 	syncLoopHandle: { stop: () => void } | null;
 	pruningHandle: { stop: () => void } | null;
 	overlayHandle: { stop: () => void } | null;
 	transport: SyncTransport | undefined;
+	wsTransport: WsTransportType | undefined;
 	wsClient: { close: () => void } | null;
 }
 
@@ -23,6 +25,7 @@ export async function initSync(
 	keyManager: KeyManager | undefined,
 ): Promise<SyncResult> {
 	let transport: SyncTransport | undefined;
+	let wsTransport: WsTransportType | undefined;
 	let wsClient: { close: () => void } | null = null;
 
 	// 14. Sync (if configured)
@@ -37,6 +40,7 @@ export async function initSync(
 				startSyncLoop,
 				SyncTransport: ST,
 				WsSyncClient,
+				WsTransport: WT,
 			} = await import("@bound/sync");
 			const keyringResult = appContext.optionalConfig.keyring;
 			const keyring = keyringResult?.ok ? (keyringResult.value as KeyringConfig) : { hosts: {} };
@@ -45,6 +49,18 @@ export async function initSync(
 			const hasKeyringPeers = Object.keys(keyring.hosts).length > 0;
 			if (hasKeyringPeers && keyManager) {
 				transport = new ST(keyManager, keypair.privateKey, appContext.siteId, appContext.logger);
+			}
+
+			// Initialize WsTransport if keyring has peers
+			if (hasKeyringPeers && keyManager) {
+				wsTransport = new WT({
+					db: appContext.db,
+					siteId: appContext.siteId,
+					eventBus: appContext.eventBus,
+					logger: appContext.logger,
+				});
+				wsTransport.start();
+				appContext.logger.info("[sync] WsTransport started");
 			}
 
 			const syncClient = new SyncClient(
@@ -92,6 +108,7 @@ export async function initSync(
 							siteId: appContext.siteId,
 							keyManager,
 							hubSiteId,
+							wsTransport,
 							logger: appContext.logger,
 							reconnectMaxInterval: 60,
 							backpressureLimit: 2097152,
@@ -167,5 +184,5 @@ export async function initSync(
 		appContext.logger.info("[overlay] Not configured");
 	}
 
-	return { syncLoopHandle, pruningHandle, overlayHandle, transport, wsClient };
+	return { syncLoopHandle, pruningHandle, overlayHandle, transport, wsTransport, wsClient };
 }
