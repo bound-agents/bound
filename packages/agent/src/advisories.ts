@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertRow, updateRow } from "@bound/core";
+import { insertRow, softDelete, updateRow } from "@bound/core";
 import type { Advisory, Result } from "@bound/shared";
 
 export function createAdvisory(
@@ -109,6 +109,34 @@ export function applyAdvisory(
 			error: error instanceof Error ? error : new Error("Unknown error"),
 		};
 	}
+}
+
+export function pruneResolvedAdvisories(db: Database, siteId: string): { pruned: number } {
+	const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+	const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+	// Find applied advisories older than 7 days
+	const appliedRows = db
+		.prepare(
+			`SELECT id FROM advisories
+			 WHERE deleted = 0 AND status = 'applied' AND resolved_at < ?`,
+		)
+		.all(sevenDaysAgo) as Array<{ id: string }>;
+
+	// Find dismissed advisories older than 1 day
+	const dismissedRows = db
+		.prepare(
+			`SELECT id FROM advisories
+			 WHERE deleted = 0 AND status = 'dismissed' AND resolved_at < ?`,
+		)
+		.all(oneDayAgo) as Array<{ id: string }>;
+
+	// Use softDelete for changelog compliance
+	for (const row of [...appliedRows, ...dismissedRows]) {
+		softDelete(db, "advisories", row.id, siteId);
+	}
+
+	return { pruned: appliedRows.length + dismissedRows.length };
 }
 
 export function getPendingAdvisories(db: Database): Advisory[] {

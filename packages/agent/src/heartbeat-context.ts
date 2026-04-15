@@ -1,9 +1,23 @@
 import type { Database } from "bun:sqlite";
+import type { Logger } from "@bound/shared";
+import { pruneResolvedAdvisories } from "./advisories";
 
 const DEFAULT_INSTRUCTIONS =
 	"Review system state. If advisories need attention, address them. If tasks have failed, investigate. Otherwise, note what you observed.";
 
-export function buildHeartbeatContext(db: Database, lastRunAt: string | null): string {
+export function buildHeartbeatContext(
+	db: Database,
+	lastRunAt: string | null,
+	options?: { siteId?: string; logger?: Logger },
+): string {
+	// Maintenance: prune stale resolved advisories
+	if (options?.siteId) {
+		const { pruned } = pruneResolvedAdvisories(db, options.siteId);
+		if (pruned > 0) {
+			options.logger?.info(`[heartbeat] Pruned ${pruned} resolved advisories`);
+		}
+	}
+
 	const instructions = loadStandingInstructions(db);
 	const advisorySection = buildAdvisorySection(db, lastRunAt);
 	const taskSection = buildTaskSection(db, lastRunAt);

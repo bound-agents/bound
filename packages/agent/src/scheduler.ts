@@ -612,7 +612,10 @@ export class Scheduler {
 				const toolCallId = `tooluse_${randomUUID().replace(/-/g, "").slice(0, 22)}`;
 				const taskContent =
 					task.type === "heartbeat"
-						? buildHeartbeatContext(this.ctx.db, task.last_run_at)
+						? buildHeartbeatContext(this.ctx.db, task.last_run_at, {
+								siteId: this.ctx.siteId,
+								logger: this.ctx.logger,
+							})
 						: (task.payload ?? "Execute scheduled task.");
 
 				// 1. Minimal user message (Bedrock requires conversation starts with user)

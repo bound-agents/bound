@@ -9,6 +9,7 @@ import {
 	deferAdvisory,
 	dismissAdvisory,
 	getPendingAdvisories,
+	pruneResolvedAdvisories,
 } from "../advisories";
 
 describe("Advisories", () => {
@@ -389,5 +390,121 @@ describe("Advisories", () => {
 
 		const pending = getPendingAdvisories(db);
 		expect(pending.length).toBe(0);
+	});
+});
+
+describe("pruneResolvedAdvisories", () => {
+	let db: Database.Database;
+	const siteId = "test-site";
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		applySchema(db);
+	});
+
+	afterEach(() => {
+		db.close();
+	});
+
+	function makeAdvisory(overrides: Record<string, unknown> = {}): string {
+		const id = createAdvisory(
+			db,
+			{
+				type: "general",
+				title: (overrides.title as string) ?? "Test advisory",
+				detail: "Detail",
+				action: null,
+				impact: null,
+				evidence: null,
+			},
+			siteId,
+		);
+		if (overrides.status || overrides.resolved_at) {
+			db.run("UPDATE advisories SET status = ?, resolved_at = ?, modified_at = ? WHERE id = ?", [
+				overrides.status ?? "proposed",
+				overrides.resolved_at ?? null,
+				new Date().toISOString(),
+				id,
+			]);
+		}
+		return id;
+	}
+
+	it("soft-deletes applied advisories older than 7 days", () => {
+		const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+		const id = makeAdvisory({ status: "applied", resolved_at: eightDaysAgo });
+
+		const { pruned } = pruneResolvedAdvisories(db, siteId);
+
+		expect(pruned).toBe(1);
+		const row = db.prepare("SELECT deleted FROM advisories WHERE id = ?").get(id) as {
+			deleted: number;
+		};
+		expect(row.deleted).toBe(1);
+	});
+
+	it("does NOT prune applied advisories within 7-day window", () => {
+		const oneDayAgo = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
+		makeAdvisory({ status: "applied", resolved_at: oneDayAgo });
+
+		const { pruned } = pruneResolvedAdvisories(db, siteId);
+		expect(pruned).toBe(0);
+	});
+
+	it("soft-deletes dismissed advisories older than 1 day", () => {
+		const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+		const id = makeAdvisory({ status: "dismissed", resolved_at: twoDaysAgo });
+
+		const { pruned } = pruneResolvedAdvisories(db, siteId);
+
+		expect(pruned).toBe(1);
+		const row = db.prepare("SELECT deleted FROM advisories WHERE id = ?").get(id) as {
+			deleted: number;
+		};
+		expect(row.deleted).toBe(1);
+	});
+
+	it("does NOT prune dismissed advisories within 1-day window", () => {
+		const halfDayAgo = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+		makeAdvisory({ status: "dismissed", resolved_at: halfDayAgo });
+
+		const { pruned } = pruneResolvedAdvisories(db, siteId);
+		expect(pruned).toBe(0);
+	});
+
+	it("does NOT prune proposed or deferred advisories", () => {
+		makeAdvisory({ status: "proposed" });
+		makeAdvisory({ status: "deferred" });
+
+		const { pruned } = pruneResolvedAdvisories(db, siteId);
+		expect(pruned).toBe(0);
+	});
+
+	it("prunes multiple advisories in one call", () => {
+		const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+		const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+
+		makeAdvisory({ status: "applied", resolved_at: eightDaysAgo });
+		makeAdvisory({ status: "applied", resolved_at: eightDaysAgo });
+		makeAdvisory({ status: "dismissed", resolved_at: twoDaysAgo });
+
+		const { pruned } = pruneResolvedAdvisories(db, siteId);
+		expect(pruned).toBe(3);
+	});
+
+	it("uses softDelete (changelog-aware) for synced table compliance", () => {
+		const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+		const id = makeAdvisory({ status: "applied", resolved_at: eightDaysAgo });
+
+		// Clear changelog from advisory creation
+		db.run("DELETE FROM change_log");
+
+		pruneResolvedAdvisories(db, siteId);
+
+		// Verify changelog entry was created by the soft-delete
+		const entries = db
+			.prepare("SELECT * FROM change_log WHERE table_name = 'advisories' AND row_id = ?")
+			.all(id);
+		expect(entries.length).toBeGreaterThanOrEqual(1);
 	});
 });
