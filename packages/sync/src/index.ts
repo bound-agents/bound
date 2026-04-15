@@ -51,3 +51,20 @@ export {
 export { KeyManager } from "./key-manager.js";
 export { SyncTransport } from "./transport.js";
 export type { TransportResponse } from "./transport.js";
+
+// WebSocket frame codec
+export {
+	encodeFrame,
+	decodeFrame,
+	WsMessageType,
+	type WsFrame,
+	type WsFrameError,
+	type ChangelogPushPayload,
+	type ChangelogAckPayload,
+	type RelaySendPayload,
+	type RelayDeliverPayload,
+	type RelayAckPayload,
+	type DrainRequestPayload,
+	type DrainCompletePayload,
+	type ErrorPayload,
+} from "./ws-frames.js";
