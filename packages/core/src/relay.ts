@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { RelayInboxEntry, RelayOutboxEntry } from "@bound/shared";
+import type { RelayInboxEntry, RelayOutboxEntry, TypedEventEmitter } from "@bound/shared";
 
 const MAX_PAYLOAD_BYTES_DEFAULT = 2 * 1024 * 1024;
 
@@ -21,6 +21,7 @@ export function writeOutbox(
 	db: Database,
 	entry: Omit<RelayOutboxEntry, "delivered">,
 	maxPayloadBytes: number = MAX_PAYLOAD_BYTES_DEFAULT,
+	eventBus?: TypedEventEmitter,
 ): void {
 	if (!entry.source_site_id) {
 		throw new Error("writeOutbox: source_site_id is required for relay routing");
@@ -46,6 +47,14 @@ export function writeOutbox(
 			entry.expires_at,
 		],
 	);
+
+	// Emit event after insert completes (for WS push-on-write)
+	if (eventBus) {
+		eventBus.emit("relay:outbox-written", {
+			id: entry.id,
+			target_site_id: entry.target_site_id,
+		});
+	}
 }
 
 export function readUndelivered(db: Database, targetSiteId?: string): RelayOutboxEntry[] {

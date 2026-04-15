@@ -3,7 +3,13 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { HLC_ZERO, TypedEventEmitter } from "@bound/shared";
 import { getPeerCursor, updatePeerCursor } from "../peer-cursor.js";
 import { MicrotaskCoalescer } from "../ws-coalescer.js";
-import type { ChangelogAckPayload, ChangelogPushPayload } from "../ws-frames.js";
+import type {
+	ChangelogAckPayload,
+	ChangelogPushPayload,
+	RelayAckPayload,
+	RelayDeliverPayload,
+	RelaySendPayload,
+} from "../ws-frames.js";
 import { WsMessageType, decodeFrame } from "../ws-frames.js";
 import { WsTransport } from "../ws-transport.js";
 
@@ -637,6 +643,379 @@ describe("WsTransport", () => {
 
 			expect(relayOutboxCount).toBe(0);
 			expect(relayInboxCount).toBe(0);
+		});
+	});
+
+	describe("relay routing (hub-side and spoke-side)", () => {
+		beforeEach(() => {
+			// Create relay tables
+			db.run(`
+				CREATE TABLE relay_outbox (
+					id TEXT PRIMARY KEY,
+					source_site_id TEXT NOT NULL,
+					target_site_id TEXT NOT NULL,
+					kind TEXT NOT NULL,
+					ref_id TEXT,
+					idempotency_key TEXT,
+					stream_id TEXT,
+					payload TEXT NOT NULL,
+					created_at TEXT NOT NULL,
+					expires_at TEXT NOT NULL,
+					delivered INTEGER DEFAULT 0
+				)
+			`);
+
+			db.run(`
+				CREATE TABLE relay_inbox (
+					id TEXT PRIMARY KEY,
+					source_site_id TEXT NOT NULL,
+					kind TEXT NOT NULL,
+					ref_id TEXT,
+					idempotency_key TEXT,
+					stream_id TEXT,
+					payload TEXT NOT NULL,
+					expires_at TEXT NOT NULL,
+					received_at TEXT NOT NULL,
+					processed INTEGER DEFAULT 0
+				)
+			`);
+		});
+
+		it("unicast relay routing: Spoke A sends to Spoke B via hub", () => {
+			const spokeASendFrames: Uint8Array[] = [];
+			const spokeBSendFrames: Uint8Array[] = [];
+
+			const spokeAKey = new Uint8Array(32).fill(2);
+			const spokeBKey = new Uint8Array(32).fill(3);
+
+			// Setup: Hub connected to Spoke A and Spoke B
+			transport.addPeer(
+				"spoke-a",
+				(frame) => {
+					spokeASendFrames.push(frame);
+					return true;
+				},
+				spokeAKey,
+			);
+			transport.addPeer(
+				"spoke-b",
+				(frame) => {
+					spokeBSendFrames.push(frame);
+					return true;
+				},
+				spokeBKey,
+			);
+
+			// Spoke A sends relay_send targeting Spoke B
+			const relaySendPayload: RelaySendPayload = {
+				entries: [
+					{
+						id: "relay-1",
+						target_site_id: "spoke-b",
+						kind: "tool_call",
+						ref_id: "ref-1",
+						idempotency_key: null,
+						stream_id: null,
+						expires_at: new Date(Date.now() + 60000).toISOString(),
+						payload: { tool: "test" },
+					},
+				],
+			};
+
+			transport.handleRelaySend("spoke-a", relaySendPayload);
+
+			// Verify Spoke B received relay_deliver frame
+			expect(spokeBSendFrames.length).toBe(1);
+			const decodedB = decodeFrame(spokeBSendFrames[0], spokeBKey);
+			expect(decodedB.ok).toBe(true);
+			if (decodedB.ok) {
+				expect(decodedB.value.type).toBe(WsMessageType.RELAY_DELIVER);
+			}
+
+			// Verify Spoke A received relay_ack frame
+			expect(spokeASendFrames.length).toBe(1);
+			const decodedA = decodeFrame(spokeASendFrames[0], spokeAKey);
+			expect(decodedA.ok).toBe(true);
+			if (decodedA.ok) {
+				expect(decodedA.value.type).toBe(WsMessageType.RELAY_ACK);
+				const ackPayload = decodedA.value.payload as RelayAckPayload;
+				expect(ackPayload.ids).toContain("relay-1");
+			}
+		});
+
+		it("broadcast fan-out: Spoke A sends to all spokes except itself", () => {
+			const spokeASendFrames: Uint8Array[] = [];
+			const spokeBSendFrames: Uint8Array[] = [];
+			const spokeCFrames: Uint8Array[] = [];
+
+			const spokeAKey = new Uint8Array(32).fill(1);
+			const spokeBKey = new Uint8Array(32).fill(2);
+			const spokeCKey = new Uint8Array(32).fill(3);
+
+			// Hub setup
+			transport.addPeer(
+				"spoke-a",
+				(frame) => {
+					spokeASendFrames.push(frame);
+					return true;
+				},
+				spokeAKey,
+			);
+			transport.addPeer(
+				"spoke-b",
+				(frame) => {
+					spokeBSendFrames.push(frame);
+					return true;
+				},
+				spokeBKey,
+			);
+			transport.addPeer(
+				"spoke-c",
+				(frame) => {
+					spokeCFrames.push(frame);
+					return true;
+				},
+				spokeCKey,
+			);
+
+			// Spoke A sends broadcast (target = "*")
+			const relaySendPayload: RelaySendPayload = {
+				entries: [
+					{
+						id: "broadcast-1",
+						target_site_id: "*",
+						kind: "event_broadcast",
+						ref_id: null,
+						idempotency_key: null,
+						stream_id: null,
+						expires_at: new Date(Date.now() + 60000).toISOString(),
+						payload: { event: "test-event" },
+					},
+				],
+			};
+
+			transport.handleRelaySend("spoke-a", relaySendPayload);
+
+			// Verify only Spoke B and C received relay_deliver (NOT Spoke A)
+			expect(spokeASendFrames.length).toBe(1); // Only ack
+			expect(spokeBSendFrames.length).toBe(1); // deliver + implicit ack
+			expect(spokeCFrames.length).toBe(1); // deliver + implicit ack
+
+			// Verify content is relay_deliver
+			const decodedB = decodeFrame(spokeBSendFrames[0], spokeBKey);
+			expect(decodedB.ok && decodedB.value.type === WsMessageType.RELAY_DELIVER).toBe(true);
+		});
+
+		it("hub-local request dispatch: request goes to relay_inbox", () => {
+			const spokeASendFrames: Uint8Array[] = [];
+			const spokeAKey = new Uint8Array(32).fill(1);
+
+			transport.addPeer(
+				"spoke-a",
+				(frame) => {
+					spokeASendFrames.push(frame);
+					return true;
+				},
+				spokeAKey,
+			);
+
+			// Spoke A sends tool_call targeting hub
+			const relaySendPayload: RelaySendPayload = {
+				entries: [
+					{
+						id: "tool-call-1",
+						target_site_id: "hub",
+						kind: "tool_call",
+						ref_id: "ref-1",
+						idempotency_key: null,
+						stream_id: null,
+						expires_at: new Date(Date.now() + 60000).toISOString(),
+						payload: { tool: "test" },
+					},
+				],
+			};
+
+			const inboxEventsFired: Array<{
+				ref_id?: string;
+				stream_id?: string;
+				kind: string;
+			}> = [];
+			eventBus.on("relay:inbox", (event) => {
+				inboxEventsFired.push(event);
+			});
+
+			transport.handleRelaySend("spoke-a", relaySendPayload);
+
+			// Verify entry in relay_inbox
+			const inboxEntry = db
+				.query("SELECT * FROM relay_inbox WHERE id = ?")
+				.get("tool-call-1") as Record<string, unknown> | null;
+			expect(inboxEntry).not.toBeNull();
+			expect(inboxEntry?.kind).toBe("tool_call");
+
+			// Verify relay:inbox event fired
+			expect(inboxEventsFired.length).toBe(1);
+			expect(inboxEventsFired[0].kind).toBe("tool_call");
+
+			// Cleanup
+			eventBus.off("relay:inbox", () => {});
+		});
+
+		it("hub-local response routing: stream_chunk goes to relay_inbox", () => {
+			const spokeASendFrames: Uint8Array[] = [];
+			const spokeAKey = new Uint8Array(32).fill(1);
+
+			transport.addPeer(
+				"spoke-a",
+				(frame) => {
+					spokeASendFrames.push(frame);
+					return true;
+				},
+				spokeAKey,
+			);
+
+			// Spoke A sends stream_chunk targeting hub
+			const relaySendPayload: RelaySendPayload = {
+				entries: [
+					{
+						id: "stream-1",
+						target_site_id: "hub",
+						kind: "stream_chunk",
+						ref_id: null,
+						idempotency_key: null,
+						stream_id: "stream-001",
+						expires_at: new Date(Date.now() + 60000).toISOString(),
+						payload: { text: "chunk" },
+					},
+				],
+			};
+
+			transport.handleRelaySend("spoke-a", relaySendPayload);
+
+			// Verify entry in relay_inbox (response kinds go to inbox, not executed)
+			const inboxEntry = db
+				.query("SELECT * FROM relay_inbox WHERE id = ?")
+				.get("stream-1") as Record<string, unknown> | null;
+			expect(inboxEntry).not.toBeNull();
+			expect(inboxEntry?.kind).toBe("stream_chunk");
+		});
+
+		// Note: Idempotency dedup testing skipped for now.
+		// The hub-side idempotency check requires matching id,empotency_key,target_site_id
+		// in relay_outbox, but entries targeting different destinations are not in relay_outbox.
+		// Full idempotency testing requires multi-step test setup that will be added in Phase 6.
+
+		it("offline spoke: entries accumulate in hub outbox", () => {
+			// Hub connected to Spoke A only
+			const spokeASendFrames: Uint8Array[] = [];
+			const spokeAKey = new Uint8Array(32).fill(1);
+
+			transport.addPeer(
+				"spoke-a",
+				(frame) => {
+					spokeASendFrames.push(frame);
+					return true;
+				},
+				spokeAKey,
+			);
+
+			// Spoke A sends relay targeting offline Spoke B
+			const relaySendPayload: RelaySendPayload = {
+				entries: [
+					{
+						id: "relay-1",
+						target_site_id: "spoke-b",
+						kind: "tool_call",
+						ref_id: null,
+						idempotency_key: null,
+						stream_id: null,
+						expires_at: new Date(Date.now() + 60000).toISOString(),
+						payload: { tool: "test" },
+					},
+				],
+			};
+
+			transport.handleRelaySend("spoke-a", relaySendPayload);
+
+			// Entry should be written to hub outbox (delivered = 0)
+			const outboxEntry = db
+				.query("SELECT * FROM relay_outbox WHERE id = ?")
+				.get("relay-1") as Record<string, unknown> | null;
+			expect(outboxEntry).not.toBeNull();
+			expect(outboxEntry?.target_site_id).toBe("spoke-b");
+			expect(outboxEntry?.delivered).toBe(0);
+
+			// Spoke A should still get ack
+			expect(spokeASendFrames.length).toBeGreaterThan(0);
+		});
+
+		it("spoke-side relay deliver: entries inserted to inbox with event fired", () => {
+			// Spoke receiving relay_deliver from hub
+			const relayDeliverPayload: RelayDeliverPayload = {
+				entries: [
+					{
+						id: "relay-result-1",
+						source_site_id: "hub",
+						kind: "result",
+						ref_id: "ref-1",
+						idempotency_key: null,
+						stream_id: null,
+						expires_at: new Date(Date.now() + 60000).toISOString(),
+						payload: { result: "data" },
+					},
+				],
+			};
+
+			const inboxEventsFired: Array<{
+				ref_id?: string;
+				stream_id?: string;
+				kind: string;
+			}> = [];
+			eventBus.on("relay:inbox", (event) => {
+				inboxEventsFired.push(event);
+			});
+
+			transport.handleRelayDeliver("hub", relayDeliverPayload);
+
+			// Verify entry in relay_inbox
+			const inboxEntry = db
+				.query("SELECT * FROM relay_inbox WHERE id = ?")
+				.get("relay-result-1") as Record<string, unknown> | null;
+			expect(inboxEntry).not.toBeNull();
+			expect(inboxEntry?.kind).toBe("result");
+
+			// Verify relay:inbox event fired
+			expect(inboxEventsFired.length).toBe(1);
+			expect(inboxEventsFired[0].kind).toBe("result");
+
+			// Cleanup
+			eventBus.off("relay:inbox", () => {});
+		});
+
+		it("spoke-side relay ack: marks outbox as delivered", () => {
+			// Pre-populate outbox
+			db.run(
+				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, payload, created_at, expires_at, delivered)
+				VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+				[
+					"relay-1",
+					"spoke-a",
+					"hub",
+					"tool_call",
+					"{}",
+					new Date().toISOString(),
+					new Date(Date.now() + 60000).toISOString(),
+				],
+			);
+
+			const ackPayload: RelayAckPayload = { ids: ["relay-1"] };
+			transport.handleRelayAck("hub", ackPayload);
+
+			// Verify entry marked as delivered
+			const outboxEntry = db
+				.query("SELECT * FROM relay_outbox WHERE id = ?")
+				.get("relay-1") as Record<string, unknown> | null;
+			expect(outboxEntry?.delivered).toBe(1);
 		});
 	});
 });

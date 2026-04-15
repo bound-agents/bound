@@ -32,5 +32,6 @@ export interface EventMap {
 		reason: string;
 	};
 	"changelog:written": { hlc: string; tableName: string; siteId: string };
+	"relay:outbox-written": { id: string; target_site_id: string };
 	"relay:inbox": { ref_id?: string; stream_id?: string; kind: RelayKind };
 }

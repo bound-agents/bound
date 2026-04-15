@@ -40,6 +40,10 @@ export type RelaySendPayload = {
 		id: string;
 		target_site_id: string;
 		kind: string;
+		ref_id: string | null;
+		idempotency_key: string | null;
+		stream_id: string | null;
+		expires_at: string;
 		payload: unknown;
 	}>;
 };
@@ -49,6 +53,10 @@ export type RelayDeliverPayload = {
 		id: string;
 		source_site_id: string;
 		kind: string;
+		ref_id: string | null;
+		idempotency_key: string | null;
+		stream_id: string | null;
+		expires_at: string;
 		payload: unknown;
 	}>;
 };
