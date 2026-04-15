@@ -955,4 +955,112 @@ describe("RelayProcessor - executeInference", () => {
 		).n;
 		expect(syncTriggers.length).toBe(totalFlushes);
 	});
+
+	it("forwards thinking chunks through the relay stream", async () => {
+		const mockBackend = new MockBackend();
+		mockBackend.pushResponse(async function* () {
+			yield { type: "thinking" as const, content: "Let me analyze this..." };
+			yield { type: "thinking" as const, content: " Reasoning complete." };
+			yield { type: "text" as const, content: "Here is my answer." };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 100,
+					output_tokens: 50,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		const backends = new Map<string, LLMBackend>();
+		backends.set("test-model", mockBackend);
+		const mockRouter = new ModelRouter(backends, "test-model");
+
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			mockRouter,
+			new Set(["requester-site"]),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+
+		const now = new Date();
+		const streamId = randomUUID();
+		const inboxEntry: RelayInboxEntry = {
+			id: randomUUID(),
+			source_site_id: "requester-site",
+			kind: "inference",
+			ref_id: null,
+			idempotency_key: null,
+			stream_id: streamId,
+			payload: JSON.stringify({
+				model: "test-model",
+				messages: [{ role: "user" as const, content: "Think about this" }],
+				thinking: { type: "enabled", budget_tokens: 10000 },
+				timeout_ms: 5000,
+			}),
+			expires_at: new Date(now.getTime() + 60000).toISOString(),
+			received_at: now.toISOString(),
+			processed: 0,
+		};
+
+		db.run(
+			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				inboxEntry.id,
+				inboxEntry.source_site_id,
+				inboxEntry.kind,
+				inboxEntry.ref_id,
+				inboxEntry.idempotency_key,
+				inboxEntry.stream_id,
+				inboxEntry.payload,
+				inboxEntry.expires_at,
+				inboxEntry.received_at,
+				inboxEntry.processed,
+			],
+		);
+
+		const handle = processor.start(10);
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+						)
+						.get(streamId) as { n: number } | null
+				)?.n > 0,
+			{ message: "stream_end not written for thinking test" },
+		);
+		handle.stop();
+
+		// Verify thinking chunks are included in the outbox (stream_chunk or stream_end)
+		const chunkRows = db
+			.query(
+				"SELECT payload FROM relay_outbox WHERE stream_id = ? AND kind IN ('stream_chunk', 'stream_end') ORDER BY created_at",
+			)
+			.all(streamId) as Array<{ payload: string }>;
+
+		// Collect all chunks from all payloads
+		const allChunks: StreamChunk[] = [];
+		for (const row of chunkRows) {
+			const parsed = JSON.parse(row.payload);
+			if (parsed.chunks) {
+				allChunks.push(...parsed.chunks);
+			}
+		}
+
+		// Should have thinking chunks
+		const thinkingChunks = allChunks.filter((c) => c.type === "thinking");
+		expect(thinkingChunks.length).toBe(2);
+
+		// Should have text chunks
+		const textChunks = allChunks.filter((c) => c.type === "text");
+		expect(textChunks.length).toBeGreaterThan(0);
+	});
 });
