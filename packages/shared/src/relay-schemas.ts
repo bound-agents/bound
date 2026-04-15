@@ -40,9 +40,16 @@ export const inferenceRequestPayloadSchema = z.object({
 	messages: z.array(z.unknown()),
 	tools: z.array(z.unknown()).optional(),
 	system: z.string().optional(),
+	system_suffix: z.string().optional(),
 	max_tokens: z.number().int().positive().optional(),
 	temperature: z.number().optional(),
 	cache_breakpoints: z.array(z.number()).optional(),
+	thinking: z
+		.object({
+			type: z.literal("enabled"),
+			budget_tokens: z.number().int().positive(),
+		})
+		.optional(),
 	messages_file_ref: z.string().optional(),
 });
 
@@ -107,6 +114,7 @@ export const errorPayloadSchema = z.object({
 
 export const streamChunkPayloadSchema = z.object({
 	content: z.string().optional(),
+	thinking: z.string().optional(),
 	tool_use_start: z
 		.object({
 			id: z.string(),
