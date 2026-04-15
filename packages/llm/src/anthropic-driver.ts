@@ -262,11 +262,18 @@ async function* parseAnthropicStream(
 			if (typeof cr === "number") cacheReadTokens = cr;
 		}
 
-		// Handle content_block_start for tool_use
+		// Reset tool state on new tool_use block
 		if (event.type === "content_block_start" && event.content_block?.type === "tool_use") {
-			// Prepare for tool_use streaming
 			currentToolId = "";
 			currentToolArgs = "";
+		}
+
+		// Handle thinking deltas
+		if (event.type === "content_block_delta" && event.delta?.type === "thinking_delta") {
+			const thinking = (event.delta as Record<string, unknown>).thinking as string | undefined;
+			if (thinking) {
+				yield { type: "thinking", content: thinking };
+			}
 		}
 
 		// Handle text deltas
@@ -423,13 +430,18 @@ export class AnthropicDriver implements LLMBackend {
 						]
 				: effectiveSystem;
 
-		const request: AnthropicRequest = {
+		const request: AnthropicRequest & { thinking?: { type: "enabled"; budget_tokens: number } } = {
 			model: params.model || this.model,
 			max_tokens: params.max_tokens || 4096,
 			system: systemPayload,
 			messages: anthropicMessages,
-			temperature: params.temperature,
+			temperature: params.thinking ? undefined : params.temperature,
 		};
+
+		// Add thinking parameter if provided
+		if (params.thinking) {
+			request.thinking = params.thinking;
+		}
 
 		if (params.tools && params.tools.length > 0) {
 			request.tools = params.tools.map((tool) => ({

@@ -231,13 +231,27 @@ export class BedrockDriver implements LLMBackend {
 					}
 				: undefined;
 
+		// When thinking is enabled, omit temperature (Anthropic/Bedrock requirement)
+		const effectiveTemperature = params.thinking ? undefined : params.temperature;
+
 		const inferenceConfig =
-			params.temperature !== undefined || params.max_tokens
+			effectiveTemperature !== undefined || params.max_tokens
 				? {
-						...(params.temperature !== undefined && { temperature: params.temperature }),
+						...(effectiveTemperature !== undefined && { temperature: effectiveTemperature }),
 						...(params.max_tokens && { maxTokens: params.max_tokens }),
 					}
 				: undefined;
+
+		// PerformanceConfiguration for extended thinking — the thinking field is not yet in
+		// the AWS SDK types but is accepted by the Bedrock Converse API (same pattern as CachePointBlock).
+		const performanceConfig = params.thinking
+			? ({
+					thinking: {
+						type: "enabled",
+						budgetTokens: params.thinking.budget_tokens,
+					},
+				} as Record<string, unknown>)
+			: undefined;
 
 		const command = new ConverseStreamCommand({
 			modelId,
@@ -245,7 +259,8 @@ export class BedrockDriver implements LLMBackend {
 			...(systemBlocks && { system: systemBlocks }),
 			...(toolConfig && { toolConfig }),
 			...(inferenceConfig && { inferenceConfig }),
-		});
+			...(performanceConfig && { performanceConfig }),
+		} as ConstructorParameters<typeof ConverseStreamCommand>[0]);
 
 		const response = await withRetry(async () => {
 			let res: ConverseStreamCommandOutput;
@@ -277,6 +292,7 @@ export class BedrockDriver implements LLMBackend {
 		// Track which content block index is a tool use so we can emit tool_use_end
 		// when the corresponding contentBlockStop arrives.
 		const toolUseIndexToId = new Map<number, string>();
+		const thinkingBlockIndices = new Set<number>();
 		let outputText = "";
 
 		try {
@@ -289,10 +305,22 @@ export class BedrockDriver implements LLMBackend {
 						const id = toolUseId ?? "";
 						toolUseIndexToId.set(contentBlockIndex ?? 0, id);
 						yield { type: "tool_use_start", id, name: name ?? "" };
+					} else if ((start as unknown as Record<string, unknown>)?.thinking !== undefined) {
+						thinkingBlockIndices.add(contentBlockIndex ?? 0);
 					}
 				} else if (event.contentBlockDelta) {
 					const { contentBlockIndex, delta } = event.contentBlockDelta;
-					if (delta?.text !== undefined) {
+					const deltaRecord = delta as unknown as Record<string, unknown> | undefined;
+					// Handle thinking deltas
+					if (
+						thinkingBlockIndices.has(contentBlockIndex ?? 0) &&
+						deltaRecord?.thinking !== undefined
+					) {
+						const thinkingDelta = deltaRecord.thinking as { text?: string } | undefined;
+						if (thinkingDelta?.text) {
+							yield { type: "thinking", content: thinkingDelta.text };
+						}
+					} else if (delta?.text !== undefined) {
 						outputText += delta.text;
 						yield { type: "text", content: delta.text };
 					} else if (delta?.toolUse) {
