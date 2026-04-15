@@ -163,12 +163,6 @@ export class SyncClient {
 
 			const duration = Date.now() - startTime;
 
-			this.eventBus.emit("sync:completed", {
-				pushed,
-				pulled,
-				duration_ms: duration,
-			});
-
 			return ok({ pushed, pulled, relay: relayResult, duration_ms: duration });
 		} catch (error) {
 			incrementSyncErrors(this.db, peerSiteId);
@@ -663,17 +657,6 @@ export function startSyncLoop(
 	};
 
 	// Listen for immediate sync trigger event
-	if (eventBus) {
-		eventBus.on("sync:trigger", async () => {
-			if (stopped) return;
-			if (timerId) {
-				clearTimeout(timerId as unknown as number);
-				timerId = null;
-			}
-			await scheduleNext();
-		});
-	}
-
 	scheduleNext();
 
 	return {

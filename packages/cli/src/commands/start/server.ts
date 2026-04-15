@@ -192,44 +192,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			}
 		}
 
-		// Hub-side eager push: when the hub's own agent loop writes relay_outbox
-		// entries (e.g., inference requests), push them to addressable spokes
-		// immediately instead of waiting for the spoke's next sync cycle.
-		// NAT spokes without sync_url are unaffected (eagerPushToSpoke skips them).
-		if (eagerPushConfig) {
-			const pushConfig = eagerPushConfig;
-			appContext.eventBus.on("sync:trigger", () => {
-				const pending = readUndelivered(appContext.db);
-				if (pending.length === 0) return;
-
-				// Group by target and push
-				const byTarget = new Map<string, typeof pending>();
-				for (const entry of pending) {
-					const list = byTarget.get(entry.target_site_id) ?? [];
-					list.push(entry);
-					byTarget.set(entry.target_site_id, list);
-				}
-
-				for (const [targetSiteId, entries] of byTarget) {
-					// Skip self-targeted entries (handled locally by RelayProcessor)
-					if (targetSiteId === appContext.siteId) continue;
-					const inboxEntries = entries.map((e) => ({
-						id: e.id,
-						source_site_id: e.source_site_id ?? appContext.siteId,
-						kind: e.kind,
-						ref_id: e.ref_id ?? e.id,
-						idempotency_key: e.idempotency_key,
-						stream_id: e.stream_id ?? null,
-						payload: e.payload,
-						expires_at: e.expires_at,
-						received_at: new Date().toISOString(),
-						processed: 0,
-					}));
-					void eagerPushToSpoke(pushConfig, targetSiteId, inboxEntries);
-				}
-			});
-		}
-
 		// Wire message:created events to the agent loop
 		const activeLoopAbortControllers = new Map<string, AbortController>();
 

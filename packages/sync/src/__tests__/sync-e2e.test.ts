@@ -1382,39 +1382,6 @@ describe("sync E2E", () => {
 	});
 
 	// -----------------------------------------------------------------------
-	// 26. Event bus fires sync:completed with correct stats
-	// -----------------------------------------------------------------------
-
-	it("26. event bus emits sync:completed with pushed/pulled counts", async () => {
-		const now = new Date().toISOString();
-
-		insertRow(
-			hostA.db,
-			"semantic_memory",
-			{
-				id: randomUUID(),
-				key: "event-bus-test",
-				value: "v1",
-				source: "test",
-				created_at: now,
-				modified_at: now,
-				last_accessed_at: now,
-				deleted: 0,
-			},
-			hostA.siteId,
-		);
-
-		let emittedEvent: { pushed: number; pulled: number } | null = null;
-		hostB.eventBus.on("sync:completed", (e) => {
-			emittedEvent = e as { pushed: number; pulled: number };
-		});
-
-		await clientBtoA.syncCycle();
-
-		expect(emittedEvent).not.toBeNull();
-		expect(emittedEvent?.pulled).toBeGreaterThan(0);
-	});
-
 	// -----------------------------------------------------------------------
 	// 27. Mixed table types in a single sync cycle
 	// -----------------------------------------------------------------------

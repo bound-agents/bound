@@ -426,54 +426,5 @@ describe("sync-loop", () => {
 	});
 
 	describe("startSyncLoop re-entry guard", () => {
-		it("coalesces rapid sync:trigger events instead of spawning concurrent cycles", async () => {
-			const { startSyncLoop } = await import("../sync-loop.js");
-			const eventBus = createMockEventBus();
-			const logger = createMockLogger();
-
-			let cycleCount = 0;
-			let maxConcurrent = 0;
-			let currentConcurrent = 0;
-
-			// Mock client with controllable delay
-			const mockClient = {
-				syncCycle: async (): Promise<SyncResult> => {
-					cycleCount++;
-					currentConcurrent++;
-					if (currentConcurrent > maxConcurrent) {
-						maxConcurrent = currentConcurrent;
-					}
-					// Simulate network latency
-					await new Promise((r) => setTimeout(r, 50));
-					currentConcurrent--;
-					return { ok: true, value: { relay: null } };
-				},
-			};
-
-			const loop = startSyncLoop(
-				mockClient as unknown as SyncClient,
-				300, // Long interval so only triggers matter
-				eventBus,
-				logger,
-			);
-
-			// Wait for initial cycle to start
-			await new Promise((r) => setTimeout(r, 10));
-
-			// Fire 5 rapid triggers while a cycle is in-flight
-			for (let i = 0; i < 5; i++) {
-				eventBus.emit("sync:trigger", { reason: `test-${i}` });
-			}
-
-			// Wait for all cycles to complete
-			await new Promise((r) => setTimeout(r, 300));
-			loop.stop();
-
-			// Should never have concurrent cycles
-			expect(maxConcurrent).toBeLessThanOrEqual(1);
-			// 5 rapid triggers should coalesce — initial cycle + 1 coalesced follow-up
-			// (not 5 separate cycles). Allow some tolerance for timing.
-			expect(cycleCount).toBeLessThanOrEqual(4);
-		});
 	});
 });
