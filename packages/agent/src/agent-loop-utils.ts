@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertRow } from "@bound/core";
-import { type CapabilityRequirements, LLMError } from "@bound/llm";
+import { type CapabilityRequirements, LLMError, type StreamChunk } from "@bound/llm";
 import type { ModelResolution } from "./model-resolution";
 
 /**
@@ -203,4 +203,93 @@ export function deriveCapabilityRequirements(
 	}
 
 	return Object.keys(req).length > 0 ? req : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Stream chunk parsing
+// ---------------------------------------------------------------------------
+
+export interface ParsedToolCall {
+	id: string;
+	name: string;
+	input: Record<string, unknown>;
+	argsJson: string;
+}
+
+export interface ParsedResponse {
+	textContent: string;
+	thinking: string | null;
+	toolCalls: ParsedToolCall[];
+	usage: {
+		inputTokens: number;
+		outputTokens: number;
+		cacheWriteTokens: number | null;
+		cacheReadTokens: number | null;
+		usageEstimated: boolean;
+	};
+}
+
+/**
+ * Parses a stream of LLM response chunks into a structured response.
+ * Thinking chunks are collected separately and never mixed into textContent.
+ */
+export function parseStreamChunks(chunks: StreamChunk[]): ParsedResponse {
+	let textContent = "";
+	let thinkingContent = "";
+	const toolCalls: ParsedToolCall[] = [];
+	const argsAccumulator = new Map<string, string>();
+	const nameMap = new Map<string, string>();
+	let inputTokens = 0;
+	let outputTokens = 0;
+	let cacheWriteTokens: number | null = null;
+	let cacheReadTokens: number | null = null;
+	let usageEstimated = false;
+
+	for (const chunk of chunks) {
+		if (chunk.type === "text") {
+			textContent += chunk.content;
+		} else if (chunk.type === "thinking") {
+			thinkingContent += chunk.content;
+		} else if (chunk.type === "tool_use_start") {
+			argsAccumulator.set(chunk.id, "");
+			nameMap.set(chunk.id, chunk.name);
+		} else if (chunk.type === "tool_use_args") {
+			const existing = argsAccumulator.get(chunk.id) ?? "";
+			argsAccumulator.set(chunk.id, existing + chunk.partial_json);
+		} else if (chunk.type === "tool_use_end") {
+			const fullArgsJson = argsAccumulator.get(chunk.id) ?? "{}";
+			const name = nameMap.get(chunk.id) ?? chunk.id;
+			let input: Record<string, unknown> = {};
+			try {
+				input = JSON.parse(fullArgsJson);
+			} catch {
+				// leave as empty object
+			}
+			toolCalls.push({
+				id: chunk.id,
+				name,
+				input,
+				argsJson: fullArgsJson,
+			});
+		} else if (chunk.type === "done") {
+			inputTokens = chunk.usage.input_tokens;
+			outputTokens = chunk.usage.output_tokens;
+			cacheWriteTokens = chunk.usage.cache_write_tokens;
+			cacheReadTokens = chunk.usage.cache_read_tokens;
+			usageEstimated = chunk.usage.estimated;
+		}
+	}
+
+	return {
+		textContent,
+		thinking: thinkingContent || null,
+		toolCalls,
+		usage: {
+			inputTokens,
+			outputTokens,
+			cacheWriteTokens,
+			cacheReadTokens,
+			usageEstimated,
+		},
+	};
 }

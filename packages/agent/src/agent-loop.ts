@@ -113,6 +113,7 @@ interface ParsedToolCall {
 /** Full parse result from an LLM response stream */
 interface ParsedResponse {
 	textContent: string;
+	thinking: string | null;
 	toolCalls: ParsedToolCall[];
 	usage: {
 		inputTokens: number;
@@ -644,6 +645,7 @@ export class AgentLoop {
 					toolNames:
 						parsed.toolCalls.length > 0 ? parsed.toolCalls.map((tc) => tc.name).join(", ") : null,
 					textLength: parsed.textContent.length,
+					thinkingLength: parsed.thinking?.length ?? 0,
 				});
 
 				// Aborted mid-stream with no done chunk — persist notice and exit.
@@ -1482,6 +1484,7 @@ export class AgentLoop {
 		});
 
 		let textContent = "";
+		let thinkingContent = "";
 		const toolCalls: ParsedToolCall[] = [];
 		const argsAccumulator = new Map<string, string>();
 		const nameMap = new Map<string, string>();
@@ -1494,6 +1497,8 @@ export class AgentLoop {
 		for (const chunk of remappedChunks) {
 			if (chunk.type === "text") {
 				textContent += chunk.content;
+			} else if (chunk.type === "thinking") {
+				thinkingContent += chunk.content;
 			} else if (chunk.type === "tool_use_start") {
 				argsAccumulator.set(chunk.id, "");
 				nameMap.set(chunk.id, chunk.name);
@@ -1526,6 +1531,7 @@ export class AgentLoop {
 
 		return {
 			textContent,
+			thinking: thinkingContent || null,
 			toolCalls,
 			usage: {
 				inputTokens,
