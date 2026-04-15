@@ -62,6 +62,7 @@ export class PooledBackend implements LLMBackend {
 			system_prompt: caps.some((c) => c.system_prompt),
 			prompt_caching: caps.some((c) => c.prompt_caching),
 			vision: caps.some((c) => c.vision),
+			extended_thinking: caps.some((c) => c.extended_thinking),
 			max_context: Math.max(...caps.map((c) => c.max_context)),
 		};
 	}
@@ -179,6 +180,7 @@ export class ModelRouter {
 						system_prompt: true,
 						prompt_caching: false,
 						vision: false,
+						extended_thinking: false,
 						max_context: 0,
 					},
 			};

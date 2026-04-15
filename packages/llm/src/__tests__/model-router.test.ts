@@ -23,6 +23,7 @@ class MockBackend implements LLMBackend {
 			system_prompt: true,
 			prompt_caching: false,
 			vision: false,
+			extended_thinking: false,
 			max_context: 4096,
 		};
 	}
@@ -792,6 +793,7 @@ describe("PooledBackend", () => {
 		system_prompt: true,
 		prompt_caching: false,
 		vision: false,
+		extended_thinking: false,
 		max_context: 4096,
 	};
 

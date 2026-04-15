@@ -31,6 +31,18 @@ export interface ChatParams {
 	 * @deprecated Unimplemented. Will be removed or implemented in a future version.
 	 */
 	cache_ttl?: "5m" | "1h";
+	/**
+	 * Extended thinking configuration. When set, the model produces reasoning
+	 * content blocks before the final response. The budget_tokens field controls
+	 * the maximum tokens the model may use for thinking.
+	 *
+	 * Only supported by Anthropic (direct) and Bedrock (Converse API) backends.
+	 * Other backends silently ignore this field.
+	 */
+	thinking?: {
+		type: "enabled";
+		budget_tokens: number;
+	};
 	signal?: AbortSignal;
 }
 
@@ -65,6 +77,7 @@ export interface CapabilityRequirements {
 
 export type StreamChunk =
 	| { type: "text"; content: string }
+	| { type: "thinking"; content: string }
 	| { type: "tool_use_start"; id: string; name: string }
 	| { type: "tool_use_args"; id: string; partial_json: string }
 	| { type: "tool_use_end"; id: string }
@@ -86,6 +99,7 @@ export interface BackendCapabilities {
 	system_prompt: boolean;
 	prompt_caching: boolean;
 	vision: boolean;
+	extended_thinking: boolean;
 	max_context: number;
 }
 
@@ -135,6 +149,10 @@ export interface InferenceRequestPayload {
 	max_tokens?: number;
 	temperature?: number;
 	cache_breakpoints?: number[];
+	thinking?: {
+		type: "enabled";
+		budget_tokens: number;
+	};
 	timeout_ms: number;
 	messages_file_ref?: string; // Set when messages are written to synced file (large prompt path)
 }

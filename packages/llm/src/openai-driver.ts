@@ -412,6 +412,7 @@ export class OpenAICompatibleDriver implements LLMBackend {
 			system_prompt: true,
 			prompt_caching: false,
 			vision: false,
+			extended_thinking: false,
 			max_context: this.contextWindow,
 		};
 	}

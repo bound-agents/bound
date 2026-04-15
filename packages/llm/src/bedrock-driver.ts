@@ -360,6 +360,7 @@ export class BedrockDriver implements LLMBackend {
 			system_prompt: true,
 			prompt_caching: true,
 			vision: true,
+			extended_thinking: true,
 			max_context: this.contextWindow,
 		};
 	}
