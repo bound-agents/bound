@@ -114,7 +114,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				};
 
 	// Phase 8: Sync loop, pruning, overlay scanner
-	const { syncLoopHandle, pruningHandle, overlayHandle, transport } = await initSync(
+	const { syncLoopHandle, pruningHandle, overlayHandle, transport, wsClient } = await initSync(
 		appContext,
 		keypair,
 		keyManager,
@@ -152,5 +152,6 @@ Press Ctrl+C to stop.
 		mcpClientsMap,
 		webServer: serverResult.webServer,
 		syncServer: serverResult.syncServer,
+		wsClient,
 	});
 }

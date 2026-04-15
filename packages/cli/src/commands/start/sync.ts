@@ -14,6 +14,7 @@ export interface SyncResult {
 	pruningHandle: { stop: () => void } | null;
 	overlayHandle: { stop: () => void } | null;
 	transport: SyncTransport | undefined;
+	wsClient: { close: () => void } | null;
 }
 
 export async function initSync(
@@ -22,6 +23,7 @@ export async function initSync(
 	keyManager: KeyManager | undefined,
 ): Promise<SyncResult> {
 	let transport: SyncTransport | undefined;
+	let wsClient: { close: () => void } | null = null;
 
 	// 14. Sync (if configured)
 	appContext.logger.info("Initializing sync loop...");
@@ -30,7 +32,9 @@ export async function initSync(
 	if (syncResult?.ok) {
 		const syncConfig = syncResult.value as { hub: string; sync_interval_seconds: number };
 		try {
-			const { SyncClient, startSyncLoop, SyncTransport: ST } = await import("@bound/sync");
+			const { SyncClient, startSyncLoop, SyncTransport: ST, WsSyncClient } = await import(
+				"@bound/sync"
+			);
 			const keyringResult = appContext.optionalConfig.keyring;
 			const keyring = keyringResult?.ok ? (keyringResult.value as KeyringConfig) : { hosts: {} };
 
@@ -59,6 +63,44 @@ export async function initSync(
 			appContext.logger.info(
 				`[sync] Sync loop started (${syncConfig.sync_interval_seconds}s interval)`,
 			);
+
+			// AC2.7: Create WsSyncClient for spoke mode (hub_url configured)
+			if (syncConfig.hub && keyManager) {
+				try {
+					const hubUrl = new URL(syncConfig.hub).toString();
+					// Derive hub site ID from the keyring — find the keyring entry matching hubUrl
+					let hubSiteId: string | undefined;
+					for (const [siteId, entry] of Object.entries(keyring.hosts ?? {})) {
+						if (entry.url === syncConfig.hub) {
+							hubSiteId = siteId;
+							break;
+						}
+					}
+
+					if (!hubSiteId) {
+						appContext.logger.warn(
+							"[sync] Hub URL in sync config not found in keyring, cannot create WS client",
+						);
+					} else {
+						const wsClientInstance = new WsSyncClient({
+							hubUrl,
+							privateKey: keypair.privateKey,
+							siteId: appContext.siteId,
+							keyManager,
+							hubSiteId,
+							logger: appContext.logger,
+							reconnectMaxInterval: 60,
+							backpressureLimit: 2097152,
+						});
+
+						await wsClientInstance.connect();
+						wsClient = wsClientInstance;
+						appContext.logger.info("[sync] WebSocket client connected to hub");
+					}
+				} catch (error) {
+					appContext.logger.warn(`[sync] Failed to create WS client: ${formatError(error)}`);
+				}
+			}
 		} catch (error) {
 			appContext.logger.warn(`[sync] Failed to start: ${formatError(error)}`);
 		}
@@ -121,5 +163,5 @@ export async function initSync(
 		appContext.logger.info("[overlay] Not configured");
 	}
 
-	return { syncLoopHandle, pruningHandle, overlayHandle, transport };
+	return { syncLoopHandle, pruningHandle, overlayHandle, transport, wsClient };
 }
