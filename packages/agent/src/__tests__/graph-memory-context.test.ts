@@ -5,7 +5,7 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
-import { upsertEdge } from "../graph-queries.js";
+import { graphSeededRetrieval, upsertEdge } from "../graph-queries.js";
 import { buildVolatileEnrichment } from "../summary-extraction.js";
 
 let db: Database;
@@ -744,5 +744,45 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			expect(enrichment.graphCount).toBe(0);
 			expect(enrichment.recencyCount).toBe(0);
 		});
+	});
+});
+
+describe("graphSeededRetrieval — keyword safety", () => {
+	it("does not throw with 1000+ keywords (expression tree depth limit)", () => {
+		// Generate 1000 unique keywords — each generates one (LIKE OR LIKE) group,
+		// and 1000 groups joined with OR exceeds SQLite's expression tree depth of 1000.
+		const keywords = Array.from({ length: 1000 }, (_, i) => `keyword${i}`);
+
+		// This should NOT throw "Expression tree is too large (maximum depth 1000)"
+		expect(() => {
+			graphSeededRetrieval(db, keywords, 10);
+		}).not.toThrow();
+	});
+
+	it("returns results with many keywords (capped internally)", () => {
+		// Seed a memory that matches one of the keywords
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: randomBytes(8).toString("hex"),
+				key: "keyword42_design",
+				value: "something about keyword42",
+				source: null,
+				created_at: "2026-02-01T00:00:00.000Z",
+				modified_at: "2026-03-15T00:00:00.000Z",
+				deleted: 0,
+				tier: "default",
+			},
+			siteId,
+		);
+
+		const keywords = Array.from({ length: 1000 }, (_, i) => `keyword${i}`);
+		const results = graphSeededRetrieval(db, keywords, 10);
+
+		// Should find the memory matching keyword42 (if cap keeps first N keywords)
+		// The exact behavior depends on where the cap is applied, but it must not throw
+		expect(results).toBeDefined();
+		expect(Array.isArray(results)).toBe(true);
 	});
 });

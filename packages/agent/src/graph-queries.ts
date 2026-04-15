@@ -300,6 +300,15 @@ export interface GraphRetrievalResult {
  *                      When provided, also filters to only retrieve `default` tier entries
  *                      and includes orphaned detail entries (detail tier with no incoming summarizes edge)
  */
+/**
+ * Maximum number of keywords to use in graph-seeded retrieval.
+ * Each keyword adds one OR group to the SQL WHERE clause. SQLite's expression
+ * tree depth limit is 1000, so exceeding ~999 keywords causes a fatal error.
+ * 30 keywords is more than enough for semantic matching; large keyword lists
+ * (e.g., from file attachments) add noise without improving retrieval.
+ */
+export const MAX_GRAPH_KEYWORDS = 30;
+
 export function graphSeededRetrieval(
 	db: Database,
 	keywords: string[],
@@ -309,12 +318,16 @@ export function graphSeededRetrieval(
 ): GraphRetrievalResult[] {
 	if (keywords.length === 0) return [];
 
+	// Cap keywords to prevent SQLite expression tree depth overflow.
+	// Keep the first N — callers order by priority (user message first, then summary).
+	const effectiveKeywords = keywords.slice(0, MAX_GRAPH_KEYWORDS);
+
 	// Step 1: Find seed memories via keyword matching
 	// When excludeKeys is provided (L2 stage), filter to default tier and orphaned details
-	const likeConditions = keywords.map(
+	const likeConditions = effectiveKeywords.map(
 		() => "(LOWER(key) LIKE '%' || ? || '%' OR LOWER(value) LIKE '%' || ? || '%')",
 	);
-	const params = keywords.flatMap((kw) => [kw.toLowerCase(), kw.toLowerCase()]);
+	const params = effectiveKeywords.flatMap((kw) => [kw.toLowerCase(), kw.toLowerCase()]);
 
 	const tierFilter = excludeKeys
 		? `AND (

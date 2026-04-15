@@ -493,7 +493,13 @@ export function buildVolatileEnrichment(
 	const summaryKeywords = extractKeywords(threadSummary ?? "").filter(
 		(w) => !messageKeywordSet.has(w),
 	);
-	const mergedKeywords = [...messageKeywords, ...summaryKeywords];
+	// Cap keywords to prevent pathologically large SQL queries. User messages with
+	// file attachments (e.g., log dumps) can produce 500+ keywords, which cascades
+	// into graphSeededRetrieval's OR-chained LIKE conditions and exceeds SQLite's
+	// expression tree depth limit of 1000. 30 keywords is more than sufficient for
+	// semantic memory matching. The cap in graphSeededRetrieval is a safety net;
+	// this is the primary cap at the source.
+	const mergedKeywords = [...messageKeywords, ...summaryKeywords].slice(0, 30);
 
 	// Run the L0→L1→L2→L3 pipeline
 	const l0 = loadPinnedEntries(db);
