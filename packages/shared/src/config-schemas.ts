@@ -151,9 +151,18 @@ export const relaySchema = z.object({
 
 export type RelayConfig = z.infer<typeof relaySchema>;
 
+export const wsSchema = z.object({
+	backpressure_limit: z.number().int().positive().default(2097152),
+	idle_timeout: z.number().int().positive().default(120),
+	reconnect_max_interval: z.number().int().positive().default(60),
+});
+
+export type WsConfig = z.infer<typeof wsSchema>;
+
 export const syncSchema = z.object({
 	hub: z.string().min(1),
 	relay: relaySchema.optional(),
+	ws: wsSchema.optional(),
 });
 
 export type SyncConfig = z.infer<typeof syncSchema>;
