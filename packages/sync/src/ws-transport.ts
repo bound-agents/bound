@@ -26,6 +26,7 @@ export interface WsTransportConfig {
 	siteId: string;
 	eventBus: TypedEventEmitter;
 	logger?: Logger;
+	isHub?: boolean;
 }
 
 interface PeerConnection {
@@ -379,34 +380,34 @@ export class WsTransport {
 
 	/**
 	 * Send a relay outbox entry to its destination.
-	 * - If spoke (hub connection exists): send to hub
-	 * - If hub (spoke connections exist): handled by handleRelaySend
+	 * - If spoke (not isHub): send to hub
+	 * - If hub (isHub): handled by handleRelaySend
 	 */
 	private sendRelayOutboxEntry(entry: RelayOutboxEntry): void {
 		// Spoke mode: send to hub if connected
 		// Hub mode: relay routing happens in handleRelaySend
-		// For now, we only send to hub if we have a hub connection
-		// (spokes have exactly one hub connection)
-		if (this.peerConnections.size === 1) {
-			const [, peer] = Array.from(this.peerConnections.entries())[0];
+		if (!this.config.isHub) {
+			// Spoke mode: find the hub connection (typically there's one)
+			for (const [, peer] of this.peerConnections) {
+				const payload: RelaySendPayload = {
+					entries: [
+						{
+							id: entry.id,
+							target_site_id: entry.target_site_id,
+							kind: entry.kind,
+							ref_id: entry.ref_id,
+							idempotency_key: entry.idempotency_key,
+							stream_id: entry.stream_id,
+							expires_at: entry.expires_at,
+							payload: JSON.parse(entry.payload),
+						},
+					],
+				};
 
-			const payload: RelaySendPayload = {
-				entries: [
-					{
-						id: entry.id,
-						target_site_id: entry.target_site_id,
-						kind: entry.kind,
-						ref_id: entry.ref_id,
-						idempotency_key: entry.idempotency_key,
-						stream_id: entry.stream_id,
-						expires_at: entry.expires_at,
-						payload: JSON.parse(entry.payload),
-					},
-				],
-			};
-
-			const frame = encodeFrame(WsMessageType.RELAY_SEND, payload, peer.symmetricKey);
-			peer.sendFrame(frame);
+				const frame = encodeFrame(WsMessageType.RELAY_SEND, payload, peer.symmetricKey);
+				peer.sendFrame(frame);
+				break; // Send to the first (only) hub connection
+			}
 		}
 	}
 
@@ -477,16 +478,19 @@ export class WsTransport {
 					processed: 0,
 				};
 
-				insertInbox(this.config.db, inboxEntry);
+				const inserted = insertInbox(this.config.db, inboxEntry);
 
-				// Emit relay:inbox event
-				this.config.eventBus.emit("relay:inbox", {
-					ref_id: inboxEntry.ref_id || undefined,
-					stream_id: inboxEntry.stream_id || undefined,
-					kind: inboxEntry.kind,
-				});
+				// Only emit relay:inbox event and track as delivered if this is a new entry
+				if (inserted) {
+					this.config.eventBus.emit("relay:inbox", {
+						ref_id: inboxEntry.ref_id || undefined,
+						stream_id: inboxEntry.stream_id || undefined,
+						kind: inboxEntry.kind,
+					});
 
-				deliveredIds.push(entry.id);
+					deliveredIds.push(entry.id);
+				}
+
 				continue;
 			}
 

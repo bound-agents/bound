@@ -59,6 +59,7 @@ export async function initSync(
 					siteId: appContext.siteId,
 					eventBus: appContext.eventBus,
 					logger: appContext.logger,
+					isHub: !syncConfig.hub, // Hub if no hub URL configured, spoke if hub URL configured
 				});
 				// Enable push-on-write for changelog entries
 				setChangelogEventBus(appContext.eventBus);
