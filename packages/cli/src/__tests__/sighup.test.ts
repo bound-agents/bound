@@ -252,6 +252,79 @@ describe("SIGHUP handler", () => {
 		expect(errors.some((e) => e.includes("sync"))).toBe(true);
 	});
 
+	it("calls mcpReload callback when mcp config changes", async () => {
+		const { reloadConfigs } = await import("../sighup.js");
+
+		let reloadCalled = false;
+		let receivedOldConfig: unknown = null;
+		let receivedNewConfig: unknown = null;
+
+		const mcpValue = {
+			servers: [{ name: "old-server", command: "echo", transport: "stdio" }],
+		};
+
+		const mockAppContext: TestAppContext = {
+			logger: testLogger,
+			optionalConfig: {
+				mcp: { ok: true, value: mcpValue },
+			},
+		};
+
+		// Write new mcp.json with a different server
+		const newMcpValue = {
+			servers: [{ name: "new-server", command: "test", transport: "stdio" }],
+		};
+		writeFileSync(join(tempDir, "mcp.json"), JSON.stringify(newMcpValue));
+
+		await reloadConfigs({
+			appContext: mockAppContext,
+			configDir: tempDir,
+			logger: testLogger,
+			onMcpConfigChanged: async (oldConfig, newConfig) => {
+				reloadCalled = true;
+				receivedOldConfig = oldConfig;
+				receivedNewConfig = newConfig;
+			},
+		});
+
+		expect(reloadCalled).toBe(true);
+		expect((receivedOldConfig as { servers: unknown[] }).servers).toHaveLength(1);
+		expect((receivedNewConfig as { servers: unknown[] }).servers).toHaveLength(1);
+	});
+
+	it("does not call mcpReload when mcp config unchanged", async () => {
+		const { reloadConfigs } = await import("../sighup.js");
+
+		let reloadCalled = false;
+
+		// Key order must match Zod parse output: discriminant (transport) comes
+		// before extension fields (command) in discriminatedUnion parsing.
+		const mcpValue = {
+			servers: [{ name: "server", transport: "stdio", command: "echo" }],
+		};
+
+		const mockAppContext: TestAppContext = {
+			logger: testLogger,
+			optionalConfig: {
+				mcp: { ok: true, value: mcpValue },
+			},
+		};
+
+		// Write same mcp.json (Zod will parse to same key order)
+		writeFileSync(join(tempDir, "mcp.json"), JSON.stringify(mcpValue));
+
+		await reloadConfigs({
+			appContext: mockAppContext,
+			configDir: tempDir,
+			logger: testLogger,
+			onMcpConfigChanged: async () => {
+				reloadCalled = true;
+			},
+		});
+
+		expect(reloadCalled).toBe(false);
+	});
+
 	it("AC12.6: concurrent reloads handled gracefully", async () => {
 		const mockAppContext: TestAppContext = {
 			logger: testLogger,

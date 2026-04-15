@@ -36,7 +36,6 @@ export async function initRelay(
 	mcpClientsMap: Map<string, MCPClient>,
 	modelRouter: ModelRouter | null,
 	clusterFsObj: ClusterFsResult | null,
-	configDir: string,
 ): Promise<RelayResult> {
 	// 8b. Relay processor setup
 	appContext.logger.info("Initializing relay processor...");
@@ -126,16 +125,8 @@ export async function initRelay(
 		}
 	}
 
-	// 11e. Register SIGHUP handler for config hot-reload
-	{
-		const { registerSighupHandler } = await import("../../sighup.js");
-		registerSighupHandler({
-			appContext,
-			configDir: configDir || "config",
-			keyManager,
-			logger: appContext.logger,
-		});
-	}
+	// SIGHUP handler registration moved to index.ts where all subsystems
+	// (sandbox, MCP clients, etc.) are available for hot-reload callbacks.
 
 	// Check for plaintext logging debug mode
 	if (process.env.BOUND_LOG_SYNC_PLAINTEXT === "1") {

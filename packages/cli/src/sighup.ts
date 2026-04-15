@@ -1,6 +1,6 @@
 import type { AppContext } from "@bound/core";
 import { loadOptionalConfigs } from "@bound/core";
-import type { Logger } from "@bound/shared";
+import type { KeyringConfig, Logger, McpConfig } from "@bound/shared";
 import type { KeyManager } from "@bound/sync";
 
 interface SighupHandlerConfig {
@@ -8,6 +8,11 @@ interface SighupHandlerConfig {
 	configDir: string;
 	keyManager?: KeyManager;
 	logger: Logger;
+	/**
+	 * Callback invoked when the MCP config changes during a reload.
+	 * Receives the old and new configs so the caller can run reloadMcpServers().
+	 */
+	onMcpConfigChanged?: (oldConfig: McpConfig, newConfig: McpConfig) => Promise<void>;
 	// For testing: inject a delay into the reload work to allow true concurrency testing
 	delayMs?: number;
 }
@@ -21,7 +26,7 @@ let reloadInProgress = false;
  * Concurrent reloads are prevented by reloadInProgress flag (AC12.6).
  */
 export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> {
-	const { appContext, configDir, keyManager, logger, delayMs } = config;
+	const { appContext, configDir, keyManager, onMcpConfigChanged, logger, delayMs } = config;
 
 	// Yield control to allow concurrent calls to be scheduled.
 	// Use setTimeout to ensure the check happens in the next event loop tick.
@@ -45,6 +50,12 @@ export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> 
 		}
 
 		const newOptionalConfigs = loadOptionalConfigs(configDir);
+
+		// Capture old MCP config before it gets overwritten
+		const oldMcpResult = appContext.optionalConfig.mcp;
+		const oldMcpConfig: McpConfig | null = oldMcpResult?.ok
+			? (oldMcpResult.value as McpConfig)
+			: null;
 
 		// Track what changed for logging
 		const changes: string[] = [];
@@ -78,11 +89,26 @@ export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> 
 		if (keyManager && changes.includes("keyring")) {
 			const keyringResult = appContext.optionalConfig.keyring;
 			if (keyringResult?.ok) {
-				const newKeyring = keyringResult.value as import("@bound/shared").KeyringConfig;
+				const newKeyring = keyringResult.value as KeyringConfig;
 				keyManager.reloadKeyring(newKeyring);
 				logger.info("KeyManager reloaded with updated keyring", {
 					peerCount: Object.keys(newKeyring.hosts).length,
 				});
+			}
+		}
+
+		// Handle MCP config changes — reconnect servers
+		if (onMcpConfigChanged && changes.includes("mcp")) {
+			const mcpResult = appContext.optionalConfig.mcp;
+			if (mcpResult?.ok) {
+				const newConfig = mcpResult.value as McpConfig;
+				try {
+					await onMcpConfigChanged(oldMcpConfig ?? { servers: [] }, newConfig);
+				} catch (err) {
+					logger.error("MCP reload failed", {
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
 			}
 		}
 

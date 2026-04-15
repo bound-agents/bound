@@ -7,11 +7,12 @@ export { type StartArgs, ensureMcpUser } from "./bootstrap.js";
 export { buildMcpToolDefinitions } from "./mcp.js";
 
 import { ThreadExecutor, startHostHeartbeat } from "@bound/core";
+import { registerSighupHandler } from "../../sighup.js";
 import { createAgentLoopFactory } from "./agent-factory.js";
 import { initBootstrap } from "./bootstrap.js";
 import type { StartArgs } from "./bootstrap.js";
 import { initInference } from "./inference.js";
-import { initMcp } from "./mcp.js";
+import { initMcp, reloadMcpServers } from "./mcp.js";
 import { initRelay } from "./relay.js";
 import { initSandbox } from "./sandbox.js";
 import { initScheduler, setupGracefulShutdown } from "./scheduler.js";
@@ -23,7 +24,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	const { appContext, keypair, configDir } = await initBootstrap(args);
 
 	// Phase 2: MCP connections and command generation
-	const { mcpClientsMap, mcpCommands, mcpServerNames } = await initMcp(appContext);
+	const { mcpClientsMap, mcpCommands, mcpServerNames, confirmGates } = await initMcp(appContext);
 
 	// Phase 3: Sandbox, command registry, VFS hydration, persona
 	const { sandbox, clusterFsObj, commandContext } = await initSandbox(
@@ -46,7 +47,33 @@ export async function runStart(args: StartArgs): Promise<void> {
 		keyManager,
 		hubSiteId,
 		keyring,
-	} = await initRelay(appContext, keypair, mcpClientsMap, modelRouter, clusterFsObj, configDir);
+	} = await initRelay(appContext, keypair, mcpClientsMap, modelRouter, clusterFsObj);
+
+	// Phase 5b: Register SIGHUP handler for config hot-reload (needs all subsystem refs)
+	registerSighupHandler({
+		appContext,
+		configDir,
+		keyManager,
+		logger: appContext.logger,
+		onMcpConfigChanged: async (oldConfig, newConfig) => {
+			await reloadMcpServers({
+				appContext,
+				mcpClientsMap,
+				mcpServerNames,
+				confirmGates,
+				sandbox,
+				commandContext: commandContext ?? {
+					db: appContext.db,
+					siteId: appContext.siteId,
+					eventBus: appContext.eventBus,
+					logger: appContext.logger,
+					mcpClients: mcpClientsMap,
+				},
+				oldConfig,
+				newConfig,
+			});
+		},
+	});
 
 	// Phase 6: Agent loop factory
 	if (!modelRouter) {
