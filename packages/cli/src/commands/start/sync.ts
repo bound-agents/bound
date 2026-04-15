@@ -71,13 +71,11 @@ export async function initSync(
 			if (syncConfig.hub && keyManager) {
 				try {
 					const hubUrl = new URL(syncConfig.hub).toString();
-					// Normalize hub URL for comparison (handles trailing slashes, port differences)
-					const normalizedHubUrl = new URL(syncConfig.hub).toString();
 					// Derive hub site ID from the keyring — find the keyring entry matching hubUrl
 					let hubSiteId: string | undefined;
 					for (const [siteId, entry] of Object.entries(keyring.hosts ?? {})) {
 						const normalizedEntryUrl = new URL(entry.url).toString();
-						if (normalizedEntryUrl === normalizedHubUrl) {
+						if (normalizedEntryUrl === hubUrl) {
 							hubSiteId = siteId;
 							break;
 						}
