@@ -2,7 +2,12 @@ import type { KeyringConfig, Logger, Result } from "@bound/shared";
 import { err, ok } from "@bound/shared";
 import type { KeyManager } from "./key-manager.js";
 import { verifyRequest } from "./signing.js";
-import type { ChangelogAckPayload, ChangelogPushPayload } from "./ws-frames.js";
+import type {
+	ChangelogAckPayload,
+	ChangelogPushPayload,
+	RelayAckPayload,
+	RelaySendPayload,
+} from "./ws-frames.js";
 import { WsMessageType, decodeFrame } from "./ws-frames.js";
 
 /**
@@ -173,6 +178,9 @@ export interface WsServerConfig {
 		handleChangelogPush: (peerSiteId: string, payload: ChangelogPushPayload) => void;
 		handleChangelogAck: (peerSiteId: string, payload: ChangelogAckPayload) => void;
 		drainChangelog: (peerSiteId: string) => void;
+		handleRelaySend: (sourceSiteId: string, payload: RelaySendPayload) => void;
+		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
+		drainRelayInbox: (spokesSiteId: string) => void;
 	};
 	logger?: Logger;
 	idleTimeout?: number; // seconds, default 120
@@ -236,6 +244,7 @@ export function createWsHandlers(config: WsServerConfig): {
 
 				config.wsTransport.addPeer(ws.data.siteId, sendFrame, ws.data.symmetricKey);
 				config.wsTransport.drainChangelog(ws.data.siteId);
+				config.wsTransport.drainRelayInbox(ws.data.siteId);
 			}
 		},
 
@@ -274,6 +283,20 @@ export function createWsHandlers(config: WsServerConfig): {
 					config.wsTransport.handleChangelogPush(ws.data.siteId, decodedFrame.payload);
 				} else if (decodedFrame.type === WsMessageType.CHANGELOG_ACK) {
 					config.wsTransport.handleChangelogAck(ws.data.siteId, decodedFrame.payload);
+				} else if (decodedFrame.type === WsMessageType.RELAY_SEND) {
+					config.wsTransport.handleRelaySend(
+						ws.data.siteId,
+						decodedFrame.payload as RelaySendPayload,
+					);
+				} else if (decodedFrame.type === WsMessageType.RELAY_DELIVER) {
+					logger?.warn("WS received relay_deliver from spoke (unexpected)", {
+						siteId: ws.data.siteId,
+					});
+				} else if (decodedFrame.type === WsMessageType.RELAY_ACK) {
+					config.wsTransport.handleRelayAck(
+						ws.data.siteId,
+						decodedFrame.payload as RelayAckPayload,
+					);
 				}
 			}
 		},

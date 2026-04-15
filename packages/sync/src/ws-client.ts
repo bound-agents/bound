@@ -1,7 +1,12 @@
 import type { Logger } from "@bound/shared";
 import type { KeyManager } from "./key-manager.js";
 import { signRequest } from "./signing.js";
-import type { ChangelogAckPayload, ChangelogPushPayload } from "./ws-frames.js";
+import type {
+	ChangelogAckPayload,
+	ChangelogPushPayload,
+	RelayAckPayload,
+	RelayDeliverPayload,
+} from "./ws-frames.js";
 import { WsMessageType, decodeFrame } from "./ws-frames.js";
 
 export interface WsClientConfig {
@@ -20,6 +25,9 @@ export interface WsClientConfig {
 		handleChangelogPush: (peerSiteId: string, payload: ChangelogPushPayload) => void;
 		handleChangelogAck: (peerSiteId: string, payload: ChangelogAckPayload) => void;
 		drainChangelog: (peerSiteId: string) => void;
+		handleRelayDeliver: (sourceSiteId: string, payload: RelayDeliverPayload) => void;
+		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
+		drainRelayOutbox: (peerSiteId: string) => void;
 	};
 	logger?: Logger;
 	reconnectMaxInterval?: number; // seconds, default 60
@@ -195,6 +203,7 @@ export class WsSyncClient {
 
 			this.config.wsTransport.addPeer(this.config.hubSiteId, sendFrame, this.symmetricKey);
 			this.config.wsTransport.drainChangelog(this.config.hubSiteId);
+			this.config.wsTransport.drainRelayOutbox(this.config.hubSiteId);
 		}
 
 		this.onConnected?.();
@@ -237,6 +246,18 @@ export class WsSyncClient {
 						);
 					} else if (decodedFrame.type === WsMessageType.CHANGELOG_ACK) {
 						this.config.wsTransport.handleChangelogAck(this.config.hubSiteId, decodedFrame.payload);
+					} else if (decodedFrame.type === WsMessageType.RELAY_DELIVER) {
+						this.config.wsTransport.handleRelayDeliver(
+							this.config.hubSiteId,
+							decodedFrame.payload as RelayDeliverPayload,
+						);
+					} else if (decodedFrame.type === WsMessageType.RELAY_ACK) {
+						this.config.wsTransport.handleRelayAck(
+							this.config.hubSiteId,
+							decodedFrame.payload as RelayAckPayload,
+						);
+					} else if (decodedFrame.type === WsMessageType.RELAY_SEND) {
+						this.config.logger?.warn("WsSyncClient: received relay_send from hub (unexpected)", {});
 					}
 				}
 			}
