@@ -362,7 +362,7 @@ type Server = {
 
 type WebSocketHandler<T = unknown> = {
 	open?(ws: ServerWebSocket<T>): void;
-	message?(ws: ServerWebSocket<T>, message: string | Uint8Array): void;
+	message(ws: ServerWebSocket<T>, message: string | Uint8Array): void;
 	close?(ws: ServerWebSocket<T>, code: number, reason: string): void;
 	drain?(ws: ServerWebSocket<T>): void;
 	idleTimeout?: number;

@@ -38,6 +38,10 @@ export interface SyncAppConfig {
 	hubSiteId?: string;
 	eagerPushConfig?: EagerPushConfig;
 	keyManager?: KeyManager;
+	wsConfig?: {
+		idleTimeout?: number;
+		backpressureLimit?: number;
+	};
 }
 
 /**

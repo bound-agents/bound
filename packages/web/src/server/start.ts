@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
+import { WsConnectionManager, createWsHandlers } from "@bound/sync";
 import type { ModelsConfig, SyncAppConfig, WebAppConfig } from "./index";
 import { createSyncApp, createWebApp } from "./index";
 import { createWebSocketHandler } from "./websocket";
@@ -27,6 +28,7 @@ export interface WebServer {
 	start(): Promise<void>;
 	stop(): Promise<void>;
 	address(): string;
+	wsConnectionManager?: WsConnectionManager;
 }
 
 /**
@@ -125,17 +127,44 @@ export async function createSyncServer(
 		return next();
 	});
 
+	// Create WebSocket connection manager and handlers
+	const wsConnectionManager = new WsConnectionManager();
+	const wsHandlers = createWsHandlers({
+		connectionManager: wsConnectionManager,
+		logger: config.logger,
+		idleTimeout: config.wsConfig?.idleTimeout,
+		backpressureLimit: config.wsConfig?.backpressureLimit,
+	});
+
 	let server: ReturnType<typeof Bun.serve> | null = null;
 
 	return {
+		wsConnectionManager,
+
 		async start(): Promise<void> {
 			server = Bun.serve({
 				port,
 				hostname: host,
 				maxRequestBodySize: 128 * 1024 * 1024, // 128 MB — chunked push keeps payloads well under this
-				fetch(request: Request) {
+				fetch(request: Request, bunServer) {
+					const url = new URL(request.url);
+					if (url.pathname === "/sync/ws" && request.headers.get("upgrade") === "websocket") {
+						// Call handleUpgrade and await the result
+						const result = wsHandlers.handleUpgrade(
+							request,
+							bunServer as Parameters<typeof wsHandlers.handleUpgrade>[1],
+							config.keyring,
+							config.keyManager,
+						);
+						if (result instanceof Promise) {
+							// handleUpgrade is async but may return synchronously
+							return result;
+						}
+						return result;
+					}
 					return app.fetch(request);
 				},
+				websocket: wsHandlers.websocket,
 			});
 
 			console.log(`Sync server listening on http://${host}:${port}`);
