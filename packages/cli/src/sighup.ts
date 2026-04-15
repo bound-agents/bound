@@ -13,6 +13,12 @@ interface SighupHandlerConfig {
 	 * Receives the old and new configs so the caller can run reloadMcpServers().
 	 */
 	onMcpConfigChanged?: (oldConfig: McpConfig, newConfig: McpConfig) => Promise<void>;
+	/**
+	 * Callback invoked when the WS config changes during a reload.
+	 * Allows the caller to update WsSyncClient and WS server config.
+	 * idle_timeout changes take effect on next connection only.
+	 */
+	onWsConfigChanged?: (newWsConfig: Record<string, unknown> | undefined) => Promise<void>;
 	// For testing: inject a delay into the reload work to allow true concurrency testing
 	delayMs?: number;
 }
@@ -26,7 +32,7 @@ let reloadInProgress = false;
  * Concurrent reloads are prevented by reloadInProgress flag (AC12.6).
  */
 export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> {
-	const { appContext, configDir, keyManager, onMcpConfigChanged, logger, delayMs } = config;
+	const { appContext, configDir, keyManager, onMcpConfigChanged, onWsConfigChanged, logger, delayMs } = config;
 
 	// Yield control to allow concurrent calls to be scheduled.
 	// Use setTimeout to ensure the check happens in the next event loop tick.
@@ -51,11 +57,13 @@ export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> 
 
 		const newOptionalConfigs = loadOptionalConfigs(configDir);
 
-		// Capture old MCP config before it gets overwritten
+		// Capture old MCP and sync configs before they get overwritten
 		const oldMcpResult = appContext.optionalConfig.mcp;
 		const oldMcpConfig: McpConfig | null = oldMcpResult?.ok
 			? (oldMcpResult.value as McpConfig)
 			: null;
+		const oldSyncResult = appContext.optionalConfig.sync;
+		const oldSyncConfig = oldSyncResult?.ok ? (oldSyncResult.value as Record<string, unknown>) : null;
 
 		// Track what changed for logging
 		const changes: string[] = [];
@@ -108,6 +116,26 @@ export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> 
 					logger.error("MCP reload failed", {
 						error: err instanceof Error ? err.message : String(err),
 					});
+				}
+			}
+		}
+
+		// Handle WS config changes — update client and server config
+		if (onWsConfigChanged && changes.includes("sync")) {
+			const syncResult = appContext.optionalConfig.sync;
+			if (syncResult?.ok) {
+				const newSyncConfig = syncResult.value as Record<string, unknown>;
+				const newWsConfig = newSyncConfig.ws as Record<string, unknown> | undefined;
+				const oldWsConfig = oldSyncConfig?.ws as Record<string, unknown> | undefined;
+				// Only invoke callback if ws config actually changed
+				if (JSON.stringify(oldWsConfig) !== JSON.stringify(newWsConfig)) {
+					try {
+						await onWsConfigChanged(newWsConfig);
+					} catch (err) {
+						logger.error("WS config reload failed", {
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
 				}
 			}
 		}

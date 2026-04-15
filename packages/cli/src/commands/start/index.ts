@@ -72,6 +72,22 @@ export async function runStart(args: StartArgs): Promise<void> {
 				newConfig,
 			});
 		},
+		onWsConfigChanged: async (newWsConfig) => {
+			// Log WS config changes. Current implementation note:
+			// - reconnect_max_interval takes effect on next reconnection
+			// - backpressure_limit takes effect on next reconnection
+			// - idle_timeout (server-side) takes effect on next connection
+			if (newWsConfig) {
+				const reconnectMaxInterval = (newWsConfig.reconnect_max_interval as number) ?? 60;
+				const backpressureLimit = (newWsConfig.backpressure_limit as number) ?? 2097152;
+				const idleTimeout = (newWsConfig.idle_timeout as number) ?? 120;
+				appContext.logger.info("[sighup] WS config reloaded", {
+					reconnectMaxInterval,
+					backpressureLimit,
+					idleTimeout,
+				});
+			}
+		},
 	});
 
 	// Phase 6: Agent loop factory
