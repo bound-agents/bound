@@ -71,6 +71,11 @@ export async function initSync(
 							"[sync] Hub URL in sync config not found in keyring, cannot create WS client",
 						);
 					} else {
+						// Read WS config if present, use defaults otherwise
+						const wsConfig = (syncConfig as Record<string, unknown>).ws as Record<string, unknown> | undefined;
+						const reconnectMaxInterval = (wsConfig?.reconnect_max_interval as number) ?? 60;
+						const backpressureLimit = (wsConfig?.backpressure_limit as number) ?? 2097152;
+
 						const wsClientInstance = new WsSyncClient({
 							hubUrl,
 							privateKey: keypair.privateKey,
@@ -79,8 +84,8 @@ export async function initSync(
 							hubSiteId,
 							wsTransport,
 							logger: appContext.logger,
-							reconnectMaxInterval: 60,
-							backpressureLimit: 2097152,
+							reconnectMaxInterval,
+							backpressureLimit,
 						});
 
 						await wsClientInstance.connect();

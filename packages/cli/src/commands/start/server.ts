@@ -153,6 +153,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 		// Start sync server if sync prerequisites are available
 		if (appContext.siteId && keyring && appContext.logger) {
+			// Read WS config if present
+			const syncConfigResult = appContext.optionalConfig.sync;
+			const wsConfig = (syncConfigResult?.ok ? (syncConfigResult.value as Record<string, unknown>).ws : undefined) as Record<string, unknown> | undefined;
+
 			syncServer = await createSyncServer(appContext.db, appContext.eventBus, {
 				port: syncPort,
 				host: syncHost,
@@ -162,6 +166,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				relayExecutor,
 				hubSiteId,
 				keyManager,
+				wsConfig: wsConfig ? {
+					idleTimeout: (wsConfig.idle_timeout as number) ?? 120,
+					backpressureLimit: (wsConfig.backpressure_limit as number) ?? 2097152,
+				} : undefined,
 			});
 			if (syncServer) {
 				await syncServer.start();
