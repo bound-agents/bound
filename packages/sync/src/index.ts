@@ -68,3 +68,9 @@ export {
 	type DrainCompletePayload,
 	type ErrorPayload,
 } from "./ws-frames.js";
+
+// WebSocket server
+export {
+	authenticateWsUpgrade,
+	type WsConnectionData,
+} from "./ws-server.js";
