@@ -2,6 +2,7 @@ import type {
 	ContextDebugInfo,
 	Message,
 	PlatformDeliverPayload,
+	RelayKind,
 	StatusForwardPayload,
 } from "./types.js";
 
@@ -31,4 +32,5 @@ export interface EventMap {
 		reason: string;
 	};
 	"changelog:written": { hlc: string; tableName: string; siteId: string };
+	"relay:inbox": { ref_id?: string; stream_id?: string; kind: RelayKind };
 }
