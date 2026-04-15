@@ -1,10 +1,21 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { type SyncedTableName, generateHlc, mergeHlc } from "@bound/shared";
+import { type SyncedTableName, type TypedEventEmitter, generateHlc, mergeHlc } from "@bound/shared";
 
 // Validate column names to prevent SQL injection
 // Only allow lowercase letters, numbers, and underscores
 const VALID_COLUMN_NAME = /^[a-z_]+$/;
+
+// Module-level event bus for emitting changelog:written events (optional)
+let changelogEventBus: TypedEventEmitter | null = null;
+
+/**
+ * Set the event bus for emitting changelog:written events.
+ * Called once at startup when WS transport is active.
+ */
+export function setChangelogEventBus(eventBus: TypedEventEmitter | null): void {
+	changelogEventBus = eventBus;
+}
 
 // Primary key column per synced table. Defaults to "id" for all others.
 const TABLE_PK_COLUMN: Partial<Record<SyncedTableName, string>> = {
@@ -50,6 +61,11 @@ export function createChangeLogEntry(
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		[hlc, tableName, rowId, siteId, now, rowDataJson],
 	);
+
+	// Emit changelog:written event after the entry is committed
+	if (changelogEventBus) {
+		changelogEventBus.emit("changelog:written", { hlc, tableName, siteId });
+	}
 }
 
 export function withChangeLog<T>(

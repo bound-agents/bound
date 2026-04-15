@@ -30,4 +30,5 @@ export interface EventMap {
 		task_id?: string;
 		reason: string;
 	};
+	"changelog:written": { hlc: string; tableName: string; siteId: string };
 }
