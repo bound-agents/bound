@@ -12,28 +12,11 @@ export {
 } from "./crypto.js";
 export { signRequest } from "./signing.js";
 
-// Middleware
-export { createSyncAuthMiddleware } from "./middleware.js";
-
-// Client and loop
-export { SyncClient } from "./sync-loop.js";
-export { startSyncLoop } from "./sync-loop.js";
-
-// Routes
-export { createSyncRoutes } from "./routes.js";
-
 // Relay wire format
 export type { RelayRequest, RelayResponse } from "./changeset.js";
 export { chunkChangeset, DEFAULT_MAX_CHUNK_BYTES } from "./changeset.js";
 export type { RelayExecutor } from "./relay-executor.js";
 export { noopRelayExecutor } from "./relay-executor.js";
-
-// Reachability tracking
-export { ReachabilityTracker } from "./reachability.js";
-
-// Eager push
-export type { EagerPushConfig } from "./eager-push.js";
-export { eagerPushToSpoke } from "./eager-push.js";
 
 // Pruning
 export { startPruningLoop } from "./pruning.js";
@@ -49,8 +32,6 @@ export {
 	extractRawEd25519Keys,
 } from "./encryption.js";
 export { KeyManager } from "./key-manager.js";
-export { SyncTransport } from "./transport.js";
-export type { TransportResponse } from "./transport.js";
 
 // WebSocket frame codec
 export {

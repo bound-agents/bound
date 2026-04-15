@@ -1,10 +1,4 @@
-export {
-	createWebApp,
-	createSyncApp,
-	type ModelsConfig,
-	type WebAppConfig,
-	type SyncAppConfig,
-} from "./server/index";
+export { createWebApp, type ModelsConfig, type WebAppConfig, type SyncAppConfig } from "./server/index";
 export {
 	createWebServer,
 	createSyncServer,

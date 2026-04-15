@@ -25,8 +25,7 @@ import {
 import type { ModelBackendsConfig, ModelRouter } from "@bound/llm";
 import type { KeyringConfig, ProcessPayload, StatusForwardPayload } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
-import type { KeyManager, RelayExecutor, SyncTransport } from "@bound/sync";
-import type { ReachabilityTracker } from "@bound/sync";
+import type { KeyManager, RelayExecutor } from "@bound/sync";
 import { createSyncServer, createWebServer } from "@bound/web";
 import { runLocalAgentLoop } from "../../lib/message-handler";
 
@@ -66,12 +65,9 @@ export interface ServerDeps {
 	routerConfig: ModelBackendsConfig;
 	agentLoopFactory: AgentLoopFactory;
 	relayExecutor: RelayExecutor | undefined;
-	reachabilityTracker: ReachabilityTracker;
 	keyManager: KeyManager | undefined;
 	keyring: KeyringConfig | undefined;
 	hubSiteId: string | undefined;
-	/** Lazy reference to SyncTransport (initialized later in sync phase). */
-	getTransport: () => SyncTransport | undefined;
 	/** RelayProcessor to wire platform connector registry into. */
 	relayProcessor: {
 		setPlatformConnectorRegistry(registry: unknown): void;
@@ -88,11 +84,9 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		routerConfig,
 		agentLoopFactory,
 		relayExecutor,
-		reachabilityTracker,
 		keyManager,
 		keyring,
 		hubSiteId,
-		getTransport,
 		relayProcessor,
 	} = deps;
 
@@ -116,21 +110,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 	try {
 		const modelBackends = appContext.config.modelBackends;
-
-		const eagerPushConfig =
-			keyring && appContext.siteId
-				? {
-						privateKey: keypair.privateKey,
-						siteId: appContext.siteId,
-						db: appContext.db,
-						keyring,
-						reachabilityTracker,
-						logger: appContext.logger,
-						get transport() {
-							return getTransport();
-						},
-					}
-				: undefined;
 
 		// Sync server: primary port, externally accessible for hub-spoke replication
 		const syncPort = Number.parseInt(process.env.PORT || "3000", 10);
@@ -182,7 +161,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				logger: appContext.logger,
 				relayExecutor,
 				hubSiteId,
-				eagerPushConfig,
 				keyManager,
 			});
 			if (syncServer) {

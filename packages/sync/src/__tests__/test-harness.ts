@@ -1,23 +1,15 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import type { Logger } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
-import type { KeyringConfig } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { Hono } from "hono";
 import { ensureKeypair } from "../crypto.js";
-import type { RelayExecutor } from "../relay-executor.js";
-import { createSyncRoutes } from "../routes.js";
-import { SyncClient } from "../sync-loop.js";
 
 export interface TestInstance {
 	db: Database;
 	siteId: string;
-	port: number;
-	server: ReturnType<typeof Bun.serve>;
-	syncClient: SyncClient | null;
 	cleanup: () => Promise<void>;
 }
 
@@ -276,19 +268,15 @@ const FULL_SCHEMA = `
 	);
 `;
 
+/**
+ * Create a test database instance with the full schema.
+ * Used by WS transport tests for setting up test instances.
+ */
 export async function createTestInstance(config: {
-	name: string;
-	port: number;
 	dbPath: string;
-	role: "hub" | "spoke";
-	hubPort?: number;
-	hubSiteId?: string;
-	keyring: KeyringConfig;
 	keypairPath?: string;
-	relayExecutor?: RelayExecutor;
 }): Promise<TestInstance> {
-	const { name, port, dbPath, role, hubPort, hubSiteId, keyring, keypairPath, relayExecutor } =
-		config;
+	const { dbPath, keypairPath } = config;
 
 	// Ensure directory exists
 	const dir = dirname(dbPath);
@@ -297,7 +285,7 @@ export async function createTestInstance(config: {
 	}
 
 	// Generate or load keypair for this instance
-	const effectiveKeypairPath = keypairPath ?? join(dir, `host-${name}`);
+	const effectiveKeypairPath = keypairPath ?? `${dir}/host-keypair`;
 	const keypair = await ensureKeypair(effectiveKeypairPath);
 	const siteId = keypair.siteId;
 
@@ -314,53 +302,11 @@ export async function createTestInstance(config: {
 		}
 	}
 
-	// Create Hono app with sync routes
-	const honoApp = new Hono();
-	const syncRoutes = createSyncRoutes(
-		db,
-		siteId,
-		keyring,
-		createMockEventBus(),
-		createMockLogger(),
-		relayExecutor,
-		hubSiteId,
-	);
-
-	// Mount sync routes
-	honoApp.route("/", syncRoutes);
-
-	// Start Bun.serve
-	const server = Bun.serve({
-		port,
-		fetch: honoApp.fetch,
-	});
-
-	// Create SyncClient for this instance
-	let syncClient: SyncClient | null = null;
-	if (role === "spoke" && hubPort) {
-		const hubUrl = `http://localhost:${hubPort}`;
-		syncClient = new SyncClient(
-			db,
-			siteId,
-			keypair.privateKey,
-			hubUrl,
-			createMockLogger(),
-			createMockEventBus(),
-			keyring,
-		);
-	}
-
 	return {
 		db,
 		siteId,
-		port,
-		server,
-		syncClient,
 		cleanup: async () => {
-			server.stop();
 			db.close();
-			// Give the port time to be released
-			await new Promise((resolve) => setTimeout(resolve, 10));
 			if (dir && existsSync(dir)) {
 				await cleanupTmpDir(dir);
 			}

@@ -271,27 +271,27 @@ describe("Config schemas", () => {
 		it("validates correct sync config", () => {
 			const config = {
 				hub: "https://hub.example.com",
-				sync_interval_seconds: 60,
 			};
 			const result = syncSchema.safeParse(config);
 			expect(result.success).toBe(true);
 		});
 
-		it("uses default sync_interval_seconds if not provided", () => {
+		it("validates sync config with relay settings", () => {
 			const config = {
 				hub: "https://hub.example.com",
+				relay: {
+					inference_timeout_ms: 60_000,
+				},
 			};
 			const result = syncSchema.safeParse(config);
 			expect(result.success).toBe(true);
-			if (result.success) {
-				expect(result.data.sync_interval_seconds).toBe(30);
-			}
 		});
 
-		it("rejects non-positive sync_interval_seconds", () => {
+		it("rejects sync config without hub", () => {
 			const config = {
-				hub: "https://hub.example.com",
-				sync_interval_seconds: 0,
+				relay: {
+					inference_timeout_ms: 60_000,
+				},
 			};
 			const result = syncSchema.safeParse(config);
 			expect(result.success).toBe(false);

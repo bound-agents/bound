@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import { WsConnectionManager, createWsHandlers } from "@bound/sync";
 import type { ModelsConfig, SyncAppConfig, WebAppConfig } from "./index";
-import { createSyncApp, createWebApp } from "./index";
+import { createWebApp } from "./index";
 import { createWebSocketHandler } from "./websocket";
 
 export type { ModelsConfig };
@@ -104,28 +104,17 @@ export async function createWebServer(
 }
 
 /**
- * Create the sync server: sync routes + relay-deliver with Ed25519 auth.
+ * Create the sync server: WebSocket sync transport with Ed25519 auth.
  * Binds to PORT (default 3000) on BIND_HOST (default localhost).
  * Returns null if sync prerequisites are missing.
  */
 export async function createSyncServer(
-	db: Database,
-	eventBus: TypedEventEmitter,
+	_db: Database,
+	_eventBus: TypedEventEmitter,
 	config: SyncServerConfig,
 ): Promise<WebServer | null> {
 	const port = config.port ?? 3000;
 	const host = config.host ?? "localhost";
-
-	const app = await createSyncApp(db, eventBus, config);
-	if (!app) return null;
-
-	// Request logging middleware
-	app.use("*", async (c, next) => {
-		const method = c.req.method;
-		const path = new URL(c.req.url).pathname;
-		console.log(`[sync] ${method} ${path}`);
-		return next();
-	});
 
 	// Create WebSocket connection manager and handlers
 	// WS upgrade requires keyManager for Ed25519 authentication
@@ -162,7 +151,8 @@ export async function createSyncServer(
 							bunServer as Parameters<typeof wsHandlers.handleUpgrade>[1],
 						);
 					}
-					return app.fetch(request);
+					// No other HTTP routes — all sync traffic is WebSocket
+					return new Response("Not found", { status: 404 });
 				},
 				websocket: wsHandlers.websocket,
 			});

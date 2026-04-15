@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { formatError } from "@bound/shared";
 import type { KeyringConfig, Logger, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
-import type { EagerPushConfig, KeyManager, RelayExecutor } from "@bound/sync";
+import type { KeyManager, RelayExecutor } from "@bound/sync";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { type ModelsConfig, type RoutesConfig, registerRoutes } from "./routes/index";
@@ -36,7 +36,6 @@ export interface SyncAppConfig {
 	logger: Logger;
 	relayExecutor?: RelayExecutor;
 	hubSiteId?: string;
-	eagerPushConfig?: EagerPushConfig;
 	keyManager?: KeyManager;
 	wsConfig?: {
 		idleTimeout?: number;
@@ -46,7 +45,6 @@ export interface SyncAppConfig {
 
 /**
  * Create the web/API Hono app: API routes, webhook routes, static assets, DNS-rebinding protection.
- * Does NOT include sync routes — those live on a separate listener via createSyncApp().
  */
 export async function createWebApp(
 	db: Database,
@@ -123,34 +121,3 @@ export async function createWebApp(
 	return app;
 }
 
-/**
- * Create the sync Hono app: sync routes + relay-deliver with Ed25519 auth.
- * Served on the primary port, externally accessible for hub-spoke replication.
- */
-export async function createSyncApp(
-	db: Database,
-	eventBus: TypedEventEmitter,
-	config: SyncAppConfig,
-): Promise<Hono | null> {
-	try {
-		const { createSyncRoutes } = await import("@bound/sync");
-		const syncRoutes = createSyncRoutes(
-			db,
-			config.siteId,
-			config.keyring,
-			eventBus,
-			config.logger,
-			config.relayExecutor,
-			config.hubSiteId,
-			config.eagerPushConfig,
-			undefined,
-			config.keyManager,
-		);
-		const app = new Hono();
-		app.route("/", syncRoutes);
-		return app;
-	} catch (error) {
-		console.warn("[sync] Sync routes unavailable:", formatError(error));
-		return null;
-	}
-}

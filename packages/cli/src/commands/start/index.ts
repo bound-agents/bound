@@ -38,12 +38,11 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// Phase 4: Model router and inference setup
 	const { modelRouter, routerConfig } = await initInference(appContext, commandContext);
 
-	// Phase 5: Relay processor, KeyManager, reachability
+	// Phase 5: Relay processor, KeyManager
 	const {
 		relayProcessor,
 		relayProcessorHandle,
 		relayExecutor,
-		reachabilityTracker,
 		keyManager,
 		hubSiteId,
 		keyring,
@@ -84,10 +83,6 @@ export async function runStart(args: StartArgs): Promise<void> {
 		: null;
 
 	// Phase 7: Web server, message handler, platform connectors
-	// Transport ref is lazily resolved — sync phase initializes it after the server.
-	// biome-ignore lint/style/useConst: intentionally mutable — set after server init, read lazily by getTransport
-	let transportRef: import("@bound/sync").SyncTransport | undefined;
-
 	const serverResult =
 		agentLoopFactory && modelRouter
 			? await initServer({
@@ -97,11 +92,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 					routerConfig,
 					agentLoopFactory,
 					relayExecutor,
-					reachabilityTracker,
 					keyManager,
 					keyring,
 					hubSiteId,
-					getTransport: () => transportRef,
 					relayProcessor,
 				})
 			: {
@@ -114,10 +107,11 @@ export async function runStart(args: StartArgs): Promise<void> {
 				};
 
 	// Phase 8: Sync loop, pruning, overlay scanner
-	const { syncLoopHandle, pruningHandle, overlayHandle, transport, wsClient, wsTransport } =
-		await initSync(appContext, keypair, keyManager);
-	// Back-patch the transport reference for eager push
-	transportRef = transport;
+	const { pruningHandle, overlayHandle, wsClient, wsTransport } = await initSync(
+		appContext,
+		keypair,
+		keyManager,
+	);
 
 	// Phase 9: Host heartbeat, cron seeding, scheduler
 	const heartbeatHandle = startHostHeartbeat(appContext.db, appContext.siteId, {
@@ -141,7 +135,6 @@ Press Ctrl+C to stop.
 	await setupGracefulShutdown(appContext, {
 		heartbeatHandle,
 		schedulerHandle,
-		syncLoopHandle,
 		pruningHandle,
 		overlayHandle,
 		relayProcessorHandle,

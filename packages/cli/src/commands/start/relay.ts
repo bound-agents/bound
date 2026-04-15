@@ -1,6 +1,6 @@
 /**
  * Relay subsystem: relay processor, KeyManager, SIGHUP handler,
- * reachability tracker, and hub site ID resolution.
+ * and hub site ID resolution.
  */
 
 import { RelayProcessor } from "@bound/agent";
@@ -10,7 +10,6 @@ import { resolveRelayConfig } from "@bound/core";
 import type { ModelRouter } from "@bound/llm";
 import type { ClusterFsResult } from "@bound/sandbox";
 import type { KeyringConfig, SyncConfig } from "@bound/shared";
-import { ReachabilityTracker } from "@bound/sync";
 import type { KeyManager, RelayExecutor } from "@bound/sync";
 
 /** Keypair shape returned by ensureKeypair from @bound/sync. */
@@ -24,7 +23,6 @@ export interface RelayResult {
 	relayProcessor: RelayProcessor;
 	relayProcessorHandle: { stop: () => void };
 	relayExecutor: RelayExecutor;
-	reachabilityTracker: ReachabilityTracker;
 	keyManager: KeyManager | undefined;
 	hubSiteId: string | undefined;
 	keyring: KeyringConfig | undefined;
@@ -85,9 +83,6 @@ export async function initRelay(
 		return relayProcessor.executeImmediate(request, hubSiteId);
 	};
 
-	// 11c. Initialize reachability tracker for eager push (hub-side)
-	const reachabilityTracker = new ReachabilityTracker();
-
 	// Determine hub siteId from keyring (for spoke-side validation)
 	let hubSiteId: string | undefined;
 	if (keyringResult?.ok && syncConfigResult?.ok) {
@@ -140,7 +135,6 @@ export async function initRelay(
 		relayProcessor,
 		relayProcessorHandle,
 		relayExecutor,
-		reachabilityTracker,
 		keyManager,
 		hubSiteId,
 		keyring,

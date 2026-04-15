@@ -27,7 +27,6 @@ export interface SchedulerResult {
 export interface ShutdownHandles {
 	heartbeatHandle: { stop: () => void } | null;
 	schedulerHandle: { stop: () => void } | null;
-	syncLoopHandle: { stop: () => void } | null;
 	pruningHandle: { stop: () => void } | null;
 	overlayHandle: { stop: () => void } | null;
 	relayProcessorHandle: { stop: () => void } | null;
@@ -159,7 +158,6 @@ export function setupGracefulShutdown(
 			);
 			if (handles.heartbeatHandle) handles.heartbeatHandle.stop();
 			if (handles.schedulerHandle) handles.schedulerHandle.stop();
-			if (handles.syncLoopHandle) handles.syncLoopHandle.stop();
 			if (handles.pruningHandle) handles.pruningHandle.stop();
 			if (handles.overlayHandle) handles.overlayHandle.stop();
 			if (handles.relayProcessorHandle) handles.relayProcessorHandle.stop();
