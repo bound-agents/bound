@@ -2,6 +2,7 @@ export { createDatabase, getSiteId } from "./database";
 export { applySchema } from "./schema";
 export {
 	createChangeLogEntry,
+	setChangelogEventBus,
 	withChangeLog,
 	insertRow,
 	updateRow,
