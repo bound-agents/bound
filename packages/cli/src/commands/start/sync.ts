@@ -32,9 +32,12 @@ export async function initSync(
 	if (syncResult?.ok) {
 		const syncConfig = syncResult.value as { hub: string; sync_interval_seconds: number };
 		try {
-			const { SyncClient, startSyncLoop, SyncTransport: ST, WsSyncClient } = await import(
-				"@bound/sync"
-			);
+			const {
+				SyncClient,
+				startSyncLoop,
+				SyncTransport: ST,
+				WsSyncClient,
+			} = await import("@bound/sync");
 			const keyringResult = appContext.optionalConfig.keyring;
 			const keyring = keyringResult?.ok ? (keyringResult.value as KeyringConfig) : { hosts: {} };
 
@@ -68,10 +71,13 @@ export async function initSync(
 			if (syncConfig.hub && keyManager) {
 				try {
 					const hubUrl = new URL(syncConfig.hub).toString();
+					// Normalize hub URL for comparison (handles trailing slashes, port differences)
+					const normalizedHubUrl = new URL(syncConfig.hub).toString();
 					// Derive hub site ID from the keyring — find the keyring entry matching hubUrl
 					let hubSiteId: string | undefined;
 					for (const [siteId, entry] of Object.entries(keyring.hosts ?? {})) {
-						if (entry.url === syncConfig.hub) {
+						const normalizedEntryUrl = new URL(entry.url).toString();
+						if (normalizedEntryUrl === normalizedHubUrl) {
 							hubSiteId = siteId;
 							break;
 						}

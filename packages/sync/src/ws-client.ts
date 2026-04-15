@@ -52,8 +52,7 @@ export class WsSyncClient {
 			const { wsUrl } = this.deriveWsUrl(this.config.hubUrl);
 
 			// Step 2: Sign the upgrade request
-			// Note: signedHeaders would be used in production for Bun's fetch websocket: true API
-			const _signedHeaders = await signRequest(
+			const signedHeaders = await signRequest(
 				this.config.privateKey,
 				this.config.siteId,
 				"GET",
@@ -68,14 +67,9 @@ export class WsSyncClient {
 			}
 
 			// Step 4: Create WebSocket with signed headers
-			// Standard WebSocket API doesn't support custom headers directly.
-			// In production with Bun's specialized WebSocket support (via fetch websocket: true),
-			// headers would be passed through that mechanism.
-			// For now, we create the connection and rely on the hub to handle auth
-			// via the standard request/response upgrade handshake.
-			// Note: This means the client currently relies on the connection URL encoding
-			// or relies on Phase 4 (message dispatch) to handle authentication at the frame level.
-			this.ws = new WebSocket(wsUrl);
+			// Bun's WebSocket constructor supports custom headers via { headers } option
+			// biome-ignore lint/suspicious/noExplicitAny: Bun WebSocket API requires any for non-standard options
+			this.ws = new WebSocket(wsUrl, { headers: signedHeaders } as any);
 
 			// Set binary type for binary frame handling
 			this.ws.binaryType = "nodebuffer" as BinaryType;
@@ -181,14 +175,21 @@ export class WsSyncClient {
 	}
 
 	private handleMessage(event: MessageEvent): void {
-		const data = event.data;
-		if (data instanceof Uint8Array) {
+		let data: Uint8Array | null = null;
+		if (event.data instanceof ArrayBuffer) {
+			data = new Uint8Array(event.data);
+		} else if (event.data instanceof Uint8Array) {
+			data = event.data;
+		} else if (typeof event.data === "string") {
+			this.config.logger?.warn("WsSyncClient: received text message, ignoring", {
+				size: event.data.length,
+			});
+			return;
+		}
+
+		if (data) {
 			this.config.logger?.debug("WsSyncClient: received binary frame", { size: data.length });
 			this.onMessage?.(data);
-		} else if (typeof data === "string") {
-			this.config.logger?.warn("WsSyncClient: received text message, ignoring", {
-				size: data.length,
-			});
 		}
 	}
 
