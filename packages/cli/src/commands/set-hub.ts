@@ -79,6 +79,9 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 		console.log("Relay drain mode enabled.");
 
 		// Step 2: Wait for relay outbox to drain
+		// This polls the relay_outbox table for delivered entries. With WS transport,
+		// entries are marked delivered via markDelivered() when acknowledged by the relay handler.
+		// This drain mechanism works transparently with WS transport (no changes needed).
 		const relayConfig = loadRelayConfig(configDir);
 		const drainTimeoutMs = relayConfig.drain_timeout_seconds * 1000;
 		const drainStart = Date.now();
