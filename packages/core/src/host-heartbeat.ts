@@ -1,6 +1,5 @@
 import type { Database } from "bun:sqlite";
 import type { Logger } from "@bound/shared";
-import { createChangeLogEntry } from "./change-log";
 
 export interface HeartbeatOptions {
 	/** Heartbeat interval in milliseconds. Defaults to 120_000 (2 minutes). */
@@ -37,12 +36,6 @@ export function startHostHeartbeat(
 				if (!existing) return;
 
 				db.run("UPDATE hosts SET modified_at = ? WHERE site_id = ?", [ts, siteId]);
-				// Read full row for changelog — partial row_data breaks LWW INSERT on peers
-				const fullRow = db.query("SELECT * FROM hosts WHERE site_id = ?").get(siteId) as Record<
-					string,
-					unknown
-				>;
-				createChangeLogEntry(db, "hosts", siteId, siteId, fullRow);
 			})();
 		} catch (error) {
 			options?.logger?.warn("Host heartbeat DB write failed", {

@@ -60,7 +60,7 @@ describe("Host Heartbeat", () => {
 		expect(updatedTime).toBeGreaterThan(initialTime);
 	});
 
-	it("creates change_log entries with full row data", async () => {
+	it("does NOT create change_log entries (heartbeat is local-only)", async () => {
 		const handle = startHostHeartbeat(db, siteId, { intervalMs: 30 });
 
 		await new Promise((resolve) => setTimeout(resolve, 40));
@@ -68,19 +68,12 @@ describe("Host Heartbeat", () => {
 		handle.stop();
 
 		const entries = db
-			.query<{ table_name: string; row_id: string; row_data: string }, []>(
-				"SELECT table_name, row_id, row_data FROM change_log WHERE table_name = 'hosts' AND row_id = ?",
+			.query<{ table_name: string; row_id: string }, []>(
+				"SELECT table_name, row_id FROM change_log WHERE table_name = 'hosts' AND row_id = ?",
 			)
 			.all(siteId);
 
-		expect(entries.length).toBeGreaterThanOrEqual(1);
-
-		// Verify the row_data contains the full row snapshot, not just modified_at
-		const lastEntry = entries[entries.length - 1];
-		const rowData = JSON.parse(lastEntry.row_data);
-		expect(rowData.site_id).toBe(siteId);
-		expect(rowData.host_name).toBe("test-host");
-		expect(rowData.modified_at).toBeDefined();
+		expect(entries.length).toBe(0);
 	});
 
 	it("stop() clears the timer and prevents further updates", async () => {
