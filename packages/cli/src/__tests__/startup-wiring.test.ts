@@ -468,7 +468,7 @@ describe("Startup Wiring", () => {
 			// start.ts reads: appContext.optionalConfig.sync
 			// config-loader stores under key: "sync"
 			const optionalConfig: Record<string, { ok: boolean; value?: Record<string, unknown> }> = {
-				sync: { ok: true, value: { hub: "https://hub.example.com", sync_interval_seconds: 30 } },
+				sync: { ok: true, value: { hub: "https://hub.example.com" } },
 			};
 
 			const syncResult = optionalConfig.sync;
