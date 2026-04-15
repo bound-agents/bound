@@ -332,7 +332,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 										{
 											id: randomUUID(),
 											thread_id,
-											role: "user",
+											role: "system",
 											content: notifText,
 											model_id: null,
 											tool_name: null,

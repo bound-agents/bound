@@ -89,7 +89,7 @@ describe("Notification message insertion", () => {
 			{
 				id: entry.message_id,
 				thread_id: threadId,
-				role: "user",
+				role: "system",
 				content: notifText,
 				model_id: null,
 				tool_name: null,
@@ -110,7 +110,7 @@ describe("Notification message insertion", () => {
 
 		expect(msg).not.toBeNull();
 		expect(msg?.content).toContain("goose deep read completed");
-		expect(msg?.role).toBe("user");
+		expect(msg?.role).toBe("system");
 	});
 
 	it("survives retry — notification message uses fresh UUID, not dispatch entry ID", () => {
@@ -137,7 +137,7 @@ describe("Notification message insertion", () => {
 			{
 				id: msgId1,
 				thread_id: threadId,
-				role: "user",
+				role: "system",
 				content: notifText,
 				model_id: null,
 				tool_name: null,
@@ -166,7 +166,7 @@ describe("Notification message insertion", () => {
 			{
 				id: msgId2,
 				thread_id: threadId,
-				role: "user",
+				role: "system",
 				content: notifText,
 				model_id: null,
 				tool_name: null,
@@ -207,7 +207,7 @@ describe("Notification message insertion", () => {
 			{
 				id: entry.message_id,
 				thread_id: threadId,
-				role: "user",
+				role: "system",
 				content: notifText,
 				model_id: null,
 				tool_name: null,
