@@ -127,7 +127,7 @@ const connectorConfigSchema = z.object({
 });
 
 export const platformsSchema = z.object({
-	connectors: z.array(connectorConfigSchema).min(1),
+	connectors: z.array(connectorConfigSchema),
 });
 
 export type PlatformConnectorConfig = z.infer<typeof connectorConfigSchema>;

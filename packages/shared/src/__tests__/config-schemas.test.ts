@@ -244,12 +244,12 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
-		it("requires at least one connector", () => {
+		it("accepts empty connectors array for spoke nodes without platforms", () => {
 			const config = {
 				connectors: [],
 			};
 			const result = platformsSchema.safeParse(config);
-			expect(result.success).toBe(false);
+			expect(result.success).toBe(true);
 		});
 
 		it("rejects invalid leadership value", () => {
