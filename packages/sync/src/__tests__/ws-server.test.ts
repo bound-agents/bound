@@ -422,9 +422,7 @@ describe("WsConnectionManager", async () => {
 });
 
 describe("createWsHandlers", async () => {
-	const { WsConnectionManager, createWsHandlers } = await import(
-		"../ws-server.js"
-	);
+	const { WsConnectionManager, createWsHandlers } = await import("../ws-server.js");
 
 	describe("lifecycle integration", () => {
 		it("processes full connection lifecycle", async () => {

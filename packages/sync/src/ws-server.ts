@@ -172,12 +172,7 @@ export interface WsServerConfig {
  * This allows the sync server's fetch handler to call handleUpgrade in an async context.
  */
 export function createWsHandlersFactory(config: WsServerConfig) {
-	const {
-		connectionManager,
-		logger,
-		idleTimeout = 120,
-		backpressureLimit = 2097152,
-	} = config;
+	const { connectionManager, logger, idleTimeout = 120, backpressureLimit = 2097152 } = config;
 
 	/**
 	 * Create handlers with async authentication.
@@ -190,16 +185,8 @@ export function createWsHandlersFactory(config: WsServerConfig) {
 		websocket: WebSocketHandler<WsConnectionData>;
 		handleUpgrade: (req: Request, server: Server) => Promise<Response | undefined>;
 	} => {
-		const handleUpgrade = async (
-			req: Request,
-			server: Server,
-		): Promise<Response | undefined> => {
-			const authResult = await authenticateWsUpgrade(
-				req,
-				keyring,
-				keyManager,
-				logger,
-			);
+		const handleUpgrade = async (req: Request, server: Server): Promise<Response | undefined> => {
+			const authResult = await authenticateWsUpgrade(req, keyring, keyManager, logger);
 
 			if (!authResult.ok) {
 				return new Response(authResult.error.body, {
@@ -280,12 +267,7 @@ export function createWsHandlers(config: WsServerConfig): {
 		keyManager?: KeyManager,
 	) => Promise<Response | undefined>;
 } {
-	const {
-		connectionManager,
-		logger,
-		idleTimeout = 120,
-		backpressureLimit = 2097152,
-	} = config;
+	const { connectionManager, logger, idleTimeout = 120, backpressureLimit = 2097152 } = config;
 
 	const handleUpgrade = async (
 		req: Request,
@@ -298,12 +280,7 @@ export function createWsHandlers(config: WsServerConfig): {
 			return new Response("WebSocket upgrade failed", { status: 500 });
 		}
 
-		const authResult = await authenticateWsUpgrade(
-			req,
-			keyring,
-			keyManager,
-			logger,
-		);
+		const authResult = await authenticateWsUpgrade(req, keyring, keyManager, logger);
 
 		if (!authResult.ok) {
 			return new Response(authResult.error.body, {
@@ -380,10 +357,7 @@ type ServerWebSocket<T = unknown> = {
 };
 
 type Server = {
-	upgrade<T = unknown>(
-		request: Request,
-		options?: { data?: T },
-	): boolean;
+	upgrade<T = unknown>(request: Request, options?: { data?: T }): boolean;
 };
 
 type WebSocketHandler<T = unknown> = {
