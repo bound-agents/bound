@@ -159,6 +159,8 @@ export class WsConnectionManager {
 
 export interface WsServerConfig {
 	connectionManager: WsConnectionManager;
+	keyring: KeyringConfig;
+	keyManager: KeyManager;
 	logger?: Logger;
 	idleTimeout?: number; // seconds, default 120
 	backpressureLimit?: number; // bytes, default 2097152 (2MB)
@@ -166,120 +168,23 @@ export interface WsServerConfig {
 
 /**
  * Create WebSocket handlers and upgrade logic for the sync server.
+ * Binds keyring and keyManager at creation time, so handleUpgrade(req, server)
+ * can be called without additional parameters.
  */
-/**
- * Create a factory that returns async handleUpgrade.
- * This allows the sync server's fetch handler to call handleUpgrade in an async context.
- */
-export function createWsHandlersFactory(config: WsServerConfig) {
-	const { connectionManager, logger, idleTimeout = 120, backpressureLimit = 2097152 } = config;
-
-	/**
-	 * Create handlers with async authentication.
-	 * This version includes authenticateWsUpgrade inline.
-	 */
-	const createHandlers = (
-		keyring: KeyringConfig,
-		keyManager: KeyManager,
-	): {
-		websocket: WebSocketHandler<WsConnectionData>;
-		handleUpgrade: (req: Request, server: Server) => Promise<Response | undefined>;
-	} => {
-		const handleUpgrade = async (req: Request, server: Server): Promise<Response | undefined> => {
-			const authResult = await authenticateWsUpgrade(req, keyring, keyManager, logger);
-
-			if (!authResult.ok) {
-				return new Response(authResult.error.body, {
-					status: authResult.error.status,
-				});
-			}
-
-			const upgraded = server.upgrade(req, { data: authResult.value });
-			if (!upgraded) {
-				logger?.warn("WS upgrade failed to upgrade connection");
-				return new Response("WebSocket upgrade failed", { status: 500 });
-			}
-
-			return undefined;
-		};
-
-		const websocket: WebSocketHandler<WsConnectionData> = {
-			open(ws) {
-				logger?.debug("WS connection opened", { siteId: ws.data.siteId });
-				connectionManager.add(ws.data.siteId, ws);
-			},
-
-			message(ws, message) {
-				// Validate binary frame (reject text messages with close code 1003)
-				if (typeof message === "string") {
-					logger?.warn("WS received text message, closing connection", {
-						siteId: ws.data.siteId,
-					});
-					ws.close(1003, "Text frames not supported");
-					return;
-				}
-
-				// Message is Uint8Array (Buffer is a subclass)
-				const frame = message as Uint8Array;
-				logger?.debug("WS received binary frame", {
-					siteId: ws.data.siteId,
-					size: frame.length,
-				});
-				// Frame dispatch to handlers comes in Phase 4/5
-			},
-
-			close(ws, code, reason) {
-				logger?.debug("WS connection closed", {
-					siteId: ws.data.siteId,
-					code,
-					reason,
-				});
-				connectionManager.remove(ws.data.siteId);
-			},
-
-			drain(ws) {
-				ws.data.sendState = "ready";
-				if (ws.data.pendingDrain) {
-					ws.data.pendingDrain();
-					ws.data.pendingDrain = null;
-				}
-			},
-
-			idleTimeout,
-			backpressureLimit,
-		};
-
-		return {
-			websocket,
-			handleUpgrade,
-		};
-	};
-
-	return createHandlers;
-}
-
 export function createWsHandlers(config: WsServerConfig): {
 	websocket: WebSocketHandler<WsConnectionData>;
-	handleUpgrade: (
-		req: Request,
-		server: Server,
-		keyring?: KeyringConfig,
-		keyManager?: KeyManager,
-	) => Promise<Response | undefined>;
+	handleUpgrade: (req: Request, server: Server) => Promise<Response | undefined>;
 } {
-	const { connectionManager, logger, idleTimeout = 120, backpressureLimit = 2097152 } = config;
+	const {
+		connectionManager,
+		keyring,
+		keyManager,
+		logger,
+		idleTimeout = 120,
+		backpressureLimit = 2097152,
+	} = config;
 
-	const handleUpgrade = async (
-		req: Request,
-		server: Server,
-		keyring?: KeyringConfig,
-		keyManager?: KeyManager,
-	): Promise<Response | undefined> => {
-		if (!keyring || !keyManager) {
-			logger?.warn("WS upgrade: missing keyring or keyManager");
-			return new Response("WebSocket upgrade failed", { status: 500 });
-		}
-
+	const handleUpgrade = async (req: Request, server: Server): Promise<Response | undefined> => {
 		const authResult = await authenticateWsUpgrade(req, keyring, keyManager, logger);
 
 		if (!authResult.ok) {
@@ -349,7 +254,12 @@ export function createWsHandlers(config: WsServerConfig): {
 	};
 }
 
-// Bun WebSocket types for type safety
+/**
+ * Local type approximations for Bun WebSocket types.
+ * We cannot import these directly from Bun (they are not exported in the public API),
+ * so we define local types that match the API contract used in this module.
+ * These are sufficient for the WebSocket handler lifecycle and frame dispatch.
+ */
 type ServerWebSocket<T = unknown> = {
 	send(data: string | Uint8Array, binary?: boolean): number;
 	close(code?: number, reason?: string): void;

@@ -97,8 +97,12 @@ describe("authenticateWsUpgrade", () => {
 				"",
 			);
 
-			// Tamper with the signature
-			const tampered = `${signatureHeaders["X-Signature"].slice(0, -2)}00`;
+			// Tamper with the signature by inverting the last hex character.
+			// This is deterministic (never a no-op) and always produces a different signature.
+			const sig = signatureHeaders["X-Signature"];
+			const lastChar = sig[sig.length - 1];
+			const inverted = lastChar === "0" ? "1" : "0";
+			const tampered = sig.slice(0, -1) + inverted;
 			signatureHeaders = {
 				...signatureHeaders,
 				"X-Signature": tampered,
@@ -424,9 +428,20 @@ describe("WsConnectionManager", async () => {
 describe("createWsHandlers", async () => {
 	const { WsConnectionManager, createWsHandlers } = await import("../ws-server.js");
 
+	// Helper to create minimal keyring and keyManager for tests
+	const createMockKeyringAndManager = () => {
+		const keyring: KeyringConfig = { hosts: {} };
+		const keyManager = {
+			getSymmetricKey: () => new Uint8Array(32),
+			getFingerprint: () => "0123456789abcdef",
+		} as any;
+		return { keyring, keyManager };
+	};
+
 	describe("lifecycle integration", () => {
 		it("processes full connection lifecycle", async () => {
 			const manager = new WsConnectionManager();
+			const { keyring, keyManager } = createMockKeyringAndManager();
 			const events: string[] = [];
 
 			const mockLogger = {
@@ -437,6 +452,8 @@ describe("createWsHandlers", async () => {
 
 			const handlers = createWsHandlers({
 				connectionManager: manager,
+				keyring,
+				keyManager,
 				logger: mockLogger as any,
 			});
 
@@ -448,15 +465,17 @@ describe("createWsHandlers", async () => {
 
 		it("handleUpgrade returns error response on auth failure", async () => {
 			const manager = new WsConnectionManager();
-			const handlers = createWsHandlers({
-				connectionManager: manager,
-			});
-
 			const failingKeyring = { hosts: {} };
 			const failingKeyManager = {
 				getSymmetricKey: () => null,
 				getFingerprint: () => null,
 			} as any;
+
+			const handlers = createWsHandlers({
+				connectionManager: manager,
+				keyring: failingKeyring,
+				keyManager: failingKeyManager,
+			});
 
 			// Create request without proper signature headers
 			const request = new Request("http://localhost:3000/sync/ws", {
@@ -471,12 +490,7 @@ describe("createWsHandlers", async () => {
 				upgrade: () => true,
 			} as any;
 
-			const response = await handlers.handleUpgrade(
-				request,
-				mockServer,
-				failingKeyring,
-				failingKeyManager,
-			);
+			const response = await handlers.handleUpgrade(request, mockServer);
 
 			if (response) {
 				expect(response.status).toBe(403);
@@ -485,8 +499,11 @@ describe("createWsHandlers", async () => {
 
 		it("websocket open handler adds connection to manager", () => {
 			const manager = new WsConnectionManager();
+			const { keyring, keyManager } = createMockKeyringAndManager();
 			const handlers = createWsHandlers({
 				connectionManager: manager,
+				keyring,
+				keyManager,
 			});
 
 			const mockWs = {
@@ -505,8 +522,11 @@ describe("createWsHandlers", async () => {
 
 		it("websocket close handler removes connection from manager", () => {
 			const manager = new WsConnectionManager();
+			const { keyring, keyManager } = createMockKeyringAndManager();
 			const handlers = createWsHandlers({
 				connectionManager: manager,
+				keyring,
+				keyManager,
 			});
 
 			const mockWs = {
@@ -525,8 +545,11 @@ describe("createWsHandlers", async () => {
 
 		it("websocket message handler validates binary frames", () => {
 			const manager = new WsConnectionManager();
+			const { keyring, keyManager } = createMockKeyringAndManager();
 			const handlers = createWsHandlers({
 				connectionManager: manager,
+				keyring,
+				keyManager,
 			});
 
 			const mockWs = {
@@ -557,8 +580,11 @@ describe("createWsHandlers", async () => {
 
 		it("websocket drain handler sets ready state and calls pending drain", () => {
 			const manager = new WsConnectionManager();
+			const { keyring, keyManager } = createMockKeyringAndManager();
 			const handlers = createWsHandlers({
 				connectionManager: manager,
+				keyring,
+				keyManager,
 			});
 
 			let drainCalled = false;
@@ -583,8 +609,11 @@ describe("createWsHandlers", async () => {
 
 		it("websocket drain handler clears pendingDrain", () => {
 			const manager = new WsConnectionManager();
+			const { keyring, keyManager } = createMockKeyringAndManager();
 			const handlers = createWsHandlers({
 				connectionManager: manager,
+				keyring,
+				keyManager,
 			});
 
 			const mockWs = {
@@ -603,8 +632,11 @@ describe("createWsHandlers", async () => {
 
 		it("uses configured idleTimeout and backpressureLimit", () => {
 			const manager = new WsConnectionManager();
+			const { keyring, keyManager } = createMockKeyringAndManager();
 			const handlers = createWsHandlers({
 				connectionManager: manager,
+				keyring,
+				keyManager,
 				idleTimeout: 60,
 				backpressureLimit: 1024,
 			});
@@ -615,8 +647,11 @@ describe("createWsHandlers", async () => {
 
 		it("uses default idleTimeout and backpressureLimit", () => {
 			const manager = new WsConnectionManager();
+			const { keyring, keyManager } = createMockKeyringAndManager();
 			const handlers = createWsHandlers({
 				connectionManager: manager,
+				keyring,
+				keyManager,
 			});
 
 			expect(handlers.websocket.idleTimeout).toBe(120);

@@ -128,9 +128,16 @@ export async function createSyncServer(
 	});
 
 	// Create WebSocket connection manager and handlers
+	// WS upgrade requires keyManager for Ed25519 authentication
+	if (!config.keyManager) {
+		throw new Error("keyManager is required for WebSocket sync transport");
+	}
+
 	const wsConnectionManager = new WsConnectionManager();
 	const wsHandlers = createWsHandlers({
 		connectionManager: wsConnectionManager,
+		keyring: config.keyring,
+		keyManager: config.keyManager,
 		logger: config.logger,
 		idleTimeout: config.wsConfig?.idleTimeout,
 		backpressureLimit: config.wsConfig?.backpressureLimit,
@@ -149,18 +156,11 @@ export async function createSyncServer(
 				fetch(request: Request, bunServer) {
 					const url = new URL(request.url);
 					if (url.pathname === "/sync/ws" && request.headers.get("upgrade") === "websocket") {
-						// Call handleUpgrade and await the result
-						const result = wsHandlers.handleUpgrade(
+						// handleUpgrade is async, so always return the Promise
+						return wsHandlers.handleUpgrade(
 							request,
 							bunServer as Parameters<typeof wsHandlers.handleUpgrade>[1],
-							config.keyring,
-							config.keyManager,
 						);
-						if (result instanceof Promise) {
-							// handleUpgrade is async but may return synchronously
-							return result;
-						}
-						return result;
 					}
 					return app.fetch(request);
 				},

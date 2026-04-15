@@ -74,7 +74,6 @@ export {
 	authenticateWsUpgrade,
 	WsConnectionManager,
 	createWsHandlers,
-	createWsHandlersFactory,
 	type WsConnectionData,
 	type WsServerConfig,
 } from "./ws-server.js";
