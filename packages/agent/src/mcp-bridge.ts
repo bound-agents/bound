@@ -159,6 +159,17 @@ export async function generateMCPCommands(
 				args: Record<string, string>,
 				ctx: CommandContext,
 			): Promise<CommandResult> => {
+				// Dynamic client lookup: resolve client from the shared map at dispatch
+				// time so that hot-reloaded clients are used without re-registering commands.
+				const currentClient = clients.get(serverName);
+				if (!currentClient || !currentClient.isConnected()) {
+					return {
+						stdout: "",
+						stderr: `Server "${serverName}" is not connected. It may have been removed or failed to reconnect.\n`,
+						exitCode: 1,
+					};
+				}
+
 				const subcommand = args.subcommand;
 				const hasHelp = args.help !== undefined;
 
@@ -244,7 +255,7 @@ export async function generateMCPCommands(
 					// Coerce values using the tool's input schema before dispatch.
 					const { subcommand: _, ...rawArgs } = args as Record<string, unknown>;
 					const toolArgs = coerceArgsFromSchema(rawArgs, entry.tool.inputSchema);
-					const result = await client.callTool(subcommand, toolArgs);
+					const result = await currentClient.callTool(subcommand, toolArgs);
 					return {
 						stdout: result.content,
 						stderr: result.isError ? result.content : "",

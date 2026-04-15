@@ -734,6 +734,79 @@ describe("MCP Bridge", () => {
 		db.close();
 	});
 
+	// Dynamic client lookup: handlers use clients.get(serverName) at dispatch time,
+	// so replacing a client in the map is reflected in subsequent calls.
+	it("handler uses updated client after map replacement (dynamic lookup)", async () => {
+		const originalClient = makeMockClient(
+			{ name: "hot-server", transport: "stdio", command: "test" },
+			[{ name: "greet", description: "Greet", inputSchema: {} }],
+			[],
+			[],
+		);
+
+		const clients = new Map([["hot-server", originalClient]]);
+		const { commands } = await generateMCPCommands(clients);
+
+		const serverCmd = commands.find((c) => c.name === "hot-server");
+		expect(serverCmd).toBeDefined();
+
+		if (serverCmd) {
+			// Call with original client — should succeed
+			const mockCtx = createMockCommandContext();
+			const result1 = await serverCmd.handler({ subcommand: "greet" }, mockCtx);
+			expect(result1.exitCode).toBe(0);
+			expect(result1.stdout).toContain("Tool greet called");
+
+			// Replace client in the shared map with one that returns different output
+			const replacementClient = {
+				...originalClient,
+				isConnected: () => true,
+				getConfig: () => ({
+					name: "hot-server",
+					transport: "stdio" as const,
+					command: "test",
+				}),
+				listTools: async () => [{ name: "greet", description: "Greet", inputSchema: {} }] as Tool[],
+				callTool: async (_name: string, _args: Record<string, unknown>) => ({
+					content: "REPLACED_CLIENT_RESPONSE",
+					isError: false,
+				}),
+			} as unknown as MCPClient;
+			clients.set("hot-server", replacementClient);
+
+			// Same command should now use the replacement client
+			const result2 = await serverCmd.handler({ subcommand: "greet" }, mockCtx);
+			expect(result2.exitCode).toBe(0);
+			expect(result2.stdout).toContain("REPLACED_CLIENT_RESPONSE");
+		}
+	});
+
+	// Dynamic client lookup: removing a client from the map makes the handler fail gracefully
+	it("handler fails gracefully after client removed from map", async () => {
+		const client = makeMockClient(
+			{ name: "removable-server", transport: "stdio", command: "test" },
+			[{ name: "tool1", description: "Tool", inputSchema: {} }],
+			[],
+			[],
+		);
+
+		const clients = new Map([["removable-server", client]]);
+		const { commands } = await generateMCPCommands(clients);
+
+		const serverCmd = commands.find((c) => c.name === "removable-server");
+		expect(serverCmd).toBeDefined();
+
+		if (serverCmd) {
+			// Remove the client from the map
+			clients.delete("removable-server");
+
+			const mockCtx = createMockCommandContext();
+			const result = await serverCmd.handler({ subcommand: "tool1" }, mockCtx);
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain("not connected");
+		}
+	});
+
 	// Outbox bypass fix: updateHostMCPInfo must use change-log outbox
 	it("updateHostMCPInfo creates changelog entry for hosts table", async () => {
 		const { applySchema, createDatabase, insertRow } = await import("@bound/core");
