@@ -41,6 +41,7 @@ COMMANDS:
   skill view <name>          View SKILL.md and file listing for a skill
   skill retire <name>        Retire a skill (operator); use --reason "..." to explain
   skill import <path>        Import a skill from a local directory
+  db vacuum                  Run VACUUM to reclaim disk space
   --help                     Show this help message
 
 OPTIONS:
@@ -65,6 +66,9 @@ OPTIONS:
   boundctl drain <new-hub> [--timeout <seconds>]
     Gracefully drain current hub and switch to new hub (default timeout: 120s)
 
+  boundctl db vacuum
+    Run a full VACUUM to reclaim disk space immediately
+
 EXAMPLES:
   boundctl set-hub primary-host
   boundctl set-hub primary-host --wait
@@ -74,6 +78,7 @@ EXAMPLES:
   boundctl config reload mcp
   boundctl sync-status
   boundctl drain new-hub --timeout 180
+  boundctl db vacuum
 `);
 		process.exit(0);
 	}
@@ -313,6 +318,43 @@ EXAMPLES:
 			db.close();
 			process.exit(1);
 		}
+	}
+
+	if (command === "db") {
+		const subCommand = args[1];
+		const dataDir = getArgValue(args, "--data-dir") || "data";
+
+		if (subCommand === "vacuum") {
+			const db = openBoundDB(dataDir);
+			try {
+				console.log("Running VACUUM...");
+				const before = db.query("PRAGMA page_count").get() as { page_count: number };
+				const freeListBefore = db.query("PRAGMA freelist_count").get() as {
+					freelist_count: number;
+				};
+				db.run("VACUUM");
+				const after = db.query("PRAGMA page_count").get() as { page_count: number };
+				const pageSize = (db.query("PRAGMA page_size").get() as { page_size: number }).page_size;
+				const reclaimedPages = before.page_count - after.page_count;
+				const reclaimedBytes = reclaimedPages * pageSize;
+				console.log("VACUUM complete.");
+				console.log(`  Pages before: ${before.page_count} (${freeListBefore.freelist_count} free)`);
+				console.log(`  Pages after:  ${after.page_count}`);
+				console.log(
+					`  Reclaimed:    ${reclaimedPages} pages (${(reclaimedBytes / 1024 / 1024).toFixed(1)}MB)`,
+				);
+			} catch (error) {
+				console.error("VACUUM failed:", error);
+				db.close();
+				process.exit(1);
+			}
+			db.close();
+			process.exit(0);
+		}
+
+		console.error(`Unknown db subcommand: ${subCommand}`);
+		console.error("Available: vacuum");
+		process.exit(1);
 	}
 
 	console.error(`Unknown command: ${command}`);

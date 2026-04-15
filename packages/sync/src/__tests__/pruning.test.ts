@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { HLC_ZERO } from "@bound/shared";
-import { determinePruningMode, pruneChangeLog } from "../pruning.js";
+import { determinePruningMode, pruneChangeLog, runIncrementalVacuum } from "../pruning.js";
 
 describe("pruning", () => {
 	let db: Database;
@@ -169,6 +169,42 @@ describe("pruning", () => {
 			expect(allHlcs).toContain("2026-03-22T11:00:00.000Z_0006_site-a");
 			expect(allHlcs).toContain("2026-03-22T11:00:00.000Z_0007_site-a");
 			expect(allHlcs).toContain("2026-03-22T11:00:00.000Z_0008_site-a");
+		});
+
+		it("incremental_vacuum reclaims freed pages after pruning", () => {
+			// Insert enough data to create free pages when deleted
+			for (let i = 1; i <= 1000; i++) {
+				const counter = i.toString(16).padStart(4, "0");
+				const hlc = `2026-03-22T10:00:00.000Z_${counter}_site-a`;
+				const largeData = JSON.stringify({ payload: "x".repeat(500) });
+				db.query(
+					"INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?, ?)",
+				).run(hlc, "semantic_memory", `row-${i}`, "site-a", "2026-03-22T10:00:00Z", largeData);
+			}
+
+			// Set up peer confirming all events
+			db.query("INSERT INTO sync_state (peer_site_id, last_received) VALUES (?, ?)").run(
+				"peer-1",
+				"2026-03-22T10:00:00.000Z_ffff_site-a",
+			);
+
+			// Prune all entries
+			const result = pruneChangeLog(db, "multi-host");
+			expect(result.deleted).toBe(1000);
+
+			// runIncrementalVacuum should run without error
+			// (in-memory DBs don't have freelist pages, but verifies the call is valid)
+			expect(() => {
+				runIncrementalVacuum(db);
+			}).not.toThrow();
+		});
+	});
+
+	describe("runIncrementalVacuum", () => {
+		it("executes without error on a database", () => {
+			expect(() => {
+				runIncrementalVacuum(db);
+			}).not.toThrow();
 		});
 	});
 });

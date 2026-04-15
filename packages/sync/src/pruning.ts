@@ -72,6 +72,11 @@ export function pruneChangeLog(
 	return { deleted };
 }
 
+/** Reclaim freed pages incrementally (64 pages = 256KB per cycle at 4KB page size). */
+export function runIncrementalVacuum(db: Database): void {
+	db.run("PRAGMA incremental_vacuum(64)");
+}
+
 export function startPruningLoop(
 	db: Database,
 	intervalMs: number,
@@ -101,6 +106,9 @@ export function startPruningLoop(
 			if (dispatchPruned > 0) {
 				logger?.debug("Pruned dispatch_queue", { count: dispatchPruned });
 			}
+
+			// Reclaim freed pages incrementally
+			runIncrementalVacuum(db);
 		}, intervalMs);
 	};
 
