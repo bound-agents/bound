@@ -273,7 +273,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				targetSiteId: targetHost.site_id,
 				processOutboxId: outboxEntry.id,
 			});
-			appContext.eventBus.emit("sync:trigger", { reason: "delegation" });
 
 			// Poll until new assistant message appears in thread (loop completed on remote)
 			const POLL_INTERVAL_MS = 1000;

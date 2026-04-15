@@ -448,7 +448,6 @@ export class AgentLoop {
 									},
 									this.ctx.siteId,
 								);
-								this.ctx.eventBus.emit("sync:trigger", { reason: "relay-large-prompt" });
 								inferencePayload = {
 									...inferencePayload,
 									messages: [], // Clear inline messages

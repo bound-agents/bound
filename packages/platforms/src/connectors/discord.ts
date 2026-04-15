@@ -563,8 +563,6 @@ export class DiscordConnector implements PlatformConnector {
 				created_at: now,
 				expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
 			});
-
-			this.eventBus.emit("sync:trigger", { reason: "discord-intake" });
 		} catch (err) {
 			this.stopTyping(thread.id);
 			this.logger.error("Failed to write intake relay to outbox", { error: String(err) });

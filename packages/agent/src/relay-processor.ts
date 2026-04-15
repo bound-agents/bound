@@ -559,7 +559,6 @@ export class RelayProcessor {
 			expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
 		});
 
-		this.eventBus.emit("sync:trigger", { reason: "intake-routed" });
 		return null;
 	}
 
@@ -1246,9 +1245,6 @@ export class RelayProcessor {
 			chunkBuffer = [];
 			bufferBytes = 0;
 			lastFlushTime = Date.now();
-			// Trigger sync immediately so chunks reach the requester without waiting
-			// for the next scheduled sync cycle (up to 60s delay otherwise).
-			this.eventBus?.emit("sync:trigger", { reason: "inference-stream-flush" });
 		};
 
 		try {
@@ -1383,7 +1379,6 @@ export class RelayProcessor {
 			};
 			try {
 				writeOutbox(this.db, outboxEntry);
-				this.eventBus.emit("sync:trigger", { reason: "status-forward" });
 			} catch (error) {
 				this.logger.warn("Failed to write status forward outbox entry", {
 					threadId: payload.thread_id,
@@ -1679,7 +1674,6 @@ export class RelayProcessor {
 			created_at: now.toISOString(),
 			expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
 		});
-		this.eventBus.emit("sync:trigger", { reason: "platform-deliver-relay" });
 	}
 
 	private createResultEntry(
