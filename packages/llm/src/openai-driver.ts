@@ -274,6 +274,14 @@ async function* parseOpenAIStream(
 			const choice = event.choices[0];
 			const delta = choice.delta;
 
+			// Handle reasoning content (OpenAI reasoning models: o1, o3, o4-mini)
+			const reasoningContent = (delta as Record<string, unknown> | undefined)?.reasoning_content as
+				| string
+				| undefined;
+			if (reasoningContent) {
+				yield { type: "thinking", content: reasoningContent };
+			}
+
 			// Handle text content
 			if (delta?.content) {
 				outputText += delta.content;
@@ -412,7 +420,7 @@ export class OpenAICompatibleDriver implements LLMBackend {
 			system_prompt: true,
 			prompt_caching: false,
 			vision: false,
-			extended_thinking: false,
+			extended_thinking: true,
 			max_context: this.contextWindow,
 		};
 	}

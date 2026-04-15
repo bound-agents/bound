@@ -23,6 +23,7 @@ interface OllamaRequest {
 	system?: string;
 	temperature?: number;
 	num_predict?: number;
+	think?: boolean;
 	tools?: Array<{
 		type: string;
 		function: {
@@ -39,6 +40,7 @@ interface OllamaStreamResponse {
 	message: {
 		role: "assistant" | "tool";
 		content: string;
+		thinking?: string;
 		tool_calls?: Array<{
 			function: {
 				name: string;
@@ -124,6 +126,11 @@ function* emitChunkEvents(
 	turnTs: number,
 	getNextToolIndex: () => number,
 ): IterableIterator<StreamChunk> {
+	// Emit thinking content if present (Ollama thinking models: DeepSeek-R1, QwQ, etc.)
+	if (chunk.message.thinking !== undefined && chunk.message.thinking !== "") {
+		yield { type: "thinking", content: chunk.message.thinking };
+	}
+
 	// Emit text content if present (check for undefined/empty, but keep whitespace)
 	if (chunk.message.content !== undefined && chunk.message.content !== "") {
 		state.outputText += chunk.message.content;
@@ -237,6 +244,7 @@ export class OllamaDriver implements LLMBackend {
 			system: params.system,
 			temperature: params.temperature,
 			num_predict: params.max_tokens,
+			...(params.thinking && { think: true }),
 			tools: params.tools,
 		};
 
@@ -272,7 +280,7 @@ export class OllamaDriver implements LLMBackend {
 			system_prompt: true,
 			prompt_caching: false,
 			vision: false,
-			extended_thinking: false,
+			extended_thinking: true,
 			max_context: this.contextWindow,
 		};
 	}
