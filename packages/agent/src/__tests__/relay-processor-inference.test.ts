@@ -69,7 +69,7 @@ const createMockEventBus = (): TypedEventEmitter => {
 	return new (require("@bound/shared").TypedEventEmitter)();
 };
 
-const createTrackedEventBus = (): {
+const _createTrackedEventBus = (): {
 	eventBus: TypedEventEmitter;
 	emitted: Array<{ event: string; args: unknown }>;
 } => {
@@ -849,5 +849,4 @@ describe("RelayProcessor - executeInference", () => {
 			}
 		}
 	});
-
 });

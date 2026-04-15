@@ -149,7 +149,7 @@ describe("Event-Driven RELAY_WAIT", () => {
 
 		// Simulate the exact pattern from the implementation:
 		// 1. Check DB immediately
-		let found = readInboxByRefId(db, refId);
+		const found = readInboxByRefId(db, refId);
 		expect(found).toBeDefined();
 
 		// 2. If found, resolve immediately without setting up listener
@@ -432,9 +432,12 @@ describe("Event-Driven RELAY_STREAM", () => {
 		const maxChecks = 3;
 
 		await new Promise<void>((resolve) => {
-			const timeoutId = setTimeout(() => {
-				resolve();
-			}, POLL_INTERVAL_MS * (maxChecks + 1) + 100);
+			const timeoutId = setTimeout(
+				() => {
+					resolve();
+				},
+				POLL_INTERVAL_MS * (maxChecks + 1) + 100,
+			);
 
 			// Simulate periodic timeout checks
 			const checkInterval = setInterval(() => {

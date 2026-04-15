@@ -567,7 +567,7 @@ export class SyncClient {
 export function startSyncLoop(
 	client: SyncClient,
 	intervalSeconds: number,
-	eventBus?: TypedEventEmitter,
+	_eventBus?: TypedEventEmitter,
 	logger?: Logger,
 ): { stop: () => void } {
 	let timerId: Timer | null = null;
@@ -656,7 +656,6 @@ export function startSyncLoop(
 		}
 	};
 
-	// Listen for immediate sync trigger event
 	scheduleNext();
 
 	return {

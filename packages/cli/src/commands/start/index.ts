@@ -114,11 +114,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 				};
 
 	// Phase 8: Sync loop, pruning, overlay scanner
-	const { syncLoopHandle, pruningHandle, overlayHandle, transport, wsClient, wsTransport } = await initSync(
-		appContext,
-		keypair,
-		keyManager,
-	);
+	const { syncLoopHandle, pruningHandle, overlayHandle, transport, wsClient, wsTransport } =
+		await initSync(appContext, keypair, keyManager);
 	// Back-patch the transport reference for eager push
 	transportRef = transport;
 

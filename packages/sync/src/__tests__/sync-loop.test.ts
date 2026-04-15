@@ -424,7 +424,4 @@ describe("sync-loop", () => {
 			globalThis.fetch = originalFetch;
 		});
 	});
-
-	describe("startSyncLoop re-entry guard", () => {
-	});
 });

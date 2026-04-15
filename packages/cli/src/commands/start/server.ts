@@ -19,7 +19,6 @@ import {
 	enqueueMessage,
 	enqueueNotification,
 	insertRow,
-	readUndelivered,
 	updateRow,
 	writeOutbox,
 } from "@bound/core";
@@ -27,7 +26,6 @@ import type { ModelBackendsConfig, ModelRouter } from "@bound/llm";
 import type { KeyringConfig, ProcessPayload, StatusForwardPayload } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import type { KeyManager, RelayExecutor, SyncTransport } from "@bound/sync";
-import { eagerPushToSpoke } from "@bound/sync";
 import type { ReachabilityTracker } from "@bound/sync";
 import { createSyncServer, createWebServer } from "@bound/web";
 import { runLocalAgentLoop } from "../../lib/message-handler";
