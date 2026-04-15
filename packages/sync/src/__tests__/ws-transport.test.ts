@@ -581,6 +581,29 @@ describe("WsTransport", () => {
 
 	describe("relay tables untouched", () => {
 		it("does not modify relay_outbox or relay_inbox tables", () => {
+			// Create relay tables to verify they remain untouched
+			db.run(`
+				CREATE TABLE relay_outbox (
+					id TEXT PRIMARY KEY,
+					target_site_id TEXT NOT NULL,
+					kind TEXT NOT NULL,
+					payload TEXT NOT NULL,
+					delivered INTEGER DEFAULT 0,
+					created_at TEXT NOT NULL
+				)
+			`);
+
+			db.run(`
+				CREATE TABLE relay_inbox (
+					id TEXT PRIMARY KEY,
+					source_site_id TEXT NOT NULL,
+					kind TEXT NOT NULL,
+					payload TEXT NOT NULL,
+					processed INTEGER DEFAULT 0,
+					created_at TEXT NOT NULL
+				)
+			`);
+
 			transport.start();
 
 			const sendFrame = (): boolean => true;
@@ -588,7 +611,7 @@ describe("WsTransport", () => {
 
 			transport.addPeer("peer-1", sendFrame, key);
 
-			// Simulate some activity
+			// Simulate changelog activity
 			const now = new Date().toISOString();
 			db.run(
 				`INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data)
@@ -604,8 +627,16 @@ describe("WsTransport", () => {
 
 			transport.stop();
 
-			// Verify relay tables are not touched (no errors)
-			// (In a full test, would create these tables and verify they remain empty)
+			// Verify relay tables remain empty (AC6.5)
+			const relayOutboxCount = (
+				db.query("SELECT COUNT(*) as count FROM relay_outbox").get() as { count: number }
+			).count;
+			const relayInboxCount = (
+				db.query("SELECT COUNT(*) as count FROM relay_inbox").get() as { count: number }
+			).count;
+
+			expect(relayOutboxCount).toBe(0);
+			expect(relayInboxCount).toBe(0);
 		});
 	});
 });

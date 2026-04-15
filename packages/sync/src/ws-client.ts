@@ -17,11 +17,7 @@ export interface WsClientConfig {
 			symmetricKey: Uint8Array,
 		) => void;
 		removePeer: (peerSiteId: string) => void;
-		handleChangelogPush: (
-			peerSiteId: string,
-			payload: ChangelogPushPayload,
-			symmetricKey: Uint8Array,
-		) => void;
+		handleChangelogPush: (peerSiteId: string, payload: ChangelogPushPayload) => void;
 		handleChangelogAck: (peerSiteId: string, payload: ChangelogAckPayload) => void;
 		drainChangelog: (peerSiteId: string) => void;
 	};
@@ -238,7 +234,6 @@ export class WsSyncClient {
 						this.config.wsTransport.handleChangelogPush(
 							this.config.hubSiteId,
 							decodedFrame.payload,
-							this.symmetricKey,
 						);
 					} else if (decodedFrame.type === WsMessageType.CHANGELOG_ACK) {
 						this.config.wsTransport.handleChangelogAck(this.config.hubSiteId, decodedFrame.payload);

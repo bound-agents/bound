@@ -36,6 +36,7 @@ export interface ShutdownHandles {
 	webServer: { stop(): Promise<void> } | null;
 	syncServer: { stop(): Promise<void> } | null;
 	wsClient: { close: () => void } | null;
+	wsTransport: { start(): void; stop(): void } | undefined;
 }
 
 export function initScheduler(
@@ -162,6 +163,11 @@ export function setupGracefulShutdown(
 			if (handles.pruningHandle) handles.pruningHandle.stop();
 			if (handles.overlayHandle) handles.overlayHandle.stop();
 			if (handles.relayProcessorHandle) handles.relayProcessorHandle.stop();
+			if (handles.wsTransport) {
+				handles.wsTransport.stop();
+				const { setChangelogEventBus } = await import("@bound/core");
+				setChangelogEventBus(null);
+			}
 			if (handles.wsClient) handles.wsClient.close();
 			if (handles.platformRegistry) {
 				try {

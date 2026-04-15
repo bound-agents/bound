@@ -5,6 +5,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { AppContext } from "@bound/core";
+import { setChangelogEventBus } from "@bound/core";
 import type { KeyringConfig } from "@bound/shared";
 import { formatError } from "@bound/shared";
 import type { KeyManager, SyncTransport } from "@bound/sync";
@@ -59,6 +60,8 @@ export async function initSync(
 					eventBus: appContext.eventBus,
 					logger: appContext.logger,
 				});
+				// Enable push-on-write for changelog entries
+				setChangelogEventBus(appContext.eventBus);
 				wsTransport.start();
 				appContext.logger.info("[sync] WsTransport started");
 			}

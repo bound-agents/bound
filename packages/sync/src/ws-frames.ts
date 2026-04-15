@@ -26,6 +26,7 @@ export type ChangelogPushPayload = {
 		table_name: string;
 		row_id: string;
 		site_id: string;
+		timestamp: string;
 		row_data: Record<string, unknown>;
 	}>;
 };

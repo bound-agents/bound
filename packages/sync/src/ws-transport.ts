@@ -127,6 +127,7 @@ export class WsTransport {
 					table_name: entry.table_name,
 					row_id: entry.row_id,
 					site_id: entry.site_id,
+					timestamp: entry.timestamp,
 					row_data: JSON.parse(entry.row_data) as Record<string, unknown>,
 				})),
 			};
@@ -171,7 +172,7 @@ export class WsTransport {
 			table_name: entry.table_name as any,
 			row_id: entry.row_id,
 			site_id: entry.site_id,
-			timestamp: new Date().toISOString(), // Approximate timestamp
+			timestamp: entry.timestamp,
 			row_data: JSON.stringify(entry.row_data),
 		}));
 
@@ -286,6 +287,7 @@ export class WsTransport {
 					table_name: entry.table_name,
 					row_id: entry.row_id,
 					site_id: entry.site_id,
+					timestamp: entry.timestamp,
 					row_data: JSON.parse(entry.row_data) as Record<string, unknown>,
 				})),
 			};

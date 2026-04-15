@@ -170,11 +170,7 @@ export interface WsServerConfig {
 			symmetricKey: Uint8Array,
 		) => void;
 		removePeer: (peerSiteId: string) => void;
-		handleChangelogPush: (
-			peerSiteId: string,
-			payload: ChangelogPushPayload,
-			symmetricKey: Uint8Array,
-		) => void;
+		handleChangelogPush: (peerSiteId: string, payload: ChangelogPushPayload) => void;
 		handleChangelogAck: (peerSiteId: string, payload: ChangelogAckPayload) => void;
 		drainChangelog: (peerSiteId: string) => void;
 	};
@@ -275,11 +271,7 @@ export function createWsHandlers(config: WsServerConfig): {
 			// Dispatch to WsTransport handlers
 			if (config.wsTransport) {
 				if (decodedFrame.type === WsMessageType.CHANGELOG_PUSH) {
-					config.wsTransport.handleChangelogPush(
-						ws.data.siteId,
-						decodedFrame.payload,
-						ws.data.symmetricKey,
-					);
+					config.wsTransport.handleChangelogPush(ws.data.siteId, decodedFrame.payload);
 				} else if (decodedFrame.type === WsMessageType.CHANGELOG_ACK) {
 					config.wsTransport.handleChangelogAck(ws.data.siteId, decodedFrame.payload);
 				}
