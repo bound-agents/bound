@@ -101,3 +101,296 @@ export async function authenticateWsUpgrade(
 
 	return ok(connectionData);
 }
+
+/**
+ * Tracks active WebSocket connections by siteId.
+ * Replaces disconnected spokes by closing old connections with code 1008.
+ */
+export class WsConnectionManager {
+	private connections = new Map<string, ServerWebSocket<WsConnectionData>>();
+
+	/**
+	 * Add a connection, replacing any existing connection for this siteId.
+	 * Old connections are closed with code 1008 (policy violation).
+	 */
+	add(siteId: string, ws: ServerWebSocket<WsConnectionData>): void {
+		const existing = this.connections.get(siteId);
+		if (existing) {
+			existing.close(1008, "Duplicate connection");
+		}
+		this.connections.set(siteId, ws);
+	}
+
+	/**
+	 * Remove a connection by siteId.
+	 */
+	remove(siteId: string): void {
+		this.connections.delete(siteId);
+	}
+
+	/**
+	 * Get a connection by siteId, or undefined if not found.
+	 */
+	get(siteId: string): ServerWebSocket<WsConnectionData> | undefined {
+		return this.connections.get(siteId);
+	}
+
+	/**
+	 * Get all connections as a Map.
+	 */
+	getAll(): Map<string, ServerWebSocket<WsConnectionData>> {
+		return new Map(this.connections);
+	}
+
+	/**
+	 * Check if a connection exists for this siteId.
+	 */
+	has(siteId: string): boolean {
+		return this.connections.has(siteId);
+	}
+
+	/**
+	 * Get the number of active connections.
+	 */
+	get size(): number {
+		return this.connections.size;
+	}
+}
+
+export interface WsServerConfig {
+	connectionManager: WsConnectionManager;
+	logger?: Logger;
+	idleTimeout?: number; // seconds, default 120
+	backpressureLimit?: number; // bytes, default 2097152 (2MB)
+}
+
+/**
+ * Create WebSocket handlers and upgrade logic for the sync server.
+ */
+/**
+ * Create a factory that returns async handleUpgrade.
+ * This allows the sync server's fetch handler to call handleUpgrade in an async context.
+ */
+export function createWsHandlersFactory(config: WsServerConfig) {
+	const {
+		connectionManager,
+		logger,
+		idleTimeout = 120,
+		backpressureLimit = 2097152,
+	} = config;
+
+	/**
+	 * Create handlers with async authentication.
+	 * This version includes authenticateWsUpgrade inline.
+	 */
+	const createHandlers = (
+		keyring: KeyringConfig,
+		keyManager: KeyManager,
+	): {
+		websocket: WebSocketHandler<WsConnectionData>;
+		handleUpgrade: (req: Request, server: Server) => Promise<Response | undefined>;
+	} => {
+		const handleUpgrade = async (
+			req: Request,
+			server: Server,
+		): Promise<Response | undefined> => {
+			const authResult = await authenticateWsUpgrade(
+				req,
+				keyring,
+				keyManager,
+				logger,
+			);
+
+			if (!authResult.ok) {
+				return new Response(authResult.error.body, {
+					status: authResult.error.status,
+				});
+			}
+
+			const upgraded = server.upgrade(req, { data: authResult.value });
+			if (!upgraded) {
+				logger?.warn("WS upgrade failed to upgrade connection");
+				return new Response("WebSocket upgrade failed", { status: 500 });
+			}
+
+			return undefined;
+		};
+
+		const websocket: WebSocketHandler<WsConnectionData> = {
+			open(ws) {
+				logger?.debug("WS connection opened", { siteId: ws.data.siteId });
+				connectionManager.add(ws.data.siteId, ws);
+			},
+
+			message(ws, message) {
+				// Validate binary frame (reject text messages with close code 1003)
+				if (typeof message === "string") {
+					logger?.warn("WS received text message, closing connection", {
+						siteId: ws.data.siteId,
+					});
+					ws.close(1003, "Text frames not supported");
+					return;
+				}
+
+				// Message is Uint8Array (Buffer is a subclass)
+				const frame = message as Uint8Array;
+				logger?.debug("WS received binary frame", {
+					siteId: ws.data.siteId,
+					size: frame.length,
+				});
+				// Frame dispatch to handlers comes in Phase 4/5
+			},
+
+			close(ws, code, reason) {
+				logger?.debug("WS connection closed", {
+					siteId: ws.data.siteId,
+					code,
+					reason,
+				});
+				connectionManager.remove(ws.data.siteId);
+			},
+
+			drain(ws) {
+				ws.data.sendState = "ready";
+				if (ws.data.pendingDrain) {
+					ws.data.pendingDrain();
+					ws.data.pendingDrain = null;
+				}
+			},
+
+			idleTimeout,
+			backpressureLimit,
+		};
+
+		return {
+			websocket,
+			handleUpgrade,
+		};
+	};
+
+	return createHandlers;
+}
+
+export function createWsHandlers(config: WsServerConfig): {
+	websocket: WebSocketHandler<WsConnectionData>;
+	handleUpgrade: (
+		req: Request,
+		server: Server,
+		keyring?: KeyringConfig,
+		keyManager?: KeyManager,
+	) => Promise<Response | undefined>;
+} {
+	const {
+		connectionManager,
+		logger,
+		idleTimeout = 120,
+		backpressureLimit = 2097152,
+	} = config;
+
+	const handleUpgrade = async (
+		req: Request,
+		server: Server,
+		keyring?: KeyringConfig,
+		keyManager?: KeyManager,
+	): Promise<Response | undefined> => {
+		if (!keyring || !keyManager) {
+			logger?.warn("WS upgrade: missing keyring or keyManager");
+			return new Response("WebSocket upgrade failed", { status: 500 });
+		}
+
+		const authResult = await authenticateWsUpgrade(
+			req,
+			keyring,
+			keyManager,
+			logger,
+		);
+
+		if (!authResult.ok) {
+			return new Response(authResult.error.body, {
+				status: authResult.error.status,
+			});
+		}
+
+		const upgraded = server.upgrade(req, { data: authResult.value });
+		if (!upgraded) {
+			logger?.warn("WS upgrade failed to upgrade connection");
+			return new Response("WebSocket upgrade failed", { status: 500 });
+		}
+
+		return undefined;
+	};
+
+	const websocket: WebSocketHandler<WsConnectionData> = {
+		open(ws) {
+			logger?.debug("WS connection opened", { siteId: ws.data.siteId });
+			connectionManager.add(ws.data.siteId, ws);
+		},
+
+		message(ws, message) {
+			// Validate binary frame (reject text messages with close code 1003)
+			if (typeof message === "string") {
+				logger?.warn("WS received text message, closing connection", {
+					siteId: ws.data.siteId,
+				});
+				ws.close(1003, "Text frames not supported");
+				return;
+			}
+
+			// Message is Uint8Array (Buffer is a subclass)
+			const frame = message as Uint8Array;
+			logger?.debug("WS received binary frame", {
+				siteId: ws.data.siteId,
+				size: frame.length,
+			});
+			// Frame dispatch to handlers comes in Phase 4/5
+		},
+
+		close(ws, code, reason) {
+			logger?.debug("WS connection closed", {
+				siteId: ws.data.siteId,
+				code,
+				reason,
+			});
+			connectionManager.remove(ws.data.siteId);
+		},
+
+		drain(ws) {
+			ws.data.sendState = "ready";
+			if (ws.data.pendingDrain) {
+				ws.data.pendingDrain();
+				ws.data.pendingDrain = null;
+			}
+		},
+
+		idleTimeout,
+		backpressureLimit,
+	};
+
+	return {
+		websocket,
+		handleUpgrade,
+	};
+}
+
+// Bun WebSocket types for type safety
+type ServerWebSocket<T = unknown> = {
+	send(data: string | Uint8Array, binary?: boolean): number;
+	close(code?: number, reason?: string): void;
+	data: T;
+};
+
+type Server = {
+	upgrade<T = unknown>(
+		request: Request,
+		options?: { data?: T },
+	): boolean;
+};
+
+type WebSocketHandler<T = unknown> = {
+	open?(ws: ServerWebSocket<T>): void;
+	message?(ws: ServerWebSocket<T>, message: string | Uint8Array): void;
+	close?(ws: ServerWebSocket<T>, code: number, reason: string): void;
+	drain?(ws: ServerWebSocket<T>): void;
+	idleTimeout?: number;
+	backpressureLimit?: number;
+};
