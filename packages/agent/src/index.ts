@@ -85,3 +85,7 @@ export {
 
 // Export skill seeding
 export { seedSkillAuthoring } from "./seed-skills";
+
+// Export built-in tools
+export { createBuiltInTools } from "./built-in-tools";
+export type { BuiltInTool } from "./built-in-tools";
