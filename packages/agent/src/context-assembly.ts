@@ -332,10 +332,10 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 
 	// Stage 1: MESSAGE_RETRIEVAL
 	// Cap loaded messages to avoid unbounded DB reads on massive threads.
-	// Compacted messages are ~80 chars each, so 500 messages is plenty of
+	// Compacted messages are ~80 chars each, so 100 messages is plenty of
 	// conversational structure even after compaction. Backward-fill truncation
 	// (Stage 7) remains as a safety net if the loaded set still exceeds budget.
-	const MESSAGE_LOAD_LIMIT = 500;
+	const MESSAGE_LOAD_LIMIT = 100;
 	const messages: Message[] = [];
 	if (!noHistory) {
 		const query = db.query(
@@ -409,14 +409,13 @@ Original output was too large for the context window. If you need the full conte
 			} as Message);
 		}
 
-		// Compact old messages (everything before the recent window)
+		// Compact old tool results (everything before the recent window)
 		// The boundary shifts by 1 if we prepended the summary message.
-		// - tool_result: replace with pointer + short preview (existing behavior)
-		// - assistant: replace with pointer only (no preview) — these are the bulk
-		//   of token waste in long-running threads (e.g., 110k of 188k tokens)
+		// - tool_result: replace with pointer + short preview
+		// - assistant: NOT compacted — the LLM mimics the compaction format,
+		//   generating fake retrieval pointers instead of real responses
 		// - user / tool_call: kept intact (user msgs are ground truth; tool_call
 		//   messages are already compact)
-		const ASSISTANT_COMPACTION_THRESHOLD = 200;
 		const adjustedBoundary = thread?.summary ? compactionBoundary + 1 : compactionBoundary;
 		for (let i = 0; i < adjustedBoundary; i++) {
 			const msg = messages[i];
@@ -424,9 +423,6 @@ Original output was too large for the context window. If you need the full conte
 				const originalLength = msg.content.length;
 				const preview = safeSlice(msg.content, 0, 200).trimEnd();
 				msg.content = `[Result truncated from context — ${originalLength} chars. Retrieve with: query SELECT content FROM messages WHERE id='${msg.id}']\n${preview}`;
-			} else if (msg.role === "assistant" && msg.content.length > ASSISTANT_COMPACTION_THRESHOLD) {
-				const originalLength = msg.content.length;
-				msg.content = `[Assistant response, ${originalLength} chars — retrieve with: query SELECT content FROM messages WHERE id='${msg.id}']`;
 			}
 		}
 	}

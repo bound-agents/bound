@@ -5051,7 +5051,7 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
-		it("should compact old assistant messages when compactToolResults is true", () => {
+		it("should NOT compact old assistant messages (prevents LLM mimicry)", () => {
 			const localUserId = randomUUID();
 			const localThreadId = randomUUID();
 			const now = new Date().toISOString();
@@ -5080,18 +5080,10 @@ This skill reviews pull requests.`;
 				],
 			);
 			const oldAssistantId = randomUUID();
+			const longContent = "The architecture consists of several layers. ".repeat(100); // ~4500 chars
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					oldAssistantId,
-					localThreadId,
-					"assistant",
-					"The architecture consists of several layers. ".repeat(100), // ~4500 chars
-					now,
-					now,
-					"localhost",
-					0,
-				],
+				[oldAssistantId, localThreadId, "assistant", longContent, now, now, "localhost", 0],
 			);
 
 			// Insert recent turn (within window)
@@ -5122,16 +5114,23 @@ This skill reviews pull requests.`;
 				compactRecentWindow: 2,
 			});
 
-			// Old assistant message should be compacted
+			// Old assistant message should NOT be compacted (LLM mimics the format)
 			const compactedAssistant = result.messages.find(
 				(m) =>
 					m.role === "assistant" &&
 					typeof m.content === "string" &&
 					m.content.includes("[Assistant response,"),
 			);
-			expect(compactedAssistant).toBeDefined();
-			expect(compactedAssistant?.content).toContain(oldAssistantId);
-			expect((compactedAssistant?.content as string).length).toBeLessThan(200);
+			expect(compactedAssistant).toBeUndefined();
+
+			// Old assistant message should be preserved intact
+			const oldAssistant = result.messages.find(
+				(m) =>
+					m.role === "assistant" &&
+					typeof m.content === "string" &&
+					m.content.includes("The architecture consists of several layers"),
+			);
+			expect(oldAssistant).toBeDefined();
 
 			// User message should NOT be compacted (kept intact)
 			const userMsg = result.messages.find(
@@ -5142,15 +5141,6 @@ This skill reviews pull requests.`;
 			);
 			expect(userMsg).toBeDefined();
 			expect(userMsg?.content).toBe("explain the architecture in detail");
-
-			// Recent assistant should NOT be compacted
-			const recentAssistant = result.messages.find(
-				(m) =>
-					m.role === "assistant" &&
-					typeof m.content === "string" &&
-					m.content.includes("You're welcome!"),
-			);
-			expect(recentAssistant).toBeDefined();
 
 			// Clean up
 			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
