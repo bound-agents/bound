@@ -380,12 +380,10 @@ export class WsTransport {
 
 	/**
 	 * Send a relay outbox entry to its destination.
-	 * - If spoke (not isHub): send to hub
-	 * - If hub (isHub): handled by handleRelaySend
+	 * - If spoke (not isHub): send relay_send frame to hub
+	 * - If hub (isHub): route locally (forward to spoke, insert into own inbox, or broadcast)
 	 */
 	private sendRelayOutboxEntry(entry: RelayOutboxEntry): void {
-		// Spoke mode: send to hub if connected
-		// Hub mode: relay routing happens in handleRelaySend
 		if (!this.config.isHub) {
 			// Spoke mode: find the hub connection (typically there's one)
 			for (const [, peer] of this.peerConnections) {
@@ -408,6 +406,28 @@ export class WsTransport {
 				peer.sendFrame(frame);
 				break; // Send to the first (only) hub connection
 			}
+		} else {
+			// Hub mode: route using the same logic as spoke-originated relay_send.
+			// The hub's own agent loop can write relay outbox entries (e.g., inference
+			// requests targeting a spoke). These must be routed just like entries
+			// received from a spoke via handleRelaySend.
+			const payload: RelaySendPayload = {
+				entries: [
+					{
+						id: entry.id,
+						target_site_id: entry.target_site_id,
+						kind: entry.kind,
+						ref_id: entry.ref_id,
+						idempotency_key: entry.idempotency_key,
+						stream_id: entry.stream_id,
+						expires_at: entry.expires_at,
+						payload: JSON.parse(entry.payload),
+					},
+				],
+			};
+			this.handleRelaySend(this.config.siteId, payload);
+			// Mark as delivered — no WS ack for hub-local routing
+			markDelivered(this.config.db, [entry.id]);
 		}
 	}
 
