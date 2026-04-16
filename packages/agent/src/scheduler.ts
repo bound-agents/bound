@@ -795,6 +795,7 @@ export class Scheduler {
 					userId: "system",
 					modelId,
 					modelTier,
+					noHistory: task.no_history === 1,
 				});
 
 				const result = await agentLoop.run();

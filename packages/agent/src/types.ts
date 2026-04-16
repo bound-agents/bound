@@ -48,6 +48,11 @@ export interface AgentLoopConfig {
 			execute: (input: Record<string, unknown>) => Promise<string>;
 		}
 	>;
+	/** When true, skip loading conversation history from the messages table.
+	 *  The loop receives context only through volatile enrichment (memory, task digest,
+	 *  standing instructions). Used for autonomous tasks like heartbeat where history
+	 *  is stale self-referential output. */
+	noHistory?: boolean;
 	/**
 	 * Cooperative cancellation callback. Checked at yield points (before tool
 	 * execution, after tool result persistence). When it returns true, the loop

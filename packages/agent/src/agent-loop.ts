@@ -335,6 +335,7 @@ export class AgentLoop {
 				targetCapabilities: resolvedCaps ?? undefined,
 				toolTokenEstimate,
 				compactToolResults: true,
+				noHistory: this.config.noHistory,
 			});
 
 			this.lastContextDebug = contextDebug;
