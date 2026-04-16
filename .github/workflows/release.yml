@@ -80,7 +80,7 @@ jobs:
       # Upload binaries for GitHub release
       - name: Rename binaries for release
         run: |
-          for bin in bound boundctl bound-mcp boundcurl; do
+          for bin in bound boundctl bound-mcp; do
             cp dist/$bin dist/${bin}-${{ matrix.target }}
           done
 
