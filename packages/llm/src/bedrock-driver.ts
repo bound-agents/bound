@@ -151,6 +151,17 @@ export function toBedrockMessages(messages: LLMMessage[]): Message[] {
 		}
 	}
 
+	// Bedrock requires the conversation to start with a user message.
+	// When the first message is not "user" (e.g. scheduled task threads
+	// that only have system wakeup + tool_call/tool_result), prepend a
+	// placeholder so the API doesn't reject the request.
+	if (result.length > 0 && result[0].role !== "user") {
+		result.unshift({
+			role: "user",
+			content: [{ text: "<system-notification />" }],
+		});
+	}
+
 	return result;
 }
 

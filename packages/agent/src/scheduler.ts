@@ -619,15 +619,17 @@ export class Scheduler {
 							})
 						: (task.payload ?? "Execute scheduled task.");
 
-				// 1. Minimal user message (Bedrock requires conversation starts with user)
+				// 1. System notification establishing the wakeup context.
+				// Formerly a user message with "." — changed to system to avoid
+				// confusing models and polluting history/memory generation.
 				insertRow(
 					this.ctx.db,
 					"messages",
 					{
 						id: randomUUID(),
 						thread_id: threadId,
-						role: "user",
-						content: ".",
+						role: "system",
+						content: `[Task wakeup] Scheduled ${task.type} task ${task.id} triggered.`,
 						model_id: null,
 						tool_name: null,
 						created_at: taskNow,

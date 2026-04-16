@@ -1485,19 +1485,29 @@ Original output was too large for the context window. If you need the full conte
 			sliceStart = Math.min(sliceStart, Math.max(0, historyMessages.length - 2));
 
 			// Advance past orphaned tool_result/tool_call/assistant at the boundary
-			// to ensure conversation starts with a user message (Bedrock requirement).
+			// to start at a clean user message when possible.
+			const preAdvanceStart = sliceStart;
 			while (sliceStart < historyMessages.length && historyMessages[sliceStart].role !== "user") {
 				sliceStart++;
 			}
 
-			// Fallback: if no user found in forward scan (e.g. no-payload cron task
-			// with only tool_call/tool_result/assistant cycles), find last user message.
+			// Fallback: if no user found in forward scan (e.g. scheduled task threads
+			// with only system wakeup + tool_call/tool_result/assistant cycles), try
+			// the last user message, or fall back to the original budget-based start.
+			// The Bedrock driver handles the user-message-first requirement itself.
 			if (sliceStart >= historyMessages.length) {
+				let foundUser = false;
 				for (let i = historyMessages.length - 1; i >= 0; i--) {
 					if (historyMessages[i].role === "user") {
 						sliceStart = i;
+						foundUser = true;
 						break;
 					}
+				}
+				// No user messages at all — restore budget-based start so we don't
+				// discard all history. Bedrock driver prepends a placeholder user msg.
+				if (!foundUser) {
+					sliceStart = preAdvanceStart;
 				}
 			}
 

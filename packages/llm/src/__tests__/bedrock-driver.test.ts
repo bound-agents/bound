@@ -902,13 +902,15 @@ describe("BedrockDriver", () => {
 					role: string;
 					content: Array<Record<string, unknown>>;
 				}>;
-				// Bedrock messages: [assistant(tool_use), user(3 toolResults), user(text)]
-				expect(messages.length).toBe(3);
-				// cachePoint should be on messages[1] (= 3 - 2), not messages[3] (out of bounds)
-				const cachedMsg = messages[1].content;
+				// Bedrock messages: [user(placeholder), assistant(tool_use), user(3 toolResults), user(text)]
+				// Placeholder prepended because first real message is assistant (tool_call)
+				expect(messages.length).toBe(4);
+				expect(messages[0].role).toBe("user");
+				// cachePoint should be on messages[2] (= 4 - 2), not out of bounds
+				const cachedMsg = messages[2].content;
 				expect(cachedMsg.at(-1)).toEqual({ cachePoint: { type: "default" } });
 				// Last message should NOT have cachePoint
-				expect(messages[2].content).toEqual([{ text: "thanks" }]);
+				expect(messages[3].content).toEqual([{ text: "thanks" }]);
 			},
 		);
 
@@ -971,8 +973,10 @@ describe("toBedrockMessages — blank text guard", () => {
 	it("replaces empty tool_call fallback text with placeholder", () => {
 		const messages: LLMMessage[] = [{ role: "tool_call", content: [] }];
 		const result = toBedrockMessages(messages);
-		expect(result).toHaveLength(1);
-		const textBlock = result[0].content?.[0];
+		// [user(placeholder), assistant(tool_call fallback)]
+		expect(result).toHaveLength(2);
+		expect(result[0].role).toBe("user"); // prepended placeholder
+		const textBlock = result[1].content?.[0];
 		// biome-ignore lint/style/noNonNullAssertion: guarded by expect(textBlock).toBeDefined()
 		expect("text" in textBlock! && textBlock.text).toBeTruthy();
 	});
@@ -984,6 +988,39 @@ describe("toBedrockMessages — blank text guard", () => {
 		const textBlock = result[0].content?.[0];
 		// biome-ignore lint/style/noNonNullAssertion: guarded by expect(textBlock).toBeDefined()
 		expect("text" in textBlock! && textBlock.text).toBe("Hello world");
+	});
+
+	it("prepends placeholder user message when first message is not user", () => {
+		const messages: LLMMessage[] = [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "tc-1", name: "retrieve_task", input: {} },
+				]),
+			},
+			{ role: "tool_result", content: "task payload", tool_use_id: "tc-1" },
+		];
+		const result = toBedrockMessages(messages);
+		expect(result).toHaveLength(3);
+		expect(result[0].role).toBe("user");
+		expect(result[0].content).toEqual([{ text: "<system-notification />" }]);
+		expect(result[1].role).toBe("assistant");
+		expect(result[2].role).toBe("user");
+	});
+
+	it("does not prepend placeholder when first message is already user", () => {
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "hello" },
+			{
+				role: "tool_call",
+				content: JSON.stringify([{ type: "tool_use", id: "tc-1", name: "foo", input: {} }]),
+			},
+			{ role: "tool_result", content: "bar", tool_use_id: "tc-1" },
+		];
+		const result = toBedrockMessages(messages);
+		expect(result).toHaveLength(3);
+		expect(result[0].role).toBe("user");
+		expect(result[0].content).toEqual([{ text: "hello" }]);
 	});
 });
 

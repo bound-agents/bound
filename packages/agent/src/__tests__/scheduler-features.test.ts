@@ -986,7 +986,7 @@ describe("Scheduler features", () => {
 			});
 			stop();
 
-			// Three messages: user "." + tool_call retrieve_task + tool_result with payload
+			// Three messages: system wakeup + tool_call retrieve_task + tool_result with payload
 			expect(messagesAtRunTime).toBeGreaterThanOrEqual(3);
 
 			const allMsgs = db
@@ -1000,9 +1000,9 @@ describe("Scheduler features", () => {
 				tool_name: string | null;
 			}[];
 
-			// First message: minimal user stub for Bedrock
-			expect(allMsgs[0].role).toBe("user");
-			expect(allMsgs[0].content).toBe(".");
+			// First message: system wakeup notification (not user "." anymore)
+			expect(allMsgs[0].role).toBe("system");
+			expect(allMsgs[0].content).toContain("[Task wakeup]");
 
 			// Second message: synthetic assistant tool_call
 			expect(allMsgs[1].role).toBe("tool_call");
