@@ -344,6 +344,21 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 		const rows = query.all(threadId, MESSAGE_LOAD_LIMIT) as Message[];
 		rows.reverse();
 		messages.push(...rows);
+	} else if (params.taskId) {
+		// noHistory tasks still need the current run's injected messages (wakeup +
+		// synthetic tool_call/tool_result). Load messages created at or after the
+		// task's claimed_at timestamp to capture exactly this run's setup.
+		const task = db.query("SELECT claimed_at FROM tasks WHERE id = ?").get(params.taskId) as {
+			claimed_at: string | null;
+		} | null;
+		if (task?.claimed_at) {
+			const rows = db
+				.query(
+					"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin FROM messages WHERE thread_id = ? AND deleted = 0 AND created_at >= ? ORDER BY created_at ASC, rowid ASC",
+				)
+				.all(threadId, task.claimed_at) as Message[];
+			messages.push(...rows);
+		}
 	}
 
 	// Stage 1.5: RETROACTIVE_RESULT_TRUNCATION
