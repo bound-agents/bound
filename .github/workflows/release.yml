@@ -48,7 +48,7 @@ jobs:
       - name: Stage binaries for Docker
         run: |
           mkdir -p binaries/${{ matrix.arch }}
-          cp dist/bound dist/boundctl dist/bound-mcp dist/boundcurl binaries/${{ matrix.arch }}/
+          cp dist/bound dist/boundctl dist/bound-mcp binaries/${{ matrix.arch }}/
 
       # Build and push per-platform Docker image (native, no QEMU)
       - uses: docker/setup-buildx-action@v3

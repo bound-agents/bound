@@ -17,7 +17,6 @@ RUN groupadd -r -g 1001 bound \
 COPY binaries/${TARGETARCH}/bound     /usr/local/bin/bound
 COPY binaries/${TARGETARCH}/boundctl  /usr/local/bin/boundctl
 COPY binaries/${TARGETARCH}/bound-mcp /usr/local/bin/bound-mcp
-COPY binaries/${TARGETARCH}/boundcurl /usr/local/bin/boundcurl
 
 WORKDIR /app
 
