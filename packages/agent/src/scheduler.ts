@@ -598,6 +598,7 @@ export class Scheduler {
 							last_message_at: taskNow,
 							modified_at: taskNow,
 							deleted: 0,
+							model_hint: task.model_hint ?? null,
 						},
 						this.ctx.siteId,
 					);
