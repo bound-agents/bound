@@ -100,6 +100,16 @@ interface BashLike {
 		thresholdBytes: number;
 	};
 	capturePreSnapshot?: () => Promise<void>;
+	builtInTools?: Map<
+		string,
+		{
+			toolDefinition: {
+				type: "function";
+				function: { name: string; description: string; parameters: Record<string, unknown> };
+			};
+			execute: (input: Record<string, unknown>) => Promise<string>;
+		}
+	>;
 }
 
 /** Parsed tool call accumulated from stream chunks */
@@ -1476,6 +1486,14 @@ export class AgentLoop {
 		if (platformTool) {
 			const content = await platformTool.execute(toolCall.input);
 			return { content, exitCode: 0 };
+		}
+
+		// Built-in tools (read, write, edit) — dispatched before bash fallback
+		const builtIn = this.sandbox.builtInTools?.get(toolCall.name);
+		if (builtIn) {
+			const content = await builtIn.execute(toolCall.input);
+			const exitCode = content.startsWith("Error:") ? 1 : 0;
+			return { content, exitCode };
 		}
 
 		if (!this.sandbox.exec) {
