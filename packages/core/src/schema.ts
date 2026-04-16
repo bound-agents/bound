@@ -694,4 +694,12 @@ export function applySchema(db: Database): void {
 			OR key LIKE '\\_pinned%' ESCAPE '\\')
 			AND tier = 'default' AND deleted = 0
 	`);
+
+	// Thread model hint: authoritative model preference for inference on this thread.
+	// Replaces the heuristic of scanning messages.model_id for thread model resolution.
+	try {
+		db.run("ALTER TABLE threads ADD COLUMN model_hint TEXT");
+	} catch {
+		/* already exists */
+	}
 }

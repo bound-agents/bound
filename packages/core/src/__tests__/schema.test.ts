@@ -137,6 +137,28 @@ describe("Database Schema", () => {
 		db.close();
 	});
 
+	it("verifies threads table has model_hint column", () => {
+		const db = createDatabase(dbPath);
+		applySchema(db);
+
+		const columns = db.query("PRAGMA table_info(threads)").all() as Array<{
+			name: string;
+			type: string;
+			notnull: number;
+			dflt_value: string | null;
+		}>;
+
+		const columnNames = columns.map((c) => c.name);
+		expect(columnNames).toContain("model_hint");
+
+		const modelHintCol = columns.find((c) => c.name === "model_hint");
+		expect(modelHintCol?.type).toBe("TEXT");
+		expect(modelHintCol?.notnull).toBe(0); // nullable
+		expect(modelHintCol?.dflt_value).toBeNull(); // no default
+
+		db.close();
+	});
+
 	it("verifies messages table has correct columns", () => {
 		const db = createDatabase(dbPath);
 		applySchema(db);
