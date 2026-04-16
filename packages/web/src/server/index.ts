@@ -1,7 +1,12 @@
 import type { Database } from "bun:sqlite";
-import { formatError } from "@bound/shared";
 import type { KeyringConfig, Logger, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { KeyManager, RelayExecutor } from "@bound/sync";
+import type {
+	ChangelogAckPayload,
+	ChangelogPushPayload,
+	RelayAckPayload,
+	RelaySendPayload,
+} from "@bound/sync";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { type ModelsConfig, type RoutesConfig, registerRoutes } from "./routes/index";
@@ -41,6 +46,20 @@ export interface SyncAppConfig {
 		idleTimeout?: number;
 		backpressureLimit?: number;
 	};
+	wsTransportHolder?: {
+		addPeer: (
+			siteId: string,
+			sendFrame: (frame: Uint8Array) => boolean,
+			symmetricKey: Uint8Array,
+		) => void;
+		removePeer: (siteId: string) => void;
+		handleChangelogPush: (siteId: string, payload: ChangelogPushPayload) => void;
+		handleChangelogAck: (siteId: string, payload: ChangelogAckPayload) => void;
+		drainChangelog: (siteId: string) => void;
+		handleRelaySend: (sourceSiteId: string, payload: RelaySendPayload) => void;
+		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
+		drainRelayInbox: (siteId: string) => void;
+	} | null;
 }
 
 /**
@@ -120,4 +139,3 @@ export async function createWebApp(
 
 	return app;
 }
-

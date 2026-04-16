@@ -56,6 +56,20 @@ export interface ServerResult {
 		stop(): void;
 		notifyLoopComplete?(threadId: string): void;
 	} | null;
+	wsTransportHolder: {
+		addPeer: (
+			siteId: string,
+			sendFrame: (frame: Uint8Array) => boolean,
+			symmetricKey: Uint8Array,
+		) => void;
+		removePeer: (siteId: string) => void;
+		handleChangelogPush: (siteId: string, payload: Record<string, unknown>) => void;
+		handleChangelogAck: (siteId: string, payload: Record<string, unknown>) => void;
+		drainChangelog: (siteId: string) => void;
+		handleRelaySend: (sourceSiteId: string, payload: Record<string, unknown>) => void;
+		handleRelayAck: (sourceSiteId: string, payload: Record<string, unknown>) => void;
+		drainRelayInbox: (siteId: string) => void;
+	};
 }
 
 export interface ServerDeps {
@@ -98,6 +112,18 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	const statusForwardCache = new Map<string, StatusForwardPayload>();
 	const activeDelegations = new Map<string, { targetSiteId: string; processOutboxId: string }>();
 	const threadExecutor = new ThreadExecutor(appContext.db, appContext.logger);
+
+	// Mutable holder for wsTransport (populated in Phase 8 after sync init)
+	const wsTransportHolder: ServerResult["wsTransportHolder"] = {
+		addPeer: () => {},
+		removePeer: () => {},
+		handleChangelogPush: () => {},
+		handleChangelogAck: () => {},
+		drainChangelog: () => {},
+		handleRelaySend: () => {},
+		handleRelayAck: () => {},
+		drainRelayInbox: () => {},
+	};
 
 	// Wire the executor into the relay processor for Discord/platform process relays.
 	relayProcessor.setThreadExecutor(threadExecutor);
@@ -172,6 +198,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							backpressureLimit: (wsConfig.backpressure_limit as number) ?? 2097152,
 						}
 					: undefined,
+				wsTransportHolder,
 			});
 			if (syncServer) {
 				await syncServer.start();
@@ -602,5 +629,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		activeDelegations,
 		threadExecutor,
 		platformRegistry,
+		wsTransportHolder,
 	};
 }

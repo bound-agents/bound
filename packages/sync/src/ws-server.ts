@@ -235,8 +235,20 @@ export function createWsHandlers(config: WsServerConfig): {
 						return false;
 					}
 					try {
-						ws.send(frame, true);
-						return true;
+						const result = ws.send(frame, true);
+						// result >= 1: success
+						// result -1: backpressure, set pressured state and return false
+						// result 0: socket closed, close and return false
+						if (result >= 1) {
+							return true;
+						}
+						if (result === -1) {
+							ws.data.sendState = "pressured";
+							return false;
+						}
+						// result === 0: socket closed
+						ws.close(1011, "Internal server error");
+						return false;
 					} catch {
 						return false;
 					}

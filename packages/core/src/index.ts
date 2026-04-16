@@ -53,6 +53,7 @@ export {
 	readInboxByRefId,
 	readInboxByStreamId,
 	PayloadTooLargeError,
+	setRelayOutboxEventBus,
 } from "./relay";
 export {
 	enqueueMessage,

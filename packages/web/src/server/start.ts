@@ -130,6 +130,7 @@ export async function createSyncServer(
 		logger: config.logger,
 		idleTimeout: config.wsConfig?.idleTimeout,
 		backpressureLimit: config.wsConfig?.backpressureLimit,
+		wsTransport: config.wsTransportHolder ?? undefined,
 	});
 
 	let server: ReturnType<typeof Bun.serve> | null = null;

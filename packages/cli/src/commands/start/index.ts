@@ -78,6 +78,16 @@ export async function runStart(args: StartArgs): Promise<void> {
 					activeDelegations: new Map(),
 					threadExecutor: new ThreadExecutor(appContext.db, appContext.logger),
 					platformRegistry: null,
+					wsTransportHolder: {
+						addPeer: () => {},
+						removePeer: () => {},
+						handleChangelogPush: () => {},
+						handleChangelogAck: () => {},
+						drainChangelog: () => {},
+						handleRelaySend: () => {},
+						handleRelayAck: () => {},
+						drainRelayInbox: () => {},
+					},
 				};
 
 	// Phase 5b: Register SIGHUP handler for config hot-reload (after sync init for wsClient reference)
@@ -125,6 +135,20 @@ export async function runStart(args: StartArgs): Promise<void> {
 	const syncResult = await initSync(appContext, keypair, keyManager);
 	wsClient = syncResult.wsClient;
 	const { pruningHandle, overlayHandle, wsTransport } = syncResult;
+
+	// Wire WsTransport into the sync server's deferred holder (for hub-side frame dispatch)
+	if (wsTransport && serverResult.wsTransportHolder) {
+		Object.assign(serverResult.wsTransportHolder, {
+			addPeer: wsTransport.addPeer.bind(wsTransport),
+			removePeer: wsTransport.removePeer.bind(wsTransport),
+			handleChangelogPush: wsTransport.handleChangelogPush.bind(wsTransport),
+			handleChangelogAck: wsTransport.handleChangelogAck.bind(wsTransport),
+			drainChangelog: wsTransport.drainChangelog.bind(wsTransport),
+			handleRelaySend: wsTransport.handleRelaySend.bind(wsTransport),
+			handleRelayAck: wsTransport.handleRelayAck.bind(wsTransport),
+			drainRelayInbox: wsTransport.drainRelayInbox.bind(wsTransport),
+		});
+	}
 
 	// Phase 9: Host heartbeat, cron seeding, scheduler
 	const heartbeatHandle = startHostHeartbeat(appContext.db, appContext.siteId, {

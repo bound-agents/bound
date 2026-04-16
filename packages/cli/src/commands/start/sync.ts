@@ -5,7 +5,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { AppContext } from "@bound/core";
-import { setChangelogEventBus } from "@bound/core";
+import { setChangelogEventBus, setRelayOutboxEventBus } from "@bound/core";
 import type { KeyringConfig, SyncConfig } from "@bound/shared";
 import { formatError, wsSchema } from "@bound/shared";
 import type { KeyManager } from "@bound/sync";
@@ -50,8 +50,9 @@ export async function initSync(
 					logger: appContext.logger,
 					isHub: !syncConfig.hub, // Hub if no hub URL configured, spoke if hub URL configured
 				});
-				// Enable push-on-write for changelog entries
+				// Enable push-on-write for changelog and relay entries
 				setChangelogEventBus(appContext.eventBus);
+				setRelayOutboxEventBus(appContext.eventBus);
 				wsTransport.start();
 				appContext.logger.info("[sync] WsTransport started");
 			}

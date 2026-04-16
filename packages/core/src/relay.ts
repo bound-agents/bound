@@ -3,6 +3,16 @@ import type { RelayInboxEntry, RelayOutboxEntry, TypedEventEmitter } from "@boun
 
 const MAX_PAYLOAD_BYTES_DEFAULT = 2 * 1024 * 1024;
 
+let relayOutboxEventBus: TypedEventEmitter | null = null;
+
+/**
+ * Set the event bus for relay:outbox-written events.
+ * Called at startup to enable push-on-write for relay entries.
+ */
+export function setRelayOutboxEventBus(eventBus: TypedEventEmitter): void {
+	relayOutboxEventBus = eventBus;
+}
+
 export class PayloadTooLargeError extends Error {
 	constructor(size: number, limit: number) {
 		super(`Relay payload size ${size} exceeds limit ${limit}`);
@@ -49,8 +59,10 @@ export function writeOutbox(
 	);
 
 	// Emit event after insert completes (for WS push-on-write)
-	if (eventBus) {
-		eventBus.emit("relay:outbox-written", {
+	// Use module-level eventBus if set, otherwise use passed-in eventBus (for backward compat)
+	const bus = eventBus ?? relayOutboxEventBus;
+	if (bus) {
+		bus.emit("relay:outbox-written", {
 			id: entry.id,
 			target_site_id: entry.target_site_id,
 		});

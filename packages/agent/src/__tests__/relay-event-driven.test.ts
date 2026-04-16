@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { applySchema, readInboxByRefId, readInboxByStreamId } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
+import { waitForRelayInbox } from "../agent-loop-utils";
 
 let db: Database;
 let testDbPath: string;
@@ -33,25 +34,34 @@ afterEach(() => {
 describe("Event-Driven RELAY_WAIT", () => {
 	it("RELAY_WAIT responds to relay:inbox event with matching ref_id", async () => {
 		const refId = "test-ref-123";
-		let eventFired = false;
-		let receivedEvent: { ref_id?: string; stream_id?: string; kind: string } | null = null;
 
-		// Set up listener to capture the relay:inbox event
-		eventBus.on("relay:inbox", (event) => {
-			eventFired = true;
-			receivedEvent = event;
-		});
+		// Insert entry into relay inbox (simulating hub delivery)
+		db.run(
+			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				"response-1",
+				"remote-host",
+				"result",
+				refId,
+				null,
+				JSON.stringify({ stdout: "result" }),
+				new Date(Date.now() + 60_000).toISOString(),
+				new Date().toISOString(),
+				0,
+			],
+		);
 
-		// Emit the event that relayWait would be listening for
-		eventBus.emit("relay:inbox", { ref_id: refId, kind: "result" });
+		// Use production helper to wait for the entry
+		// Simulate event arrival (as sync transport would do)
+		setTimeout(() => {
+			eventBus.emit("relay:inbox", { ref_id: refId, kind: "result" });
+		}, 10);
 
-		// Verify event was emitted and captured
-		expect(eventFired).toBe(true);
-		expect(receivedEvent).toBeDefined();
-		if (receivedEvent) {
-			expect(receivedEvent.ref_id).toBe(refId);
-			expect(receivedEvent.kind).toBe("result");
-		}
+		const result = await waitForRelayInbox(db, eventBus, refId, 1000);
+
+		expect(result).toBeDefined();
+		expect(result?.kind).toBe("result");
 	});
 
 	it("RELAY_WAIT finds pre-existing entry on initial DB check", () => {

@@ -209,7 +209,54 @@ export function decodeFrame(
 		return { ok: false, error: "invalid_payload" };
 	}
 
+	// Validate payload structure matches expected type
+	if (!isValidPayloadForType(typeByte as WsMessageType, payload)) {
+		return { ok: false, error: "invalid_payload" };
+	}
+
 	// Return discriminated union based on type
 	const framePayload = { type: typeByte as WsMessageType, payload } as unknown;
 	return { ok: true, value: framePayload as WsFrame };
+}
+
+/**
+ * Validates that a parsed payload object has the expected fields for its message type.
+ * Returns false if required fields are clearly missing or wrong types for core fields.
+ * Note: We're lenient on structure to allow flexible payloads for non-critical fields.
+ */
+function isValidPayloadForType(type: WsMessageType, payload: unknown): boolean {
+	if (typeof payload !== "object" || payload === null) {
+		return false;
+	}
+
+	const p = payload as Record<string, unknown>;
+
+	switch (type) {
+		case WsMessageType.CHANGELOG_PUSH:
+			// Required: entries array
+			return Array.isArray(p.entries);
+		case WsMessageType.CHANGELOG_ACK:
+			// Required: cursor string
+			return typeof p.cursor === "string";
+		case WsMessageType.RELAY_SEND:
+			// Required: entries array
+			return Array.isArray(p.entries);
+		case WsMessageType.RELAY_DELIVER:
+			// Required: entries array
+			return Array.isArray(p.entries);
+		case WsMessageType.RELAY_ACK:
+			// Required: ids array
+			return Array.isArray(p.ids);
+		case WsMessageType.DRAIN_REQUEST:
+			// Lenient: allow any object (reason is optional or may be in different format)
+			return true;
+		case WsMessageType.DRAIN_COMPLETE:
+			// Lenient: allow any object (success may be optional)
+			return true;
+		case WsMessageType.ERROR:
+			// Lenient: allow any object (code/message are optional or may be in different format)
+			return true;
+		default:
+			return false;
+	}
 }

@@ -459,6 +459,29 @@ export class WsTransport {
 
 					this.sendRelayDeliver(peerSiteId, [inboxEntry]);
 				}
+
+				// Also insert into hub's own relay_inbox and emit event
+				const hubInboxEntry: RelayInboxEntry = {
+					id: entry.id,
+					source_site_id: sourceSiteId,
+					kind: entry.kind as RelayKind,
+					ref_id: entry.ref_id,
+					idempotency_key: entry.idempotency_key,
+					stream_id: entry.stream_id,
+					payload: JSON.stringify(entry.payload),
+					expires_at: entry.expires_at,
+					received_at: new Date().toISOString(),
+					processed: 0,
+				};
+
+				if (insertInbox(this.config.db, hubInboxEntry)) {
+					this.config.eventBus.emit("relay:inbox", {
+						ref_id: hubInboxEntry.ref_id || undefined,
+						stream_id: hubInboxEntry.stream_id || undefined,
+						kind: hubInboxEntry.kind,
+					});
+				}
+
 				deliveredIds.push(entry.id);
 				continue;
 			}
