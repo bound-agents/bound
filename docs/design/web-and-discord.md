@@ -28,12 +28,19 @@ This document covers the `@bound/web` and `@bound/platforms` packages. The web p
 
 ### Server Bootstrap
 
-`createWebServer` in `packages/web/src/server/start.ts` is the top-level entry point for the server. It accepts a `Database`, a `TypedEventEmitter`, and an optional `WebServerConfig` and returns a `WebServer` handle with `start`, `stop`, and `address` methods.
+`createWebServer` in `packages/web/src/server/start.ts` is the top-level entry point for the server. It accepts a `Database`, a `TypedEventEmitter`, and a required `WebServerConfig` and returns a `WebServer` handle with `start`, `stop`, and `address` methods.
 
 ```ts
 interface WebServerConfig {
-  port?: number;   // default: 3000
-  host?: string;   // default: "localhost"
+  port?: number;            // default: 3001
+  host?: string;            // default: "localhost"
+  hostName?: string;
+  operatorUserId: string;   // required
+  models?: ModelsConfig;
+  siteId?: string;
+  statusForwardCache?: Map<string, StatusForwardPayload>;
+  activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
+  activeLoops?: Set<string>;
 }
 
 interface WebServer {
@@ -43,9 +50,9 @@ interface WebServer {
 }
 ```
 
-The server is launched with `Bun.serve` and binds to `localhost` by default. Set `BIND_HOST=0.0.0.0` for hub nodes that must accept external spoke connections. The `fetch` handler intercepts upgrade requests arriving on the `/ws` path and hands them to the Bun WebSocket subsystem; all other requests are forwarded to the Hono application. Stopping the server calls `Bun.Server.stop(true)`, which closes all active connections.
+The server is launched with `Bun.serve` and binds to `localhost` by default. Set `WEB_BIND_HOST=0.0.0.0` for hub nodes that must accept external spoke connections; the companion sync server (a separate `Bun.serve` on a different port) uses `BIND_HOST`. The `fetch` handler intercepts upgrade requests arriving on the `/ws` path and hands them to the Bun WebSocket subsystem; all other requests are forwarded to the Hono application. Stopping the server calls `Bun.Server.stop(true)`, which closes all active connections.
 
-The SPA is embedded into the compiled binary via `scripts/embed-assets.ts`. At runtime, `createApp` attempts to import the `embedded-assets` module; if embedded assets are present they are served directly from in-memory byte arrays, so `dist/client/index.html` does not need to exist on disk. If no embedded assets are found, the server falls back to `serveStatic` from `dist/client/`.
+The SPA is embedded into the compiled binary via `scripts/embed-assets.ts`. At runtime, `createWebApp` attempts to import the `embedded-assets` module; if embedded assets are present they are served directly from in-memory byte arrays, so `dist/client/index.html` does not need to exist on disk. If no embedded assets are found, the server falls back to `serveStatic` from `dist/client/`.
 
 ### Host Header Validation
 
@@ -59,9 +66,9 @@ localhost
 
 Any request whose `Host` header resolves to a hostname not in that list is rejected with `400 Bad Request` and the JSON body `{ "error": "Invalid Host header" }`. Requests with no `Host` header pass through unchanged.
 
-The `/sync/*` routes and `POST /api/relay-deliver` are **exempt** from this check. These routes carry Ed25519 signature authentication and must be reachable by remote spokes connecting to a hub through a reverse proxy.
+The middleware is mounted globally on the web app (`app.use("*", ...)`), so it runs for every route on this server including `/hooks/:platform`. Ed25519-authenticated sync traffic is not affected because it is handled by a separate sync server (`createSyncServer`) listening on its own port (`/sync/ws`) — that process has its own binding and does not share this middleware.
 
-This exemption aside, host header validation is the primary mechanism that prevents the local API from being reachable by remote callers via DNS rebinding or forwarded proxies.
+Host header validation is the primary mechanism that prevents the local API from being reachable by remote callers via DNS rebinding or forwarded proxies.
 
 ### API Route Reference
 
@@ -71,15 +78,16 @@ All routes are mounted under `/api` and registered in `packages/web/src/server/r
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/threads` | List all non-deleted threads for `default_web_user`, ordered by `last_message_at` descending. |
+| GET | `/api/threads` | List all non-deleted threads for the configured `operatorUserId` (resolved from the allowlist's `default_web_user`), ordered by `last_message_at` descending. Each row is enriched with `messageCount` and `lastModel`. |
 | POST | `/api/threads` | Create a new thread. |
 | GET | `/api/threads/:id` | Fetch a single thread by ID. |
 | GET | `/api/threads/:id/status` | Fetch the current agent status for a thread. |
+| GET | `/api/threads/:id/context-debug` | Fetch per-turn context-debug records for a thread (for the debug panel). |
 | POST | `/api/mcp/threads` | Create a thread owned by the deterministic `mcp` system user (interface `"mcp"`). Used by `bound-mcp` stdio server. Response `201`: `{ thread_id: string }`. |
 
 **GET /api/threads** — Response: `Thread[]`
 
-**POST /api/threads** — No request body required. Inserts a new row with `interface = "web"`, `host_origin = "localhost:3000"`, a `color` cycling from the last thread's value (mod 10), and an empty `title`. Response `201`: `Thread`.
+**POST /api/threads** — No request body required. Inserts a new row with `interface = "web"`, `host_origin = "localhost:3000"`, a `color` cycling from the last thread's value (mod 10), and an empty `title`. The row is owned by the configured `operatorUserId`. Response `201`: `Thread`.
 
 **GET /api/threads/:id** — Response `200`: `Thread`. Response `404`: `{ "error": "Thread not found" }`.
 
@@ -121,7 +129,14 @@ Message routes are also mounted at `/api/threads` and share path parameters with
 
 **GET /api/threads/:threadId/messages** — Verifies the thread exists first. Response `200`: `Message[]`.
 
-**POST /api/threads/:threadId/messages** — Request body: `{ "content": string }`. Inserts a message with `role = "user"` and emits a `message:created` event on the event bus (which fans the message out to all subscribed WebSocket clients). Response `201`: `Message`.
+**POST /api/threads/:threadId/messages** — Request body: `{ content: string, file_ids?: string[], model_id?: string }`. Content is capped at 512 KB; up to 20 attached files have their stored contents (or a binary-metadata placeholder) appended to the message body. If `model_id` is provided, it is stored as `threads.model_hint`. Inserts a message with `role = "user"` and emits a `message:created` event on the event bus (which fans the message out to all subscribed WebSocket clients). Response `201`: `Message`.
+
+Two additional redaction endpoints live on the same route group:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/threads/:threadId/messages/:messageId/redact` | Redact a single message. |
+| POST | `/api/threads/:threadId/redact` | Redact an entire thread (messages + derived memories). |
 
 The `Message` shape:
 ```ts
@@ -142,21 +157,23 @@ interface Message {
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/files` | List all non-deleted files, ordered by `created_at` descending. |
-| GET | `/api/files/*` | Fetch a single file by its path (the wildcard is the file path stripped of the `/api/files/` prefix). |
+| GET | `/api/files` | List all non-deleted files, ordered by `created_at` descending. Response rows have `content` stripped. |
+| GET | `/api/files/download?path=…` | Download raw file bytes with MIME type inferred from extension and a `Content-Disposition` attachment header. |
+| GET | `/api/files/*` | Fetch a single file (metadata + content) by its path (the wildcard is the file path stripped of the `/api/files/` prefix). |
 | POST | `/api/files/upload` | Upload a new file via `multipart/form-data`. |
 
-**GET /api/files** — Response `200`: `AgentFile[]`.
+**GET /api/files** — Response `200`: `AgentFile[]` with each row's `content` field removed.
 
 **GET /api/files/*** — The path after `/api/files/` is used as the lookup key in the `files` table. Response `200`: `AgentFile`. Response `404`: `{ "error": "File not found" }`.
 
-**POST /api/files/upload** — Expects `multipart/form-data` with a `file` field. The file is stored as text at `/home/user/uploads/<filename>` with `created_by = "default_web_user"`. Response `201`: `AgentFile`.
+**POST /api/files/upload** — Expects `multipart/form-data` with a `file` field. Text-typed files are stored decoded, binary files as base64; size is capped at `MAX_FILE_STORAGE_BYTES`. The file is stored at `/home/user/uploads/<sanitized-filename>` with `created_by = "default_web_user"`. Response `201`: `AgentFile`.
 
 #### Status — `/api/status`
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/status` | Return host uptime and active loop count. |
+| GET | `/api/status/network` | Return the `hosts` table, the hub `cluster_config` value, the local `site_id`, and per-peer sync state. |
 | GET | `/api/status/models` | Return all cluster-wide models (local and remote). |
 | POST | `/api/status/cancel/:threadId` | Cancel the agent loop running on the given thread. |
 
@@ -198,24 +215,26 @@ The same model ID may appear multiple times if it is available on more than one 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/tasks` | List tasks, with an optional `status` query parameter filter. |
+| GET | `/api/tasks/:id` | Fetch a single task row. |
+| POST | `/api/tasks/:id/cancel` | Mark a `pending`/`running`/`claimed` task as `cancelled`. |
 
-**GET /api/tasks** — Accepts an optional `?status=` query parameter (`pending`, `running`, `completed`, `failed`). Returns all non-deleted tasks ordered by `created_at` descending. Response `200`: `Task[]`.
+**GET /api/tasks** — Accepts an optional `?status=` query parameter (`pending`, `running`, `completed`, `failed`). Returns all non-deleted tasks ordered by `created_at` descending, enriched with `displayName`, `schedule`, `hostName`, and `lastDurationMs`. Response `200`: `Task[]`.
 
-#### Relay — `/api/relay-deliver`
+#### Memory — `/api/memory`
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/relay-deliver` | Receives eager-pushed relay messages from the hub (Ed25519 signed). Exempt from host header validation. |
+Routes under `/api/memory` back the memory-graph view (e.g. `GET /api/memory/graph`). They return the nodes/edges rendered by the client's `MemoryGraph` component.
 
-This endpoint is used when the hub pushes relay messages directly to spokes with a known `sync_url`, bypassing the next scheduled sync cycle. The request body is an Ed25519-signed relay payload; the sync package verifies the signature.
+#### Advisories — `/api/advisories`
+
+Routes under `/api/advisories` back the advisory view and the TopBar advisory-count badge (`GET /api/advisories/count`).
 
 #### Webhook Ingress — `/hooks`
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/hooks/:platform` | Webhook ingress for exclusive-delivery platform connectors. Emits `platform:webhook` event; signature verification is handled by each connector's `handleWebhookPayload()`. Exempt from host header validation. |
+| POST | `/hooks/:platform` | Webhook ingress for exclusive-delivery platform connectors. Emits `platform:webhook` event; signature verification is handled by each connector's `handleWebhookPayload()`. The platform segment is constrained to `[a-z0-9-]+` and raw bodies are capped at 1 MB. Host header validation still applies. |
 
-The raw body and all headers are forwarded to `platform:webhook` on the eventBus unchanged. The `PlatformConnectorRegistry` routes this event to the leader connector matching `payload.platform`.
+The raw body and all headers are forwarded to `platform:webhook` on the eventBus unchanged. The `PlatformConnectorRegistry` routes this event to the leader connector matching `payload.platform`. Note: peer-to-peer relay traffic (Ed25519-signed sync) is not served here — it runs on the separate sync WebSocket server at `/sync/ws`.
 
 #### Error Shape
 
@@ -259,14 +278,16 @@ Both fields may appear in the same frame. There is no acknowledgement response f
 
 #### Server-Push Event Types
 
-The handler listens to four event bus events and pushes corresponding frames to connected clients.
+The handler listens to six event bus events and pushes corresponding frames to connected clients.
 
 | Event bus event | WS frame type | Routing | Payload |
 |----------------|---------------|---------|---------|
-| `message:created` | `"message"` | Thread subscribers only | The full message object from the database |
+| `message:created` | `"message:created"` | Thread subscribers only | The full message object from the database |
+| `message:broadcast` | `"message:created"` | Thread subscribers only | Same as above; used to re-emit assistant responses to WS clients without re-triggering the agent-loop handler |
 | `task:completed` | `"task_update"` | All connected clients | `{ taskId, status: "completed" }` |
 | `file:changed` | `"file_update"` | All connected clients | `{ path, operation }` where operation is `"created"`, `"modified"`, or `"deleted"` |
 | `alert:created` | `"alert"` | Thread subscribers only | The full alert message object |
+| `context:debug` | `"context:debug"` | Thread subscribers only | `{ turn_id, debug }` — context-budget breakdown for the debug panel |
 
 All frames follow the envelope:
 ```json
@@ -276,7 +297,7 @@ All frames follow the envelope:
 }
 ```
 
-Only clients whose connection `readyState` equals `WebSocket.OPEN` receive frames; stale connections are skipped but not explicitly removed here — that happens on `close`.
+Only clients whose connection `readyState` equals `WebSocket.OPEN` (numeric `1`) receive frames; stale connections are skipped but not explicitly removed here — that happens on `close`.
 
 ---
 
@@ -288,7 +309,7 @@ The client is a Svelte 5 single-page application built with Vite and embedded in
 
 `App.svelte` is the root component. It mounts a single `TopBar` across the top and renders a view in the `<main>` area below it.
 
-Routing is hash-based. The router in `packages/web/src/client/lib/router.ts` exposes a writable Svelte store `currentRoute` and a `navigateTo(route)` function that sets `window.location.hash`. `App.svelte` listens to the browser `hashchange` event and syncs the hash (without the leading `#`) back into the store.
+Routing is hash-based. `App.svelte` owns a local `$state` `route` that is initialised from `window.location.hash` and updated on every `hashchange` event. The helper in `packages/web/src/client/lib/router.ts` exports a `navigateTo(route)` function that sets `window.location.hash` (and a `currentRoute` writable store, currently unused by `App.svelte`).
 
 | Hash | View rendered |
 |------|---------------|
@@ -296,18 +317,17 @@ Routing is hash-based. The router in `packages/web/src/client/lib/router.ts` exp
 | `#/line/<thread-id>` | `LineView` with the thread ID extracted from the path segment |
 | `#/timetable` | `Timetable` |
 | `#/network` | `NetworkStatus` |
+| `#/advisories` | `AdvisoryView` |
+| `#/files` | `FilesView` |
 | Any other value | `SystemMap` (fallback) |
 
 ### Views
 
 #### SystemMap
 
-`views/SystemMap.svelte` is the landing view. On mount it calls `api.listThreads()` and renders each thread as a horizontal line in an SVG metro-style diagram.
+`views/SystemMap.svelte` is the landing view. On mount it calls `api.listThreads()` (polling every 5 s) and in parallel fetches `/api/threads/:id/status` for each thread to populate per-line status dots.
 
-- Each thread occupies a horizontal band in an SVG viewport of `1200 x 600`. Threads are stacked vertically with 50 px spacing starting at y = 100.
-- The line color is determined by `thread.color % 10`, mapped into a fixed 10-color palette (red, blue, green, orange, purple, cyan, magenta, yellow, dark orange, light blue).
-- Five station circles are drawn at fixed x positions (100, 300, 500, 700, 900) along each line.
-- A transparent `<rect>` covers the full width of each line and acts as a clickable hit area. Clicking or pressing Enter/Space navigates to `#/line/<thread.id>`.
+The view is a split panel: a resizable left column renders a `ThreadList` (with a search box and a "+ New Line" button), and the right column renders a `MemoryGraph` keyed by the hovered thread. Thread color is taken from `thread.color` and resolved through the Tokyo Metro 10-color palette in `lib/metro-lines.ts` (Ginza orange, Marunouchi red, Hibiya silver, Tozai sky blue, Chiyoda green, Yurakucho gold, Hanzomon purple, Namboku emerald, Fukutoshin brown, Oedo ruby). Clicking a thread navigates to `#/line/<thread.id>`.
 
 #### LineView
 
@@ -317,25 +337,23 @@ On mount it:
 1. Calls `api.getThread(threadId)` to verify the thread exists.
 2. Calls `api.listMessages(threadId)` to populate the message list.
 3. Calls `connectWebSocket()` and `subscribeToThread(threadId)` to receive real-time updates.
+4. Starts two polling timers — a 5 s poll on `api.listMessages` (belt-and-braces over the WS) and a 2 s poll on `/api/threads/:id/status` to drive the active/idle/"thinking"/"using tool" indicator and its Cancel button.
 
-The input area contains a resizable `<textarea>` and a Send button. `handleSendMessage` calls `api.sendMessage` and appends the returned message to the local array. While sending, both the textarea and button are disabled. A back button navigates to `#/`.
+The bottom area contains a file-attachment control (uploading via `POST /api/files/upload` and stashing the returned file ID as a pending attachment), a `<textarea>`, and a Send button. `handleSendMessage` calls `api.sendMessage` with the currently selected model (from `modelStore`) and any pending `file_id`. A debug toggle in the header opens a context-debug panel. A back button navigates to `#/`.
 
-Each message is rendered by a `MessageBubble` component.
+Messages are rendered by a `MessageList` component, which in turn renders each message through `MessageBubble`.
 
 #### Timetable
 
-`views/Timetable.svelte` displays all tasks fetched from `GET /api/tasks`. On mount it fetches directly via `fetch("/api/tasks")`.
+`views/Timetable.svelte` displays all tasks fetched from `GET /api/tasks` (polled every 5 s) rendered as a departure-board style table with filter chips (pending / running / failed / cancelled).
 
-The table columns are: Task ID (first 8 characters, monospace), Type, Status, Run Count, Created (formatted with `toLocaleString()`). Status cells are styled with distinct colors: completed (green), running (teal), failed (red), pending (amber).
+Table columns: Status, Name, Type (with a `LineBadge` colored by task type), Schedule, Next Run, Last Run, Duration, Host, Actions. Rows are grouped into active (running / claimed / failed / pending) and inactive (cancelled / completed) sections, and can be expanded for a detail pane. The Actions column exposes a Cancel button for cancellable tasks that calls `POST /api/tasks/:id/cancel`.
 
 #### NetworkStatus
 
-`views/NetworkStatus.svelte` fetches `GET /api/status` on mount and builds a single host card for `localhost` from the response. The card shows:
-- An online/offline indicator dot (green when online).
-- The sync status string (`"synced"`).
-- A "Last sync" timestamp derived by subtracting `host_info.uptime_seconds` from the current time.
+`views/NetworkStatus.svelte` fetches `GET /api/status/network` on mount (polled every 10 s) and renders a `TopologyDiagram` together with one `MetroCard` per entry in the returned `hosts` array. Each card shows: host name, local/hub badges, online status (derived from `online_at` vs. a 5 min threshold; the local host is always shown online), site ID, last-seen timestamp, version, per-peer sync health (healthy / degraded / unreachable / unknown, derived from the matching `sync_state` row), last sync time, and pill lists of advertised models and MCP tools. Below the card grid is a "Sync Mesh" `DataTable` summarising per-peer `sent` / `received` / `last_sync` / `errors` columns.
 
-The grid layout uses `auto-fill` columns of minimum 250 px, so additional host cards would wrap naturally.
+The grid layout uses `auto-fill` columns of minimum 340 px, so host cards wrap naturally.
 
 ### Components
 
@@ -353,13 +371,14 @@ The `role` is applied as a CSS class on the outer div, giving each role a distin
 #### TopBar
 
 `components/TopBar.svelte` is a fixed header rendered on every view. It displays:
-- The application name ("Bound") on the left.
-- A `ModelSelector` in the center-right.
-- An "Advisory Count: 0" indicator on the far right.
+- The application name ("Bound") and logo on the left (clickable — navigates to `#/`).
+- A navigation row of buttons, each tinted with its metro line color: System Map (`#/`), Timetable (`#/timetable`), Network (`#/network`), Files (`#/files`), Advisories (`#/advisories`). The active button is highlighted based on the current hash. The Advisories button carries a numeric badge when the count is non-zero.
+- A `ModelSelector` on the right.
+- An advisory indicator button showing the current advisory count (polled every 10 s from `GET /api/advisories/count`) — clicking it navigates to `#/advisories`.
 
 #### ModelSelector
 
-`components/ModelSelector.svelte` renders a `<select>` element populated from `GET /api/status/models`. On mount the component fetches the models list and sets the initial selection to `data.default`. Each option displays the model ID; relay models show their host name and an `"offline?"` annotation when stale. When the selection changes, `handleChange` strips any `@host` suffix and writes the model ID to `modelStore`, which other components subscribe to in order to send the selected model to the server.
+`components/ModelSelector.svelte` renders a `<select>` element populated from `GET /api/status/models`. On mount the component fetches the models list and sets the initial selection to the default model's `${id}@${host}` value (so the same model ID on multiple hosts remains distinguishable). Each option displays the model ID; relay models show their host name and either a "via relay" or "offline?" annotation. When the selection changes, `handleChange` strips the `@host` suffix and writes the model ID to `modelStore`, which other components subscribe to in order to send the selected model to the server.
 
 ### API Client
 
@@ -372,10 +391,13 @@ Internal helper `fetchJson<T>(url, options?)` calls `fetch`, throws an `Error` c
 | `listThreads` | `() => Promise<Thread[]>` | `GET /api/threads` |
 | `createThread` | `() => Promise<Thread>` | `POST /api/threads` |
 | `getThread` | `(id: string) => Promise<Thread>` | `GET /api/threads/:id` |
+| `getTask` | `(id: string) => Promise<Task>` | `GET /api/tasks/:id` |
 | `listMessages` | `(threadId: string) => Promise<Message[]>` | `GET /api/threads/:threadId/messages` |
-| `sendMessage` | `(threadId: string, content: string) => Promise<Message>` | `POST /api/threads/:threadId/messages` |
+| `sendMessage` | `(threadId: string, content: string, modelId?: string, fileId?: string) => Promise<Message>` | `POST /api/threads/:threadId/messages` |
+| `getContextDebug` | `(threadId: string) => Promise<ContextDebugTurn[]>` | `GET /api/threads/:threadId/context-debug` |
+| `getMemoryGraph` | `() => Promise<MemoryGraphResponse>` | `GET /api/memory/graph` |
 
-The `Thread` and `Message` types are defined in the same file and match the server shapes documented above.
+The `Thread`, `Message`, `Task`, `ContextDebugTurn`, and `MemoryGraph*` types are defined in the same file and match the server shapes documented above.
 
 ### WebSocket Client
 
@@ -407,8 +429,14 @@ interface PlatformConnector {
   readonly delivery: "broadcast" | "exclusive";
   connect(hostBaseUrl?: string): Promise<void>;
   disconnect(): Promise<void>;
-  deliver(threadId: string, messageId: string, content: string, attachments?: unknown[]): Promise<void>;
+  deliver(
+    threadId: string,
+    messageId: string,
+    content: string,
+    attachments?: Array<{ filename: string; data: Buffer }>,
+  ): Promise<void>;
   handleWebhookPayload?(rawBody: string, headers: Record<string, string>): Promise<void>;
+  onLoopComplete?(threadId: string): void;
   getPlatformTools?(
     threadId: string,
     readFileFn?: (path: string) => Promise<Uint8Array>,
@@ -418,6 +446,7 @@ interface PlatformConnector {
 
 - **`broadcast`** connectors maintain a persistent gateway connection (Discord). Only the elected leader connects.
 - **`exclusive`** connectors receive events via HTTP webhook (Telegram, Slack Events API). The new leader re-registers the webhook URL on failover.
+- **`onLoopComplete`** is optional. The registry calls it on every registered connector when an agent loop finishes a thread (success or error), letting connectors clean up per-thread state — e.g. Discord typing indicators.
 - **`getPlatformTools`** is optional. When a `process` relay payload has `platform` set, the `RelayProcessor` calls `getPlatformTools()` on the matching connector and injects those tools into the delegated agent loop's config. This is how platform-scoped tools (e.g. `discord_send_message`) reach loops running on remote hosts. The `readFileFn` parameter, when provided, lets the tool read files from the virtual filesystem rather than the host OS filesystem.
 
 ### PlatformLeaderElection
@@ -446,7 +475,9 @@ registry.stop();
 
 Only the leader connector for a given platform handles `platform:deliver` and `platform:webhook` events. Non-leaders ignore them.
 
-After startup, the registry is wired into the `RelayProcessor` via `setPlatformConnectorRegistry()` so the processor can look up connectors when dispatching `platform_deliver` relay messages and injecting platform tools into delegated loops.
+The Discord entry is special: the registry constructs a compound connector that drives a shared `DiscordClientManager` plus two sub-connectors — `DiscordConnector` (DM messages, registered under the `"discord"` key) and `DiscordInteractionConnector` (slash-command / component interactions, registered under `"discord-interaction"`). Both share a single leader election (`"discord"`), so they connect and disconnect together. Interaction events arrive via the gateway's `interactionCreate`, not via `/hooks`, so the webhook router never dispatches to `discord-interaction`.
+
+After startup, the registry is wired into the `RelayProcessor` so the processor can look up connectors when dispatching `platform_deliver` relay messages and injecting platform tools into delegated loops. The registry also exposes `getConnector(platform)` and `notifyLoopComplete(threadId)`.
 
 ### DiscordConnector
 

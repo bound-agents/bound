@@ -52,8 +52,8 @@ type AgentLoopState =
 | `LLM_CALL` | Streams tokens from the LLM backend (local) or enters `RELAY_STREAM` (remote). |
 | `PARSE_RESPONSE` | Iterates accumulated chunks to extract text content and detect tool-use starts. |
 | `TOOL_EXECUTE` | Dispatches tool calls via the sandbox. Remote MCP tools enter `RELAY_WAIT`. |
-| `RELAY_WAIT` | Polls `relay_inbox` for a tool result from a remote host (500ms intervals, 30s timeout per host, automatic failover). |
-| `RELAY_STREAM` | Polls `relay_inbox` for streaming inference chunks from a remote host. Reorders by `seq`, handles gaps, fails over after 120s per host. |
+| `RELAY_WAIT` | Polls `relay_inbox` for a tool result from a remote host (event-driven with 500ms fallback polls, 30s timeout per host, automatic failover). |
+| `RELAY_STREAM` | Polls `relay_inbox` for streaming inference chunks from a remote host. Reorders by `seq`, handles gaps, fails over after `inference_timeout_ms` (default 300s) per host. |
 | `TOOL_PERSIST` | Writes tool call and tool result messages to the database. |
 | `RESPONSE_PERSIST` | Persists the assembled assistant message to `messages`. |
 | `FS_PERSIST` | Flushes workspace file mutations back to the database. |
@@ -66,10 +66,12 @@ type AgentLoopState =
 ```typescript
 interface AgentLoopConfig {
   threadId: string;
-  taskId?: string;   // "delegated-{id}" prefix blocks confirmed MCP tools on delegated loops
+  taskId?: string;   // task IDs not prefixed "interactive-" block confirmed MCP tools (autonomous mode)
   userId: string;
   modelId?: string;  // resolved cluster-wide via resolveModel(); routes to RELAY_STREAM if remote
+  modelTier?: number;
   abortSignal?: AbortSignal;
+  // ... additional optional fields: onActivity, tools, platform, platformTools, shouldYield
 }
 
 interface AgentLoopResult {
@@ -102,7 +104,7 @@ IDLE
 
 During `LLM_CALL`, model resolution determines the execution path:
 - **Local model** — `StreamChunk`s collected directly from the local `LLMBackend.chat()` call.
-- **Remote model** — loop enters `RELAY_STREAM`: writes an `inference` outbox entry with a UUID `stream_id`, then polls `readInboxByStreamId()` at 500ms intervals for `stream_chunk` and `stream_end` inbox entries. Chunks are reordered by `seq`. Gaps are skipped after 2 polling cycles with a warning. Per-host timeout is 120s; the loop fails over to the next eligible host on timeout.
+- **Remote model** — loop enters `RELAY_STREAM`: writes an `inference` outbox entry with a UUID `stream_id`, then waits for `relay:inbox` events (with 500ms fallback polling) for `stream_chunk` and `stream_end` inbox entries. Chunks are reordered by `seq`. Gaps are skipped after 6 polling cycles (~3s) with a warning. Per-host timeout is `inference_timeout_ms` (default 300s); the loop fails over to the next eligible host on timeout.
 
 If `this.aborted` is set during streaming, `RELAY_STREAM` writes a `cancel` outbox entry (with `ref_id` pointing to the original `inference` entry) and exits cleanly.
 
@@ -142,7 +144,7 @@ The `alert` role is a reserved message role visible in the thread but excluded f
 
 ## Context Assembly Pipeline
 
-`assembleContext(params: ContextParams): LLMMessage[]` is a pure, synchronous function that builds the full message array to be sent to the LLM. It runs in 8 stages described in spec §13.1.
+`assembleContext(params: ContextParams): ContextAssemblyResult` is a synchronous function that builds the full message array to be sent to the LLM, returning `{ messages, debug, systemSuffix? }`. It runs in 8 stages described in spec §13.1.
 
 ```typescript
 interface ContextParams {
@@ -213,7 +215,7 @@ Each sanitized `Message` is mapped to an `LLMMessage`, dropping messages whose `
 The final message array is composed in this order:
 
 1. **Base system prompt** — a hardcoded instruction establishing the assistant identity and tool-use posture.
-2. **Persona** (optional) — the contents of `{configDir}/persona.md` injected as a second `system` message. The persona file is loaded once and cached in module-level variables keyed by `configDir` path. If the file does not exist, this message is omitted.
+2. **Persona** (optional) — the contents of `{configDir}/persona.md` injected as a second `system` message. The persona file is loaded once and cached in a module-level variable per `configDir` path. If the file does not exist, this message is omitted.
 3. **Orientation** — a stable `system` message listing available commands, current model, and host identity.
 4. **Skill body** (optional) — if the task's `payload` JSON contains `"skill": "<name>"` and that skill is active in the `skills` table, its SKILL.md content is injected as an additional `system` message. This injection happens outside the `noHistory` guard so it applies even when history is suppressed. If the referenced skill is not active, a note is deferred to the volatile context instead.
 5. **Message history** — all annotated messages from stage 5b.
@@ -239,11 +241,13 @@ The final message array is composed in this order:
 
 ### Stage 7 — BUDGET_VALIDATION
 
-Estimates token count using a 1-token-per-4-characters approximation across all assembled messages. The context window is set to 8,000 tokens. If the estimate exceeds this limit:
+Counts tokens using `countContentTokens()` (tiktoken `cl100k_base`) across all assembled messages. The context window is resolved from the backend's advertised `max_context` (defaults to 200,000 when unavailable; the `contextWindow` parameter defaults to 8,000 but is typically overridden by the agent loop). If the estimated total exceeds the window:
 
 1. System messages are separated from history messages.
-2. History is truncated to the most recent 10 non-system messages.
-3. The truncated array `[...systemMessages, ...remaining]` is returned.
+2. History is truncated via a token-aware backward fill targeting 85% of the window (cache-friendly headroom), always keeping at least 2 messages and advancing the slice so the kept history begins with a `user` message.
+3. A `system` truncation marker is injected (noting how many messages were dropped and including the thread summary when available) and the result `[...systemMessages, truncationMarker, ...remaining]` is returned.
+
+Budget pressure also triggers tier-aware reductions to the volatile enrichment (memory/digest sections) before truncation.
 
 ### Stage 8 — METRIC_RECORDING
 
@@ -262,7 +266,7 @@ config/
 
 ## Built-in Commands
 
-Commands are defined as `CommandDefinition` objects from `@bound/sandbox` and dispatched by the sandbox during tool execution. All 20 built-in commands are registered via `getAllCommands()` in `packages/agent/src/commands/index.ts`.
+Commands are defined as `CommandDefinition` objects from `@bound/sandbox` and dispatched by the sandbox during tool execution. All built-in commands are registered via `getAllCommands()` in `packages/agent/src/commands/index.ts`. The current set includes: `help`, `query`, `advisory`, `memory`, `schedule`, `cancel`, `emit`, `purge`, `await`, `cache-warm`, `cache-pin`, `cache-unpin`, `cache-evict`, `model-hint`, `archive`, `hostinfo`, `notify`, `skill-activate`, `skill-list`, `skill-read`, `skill-retire`.
 
 Each command receives a `CommandContext` at runtime. Relevant fields for built-in commands:
 
@@ -303,38 +307,23 @@ query --query "SELECT id, status FROM tasks WHERE status = 'pending'"
 
 ---
 
-### `memorize`
+### `memory`
 
-Upsert a key-value pair in `semantic_memory`.
+Unified memory command dispatched by subcommand: `store`, `forget`, `search`, `connect`, `disconnect`, `traverse`, `neighbors`.
 
-| Argument | Required | Description |
-|---|---|---|
-| `key` | yes | Memory key |
-| `value` | yes | Memory value |
-| `source` | no | Source of the memory entry (default: `"agent"`) |
-
-The row ID is computed as a deterministic UUID derived from the key using `BOUND_NAMESPACE`. If a non-deleted entry with the same key already exists, its `value`, `source`, and `last_accessed_at` are updated; otherwise a new row is inserted.
-
-```
-memorize --key "project.language" --value "TypeScript" --source "user:conversation-id"
-```
-
----
-
-### `forget`
-
-Soft-delete a key from `semantic_memory`.
-
-| Argument | Required | Description |
-|---|---|---|
-| `key` | no | Memory key to remove |
-| `prefix` | no | Delete all entries whose key starts with this prefix |
-
-One of `key` or `prefix` must be provided. When `key` is supplied, looks up the entry by key and soft-deletes it if found. When `prefix` is supplied, all non-deleted entries whose key starts with that prefix are soft-deleted. Returns an error if neither is provided or if the key does not exist.
+| Subcommand | Description |
+|---|---|
+| `store` | Upsert a key/value pair in `semantic_memory`. Keys with prefixes `_standing`, `_feedback`, `_policy`, or `_pinned` are auto-pinned; otherwise `--tier` (`pinned`, `summary`, `default`, `detail`) is honored. Row ID is a deterministic UUID derived from the key using `BOUND_NAMESPACE`. |
+| `forget` | Soft-delete an entry by `--key` or batch-delete by `--prefix`. Cascades to memory edges; retiring a `summary` promotes its `detail` children back to `default`. |
+| `search` | Keyword search over memory keys and values (stop-word filtered, limit 20, ordered by `modified_at DESC`). |
+| `connect` / `disconnect` | Upsert or remove `memory_edges` rows with optional `--relation` and `--weight`. `summarizes` edges drive tier transitions. |
+| `traverse` / `neighbors` | Graph queries over the memory edge graph. |
 
 ```
-forget --key "project.language"
-forget --prefix "config."
+memory store project.language TypeScript
+memory forget --prefix "config."
+memory search "language"
+memory connect project.language project.runtime related --weight 2
 ```
 
 ---
@@ -416,8 +405,8 @@ Insert a `purge`-role message that causes the context assembly pipeline to drop 
 |---|---|---|
 | `ids` | one-of | Comma-separated message IDs |
 | `last` | one-of | Number of most-recent messages to target |
-| `thread-id` | with `last` | Thread to query for the last N messages |
-| `create-summary` | no | Include a summary note in the purge record |
+| `thread-id` | with `last` | Thread to query for the last N messages (falls back to `ctx.threadId`) |
+| `summary` | no | Include a summary note in the purge record |
 
 The purge message content is stored as:
 
@@ -428,7 +417,7 @@ The purge message content is stored as:
 Stage 2 of context assembly reads this structure and excludes the listed IDs from the LLM context. The original message rows are not modified or deleted.
 
 ```
-purge --last 10 --thread-id "t-abc123" --create-summary
+purge --last 10 --thread-id "t-abc123" --summary
 ```
 
 ---
@@ -441,7 +430,7 @@ Poll until a set of tasks reach a terminal state (`completed`, `failed`, or `can
 |---|---|---|
 | `task-ids` | yes | Comma-separated task UUIDs |
 
-Returns a JSON object keyed by task ID, each containing `status`, `result`, and `error`. If the aggregated JSON exceeds 50 KB, the command reports the byte count instead of printing the full payload (to be buffered to a file in production).
+Polls every 2s up to a 300s hard timeout. Returns a JSON object keyed by task ID, each containing `status`, `result`, and `error`. If the aggregated JSON exceeds 50 KB, the output is truncated to 50 KB and the total byte count is appended.
 
 ```
 await --task-ids "task-1,task-2,task-3"
@@ -517,8 +506,9 @@ Set or clear the preferred model for the current task. Requires `taskId` to be p
 |---|---|---|
 | `model` | one-of | Model ID or tier string |
 | `reset` | one-of | Pass `true` to clear the hint |
+| `for-turns` | no | Turn count limit for the hint |
 
-Updates `model_hint` on the task row. The agent loop reads this field when constructing its `AgentLoopConfig` for subsequent runs. If no task row exists yet (first run of an interactive session), a stub task row is inserted to carry the hint.
+Updates `model_hint` on the task row (the task row must already exist — the command fails if it does not). When a `modelRouter` is available, the requested model is validated against the cluster-wide pool (derived capability requirements include `vision` when the recent thread contains image blocks); capability mismatches log a warning but the hint is still accepted.
 
 ```
 model-hint --model "claude-3-5-sonnet"
@@ -625,10 +615,10 @@ stop();
 
 `agentLoopFactory` is a `(config: AgentLoopConfig) => AgentLoop` callback. The scheduler uses it to instantiate a fresh `AgentLoop` for each task, keeping each run isolated.
 
-The scheduler starts two intervals on `start()`:
+The scheduler starts two timers on `start()`:
 
-- **Main tick** — runs `tick()` at `pollInterval` (default 5 seconds).
-- **Heartbeat** — runs `updateHeartbeats()` every 30 seconds, updating `heartbeat_at` for all currently running tasks to prevent eviction.
+- **Main tick** — runs `tick()` via a self-rescheduling `setTimeout`, pacing on the current `getEffectivePollInterval()` (base default 5 seconds, subject to quiescence multiplier).
+- **Heartbeat** — runs `updateHeartbeats()` every 30 seconds via `setInterval`, updating `heartbeat_at` for all currently running tasks to prevent eviction.
 
 ### 4-Phase Tick
 
@@ -647,11 +637,11 @@ tick()
 Two sweeps:
 
 1. **Lease expiry** — any task in `claimed` status whose `claimed_at` is older than 5 minutes is reset to `pending` (lease cleared). This recovers tasks that were claimed but never started.
-2. **Heartbeat timeout** — any task in `running` status whose `heartbeat_at` is older than 10 minutes is marked `failed` with error `"evicted due to heartbeat timeout"`. This reclaims tasks from crashed workers.
+2. **Heartbeat timeout** — any task in `running` status whose `heartbeat_at` is older than 5 minutes is marked `failed` with error `"evicted due to heartbeat timeout"` (and `consecutive_failures` is incremented). This reclaims tasks from crashed workers.
 
 ```
 LEASE_DURATION    = 300_000 ms  (5 minutes)
-EVICTION_TIMEOUT  = 600_000 ms  (10 minutes)
+EVICTION_TIMEOUT  = 300_000 ms  (5 minutes)
 ```
 
 #### Phase 1 — Schedule
@@ -660,9 +650,9 @@ Fetches up to 100 tasks in `pending` status whose `next_run_at <= now`, ordered 
 
 - All dependencies listed in `depends_on` are `completed` (or don't exist, which is treated as failed).
 - If `require_success` is set, no dependency may be in `failed` state.
-- If `requires.host` is specified, it must match `ctx.hostName`.
+- If `requires.host` is specified, it must match `ctx.hostName` (exact or glob), or be a matching array; `requires.site_id` is also honored.
 
-Tasks that pass are updated to `claimed` with `claimed_by = ctx.hostName`.
+Tasks that pass are updated to `claimed` with `claimed_by = ctx.siteId`.
 
 #### Phase 2 — Sync
 
@@ -670,7 +660,7 @@ Reserved for cross-host synchronisation (not yet active).
 
 #### Phase 3 — Run
 
-Fetches up to 10 tasks in `claimed` status owned by this host, ordered by `created_at ASC`. Each is dispatched asynchronously via `setImmediate` to avoid blocking the tick. The run sequence for each task:
+Fetches up to 10 tasks in `claimed` status owned by this host (by `ctx.siteId`), ordered by `created_at ASC`. Each is dispatched asynchronously to avoid blocking the tick. The run sequence for each task:
 
 1. Generate a `leaseId` (UUID) and set `status = 'running'`, `heartbeat_at = now`.
 2. Record the task in `runningTasks` map for heartbeat updates.
@@ -726,14 +716,17 @@ computeNextRunAt("0 0 1 * *")
 
 ### Quiescence
 
-The scheduler adjusts its effective poll interval based on user inactivity. The `message:created` event resets the inactivity clock. After 1 hour of no user interaction, the poll interval scales linearly up to 5x the base rate.
+The scheduler adjusts its effective poll interval based on user inactivity using a graduated-tier table. The `message:created` event resets the inactivity clock (and also resets `eventDepth`).
 
 ```
-effective = base * min(scale, 5)
-scale     = 1 + ((inactivity - 1h) / 1h) * 4   (after the 1h threshold)
+0-30m idle   : ×1
+30m-1h idle  : ×2
+1-4h idle    : ×3
+4-12h idle   : ×5
+12-24h idle  : ×10
 ```
 
-`getEffectivePollInterval()` exposes this value for inspection or external use. The main tick interval is fixed at startup; the quiescence factor is intended for callers that adjust the interval dynamically between starts.
+`getEffectivePollInterval()` exposes this value. If any pending task has `no_quiescence = 1`, the base interval is used unconditionally. The interval is recomputed after every tick so changes take effect without restarting the scheduler.
 
 ### Event-Driven Tasks
 
@@ -758,7 +751,7 @@ seedCronTasks(db, [
 ], siteId);
 ```
 
-Task IDs are derived as `deterministicUUID(BOUND_NAMESPACE, "cron-{name}")`.
+Task IDs are derived as `deterministicUUID(BOUND_NAMESPACE, "cron-{name}")`. Cron `trigger_spec` is stored as the raw expression (e.g. `"0 * * * *"`); the scheduler uses `extractCronExpression()` to handle both raw-string and JSON-wrapped forms at read time.
 
 ---
 
@@ -778,6 +771,8 @@ const client = new MCPClient({
   args:      ["--port", "3000"],
   allow_tools: ["search", "fetch"],  // optional allowlist
   confirm:     ["delete"],           // tools requiring confirmation
+  // HTTP transport alternative:
+  // transport: "http", url: "https://host/mcp", headers: { Authorization: "..." }
 });
 
 await client.connect();
@@ -790,10 +785,11 @@ await client.disconnect();
 | Field | Description |
 |---|---|
 | `name` | Logical name used to prefix generated command names |
-| `transport` | `"stdio"` (subprocess) or `"sse"` (HTTP/SSE) |
+| `transport` | `"stdio"` (subprocess) or `"http"` (Streamable HTTP) |
 | `command` | Executable to spawn (stdio only) |
 | `args` | Arguments for the subprocess |
-| `url` | Endpoint URL (SSE only) |
+| `url` | Endpoint URL (http only) |
+| `headers` | Optional request headers for the http transport |
 | `allow_tools` | If set, only tools in this list are exposed as commands |
 | `confirm` | Tools that require explicit confirmation in autonomous mode |
 
@@ -812,7 +808,6 @@ await client.disconnect();
 | `isConnected()` | Returns current connection state |
 | `getConfig()` | Returns the `MCPServerConfig` used at construction |
 
-For testing, `registerTool`, `registerResource`, and `registerPrompt` allow injecting capabilities without a live server.
 
 ### Auto-Generated Commands from MCP Tools
 
@@ -825,7 +820,7 @@ interface MCPCommandsResult {
 }
 ```
 
-Each server command accepts a required `subcommand` parameter that selects the tool within that server (e.g., `github --subcommand create_issue`). The LLM ToolDefinition for each server uses `additionalProperties: true` so tool-specific arguments pass through alongside `subcommand`.
+Each server command accepts an optional `subcommand` parameter that selects the tool within that server (e.g., `github --subcommand create_issue`). Tool-specific arguments pass through alongside `subcommand`.
 
 When no `subcommand` is provided (or `subcommand="help"`), the command prints a listing of all available subcommands for that server. Tools not in `allow_tools` (if configured) are silently excluded from the dispatch table.
 
@@ -925,7 +920,7 @@ import {
 ```typescript
 const id = createAdvisory(db, {
   type:     "config-change",
-  status:   "proposed",          // always overridden to "proposed"
+  status:   "proposed",          // always overwritten to "proposed" in insert
   title:    "Enable rate limiting",
   detail:   "Current config has no rate limits on the public API.",
   action:   "Set RATE_LIMIT_RPM=100 in environment",
@@ -933,6 +928,8 @@ const id = createAdvisory(db, {
   evidence: "task-id-xyz produced 800 calls in 60 seconds",
 }, siteId);
 ```
+
+The `advisory` command exposes the same lifecycle via subcommands (`create`, `dismiss`, `approve`, `apply`, `defer`, `list`) from inside the agent.
 
 **Lifecycle transitions:**
 
@@ -951,7 +948,7 @@ All mutating functions return `Result<void, Error>` from `@bound/shared`.
 const pending = getPendingAdvisories(db);
 ```
 
-Returns all advisories in `proposed` status, plus `deferred` advisories whose `defer_until` timestamp is in the past. Results are ordered by `proposed_at DESC`.
+Returns all advisories in `proposed` status, plus `deferred` advisories whose `defer_until` timestamp is in the past. Results are ordered by `proposed_at ASC, rowid ASC`.
 
 ---
 
@@ -967,13 +964,13 @@ redactMessage(db, messageId, siteId);
 
 // Redact every message in a thread (and tombstone related memories)
 const result = redactThread(db, threadId, siteId);
-// result.value = { messagesRedacted: number, memoriesAffected: number }
+// result.value = { messagesRedacted: number, memoriesAffected: number, edgesAffected?: number }
 ```
 
 **Thread redaction cascade:**
 
-1. All `messages` rows where `thread_id` matches have their `content` set to `"[redacted]"`.
-2. All `semantic_memory` rows where `source` matches the thread ID are soft-deleted (`deleted = 1`). This removes any facts the agent extracted from that conversation.
+1. All `messages` rows where `thread_id` matches have their `content` set to `"[redacted]"` via `updateRow` (so a change-log entry is created and the redaction propagates via sync).
+2. All `semantic_memory` rows where `source` matches the thread ID are soft-deleted (`deleted = 1`), and edges referencing those keys are cascade-tombstoned. This removes any facts the agent extracted from that conversation.
 
 Both functions return `Result<void | RedactionResult, Error>`. The cascade is non-atomic — if the process is interrupted partway through, some messages may be redacted while others are not. Callers that require atomicity should wrap calls in a SQLite transaction.
 
@@ -1002,12 +999,14 @@ if (result.ok) {
 The prompt structure:
 
 ```
-Based on the initial exchange below, generate a short title (5-10 words)
-for this conversation thread. Return ONLY the title, nothing else.
+Generate a short, single-line title (5-10 words) for this conversation.
+No markdown, no quotes, no punctuation at the start. Return ONLY the title text on one line.
 
 User: {first user message}
 Assistant: {first assistant message}   <- omitted if not yet available
 ```
+
+After the LLM responds, the output is sanitized (newlines collapsed, leading markdown/quote characters stripped) and capped at 80 characters. If the LLM returns empty output or throws, a fallback derives the title from the first user message (either via `titleFromPayload` for JSON task payloads or the first 50 characters).
 
 ---
 
@@ -1061,7 +1060,7 @@ Storage uses `semantic_memory` with keys prefixed `_internal.file_thread.{filePa
 **Recording a file write:**
 
 ```typescript
-trackFilePath(db, "/workspace/src/agent-loop.ts", currentThreadId);
+trackFilePath(db, "/workspace/src/agent-loop.ts", currentThreadId, siteId);
 ```
 
 Upserts the mapping. If an entry already exists for the path, its value is updated; otherwise a new row is inserted.
@@ -1129,13 +1128,13 @@ The agent loop derives `CapabilityRequirements` before `ASSEMBLE_CONTEXT` on eac
 When `resolveModel()` returns `kind: "remote"`, `LLM_CALL` constructs an `InferenceRequestPayload` and enters `RELAY_STREAM`:
 
 1. Writes an `inference` outbox entry with a UUID `stream_id`.
-2. Emits `sync:trigger` to accelerate delivery to the hub.
-3. Polls `readInboxByStreamId(db, streamId)` at 500ms intervals.
+2. Waits for `relay:inbox` events (with a 500ms fallback timer) so sync-delivered chunks are processed immediately.
+3. Reads `stream_chunk` / `stream_end` inbox entries via `readInboxByStreamId()`.
 4. Buffers received `stream_chunk` entries by `seq`; yields contiguous chunks in order.
-5. Gaps (missing seq) are skipped after `MAX_GAP_CYCLES = 2` polling cycles with a warning log.
+5. Gaps (missing seq) are skipped after `MAX_GAP_CYCLES = 6` polling cycles (~3s) with a warning log.
 6. `stream_end` closes the generator.
 7. On abort, writes a `cancel` outbox entry with `ref_id = inference outbox entry ID`.
-8. Per-host timeout: 120s. On timeout, generates a new `stream_id` and retries on the next eligible host.
+8. Per-host timeout: `inference_timeout_ms` (default 300s, configurable via `sync.relay.inference_timeout_ms`). On timeout, generates a new `stream_id` and retries on the next eligible host.
 9. After the first chunk, records `relay_target` and `relay_latency_ms` on the turn row via `recordTurnRelayMetrics`.
 
 **Large prompts (AC1.9):** If the serialized `InferenceRequestPayload` exceeds 2MB, the messages array is written to the `files` table (path `cluster/relay/inference-{uuid}.json`) and the payload sets `messages_file_ref` / `messages: []`. The file syncs to all cluster hosts; the target reads it by path.
@@ -1157,13 +1156,14 @@ When a tool call targets a remote host (detected via `isRelayRequest()` in the M
 | `tool_call` | `executeToolCall()` | Calls local MCP server via subcommand dispatch, writes `result`/`error` |
 | `resource_read` | `executeResourceRead()` | Reads MCP resource |
 | `prompt_invoke` | `executePromptInvoke()` | Invokes MCP prompt |
+| `cache_warm` | `executeCacheWarm()` | Warms the file cache for requested paths. |
 | `inference` | `executeInference()` | Runs local `LLMBackend.chat()`, writes streaming `stream_chunk`/`stream_end` outbox entries |
 | `process` | `executeProcess()` | Starts a full `AgentLoop` on the delegated thread, emits `status_forward` outbox entries |
-| `status_forward` | (local event) | Emits `status:forward` event so the web server can serve forwarded status |
-| `cancel` | (first-pass) | Aborts active inference stream via stored `AbortController` |
-| `intake` | `selectIntakeHost()` | Routes inbound platform messages to the appropriate spoke via a four-tier algorithm: thread affinity → model match → tool match → least-loaded fallback. Writes a `process` outbox entry targeting the selected host. |
-| `platform_deliver` | (local event) | Emits `platform:deliver` on the local event bus so the platform connector delivers the message to the external platform. |
-| `event_broadcast` | (local event) | Fires the named event locally on the event bus (target `*`); sync routes broadcast entries to all spokes except the source. |
+| `intake` | `handleIntake()` | Routes inbound platform messages to the appropriate spoke via a four-tier algorithm (thread affinity → model match → tool match → least-loaded fallback) and writes a `process` outbox entry targeting the selected host. |
+| `platform_deliver` | `handlePlatformDeliver()` | Emits `platform:deliver` on the local event bus so the platform connector delivers the message to the external platform. |
+| `event_broadcast` | `handleEventBroadcast()` | Fires the named event locally on the event bus; sync routes broadcast entries to all spokes except the source. |
+
+`cancel` entries are special-cased: when encountered in the inbox, they abort any active inference stream for the referenced `ref_id` and are not routed through the dispatch table. `status_forward` entries originate from `executeProcess` and are consumed by the requester-side cache to serve `/api/threads/{id}/status`.
 
 **`executeInference` buffering:** Chunks are flushed to outbox at 200ms timer OR 4KB buffer threshold, whichever fires first. The final flush is always `stream_end`. Each flush records a `relay_cycles` row. Cancel aborts the `for await` loop via `AbortController.signal.aborted` and writes an `error` response.
 
@@ -1175,9 +1175,9 @@ When a tool call targets a remote host (detected via `isRelayRequest()` in the M
 
 ### Loop Delegation
 
-**Source:** `packages/agent/src/delegation.ts`, `packages/cli/src/commands/start.ts`
+**Source:** `packages/agent/src/delegation.ts`, `packages/cli/src/commands/start/server.ts`
 
-Before starting a local `AgentLoop`, `start.ts` checks `getDelegationTarget()` which returns a target `EligibleHost` when all AC6.1 conditions hold:
+Before starting a local `AgentLoop`, `server.ts` checks `getDelegationTarget()` which returns a target `EligibleHost` when all AC6.1 conditions hold:
 
 1. `resolveModel()` returns `kind: "remote"` for the thread's model.
 2. Exactly one host has the model.

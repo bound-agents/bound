@@ -1,6 +1,6 @@
 # Sync Protocol
 
-The `@bound/sync` package implements event-sourced synchronisation between distributed Bound instances. Each instance maintains a local SQLite change log and exchanges changesets with a designated hub over HTTP. All transport is authenticated with Ed25519 request signatures; merge conflicts are resolved through deterministic LWW or append-only reducers.
+The `@bound/sync` package implements event-sourced synchronisation between distributed Bound instances. Each instance maintains a local SQLite change log and exchanges changesets with a designated hub over a persistent WebSocket connection. The WebSocket upgrade is authenticated with an Ed25519 request signature and all frames are encrypted with XChaCha20-Poly1305 using a per-peer symmetric key derived via ECDH. Merge conflicts are resolved through deterministic LWW or append-only reducers.
 
 ---
 
@@ -11,8 +11,8 @@ The `@bound/sync` package implements event-sourced synchronisation between distr
 3. [Request Signing](#request-signing)
 4. [Reducers](#reducers)
 5. [Changesets and Peer Cursors](#changesets-and-peer-cursors)
-6. [Four-Phase Sync Protocol](#four-phase-sync-protocol)
-7. [HTTP Endpoints](#http-endpoints)
+6. [WebSocket Sync Protocol](#websocket-sync-protocol)
+7. [WebSocket Frames](#websocket-frames)
 8. [Change Log Pruning](#change-log-pruning)
 9. [Relay Transport](#relay-transport)
 
@@ -20,14 +20,18 @@ The `@bound/sync` package implements event-sourced synchronisation between distr
 
 ## Overview
 
-Bound uses a hub-and-spoke topology. Each spoke instance runs a `SyncClient` that periodically executes a four-phase cycle against its hub:
+Bound uses a hub-and-spoke topology. Each spoke instance runs a `WsSyncClient` that maintains a persistent WebSocket connection to its hub at `/sync/ws`. Replication is event-driven rather than polled: whenever a local change log entry is written, a `changelog:written` event triggers the `WsTransport` to coalesce recent entries and send a `changelog_push` frame to every connected peer.
 
-1. **Push** — the spoke serialises every change log entry the hub has not yet seen and POSTs it to `/sync/push`.
-2. **Pull** — the spoke requests all entries the hub holds that the spoke has not yet seen via `/sync/pull`.
-3. **Ack** — the spoke confirms the highest sequence number it received via `/sync/ack`, allowing the hub to eventually prune its change log.
-4. **Relay** — the spoke exchanges pending `relay_outbox` messages with the hub and receives any `relay_inbox` messages the hub has routed to it. Relay failure is non-fatal; the sync cycle still succeeds.
+The exchange consists of four frame kinds that move in both directions:
 
-Every HTTP request in the sync protocol is signed with the caller's Ed25519 private key. The receiving side authenticates the request by verifying the signature against the caller's public key, which it retrieves from a shared `keyring` configuration file. This means no pre-shared passwords or TLS client certificates are required — identity is entirely key-based.
+1. **`changelog_push`** — sender transmits change log entries the peer has not yet seen. Entries originating from the destination peer are filtered out (echo suppression).
+2. **`changelog_ack`** — receiver confirms the highest HLC it has applied, allowing the sender to advance its `last_sent` cursor and prune accordingly.
+3. **`relay_send` / `relay_deliver`** — cross-host relay messages (tool calls, inference requests, broadcast events) are forwarded spoke→hub (`relay_send`) or hub→spoke (`relay_deliver`).
+4. **`relay_ack`** — acknowledges delivery of relay entries so the outbox can be marked delivered.
+
+On reconnection, the transport drains any changelog entries or relay outbox entries missed while disconnected, then resumes event-driven replication.
+
+The WebSocket upgrade request is signed with the caller's Ed25519 private key. The receiving side authenticates the upgrade by verifying the signature against the caller's public key, which it retrieves from a shared `keyring` configuration file. This means no pre-shared passwords or TLS client certificates are required — identity is entirely key-based. Once the upgrade succeeds, subsequent frames are encrypted with the per-peer symmetric key and no further per-message signatures are used.
 
 The change log is append-only at the SQLite level. Rows are never mutated in the log itself; instead, reducers apply log entries to the live application tables using either last-write-wins (LWW) or append-only semantics. The log accumulates until a pruning pass removes entries that all known peers have confirmed receiving.
 
@@ -106,7 +110,7 @@ The `dataDir` is created recursively if it does not exist. The private key file 
 
 **Source:** `packages/sync/src/signing.ts`
 
-All sync HTTP requests carry four custom headers that together constitute a signed proof of identity. The scheme is intentionally simple — no HTTP Signatures draft, no JWT — to keep the dependency surface small.
+The WebSocket upgrade request (and any other authenticated request built on the same primitive, such as command-line tooling) carries four custom headers that together constitute a signed proof of identity. The scheme is intentionally simple — no HTTP Signatures draft, no JWT — to keep the dependency surface small.
 
 ### Signing Scheme
 
@@ -116,11 +120,11 @@ The signed message (the "signing base") is a newline-separated concatenation of 
 <METHOD>\n<PATH>\n<ISO-TIMESTAMP>\n<SHA-256-HEX-OF-BODY>
 ```
 
-For example:
+For example, the signing base for the WebSocket upgrade request (method `GET`, path `/sync/ws`, empty body):
 
 ```
-POST
-/sync/push
+GET
+/sync/ws
 2026-03-23T14:05:00.000Z
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
@@ -140,19 +144,12 @@ The signing base is UTF-8 encoded and signed with Ed25519. The resulting signatu
 
 #### `signRequest(privateKey, siteId, method, path, body): Promise<{ "X-Site-Id": string; "X-Timestamp": string; "X-Signature": string; "X-Agent-Version": string }>`
 
-Computes the signing base from the provided arguments, signs it, and returns the four headers ready to spread into a `fetch` call.
+Computes the signing base from the provided arguments, signs it, and returns the four headers ready to attach to a WebSocket upgrade request (or other signed request).
 
 ```typescript
-const headers = await signRequest(privateKey, siteId, "POST", "/sync/push", body);
+const headers = await signRequest(privateKey, siteId, "GET", "/sync/ws", "");
 
-await fetch(`${hubUrl}/sync/push`, {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    ...headers,
-  },
-  body,
-});
+const ws = new WebSocket(wsUrl, { headers } as any);
 ```
 
 #### `verifyRequest(keyring, method, path, headers, body): Promise<Result<{ siteId: string; hostName: string }, SignatureError>>`
@@ -166,7 +163,7 @@ Verifies an incoming request. The steps are:
 5. On success, return `{ siteId, hostName }`.
 
 ```typescript
-const result = await verifyRequest(keyring, "POST", "/sync/push", headers, body);
+const result = await verifyRequest(keyring, "GET", "/sync/ws", headers, "");
 if (!result.ok) {
   // result.error.code is "unknown_site" | "invalid_signature" | "stale_timestamp"
 }
@@ -174,7 +171,7 @@ if (!result.ok) {
 
 #### `detectClockSkew(localTimestamp: string, remoteTimestamp: string): number | null`
 
-Compares two ISO timestamps and returns the absolute skew in **seconds** if it exceeds 30 seconds, or `null` otherwise. Called by the auth middleware to populate the `X-Clock-Skew` response header as an advisory signal to the client.
+Compares two ISO timestamps and returns the absolute skew in **seconds** if it exceeds 30 seconds, or `null` otherwise. Exposed as a utility for callers that want to diagnose NTP drift; the current WebSocket transport does not itself propagate clock skew back to peers.
 
 ```typescript
 const skew = detectClockSkew(new Date().toISOString(), remoteTimestamp);
@@ -218,18 +215,18 @@ Column names for LWW tables are additionally cross-referenced against the live s
 Last-write-wins strategy. Behaviour depends on whether the row already exists:
 
 - **Row does not exist** — inserts using only columns that are both present in the event and present in the schema.
-- **Row exists** — compares `modified_at` fields. The update is applied only if `event.row_data.modified_at` is strictly greater than the stored value. Columns not in the schema are ignored; only non-`id` columns are updated.
+- **Row exists** — compares `modified_at` fields. The update is applied only if `event.row_data.modified_at` is strictly greater than the stored value. Columns not in the schema are ignored; only non-PK columns are updated. The PK column is `id` for most tables, `site_id` for `hosts`, and `key` for `cluster_config`.
 
 Returns `{ applied: true }` if the underlying SQL statement changed at least one row.
 
 ```typescript
 const result = applyLWWReducer(db, {
-  seq: 42,
-  table_name: "bookmarks",
+  hlc: "2026-03-23T14:00:00.000Z-0000-a3f1c8b2e4d07f91",
+  table_name: "users",
   row_id: "abc123",
   site_id: "a3f1c8b2...",
   timestamp: "2026-03-23T14:00:00.000Z",
-  row_data: JSON.stringify({ id: "abc123", url: "https://example.com", modified_at: "2026-03-23T14:00:00.000Z" }),
+  row_data: JSON.stringify({ id: "abc123", display_name: "Ada", modified_at: "2026-03-23T14:00:00.000Z" }),
 });
 // { applied: true }
 ```
@@ -251,7 +248,7 @@ const { applied } = applyEvent(db, entry);
 
 ### `replayEvents(db, events): { applied: number; skipped: number }`
 
-Iterates a list of `ChangeLogEntry` records in order, calling `applyEvent` for each. When an event is applied successfully, a new change log entry is written to the local `change_log` table (via `createChangeLogEntry`) with the **original** `site_id` preserved. This is important: the log must record where each change originated so that echo suppression works correctly during a subsequent pull.
+Iterates a list of `ChangeLogEntry` records in order, calling `applyEvent` for each. The entire batch runs inside a single SQLite transaction, which is rolled back if `applyEvent` throws. When an event is applied successfully, a new change log entry is written to the local `change_log` table (via `createChangeLogEntry`) with the **original** `site_id` and remote HLC preserved. This is important: the log must record where each change originated so that echo suppression works correctly when this instance later replicates to other peers.
 
 ```typescript
 const { applied, skipped } = replayEvents(db, inbound.events);
@@ -274,44 +271,44 @@ Clears the module-level column name cache. Intended for use in tests.
 
 **Source:** `packages/sync/src/changeset.ts`
 
-A `Changeset` is the unit of exchange in the sync protocol.
+A `Changeset` is a bundle of change log entries together with the HLC range it covers. It is used by the reconnect-drain path and by any bulk-transfer tooling.
 
 ```typescript
 interface Changeset {
   events: ChangeLogEntry[];
   source_site_id: string;
-  source_seq_start: number;
-  source_seq_end: number;
+  source_hlc_start: string;
+  source_hlc_end: string;
 }
 ```
 
-`source_seq_start` and `source_seq_end` are the first and last `seq` values in the `events` array. When `events` is empty, `source_seq_end` equals the cursor value that was passed in (i.e. no progress was made) and `source_seq_start` is `cursor + 1`.
+`source_hlc_start` and `source_hlc_end` are the first and last `hlc` values in the `events` array. When `events` is empty, both fields equal the cursor value that was passed in.
 
 #### `fetchOutboundChangeset(db, peerSiteId, siteId): Changeset`
 
-Builds the changeset that the local instance will push to a peer. Reads `sync_state.last_sent` for `peerSiteId` (defaulting to `0`) and returns every `change_log` entry with `seq > last_sent`, regardless of which site originally created the entry. The rationale is that the hub should receive the full history, not just locally-originated entries.
+Builds the changeset that the local instance will push to a peer. Reads `sync_state.last_sent` for `peerSiteId` (defaulting to `HLC_ZERO`) and returns every `change_log` entry with `hlc > last_sent`, regardless of which site originally created the entry. The rationale is that the hub should receive the full history, not just locally-originated entries.
 
 ```typescript
 const outbound = fetchOutboundChangeset(db, hubSiteId, localSiteId);
 // outbound.events contains everything the hub hasn't seen yet
 ```
 
-#### `fetchInboundChangeset(db, requesterSiteId, sinceSeq): Changeset`
+#### `fetchInboundChangeset(db, requesterSiteId, sinceHlc): Changeset`
 
-Builds the changeset the hub will return to a spoke during a pull. Selects entries with `seq > sinceSeq` and **excludes any entry whose `site_id` equals `requesterSiteId`**. This echo suppression prevents a spoke from receiving back its own changes that have been relayed through the hub.
+Builds the changeset the hub will return to a spoke during a drain. Selects entries with `hlc > sinceHlc` and **excludes any entry whose `site_id` equals `requesterSiteId`**. This echo suppression prevents a spoke from receiving back its own changes that have been relayed through the hub.
 
 ```typescript
-const inbound = fetchInboundChangeset(db, spokeSiteId, sinceSeq);
+const inbound = fetchInboundChangeset(db, spokeSiteId, sinceHlc);
 // entries originally created by spokeSiteId are excluded
 ```
 
-#### `serializeChangeset(changeset): string`
+#### `serializeChangeset(changeset): string` / `deserializeChangeset(json): Result<Changeset, Error>`
 
-JSON-serialises a `Changeset` for transmission.
+JSON serialises/deserialises a `Changeset`. `deserializeChangeset` returns `err` on malformed JSON without throwing.
 
-#### `deserializeChangeset(json): Result<Changeset, Error>`
+#### `chunkChangeset(changeset, maxBytes = 10 MB): Changeset[]`
 
-Parses a JSON string and returns a `Result`. Returns `err` on malformed JSON without throwing.
+Splits a changeset into smaller chunks that each serialize under `maxBytes` (default 10 MB). Events are HLC-ordered; each chunk gets its own HLC range. Returns a single-element array if the changeset already fits.
 
 ### Peer Cursors
 
@@ -321,8 +318,8 @@ Peer cursors track synchronisation progress per peer in the `sync_state` table. 
 
 | Field | Meaning |
 |---|---|
-| `last_received` | Highest `seq` this instance has received from the peer |
-| `last_sent` | Highest `seq` this instance has sent to (or confirmed by) the peer |
+| `last_received` | Highest `hlc` this instance has received from the peer |
+| `last_sent` | Highest `hlc` this instance has sent to (or confirmed by) the peer |
 | `last_sync_at` | ISO timestamp of the most recent successful cursor update |
 | `sync_errors` | Count of consecutive sync failures for this peer |
 
@@ -332,221 +329,204 @@ Returns the full `SyncState` row for a peer, or `null` if none exists.
 
 #### `updatePeerCursor(db, peerSiteId, updates): void`
 
-Upserts `sync_state` for the given peer. Accepted fields in `updates` are `last_received`, `last_sent`, and `sync_errors`. `last_sync_at` is always set to the current time. On insert, any field omitted from `updates` defaults to `0`.
+Upserts `sync_state` for the given peer. Accepted fields in `updates` are `last_received`, `last_sent`, and `sync_errors`. `last_sync_at` is always set to the current time. On insert, omitted HLC fields default to `HLC_ZERO` and omitted `sync_errors` defaults to `0`.
 
 ```typescript
-updatePeerCursor(db, hubSiteId, { last_sent: outbound.source_seq_end });
-updatePeerCursor(db, hubSiteId, { last_received: newLastReceived });
+updatePeerCursor(db, hubSiteId, { last_sent: outbound.source_hlc_end });
+updatePeerCursor(db, hubSiteId, { last_received: newLastReceivedHlc });
 ```
 
 #### `resetSyncErrors(db, peerSiteId): void`
 
-Sets `sync_errors` to `0` for the given peer. Called after a successful sync cycle.
+Sets `sync_errors` to `0` for the given peer. Called after a successful exchange with that peer.
 
 #### `incrementSyncErrors(db, peerSiteId): void`
 
 Atomically increments `sync_errors` by 1, inserting the row first if it does not exist.
 
-#### `getMinConfirmedSeq(db): number`
+#### `getMinConfirmedHlc(db): string`
 
-Returns `MIN(last_received)` across all rows in `sync_state`, or `0` if the table is empty. Used by the pruning logic to determine the lowest sequence number that every peer has confirmed receiving — entries at or below this threshold are safe to delete.
+Returns `MIN(last_received)` across all rows in `sync_state`, or `HLC_ZERO` if the table is empty. Used by the pruning logic to determine the lowest HLC that every peer has confirmed receiving — entries at or below this threshold are safe to delete.
 
 ---
 
-## Four-Phase Sync Protocol
+## WebSocket Sync Protocol
 
-**Source:** `packages/sync/src/sync-loop.ts`
+**Sources:** `packages/sync/src/ws-client.ts`, `packages/sync/src/ws-server.ts`, `packages/sync/src/ws-transport.ts`
 
-### `SyncClient`
+### `WsSyncClient`
 
-`SyncClient` encapsulates the logic for a single spoke's synchronisation against one hub.
+`WsSyncClient` manages the persistent WebSocket connection from a spoke to its hub.
 
 ```typescript
-const client = new SyncClient(
+const client = new WsSyncClient({
+  hubUrl,         // e.g. "https://polaris.example.com"
+  privateKey,
+  siteId,
+  keyManager,
+  hubSiteId,
+  wsTransport,    // optional: WsTransport instance for dispatching received frames
+  logger,
+  reconnectMaxInterval,  // seconds, default 60
+  backpressureLimit,     // bytes, default 2097152 (2 MB)
+});
+
+await client.connect();
+```
+
+On `connect()`, the client:
+
+1. Derives the WebSocket URL from `hubUrl` by rewriting `https://` → `wss://` (or `http://` → `ws://`) and replacing the path with `/sync/ws`.
+2. Calls `signRequest(privateKey, siteId, "GET", "/sync/ws", "")` to build the signed upgrade headers.
+3. Retrieves the per-peer XChaCha20-Poly1305 symmetric key from the `KeyManager` using the hub's site ID.
+4. Opens the WebSocket with the signed headers.
+5. On `open`, registers the hub as a peer in the `WsTransport` and drains any pending changelog and relay-outbox entries accumulated while disconnected.
+
+**Reconnection:** After any disconnect (close or error), the client reconnects using exponential backoff with 0–25% jitter, starting at 1 second and doubling until `reconnectMaxInterval` (default 60 s). `close()` marks the client as stopped and cancels any pending reconnect timer.
+
+**Backpressure:** `send()` checks `ws.bufferedAmount` against `backpressureLimit` before writing. If the limit is exceeded the client marks itself as `pressured` and returns `false` so callers can shed load.
+
+### Hub Upgrade
+
+On the server side, the sync listener mounts a WebSocket upgrade handler at `/sync/ws`. For each upgrade request it calls:
+
+**`authenticateWsUpgrade(request, keyring, keyManager, logger)`**
+
+1. Verifies the signed headers with `verifyRequest` (method `"GET"`, path `"/sync/ws"`, empty body).
+2. Maps the signature error code to an HTTP status:
+
+   | Error code | Status |
+   |---|---|
+   | `unknown_site` | `403 Forbidden` |
+   | `invalid_signature` | `401 Unauthorized` |
+   | `stale_timestamp` | `408 Request Timeout` |
+
+3. Looks up the per-peer symmetric key and fingerprint via `KeyManager`. Missing entries fail with `403`.
+4. Returns a `WsConnectionData` record containing `{ siteId, symmetricKey, fingerprint, sendState, pendingDrain }` which Bun attaches to the upgraded socket as `ws.data`.
+
+The `WsConnectionManager` tracks one connection per `siteId`; a fresh upgrade from the same site closes the prior connection with code `1008` ("Duplicate connection").
+
+### `WsTransport`
+
+`WsTransport` is the event-driven replication engine. A single instance handles all peers on one process.
+
+```typescript
+const transport = new WsTransport({
   db,
   siteId,
-  privateKey,
-  hubUrl,
-  logger,
   eventBus,
-  keyring,
-);
-```
-
-On construction, `SyncClient` resolves the hub's site ID by scanning `keyring.hosts` for the entry whose `url` matches `hubUrl`. This site ID is used as the `peer_site_id` key for all cursor operations.
-
-#### `syncCycle(): Promise<Result<SyncResult, SyncError>>`
-
-Executes one full push/pull/ack cycle. The phases run in order; any failure aborts the cycle and returns an `err` result without advancing the cursor.
-
-**Phase 1 — Push:**
-1. Call `fetchOutboundChangeset(db, peerSiteId, siteId)` to build the outbound batch.
-2. If the batch is non-empty, POST it to `/sync/push` with a signed request.
-3. On success, advance `sync_state.last_sent` to `outbound.source_seq_end`.
-
-**Phase 2 — Pull:**
-1. Read `sync_state.last_received` for the hub peer (default `0`).
-2. POST `{ since_seq }` to `/sync/pull` with a signed request.
-3. Deserialise the response body as a `Changeset`.
-4. Call `replayEvents` to apply the received entries locally.
-
-**Phase 3 — Ack:**
-1. POST `{ last_received: newLastReceived }` to `/sync/ack` with a signed request.
-2. On success, advance `sync_state.last_received` and call `resetSyncErrors`.
-
-On success, emits a `sync:completed` event on the `eventBus`:
-
-```typescript
-eventBus.emit("sync:completed", {
-  pushed: number,
-  pulled: number,
-  duration_ms: number,
+  logger,
+  isHub: true,  // true on the hub, false on a spoke
 });
+transport.start();
 ```
 
-The `SyncResult` type:
+On `start()`, `WsTransport` registers listeners for two event bus events:
 
-```typescript
-interface SyncResult {
-  pushed: number;
-  pulled: number;
-  duration_ms: number;
-}
-```
+- `changelog:written` — fired whenever the local `change_log` table gains a row. The handler loads the full entry and hands it to a `MicrotaskCoalescer` that batches entries arriving in the same microtask, then flushes each batch as a `changelog_push` frame to every connected peer (with echo suppression).
+- `relay:outbox-written` — fired whenever a relay outbox entry is created. The handler routes the entry: on a spoke it sends a `relay_send` frame to the hub; on the hub it invokes the same routing logic as an incoming `relay_send` (broadcast, hub-local dispatch, or forward to another spoke).
 
-The `SyncError` type:
+### `drainChangelog(peerSiteId)` / `drainRelayOutbox(peerSiteId)` / `drainRelayInbox(spokesSiteId)`
 
-```typescript
-interface SyncError {
-  phase: "push" | "pull" | "ack";
-  status?: number;  // HTTP status code, if the failure was an HTTP error
-  message: string;
-}
-```
-
-### `startSyncLoop(client, intervalSeconds): { stop: () => void }`
-
-Starts a recurring sync loop that calls `client.syncCycle()`. Uses recursive `setTimeout` rather than `setInterval` so the interval can vary dynamically based on failure state.
-
-**Exponential backoff:** After each failed cycle, the delay before the next attempt is computed as:
-
-```
-nextInterval = min(baseInterval * 2^consecutiveFailures, 300_000ms)
-```
-
-The maximum interval is 5 minutes. After any successful cycle, `consecutiveFailures` resets to `0` and the base interval resumes.
-
-```typescript
-const loop = startSyncLoop(client, 30); // sync every 30 seconds when healthy
-
-// Later, during shutdown:
-loop.stop();
-```
-
-Calling `stop()` sets a flag that prevents any further cycles from being scheduled and cancels any pending timer.
-
-### `resolveHubUrl(db, syncConfig, keyring): string`
-
-Determines the hub URL from available configuration sources in priority order:
-
-1. `cluster_config` table row with `key = "cluster_hub"` (dynamic, runtime-set).
-2. `syncConfig.hub` from the static `sync.json` configuration.
-3. The first `url` found in `keyring.hosts` (fallback of last resort).
-
-Throws if no URL can be determined from any source.
-
-```typescript
-const hubUrl = resolveHubUrl(db, syncConfig, keyring);
-```
+Called when a peer connects or reconnects. `drainChangelog` queries `change_log WHERE hlc > last_sent AND site_id != peerSiteId`, batches the results in chunks of 100, and sends each as a `changelog_push` frame, updating `last_sent` after each successful batch and emitting a final `drain_complete` frame. `drainRelayOutbox` (spoke-side) resends all undelivered outbox entries. `drainRelayInbox` (hub-side) forwards entries from the hub's outbox targeting the reconnected spoke.
 
 ---
 
-## HTTP Endpoints
+## WebSocket Frames
 
-**Sources:** `packages/sync/src/routes.ts`, `packages/sync/src/middleware.ts`
+**Source:** `packages/sync/src/ws-frames.ts`
 
-The hub exposes three endpoints, all under the `/sync/` path prefix, mounted as a Hono application. All three are protected by the auth middleware.
+All sync traffic after the upgrade flows as binary WebSocket frames. Every frame is encrypted with XChaCha20-Poly1305 using the per-peer symmetric key derived by `KeyManager` during the upgrade.
 
-### Auth Middleware
+### Frame Layout
 
-**`createSyncAuthMiddleware(keyring): MiddlewareHandler`**
-
-Applied to `/sync/*`. For every request it:
-
-1. Reads the raw request body and caches it in the Hono context as `rawBody` so route handlers can access it without consuming the stream a second time.
-2. Calls `verifyRequest` with the keyring, method, path, lowercased headers, and body.
-3. On failure, returns immediately with the appropriate HTTP status:
-
-| Error code | Status |
-|---|---|
-| `unknown_site` | `403 Forbidden` |
-| `invalid_signature` | `401 Unauthorized` |
-| `stale_timestamp` | `408 Request Timeout` |
-
-4. On success, sets `siteId` and `hostName` in the Hono context for use by route handlers.
-5. Calls `detectClockSkew`. If skew exceeds 30 seconds, the response carries an advisory `X-Clock-Skew` header (value in seconds) so the client can detect and diagnose NTP drift.
-
-### `POST /sync/push`
-
-Receives a changeset from a spoke and applies it to the hub's local database.
-
-**Request body:** A serialised `Changeset` object.
-
-**Behaviour:**
-1. Parse `changeset.events` from the raw body.
-2. Call `replayEvents(db, events)` to apply each entry through the appropriate reducer.
-3. If any events were received, advance `sync_state.last_received` for the pushing spoke to the `seq` of the last event.
-
-**Response:**
-```json
-{ "ok": true, "received": 3 }
+```
+[1 byte type][24 bytes nonce][N bytes ciphertext (includes 16-byte Poly1305 tag)]
 ```
 
-`received` is the count of events that were actually applied (skipped duplicates are not counted).
+The plaintext is UTF-8 encoded JSON. Minimum valid frame size is 41 bytes (1 + 24 + 16). `encodeFrame` / `decodeFrame` perform the encryption, decryption, and payload-shape validation.
 
-### `POST /sync/pull`
+### Message Types
 
-Returns events to a spoke that the spoke has not yet seen.
+| Byte | Name | Direction | Purpose |
+|------|------|-----------|---------|
+| `0x01` | `CHANGELOG_PUSH` | both | Batch of change log entries the sender wants the receiver to apply. |
+| `0x02` | `CHANGELOG_ACK` | both | Confirms the highest HLC the receiver has applied. |
+| `0x03` | `RELAY_SEND` | spoke → hub | Relay outbox entries awaiting routing by the hub. |
+| `0x04` | `RELAY_DELIVER` | hub → spoke | Relay inbox entries being delivered to a spoke. |
+| `0x05` | `RELAY_ACK` | both | Acknowledges delivery of relay entries by ID. |
+| `0x06` | `DRAIN_REQUEST` | reserved | Request peer to drain missed entries. |
+| `0x07` | `DRAIN_COMPLETE` | sender → peer | Signals end of a reconnect drain. |
+| `0xff` | `ERROR` | either | Advisory error payload. |
 
-**Request body:**
-```json
-{ "since_seq": 42 }
-```
-
-`since_seq` defaults to `0` if omitted.
-
-**Behaviour:**
-1. Read the requesting spoke's site ID from context.
-2. Call `fetchInboundChangeset(db, requesterSiteId, sinceSeq)`, which applies echo suppression.
-
-**Response:** A serialised `Changeset` object.
-
-### `POST /sync/ack`
-
-Records that the spoke has successfully received and applied events up to a given sequence number.
-
-**Request body:**
-```json
-{ "last_received": 55 }
-```
-
-**Behaviour:**
-1. Call `updatePeerCursor(db, ackingSiteId, { last_sent: lastReceived })`.
-
-The hub records this as `last_sent` because, from its perspective, it has successfully delivered events through `lastReceived` to this peer.
-
-**Response:**
-```json
-{ "ok": true }
-```
-
-### Registering the Routes
+### `CHANGELOG_PUSH`
 
 ```typescript
-import { createSyncRoutes } from "@bound/sync";
+type ChangelogPushPayload = {
+  entries: Array<{
+    hlc: string;
+    table_name: string;
+    row_id: string;
+    site_id: string;
+    timestamp: string;
+    row_data: Record<string, unknown>;
+  }>;
+};
+```
 
-const syncApp = createSyncRoutes(db, siteId, keyring, eventBus, logger);
-app.route("/", syncApp);
+On receipt, `WsTransport.handleChangelogPush` calls `replayEvents(db, entries)` to apply each entry through the appropriate reducer, updates `last_received` to the highest HLC in the batch, and sends a `CHANGELOG_ACK` back.
+
+### `CHANGELOG_ACK`
+
+```typescript
+type ChangelogAckPayload = { cursor: string };  // HLC
+```
+
+On receipt, `WsTransport.handleChangelogAck` advances `sync_state.last_sent` for the acknowledging peer to `cursor`.
+
+### `RELAY_SEND` / `RELAY_DELIVER` / `RELAY_ACK`
+
+```typescript
+type RelaySendPayload = { entries: Array<{ id, target_site_id, kind, ref_id, idempotency_key, stream_id, expires_at, payload }> };
+type RelayDeliverPayload = { entries: Array<{ id, source_site_id, kind, ref_id, idempotency_key, stream_id, expires_at, payload }> };
+type RelayAckPayload = { ids: string[] };
+```
+
+`RELAY_SEND` carries outbox entries from a spoke to the hub for routing (see [Relay Transport](#relay-transport)). The hub dispatches each entry by its `target_site_id`:
+
+- `"*"` — fan out to every other connected spoke and insert one copy into the hub's own `relay_inbox`.
+- Hub's own `site_id` — insert into the hub's `relay_inbox` for local processing.
+- Another spoke — if that spoke is currently connected, send a `RELAY_DELIVER` to it immediately; otherwise write an entry into the hub's `relay_outbox` targeting the spoke, to be drained when it reconnects.
+
+`RELAY_DELIVER` is the hub → spoke direction. The receiving spoke inserts the entries into its own `relay_inbox` and emits a `relay:inbox` event. `RELAY_ACK` carries a list of delivered entry IDs and causes `markDelivered` to run on the outbox.
+
+### `DRAIN_COMPLETE`
+
+Sent by the sender after a reconnect drain finishes successfully, allowing the peer to know the catch-up is complete. Payload is `{ success: boolean }`.
+
+### Wiring the WebSocket Handler
+
+```typescript
+import { createWsHandlers, WsConnectionManager } from "@bound/sync";
+
+const { websocket, handleUpgrade } = createWsHandlers({
+  connectionManager: new WsConnectionManager(),
+  keyring,
+  keyManager,
+  wsTransport,
+  logger,
+});
+
+Bun.serve({
+  port,
+  fetch(req, server) {
+    if (new URL(req.url).pathname === "/sync/ws") {
+      return handleUpgrade(req, server);
+    }
+    // ...
+  },
+  websocket,
+});
 ```
 
 ---
@@ -561,21 +541,21 @@ The `change_log` table grows indefinitely unless pruned. The pruning strategy de
 
 Checks whether `sync_state` contains any rows:
 
-- **No rows** — returns `"single-host"`. The instance has no known peers; the change log serves no replication purpose and can be cleared entirely.
+- **No rows** — returns `"single-host"`. The instance has no known peers, but the change log is still retained (capped) so it remains available if multi-host sync is enabled later.
 - **One or more rows** — returns `"multi-host"`. Entries must be retained until all peers have confirmed receipt.
 
 ### `pruneChangeLog(db, mode, logger?): { deleted: number }`
 
 Deletes change log entries according to the mode.
 
-**Single-host mode:** Unconditionally deletes all rows from `change_log`.
+**Single-host mode:** Retains the most recent `100_000` entries and deletes anything older. If the table holds fewer than the cap, no rows are deleted.
 
 ```typescript
 pruneChangeLog(db, "single-host", logger);
-// All change_log rows removed
+// Older change_log rows removed once the 100k cap is exceeded
 ```
 
-**Multi-host mode:** Calls `getMinConfirmedSeq` to find the lowest `last_received` value across all peers. Deletes only entries with `seq <= minSeq`. If `minSeq` is `0` (no peer has acknowledged anything yet), no rows are deleted.
+**Multi-host mode:** Calls `getMinConfirmedHlc` to find the lowest `last_received` HLC across all peers. Deletes entries with `hlc <= minHlc`. If `minHlc` is `HLC_ZERO` (no peer has acknowledged anything yet), no rows are deleted.
 
 ```typescript
 pruneChangeLog(db, "multi-host", logger);
@@ -586,7 +566,7 @@ Returns `{ deleted: N }` where `N` is the number of rows removed.
 
 ### `startPruningLoop(db, intervalMs, logger?): { stop: () => void }`
 
-Starts a `setInterval`-based loop that calls `determinePruningMode` and `pruneChangeLog` on each tick.
+Starts a `setInterval`-based loop that on each tick calls `determinePruningMode` and `pruneChangeLog`, prunes the `relay_cycles` table (30-day retention), prunes acknowledged dispatch-queue entries (1-hour retention), and runs `PRAGMA incremental_vacuum(64)` to reclaim freed pages.
 
 ```typescript
 const pruner = startPruningLoop(db, 60_000, logger); // prune every minute
@@ -595,17 +575,17 @@ const pruner = startPruningLoop(db, 60_000, logger); // prune every minute
 pruner.stop();
 ```
 
-Unlike the sync loop, the pruning loop does not apply exponential backoff — pruning failures are non-fatal and the fixed interval is sufficient.
+Pruning failures are non-fatal and the fixed interval is sufficient; no backoff is applied.
 
 ### Safety Invariant
 
-The combination of `getMinConfirmedSeq` (taking the minimum across all peers) and the ack mechanism ensures that an entry is only deleted after every registered peer has sent an `/sync/ack` confirming a sequence number at or above that entry's `seq`. A peer that falls behind — for example due to an extended outage — will hold the minimum at a low value and effectively block pruning until it catches up.
+The combination of `getMinConfirmedHlc` (taking the minimum across all peers) and the `CHANGELOG_ACK` mechanism ensures that an entry is only deleted after every registered peer has sent an acknowledgement for an HLC at or above that entry's `hlc`. A peer that falls behind — for example due to an extended outage — will hold the minimum at a low value and effectively block pruning until it catches up.
 
 ---
 
 ## Relay Transport
 
-The relay phase (phase 4 of the sync cycle) provides store-and-forward delivery for cross-host operations: MCP tool calls, remote LLM inference, and loop delegation.
+The relay frames (`RELAY_SEND`, `RELAY_DELIVER`, `RELAY_ACK`) provide store-and-forward delivery for cross-host operations: MCP tool calls, remote LLM inference, and loop delegation. Relay traffic shares the same WebSocket connection as changelog replication.
 
 ### Tables
 
@@ -650,22 +630,31 @@ CRUD helpers (from `@bound/core`): `writeOutbox`, `insertInbox`, `readUnprocesse
 
 ### Hub Routing
 
-The hub acts as a relay router. When a spoke pushes relay outbox entries to the hub (in the relay phase), the hub:
+The hub acts as a relay router. When a spoke sends a `RELAY_SEND` frame, `WsTransport.handleRelaySend` processes each entry and dispatches it based on `target_site_id`:
 
-1. Identifies the target spoke from `target_site_id`.
-2. Writes the entry to a pending-outbox record in its own database.
-3. When the target spoke syncs, the hub includes the pending entries in the relay response.
-4. The target spoke inserts them into its `relay_inbox`.
+1. **`"*"` (broadcast)** — fan out to every connected spoke except the originator by sending each a `RELAY_DELIVER`, and also insert one copy into the hub's own `relay_inbox`.
+2. **Hub's own `site_id`** — insert into the hub's `relay_inbox` for local processing by the `RelayProcessor`.
+3. **Another spoke** — if that spoke is currently connected, send a `RELAY_DELIVER` immediately; otherwise write the entry into the hub's own `relay_outbox` targeting the spoke, to be forwarded when it reconnects via `drainRelayInbox`.
 
-`stream_id` is propagated through all three hub routing paths (inline construction, `writeOutbox`, and pending-for-requester mapping), so `readInboxByStreamId()` on the requester always finds its chunks.
+After routing, the hub sends a `RELAY_ACK` back to the originating spoke containing the delivered IDs. An idempotency check on `(idempotency_key, target_site_id)` prevents duplicate routing when entries are replayed.
 
-**Routing for `intake`:** The receiving spoke's `RelayProcessor` selects the best host to handle the platform message using a four-tier algorithm: (1) **thread affinity** — the spoke that most recently processed this thread (tracked via `status_forward` messages passing through the hub); (2) **model match** — a spoke that has the model last used in this thread; (3) **tool match** — the spoke with the highest overlap between its registered MCP tools and the tools used in this thread; (4) **least-loaded fallback** — the spoke with the fewest pending undelivered `relay_outbox` entries. Once a target is selected, the intake processor writes a `process` outbox entry targeting that spoke.
+`stream_id` is propagated through all routing paths, so `readInboxByStreamId()` on the requester always finds its chunks.
+
+**Routing for `intake`:** The receiving spoke's `RelayProcessor` selects the best host to handle the platform message using a five-tier algorithm:
+
+1. **platform affinity** — if the intake carries a `platform` field, route to a host that advertises that platform.
+2. **thread affinity** — the spoke that most recently processed this thread (tracked via `status_forward` messages passing through the hub).
+3. **model match** — a spoke that advertises the model listed in `threads.model_hint` for this thread.
+4. **tool match** — the spoke with the highest overlap between its registered MCP tools and the tools used in this thread.
+5. **least-loaded fallback** — the spoke with the fewest pending undelivered `relay_outbox` entries.
+
+Once a target is selected, the intake processor writes a `process` outbox entry targeting that spoke.
 
 **Routing for `platform_deliver`:** The entry is routed to the spoke that currently holds the platform leader role for the relevant platform. Leadership is stored in the synced `cluster_config` table under the key `platform_leader:<platform>` (e.g., `platform_leader:discord`). The receiving spoke's `RelayProcessor` emits a local `platform:deliver` event, which the `PlatformConnectorRegistry` handles to send the message to the user.
 
-**Routing for `event_broadcast`:** The target field is set to `*`. The hub fans out the entry to all spokes with a known `sync_url` in the keyring, excluding the originating source spoke. Each recipient's `RelayProcessor` fires the named event locally on its event bus. Used by the agent's `emit` command to propagate custom events across the cluster.
+**Routing for `event_broadcast`:** The target field is set to `*`. The hub fans out the entry to all connected spokes, excluding the originating source spoke. Each recipient's `RelayProcessor` fires the named event locally on its event bus. Used by the agent's `emit` command to propagate custom events across the cluster.
 
-**Eager push:** The hub can proactively push relay messages to spokes with a known `sync_url` (skipping the wait for the next sync cycle). Controlled by `sync.relay.eager_push` config. Falls back to sync-based delivery if the spoke is unreachable. Reachability is tracked by `ReachabilityTracker` (3 consecutive failures → unreachable; recovered on success).
+**Immediate delivery:** Because replication runs over a persistent WebSocket, relay entries are delivered to connected peers as soon as they are written — there is no separate polling cycle to wait for. The `relay_cycles.delivery_method` column records whether delivery went through the sync pipeline or an out-of-band eager push path; the current WebSocket transport uses `"sync"`.
 
 ### Inference Relay Flow
 
@@ -673,21 +662,20 @@ The hub acts as a relay router. When a spoke pushes relay outbox entries to the 
 Requester                        Hub                       Target
     |                             |                            |
     | writeOutbox(inference)      |                            |
-    | emit sync:trigger           |                            |
+    | emit relay:outbox-written   |                            |
     |                             |                            |
-    |----- relay phase push ----->|                            |
-    |                             |------ relay response ----->|
-    |                             |     (routes to target)     |
+    |------- RELAY_SEND --------->|                            |
+    |                             |-------- RELAY_DELIVER ---->|
+    |                             |      (routes to target)    |
     |                             |                            |-- insertInbox(inference)
     |                             |                            |-- RelayProcessor.executeInference()
     |                             |                            |   - calls local LLMBackend.chat()
     |                             |                            |   - flushes at 200ms or 4KB
-    |                             |                            |   writes stream_chunk / stream_end
+    |                             |                            |   writeOutbox(stream_chunk / stream_end)
     |                             |                            |
-    |                             |<------ relay phase push ---|
-    |<----- relay phase pull -----| (routes to requester)      |
+    |                             |<-------- RELAY_SEND -------|
+    |<------- RELAY_DELIVER ------| (routes to requester)      |
     |                             |                            |
-    | RELAY_STREAM polling        |                            |
     | readInboxByStreamId()       |                            |
     | yields StreamChunks         |                            |
 ```
@@ -700,9 +688,11 @@ interface InferenceRequestPayload {
   messages: LLMMessage[];
   tools?: ToolDefinition[];
   system?: string;
+  system_suffix?: string;
   max_tokens?: number;
   temperature?: number;
   cache_breakpoints?: number[];
+  thinking?: { type: "enabled"; budget_tokens: number };
   timeout_ms: number;
   messages_file_ref?: string;  // set when messages were written to files table (>2MB payloads)
 }

@@ -150,7 +150,7 @@ Relay message kinds:
 
 ## Database Schema
 
-17 STRICT tables in WAL mode:
+19 STRICT tables in WAL mode:
 
 | Table | Purpose | Reducer |
 |-------|---------|---------|
@@ -165,12 +165,14 @@ Relay message kinds:
 | `cluster_config` | Cluster-wide settings (hub, emergency_stop) | LWW |
 | `advisories` | Cost/frequency/model advisories | LWW |
 | `skills` | Operator-defined skill prompts injected into agent context | LWW |
+| `memory_edges` | Typed relations between semantic_memory keys | LWW |
 | `change_log` | Event-sourced outbox for sync | Local only |
 | `sync_state` | Per-peer replication cursors | Local only |
 | `host_meta` | Local host identity (site_id, keys) | Local only |
 | `relay_outbox` | Pending relay messages to send to other hosts | Local only |
 | `relay_inbox` | Received relay messages awaiting processing | Local only |
 | `relay_cycles` | Per-cycle relay metrics (latency, success) | Local only |
+| `dispatch_queue` | Local claim queue for thread message dispatch | Local only |
 
 Every write to a synced table also writes to `change_log` via the transactional outbox pattern, ensuring atomic event production. The three relay tables are local-only and use dedicated CRUD helpers (`writeOutbox`, `insertInbox`, `readUnprocessed`, `markProcessed`).
 
@@ -190,7 +192,7 @@ The `relay_outbox` and `relay_inbox` tables carry a nullable `stream_id TEXT` co
 
 **MCP integration via @modelcontextprotocol/sdk.** Supports stdio and Streamable HTTP transports. Tools from connected servers are exposed via subcommand dispatch: one `CommandDefinition` per MCP server (named by server, e.g. `github`), with a `subcommand` parameter selecting the individual tool. This reduces LLM tool definition count and simplifies cross-host delegation tracking. Cross-host tool proxying uses the relay transport (`tool_call` relay kind). The standalone `bound-mcp` binary (`@bound/mcp-server`) exposes a `bound_chat` MCP tool over stdio, allowing external MCP clients to drive the agent; it depends only on `@bound/shared`, `@modelcontextprotocol/sdk`, and `zod`.
 
-**Inference relay over store-and-forward.** Remote LLM inference uses the sync relay transport: the requester writes an `inference` relay message; the target streams `stream_chunk`/`stream_end` responses back via the same relay. The agent loop enters `RELAY_STREAM` state during remote inference, polling `relay_inbox` for chunks. Chunks carry a monotonic `seq` field for reordering. Failover retries on the next eligible host after a 120s per-host timeout.
+**Inference relay over store-and-forward.** Remote LLM inference uses the sync relay transport: the requester writes an `inference` relay message; the target streams `stream_chunk`/`stream_end` responses back via the same relay. The agent loop enters `RELAY_STREAM` state during remote inference, polling `relay_inbox` for chunks. Chunks carry a monotonic `seq` field for reordering. Failover retries on the next eligible host after a configurable per-host timeout (default 300s).
 
 **Cluster-wide model resolution.** Each host advertises its available models in `hosts.models` as `HostModelEntry[]` objects (with `id`, `tier`, and `capabilities`). `resolveModel()` is a three-phase pipeline (identify → qualify → dispatch) that supports capability-aware routing: if the primary backend lacks required capabilities (vision, tool_use, etc.), it re-routes to eligible alternatives. Returns `{ kind: "local" }`, `{ kind: "remote" }`, or `{ kind: "error" }` with `reason` (`"capability-mismatch"` | `"transient-unavailable"`), `unmetCapabilities`, and `earliestRecovery` fields. `ModelSelector` in the web UI shows all cluster models with relay/offline annotations.
 

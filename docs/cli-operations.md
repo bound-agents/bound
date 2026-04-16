@@ -73,11 +73,11 @@ Configures Anthropic API. Requires:
 Defaults:
 - Provider: `anthropic`
 - Model: `claude-3-5-sonnet-20241022`
-- Context window: 200000 tokens
+- Context window: 8192 tokens
 - Capability tier: 3
 - Base URL: Anthropic's default (not configurable via init)
 
-If `ANTHROPIC_API_KEY` is not set, initialization continues but the API key will be empty in the configuration.
+If `ANTHROPIC_API_KEY` is not set, initialization continues but the API key will be omitted from the configuration.
 
 #### Bedrock Preset
 
@@ -92,9 +92,47 @@ Defaults:
 - Provider: `bedrock`
 - Region: Specified by `--region` (defaults to `us-east-1` if omitted)
 - Model: `anthropic.claude-3-5-sonnet-20241022-v2:0`
-- Context window: 200000 tokens
+- Context window: 8192 tokens
 - Capability tier: 3
 - Credentials: Retrieved from AWS SDK (environment, credentials file, or IAM role)
+
+#### Cerebras Preset
+
+```
+bound init --cerebras
+```
+
+Configures Cerebras Cloud. Reads `CEREBRAS_API_KEY` from the environment.
+
+Defaults:
+- Provider: `cerebras`
+- Base URL: `https://api.cerebras.ai/v1`
+- Model: `llama-4-scout-17b-16e-instruct`
+- Context window: 8192 tokens
+- Capability tier: 3
+
+#### z.AI Preset
+
+```
+bound init --zai
+```
+
+Configures z.AI (GLM). Reads `ZAI_API_KEY` from the environment.
+
+Defaults:
+- Provider: `zai`
+- Base URL: `https://api.z.ai/api/coding/paas/v4`
+- Model: `glm-4.7`
+- Context window: 8192 tokens
+- Capability tier: 3
+
+#### Hub Preset
+
+```
+bound init --hub
+```
+
+Initializes a relay hub: no local inference backends are configured; the node relays inference to spokes that have backends. Generates `allowlist.json` and an empty-backends `model_backends.json`. Typically combined with `BIND_HOST=0.0.0.0`, `keyring.json`, and `sync.json` on the hub.
 
 ### Options
 
@@ -187,7 +225,7 @@ bound start --config-dir /etc/bound/config
 
 On successful startup:
 ```
-Starting Bound orchestrator...
+Starting Bound orchestrator (commit <hash>, built <time>)...
 Loading configuration...
 Initializing cryptography...
 Initializing database...
@@ -199,16 +237,14 @@ Initializing MCP servers...
 Setting up sandbox...
 Loading persona...
 Initializing LLM...
-Starting web server...
-Initializing Discord...
-Initializing sync loop...
-Initializing overlay scanner...
+Starting servers...
+Initializing sync...
 Starting scheduler...
 
 Bound is running!
 Operator: <name>
 
-Open http://localhost:3000 in your browser to start chatting.
+Open http://localhost:3001 in your browser to start chatting.
 
 Press Ctrl+C to stop.
 ```
@@ -246,7 +282,7 @@ boundctl set-hub <host-name> [OPTIONS]
 
 Writes `cluster_hub` key to the `cluster_config` table in the database. Hosts sync this configuration on their next sync cycle and recognize the new hub.
 
-If `--wait` is used, the command polls the `sync_status` table until all registered peers have confirmed the change.
+If `--wait` is used, the command polls the `sync_state` table until all registered peers have confirmed the change.
 
 #### Examples
 
@@ -380,9 +416,9 @@ boundctl restore --before <timestamp> [OPTIONS]
 
 #### Behavior
 
-Reads the changelog to identify rows modified after the specified timestamp. For each affected synced row, reverts to the state recorded in the changelog before that timestamp. Local rows (not part of sync) remain unchanged.
+Reads the changelog to identify rows modified after the specified timestamp. For each affected row, reverts to the state recorded in the changelog before that timestamp (or tombstones the row if it was created after the cutoff). Append-only tables (`messages`) are skipped.
 
-The restore process uses a copy-on-write approach to ensure atomicity: if the operation fails partway through, the original database state is preserved.
+The restore runs inside a single `BEGIN IMMEDIATE` transaction: if any step fails, the transaction is rolled back and the original database state is preserved.
 
 #### Examples
 
@@ -436,24 +472,23 @@ The `bound start` command executes a strictly ordered bootstrap sequence. All st
 
 1. **Load and validate all config files**
    - Reads and validates `allowlist.json` and `model_backends.json`
-   - Checks for optional files (`sync.json`, `mcp.json`, `overlay.json`, `discord.json`)
+   - Checks for optional files (`sync.json`, `keyring.json`, `mcp.json`, `overlay.json`, `network.json`, `platforms.json`, `cron_schedules.json`)
    - Exits with error if required files are missing or invalid
 
 2. **Initialize cryptography**
-   - Ensures Ed25519 keypair exists (via `@bound/sync`)
+   - Ensures Ed25519 keypair exists (via `@bound/sync`'s `ensureKeypair`)
    - Generates keypair if needed, stored in `data/host.key` (private) and `data/host.pub` (public)
    - Used for cluster synchronization signing and host identity
    - Public key must be registered in `keyring.json` for multi-host setups
 
 3. **Initialize database**
-   - Creates or opens `bound.db` (SQLite)
+   - Creates or opens `data/bound.db` (SQLite)
    - Runs all pending schema migrations
    - Establishes WAL (Write-Ahead Logging) mode for durability
 
-4. **Set up dependency injection container**
-   - Bootstraps tsyringe container
-   - Registers all service singletons
-   - Injects database, cryptography, and configuration into services
+4. **Set up services**
+   - Creates the `AppContext` (database, event bus, logger, configuration)
+   - Initializes service singletons used by later bootstrap phases
 
 5. **Seed users from allowlist**
    - Creates user entries in the `users` table
@@ -490,21 +525,22 @@ The `bound start` command executes a strictly ordered bootstrap sequence. All st
     - Validates connectivity to configured backends
     - Selects default backend by tier and configuration
 
-12. **Start web server**
+12. **Start web and sync servers**
     - Initializes Hono web framework
     - Sets up WebSocket for real-time communication
-    - Listens on `http://localhost:3000` (customizable)
-    - Exposes MCP proxy at `POST /api/mcp-proxy` for cross-host tool access
+    - Starts the web server on `http://localhost:3001` (customizable via `WEB_PORT`/`WEB_BIND_HOST`)
+    - Starts the sync server on `http://localhost:3000` (customizable via `PORT`/`BIND_HOST`) for hub-spoke replication
+    - Cross-host MCP tool calls are relayed over the sync transport (no separate HTTP proxy endpoint)
     - Serves embedded Svelte SPA web UI
 
-13. **Initialize Discord bot**
-    - Reads `discord.json` if present
-    - Checks if host matches current hostname (only active host runs the bot)
-    - Connects to Discord API and registers DM listener for allowlisted users
+13. **Initialize platform connectors**
+    - Reads `platforms.json` if present
+    - Starts the platform connector registry (Discord, etc.) with leader election across hosts
+    - Connectors deliver DMs/mentions for allowlisted users
 
 14. **Initialize sync loop**
     - Reads `sync.json` if present
-    - Starts periodic synchronization with hub (30s interval by default, adaptive scaling)
+    - Starts the WebSocket transport (`WsTransport` / `WsSyncClient`) for push-on-write changelog replication
     - Establishes cluster membership and state replication
 
 15. **Initialize overlay scanner**
@@ -522,10 +558,10 @@ The `bound start` command executes a strictly ordered bootstrap sequence. All st
 
 Bootstrap is driven by file presence and configuration:
 
-- If `sync.json` is absent, steps 6 and 14 are skipped (single-host mode)
+- If `sync.json` is absent, step 14 is skipped (single-host mode)
 - If `mcp.json` is absent, step 8 is skipped (no external tool integrations)
 - If `persona.md` is absent, step 10 uses default system prompt
-- If `discord.json` is absent or host doesn't match, step 13 is skipped
+- If `platforms.json` is absent, step 13 is skipped
 - If `overlay.json` is absent, step 15 is skipped
 
 All other steps execute unconditionally. MCP tools discovered in step 8 are automatically wired into the agent loop (step 16) and available during chat interactions.
@@ -545,15 +581,17 @@ The orchestrator responds to SIGINT (Ctrl+C) and SIGTERM signals. Shutdown perfo
 
 ## Web Server and API
 
-When the orchestrator starts, it initializes an HTTP server on `http://localhost:3000` with the following endpoints:
+When the orchestrator starts, it initializes two HTTP servers: a web server on `http://localhost:3001` (default; overridable via `WEB_PORT`) and a sync server on `http://localhost:3000` (default; overridable via `PORT`) for hub-spoke replication.
 
 ### WebSocket
-- `GET /ws` — Real-time bidirectional communication for chat and event streaming
+- `GET /ws` — Real-time bidirectional communication for chat and event streaming (web server)
+- `GET /sync/ws` — Cluster sync transport (sync server)
 
 ### API Endpoints
 - `POST /api/threads` — Create or list conversation threads
 - `POST /api/threads/:id/messages` — Post a message to a thread
-- `POST /api/mcp-proxy` — Cross-host MCP tool execution (when sync is enabled)
+- Additional routes under `/api/files`, `/api/memory`, `/api/status`, `/api/tasks`, `/api/advisories`, `/api/mcp`
+- Cross-host MCP tool calls are relayed through the sync transport, not a dedicated HTTP proxy endpoint
 
 ### Web UI
 The server serves a Svelte SPA embedded directly in the compiled binary. The UI provides:
@@ -568,11 +606,19 @@ No external dependencies are needed to serve the UI; it is fully self-contained 
 
 ## Build Pipeline
 
-The Bound CLI is built as a single standalone binary via `bun build --compile`, eliminating runtime dependency on Node.js or Bun.
+The Bound CLIs are built as standalone binaries via `bun build --compile`, eliminating runtime dependency on Node.js or Bun.
 
 ### Build Process
 
-The build pipeline is defined in `scripts/build.ts` and performs two main steps:
+The build pipeline is defined in `scripts/build.ts` and performs these steps:
+
+#### Step 0: Generate Build Metadata
+
+```
+bun run scripts/generate-build-info.ts
+```
+
+Generates commit hash and build timestamp metadata consumed by the orchestrator at runtime.
 
 #### Step 1: Build Web Assets
 
@@ -580,22 +626,23 @@ The build pipeline is defined in `scripts/build.ts` and performs two main steps:
 cd packages/web && bun run build
 ```
 
-Compiles the web UI (React, TypeScript, CSS) into static assets. These are embedded into the final binary.
+Compiles the web UI (Svelte 5, TypeScript, CSS) via Vite and embeds the assets (via `scripts/embed-assets.ts`) for inclusion in the binary.
 
 Output: Static files in `packages/web/dist/`
 
-#### Step 2: Compile Single Binary
+#### Step 2: Compile Binaries
 
 ```
 bun build --compile packages/cli/src/bound.ts --outfile dist/bound
+bun build --compile packages/cli/src/boundctl.ts --outfile dist/boundctl
+bun build --compile packages/mcp-server/src/server.ts --outfile dist/bound-mcp
 ```
 
-Compiles the CLI entry point and all dependencies into a standalone executable. The executable contains:
-- Bound CLI code (bound.ts, boundctl.ts, and all commands)
-- Web assets including Svelte SPA (embedded)
-- All Node.js and Bun runtime dependencies
-- No external runtime required
-- No external web server or static file hosting needed
+Three standalone executables are produced: `bound`, `boundctl`, and `bound-mcp`. Each contains:
+- The CLI / server code and all compiled dependencies
+- Web assets including the Svelte SPA (embedded in `bound`)
+- The Bun runtime
+- No external runtime, web server, or static file hosting required
 
 ### Running the Build
 
@@ -603,20 +650,20 @@ Compiles the CLI entry point and all dependencies into a standalone executable. 
 bun scripts/build.ts
 ```
 
-On successful completion, outputs binary size and location:
+On successful completion, outputs a summary with binary sizes:
 ```
 Building Bound...
 
-1. Building web assets...
-✓ Web assets built successfully
+0. Generating build metadata...
+1. Building web UI...
+2. Compiling bound binary...
+3. Compiling boundctl binary...
+4. Compiling bound-mcp binary...
 
-2. Compiling single binary...
-✓ Binary compiled successfully
-
-Build complete!
-Binary: dist/bound (45.23 MB)
-
-You can run: ./dist/bound --help
+--- Build summary ---
+  dist/bound (45.23 MB)
+  dist/boundctl (38.10 MB)
+  dist/bound-mcp (32.05 MB)
 ```
 
 ### Development Alternative
@@ -646,23 +693,19 @@ bun packages/cli/src/boundctl.ts set-hub primary-host
 
 ### Deployment
 
-After building, deploy the binary to target systems:
+After building, deploy the binaries to target systems:
 
 ```
 scp dist/bound user@host:/usr/local/bin/bound
-chmod +x /usr/local/bin/bound
+scp dist/boundctl user@host:/usr/local/bin/boundctl
+chmod +x /usr/local/bin/bound /usr/local/bin/boundctl
 
 # Verify
 /usr/local/bin/bound --help
+/usr/local/bin/boundctl --help
 ```
 
-Create `boundctl` as a symlink or separate build:
-
-```
-ln -s /usr/local/bin/bound /usr/local/bin/boundctl
-```
-
-The binary detects the invocation name and routes to the appropriate CLI (bound or boundctl).
+`bound` and `boundctl` are independent binaries (each compiled from its own entry point).
 
 ---
 
@@ -686,7 +729,7 @@ The binary detects the invocation name and routes to the appropriate CLI (bound 
    bound start
    ```
 
-4. Open browser to `http://localhost:3000`
+4. Open browser to `http://localhost:3001`
 
 ### Multi-Host Cluster Setup
 
@@ -748,7 +791,7 @@ boundctl restore --before "2024-01-15T10:00:00Z"
 
 - `ANTHROPIC_API_KEY`: API key for Anthropic Claude models
 
-If unset, the init command logs a warning but continues (API key remains empty in config).
+If unset, the init command logs a warning but continues (the `api_key` field is omitted from the generated config).
 
 ### AWS Bedrock
 
@@ -758,9 +801,21 @@ Standard AWS SDK environment variables:
 - `AWS_SESSION_TOKEN` (optional, for temporary credentials)
 - `AWS_REGION` (optional, overrides `--region` flag)
 
+### Cerebras
+
+- `CEREBRAS_API_KEY`: API key for the Cerebras Cloud preset (`bound init --cerebras`).
+
+### z.AI
+
+- `ZAI_API_KEY`: API key for the z.AI (GLM) preset (`bound init --zai`).
+
 ### Bound System
 
 - `USER`: Fallback operator name if `--name` not provided (defaults to `operator`)
+- `PORT`: Sync server port (default: `3000`)
+- `BIND_HOST`: Sync server bind host (default: `localhost`; set to `0.0.0.0` on hub hosts so spokes can connect)
+- `WEB_PORT`: Web UI port (default: `3001`)
+- `WEB_BIND_HOST`: Web UI bind host (default: `localhost`)
 
 ---
 
@@ -789,7 +844,7 @@ jq . config/model_backends.json
 Ensure the database path exists and is writable:
 
 ```
-ls -la config/bound.db
+ls -la data/bound.db
 ```
 
 If missing, run `bound start` to initialize it.
@@ -826,9 +881,7 @@ bun packages/cli/src/boundctl.ts set-hub primary-host
 
 ## Configuration Reference
 
-All configuration files live in the `config/` directory (or the path passed to `--config-dir`). The directory is `.gitignored` and ships with `.example` templates for each file.
-
-Only `allowlist.json` and `model_backends.json` are required. All other files are optional; the orchestrator detects their absence and disables the corresponding feature rather than failing.
+All configuration files live in the `config/` directory (or the path passed to `--config-dir`). Only `allowlist.json` and `model_backends.json` are required. All other files are optional; the orchestrator detects their absence and disables the corresponding feature rather than failing. Runtime state (the SQLite database, keypair, etc.) lives under `data/`.
 
 ### allowlist.json
 
@@ -841,7 +894,7 @@ Only `allowlist.json` and `model_backends.json` are required. All other files ar
 | `default_web_user` | string | Username that the web UI operates as. Must be a key in `users`. |
 | `users` | object | Map from username to user record. |
 | `users.<name>.display_name` | string | Human-readable name shown in the UI. |
-| `users.<name>.discord_id` | string | Optional. Discord user ID for DM linking. |
+| `users.<name>.platforms` | object | Optional. Map from platform name (e.g. `discord`) to the platform-specific user identifier. |
 
 **Example:**
 
@@ -854,13 +907,13 @@ Only `allowlist.json` and `model_backends.json` are required. All other files ar
     },
     "bob": {
       "display_name": "Bob",
-      "discord_id": "987654321098765432"
+      "platforms": { "discord": "987654321098765432" }
     }
   }
 }
 ```
 
-Users are seeded into the `users` database table with deterministic UUIDs (`UUID5(BOUND_NAMESPACE, username)`) on every startup. Seeding is idempotent. Discord IDs are optional; omit them for web-only users.
+Users are seeded into the `users` database table with deterministic UUIDs (`UUID5(BOUND_NAMESPACE, username)`) on every startup. Seeding is idempotent. The `platforms` map is optional; omit it for web-only users. (The legacy `discord_id` field is no longer supported — use `platforms.discord` instead.)
 
 This file is never exposed to the agent sandbox. The agent cannot read, modify, or infer the allowlist contents.
 
@@ -874,20 +927,19 @@ This file is never exposed to the agent sandbox. The agent cannot read, modify, 
 
 | Field | Type | Description |
 |---|---|---|
-| `backends` | array | List of backend configuration objects. |
-| `default` | string | ID of the backend to use when the user has not selected one. |
+| `backends` | array | List of backend configuration objects. Empty array is valid for hub-only nodes that relay inference to spokes. |
+| `default` | string | ID of the backend to use when the user has not selected one. Empty string is the sentinel for hub-only mode (no local default). |
 | `daily_budget_usd` | number | Optional. When daily spend (summed from `daily_summary`) crosses this value, autonomous task scheduling pauses. Interactive conversations are never blocked. Resets at midnight. |
-| `budget_warn_pct` | number | Optional. Percentage of `daily_budget_usd` at which a warning advisory is generated. Default: 80. |
 
 **Backend object fields:**
 
 | Field | Type | Description |
 |---|---|---|
 | `id` | string | Unique identifier used throughout the system. Convention: `provider/model-short-name`. |
-| `provider` | string | Driver. Built-in values: `ollama`, `anthropic`, `bedrock`, `openai-compatible`. |
+| `provider` | string | Driver. Built-in values: `ollama`, `anthropic`, `bedrock`, `openai-compatible`, `cerebras`, `zai`. |
 | `model` | string | Provider-specific model identifier string. |
 | `base_url` | string | API endpoint. Required for `ollama` and `openai-compatible`. |
-| `api_key` | string | Auth token. Env vars are expanded at load time (`${VAR}`). Used by `anthropic` and `openai-compatible`. |
+| `api_key` | string | Auth token. Env vars are expanded at load time (`${VAR}`). Required for `anthropic`, `cerebras`, and `zai`; usable by `openai-compatible`. |
 | `region` | string | AWS region. Required for `bedrock`. |
 | `context_window` | number | Token count. Used for summarization triggers, context budgeting, and await result buffering. |
 | `tier` | number | Integer capability ranking 1 (smallest) to 5 (most capable). Used for summary reliability assessment and `--requires model:` task routing. |
@@ -939,8 +991,7 @@ This file is never exposed to the agent sandbox. The agent cannot read, modify, 
     }
   ],
   "default": "ollama",
-  "daily_budget_usd": 10.00,
-  "budget_warn_pct": 80
+  "daily_budget_usd": 10.00
 }
 ```
 
@@ -972,21 +1023,23 @@ This file is never exposed to the agent sandbox. The agent cannot read, modify, 
 
 | Field | Type | Description |
 |---|---|---|
-| `hub` | string | Name of the initial sync target, resolved against `keyring.json`. After the first sync cycle, `cluster_config.cluster_hub` (managed by `boundctl set-hub`) takes over and this field is used only as a fallback. |
-| `sync_interval_seconds` | number | Polling interval in seconds. Default: 30. The orchestrator may scale this adaptively based on current activity. |
-| `change_log_min_retention_hours` | number | Optional. Minimum hours to retain change_log events regardless of peer acknowledgment status. Provides a guaranteed recovery window for `boundctl restore`. Default: 24. |
+| `hub` | string | URL of the hub this node connects to as a spoke. Must match a `url` entry in `keyring.json` so the hub's site ID can be resolved. When omitted, the node runs in hub mode itself. After the first sync cycle, `cluster_config.cluster_hub` (managed by `boundctl set-hub`) takes over and this field is used only as a fallback. |
+| `relay` | object | Optional. Relay subsystem tuning (see `relaySchema`). Keys include `enabled`, `max_payload_bytes`, `request_timeout_ms`, `prune_interval_seconds`, `prune_retention_seconds`, `drain_timeout_seconds`, `inference_timeout_ms`. |
+| `ws` | object | Optional. WebSocket transport tuning. Keys: `backpressure_limit` (default 2097152), `idle_timeout` (default 120), `reconnect_max_interval` (default 60). |
 
 **Example:**
 
 ```json
 {
-  "hub": "cloud-vm",
-  "sync_interval_seconds": 30,
-  "change_log_min_retention_hours": 24
+  "hub": "https://cloud.example.com",
+  "ws": {
+    "idle_timeout": 120,
+    "reconnect_max_interval": 60
+  }
 }
 ```
 
-This file is per-host and its `hub` field may differ across hosts only during initial setup. Once `boundctl set-hub` has been used, the live `cluster_config.cluster_hub` value governs topology and this file is only consulted as a bootstrapping fallback.
+This file is per-host. Once `boundctl set-hub` has been used, the live `cluster_config.cluster_hub` value governs topology and this file is only consulted as a bootstrapping fallback.
 
 ---
 
@@ -1037,7 +1090,6 @@ Private key material (`data/host.key`) is auto-generated by the orchestrator on 
 |---|---|---|
 | `servers` | array | List of MCP server configuration objects. |
 | `servers[].name` | string | Server identifier. Tools from this server are namespaced as `{name}-{tool}`. |
-| `servers[].instance` | string | Optional. When set, the effective server name becomes `{name}-{instance}`. Use to distinguish two servers of the same type with different credentials (e.g. personal vs work GitHub). |
 | `servers[].transport` | string | `stdio` or `http`. |
 | `servers[].command` | string | For `stdio` transport: the executable to spawn (e.g. `npx`). |
 | `servers[].args` | array | For `stdio` transport: arguments to the command. |
@@ -1072,22 +1124,20 @@ Private key material (`data/host.key`) is auto-generated by the orchestrator on 
 }
 ```
 
-**Using `instance` to distinguish servers with different credentials:**
+To distinguish two servers of the same type with different credentials (for example personal vs work GitHub), give each one a unique `name`:
 
 ```json
 {
   "servers": [
     {
-      "name": "github",
-      "instance": "personal",
+      "name": "github-personal",
       "transport": "stdio",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-github"],
       "env": { "GITHUB_TOKEN": "${GITHUB_PERSONAL_TOKEN}" }
     },
     {
-      "name": "github",
-      "instance": "work",
+      "name": "github-work",
       "transport": "stdio",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-github"],
@@ -1096,8 +1146,6 @@ Private key material (`data/host.key`) is auto-generated by the orchestrator on 
   ]
 }
 ```
-
-This produces tool names `github-personal-create-issue` and `github-work-create-issue`, avoiding proxy routing ambiguity in multi-host clusters.
 
 Server URLs, credentials, and transport details are never exposed to the agent sandbox.
 
@@ -1111,17 +1159,14 @@ Server URLs, credentials, and transport details are never exposed to the agent s
 
 | Field | Type | Description |
 |---|---|---|
-| `mounts` | object | Map from mount name to mount configuration. |
-| `mounts.<name>.path` | string | Absolute path on the host filesystem to mount. |
+| `mounts` | object | Map from mount name to an absolute host filesystem path (string). |
 
 **Example:**
 
 ```json
 {
   "mounts": {
-    "projects": {
-      "path": "/home/alice/projects"
-    }
+    "projects": "/home/alice/projects"
   }
 }
 ```
@@ -1169,17 +1214,16 @@ Files under the mounted path are indexed into `overlay_index` and accessible to 
 
 **Schema:**
 
-Each key in the object is a task name. The value is a task configuration object.
+Each key in the object is a task name. The value is a task configuration object. One reserved key, `heartbeat`, carries the heartbeat task configuration (see `heartbeatConfigSchema`).
 
 | Field | Type | Description |
 |---|---|---|
 | `schedule` | string | Cron expression (5-field). |
 | `thread` | string | Optional. Name of the thread to post results to. |
-| `payload` | object | Optional. JSON payload passed to the agent loop as the task directive. |
-| `template` | array | Optional. Shell commands to execute without an LLM call. Variables assigned in earlier commands are available in later ones. If any command exits non-zero the task is marked failed. |
-| `requires` | string | Optional. Comma-separated list of MCP server names, model specifiers (`model:claude-opus-4`), or host pins (`host:laptop`) required to claim this task. |
+| `payload` | string | Optional. Payload passed to the agent loop as the task directive. |
+| `template` | array of strings | Optional. Shell commands to execute without an LLM call. Variables assigned in earlier commands are available in later ones. If any command exits non-zero the task is marked failed. |
+| `requires` | array of strings | Optional. List of MCP server names, model specifiers (`model:claude-opus-4`), or host pins (`host:laptop`) required to claim this task. |
 | `model_hint` | string | Optional. Preferred backend ID for the agent loop. |
-| `no_quiescence` | boolean | Optional. If true, runs at the configured frequency regardless of user activity level. Use for production-critical monitoring. |
 
 **Example:**
 
@@ -1188,19 +1232,14 @@ Each key in the object is a task name. The value is a task configuration object.
   "daily_standup": {
     "schedule": "0 9 * * 1-5",
     "thread": "Daily Standup",
-    "payload": {
-      "action": "summarize_overnight_activity"
-    },
-    "requires": "github,slack"
+    "payload": "summarize overnight activity",
+    "requires": ["github", "slack"]
   },
   "hourly_ci_check": {
     "schedule": "0 * * * *",
     "thread": "CI Monitoring",
-    "requires": "github",
-    "no_quiescence": true,
-    "payload": {
-      "action": "check_failing_builds"
-    }
+    "requires": ["github"],
+    "payload": "check failing builds"
   },
   "weekly_pipeline": {
     "schedule": "0 9 * * 1",
@@ -1216,23 +1255,34 @@ Each key in the object is a task name. The value is a task configuration object.
 
 ---
 
-### discord.json
+### platforms.json
 
-**Optional.** Enables the Discord bot module. The bot listens for direct messages from users whose `discord_id` appears in `allowlist.json`. Non-allowlisted senders are silently ignored.
+**Optional.** Enables platform connectors (Discord, etc.). Connectors listen for messages from users whose identifier is registered in `allowlist.json` under `users.<name>.platforms`. Non-allowlisted senders are silently ignored.
 
 **Schema:**
 
 | Field | Type | Description |
 |---|---|---|
-| `bot_token` | string | Discord bot token. Expanded from environment (`${DISCORD_BOT_TOKEN}`). |
-| `host` | string | Name of the host that should run the Discord bot. Only one host activates the bot; others ignore this config even if the file is present. Should be an always-online host. |
+| `connectors` | array | List of connector configuration objects. |
+| `connectors[].platform` | string | Platform identifier (e.g. `discord`). |
+| `connectors[].token` | string | Optional. Platform API token. Expanded from environment (`${DISCORD_BOT_TOKEN}`). |
+| `connectors[].signing_secret` | string | Optional. Platform signing secret (e.g. for Slack interaction verification). |
+| `connectors[].allowed_users` | array of strings | Optional. Default `[]`. Platform user IDs permitted to interact with the connector (in addition to the allowlist). |
+| `connectors[].leadership` | string | One of `auto`, `leader`, `standby`, `all`. Default `auto`. Controls leader election: only one host in the cluster activates the connector by default. |
+| `connectors[].failover_threshold_ms` | number | Default 30000. Milliseconds before a standby host takes over from an unresponsive leader. |
 
 **Example:**
 
 ```json
 {
-  "bot_token": "${DISCORD_BOT_TOKEN}",
-  "host": "cloud-vm"
+  "connectors": [
+    {
+      "platform": "discord",
+      "token": "${DISCORD_BOT_TOKEN}",
+      "leadership": "auto",
+      "failover_threshold_ms": 30000
+    }
+  ]
 }
 ```
 

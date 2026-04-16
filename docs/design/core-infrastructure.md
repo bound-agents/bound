@@ -16,7 +16,7 @@ This document covers the two foundational packages in the Bound agent system: `@
    - [Zod Config Schemas](#zod-config-schemas)
 2. [@bound/core](#boundcore)
    - [Database Initialization](#database-initialization)
-   - [Schema — 17 STRICT Tables](#schema--17-strict-tables)
+   - [Schema — 19 STRICT Tables](#schema--19-strict-tables)
    - [Change Log and Transactional Outbox](#change-log-and-transactional-outbox)
    - [Config Loader](#config-loader)
    - [Dependency Injection Container](#dependency-injection-container)
@@ -33,7 +33,7 @@ The `@bound/shared` package exports all types, enumerations, utility functions, 
 
 ### Domain Types
 
-Every interface in `types.ts` corresponds directly to a SQLite table. All primary keys are `TEXT` UUIDs. Timestamps are ISO 8601 strings. Soft-deleted rows carry `deleted: number` (0 or 1 — SQLite has no boolean type).
+Every entity interface in `types.ts` corresponds directly to a SQLite table. Primary keys are `TEXT` UUIDs on entity tables; `change_log` uses a `TEXT` HLC (Hybrid Logical Clock) instead. Timestamps are ISO 8601 strings. Soft-deleted rows carry `deleted: number` (0 or 1 — SQLite has no boolean type).
 
 #### String Union Types
 
@@ -47,7 +47,7 @@ type MessageRole =
   | "tool_result"
   | "purge";
 
-type TaskType   = "cron" | "deferred" | "event";
+type TaskType   = "cron" | "deferred" | "event" | "heartbeat";
 type TaskStatus = "pending" | "claimed" | "running" | "completed" | "failed" | "cancelled";
 type InjectMode = "results" | "status" | "file";
 
@@ -71,10 +71,11 @@ type SyncedTableName =
   | "overlay_index"
   | "cluster_config"
   | "advisories"
-  | "skills";
+  | "skills"
+  | "memory_edges";
 ```
 
-These eleven names are the tables that participate in cross-host replication. Every write to one of these tables must be accompanied by a `change_log` entry (see [Change Log](#change-log-and-transactional-outbox)).
+These twelve names are the tables that participate in cross-host replication. Every write to one of these tables must be accompanied by a `change_log` entry (see [Change Log](#change-log-and-transactional-outbox)).
 
 #### TABLE_REDUCER_MAP
 
@@ -90,15 +91,16 @@ Maps each synced table to its conflict resolution strategy. `"lww"` (last-write-
 |---|---|---|---|
 | `User` | `id: string` | `deleted: number` | Optional `platform_ids` JSON (e.g. `{"discord":"12345"}`) |
 | `Thread` | `id: string` | `deleted: number` | Tracks summary state, interface type (any `string` — e.g. `"web"`, `"discord"`) |
-| `Message` | `id: string` | — | `role` is a `MessageRole`; append-only table |
-| `SemanticMemory` | `id: string` | `deleted: number` | Keyed memory with LRU tracking (`last_accessed_at`) |
+| `Message` | `id: string` | — | `role` is a `MessageRole`; append-only at the reducer level. Optional `exit_code` on `tool_result` rows |
+| `SemanticMemory` | `id: string` | `deleted: number` | Keyed memory with LRU tracking (`last_accessed_at`) and a `tier: MemoryTier` field |
 | `Task` | `id: string` | `deleted: number` | Full task scheduling state; see field notes below |
 | `AgentFile` | `id: string` | `deleted: number` | Stored as text or binary; `content` is the raw payload |
-| `Host` | `site_id: string` | `deleted: number` | Describes a Bound node in the cluster |
+| `Host` | `site_id: string` | — (schema only) | Describes a Bound node in the cluster; the TS interface omits `deleted`, the SQL table carries it for replication hygiene |
 | `OverlayIndexEntry` | `id: string` | `deleted: number` | File index for a host's overlay filesystem |
 | `ClusterConfigEntry` | `key: string` | — | Key-value cluster-wide config; LWW by `modified_at` |
-| `Advisory` | `id: string` | `deleted: number` | Agent self-advisory lifecycle |
-| `Skill` | `id: string` | `deleted: number` | Deterministic UUID from name; `status` is `"active"\|"retired"`; `skill_root` is the VFS path; `body` stored as `skill_root` content; context assembly uses `activation_count` and `last_activated_at` |
+| `Advisory` | `id: string` | — (schema only) | Agent self-advisory lifecycle; the TS interface omits `deleted`, the SQL table carries it |
+| `Skill` | `id: string` | — (schema only) | Deterministic UUID from name; `status` is `"active"\|"retired"`; `skill_root` is the VFS path; context assembly uses `activation_count` and `last_activated_at`. The TS interface omits `deleted`, the SQL table carries it |
+| `MemoryEdge` | `id: string` | `deleted: number` | Directed, weighted `relation` edge between `semantic_memory.key` values |
 
 **Task field notes:**
 - `trigger_spec` — cron expression or event name.
@@ -115,7 +117,7 @@ Maps each synced table to its conflict resolution strategy. `"lww"` (last-write-
 
 ```typescript
 interface ChangeLogEntry {
-  seq: number;               // AUTOINCREMENT, local-only
+  hlc: string;               // Hybrid Logical Clock, local-only primary key
   table_name: SyncedTableName;
   row_id: string;
   site_id: string;
@@ -125,9 +127,9 @@ interface ChangeLogEntry {
 
 interface SyncState {
   peer_site_id: string;
-  last_received: number;     // Highest change_log seq received from peer
-  last_sent: number;         // Highest change_log seq sent to peer
-  last_sync_at: string;
+  last_received: string;     // Highest change_log HLC received from peer
+  last_sent: string;         // Highest change_log HLC sent to peer
+  last_sync_at: string | null;
   sync_errors: number;
 }
 
@@ -178,22 +180,33 @@ The `E` type parameter defaults to `Error` but can be any type. Throughout `@bou
 
 ```typescript
 interface EventMap {
-  "message:created":   { message: Message; thread_id: string };
-  "message:broadcast": { message: Message; thread_id: string };
-  "task:triggered":    { task_id: string; trigger: string };
-  "task:completed":    { task_id: string; result: string | null };
-  "sync:completed":    { pushed: number; pulled: number; duration_ms: number };
-  "sync:trigger":      { reason: string };
-  "file:changed":      { path: string; operation: "created" | "modified" | "deleted" };
-  "alert:created":     { message: Message; thread_id: string };
-  "agent:cancel":      { thread_id: string };
-  "status:forward":    { thread_id: string; status: string; detail: string | null; tokens: number };
-  "platform:deliver":  { platform: string; thread_id: string; message_id: string; content: string };
-  "platform:webhook":  { platform: string; rawBody: string; headers: Record<string, string> };
+  "message:created":       { message: Message; thread_id: string };
+  "message:broadcast":     { message: Message; thread_id: string };
+  "task:triggered":        { task_id: string; trigger: string };
+  "task:completed":        { task_id: string; result: string | null };
+  "file:changed":          { path: string; operation: "created" | "modified" | "deleted" };
+  "alert:created":         { message: Message; thread_id: string };
+  "agent:cancel":          { thread_id: string };
+  "status:forward":        StatusForwardPayload;
+  "platform:deliver":      PlatformDeliverPayload;
+  "platform:webhook":      { platform: string; rawBody: string; headers: Record<string, string> };
+  "context:debug":         { thread_id: string; turn_id: number; debug: ContextDebugInfo };
+  "notify:enqueued":       { thread_id: string };
+  "model:fallback": {
+    requested_model: string;
+    fallback_model: string;
+    tier: number;
+    thread_id: string;
+    task_id?: string;
+    reason: string;
+  };
+  "changelog:written":     { hlc: string; tableName: string; siteId: string };
+  "relay:outbox-written":  { id: string; target_site_id: string };
+  "relay:inbox":           { ref_id?: string; stream_id?: string; kind: RelayKind };
 }
 ```
 
-`"message:broadcast"` is emitted after a local agent loop run to push the new assistant message to WebSocket clients without re-triggering the agent loop handler. `"sync:trigger"` signals the sync loop to accelerate its next cycle. `"status:forward"` carries delegated loop state from remote hosts. `"platform:deliver"` routes outbound assistant responses to the platform leader; `"platform:webhook"` carries inbound webhook payloads for signature verification and dispatch.
+`"message:broadcast"` is emitted after a local agent loop run to push the new assistant message to WebSocket clients without re-triggering the agent loop handler. `"status:forward"` carries delegated loop state from remote hosts. `"platform:deliver"` routes outbound assistant responses to the platform leader; `"platform:webhook"` carries inbound webhook payloads for signature verification and dispatch. `"changelog:written"`, `"relay:outbox-written"`, and `"relay:inbox"` wake the sync and relay subsystems when new work is appended.
 
 To add a new event to the system, add an entry to this interface. The `TypedEventEmitter` class (below) enforces the payload type at every call site.
 
@@ -228,8 +241,8 @@ bus.on("task:completed", ({ task_id, result }) => {
 bus.emit("task:completed", { task_id: "abc-123", result: "ok" });
 
 // One-shot listener — unregisters itself after first fire
-bus.once("sync:completed", ({ pushed, pulled, duration_ms }) => {
-  console.log(`Sync done in ${duration_ms}ms, +${pushed}/-${pulled}`);
+bus.once("changelog:written", ({ hlc, tableName, siteId }) => {
+  console.log(`Changelog entry ${hlc} written to ${tableName} by ${siteId}`);
 });
 ```
 
@@ -263,7 +276,7 @@ const userId = deterministicUUID(BOUND_NAMESPACE, "discord:123456789");
 
 ### Logger
 
-`logger.ts` provides a structured JSON logger that writes to `stderr`.
+`logger.ts` provides a structured logger, built on [pino](https://getpino.io), that writes human-readable output to `stderr` and structured JSON to a log file.
 
 ```typescript
 type LogLevel = "debug" | "info" | "warn" | "error";
@@ -278,20 +291,14 @@ interface Logger {
 function createLogger(pkg: string, component: string): Logger
 ```
 
-`createLogger` reads the `LOG_LEVEL` environment variable (defaulting to `"info"`) and returns a `Logger` that discards entries below that threshold. Each entry is a single line of JSON with the following fixed fields merged with any `context` object provided:
+`createLogger` reads the `LOG_LEVEL` environment variable (defaulting to `"info"`) and returns a `Logger` that discards entries below that threshold. Internally it lazily constructs a single root pino logger on first use and spawns a child logger bound to `{ package, component }`; each call site gets its own child so those fields are always present in every record.
 
-```json
-{
-  "timestamp": "2026-03-23T14:00:00.000Z",
-  "level": "info",
-  "package": "@bound/core",
-  "component": "app-context",
-  "message": "Generated new site_id",
-  "siteId": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
-}
-```
+The root logger fans out to two destinations via `pino.multistream`:
 
-All output goes to `stderr` so it does not interfere with stdout-based IPC or MCP stdio transports.
+- **`stderr`** — formatted by `pino-pretty` with colorized, human-readable output (timestamp `HH:MM:ss.l`, then `[package/component] message` plus any context fields). Writing to `stderr` keeps log output from interfering with stdout-based IPC or MCP stdio transports.
+- **`logs/bound.log`** (relative to `process.cwd()`) — raw newline-delimited pino JSON, written asynchronously. The `logs/` directory is created on demand with `mkdirSync({ recursive: true })`.
+
+A `resetLogger()` helper is exported for tests to discard the cached root logger.
 
 **Usage:**
 
@@ -334,10 +341,10 @@ type ModelBackendsConfig = {
   daily_budget_usd?: number;
   backends: Array<{
     id: string;
-    provider: "ollama" | "bedrock" | "anthropic" | "openai-compatible";
+    provider: "ollama" | "bedrock" | "anthropic" | "openai-compatible" | "cerebras" | "zai";
     model: string;
     base_url?: string;              // Required for ollama and openai-compatible
-    api_key?: string;
+    api_key?: string;               // Required for cerebras, anthropic, and zai
     region?: string;
     profile?: string;
     context_window: number;
@@ -358,7 +365,7 @@ type ModelBackendsConfig = {
 };
 ```
 
-Two cross-field constraints are enforced: `default` must reference a `backend.id` that exists in `backends`, and `ollama` / `openai-compatible` providers must supply `base_url`. The optional `capabilities` object overrides the capabilities that the driver auto-detects at startup, allowing operators to enable or disable specific features (e.g. marking a model as vision-capable or disabling tool use) without changing the driver code.
+Three cross-field constraints are enforced: `default` must reference a `backend.id` that exists in `backends` (or be the empty string sentinel when `backends` is empty, for hub-only nodes that relay inference to spokes); `ollama` / `openai-compatible` providers must supply `base_url`; and `cerebras` / `anthropic` / `zai` providers must supply `api_key`. The optional `capabilities` object overrides the capabilities that the driver auto-detects at startup, allowing operators to enable or disable specific features (e.g. marking a model as vision-capable or disabling tool use) without changing the driver code.
 
 #### Optional Config Schemas
 
@@ -366,9 +373,9 @@ Two cross-field constraints are enforced: `default` must reference a `backend.id
 |---|---|---|
 | `networkSchema` | `network.json` | Outbound HTTP allowlist with optional header injection |
 | `platformsSchema` | `platforms.json` | Platform connector configs (Discord, etc.) with leader election settings |
-| `syncSchema` | `sync.json` | Hub URL and polling interval |
+| `syncSchema` | `sync.json` | Optional hub URL, nested `relay` (payload/timeout/prune/drain/inference limits), and `ws` (backpressure, idle timeout, reconnect) configs |
 | `keyringSchema` | `keyring.json` | Per-host public key and URL map |
-| `mcpSchema` | `mcp.json` | MCP server definitions (stdio or SSE transport) |
+| `mcpSchema` | `mcp.json` | MCP server definitions (stdio or http transport) |
 | `overlaySchema` | `overlay.json` | Virtual filesystem mount points |
 | `cronSchedulesSchema` | `cron_schedules.json` | Named cron jobs with schedule, thread, and model hints |
 
@@ -405,14 +412,22 @@ type McpConfig = {
 **`cronSchedulesSchema`:**
 
 ```typescript
-type CronSchedulesConfig = Record<string, {
-  schedule: string;         // Cron expression
-  thread?: string;
-  payload?: string;
-  template?: string[];
-  requires?: string[];
-  model_hint?: string;
-}>;
+type CronSchedulesConfig = {
+  heartbeat?: {              // Reserved top-level key: agent heartbeat config
+    enabled: boolean;        // default true
+    interval_ms: number;     // default 1_800_000, minimum 60_000
+    model_hint?: string;
+  };
+  // All other keys are cron entries (zod .catchall)
+  [name: string]: {
+    schedule: string;        // Cron expression
+    thread?: string;
+    payload?: string;
+    template?: string[];
+    requires?: string[];
+    model_hint?: string;
+  } | undefined;
+};
 ```
 
 #### configSchemaMap
@@ -457,6 +472,10 @@ It opens a `bun:sqlite` `Database` at the given path and sets three PRAGMAs befo
 | `foreign_keys` | `ON` | Enforces referential integrity at the SQLite level |
 | `busy_timeout` | `5000` | Waits up to 5 s before returning `SQLITE_BUSY` |
 
+On first run it also performs a one-time migration to `PRAGMA auto_vacuum = INCREMENTAL` (followed by `VACUUM` to restructure the file); subsequent startups detect the existing `auto_vacuum` setting and skip this step.
+
+`database.ts` additionally exports `getSiteId(db: Database): string`, a convenience reader that returns the persisted `site_id` from `host_meta` (falling back to `"unknown"` if the row has not been written yet).
+
 **Usage:**
 
 ```typescript
@@ -467,15 +486,15 @@ const db = createDatabase("/data/bound.db");
 
 ---
 
-### Schema — 17 STRICT Tables
+### Schema — 19 STRICT Tables
 
-`schema.ts` exports `applySchema(db: Database): void`, which issues `CREATE TABLE IF NOT EXISTS` statements for all 17 tables. Every table uses the `STRICT` keyword, which makes SQLite enforce declared column types rather than accepting arbitrary affinities.
+`schema.ts` exports `applySchema(db: Database): void`, which issues `CREATE TABLE IF NOT EXISTS` statements for all 19 tables (12 synced + 7 local-only). Every table uses the `STRICT` keyword, which makes SQLite enforce declared column types rather than accepting arbitrary affinities.
 
-`applySchema` is idempotent and safe to call on every startup.
+`applySchema` is idempotent and safe to call on every startup. It also runs a number of in-place migrations (HLC conversion for `change_log` / `sync_state`, idempotent `ALTER TABLE` additions for newer columns, data backfills, and an `auto_vacuum` configuration).
 
 #### Synced Tables (participate in replication)
 
-These 11 tables are the source of truth for replicated state. Every mutation should go through the change-log helpers in `change-log.ts`.
+These 12 tables are the source of truth for replicated state. Every mutation should go through the change-log helpers in `change-log.ts`.
 
 **`users`**
 ```sql
@@ -489,7 +508,9 @@ first_seen_at TEXT NOT NULL, modified_at TEXT NOT NULL, deleted INTEGER DEFAULT 
 id TEXT PRIMARY KEY, user_id TEXT NOT NULL, interface TEXT NOT NULL,
 host_origin TEXT NOT NULL, color INTEGER DEFAULT 0, title TEXT, summary TEXT,
 summary_through TEXT, summary_model_id TEXT, extracted_through TEXT,
-created_at TEXT NOT NULL, last_message_at TEXT NOT NULL, deleted INTEGER DEFAULT 0
+created_at TEXT NOT NULL, last_message_at TEXT NOT NULL,
+modified_at TEXT NOT NULL, deleted INTEGER DEFAULT 0,
+model_hint TEXT  -- added via idempotent ALTER TABLE
 ```
 Index: on `(user_id, last_message_at)` where `deleted = 0`.
 
@@ -497,17 +518,20 @@ Index: on `(user_id, last_message_at)` where `deleted = 0`.
 ```sql
 id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, role TEXT NOT NULL,
 content TEXT NOT NULL, model_id TEXT, tool_name TEXT,
-created_at TEXT NOT NULL, modified_at TEXT, host_origin TEXT NOT NULL
+created_at TEXT NOT NULL, modified_at TEXT, host_origin TEXT NOT NULL,
+deleted INTEGER DEFAULT 0,
+exit_code INTEGER  -- added via idempotent ALTER TABLE; populated for tool_result rows
 ```
-Index: on `(thread_id, created_at)`. No soft-delete column — the append-only reducer never tombstones messages.
+Index: on `(thread_id, created_at)`. The `deleted` column exists for column-parity with other synced tables, but the append-only reducer never updates existing rows — rows are inserted once and never tombstoned.
 
 **`semantic_memory`**
 ```sql
 id TEXT PRIMARY KEY, key TEXT NOT NULL, value TEXT NOT NULL, source TEXT,
 created_at TEXT NOT NULL, modified_at TEXT NOT NULL, last_accessed_at TEXT,
-deleted INTEGER DEFAULT 0
+deleted INTEGER DEFAULT 0,
+tier TEXT DEFAULT 'default'  -- added via idempotent ALTER TABLE; one of "pinned" | "summary" | "default" | "detail"
 ```
-Index: unique on `key` where `deleted = 0`.
+Indexes: unique partial index on `key` where `deleted = 0`; `idx_memory_modified` on `modified_at DESC`; partial index `idx_memory_tier` on `tier` where `deleted = 0`. An idempotent backfill promotes entries with `_standing`/`_feedback`/`_policy`/`_pinned` key prefixes from the `default` tier to `pinned`.
 
 **`tasks`**
 ```sql
@@ -517,11 +541,13 @@ created_by TEXT, thread_id TEXT, claimed_by TEXT, claimed_at TEXT,
 lease_id TEXT, next_run_at TEXT, last_run_at TEXT, run_count INTEGER DEFAULT 0,
 max_runs INTEGER, requires TEXT, model_hint TEXT, no_history INTEGER DEFAULT 0,
 inject_mode TEXT DEFAULT 'results', depends_on TEXT,
-require_success INTEGER DEFAULT 0, alert_threshold INTEGER DEFAULT 1,
+require_success INTEGER DEFAULT 0, alert_threshold INTEGER DEFAULT 3,
 consecutive_failures INTEGER DEFAULT 0, event_depth INTEGER DEFAULT 0,
 no_quiescence INTEGER DEFAULT 0, heartbeat_at TEXT, result TEXT, error TEXT,
-modified_at TEXT NOT NULL, deleted INTEGER DEFAULT 0
+modified_at TEXT NOT NULL, deleted INTEGER DEFAULT 0,
+origin_thread_id TEXT  -- added via idempotent ALTER TABLE; conversation that scheduled the task
 ```
+Indexes: `idx_tasks_last_run` on `last_run_at DESC` where `deleted = 0 AND last_run_at IS NOT NULL`; `idx_tasks_pending_schedule` on `(status, next_run_at)` where `status = 'pending' AND deleted = 0 AND next_run_at IS NOT NULL`.
 
 **`files`**
 ```sql
@@ -575,23 +601,35 @@ modified_at TEXT NOT NULL, deleted INTEGER DEFAULT 0
 Index: unique partial index `idx_skills_name ON skills(name) WHERE deleted = 0`.
 IDs are deterministic: `deterministicUUID(BOUND_NAMESPACE, name)`. `status` is `"active"` or `"retired"`. `skill_root` is the VFS path under which the skill's `SKILL.md` and supporting files live. `allowed_tools` and `compatibility` are JSON arrays stored as TEXT.
 
+**`memory_edges`**
+```sql
+id TEXT PRIMARY KEY, source_key TEXT NOT NULL, target_key TEXT NOT NULL,
+relation TEXT NOT NULL, weight REAL DEFAULT 1.0,
+created_at TEXT NOT NULL, modified_at TEXT NOT NULL,
+deleted INTEGER DEFAULT 0
+```
+Indexes: unique partial index on `(source_key, target_key, relation)` where `deleted = 0`; partial indexes on `source_key` and `target_key` where `deleted = 0`. Stores directed, weighted relations between `semantic_memory.key` values.
+
 #### Local-Only Tables (not replicated)
 
-These six tables hold node-local state and are never included in sync payloads.
+These seven tables hold node-local state and are never included in sync payloads.
 
 **`change_log`** — the transactional outbox
 ```sql
-seq INTEGER PRIMARY KEY AUTOINCREMENT, table_name TEXT NOT NULL,
-row_id TEXT NOT NULL, site_id TEXT NOT NULL, timestamp TEXT NOT NULL,
-row_data TEXT NOT NULL
+hlc        TEXT PRIMARY KEY,   -- Hybrid Logical Clock: "<iso_timestamp>_<counter_hex>_<site_id>"
+table_name TEXT NOT NULL, row_id TEXT NOT NULL, site_id TEXT NOT NULL,
+timestamp  TEXT NOT NULL, row_data TEXT NOT NULL
 ```
-Index: on `seq` (explicitly created for efficient range scans during sync).
+The primary key is an HLC string (see `@bound/shared/hlc.ts`), which provides per-site-monotonic, total ordering across all sites. Range scans during sync use `WHERE hlc > ?` against peer cursors. A one-time migration (`migrateChangeLogToHlc`) converts an older `seq INTEGER PRIMARY KEY AUTOINCREMENT` schema by synthesizing HLCs from the legacy `(timestamp, seq, site_id)` triple.
 
 **`sync_state`** — per-peer sync cursors
 ```sql
-peer_site_id TEXT PRIMARY KEY, last_received INTEGER NOT NULL,
-last_sent INTEGER NOT NULL, last_sync_at TEXT, sync_errors INTEGER DEFAULT 0
+peer_site_id  TEXT PRIMARY KEY,
+last_received TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
+last_sent     TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
+last_sync_at  TEXT, sync_errors INTEGER DEFAULT 0
 ```
+Cursors are HLC strings (matching `change_log.hlc`). A one-time migration (`migrateSyncStateToHlc`) resets integer cursors from any older schema to `HLC_ZERO`.
 
 **`host_meta`** — local node identity
 ```sql
@@ -630,6 +668,17 @@ stream_id TEXT  -- added via idempotent ALTER TABLE
 ```
 Index: on `(created_at)`. Use dedicated CRUD helpers (`writeOutbox`, `insertInbox`, `readUndelivered`, `markDelivered`, `readUnprocessed`, `markProcessed`) from `@bound/core` — do not use the change-log outbox pattern for these tables.
 
+**`dispatch_queue`** — per-message dispatch coordination for the event-driven conversation model
+```sql
+message_id    TEXT PRIMARY KEY, thread_id TEXT NOT NULL,
+status        TEXT NOT NULL DEFAULT 'pending',
+claimed_by    TEXT,
+event_type    TEXT NOT NULL DEFAULT 'user_message',
+event_payload TEXT,
+created_at    TEXT NOT NULL, modified_at TEXT NOT NULL
+```
+Index: on `(thread_id, status)` where `status = 'pending'`. Local coordination only — never synced. The `event_type` and `event_payload` columns are added via idempotent `ALTER TABLE` for older databases.
+
 ---
 
 ### Change Log and Transactional Outbox
@@ -647,10 +696,11 @@ function createChangeLogEntry(
   rowId: string,
   siteId: string,
   rowData: Record<string, unknown>,
-): void
+  remoteHlc?: string,
+): string
 ```
 
-Inserts a single row into `change_log` with the current ISO timestamp and a JSON snapshot of `rowData`. This is the primitive used by all other helpers and by `withChangeLog`.
+Inserts a single row into `change_log` with the current ISO timestamp and a JSON snapshot of `rowData`, and returns the HLC assigned to the new entry. This is the primitive used by all other helpers and by `withChangeLog`. When generating the HLC it reads the current maximum HLC from `change_log` so the new value is strictly greater. Pass `remoteHlc` when applying a row received from a peer — the helper then calls `mergeHlc` instead of `generateHlc` to preserve causal ordering across sites.
 
 #### `withChangeLog`
 
@@ -739,6 +789,8 @@ function softDelete(
 
 Sets `deleted = 1` and `modified_at = now` on the row, then logs the full tombstoned snapshot to `change_log`. Physical deletion is never performed on synced tables.
 
+`change-log.ts` also exports `insertMessage(db, params, siteId)`, a convenience wrapper that builds a standard `messages` row (`id`, timestamps, `deleted = 0`) and routes it through `insertRow`; `setChangelogEventBus(eventBus)`, which hooks up the optional `changelog:written` event emission used by the WS transport; and `validateColumnName(name)`, the exported version of the column-name regex check.
+
 ---
 
 ### Config Loader
@@ -810,7 +862,7 @@ function loadOptionalConfigs(configDir: string): OptionalConfigs
 type OptionalConfigs = Record<string, Result<Record<string, unknown>, ConfigError>>
 ```
 
-Attempts to load all seven optional config files. Files that are absent (ENOENT) are silently omitted from the returned map. Files that are present but fail validation are included as `err(ConfigError)` entries so the caller can surface them. The keys in the returned map are the logical config names (`"network"`, `"discord"`, `"sync"`, `"keyring"`, `"mcp"`, `"overlay"`, `"cronSchedules"`).
+Attempts to load all seven optional config files. Files that are absent (ENOENT) are silently omitted from the returned map. Files that are present but fail validation are included as `err(ConfigError)` entries so the caller can surface them. The keys in the returned map are the logical config names (`"network"`, `"platforms"`, `"sync"`, `"keyring"`, `"mcp"`, `"overlay"`, `"cronSchedules"`).
 
 ```typescript
 const optionals = loadOptionalConfigs("/etc/bound/config");
@@ -876,9 +928,9 @@ function bootstrapContainer(configDir: string, dbPath: string): typeof container
 The single entry point for container initialization. It performs the following steps in order:
 
 1. Calls `loadRequiredConfigs` — throws if either required config is missing or invalid.
-2. Calls `createDatabase(dbPath)` and `applySchema(db)`.
+2. Calls `createDatabase(dbPath)`, then `applySchema(db)` and `applyMetricsSchema(db)`.
 3. Registers all four service classes as singletons via `container.registerSingleton`.
-4. Resolves each service and injects the database and config instances.
+4. Resolves `DatabaseService` and `ConfigService` and injects the database and config instances (the `EventBusService` and `LoggerService` need no setters — they are ready on construction).
 5. Returns the fully initialized container.
 
 Throws an `Error` with a descriptive message if any required config fails to load.
@@ -947,12 +999,14 @@ id INTEGER PRIMARY KEY AUTOINCREMENT,
 thread_id TEXT, task_id TEXT, dag_root_id TEXT,
 model_id TEXT NOT NULL, tokens_in INTEGER NOT NULL, tokens_out INTEGER NOT NULL,
 cost_usd REAL, created_at TEXT NOT NULL,
-relay_target TEXT,        -- hostname of the remote inference provider (NULL for local)
-relay_latency_ms INTEGER, -- time-to-first-chunk for relay inference (NULL for local)
+relay_target TEXT,          -- hostname of the remote inference provider (NULL for local)
+relay_latency_ms INTEGER,   -- time-to-first-chunk for relay inference (NULL for local)
 tokens_cache_write INTEGER, -- prompt cache write tokens (NULL if not reported)
-tokens_cache_read INTEGER   -- prompt cache read tokens (NULL if not reported)
+tokens_cache_read INTEGER,  -- prompt cache read tokens (NULL if not reported)
+context_debug TEXT          -- JSON-encoded ContextDebugInfo for the turn (NULL if not captured)
 ```
-The four additional columns (`relay_target`, `relay_latency_ms`, `tokens_cache_write`, `tokens_cache_read`) are added via idempotent `ALTER TABLE` statements at startup so the table remains backward-compatible with existing databases.
+Index: `idx_turns_thread` on `(thread_id, created_at DESC)` for fast per-thread lookup.
+The five additional columns (`relay_target`, `relay_latency_ms`, `tokens_cache_write`, `tokens_cache_read`, `context_debug`) are added via idempotent `ALTER TABLE` statements at startup so the table remains backward-compatible with existing databases.
 
 **`daily_summary`** — materialized daily aggregates, updated in-place by `recordTurn`
 ```sql
@@ -989,6 +1043,11 @@ interface TurnRecord {
 function recordTurn(db: Database, turn: TurnRecord): number
 ```
 Inserts a row into `turns` and upserts the corresponding row in `daily_summary` within a single implicit transaction. The date key is derived by splitting `created_at` on `"T"`. Returns the auto-incremented row ID of the inserted turn. `tokens_cache_write` and `tokens_cache_read` should be `null` when the backend does not report prompt caching statistics.
+
+```typescript
+function recordContextDebug(db: Database, turnId: number, debug: ContextDebugInfo): void
+```
+Attaches a JSON-encoded `ContextDebugInfo` blob to an existing `turns` row via `UPDATE`. Called after `recordTurn` has returned the row ID — the same post-insert-update pattern used by the relay metrics helpers.
 
 ```typescript
 function getDailySpend(db: Database, date: string): number

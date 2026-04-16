@@ -75,7 +75,7 @@ Two helpers restore previously persisted files into a fresh filesystem at startu
 
 The bootstrap sequence creates a `loopSandbox` wrapper per `AgentLoop` invocation via `agentLoopFactory`. Each invocation receives its own closure over the `ClusterFsResult`, providing two lifecycle hooks:
 
-- **`capturePreSnapshot(paths?)`** — Called at the HYDRATE_FS agent loop state. Calls `snapshotWorkspace` scoped to the provided `paths` (the set of in-memory paths returned by `ClusterFsResult.getInMemoryPaths()`), capturing a before-image of the VFS for that specific loop run.
+- **`capturePreSnapshot()`** — Called at the HYDRATE_FS agent loop state. Calls `snapshotWorkspace` scoped to the set of in-memory paths returned by `ClusterFsResult.getInMemoryPaths()`, capturing a before-image of the VFS for that specific loop run.
 - **`persistFs()`** — Called at the FS_PERSIST agent loop state. Takes a post-execution snapshot of the same paths, diffs it against the pre-snapshot captured above, and calls `persistWorkspaceChanges` to flush any changes to the `files` table.
 
 Because each loop invocation gets its own snapshot state via a closure, concurrent agent loops running against the same `ClusterFs` do not interfere with each other's pre/post snapshots.
@@ -157,6 +157,9 @@ interface CommandContext {
   logger: Logger;
   threadId?: string;
   taskId?: string;
+  mcpClients?: Map<string, unknown>;
+  modelRouter?: unknown; // ModelRouter from @bound/llm
+  fs?: IFileSystem;
 }
 
 interface CommandResult {
@@ -172,7 +175,15 @@ interface CommandResult {
 
 `createDefineCommands(definitions, context)` takes an array of `CommandDefinition` objects and a single `CommandContext` and returns a list of `just-bash` `CustomCommand` objects ready to be passed to `createSandbox`.
 
-Argument parsing is positional: `argv[0]` maps to the first declared argument, `argv[1]` to the second, and so on. If a required argument is absent, the handler returns `exitCode: 1` immediately with an appropriate message on `stderr`. Handler exceptions are caught and surfaced as `exitCode: 1` with the error message on `stderr`.
+Argument parsing supports three input styles, chosen per-invocation based on the shape of `argv`:
+
+1. **Flag / key-value** — if any token starts with `--` or matches `<identifier>=`, the parser handles `--key value` pairs, `key=value` pairs, and leading positional tokens in a single pass. Unrecognised positional tokens fill the declared arg slots in declaration order.
+2. **Positional** — with no flag/key-value tokens and at least one declared arg, `argv[0]` maps to the first declared arg, `argv[1]` to the second, and so on.
+3. **JSON fallback** — with no flags and no declared args, the parser tries `JSON.parse(argv.join(" "))`; if it yields an object, its entries become string-coerced args, otherwise each token is assigned to `arg0`, `arg1`, etc.
+
+If a required argument is absent (positional mode only), the handler returns `exitCode: 1` immediately with an appropriate message on `stderr`. Handler exceptions are caught and surfaced as `exitCode: 1` with the error message on `stderr`.
+
+Per-invocation `threadId` and `taskId` are propagated through `loopContextStorage` (an `AsyncLocalStorage`) and merged into the `CommandContext` passed to the handler, so concurrent agent loops see their own scoping without sharing mutable context.
 
 #### Example — registering a custom command
 
@@ -221,7 +232,7 @@ const commands = createDefineCommands(definitions, context);
 
 **Source:** `packages/sandbox/src/sandbox-factory.ts`
 
-`createSandbox` assembles a `just-bash` `Bash` instance from a `ClusterFs`, a set of custom commands, and optional network and execution limit configuration.
+`createSandbox` assembles a `Sandbox` wrapping a `just-bash` `Bash` instance from a `ClusterFs`, a set of custom commands, and optional network, execution limit, memory threshold, and URL allowlist configuration. The returned `Sandbox` exposes `bash`, a `checkMemoryThreshold()` helper, the underlying `MemoryTracker`, and a `UrlFilter`.
 
 ```typescript
 interface SandboxConfig {
@@ -229,12 +240,21 @@ interface SandboxConfig {
   commands: CustomCommand[];
   networkConfig?: NetworkConfig;
   executionLimits?: ExecutionLimits;
+  memoryThresholdBytes?: number;
+  allowedUrlPrefixes?: string[];
 }
 
 interface ExecutionLimits {
   maxCallDepth?: number;
   maxCommandCount?: number;
   maxLoopIterations?: number;
+}
+
+interface Sandbox {
+  bash: Bash;
+  checkMemoryThreshold: () => MemoryThresholdResult;
+  memoryTracker: MemoryTracker;
+  urlFilter: UrlFilter;
 }
 ```
 
@@ -283,7 +303,7 @@ const sandbox = await createSandbox({
 });
 
 // 6. Run the agent's shell script inside the sandbox
-await sandbox.exec('echo "hello from the sandbox"');
+await sandbox.bash.exec('echo "hello from the sandbox"');
 
 // 7. Persist any changes the agent made
 const postSnapshot = await snapshotWorkspace(clusterFs, { paths: clusterFs.getInMemoryPaths() });
@@ -378,12 +398,15 @@ interface ChatParams {
   max_tokens?: number;
   temperature?: number;
   system?: string;
+  system_suffix?: string;
   cache_breakpoints?: number[];
+  cache_ttl?: "5m" | "1h";  // currently unimplemented
+  thinking?: { type: "enabled"; budget_tokens: number };
   signal?: AbortSignal;
 }
 ```
 
-`model` is optional; if omitted, the driver uses the model from its constructor config. `cache_breakpoints` is an array of message indices at which to insert Anthropic prompt caching markers — ignored by drivers that do not support prompt caching. `signal` is an optional `AbortSignal`; all four drivers accept it and will abort the in-progress stream when it fires.
+`model` is optional; if omitted, the driver uses the model from its constructor config. `system_suffix` carries varying system context placed AFTER the cached system prefix — when `cache_breakpoints` is set, it is sent as a separate uncached system block so it does not bust the prompt cache; otherwise it is appended to `system`. `cache_breakpoints` is an array of message indices at which to insert Anthropic prompt caching markers — ignored by drivers that do not support prompt caching. `thinking` enables extended thinking (Anthropic / Bedrock produce reasoning content blocks; other backends silently ignore it). `signal` is an optional `AbortSignal`; all four drivers accept it and will abort the in-progress stream when it fires.
 
 #### LLMMessage
 
@@ -426,6 +449,7 @@ All drivers emit the same discriminated union:
 ```typescript
 type StreamChunk =
   | { type: "text";           content: string }
+  | { type: "thinking";       content: string }
   | { type: "tool_use_start"; id: string; name: string }
   | { type: "tool_use_args";  id: string; partial_json: string }
   | { type: "tool_use_end";   id: string }
@@ -452,6 +476,7 @@ interface BackendCapabilities {
   system_prompt: boolean;
   prompt_caching: boolean;
   vision: boolean;
+  extended_thinking: boolean;
   max_context: number;
 }
 ```
@@ -496,7 +521,7 @@ const driver = new OllamaDriver({
 - The final object has `done: true` and carries `prompt_eval_count` / `eval_count` for token usage.
 - Tool calls arrive in a single non-streaming chunk on the `message.tool_calls` array; the driver synthesises the `tool_use_start` / `tool_use_args` / `tool_use_end` sequence from them.
 
-**Capabilities:** streaming, tool use, system prompt. No prompt caching or vision.
+**Capabilities:** streaming, tool use, system prompt, extended thinking. No prompt caching or vision.
 
 ---
 
@@ -526,7 +551,7 @@ const driver = new AnthropicDriver({
 
 **Prompt caching:** When `cache_breakpoints` is set in `ChatParams`, the driver attaches `cache_control: { type: "ephemeral" }` to the messages at those indices before sending the request. This instructs Anthropic's API to cache the KV state up to those points.
 
-**Capabilities:** streaming, tool use, system prompt, prompt caching, vision.
+**Capabilities:** streaming, tool use, system prompt, prompt caching, vision, extended thinking.
 
 ---
 
@@ -534,7 +559,7 @@ const driver = new AnthropicDriver({
 
 **Source:** `packages/llm/src/bedrock-driver.ts`
 
-Targets the AWS Bedrock Converse Stream API. Uses IAM credentials from the environment (the standard AWS SDK credential chain applies to the underlying HTTP call).
+Targets the AWS Bedrock Converse Stream API. Uses the `@aws-sdk/client-bedrock-runtime` SDK's `ConverseStreamCommand`, so the standard AWS credential chain (env vars, shared config, instance profile, etc.) applies. An optional `profile` config selects a named credentials profile.
 
 ```typescript
 const driver = new BedrockDriver({
@@ -545,12 +570,12 @@ const driver = new BedrockDriver({
 ```
 
 **Protocol details:**
-- POST to `https://bedrock-runtime.<region>.amazonaws.com/model/<modelId>/converse-stream`.
-- The response body is a stream of JSON event objects. Because Bedrock does not use a line-delimited or SSE framing, the driver uses a brace-counting parser to extract complete JSON objects from the raw byte stream.
-- Tool use follows the same `content_block_start` / `content_block_delta` / `content_block_stop` event shape as Anthropic. Tool parameters use `inputSchema.json` rather than `input_schema`.
-- Token usage is reported on the `message_stop` event.
+- Uses `BedrockRuntimeClient.send(new ConverseStreamCommand(...))`; the SDK handles SigV4 signing, endpoint construction, and event-stream framing. The driver iterates the SDK's async event iterator directly.
+- Events are delivered as discriminated objects with camelCase keys: `contentBlockStart` (may carry `start.toolUse`), `contentBlockDelta` (`delta.text`, `delta.toolUse.input`, or `delta.thinking.text`), `contentBlockStop`, and `metadata`.
+- Token usage is reported on the `metadata` event, including `cacheWriteInputTokens` / `cacheReadInputTokens` when prompt caching is active.
+- Tool names are sanitised via `sanitizeToolName` before being sent to Bedrock.
 
-**Capabilities:** streaming, tool use, system prompt, vision. No prompt caching.
+**Capabilities:** streaming, tool use, system prompt, prompt caching, vision, extended thinking.
 
 ---
 
@@ -574,7 +599,7 @@ const driver = new OpenAICompatibleDriver({
 - Streams SSE. The sentinel `data: [DONE]` terminates the stream.
 - Tool calls stream incrementally: each chunk may carry a `tool_calls` array with a `function.arguments` fragment. The driver maintains a per-index state map and emits `tool_use_start` on the first chunk for a given tool index, `tool_use_args` for each argument fragment, and `tool_use_end` when the stream finishes (detected via `finish_reason`).
 
-**Capabilities:** streaming, tool use, system prompt. No prompt caching or vision.
+**Capabilities:** streaming, tool use, system prompt, extended thinking. No prompt caching or vision.
 
 ---
 
@@ -589,12 +614,14 @@ const driver = new OpenAICompatibleDriver({
 ```typescript
 interface BackendConfig {
   id: string;
-  provider: string;  // "anthropic" | "bedrock" | "openai-compatible" | "ollama"
+  provider: string;  // "anthropic" | "bedrock" | "openai-compatible" | "ollama" | "cerebras" | "zai"
   model: string;
   baseUrl?: string;
   contextWindow?: number;
-  capabilities?: Partial<BackendCapabilities>;  // merges over driver-reported capabilities
-  [key: string]: unknown;  // provider-specific fields, e.g. apiKey, region
+  [key: string]: unknown;  // provider-specific fields (apiKey, region, profile, tier,
+                           //   pricePerMInput, thinking, and an optional
+                           //   `capabilities: Partial<BackendCapabilities>` that merges
+                           //   over driver-reported capabilities)
 }
 
 interface ModelBackendsConfig {
@@ -608,13 +635,17 @@ Provider-specific extra fields:
 | Provider | Required extra fields | Optional extra fields |
 |---|---|---|
 | `anthropic` | `apiKey` | `contextWindow` (default 200 000) |
-| `bedrock` | `region` | `contextWindow` (default 200 000) |
+| `bedrock` | `region` | `profile`, `contextWindow` (default 200 000) |
 | `openai-compatible` | `apiKey` | `baseUrl` (default `http://localhost:8000`), `contextWindow` (default 8 192) |
 | `ollama` | — | `baseUrl` (default `http://localhost:11434`), `contextWindow` (default 4 096) |
+| `cerebras` | `apiKey` | `baseUrl` (default `https://api.cerebras.ai/v1`), `contextWindow` (default 128 000) |
+| `zai` | `apiKey` | `baseUrl` (default `https://api.z.ai/api/coding/paas/v4`), `contextWindow` (default 128 000) |
+
+`cerebras` and `zai` are thin wrappers that delegate to `OpenAICompatibleDriver` with provider-specific defaults.
 
 #### createModelRouter
 
-`createModelRouter(config)` instantiates all configured backends, verifies that the `default` ID exists, and returns a `ModelRouter`. Throws `LLMError` if the default backend ID is not present in the backends list.
+`createModelRouter(config)` instantiates all configured backends and returns a `ModelRouter`. When multiple entries share the same `id`, they are wrapped in a `PooledBackend` that fails over between sub-backends on rate-limit (429), payment-required (402), and server-error (5xx) responses, using exponential backoff per sub-entry. As a special case, an empty `backends` array produces a hub-only router with no local backends (inference is proxied to spokes); otherwise, `createModelRouter` throws `LLMError` if the default backend ID is not present in the backends list.
 
 ```typescript
 import { createModelRouter } from "@bound/llm";
