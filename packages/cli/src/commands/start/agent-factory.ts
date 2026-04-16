@@ -3,7 +3,7 @@
  * isolated snapshot state and full sandbox/tool wiring.
  */
 
-import { AgentLoop } from "@bound/agent";
+import { AgentLoop, createBuiltInTools } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import { isRelayRequest } from "@bound/agent";
 import type { AppContext } from "@bound/core";
@@ -49,6 +49,11 @@ export function createAgentLoopFactory(
 		// Per-invocation snapshot state. Each call gets its own
 		// closure so concurrent agent loops do not share preSnapshot.
 		let preSnapshot: Map<string, string> | null = null;
+
+		// Built-in file tools (read, write, edit) operating on the VFS.
+		// Created from the same IFileSystem handle wrapped by wrapWithMemoryTracking,
+		// so writes through these tools flow through memory tracking + FS_PERSIST.
+		const builtInTools = clusterFsObj ? createBuiltInTools(clusterFsObj.fs) : undefined;
 
 		const loopSandbox = {
 			// Delegate exec to the underlying sandbox, wrapping the call in
@@ -117,17 +122,23 @@ export function createAgentLoopFactory(
 				}
 				return { changes: result.value.changes, changedPaths };
 			},
+
+			builtInTools,
 		};
 
+		const builtInToolDefs = builtInTools
+			? Array.from(builtInTools.values(), (t) => t.toolDefinition)
+			: [];
 		const platformToolDefs = config.platformTools
 			? Array.from(config.platformTools.values()).map((t) => t.toolDefinition)
 			: [];
-		// sandboxTool (bash) is always included first; config.tools adds extra tools beyond bash.
+		// sandboxTool (bash) is always included first; built-in file tools next;
+		// then extra tools; then platform tools.
 		// If config.tools includes bash, dedupe it.
 		const extraTools = config.tools?.filter((t) => t.function.name !== "bash") ?? [];
 		return new AgentLoop(appContext, loopSandbox, modelRouter, {
 			...config,
-			tools: [sandboxTool, ...extraTools, ...platformToolDefs],
+			tools: [sandboxTool, ...builtInToolDefs, ...extraTools, ...platformToolDefs],
 		});
 	};
 }
