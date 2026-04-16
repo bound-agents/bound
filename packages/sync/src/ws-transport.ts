@@ -452,8 +452,11 @@ export class WsTransport {
 		const deliveredIds: string[] = [];
 
 		for (const entry of payload.entries) {
-			// Idempotency check on hub side
-			if (entry.idempotency_key) {
+			// Idempotency check on hub side — skip when source is self, because
+			// hub-originated entries are already in our own relay_outbox (we just
+			// wrote them). Without this guard the check always finds the entry we
+			// just inserted and silently skips routing.
+			if (entry.idempotency_key && sourceSiteId !== this.config.siteId) {
 				const existing = this.config.db
 					.query("SELECT id FROM relay_outbox WHERE idempotency_key = ? AND target_site_id = ?")
 					.get(entry.idempotency_key, entry.target_site_id) as { id: string } | null;
