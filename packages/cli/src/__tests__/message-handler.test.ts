@@ -1,5 +1,6 @@
+import type { Database } from "bun:sqlite";
 /**
- * End-to-end tests for the agent:cancel propagation path.
+ * End-to-end tests for the agent:cancel propagation path and model resolution.
  *
  * These tests exercise the full runLocalAgentLoop pipeline:
  *   message:created → AbortController wired → agent:cancel → loop aborted
@@ -8,8 +9,11 @@
  * inside createWebServer, making it impractical to test without starting the
  * full server.
  */
-import { afterEach, describe, expect, it } from "bun:test";
-import { randomUUID } from "node:crypto";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomBytes, randomUUID } from "node:crypto";
+import { unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentLoopResult } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import type { AgentLoop } from "@bound/agent";
@@ -269,5 +273,89 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 
 		// Should have been aborted — no activity to reset timeout
 		expect(capturedSignals[0]?.aborted).toBe(true);
+	});
+});
+
+import { createDatabase } from "@bound/core";
+import { applySchema, insertRow } from "@bound/core";
+import { resolveThreadModel } from "../lib/message-handler";
+
+describe("resolveThreadModel", () => {
+	let dbPath: string;
+	let db: Database;
+	const siteId = "test-site-000";
+
+	beforeEach(() => {
+		dbPath = join(tmpdir(), `bound-test-${randomBytes(4).toString("hex")}.db`);
+		db = createDatabase(dbPath);
+		applySchema(db);
+
+		// Seed a user for FK
+		insertRow(
+			db,
+			"users",
+			{
+				id: "u1",
+				display_name: "Test",
+				platform_ids: null,
+				first_seen_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+			},
+			siteId,
+		);
+	});
+
+	afterEach(() => {
+		db.close();
+		try {
+			unlinkSync(dbPath);
+		} catch {
+			// ignore
+		}
+	});
+
+	function makeThread(id: string, modelHint: string | null = null): string {
+		const now = new Date().toISOString();
+		insertRow(
+			db,
+			"threads",
+			{
+				id,
+				user_id: "u1",
+				interface: "web",
+				host_origin: "test-host",
+				color: 0,
+				title: null,
+				summary: null,
+				summary_through: null,
+				summary_model_id: null,
+				extracted_through: null,
+				created_at: now,
+				last_message_at: now,
+				modified_at: now,
+				deleted: 0,
+				model_hint: modelHint,
+			},
+			siteId,
+		);
+		return id;
+	}
+
+	it("returns threads.model_hint when set", () => {
+		const threadId = makeThread(randomUUID(), "opus");
+		const result = resolveThreadModel(db, threadId, "glm-4.7");
+		expect(result).toBe("opus");
+	});
+
+	it("returns nodeDefault when threads.model_hint is null", () => {
+		const threadId = makeThread(randomUUID(), null);
+		const result = resolveThreadModel(db, threadId, "glm-4.7");
+		expect(result).toBe("glm-4.7");
+	});
+
+	it("returns nodeDefault when thread does not exist", () => {
+		const result = resolveThreadModel(db, randomUUID(), "opus");
+		expect(result).toBe("opus");
 	});
 });

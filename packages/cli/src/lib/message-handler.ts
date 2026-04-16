@@ -41,6 +41,21 @@ export interface RunLocalLoopResult {
  * Guarantees cleanup (clearTimeout, off("agent:cancel"), map.delete) even on
  * error via a finally block.
  */
+/**
+ * Resolves the model to use for a thread by reading threads.model_hint.
+ * Falls back to nodeDefault when model_hint is NULL or thread doesn't exist.
+ */
+export function resolveThreadModel(
+	db: import("bun:sqlite").Database,
+	threadId: string,
+	nodeDefault: string,
+): string {
+	const row = db.query("SELECT model_hint FROM threads WHERE id = ?").get(threadId) as {
+		model_hint: string | null;
+	} | null;
+	return row?.model_hint ?? nodeDefault;
+}
+
 export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<RunLocalLoopResult> {
 	const {
 		eventBus,

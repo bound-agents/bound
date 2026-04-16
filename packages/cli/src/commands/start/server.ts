@@ -4,12 +4,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import {
-	createRelayOutboxEntry,
-	generateThreadTitle,
-	getDelegationTarget,
-	resolveModel,
-} from "@bound/agent";
+import { createRelayOutboxEntry, generateThreadTitle, getDelegationTarget } from "@bound/agent";
 import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
@@ -27,7 +22,7 @@ import type { KeyringConfig, ProcessPayload, StatusForwardPayload } from "@bound
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import type { KeyManager, RelayExecutor } from "@bound/sync";
 import { createSyncServer, createWebServer } from "@bound/web";
-import { runLocalAgentLoop } from "../../lib/message-handler";
+import { resolveThreadModel, runLocalAgentLoop } from "../../lib/message-handler";
 
 export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
 
@@ -327,42 +322,14 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							}
 						}
 
-						// Resolve the model for this thread: prefer the model that was
-						// previously in use (from the last assistant message) over the
-						// node's default. This ensures threads recover to their established
-						// model when the host comes back online (e.g., opus via relay),
-						// while gracefully degrading to the node's default when unavailable.
-						const lastThreadModel = appContext.db
-							.prepare(
-								`SELECT model_id FROM messages
-								 WHERE thread_id = ? AND model_id IS NOT NULL
-								   AND role IN ('assistant', 'tool_call', 'system')
-								 ORDER BY created_at DESC LIMIT 1`,
-							)
-							.get(thread_id) as { model_id: string } | null;
-						let activeModelId = routerConfig.default;
-						if (lastThreadModel?.model_id && lastThreadModel.model_id !== routerConfig.default) {
-							// Thread was using a different model — check if it's still reachable
-							const threadModelResolution = resolveModel(
-								lastThreadModel.model_id,
-								modelRouter,
-								appContext.db,
-								appContext.siteId,
-							);
-							if (threadModelResolution.kind !== "error") {
-								activeModelId = lastThreadModel.model_id;
-							} else {
-								appContext.logger.warn(
-									"[agent] Thread model unavailable, degrading to node default",
-									{
-										threadId: thread_id,
-										threadModel: lastThreadModel.model_id,
-										nodeDefault: routerConfig.default,
-										reason: threadModelResolution.error,
-									},
-								);
-							}
-						}
+						// Resolve the model for this thread from the authoritative
+						// threads.model_hint column (set by /model command or web UI).
+						// Falls back to the node's default when model_hint is NULL.
+						const activeModelId = resolveThreadModel(
+							appContext.db,
+							thread_id,
+							routerConfig.default,
+						);
 
 						const delegationTarget = getDelegationTarget(
 							appContext.db,
