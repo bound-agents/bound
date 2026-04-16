@@ -331,12 +331,18 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 	let taskDigestLinesSnapshot: string[] = []; // Captured from initial enrichment for budget pressure shedding
 
 	// Stage 1: MESSAGE_RETRIEVAL
+	// Cap loaded messages to avoid unbounded DB reads on massive threads.
+	// Compacted messages are ~80 chars each, so 500 messages is plenty of
+	// conversational structure even after compaction. Backward-fill truncation
+	// (Stage 7) remains as a safety net if the loaded set still exceeds budget.
+	const MESSAGE_LOAD_LIMIT = 500;
 	const messages: Message[] = [];
 	if (!noHistory) {
 		const query = db.query(
-			"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin FROM messages WHERE thread_id = ? ORDER BY created_at ASC, rowid ASC",
+			"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC, rowid DESC LIMIT ?",
 		);
-		const rows = query.all(threadId) as Message[];
+		const rows = query.all(threadId, MESSAGE_LOAD_LIMIT) as Message[];
+		rows.reverse();
 		messages.push(...rows);
 	}
 
@@ -352,13 +358,15 @@ Original output was too large for the context window. If you need the full conte
 		}
 	}
 
-	// Stage 1.7: TOOL_RESULT_COMPACTION
-	// Replace old tool_result content (outside the recent window) with DB retrieval
+	// Stage 1.7: HISTORY_COMPACTION
+	// Replace old message content (outside the recent window) with DB retrieval
 	// pointers. The agent can re-fetch full content via "query" if needed. Compaction
 	// is deterministic (same message → same replacement), so the compacted prefix is
 	// cache-friendly: assembleContext runs once per loop invocation, and the compacted
 	// messages produce identical content across turns. This reduces context size
-	// dramatically (e.g., 190k → 80k) while preserving prompt cache stability.
+	// dramatically (e.g., 190k → 40k) while preserving conversational structure.
+	// User messages and tool_call messages are kept intact; assistant and tool_result
+	// messages are replaced with compact stubs.
 	// Also injects the thread summary as a context anchor for compacted history.
 	if (params.compactToolResults && messages.length > 0) {
 		const recentWindow = params.compactRecentWindow ?? 20;
@@ -386,8 +394,14 @@ Original output was too large for the context window. If you need the full conte
 			} as Message);
 		}
 
-		// Compact old tool results (everything before the recent window)
-		// The boundary shifts by 1 if we prepended the summary message
+		// Compact old messages (everything before the recent window)
+		// The boundary shifts by 1 if we prepended the summary message.
+		// - tool_result: replace with pointer + short preview (existing behavior)
+		// - assistant: replace with pointer only (no preview) — these are the bulk
+		//   of token waste in long-running threads (e.g., 110k of 188k tokens)
+		// - user / tool_call: kept intact (user msgs are ground truth; tool_call
+		//   messages are already compact)
+		const ASSISTANT_COMPACTION_THRESHOLD = 200;
 		const adjustedBoundary = thread?.summary ? compactionBoundary + 1 : compactionBoundary;
 		for (let i = 0; i < adjustedBoundary; i++) {
 			const msg = messages[i];
@@ -395,6 +409,9 @@ Original output was too large for the context window. If you need the full conte
 				const originalLength = msg.content.length;
 				const preview = safeSlice(msg.content, 0, 200).trimEnd();
 				msg.content = `[Result truncated from context — ${originalLength} chars. Retrieve with: query SELECT content FROM messages WHERE id='${msg.id}']\n${preview}`;
+			} else if (msg.role === "assistant" && msg.content.length > ASSISTANT_COMPACTION_THRESHOLD) {
+				const originalLength = msg.content.length;
+				msg.content = `[Assistant response, ${originalLength} chars — retrieve with: query SELECT content FROM messages WHERE id='${msg.id}']`;
 			}
 		}
 	}

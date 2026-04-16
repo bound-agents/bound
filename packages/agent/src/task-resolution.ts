@@ -307,9 +307,15 @@ export function seedHeartbeat(
 		) VALUES (
 			?, 'heartbeat', 'pending', ?, NULL, ?, 'system',
 			NULL, NULL, NULL, NULL, ?, NULL,
-			0, NULL, NULL, ?, 0, 'status',
+			0, NULL, NULL, ?, 1, 'status',
 			NULL, 0, 5, 0,
 			0, 0, NULL, NULL, NULL, ?, 0
 		)`,
 	).run(id, triggerSpec, now.toISOString(), nextRunAt, modelHint, now.toISOString());
+
+	// Migrate existing heartbeat tasks: the heartbeat doesn't need conversation
+	// history — it receives volatile enrichment (standing instructions, task digest,
+	// thread activity) which provides all necessary context. Loading history on a
+	// long-running heartbeat thread wastes tokens on stale self-referential output.
+	db.prepare("UPDATE tasks SET no_history = 1 WHERE type = 'heartbeat' AND no_history = 0").run();
 }

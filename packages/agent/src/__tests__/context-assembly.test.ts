@@ -4994,6 +4994,237 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
+		it("should compact old assistant messages when compactToolResults is true", () => {
+			const localUserId = randomUUID();
+			const localThreadId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "TestUser", now, now, 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
+			);
+
+			// Insert old turn: user → assistant (large response)
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					localThreadId,
+					"user",
+					"explain the architecture in detail",
+					now,
+					now,
+					"localhost",
+					0,
+				],
+			);
+			const oldAssistantId = randomUUID();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					oldAssistantId,
+					localThreadId,
+					"assistant",
+					"The architecture consists of several layers. ".repeat(100), // ~4500 chars
+					now,
+					now,
+					"localhost",
+					0,
+				],
+			);
+
+			// Insert recent turn (within window)
+			const recentTime = new Date(Date.now() + 1000).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), localThreadId, "user", "thanks!", recentTime, recentTime, "localhost", 0],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					localThreadId,
+					"assistant",
+					"You're welcome!",
+					recentTime,
+					recentTime,
+					"localhost",
+					0,
+				],
+			);
+
+			const result = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				compactToolResults: true,
+				compactRecentWindow: 2,
+			});
+
+			// Old assistant message should be compacted
+			const compactedAssistant = result.messages.find(
+				(m) =>
+					m.role === "assistant" &&
+					typeof m.content === "string" &&
+					m.content.includes("[Assistant response,"),
+			);
+			expect(compactedAssistant).toBeDefined();
+			expect(compactedAssistant?.content).toContain(oldAssistantId);
+			expect((compactedAssistant?.content as string).length).toBeLessThan(200);
+
+			// User message should NOT be compacted (kept intact)
+			const userMsg = result.messages.find(
+				(m) =>
+					m.role === "user" &&
+					typeof m.content === "string" &&
+					m.content.includes("explain the architecture"),
+			);
+			expect(userMsg).toBeDefined();
+			expect(userMsg?.content).toBe("explain the architecture in detail");
+
+			// Recent assistant should NOT be compacted
+			const recentAssistant = result.messages.find(
+				(m) =>
+					m.role === "assistant" &&
+					typeof m.content === "string" &&
+					m.content.includes("You're welcome!"),
+			);
+			expect(recentAssistant).toBeDefined();
+
+			// Clean up
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+
+		it("should not compact short assistant messages", () => {
+			const localUserId = randomUUID();
+			const localThreadId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "TestUser", now, now, 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
+			);
+
+			// Insert old turn with short assistant response
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), localThreadId, "user", "status?", now, now, "localhost", 0],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), localThreadId, "assistant", "All good!", now, now, "localhost", 0],
+			);
+
+			// Recent turn
+			const recentTime = new Date(Date.now() + 1000).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), localThreadId, "user", "ok", recentTime, recentTime, "localhost", 0],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), localThreadId, "assistant", "bye", recentTime, recentTime, "localhost", 0],
+			);
+
+			const result = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				compactToolResults: true,
+				compactRecentWindow: 2,
+			});
+
+			// Short assistant should NOT be compacted
+			const shortAssistant = result.messages.find(
+				(m) => m.role === "assistant" && typeof m.content === "string" && m.content === "All good!",
+			);
+			expect(shortAssistant).toBeDefined();
+
+			// No compacted assistant messages
+			const compacted = result.messages.find(
+				(m) =>
+					m.role === "assistant" &&
+					typeof m.content === "string" &&
+					m.content.includes("[Assistant response,"),
+			);
+			expect(compacted).toBeUndefined();
+
+			// Clean up
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+
+		it("should limit loaded messages to 500", () => {
+			const localUserId = randomUUID();
+			const localThreadId = randomUUID();
+			const now = new Date();
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "TestUser", now.toISOString(), now.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"localhost",
+					now.toISOString(),
+					now.toISOString(),
+					now.toISOString(),
+					0,
+				],
+			);
+
+			// Insert 600 messages (exceeds the 500 limit)
+			const insertMsg = db.prepare(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			);
+			for (let i = 0; i < 600; i++) {
+				const ts = new Date(now.getTime() + i * 1000).toISOString();
+				const role = i % 2 === 0 ? "user" : "assistant";
+				insertMsg.run(randomUUID(), localThreadId, role, `Message ${i}`, ts, ts, "localhost", 0);
+			}
+
+			const result = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+			});
+
+			// Should have loaded at most 500 history messages (plus any system messages)
+			const historyMessages = result.messages.filter(
+				(m) => m.role === "user" || m.role === "assistant",
+			);
+			expect(historyMessages.length).toBeLessThanOrEqual(500);
+
+			// Should have the MOST RECENT messages (not the oldest)
+			const lastHistoryMsg = historyMessages[historyMessages.length - 1];
+			expect(lastHistoryMsg?.content).toContain("Message 599");
+
+			// Should NOT have the oldest messages
+			const hasOldest = historyMessages.some(
+				(m) => typeof m.content === "string" && m.content === "Message 0",
+			);
+			expect(hasOldest).toBe(false);
+
+			// Clean up
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
 	});
 
 	describe("hierarchical-memory budget shedding", () => {

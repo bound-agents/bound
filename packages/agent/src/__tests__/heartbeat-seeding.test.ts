@@ -167,7 +167,7 @@ describe("seedHeartbeat", () => {
 		expect(task.max_runs).toBeNull();
 		expect(task.requires).toBeNull();
 		expect(task.model_hint).toBeNull();
-		expect(task.no_history).toBe(0);
+		expect(task.no_history).toBe(1);
 		expect(task.inject_mode).toBe("status");
 		expect(task.depends_on).toBeNull();
 		expect(task.require_success).toBe(0);
