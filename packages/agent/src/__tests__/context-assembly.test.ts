@@ -1923,6 +1923,63 @@ This skill reviews pull requests.`;
 				expect(content).not.toMatch(/\[\d+[smhd] ago\]/);
 			}
 		});
+
+		it("does not annotate assistant messages with timestamps", () => {
+			const tsThreadId3 = randomUUID();
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					tsThreadId3,
+					userId,
+					"web",
+					"local",
+					0,
+					"Assistant Timestamp Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const twoHoursAgo = new Date(Date.now() - 2 * 3600_000).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), tsThreadId3, "user", "Hello", null, null, twoHoursAgo, twoHoursAgo, "local"],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					tsThreadId3,
+					"assistant",
+					"Here is my response",
+					"test-model",
+					null,
+					twoHoursAgo,
+					twoHoursAgo,
+					"local",
+				],
+			);
+
+			const { messages } = assembleContext({
+				db,
+				threadId: tsThreadId3,
+				userId,
+			});
+
+			// User message should be annotated
+			const userMsg = messages.find((m) => m.role === "user");
+			expect(userMsg?.content).toMatch(/^\[.*\d{1,2}:\d{2}\]/);
+
+			// Assistant message should NOT be annotated (avoids LLM echo pattern)
+			const assistantMsg = messages.find((m) => m.role === "assistant");
+			expect(assistantMsg?.content).toBe("Here is my response");
+		});
 	});
 
 	describe("Stage 5.5: volatile enrichment", () => {

@@ -835,14 +835,15 @@ Original output was too large for the context window. If you need the full conte
 			}
 		}
 
-		// Annotate user and assistant messages with absolute timestamps
-		// so the agent can detect session boundaries and temporal gaps.
+		// Annotate user messages with absolute timestamps so the agent can
+		// detect session boundaries and temporal gaps. Only user messages are
+		// annotated — annotating assistant messages caused the LLM to echo
+		// the timestamp format as its entire response (producing noise like
+		// "[Apr 5, 07:25]" persisted as real assistant messages).
 		// Uses absolute format (e.g. "[Apr 4, 14:30]") instead of relative
-		// (e.g. "[5m ago]") to avoid busting the LLM prompt cache prefix,
-		// which depends on message content remaining stable across turns.
-		// Tool messages are left as-is to avoid corrupting structured content.
+		// (e.g. "[5m ago]") to avoid busting the LLM prompt cache prefix.
 		// Only annotate when the message is >= 1 minute old (no value for very recent).
-		if ((m.role === "user" || m.role === "assistant") && m.created_at) {
+		if (m.role === "user" && m.created_at) {
 			const ageMs = Date.now() - new Date(m.created_at).getTime();
 			if (ageMs >= 60_000 && typeof annotatedContent === "string") {
 				const ts = formatTimestamp(m.created_at);

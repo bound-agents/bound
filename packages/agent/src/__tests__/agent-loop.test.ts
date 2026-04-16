@@ -319,7 +319,7 @@ describe("AgentLoop", () => {
 		expect(msgs[2].content).toBe("Done!");
 	});
 
-	it("should persist assistant message even when model returns empty text after tool calls", async () => {
+	it("should not persist a sentinel assistant message when model returns empty text after tool calls", async () => {
 		const mockBackend = new MockLLMBackend();
 		// First call: tool use
 		mockBackend.pushResponse(async function* () {
@@ -369,17 +369,17 @@ describe("AgentLoop", () => {
 
 		const result = await agentLoop.run();
 
-		// Should have created messages (not be treated as cancelled)
-		expect(result.messagesCreated).toBeGreaterThan(2); // tool_call + tool_result + assistant
+		// Should have created tool_call + tool_result but no sentinel assistant message
+		expect(result.messagesCreated).toBe(2); // tool_call + tool_result only
 
-		// The last message should be an assistant message (even if empty-ish)
+		// The last message should be a tool_result, not an empty assistant sentinel
 		const msgs = db
 			.query(
 				"SELECT role, content FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
 			)
 			.all(threadId) as Array<{ role: string; content: string }>;
 
-		expect(msgs[0].role).toBe("assistant");
+		expect(msgs[0].role).toBe("tool_result");
 	});
 
 	it("should feed tool errors back to the LLM instead of terminating", async () => {

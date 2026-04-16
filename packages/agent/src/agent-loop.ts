@@ -932,8 +932,7 @@ export class AgentLoop {
 
 				// No tool calls — persist final response and exit
 				this.state = "RESPONSE_PERSIST";
-				const assistantContent =
-					parsed.textContent || (this.toolCallsMade > 0 ? "[turn complete]" : "");
+				const assistantContent = parsed.textContent || "";
 
 				if (assistantContent) {
 					insertThreadMessage(
