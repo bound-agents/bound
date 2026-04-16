@@ -3,7 +3,7 @@ import { getSiteId } from "@bound/core";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { redactMessage, redactThread } from "@bound/agent";
-import { insertRow } from "@bound/core";
+import { insertRow, updateRow } from "@bound/core";
 import type { Message, TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -141,7 +141,7 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 					thread_id: threadId,
 					role: "user",
 					content,
-					model_id: body.model_id || null,
+					model_id: null,
 					tool_name: null,
 					created_at: now,
 					modified_at: now,
@@ -149,6 +149,11 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 				},
 				siteId,
 			);
+
+			// Update threads.model_hint when the client sends a model selection
+			if (body.model_id) {
+				updateRow(db, "threads", threadId, { model_hint: body.model_id, modified_at: now }, siteId);
+			}
 
 			const message = db.query("SELECT * FROM messages WHERE id = ?").get(messageId) as Message;
 
