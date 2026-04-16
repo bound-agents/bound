@@ -867,8 +867,26 @@ describe("PooledBackend", () => {
 		expect(backend2.chatCalled).toBe(true);
 	});
 
-	it("propagates 400 client error immediately without fallback", async () => {
+	it("falls through to next backend on 400 bad request (provider format mismatch)", async () => {
 		const backend1 = createFailingBackend("b1", 400);
+		const backend2 = createSuccessBackend("b2");
+		const pool = new PooledBackend([
+			{ backend: backend1, tier: 1, pricePerMInput: 0 },
+			{ backend: backend2, tier: 2, pricePerMInput: 0 },
+		]);
+
+		const chunks: StreamChunk[] = [];
+		for await (const chunk of pool.chat(mockParams)) {
+			chunks.push(chunk);
+		}
+
+		expect(backend1.chatCalled).toBe(true);
+		expect(backend2.chatCalled).toBe(true);
+		expect(chunks.length).toBeGreaterThan(0);
+	});
+
+	it("propagates 403 client error immediately without fallback", async () => {
+		const backend1 = createFailingBackend("b1", 403);
 		const backend2 = createSuccessBackend("b2");
 		const pool = new PooledBackend([
 			{ backend: backend1, tier: 1, pricePerMInput: 0 },
@@ -885,7 +903,7 @@ describe("PooledBackend", () => {
 		}
 
 		expect(caught).not.toBeNull();
-		expect(caught?.statusCode).toBe(400);
+		expect(caught?.statusCode).toBe(403);
 		expect(backend2.chatCalled).toBe(false); // No fallback
 	});
 

@@ -14,7 +14,7 @@ type OpenAIContentPart =
 
 interface OpenAIMessage {
 	role: "user" | "assistant" | "tool" | "system";
-	content: string | OpenAIContentPart[];
+	content: string | OpenAIContentPart[] | null;
 	tool_calls?: Array<{
 		id: string;
 		type: "function";
@@ -93,7 +93,9 @@ export function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 
 				result.push({
 					role: "assistant",
-					content: textContent,
+					// Many OpenAI-compatible providers (e.g. GLM/ZAI) reject content: "" on
+					// tool-call-only assistant messages — must be null.
+					content: textContent || null,
 					tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
 				});
 			} else if (msg.role === "tool_result") {
@@ -170,7 +172,7 @@ export function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 				}
 				result.push({
 					role: "assistant",
-					content: textContent,
+					content: textContent || null,
 					tool_calls: toolCalls,
 				});
 			} else if (msg.role === "tool_result") {
@@ -185,6 +187,18 @@ export function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 					content: msg.content,
 				});
 			}
+		}
+	}
+
+	// Many OpenAI-compatible providers (e.g. GLM/ZAI) only accept system messages
+	// at position 0. Convert any interleaved system messages to user messages.
+	let foundNonSystem = false;
+	for (const msg of result) {
+		if (msg.role !== "system") {
+			foundNonSystem = true;
+		} else if (foundNonSystem) {
+			msg.role = "user";
+			msg.content = `<system-note>${typeof msg.content === "string" ? msg.content : ""}</system-note>`;
 		}
 	}
 

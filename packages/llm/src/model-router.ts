@@ -105,7 +105,8 @@ export class PooledBackend implements LLMBackend {
 					const isRateLimit = error.statusCode === 429;
 					const isPaymentRequired = error.statusCode === 402;
 					const isServerError = error.statusCode >= 500;
-					if (isRateLimit || isPaymentRequired || isServerError) {
+					const isBadRequest = error.statusCode === 400;
+					if (isRateLimit || isPaymentRequired || isServerError || isBadRequest) {
 						const failures = (this.consecutiveFailures.get(idx) ?? 0) + 1;
 						this.consecutiveFailures.set(idx, failures);
 						// Use provider's Retry-After if available, otherwise exponential backoff
@@ -114,7 +115,12 @@ export class PooledBackend implements LLMBackend {
 						continue;
 					}
 				}
-				throw error; // Client errors (4xx except 402/429) propagate immediately
+				// Network errors (TLS failures, DNS, etc.) should also fall through to
+				// the next pool entry rather than killing the entire request
+				if (!(error instanceof LLMError) && candidates.indexOf(entry) < candidates.length - 1) {
+					continue;
+				}
+				throw error; // Other client errors (4xx except 400/402/429) propagate immediately
 			}
 		}
 
