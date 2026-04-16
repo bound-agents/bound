@@ -79,18 +79,38 @@ describe("TypedEventEmitter", () => {
 	it("supports once() for single-fire listeners", () => {
 		let callCount = 0;
 
-		emitter.once("sync:completed", () => {
+		emitter.once("alert:created", () => {
 			callCount++;
 		});
 
-		emitter.emit("sync:completed", {
-			peer_site_id: "peer-1",
-			events_received: 10,
+		emitter.emit("alert:created", {
+			message: {
+				id: "alert-1",
+				thread_id: "thread-1",
+				role: "alert",
+				content: "Warning",
+				model_id: null,
+				tool_name: null,
+				created_at: "2026-03-22T00:00:00Z",
+				modified_at: "2026-03-22T00:00:00Z",
+				host_origin: "web",
+			},
+			thread_id: "thread-1",
 		});
 
-		emitter.emit("sync:completed", {
-			peer_site_id: "peer-1",
-			events_received: 10,
+		emitter.emit("alert:created", {
+			message: {
+				id: "alert-2",
+				thread_id: "thread-1",
+				role: "alert",
+				content: "Warning",
+				model_id: null,
+				tool_name: null,
+				created_at: "2026-03-22T00:00:00Z",
+				modified_at: "2026-03-22T00:00:00Z",
+				host_origin: "web",
+			},
+			thread_id: "thread-1",
 		});
 
 		expect(callCount).toBe(1);
@@ -124,7 +144,7 @@ describe("TypedEventEmitter", () => {
 		const result = emitter
 			.on("message:created", () => {})
 			.on("task:triggered", () => {})
-			.once("sync:completed", () => {});
+			.once("alert:created", () => {});
 
 		expect(result).toBe(emitter);
 	});

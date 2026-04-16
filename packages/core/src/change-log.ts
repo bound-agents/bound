@@ -1,10 +1,21 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { type SyncedTableName, generateHlc, mergeHlc } from "@bound/shared";
+import { type SyncedTableName, type TypedEventEmitter, generateHlc, mergeHlc } from "@bound/shared";
 
 // Validate column names to prevent SQL injection
 // Only allow lowercase letters, numbers, and underscores
 const VALID_COLUMN_NAME = /^[a-z_]+$/;
+
+// Module-level event bus for emitting changelog:written events (optional)
+let changelogEventBus: TypedEventEmitter | null = null;
+
+/**
+ * Set the event bus for emitting changelog:written events.
+ * Called once at startup when WS transport is active.
+ */
+export function setChangelogEventBus(eventBus: TypedEventEmitter | null): void {
+	changelogEventBus = eventBus;
+}
 
 // Primary key column per synced table. Defaults to "id" for all others.
 const TABLE_PK_COLUMN: Partial<Record<SyncedTableName, string>> = {
@@ -29,7 +40,7 @@ export function createChangeLogEntry(
 	siteId: string,
 	rowData: Record<string, unknown>,
 	remoteHlc?: string,
-): void {
+): string {
 	const now = new Date().toISOString();
 	const rowDataJson = JSON.stringify(rowData);
 
@@ -50,6 +61,9 @@ export function createChangeLogEntry(
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		[hlc, tableName, rowId, siteId, now, rowDataJson],
 	);
+
+	// Return HLC for caller to emit event after transaction commits
+	return hlc;
 }
 
 export function withChangeLog<T>(
@@ -63,12 +77,29 @@ export function withChangeLog<T>(
 	},
 ): T {
 	const transaction = db.transaction(() => {
-		const { tableName, rowId, rowData, result } = fn();
-		createChangeLogEntry(db, tableName, rowId, siteId, rowData);
-		return result;
+		const result_obj = fn();
+		const hlc = createChangeLogEntry(
+			db,
+			result_obj.tableName,
+			result_obj.rowId,
+			siteId,
+			result_obj.rowData,
+		);
+		return { result: result_obj.result, hlc, tableName: result_obj.tableName };
 	});
 
-	return transaction() as T;
+	const { result, hlc, tableName } = transaction() as {
+		result: T;
+		hlc: string;
+		tableName: SyncedTableName;
+	};
+
+	// Emit event after transaction commits
+	if (changelogEventBus) {
+		changelogEventBus.emit("changelog:written", { hlc, tableName, siteId });
+	}
+
+	return result;
 }
 
 export function insertRow(
@@ -92,10 +123,15 @@ export function insertRow(
 			values,
 		);
 
-		createChangeLogEntry(db, table, rowId, siteId, row);
+		return createChangeLogEntry(db, table, rowId, siteId, row);
 	});
 
-	txFn();
+	const hlc = txFn();
+
+	// Emit event after transaction commits
+	if (changelogEventBus) {
+		changelogEventBus.emit("changelog:written", { hlc, tableName: table, siteId });
+	}
 }
 
 export function updateRow(
@@ -129,10 +165,15 @@ export function updateRow(
 			throw new Error(`updateRow: Row ${id} disappeared from ${table} after update`);
 		}
 
-		createChangeLogEntry(db, table, id, siteId, updatedRow);
+		return createChangeLogEntry(db, table, id, siteId, updatedRow);
 	});
 
-	txFn();
+	const hlc = txFn();
+
+	// Emit event after transaction commits
+	if (changelogEventBus) {
+		changelogEventBus.emit("changelog:written", { hlc, tableName: table, siteId });
+	}
 }
 
 export function softDelete(db: Database, table: SyncedTableName, id: string, siteId: string): void {
@@ -151,10 +192,15 @@ export function softDelete(db: Database, table: SyncedTableName, id: string, sit
 			throw new Error(`softDelete: Row ${id} disappeared from ${table} after update`);
 		}
 
-		createChangeLogEntry(db, table, id, siteId, deletedRow);
+		return createChangeLogEntry(db, table, id, siteId, deletedRow);
 	});
 
-	txFn();
+	const hlc = txFn();
+
+	// Emit event after transaction commits
+	if (changelogEventBus) {
+		changelogEventBus.emit("changelog:written", { hlc, tableName: table, siteId });
+	}
 }
 
 export function insertMessage(

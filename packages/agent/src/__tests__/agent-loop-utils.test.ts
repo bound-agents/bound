@@ -167,7 +167,6 @@ describe("getResolvedModelId", () => {
 	it("returns modelId from local resolution", () => {
 		const res: ModelResolution = {
 			kind: "local",
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			backend: {} as any,
 			modelId: "claude-opus",
 		};
@@ -313,7 +312,6 @@ describe("insertThreadMessage", () => {
 		);
 
 		expect(typeof id).toBe("string");
-		// biome-ignore lint/suspicious/noExplicitAny: DB row type
 		const row = db.query("SELECT * FROM messages WHERE id = ?").get(id) as any;
 		expect(row).not.toBeNull();
 		expect(row.thread_id).toBe(threadId);
@@ -335,7 +333,6 @@ describe("insertThreadMessage", () => {
 			siteId,
 		);
 
-		// biome-ignore lint/suspicious/noExplicitAny: DB row type
 		const row = db.query("SELECT model_id FROM messages WHERE id = ?").get(id) as any;
 		expect(row.model_id).toBe("claude-opus");
 	});
@@ -353,7 +350,6 @@ describe("insertThreadMessage", () => {
 			siteId,
 		);
 
-		// biome-ignore lint/suspicious/noExplicitAny: DB row type
 		const row = db.query("SELECT tool_name FROM messages WHERE id = ?").get(id) as any;
 		expect(row.tool_name).toBe("tool-call-123");
 	});
@@ -371,13 +367,11 @@ describe("insertThreadMessage", () => {
 			siteId,
 		);
 
-		// biome-ignore lint/suspicious/noExplicitAny: DB row type
 		const row = db.query("SELECT exit_code FROM messages WHERE id = ?").get(id) as any;
 		expect(row.exit_code).toBe(1);
 	});
 
 	it("creates a changelog entry", () => {
-		// biome-ignore lint/suspicious/noExplicitAny: DB row type
 		const countBefore = (db.query("SELECT COUNT(*) as c FROM change_log").get() as any).c;
 
 		insertThreadMessage(
@@ -391,7 +385,6 @@ describe("insertThreadMessage", () => {
 			siteId,
 		);
 
-		// biome-ignore lint/suspicious/noExplicitAny: DB row type
 		const countAfter = (db.query("SELECT COUNT(*) as c FROM change_log").get() as any).c;
 		expect(countAfter).toBe(countBefore + 1);
 	});

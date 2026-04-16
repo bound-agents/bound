@@ -99,7 +99,6 @@ describe("Scheduler Integration", () => {
 			};
 		};
 
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(20); // Fast poll for testing
 
@@ -157,7 +156,6 @@ describe("Scheduler Integration", () => {
 			}),
 		});
 
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(20);
 
@@ -255,7 +253,6 @@ describe("Scheduler Integration", () => {
 			}),
 		});
 
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(20);
 
@@ -312,7 +309,6 @@ describe("Scheduler Integration", () => {
 			}),
 		});
 
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(20);
 
@@ -361,7 +357,6 @@ describe("Scheduler Integration", () => {
 			}),
 		});
 
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(20);
 
@@ -418,7 +413,6 @@ describe("Scheduler Integration", () => {
 			},
 		};
 
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(localCtx as any, agentLoopFactory);
 		const { stop } = scheduler.start(20);
 
@@ -485,7 +479,6 @@ describe("Scheduler Integration", () => {
 			}),
 		});
 
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 		const { stop } = scheduler.start(20);
 
@@ -563,7 +556,6 @@ describe("Scheduler Integration", () => {
 			},
 		};
 
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(localCtx as any, agentLoopFactory);
 		const { stop } = scheduler.start(20);
 
@@ -649,7 +641,6 @@ describe("Scheduler Integration", () => {
 			},
 		});
 
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory, {
 			retryBackoffMs: 50,
 			basePollIntervalMs: 20,
@@ -718,7 +709,6 @@ describe("Scheduler Integration", () => {
 			}),
 		});
 
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory, {
 			retryBackoffMs: 50,
 			basePollIntervalMs: 20,

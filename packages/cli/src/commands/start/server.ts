@@ -19,16 +19,13 @@ import {
 	enqueueMessage,
 	enqueueNotification,
 	insertRow,
-	readUndelivered,
 	updateRow,
 	writeOutbox,
 } from "@bound/core";
 import type { ModelBackendsConfig, ModelRouter } from "@bound/llm";
 import type { KeyringConfig, ProcessPayload, StatusForwardPayload } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
-import type { KeyManager, RelayExecutor, SyncTransport } from "@bound/sync";
-import { eagerPushToSpoke } from "@bound/sync";
-import type { ReachabilityTracker } from "@bound/sync";
+import type { KeyManager, RelayExecutor } from "@bound/sync";
 import { createSyncServer, createWebServer } from "@bound/web";
 import { runLocalAgentLoop } from "../../lib/message-handler";
 
@@ -59,21 +56,31 @@ export interface ServerResult {
 		stop(): void;
 		notifyLoopComplete?(threadId: string): void;
 	} | null;
+	wsTransportHolder: {
+		addPeer: (
+			siteId: string,
+			sendFrame: (frame: Uint8Array) => boolean,
+			symmetricKey: Uint8Array,
+		) => void;
+		removePeer: (siteId: string) => void;
+		handleChangelogPush: (siteId: string, payload: Record<string, unknown>) => void;
+		handleChangelogAck: (siteId: string, payload: Record<string, unknown>) => void;
+		drainChangelog: (siteId: string) => void;
+		handleRelaySend: (sourceSiteId: string, payload: Record<string, unknown>) => void;
+		handleRelayAck: (sourceSiteId: string, payload: Record<string, unknown>) => void;
+		drainRelayInbox: (siteId: string) => void;
+	};
 }
 
 export interface ServerDeps {
 	appContext: AppContext;
-	keypair: { privateKey: CryptoKey };
 	modelRouter: ModelRouter;
 	routerConfig: ModelBackendsConfig;
 	agentLoopFactory: AgentLoopFactory;
 	relayExecutor: RelayExecutor | undefined;
-	reachabilityTracker: ReachabilityTracker;
 	keyManager: KeyManager | undefined;
 	keyring: KeyringConfig | undefined;
 	hubSiteId: string | undefined;
-	/** Lazy reference to SyncTransport (initialized later in sync phase). */
-	getTransport: () => SyncTransport | undefined;
 	/** RelayProcessor to wire platform connector registry into. */
 	relayProcessor: {
 		setPlatformConnectorRegistry(registry: unknown): void;
@@ -85,16 +92,13 @@ export interface ServerDeps {
 export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	const {
 		appContext,
-		keypair,
 		modelRouter,
 		routerConfig,
 		agentLoopFactory,
 		relayExecutor,
-		reachabilityTracker,
 		keyManager,
 		keyring,
 		hubSiteId,
-		getTransport,
 		relayProcessor,
 	} = deps;
 
@@ -109,6 +113,18 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	const activeDelegations = new Map<string, { targetSiteId: string; processOutboxId: string }>();
 	const threadExecutor = new ThreadExecutor(appContext.db, appContext.logger);
 
+	// Mutable holder for wsTransport (populated in Phase 8 after sync init)
+	const wsTransportHolder: ServerResult["wsTransportHolder"] = {
+		addPeer: () => {},
+		removePeer: () => {},
+		handleChangelogPush: () => {},
+		handleChangelogAck: () => {},
+		drainChangelog: () => {},
+		handleRelaySend: () => {},
+		handleRelayAck: () => {},
+		drainRelayInbox: () => {},
+	};
+
 	// Wire the executor into the relay processor for Discord/platform process relays.
 	relayProcessor.setThreadExecutor(threadExecutor);
 
@@ -118,21 +134,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 	try {
 		const modelBackends = appContext.config.modelBackends;
-
-		const eagerPushConfig =
-			keyring && appContext.siteId
-				? {
-						privateKey: keypair.privateKey,
-						siteId: appContext.siteId,
-						db: appContext.db,
-						keyring,
-						reachabilityTracker,
-						logger: appContext.logger,
-						get transport() {
-							return getTransport();
-						},
-					}
-				: undefined;
 
 		// Sync server: primary port, externally accessible for hub-spoke replication
 		const syncPort = Number.parseInt(process.env.PORT || "3000", 10);
@@ -176,6 +177,12 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 		// Start sync server if sync prerequisites are available
 		if (appContext.siteId && keyring && appContext.logger) {
+			// Read WS config if present
+			const syncConfigResult = appContext.optionalConfig.sync;
+			const wsConfig = (
+				syncConfigResult?.ok ? (syncConfigResult.value as Record<string, unknown>).ws : undefined
+			) as Record<string, unknown> | undefined;
+
 			syncServer = await createSyncServer(appContext.db, appContext.eventBus, {
 				port: syncPort,
 				host: syncHost,
@@ -184,50 +191,18 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				logger: appContext.logger,
 				relayExecutor,
 				hubSiteId,
-				eagerPushConfig,
 				keyManager,
+				wsConfig: wsConfig
+					? {
+							idleTimeout: (wsConfig.idle_timeout as number) ?? 120,
+							backpressureLimit: (wsConfig.backpressure_limit as number) ?? 2097152,
+						}
+					: undefined,
+				wsTransportHolder,
 			});
 			if (syncServer) {
 				await syncServer.start();
 			}
-		}
-
-		// Hub-side eager push: when the hub's own agent loop writes relay_outbox
-		// entries (e.g., inference requests), push them to addressable spokes
-		// immediately instead of waiting for the spoke's next sync cycle.
-		// NAT spokes without sync_url are unaffected (eagerPushToSpoke skips them).
-		if (eagerPushConfig) {
-			const pushConfig = eagerPushConfig;
-			appContext.eventBus.on("sync:trigger", () => {
-				const pending = readUndelivered(appContext.db);
-				if (pending.length === 0) return;
-
-				// Group by target and push
-				const byTarget = new Map<string, typeof pending>();
-				for (const entry of pending) {
-					const list = byTarget.get(entry.target_site_id) ?? [];
-					list.push(entry);
-					byTarget.set(entry.target_site_id, list);
-				}
-
-				for (const [targetSiteId, entries] of byTarget) {
-					// Skip self-targeted entries (handled locally by RelayProcessor)
-					if (targetSiteId === appContext.siteId) continue;
-					const inboxEntries = entries.map((e) => ({
-						id: e.id,
-						source_site_id: e.source_site_id ?? appContext.siteId,
-						kind: e.kind,
-						ref_id: e.ref_id ?? e.id,
-						idempotency_key: e.idempotency_key,
-						stream_id: e.stream_id ?? null,
-						payload: e.payload,
-						expires_at: e.expires_at,
-						received_at: new Date().toISOString(),
-						processed: 0,
-					}));
-					void eagerPushToSpoke(pushConfig, targetSiteId, inboxEntries);
-				}
-			});
 		}
 
 		// Wire message:created events to the agent loop
@@ -273,7 +248,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				targetSiteId: targetHost.site_id,
 				processOutboxId: outboxEntry.id,
 			});
-			appContext.eventBus.emit("sync:trigger", { reason: "delegation" });
 
 			// Poll until new assistant message appears in thread (loop completed on remote)
 			const POLL_INTERVAL_MS = 1000;
@@ -655,5 +629,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		activeDelegations,
 		threadExecutor,
 		platformRegistry,
+		wsTransportHolder,
 	};
 }

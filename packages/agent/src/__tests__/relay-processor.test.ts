@@ -2241,11 +2241,9 @@ describe("RelayProcessor", () => {
 				new Set(["requester-site"]),
 				createMockLogger(),
 				eventBus,
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				mockAppCtx as any,
 				undefined,
 				new Map(),
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				() => mockAgentLoop as any,
 			);
 
@@ -2355,7 +2353,6 @@ describe("RelayProcessor", () => {
 				new Set(["requester-site"]),
 				createMockLogger(),
 				eventBus,
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				mockAppCtx as any,
 				undefined,
 				new Map(),
@@ -2367,7 +2364,6 @@ describe("RelayProcessor", () => {
 							toolCallsMade: 0,
 							filesChanged: 0,
 						}),
-						// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					}) as any,
 			);
 
@@ -2457,7 +2453,6 @@ describe("RelayProcessor", () => {
 				new Set(["requester-site"]),
 				createMockLogger(),
 				eventBus,
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				mockAppCtx as any,
 				undefined,
 				new Map(),
@@ -2469,7 +2464,6 @@ describe("RelayProcessor", () => {
 							toolCallsMade: 1,
 							filesChanged: 0,
 						}),
-						// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					}) as any,
 			);
 
@@ -2577,11 +2571,9 @@ describe("RelayProcessor", () => {
 				new Set(["requester-site"]),
 				createMockLogger(),
 				eventBus,
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				mockAppCtx as any,
 				undefined,
 				new Map(),
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				() => mockAgentLoop as any,
 			);
 
@@ -2717,11 +2709,9 @@ describe("RelayProcessor", () => {
 				new Set(["requester-site"]),
 				createMockLogger(),
 				eventBus,
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				mockAppCtx as any,
 				undefined,
 				new Map(),
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				() => mockAgentLoop as any,
 			);
 
@@ -2830,7 +2820,6 @@ describe("RelayProcessor", () => {
 
 				const mockAgentLoopFactory = (config: AgentLoopConfig) => {
 					capturedLoopConfig = config;
-					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					return mockAgentLoop as any;
 				};
 
@@ -2843,7 +2832,6 @@ describe("RelayProcessor", () => {
 					new Set(["requester-site"]),
 					createMockLogger(),
 					eventBus,
-					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					mockAppCtx as any,
 					undefined,
 					new Map(),
@@ -2881,7 +2869,6 @@ describe("RelayProcessor", () => {
 					},
 				};
 
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				processor.setPlatformConnectorRegistry(mockRegistry as any);
 
 				// Execute: Insert a process inbox entry to trigger executeProcess
@@ -3009,11 +2996,9 @@ describe("RelayProcessor", () => {
 					new Set(["requester-site"]),
 					createMockLogger(),
 					eventBus,
-					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					mockAppCtx as any,
 					undefined,
 					new Map(),
-					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					() => mockAgentLoop as any,
 				);
 
@@ -3135,11 +3120,9 @@ describe("RelayProcessor", () => {
 					new Set(["requester-site"]),
 					createMockLogger(),
 					eventBus,
-					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					mockAppCtx as any,
 					undefined,
 					new Map(),
-					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					() => mockAgentLoop as any,
 				);
 
@@ -3249,7 +3232,6 @@ describe("RelayProcessor", () => {
 
 				const mockAgentLoopFactory = (config: AgentLoopConfig) => {
 					capturedLoopConfig = config;
-					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					return mockAgentLoop as any;
 				};
 
@@ -3262,7 +3244,6 @@ describe("RelayProcessor", () => {
 					new Set(["requester-site"]),
 					createMockLogger(),
 					eventBus,
-					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					mockAppCtx as any,
 					undefined,
 					new Map(),
@@ -3370,7 +3351,6 @@ describe("RelayProcessor", () => {
 					new Set(["requester-site"]),
 					createMockLogger(),
 					eventBus,
-					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					mockAppCtx as any,
 					undefined,
 					new Map(),
@@ -3382,7 +3362,6 @@ describe("RelayProcessor", () => {
 								toolCallsMade: 0,
 								filesChanged: 0,
 							}),
-							// biome-ignore lint/suspicious/noExplicitAny: partial mock in test
 						}) as any,
 				);
 
@@ -3464,7 +3443,6 @@ describe("RelayProcessor", () => {
 					new Set(["requester-site"]),
 					createMockLogger(),
 					eventBus,
-					// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 					mockAppCtx as any,
 					undefined,
 					new Map(),
@@ -3473,7 +3451,6 @@ describe("RelayProcessor", () => {
 							run: async (): Promise<never> => {
 								throw new Error("Simulated agent failure");
 							},
-							// biome-ignore lint/suspicious/noExplicitAny: partial mock in test
 						}) as any,
 				);
 
@@ -3794,7 +3771,6 @@ describe("RelayProcessor", () => {
 
 			const mockAgentLoopFactory = (config: AgentLoopConfig) => {
 				_capturedLoopConfig = config;
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				return mockAgentLoop as any;
 			};
 
@@ -3806,21 +3782,18 @@ describe("RelayProcessor", () => {
 				new Set(["requester-site"]),
 				createMockLogger(),
 				eventBus,
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				mockAppCtx as any,
 				undefined,
 				new Map(),
 				mockAgentLoopFactory,
 			);
 
-			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 			processor.setPlatformConnectorRegistry(mockRegistry as any);
 
 			// Setup: Create and set the file reader
 			const mockFileReader = async (_path: string): Promise<Uint8Array> => {
 				return new Uint8Array([1, 2, 3, 4]);
 			};
-			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 			(processor as any).setFileReader(mockFileReader);
 
 			// Execute: Insert a process inbox entry to trigger executeProcess
@@ -3931,14 +3904,11 @@ describe("RelayProcessor", () => {
 				new Set(["spoke-site"]),
 				createMockLogger(),
 				eventBus,
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock
 				mockAppCtx as any,
 				undefined,
 				new Map(),
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock
 				() => mockAgentLoop as any,
 			);
-			// biome-ignore lint/suspicious/noExplicitAny: partial mock
 			processor.setPlatformConnectorRegistry(emptyRegistry as any);
 
 			// Insert a process inbox entry from the SPOKE with platform="discord"

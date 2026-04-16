@@ -55,7 +55,6 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 			userId: "u1",
 			modelId: "mock",
 			activeLoopAbortControllers: controllers,
-			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 			agentLoopFactory: factory as any,
 		});
 
@@ -92,7 +91,6 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 			userId: "u1",
 			modelId: "mock",
 			activeLoopAbortControllers: controllers,
-			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 			agentLoopFactory: factory as any,
 		});
 
@@ -123,7 +121,6 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 			userId: "u1",
 			modelId: "mock",
 			activeLoopAbortControllers: controllers,
-			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 			agentLoopFactory: factory as any,
 		});
 
@@ -144,7 +141,6 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 			userId: "u1",
 			modelId: "mock",
 			activeLoopAbortControllers: controllers,
-			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 			agentLoopFactory: factory as any,
 		});
 
@@ -175,7 +171,6 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 				userId: "u1",
 				modelId: "mock",
 				activeLoopAbortControllers: controllers,
-				// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 				agentLoopFactory: factory as any,
 			}),
 		).rejects.toThrow("LLM connection error");
@@ -197,7 +192,6 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 			userId: "u1",
 			modelId: "mock",
 			activeLoopAbortControllers: controllers,
-			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 			agentLoopFactory: factory as any,
 			timeoutMs: 30, // very short timeout for the test
 		});
@@ -237,7 +231,6 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 			userId: "u1",
 			modelId: "mock",
 			activeLoopAbortControllers: controllers,
-			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 			agentLoopFactory: factory as any,
 			timeoutMs: 100,
 		});
@@ -270,7 +263,6 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 			userId: "u1",
 			modelId: "mock",
 			activeLoopAbortControllers: controllers,
-			// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 			agentLoopFactory: factory as any,
 			timeoutMs: 100,
 		});

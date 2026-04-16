@@ -263,14 +263,10 @@ describe("Quiescence note injection", () => {
 		return { taskId, threadId: tid };
 	}
 
-	// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result
 	function getThreadMessages(threadId: string): Array<any> {
-		return (
-			db
-				.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC")
-				// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result cast
-				.all(threadId) as any[]
-		);
+		return db
+			.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC")
+			.all(threadId) as any[];
 	}
 
 	// AC5.2: Heartbeat quiescence note
@@ -281,27 +277,21 @@ describe("Quiescence note injection", () => {
 		const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
 
 		const ctx = makeCtx();
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory());
 
 		// Manually set scheduler's lastUserInteractionAt to 2 hours ago
 		// We access private field for test purposes
-		// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 		(scheduler as any).lastUserInteractionAt = twoHoursAgo;
 
 		// Run the task (which triggers runTask and note injection)
 		await new Promise<void>((resolve) => {
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			const originalRunningTasks = (scheduler as any).runningTasks;
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			(scheduler as any).runningTasks = new Map([
 				[taskId, { leaseId: randomUUID(), startedAt: new Date() }],
 			]);
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			(scheduler as any).runTask(db.query("SELECT * FROM tasks WHERE id = ?").get(taskId));
 			// Give the async runTask time to complete
 			setTimeout(() => {
-				// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 				(scheduler as any).runningTasks = originalRunningTasks;
 				resolve();
 			}, 20);
@@ -324,25 +314,19 @@ describe("Quiescence note injection", () => {
 		const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
 
 		const ctx = makeCtx();
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory());
 
 		// Set lastUserInteractionAt to 3 hours ago
-		// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 		(scheduler as any).lastUserInteractionAt = threeHoursAgo;
 
 		// Run the task
 		await new Promise<void>((resolve) => {
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			const originalRunningTasks = (scheduler as any).runningTasks;
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			(scheduler as any).runningTasks = new Map([
 				[taskId, { leaseId: randomUUID(), startedAt: new Date() }],
 			]);
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			(scheduler as any).runTask(db.query("SELECT * FROM tasks WHERE id = ?").get(taskId));
 			setTimeout(() => {
-				// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 				(scheduler as any).runningTasks = originalRunningTasks;
 				resolve();
 			}, 20);
@@ -365,25 +349,19 @@ describe("Quiescence note injection", () => {
 		const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
 
 		const ctx = makeCtx();
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory());
 
 		// Set lastUserInteractionAt to 5 minutes ago
-		// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 		(scheduler as any).lastUserInteractionAt = fiveMinutesAgo;
 
 		// Run the task
 		await new Promise<void>((resolve) => {
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			const originalRunningTasks = (scheduler as any).runningTasks;
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			(scheduler as any).runningTasks = new Map([
 				[taskId, { leaseId: randomUUID(), startedAt: new Date() }],
 			]);
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			(scheduler as any).runTask(db.query("SELECT * FROM tasks WHERE id = ?").get(taskId));
 			setTimeout(() => {
-				// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 				(scheduler as any).runningTasks = originalRunningTasks;
 				resolve();
 			}, 20);
@@ -403,23 +381,17 @@ describe("Quiescence note injection", () => {
 		const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000);
 
 		const ctx = makeCtx();
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory());
 
-		// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 		(scheduler as any).lastUserInteractionAt = fiveHoursAgo;
 
 		await new Promise<void>((resolve) => {
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			const originalRunningTasks = (scheduler as any).runningTasks;
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			(scheduler as any).runningTasks = new Map([
 				[taskId, { leaseId: randomUUID(), startedAt: new Date() }],
 			]);
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			(scheduler as any).runTask(db.query("SELECT * FROM tasks WHERE id = ?").get(taskId));
 			setTimeout(() => {
-				// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 				(scheduler as any).runningTasks = originalRunningTasks;
 				resolve();
 			}, 20);
@@ -439,23 +411,17 @@ describe("Quiescence note injection", () => {
 		const thirteenHoursAgo = new Date(Date.now() - 13 * 60 * 60 * 1000);
 
 		const ctx = makeCtx();
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory());
 
-		// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 		(scheduler as any).lastUserInteractionAt = thirteenHoursAgo;
 
 		await new Promise<void>((resolve) => {
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			const originalRunningTasks = (scheduler as any).runningTasks;
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			(scheduler as any).runningTasks = new Map([
 				[taskId, { leaseId: randomUUID(), startedAt: new Date() }],
 			]);
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			(scheduler as any).runTask(db.query("SELECT * FROM tasks WHERE id = ?").get(taskId));
 			setTimeout(() => {
-				// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 				(scheduler as any).runningTasks = originalRunningTasks;
 				resolve();
 			}, 20);
@@ -476,23 +442,17 @@ describe("Quiescence note injection", () => {
 		const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
 
 		const ctx = makeCtx();
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory());
 
-		// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 		(scheduler as any).lastUserInteractionAt = twoHoursAgo;
 
 		await new Promise<void>((resolve) => {
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			const originalRunningTasks = (scheduler as any).runningTasks;
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			(scheduler as any).runningTasks = new Map([
 				[taskId, { leaseId: randomUUID(), startedAt: new Date() }],
 			]);
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			(scheduler as any).runTask(db.query("SELECT * FROM tasks WHERE id = ?").get(taskId));
 			setTimeout(() => {
-				// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 				(scheduler as any).runningTasks = originalRunningTasks;
 				resolve();
 			}, 20);
@@ -511,23 +471,17 @@ describe("Quiescence note injection", () => {
 		const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
 
 		const ctx = makeCtx();
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory());
 
-		// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 		(scheduler as any).lastUserInteractionAt = threeHoursAgo;
 
 		await new Promise<void>((resolve) => {
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			const originalRunningTasks = (scheduler as any).runningTasks;
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			(scheduler as any).runningTasks = new Map([
 				[taskId, { leaseId: randomUUID(), startedAt: new Date() }],
 			]);
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			(scheduler as any).runTask(db.query("SELECT * FROM tasks WHERE id = ?").get(taskId));
 			setTimeout(() => {
-				// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 				(scheduler as any).runningTasks = originalRunningTasks;
 				resolve();
 			}, 20);
@@ -580,24 +534,18 @@ describe("Quiescence note injection", () => {
 		const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
 
 		const ctx = makeCtx();
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory());
 
-		// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 		(scheduler as any).lastUserInteractionAt = twoHoursAgo;
 
 		// Should not crash even with invalid trigger_spec
 		await new Promise<void>((resolve) => {
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			const originalRunningTasks = (scheduler as any).runningTasks;
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			(scheduler as any).runningTasks = new Map([
 				[taskId, { leaseId: randomUUID(), startedAt: new Date() }],
 			]);
-			// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 			(scheduler as any).runTask(db.query("SELECT * FROM tasks WHERE id = ?").get(taskId));
 			setTimeout(() => {
-				// biome-ignore lint/suspicious/noExplicitAny: test access to private field
 				(scheduler as any).runningTasks = originalRunningTasks;
 				resolve();
 			}, 20);

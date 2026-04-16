@@ -16,7 +16,7 @@ import {
 import type { ModelRouter, StreamChunk } from "@bound/llm";
 import type { InferenceRequestPayload, StreamChunkPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
-import type { ContextDebugInfo, SyncConfig } from "@bound/shared";
+import type { ContextDebugInfo, RelayInboxEntry, RelayKind, SyncConfig } from "@bound/shared";
 import {
 	countTokens,
 	errorPayloadSchema,
@@ -449,7 +449,6 @@ export class AgentLoop {
 									},
 									this.ctx.siteId,
 								);
-								this.ctx.eventBus.emit("sync:trigger", { reason: "relay-large-prompt" });
 								inferencePayload = {
 									...inferencePayload,
 									messages: [], // Clear inline messages
@@ -1103,13 +1102,10 @@ export class AgentLoop {
 	): Promise<string> {
 		let { outboxEntryId } = relayRequest;
 		const { toolName, eligibleHosts } = relayRequest;
-		const pollIntervalMs = 500;
 		const timeoutMs = 30_000; // 30 second timeout per host
 		let currentHostIndex = relayRequest.currentHostIndex;
 		let hostStartTime = Date.now();
 		const relayStartTime = Date.now();
-
-		this.ctx.eventBus.emit("sync:trigger", { reason: "relay-wait" });
 
 		while (true) {
 			if (this.aborted) {
@@ -1124,7 +1120,6 @@ export class AgentLoop {
 				);
 				try {
 					writeOutbox(this.ctx.db, cancelEntry);
-					this.ctx.eventBus.emit("sync:trigger", { reason: "relay-cancel" });
 				} catch (error) {
 					this.ctx.logger.warn("Failed to write relay cancel outbox entry in RELAY_WAIT", {
 						refId: outboxEntryId,
@@ -1140,7 +1135,42 @@ export class AgentLoop {
 				host: currentHost.host_name,
 			});
 
-			const response = readInboxByRefId(this.ctx.db, outboxEntryId);
+			// Wait for response via event listener (event-driven approach)
+			const response = await new Promise<RelayInboxEntry | null>((resolve) => {
+				const timeoutId = setTimeout(() => {
+					cleanup();
+					resolve(null); // timeout
+				}, timeoutMs);
+
+				const onInbox = (event: { ref_id?: string; stream_id?: string; kind: RelayKind }) => {
+					if (this.aborted) {
+						cleanup();
+						resolve(null);
+						return;
+					}
+					if (event.ref_id !== outboxEntryId) return;
+					const entry = readInboxByRefId(this.ctx.db, outboxEntryId);
+					if (!entry) return; // spurious event
+					cleanup();
+					resolve(entry);
+				};
+
+				const cleanup = () => {
+					clearTimeout(timeoutId);
+					this.ctx.eventBus.off("relay:inbox", onInbox);
+				};
+
+				// Check immediately in case entry arrived before listener
+				const existing = readInboxByRefId(this.ctx.db, outboxEntryId);
+				if (existing) {
+					cleanup();
+					resolve(existing);
+					return;
+				}
+
+				this.ctx.eventBus.on("relay:inbox", onInbox);
+			});
+
 			if (response) {
 				const latencyMs = Date.now() - relayStartTime;
 				const currentHost = eligibleHosts[currentHostIndex];
@@ -1205,21 +1235,16 @@ export class AgentLoop {
 				try {
 					writeOutbox(this.ctx.db, nextEntry);
 					outboxEntryId = nextEntry.id; // Update polled ref_id for failover host
-					this.ctx.eventBus.emit("sync:trigger", { reason: "relay-failover" });
 					hostStartTime = Date.now(); // Reset timeout for next host
 				} catch {
 					return `Failover failed: could not write outbox entry for host ${nextHost.host_name}`;
 				}
-				continue;
 			}
-
-			// Wait before next poll
-			await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
 		}
 	}
 
 	/**
-	 * Stream LLM inference from a remote host via relay. Polls for stream_chunk/stream_end,
+	 * Stream LLM inference from a remote host via relay. Listens for relay:inbox events,
 	 * reorders by seq, fails over on timeout, and propagates cancellation.
 	 */
 	private async *relayStream(
@@ -1252,7 +1277,6 @@ export class AgentLoop {
 					streamId,
 				);
 				writeOutbox(this.ctx.db, outboxEntry);
-				this.ctx.eventBus.emit("sync:trigger", { reason: "relay-stream" });
 
 				this.ctx.logger.info("RELAY_STREAM: connecting", {
 					host: host.host_name,
@@ -1271,7 +1295,7 @@ export class AgentLoop {
 				let hostSucceeded = false;
 				let streamEndConsumed = false; // persistent flag: true once stream_end chunks are yielded
 
-				// Polling loop for this host attempt
+				// Polling loop for this host attempt with event-driven waiting
 				while (true) {
 					// Check abort/cancel before every poll
 					if (this.aborted) {
@@ -1285,7 +1309,6 @@ export class AgentLoop {
 						);
 						try {
 							writeOutbox(this.ctx.db, cancelEntry);
-							this.ctx.eventBus.emit("sync:trigger", { reason: "relay-cancel" });
 						} catch (error) {
 							this.ctx.logger.warn("Failed to write relay cancel outbox entry in RELAY_STREAM", {
 								streamId,
@@ -1308,6 +1331,27 @@ export class AgentLoop {
 						});
 						break; // Exit inner while(true) — outer for-loop will try next host
 					}
+
+					// Wait for relay:inbox event with short timeout to allow periodic checks
+					await new Promise<void>((resolve) => {
+						const timeoutId = setTimeout(() => {
+							cleanup();
+							resolve();
+						}, POLL_INTERVAL_MS);
+
+						const onInbox = (event: { ref_id?: string; stream_id?: string; kind: RelayKind }) => {
+							if (event.stream_id !== streamId) return;
+							cleanup();
+							resolve();
+						};
+
+						const cleanup = () => {
+							clearTimeout(timeoutId);
+							this.ctx.eventBus.off("relay:inbox", onInbox);
+						};
+
+						this.ctx.eventBus.on("relay:inbox", onInbox);
+					});
 
 					// Fetch all unprocessed stream_chunk / stream_end for this stream_id
 					const inboxEntries = readInboxByStreamId(this.ctx.db, streamId);
@@ -1406,9 +1450,6 @@ export class AgentLoop {
 							gapCyclesWaited = 0;
 						}
 					}
-
-					// Wait before next poll
-					await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
 				}
 
 				if (hostSucceeded) {

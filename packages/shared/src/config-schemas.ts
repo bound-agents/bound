@@ -143,7 +143,6 @@ export const relaySchema = z.object({
 	request_timeout_ms: z.number().int().positive().default(30_000),
 	prune_interval_seconds: z.number().int().positive().default(60),
 	prune_retention_seconds: z.number().int().positive().default(300),
-	eager_push: z.boolean().default(true),
 	drain_timeout_seconds: z.number().int().positive().default(120),
 	/** Per-host timeout for inference relay streaming (ms). Must account for
 	 *  sync delivery latency + LLM inference time. Default 300s. */
@@ -152,10 +151,18 @@ export const relaySchema = z.object({
 
 export type RelayConfig = z.infer<typeof relaySchema>;
 
+export const wsSchema = z.object({
+	backpressure_limit: z.number().int().positive().default(2097152),
+	idle_timeout: z.number().int().positive().default(120),
+	reconnect_max_interval: z.number().int().positive().default(60),
+});
+
+export type WsConfig = z.infer<typeof wsSchema>;
+
 export const syncSchema = z.object({
 	hub: z.string().min(1),
-	sync_interval_seconds: z.number().int().positive().default(30),
 	relay: relaySchema.optional(),
+	ws: wsSchema.optional(),
 });
 
 export type SyncConfig = z.infer<typeof syncSchema>;

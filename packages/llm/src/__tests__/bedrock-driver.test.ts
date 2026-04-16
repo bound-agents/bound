@@ -399,9 +399,7 @@ describe("BedrockDriver", () => {
 	it.skipIf(shouldSkip)("extracts HTTP status code from AWS SDK $metadata", async () => {
 		const awsError = new Error("The request body is not valid JSON.");
 		// AWS SDK errors carry $metadata with the HTTP status code
-		// biome-ignore lint/suspicious/noExplicitAny: AWS SDK error shape
 		(awsError as any).$metadata = { httpStatusCode: 400 };
-		// biome-ignore lint/suspicious/noExplicitAny: AWS SDK error shape
 		(awsError as any).name = "ValidationException";
 		sendSpy.mockImplementation(() => Promise.reject(awsError));
 
@@ -756,7 +754,6 @@ describe("BedrockDriver", () => {
 		it.skipIf(shouldSkip)("injects cachePoint at breakpoint message indices", async () => {
 			let capturedInput: Record<string, unknown> | undefined;
 			sendSpy.mockImplementation((command: unknown) => {
-				// biome-ignore lint/suspicious/noExplicitAny: test mock
 				capturedInput = (command as any).input;
 				return Promise.resolve(
 					createMockStream([
@@ -813,7 +810,6 @@ describe("BedrockDriver", () => {
 		it.skipIf(shouldSkip)("ignores cache_ttl and uses plain default cachePoint", async () => {
 			let capturedInput: Record<string, unknown> | undefined;
 			sendSpy.mockImplementation((command: unknown) => {
-				// biome-ignore lint/suspicious/noExplicitAny: test mock
 				capturedInput = (command as any).input;
 				return Promise.resolve(
 					createMockStream([
@@ -857,7 +853,6 @@ describe("BedrockDriver", () => {
 			async () => {
 				let capturedInput: Record<string, unknown> | undefined;
 				sendSpy.mockImplementation((command: unknown) => {
-					// biome-ignore lint/suspicious/noExplicitAny: test mock
 					capturedInput = (command as any).input;
 					return Promise.resolve(
 						createMockStream([
@@ -920,7 +915,6 @@ describe("BedrockDriver", () => {
 		it.skipIf(shouldSkip)("caches system prompt when breakpoints are provided", async () => {
 			let capturedInput: Record<string, unknown> | undefined;
 			sendSpy.mockImplementation((command: unknown) => {
-				// biome-ignore lint/suspicious/noExplicitAny: test mock
 				capturedInput = (command as any).input;
 				return Promise.resolve(
 					createMockStream([
@@ -1009,7 +1003,6 @@ describe("BedrockDriver system_suffix", () => {
 		async () => {
 			let capturedInput: Record<string, unknown> | undefined;
 			sendSpy.mockImplementation((command: unknown) => {
-				// biome-ignore lint/suspicious/noExplicitAny: test mock
 				capturedInput = (command as any).input;
 				return Promise.resolve(
 					createMockStream([
@@ -1059,7 +1052,6 @@ describe("BedrockDriver system_suffix", () => {
 		async () => {
 			let capturedInput: Record<string, unknown> | undefined;
 			sendSpy.mockImplementation((command: unknown) => {
-				// biome-ignore lint/suspicious/noExplicitAny: test mock
 				capturedInput = (command as any).input;
 				return Promise.resolve(
 					createMockStream([

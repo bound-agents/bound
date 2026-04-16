@@ -125,7 +125,6 @@ describe("Scheduler features", () => {
 	describe("quiescence multiplier", () => {
 		it("applies quiescence multiplier to poll interval based on idle time", () => {
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory());
 
 			// Immediately after creation, lastUserInteractionAt is "now",
@@ -160,7 +159,6 @@ describe("Scheduler features", () => {
 			);
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory());
 
 			const interval = scheduler.getEffectivePollInterval();
@@ -247,7 +245,6 @@ describe("Scheduler features", () => {
 				},
 			});
 
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, factory as any);
 			const { stop } = scheduler.start(10);
 
@@ -313,7 +310,6 @@ describe("Scheduler features", () => {
 			});
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, softErrorFactory as any);
 			const { stop } = scheduler.start(10);
 
@@ -379,7 +375,6 @@ describe("Scheduler features", () => {
 			);
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeFailingAgentLoopFactory() as any);
 			const { stop } = scheduler.start(10);
 
@@ -476,7 +471,6 @@ describe("Scheduler features", () => {
 			insertTask(taskId, { consecutiveFailures: 0, alertThreshold: 5 });
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, softErrorFactory() as any);
 			const { stop } = scheduler.start(10);
 			await waitFor(
@@ -503,7 +497,6 @@ describe("Scheduler features", () => {
 			insertTask(taskId, { consecutiveFailures: 1, alertThreshold: 2 });
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, softErrorFactory() as any);
 			const { stop } = scheduler.start(10);
 			await waitFor(
@@ -532,7 +525,6 @@ describe("Scheduler features", () => {
 			insertTask(taskId, { consecutiveFailures: 1, alertThreshold: 2 });
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeFailingAgentLoopFactory() as any);
 			const { stop } = scheduler.start(10);
 			await waitFor(
@@ -560,7 +552,6 @@ describe("Scheduler features", () => {
 			insertTask(taskId, { consecutiveFailures: 2, alertThreshold: 2 });
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, softErrorFactory() as any);
 			const { stop } = scheduler.start(10);
 			await waitFor(
@@ -602,7 +593,6 @@ describe("Scheduler features", () => {
 			});
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, factory as any);
 			const { stop } = scheduler.start(10);
 			await waitFor(
@@ -638,7 +628,6 @@ describe("Scheduler features", () => {
 			insertTask(taskId, { consecutiveFailures: 4, alertThreshold: 5 });
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
 			const { stop } = scheduler.start(10);
 			await waitFor(
@@ -733,7 +722,6 @@ describe("Scheduler features", () => {
 				},
 			};
 
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, agentLoopFactory as any, {}, sandbox);
 			const { stop } = scheduler.start(10);
 			await waitFor(() => execCalls.length > 0, { message: "cron template not executed" });
@@ -791,7 +779,6 @@ describe("Scheduler features", () => {
 			};
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, factory as any);
 			const { stop } = scheduler.start(10);
 
@@ -854,7 +841,6 @@ describe("Scheduler features", () => {
 			};
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, factory as any);
 			const { stop } = scheduler.start(10);
 
@@ -927,7 +913,6 @@ describe("Scheduler features", () => {
 			};
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, factory as any);
 			const { stop } = scheduler.start(10);
 
@@ -1006,7 +991,6 @@ describe("Scheduler features", () => {
 			);
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeFailingAgentLoopFactory() as any);
 			const { stop } = scheduler.start(10);
 
@@ -1075,18 +1059,12 @@ describe("Scheduler features", () => {
 			);
 
 			const ctx = makeCtx();
-			const scheduler = new Scheduler(
-				// biome-ignore lint/suspicious/noExplicitAny: test mock
-				ctx as any,
-				// biome-ignore lint/suspicious/noExplicitAny: test mock
-				makeAgentLoopFactory() as any,
-				{
-					modelValidator: () => ({
-						ok: false,
-						error: "Model not found",
-					}),
-				},
-			);
+			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any, {
+				modelValidator: () => ({
+					ok: false,
+					error: "Model not found",
+				}),
+			});
 			const { stop } = scheduler.start(10);
 
 			// Wait for the task to be processed — should reschedule despite model failure
@@ -1170,9 +1148,7 @@ describe("Scheduler features", () => {
 			};
 
 			const scheduler = new Scheduler(
-				// biome-ignore lint/suspicious/noExplicitAny: test mock
 				ctx as any,
-				// biome-ignore lint/suspicious/noExplicitAny: test mock
 				makeAgentLoopFactory() as any,
 				{},
 				failingSandbox,
@@ -1241,7 +1217,6 @@ describe("Scheduler features", () => {
 			);
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
 			const { stop } = scheduler.start(10);
 
@@ -1326,18 +1301,12 @@ describe("Scheduler features", () => {
 
 			// modelValidator rejects the hint
 			const ctx = makeCtx();
-			const scheduler = new Scheduler(
-				// biome-ignore lint/suspicious/noExplicitAny: test mock
-				ctx as any,
-				// biome-ignore lint/suspicious/noExplicitAny: test mock
-				factory as any,
-				{
-					modelValidator: (_modelId: string) => ({
-						ok: false,
-						error: `Model "nonexistent-model-xyz" not found in cluster`,
-					}),
-				},
-			);
+			const scheduler = new Scheduler(ctx as any, factory as any, {
+				modelValidator: (_modelId: string) => ({
+					ok: false,
+					error: `Model "nonexistent-model-xyz" not found in cluster`,
+				}),
+			});
 			const { stop } = scheduler.start(10);
 			await waitFor(
 				() =>
@@ -1381,15 +1350,9 @@ describe("Scheduler features", () => {
 			};
 
 			const ctx = makeCtx();
-			const scheduler = new Scheduler(
-				// biome-ignore lint/suspicious/noExplicitAny: test mock
-				ctx as any,
-				// biome-ignore lint/suspicious/noExplicitAny: test mock
-				factory as any,
-				{
-					modelValidator: (_modelId: string) => ({ ok: true }),
-				},
-			);
+			const scheduler = new Scheduler(ctx as any, factory as any, {
+				modelValidator: (_modelId: string) => ({ ok: true }),
+			});
 			const { stop } = scheduler.start(10);
 			await waitFor(() => agentLoopCalled, { message: "agent loop not called" });
 			stop();
@@ -1441,20 +1404,14 @@ describe("Scheduler features", () => {
 			};
 
 			const ctx = makeCtx();
-			const scheduler = new Scheduler(
-				// biome-ignore lint/suspicious/noExplicitAny: test mock
-				ctx as any,
-				// biome-ignore lint/suspicious/noExplicitAny: test mock
-				factory as any,
-				{
-					// Validator that would reject everything — but should NOT be consulted
-					// because model_hint is null
-					modelValidator: (_modelId: string) => ({
-						ok: false,
-						error: "should never fire",
-					}),
-				},
-			);
+			const scheduler = new Scheduler(ctx as any, factory as any, {
+				// Validator that would reject everything — but should NOT be consulted
+				// because model_hint is null
+				modelValidator: (_modelId: string) => ({
+					ok: false,
+					error: "should never fire",
+				}),
+			});
 			const { stop } = scheduler.start(10);
 			await waitFor(() => agentLoopCalled, { message: "agent loop not called" });
 			stop();
@@ -1571,7 +1528,6 @@ describe("Scheduler features", () => {
 			);
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
 			const { stop } = scheduler.start(10);
 
@@ -1638,7 +1594,6 @@ describe("Scheduler features", () => {
 
 			const titleGenCalls: string[] = [];
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any, {
 				generateTitle: async (threadId: string) => {
 					titleGenCalls.push(threadId);
@@ -1725,7 +1680,6 @@ describe("Scheduler features", () => {
 			};
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, factory as any);
 			const { stop } = scheduler.start(10);
 
@@ -1804,7 +1758,6 @@ describe("Scheduler features", () => {
 			};
 
 			const ctx = makeCtx();
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			const scheduler = new Scheduler(ctx as any, factory as any);
 			const { stop } = scheduler.start(10);
 

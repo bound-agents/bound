@@ -55,7 +55,6 @@ export const emit: CommandDefinition = {
 					created_at: new Date().toISOString(),
 					expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
 				});
-				ctx.eventBus.emit("sync:trigger", { reason: "emit-broadcast" });
 			}
 
 			return commandSuccess(`Event emitted: ${event}\n`);

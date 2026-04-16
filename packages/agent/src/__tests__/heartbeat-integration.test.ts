@@ -80,7 +80,6 @@ describe("Heartbeat Integration", () => {
 		seedHeartbeat(db, config, appContext.siteId);
 
 		const heartbeatTaskId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const task = db.query("SELECT * FROM tasks WHERE id = ?").get(heartbeatTaskId) as any;
 
 		expect(task).toBeDefined();
@@ -100,7 +99,6 @@ describe("Heartbeat Integration", () => {
 		seedHeartbeat(db, config, appContext.siteId);
 
 		const heartbeatTaskId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const task = db.query("SELECT thread_id FROM tasks WHERE id = ?").get(heartbeatTaskId) as any;
 
 		// Initially thread_id should be null (created on first run)
@@ -215,7 +213,6 @@ describe("Heartbeat Integration", () => {
 		seedHeartbeat(db, config, appContext.siteId);
 
 		const heartbeatTaskId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const task = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(heartbeatTaskId) as any;
 
 		const nextRunTime = new Date(task.next_run_at).getTime();
@@ -242,7 +239,6 @@ describe("Heartbeat Integration", () => {
 
 		const task = db
 			.query("SELECT error, status FROM tasks WHERE id = ?")
-			// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 			.get(heartbeatTaskId) as any;
 		expect(task.error).toBe("Test error");
 		expect(task.status).toBe("failed");
@@ -261,7 +257,6 @@ describe("Heartbeat Integration", () => {
 
 		const count = db
 			.query("SELECT COUNT(*) as count FROM tasks WHERE type = ?")
-			// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 			.get("heartbeat") as any;
 
 		expect(count.count).toBe(1);
@@ -343,12 +338,10 @@ describe("Heartbeat Integration", () => {
 		const firstThreadId = randomUUID();
 		db.run("UPDATE tasks SET thread_id = ? WHERE id = ?", [firstThreadId, heartbeatTaskId]);
 
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		let task = db.query("SELECT thread_id FROM tasks WHERE id = ?").get(heartbeatTaskId) as any;
 		expect(task.thread_id).toBe(firstThreadId);
 
 		// On subsequent run, thread_id should be the same (reused)
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		task = db.query("SELECT thread_id FROM tasks WHERE id = ?").get(heartbeatTaskId) as any;
 		expect(task.thread_id).toBe(firstThreadId);
 	});

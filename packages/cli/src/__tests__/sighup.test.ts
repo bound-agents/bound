@@ -53,10 +53,7 @@ describe("SIGHUP handler", () => {
 		const { reloadConfigs } = await import("../sighup.js");
 
 		// Create config files with minimal valid JSON (will be caught by schema validation)
-		writeFileSync(
-			join(tempDir, "sync.json"),
-			JSON.stringify({ hub: "http://hub", sync_interval_seconds: 30 }),
-		);
+		writeFileSync(join(tempDir, "sync.json"), JSON.stringify({ hub: "http://hub" }));
 		writeFileSync(join(tempDir, "keyring.json"), JSON.stringify({ hosts: {} }));
 
 		const mockAppContext: TestAppContext = {
@@ -218,7 +215,7 @@ describe("SIGHUP handler", () => {
 			optionalConfig: {
 				sync: {
 					ok: true,
-					value: { hub: "http://hub", sync_interval_seconds: 30 },
+					value: { hub: "http://hub" },
 				},
 			},
 		};
@@ -331,10 +328,7 @@ describe("SIGHUP handler", () => {
 			optionalConfig: {},
 		};
 
-		writeFileSync(
-			join(tempDir, "sync.json"),
-			JSON.stringify({ hub: "http://hub", sync_interval_seconds: 30 }),
-		);
+		writeFileSync(join(tempDir, "sync.json"), JSON.stringify({ hub: "http://hub" }));
 
 		const config = {
 			appContext: mockAppContext,

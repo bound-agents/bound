@@ -139,7 +139,6 @@ describe("relayStream() streaming generator", () => {
 		let generatedStreamId: string | null = null;
 
 		// Start the generator and capture its stream_id from the outbox
-		// biome-ignore lint/suspicious/noExplicitAny: testing private method
 		const gen = (loop as any).relayStream(
 			payload,
 			eligibleHosts,
@@ -263,7 +262,6 @@ describe("relayStream() streaming generator", () => {
 		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
 
-		// biome-ignore lint/suspicious/noExplicitAny: testing private method
 		const gen = (loop as any).relayStream(
 			payload,
 			eligibleHosts,
@@ -369,7 +367,6 @@ describe("relayStream() streaming generator", () => {
 		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
 
-		// biome-ignore lint/suspicious/noExplicitAny: testing private method
 		const gen = (loop as any).relayStream(
 			payload,
 			eligibleHosts,
@@ -512,7 +509,6 @@ describe("relayStream() streaming generator", () => {
 		let generatedStreamId: string | null = null;
 		let inferenceOutboxId: string | null = null;
 
-		// biome-ignore lint/suspicious/noExplicitAny: testing private method
 		const gen = (loop as any).relayStream(
 			payload,
 			eligibleHosts,
@@ -524,7 +520,6 @@ describe("relayStream() streaming generator", () => {
 			try {
 				for await (const _chunk of gen) {
 					// After first iteration, set abort flag to trigger cancel
-					// biome-ignore lint/suspicious/noExplicitAny: testing private field
 					(loop as any).aborted = true;
 				}
 			} catch {
@@ -602,7 +597,6 @@ describe("relayStream() streaming generator", () => {
 		const generatedStreamIds: Set<string> = new Set();
 
 		try {
-			// biome-ignore lint/suspicious/noExplicitAny: testing private method
 			const gen = (loop as any).relayStream(
 				payload,
 				eligibleHosts,
@@ -655,7 +649,6 @@ describe("relayStream() streaming generator", () => {
 
 		let error: Error | null = null;
 		try {
-			// biome-ignore lint/suspicious/noExplicitAny: testing private method
 			const gen = (loop as any).relayStream(
 				payload,
 				eligibleHosts,
@@ -693,7 +686,6 @@ describe("relayStream() streaming generator", () => {
 		let generatedStreamId: string | null = null;
 		let error: Error | null = null;
 
-		// biome-ignore lint/suspicious/noExplicitAny: testing private method
 		const gen = (loop as any).relayStream(
 			payload,
 			eligibleHosts,
@@ -768,7 +760,6 @@ describe("relayStream() streaming generator", () => {
 		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
 
-		// biome-ignore lint/suspicious/noExplicitAny: testing private method
 		const gen = (loop as any).relayStream(
 			payload,
 			eligibleHosts,
@@ -895,7 +886,6 @@ describe("relayStream() streaming generator", () => {
 		};
 
 		try {
-			// biome-ignore lint/suspicious/noExplicitAny: testing private method
 			const gen = (loop as any).relayStream(
 				payload,
 				eligibleHosts,
@@ -949,7 +939,6 @@ describe("relayStream() streaming generator", () => {
 		const relayMetadataRef: { hostName?: string; firstChunkLatencyMs?: number } = {};
 		let generatedStreamId: string | null = null;
 
-		// biome-ignore lint/suspicious/noExplicitAny: testing private method
 		const gen = (loop as any).relayStream(payload, eligibleHosts, relayMetadataRef, {
 			pollIntervalMs: 5,
 			perHostTimeoutMs: 500,
@@ -1046,7 +1035,6 @@ describe("relayStream() streaming generator", () => {
 		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
 
-		// biome-ignore lint/suspicious/noExplicitAny: testing private method
 		const gen = (loop as any).relayStream(
 			payload,
 			eligibleHosts,
@@ -1176,7 +1164,6 @@ describe("relayStream() streaming generator", () => {
 		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
 
-		// biome-ignore lint/suspicious/noExplicitAny: testing private method
 		const gen = (loop as any).relayStream(
 			payload,
 			eligibleHosts,
@@ -1302,7 +1289,6 @@ describe("relayStream() streaming generator", () => {
 		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
 
-		// biome-ignore lint/suspicious/noExplicitAny: testing private method
 		const gen = (loop as any).relayStream(
 			payload,
 			eligibleHosts,
@@ -1452,7 +1438,6 @@ describe("relayStream() streaming generator", () => {
 		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
 
-		// biome-ignore lint/suspicious/noExplicitAny: testing private method
 		const gen = (loop as any).relayStream(
 			payload,
 			eligibleHosts,
@@ -1568,7 +1553,6 @@ describe("relayStream() streaming generator", () => {
 		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
 
-		// biome-ignore lint/suspicious/noExplicitAny: testing private method
 		const gen = (loop as any).relayStream(
 			payload,
 			eligibleHosts,

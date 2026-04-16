@@ -8,7 +8,6 @@ import { highlightCode, renderMarkdown, splitOnThinkingBlocks } from "../markdow
 // so those tests exercise real sanitization rather than passthrough.
 // ---------------------------------------------------------------------------
 const { window: jsdomWindow } = new JSDOM("<!DOCTYPE html>");
-// biome-ignore lint/suspicious/noExplicitAny: jsdom Window type is not assignable to browser Window
 const jsdomDOMPurify = createDOMPurify(jsdomWindow as any);
 const realSanitize = (html: string): string =>
 	jsdomDOMPurify.sanitize(html, {

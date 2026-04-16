@@ -100,7 +100,6 @@ describe("bound init", () => {
 		const sync = JSON.parse(syncContent);
 
 		expect(sync).toHaveProperty("hub");
-		expect(sync).toHaveProperty("sync_interval_seconds");
 	});
 
 	it("creates mcp.json template with --with-mcp", async () => {

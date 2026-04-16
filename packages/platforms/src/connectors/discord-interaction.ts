@@ -635,8 +635,6 @@ export class DiscordInteractionConnector implements PlatformConnector {
 				created_at: now,
 				expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
 			});
-
-			this.eventBus.emit("sync:trigger", { reason: "discord-interaction-intake" });
 		} catch (err) {
 			this.logger.error("Failed to write intake relay", { error: String(err) });
 			await interaction.editReply({

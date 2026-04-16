@@ -72,7 +72,6 @@ describe("KeyManager class", () => {
 				publicKey: keyPairA.publicKey,
 				privateKey: {
 					type: "private",
-					// biome-ignore lint/suspicious/noExplicitAny: mock non-exportable CryptoKey for AC1.5 failure test
 				} as any,
 			};
 

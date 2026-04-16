@@ -194,7 +194,6 @@ describe("AnthropicDriver", () => {
 		const request = JSON.parse(requestBody);
 		expect(request.messages[0].role).toBe("assistant");
 		const toolUseContent = request.messages[0].content.find(
-			// biome-ignore lint/suspicious/noExplicitAny: partial mock or untyped parse result in test
 			(block: any) => block.type === "tool_use",
 		);
 		expect(toolUseContent).toBeDefined();
@@ -243,7 +242,6 @@ describe("AnthropicDriver", () => {
 		const request = JSON.parse(requestBody);
 		expect(request.messages[0].role).toBe("user");
 		const toolResultContent = request.messages[0].content.find(
-			// biome-ignore lint/suspicious/noExplicitAny: partial mock or untyped parse result in test
 			(block: any) => block.type === "tool_result",
 		);
 		expect(toolResultContent).toBeDefined();
@@ -294,10 +292,8 @@ describe("AnthropicDriver", () => {
 		const request = JSON.parse(requestBody as string);
 
 		// All three tool_result messages must be merged into a single user message
-		// biome-ignore lint/suspicious/noExplicitAny: partial mock or untyped parse result in test
 		const userMessages = request.messages.filter((m: any) => m.role === "user");
 		const lastUser = userMessages[userMessages.length - 1];
-		// biome-ignore lint/suspicious/noExplicitAny: partial mock or untyped parse result in test
 		const toolResultBlocks = lastUser.content.filter((b: any) => b.type === "tool_result");
 		expect(toolResultBlocks).toHaveLength(3);
 		expect(toolResultBlocks[0].tool_use_id).toBe("tu-1");

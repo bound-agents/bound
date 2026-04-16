@@ -609,7 +609,6 @@ export function generateRemoteMCPProxyCommands(
 					30_000, // 30s timeout
 				);
 				writeOutbox(ctx.db, outboxEntry);
-				ctx.eventBus.emit("sync:trigger", { reason: "remote-mcp-tool-call" });
 
 				// Build RelayToolCallRequest. just-bash normalizes custom command
 				// return values to { stdout, stderr, exitCode, env }, stripping

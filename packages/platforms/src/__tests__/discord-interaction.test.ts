@@ -1329,11 +1329,6 @@ describe("DiscordInteractionConnector", () => {
 		});
 
 		it("AC3.4: intake relay — should write relay_outbox with platform = discord-interaction", async () => {
-			let syncTriggerEmitted = false;
-			eventBus.on("sync:trigger", () => {
-				syncTriggerEmitted = true;
-			});
-
 			const mockInteraction = {
 				isMessageContextMenuCommand: () => true,
 				commandName: "File for Later",
@@ -1393,9 +1388,6 @@ describe("DiscordInteractionConnector", () => {
 			expect(payload.user_id).toBeDefined();
 			expect(payload.message_id).toBeDefined();
 			expect(payload.content).toBeDefined();
-
-			// Verify sync:trigger event was emitted
-			expect(syncTriggerEmitted).toBe(true);
 		});
 
 		it("AC4.1: recognized user — should include trust signal with bound user name", async () => {

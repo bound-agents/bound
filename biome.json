@@ -47,6 +47,16 @@
 					}
 				}
 			}
+		},
+		{
+			"include": ["**/__tests__/**/*.ts"],
+			"linter": {
+				"rules": {
+					"suspicious": {
+						"noExplicitAny": "off"
+					}
+				}
+			}
 		}
 	]
 }

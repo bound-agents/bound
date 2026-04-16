@@ -1,6 +1,5 @@
 export {
 	createWebApp,
-	createSyncApp,
 	type ModelsConfig,
 	type WebAppConfig,
 	type SyncAppConfig,

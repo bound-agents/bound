@@ -45,7 +45,6 @@ describe("seedHeartbeat", () => {
 		await cleanupTmpDir(tmpDir);
 	});
 
-	// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 	function getHeartbeatTask(): any {
 		const expectedId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
 		return db.query("SELECT * FROM tasks WHERE id = ?").get(expectedId);
@@ -54,7 +53,6 @@ describe("seedHeartbeat", () => {
 	function countHeartbeatTasks(): number {
 		const result = db
 			.query("SELECT COUNT(*) as count FROM tasks WHERE type = ?")
-			// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 			.get("heartbeat") as any;
 		return result?.count ?? 0;
 	}

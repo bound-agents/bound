@@ -181,7 +181,6 @@ Next steps:
 		const syncPath = resolve(configDir, "sync.json");
 		const syncConfig = {
 			hub: "primary-host",
-			sync_interval_seconds: 30,
 		};
 		writeFileSync(syncPath, `${JSON.stringify(syncConfig, null, 2)}\n`);
 		console.log(`  - ${configDir}/sync.json (template)`);

@@ -212,7 +212,6 @@ export function createStatusRoutes(
 				);
 				try {
 					writeOutbox(db, cancelEntry);
-					eventBus.emit("sync:trigger", { reason: "delegation-cancel" });
 				} catch {
 					// Non-fatal
 				}

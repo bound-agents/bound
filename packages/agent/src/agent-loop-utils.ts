@@ -293,3 +293,66 @@ export function parseStreamChunks(chunks: StreamChunk[]): ParsedResponse {
 		},
 	};
 }
+
+/**
+ * Wait for a relay inbox entry with a given ref_id, using event-driven listening + DB polling.
+ * Tests can use this helper to verify the timeout/event-wait pattern used in _relayWaitImpl.
+ *
+ * @param db Database instance
+ * @param eventBus Event emitter for relay:inbox events
+ * @param refId ref_id to match
+ * @param timeoutMs Max time to wait before returning null
+ * @returns RelayInboxEntry if found, null if timeout
+ */
+export async function waitForRelayInbox(
+	db: Database,
+	eventBus: {
+		on: (
+			event: string,
+			handler: (e: { ref_id?: string; stream_id?: string; kind: string }) => void,
+		) => void;
+		off?: (
+			event: string,
+			handler: (e: { ref_id?: string; stream_id?: string; kind: string }) => void,
+		) => void;
+	},
+	refId: string,
+	timeoutMs = 30000,
+): Promise<{ id: string; kind: string } | null> {
+	const { readInboxByRefId } = await import("@bound/core");
+
+	return new Promise((resolve) => {
+		const timeoutId = setTimeout(() => {
+			cleanup();
+			resolve(null);
+		}, timeoutMs);
+
+		const onInbox = (event: { ref_id?: string; stream_id?: string; kind: string }) => {
+			if (event.ref_id !== refId) return;
+
+			// Check DB for the actual entry
+			const entry = readInboxByRefId(db, refId);
+			if (entry) {
+				cleanup();
+				resolve({ id: entry.id, kind: entry.kind });
+			}
+		};
+
+		eventBus.on("relay:inbox", onInbox);
+
+		// Also check DB immediately (race condition: entry may have arrived before listener attached)
+		const immediate = readInboxByRefId(db, refId);
+		if (immediate) {
+			cleanup();
+			resolve({ id: immediate.id, kind: immediate.kind });
+			return;
+		}
+
+		function cleanup() {
+			clearTimeout(timeoutId);
+			if (eventBus.off) {
+				eventBus.off("relay:inbox", onInbox);
+			}
+		}
+	});
+}

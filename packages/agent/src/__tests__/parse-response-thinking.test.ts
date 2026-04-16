@@ -10,7 +10,6 @@ import type { StreamChunk } from "@bound/llm";
  * Since parseResponseChunks is a private method on AgentLoop, we test the
  * exported parseStreamChunks helper function instead.
  */
-// biome-ignore lint/suspicious/noExplicitAny: dynamic import for testing
 let parseStreamChunks: any;
 try {
 	const mod = await import("../agent-loop-utils");

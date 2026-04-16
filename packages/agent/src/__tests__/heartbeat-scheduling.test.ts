@@ -116,7 +116,6 @@ describe("rescheduleHeartbeat", () => {
 		return { id: taskId, taskId };
 	}
 
-	// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 	function getTask(taskId: string): any {
 		return db.query("SELECT * FROM tasks WHERE id = ?").get(taskId);
 	}
@@ -130,7 +129,6 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
 
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at, status FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("pending");
 
@@ -149,7 +147,6 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "completion", lastInteraction);
 
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("pending");
 	});
@@ -163,7 +160,6 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "eviction", lastInteraction);
 
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT status, next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("pending");
 		expect(row.next_run_at).toBeDefined();
@@ -178,7 +174,6 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
 
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		const nextDate = new Date(row.next_run_at);
 		const minutes = nextDate.getUTCMinutes();
@@ -194,7 +189,6 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
 
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		const nextDate = new Date(row.next_run_at);
 		const totalMinutes = nextDate.getUTCHours() * 60 + nextDate.getUTCMinutes();
@@ -211,7 +205,6 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
 
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		const nextDate = new Date(row.next_run_at);
 		const totalMinutes = nextDate.getUTCHours() * 60 + nextDate.getUTCMinutes();
@@ -230,7 +223,6 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
 
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		// With 1x multiplier: 30min interval, boundaries at :00 and :30
 		const nextDate = new Date(row.next_run_at);
@@ -246,7 +238,6 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
 
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		// With 3x multiplier: 30min becomes 90min effective interval
 		const nextDate = new Date(row.next_run_at);
@@ -265,7 +256,6 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
 
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		// With 5x multiplier: 30min becomes 150min effective interval
 		// Verify that next_run_at is in the future
@@ -289,7 +279,6 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "eviction_timeout", lastInteraction);
 
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at, status FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("pending");
 		const nextDate = new Date(row.next_run_at);
@@ -327,7 +316,6 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
 
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("running"); // unchanged
 	});
@@ -367,7 +355,6 @@ describe("rescheduleHeartbeat", () => {
 
 		expect(errorLogged).toBe(true);
 
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("running"); // unchanged
 	});
@@ -420,7 +407,6 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", fiveHoursAgo);
 
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		const nextDate = new Date(row.next_run_at);
 
@@ -447,7 +433,6 @@ describe("rescheduleHeartbeat", () => {
 		const task = getTask(taskId);
 		rescheduleHeartbeat(db, task, ctx.logger, "test", twoHoursAgo);
 
-		// biome-ignore lint/suspicious/noExplicitAny: Dynamic query result from SQLite
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		const nextDate = new Date(row.next_run_at);
 

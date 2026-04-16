@@ -27,7 +27,6 @@ describe("api.sendMessage", () => {
 	const originalFetch = global.fetch;
 
 	beforeEach(() => {
-		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		(global as any).fetch = async (_url: string, opts: RequestInit) => {
 			capturedBody = JSON.parse(opts.body as string);
 			return { ok: true, json: async () => ({ id: "msg-1", content: "ok" }) } as Response;

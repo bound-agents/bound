@@ -27,7 +27,6 @@ export interface SchedulerResult {
 export interface ShutdownHandles {
 	heartbeatHandle: { stop: () => void } | null;
 	schedulerHandle: { stop: () => void } | null;
-	syncLoopHandle: { stop: () => void } | null;
 	pruningHandle: { stop: () => void } | null;
 	overlayHandle: { stop: () => void } | null;
 	relayProcessorHandle: { stop: () => void } | null;
@@ -35,6 +34,8 @@ export interface ShutdownHandles {
 	mcpClientsMap: Map<string, MCPClient>;
 	webServer: { stop(): Promise<void> } | null;
 	syncServer: { stop(): Promise<void> } | null;
+	wsClient: { close: () => void } | null;
+	wsTransport: { start(): void; stop(): void } | undefined;
 }
 
 export function initScheduler(
@@ -157,10 +158,15 @@ export function setupGracefulShutdown(
 			);
 			if (handles.heartbeatHandle) handles.heartbeatHandle.stop();
 			if (handles.schedulerHandle) handles.schedulerHandle.stop();
-			if (handles.syncLoopHandle) handles.syncLoopHandle.stop();
 			if (handles.pruningHandle) handles.pruningHandle.stop();
 			if (handles.overlayHandle) handles.overlayHandle.stop();
 			if (handles.relayProcessorHandle) handles.relayProcessorHandle.stop();
+			if (handles.wsTransport) {
+				handles.wsTransport.stop();
+				const { setChangelogEventBus } = await import("@bound/core");
+				setChangelogEventBus(null);
+			}
+			if (handles.wsClient) handles.wsClient.close();
 			if (handles.platformRegistry) {
 				try {
 					handles.platformRegistry.stop();

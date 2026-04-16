@@ -468,7 +468,7 @@ describe("Startup Wiring", () => {
 			// start.ts reads: appContext.optionalConfig.sync
 			// config-loader stores under key: "sync"
 			const optionalConfig: Record<string, { ok: boolean; value?: Record<string, unknown> }> = {
-				sync: { ok: true, value: { hub: "https://hub.example.com", sync_interval_seconds: 30 } },
+				sync: { ok: true, value: { hub: "https://hub.example.com" } },
 			};
 
 			const syncResult = optionalConfig.sync;
@@ -594,7 +594,6 @@ describe("Startup Wiring", () => {
 					.get(threadId);
 				if (lastMsg) {
 					eventBus.emit("message:created", {
-						// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 						message: lastMsg as any,
 						thread_id: threadId,
 					});
@@ -663,7 +662,6 @@ describe("Startup Wiring", () => {
 					.get(threadId);
 				if (lastMsg) {
 					eventBus.emit("message:created", {
-						// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 						message: lastMsg as any,
 						thread_id: threadId,
 					});
@@ -751,7 +749,6 @@ describe("Startup Wiring", () => {
 					.get(threadId);
 				if (lastMsg) {
 					eventBus.emit("message:created", {
-						// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 						message: lastMsg as any,
 						thread_id: threadId,
 					});
@@ -817,7 +814,6 @@ describe("Startup Wiring", () => {
 					.get(threadId);
 				if (lastMsg) {
 					eventBus.emit("message:created", {
-						// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 						message: lastMsg as any,
 						thread_id: threadId,
 					});
@@ -867,7 +863,6 @@ describe("Startup Wiring", () => {
 				const configAfterFactory = {
 					...testConfig,
 					tools:
-						// biome-ignore lint/suspicious/noExplicitAny: partial mock object in test
 						testConfig && (testConfig as any).tools ? (testConfig as any).tools : [sandboxTool],
 				};
 

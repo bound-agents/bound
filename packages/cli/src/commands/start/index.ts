@@ -38,18 +38,59 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// Phase 4: Model router and inference setup
 	const { modelRouter, routerConfig } = await initInference(appContext, commandContext);
 
-	// Phase 5: Relay processor, KeyManager, reachability
-	const {
-		relayProcessor,
-		relayProcessorHandle,
-		relayExecutor,
-		reachabilityTracker,
-		keyManager,
-		hubSiteId,
-		keyring,
-	} = await initRelay(appContext, keypair, mcpClientsMap, modelRouter, clusterFsObj);
+	// Phase 5: Relay processor, KeyManager
+	const { relayProcessor, relayProcessorHandle, relayExecutor, keyManager, hubSiteId, keyring } =
+		await initRelay(appContext, keypair, mcpClientsMap, modelRouter, clusterFsObj);
 
-	// Phase 5b: Register SIGHUP handler for config hot-reload (needs all subsystem refs)
+	// Initialize wsClient reference for SIGHUP callback
+	let wsClient: {
+		close: () => void;
+		updateReconnectConfig: (max?: number) => void;
+		updateBackpressureLimit: (limit?: number) => void;
+	} | null = null;
+
+	// Phase 6: Agent loop factory
+	if (!modelRouter) {
+		appContext.logger.warn("[agent] No model router — agent loops will not be available");
+	}
+	const agentLoopFactory = modelRouter
+		? createAgentLoopFactory(appContext, modelRouter, sandbox, clusterFsObj)
+		: null;
+
+	// Phase 7: Web server, message handler, platform connectors
+	const serverResult =
+		agentLoopFactory && modelRouter
+			? await initServer({
+					appContext,
+					modelRouter,
+					routerConfig,
+					agentLoopFactory,
+					relayExecutor,
+					keyManager,
+					keyring,
+					hubSiteId,
+					relayProcessor,
+				})
+			: {
+					webServer: null,
+					syncServer: null,
+					statusForwardCache: new Map(),
+					activeDelegations: new Map(),
+					threadExecutor: new ThreadExecutor(appContext.db, appContext.logger),
+					platformRegistry: null,
+					wsTransportHolder: {
+						addPeer: () => {},
+						removePeer: () => {},
+						handleChangelogPush: () => {},
+						handleChangelogAck: () => {},
+						drainChangelog: () => {},
+						handleRelaySend: () => {},
+						handleRelayAck: () => {},
+						drainRelayInbox: () => {},
+					},
+				};
+
+	// Phase 5b: Register SIGHUP handler for config hot-reload (after sync init for wsClient reference)
 	registerSighupHandler({
 		appContext,
 		configDir,
@@ -73,54 +114,41 @@ export async function runStart(args: StartArgs): Promise<void> {
 				newConfig,
 			});
 		},
+		onWsConfigChanged: async (newWsConfig) => {
+			// Update WS client config. Changes take effect on next reconnection/connection.
+			// - reconnect_max_interval: takes effect on next reconnection
+			// - backpressure_limit: takes effect on next send
+			// - idle_timeout: server-side, takes effect on next connection
+			if (newWsConfig && wsClient) {
+				appContext.logger.info("[sighup] Applying WS config changes", {
+					reconnect_max_interval: newWsConfig.reconnect_max_interval,
+					backpressure_limit: newWsConfig.backpressure_limit,
+					idle_timeout: newWsConfig.idle_timeout,
+				});
+				wsClient.updateReconnectConfig(newWsConfig.reconnect_max_interval);
+				wsClient.updateBackpressureLimit(newWsConfig.backpressure_limit);
+			}
+		},
 	});
 
-	// Phase 6: Agent loop factory
-	if (!modelRouter) {
-		appContext.logger.warn("[agent] No model router — agent loops will not be available");
-	}
-	const agentLoopFactory = modelRouter
-		? createAgentLoopFactory(appContext, modelRouter, sandbox, clusterFsObj)
-		: null;
-
-	// Phase 7: Web server, message handler, platform connectors
-	// Transport ref is lazily resolved — sync phase initializes it after the server.
-	// biome-ignore lint/style/useConst: intentionally mutable — set after server init, read lazily by getTransport
-	let transportRef: import("@bound/sync").SyncTransport | undefined;
-
-	const serverResult =
-		agentLoopFactory && modelRouter
-			? await initServer({
-					appContext,
-					keypair,
-					modelRouter,
-					routerConfig,
-					agentLoopFactory,
-					relayExecutor,
-					reachabilityTracker,
-					keyManager,
-					keyring,
-					hubSiteId,
-					getTransport: () => transportRef,
-					relayProcessor,
-				})
-			: {
-					webServer: null,
-					syncServer: null,
-					statusForwardCache: new Map(),
-					activeDelegations: new Map(),
-					threadExecutor: new ThreadExecutor(appContext.db, appContext.logger),
-					platformRegistry: null,
-				};
-
 	// Phase 8: Sync loop, pruning, overlay scanner
-	const { syncLoopHandle, pruningHandle, overlayHandle, transport } = await initSync(
-		appContext,
-		keypair,
-		keyManager,
-	);
-	// Back-patch the transport reference for eager push
-	transportRef = transport;
+	const syncResult = await initSync(appContext, keypair, keyManager);
+	wsClient = syncResult.wsClient;
+	const { pruningHandle, overlayHandle, wsTransport } = syncResult;
+
+	// Wire WsTransport into the sync server's deferred holder (for hub-side frame dispatch)
+	if (wsTransport && serverResult.wsTransportHolder) {
+		Object.assign(serverResult.wsTransportHolder, {
+			addPeer: wsTransport.addPeer.bind(wsTransport),
+			removePeer: wsTransport.removePeer.bind(wsTransport),
+			handleChangelogPush: wsTransport.handleChangelogPush.bind(wsTransport),
+			handleChangelogAck: wsTransport.handleChangelogAck.bind(wsTransport),
+			drainChangelog: wsTransport.drainChangelog.bind(wsTransport),
+			handleRelaySend: wsTransport.handleRelaySend.bind(wsTransport),
+			handleRelayAck: wsTransport.handleRelayAck.bind(wsTransport),
+			drainRelayInbox: wsTransport.drainRelayInbox.bind(wsTransport),
+		});
+	}
 
 	// Phase 9: Host heartbeat, cron seeding, scheduler
 	const heartbeatHandle = startHostHeartbeat(appContext.db, appContext.siteId, {
@@ -144,7 +172,6 @@ Press Ctrl+C to stop.
 	await setupGracefulShutdown(appContext, {
 		heartbeatHandle,
 		schedulerHandle,
-		syncLoopHandle,
 		pruningHandle,
 		overlayHandle,
 		relayProcessorHandle,
@@ -152,5 +179,7 @@ Press Ctrl+C to stop.
 		mcpClientsMap,
 		webServer: serverResult.webServer,
 		syncServer: serverResult.syncServer,
+		wsClient,
+		wsTransport,
 	});
 }

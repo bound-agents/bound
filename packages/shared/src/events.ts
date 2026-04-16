@@ -2,6 +2,7 @@ import type {
 	ContextDebugInfo,
 	Message,
 	PlatformDeliverPayload,
+	RelayKind,
 	StatusForwardPayload,
 } from "./types.js";
 
@@ -12,8 +13,6 @@ export interface EventMap {
 	"message:broadcast": { message: Message; thread_id: string };
 	"task:triggered": { task_id: string; trigger: string };
 	"task:completed": { task_id: string; result: string | null };
-	"sync:completed": { pushed: number; pulled: number; duration_ms: number };
-	"sync:trigger": { reason: string };
 	"file:changed": { path: string; operation: "created" | "modified" | "deleted" };
 	"alert:created": { message: Message; thread_id: string };
 	"agent:cancel": { thread_id: string };
@@ -30,4 +29,7 @@ export interface EventMap {
 		task_id?: string;
 		reason: string;
 	};
+	"changelog:written": { hlc: string; tableName: string; siteId: string };
+	"relay:outbox-written": { id: string; target_site_id: string };
+	"relay:inbox": { ref_id?: string; stream_id?: string; kind: RelayKind };
 }

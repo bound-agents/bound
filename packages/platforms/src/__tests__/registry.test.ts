@@ -455,7 +455,6 @@ describe("PlatformConnectorRegistry", () => {
 
 			// Create a test-specific manager instance with mocked client
 			const testManager = new RealClientManager(mockLogger);
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			(testManager as any).client = mockClient;
 
 			// Manually set up the connectors with the mocked manager
@@ -534,7 +533,6 @@ describe("PlatformConnectorRegistry", () => {
 			);
 
 			const testManager = new RealClientManager(mockLogger);
-			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			(testManager as any).client = mockClient;
 
 			const { DiscordConnector } = await import("../connectors/discord.js");
