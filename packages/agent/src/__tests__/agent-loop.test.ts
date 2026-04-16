@@ -283,8 +283,8 @@ describe("AgentLoop", () => {
 		const mockBackend = new MockLLMBackend();
 		mockBackend.setToolThenTextResponse(
 			"tool-456",
-			"memorize",
-			{ key: "color", value: "blue" },
+			"bash",
+			{ command: "memorize color blue" },
 			"Done!",
 		);
 
@@ -435,6 +435,33 @@ describe("AgentLoop", () => {
 
 		expect(mockBash.calls.length).toBe(1);
 		expect(mockBash.calls[0]).toBe("echo hello");
+	});
+
+	it("should return error when LLM hallucinates non-bash tool name", async () => {
+		const mockBackend = new MockLLMBackend();
+		// LLM calls "query" directly instead of bash with command: "query ..."
+		mockBackend.setToolThenTextResponse("tool-query", "query", { query: "SELECT 1" }, "Done.");
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		await agentLoop.run();
+
+		// Sandbox should NOT have been called — the error is returned directly
+		expect(mockBash.calls.length).toBe(0);
+
+		const msgs = db
+			.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'tool_result'")
+			.all(threadId) as Array<{ content: string }>;
+
+		expect(msgs.length).toBe(1);
+		expect(msgs[0].content).toContain('unknown tool "query"');
+		expect(msgs[0].content).toContain("bash");
 	});
 
 	it("should handle sandbox without exec gracefully", async () => {
@@ -1968,7 +1995,7 @@ describe("AgentLoop", () => {
 			const backend = new MockLLMBackend();
 
 			// LLM wants to call a tool, then produce text
-			backend.setToolThenTextResponse("tool-1", "query", { sql: "SELECT 1" }, "Done!");
+			backend.setToolThenTextResponse("tool-1", "bash", { command: "query SELECT 1" }, "Done!");
 
 			const sandbox = createMockSandbox();
 
@@ -2068,7 +2095,7 @@ describe("AgentLoop", () => {
 
 		it("does not interfere when shouldYield always returns false", async () => {
 			const backend = new MockLLMBackend();
-			backend.setToolThenTextResponse("tool-1", "query", { sql: "SELECT 1" }, "Done!");
+			backend.setToolThenTextResponse("tool-1", "bash", { command: "query SELECT 1" }, "Done!");
 
 			const sandbox = createMockSandbox();
 

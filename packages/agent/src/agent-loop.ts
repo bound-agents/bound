@@ -1483,7 +1483,15 @@ export class AgentLoop {
 			return { content: "Error: sandbox execution not available", exitCode: 1 };
 		}
 
-		const result = await this.sandbox.exec(toolCall.input.command as string);
+		const command = toolCall.input.command;
+		if (typeof command !== "string") {
+			return {
+				content: `Error: unknown tool "${toolCall.name}". Use the bash tool with {"command": "${toolCall.name} ..."}`,
+				exitCode: 1,
+			};
+		}
+
+		const result = await this.sandbox.exec(command);
 
 		// The exec wrapper in agent-factory.ts propagates RelayToolCallRequest
 		// objects from remote MCP proxy commands via loopContextStorage side-channel
