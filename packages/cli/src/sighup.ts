@@ -1,6 +1,6 @@
 import type { AppContext } from "@bound/core";
 import { loadOptionalConfigs } from "@bound/core";
-import type { KeyringConfig, Logger, McpConfig } from "@bound/shared";
+import type { KeyringConfig, Logger, McpConfig, WsConfig } from "@bound/shared";
 import type { KeyManager } from "@bound/sync";
 
 interface SighupHandlerConfig {
@@ -18,7 +18,7 @@ interface SighupHandlerConfig {
 	 * Allows the caller to update WsSyncClient and WS server config.
 	 * idle_timeout changes take effect on next connection only.
 	 */
-	onWsConfigChanged?: (newWsConfig: Record<string, unknown> | undefined) => Promise<void>;
+	onWsConfigChanged?: (newWsConfig: WsConfig | undefined) => Promise<void>;
 	// For testing: inject a delay into the reload work to allow true concurrency testing
 	delayMs?: number;
 }
@@ -134,9 +134,9 @@ export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> 
 		if (onWsConfigChanged && changes.includes("sync")) {
 			const syncResult = appContext.optionalConfig.sync;
 			if (syncResult?.ok) {
-				const newSyncConfig = syncResult.value as Record<string, unknown>;
-				const newWsConfig = newSyncConfig.ws as Record<string, unknown> | undefined;
-				const oldWsConfig = oldSyncConfig?.ws as Record<string, unknown> | undefined;
+				const newSyncConfig = syncResult.value;
+				const newWsConfig = newSyncConfig.ws as WsConfig | undefined;
+				const oldWsConfig = oldSyncConfig?.ws as WsConfig | undefined;
 				// Only invoke callback if ws config actually changed
 				if (JSON.stringify(oldWsConfig) !== JSON.stringify(newWsConfig)) {
 					try {

@@ -6,8 +6,8 @@
 import type { Database } from "bun:sqlite";
 import type { AppContext } from "@bound/core";
 import { setChangelogEventBus } from "@bound/core";
-import type { KeyringConfig } from "@bound/shared";
-import { formatError } from "@bound/shared";
+import type { KeyringConfig, SyncConfig } from "@bound/shared";
+import { formatError, wsSchema } from "@bound/shared";
 import type { KeyManager } from "@bound/sync";
 import type { WsTransport as WsTransportType } from "@bound/sync";
 
@@ -15,7 +15,11 @@ export interface SyncResult {
 	pruningHandle: { stop: () => void } | null;
 	overlayHandle: { stop: () => void } | null;
 	wsTransport: WsTransportType | undefined;
-	wsClient: { close: () => void } | null;
+	wsClient: {
+		close: () => void;
+		updateReconnectConfig: (max?: number) => void;
+		updateBackpressureLimit: (limit?: number) => void;
+	} | null;
 }
 
 export async function initSync(
@@ -30,7 +34,7 @@ export async function initSync(
 	appContext.logger.info("Initializing sync...");
 	const syncResult = appContext.optionalConfig.sync;
 	if (syncResult?.ok) {
-		const syncConfig = syncResult.value as { hub?: string };
+		const syncConfig = syncResult.value as SyncConfig;
 		try {
 			const { WsSyncClient, WsTransport: WT } = await import("@bound/sync");
 			const keyringResult = appContext.optionalConfig.keyring;
@@ -71,12 +75,11 @@ export async function initSync(
 							"[sync] Hub URL in sync config not found in keyring, cannot create WS client",
 						);
 					} else {
-						// Read WS config if present, use defaults otherwise
-						const wsConfig = (syncConfig as Record<string, unknown>).ws as
-							| Record<string, unknown>
-							| undefined;
-						const reconnectMaxInterval = (wsConfig?.reconnect_max_interval as number) ?? 60;
-						const backpressureLimit = (wsConfig?.backpressure_limit as number) ?? 2097152;
+						// Parse WS config with defaults applied by schema
+						const wsConfigRaw = syncConfig.ws;
+						const wsConfig = wsConfigRaw ? wsSchema.parse(wsConfigRaw) : wsSchema.parse({});
+						const reconnectMaxInterval = wsConfig.reconnect_max_interval;
+						const backpressureLimit = wsConfig.backpressure_limit;
 
 						const wsClientInstance = new WsSyncClient({
 							hubUrl,
@@ -91,7 +94,8 @@ export async function initSync(
 						});
 
 						await wsClientInstance.connect();
-						wsClient = wsClientInstance;
+						// biome-ignore lint/suspicious/noExplicitAny: WsSyncClient instance has the required methods
+						wsClient = wsClientInstance as any;
 						appContext.logger.info("[sync] WebSocket client connected to hub");
 					}
 				} catch (error) {
@@ -160,5 +164,5 @@ export async function initSync(
 		appContext.logger.info("[overlay] Not configured");
 	}
 
-	return { pruningHandle, overlayHandle, wsTransport, wsClient };
+	return { pruningHandle, overlayHandle, wsTransport, wsClient } as SyncResult;
 }

@@ -42,7 +42,45 @@ export async function runStart(args: StartArgs): Promise<void> {
 	const { relayProcessor, relayProcessorHandle, relayExecutor, keyManager, hubSiteId, keyring } =
 		await initRelay(appContext, keypair, mcpClientsMap, modelRouter, clusterFsObj);
 
-	// Phase 5b: Register SIGHUP handler for config hot-reload (needs all subsystem refs)
+	// Initialize wsClient reference for SIGHUP callback
+	let wsClient: {
+		close: () => void;
+		updateReconnectConfig: (max?: number) => void;
+		updateBackpressureLimit: (limit?: number) => void;
+	} | null = null;
+
+	// Phase 6: Agent loop factory
+	if (!modelRouter) {
+		appContext.logger.warn("[agent] No model router — agent loops will not be available");
+	}
+	const agentLoopFactory = modelRouter
+		? createAgentLoopFactory(appContext, modelRouter, sandbox, clusterFsObj)
+		: null;
+
+	// Phase 7: Web server, message handler, platform connectors
+	const serverResult =
+		agentLoopFactory && modelRouter
+			? await initServer({
+					appContext,
+					modelRouter,
+					routerConfig,
+					agentLoopFactory,
+					relayExecutor,
+					keyManager,
+					keyring,
+					hubSiteId,
+					relayProcessor,
+				})
+			: {
+					webServer: null,
+					syncServer: null,
+					statusForwardCache: new Map(),
+					activeDelegations: new Map(),
+					threadExecutor: new ThreadExecutor(appContext.db, appContext.logger),
+					platformRegistry: null,
+				};
+
+	// Phase 5b: Register SIGHUP handler for config hot-reload (after sync init for wsClient reference)
 	registerSighupHandler({
 		appContext,
 		configDir,
@@ -67,61 +105,26 @@ export async function runStart(args: StartArgs): Promise<void> {
 			});
 		},
 		onWsConfigChanged: async (newWsConfig) => {
-			// Log WS config changes. Current implementation note:
-			// - reconnect_max_interval takes effect on next reconnection
-			// - backpressure_limit takes effect on next reconnection
-			// - idle_timeout (server-side) takes effect on next connection
-			if (newWsConfig) {
-				const reconnectMaxInterval = (newWsConfig.reconnect_max_interval as number) ?? 60;
-				const backpressureLimit = (newWsConfig.backpressure_limit as number) ?? 2097152;
-				const idleTimeout = (newWsConfig.idle_timeout as number) ?? 120;
-				appContext.logger.info("[sighup] WS config reloaded", {
-					reconnectMaxInterval,
-					backpressureLimit,
-					idleTimeout,
+			// Update WS client config. Changes take effect on next reconnection/connection.
+			// - reconnect_max_interval: takes effect on next reconnection
+			// - backpressure_limit: takes effect on next send
+			// - idle_timeout: server-side, takes effect on next connection
+			if (newWsConfig && wsClient) {
+				appContext.logger.info("[sighup] Applying WS config changes", {
+					reconnect_max_interval: newWsConfig.reconnect_max_interval,
+					backpressure_limit: newWsConfig.backpressure_limit,
+					idle_timeout: newWsConfig.idle_timeout,
 				});
+				wsClient.updateReconnectConfig(newWsConfig.reconnect_max_interval);
+				wsClient.updateBackpressureLimit(newWsConfig.backpressure_limit);
 			}
 		},
 	});
 
-	// Phase 6: Agent loop factory
-	if (!modelRouter) {
-		appContext.logger.warn("[agent] No model router — agent loops will not be available");
-	}
-	const agentLoopFactory = modelRouter
-		? createAgentLoopFactory(appContext, modelRouter, sandbox, clusterFsObj)
-		: null;
-
-	// Phase 7: Web server, message handler, platform connectors
-	const serverResult =
-		agentLoopFactory && modelRouter
-			? await initServer({
-					appContext,
-					keypair,
-					modelRouter,
-					routerConfig,
-					agentLoopFactory,
-					relayExecutor,
-					keyManager,
-					keyring,
-					hubSiteId,
-					relayProcessor,
-				})
-			: {
-					webServer: null,
-					syncServer: null,
-					statusForwardCache: new Map(),
-					activeDelegations: new Map(),
-					threadExecutor: new ThreadExecutor(appContext.db, appContext.logger),
-					platformRegistry: null,
-				};
-
 	// Phase 8: Sync loop, pruning, overlay scanner
-	const { pruningHandle, overlayHandle, wsClient, wsTransport } = await initSync(
-		appContext,
-		keypair,
-		keyManager,
-	);
+	const syncResult = await initSync(appContext, keypair, keyManager);
+	wsClient = syncResult.wsClient;
+	const { pruningHandle, overlayHandle, wsTransport } = syncResult;
 
 	// Phase 9: Host heartbeat, cron seeding, scheduler
 	const heartbeatHandle = startHostHeartbeat(appContext.db, appContext.siteId, {

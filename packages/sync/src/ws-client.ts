@@ -166,6 +166,24 @@ export class WsSyncClient {
 	}
 
 	/**
+	 * Update reconnect configuration. Takes effect on next reconnection.
+	 */
+	updateReconnectConfig(maxInterval?: number): void {
+		if (maxInterval !== undefined) {
+			this.config.reconnectMaxInterval = maxInterval;
+		}
+	}
+
+	/**
+	 * Update backpressure limit. Takes effect on next send.
+	 */
+	updateBackpressureLimit(limit?: number): void {
+		if (limit !== undefined) {
+			this.config.backpressureLimit = limit;
+		}
+	}
+
+	/**
 	 * Derive WS URL from hub URL.
 	 * https:// -> wss://, http:// -> ws://
 	 * Append /sync/ws and preserve port.

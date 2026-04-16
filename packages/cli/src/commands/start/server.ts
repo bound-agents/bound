@@ -60,7 +60,6 @@ export interface ServerResult {
 
 export interface ServerDeps {
 	appContext: AppContext;
-	keypair: { privateKey: CryptoKey };
 	modelRouter: ModelRouter;
 	routerConfig: ModelBackendsConfig;
 	agentLoopFactory: AgentLoopFactory;
