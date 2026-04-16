@@ -488,6 +488,7 @@ export class AgentLoop {
 										system_suffix: systemSuffix || undefined,
 										tools: this.config.tools,
 										cache_breakpoints: cacheBreakpoints,
+										thinking: resolution.thinkingConfig,
 										signal: this.config.abortSignal,
 									});
 									for await (const chunk of this.withSilenceTimeout(
