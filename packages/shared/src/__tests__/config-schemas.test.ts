@@ -287,14 +287,20 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
-		it("rejects sync config without hub", () => {
+		it("validates sync config without hub (hub-only mode)", () => {
 			const config = {
 				relay: {
 					inference_timeout_ms: 60_000,
 				},
 			};
 			const result = syncSchema.safeParse(config);
-			expect(result.success).toBe(false);
+			expect(result.success).toBe(true);
+		});
+
+		it("validates empty sync config (hub-only, defaults)", () => {
+			const config = {};
+			const result = syncSchema.safeParse(config);
+			expect(result.success).toBe(true);
 		});
 	});
 

@@ -160,7 +160,7 @@ export const wsSchema = z.object({
 export type WsConfig = z.infer<typeof wsSchema>;
 
 export const syncSchema = z.object({
-	hub: z.string().min(1),
+	hub: z.string().min(1).optional(),
 	relay: relaySchema.optional(),
 	ws: wsSchema.optional(),
 });
