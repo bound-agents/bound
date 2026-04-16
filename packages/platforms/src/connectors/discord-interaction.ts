@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertRow, writeOutbox } from "@bound/core";
+import { insertRow, updateRow, writeOutbox } from "@bound/core";
 import { MAX_FILE_STORAGE_BYTES } from "@bound/shared";
 import type { IntakePayload, Thread, User } from "@bound/shared";
 import type { Logger, PlatformConnectorConfig, TypedEventEmitter } from "@bound/shared";
@@ -699,23 +699,12 @@ export class DiscordInteractionConnector implements PlatformConnector {
 			return;
 		}
 
-		// Insert a system notification message with the desired model_id
-		const now = new Date().toISOString();
-		insertRow(
+		// Set the authoritative model hint on the thread
+		updateRow(
 			this.db,
-			"messages",
-			{
-				id: randomUUID(),
-				thread_id: thread.id,
-				role: "system",
-				content: `Model preference set to "${modelId}" by operator via /model command.`,
-				model_id: modelId,
-				tool_name: null,
-				created_at: now,
-				modified_at: now,
-				host_origin: this.siteId,
-				deleted: 0,
-			},
+			"threads",
+			thread.id,
+			{ model_hint: modelId, modified_at: new Date().toISOString() },
 			this.siteId,
 		);
 

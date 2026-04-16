@@ -1914,7 +1914,7 @@ describe("DiscordInteractionConnector", () => {
 			expect(modelCmd.type).toBe(1); // ChatInputCommand
 		});
 
-		it("inserts a system message with the specified model_id into the user's DM thread", async () => {
+		it("sets threads.model_hint to the specified model for the user's DM thread", async () => {
 			const { client, handlers } = createMockClientWithHandlers();
 			const connector = new DiscordInteractionConnector(
 				config,
@@ -1951,16 +1951,12 @@ describe("DiscordInteractionConnector", () => {
 			expect(editReplyCalls.length).toBe(1);
 			expect(editReplyCalls[0]?.content).toContain("opus");
 
-			// Should have inserted a system message with model_id = "opus"
-			const msg = db
-				.query(
-					"SELECT role, model_id, content FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
-				)
-				.get(threadId) as { role: string; model_id: string; content: string } | null;
-			assert(msg);
-			expect(msg.model_id).toBe("opus");
-			expect(msg.role).toBe("system");
-			expect(msg.content).toContain("opus");
+			// Should have updated threads.model_hint = "opus"
+			const thread = db.query("SELECT model_hint FROM threads WHERE id = ?").get(threadId) as {
+				model_hint: string | null;
+			} | null;
+			assert(thread);
+			expect(thread.model_hint).toBe("opus");
 		});
 
 		it("replies with error when user has no DM thread", async () => {
