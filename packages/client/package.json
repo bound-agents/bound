@@ -1,0 +1,12 @@
+{
+	"name": "@bound/client",
+	"version": "0.0.1",
+	"description": "HTTP and WebSocket client for the Bound agent API",
+	"type": "module",
+	"main": "src/index.ts",
+	"types": "src/index.ts",
+	"dependencies": {
+		"@bound/shared": "workspace:*",
+		"zod": "^4.0.0"
+	}
+}

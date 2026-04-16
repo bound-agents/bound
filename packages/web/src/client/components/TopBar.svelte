@@ -1,5 +1,6 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
+import { client } from "../lib/bound";
 import ModelSelector from "./ModelSelector.svelte";
 
 function navigate(hash: string): void {
@@ -28,11 +29,8 @@ let advisoryPollInterval: ReturnType<typeof setInterval> | null = null;
 
 async function loadAdvisoryCount(): Promise<void> {
 	try {
-		const response = await fetch("/api/advisories/count");
-		if (response.ok) {
-			const data = (await response.json()) as { count: number };
-			advisoryCount = data.count;
-		}
+		const data = await client.countAdvisories();
+		advisoryCount = data.count;
 	} catch {
 		// Ignore fetch errors for count
 	}

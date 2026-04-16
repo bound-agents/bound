@@ -8,6 +8,7 @@ import {
 	StatusChip,
 	TopologyDiagram,
 } from "../components/shared";
+import { client } from "../lib/bound";
 import { getLineColor } from "../lib/metro-lines";
 
 interface HostInfo {
@@ -46,13 +47,7 @@ let pollInterval: ReturnType<typeof setInterval> | null = null;
 
 async function loadNetwork(): Promise<void> {
 	try {
-		const response = await fetch("/api/status/network");
-		if (!response.ok) {
-			const errData = await response.json();
-			error = errData.error ?? "Failed to load network data";
-			return;
-		}
-		networkData = await response.json();
+		networkData = await client.getNetwork();
 		error = null;
 	} catch (err) {
 		console.error("Failed to load network status:", err);

@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { Thread } from "../lib/api";
+import type { Thread } from "@bound/shared";
 import { formatRelativeTime, isToday } from "../lib/format-time";
 import { getLineColor } from "../lib/metro-lines";
 import { LineBadge, MetroCard, StatusChip } from "./shared";

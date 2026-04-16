@@ -1,5 +1,5 @@
-import type { BoundClient, BoundMessage } from "./bound-client";
-import { BoundNotRunningError } from "./bound-client";
+import { BoundApiError, type BoundClient, BoundNotRunningError } from "@bound/client";
+import type { Message } from "@bound/shared";
 
 const POLL_INTERVAL_MS = 500;
 const MAX_POLL_MS = 30 * 60 * 1000; // 30 minutes
@@ -24,7 +24,7 @@ export function createBoundChatHandler(
 			// Step 3: Poll until agent loop completes
 			const startTime = Date.now();
 			while (true) {
-				const status = await client.getStatus(threadId);
+				const status = await client.getThreadStatus(threadId);
 				if (!status.active) break;
 
 				if (Date.now() - startTime >= MAX_POLL_MS) {
@@ -43,10 +43,8 @@ export function createBoundChatHandler(
 			}
 
 			// Step 4: Return last assistant message
-			const messages = await client.getMessages(threadId);
-			const lastAssistant = [...messages]
-				.reverse()
-				.find((m: BoundMessage) => m.role === "assistant");
+			const messages = await client.listMessages(threadId);
+			const lastAssistant = [...messages].reverse().find((m: Message) => m.role === "assistant");
 
 			return {
 				content: [
@@ -57,7 +55,7 @@ export function createBoundChatHandler(
 				],
 			};
 		} catch (e) {
-			if (e instanceof BoundNotRunningError) {
+			if (e instanceof BoundNotRunningError || e instanceof BoundApiError) {
 				return {
 					isError: true,
 					content: [{ type: "text", text: e.message }],

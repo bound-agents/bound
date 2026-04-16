@@ -8,6 +8,7 @@
 		"bound-mcp": "src/server.ts"
 	},
 	"dependencies": {
+		"@bound/client": "workspace:*",
 		"@bound/shared": "workspace:*",
 		"@modelcontextprotocol/sdk": "^1.28.0",
 		"zod": "^4.0.0"

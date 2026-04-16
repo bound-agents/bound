@@ -7,13 +7,13 @@ import Breadcrumbs from "../components/Breadcrumbs.svelte";
 import DirectoryListing from "../components/DirectoryListing.svelte";
 import FilePreviewModal from "../components/FilePreviewModal.svelte";
 import TreeNode from "../components/TreeNode.svelte";
+import { client, wsEvents } from "../lib/bound";
 import {
 	type FileMetadata,
 	type FileTreeNode,
 	buildFileTree,
 	findNodeByPath,
 } from "../lib/file-tree";
-import { wsEvents } from "../lib/websocket";
 
 let tree: FileTreeNode[] = $state([]);
 let loading = $state(true);
@@ -48,11 +48,7 @@ async function loadFiles(): Promise<void> {
 	try {
 		loading = true;
 		error = null;
-		const response = await fetch("/api/files");
-		if (!response.ok) {
-			throw new Error(`HTTP ${response.status}`);
-		}
-		const files = (await response.json()) as FileMetadata[];
+		const files = (await client.listFiles()) as FileMetadata[];
 		tree = buildFileTree(files);
 		// Expand all directories on initial load
 		expandedPaths.clear();

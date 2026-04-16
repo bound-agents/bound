@@ -17,6 +17,7 @@
 	},
 	"references": [
 		{ "path": "packages/shared" },
+		{ "path": "packages/client" },
 		{ "path": "packages/core" },
 		{ "path": "packages/sync" },
 		{ "path": "packages/sandbox" },

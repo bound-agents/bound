@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
-import { BoundClient, BoundNotRunningError } from "../bound-client";
+import { BoundApiError, BoundClient, BoundNotRunningError } from "@bound/client";
 
 // Save original fetch — must be restored to prevent polluting other test suites
 let originalFetch: typeof fetch;
@@ -46,12 +46,17 @@ describe("BoundClient", () => {
 			expect(result.thread_id).toBe("abc-123");
 		});
 
-		it("throws BoundNotRunningError on non-2xx response", async () => {
+		it("throws BoundApiError on non-2xx response", async () => {
 			mockFetch.mockImplementation(() =>
-				Promise.resolve(new Response("Not found", { status: 404 })),
+				Promise.resolve(
+					new Response(JSON.stringify({ error: "Not found" }), {
+						status: 404,
+						headers: { "Content-Type": "application/json" },
+					}),
+				),
 			);
 
-			await expect(client.createMcpThread()).rejects.toBeInstanceOf(BoundNotRunningError);
+			await expect(client.createMcpThread()).rejects.toBeInstanceOf(BoundApiError);
 		});
 
 		it("throws BoundNotRunningError when fetch throws (connection refused)", async () => {
@@ -63,7 +68,14 @@ describe("BoundClient", () => {
 
 	describe("sendMessage", () => {
 		it("POST /api/threads/:id/messages with content body", async () => {
-			mockFetch.mockImplementation(() => Promise.resolve(new Response("{}", { status: 201 })));
+			mockFetch.mockImplementation(() =>
+				Promise.resolve(
+					new Response(JSON.stringify({ id: "msg-1" }), {
+						status: 201,
+						headers: { "Content-Type": "application/json" },
+					}),
+				),
+			);
 
 			await client.sendMessage("thread-1", "Hello!");
 
@@ -73,12 +85,17 @@ describe("BoundClient", () => {
 			expect(JSON.parse(init.body as string)).toEqual({ content: "Hello!" });
 		});
 
-		it("throws BoundNotRunningError on non-2xx response", async () => {
-			mockFetch.mockImplementation(() => Promise.resolve(new Response("Error", { status: 500 })));
-
-			await expect(client.sendMessage("thread-1", "Hello!")).rejects.toBeInstanceOf(
-				BoundNotRunningError,
+		it("throws BoundApiError on non-2xx response", async () => {
+			mockFetch.mockImplementation(() =>
+				Promise.resolve(
+					new Response(JSON.stringify({ error: "Server error" }), {
+						status: 500,
+						headers: { "Content-Type": "application/json" },
+					}),
+				),
 			);
+
+			await expect(client.sendMessage("thread-1", "Hello!")).rejects.toBeInstanceOf(BoundApiError);
 		});
 
 		it("throws BoundNotRunningError when fetch throws", async () => {
@@ -90,9 +107,9 @@ describe("BoundClient", () => {
 		});
 	});
 
-	describe("getStatus", () => {
+	describe("getThreadStatus", () => {
 		it("GET /api/threads/:id/status and returns status object", async () => {
-			const statusPayload = { active: false, state: null, detail: null };
+			const statusPayload = { active: false, state: null, detail: null, tokens: 0, model: null };
 			mockFetch.mockImplementation(() =>
 				Promise.resolve(
 					new Response(JSON.stringify(statusPayload), {
@@ -101,27 +118,34 @@ describe("BoundClient", () => {
 				),
 			);
 
-			const status = await client.getStatus("thread-1");
+			const status = await client.getThreadStatus("thread-1");
 
 			const [url] = mockFetch.mock.calls[0] as [string];
 			expect(url).toBe(`${BASE_URL}/api/threads/thread-1/status`);
 			expect(status.active).toBe(false);
 		});
 
-		it("throws BoundNotRunningError on non-2xx response", async () => {
-			mockFetch.mockImplementation(() => Promise.resolve(new Response("Error", { status: 503 })));
+		it("throws BoundApiError on non-2xx response", async () => {
+			mockFetch.mockImplementation(() =>
+				Promise.resolve(
+					new Response(JSON.stringify({ error: "Error" }), {
+						status: 503,
+						headers: { "Content-Type": "application/json" },
+					}),
+				),
+			);
 
-			await expect(client.getStatus("thread-1")).rejects.toBeInstanceOf(BoundNotRunningError);
+			await expect(client.getThreadStatus("thread-1")).rejects.toBeInstanceOf(BoundApiError);
 		});
 
 		it("throws BoundNotRunningError when fetch throws", async () => {
 			mockFetch.mockImplementation(() => Promise.reject(new TypeError("fetch failed")));
 
-			await expect(client.getStatus("thread-1")).rejects.toBeInstanceOf(BoundNotRunningError);
+			await expect(client.getThreadStatus("thread-1")).rejects.toBeInstanceOf(BoundNotRunningError);
 		});
 	});
 
-	describe("getMessages", () => {
+	describe("listMessages", () => {
 		it("GET /api/threads/:id/messages and returns message array", async () => {
 			const messages = [
 				{
@@ -144,7 +168,7 @@ describe("BoundClient", () => {
 				),
 			);
 
-			const result = await client.getMessages("thread-1");
+			const result = await client.listMessages("thread-1");
 
 			const [url] = mockFetch.mock.calls[0] as [string];
 			expect(url).toBe(`${BASE_URL}/api/threads/thread-1/messages`);
@@ -153,16 +177,23 @@ describe("BoundClient", () => {
 			expect(result[0].content).toBe("Hello!");
 		});
 
-		it("throws BoundNotRunningError on non-2xx response", async () => {
-			mockFetch.mockImplementation(() => Promise.resolve(new Response("Error", { status: 404 })));
+		it("throws BoundApiError on non-2xx response", async () => {
+			mockFetch.mockImplementation(() =>
+				Promise.resolve(
+					new Response(JSON.stringify({ error: "Not found" }), {
+						status: 404,
+						headers: { "Content-Type": "application/json" },
+					}),
+				),
+			);
 
-			await expect(client.getMessages("thread-1")).rejects.toBeInstanceOf(BoundNotRunningError);
+			await expect(client.listMessages("thread-1")).rejects.toBeInstanceOf(BoundApiError);
 		});
 
 		it("throws BoundNotRunningError when fetch throws", async () => {
 			mockFetch.mockImplementation(() => Promise.reject(new TypeError("fetch failed")));
 
-			await expect(client.getMessages("thread-1")).rejects.toBeInstanceOf(BoundNotRunningError);
+			await expect(client.listMessages("thread-1")).rejects.toBeInstanceOf(BoundNotRunningError);
 		});
 	});
 

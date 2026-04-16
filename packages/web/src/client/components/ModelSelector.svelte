@@ -1,30 +1,21 @@
 <script lang="ts">
+import type { ClusterModelInfo } from "@bound/client";
 import { Cpu } from "lucide-svelte";
 import { onMount } from "svelte";
+import { client } from "../lib/bound";
 import { modelStore } from "../lib/modelStore";
-
-interface ClusterModelInfo {
-	id: string;
-	provider: string;
-	host: string;
-	via: "local" | "relay";
-	status: "local" | "online" | "offline?";
-}
 
 let selectedModel = $state("");
 let models = $state<ClusterModelInfo[]>([]);
 
 onMount(async () => {
 	try {
-		const res = await fetch("/api/status/models");
-		if (res.ok) {
-			const data = (await res.json()) as { models: ClusterModelInfo[]; default: string };
-			models = data.models;
-			// Match default model to the full option value (id@host)
-			const defaultMatch = data.models.find((m) => m.id === data.default);
-			selectedModel = defaultMatch ? `${defaultMatch.id}@${defaultMatch.host}` : data.default;
-			modelStore.setModel(data.default);
-		}
+		const data = await client.listModels();
+		models = data.models;
+		// Match default model to the full option value (id@host)
+		const defaultMatch = data.models.find((m) => m.id === data.default);
+		selectedModel = defaultMatch ? `${defaultMatch.id}@${defaultMatch.host}` : data.default;
+		modelStore.setModel(data.default);
 	} catch (error) {
 		console.error("Failed to load models:", error);
 	}

@@ -3,10 +3,14 @@ import { ChevronLeft, Settings, X } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
 import DebugPanelWrapper from "../components/DebugPanelWrapper.svelte";
 import MessageList from "../components/MessageList.svelte";
-import { api } from "../lib/api";
+import {
+	client,
+	connectWebSocket,
+	disconnectWebSocket,
+	subscribeToThread,
+	wsEvents,
+} from "../lib/bound";
 import { navigateTo } from "../lib/router";
-import { connectWebSocket, disconnectWebSocket, subscribeToThread } from "../lib/websocket";
-import { wsEvents } from "../lib/websocket";
 
 interface TaskDetail {
 	id: string;
@@ -104,11 +108,11 @@ function formatRelativeTime(iso: string | null): string {
 
 async function fetchData() {
 	try {
-		task = (await api.getTask(taskId)) as TaskDetail;
+		task = (await client.getTask(taskId)) as TaskDetail;
 		errorMsg = null;
 
 		if (task.thread_id) {
-			messages = (await api.listMessages(task.thread_id)) as Message[];
+			messages = (await client.listMessages(task.thread_id)) as Message[];
 		}
 	} catch {
 		if (!task) {

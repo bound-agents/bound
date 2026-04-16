@@ -45,6 +45,14 @@
         "reflect-metadata": "^0.2.2",
       },
     },
+    "packages/client": {
+      "name": "@bound/client",
+      "version": "0.0.1",
+      "dependencies": {
+        "@bound/shared": "workspace:*",
+        "zod": "^4.0.0",
+      },
+    },
     "packages/core": {
       "name": "@bound/core",
       "version": "0.0.1",
@@ -70,6 +78,7 @@
         "bound-mcp": "src/server.ts",
       },
       "dependencies": {
+        "@bound/client": "workspace:*",
         "@bound/shared": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.28.0",
         "zod": "^4.0.0",
@@ -133,6 +142,7 @@
       "version": "0.0.1",
       "dependencies": {
         "@bound/agent": "workspace:*",
+        "@bound/client": "workspace:*",
         "@bound/core": "workspace:*",
         "@bound/shared": "workspace:*",
         "@bound/sync": "workspace:*",
@@ -253,6 +263,8 @@
     "@bound/agent": ["@bound/agent@workspace:packages/agent"],
 
     "@bound/cli": ["@bound/cli@workspace:packages/cli"],
+
+    "@bound/client": ["@bound/client@workspace:packages/client"],
 
     "@bound/core": ["@bound/core@workspace:packages/core"],
 

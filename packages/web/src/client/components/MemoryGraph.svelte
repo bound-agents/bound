@@ -1,7 +1,7 @@
 <script lang="ts">
+import type { MemoryGraphResponse } from "@bound/client";
 import { onMount, untrack } from "svelte";
-import { api } from "../lib/api";
-import type { MemoryGraphResponse } from "../lib/api";
+import { client } from "../lib/bound";
 import { computeInitialLayout, simulationStep, updateOpacity } from "../lib/graph-layout";
 import type { GraphLayoutResult, PositionedEdge, PositionedNode } from "../lib/graph-layout";
 
@@ -72,7 +72,7 @@ async function fetchMemoryGraph() {
 	try {
 		loading = true;
 		error = null;
-		const data = await api.getMemoryGraph();
+		const data = await client.getMemoryGraph();
 		graphData = data;
 	} catch (err) {
 		error = err instanceof Error ? err.message : "Failed to load memory graph";

@@ -12,6 +12,7 @@
 	},
 	"dependencies": {
 		"@bound/agent": "workspace:*",
+		"@bound/client": "workspace:*",
 		"@bound/core": "workspace:*",
 		"@bound/shared": "workspace:*",
 		"@bound/sync": "workspace:*",

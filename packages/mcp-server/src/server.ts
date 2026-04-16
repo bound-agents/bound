@@ -1,7 +1,7 @@
+import { BoundClient } from "@bound/client";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { BoundClient } from "./bound-client";
 import { createBoundChatHandler } from "./handler";
 
 function getBaseUrl(): string {

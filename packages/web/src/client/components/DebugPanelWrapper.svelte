@@ -1,7 +1,7 @@
 <script lang="ts">
 import type { Snippet } from "svelte";
 import type { Writable } from "svelte/store";
-import type { WebSocketMessage } from "../lib/websocket";
+import type { WebSocketMessage } from "../lib/bound";
 import ContextDebugPanel from "./ContextDebugPanel.svelte";
 
 export interface TurnRange {

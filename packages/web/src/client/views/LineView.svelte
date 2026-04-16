@@ -1,20 +1,20 @@
 <script lang="ts">
+import type { Thread } from "@bound/shared";
 import { ChevronLeft, Paperclip, Send, Settings, X } from "lucide-svelte";
 import { onDestroy, onMount, tick } from "svelte";
 import DebugPanelWrapper from "../components/DebugPanelWrapper.svelte";
 import MessageList from "../components/MessageList.svelte";
 import { LineBadge, StatusChip } from "../components/shared";
-import { api } from "../lib/api";
-import type { Thread } from "../lib/api";
-import { getLineColor } from "../lib/metro-lines";
-import { modelStore } from "../lib/modelStore";
-import { navigateTo } from "../lib/router";
 import {
+	client,
 	connectWebSocket,
 	disconnectWebSocket,
 	subscribeToThread,
 	wsEvents,
-} from "../lib/websocket";
+} from "../lib/bound";
+import { getLineColor } from "../lib/metro-lines";
+import { modelStore } from "../lib/modelStore";
+import { navigateTo } from "../lib/router";
 import { shouldClearWaiting } from "../utils/waiting";
 
 const { threadId } = $props<{ threadId: string }>();
@@ -62,7 +62,7 @@ const unsubscribeWs = wsEvents.subscribe((events) => {
 
 async function pollMessages(): Promise<void> {
 	try {
-		const latest = await api.listMessages(threadId);
+		const latest = await client.listMessages(threadId);
 		messages = latest;
 		// Clear waiting indicator if a new assistant or alert message arrived after we started waiting
 		if (
@@ -81,15 +81,12 @@ async function pollMessages(): Promise<void> {
 
 async function pollStatus(): Promise<void> {
 	try {
-		const res = await fetch(`/api/threads/${threadId}/status`);
-		if (res.ok) {
-			const data = (await res.json()) as { active: boolean; state: string | null };
-			agentActive = data.active;
-			agentState = data.state;
-			// Clear stale waiting indicator if agent is no longer active
-			if (waiting && !data.active) {
-				waiting = false;
-			}
+		const data = await client.getThreadStatus(threadId);
+		agentActive = data.active;
+		agentState = data.state;
+		// Clear stale waiting indicator if agent is no longer active
+		if (waiting && !data.active) {
+			waiting = false;
 		}
 	} catch (error) {
 		console.error("Failed to poll status:", error);
@@ -98,8 +95,8 @@ async function pollStatus(): Promise<void> {
 
 onMount(async () => {
 	try {
-		thread = await api.getThread(threadId);
-		messages = await api.listMessages(threadId);
+		thread = await client.getThread(threadId);
+		messages = await client.listMessages(threadId);
 		connectWebSocket();
 		subscribeToThread(threadId);
 	} catch (error) {
@@ -123,12 +120,10 @@ async function handleSendMessage(): Promise<void> {
 
 	sending = true;
 	try {
-		const newMessage = await api.sendMessage(
-			threadId,
-			inputText.trim(),
-			modelStore.getModel() || undefined,
-			pendingFileId ?? undefined,
-		);
+		const newMessage = await client.sendMessage(threadId, inputText.trim(), {
+			modelId: modelStore.getModel() || undefined,
+			fileId: pendingFileId ?? undefined,
+		});
 		// Deduplicate: WebSocket may have already delivered this message
 		const alreadyExists = messages.some((m: { id: string }) => m.id === newMessage.id);
 		if (!alreadyExists) {
@@ -147,7 +142,7 @@ async function handleSendMessage(): Promise<void> {
 
 async function handleCancel(): Promise<void> {
 	try {
-		await fetch(`/api/status/cancel/${threadId}`, { method: "POST" });
+		await client.cancelThread(threadId);
 	} catch (error) {
 		console.error("Failed to cancel agent:", error);
 	}
@@ -162,14 +157,9 @@ async function handleFileChange(e: Event): Promise<void> {
 	uploadStatus = "Uploading...";
 	pendingFileId = null;
 	try {
-		const res = await fetch("/api/files/upload", { method: "POST", body: form });
-		if (res.ok) {
-			const uploaded = await res.json();
-			pendingFileId = uploaded.id ?? null;
-			uploadStatus = `Attached: ${file.name}`;
-		} else {
-			uploadStatus = "Upload failed";
-		}
+		const uploaded = await client.uploadFile(file, file.name);
+		pendingFileId = uploaded.id ?? null;
+		uploadStatus = `Attached: ${file.name}`;
 	} catch (error) {
 		console.error("Failed to upload file:", error);
 		uploadStatus = "Upload failed";

@@ -1,6 +1,7 @@
 <script lang="ts">
 import { Download, X } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
+import { client } from "../lib/bound";
 import { extensionToLanguage, getFileCategory } from "../lib/file-categories";
 import type { FileMetadata } from "../lib/file-tree";
 
@@ -36,9 +37,7 @@ async function fetchContent(): Promise<void> {
 	try {
 		loading = true;
 		error = null;
-		const response = await fetch(`/api/files/${file.path}`);
-		if (!response.ok) throw new Error(`HTTP ${response.status}`);
-		const data = await response.json();
+		const data = await client.getFile(file.path);
 
 		if (data.content === null || data.size_bytes === 0) {
 			// AC2.10: Empty file

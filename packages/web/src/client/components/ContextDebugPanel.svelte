@@ -1,8 +1,7 @@
 <script lang="ts">
+import type { ContextDebugTurn } from "@bound/client";
 import { onDestroy } from "svelte";
-import { type ContextDebugTurn, api } from "../lib/api";
-import { wsEvents } from "../lib/websocket";
-import type { WebSocketMessage } from "../lib/websocket";
+import { type WebSocketMessage, client, wsEvents } from "../lib/bound";
 import ContextBar from "./ContextBar.svelte";
 import ContextSectionList from "./ContextSectionList.svelte";
 import ContextSparkline from "./ContextSparkline.svelte";
@@ -22,7 +21,7 @@ let loading = $state(false);
 async function fetchData(): Promise<void> {
 	loading = true;
 	try {
-		const data = await api.getContextDebug(threadId);
+		const data = await client.getContextDebug(threadId);
 		turns = data;
 		if (turns.length > 0) {
 			selectedTurnIdx = turns.length - 1; // start at latest

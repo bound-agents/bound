@@ -4,6 +4,7 @@ import { ChevronDown } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
 import { LineBadge, MetroCard, SectionHeader, StatusChip } from "../components/shared";
 import { type DedupedAdvisory, deduplicateAdvisories } from "../lib/advisory-utils";
+import { client } from "../lib/bound";
 
 let advisories: Advisory[] = $state([]);
 let loading = $state(true);
@@ -24,10 +25,7 @@ const resolved = $derived(
 
 async function loadAdvisories(): Promise<void> {
 	try {
-		const response = await fetch("/api/advisories");
-		if (response.ok) {
-			advisories = await response.json();
-		}
+		advisories = await client.listAdvisories();
 	} catch (error) {
 		console.error("Failed to load advisories:", error);
 	}
@@ -36,18 +34,16 @@ async function loadAdvisories(): Promise<void> {
 
 async function loadNetworkStatus(): Promise<void> {
 	try {
-		const response = await fetch("/api/status/network");
-		if (response.ok) {
-			const data = await response.json();
-			if (Array.isArray(data.hosts)) {
-				const map = new Map<string, string>();
-				for (const host of data.hosts) {
-					if (host.site_id && host.host_name) {
-						map.set(host.site_id, host.host_name);
-					}
+		const data = await client.getNetwork();
+		if (Array.isArray(data.hosts)) {
+			const map = new Map<string, string>();
+			for (const host of data.hosts) {
+				const h = host as { site_id?: string; host_name?: string };
+				if (h.site_id && h.host_name) {
+					map.set(h.site_id, h.host_name);
 				}
-				hostNameMap = map;
 			}
+			hostNameMap = map;
 		}
 	} catch (error) {
 		console.error("Failed to load network status:", error);
@@ -67,13 +63,18 @@ onDestroy(() => {
 async function performAction(id: string, action: string): Promise<void> {
 	actionInProgress = `${id}:${action}`;
 	try {
-		const response = await fetch(`/api/advisories/${id}/${action}`, {
-			method: "POST",
-		});
-		if (response.ok) {
+		const actionMap: Record<string, (id: string) => Promise<unknown>> = {
+			approve: (id) => client.approveAdvisory(id),
+			dismiss: (id) => client.dismissAdvisory(id),
+			defer: (id) => client.deferAdvisory(id),
+			apply: (id) => client.applyAdvisory(id),
+		};
+		const fn = actionMap[action];
+		if (fn) {
+			await fn(id);
 			await loadAdvisories();
 		} else {
-			console.error(`Failed to ${action} advisory:`, await response.text());
+			console.error(`Unknown advisory action: ${action}`);
 		}
 	} catch (error) {
 		console.error(`Failed to ${action} advisory:`, error);

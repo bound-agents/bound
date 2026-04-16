@@ -1,10 +1,10 @@
 <script lang="ts">
+import type { Thread } from "@bound/shared";
 import { onDestroy, onMount } from "svelte";
 import MemoryGraph from "../components/MemoryGraph.svelte";
 import ThreadList from "../components/ThreadList.svelte";
 import { SectionHeader } from "../components/shared";
-import { api } from "../lib/api";
-import type { Thread } from "../lib/api";
+import { client } from "../lib/bound";
 import { navigateTo } from "../lib/router";
 
 interface ThreadStatus {
@@ -37,17 +37,14 @@ const filteredThreads = $derived(
 
 async function loadThreads(): Promise<void> {
 	try {
-		threads = await api.listThreads();
+		threads = await client.listThreads();
 
 		const statusMap = new Map<string, ThreadStatus>();
 		await Promise.all(
 			threads.map(async (t) => {
 				try {
-					const res = await fetch(`/api/threads/${t.id}/status`);
-					if (res.ok) {
-						const data = (await res.json()) as ThreadStatus;
-						statusMap.set(t.id, data);
-					}
+					const data = await client.getThreadStatus(t.id);
+					statusMap.set(t.id, data);
 				} catch {
 					// Ignore individual status fetch failures
 				}
@@ -62,7 +59,7 @@ async function loadThreads(): Promise<void> {
 async function newThread(): Promise<void> {
 	creating = true;
 	try {
-		const thread = await api.createThread();
+		const thread = await client.createThread();
 		navigateTo(`/line/${thread.id}`);
 	} catch (error) {
 		console.error("Failed to create thread:", error);

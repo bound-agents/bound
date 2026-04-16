@@ -2,6 +2,7 @@
 import { onDestroy, onMount } from "svelte";
 import DepartureBoard from "../components/DepartureBoard.svelte";
 import { LineBadge, SectionHeader, StatusChip } from "../components/shared";
+import { client } from "../lib/bound";
 import { navigateTo } from "../lib/router";
 import { sortTasks } from "../lib/task-sort";
 
@@ -115,8 +116,7 @@ function toggleTaskExpansion(taskId: string): void {
 
 async function loadTasks(): Promise<void> {
 	try {
-		const response = await fetch("/api/tasks");
-		allTasks = await response.json();
+		allTasks = await client.listTasks();
 	} catch (error) {
 		console.error("Failed to load tasks:", error);
 	}
@@ -125,7 +125,7 @@ async function loadTasks(): Promise<void> {
 
 async function cancelTask(taskId: string): Promise<void> {
 	try {
-		await fetch(`/api/tasks/${taskId}/cancel`, { method: "POST" });
+		await client.cancelTask(taskId);
 		await loadTasks();
 	} catch (error) {
 		console.error("Failed to cancel task:", error);
