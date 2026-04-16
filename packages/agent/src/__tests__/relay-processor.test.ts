@@ -1588,11 +1588,11 @@ describe("RelayProcessor", () => {
 			);
 
 			const threadId = "thread-model-match";
-			// Insert a turns row for the thread with model_id = "claude-3"
-			const turnTimestamp = new Date().toISOString();
+			// Insert a thread with model_hint = "claude-3" for Tier 2 routing
 			db.run(
-				"INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, created_at) VALUES (?, ?, ?, ?, ?)",
-				[threadId, "claude-3", 100, 50, turnTimestamp],
+				`INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted, model_hint)
+				 VALUES (?, 'user-1', 'web', 'test', ?, ?, ?, 0, 'claude-3')`,
+				[threadId, timestamp, timestamp, timestamp],
 			);
 
 			const now = new Date();

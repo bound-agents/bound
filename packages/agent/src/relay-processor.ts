@@ -52,7 +52,6 @@ import {
 } from "@bound/shared";
 import { AgentLoop } from "./agent-loop.js";
 import type { MCPClient } from "./mcp-client.js";
-import { resolveModel } from "./model-resolution.js";
 import type { AgentLoopConfig } from "./types.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 500;
@@ -849,15 +848,15 @@ export class RelayProcessor {
 			// Affinity host gone — fall through
 		}
 
-		// Tier 2: Model match — find a host that supports the model last used in this thread
+		// Tier 2: Model match — use threads.model_hint (authoritative model preference)
 		try {
-			const lastModel = this.db
-				.query<{ model_id: string | null }, [string]>(
-					"SELECT model_id FROM turns WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
+			const threadHint = this.db
+				.query<{ model_hint: string | null }, [string]>(
+					"SELECT model_hint FROM threads WHERE id = ?",
 				)
 				.get(threadId);
 
-			if (lastModel?.model_id) {
+			if (threadHint?.model_hint) {
 				const hosts = this.db
 					.query<{ site_id: string; models: string }, []>(
 						"SELECT site_id, models FROM hosts WHERE deleted = 0 AND models IS NOT NULL",
@@ -875,7 +874,7 @@ export class RelayProcessor {
 					const models = modelsResult.value;
 					// Check if any model entry matches (handle both string[] and HostModelEntry[] formats)
 					const hasMatch = models.some((m) =>
-						typeof m === "string" ? m === lastModel.model_id : m.id === lastModel.model_id,
+						typeof m === "string" ? m === threadHint.model_hint : m.id === threadHint.model_hint,
 					);
 					if (hasMatch) return host.site_id;
 				}
@@ -1458,35 +1457,13 @@ export class RelayProcessor {
 		delegatedCtx: AppContext,
 		shouldYield?: () => boolean,
 	): Promise<Record<string, unknown>> {
-		// Resolve thread's preferred model: check the last message with a model_id
-		// so /model slash command preferences and model continuity are respected.
+		// Resolve thread's preferred model from the authoritative threads.model_hint column.
 		let threadModelId: string | undefined;
-		if (this.modelRouter) {
-			const lastThreadModel = this.db
-				.prepare(
-					`SELECT model_id FROM messages
-					 WHERE thread_id = ? AND model_id IS NOT NULL
-					   AND role IN ('assistant', 'tool_call', 'system')
-					 ORDER BY created_at DESC LIMIT 1`,
-				)
-				.get(payload.thread_id) as { model_id: string } | null;
-			if (lastThreadModel?.model_id) {
-				const resolution = resolveModel(
-					lastThreadModel.model_id,
-					this.modelRouter,
-					this.db,
-					this.siteId,
-				);
-				if (resolution.kind !== "error") {
-					threadModelId = lastThreadModel.model_id;
-				} else {
-					this.logger.warn("[relay] Thread model unavailable, using node default", {
-						threadId: payload.thread_id,
-						threadModel: lastThreadModel.model_id,
-						reason: resolution.error,
-					});
-				}
-			}
+		const threadRow = this.db
+			.query("SELECT model_hint FROM threads WHERE id = ?")
+			.get(payload.thread_id) as { model_hint: string | null } | null;
+		if (threadRow?.model_hint) {
+			threadModelId = threadRow.model_hint;
 		}
 
 		const loopConfig: AgentLoopConfig = {
