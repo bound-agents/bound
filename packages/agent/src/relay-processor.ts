@@ -221,6 +221,10 @@ export class RelayProcessor {
 		//     are callbacks from a prior request and do not need re-processing on this host.
 		const allSelfOutbox = readUndelivered(this.db, this.siteId);
 		if (allSelfOutbox.length > 0) {
+			this.logger.info("[relay] Loopback: processing self-targeted outbox entries", {
+				count: allSelfOutbox.length,
+				kinds: allSelfOutbox.map((e) => e.kind),
+			});
 			const now = new Date().toISOString();
 			const requestKindSet = new Set<string>(RELAY_REQUEST_KINDS);
 			for (const entry of allSelfOutbox) {

@@ -535,8 +535,17 @@ export class DiscordConnector implements PlatformConnector {
 		// Write intake relay to outbox — no direct agent loop invocation (AC6.1)
 		try {
 			const hubSiteId = this.getHubSiteId();
+			const intakeId = randomUUID();
+			this.logger.info("[discord] Writing intake to outbox", {
+				intakeId,
+				threadId: thread.id,
+				messageId,
+				targetSiteId: hubSiteId,
+				isSelf: hubSiteId === this.siteId,
+				discordMsgId: msg.id,
+			});
 			writeOutbox(this.db, {
-				id: randomUUID(),
+				id: intakeId,
 				source_site_id: this.siteId,
 				target_site_id: hubSiteId,
 				kind: "intake",
@@ -563,6 +572,17 @@ export class DiscordConnector implements PlatformConnector {
 				created_at: now,
 				expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
 			});
+			// Verify the outbox entry was actually inserted (INSERT OR IGNORE may silently discard)
+			const written = this.db
+				.query<{ id: string }, [string]>("SELECT id FROM relay_outbox WHERE id = ?")
+				.get(intakeId);
+			if (!written) {
+				this.logger.error("[discord] Intake NOT inserted — likely idempotency collision", {
+					intakeId,
+					discordMsgId: msg.id,
+					idempotencyKey: `intake:discord:${msg.id}`,
+				});
+			}
 		} catch (err) {
 			this.stopTyping(thread.id);
 			this.logger.error("Failed to write intake relay to outbox", { error: String(err) });

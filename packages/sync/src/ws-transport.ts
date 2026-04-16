@@ -411,6 +411,12 @@ export class WsTransport {
 			// The hub's own agent loop can write relay outbox entries (e.g., inference
 			// requests targeting a spoke). These must be routed just like entries
 			// received from a spoke via handleRelaySend.
+			this.config.logger?.info("WsTransport: hub routing outbox entry", {
+				kind: entry.kind,
+				targetSiteId: entry.target_site_id,
+				isSelf: entry.target_site_id === this.config.siteId,
+				entryId: entry.id,
+			});
 			const payload: RelaySendPayload = {
 				entries: [
 					{
