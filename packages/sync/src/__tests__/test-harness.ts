@@ -1,9 +1,15 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { setChangelogEventBus, setRelayOutboxEventBus } from "@bound/core";
+import { TypedEventEmitter } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { ensureKeypair } from "../crypto.js";
+import { ensureKeypair, exportPublicKey } from "../crypto.js";
+import { KeyManager } from "../key-manager.js";
+import { WsSyncClient } from "../ws-client.js";
+import { WsConnectionManager, createWsHandlers } from "../ws-server.js";
+import { WsTransport } from "../ws-transport.js";
 
 export interface TestInstance {
 	db: Database;
@@ -298,5 +304,247 @@ export async function createTestInstance(config: {
 				await cleanupTmpDir(dir);
 			}
 		},
+	};
+}
+
+export interface WsTestCluster {
+	hub: TestInstance & {
+		server: ReturnType<typeof Bun.serve>;
+		wsTransport: WsTransport;
+		connectionManager: WsConnectionManager;
+		eventBus: TypedEventEmitter;
+	};
+	spokes: Array<
+		TestInstance & {
+			wsTransport: WsTransport;
+			wsClient: WsSyncClient;
+			eventBus: TypedEventEmitter;
+		}
+	>;
+	cleanup: () => Promise<void>;
+}
+
+/**
+ * Create a multi-node WS test cluster with a hub and N spokes.
+ *
+ * All nodes share a single TypedEventEmitter so that relay:outbox-written
+ * events emitted by the module-level writeOutbox() reach every WsTransport.
+ * Each WsTransport queries its own DB on drain, so non-owning transports
+ * find no entries and are effectively no-ops.
+ *
+ * NOTE: Because setChangelogEventBus and setRelayOutboxEventBus are
+ * module-level singletons, this function overwrites them. Tests using this
+ * cluster must not rely on separate per-instance event buses for changelog
+ * or relay outbox writes.
+ */
+export async function createWsTestCluster(config: {
+	spokeCount: number;
+	basePort: number;
+	testRunId: string;
+}): Promise<WsTestCluster> {
+	const { spokeCount, basePort, testRunId } = config;
+	const totalNodes = 1 + spokeCount; // hub + spokes
+
+	// One shared event bus for all nodes (see NOTE above)
+	const sharedBus = new TypedEventEmitter();
+
+	// Wire module-level event buses so writeOutbox() / insertRow() push to sharedBus
+	setChangelogEventBus(sharedBus);
+	setRelayOutboxEventBus(sharedBus);
+
+	// Generate keypairs for all nodes: index 0 = hub, 1..N = spokes
+	const keypairs = await Promise.all(
+		Array.from({ length: totalNodes }, (_, i) =>
+			ensureKeypair(join("/tmp", `bound-ws-cluster-${testRunId}-${i}`)),
+		),
+	);
+
+	// Build shared keyring
+	const keyring = {
+		hosts: Object.fromEntries(
+			await Promise.all(
+				keypairs.map(async (kp, i) => [
+					kp.siteId,
+					{
+						public_key: await exportPublicKey(kp.publicKey),
+						url: `http://localhost:${basePort + i}`,
+					},
+				]),
+			),
+		),
+	};
+
+	// Helper: create a DB with full schema at a given path
+	const createDb = async (dbPath: string): Promise<Database> => {
+		const dir = dirname(dbPath);
+		if (!existsSync(dir)) {
+			await mkdir(dir, { recursive: true });
+		}
+		const db = new Database(dbPath);
+		db.run("PRAGMA journal_mode = WAL");
+		db.run("PRAGMA foreign_keys = ON");
+		const statements = FULL_SCHEMA.split(";").filter((s) => s.trim());
+		for (const stmt of statements) {
+			if (stmt.trim()) {
+				db.run(stmt);
+			}
+		}
+		return db;
+	};
+
+	// ── Hub ──────────────────────────────────────────────────────────────────
+
+	const hubKeypair = keypairs[0];
+	const hubSiteId = hubKeypair.siteId;
+	const hubPort = basePort;
+
+	const hubDb = await createDb(join("/tmp", `bound-ws-cluster-${testRunId}-hub.db`));
+
+	const hubKeyManager = new KeyManager(
+		{ publicKey: hubKeypair.publicKey, privateKey: hubKeypair.privateKey },
+		hubSiteId,
+	);
+	await hubKeyManager.init(keyring);
+
+	const hubTransport = new WsTransport({
+		db: hubDb,
+		siteId: hubSiteId,
+		eventBus: sharedBus,
+		isHub: true,
+	});
+	hubTransport.start();
+
+	const connectionManager = new WsConnectionManager();
+
+	const wsHandlers = createWsHandlers({
+		connectionManager,
+		keyring,
+		keyManager: hubKeyManager,
+		wsTransport: hubTransport,
+	});
+
+	const hubServer = Bun.serve({
+		port: hubPort,
+		fetch: async (req, server) => {
+			const url = new URL(req.url);
+			if (url.pathname === "/sync/ws") {
+				// biome-ignore lint/suspicious/noExplicitAny: Bun.serve Server type is structurally compatible
+				return (await wsHandlers.handleUpgrade(req, server as any)) ?? new Response("upgraded");
+			}
+			return new Response("not found", { status: 404 });
+		},
+		websocket: wsHandlers.websocket,
+	});
+
+	// ── Spokes ───────────────────────────────────────────────────────────────
+
+	const spokeNodes: WsTestCluster["spokes"] = [];
+
+	for (let i = 0; i < spokeCount; i++) {
+		const spokeKeypair = keypairs[1 + i];
+		const spokeSiteId = spokeKeypair.siteId;
+		const spokeDb = await createDb(join("/tmp", `bound-ws-cluster-${testRunId}-spoke-${i}.db`));
+
+		const spokeKeyManager = new KeyManager(
+			{ publicKey: spokeKeypair.publicKey, privateKey: spokeKeypair.privateKey },
+			spokeSiteId,
+		);
+		await spokeKeyManager.init(keyring);
+
+		const spokeTransport = new WsTransport({
+			db: spokeDb,
+			siteId: spokeSiteId,
+			eventBus: sharedBus,
+			isHub: false,
+		});
+		spokeTransport.start();
+
+		const wsClient = new WsSyncClient({
+			hubUrl: `http://localhost:${hubPort}`,
+			privateKey: spokeKeypair.privateKey,
+			siteId: spokeSiteId,
+			keyManager: spokeKeyManager,
+			hubSiteId,
+			wsTransport: spokeTransport,
+		});
+
+		await wsClient.connect();
+
+		spokeNodes.push({
+			db: spokeDb,
+			siteId: spokeSiteId,
+			wsTransport: spokeTransport,
+			wsClient,
+			eventBus: sharedBus,
+			cleanup: async () => {
+				spokeDb.close();
+			},
+		});
+	}
+
+	// Wait briefly for all spoke WebSocket connections to open
+	await new Promise((r) => setTimeout(r, 100));
+
+	// ── Cleanup ───────────────────────────────────────────────────────────────
+
+	const cleanup = async (): Promise<void> => {
+		// Stop spoke clients first
+		for (const spoke of spokeNodes) {
+			spoke.wsClient.close();
+		}
+
+		// Allow connections to close
+		await new Promise((r) => setTimeout(r, 50));
+
+		// Stop transports
+		for (const spoke of spokeNodes) {
+			spoke.wsTransport.stop();
+			spoke.db.close();
+		}
+
+		hubTransport.stop();
+		hubServer.stop(true);
+		hubDb.close();
+
+		// Reset module-level buses so they don't bleed into other tests
+		setChangelogEventBus(null);
+
+		// Clean up keypair files
+		for (let i = 0; i < totalNodes; i++) {
+			const dir = join("/tmp", `bound-ws-cluster-${testRunId}-${i}`);
+			if (existsSync(dir)) {
+				await cleanupTmpDir(dir);
+			}
+		}
+
+		// Clean up DB files
+		const hubDbPath = join("/tmp", `bound-ws-cluster-${testRunId}-hub.db`);
+		if (existsSync(hubDbPath)) {
+			await cleanupTmpDir(hubDbPath).catch(() => {});
+		}
+		for (let i = 0; i < spokeCount; i++) {
+			const spokeDbPath = join("/tmp", `bound-ws-cluster-${testRunId}-spoke-${i}.db`);
+			if (existsSync(spokeDbPath)) {
+				await cleanupTmpDir(spokeDbPath).catch(() => {});
+			}
+		}
+	};
+
+	return {
+		hub: {
+			db: hubDb,
+			siteId: hubSiteId,
+			server: hubServer,
+			wsTransport: hubTransport,
+			connectionManager,
+			eventBus: sharedBus,
+			cleanup: async () => {
+				hubTransport.stop();
+				hubServer.stop(true);
+				hubDb.close();
+			},
+		},
+		spokes: spokeNodes,
+		cleanup,
 	};
 }

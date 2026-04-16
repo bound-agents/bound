@@ -60,7 +60,7 @@ describe("Host Heartbeat", () => {
 		expect(updatedTime).toBeGreaterThan(initialTime);
 	});
 
-	it("does NOT create change_log entries (heartbeat is local-only)", async () => {
+	it("creates change_log entries so freshness syncs to peers", async () => {
 		const handle = startHostHeartbeat(db, siteId, { intervalMs: 30 });
 
 		await new Promise((resolve) => setTimeout(resolve, 40));
@@ -73,7 +73,7 @@ describe("Host Heartbeat", () => {
 			)
 			.all(siteId);
 
-		expect(entries.length).toBe(0);
+		expect(entries.length).toBeGreaterThanOrEqual(1);
 	});
 
 	it("stop() clears the timer and prevents further updates", async () => {
