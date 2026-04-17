@@ -806,4 +806,433 @@ describe("ClientConnection type and WS message schemas", () => {
 			testHandler.cleanup();
 		});
 	});
+
+	describe("Task 5: tool:call delivery to WS clients", () => {
+		it("should deliver tool:call message to subscribed client with matching tool", () => {
+			const eventBus = new TypedEventEmitter();
+			const mockDb = {
+				prepare: (_sql: string) => ({
+					run: () => {},
+				}),
+			} as any;
+
+			const testHandler = createWebSocketHandler({
+				eventBus,
+				db: mockDb,
+				siteId: "site-1",
+				defaultUserId: "user-1",
+			});
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			// First, register tools on the connection
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [
+						{
+							type: "function",
+							function: {
+								name: "my_tool",
+								description: "A test tool",
+								parameters: { type: "object" },
+							},
+						},
+					],
+				}),
+			);
+
+			// Subscribe to a thread
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-123",
+				}),
+			);
+
+			// Clear any previous messages
+			(mockWs as unknown as MockWebSocket).messages = [];
+
+			// Emit client_tool_call:created event
+			eventBus.emit("client_tool_call:created", {
+				threadId: "thread-123",
+				callId: "call-456",
+				toolName: "my_tool",
+				arguments: { arg1: "value1" },
+			});
+
+			// Check that tool:call message was sent
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages).toHaveLength(1);
+			const toolCallMsg = messages[0] as Record<string, unknown>;
+			expect(toolCallMsg.type).toBe("tool:call");
+			expect(toolCallMsg.call_id).toBe("call-456");
+			expect(toolCallMsg.thread_id).toBe("thread-123");
+			expect(toolCallMsg.tool_name).toBe("my_tool");
+			expect(toolCallMsg.arguments).toEqual({ arg1: "value1" });
+
+			testHandler.cleanup();
+		});
+
+		it("should not deliver tool:call to client without matching tool", () => {
+			const eventBus = new TypedEventEmitter();
+			const mockDb = {
+				prepare: (_sql: string) => ({
+					run: () => {},
+				}),
+			} as any;
+
+			const testHandler = createWebSocketHandler({
+				eventBus,
+				db: mockDb,
+				siteId: "site-1",
+				defaultUserId: "user-1",
+			});
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			// Register different tools
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [
+						{
+							type: "function",
+							function: {
+								name: "other_tool",
+								description: "Another tool",
+								parameters: { type: "object" },
+							},
+						},
+					],
+				}),
+			);
+
+			// Subscribe to thread
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-123",
+				}),
+			);
+
+			// Clear messages
+			(mockWs as unknown as MockWebSocket).messages = [];
+
+			// Emit tool call for tool we don't have
+			eventBus.emit("client_tool_call:created", {
+				threadId: "thread-123",
+				callId: "call-456",
+				toolName: "my_tool",
+				arguments: { arg1: "value1" },
+			});
+
+			// No message should be sent
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages).toHaveLength(0);
+
+			testHandler.cleanup();
+		});
+
+		it("should not deliver tool:call to unsubscribed client", () => {
+			const eventBus = new TypedEventEmitter();
+			const mockDb = {
+				prepare: (_sql: string) => ({
+					run: () => {},
+				}),
+			} as any;
+
+			const testHandler = createWebSocketHandler({
+				eventBus,
+				db: mockDb,
+				siteId: "site-1",
+				defaultUserId: "user-1",
+			});
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			// Register tools but don't subscribe to the thread
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [
+						{
+							type: "function",
+							function: {
+								name: "my_tool",
+								description: "A test tool",
+								parameters: { type: "object" },
+							},
+						},
+					],
+				}),
+			);
+
+			// Clear messages
+			(mockWs as unknown as MockWebSocket).messages = [];
+
+			// Emit tool call for thread we're not subscribed to
+			eventBus.emit("client_tool_call:created", {
+				threadId: "thread-123",
+				callId: "call-456",
+				toolName: "my_tool",
+				arguments: { arg1: "value1" },
+			});
+
+			// No message should be sent
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages).toHaveLength(0);
+
+			testHandler.cleanup();
+		});
+
+		it("should deliver to only the first matching connection", () => {
+			const eventBus = new TypedEventEmitter();
+			const mockDb = {
+				prepare: (_sql: string) => ({
+					run: () => {},
+				}),
+			} as any;
+
+			const testHandler = createWebSocketHandler({
+				eventBus,
+				db: mockDb,
+				siteId: "site-1",
+				defaultUserId: "user-1",
+			});
+
+			// Create two connections with the same tool and subscription
+			const mockWs1 = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			const mockWs2 = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+
+			testHandler.open(mockWs1);
+			testHandler.open(mockWs2);
+
+			// Register tools on both
+			for (const ws of [mockWs1, mockWs2]) {
+				testHandler.message(
+					ws,
+					JSON.stringify({
+						type: "session:configure",
+						tools: [
+							{
+								type: "function",
+								function: {
+									name: "my_tool",
+									description: "A test tool",
+									parameters: { type: "object" },
+								},
+							},
+						],
+					}),
+				);
+
+				// Subscribe to same thread
+				testHandler.message(
+					ws,
+					JSON.stringify({
+						type: "thread:subscribe",
+						thread_id: "thread-123",
+					}),
+				);
+			}
+
+			// Clear messages
+			(mockWs1 as unknown as MockWebSocket).messages = [];
+			(mockWs2 as unknown as MockWebSocket).messages = [];
+
+			// Emit tool call
+			eventBus.emit("client_tool_call:created", {
+				threadId: "thread-123",
+				callId: "call-456",
+				toolName: "my_tool",
+				arguments: { arg1: "value1" },
+			});
+
+			// Only one should receive the message
+			const messages1 = (mockWs1 as unknown as MockWebSocket).messages;
+			const messages2 = (mockWs2 as unknown as MockWebSocket).messages;
+
+			expect(messages1.length + messages2.length).toBe(1);
+
+			testHandler.cleanup();
+		});
+	});
+
+	describe("Task 6: Event name migration and thread:status push", () => {
+		it("should send task:updated instead of task_update", () => {
+			const eventBus = new TypedEventEmitter();
+			const testHandler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			// Clear messages
+			(mockWs as unknown as MockWebSocket).messages = [];
+
+			// Emit task:completed event
+			eventBus.emit("task:completed", {
+				task_id: "task-123",
+				result: "success",
+			});
+
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages).toHaveLength(1);
+			const taskMsg = messages[0] as Record<string, unknown>;
+			expect(taskMsg.type).toBe("task:updated");
+
+			testHandler.cleanup();
+		});
+
+		it("should send file:updated instead of file_update", () => {
+			const eventBus = new TypedEventEmitter();
+			const testHandler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			// Clear messages
+			(mockWs as unknown as MockWebSocket).messages = [];
+
+			// Emit file:changed event
+			eventBus.emit("file:changed", {
+				path: "/home/user/file.txt",
+				operation: "created",
+			});
+
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages).toHaveLength(1);
+			const fileMsg = messages[0] as Record<string, unknown>;
+			expect(fileMsg.type).toBe("file:updated");
+
+			testHandler.cleanup();
+		});
+
+		it("should push thread:status to subscribed clients", () => {
+			const eventBus = new TypedEventEmitter();
+			const testHandler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			// Subscribe to thread
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-123",
+				}),
+			);
+
+			// Clear messages
+			(mockWs as unknown as MockWebSocket).messages = [];
+
+			// Emit status:forward event with thread_id
+			eventBus.emit("status:forward", {
+				thread_id: "thread-123",
+				status: "running",
+				detail: "claude-opus",
+				tokens: 1234,
+			} as any);
+
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages).toHaveLength(1);
+			const statusMsg = messages[0] as Record<string, unknown>;
+			expect(statusMsg.type).toBe("thread:status");
+			expect(statusMsg.thread_id).toBe("thread-123");
+			expect(statusMsg.active).toBe(true);
+			expect(statusMsg.state).toBe("running");
+			expect(statusMsg.tokens).toBe(1234);
+			expect(statusMsg.model).toBe("claude-opus");
+
+			testHandler.cleanup();
+		});
+
+		it("should not push thread:status to non-subscribed clients", () => {
+			const eventBus = new TypedEventEmitter();
+			const testHandler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			// Subscribe to different thread
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-456",
+				}),
+			);
+
+			// Clear messages
+			(mockWs as unknown as MockWebSocket).messages = [];
+
+			// Emit status for different thread
+			eventBus.emit("status:forward", {
+				thread_id: "thread-123",
+				status: "running",
+				detail: "claude-opus",
+				tokens: 1234,
+			} as any);
+
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages).toHaveLength(0);
+
+			testHandler.cleanup();
+		});
+
+		it("should verify event names in broadcast", () => {
+			const eventBus = new TypedEventEmitter();
+			const testHandler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			// Subscribe to thread
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-123",
+				}),
+			);
+
+			// Clear messages
+			(mockWs as unknown as MockWebSocket).messages = [];
+
+			// Emit all event types and verify names
+			const eventTypes = [
+				{
+					name: "task:completed",
+					data: { task_id: "t1", result: null },
+					expectedType: "task:updated",
+				},
+				{
+					name: "file:changed",
+					data: { path: "/test", operation: "created" as const },
+					expectedType: "file:updated",
+				},
+			];
+
+			for (const eventType of eventTypes) {
+				(mockWs as unknown as MockWebSocket).messages = [];
+				eventBus.emit(eventType.name as any, eventType.data);
+
+				const messages = (mockWs as unknown as MockWebSocket).messages;
+				expect(messages.length).toBeGreaterThan(0);
+				const msg = messages[0] as Record<string, unknown>;
+				expect(msg.type).toBe(eventType.expectedType);
+			}
+
+			testHandler.cleanup();
+		});
+	});
 });

@@ -4,9 +4,10 @@ import {
 	acknowledgeClientToolCall,
 	enqueueToolResult,
 	getPendingClientToolCalls,
+	updateClaimedBy,
 } from "@bound/core";
 import { insertRow } from "@bound/core";
-import type { Message, TypedEventEmitter } from "@bound/shared";
+import type { Message, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { ServerWebSocket } from "bun";
 import { z } from "zod";
 
@@ -133,7 +134,7 @@ export function createWebSocketHandler(
 		result: string | null;
 	}): void => {
 		const message = JSON.stringify({
-			type: "task_update",
+			type: "task:updated",
 			data: {
 				taskId: data.task_id,
 				status: "completed",
@@ -152,7 +153,7 @@ export function createWebSocketHandler(
 		operation: "created" | "modified" | "deleted";
 	}): void => {
 		const message = JSON.stringify({
-			type: "file_update",
+			type: "file:updated",
 			data: {
 				path: data.path,
 				operation: data.operation,
@@ -449,6 +450,75 @@ export function createWebSocketHandler(
 		}
 	}
 
+	const handleClientToolCallCreated = (data: {
+		threadId: string;
+		callId: string;
+		toolName: string;
+		arguments: Record<string, unknown>;
+	}): void => {
+		// Find the first connection subscribed to this thread that has the matching tool
+		for (const [, conn] of clients) {
+			if (conn.subscriptions.has(data.threadId) && conn.clientTools.has(data.toolName)) {
+				const toolCallMessage = JSON.stringify({
+					type: "tool:call",
+					call_id: data.callId,
+					thread_id: data.threadId,
+					tool_name: data.toolName,
+					arguments: data.arguments,
+				});
+				if (conn.ws.readyState === 1) {
+					conn.ws.send(toolCallMessage);
+				}
+				// Update dispatch_queue entry status to 'processing' and claimed_by to connectionId
+				if (db) {
+					try {
+						updateClaimedBy(db, data.callId, conn.connectionId);
+					} catch {
+						// Ignore errors from updating dispatch queue
+					}
+				}
+				break; // Deliver to first matching connection
+			}
+		}
+	};
+
+	const handleThreadStatus = (data: {
+		threadId: string;
+		active: boolean;
+		state: string | null;
+		tokens: number;
+		model: string | null;
+	}): void => {
+		for (const [, conn] of clients) {
+			if (conn.subscriptions.has(data.threadId)) {
+				const statusMessage = JSON.stringify({
+					type: "thread:status",
+					thread_id: data.threadId,
+					active: data.active,
+					state: data.state,
+					tokens: data.tokens,
+					model: data.model,
+				});
+				if (conn.ws.readyState === 1) {
+					conn.ws.send(statusMessage);
+				}
+			}
+		}
+	};
+
+	const handleStatusForward = (data: StatusForwardPayload): void => {
+		// Only push thread:status if the payload is for a thread (not a task)
+		if (data.thread_id) {
+			handleThreadStatus({
+				threadId: data.thread_id,
+				active: data.status !== "idle",
+				state: data.status,
+				tokens: data.tokens,
+				model: data.detail,
+			});
+		}
+	};
+
 	eventBus.on("message:created", handleMessageCreated);
 	// message:broadcast is used for assistant-response re-emit so it reaches
 	// WebSocket clients without re-triggering the agent loop handler.
@@ -457,6 +527,8 @@ export function createWebSocketHandler(
 	eventBus.on("file:changed", handleFileChanged);
 	eventBus.on("alert:created", handleAlertCreated);
 	eventBus.on("context:debug", handleContextDebug);
+	eventBus.on("client_tool_call:created", handleClientToolCallCreated);
+	eventBus.on("status:forward", handleStatusForward);
 
 	return {
 		open(ws: ServerWebSocket<unknown>): void {
@@ -538,6 +610,8 @@ export function createWebSocketHandler(
 			eventBus.off("file:changed", handleFileChanged);
 			eventBus.off("alert:created", handleAlertCreated);
 			eventBus.off("context:debug", handleContextDebug);
+			eventBus.off("client_tool_call:created", handleClientToolCallCreated);
+			eventBus.off("status:forward", handleStatusForward);
 			clients.clear();
 		},
 	};
