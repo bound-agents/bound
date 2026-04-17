@@ -1,7 +1,6 @@
 import { BoundApiError, type BoundClient, BoundNotRunningError } from "@bound/client";
 import type { Message } from "@bound/shared";
 
-const POLL_INTERVAL_MS = 500;
 const MAX_POLL_MS = 30 * 60 * 1000; // 30 minutes
 
 export interface ToolResult {
@@ -18,31 +17,33 @@ export function createBoundChatHandler(
 			// Step 1: Get or create thread
 			const threadId = thread_id ?? (await client.createMcpThread()).thread_id;
 
-			// Step 2: Send message
-			await client.sendMessage(threadId, message);
+			// Step 2: Subscribe to thread events
+			client.subscribe(threadId);
 
-			// Step 3: Poll until agent loop completes
-			const startTime = Date.now();
-			while (true) {
-				const status = await client.getThreadStatus(threadId);
-				if (!status.active) break;
+			// Step 3: Wait for completion via thread:status event (with timeout)
+			const completionPromise = new Promise<void>((resolve, reject) => {
+				const timeout = setTimeout(() => {
+					reject(new Error("Timed out waiting for bound agent to respond after 30 minutes."));
+				}, MAX_POLL_MS);
 
-				if (Date.now() - startTime >= MAX_POLL_MS) {
-					return {
-						isError: true,
-						content: [
-							{
-								type: "text",
-								text: "Timed out waiting for bound agent to respond after 30 minutes.",
-							},
-						],
-					};
-				}
+				const handler = (data: { thread_id: string; active: boolean }) => {
+					if (data.thread_id === threadId && !data.active) {
+						clearTimeout(timeout);
+						client.off("thread:status", handler);
+						client.unsubscribe(threadId);
+						resolve();
+					}
+				};
+				client.on("thread:status", handler);
+			});
 
-				await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-			}
+			// Step 4: Send message over WS (fire-and-forget)
+			client.sendMessage(threadId, message);
 
-			// Step 4: Return last assistant message
+			// Step 5: Wait for completion
+			await completionPromise;
+
+			// Step 6: Return last assistant message (via HTTP listMessages)
 			const messages = await client.listMessages(threadId);
 			const lastAssistant = [...messages].reverse().find((m: Message) => m.role === "assistant");
 
@@ -56,6 +57,12 @@ export function createBoundChatHandler(
 			};
 		} catch (e) {
 			if (e instanceof BoundNotRunningError || e instanceof BoundApiError) {
+				return {
+					isError: true,
+					content: [{ type: "text", text: e.message }],
+				};
+			}
+			if (e instanceof Error) {
 				return {
 					isError: true,
 					content: [{ type: "text", text: e.message }],
