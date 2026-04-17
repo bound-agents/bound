@@ -214,6 +214,8 @@ export interface ParsedToolCall {
 	name: string;
 	input: Record<string, unknown>;
 	argsJson: string;
+	/** True when the tool_use args JSON failed to parse (likely output truncation). */
+	truncated?: boolean;
 }
 
 export interface ParsedResponse {
@@ -263,16 +265,23 @@ export function parseStreamChunks(chunks: StreamChunk[]): ParsedResponse {
 			const fullArgsJson = argsAccumulator.get(chunk.id) ?? "{}";
 			const name = nameMap.get(chunk.id) ?? chunk.id;
 			let input: Record<string, unknown> = {};
+			let truncated = false;
 			try {
 				input = JSON.parse(fullArgsJson);
 			} catch {
-				// leave as empty object
+				truncated = true;
+				console.warn(
+					`[parseStreamChunks] Failed to parse tool_use args for "${name}" (id=${chunk.id}), ` +
+						`args length=${fullArgsJson.length}. Output likely truncated by max_tokens limit. ` +
+						`Raw args prefix: ${fullArgsJson.slice(0, 200)}`,
+				);
 			}
 			toolCalls.push({
 				id: chunk.id,
 				name,
 				input,
 				argsJson: fullArgsJson,
+				truncated,
 			});
 		} else if (chunk.type === "done") {
 			inputTokens = chunk.usage.input_tokens;

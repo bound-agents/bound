@@ -10,6 +10,24 @@ const MAX_LINES = 2000;
 const MAX_BYTES = 50_000;
 const BINARY_CHECK_BYTES = 8192;
 
+// ─── Input validation ───────────────────────────────────────────────
+
+/**
+ * Validate that required parameters are present and non-undefined.
+ * Returns an error string if validation fails, or null if all required params exist.
+ */
+function validateRequired(
+	input: Record<string, unknown>,
+	required: string[],
+	toolName: string,
+): string | null {
+	const missing = required.filter((key) => input[key] === undefined || input[key] === null);
+	if (missing.length > 0) {
+		return `Error: missing required parameter${missing.length > 1 ? "s" : ""} for "${toolName}": ${missing.join(", ")}. This may indicate the tool call was truncated by the output token limit.`;
+	}
+	return null;
+}
+
 // ─── Error classification ───────────────────────────────────────────
 
 function isExpectedFsError(err: unknown, code: string): err is Error & { code?: string } {
@@ -157,6 +175,9 @@ function createReadTool(fs: IFileSystem): BuiltInTool {
 	return {
 		toolDefinition,
 		async execute(input) {
+			const validationError = validateRequired(input, ["path"], "read");
+			if (validationError) return validationError;
+
 			const path = input.path as string;
 			const offset = (input.offset as number | undefined) ?? 1;
 			const limit = (input.limit as number | undefined) ?? MAX_LINES;
@@ -242,6 +263,9 @@ function createWriteTool(fs: IFileSystem): BuiltInTool {
 	return {
 		toolDefinition,
 		async execute(input) {
+			const validationError = validateRequired(input, ["path", "content"], "write");
+			if (validationError) return validationError;
+
 			const path = input.path as string;
 			const content = input.content as string;
 
@@ -295,6 +319,9 @@ function createEditTool(fs: IFileSystem): BuiltInTool {
 	return {
 		toolDefinition,
 		async execute(input) {
+			const validationError = validateRequired(input, ["path", "edits"], "edit");
+			if (validationError) return validationError;
+
 			const path = input.path as string;
 			const edits = input.edits as Array<{ old_text: string; new_text: string }>;
 

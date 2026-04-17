@@ -56,6 +56,8 @@ import { isClientToolCallRequest } from "./types";
 
 export const SILENCE_TIMEOUT_MS = 60_000;
 export const MAX_SILENCE_RETRIES = 10;
+/** Default max output tokens. Bedrock defaults to 4096 if unset, which truncates large tool calls. */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 
 /**
  * Scale silence timeout based on estimated context size.
@@ -125,6 +127,8 @@ interface ParsedToolCall {
 	name: string;
 	input: Record<string, unknown>;
 	argsJson: string;
+	/** True when the tool_use args JSON failed to parse (likely output truncation). */
+	truncated?: boolean;
 }
 
 /** Full parse result from an LLM response stream */
@@ -438,7 +442,7 @@ export class AgentLoop {
 								tools: mergedTools,
 								system: systemPrompt || undefined,
 								system_suffix: systemSuffix || undefined,
-								max_tokens: undefined,
+								max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
 								temperature: undefined,
 								cache_breakpoints: undefined,
 								timeout_ms: this.inferenceTimeoutMs,
@@ -505,6 +509,7 @@ export class AgentLoop {
 										system: systemPrompt || undefined,
 										system_suffix: systemSuffix || undefined,
 										tools: mergedTools,
+										max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
 										cache_breakpoints: cacheBreakpoints,
 										thinking: resolution.thinkingConfig,
 										signal: this.config.abortSignal,
@@ -808,6 +813,21 @@ export class AgentLoop {
 							toolCallId: toolCall.id,
 							argsLength: toolCall.argsJson.length,
 						});
+
+						// Short-circuit truncated tool calls — args JSON was malformed (output truncation)
+						if (toolCall.truncated) {
+							this.ctx.logger.warn("[agent-loop] Skipping truncated tool call", {
+								tool: toolCall.name,
+								toolCallId: toolCall.id,
+								argsLength: toolCall.argsJson.length,
+							});
+							toolResults.push({
+								toolCall,
+								content: `Error: tool call arguments were truncated (output exceeded max_tokens limit). The "${toolCall.name}" call was cut off before the full arguments could be generated. Try breaking the operation into smaller parts, or reduce the size of the arguments.`,
+								exitCode: 1,
+							});
+							continue;
+						}
 
 						try {
 							const result = await this.executeToolCall(toolCall);
@@ -1691,16 +1711,22 @@ export class AgentLoop {
 				const fullArgsJson = argsAccumulator.get(chunk.id) ?? "{}";
 				const name = nameMap.get(chunk.id) ?? chunk.id;
 				let input: Record<string, unknown> = {};
+				let truncated = false;
 				try {
 					input = JSON.parse(fullArgsJson);
 				} catch {
-					// leave as empty object
+					truncated = true;
+					this.ctx.logger.warn(
+						`[agent-loop] Failed to parse tool_use args for "${name}" (id=${chunk.id}), ` +
+							`args length=${fullArgsJson.length}. Output likely truncated by max_tokens limit.`,
+					);
 				}
 				toolCalls.push({
 					id: chunk.id,
 					name,
 					input,
 					argsJson: fullArgsJson,
+					truncated,
 				});
 			} else if (chunk.type === "done") {
 				inputTokens = chunk.usage.input_tokens;
