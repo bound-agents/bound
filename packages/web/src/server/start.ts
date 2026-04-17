@@ -4,6 +4,7 @@ import { WsConnectionManager, createWsHandlers } from "@bound/sync";
 import type { ModelsConfig, SyncAppConfig, WebAppConfig } from "./index";
 import { createWebApp } from "./index";
 import { createWebSocketHandler } from "./websocket";
+import type { ConnectionRegistry } from "./websocket";
 
 export type { ModelsConfig };
 
@@ -29,20 +30,7 @@ export interface WebServer {
 	stop(): Promise<void>;
 	address(): string;
 	wsConnectionManager?: WsConnectionManager;
-	wsRegistry?: {
-		getClientToolsForThread(threadId: string): Map<
-			string,
-			{
-				type: "function";
-				function: {
-					name: string;
-					description: string;
-					parameters: Record<string, unknown>;
-				};
-			}
-		>;
-		getConnectionForTool(threadId: string, toolName: string): string | undefined;
-	};
+	wsRegistry?: ConnectionRegistry;
 }
 
 /**
