@@ -429,31 +429,45 @@ describe("createBoundChatHandler", () => {
 		});
 	});
 
-	describe("timeout handling: returns isError on 30-minute completion timeout", () => {
+	describe("timeout handling: returns isError on completion timeout", () => {
 		it("returns isError:true when thread:status event does not arrive within timeout", async () => {
 			const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
 			const client = makeClient({ listeners });
-			const handler = createBoundChatHandler(client);
+			const SHORT_TIMEOUT = 50; // 50ms for testing
+			const handler = createBoundChatHandler(client, { maxPollMs: SHORT_TIMEOUT });
 
 			// Start handler but don't emit completion event
-			const _resultPromise = handler({ message: "Hello", thread_id: "t-1" });
+			const resultPromise = handler({ message: "Hello", thread_id: "t-1" });
 
 			// Allow handler to set up listeners
 			await new Promise((resolve) => setImmediate(resolve));
 
-			// Wait for timeout (should happen after 30 minutes)
-			// For testing, we'll just let it timeout naturally or simulate with a shorter timeout
-			// In this test, we verify the timeout error is returned
-			const timeoutPromise = new Promise<void>((resolve) => {
-				setTimeout(() => resolve(), 100); // Wait a bit for async setup
-			});
+			// Wait for timeout to fire
+			const result = await resultPromise;
 
-			await timeoutPromise;
+			// Verify timeout behavior
+			expect(result.isError).toBe(true);
+			expect(result.content[0].text).toContain("Timed out");
+		});
 
-			// The handler should still be waiting for the event, but we can't easily test
-			// the actual 30-minute timeout without mocking timers. Instead, we'll verify
-			// that NOT sending an event keeps the handler waiting.
-			// For now, this test verifies the structure is correct.
+		it("cleans up listeners and unsubscribes on timeout", async () => {
+			const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
+			const client = makeClient({ listeners });
+			const SHORT_TIMEOUT = 50; // 50ms for testing
+			const handler = createBoundChatHandler(client, { maxPollMs: SHORT_TIMEOUT });
+
+			// Start handler but don't emit completion event
+			const resultPromise = handler({ message: "Hello", thread_id: "t-1" });
+
+			// Allow handler to set up listeners
+			await new Promise((resolve) => setImmediate(resolve));
+
+			// Wait for timeout to fire
+			await resultPromise;
+
+			// Verify cleanup was called
+			expect(client.unsubscribe).toHaveBeenCalledWith("t-1");
+			expect(client.off).toHaveBeenCalledWith("thread:status", expect.any(Function));
 		});
 	});
 

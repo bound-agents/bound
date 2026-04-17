@@ -1,7 +1,7 @@
-import { BoundApiError, type BoundClient, BoundNotRunningError } from "@bound/client";
+import type { BoundClient } from "@bound/client";
 import type { Message } from "@bound/shared";
 
-const MAX_POLL_MS = 30 * 60 * 1000; // 30 minutes
+const DEFAULT_MAX_POLL_MS = 30 * 60 * 1000; // 30 minutes
 
 export interface ToolResult {
 	[key: string]: unknown;
@@ -9,9 +9,16 @@ export interface ToolResult {
 	isError?: boolean;
 }
 
+export interface BoundChatHandlerOptions {
+	maxPollMs?: number;
+}
+
 export function createBoundChatHandler(
 	client: BoundClient,
+	options?: BoundChatHandlerOptions,
 ): (args: { message: string; thread_id?: string }) => Promise<ToolResult> {
+	const maxPollMs = options?.maxPollMs ?? DEFAULT_MAX_POLL_MS;
+
 	return async ({ message, thread_id }) => {
 		try {
 			// Step 1: Get or create thread
@@ -22,11 +29,16 @@ export function createBoundChatHandler(
 
 			// Step 3: Wait for completion via thread:status event (with timeout)
 			const completionPromise = new Promise<void>((resolve, reject) => {
-				const timeout = setTimeout(() => {
-					reject(new Error("Timed out waiting for bound agent to respond after 30 minutes."));
-				}, MAX_POLL_MS);
+				// biome-ignore lint/style/useConst: handler is assigned after use in setTimeout
+				let handler: (data: { thread_id: string; active: boolean }) => void;
 
-				const handler = (data: { thread_id: string; active: boolean }) => {
+				const timeout = setTimeout(() => {
+					client.off("thread:status", handler);
+					client.unsubscribe(threadId);
+					reject(new Error("Timed out waiting for bound agent to respond after 30 minutes."));
+				}, maxPollMs);
+
+				handler = (data: { thread_id: string; active: boolean }) => {
 					if (data.thread_id === threadId && !data.active) {
 						clearTimeout(timeout);
 						client.off("thread:status", handler);
@@ -56,12 +68,6 @@ export function createBoundChatHandler(
 				],
 			};
 		} catch (e) {
-			if (e instanceof BoundNotRunningError || e instanceof BoundApiError) {
-				return {
-					isError: true,
-					content: [{ type: "text", text: e.message }],
-				};
-			}
 			if (e instanceof Error) {
 				return {
 					isError: true,
