@@ -501,4 +501,309 @@ describe("ClientConnection type and WS message schemas", () => {
 			).toHaveLength(0);
 		});
 	});
+
+	describe("Task 3: message:send WS handler", () => {
+		it("should send handler_not_configured error when db is not provided", () => {
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "message:send",
+					thread_id: "thread-123",
+					content: "Hello",
+				}),
+			);
+
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages).toHaveLength(1);
+			expect(messages[0]).toMatchObject({
+				type: "error",
+				code: "handler_not_configured",
+			});
+		});
+
+		it("should send error for empty content", () => {
+			const eventBus = new TypedEventEmitter();
+			// Mock a database that returns the thread exists
+			const mockDb = {
+				query: (_sql: string) => ({
+					get: () => ({ id: "thread-123" }), // thread exists
+				}),
+				prepare: (_sql: string) => ({
+					run: () => {},
+				}),
+			} as any;
+
+			const testHandler = createWebSocketHandler({
+				eventBus,
+				db: mockDb,
+				siteId: "site-1",
+				defaultUserId: "user-1",
+			});
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			// Empty content
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "message:send",
+					thread_id: "thread-123",
+					content: "",
+				}),
+			);
+
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages.length).toBeGreaterThan(0);
+			const lastMessage = messages[messages.length - 1] as Record<string, unknown>;
+			expect(lastMessage.type).toBe("error");
+			expect(lastMessage.code).toBe("invalid_content");
+
+			testHandler.cleanup();
+		});
+
+		it("should send error for whitespace-only content", () => {
+			const eventBus = new TypedEventEmitter();
+			const mockDb = {
+				query: (_sql: string) => ({
+					get: () => ({ id: "thread-123" }),
+				}),
+				prepare: (_sql: string) => ({
+					run: () => {},
+				}),
+			} as any;
+
+			const testHandler = createWebSocketHandler({
+				eventBus,
+				db: mockDb,
+				siteId: "site-1",
+				defaultUserId: "user-1",
+			});
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "message:send",
+					thread_id: "thread-123",
+					content: "   \n\t  ",
+				}),
+			);
+
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages.length).toBeGreaterThan(0);
+			const lastMessage = messages[messages.length - 1] as Record<string, unknown>;
+			expect(lastMessage.type).toBe("error");
+
+			testHandler.cleanup();
+		});
+
+		it("should send error for content exceeding 512KB limit", () => {
+			const eventBus = new TypedEventEmitter();
+			const mockDb = {
+				query: (_sql: string) => ({
+					get: () => ({ id: "thread-123" }),
+				}),
+				prepare: (_sql: string) => ({
+					run: () => {},
+				}),
+			} as any;
+
+			const testHandler = createWebSocketHandler({
+				eventBus,
+				db: mockDb,
+				siteId: "site-1",
+				defaultUserId: "user-1",
+			});
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			const tooLarge = "x".repeat(513 * 1024); // 513KB
+
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "message:send",
+					thread_id: "thread-123",
+					content: tooLarge,
+				}),
+			);
+
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages.length).toBeGreaterThan(0);
+			const lastMessage = messages[messages.length - 1] as Record<string, unknown>;
+			expect(lastMessage.type).toBe("error");
+			expect(lastMessage.code).toBe("content_too_large");
+
+			testHandler.cleanup();
+		});
+
+		it("should send error for non-existent thread", () => {
+			const eventBus = new TypedEventEmitter();
+			// Mock a database that doesn't have the thread
+			const mockDb = {
+				query: (_sql: string) => ({
+					get: () => null, // thread not found
+				}),
+				prepare: (_sql: string) => ({
+					run: () => {},
+				}),
+			} as any;
+
+			const testHandler = createWebSocketHandler({
+				eventBus,
+				db: mockDb,
+				siteId: "site-1",
+				defaultUserId: "user-1",
+			});
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "message:send",
+					thread_id: "nonexistent-thread",
+					content: "Hello",
+				}),
+			);
+
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages.length).toBeGreaterThan(0);
+			const lastMessage = messages[messages.length - 1] as Record<string, unknown>;
+			expect(lastMessage.type).toBe("error");
+			expect(lastMessage.code).toBe("thread_not_found");
+
+			testHandler.cleanup();
+		});
+	});
+
+	describe("Task 4: tool:result WS handler", () => {
+		it("should send handler_not_configured error when db is not provided", () => {
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "tool:result",
+					call_id: "call-123",
+					thread_id: "thread-123",
+					content: "Result",
+				}),
+			);
+
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages).toHaveLength(1);
+			expect(messages[0]).toMatchObject({
+				type: "error",
+				code: "handler_not_configured",
+			});
+		});
+
+		it("should send error for unknown call_id", () => {
+			const eventBus = new TypedEventEmitter();
+			// Mock a database that returns no pending calls
+			const mockDb = {
+				prepare: (_sql: string) => ({
+					all: () => [], // getPendingClientToolCalls returns empty
+				}),
+				query: (_sql: string) => ({
+					get: () => null,
+				}),
+			} as any;
+
+			const testHandler = createWebSocketHandler({
+				eventBus,
+				db: mockDb,
+				siteId: "site-1",
+				defaultUserId: "user-1",
+			});
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "tool:result",
+					call_id: "unknown-call",
+					thread_id: "thread-123",
+					content: "Result",
+				}),
+			);
+
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages.length).toBeGreaterThan(0);
+			const lastMessage = messages[messages.length - 1] as Record<string, unknown>;
+			expect(lastMessage.type).toBe("error");
+			expect(lastMessage.code).toBe("unknown_call_id");
+			expect(lastMessage.call_id).toBe("unknown-call");
+
+			testHandler.cleanup();
+		});
+
+		it("should send error for expired tool call", () => {
+			const eventBus = new TypedEventEmitter();
+			// Mock database with an old pending call (simulating expiration)
+			const oldTime = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+			const mockDb = {
+				prepare: (_sql: string) => ({
+					all: () => [
+						{
+							message_id: "msg-1",
+							thread_id: "thread-123",
+							status: "pending",
+							claimed_by: null,
+							event_type: "client_tool_call",
+							event_payload: JSON.stringify({ call_id: "call-123" }),
+							created_at: oldTime,
+							modified_at: oldTime,
+						},
+					],
+					run: () => {},
+				}),
+				query: (_sql: string) => ({
+					get: () => null,
+				}),
+				exec: () => {},
+			} as any;
+
+			const testHandler = createWebSocketHandler({
+				eventBus,
+				db: mockDb,
+				siteId: "site-1",
+				defaultUserId: "user-1",
+			});
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "tool:result",
+					call_id: "call-123",
+					thread_id: "thread-123",
+					content: "Tool execution failed",
+					is_error: true,
+				}),
+			);
+
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages.length).toBeGreaterThan(0);
+			const lastMessage = messages[messages.length - 1] as Record<string, unknown>;
+			expect(lastMessage.type).toBe("error");
+			expect(lastMessage.code).toBe("tool_call_expired");
+
+			testHandler.cleanup();
+		});
+	});
 });

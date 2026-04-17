@@ -64,7 +64,12 @@ export async function createWebServer(
 	});
 
 	// Create WebSocket handler
-	const wsHandler = createWebSocketHandler(eventBus);
+	const wsHandler = createWebSocketHandler({
+		eventBus,
+		db,
+		siteId: config.siteId,
+		defaultUserId: config.operatorUserId,
+	});
 
 	let server: ReturnType<typeof Bun.serve> | null = null;
 

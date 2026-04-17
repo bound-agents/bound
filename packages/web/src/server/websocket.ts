@@ -1,4 +1,12 @@
-import type { TypedEventEmitter } from "@bound/shared";
+import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
+import {
+	acknowledgeClientToolCall,
+	enqueueToolResult,
+	getPendingClientToolCalls,
+} from "@bound/core";
+import { insertRow } from "@bound/core";
+import type { Message, TypedEventEmitter } from "@bound/shared";
 import type { ServerWebSocket } from "bun";
 import { z } from "zod";
 
@@ -74,9 +82,33 @@ export interface WebSocketConfig {
 	close(ws: ServerWebSocket<unknown>): void;
 }
 
+export interface WebSocketHandlerConfig {
+	eventBus: TypedEventEmitter;
+	db?: Database;
+	siteId?: string;
+	defaultUserId?: string;
+}
+
 export function createWebSocketHandler(
-	eventBus: TypedEventEmitter,
+	config: WebSocketHandlerConfig | TypedEventEmitter,
 ): WebSocketConfig & { cleanup: () => void } {
+	// Support both old (eventBus only) and new (config object) signatures for backwards compatibility
+	let eventBus: TypedEventEmitter;
+	let db: Database | undefined;
+	let siteId: string | undefined;
+	let defaultUserId: string | undefined;
+
+	if ("on" in config && "emit" in config) {
+		// Old signature: eventBus parameter
+		eventBus = config;
+	} else {
+		// New signature: config object
+		eventBus = config.eventBus;
+		db = config.db;
+		siteId = config.siteId;
+		defaultUserId = config.defaultUserId;
+	}
+
 	const clients = new Map<ServerWebSocket<unknown>, ClientConnection>();
 
 	const handleMessageCreated = (data: {
@@ -196,6 +228,227 @@ export function createWebSocketHandler(
 		conn.subscriptions.delete(msg.thread_id);
 	}
 
+	function handleMessageSend(conn: ClientConnection, msg: z.infer<typeof messageSendSchema>): void {
+		if (!db || !siteId || !defaultUserId) {
+			conn.ws.send(
+				JSON.stringify({
+					type: "error",
+					code: "handler_not_configured",
+					message: "Message handler not configured with required dependencies",
+				}),
+			);
+			return;
+		}
+
+		try {
+			const MAX_CONTENT_LENGTH = 512 * 1024; // 512KB
+
+			// Validate content is non-empty
+			if (!msg.content.trim()) {
+				conn.ws.send(
+					JSON.stringify({
+						type: "error",
+						code: "invalid_content",
+						message: "Content must not be empty",
+					}),
+				);
+				return;
+			}
+
+			// Validate content length
+			if (msg.content.length > MAX_CONTENT_LENGTH) {
+				conn.ws.send(
+					JSON.stringify({
+						type: "error",
+						code: "content_too_large",
+						message: `Maximum content length is ${MAX_CONTENT_LENGTH / 1024}KB`,
+					}),
+				);
+				return;
+			}
+
+			// Verify thread exists
+			const thread = db
+				.query("SELECT * FROM threads WHERE id = ? AND deleted = 0")
+				.get(msg.thread_id);
+			if (!thread) {
+				conn.ws.send(
+					JSON.stringify({
+						type: "error",
+						code: "thread_not_found",
+						message: "Thread not found",
+					}),
+				);
+				return;
+			}
+
+			// Append file contents if provided
+			let content: string = msg.content;
+			const MAX_FILE_IDS = 20;
+			const fileIds: string[] = (Array.isArray(msg.file_ids) ? msg.file_ids : [])
+				.filter((id): id is string => typeof id === "string")
+				.slice(0, MAX_FILE_IDS);
+			for (const fileId of fileIds) {
+				const file = db.query("SELECT * FROM files WHERE id = ? AND deleted = 0").get(fileId) as {
+					path: string;
+					content: string | null;
+					is_binary: number;
+					size_bytes: number;
+				} | null;
+				if (!file) continue;
+				const name = file.path.split("/").pop() ?? file.path;
+				if (file.is_binary) {
+					content += `\n\n[Attached file: ${name} (binary, ${file.size_bytes} bytes)]`;
+				} else {
+					content += `\n\n[Attached file: ${name}]\n${file.content ?? ""}`;
+				}
+			}
+
+			// Persist the message
+			const messageId = randomUUID();
+			const now = new Date().toISOString();
+
+			insertRow(
+				db,
+				"messages",
+				{
+					id: messageId,
+					thread_id: msg.thread_id,
+					role: "user",
+					content,
+					model_id: null,
+					tool_name: null,
+					created_at: now,
+					modified_at: now,
+					host_origin: "localhost:3000",
+				},
+				siteId,
+			);
+
+			// Retrieve the persisted message
+			const message = db.query("SELECT * FROM messages WHERE id = ?").get(messageId) as Message;
+
+			// Emit message:created event to trigger agent loop
+			eventBus.emit("message:created", {
+				message,
+				thread_id: msg.thread_id,
+			});
+		} catch (error) {
+			const errorMsg = error instanceof Error ? error.message : "Unknown error";
+			conn.ws.send(
+				JSON.stringify({
+					type: "error",
+					code: "message_send_failed",
+					message: errorMsg,
+				}),
+			);
+		}
+	}
+
+	function handleToolResult(conn: ClientConnection, msg: z.infer<typeof toolResultSchema>): void {
+		if (!db || !siteId || !defaultUserId) {
+			conn.ws.send(
+				JSON.stringify({
+					type: "error",
+					code: "handler_not_configured",
+					message: "Tool result handler not configured with required dependencies",
+				}),
+			);
+			return;
+		}
+
+		try {
+			const now = new Date().toISOString();
+			const TTL_MS = 5 * 60 * 1000; // 5 minutes
+			const cutoff = new Date(Date.now() - TTL_MS).toISOString();
+
+			// Look up the pending client tool call entry
+			const pendingCalls = getPendingClientToolCalls(db, msg.thread_id);
+			let matchingEntry = null;
+
+			for (const entry of pendingCalls) {
+				if (!entry.event_payload) continue;
+				try {
+					const payload = JSON.parse(entry.event_payload) as { call_id?: string };
+					if (payload.call_id === msg.call_id) {
+						matchingEntry = entry;
+						break;
+					}
+				} catch {
+					// Ignore parse errors and continue searching
+				}
+			}
+
+			if (!matchingEntry) {
+				conn.ws.send(
+					JSON.stringify({
+						type: "error",
+						code: "unknown_call_id",
+						message: "No pending tool call with this call_id",
+						call_id: msg.call_id,
+					}),
+				);
+				return;
+			}
+
+			// Check if entry has expired
+			if (matchingEntry.created_at < cutoff) {
+				conn.ws.send(
+					JSON.stringify({
+						type: "error",
+						code: "tool_call_expired",
+						message: "Tool call has expired",
+						call_id: msg.call_id,
+					}),
+				);
+				return;
+			}
+
+			// Persist the tool_result message
+			const messageId = randomUUID();
+			const toolResultContent = msg.is_error ? `Error: ${msg.content}` : msg.content;
+
+			insertRow(
+				db,
+				"messages",
+				{
+					id: messageId,
+					thread_id: msg.thread_id,
+					role: "tool_result",
+					content: toolResultContent,
+					model_id: null,
+					tool_name: null,
+					created_at: now,
+					modified_at: now,
+					host_origin: "localhost:3000",
+				},
+				siteId,
+			);
+
+			// Acknowledge the dispatch entry
+			acknowledgeClientToolCall(db, matchingEntry.message_id);
+
+			// Enqueue tool result trigger to resume agent loop
+			enqueueToolResult(db, msg.thread_id, msg.call_id);
+
+			// Emit an event to trigger handleThread (re-emit the message so subscribed clients see it)
+			const message = db.query("SELECT * FROM messages WHERE id = ?").get(messageId) as Message;
+			eventBus.emit("message:created", {
+				message,
+				thread_id: msg.thread_id,
+			});
+		} catch (error) {
+			const errorMsg = error instanceof Error ? error.message : "Unknown error";
+			conn.ws.send(
+				JSON.stringify({
+					type: "error",
+					code: "tool_result_failed",
+					message: errorMsg,
+				}),
+			);
+		}
+	}
+
 	eventBus.on("message:created", handleMessageCreated);
 	// message:broadcast is used for assistant-response re-emit so it reaches
 	// WebSocket clients without re-triggering the agent loop handler.
@@ -254,11 +507,11 @@ export function createWebSocketHandler(
 						break;
 					}
 					case "message:send": {
-						// Placeholder for Task 3
+						handleMessageSend(conn, message);
 						break;
 					}
 					case "tool:result": {
-						// Placeholder for Task 4
+						handleToolResult(conn, message);
 						break;
 					}
 				}
