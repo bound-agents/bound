@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { applySchema, createDatabase } from "@bound/core";
+import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { createWebApp } from "../index";
 
@@ -10,6 +10,7 @@ describe("Server Integration", () => {
 	beforeEach(() => {
 		db = createDatabase(":memory:");
 		applySchema(db);
+		applyMetricsSchema(db);
 		eventBus = new TypedEventEmitter();
 	});
 

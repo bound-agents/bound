@@ -1,20 +1,11 @@
 import { getSiteId } from "@bound/core";
 
 import type { Database } from "bun:sqlite";
-import { randomUUID } from "node:crypto";
 import { redactMessage, redactThread } from "@bound/agent";
-import { insertRow, updateRow } from "@bound/core";
 import type { Message, TypedEventEmitter } from "@bound/shared";
 import { Hono } from "hono";
-import { z } from "zod";
 
-const createMessageSchema = z.object({
-	content: z.string(),
-	file_ids: z.array(z.unknown()).optional(),
-	model_id: z.string().optional(),
-});
-
-export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter): Hono {
+export function createMessagesRoutes(db: Database, _eventBus: TypedEventEmitter): Hono {
 	const app = new Hono();
 
 	app.get("/:threadId/messages", (c) => {
@@ -55,130 +46,13 @@ export function createMessagesRoutes(db: Database, eventBus: TypedEventEmitter):
 		}
 	});
 
-	app.post("/:threadId/messages", async (c) => {
-		try {
-			const { threadId } = c.req.param();
-			console.log(`[web] POST /api/threads/${threadId}/messages - message received`);
-
-			const parseResult = createMessageSchema.safeParse(await c.req.json());
-			if (!parseResult.success) {
-				return c.json(
-					{
-						error: "Invalid request body",
-						details: parseResult.error.message,
-					},
-					400,
-				);
-			}
-			const body = parseResult.data;
-
-			const MAX_CONTENT_LENGTH = 512 * 1024; // 512KB
-
-			if (!body.content.trim()) {
-				return c.json(
-					{
-						error: "Invalid request body",
-						details: "content must not be empty",
-					},
-					400,
-				);
-			}
-
-			if (body.content.length > MAX_CONTENT_LENGTH) {
-				return c.json(
-					{
-						error: "Content too large",
-						details: `Maximum content length is ${MAX_CONTENT_LENGTH / 1024}KB`,
-					},
-					413,
-				);
-			}
-
-			const thread = db.query("SELECT * FROM threads WHERE id = ? AND deleted = 0").get(threadId);
-
-			if (!thread) {
-				return c.json(
-					{
-						error: "Thread not found",
-					},
-					404,
-				);
-			}
-
-			// Append any referenced file contents to the message so the agent can see them.
-			let content: string = body.content;
-			const MAX_FILE_IDS = 20;
-			const fileIds: string[] = (Array.isArray(body.file_ids) ? body.file_ids : [])
-				.filter((id: unknown): id is string => typeof id === "string")
-				.slice(0, MAX_FILE_IDS);
-			for (const fileId of fileIds) {
-				const file = db.query("SELECT * FROM files WHERE id = ? AND deleted = 0").get(fileId) as {
-					path: string;
-					content: string | null;
-					is_binary: number;
-					size_bytes: number;
-				} | null;
-				if (!file) continue;
-				const name = file.path.split("/").pop() ?? file.path;
-				if (file.is_binary) {
-					// Binary files: mention metadata only (don't dump base64 into the prompt)
-					content += `\n\n[Attached file: ${name} (binary, ${file.size_bytes} bytes)]`;
-				} else {
-					content += `\n\n[Attached file: ${name}]\n${file.content ?? ""}`;
-				}
-			}
-
-			const messageId = randomUUID();
-			const now = new Date().toISOString();
-
-			const siteId = getSiteId(db);
-
-			insertRow(
-				db,
-				"messages",
-				{
-					id: messageId,
-					thread_id: threadId,
-					role: "user",
-					content,
-					model_id: null,
-					tool_name: null,
-					created_at: now,
-					modified_at: now,
-					host_origin: "localhost:3000",
-				},
-				siteId,
-			);
-
-			// Update threads.model_hint when the client sends a model selection
-			if (body.model_id) {
-				updateRow(db, "threads", threadId, { model_hint: body.model_id, modified_at: now }, siteId);
-			}
-
-			const message = db.query("SELECT * FROM messages WHERE id = ?").get(messageId) as Message;
-
-			console.log(
-				`[web] POST /api/threads/${threadId}/messages - message persisted (id=${messageId})`,
-			);
-
-			eventBus.emit("message:created", {
-				message,
-				thread_id: threadId,
-			});
-
-			console.log(`[web] POST /api/threads/${threadId}/messages - event emitted`);
-
-			return c.json(message, 201);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{
-					error: "Failed to create message",
-					details: message,
-				},
-				500,
-			);
-		}
+	app.post("/:threadId/messages", (c) => {
+		return c.json(
+			{
+				error: "POST endpoint removed. Use WebSocket message:send instead.",
+			},
+			404,
+		);
 	});
 
 	app.post("/:threadId/messages/:messageId/redact", (c) => {

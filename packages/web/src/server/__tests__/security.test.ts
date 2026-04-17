@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Hono } from "hono";
@@ -34,16 +35,15 @@ describe("API Security", () => {
 		return t.id;
 	}
 
-	async function postMessage(threadId: string, content: string): Promise<string> {
-		const res = await app.fetch(
-			new Request(`http://localhost:3000/api/threads/${threadId}/messages`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ content }),
-			}),
+	function createMessage(threadId: string, content: string): string {
+		const msgId = randomUUID();
+		const now = new Date().toISOString();
+		db.exec(
+			`INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			[msgId, threadId, "user", content, now, now, "localhost", 0],
 		);
-		const msg = await res.json();
-		return msg.id;
+		return msgId;
 	}
 
 	// ──────────────────────────────────────────────────────────────────
@@ -52,7 +52,7 @@ describe("API Security", () => {
 	describe("deleted messages filtered from GET listing", () => {
 		it("excludes soft-deleted messages from thread message listing", async () => {
 			const threadId = await createThread();
-			const msgId = await postMessage(threadId, "sensitive secret data");
+			const msgId = createMessage(threadId, "sensitive secret data");
 
 			// Soft-delete the message (simulating redaction)
 			db.exec("UPDATE messages SET deleted = 1 WHERE id = ?", [msgId]);
@@ -71,9 +71,9 @@ describe("API Security", () => {
 
 		it("returns only non-deleted messages when mix of deleted and active exist", async () => {
 			const threadId = await createThread();
-			await postMessage(threadId, "keep this");
-			const secretId = await postMessage(threadId, "delete this secret");
-			await postMessage(threadId, "also keep");
+			createMessage(threadId, "keep this");
+			const secretId = createMessage(threadId, "delete this secret");
+			createMessage(threadId, "also keep");
 
 			db.exec("UPDATE messages SET deleted = 1 WHERE id = ?", [secretId]);
 
@@ -235,94 +235,6 @@ describe("API Security", () => {
 				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
 			);
 
-			expect(res.status).toBe(201);
-		});
-	});
-
-	// ──────────────────────────────────────────────────────────────────
-	// 6. Empty content validation on messages
-	// ──────────────────────────────────────────────────────────────────
-	describe("message content validation", () => {
-		it("rejects empty string content", async () => {
-			const threadId = await createThread();
-
-			const res = await app.fetch(
-				new Request(`http://localhost:3000/api/threads/${threadId}/messages`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ content: "" }),
-				}),
-			);
-
-			expect(res.status).toBe(400);
-		});
-
-		it("rejects whitespace-only content", async () => {
-			const threadId = await createThread();
-
-			const res = await app.fetch(
-				new Request(`http://localhost:3000/api/threads/${threadId}/messages`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ content: "   \n\t  " }),
-				}),
-			);
-
-			expect(res.status).toBe(400);
-		});
-
-		it("rejects content exceeding 500KB", async () => {
-			const threadId = await createThread();
-			const hugeContent = "a".repeat(512 * 1024 + 1);
-
-			const res = await app.fetch(
-				new Request(`http://localhost:3000/api/threads/${threadId}/messages`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ content: hugeContent }),
-				}),
-			);
-
-			expect(res.status).toBe(413);
-		});
-	});
-
-	// ──────────────────────────────────────────────────────────────────
-	// 7. file_ids array cap
-	// ──────────────────────────────────────────────────────────────────
-	describe("file_ids array bounds", () => {
-		it("only processes up to 20 file_ids", async () => {
-			const threadId = await createThread();
-
-			// Create 25 fake file IDs (they won't exist, but we're testing the cap)
-			const fakeIds = Array.from({ length: 25 }, (_, i) => `fake-id-${i}`);
-
-			const res = await app.fetch(
-				new Request(`http://localhost:3000/api/threads/${threadId}/messages`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ content: "test", file_ids: fakeIds }),
-				}),
-			);
-
-			// Should succeed (non-existent IDs are just skipped)
-			expect(res.status).toBe(201);
-			const msg = await res.json();
-			expect(msg.content).toBe("test");
-		});
-
-		it("validates file_ids elements are strings", async () => {
-			const threadId = await createThread();
-
-			const res = await app.fetch(
-				new Request(`http://localhost:3000/api/threads/${threadId}/messages`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ content: "test", file_ids: [123, null, {}] }),
-				}),
-			);
-
-			// Should succeed but ignore non-string entries
 			expect(res.status).toBe(201);
 		});
 	});

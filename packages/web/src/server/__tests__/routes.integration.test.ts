@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Hono } from "hono";
@@ -477,47 +478,7 @@ describe("API Routes", () => {
 	});
 
 	describe("POST /api/threads/:id/messages", () => {
-		it("creates a message for a thread", async () => {
-			// First create a thread
-			const createThreadRequest = new Request("http://localhost:3000/api/threads", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({}),
-			});
-			const threadResponse = await app.fetch(createThreadRequest);
-			const thread = await threadResponse.json();
-
-			// Then create a message
-			const messageRequest = new Request(
-				`http://localhost:3000/api/threads/${thread.id}/messages`,
-				{
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ content: "Hello, world!" }),
-				},
-			);
-			const messageResponse = await app.fetch(messageRequest);
-
-			expect(messageResponse.status).toBe(201);
-			const message = await messageResponse.json();
-			expect(message.id).toBeDefined();
-			expect(message.content).toBe("Hello, world!");
-			expect(message.role).toBe("user");
-			expect(message.thread_id).toBe(thread.id);
-		});
-
-		it("returns 404 for message on non-existent thread", async () => {
-			const request = new Request("http://localhost:3000/api/threads/invalid-id/messages", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ content: "test" }),
-			});
-			const response = await app.fetch(request);
-
-			expect(response.status).toBe(404);
-		});
-
-		it("returns 400 for invalid message body", async () => {
+		it("returns 404 with deprecation message", async () => {
 			// Create a thread first
 			const createThreadRequest = new Request("http://localhost:3000/api/threads", {
 				method: "POST",
@@ -527,24 +488,26 @@ describe("API Routes", () => {
 			const threadResponse = await app.fetch(createThreadRequest);
 			const thread = await threadResponse.json();
 
-			// Try to create a message with invalid body
+			// POST to messages endpoint should now return 404
 			const messageRequest = new Request(
 				`http://localhost:3000/api/threads/${thread.id}/messages`,
 				{
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ invalid: "body" }),
+					body: JSON.stringify({ content: "test" }),
 				},
 			);
 			const response = await app.fetch(messageRequest);
 
-			expect(response.status).toBe(400);
+			expect(response.status).toBe(404);
+			const body = await response.json();
+			expect(body.error).toContain("WebSocket message:send");
 		});
 	});
 
 	describe("GET /api/threads/:id/messages", () => {
 		it("returns messages for a thread", async () => {
-			// Create a thread and message
+			// Create a thread
 			const createThreadRequest = new Request("http://localhost:3000/api/threads", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -553,15 +516,13 @@ describe("API Routes", () => {
 			const threadResponse = await app.fetch(createThreadRequest);
 			const thread = await threadResponse.json();
 
-			const messageRequest = new Request(
-				`http://localhost:3000/api/threads/${thread.id}/messages`,
-				{
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ content: "Test message" }),
-				},
+			// Insert a message directly (since POST is deprecated)
+			const now = new Date().toISOString();
+			db.exec(
+				`INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				[randomUUID(), thread.id, "user", "Test message", now, now, "localhost", 0],
 			);
-			await app.fetch(messageRequest);
 
 			// Get messages
 			const getRequest = new Request(`http://localhost:3000/api/threads/${thread.id}/messages`);
@@ -627,74 +588,6 @@ describe("API Routes", () => {
 			const response = await app.fetch(request);
 
 			expect(response.status).toBe(200);
-		});
-	});
-
-	describe("POST /api/threads/:id/messages with file_ids", () => {
-		async function createThread(): Promise<string> {
-			const res = await app.fetch(
-				new Request("http://localhost:3000/api/threads", {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({}),
-				}),
-			);
-			const t = await res.json();
-			return t.id;
-		}
-
-		it("inlines text file content into message when file_ids provided", async () => {
-			const threadId = await createThread();
-			// Upload a text file first
-			const form = new FormData();
-			form.append("file", new File(["Hello from file!"], "note.txt", { type: "text/plain" }));
-			const uploadRes = await app.fetch(
-				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
-			);
-			const uploaded = await uploadRes.json();
-
-			// Send message with file_id
-			const msgRes = await app.fetch(
-				new Request(`http://localhost:3000/api/threads/${threadId}/messages`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ content: "check this", file_ids: [uploaded.id] }),
-				}),
-			);
-
-			expect(msgRes.status).toBe(201);
-			const msg = await msgRes.json();
-			// File content must be appended to the message
-			expect(msg.content).toContain("check this");
-			expect(msg.content).toContain("Hello from file!");
-			expect(msg.content).toContain("note.txt");
-		});
-
-		it("appends binary file metadata (not raw content) when file is binary", async () => {
-			const threadId = await createThread();
-			const form = new FormData();
-			form.append(
-				"file",
-				new File([new Uint8Array([137, 80, 78, 71])], "img.png", { type: "image/png" }),
-			);
-			const uploadRes = await app.fetch(
-				new Request("http://localhost:3000/api/files/upload", { method: "POST", body: form }),
-			);
-			const uploaded = await uploadRes.json();
-
-			const msgRes = await app.fetch(
-				new Request(`http://localhost:3000/api/threads/${threadId}/messages`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ content: "see image", file_ids: [uploaded.id] }),
-				}),
-			);
-
-			const msg = await msgRes.json();
-			expect(msg.content).toContain("see image");
-			expect(msg.content).toContain("img.png");
-			// Must NOT dump raw base64 into the message
-			expect(msg.content).not.toContain(Buffer.from([137, 80, 78, 71]).toString("base64"));
 		});
 	});
 
