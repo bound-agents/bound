@@ -32,7 +32,6 @@ let pendingFileId = $state<string | null>(null);
 let thread = $state<Thread | null>(null);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
-let statusPollInterval: ReturnType<typeof setInterval> | null = null;
 let messageListElement = $state<HTMLDivElement | null>(null);
 
 // Subscribe to WebSocket events and append new messages
@@ -79,17 +78,13 @@ async function pollMessages(): Promise<void> {
 	}
 }
 
-async function pollStatus(): Promise<void> {
-	try {
-		const data = await client.getThreadStatus(threadId);
-		agentActive = data.active;
-		agentState = data.state;
-		// Clear stale waiting indicator if agent is no longer active
-		if (waiting && !data.active) {
-			waiting = false;
-		}
-	} catch (error) {
-		console.error("Failed to poll status:", error);
+function handleThreadStatus(data: unknown): void {
+	const status = data as { active?: boolean; state?: string | null };
+	agentActive = status.active ?? false;
+	agentState = status.state ?? null;
+	// Clear stale waiting indicator if agent is no longer active
+	if (waiting && !status.active) {
+		waiting = false;
 	}
 }
 
@@ -103,32 +98,38 @@ onMount(async () => {
 		console.error("Failed to load thread:", error);
 	}
 
+	// Poll messages periodically (WebSocket events don't include all updates)
 	pollInterval = setInterval(pollMessages, 5000);
-	statusPollInterval = setInterval(pollStatus, 2000);
-	await pollStatus();
+
+	// Listen for real-time thread status updates instead of polling
+	client.on("thread:status", handleThreadStatus);
+
+	// Initial status load
+	try {
+		const data = await client.getThreadStatus(threadId);
+		handleThreadStatus(data);
+	} catch (error) {
+		console.error("Failed to load thread status:", error);
+	}
 });
 
 onDestroy(() => {
 	unsubscribeWs();
 	disconnectWebSocket();
 	if (pollInterval !== null) clearInterval(pollInterval);
-	if (statusPollInterval !== null) clearInterval(statusPollInterval);
+	client.off("thread:status", handleThreadStatus);
 });
 
-async function handleSendMessage(): Promise<void> {
+function handleSendMessage(): void {
 	if (!inputText.trim() && !pendingFileId) return;
 
 	sending = true;
 	try {
-		const newMessage = await client.sendMessage(threadId, inputText.trim(), {
+		// Fire-and-forget over WebSocket; message arrives via message:created event
+		client.sendMessage(threadId, inputText.trim(), {
 			modelId: modelStore.getModel() || undefined,
 			fileId: pendingFileId ?? undefined,
 		});
-		// Deduplicate: WebSocket may have already delivered this message
-		const alreadyExists = messages.some((m: { id: string }) => m.id === newMessage.id);
-		if (!alreadyExists) {
-			messages = [...messages, newMessage];
-		}
 		inputText = "";
 		pendingFileId = null;
 		uploadStatus = null;
@@ -136,8 +137,9 @@ async function handleSendMessage(): Promise<void> {
 		waiting = true;
 	} catch (error) {
 		console.error("Failed to send message:", error);
+	} finally {
+		sending = false;
 	}
-	sending = false;
 }
 
 async function handleCancel(): Promise<void> {
