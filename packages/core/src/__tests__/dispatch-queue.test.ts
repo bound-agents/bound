@@ -933,3 +933,117 @@ describe("resetProcessingForThread with client_tool_call filtering", () => {
 		expect(toolCallRow.status).toBe("processing"); // Unchanged
 	});
 });
+
+describe("Bootstrap recovery for client_tool_call entries (Task 4)", () => {
+	it("resets client_tool_call entries from processing to pending with claimed_by = NULL", () => {
+		const threadId = randomUUID();
+		const connectionId = "ws-conn-123";
+		const payload = {
+			call_id: "call-456",
+			tool_name: "search",
+			arguments: { query: "test" },
+		};
+
+		// Simulate crash: tool call was being delivered (processing)
+		const entryId = enqueueClientToolCall(db, threadId, payload, connectionId);
+		const now = new Date().toISOString();
+		db.prepare(
+			"UPDATE dispatch_queue SET status = 'processing', modified_at = ? WHERE message_id = ?",
+		).run(now, entryId);
+
+		// Simulate bootstrap recovery: reset processing entries
+		db.prepare(
+			`UPDATE dispatch_queue
+			 SET status = 'pending', claimed_by = NULL, modified_at = ?
+			 WHERE event_type = 'client_tool_call' AND status = 'processing'`,
+		).run(now);
+
+		const row = db
+			.query("SELECT status, claimed_by FROM dispatch_queue WHERE message_id = ?")
+			.get(entryId) as { status: string; claimed_by: string | null };
+
+		expect(row.status).toBe("pending");
+		expect(row.claimed_by).toBeNull();
+	});
+
+	it("does not affect user_message entries when recovering client_tool_call", () => {
+		const threadId = randomUUID();
+		const userMsgId = randomUUID();
+		const connectionId = "ws-conn-123";
+		const toolPayload = {
+			call_id: "call-456",
+			tool_name: "search",
+			arguments: { query: "test" },
+		};
+
+		// Enqueue both types
+		enqueueMessage(db, userMsgId, threadId);
+		const toolCallId = enqueueClientToolCall(db, threadId, toolPayload, connectionId);
+
+		// Claim both (puts them in processing)
+		claimPending(db, threadId, "host-1");
+
+		// Manually update tool call to processing (claimPending would have claimed it if we hadn't filtered)
+		const now = new Date().toISOString();
+		db.prepare(
+			"UPDATE dispatch_queue SET status = 'processing', modified_at = ? WHERE message_id = ?",
+		).run(now, toolCallId);
+
+		// Simulate bootstrap recovery: only reset client_tool_call entries
+		db.prepare(
+			`UPDATE dispatch_queue
+			 SET status = 'pending', claimed_by = NULL, modified_at = ?
+			 WHERE event_type = 'client_tool_call' AND status = 'processing'`,
+		).run(now);
+
+		const userMsgRow = db
+			.query("SELECT status, claimed_by FROM dispatch_queue WHERE message_id = ?")
+			.get(userMsgId) as { status: string; claimed_by: string | null };
+		const toolCallRow = db
+			.query("SELECT status, claimed_by FROM dispatch_queue WHERE message_id = ?")
+			.get(toolCallId) as { status: string; claimed_by: string | null };
+
+		// User message should still be processing from claimPending
+		expect(userMsgRow.status).toBe("processing");
+		expect(userMsgRow.claimed_by).toBe("host-1");
+
+		// Tool call should be reset
+		expect(toolCallRow.status).toBe("pending");
+		expect(toolCallRow.claimed_by).toBeNull();
+	});
+
+	it("respects claimed_by field set by reconnecting client on re-delivery", () => {
+		const threadId = randomUUID();
+		const connectionId1 = "ws-conn-old";
+		const connectionId2 = "ws-conn-new";
+		const payload = {
+			call_id: "call-456",
+			tool_name: "search",
+			arguments: { query: "test" },
+		};
+
+		// Original connection delivered the call
+		const entryId = enqueueClientToolCall(db, threadId, payload, connectionId1);
+		const now = new Date().toISOString();
+		db.prepare(
+			"UPDATE dispatch_queue SET status = 'processing', modified_at = ? WHERE message_id = ?",
+		).run(now, entryId);
+
+		// Server crashes and recovers
+		db.prepare(
+			`UPDATE dispatch_queue
+			 SET status = 'pending', claimed_by = NULL, modified_at = ?
+			 WHERE event_type = 'client_tool_call' AND status = 'processing'`,
+		).run(now);
+
+		// New client reconnects and requests re-delivery
+		updateClaimedBy(db, entryId, connectionId2);
+
+		const row = db
+			.query("SELECT status, claimed_by FROM dispatch_queue WHERE message_id = ?")
+			.get(entryId) as { status: string; claimed_by: string };
+
+		expect(row.status).toBe("processing");
+		expect(row.claimed_by).toBe(connectionId2);
+	});
+});

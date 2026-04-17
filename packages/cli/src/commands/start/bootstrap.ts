@@ -287,6 +287,26 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 			appContext.logger.info(`[recovery] Reset ${dispatchReset} in-flight dispatch(es) to pending`);
 		}
 
+		// Recovery for client_tool_call entries: reset to pending with claimed_by = NULL
+		// so reconnecting clients can be re-assigned on next connection
+		const clientToolCallReset = (() => {
+			const now = new Date().toISOString();
+			appContext.db
+				.prepare(
+					`UPDATE dispatch_queue
+				 SET status = 'pending', claimed_by = NULL, modified_at = ?
+				 WHERE event_type = 'client_tool_call' AND status = 'processing'`,
+				)
+				.run(now);
+			const row = appContext.db.query("SELECT changes() as c").get() as { c: number } | null;
+			return row?.c ?? 0;
+		})();
+		if (clientToolCallReset > 0) {
+			appContext.logger.info(
+				`[recovery] Reset ${clientToolCallReset} orphaned client tool call(s) to pending`,
+			);
+		}
+
 		// Scan for interrupted tool-use per R-E13
 		const interruptedThreads = appContext.db
 			.query(
