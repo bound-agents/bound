@@ -170,6 +170,9 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		});
 		await webServer.start();
 
+		// Capture connection registry from web server for client tool lookup in handleThread
+		const wsRegistry = webServer?.wsRegistry;
+
 		// Start sync server if sync prerequisites are available
 		if (appContext.siteId && keyring && appContext.logger) {
 			// Read WS config if present
@@ -381,6 +384,19 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								}
 							}
 
+							// Resolve client tools from WS connections subscribed to this thread
+							const clientToolsFromRegistry = wsRegistry?.getClientToolsForThread(thread_id);
+							const resolvedClientTools =
+								clientToolsFromRegistry && clientToolsFromRegistry.size > 0
+									? clientToolsFromRegistry
+									: undefined;
+							const firstToolName = resolvedClientTools
+								? clientToolsFromRegistry?.keys().next().value
+								: undefined;
+							const resolvedConnectionId = firstToolName
+								? wsRegistry?.getConnectionForTool(thread_id, firstToolName)
+								: undefined;
+
 							const { agentResult: result } = await runLocalAgentLoop({
 								eventBus: appContext.eventBus,
 								threadId: thread_id,
@@ -391,6 +407,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								shouldYield,
 								platform: platformConfig?.platform,
 								platformTools: platformConfig?.platformTools,
+								clientTools: resolvedClientTools,
+								connectionId: resolvedConnectionId,
 							});
 
 							if (result.yielded) {

@@ -1230,4 +1230,281 @@ describe("ClientConnection type and WS message schemas", () => {
 			testHandler.cleanup();
 		});
 	});
+
+	describe("Task 1: Connection registry with client tool lookup", () => {
+		it("should return client tools for subscribed connections", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			// Register tools
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [
+						{
+							type: "function",
+							function: {
+								name: "test_tool",
+								description: "A test tool",
+								parameters: { type: "object" },
+							},
+						},
+					],
+				}),
+			);
+
+			// Subscribe to thread
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			// Query registry
+			const tools = handler.registry.getClientToolsForThread("thread-1");
+			expect(tools.size).toBe(1);
+			expect(tools.has("test_tool")).toBe(true);
+
+			handler.cleanup();
+		});
+
+		it("should return empty map when no connections subscribed", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const tools = handler.registry.getClientToolsForThread("nonexistent-thread");
+			expect(tools.size).toBe(0);
+
+			handler.cleanup();
+		});
+
+		it("should merge tools from multiple connections", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			// Connection 1 with tool_a
+			const mockWs1 = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs1);
+
+			handler.message(
+				mockWs1,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [
+						{
+							type: "function",
+							function: {
+								name: "tool_a",
+								description: "Tool A",
+								parameters: { type: "object" },
+							},
+						},
+					],
+				}),
+			);
+
+			handler.message(
+				mockWs1,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			// Connection 2 with tool_b
+			const mockWs2 = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs2);
+
+			handler.message(
+				mockWs2,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [
+						{
+							type: "function",
+							function: {
+								name: "tool_b",
+								description: "Tool B",
+								parameters: { type: "object" },
+							},
+						},
+					],
+				}),
+			);
+
+			handler.message(
+				mockWs2,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			// Query registry — should have both tools
+			const tools = handler.registry.getClientToolsForThread("thread-1");
+			expect(tools.size).toBe(2);
+			expect(tools.has("tool_a")).toBe(true);
+			expect(tools.has("tool_b")).toBe(true);
+
+			handler.cleanup();
+		});
+
+		it("should return connection ID for tool lookup", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [
+						{
+							type: "function",
+							function: {
+								name: "test_tool",
+								description: "A test tool",
+								parameters: { type: "object" },
+							},
+						},
+					],
+				}),
+			);
+
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			// Query for connection ID
+			const connectionId = handler.registry.getConnectionForTool("thread-1", "test_tool");
+			expect(connectionId).toBeDefined();
+			expect(typeof connectionId).toBe("string");
+
+			handler.cleanup();
+		});
+
+		it("should return undefined for tool not in thread", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [
+						{
+							type: "function",
+							function: {
+								name: "tool_a",
+								description: "Tool A",
+								parameters: { type: "object" },
+							},
+						},
+					],
+				}),
+			);
+
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			// Query for non-existent tool
+			const connectionId = handler.registry.getConnectionForTool("thread-1", "nonexistent_tool");
+			expect(connectionId).toBeUndefined();
+
+			handler.cleanup();
+		});
+
+		it("should exclude connections not subscribed to thread", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			// Connection 1 subscribed to thread-1
+			const mockWs1 = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs1);
+
+			handler.message(
+				mockWs1,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [
+						{
+							type: "function",
+							function: {
+								name: "tool_a",
+								description: "Tool A",
+								parameters: { type: "object" },
+							},
+						},
+					],
+				}),
+			);
+
+			handler.message(
+				mockWs1,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			// Connection 2 with same tool but subscribed to thread-2
+			const mockWs2 = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs2);
+
+			handler.message(
+				mockWs2,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [
+						{
+							type: "function",
+							function: {
+								name: "tool_a",
+								description: "Tool A",
+								parameters: { type: "object" },
+							},
+						},
+					],
+				}),
+			);
+
+			handler.message(
+				mockWs2,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-2",
+				}),
+			);
+
+			// Query for thread-1 — should only find tool_a from mockWs1
+			const tools = handler.registry.getClientToolsForThread("thread-1");
+			expect(tools.size).toBe(1);
+			expect(tools.has("tool_a")).toBe(true);
+
+			const connectionId = handler.registry.getConnectionForTool("thread-1", "tool_a");
+			expect(connectionId).toBeDefined();
+
+			handler.cleanup();
+		});
+	});
 });

@@ -83,6 +83,23 @@ export interface WebSocketConfig {
 	close(ws: ServerWebSocket<unknown>): void;
 }
 
+export interface ConnectionRegistry {
+	/** Find client tools registered by connections subscribed to a thread */
+	getClientToolsForThread(threadId: string): Map<
+		string,
+		{
+			type: "function";
+			function: {
+				name: string;
+				description: string;
+				parameters: Record<string, unknown>;
+			};
+		}
+	>;
+	/** Get the connectionId of the connection that has a specific tool for a thread */
+	getConnectionForTool(threadId: string, toolName: string): string | undefined;
+}
+
 export interface WebSocketHandlerConfig {
 	eventBus: TypedEventEmitter;
 	db?: Database;
@@ -93,7 +110,7 @@ export interface WebSocketHandlerConfig {
 
 export function createWebSocketHandler(
 	config: WebSocketHandlerConfig | TypedEventEmitter,
-): WebSocketConfig & { cleanup: () => void } {
+): WebSocketConfig & { cleanup: () => void; registry: ConnectionRegistry } {
 	// Support both old (eventBus only) and new (config object) signatures for backwards compatibility
 	let eventBus: TypedEventEmitter;
 	let db: Database | undefined;
@@ -523,6 +540,40 @@ export function createWebSocketHandler(
 		}
 	};
 
+	// Connection registry implementation
+	const registry: ConnectionRegistry = {
+		getClientToolsForThread(threadId: string) {
+			const merged = new Map<
+				string,
+				{
+					type: "function";
+					function: {
+						name: string;
+						description: string;
+						parameters: Record<string, unknown>;
+					};
+				}
+			>();
+			for (const [, conn] of clients) {
+				if (conn.subscriptions.has(threadId)) {
+					for (const [name, def] of conn.clientTools) {
+						merged.set(name, def);
+					}
+				}
+			}
+			return merged;
+		},
+
+		getConnectionForTool(threadId: string, toolName: string): string | undefined {
+			for (const [, conn] of clients) {
+				if (conn.subscriptions.has(threadId) && conn.clientTools.has(toolName)) {
+					return conn.connectionId;
+				}
+			}
+			return undefined;
+		},
+	};
+
 	eventBus.on("message:created", handleMessageCreated);
 	// message:broadcast is used for assistant-response re-emit so it reaches
 	// WebSocket clients without re-triggering the agent loop handler.
@@ -618,5 +669,7 @@ export function createWebSocketHandler(
 			eventBus.off("status:forward", handleStatusForward);
 			clients.clear();
 		},
+
+		registry,
 	};
 }

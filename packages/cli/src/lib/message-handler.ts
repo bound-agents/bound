@@ -25,6 +25,10 @@ export interface RunLocalLoopParams {
 	platform?: string;
 	/** Platform-specific tools (e.g. discord_send_message). */
 	platformTools?: AgentLoopConfig["platformTools"];
+	/** Client tools from WS connections subscribed to this thread. */
+	clientTools?: AgentLoopConfig["clientTools"];
+	/** Connection ID for the WS connection that provided client tools. */
+	connectionId?: string;
 }
 
 export interface RunLocalLoopResult {
@@ -68,6 +72,8 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 		shouldYield,
 		platform,
 		platformTools,
+		clientTools,
+		connectionId,
 	} = params;
 
 	const abortController = new AbortController();
@@ -102,6 +108,8 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 			shouldYield,
 			platform,
 			platformTools,
+			clientTools,
+			connectionId,
 		});
 		const agentResult = await agentLoop.run();
 		return { agentResult, signal: abortController.signal };

@@ -29,6 +29,20 @@ export interface WebServer {
 	stop(): Promise<void>;
 	address(): string;
 	wsConnectionManager?: WsConnectionManager;
+	wsRegistry?: {
+		getClientToolsForThread(threadId: string): Map<
+			string,
+			{
+				type: "function";
+				function: {
+					name: string;
+					description: string;
+					parameters: Record<string, unknown>;
+				};
+			}
+		>;
+		getConnectionForTool(threadId: string, toolName: string): string | undefined;
+	};
 }
 
 /**
@@ -105,6 +119,8 @@ export async function createWebServer(
 		address(): string {
 			return `http://${host}:${port}`;
 		},
+
+		wsRegistry: wsHandler.registry,
 	};
 }
 
