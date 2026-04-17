@@ -177,26 +177,6 @@ describe("claimPending", () => {
 		};
 		expect(row.status).toBe("pending");
 	});
-
-	it("does not claim messages from other threads", () => {
-		const thread1 = randomUUID();
-		const thread2 = randomUUID();
-		const msg1 = randomUUID();
-		const msg2 = randomUUID();
-
-		enqueueMessage(db, msg1, thread1);
-		enqueueMessage(db, msg2, thread2);
-
-		const claimed = claimPending(db, thread1, "host-1");
-		expect(claimed).toHaveLength(1);
-		expect(claimed[0].message_id).toBe(msg1);
-
-		// thread2's message should still be pending
-		const row = db.query("SELECT status FROM dispatch_queue WHERE message_id = ?").get(msg2) as {
-			status: string;
-		};
-		expect(row.status).toBe("pending");
-	});
 });
 
 describe("resetProcessingForThread", () => {

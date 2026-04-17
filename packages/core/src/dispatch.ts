@@ -209,7 +209,7 @@ export function hasPendingClientToolCalls(db: Database, threadId: string): boole
 
 /**
  * Get all pending/processing client tool calls for a thread.
- * Returns the entries with parsed payloads.
+ * Returns the entries (event_payload is JSON-encoded).
  */
 export function getPendingClientToolCalls(db: Database, threadId: string): DispatchEntry[] {
 	return db
@@ -224,6 +224,7 @@ export function getPendingClientToolCalls(db: Database, threadId: string): Dispa
 /**
  * Expire stale client tool calls that exceeded TTL.
  * Returns the list of expired entries.
+ * Atomic SELECT + UPDATE inside BEGIN IMMEDIATE to prevent TOCTOU races.
  */
 export function expireClientToolCalls(
 	db: Database,
@@ -233,39 +234,53 @@ export function expireClientToolCalls(
 	const now = new Date().toISOString();
 	const cutoff = new Date(Date.now() - ttlMs).toISOString();
 
-	// Get the entries that will expire
-	const expired = threadId
-		? (db
-				.prepare(
-					`SELECT * FROM dispatch_queue
+	// Atomic SELECT + UPDATE inside BEGIN IMMEDIATE to prevent TOCTOU races
+	// in multi-process deployments. IMMEDIATE acquires a write lock before the
+	// SELECT, so no other process can modify the same entries concurrently.
+	db.exec("BEGIN IMMEDIATE");
+	try {
+		// Get the entries that will expire
+		const expired = threadId
+			? (db
+					.prepare(
+						`SELECT * FROM dispatch_queue
+					 WHERE event_type = ? AND status IN ('pending', 'processing') AND created_at < ? AND thread_id = ?`,
+					)
+					.all(CLIENT_TOOL_CALL, cutoff, threadId) as DispatchEntry[])
+			: (db
+					.prepare(
+						`SELECT * FROM dispatch_queue
+					 WHERE event_type = ? AND status IN ('pending', 'processing') AND created_at < ?`,
+					)
+					.all(CLIENT_TOOL_CALL, cutoff) as DispatchEntry[]);
+
+		// Update the entries to expired status
+		if (expired.length > 0) {
+			if (threadId) {
+				db.prepare(
+					`UPDATE dispatch_queue
+				 SET status = 'expired', modified_at = ?
 				 WHERE event_type = ? AND status IN ('pending', 'processing') AND created_at < ? AND thread_id = ?`,
-				)
-				.all(CLIENT_TOOL_CALL, cutoff, threadId) as DispatchEntry[])
-		: (db
-				.prepare(
-					`SELECT * FROM dispatch_queue
+				).run(now, CLIENT_TOOL_CALL, cutoff, threadId);
+			} else {
+				db.prepare(
+					`UPDATE dispatch_queue
+				 SET status = 'expired', modified_at = ?
 				 WHERE event_type = ? AND status IN ('pending', 'processing') AND created_at < ?`,
-				)
-				.all(CLIENT_TOOL_CALL, cutoff) as DispatchEntry[]);
-
-	// Update the entries to expired status
-	if (expired.length > 0) {
-		if (threadId) {
-			db.prepare(
-				`UPDATE dispatch_queue
-			 SET status = 'expired', modified_at = ?
-			 WHERE event_type = ? AND status IN ('pending', 'processing') AND created_at < ? AND thread_id = ?`,
-			).run(now, CLIENT_TOOL_CALL, cutoff, threadId);
-		} else {
-			db.prepare(
-				`UPDATE dispatch_queue
-			 SET status = 'expired', modified_at = ?
-			 WHERE event_type = ? AND status IN ('pending', 'processing') AND created_at < ?`,
-			).run(now, CLIENT_TOOL_CALL, cutoff);
+				).run(now, CLIENT_TOOL_CALL, cutoff);
+			}
 		}
-	}
 
-	return expired;
+		db.exec("COMMIT");
+		return expired;
+	} catch (error) {
+		try {
+			db.exec("ROLLBACK");
+		} catch {
+			// ROLLBACK may fail if transaction was already rolled back
+		}
+		throw error;
+	}
 }
 
 /**
