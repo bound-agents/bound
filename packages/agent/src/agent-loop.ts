@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { AppContext } from "@bound/core";
 import {
+	enqueueClientToolCall,
 	insertRow,
 	markProcessed,
 	readInboxByRefId,
@@ -789,6 +790,10 @@ export class AgentLoop {
 						content: string;
 						exitCode: number;
 					}> = [];
+					const pendingClientCalls: Array<{
+						toolCall: ParsedToolCall;
+						request: ClientToolCallRequest;
+					}> = [];
 
 					for (const toolCall of parsed.toolCalls) {
 						this.toolCallsMade++;
@@ -809,10 +814,19 @@ export class AgentLoop {
 							if ("outboxEntryId" in result) {
 								resultContent = await this.relayWait(result, toolCall, currentTurnId);
 							} else if (isClientToolCallRequest(result)) {
-								// Client tool calls are deferred to the client — skip result collection for now
-								// Task 3 will handle persistence and loop exit
+								// Client tool calls are deferred to the client — track but don't get result yet
+								pendingClientCalls.push({ toolCall, request: result });
 								resultContent = "";
 								exitCode = 0;
+								// Don't add to toolResults yet — no tool_result message to persist
+								const toolDurationMs = Date.now() - toolStartTime;
+								this.ctx.logger.info("[agent-loop] Client tool call deferred", {
+									turn: turnCount,
+									tool: toolCall.name,
+									durationMs: toolDurationMs,
+								});
+								this.config.onActivity?.();
+								continue;
 							} else {
 								resultContent = result.content;
 								exitCode = result.exitCode;
@@ -936,6 +950,58 @@ export class AgentLoop {
 							});
 							break;
 						}
+					}
+
+					// Handle pending client tool calls — persist and yield
+					if (pendingClientCalls.length > 0) {
+						this.ctx.logger.info("[agent-loop] Processing pending client tool calls", {
+							count: pendingClientCalls.length,
+						});
+
+						for (const { toolCall } of pendingClientCalls) {
+							// Persist tool_call message (already persisted as part of the batch above)
+							// Enqueue dispatch entry for WS delivery
+							const connectionId = this.config.connectionId;
+							if (!connectionId) {
+								this.ctx.logger.error("Client tool call without connectionId", {
+									tool: toolCall.name,
+									callId: toolCall.id,
+								});
+								continue;
+							}
+
+							enqueueClientToolCall(
+								this.ctx.db,
+								this.config.threadId,
+								{
+									call_id: toolCall.id,
+									tool_name: toolCall.name,
+									arguments: toolCall.input,
+								},
+								connectionId,
+							);
+
+							// Emit event for WS handler to deliver tool:call to client
+							this.ctx.eventBus.emit("client_tool_call:created", {
+								threadId: this.config.threadId,
+								callId: toolCall.id,
+								toolName: toolCall.name,
+								arguments: toolCall.input,
+							});
+
+							this.ctx.logger.debug("[agent-loop] Client tool call enqueued and event emitted", {
+								tool: toolCall.name,
+								callId: toolCall.id,
+								connectionId,
+							});
+						}
+
+						// Exit loop — resume when tool_result arrives
+						this.ctx.logger.info("[agent-loop] Exiting loop for client tool call resolution", {
+							count: pendingClientCalls.length,
+						});
+						continueLoop = false;
+						break;
 					}
 
 					// Cooperative cancellation: check after tool results persisted

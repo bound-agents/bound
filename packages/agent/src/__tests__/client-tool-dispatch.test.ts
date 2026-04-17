@@ -410,4 +410,191 @@ describe("Client tool dispatch in AgentLoop", () => {
 		// Should complete without error
 		expect(result.toolCallsMade).toBe(1);
 	});
+
+	it("persists tool_call message and exits loop when client tool is deferred", async () => {
+		const clientTool = {
+			type: "function" as const,
+			function: {
+				name: "client_action",
+				description: "Action on client",
+				parameters: { type: "object", properties: {}, required: [] },
+			},
+		};
+
+		const clientTools = new Map([["client_action", clientTool]]);
+
+		const mockBackend = new MockLLMBackend();
+		// LLM returns a client tool call
+		mockBackend.pushResponse(async function* () {
+			yield { type: "tool_use_start" as const, id: "client-call-1", name: "client_action" };
+			yield {
+				type: "tool_use_args" as const,
+				id: "client-call-1",
+				partial_json: '{"param": "value"}',
+			};
+			yield { type: "tool_use_end" as const, id: "client-call-1" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 15,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		const ctx = makeCtx();
+		const userId = randomUUID();
+		const loop = new AgentLoop(
+			ctx,
+			{ exec: () => Promise.resolve({}) } as any,
+			createMockRouter(mockBackend),
+			{
+				threadId,
+				userId,
+				clientTools,
+				connectionId: "test-connection-id",
+			},
+		);
+
+		const result = await loop.run();
+
+		// Loop should exit after client tool call (no final text response)
+		expect(result.error).toBeUndefined();
+		expect(result.toolCallsMade).toBe(1);
+
+		// Verify tool_call message was persisted
+		const messages = db.prepare("SELECT * FROM messages WHERE thread_id = ?").all(threadId);
+		const toolCallMsg = (messages as any[]).find((m: any) => m.role === "tool_call");
+		expect(toolCallMsg).toBeDefined();
+		if (toolCallMsg) {
+			const content = JSON.parse(toolCallMsg.content);
+			expect(content).toEqual([
+				{
+					type: "tool_use",
+					id: "client-call-1",
+					name: "client_action",
+					input: { param: "value" },
+				},
+			]);
+		}
+
+		// Verify dispatch_queue entry was created
+		const dispatchEntries = db
+			.prepare("SELECT * FROM dispatch_queue WHERE thread_id = ? AND event_type = ?")
+			.all(threadId, "client_tool_call") as any[];
+		expect(dispatchEntries.length).toBe(1);
+		const entry = dispatchEntries[0];
+		expect(entry.claimed_by).toBe("test-connection-id");
+		const payload = JSON.parse(entry.event_payload);
+		expect(payload.call_id).toBe("client-call-1");
+		expect(payload.tool_name).toBe("client_action");
+	});
+
+	it("in a mixed turn, server tools execute immediately, client tools deferred, loop exits", async () => {
+		const serverTool = {
+			type: "function" as const,
+			function: {
+				name: "ls",
+				description: "List files",
+				parameters: { type: "object", properties: {}, required: [] },
+			},
+		};
+
+		const clientTool = {
+			type: "function" as const,
+			function: {
+				name: "client_action",
+				description: "Action on client",
+				parameters: { type: "object", properties: {}, required: [] },
+			},
+		};
+
+		const clientTools = new Map([["client_action", clientTool]]);
+
+		const mockBackend = new MockLLMBackend();
+		// LLM returns both server and client tool calls in same response
+		mockBackend.pushResponse(async function* () {
+			// First: server tool call (bash command)
+			yield { type: "tool_use_start" as const, id: "server-call-1", name: "bash" };
+			yield {
+				type: "tool_use_args" as const,
+				id: "server-call-1",
+				partial_json: '{"command": "ls"}',
+			};
+			yield { type: "tool_use_end" as const, id: "server-call-1" };
+			// Second: client tool call
+			yield { type: "tool_use_start" as const, id: "client-call-1", name: "client_action" };
+			yield {
+				type: "tool_use_args" as const,
+				id: "client-call-1",
+				partial_json: '{"action": "run"}',
+			};
+			yield { type: "tool_use_end" as const, id: "client-call-1" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 20,
+					output_tokens: 30,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		const ctx = makeCtx();
+		const userId = randomUUID();
+		const loop = new AgentLoop(
+			ctx,
+			{
+				exec: async () => {
+					return { stdout: "server result", stderr: "", exitCode: 0 };
+				},
+			} as any,
+			createMockRouter(mockBackend),
+			{
+				threadId,
+				userId,
+				tools: [serverTool],
+				clientTools,
+				connectionId: "test-connection-id",
+			},
+		);
+
+		const result = await loop.run();
+
+		// Loop should exit (not continue with final response)
+		expect(result.error).toBeUndefined();
+		expect(result.toolCallsMade).toBe(2);
+
+		// Verify tool_call message has both calls
+		const messages = db.prepare("SELECT * FROM messages WHERE thread_id = ?").all(threadId);
+		const toolCallMsg = (messages as any[]).find((m: any) => m.role === "tool_call");
+		expect(toolCallMsg).toBeDefined();
+		if (toolCallMsg) {
+			const content = JSON.parse(toolCallMsg.content);
+			expect(content.length).toBe(2);
+			expect(content[0].name).toBe("bash");
+			expect(content[1].name).toBe("client_action");
+		}
+
+		// Verify tool_result for server tool was persisted
+		const toolResultMsgs = (messages as any[]).filter((m: any) => m.role === "tool_result");
+		expect(toolResultMsgs.length).toBe(1); // Only server tool result
+		expect(toolResultMsgs[0].content).toBe("server result");
+
+		// Verify dispatch_queue entry was created for client tool only
+		const dispatchEntries = db
+			.prepare("SELECT * FROM dispatch_queue WHERE thread_id = ? AND event_type = ?")
+			.all(threadId, "client_tool_call") as any[];
+		expect(dispatchEntries.length).toBe(1);
+		const entry = dispatchEntries[0];
+		expect(entry.claimed_by).toBe("test-connection-id");
+		const payload = JSON.parse(entry.event_payload);
+		expect(payload.call_id).toBe("client-call-1");
+		expect(payload.tool_name).toBe("client_action");
+	});
 });

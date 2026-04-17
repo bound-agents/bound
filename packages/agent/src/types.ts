@@ -101,6 +101,11 @@ export interface AgentLoopConfig {
 	 * markers. Used by the dispatch system to coalesce rapid-fire messages.
 	 */
 	shouldYield?: () => boolean;
+	/**
+	 * Connection ID for WebSocket client delivering client tool calls.
+	 * Required when clientTools are present.
+	 */
+	connectionId?: string;
 }
 
 export interface AgentLoopResult {
