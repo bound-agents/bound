@@ -567,6 +567,71 @@ describe("API Routes", () => {
 
 			expect(response.status).toBe(404);
 		});
+
+		it("expires pending client tool calls and injects interruption notice (AC4.5)", async () => {
+			// Create a thread first
+			const createThreadRequest = new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({}),
+			});
+			const threadResponse = await app.fetch(createThreadRequest);
+			const thread = await threadResponse.json();
+
+			// Manually create a pending client tool call entry
+			const now = new Date().toISOString();
+			const entryId = randomUUID();
+			db.prepare(
+				`INSERT INTO dispatch_queue
+				 (message_id, thread_id, status, event_type, event_payload, claimed_by, created_at, modified_at)
+				 VALUES (?, ?, 'pending', 'client_tool_call', ?, ?, ?, ?)`,
+			).run(
+				entryId,
+				thread.id,
+				JSON.stringify({
+					call_id: "call-1",
+					tool_name: "test_tool",
+					arguments: { arg1: "value" },
+				}),
+				"connection-1",
+				now,
+				now,
+			);
+
+			// Verify the entry is pending before cancel
+			const beforeCancel = db
+				.prepare(
+					`SELECT status FROM dispatch_queue WHERE message_id = ? AND event_type = 'client_tool_call'`,
+				)
+				.get(entryId) as { status: string };
+			expect(beforeCancel.status).toBe("pending");
+
+			// Cancel the thread
+			const cancelRequest = new Request(`http://localhost:3000/api/status/cancel/${thread.id}`, {
+				method: "POST",
+			});
+			const cancelResponse = await app.fetch(cancelRequest);
+
+			expect(cancelResponse.status).toBe(200);
+
+			// Verify the entry is now expired
+			const afterCancel = db
+				.prepare(
+					`SELECT status FROM dispatch_queue WHERE message_id = ? AND event_type = 'client_tool_call'`,
+				)
+				.get(entryId) as { status: string };
+			expect(afterCancel.status).toBe("expired");
+
+			// Verify an interruption notice was injected
+			const messages = db
+				.prepare(`SELECT content FROM messages WHERE thread_id = ? AND role = 'system'`)
+				.all(thread.id) as Array<{ content: string }>;
+
+			const cancelNotice = messages.find((m) =>
+				m.content.includes("[Client tool calls cancelled]"),
+			);
+			expect(cancelNotice).toBeDefined();
+		});
 	});
 
 	describe("Host header validation", () => {

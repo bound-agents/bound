@@ -231,8 +231,43 @@ export function createWebSocketHandler(
 		for (const tool of msg.tools) {
 			conn.clientTools.set(tool.function.name, tool);
 		}
-		// Scan for pending client_tool_call entries that match this connection's tools
-		// (reconnection delivery — Phase 8 completes this, but structure the scan here)
+
+		// Scan for re-deliverable pending tool calls (AC7.1-AC7.2)
+		// For each subscribed thread, find pending client tool calls matching registered tools
+		if (!db || !siteId) return;
+
+		for (const threadId of conn.subscriptions) {
+			const pending = getPendingClientToolCalls(db, threadId);
+			for (const entry of pending) {
+				if (!entry.event_payload) continue;
+				try {
+					const payload = JSON.parse(entry.event_payload) as {
+						call_id?: string;
+						tool_name?: string;
+						arguments?: Record<string, unknown>;
+					};
+
+					// Check if this tool matches one of the client's registered tools
+					if (payload.tool_name && conn.clientTools.has(payload.tool_name)) {
+						// Update claimed_by to new connection (AC7.2)
+						updateClaimedBy(db, entry.message_id, conn.connectionId);
+
+						// Re-deliver tool:call
+						conn.ws.send(
+							JSON.stringify({
+								type: "tool:call",
+								call_id: payload.call_id,
+								thread_id: threadId,
+								tool_name: payload.tool_name,
+								arguments: payload.arguments,
+							}),
+						);
+					}
+				} catch {
+					// Ignore parse errors and continue
+				}
+			}
+		}
 	}
 
 	function handleThreadSubscribe(
@@ -240,6 +275,41 @@ export function createWebSocketHandler(
 		msg: z.infer<typeof threadSubscribeSchema>,
 	): void {
 		conn.subscriptions.add(msg.thread_id);
+
+		// Scan for re-deliverable pending tool calls on this thread (AC7.1-AC7.2)
+		// In case session:configure happened before thread:subscribe
+		if (!db || !siteId) return;
+
+		const pending = getPendingClientToolCalls(db, msg.thread_id);
+		for (const entry of pending) {
+			if (!entry.event_payload) continue;
+			try {
+				const payload = JSON.parse(entry.event_payload) as {
+					call_id?: string;
+					tool_name?: string;
+					arguments?: Record<string, unknown>;
+				};
+
+				// Check if this tool matches one of the client's registered tools
+				if (payload.tool_name && conn.clientTools.has(payload.tool_name)) {
+					// Update claimed_by to new connection (AC7.2)
+					updateClaimedBy(db, entry.message_id, conn.connectionId);
+
+					// Re-deliver tool:call
+					conn.ws.send(
+						JSON.stringify({
+							type: "tool:call",
+							call_id: payload.call_id,
+							thread_id: msg.thread_id,
+							tool_name: payload.tool_name,
+							arguments: payload.arguments,
+						}),
+					);
+				}
+			} catch {
+				// Ignore parse errors and continue
+			}
+		}
 	}
 
 	function handleThreadUnsubscribe(
@@ -383,6 +453,37 @@ export function createWebSocketHandler(
 			const TTL_MS = 5 * 60 * 1000; // 5 minutes
 			const cutoff = new Date(Date.now() - TTL_MS).toISOString();
 
+			// First check for expired entries with this call_id (AC7.3)
+			const expiredEntry = db
+				.prepare(
+					`SELECT * FROM dispatch_queue
+					 WHERE thread_id = ? AND event_type = 'client_tool_call' AND status = 'expired'`,
+				)
+				.all(msg.thread_id) as Array<{
+				message_id: string;
+				event_payload: string | null;
+			}>;
+
+			for (const entry of expiredEntry) {
+				if (!entry.event_payload) continue;
+				try {
+					const payload = JSON.parse(entry.event_payload) as { call_id?: string };
+					if (payload.call_id === msg.call_id) {
+						conn.ws.send(
+							JSON.stringify({
+								type: "error",
+								code: "tool_call_expired",
+								message: "This tool call has expired",
+								call_id: msg.call_id,
+							}),
+						);
+						return;
+					}
+				} catch {
+					// Ignore parse errors
+				}
+			}
+
 			// Look up the pending client tool call entry
 			const pendingCalls = getPendingClientToolCalls(db, msg.thread_id);
 			let matchingEntry = null;
@@ -412,7 +513,7 @@ export function createWebSocketHandler(
 				return;
 			}
 
-			// Check if entry has expired
+			// Check if entry has expired based on TTL
 			if (matchingEntry.created_at < cutoff) {
 				conn.ws.send(
 					JSON.stringify({
