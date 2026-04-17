@@ -3,6 +3,7 @@ import { z } from "zod";
 import type {
 	AdvisoryCount,
 	ApiErrorBody,
+	BoundSocketEvents,
 	CancelResult,
 	ContextDebugTurn,
 	CreateMcpThreadResult,
@@ -17,6 +18,9 @@ import type {
 	TaskListEntry,
 	ThreadListEntry,
 	ThreadStatus,
+	ToolCallRequest,
+	ToolCallResult,
+	ToolDefinition,
 } from "./types.js";
 
 export class BoundNotRunningError extends Error {
@@ -46,8 +50,22 @@ const threadStatusSchema = z.object({
 	model: z.string().nullable(),
 });
 
+type EventName = keyof BoundSocketEvents;
+
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 30_000;
+
 export class BoundClient {
 	private readonly baseUrl: string;
+	private ws: WebSocket | null = null;
+	private readonly wsUrl: string;
+	private readonly subscriptions = new Set<string>();
+	private clientTools: ToolDefinition[] = [];
+	private toolCallHandler: ((call: ToolCallRequest) => Promise<ToolCallResult>) | null = null;
+	private readonly listeners = new Map<string, Set<(...args: unknown[]) => void>>();
+	private shouldReconnect = false;
+	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	private reconnectAttempt = 0;
 
 	/**
 	 * @param baseUrl Base URL for the Bound API. Defaults to "" (empty string)
@@ -57,6 +75,16 @@ export class BoundClient {
 	constructor(baseUrl = "") {
 		// Strip trailing slash for consistent path joining
 		this.baseUrl = baseUrl.replace(/\/+$/, "");
+
+		// Derive WebSocket URL from baseUrl
+		if (baseUrl) {
+			this.wsUrl = `${baseUrl.replace(/^http/, "ws").replace(/\/+$/, "")}/ws`;
+		} else if (typeof window !== "undefined") {
+			const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+			this.wsUrl = `${protocol}//${window.location.host}/ws`;
+		} else {
+			this.wsUrl = "ws://localhost:3001/ws";
+		}
 	}
 
 	// ---- Internal helpers ----
@@ -106,6 +134,162 @@ export class BoundClient {
 		});
 	}
 
+	// ---- WebSocket ----
+
+	connect(): void {
+		if (this.ws) return;
+		this.shouldReconnect = true;
+		this.createConnection();
+	}
+
+	disconnect(): void {
+		this.shouldReconnect = false;
+		if (this.reconnectTimer) {
+			clearTimeout(this.reconnectTimer);
+			this.reconnectTimer = null;
+		}
+		if (this.ws) {
+			this.ws.close();
+			this.ws = null;
+		}
+	}
+
+	subscribe(threadId: string): void {
+		this.subscriptions.add(threadId);
+		this.sendWsMessage({ type: "thread:subscribe", thread_id: threadId });
+	}
+
+	unsubscribe(threadId: string): void {
+		this.subscriptions.delete(threadId);
+		this.sendWsMessage({ type: "thread:unsubscribe", thread_id: threadId });
+	}
+
+	configureTools(tools: ToolDefinition[]): void {
+		this.clientTools = tools;
+		this.sendWsMessage({ type: "session:configure", tools });
+	}
+
+	onToolCall(handler: (call: ToolCallRequest) => Promise<ToolCallResult>): void {
+		this.toolCallHandler = handler;
+	}
+
+	on<E extends EventName>(event: E, handler: BoundSocketEvents[E]): void {
+		let set = this.listeners.get(event);
+		if (!set) {
+			set = new Set();
+			this.listeners.set(event, set);
+		}
+		set.add(handler as (...args: unknown[]) => void);
+	}
+
+	off<E extends EventName>(event: E, handler: BoundSocketEvents[E]): void {
+		const set = this.listeners.get(event);
+		if (set) {
+			set.delete(handler as (...args: unknown[]) => void);
+			if (set.size === 0) this.listeners.delete(event);
+		}
+	}
+
+	private createConnection(): void {
+		// Handle case where WebSocket is not available (e.g., in tests)
+		if (typeof WebSocket === "undefined") {
+			return;
+		}
+
+		const ws = new WebSocket(this.wsUrl);
+
+		ws.onopen = () => {
+			this.reconnectAttempt = 0;
+			this.sendSessionConfigure();
+			this.resendSubscriptions();
+			this.emit("open");
+		};
+
+		ws.onmessage = (event) => {
+			try {
+				const msg = JSON.parse(event.data as string) as {
+					type: string;
+					[key: string]: unknown;
+				};
+
+				// Handle tool:call specially - auto-respond if handler is registered
+				if (msg.type === "tool:call" && this.toolCallHandler) {
+					const toolCall = msg as unknown as ToolCallRequest;
+					this.toolCallHandler(toolCall)
+						.then((result) => {
+							this.sendWsMessage({ type: "tool:result", ...result });
+						})
+						.catch((err) => {
+							this.emit("error", {
+								code: "TOOL_CALL_ERROR",
+								message: String(err),
+							});
+						});
+					return;
+				}
+
+				// Emit other events
+				this.emit(msg.type, msg);
+			} catch {
+				// Ignore malformed messages
+			}
+		};
+
+		ws.onerror = (event) => {
+			this.emit("error", event);
+		};
+
+		ws.onclose = () => {
+			this.ws = null;
+			this.emit("close");
+			if (this.shouldReconnect) {
+				this.scheduleReconnect();
+			}
+		};
+
+		this.ws = ws;
+	}
+
+	private emit(event: string, data?: unknown): void {
+		const set = this.listeners.get(event);
+		if (set) {
+			for (const handler of set) {
+				handler(data);
+			}
+		}
+	}
+
+	private sendWsMessage(msg: Record<string, unknown>): void {
+		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+			this.ws.send(JSON.stringify(msg));
+		}
+	}
+
+	private sendSessionConfigure(): void {
+		if (this.clientTools.length > 0) {
+			this.sendWsMessage({ type: "session:configure", tools: this.clientTools });
+		}
+	}
+
+	private resendSubscriptions(): void {
+		if (this.subscriptions.size > 0) {
+			for (const threadId of this.subscriptions) {
+				this.sendWsMessage({ type: "thread:subscribe", thread_id: threadId });
+			}
+		}
+	}
+
+	private scheduleReconnect(): void {
+		const delay = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempt, RECONNECT_MAX_MS);
+		// Add jitter: 0.5x to 1.5x of computed delay
+		const jitteredDelay = delay * (0.5 + Math.random());
+		this.reconnectAttempt++;
+		this.reconnectTimer = setTimeout(() => {
+			this.reconnectTimer = null;
+			this.createConnection();
+		}, jitteredDelay);
+	}
+
 	// ---- Threads ----
 
 	async listThreads(): Promise<ThreadListEntry[]> {
@@ -143,19 +327,15 @@ export class BoundClient {
 		return this.fetchJson(`/api/threads/${threadId}/messages`);
 	}
 
-	async sendMessage(
-		threadId: string,
-		content: string,
-		options?: SendMessageOptions,
-	): Promise<Message> {
-		const body: Record<string, unknown> = { content };
-		if (options?.modelId) body.model_id = options.modelId;
-		if (options?.fileId) body.file_ids = [options.fileId];
-		return this.fetchJson(`/api/threads/${threadId}/messages`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(body),
-		});
+	sendMessage(threadId: string, content: string, options?: SendMessageOptions): void {
+		const msg: Record<string, unknown> = {
+			type: "message:send",
+			thread_id: threadId,
+			content,
+		};
+		if (options?.modelId) msg.model_id = options.modelId;
+		if (options?.fileId) msg.file_ids = [options.fileId];
+		this.sendWsMessage(msg);
 	}
 
 	async redactMessage(threadId: string, messageId: string): Promise<RedactMessageResult> {

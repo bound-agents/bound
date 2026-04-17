@@ -165,12 +165,43 @@ export interface ApiErrorBody {
 
 // ---- WebSocket ----
 
+export interface ToolDefinition {
+	type: "function";
+	function: {
+		name: string;
+		description: string;
+		parameters: Record<string, unknown>;
+	};
+}
+
+export interface ToolCallRequest {
+	call_id: string;
+	thread_id: string;
+	tool_name: string;
+	arguments: Record<string, unknown>;
+}
+
+export interface ToolCallResult {
+	call_id: string;
+	thread_id: string;
+	content: string;
+	is_error?: boolean;
+}
+
 export interface BoundSocketEvents {
 	"message:created": (msg: Message) => void;
-	task_update: (data: { taskId: string; status: string }) => void;
-	file_update: (data: { path: string; operation: string }) => void;
+	"task:updated": (data: { taskId: string; status: string }) => void;
+	"file:updated": (data: { path: string; operation: string }) => void;
 	"context:debug": (data: ContextDebugTurn) => void;
+	"thread:status": (data: {
+		thread_id: string;
+		active: boolean;
+		state: string | null;
+		tokens: number;
+		model: string | null;
+	}) => void;
+	"tool:call": (call: ToolCallRequest) => void;
+	error: (err: Event | Error | { code: string; message: string }) => void;
 	open: () => void;
 	close: () => void;
-	error: (err: Event | Error) => void;
 }

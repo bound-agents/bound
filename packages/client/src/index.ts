@@ -1,6 +1,5 @@
 // Client classes
 export { BoundClient, BoundNotRunningError, BoundApiError } from "./client.js";
-export { BoundSocket } from "./socket.js";
 
 // API-specific types
 export type {
@@ -27,4 +26,7 @@ export type {
 	CreateMcpThreadResult,
 	ApiErrorBody,
 	BoundSocketEvents,
+	ToolDefinition,
+	ToolCallRequest,
+	ToolCallResult,
 } from "./types.js";
