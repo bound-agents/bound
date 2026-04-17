@@ -190,13 +190,15 @@ export function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 		}
 	}
 
-	// Many OpenAI-compatible providers (e.g. GLM/ZAI) only accept system messages
-	// at position 0. Convert any interleaved system messages to user messages.
-	let foundNonSystem = false;
+	// Convert ALL system messages to user messages. The real system prompt is
+	// injected separately by chat() via params.system. Any system-role messages
+	// in the conversation array are injected notes (task wakeup, quiescence,
+	// truncation markers, etc.). Many OpenAI-compatible providers (e.g. GLM/ZAI)
+	// only accept a single system message at position 0, so leaving these as
+	// system role causes "illegal messages" errors when chat() prepends the
+	// real system prompt.
 	for (const msg of result) {
-		if (msg.role !== "system") {
-			foundNonSystem = true;
-		} else if (foundNonSystem) {
+		if (msg.role === "system") {
 			msg.role = "user";
 			msg.content = `<system-note>${typeof msg.content === "string" ? msg.content : ""}</system-note>`;
 		}
