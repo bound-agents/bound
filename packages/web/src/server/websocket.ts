@@ -2,14 +2,70 @@ import type { TypedEventEmitter } from "@bound/shared";
 import type { ServerWebSocket } from "bun";
 import { z } from "zod";
 
-const wsMessageSchema = z.object({
-	subscribe: z.array(z.string()).optional(),
-	unsubscribe: z.array(z.string()).optional(),
+// Zod schemas for all client→server message types
+const sessionConfigureSchema = z.object({
+	type: z.literal("session:configure"),
+	tools: z.array(
+		z.object({
+			type: z.literal("function"),
+			function: z.object({
+				name: z.string(),
+				description: z.string(),
+				parameters: z.record(z.string(), z.unknown()),
+			}),
+		}),
+	),
 });
+
+const messageSendSchema = z.object({
+	type: z.literal("message:send"),
+	thread_id: z.string(),
+	content: z.string(),
+	file_ids: z.array(z.string()).optional(),
+});
+
+const threadSubscribeSchema = z.object({
+	type: z.literal("thread:subscribe"),
+	thread_id: z.string(),
+});
+
+const threadUnsubscribeSchema = z.object({
+	type: z.literal("thread:unsubscribe"),
+	thread_id: z.string(),
+});
+
+const toolResultSchema = z.object({
+	type: z.literal("tool:result"),
+	call_id: z.string(),
+	thread_id: z.string(),
+	content: z.string(),
+	is_error: z.boolean().optional(),
+});
+
+// Discriminated union for all message types
+const wsClientMessageSchema = z.discriminatedUnion("type", [
+	sessionConfigureSchema,
+	messageSendSchema,
+	threadSubscribeSchema,
+	threadUnsubscribeSchema,
+	toolResultSchema,
+]);
 
 interface ClientConnection {
 	ws: ServerWebSocket<unknown>;
+	connectionId: string;
 	subscriptions: Set<string>;
+	clientTools: Map<
+		string,
+		{
+			type: "function";
+			function: {
+				name: string;
+				description: string;
+				parameters: Record<string, unknown>;
+			};
+		}
+	>;
 }
 
 export interface WebSocketConfig {
@@ -114,6 +170,32 @@ export function createWebSocketHandler(
 		}
 	};
 
+	function handleSessionConfigure(
+		conn: ClientConnection,
+		msg: z.infer<typeof sessionConfigureSchema>,
+	): void {
+		conn.clientTools.clear();
+		for (const tool of msg.tools) {
+			conn.clientTools.set(tool.function.name, tool);
+		}
+		// Scan for pending client_tool_call entries that match this connection's tools
+		// (reconnection delivery — Phase 8 completes this, but structure the scan here)
+	}
+
+	function handleThreadSubscribe(
+		conn: ClientConnection,
+		msg: z.infer<typeof threadSubscribeSchema>,
+	): void {
+		conn.subscriptions.add(msg.thread_id);
+	}
+
+	function handleThreadUnsubscribe(
+		conn: ClientConnection,
+		msg: z.infer<typeof threadUnsubscribeSchema>,
+	): void {
+		conn.subscriptions.delete(msg.thread_id);
+	}
+
 	eventBus.on("message:created", handleMessageCreated);
 	// message:broadcast is used for assistant-response re-emit so it reaches
 	// WebSocket clients without re-triggering the agent loop handler.
@@ -127,7 +209,9 @@ export function createWebSocketHandler(
 		open(ws: ServerWebSocket<unknown>): void {
 			const conn: ClientConnection = {
 				ws,
+				connectionId: crypto.randomUUID(),
 				subscriptions: new Set(),
+				clientTools: new Map(),
 			};
 			clients.set(ws, conn);
 		},
@@ -141,27 +225,52 @@ export function createWebSocketHandler(
 			if (!conn) return;
 
 			try {
-				const parsed = wsMessageSchema.safeParse(JSON.parse(rawMessage));
+				const parsed = wsClientMessageSchema.safeParse(JSON.parse(rawMessage));
 				if (!parsed.success) {
-					// Invalid message schema, ignore
+					// Invalid message schema, send error response
+					ws.send(
+						JSON.stringify({
+							type: "error",
+							code: "invalid_message",
+							message: parsed.error.message,
+						}),
+					);
 					return;
 				}
+
 				const message = parsed.data;
 
-				if (message.subscribe) {
-					for (const threadId of message.subscribe) {
-						conn.subscriptions.add(threadId);
+				switch (message.type) {
+					case "session:configure": {
+						handleSessionConfigure(conn, message);
+						break;
+					}
+					case "thread:subscribe": {
+						handleThreadSubscribe(conn, message);
+						break;
+					}
+					case "thread:unsubscribe": {
+						handleThreadUnsubscribe(conn, message);
+						break;
+					}
+					case "message:send": {
+						// Placeholder for Task 3
+						break;
+					}
+					case "tool:result": {
+						// Placeholder for Task 4
+						break;
 					}
 				}
-
-				if (message.unsubscribe) {
-					for (const threadId of message.unsubscribe) {
-						conn.subscriptions.delete(threadId);
-					}
-				}
-			} catch (error) {
-				// Invalid JSON, ignore
-				console.error("WebSocket message error:", error);
+			} catch {
+				// Invalid JSON, send error response
+				ws.send(
+					JSON.stringify({
+						type: "error",
+						code: "invalid_json",
+						message: "Invalid JSON",
+					}),
+				);
 			}
 		},
 
