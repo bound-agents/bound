@@ -13,6 +13,7 @@ import {
 	claimPending,
 	enqueueMessage,
 	enqueueNotification,
+	expireClientToolCalls,
 	insertRow,
 	updateRow,
 	writeOutbox,
@@ -569,6 +570,69 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				appContext.logger.error("[recovery] Unhandled dispatch error", { error: formatError(err) }),
 			);
 		}
+
+		// Task 1: Periodic TTL-based expiry scan for stale client tool calls
+		const CLIENT_TOOL_CALL_TTL_MS = 5 * 60 * 1000; // 5 minutes default
+		const EXPIRY_SCAN_INTERVAL_MS = 60 * 1000; // Scan every 60 seconds
+
+		const expiryScanInterval = setInterval(() => {
+			try {
+				const expired = expireClientToolCalls(appContext.db, CLIENT_TOOL_CALL_TTL_MS);
+				if (expired.length > 0) {
+					// Group by thread_id
+					const threadIds = new Set(expired.map((e) => e.thread_id));
+					const now = new Date().toISOString();
+
+					for (const threadId of threadIds) {
+						// Inject interruption notice as system message
+						try {
+							insertRow(
+								appContext.db,
+								"messages",
+								{
+									id: randomUUID(),
+									thread_id: threadId,
+									role: "system",
+									content: `[Client tool call expired] One or more client tool calls timed out after ${CLIENT_TOOL_CALL_TTL_MS / 1000}s without receiving results. The client may have disconnected permanently.`,
+									model_id: null,
+									tool_name: null,
+									created_at: now,
+									modified_at: now,
+									host_origin: appContext.hostName,
+									deleted: 0,
+								},
+								appContext.siteId,
+							);
+
+							// Re-trigger handleThread to unblock the thread
+							handleThread(threadId).catch((err) =>
+								appContext.logger.warn("[expiry] Background re-trigger failed", {
+									error: formatError(err),
+								}),
+							);
+						} catch (error) {
+							appContext.logger.warn(
+								`[expiry] Failed to inject interruption notice for thread ${threadId}`,
+								{ error: formatError(error) },
+							);
+						}
+					}
+					appContext.logger.info(
+						`[expiry] Expired ${expired.length} stale client tool call(s) across ${threadIds.size} thread(s)`,
+					);
+				}
+			} catch (error) {
+				appContext.logger.error("[expiry] Scan failed", { error: formatError(error) });
+			}
+		}, EXPIRY_SCAN_INTERVAL_MS);
+
+		// Clean up on server stop — store interval ID for cleanup
+		const cleanup = () => {
+			clearInterval(expiryScanInterval);
+		};
+		process.on("exit", cleanup);
+		process.on("SIGINT", cleanup);
+		process.on("SIGTERM", cleanup);
 	} catch (error) {
 		appContext.logger.warn("Web server failed to start", { error: formatError(error) });
 		appContext.logger.warn("Continuing without web UI. API will not be available.");
