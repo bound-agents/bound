@@ -1,5 +1,29 @@
 import type { ToolDefinition } from "@bound/llm";
 
+/**
+ * Signal from a client tool that indicates the tool execution should be deferred
+ * to the client (e.g., over WebSocket). The agent loop persists the tool_call
+ * message and exits, waiting for a tool_result to be provided by the client.
+ */
+export interface ClientToolCallRequest {
+	clientToolCall: true; // discriminant
+	toolName: string;
+	callId: string;
+	arguments: Record<string, unknown>;
+}
+
+/**
+ * Type guard to check if a tool execution result is a client tool call request.
+ */
+export function isClientToolCallRequest(result: unknown): result is ClientToolCallRequest {
+	return (
+		result != null &&
+		typeof result === "object" &&
+		"clientToolCall" in result &&
+		(result as { clientToolCall: unknown }).clientToolCall === true
+	);
+}
+
 export type AgentLoopState =
 	| "IDLE"
 	| "HYDRATE_FS"
@@ -46,6 +70,23 @@ export interface AgentLoopConfig {
 		{
 			toolDefinition: ToolDefinition;
 			execute: (input: Record<string, unknown>) => Promise<string>;
+		}
+	>;
+	/**
+	 * Client-side tool definitions, keyed by tool name.
+	 * The agent loop includes these in the LLM tool list but defers execution
+	 * to the client. Tool calls matching these names return a ClientToolCallRequest
+	 * sentinel instead of executing locally.
+	 */
+	clientTools?: Map<
+		string,
+		{
+			type: "function";
+			function: {
+				name: string;
+				description: string;
+				parameters: Record<string, unknown>;
+			};
 		}
 	>;
 	/** When true, skip loading conversation history from the messages table.

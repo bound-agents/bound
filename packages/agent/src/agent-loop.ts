@@ -13,7 +13,7 @@ import {
 	updateRow,
 	writeOutbox,
 } from "@bound/core";
-import type { ModelRouter, StreamChunk } from "@bound/llm";
+import type { ModelRouter, StreamChunk, ToolDefinition } from "@bound/llm";
 import type { InferenceRequestPayload, StreamChunkPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
 import type { ContextDebugInfo, RelayInboxEntry, RelayKind, SyncConfig } from "@bound/shared";
@@ -45,7 +45,13 @@ import {
 	buildOffloadMessage,
 	offloadToolResultPath,
 } from "./tool-result-offload";
-import type { AgentLoopConfig, AgentLoopResult, AgentLoopState } from "./types";
+import type {
+	AgentLoopConfig,
+	AgentLoopResult,
+	AgentLoopState,
+	ClientToolCallRequest,
+} from "./types";
+import { isClientToolCallRequest } from "./types";
 
 export const SILENCE_TIMEOUT_MS = 60_000;
 export const MAX_SILENCE_RETRIES = 10;
@@ -310,9 +316,8 @@ export class AgentLoop {
 			}
 			const contextWindow = resolvedMaxContext || 200_000;
 
-			const toolTokenEstimate = this.config.tools
-				? countTokens(JSON.stringify(this.config.tools))
-				: 0;
+			const mergedTools = this.getMergedTools();
+			const toolTokenEstimate = mergedTools ? countTokens(JSON.stringify(mergedTools)) : 0;
 
 			const resolvedModelForDebug = getResolvedModelId(
 				this.lastModelResolution,
@@ -428,7 +433,7 @@ export class AgentLoop {
 							let inferencePayload: InferenceRequestPayload = {
 								model: resolution.modelId,
 								messages: nonSystemMessages,
-								tools: this.config.tools,
+								tools: mergedTools,
 								system: systemPrompt || undefined,
 								system_suffix: systemSuffix || undefined,
 								max_tokens: undefined,
@@ -497,7 +502,7 @@ export class AgentLoop {
 										messages: nonSystemMessages,
 										system: systemPrompt || undefined,
 										system_suffix: systemSuffix || undefined,
-										tools: this.config.tools,
+										tools: mergedTools,
 										cache_breakpoints: cacheBreakpoints,
 										thinking: resolution.thinkingConfig,
 										signal: this.config.abortSignal,
@@ -803,6 +808,11 @@ export class AgentLoop {
 
 							if ("outboxEntryId" in result) {
 								resultContent = await this.relayWait(result, toolCall, currentTurnId);
+							} else if (isClientToolCallRequest(result)) {
+								// Client tool calls are deferred to the client — skip result collection for now
+								// Task 3 will handle persistence and loop exit
+								resultContent = "";
+								exitCode = 0;
 							} else {
 								resultContent = result.content;
 								exitCode = result.exitCode;
@@ -1478,14 +1488,32 @@ export class AgentLoop {
 		}
 	}
 
-	/** Execute a tool call via platform tools or sandbox. Returns relay request for remote MCP tools. */
+	/** Merge server tools and client tool definitions into a single LLM tool list. */
+	private getMergedTools(): Array<ToolDefinition> | undefined {
+		const serverTools = this.config.tools ?? [];
+		const clientTools = this.config.clientTools ? Array.from(this.config.clientTools.values()) : [];
+		const merged: Array<ToolDefinition> = [...serverTools, ...clientTools];
+		return merged.length > 0 ? merged : undefined;
+	}
+
+	/** Execute a tool call via platform tools or sandbox. Returns relay request for remote MCP tools or client tool call request. */
 	private async executeToolCall(
 		toolCall: ParsedToolCall,
-	): Promise<{ content: string; exitCode: number } | RelayToolCallRequest> {
+	): Promise<{ content: string; exitCode: number } | RelayToolCallRequest | ClientToolCallRequest> {
 		const platformTool = this.config.platformTools?.get(toolCall.name);
 		if (platformTool) {
 			const content = await platformTool.execute(toolCall.input);
 			return { content, exitCode: 0 };
+		}
+
+		// Priority 2: Client tools (schema only, execution deferred to client)
+		if (this.config.clientTools?.has(toolCall.name)) {
+			return {
+				clientToolCall: true,
+				toolName: toolCall.name,
+				callId: toolCall.id,
+				arguments: toolCall.input,
+			} satisfies ClientToolCallRequest;
 		}
 
 		// Built-in tools (read, write, edit) — dispatched before bash fallback
