@@ -10,6 +10,7 @@ import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { AgentLoop } from "../agent-loop";
+import { insertThreadMessage } from "../agent-loop-utils";
 import { type ClientToolCallRequest, isClientToolCallRequest } from "../types";
 
 describe("ClientToolCallRequest type and type guard", () => {
@@ -596,5 +597,122 @@ describe("Client tool dispatch in AgentLoop", () => {
 		const payload = JSON.parse(entry.event_payload);
 		expect(payload.call_id).toBe("client-call-1");
 		expect(payload.tool_name).toBe("client_action");
+	});
+
+	it("full round-trip: LLM call -> loop exit -> tool_result persisted -> loop resume -> final response", async () => {
+		const clientTool = {
+			type: "function" as const,
+			function: {
+				name: "client_math",
+				description: "Math on client",
+				parameters: { type: "object", properties: {}, required: [] },
+			},
+		};
+
+		const clientTools = new Map([["client_math", clientTool]]);
+
+		const mockBackend = new MockLLMBackend();
+
+		// First response: client tool call
+		mockBackend.pushResponse(async function* () {
+			yield { type: "tool_use_start" as const, id: "call-1", name: "client_math" };
+			yield {
+				type: "tool_use_args" as const,
+				id: "call-1",
+				partial_json: '{"x": 10}',
+			};
+			yield { type: "tool_use_end" as const, id: "call-1" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 15,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		// Second response: final answer (after tool_result is in context)
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "The answer is 20" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 20,
+					output_tokens: 10,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		const ctx = makeCtx();
+		const userId = randomUUID();
+
+		// First run: LLM calls client tool, loop exits
+		const loop1 = new AgentLoop(
+			ctx,
+			{ exec: () => Promise.resolve({}) } as any,
+			createMockRouter(mockBackend),
+			{
+				threadId,
+				userId,
+				clientTools,
+				connectionId: "test-connection-id",
+			},
+		);
+
+		const result1 = await loop1.run();
+		expect(result1.error).toBeUndefined();
+		expect(result1.toolCallsMade).toBe(1);
+
+		// Verify tool_call message was persisted
+		let messages = db.prepare("SELECT * FROM messages WHERE thread_id = ?").all(threadId);
+		const toolCallMsg = (messages as any[]).find((m: any) => m.role === "tool_call");
+		expect(toolCallMsg).toBeDefined();
+
+		// Simulate client executing the tool and sending result
+		// Insert tool_result message using the same function as the loop uses
+		insertThreadMessage(
+			ctx.db,
+			{
+				threadId,
+				role: "tool_result",
+				content: "20", // result from client tool execution
+				toolName: "call-1", // matches the call ID for tool_result pairing
+				hostOrigin: ctx.siteId,
+			},
+			ctx.siteId,
+		);
+
+		// Enqueue tool_result to trigger loop resume
+		const { enqueueToolResult } = await import("@bound/core");
+		enqueueToolResult(ctx.db, threadId, "call-1");
+
+		// Second run: LLM sees complete tool_call/tool_result pair and produces final response
+		const loop2 = new AgentLoop(
+			ctx,
+			{ exec: () => Promise.resolve({}) } as any,
+			createMockRouter(mockBackend),
+			{
+				threadId,
+				userId,
+				clientTools,
+				connectionId: "test-connection-id",
+			},
+		);
+
+		const result2 = await loop2.run();
+		expect(result2.error).toBeUndefined();
+
+		// Verify final assistant message was created
+		messages = db.prepare("SELECT * FROM messages WHERE thread_id = ?").all(threadId);
+		const assistantMsgs = (messages as any[]).filter((m: any) => m.role === "assistant");
+		expect(assistantMsgs.length).toBeGreaterThan(0);
+		const finalMsg = assistantMsgs[assistantMsgs.length - 1];
+		expect(finalMsg.content).toBe("The answer is 20");
 	});
 });
