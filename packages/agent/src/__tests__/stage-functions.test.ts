@@ -931,7 +931,47 @@ describe("Stage Functions - L2 Graph Entries", () => {
 		expect(orphanEntry?.tier).toBe("detail");
 	});
 
-	it("AC3.6: L2 excludes non-orphaned detail entries (with incoming summarizes edge)", () => {
+	it("AC3.6: L2 retrieves entries at 3-edge depth from seeds", () => {
+		const now = new Date().toISOString();
+
+		// Create a chain: alpha → bravo → charlie → delta (3 edges deep)
+		for (const [id, key, value] of [
+			["chain1", "alpha_node", "Alpha node entry"],
+			["chain2", "bravo_node", "Bravo node entry"],
+			["chain3", "charlie_node", "Charlie node entry"],
+			["chain4", "delta_node", "Delta node entry"],
+		] as const) {
+			db.prepare(
+				`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			).run(id, key, value, "default", now, now, now, 0);
+		}
+
+		// alpha → bravo (depth 1), bravo → charlie (depth 2), charlie → delta (depth 3)
+		db.prepare(
+			`INSERT INTO memory_edges (id, source_key, target_key, relation, weight, created_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run("chain_e1", "alpha_node", "bravo_node", "relates", 1.0, now, now, 0);
+		db.prepare(
+			`INSERT INTO memory_edges (id, source_key, target_key, relation, weight, created_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run("chain_e2", "bravo_node", "charlie_node", "relates", 1.0, now, now, 0);
+		db.prepare(
+			`INSERT INTO memory_edges (id, source_key, target_key, relation, weight, created_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run("chain_e3", "charlie_node", "delta_node", "relates", 1.0, now, now, 0);
+
+		const result = loadGraphEntries(db, new Set(), ["alpha"], 10);
+
+		const keys = result.entries.map((e) => e.key);
+		// alpha is the seed, bravo at depth 1, charlie at depth 2, delta at depth 3
+		expect(keys).toContain("alpha_node"); // seed
+		expect(keys).toContain("bravo_node"); // depth 1
+		expect(keys).toContain("charlie_node"); // depth 2
+		expect(keys).toContain("delta_node"); // depth 3 — the key assertion
+	});
+
+	it("AC3.7: L2 excludes non-orphaned detail entries (with incoming summarizes edge)", () => {
 		const baseTime = new Date("2026-04-10T10:00:00Z").toISOString();
 
 		// Create a summary

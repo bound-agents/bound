@@ -785,7 +785,7 @@ export function loadGraphEntries(
 		db,
 		keywords,
 		maxSlots + excludeKeys.size,
-		2,
+		3,
 		excludeKeys,
 	);
 
