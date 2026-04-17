@@ -287,7 +287,42 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 			appContext.logger.info(`[recovery] Reset ${dispatchReset} in-flight dispatch(es) to pending`);
 		}
 
+		// Recovery for client_tool_call entries: reset to pending with claimed_by = NULL
+		// so reconnecting clients can be re-assigned on next connection
+		const clientToolCallReset = (() => {
+			const now = new Date().toISOString();
+			appContext.db
+				.prepare(
+					`UPDATE dispatch_queue
+				 SET status = 'pending', claimed_by = NULL, modified_at = ?
+				 WHERE event_type = 'client_tool_call' AND status = 'processing'`,
+				)
+				.run(now);
+			const row = appContext.db.query("SELECT changes() as c").get() as { c: number } | null;
+			return row?.c ?? 0;
+		})();
+		if (clientToolCallReset > 0) {
+			appContext.logger.info(
+				`[recovery] Reset ${clientToolCallReset} orphaned client tool call(s) to pending`,
+			);
+		}
+
+		// Log pending client tool calls found during bootstrap
+		const clientToolCallThreads = appContext.db
+			.prepare(
+				`SELECT DISTINCT thread_id FROM dispatch_queue
+				 WHERE event_type = 'client_tool_call' AND status IN ('pending', 'processing')`,
+			)
+			.all() as Array<{ thread_id: string }>;
+		if (clientToolCallThreads.length > 0) {
+			appContext.logger.info(
+				`[recovery] Found pending client tool calls across ${clientToolCallThreads.length} thread(s) from prior server lifetime — will re-deliver on client reconnect`,
+			);
+		}
+
 		// Scan for interrupted tool-use per R-E13
+		// Exclude tool_call messages that have corresponding client_tool_call entries in dispatch_queue
+		// (those are waiting for client execution, not crashed server tools)
 		const interruptedThreads = appContext.db
 			.query(
 				`SELECT DISTINCT m.thread_id FROM messages m
@@ -298,6 +333,12 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 					AND m2.created_at > m.created_at
 					AND (m2.role = 'assistant'
 					  OR (m2.role = 'system' AND (m2.content LIKE '%interrupted%' OR m2.content LIKE '%cancelled%')))
+				 )
+				 AND NOT EXISTS (
+					SELECT 1 FROM dispatch_queue dq
+					WHERE dq.thread_id = m.thread_id
+					AND dq.event_type = 'client_tool_call'
+					AND dq.status IN ('pending', 'processing')
 				 )`,
 			)
 			.all() as Array<{ thread_id: string }>;

@@ -1,8 +1,7 @@
-import { BoundApiError, type BoundClient, BoundNotRunningError } from "@bound/client";
+import type { BoundClient } from "@bound/client";
 import type { Message } from "@bound/shared";
 
-const POLL_INTERVAL_MS = 500;
-const MAX_POLL_MS = 30 * 60 * 1000; // 30 minutes
+const DEFAULT_MAX_POLL_MS = 30 * 60 * 1000; // 30 minutes
 
 export interface ToolResult {
 	[key: string]: unknown;
@@ -10,39 +9,53 @@ export interface ToolResult {
 	isError?: boolean;
 }
 
+export interface BoundChatHandlerOptions {
+	maxPollMs?: number;
+}
+
 export function createBoundChatHandler(
 	client: BoundClient,
+	options?: BoundChatHandlerOptions,
 ): (args: { message: string; thread_id?: string }) => Promise<ToolResult> {
+	const maxPollMs = options?.maxPollMs ?? DEFAULT_MAX_POLL_MS;
+
 	return async ({ message, thread_id }) => {
 		try {
 			// Step 1: Get or create thread
 			const threadId = thread_id ?? (await client.createMcpThread()).thread_id;
 
-			// Step 2: Send message
-			await client.sendMessage(threadId, message);
+			// Step 2: Subscribe to thread events
+			client.subscribe(threadId);
 
-			// Step 3: Poll until agent loop completes
-			const startTime = Date.now();
-			while (true) {
-				const status = await client.getThreadStatus(threadId);
-				if (!status.active) break;
+			// Step 3: Wait for completion via thread:status event (with timeout)
+			const completionPromise = new Promise<void>((resolve, reject) => {
+				// biome-ignore lint/style/useConst: handler is assigned after use in setTimeout
+				let handler: (data: { thread_id: string; active: boolean }) => void;
 
-				if (Date.now() - startTime >= MAX_POLL_MS) {
-					return {
-						isError: true,
-						content: [
-							{
-								type: "text",
-								text: "Timed out waiting for bound agent to respond after 30 minutes.",
-							},
-						],
-					};
-				}
+				const timeout = setTimeout(() => {
+					client.off("thread:status", handler);
+					client.unsubscribe(threadId);
+					reject(new Error("Timed out waiting for bound agent to respond after 30 minutes."));
+				}, maxPollMs);
 
-				await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-			}
+				handler = (data: { thread_id: string; active: boolean }) => {
+					if (data.thread_id === threadId && !data.active) {
+						clearTimeout(timeout);
+						client.off("thread:status", handler);
+						client.unsubscribe(threadId);
+						resolve();
+					}
+				};
+				client.on("thread:status", handler);
+			});
 
-			// Step 4: Return last assistant message
+			// Step 4: Send message over WS (fire-and-forget)
+			client.sendMessage(threadId, message);
+
+			// Step 5: Wait for completion
+			await completionPromise;
+
+			// Step 6: Return last assistant message (via HTTP listMessages)
 			const messages = await client.listMessages(threadId);
 			const lastAssistant = [...messages].reverse().find((m: Message) => m.role === "assistant");
 
@@ -55,7 +68,7 @@ export function createBoundChatHandler(
 				],
 			};
 		} catch (e) {
-			if (e instanceof BoundNotRunningError || e instanceof BoundApiError) {
+			if (e instanceof Error) {
 				return {
 					isError: true,
 					content: [{ type: "text", text: e.message }],

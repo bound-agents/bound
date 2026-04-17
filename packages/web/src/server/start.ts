@@ -4,6 +4,7 @@ import { WsConnectionManager, createWsHandlers } from "@bound/sync";
 import type { ModelsConfig, SyncAppConfig, WebAppConfig } from "./index";
 import { createWebApp } from "./index";
 import { createWebSocketHandler } from "./websocket";
+import type { ConnectionRegistry } from "./websocket";
 
 export type { ModelsConfig };
 
@@ -29,6 +30,7 @@ export interface WebServer {
 	stop(): Promise<void>;
 	address(): string;
 	wsConnectionManager?: WsConnectionManager;
+	wsRegistry?: ConnectionRegistry;
 }
 
 /**
@@ -64,7 +66,12 @@ export async function createWebServer(
 	});
 
 	// Create WebSocket handler
-	const wsHandler = createWebSocketHandler(eventBus);
+	const wsHandler = createWebSocketHandler({
+		eventBus,
+		db,
+		siteId: config.siteId,
+		defaultUserId: config.operatorUserId,
+	});
 
 	let server: ReturnType<typeof Bun.serve> | null = null;
 
@@ -100,6 +107,8 @@ export async function createWebServer(
 		address(): string {
 			return `http://${host}:${port}`;
 		},
+
+		wsRegistry: wsHandler.registry,
 	};
 }
 

@@ -151,7 +151,7 @@ onMount(() => {
 	loadFiles();
 	unsubscribe = wsEvents.subscribe((events) => {
 		const lastEvent = events[events.length - 1];
-		if (lastEvent?.type === "file_update") {
+		if (lastEvent?.type === "file:updated") {
 			loadFiles();
 		}
 	});

@@ -143,7 +143,6 @@ describe("API endpoint completeness", () => {
 		{ method: "POST", path: "/api/threads" },
 		{ method: "GET", path: "/api/threads/:id" },
 		{ method: "GET", path: "/api/threads/:id/messages" },
-		{ method: "POST", path: "/api/threads/:id/messages" },
 		{ method: "GET", path: "/api/threads/:id/status" },
 		{ method: "POST", path: "/api/status/cancel/:id" },
 		{ method: "GET", path: "/api/status/models" },

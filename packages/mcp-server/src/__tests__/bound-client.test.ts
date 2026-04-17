@@ -67,43 +67,11 @@ describe("BoundClient", () => {
 	});
 
 	describe("sendMessage", () => {
-		it("POST /api/threads/:id/messages with content body", async () => {
-			mockFetch.mockImplementation(() =>
-				Promise.resolve(
-					new Response(JSON.stringify({ id: "msg-1" }), {
-						status: 201,
-						headers: { "Content-Type": "application/json" },
-					}),
-				),
-			);
-
-			await client.sendMessage("thread-1", "Hello!");
-
-			const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-			expect(url).toBe(`${BASE_URL}/api/threads/thread-1/messages`);
-			expect(init.method).toBe("POST");
-			expect(JSON.parse(init.body as string)).toEqual({ content: "Hello!" });
-		});
-
-		it("throws BoundApiError on non-2xx response", async () => {
-			mockFetch.mockImplementation(() =>
-				Promise.resolve(
-					new Response(JSON.stringify({ error: "Server error" }), {
-						status: 500,
-						headers: { "Content-Type": "application/json" },
-					}),
-				),
-			);
-
-			await expect(client.sendMessage("thread-1", "Hello!")).rejects.toBeInstanceOf(BoundApiError);
-		});
-
-		it("throws BoundNotRunningError when fetch throws", async () => {
-			mockFetch.mockImplementation(() => Promise.reject(new TypeError("fetch failed")));
-
-			await expect(client.sendMessage("thread-1", "Hi")).rejects.toBeInstanceOf(
-				BoundNotRunningError,
-			);
+		it("is fire-and-forget (returns void)", () => {
+			// sendMessage is now WS fire-and-forget and returns void
+			// WebSocket connection is not available in tests, so this just verifies type
+			const result = client.sendMessage("thread-1", "Hello!");
+			expect(result).toBeUndefined();
 		});
 	});
 

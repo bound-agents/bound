@@ -16,6 +16,7 @@ function getBaseUrl(): string {
 async function main(): Promise<void> {
 	const baseUrl = getBaseUrl();
 	const client = new BoundClient(baseUrl);
+	client.connect();
 
 	const server = new McpServer({
 		name: "bound-mcp",
@@ -41,6 +42,16 @@ async function main(): Promise<void> {
 	const transport = new StdioServerTransport();
 	await server.connect(transport);
 	console.error("[bound-mcp] MCP server running on stdio (bound at %s)", baseUrl);
+
+	// Cleanup on process exit
+	process.on("SIGINT", () => {
+		client.disconnect();
+		process.exit(0);
+	});
+	process.on("SIGTERM", () => {
+		client.disconnect();
+		process.exit(0);
+	});
 }
 
 main().catch((error: unknown) => {

@@ -58,12 +58,22 @@ export {
 export {
 	enqueueMessage,
 	enqueueNotification,
+	enqueueClientToolCall,
+	enqueueToolResult,
+	acknowledgeClientToolCall,
 	claimPending,
 	acknowledgeBatch,
 	resetProcessing,
 	resetProcessingForThread,
 	pruneAcknowledged,
 	hasPending,
+	hasPendingClientToolCalls,
+	getPendingClientToolCalls,
+	expireClientToolCalls,
+	cancelClientToolCalls,
+	updateClaimedBy,
+	CLIENT_TOOL_CALL,
+	TOOL_RESULT,
 	type DispatchEntry,
 } from "./dispatch";
 export { ThreadExecutor, type ExecutorRunResult, type ExecutorOptions } from "./thread-executor";

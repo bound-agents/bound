@@ -1,5 +1,11 @@
 // Export types
-export type { AgentLoopState, AgentLoopConfig, AgentLoopResult } from "./types";
+export type {
+	AgentLoopState,
+	AgentLoopConfig,
+	AgentLoopResult,
+	ClientToolCallRequest,
+} from "./types";
+export { isClientToolCallRequest } from "./types";
 export type { ContextParams } from "./context-assembly";
 export type { ModelResolution } from "./model-resolution";
 

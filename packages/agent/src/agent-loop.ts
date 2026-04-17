@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { AppContext } from "@bound/core";
 import {
+	enqueueClientToolCall,
 	insertRow,
 	markProcessed,
 	readInboxByRefId,
@@ -13,7 +14,7 @@ import {
 	updateRow,
 	writeOutbox,
 } from "@bound/core";
-import type { ModelRouter, StreamChunk } from "@bound/llm";
+import type { ModelRouter, StreamChunk, ToolDefinition } from "@bound/llm";
 import type { InferenceRequestPayload, StreamChunkPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
 import type { ContextDebugInfo, RelayInboxEntry, RelayKind, SyncConfig } from "@bound/shared";
@@ -45,7 +46,13 @@ import {
 	buildOffloadMessage,
 	offloadToolResultPath,
 } from "./tool-result-offload";
-import type { AgentLoopConfig, AgentLoopResult, AgentLoopState } from "./types";
+import type {
+	AgentLoopConfig,
+	AgentLoopResult,
+	AgentLoopState,
+	ClientToolCallRequest,
+} from "./types";
+import { isClientToolCallRequest } from "./types";
 
 export const SILENCE_TIMEOUT_MS = 60_000;
 export const MAX_SILENCE_RETRIES = 10;
@@ -310,9 +317,8 @@ export class AgentLoop {
 			}
 			const contextWindow = resolvedMaxContext || 200_000;
 
-			const toolTokenEstimate = this.config.tools
-				? countTokens(JSON.stringify(this.config.tools))
-				: 0;
+			const mergedTools = this.getMergedTools();
+			const toolTokenEstimate = mergedTools ? countTokens(JSON.stringify(mergedTools)) : 0;
 
 			const resolvedModelForDebug = getResolvedModelId(
 				this.lastModelResolution,
@@ -428,7 +434,7 @@ export class AgentLoop {
 							let inferencePayload: InferenceRequestPayload = {
 								model: resolution.modelId,
 								messages: nonSystemMessages,
-								tools: this.config.tools,
+								tools: mergedTools,
 								system: systemPrompt || undefined,
 								system_suffix: systemSuffix || undefined,
 								max_tokens: undefined,
@@ -497,7 +503,7 @@ export class AgentLoop {
 										messages: nonSystemMessages,
 										system: systemPrompt || undefined,
 										system_suffix: systemSuffix || undefined,
-										tools: this.config.tools,
+										tools: mergedTools,
 										cache_breakpoints: cacheBreakpoints,
 										thinking: resolution.thinkingConfig,
 										signal: this.config.abortSignal,
@@ -784,6 +790,10 @@ export class AgentLoop {
 						content: string;
 						exitCode: number;
 					}> = [];
+					const pendingClientCalls: Array<{
+						toolCall: ParsedToolCall;
+						request: ClientToolCallRequest;
+					}> = [];
 
 					for (const toolCall of parsed.toolCalls) {
 						this.toolCallsMade++;
@@ -803,6 +813,20 @@ export class AgentLoop {
 
 							if ("outboxEntryId" in result) {
 								resultContent = await this.relayWait(result, toolCall, currentTurnId);
+							} else if (isClientToolCallRequest(result)) {
+								// Client tool calls are deferred to the client — track but don't get result yet
+								pendingClientCalls.push({ toolCall, request: result });
+								resultContent = "";
+								exitCode = 0;
+								// Don't add to toolResults yet — no tool_result message to persist
+								const toolDurationMs = Date.now() - toolStartTime;
+								this.ctx.logger.info("[agent-loop] Client tool call deferred", {
+									turn: turnCount,
+									tool: toolCall.name,
+									durationMs: toolDurationMs,
+								});
+								this.config.onActivity?.();
+								continue;
 							} else {
 								resultContent = result.content;
 								exitCode = result.exitCode;
@@ -926,6 +950,59 @@ export class AgentLoop {
 							});
 							break;
 						}
+					}
+
+					// Handle pending client tool calls — persist and yield
+					if (pendingClientCalls.length > 0) {
+						this.ctx.logger.info("[agent-loop] Processing pending client tool calls", {
+							count: pendingClientCalls.length,
+						});
+
+						for (const { toolCall } of pendingClientCalls) {
+							// Persist tool_call message (already persisted as part of the batch above)
+							// Enqueue dispatch entry for WS delivery
+							const connectionId = this.config.connectionId;
+							if (!connectionId) {
+								this.ctx.logger.error("Client tool call without connectionId", {
+									tool: toolCall.name,
+									callId: toolCall.id,
+								});
+								continue;
+							}
+
+							const entryId = enqueueClientToolCall(
+								this.ctx.db,
+								this.config.threadId,
+								{
+									call_id: toolCall.id,
+									tool_name: toolCall.name,
+									arguments: toolCall.input,
+								},
+								connectionId,
+							);
+
+							// Emit event for WS handler to deliver tool:call to client
+							this.ctx.eventBus.emit("client_tool_call:created", {
+								threadId: this.config.threadId,
+								callId: toolCall.id,
+								entryId,
+								toolName: toolCall.name,
+								arguments: toolCall.input,
+							});
+
+							this.ctx.logger.debug("[agent-loop] Client tool call enqueued and event emitted", {
+								tool: toolCall.name,
+								callId: toolCall.id,
+								connectionId,
+							});
+						}
+
+						// Exit loop — resume when tool_result arrives
+						this.ctx.logger.info("[agent-loop] Exiting loop for client tool call resolution", {
+							count: pendingClientCalls.length,
+						});
+						continueLoop = false;
+						break;
 					}
 
 					// Cooperative cancellation: check after tool results persisted
@@ -1478,14 +1555,32 @@ export class AgentLoop {
 		}
 	}
 
-	/** Execute a tool call via platform tools or sandbox. Returns relay request for remote MCP tools. */
+	/** Merge server tools and client tool definitions into a single LLM tool list. */
+	private getMergedTools(): Array<ToolDefinition> | undefined {
+		const serverTools = this.config.tools ?? [];
+		const clientTools = this.config.clientTools ? Array.from(this.config.clientTools.values()) : [];
+		const merged: Array<ToolDefinition> = [...serverTools, ...clientTools];
+		return merged.length > 0 ? merged : undefined;
+	}
+
+	/** Execute a tool call via platform tools or sandbox. Returns relay request for remote MCP tools or client tool call request. */
 	private async executeToolCall(
 		toolCall: ParsedToolCall,
-	): Promise<{ content: string; exitCode: number } | RelayToolCallRequest> {
+	): Promise<{ content: string; exitCode: number } | RelayToolCallRequest | ClientToolCallRequest> {
 		const platformTool = this.config.platformTools?.get(toolCall.name);
 		if (platformTool) {
 			const content = await platformTool.execute(toolCall.input);
 			return { content, exitCode: 0 };
+		}
+
+		// Priority 2: Client tools (schema only, execution deferred to client)
+		if (this.config.clientTools?.has(toolCall.name)) {
+			return {
+				clientToolCall: true,
+				toolName: toolCall.name,
+				callId: toolCall.id,
+				arguments: toolCall.input,
+			} satisfies ClientToolCallRequest;
 		}
 
 		// Built-in tools (read, write, edit) — dispatched before bash fallback

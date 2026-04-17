@@ -30,22 +30,21 @@ describe("Redaction API Endpoints (R-E18)", () => {
 		return thread.id;
 	}
 
-	async function createMessage(threadId: string, content: string): Promise<string> {
-		const res = await app.fetch(
-			new Request(`http://localhost:3000/api/threads/${threadId}/messages`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ content }),
-			}),
+	function createMessage(threadId: string, content: string): string {
+		const msgId = randomUUID();
+		const now = new Date().toISOString();
+		db.exec(
+			`INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			[msgId, threadId, "user", content, now, now, "localhost", 0],
 		);
-		const msg = await res.json();
-		return msg.id;
+		return msgId;
 	}
 
 	describe("POST /:threadId/messages/:messageId/redact", () => {
 		it("redacts a single message and returns 200", async () => {
 			const threadId = await createThread();
-			const messageId = await createMessage(threadId, "Secret content here");
+			const messageId = createMessage(threadId, "Secret content here");
 
 			const res = await app.fetch(
 				new Request(`http://localhost:3000/api/threads/${threadId}/messages/${messageId}/redact`, {
@@ -93,8 +92,8 @@ describe("Redaction API Endpoints (R-E18)", () => {
 	describe("POST /:threadId/redact", () => {
 		it("redacts all messages in a thread", async () => {
 			const threadId = await createThread();
-			await createMessage(threadId, "Message one");
-			await createMessage(threadId, "Message two");
+			createMessage(threadId, "Message one");
+			createMessage(threadId, "Message two");
 
 			const res = await app.fetch(
 				new Request(`http://localhost:3000/api/threads/${threadId}/redact`, {
@@ -129,7 +128,7 @@ describe("Redaction API Endpoints (R-E18)", () => {
 
 		it("reports affected memories when redacting a thread", async () => {
 			const threadId = await createThread();
-			await createMessage(threadId, "Message with memory");
+			createMessage(threadId, "Message with memory");
 
 			// Insert a semantic memory sourced from this thread
 			const now = new Date().toISOString();

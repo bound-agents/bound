@@ -25,12 +25,19 @@ describe("WebSocket Handler", () => {
 
 		handler.open(mockWs);
 
-		const subscribeMessage = JSON.stringify({
-			subscribe: ["thread-1", "thread-2"],
+		const subscribeMessage1 = JSON.stringify({
+			type: "thread:subscribe",
+			thread_id: "thread-1",
+		});
+
+		const subscribeMessage2 = JSON.stringify({
+			type: "thread:subscribe",
+			thread_id: "thread-2",
 		});
 
 		expect(() => {
-			handler.message(mockWs, subscribeMessage);
+			handler.message(mockWs, subscribeMessage1);
+			handler.message(mockWs, subscribeMessage2);
 		}).not.toThrow();
 	});
 
@@ -46,7 +53,8 @@ describe("WebSocket Handler", () => {
 		handler.open(mockWs);
 
 		const subscribeMessage = JSON.stringify({
-			subscribe: ["thread-1"],
+			type: "thread:subscribe",
+			thread_id: "thread-1",
 		});
 		handler.message(mockWs, subscribeMessage);
 
@@ -79,7 +87,8 @@ describe("WebSocket Handler", () => {
 		handler.open(mockWs);
 
 		const subscribeMessage = JSON.stringify({
-			subscribe: ["thread-1"],
+			type: "thread:subscribe",
+			thread_id: "thread-1",
 		});
 		handler.message(mockWs, subscribeMessage);
 
@@ -107,7 +116,13 @@ describe("WebSocket Handler", () => {
 		} as unknown as WebSocket;
 
 		handler.open(mockWs);
-		handler.message(mockWs, JSON.stringify({ subscribe: ["thread-1"] }));
+		handler.message(
+			mockWs,
+			JSON.stringify({
+				type: "thread:subscribe",
+				thread_id: "thread-1",
+			}),
+		);
 
 		eventBus.emit("message:broadcast", {
 			message: {
@@ -136,7 +151,13 @@ describe("WebSocket Handler", () => {
 		} as unknown as WebSocket;
 
 		handler.open(mockWs);
-		handler.message(mockWs, JSON.stringify({ subscribe: ["thread-1"] }));
+		handler.message(
+			mockWs,
+			JSON.stringify({
+				type: "thread:subscribe",
+				thread_id: "thread-1",
+			}),
+		);
 
 		eventBus.emit("message:broadcast", {
 			message: { id: "msg-2", content: "Other", role: "assistant" } as any,
@@ -185,7 +206,8 @@ describe("WebSocket Handler", () => {
 		handler.open(mockWs);
 
 		const subscribeMessage = JSON.stringify({
-			subscribe: ["thread-1"],
+			type: "thread:subscribe",
+			thread_id: "thread-1",
 		});
 		handler.message(mockWs, subscribeMessage);
 
@@ -228,7 +250,8 @@ describe("WebSocket Handler", () => {
 		handler.open(mockWs);
 
 		const subscribeMessage = JSON.stringify({
-			subscribe: ["thread-1"],
+			type: "thread:subscribe",
+			thread_id: "thread-1",
 		});
 		handler.message(mockWs, subscribeMessage);
 

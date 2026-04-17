@@ -1,10 +1,14 @@
 import { createRelayOutboxEntry } from "@bound/agent";
-import { getSiteId, writeOutbox } from "@bound/core";
+import { cancelClientToolCalls, getSiteId, insertRow, writeOutbox } from "@bound/core";
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertRow } from "@bound/core";
-import { type TypedEventEmitter, hostModelsSchema, parseJsonSafe } from "@bound/shared";
+import {
+	type TypedEventEmitter,
+	createLogger,
+	hostModelsSchema,
+	parseJsonSafe,
+} from "@bound/shared";
 import { Hono } from "hono";
 
 export interface ModelInfo {
@@ -32,7 +36,9 @@ export function createStatusRoutes(
 	siteId: string,
 	modelsConfig?: ModelsConfig,
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>,
+	logger?: ReturnType<typeof createLogger>,
 ): Hono {
+	const log = logger ?? createLogger("@bound/web", "status");
 	const app = new Hono();
 
 	app.get("/", (c) => {
@@ -175,6 +181,33 @@ export function createStatusRoutes(
 				| { value: string }
 				| undefined;
 			const hostNameValue = hostNameRow?.value ?? "unknown";
+
+			// Expire any pending client tool calls for this thread (AC4.5)
+			const cancelledToolCalls = cancelClientToolCalls(db, threadId);
+			if (cancelledToolCalls > 0) {
+				log.info(
+					`[cancel] Expired ${cancelledToolCalls} pending client tool call(s) for thread ${threadId}`,
+				);
+
+				// Inject interruption notice if client tool calls were cancelled
+				insertRow(
+					db,
+					"messages",
+					{
+						id: randomUUID(),
+						thread_id: threadId,
+						role: "system",
+						content:
+							"[Client tool calls cancelled] Pending client tool calls were cancelled by user request.",
+						model_id: null,
+						tool_name: null,
+						created_at: new Date().toISOString(),
+						modified_at: new Date().toISOString(),
+						host_origin: hostNameValue,
+					},
+					siteId,
+				);
+			}
 
 			// Persist cancellation message per spec R-E14
 			const cancelMsgId = randomUUID();
