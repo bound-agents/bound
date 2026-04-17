@@ -308,15 +308,15 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		}
 
 		// Log pending client tool calls found during bootstrap
-		const allClientToolCalls = appContext.db
+		const clientToolCallThreads = appContext.db
 			.prepare(
 				`SELECT DISTINCT thread_id FROM dispatch_queue
 				 WHERE event_type = 'client_tool_call' AND status IN ('pending', 'processing')`,
 			)
 			.all() as Array<{ thread_id: string }>;
-		if (allClientToolCalls.length > 0) {
+		if (clientToolCallThreads.length > 0) {
 			appContext.logger.info(
-				`[recovery] Found ${allClientToolCalls.length} pending client tool call(s) from prior server lifetime — will re-deliver on client reconnect`,
+				`[recovery] Found pending client tool calls across ${clientToolCallThreads.length} thread(s) from prior server lifetime — will re-deliver on client reconnect`,
 			);
 		}
 

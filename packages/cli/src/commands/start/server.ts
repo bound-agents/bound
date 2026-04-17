@@ -599,7 +599,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 									created_at: now,
 									modified_at: now,
 									host_origin: appContext.hostName,
-									deleted: 0,
 								},
 								appContext.siteId,
 							);

@@ -274,19 +274,4 @@ describe("WebSocket Handler", () => {
 
 		expect(messages.length).toBe(0);
 	});
-
-	describe("Reconnect re-delivery and tool_call_expired error (AC7.1-AC7.3)", () => {
-		it("should re-deliver pending tool calls on reconnect when tools match (AC7.1)", async () => {
-			// This test would require database access for getPendingClientToolCalls
-			// For now, this is a placeholder showing the structure
-			// Full implementation tested in routes.integration.test.ts with database
-			expect(true).toBe(true);
-		});
-
-		it("should return tool_call_expired error for expired entries (AC7.3)", async () => {
-			// This test would also require database access
-			// Full implementation tested in routes.integration.test.ts with database
-			expect(true).toBe(true);
-		});
-	});
 });

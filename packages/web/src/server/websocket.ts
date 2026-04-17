@@ -132,6 +132,50 @@ export function createWebSocketHandler(
 
 	const clients = new Map<ServerWebSocket<unknown>, ClientConnection>();
 
+	/**
+	 * Helper to re-deliver pending client tool calls that match the connection's tools.
+	 * Skips entries already claimed by this connection to prevent redundant re-sends.
+	 */
+	function redeliverPendingToolCalls(conn: ClientConnection, threadId: string): void {
+		if (!db || !siteId) return;
+
+		const pending = getPendingClientToolCalls(db, threadId);
+		for (const entry of pending) {
+			// Skip entries already claimed by this connection
+			if (entry.claimed_by === conn.connectionId) {
+				continue;
+			}
+
+			if (!entry.event_payload) continue;
+			try {
+				const payload = JSON.parse(entry.event_payload) as {
+					call_id?: string;
+					tool_name?: string;
+					arguments?: Record<string, unknown>;
+				};
+
+				// Check if this tool matches one of the client's registered tools
+				if (payload.tool_name && conn.clientTools.has(payload.tool_name)) {
+					// Update claimed_by to new connection (AC7.2)
+					updateClaimedBy(db, entry.message_id, conn.connectionId);
+
+					// Re-deliver tool:call
+					conn.ws.send(
+						JSON.stringify({
+							type: "tool:call",
+							call_id: payload.call_id,
+							thread_id: threadId,
+							tool_name: payload.tool_name,
+							arguments: payload.arguments,
+						}),
+					);
+				}
+			} catch {
+				// Ignore parse errors and continue
+			}
+		}
+	}
+
 	const handleMessageCreated = (data: {
 		message: unknown;
 		thread_id: string;
@@ -232,41 +276,9 @@ export function createWebSocketHandler(
 			conn.clientTools.set(tool.function.name, tool);
 		}
 
-		// Scan for re-deliverable pending tool calls (AC7.1-AC7.2)
-		// For each subscribed thread, find pending client tool calls matching registered tools
-		if (!db || !siteId) return;
-
+		// Re-deliver pending client tool calls for each subscribed thread (AC7.1-AC7.2)
 		for (const threadId of conn.subscriptions) {
-			const pending = getPendingClientToolCalls(db, threadId);
-			for (const entry of pending) {
-				if (!entry.event_payload) continue;
-				try {
-					const payload = JSON.parse(entry.event_payload) as {
-						call_id?: string;
-						tool_name?: string;
-						arguments?: Record<string, unknown>;
-					};
-
-					// Check if this tool matches one of the client's registered tools
-					if (payload.tool_name && conn.clientTools.has(payload.tool_name)) {
-						// Update claimed_by to new connection (AC7.2)
-						updateClaimedBy(db, entry.message_id, conn.connectionId);
-
-						// Re-deliver tool:call
-						conn.ws.send(
-							JSON.stringify({
-								type: "tool:call",
-								call_id: payload.call_id,
-								thread_id: threadId,
-								tool_name: payload.tool_name,
-								arguments: payload.arguments,
-							}),
-						);
-					}
-				} catch {
-					// Ignore parse errors and continue
-				}
-			}
+			redeliverPendingToolCalls(conn, threadId);
 		}
 	}
 
@@ -276,40 +288,9 @@ export function createWebSocketHandler(
 	): void {
 		conn.subscriptions.add(msg.thread_id);
 
-		// Scan for re-deliverable pending tool calls on this thread (AC7.1-AC7.2)
+		// Re-deliver pending client tool calls on this thread (AC7.1-AC7.2)
 		// In case session:configure happened before thread:subscribe
-		if (!db || !siteId) return;
-
-		const pending = getPendingClientToolCalls(db, msg.thread_id);
-		for (const entry of pending) {
-			if (!entry.event_payload) continue;
-			try {
-				const payload = JSON.parse(entry.event_payload) as {
-					call_id?: string;
-					tool_name?: string;
-					arguments?: Record<string, unknown>;
-				};
-
-				// Check if this tool matches one of the client's registered tools
-				if (payload.tool_name && conn.clientTools.has(payload.tool_name)) {
-					// Update claimed_by to new connection (AC7.2)
-					updateClaimedBy(db, entry.message_id, conn.connectionId);
-
-					// Re-deliver tool:call
-					conn.ws.send(
-						JSON.stringify({
-							type: "tool:call",
-							call_id: payload.call_id,
-							thread_id: msg.thread_id,
-							tool_name: payload.tool_name,
-							arguments: payload.arguments,
-						}),
-					);
-				}
-			} catch {
-				// Ignore parse errors and continue
-			}
-		}
+		redeliverPendingToolCalls(conn, msg.thread_id);
 	}
 
 	function handleThreadUnsubscribe(
