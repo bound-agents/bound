@@ -27,15 +27,6 @@ describe("ClientConnection type and WS message schemas", () => {
 	});
 
 	describe("ClientConnection extended fields", () => {
-		it("should initialize connectionId and clientTools on open", () => {
-			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
-
-			handler.open(mockWs);
-
-			// We'll verify this by checking the internal state after operations
-			// that depend on these fields existing (tested in Task 2)
-		});
-
 		it("should persist clientTools across multiple messages", () => {
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			handler.open(mockWs);
@@ -860,6 +851,7 @@ describe("ClientConnection type and WS message schemas", () => {
 			eventBus.emit("client_tool_call:created", {
 				threadId: "thread-123",
 				callId: "call-456",
+				entryId: "entry-789",
 				toolName: "my_tool",
 				arguments: { arg1: "value1" },
 			});
@@ -929,6 +921,7 @@ describe("ClientConnection type and WS message schemas", () => {
 			eventBus.emit("client_tool_call:created", {
 				threadId: "thread-123",
 				callId: "call-456",
+				entryId: "entry-789",
 				toolName: "my_tool",
 				arguments: { arg1: "value1" },
 			});
@@ -983,6 +976,7 @@ describe("ClientConnection type and WS message schemas", () => {
 			eventBus.emit("client_tool_call:created", {
 				threadId: "thread-123",
 				callId: "call-456",
+				entryId: "entry-789",
 				toolName: "my_tool",
 				arguments: { arg1: "value1" },
 			});
@@ -1053,6 +1047,7 @@ describe("ClientConnection type and WS message schemas", () => {
 			eventBus.emit("client_tool_call:created", {
 				threadId: "thread-123",
 				callId: "call-456",
+				entryId: "entry-789",
 				toolName: "my_tool",
 				arguments: { arg1: "value1" },
 			});

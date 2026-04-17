@@ -970,7 +970,7 @@ export class AgentLoop {
 								continue;
 							}
 
-							enqueueClientToolCall(
+							const entryId = enqueueClientToolCall(
 								this.ctx.db,
 								this.config.threadId,
 								{
@@ -985,6 +985,7 @@ export class AgentLoop {
 							this.ctx.eventBus.emit("client_tool_call:created", {
 								threadId: this.config.threadId,
 								callId: toolCall.id,
+								entryId,
 								toolName: toolCall.name,
 								arguments: toolCall.input,
 							});

@@ -35,6 +35,7 @@ export interface EventMap {
 	"client_tool_call:created": {
 		threadId: string;
 		callId: string;
+		entryId: string;
 		toolName: string;
 		arguments: Record<string, unknown>;
 	};

@@ -4,9 +4,9 @@ import {
 	acknowledgeClientToolCall,
 	enqueueToolResult,
 	getPendingClientToolCalls,
+	insertRow,
 	updateClaimedBy,
 } from "@bound/core";
-import { insertRow } from "@bound/core";
 import type { Message, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { ServerWebSocket } from "bun";
 import { z } from "zod";
@@ -88,6 +88,7 @@ export interface WebSocketHandlerConfig {
 	db?: Database;
 	siteId?: string;
 	defaultUserId?: string;
+	hostOrigin?: string;
 }
 
 export function createWebSocketHandler(
@@ -98,6 +99,7 @@ export function createWebSocketHandler(
 	let db: Database | undefined;
 	let siteId: string | undefined;
 	let defaultUserId: string | undefined;
+	let hostOrigin = "localhost:3000";
 
 	if ("on" in config && "emit" in config) {
 		// Old signature: eventBus parameter
@@ -108,6 +110,7 @@ export function createWebSocketHandler(
 		db = config.db;
 		siteId = config.siteId;
 		defaultUserId = config.defaultUserId;
+		hostOrigin = config.hostOrigin ?? "localhost:3000";
 	}
 
 	const clients = new Map<ServerWebSocket<unknown>, ClientConnection>();
@@ -321,7 +324,7 @@ export function createWebSocketHandler(
 					tool_name: null,
 					created_at: now,
 					modified_at: now,
-					host_origin: "localhost:3000",
+					host_origin: hostOrigin,
 				},
 				siteId,
 			);
@@ -421,7 +424,7 @@ export function createWebSocketHandler(
 					tool_name: null,
 					created_at: now,
 					modified_at: now,
-					host_origin: "localhost:3000",
+					host_origin: hostOrigin,
 				},
 				siteId,
 			);
@@ -453,6 +456,7 @@ export function createWebSocketHandler(
 	const handleClientToolCallCreated = (data: {
 		threadId: string;
 		callId: string;
+		entryId: string;
 		toolName: string;
 		arguments: Record<string, unknown>;
 	}): void => {
@@ -472,7 +476,7 @@ export function createWebSocketHandler(
 				// Update dispatch_queue entry status to 'processing' and claimed_by to connectionId
 				if (db) {
 					try {
-						updateClaimedBy(db, data.callId, conn.connectionId);
+						updateClaimedBy(db, data.entryId, conn.connectionId);
 					} catch {
 						// Ignore errors from updating dispatch queue
 					}
