@@ -494,6 +494,77 @@ describe("ClientConnection type and WS message schemas", () => {
 	});
 
 	describe("Task 3: message:send WS handler", () => {
+		it("AC1.1: should persist message and emit message:created event (happy path)", async () => {
+			const { applySchema, createDatabase } = await import("@bound/core");
+
+			// Create a real DB with schema
+			const db = createDatabase(":memory:");
+			applySchema(db);
+
+			// Create a thread in the DB
+			const threadId = "thread-ac1-1";
+			const userId = "test-user";
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO threads (id, user_id, interface, host_origin, title, created_at, last_message_at, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[threadId, userId, "web", "localhost:3000", "AC1.1 Test Thread", now, now, now, 0],
+			);
+
+			// Create event bus and handler
+			const testEventBus = new TypedEventEmitter();
+			const testHandler = createWebSocketHandler({
+				eventBus: testEventBus,
+				db,
+				siteId: "test-site",
+				defaultUserId: "test-user",
+			});
+
+			// Create mock WebSocket
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			// Track emitted events
+			let createdEventEmitted = false;
+			let receivedMessage: any = null;
+
+			testEventBus.on("message:created", (data) => {
+				createdEventEmitted = true;
+				receivedMessage = data.message;
+			});
+
+			// Send message:send over WS
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "message:send",
+					thread_id: threadId,
+					content: "hello world",
+				}),
+			);
+
+			// Allow async event emission to complete
+			await new Promise((resolve) => setTimeout(resolve, 10));
+
+			// Verify message was persisted to DB
+			const persistedMessage = db
+				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'user'")
+				.get(threadId) as any;
+
+			expect(persistedMessage).toBeDefined();
+			expect(persistedMessage.content).toBe("hello world");
+			expect(persistedMessage.role).toBe("user");
+			expect(persistedMessage.thread_id).toBe(threadId);
+
+			// Verify message:created event was emitted
+			expect(createdEventEmitted).toBe(true);
+			expect(receivedMessage).toBeDefined();
+			expect(receivedMessage.content).toBe("hello world");
+			expect(receivedMessage.role).toBe("user");
+
+			testHandler.cleanup();
+		});
+
 		it("should send handler_not_configured error when db is not provided", () => {
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			handler.open(mockWs);
