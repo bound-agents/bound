@@ -451,6 +451,14 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 									});
 								}
 							}
+
+							// Emit status:forward with active: false to signal completion to MCP handler
+							appContext.eventBus.emit("status:forward", {
+								thread_id: thread_id,
+								status: "idle",
+								tokens: 0,
+								detail: null,
+							});
 						}
 
 						// Acknowledge the batch we just processed

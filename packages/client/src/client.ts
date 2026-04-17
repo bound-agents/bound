@@ -3,7 +3,7 @@ import { z } from "zod";
 import type {
 	AdvisoryCount,
 	ApiErrorBody,
-	BoundSocketEvents,
+	BoundClientEvents,
 	CancelResult,
 	ContextDebugTurn,
 	CreateMcpThreadResult,
@@ -50,7 +50,7 @@ const threadStatusSchema = z.object({
 	model: z.string().nullable(),
 });
 
-type EventName = keyof BoundSocketEvents;
+type EventName = keyof BoundClientEvents;
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30_000;
@@ -173,7 +173,7 @@ export class BoundClient {
 		this.toolCallHandler = handler;
 	}
 
-	on<E extends EventName>(event: E, handler: BoundSocketEvents[E]): void {
+	on<E extends EventName>(event: E, handler: BoundClientEvents[E]): void {
 		let set = this.listeners.get(event);
 		if (!set) {
 			set = new Set();
@@ -182,7 +182,7 @@ export class BoundClient {
 		set.add(handler as (...args: unknown[]) => void);
 	}
 
-	off<E extends EventName>(event: E, handler: BoundSocketEvents[E]): void {
+	off<E extends EventName>(event: E, handler: BoundClientEvents[E]): void {
 		const set = this.listeners.get(event);
 		if (set) {
 			set.delete(handler as (...args: unknown[]) => void);

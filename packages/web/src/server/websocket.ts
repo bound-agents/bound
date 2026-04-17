@@ -6,6 +6,7 @@ import {
 	getPendingClientToolCalls,
 	insertRow,
 	updateClaimedBy,
+	updateRow,
 } from "@bound/core";
 import type { Message, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { ServerWebSocket } from "bun";
@@ -31,6 +32,7 @@ const messageSendSchema = z.object({
 	thread_id: z.string(),
 	content: z.string(),
 	file_ids: z.array(z.string()).optional(),
+	model_id: z.string().optional(),
 });
 
 const threadSubscribeSchema = z.object({
@@ -397,6 +399,20 @@ export function createWebSocketHandler(
 				siteId,
 			);
 
+			// Update thread model_hint if model_id is provided
+			if (msg.model_id) {
+				updateRow(
+					db,
+					"threads",
+					msg.thread_id,
+					{
+						model_hint: msg.model_id,
+						modified_at: now,
+					},
+					siteId,
+				);
+			}
+
 			// Retrieve the persisted message
 			const message = db.query("SELECT * FROM messages WHERE id = ?").get(messageId) as Message;
 
@@ -520,7 +536,7 @@ export function createWebSocketHandler(
 					role: "tool_result",
 					content: toolResultContent,
 					model_id: null,
-					tool_name: null,
+					tool_name: msg.call_id,
 					created_at: now,
 					modified_at: now,
 					host_origin: hostOrigin,

@@ -188,7 +188,7 @@ export interface ToolCallResult {
 	is_error?: boolean;
 }
 
-export interface BoundSocketEvents {
+export interface BoundClientEvents {
 	"message:created": (msg: Message) => void;
 	"task:updated": (data: { taskId: string; status: string }) => void;
 	"file:updated": (data: { path: string; operation: string }) => void;

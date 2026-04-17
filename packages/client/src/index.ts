@@ -25,7 +25,7 @@ export type {
 	ContextDebugTurn,
 	CreateMcpThreadResult,
 	ApiErrorBody,
-	BoundSocketEvents,
+	BoundClientEvents,
 	ToolDefinition,
 	ToolCallRequest,
 	ToolCallResult,
