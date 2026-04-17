@@ -10,8 +10,10 @@ import {
 import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
 
 interface AnthropicContentBlock {
-	type: "text" | "tool_use" | "tool_result" | "image";
+	type: "text" | "tool_use" | "tool_result" | "image" | "thinking";
 	text?: string;
+	thinking?: string;
+	signature?: string;
 	id?: string;
 	name?: string;
 	input?: Record<string, unknown>;
@@ -90,7 +92,7 @@ interface AnthropicStreamEvent {
 	};
 }
 
-function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] {
+export function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] {
 	const result: AnthropicMessage[] = [];
 
 	for (const msg of messages) {
@@ -100,7 +102,14 @@ function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] {
 				// Convert tool_call to assistant message with tool_use blocks
 				const content: AnthropicMessage["content"] = [];
 				for (const block of msg.content) {
-					if (block.type === "tool_use") {
+					if (block.type === "thinking") {
+						const thinkingBlock: AnthropicContentBlock = {
+							type: "thinking",
+							thinking: block.thinking,
+						};
+						if (block.signature) thinkingBlock.signature = block.signature;
+						content.push(thinkingBlock);
+					} else if (block.type === "tool_use") {
 						content.push({
 							type: "tool_use",
 							id: block.id,
@@ -175,7 +184,14 @@ function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] {
 					if (Array.isArray(parsed)) {
 						const content: AnthropicMessage["content"] = [];
 						for (const block of parsed) {
-							if (block.type === "tool_use") {
+							if (block.type === "thinking") {
+								const thinkingBlock: AnthropicContentBlock = {
+									type: "thinking",
+									thinking: block.thinking,
+								};
+								if (block.signature) thinkingBlock.signature = block.signature;
+								content.push(thinkingBlock);
+							} else if (block.type === "tool_use") {
 								content.push({
 									type: "tool_use",
 									id: block.id,
@@ -273,6 +289,14 @@ async function* parseAnthropicStream(
 			const thinking = (event.delta as Record<string, unknown>).thinking as string | undefined;
 			if (thinking) {
 				yield { type: "thinking", content: thinking };
+			}
+		}
+
+		// Handle signature deltas (arrives just before content_block_stop for thinking blocks)
+		if (event.type === "content_block_delta" && event.delta?.type === "signature_delta") {
+			const signature = (event.delta as Record<string, unknown>).signature as string | undefined;
+			if (signature) {
+				yield { type: "thinking", content: "", signature };
 			}
 		}
 

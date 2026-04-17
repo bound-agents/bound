@@ -219,6 +219,7 @@ export interface ParsedToolCall {
 export interface ParsedResponse {
 	textContent: string;
 	thinking: string | null;
+	thinkingSignature: string | null;
 	toolCalls: ParsedToolCall[];
 	usage: {
 		inputTokens: number;
@@ -236,6 +237,7 @@ export interface ParsedResponse {
 export function parseStreamChunks(chunks: StreamChunk[]): ParsedResponse {
 	let textContent = "";
 	let thinkingContent = "";
+	let thinkingSignature: string | null = null;
 	const toolCalls: ParsedToolCall[] = [];
 	const argsAccumulator = new Map<string, string>();
 	const nameMap = new Map<string, string>();
@@ -250,6 +252,7 @@ export function parseStreamChunks(chunks: StreamChunk[]): ParsedResponse {
 			textContent += chunk.content;
 		} else if (chunk.type === "thinking") {
 			thinkingContent += chunk.content;
+			if (chunk.signature) thinkingSignature = chunk.signature;
 		} else if (chunk.type === "tool_use_start") {
 			argsAccumulator.set(chunk.id, "");
 			nameMap.set(chunk.id, chunk.name);
@@ -283,6 +286,7 @@ export function parseStreamChunks(chunks: StreamChunk[]): ParsedResponse {
 	return {
 		textContent,
 		thinking: thinkingContent || null,
+		thinkingSignature,
 		toolCalls,
 		usage: {
 			inputTokens,

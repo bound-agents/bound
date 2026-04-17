@@ -65,6 +65,7 @@ export type ImageSource =
 export type ContentBlock =
 	| { type: "text"; text: string }
 	| { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
+	| { type: "thinking"; thinking: string; signature?: string }
 	| { type: "image"; source: ImageSource; description?: string }
 	| { type: "document"; source: ImageSource; text_representation: string; title?: string };
 
@@ -77,7 +78,7 @@ export interface CapabilityRequirements {
 
 export type StreamChunk =
 	| { type: "text"; content: string }
-	| { type: "thinking"; content: string }
+	| { type: "thinking"; content: string; signature?: string }
 	| { type: "tool_use_start"; id: string; name: string }
 	| { type: "tool_use_args"; id: string; partial_json: string }
 	| { type: "tool_use_end"; id: string }

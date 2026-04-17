@@ -14,7 +14,7 @@ import {
 	updateRow,
 	writeOutbox,
 } from "@bound/core";
-import type { ModelRouter, StreamChunk, ToolDefinition } from "@bound/llm";
+import type { ContentBlock, ModelRouter, StreamChunk, ToolDefinition } from "@bound/llm";
 import type { InferenceRequestPayload, StreamChunkPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
 import type { ContextDebugInfo, RelayInboxEntry, RelayKind, SyncConfig } from "@bound/shared";
@@ -131,6 +131,7 @@ interface ParsedToolCall {
 interface ParsedResponse {
 	textContent: string;
 	thinking: string | null;
+	thinkingSignature: string | null;
 	toolCalls: ParsedToolCall[];
 	usage: {
 		inputTokens: number;
@@ -878,12 +879,28 @@ export class AgentLoop {
 					// Persist tool messages before next LLM call (pairing invariant)
 					this.state = "TOOL_PERSIST";
 
-					const toolCallBlocks = parsed.toolCalls.map((tc) => ({
-						type: "tool_use" as const,
-						id: tc.id,
-						name: tc.name,
-						input: tc.input,
-					}));
+					const toolCallBlocks: ContentBlock[] = [];
+
+					// Preserve thinking block for multi-turn reasoning continuity
+					if (parsed.thinking) {
+						const thinkingBlock: ContentBlock = {
+							type: "thinking",
+							thinking: parsed.thinking,
+						};
+						if (parsed.thinkingSignature) {
+							thinkingBlock.signature = parsed.thinkingSignature;
+						}
+						toolCallBlocks.push(thinkingBlock);
+					}
+
+					for (const tc of parsed.toolCalls) {
+						toolCallBlocks.push({
+							type: "tool_use",
+							id: tc.id,
+							name: tc.name,
+							input: tc.input,
+						});
+					}
 
 					insertThreadMessage(
 						this.ctx.db,
@@ -1648,6 +1665,7 @@ export class AgentLoop {
 
 		let textContent = "";
 		let thinkingContent = "";
+		let thinkingSignature: string | null = null;
 		const toolCalls: ParsedToolCall[] = [];
 		const argsAccumulator = new Map<string, string>();
 		const nameMap = new Map<string, string>();
@@ -1662,6 +1680,7 @@ export class AgentLoop {
 				textContent += chunk.content;
 			} else if (chunk.type === "thinking") {
 				thinkingContent += chunk.content;
+				if (chunk.signature) thinkingSignature = chunk.signature;
 			} else if (chunk.type === "tool_use_start") {
 				argsAccumulator.set(chunk.id, "");
 				nameMap.set(chunk.id, chunk.name);
@@ -1695,6 +1714,7 @@ export class AgentLoop {
 		return {
 			textContent,
 			thinking: thinkingContent || null,
+			thinkingSignature,
 			toolCalls,
 			usage: {
 				inputTokens,

@@ -50,7 +50,13 @@ export function toBedrockMessages(messages: LLMMessage[]): Message[] {
 			const content: Message["content"] = [];
 			if (Array.isArray(msg.content)) {
 				for (const block of msg.content) {
-					if (block.type === "tool_use") {
+					if (block.type === "thinking") {
+						const reasoningText: Record<string, unknown> = { text: block.thinking };
+						if (block.signature) reasoningText.signature = block.signature;
+						content.push({
+							reasoningContent: { reasoningText },
+						} as unknown as BedrockContentBlock);
+					} else if (block.type === "tool_use") {
 						content.push({
 							toolUse: {
 								toolUseId: block.id,
@@ -68,7 +74,13 @@ export function toBedrockMessages(messages: LLMMessage[]): Message[] {
 					const parsed = JSON.parse(msg.content);
 					if (Array.isArray(parsed)) {
 						for (const block of parsed) {
-							if (block.type === "tool_use") {
+							if (block.type === "thinking") {
+								const reasoningText: Record<string, unknown> = { text: block.thinking };
+								if (block.signature) reasoningText.signature = block.signature;
+								content.push({
+									reasoningContent: { reasoningText },
+								} as unknown as BedrockContentBlock);
+							} else if (block.type === "tool_use") {
 								content.push({
 									toolUse: {
 										toolUseId: block.id ?? "",
@@ -322,13 +334,17 @@ export class BedrockDriver implements LLMBackend {
 				} else if (event.contentBlockDelta) {
 					const { contentBlockIndex, delta } = event.contentBlockDelta;
 					const deltaRecord = delta as unknown as Record<string, unknown> | undefined;
-					// Handle thinking deltas
+					// Handle thinking deltas (text and signature)
 					if (
 						thinkingBlockIndices.has(contentBlockIndex ?? 0) &&
 						deltaRecord?.thinking !== undefined
 					) {
-						const thinkingDelta = deltaRecord.thinking as { text?: string } | undefined;
-						if (thinkingDelta?.text) {
+						const thinkingDelta = deltaRecord.thinking as
+							| { text?: string; signature?: string }
+							| undefined;
+						if (thinkingDelta?.signature) {
+							yield { type: "thinking", content: "", signature: thinkingDelta.signature };
+						} else if (thinkingDelta?.text) {
 							yield { type: "thinking", content: thinkingDelta.text };
 						}
 					} else if (delta?.text !== undefined) {

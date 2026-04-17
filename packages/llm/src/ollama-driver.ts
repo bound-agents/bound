@@ -6,6 +6,7 @@ import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChu
 interface OllamaMessage {
 	role: "system" | "user" | "assistant" | "tool";
 	content: string;
+	thinking?: string;
 	tool_calls?: Array<{
 		function: {
 			name: string;
@@ -58,7 +59,7 @@ interface OllamaStreamResponse {
 	eval_duration?: number;
 }
 
-function toOllamaMessages(messages: LLMMessage[]): OllamaMessage[] {
+export function toOllamaMessages(messages: LLMMessage[]): OllamaMessage[] {
 	return messages.map((msg) => {
 		// Handle array content blocks
 		if (Array.isArray(msg.content)) {
@@ -69,6 +70,14 @@ function toOllamaMessages(messages: LLMMessage[]): OllamaMessage[] {
 					(block): block is Extract<typeof block, { type: "tool_use" }> =>
 						block.type === "tool_use",
 				);
+				// Extract thinking text from thinking blocks
+				const thinkingBlocks = msg.content.filter(
+					(block): block is Extract<typeof block, { type: "thinking" }> =>
+						block.type === "thinking",
+				);
+				const thinkingText =
+					thinkingBlocks.length > 0 ? thinkingBlocks.map((b) => b.thinking).join("") : undefined;
+
 				if (toolBlocks.length > 0) {
 					const toolCalls = toolBlocks.map((block) => ({
 						function: {
@@ -79,6 +88,7 @@ function toOllamaMessages(messages: LLMMessage[]): OllamaMessage[] {
 					return {
 						role: "assistant",
 						content: textContent,
+						thinking: thinkingText,
 						tool_calls: toolCalls,
 					};
 				}

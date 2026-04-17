@@ -106,6 +106,70 @@ describe("parseStreamChunks thinking handling", () => {
 		expect(result.toolCalls[0].input).toEqual({ command: "ls" });
 	});
 
+	it("captures signature from thinking chunk", () => {
+		const chunks: StreamChunk[] = [
+			{ type: "thinking", content: "Let me analyze " },
+			{ type: "thinking", content: "this problem." },
+			{ type: "thinking", content: "", signature: "WaUjzkypQ2mUEVM36O2T..." },
+			{ type: "text", content: "Answer." },
+			{
+				type: "done",
+				usage: {
+					input_tokens: 100,
+					output_tokens: 50,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			},
+		];
+
+		const result = parseStreamChunks(chunks);
+		expect(result.thinking).toBe("Let me analyze this problem.");
+		expect(result.thinkingSignature).toBe("WaUjzkypQ2mUEVM36O2T...");
+	});
+
+	it("returns null thinkingSignature when no signature present", () => {
+		const chunks: StreamChunk[] = [
+			{ type: "thinking", content: "Just thinking..." },
+			{ type: "text", content: "Answer." },
+			{
+				type: "done",
+				usage: {
+					input_tokens: 100,
+					output_tokens: 50,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			},
+		];
+
+		const result = parseStreamChunks(chunks);
+		expect(result.thinking).toBe("Just thinking...");
+		expect(result.thinkingSignature).toBeNull();
+	});
+
+	it("last signature wins when multiple thinking chunks have signatures", () => {
+		const chunks: StreamChunk[] = [
+			{ type: "thinking", content: "Part 1", signature: "first-sig" },
+			{ type: "thinking", content: "Part 2", signature: "last-sig" },
+			{
+				type: "done",
+				usage: {
+					input_tokens: 100,
+					output_tokens: 50,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			},
+		];
+
+		const result = parseStreamChunks(chunks);
+		expect(result.thinkingSignature).toBe("last-sig");
+	});
+
 	it("extracts usage correctly with thinking chunks", () => {
 		const chunks: StreamChunk[] = [
 			{ type: "thinking", content: "Reasoning..." },
