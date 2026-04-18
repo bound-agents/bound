@@ -383,6 +383,55 @@ describe("PlatformConnectorRegistry", () => {
 		});
 	});
 
+	describe("getRegisteredPlatforms()", () => {
+		it("returns all registered platform keys including compound connector platforms", () => {
+			const platformsConfig: PlatformsConfig = {
+				connectors: [
+					{
+						platform: "discord",
+						token: "test-token",
+						failover_threshold_ms: 100,
+						allowed_users: [],
+					},
+				],
+			};
+
+			const registry = new PlatformConnectorRegistry(mockAppContext, platformsConfig);
+			registry.start();
+
+			const platforms = registry.getRegisteredPlatforms();
+
+			// Discord compound connector registers both "discord" and "discord-interaction"
+			expect(platforms).toContain("discord");
+			expect(platforms).toContain("discord-interaction");
+			expect(platforms).toHaveLength(2);
+
+			registry.stop();
+		});
+
+		it("returns single platform for non-compound connectors", () => {
+			const platformsConfig: PlatformsConfig = {
+				connectors: [
+					{
+						platform: "webhook-stub",
+						failover_threshold_ms: 100,
+						allowed_users: [],
+					},
+				],
+			};
+
+			const registry = new PlatformConnectorRegistry(mockAppContext, platformsConfig);
+			registry.start();
+
+			const platforms = registry.getRegisteredPlatforms();
+
+			expect(platforms).toContain("webhook-stub");
+			expect(platforms).toHaveLength(1);
+
+			registry.stop();
+		});
+	});
+
 	describe("Discord dual-connector", () => {
 		it("should create both DiscordConnector and DiscordInteractionConnector for discord config (AC7.1)", async () => {
 			const platformsConfig: PlatformsConfig = {

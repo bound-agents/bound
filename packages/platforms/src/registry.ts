@@ -100,6 +100,15 @@ export class PlatformConnectorRegistry {
 	}
 
 	/**
+	 * Return all registered platform keys, including those created implicitly
+	 * by compound connectors (e.g. "discord-interaction" alongside "discord").
+	 * Used to advertise the full set of platforms in the hosts table.
+	 */
+	getRegisteredPlatforms(): string[] {
+		return Array.from(this.connectorsByPlatform.keys());
+	}
+
+	/**
 	 * Notify all connectors that the agent loop has finished for a thread.
 	 * Connectors use this to clean up per-thread state (e.g. typing indicators).
 	 */

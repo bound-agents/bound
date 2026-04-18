@@ -51,6 +51,7 @@ export interface ServerResult {
 		start(): void;
 		stop(): void;
 		notifyLoopComplete?(threadId: string): void;
+		getRegisteredPlatforms(): string[];
 	} | null;
 	wsTransportHolder: {
 		addPeer: (
@@ -662,8 +663,11 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		);
 		appContext.logger.info("[platforms] Platform connector registry started");
 
-		// Advertise configured platform names in hosts.platforms
-		const platformNames = platformsConfig.connectors.map((c) => c.platform);
+		// Advertise all registered platform names in hosts.platforms, including
+		// those created implicitly by compound connectors (e.g. "discord-interaction"
+		// alongside "discord"). Without this, relay intake routing via
+		// findPlatformHost() cannot match compound connector platforms.
+		const platformNames = platformRegistry.getRegisteredPlatforms();
 		if (platformNames.length > 0) {
 			updateRow(
 				appContext.db,
