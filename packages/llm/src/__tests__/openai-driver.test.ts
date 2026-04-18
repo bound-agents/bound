@@ -133,10 +133,12 @@ describe("OpenAICompatibleDriver", () => {
 		expect(requestBody).not.toBeNull();
 		if (!requestBody) throw new Error("requestBody is null");
 		const request = JSON.parse(requestBody);
-		expect(request.messages[0].role).toBe("assistant");
-		expect(request.messages[0].tool_calls).toBeDefined();
-		expect(request.messages[0].tool_calls[0].id).toBe("call-1");
-		expect(request.messages[0].tool_calls[0].function.name).toBe("add");
+		// messages[0] is the user-first placeholder prepended by toOpenAIMessages
+		expect(request.messages[0].role).toBe("user");
+		expect(request.messages[1].role).toBe("assistant");
+		expect(request.messages[1].tool_calls).toBeDefined();
+		expect(request.messages[1].tool_calls[0].id).toBe("call-1");
+		expect(request.messages[1].tool_calls[0].function.name).toBe("add");
 	});
 
 	it("should translate tool_result message correctly", async () => {
@@ -179,9 +181,11 @@ describe("OpenAICompatibleDriver", () => {
 		expect(requestBody).not.toBeNull();
 		if (!requestBody) throw new Error("requestBody is null");
 		const request = JSON.parse(requestBody);
-		expect(request.messages[0].role).toBe("tool");
-		expect(request.messages[0].tool_call_id).toBe("call-1");
-		expect(request.messages[0].content).toBe("3");
+		// messages[0] is the user-first placeholder prepended by toOpenAIMessages
+		expect(request.messages[0].role).toBe("user");
+		expect(request.messages[1].role).toBe("tool");
+		expect(request.messages[1].tool_call_id).toBe("call-1");
+		expect(request.messages[1].content).toBe("3");
 	});
 
 	it("should parse SSE stream correctly", async () => {
@@ -807,22 +811,26 @@ describe("toOpenAIMessages — tool_call string content parsing", () => {
 			},
 		];
 		const result = toOpenAIMessages(messages);
-		expect(result).toHaveLength(1);
-		expect(result[0].role).toBe("assistant");
-		expect(result[0].tool_calls).toBeDefined();
-		expect(result[0].tool_calls).toHaveLength(1);
-		expect(result[0].tool_calls?.[0].id).toBe("call_123");
-		expect(result[0].tool_calls?.[0].function.name).toBe("search");
-		expect(result[0].tool_calls?.[0].function.arguments).toBe('{"query":"test"}');
+		// +1 for user-first placeholder
+		expect(result).toHaveLength(2);
+		expect(result[0].role).toBe("user");
+		expect(result[1].role).toBe("assistant");
+		expect(result[1].tool_calls).toBeDefined();
+		expect(result[1].tool_calls).toHaveLength(1);
+		expect(result[1].tool_calls?.[0].id).toBe("call_123");
+		expect(result[1].tool_calls?.[0].function.name).toBe("search");
+		expect(result[1].tool_calls?.[0].function.arguments).toBe('{"query":"test"}');
 	});
 
 	it("falls back to plain content when JSON parse fails", () => {
 		const messages: LLMMessage[] = [{ role: "tool_call", content: "I will help you with that." }];
 		const result = toOpenAIMessages(messages);
-		expect(result).toHaveLength(1);
-		expect(result[0].role).toBe("assistant");
-		expect(result[0].content).toBe("I will help you with that.");
-		expect(result[0].tool_calls).toBeUndefined();
+		// +1 for user-first placeholder
+		expect(result).toHaveLength(2);
+		expect(result[0].role).toBe("user");
+		expect(result[1].role).toBe("assistant");
+		expect(result[1].content).toBe("I will help you with that.");
+		expect(result[1].tool_calls).toBeUndefined();
 	});
 
 	it("ensures tool_result following string tool_call has matching tool_calls", () => {
@@ -840,13 +848,74 @@ describe("toOpenAIMessages — tool_call string content parsing", () => {
 			},
 		];
 		const result = toOpenAIMessages(messages);
-		expect(result).toHaveLength(2);
+		// +1 for user-first placeholder
+		expect(result).toHaveLength(3);
+		expect(result[0].role).toBe("user");
 		// Assistant must have tool_calls for the tool result to be valid
-		expect(result[0].role).toBe("assistant");
-		expect(result[0].tool_calls).toBeDefined();
-		expect(result[0].tool_calls?.[0].id).toBe("call_abc");
+		expect(result[1].role).toBe("assistant");
+		expect(result[1].tool_calls).toBeDefined();
+		expect(result[1].tool_calls?.[0].id).toBe("call_abc");
 		// Tool result follows
-		expect(result[1].role).toBe("tool");
-		expect(result[1].tool_call_id).toBe("call_abc");
+		expect(result[2].role).toBe("tool");
+		expect(result[2].tool_call_id).toBe("call_abc");
+	});
+});
+
+describe("toOpenAIMessages — user-first placeholder", () => {
+	it("prepends a user placeholder when first message is assistant (tool_call)", () => {
+		const messages: LLMMessage[] = [
+			{
+				role: "tool_call",
+				content: [
+					{
+						type: "tool_use",
+						id: "call_1",
+						name: "memory",
+						input: { subcommand: "search", query: "test" },
+					},
+				],
+			},
+			{
+				role: "tool_result",
+				content: "found: test entry",
+				tool_use_id: "call_1",
+			},
+		];
+		const result = toOpenAIMessages(messages);
+		// First message must be role=user (placeholder)
+		expect(result[0].role).toBe("user");
+		expect(typeof result[0].content).toBe("string");
+		// Original messages follow
+		expect(result[1].role).toBe("assistant");
+		expect(result[2].role).toBe("tool");
+	});
+
+	it("does not prepend placeholder when first message is already user", () => {
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "hello" },
+			{ role: "assistant", content: "hi there" },
+		];
+		const result = toOpenAIMessages(messages);
+		expect(result[0].role).toBe("user");
+		expect(result[0].content).toBe("hello");
+		expect(result).toHaveLength(2);
+	});
+
+	it("prepends placeholder when first message is a system-converted-to-user note", () => {
+		// System messages get converted to user role with <system-note> wrapper.
+		// But if the ONLY messages are system (converted to user), that's fine.
+		// This test verifies: when first original message is tool_result (role=tool),
+		// a placeholder is prepended.
+		const messages: LLMMessage[] = [
+			{
+				role: "tool_result",
+				content: "some result",
+				tool_use_id: "call_orphan",
+			},
+		];
+		const result = toOpenAIMessages(messages);
+		expect(result[0].role).toBe("user");
+		// The tool message should follow
+		expect(result.some((m) => m.role === "tool")).toBe(true);
 	});
 });

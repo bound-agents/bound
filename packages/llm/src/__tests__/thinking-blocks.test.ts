@@ -178,12 +178,14 @@ describe("toOpenAIMessages — thinking blocks", () => {
 		];
 
 		const result = toOpenAIMessages(messages);
-		expect(result).toHaveLength(1);
-		expect(result[0].role).toBe("assistant");
+		// +1 for user-first placeholder (tool_call starts the sequence)
+		expect(result).toHaveLength(2);
+		expect(result[0].role).toBe("user");
+		expect(result[1].role).toBe("assistant");
 		// Should have tool_calls but no thinking content
-		expect(result[0].tool_calls).toHaveLength(1);
+		expect(result[1].tool_calls).toHaveLength(1);
 		// Content should be null (no text content after stripping thinking)
-		expect(result[0].content).toBeNull();
+		expect(result[1].content).toBeNull();
 	});
 
 	it("preserves text blocks alongside stripped thinking blocks", () => {
@@ -199,8 +201,9 @@ describe("toOpenAIMessages — thinking blocks", () => {
 		];
 
 		const result = toOpenAIMessages(messages);
-		expect(result[0].content).toBe("I'll help with that.");
-		expect(result[0].tool_calls).toHaveLength(1);
+		// result[0] is user-first placeholder, result[1] is the assistant message
+		expect(result[1].content).toBe("I'll help with that.");
+		expect(result[1].tool_calls).toHaveLength(1);
 	});
 });
 
