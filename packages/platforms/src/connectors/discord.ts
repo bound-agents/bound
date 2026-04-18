@@ -13,6 +13,7 @@ import {
 	type Thread,
 	type TypedEventEmitter,
 	type User,
+	formatFileAttachment,
 } from "@bound/shared";
 import type { PlatformConnector } from "../connector.js";
 import type { DiscordClientManager } from "./discord-client-manager.js";
@@ -25,55 +26,6 @@ const ATTACHMENT_FILE_REF_THRESHOLD = 1024 * 1024; // 1 MB
 
 /** Discord image MIME types supported as ContentBlock image variants */
 const DISCORD_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
-
-/** MIME types whose content can be inlined as text for the LLM to read */
-const TEXT_READABLE_TYPES = new Set([
-	"text/plain",
-	"text/markdown",
-	"text/html",
-	"text/csv",
-	"text/xml",
-	"application/json",
-	"application/yaml",
-	"application/x-yaml",
-	"application/xml",
-	"application/javascript",
-	"application/typescript",
-]);
-
-/** Max chars to inline from a text file. Larger files are stored but referenced by path only. */
-const MAX_INLINE_TEXT_CHARS = 50_000;
-
-/** File extensions treated as text-readable when MIME type is ambiguous */
-const TEXT_EXTENSIONS = new Set([
-	".md",
-	".txt",
-	".json",
-	".csv",
-	".py",
-	".ts",
-	".js",
-	".yaml",
-	".yml",
-	".toml",
-	".xml",
-	".html",
-	".css",
-	".sh",
-	".bash",
-	".zsh",
-	".rs",
-	".go",
-	".java",
-	".kt",
-	".c",
-	".cpp",
-	".h",
-	".hpp",
-	".rb",
-	".lua",
-	".sql",
-]);
 
 /**
  * Platform connector for Discord DM-based conversations.
@@ -452,39 +404,15 @@ export class DiscordConnector implements PlatformConnector {
 						this.siteId,
 					);
 
-					// Determine if the file content can be inlined as text
-					const ext = attachment.name.includes(".")
-						? `.${attachment.name.split(".").pop()?.toLowerCase()}`
-						: "";
-					const isTextReadable = TEXT_READABLE_TYPES.has(contentType) || TEXT_EXTENSIONS.has(ext);
-
-					if (isTextReadable) {
-						const textContent = buffer.toString("utf-8");
-						if (textContent.length <= MAX_INLINE_TEXT_CHARS) {
-							contentBlocks.push({
-								type: "text",
-								text: `[Attached file: ${attachment.name}]\n\n${textContent}`,
-							});
-						} else {
-							// Too large to inline — include a preview + path reference
-							const preview = textContent.slice(0, MAX_INLINE_TEXT_CHARS);
-							contentBlocks.push({
-								type: "text",
-								text: `[Attached file: ${attachment.name} — ${textContent.length} chars, showing first ${MAX_INLINE_TEXT_CHARS}]\n\n${preview}\n\n[... truncated, full file stored at ${filePath}]`,
-							});
-						}
-					} else {
-						contentBlocks.push({
-							type: "text",
-							text: `[Attached file: ${attachment.name}] stored at ${filePath}`,
-						});
-					}
+					contentBlocks.push({
+						type: "text",
+						text: formatFileAttachment(attachment.name, filePath, attachment.size),
+					});
 
 					this.logger.info("[discord] Saved file attachment", {
 						filename: attachment.name,
 						path: filePath,
 						size: attachment.size,
-						textInlined: isTextReadable,
 					});
 				} catch (err) {
 					this.logger.warn("[discord] Error processing file attachment, skipping", {

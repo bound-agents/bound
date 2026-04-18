@@ -8,6 +8,7 @@ import {
 	updateClaimedBy,
 	updateRow,
 } from "@bound/core";
+import { formatFileAttachment } from "@bound/shared";
 import type { Message, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { ServerWebSocket } from "bun";
 import { z } from "zod";
@@ -371,11 +372,7 @@ export function createWebSocketHandler(
 				} | null;
 				if (!file) continue;
 				const name = file.path.split("/").pop() ?? file.path;
-				if (file.is_binary) {
-					content += `\n\n[Attached file: ${name} (binary, ${file.size_bytes} bytes)]`;
-				} else {
-					content += `\n\n[Attached file: ${name}]\n${file.content ?? ""}`;
-				}
+				content += `\n\n${formatFileAttachment(name, file.path, file.size_bytes)}`;
 			}
 
 			// Persist the message

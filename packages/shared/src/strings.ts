@@ -1,4 +1,13 @@
 /**
+ * Format a file attachment reference for inclusion in a user message.
+ * All attachment types (text, binary) get the same compact format
+ * that points to where the file is stored in the VFS.
+ */
+export function formatFileAttachment(name: string, path: string, sizeBytes: number): string {
+	return `[Attached file: ${name} — saved to ${path} (${sizeBytes} bytes)]`;
+}
+
+/**
  * Slice a string at a code-unit boundary without splitting surrogate pairs.
  * JavaScript strings are UTF-16; characters outside the BMP (emoji, CJK
  * Extension B, etc.) are stored as two code units (a surrogate pair).

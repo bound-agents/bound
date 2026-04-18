@@ -324,7 +324,7 @@ describe("Discord attachment ingestion", () => {
 			(b: { type: string; text?: string }) => b.type === "text" && b.text?.includes("document.pdf"),
 		);
 		expect(fileBlock).toBeDefined();
-		expect(fileBlock.text).toContain("stored at");
+		expect(fileBlock.text).toContain("saved to");
 	});
 
 	it("text file attachment inlined as ContentBlock text", async () => {
@@ -383,13 +383,14 @@ describe("Discord attachment ingestion", () => {
 		const blocks = JSON.parse(message.content);
 		expect(Array.isArray(blocks)).toBe(true);
 
-		// Should have the user's text + the inlined file content
+		// Should have the user's text + a file reference (not inlined content)
 		const fileBlock = blocks.find(
-			(b: { type: string; text?: string }) => b.type === "text" && b.text?.includes("Hello World"),
+			(b: { type: string; text?: string }) => b.type === "text" && b.text?.includes("notes.md"),
 		);
 		expect(fileBlock).toBeDefined();
-		expect(fileBlock.text).toContain("[Attached file: notes.md]");
-		expect(fileBlock.text).toContain("This is a markdown file.");
+		expect(fileBlock.text).toContain("[Attached file: notes.md");
+		expect(fileBlock.text).toContain("saved to");
+		expect(fileBlock.text).not.toContain("This is a markdown file.");
 
 		// File should also be in files table
 		const fileRows = db
