@@ -795,6 +795,159 @@ data: [DONE]
 	});
 });
 
+describe("OpenAI stream — empty tool args detection", () => {
+	const originalFetch = global.fetch;
+
+	afterAll(() => {
+		global.fetch = originalFetch;
+	});
+
+	it("emits error chunk when tool call finishes with no argument data (GLM arg dropping)", async () => {
+		const driver = new OpenAICompatibleDriver({
+			baseUrl: "http://localhost:8000",
+			apiKey: "test-key",
+			model: "glm-4.7",
+			contextWindow: 131000,
+		});
+
+		// Simulate GLM dropping args: tool_use_start with name, but NO argument chunks
+		const sseResponse = [
+			`data: ${JSON.stringify({
+				choices: [
+					{
+						index: 0,
+						delta: {
+							tool_calls: [
+								{
+									index: 0,
+									id: "call_dropped",
+									type: "function",
+									function: { name: "bash" },
+								},
+							],
+						},
+						finish_reason: null,
+					},
+				],
+			})}`,
+			"",
+			// Finalize immediately with no argument chunks in between
+			`data: ${JSON.stringify({
+				choices: [
+					{
+						index: 0,
+						delta: {},
+						finish_reason: "tool_calls",
+					},
+				],
+			})}`,
+			"",
+			"data: [DONE]",
+			"",
+		].join("\n");
+
+		global.fetch = (async () => {
+			return new Response(sseResponse, {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		const chunks: StreamChunk[] = [];
+		for await (const chunk of driver.chat({
+			model: "glm-4.7",
+			messages: [{ role: "user", content: "write a file" }],
+		})) {
+			chunks.push(chunk);
+		}
+
+		// Should contain an error chunk about dropped arguments
+		const errorChunks = chunks.filter((c) => c.type === "error");
+		expect(errorChunks.length).toBeGreaterThanOrEqual(1);
+		expect((errorChunks[0] as { error: string }).error).toContain("bash");
+		expect((errorChunks[0] as { error: string }).error).toContain("empty");
+	});
+
+	it("does not emit error for tool calls that legitimately have arguments", async () => {
+		const driver = new OpenAICompatibleDriver({
+			baseUrl: "http://localhost:8000",
+			apiKey: "test-key",
+			model: "glm-4.7",
+			contextWindow: 131000,
+		});
+
+		const sseResponse = [
+			`data: ${JSON.stringify({
+				choices: [
+					{
+						index: 0,
+						delta: {
+							tool_calls: [
+								{
+									index: 0,
+									id: "call_ok",
+									type: "function",
+									function: { name: "bash", arguments: '{"command":' },
+								},
+							],
+						},
+						finish_reason: null,
+					},
+				],
+			})}`,
+			"",
+			`data: ${JSON.stringify({
+				choices: [
+					{
+						index: 0,
+						delta: {
+							tool_calls: [
+								{
+									index: 0,
+									function: { arguments: '"ls"}' },
+								},
+							],
+						},
+						finish_reason: null,
+					},
+				],
+			})}`,
+			"",
+			`data: ${JSON.stringify({
+				choices: [
+					{
+						index: 0,
+						delta: {},
+						finish_reason: "tool_calls",
+					},
+				],
+			})}`,
+			"",
+			"data: [DONE]",
+			"",
+		].join("\n");
+
+		global.fetch = (async () => {
+			return new Response(sseResponse, {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		const chunks: StreamChunk[] = [];
+		for await (const chunk of driver.chat({
+			model: "glm-4.7",
+			messages: [{ role: "user", content: "list files" }],
+		})) {
+			chunks.push(chunk);
+		}
+
+		// No error chunks
+		const errorChunks = chunks.filter((c) => c.type === "error");
+		expect(errorChunks.length).toBe(0);
+	});
+});
+
 describe("toOpenAIMessages — tool_call string content parsing", () => {
 	it("parses JSON string tool_call content into tool_calls array", () => {
 		const messages: LLMMessage[] = [

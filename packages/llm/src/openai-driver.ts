@@ -364,6 +364,15 @@ async function* parseOpenAIStream(
 				toolStates.size > 0
 			) {
 				for (const [, state] of toolStates) {
+					// Detect dropped arguments: tool has a name (expects args) but
+					// received zero argument bytes. Known issue with GLM-4.7 on
+					// large payloads — it emits tool_use with empty input {}.
+					if (state.name && state.args === "") {
+						yield {
+							type: "error",
+							error: `Tool call "${state.name}" (${state.id}) completed with empty arguments — the provider may have dropped the payload`,
+						};
+					}
 					yield {
 						type: "tool_use_end",
 						id: state.id,
