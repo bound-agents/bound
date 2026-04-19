@@ -228,4 +228,16 @@ export class McpServerManager {
 	getServerStates(): Map<string, McpServerState> {
 		return new Map(this.servers);
 	}
+
+	/**
+	 * Get the client for a specific server.
+	 * Returns null if server is not running.
+	 */
+	getClient(serverName: string): Client | null {
+		const state = this.servers.get(serverName);
+		if (state?.status === "running") {
+			return state.client;
+		}
+		return null;
+	}
 }

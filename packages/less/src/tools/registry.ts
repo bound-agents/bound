@@ -5,9 +5,15 @@ import { createReadTool } from "./read";
 import type { ToolHandler } from "./types";
 import { createWriteTool } from "./write";
 
+export interface ToolNameMapping {
+	serverName: string;
+	toolName: string;
+}
+
 export interface BuildToolSetResult {
 	tools: ToolDefinition[];
 	handlers: Map<string, ToolHandler>;
+	toolNameMapping: Map<string, ToolNameMapping>;
 }
 
 export function buildToolSet(
@@ -17,6 +23,7 @@ export function buildToolSet(
 ): BuildToolSetResult {
 	const toolDefinitions: ToolDefinition[] = [];
 	const handlers = new Map<string, ToolHandler>();
+	const toolNameMapping = new Map<string, ToolNameMapping>();
 
 	// Add core tools
 	const coreToolDefs: ToolDefinition[] = [
@@ -188,6 +195,12 @@ export function buildToolSet(
 
 				toolDefinitions.push(mcpToolDef);
 
+				// Store reverse mapping for proxyToolCall lookup
+				toolNameMapping.set(mcpToolName, {
+					serverName,
+					toolName: tool.function.name,
+				});
+
 				// For MCP tools, we don't have actual handlers - they would be
 				// proxied through the MCP server. This is a placeholder.
 				// The actual handler would be implemented in a different layer.
@@ -208,6 +221,7 @@ export function buildToolSet(
 	return {
 		tools: toolDefinitions,
 		handlers,
+		toolNameMapping,
 	};
 }
 
