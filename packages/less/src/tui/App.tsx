@@ -1,12 +1,13 @@
 import type { BoundClient } from "@bound/client";
 import type { Message } from "@bound/shared";
-import { Box, useInput } from "ink";
+import { Box } from "ink";
 import type React from "react";
-import { useReducer } from "react";
+import { useCallback, useReducer, useState } from "react";
 import type { McpServerConfig } from "../config";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
 import type { ToolHandler } from "../tools/types";
+import { useCancelHandler } from "./hooks/useCancelHandler";
 import { useMcpServers } from "./hooks/useMcpServers";
 import { useMessages } from "./hooks/useMessages";
 import { useToolCalls } from "./hooks/useToolCalls";
@@ -99,17 +100,36 @@ export function App({
 	// Wire in React hooks for state management
 	// biome-ignore lint/correctness/noUnusedVariables: appendMessage and clearMessages are managed by the hook and exposed for future use
 	const { messages, appendMessage, clearMessages } = useMessages(client, initialMessages);
-	// biome-ignore lint/correctness/noUnusedVariables: abortAll is managed by the hook and exposed for future use
 	const { inFlightTools, abortAll } = useToolCalls(client, toolHandlers, hostname, cwd);
 	const { runningCount: mcpServerCount } = useMcpServers(mcpManager);
 
-	// Ctrl-C handling via CancelStateMachine (mocked for component testing)
-	useInput((input, key) => {
-		if (key.ctrl && input === "c") {
-			// In a real implementation, would trigger cancel state machine
-			// For now, just handle it gracefully
+	// Ctrl-C hint state
+	const [ctrlCHint, setCtrlCHint] = useState<string | null>(null);
+
+	const dismissModal = useCallback(() => {
+		if (state.view !== "chat") {
+			dispatch({ type: "SET_VIEW", view: "chat" });
+			return true;
 		}
+		return false;
+	}, [state.view]);
+
+	const showHint = useCallback((message: string) => {
+		setCtrlCHint(message);
+		setTimeout(() => setCtrlCHint(null), 2000);
+	}, []);
+
+	// Ctrl-C handling via CancelStateMachine
+	const { stateMachine } = useCancelHandler({
+		client,
+		threadId: state.threadId,
+		abortAll,
+		dismissModal,
+		showHint,
 	});
+
+	// Keep modal state in sync
+	stateMachine.modalOpen = state.view !== "chat";
 
 	// Dispatch helpers
 	const handleSetView = (view: AppView, pickerMode?: PickerMode) => {
@@ -157,6 +177,7 @@ export function App({
 					mcpServerCount={mcpServerCount}
 					bannerMessage={state.bannerMessage}
 					bannerType={state.bannerType}
+					ctrlCHint={ctrlCHint}
 					onModelChange={handleSetModel}
 					onAttachThread={() => handleSetView("picker", "thread")}
 					onMcpView={() => handleSetView("mcp")}

@@ -24,6 +24,7 @@ export interface ChatViewProps {
 	mcpServerCount: number;
 	bannerMessage: string | null;
 	bannerType: "error" | "info" | null;
+	ctrlCHint: string | null;
 	onModelChange: (model: string) => void;
 	onAttachThread: () => void;
 	onMcpView: () => void;
@@ -47,6 +48,7 @@ export function ChatView({
 	mcpServerCount,
 	bannerMessage,
 	bannerType,
+	ctrlCHint,
 	onModelChange,
 	onAttachThread,
 	onMcpView,
@@ -155,6 +157,13 @@ export function ChatView({
 			}
 			bottom={
 				<Box flexDirection="column">
+					{/* Ctrl-C hint */}
+					{ctrlCHint && (
+						<Box>
+							<Text dimColor>{ctrlCHint}</Text>
+						</Box>
+					)}
+
 					{/* Input area */}
 					<Box marginBottom={1}>
 						<Text>{">>> "}</Text>
