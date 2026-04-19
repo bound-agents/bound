@@ -131,21 +131,6 @@ describe("performAttach", () => {
 	});
 
 	it("AC7.1: executes attach steps in order", async () => {
-		// Mock buildToolSet and buildSystemPromptAddition
-		vi.mock("../tools/registry", () => ({
-			buildToolSet: vi.fn(() => ({
-				tools: [
-					{
-						type: "function",
-						function: { name: "boundless_read", description: "read" },
-					},
-				],
-				handlers: new Map(),
-				toolNameMapping: new Map(),
-			})),
-			buildSystemPromptAddition: vi.fn(() => "System prompt addition"),
-		}));
-
 		const params: AttachParams = {
 			client: mockClient,
 			threadId: "thread1",
@@ -166,15 +151,6 @@ describe("performAttach", () => {
 	});
 
 	it("AC7.2: identifies unpaired tool calls as pending", async () => {
-		vi.mock("../tools/registry", () => ({
-			buildToolSet: vi.fn(() => ({
-				tools: [],
-				handlers: new Map(),
-				toolNameMapping: new Map(),
-			})),
-			buildSystemPromptAddition: vi.fn(() => ""),
-		}));
-
 		const params: AttachParams = {
 			client: mockClient,
 			threadId: "thread1",
@@ -193,15 +169,6 @@ describe("performAttach", () => {
 	});
 
 	it("collects MCP failures as non-fatal", async () => {
-		vi.mock("../tools/registry", () => ({
-			buildToolSet: vi.fn(() => ({
-				tools: [],
-				handlers: new Map(),
-				toolNameMapping: new Map(),
-			})),
-			buildSystemPromptAddition: vi.fn(() => ""),
-		}));
-
 		const params: AttachParams = {
 			client: mockClient,
 			threadId: "thread1",
@@ -222,15 +189,6 @@ describe("performAttach", () => {
 	});
 
 	it("returns messages and tool call IDs", async () => {
-		vi.mock("../tools/registry", () => ({
-			buildToolSet: vi.fn(() => ({
-				tools: [],
-				handlers: new Map(),
-				toolNameMapping: new Map(),
-			})),
-			buildSystemPromptAddition: vi.fn(() => ""),
-		}));
-
 		const params: AttachParams = {
 			client: mockClient,
 			threadId: "thread1",
