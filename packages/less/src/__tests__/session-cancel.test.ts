@@ -177,6 +177,67 @@ describe("CancelStateMachine", () => {
 		});
 	});
 
+	describe("setThreadId", () => {
+		it("updates the thread ID after transition", async () => {
+			stateMachine.turnActive = true;
+
+			// Initially uses thread1
+			await stateMachine.onCtrlC();
+			expect(deps.cancelThread).toHaveBeenCalledWith("thread1");
+
+			// Update to new thread
+			stateMachine.setThreadId("thread2");
+
+			// Reset and try again
+			(stateMachine as any).canceledThisTurn = false;
+			(stateMachine as any).lastCtrlCTime = 0;
+			deps.cancelThread.mockClear();
+
+			await stateMachine.onCtrlC();
+			expect(deps.cancelThread).toHaveBeenCalledWith("thread2");
+		});
+	});
+
+	describe("Expired cancel window feedback", () => {
+		it("shows hint when canceled turn but 2s window expired", async () => {
+			stateMachine.turnActive = true;
+
+			// First Ctrl-C: cancel the turn
+			await stateMachine.onCtrlC();
+			expect(deps.cancelThread).toHaveBeenCalledTimes(1);
+			expect(deps.showHint).not.toHaveBeenCalled();
+
+			// Simulate pressing after 2-second window expired
+			(stateMachine as any).lastCtrlCTime = Date.now() - 2100;
+
+			deps.showHint.mockClear();
+			await stateMachine.onCtrlC();
+
+			// Should show hint now (previously was silent no-op)
+			expect(deps.showHint).toHaveBeenCalledWith("Press Ctrl-C again to exit");
+			expect(deps.gracefulExit).not.toHaveBeenCalled();
+		});
+
+		it("updates lastCtrlCTime when showing hint after expired window", async () => {
+			stateMachine.turnActive = true;
+
+			await stateMachine.onCtrlC();
+			const firstTime = (stateMachine as any).lastCtrlCTime;
+
+			// Expire the 2s window
+			(stateMachine as any).lastCtrlCTime = Date.now() - 2100;
+
+			// Wait a bit
+			await new Promise((resolve) => setTimeout(resolve, 10));
+
+			await stateMachine.onCtrlC();
+			const secondTime = (stateMachine as any).lastCtrlCTime;
+
+			// lastCtrlCTime should be updated
+			expect(secondTime).toBeGreaterThan(firstTime);
+		});
+	});
+
 	describe("state transitions", () => {
 		it("handles multiple state transitions correctly", async () => {
 			// Start idle

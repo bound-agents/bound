@@ -258,14 +258,14 @@ export class McpServerManager {
 
 	/**
 	 * Get tools from all running servers.
-	 * Returns map of serverName -> Tool[]
+	 * Returns map of serverName -> { tools: Tool[], config: McpServerConfig }
 	 */
-	getRunningTools(): Map<string, Tool[]> {
-		const result = new Map<string, Tool[]>();
+	getRunningTools(): Map<string, { tools: Tool[]; config: McpServerConfig }> {
+		const result = new Map<string, { tools: Tool[]; config: McpServerConfig }>();
 
 		for (const [serverName, state] of this.servers.entries()) {
 			if (state.status === "running") {
-				result.set(serverName, state.tools);
+				result.set(serverName, { tools: state.tools, config: state.config });
 			}
 		}
 

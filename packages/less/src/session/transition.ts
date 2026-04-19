@@ -79,7 +79,10 @@ export async function transitionThread(params: TransitionParams): Promise<Transi
 	});
 
 	if (toolAborts.length > 0) {
-		// Wait up to 500ms for handlers to complete
+		// Wait up to 500ms for handlers to complete.
+		// This is an intentional design trade-off per AC7.3: we wait a fixed duration
+		// rather than attempting to detect completion (which is unreliable with async handlers).
+		// The 500ms window balances responsiveness with handler cleanup.
 		await new Promise((resolve) => setTimeout(resolve, 500));
 	}
 

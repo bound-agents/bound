@@ -45,6 +45,14 @@ export class CancelStateMachine {
 	) {}
 
 	/**
+	 * Update the thread ID after a thread transition.
+	 * Used when /attach or /clear changes the active thread.
+	 */
+	setThreadId(threadId: string): void {
+		this.threadId = threadId;
+	}
+
+	/**
 	 * Handle Ctrl-C press. Implements the full state machine.
 	 */
 	async onCtrlC(): Promise<void> {
@@ -77,6 +85,10 @@ export class CancelStateMachine {
 			} else if (withinTwoSeconds) {
 				// AC7.8: Second press within 2s - exit gracefully
 				await this.deps.gracefulExit();
+			} else {
+				// Cancel was called but 2-second window expired - show hint for fresh exit press
+				this.deps.showHint("Press Ctrl-C again to exit");
+				this.lastCtrlCTime = now;
 			}
 		} else {
 			// Idle path
