@@ -251,4 +251,239 @@ describe("McpServerManager", () => {
 			expect(state?.transport).toBeDefined();
 		});
 	});
+
+	describe("reload", () => {
+		it("AC6.8: detects added servers", async () => {
+			const manager = new McpServerManager(logger);
+
+			// Start with config [A]
+			const config1: McpServerConfig[] = [
+				{
+					transport: "stdio",
+					name: "server-a",
+					command: "/nonexistent/a",
+					args: [],
+					enabled: true,
+				},
+			];
+			await manager.ensureAllEnabled(config1);
+
+			// Reload with config [A, B]
+			const config2: McpServerConfig[] = [
+				{
+					transport: "stdio",
+					name: "server-a",
+					command: "/nonexistent/a",
+					args: [],
+					enabled: true,
+				},
+				{
+					transport: "stdio",
+					name: "server-b",
+					command: "/nonexistent/b",
+					args: [],
+					enabled: true,
+				},
+			];
+			const result = await manager.reload(config2);
+
+			expect(result.added).toContain("server-b");
+			expect(result.removed).toEqual([]);
+			expect(result.changed).toEqual([]);
+
+			// Verify state includes both servers
+			const states = manager.getServerStates();
+			expect(states.has("server-a")).toBe(true);
+			expect(states.has("server-b")).toBe(true);
+		});
+
+		it("AC6.8: detects removed servers", async () => {
+			const manager = new McpServerManager(logger);
+
+			// Start with config [A, B]
+			const config1: McpServerConfig[] = [
+				{
+					transport: "stdio",
+					name: "server-a",
+					command: "/nonexistent/a",
+					args: [],
+					enabled: true,
+				},
+				{
+					transport: "stdio",
+					name: "server-b",
+					command: "/nonexistent/b",
+					args: [],
+					enabled: true,
+				},
+			];
+			await manager.ensureAllEnabled(config1);
+
+			// Reload with config [A]
+			const config2: McpServerConfig[] = [
+				{
+					transport: "stdio",
+					name: "server-a",
+					command: "/nonexistent/a",
+					args: [],
+					enabled: true,
+				},
+			];
+			const result = await manager.reload(config2);
+
+			expect(result.removed).toContain("server-b");
+			expect(result.added).toEqual([]);
+			expect(result.changed).toEqual([]);
+
+			// Verify server-b is terminated
+			const states = manager.getServerStates();
+			expect(states.size).toBe(1);
+			expect(states.has("server-a")).toBe(true);
+			expect(states.has("server-b")).toBe(false);
+		});
+
+		it("AC6.8: detects changed servers", async () => {
+			const manager = new McpServerManager(logger);
+
+			// Start with config with server-a using command /nonexistent/a
+			const config1: McpServerConfig[] = [
+				{
+					transport: "stdio",
+					name: "server-a",
+					command: "/nonexistent/a",
+					args: [],
+					enabled: true,
+				},
+			];
+			await manager.ensureAllEnabled(config1);
+
+			// Reload with same name but different command
+			const config2: McpServerConfig[] = [
+				{
+					transport: "stdio",
+					name: "server-a",
+					command: "/nonexistent/a-changed",
+					args: [],
+					enabled: true,
+				},
+			];
+			const result = await manager.reload(config2);
+
+			expect(result.changed).toContain("server-a");
+			expect(result.added).toEqual([]);
+			expect(result.removed).toEqual([]);
+
+			// Verify config was updated
+			const states = manager.getServerStates();
+			const state = states.get("server-a");
+			expect(state?.config.command).toBe("/nonexistent/a-changed");
+		});
+
+		it("AC6.8: handles enable/disable transitions", async () => {
+			const manager = new McpServerManager(logger);
+
+			// Start with enabled server
+			const config1: McpServerConfig[] = [
+				{
+					transport: "stdio",
+					name: "server-a",
+					command: "/nonexistent/a",
+					args: [],
+					enabled: true,
+				},
+			];
+			await manager.ensureAllEnabled(config1);
+
+			// Reload with disabled server
+			const config2: McpServerConfig[] = [
+				{
+					transport: "stdio",
+					name: "server-a",
+					command: "/nonexistent/a",
+					args: [],
+					enabled: false,
+				},
+			];
+			const result = await manager.reload(config2);
+
+			// Should be detected as changed
+			expect(result.changed).toContain("server-a");
+
+			// Verify server is now disabled
+			const states = manager.getServerStates();
+			const state = states.get("server-a");
+			expect(state?.status).toBe("disabled");
+		});
+
+		it("AC6.8: handles complex transition [A, B] -> [B, C]", async () => {
+			const manager = new McpServerManager(logger);
+
+			// Start with [A, B]
+			const config1: McpServerConfig[] = [
+				{
+					transport: "stdio",
+					name: "server-a",
+					command: "/nonexistent/a",
+					args: [],
+					enabled: true,
+				},
+				{
+					transport: "stdio",
+					name: "server-b",
+					command: "/nonexistent/b",
+					args: [],
+					enabled: true,
+				},
+			];
+			await manager.ensureAllEnabled(config1);
+
+			// Reload with [B, C]
+			const config2: McpServerConfig[] = [
+				{
+					transport: "stdio",
+					name: "server-b",
+					command: "/nonexistent/b",
+					args: [],
+					enabled: true,
+				},
+				{
+					transport: "stdio",
+					name: "server-c",
+					command: "/nonexistent/c",
+					args: [],
+					enabled: true,
+				},
+			];
+			const result = await manager.reload(config2);
+
+			expect(result.added).toContain("server-c");
+			expect(result.removed).toContain("server-a");
+			expect(result.changed).toEqual([]);
+
+			// Verify state
+			const states = manager.getServerStates();
+			expect(states.size).toBe(2);
+			expect(states.has("server-a")).toBe(false);
+			expect(states.has("server-b")).toBe(true);
+			expect(states.has("server-c")).toBe(true);
+		});
+
+		it("returns failed servers in result", async () => {
+			const manager = new McpServerManager(logger);
+
+			// Reload with a server that will fail to start
+			const config: McpServerConfig[] = [
+				{
+					transport: "stdio",
+					name: "server-fail",
+					command: "/nonexistent/fail",
+					args: [],
+					enabled: true,
+				},
+			];
+			const result = await manager.reload(config);
+
+			expect(result.failed).toContain("server-fail");
+		});
+	});
 });

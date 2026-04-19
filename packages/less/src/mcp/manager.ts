@@ -27,6 +27,59 @@ function isStdioTransport(
 	return transport instanceof StdioClientTransport;
 }
 
+/**
+ * Check if two server configs are functionally equal.
+ * Returns true if all relevant fields match (name, transport, command/url, args/env, enabled).
+ */
+function configsEqual(a: McpServerConfig, b: McpServerConfig): boolean {
+	// Check basic fields
+	if (a.name !== b.name || a.transport !== b.transport || a.enabled !== b.enabled) {
+		return false;
+	}
+
+	// Check transport-specific fields
+	if (a.transport === "stdio" && b.transport === "stdio") {
+		// biome-ignore lint/suspicious/noExplicitAny: Discriminated union type narrowing
+		const aStdio = a as any;
+		// biome-ignore lint/suspicious/noExplicitAny: Discriminated union type narrowing
+		const bStdio = b as any;
+
+		if (aStdio.command !== bStdio.command) {
+			return false;
+		}
+
+		const aArgs = aStdio.args || [];
+		const bArgs = bStdio.args || [];
+		if (JSON.stringify(aArgs) !== JSON.stringify(bArgs)) {
+			return false;
+		}
+
+		const aEnv = aStdio.env || {};
+		const bEnv = bStdio.env || {};
+		if (JSON.stringify(aEnv) !== JSON.stringify(bEnv)) {
+			return false;
+		}
+	} else if (a.transport === "http" && b.transport === "http") {
+		// biome-ignore lint/suspicious/noExplicitAny: Discriminated union type narrowing
+		const aHttp = a as any;
+		// biome-ignore lint/suspicious/noExplicitAny: Discriminated union type narrowing
+		const bHttp = b as any;
+
+		if (aHttp.url !== bHttp.url) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+export interface ReloadResult {
+	added: string[];
+	removed: string[];
+	changed: string[];
+	failed: string[];
+}
+
 export class McpServerManager {
 	private logger: AppLogger;
 	private servers: Map<string, McpServerState> = new Map();
@@ -239,5 +292,155 @@ export class McpServerManager {
 			return state.client;
 		}
 		return null;
+	}
+
+	/**
+	 * Hot-reload: update server configurations and reconcile state.
+	 * AC6.8: Diffs old vs new configs by name.
+	 * - Added: new server name not in current state → spawn/connect
+	 * - Removed: current server not in new configs → terminate
+	 * - Changed: config differs (command, url, enabled, etc.) → terminate old, spawn new
+	 * - Unchanged: skip
+	 * Returns { added, removed, changed, failed } for TUI display.
+	 */
+	async reload(newConfigs: McpServerConfig[]): Promise<ReloadResult> {
+		const result: ReloadResult = {
+			added: [],
+			removed: [],
+			changed: [],
+			failed: [],
+		};
+
+		// Build map of new configs by name
+		const newConfigsByName = new Map<string, McpServerConfig>();
+		for (const config of newConfigs) {
+			newConfigsByName.set(config.name, config);
+		}
+
+		// Handle removed and changed servers
+		const currentNames = Array.from(this.servers.keys());
+		for (const currentName of currentNames) {
+			const currentState = this.servers.get(currentName);
+			if (!currentState) continue;
+
+			const newConfig = newConfigsByName.get(currentName);
+
+			if (!newConfig) {
+				// Server removed
+				result.removed.push(currentName);
+				await this.terminateServer(currentName, currentState);
+				this.servers.delete(currentName);
+			} else if (!configsEqual(currentState.config, newConfig)) {
+				// Server config changed
+				result.changed.push(currentName);
+				await this.terminateServer(currentName, currentState);
+				this.servers.delete(currentName);
+
+				// Try to spawn the new config if enabled
+				if (newConfig.enabled) {
+					try {
+						await this.connectServer(newConfig);
+					} catch (error) {
+						const errorMessage = error instanceof Error ? error.message : String(error);
+						this.logger.error("mcp_server_failed", {
+							serverName: newConfig.name,
+							error: errorMessage,
+						});
+
+						this.servers.set(newConfig.name, {
+							config: newConfig,
+							status: "failed",
+							client: null,
+							tools: [],
+							error: errorMessage,
+							transport: null,
+						});
+
+						result.failed.push(newConfig.name);
+					}
+				} else {
+					// Add disabled server
+					this.servers.set(newConfig.name, {
+						config: newConfig,
+						status: "disabled",
+						client: null,
+						tools: [],
+						error: null,
+						transport: null,
+					});
+				}
+			}
+		}
+
+		// Handle added and newly enabled servers
+		for (const newConfig of newConfigs) {
+			if (!this.servers.has(newConfig.name)) {
+				// Server added
+				result.added.push(newConfig.name);
+
+				if (newConfig.enabled) {
+					try {
+						await this.connectServer(newConfig);
+					} catch (error) {
+						const errorMessage = error instanceof Error ? error.message : String(error);
+						this.logger.error("mcp_server_failed", {
+							serverName: newConfig.name,
+							error: errorMessage,
+						});
+
+						this.servers.set(newConfig.name, {
+							config: newConfig,
+							status: "failed",
+							client: null,
+							tools: [],
+							error: errorMessage,
+							transport: null,
+						});
+
+						result.failed.push(newConfig.name);
+					}
+				} else {
+					// Add disabled server
+					this.servers.set(newConfig.name, {
+						config: newConfig,
+						status: "disabled",
+						client: null,
+						tools: [],
+						error: null,
+						transport: null,
+					});
+				}
+			} else {
+				// Server already exists but unchanged. Check if it was disabled and now enabled.
+				const currentState = this.servers.get(newConfig.name);
+				if (currentState && currentState.status === "disabled" && newConfig.enabled) {
+					// Re-enable the server
+					this.servers.delete(newConfig.name);
+
+					try {
+						await this.connectServer(newConfig);
+					} catch (error) {
+						const errorMessage = error instanceof Error ? error.message : String(error);
+						this.logger.error("mcp_server_failed", {
+							serverName: newConfig.name,
+							error: errorMessage,
+						});
+
+						this.servers.set(newConfig.name, {
+							config: newConfig,
+							status: "failed",
+							client: null,
+							tools: [],
+							error: errorMessage,
+							transport: null,
+						});
+
+						result.failed.push(newConfig.name);
+					}
+				}
+			}
+		}
+
+		return result;
 	}
 }
