@@ -13,6 +13,7 @@ import {
 	TextInput,
 	ToolCallCard,
 } from "../components";
+import { useTerminalSize } from "../hooks/useTerminalSize";
 
 export interface ChatViewProps {
 	client: BoundClient | null;
@@ -56,6 +57,7 @@ export function ChatView({
 	onSendMessage,
 }: ChatViewProps): React.ReactElement {
 	const [commandError, setCommandError] = useState<string | null>(null);
+	const { rows } = useTerminalSize();
 
 	/**
 	 * Parse and handle slash commands.
@@ -112,8 +114,13 @@ export function ChatView({
 		onSendMessage(input);
 	};
 
+	// Reserve space for bottom: input line (2) + status bar (1) + action bar (1) + hint (1 maybe) + margins
+	const bottomReserve = 6;
+	const scrollHeight = Math.max(5, rows - bottomReserve);
+
 	return (
 		<SplitView
+			height={rows}
 			top={
 				<Box flexDirection="column">
 					{/* Banner for MCP failures or errors */}
@@ -131,7 +138,7 @@ export function ChatView({
 					)}
 
 					{/* Message history */}
-					<ScrollRegion maxHeight={20}>
+					<ScrollRegion maxHeight={scrollHeight}>
 						<Box flexDirection="column">
 							{messages.length === 0 ? (
 								<Text dimColor>[No messages yet]</Text>
