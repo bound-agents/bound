@@ -29,9 +29,10 @@ export function useMessages(
 		const handleMessageCreated = (msg: Message) => {
 			setMessages((prev) => {
 				// If this is a tool_call message, check if there's a pending placeholder to replace
+				// Pending placeholders are identified by missing id field
 				if (msg.role === "tool_call") {
 					const placeholderIdx = prev.findIndex(
-						(m) => m.role === "tool_call" && m.tool_name === msg.tool_name && !m.tool_name,
+						(m) => m.role === "tool_call" && m.tool_name === msg.tool_name && !m.id,
 					);
 					if (placeholderIdx !== -1) {
 						// Replace placeholder with actual tool call

@@ -51,11 +51,11 @@ export function PickerView({
 						})),
 					);
 				} else if (mode === "model") {
-					const models = await client.listModels();
+					const response = await client.listModels();
 					setItems(
-						models.map((m) => ({
-							id: m,
-							label: m,
+						response.models.map((m) => ({
+							id: m.id,
+							label: m.id,
 						})),
 					);
 				}

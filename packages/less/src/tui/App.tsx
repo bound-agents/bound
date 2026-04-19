@@ -3,13 +3,12 @@ import type { Message } from "@bound/shared";
 import { Box, useInput } from "ink";
 import type React from "react";
 import { useReducer } from "react";
-import { ChatView } from "./views/ChatView";
-import { McpView } from "./views/McpView";
-import { PickerView } from "./views/PickerView";
 import type { McpServerConfig } from "../config";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
-import { CancelStateMachine } from "../session/cancel";
+import { ChatView } from "./views/ChatView";
+import { McpView } from "./views/McpView";
+import { PickerView } from "./views/PickerView";
 
 export type AppView = "chat" | "mcp" | "picker";
 export type PickerMode = "thread" | "model";
@@ -73,12 +72,12 @@ export interface AppProps {
 export function App({
 	client,
 	threadId: initialThreadId,
-	_configDir,
-	_cwd,
-	_hostname,
+	configDir: _configDir,
+	cwd: _cwd,
+	hostname: _hostname,
 	mcpManager,
 	mcpConfigs,
-	_logger,
+	logger: _logger,
 	initialMessages,
 	model: initialModel,
 }: AppProps): React.ReactElement {

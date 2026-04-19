@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { McpServerManager, McpServerState } from "../mcp/manager";
+import type { McpServerManager, McpServerState } from "../../mcp/manager";
 
 export interface UseMcpServersResult {
 	serverStates: Map<string, McpServerState>;
@@ -20,8 +20,9 @@ export function useMcpServers(mcpManager: McpServerManager): UseMcpServersResult
 		const states = mcpManager.getServerStates();
 		setServerStates(states);
 
-		// For now, we don't have a real event system, so we poll
-		// In the future, this could be replaced with an event listener
+		// TODO: Replace 1s polling with event-driven updates from McpServerManager
+		// For now, we poll for state changes. This is a performance trade-off
+		// that works fine for the small number of MCP servers typically running.
 		const interval = setInterval(() => {
 			const updatedStates = mcpManager.getServerStates();
 			setServerStates(updatedStates);

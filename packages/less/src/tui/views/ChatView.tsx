@@ -78,8 +78,8 @@ export function ChatView({
 					// Set model directly
 					onModelChange(args);
 				} else {
-					// Open picker (would be handled by App state)
-					setShowModelPicker(true);
+					// Open model picker (would be handled by App state)
+					// TODO: implement model picker
 				}
 				return;
 			}
@@ -132,7 +132,7 @@ export function ChatView({
 					<ScrollRegion maxHeight={20}>
 						<Box flexDirection="column">
 							{messages.length === 0 ? (
-								<Text dim>[No messages yet]</Text>
+								<Text dimColor>[No messages yet]</Text>
 							) : (
 								messages.map((msg) => (
 									<Box key={`msg-${msg.id}`} marginBottom={1}>

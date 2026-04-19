@@ -1,8 +1,8 @@
 import { Box, Text } from "ink";
 import type React from "react";
+import type { McpServerConfig } from "../../config";
+import type { McpServerManager } from "../../mcp/manager";
 import { ActionBar, Badge, ModalOverlay, SelectList } from "../components";
-import type { McpServerConfig } from "../config";
-import type { McpServerManager } from "../mcp/manager";
 
 export interface McpViewProps {
 	mcpManager: McpServerManager;
@@ -19,7 +19,7 @@ export interface McpViewProps {
 export function McpView({
 	mcpManager,
 	mcpConfigs,
-	_onConfigChange,
+	onConfigChange: _onConfigChange,
 	onCancel,
 }: McpViewProps): React.ReactElement {
 	const serverStates = mcpManager.getServerStates();
@@ -41,6 +41,9 @@ export function McpView({
 					<Box marginTop={1}>
 						<SelectList
 							items={items}
+							onSelect={() => {
+								// TODO: implement selection action (toggle/edit)
+							}}
 							onCancel={onCancel}
 							renderItem={(item) => (
 								<Box>
@@ -61,9 +64,14 @@ export function McpView({
 						actions={[
 							{ keys: "space", label: "toggle" },
 							{ keys: "d", label: "delete" },
+							{ keys: "a", label: "add" },
 							{ keys: "Esc", label: "back" },
 						]}
 					/>
+					{/* TODO: Implement add/toggle/delete handlers for MCP servers */}
+					{/* - Add: prompt for name + config, hot-reload */}
+					{/* - Toggle: enable/disable server, hot-reload */}
+					{/* - Delete: confirm, then hot-reload */}
 				</Box>
 			</Box>
 		</ModalOverlay>

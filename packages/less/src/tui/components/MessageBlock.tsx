@@ -26,7 +26,7 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 		// ContentBlock array - extract text blocks
 		const textBlocks = content.filter((block) => block.type === "text");
 		if (textBlocks.length === 0) {
-			return <Text dim>[Non-text content]</Text>;
+			return <Text dimColor>[Non-text content]</Text>;
 		}
 
 		return (
@@ -73,7 +73,7 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 
 	if (message.role === "tool_call") {
 		return (
-			<Text dim>
+			<Text dimColor>
 				Tool: {message.tool_name} {message.content}
 			</Text>
 		);
@@ -89,7 +89,7 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 
 	// Fallback for other roles
 	return (
-		<Text dim>
+		<Text dimColor>
 			[{message.role}: {message.content}]
 		</Text>
 	);
