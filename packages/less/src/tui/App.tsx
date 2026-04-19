@@ -2,7 +2,7 @@ import type { BoundClient } from "@bound/client";
 import type { Message } from "@bound/shared";
 import { Box } from "ink";
 import type React from "react";
-import { useCallback, useReducer, useState } from "react";
+import { useCallback, useEffect, useReducer, useState } from "react";
 import type { McpServerConfig } from "../config";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
@@ -131,6 +131,21 @@ export function App({
 	// Keep modal state in sync
 	stateMachine.modalOpen = state.view !== "chat";
 
+	// Track whether the agent loop is processing (for thinking indicator)
+	const [isProcessing, setIsProcessing] = useState(false);
+	useEffect(() => {
+		if (!client) return;
+		const handler = (data: { thread_id: string; active: boolean }) => {
+			if (data.thread_id === state.threadId) {
+				setIsProcessing(data.active);
+			}
+		};
+		client.on("thread:status", handler);
+		return () => {
+			client.off("thread:status", handler);
+		};
+	}, [client, state.threadId]);
+
 	// Dispatch helpers
 	const handleSetView = (view: AppView, pickerMode?: PickerMode) => {
 		dispatch({ type: "SET_VIEW", view, pickerMode });
@@ -178,6 +193,7 @@ export function App({
 					bannerMessage={state.bannerMessage}
 					bannerType={state.bannerType}
 					ctrlCHint={ctrlCHint}
+					isProcessing={isProcessing}
 					onModelChange={handleSetModel}
 					onAttachThread={() => handleSetView("picker", "thread")}
 					onMcpView={() => handleSetView("mcp")}

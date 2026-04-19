@@ -7,7 +7,7 @@ import {
 	ActionBar,
 	Banner,
 	MessageBlock,
-	ScrollRegion,
+	Spinner,
 	SplitView,
 	StatusBar,
 	TextInput,
@@ -26,6 +26,7 @@ export interface ChatViewProps {
 	bannerMessage: string | null;
 	bannerType: "error" | "info" | null;
 	ctrlCHint: string | null;
+	isProcessing: boolean;
 	onModelChange: (model: string) => void;
 	onAttachThread: () => void;
 	onMcpView: () => void;
@@ -50,6 +51,7 @@ export function ChatView({
 	bannerMessage,
 	bannerType,
 	ctrlCHint,
+	isProcessing,
 	onModelChange,
 	onAttachThread,
 	onMcpView,
@@ -118,6 +120,13 @@ export function ChatView({
 	const bottomReserve = 6;
 	const scrollHeight = Math.max(5, rows - bottomReserve);
 
+	// Show only the most recent messages that fit in the viewport.
+	// Ink's overflow="hidden" clips from the bottom (wrong direction for chat).
+	// Estimate ~3 rows per message (content + margin + possible wrap).
+	const maxVisibleMessages = Math.max(3, Math.floor(scrollHeight / 3));
+	const visibleMessages =
+		messages.length > maxVisibleMessages ? messages.slice(-maxVisibleMessages) : messages;
+
 	return (
 		<SplitView
 			height={rows}
@@ -137,29 +146,37 @@ export function ChatView({
 						</Box>
 					)}
 
-					{/* Message history */}
-					<ScrollRegion maxHeight={scrollHeight}>
-						<Box flexDirection="column">
-							{messages.length === 0 ? (
-								<Text dimColor>[No messages yet]</Text>
-							) : (
-								messages.map((msg) => (
-									<Box key={`msg-${msg.id}`} marginBottom={1}>
-										<MessageBlock message={msg} />
-									</Box>
-								))
-							)}
+					{/* Message history — tail-sliced to fit viewport */}
+					<Box flexDirection="column">
+						{messages.length > maxVisibleMessages && (
+							<Text dimColor>[{messages.length - maxVisibleMessages} earlier messages hidden]</Text>
+						)}
+						{visibleMessages.length === 0 ? (
+							<Text dimColor>[No messages yet]</Text>
+						) : (
+							visibleMessages.map((msg) => (
+								<Box key={`msg-${msg.id}`} marginBottom={1}>
+									<MessageBlock message={msg} />
+								</Box>
+							))
+						)}
 
-							{/* In-flight tool calls */}
-							{Array.from(inFlightTools.entries()).map(
-								([callId, { toolName, startTime, stdout }]) => (
-									<Box key={callId} marginBottom={1}>
-										<ToolCallCard toolName={toolName} startTime={startTime} stdout={stdout} />
-									</Box>
-								),
-							)}
-						</Box>
-					</ScrollRegion>
+						{/* In-flight tool calls */}
+						{Array.from(inFlightTools.entries()).map(
+							([callId, { toolName, startTime, stdout }]) => (
+								<Box key={callId} marginBottom={1}>
+									<ToolCallCard toolName={toolName} startTime={startTime} stdout={stdout} />
+								</Box>
+							),
+						)}
+
+						{/* Processing indicator */}
+						{isProcessing && inFlightTools.size === 0 && (
+							<Box>
+								<Spinner label="Thinking" />
+							</Box>
+						)}
+					</Box>
 				</Box>
 			}
 			bottom={
