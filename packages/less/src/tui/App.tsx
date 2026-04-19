@@ -6,6 +6,10 @@ import { useReducer } from "react";
 import type { McpServerConfig } from "../config";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
+import type { ToolHandler } from "../tools/types";
+import { useMcpServers } from "./hooks/useMcpServers";
+import { useMessages } from "./hooks/useMessages";
+import { useToolCalls } from "./hooks/useToolCalls";
 import { ChatView } from "./views/ChatView";
 import { McpView } from "./views/McpView";
 import { PickerView } from "./views/PickerView";
@@ -61,6 +65,7 @@ export interface AppProps {
 	logger: AppLogger;
 	initialMessages: Message[];
 	model: string | null;
+	toolHandlers: Map<string, ToolHandler>;
 }
 
 /**
@@ -73,13 +78,14 @@ export function App({
 	client,
 	threadId: initialThreadId,
 	configDir: _configDir,
-	cwd: _cwd,
-	hostname: _hostname,
+	cwd,
+	hostname,
 	mcpManager,
 	mcpConfigs,
 	logger: _logger,
 	initialMessages,
 	model: initialModel,
+	toolHandlers,
 }: AppProps): React.ReactElement {
 	const [state, dispatch] = useReducer(appReducer, {
 		view: "chat",
@@ -89,6 +95,13 @@ export function App({
 		bannerMessage: null,
 		bannerType: null,
 	});
+
+	// Wire in React hooks for state management
+	// biome-ignore lint/correctness/noUnusedVariables: appendMessage and clearMessages are managed by the hook and exposed for future use
+	const { messages, appendMessage, clearMessages } = useMessages(client, initialMessages);
+	// biome-ignore lint/correctness/noUnusedVariables: abortAll is managed by the hook and exposed for future use
+	const { inFlightTools, abortAll } = useToolCalls(client, toolHandlers, hostname, cwd);
+	const { runningCount: mcpServerCount } = useMcpServers(mcpManager);
 
 	// Ctrl-C handling via CancelStateMachine (mocked for component testing)
 	useInput((input, key) => {
@@ -111,12 +124,23 @@ export function App({
 		dispatch({ type: "SET_MODEL", model });
 	};
 
-	const _handleSetBanner = (message: string | null, bannerType: "error" | "info" | null) => {
+	const handleSetBanner = (message: string | null, bannerType: "error" | "info" | null) => {
 		dispatch({ type: "SET_BANNER", message, bannerType });
 	};
 
 	const handleDismissBanner = () => {
 		dispatch({ type: "DISMISS_BANNER" });
+	};
+
+	const handleSendMessage = async (message: string) => {
+		if (client) {
+			try {
+				await client.sendMessage(state.threadId, message, { modelId: state.model || undefined });
+			} catch (error) {
+				const errorMsg = error instanceof Error ? error.message : String(error);
+				handleSetBanner(`Failed to send message: ${errorMsg}`, "error");
+			}
+		}
 	};
 
 	// View routing
@@ -128,18 +152,16 @@ export function App({
 					threadId={state.threadId}
 					model={state.model}
 					connectionState={client ? "connected" : "disconnected"}
-					messages={initialMessages}
-					inFlightTools={new Map()}
-					mcpServerCount={mcpConfigs.length}
+					messages={messages}
+					inFlightTools={inFlightTools}
+					mcpServerCount={mcpServerCount}
 					bannerMessage={state.bannerMessage}
 					bannerType={state.bannerType}
 					onModelChange={handleSetModel}
 					onAttachThread={() => handleSetView("picker", "thread")}
 					onMcpView={() => handleSetView("mcp")}
 					onBannerDismiss={handleDismissBanner}
-					onSendMessage={() => {
-						/* handled by ChatView */
-					}}
+					onSendMessage={handleSendMessage}
 				/>
 			)}
 			{state.view === "mcp" && (
