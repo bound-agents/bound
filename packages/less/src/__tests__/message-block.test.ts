@@ -46,6 +46,68 @@ describe("MessageBlock", () => {
 			expect(frame).not.toContain("tool_use");
 		});
 
+		it("prefixes remote (non-boundless) tools with [remote]", async () => {
+			const content = JSON.stringify([
+				{
+					type: "tool_use",
+					id: "tooluse_ccc333",
+					name: "bash",
+					input: { command: "ls -la" },
+				},
+				{
+					type: "tool_use",
+					id: "tooluse_ddd444",
+					name: "memorize",
+					input: { key: "test", value: "hello" },
+				},
+			]);
+
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-1",
+						role: "tool_call",
+						content,
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame();
+			expect(frame).toContain("[remote] bash");
+			expect(frame).toContain("[remote] memorize");
+		});
+
+		it("does not prefix boundless_ tools with [remote]", async () => {
+			const content = JSON.stringify([
+				{
+					type: "tool_use",
+					id: "tooluse_eee555",
+					name: "boundless_bash",
+					input: { command: "echo hi" },
+				},
+			]);
+
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-1",
+						role: "tool_call",
+						content,
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame();
+			expect(frame).toContain("boundless_bash");
+			expect(frame).not.toContain("[remote]");
+		});
+
 		it("shows tool arguments in a readable format", async () => {
 			const content = JSON.stringify([
 				{

@@ -179,6 +179,17 @@ export class AgentLoop {
 		}
 	}
 
+	/** Broadcast a persisted message to WS clients without re-triggering the agent loop. */
+	private broadcastMessage(messageId: string): void {
+		const message = this.ctx.db.prepare("SELECT * FROM messages WHERE id = ?").get(messageId);
+		if (message) {
+			this.ctx.eventBus.emit("message:broadcast", {
+				message: message as EventMap["message:broadcast"]["message"],
+				thread_id: this.config.threadId,
+			});
+		}
+	}
+
 	/** Create an alert message and broadcast it to WS clients so they see it immediately. */
 	private emitAlert(content: string): void {
 		const id = insertThreadMessage(
@@ -191,14 +202,7 @@ export class AgentLoop {
 			},
 			this.ctx.siteId,
 		);
-		// message:broadcast delivers to WS clients without re-triggering the agent loop
-		const message = this.ctx.db.prepare("SELECT * FROM messages WHERE id = ?").get(id);
-		if (message) {
-			this.ctx.eventBus.emit("message:broadcast", {
-				message: message as EventMap["message:broadcast"]["message"],
-				thread_id: this.config.threadId,
-			});
-		}
+		this.broadcastMessage(id);
 	}
 
 	/** Read inference_timeout_ms from relay config (default 300s). */
@@ -612,7 +616,7 @@ export class AgentLoop {
 								if (previousModelId !== newModelId) {
 									const switchMsg = `Model switched from ${previousModelId} to ${newModelId} (rate limit on ${previousModelId})`;
 									llmMessages.push({ role: "system", content: switchMsg });
-									insertThreadMessage(
+									const switchMsgId = insertThreadMessage(
 										this.ctx.db,
 										{
 											threadId: this.config.threadId,
@@ -622,6 +626,7 @@ export class AgentLoop {
 										},
 										this.ctx.siteId,
 									);
+									this.broadcastMessage(switchMsgId);
 									this.messagesCreated++;
 								}
 
@@ -688,7 +693,7 @@ export class AgentLoop {
 				// executor will retry the loop and the message will be processed.
 				if (this.aborted && parsed.usage.inputTokens === 0 && parsed.usage.outputTokens === 0) {
 					if (!this.yielded) {
-						insertThreadMessage(
+						const cancelId = insertThreadMessage(
 							this.ctx.db,
 							{
 								threadId: this.config.threadId,
@@ -700,6 +705,7 @@ export class AgentLoop {
 							},
 							this.ctx.siteId,
 						);
+						this.broadcastMessage(cancelId);
 						this.messagesCreated++;
 					}
 					break;
@@ -934,7 +940,7 @@ export class AgentLoop {
 						});
 					}
 
-					insertThreadMessage(
+					const toolCallMsgId = insertThreadMessage(
 						this.ctx.db,
 						{
 							threadId: this.config.threadId,
@@ -945,13 +951,14 @@ export class AgentLoop {
 						},
 						this.ctx.siteId,
 					);
+					this.broadcastMessage(toolCallMsgId);
 					this.messagesCreated++;
 
 					// In-memory context uses ContentBlock array (not JSON string)
 					llmMessages.push({ role: "tool_call", content: toolCallBlocks });
 
 					for (const { toolCall, content, exitCode } of toolResults) {
-						insertThreadMessage(
+						const toolResultMsgId = insertThreadMessage(
 							this.ctx.db,
 							{
 								threadId: this.config.threadId,
@@ -964,6 +971,7 @@ export class AgentLoop {
 							},
 							this.ctx.siteId,
 						);
+						this.broadcastMessage(toolResultMsgId);
 						this.messagesCreated++;
 
 						llmMessages.push({
@@ -976,7 +984,7 @@ export class AgentLoop {
 					// Timestamp computed AFTER tool_result loop to sort after all results
 					// (avoids sub-ms collisions that break Bedrock tool_call pairing)
 					if (parsed.textContent) {
-						insertThreadMessage(
+						const inlineTextId = insertThreadMessage(
 							this.ctx.db,
 							{
 								threadId: this.config.threadId,
@@ -987,6 +995,7 @@ export class AgentLoop {
 							},
 							this.ctx.siteId,
 						);
+						this.broadcastMessage(inlineTextId);
 						this.messagesCreated++;
 					}
 
@@ -1071,7 +1080,7 @@ export class AgentLoop {
 				const assistantContent = parsed.textContent || "";
 
 				if (assistantContent) {
-					insertThreadMessage(
+					const assistantMsgId = insertThreadMessage(
 						this.ctx.db,
 						{
 							threadId: this.config.threadId,
@@ -1082,6 +1091,7 @@ export class AgentLoop {
 						},
 						this.ctx.siteId,
 					);
+					this.broadcastMessage(assistantMsgId);
 					this.messagesCreated++;
 				}
 

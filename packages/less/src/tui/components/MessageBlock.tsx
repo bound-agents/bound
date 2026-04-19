@@ -111,12 +111,15 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 			return (
 				<Box flexDirection="column">
 					{toolUseBlocks.map((block, idx) => {
-						// Show the most relevant argument as a summary
 						const argSummary = summarizeToolArgs(block.name, block.input);
+						// Tools not prefixed with "boundless_" are server-side (remote)
+						const isRemote = !block.name.startsWith("boundless_");
+						const prefix = isRemote ? "[remote] " : "";
 						return (
 							// biome-ignore lint/suspicious/noArrayIndexKey: tool_use blocks are immutable
 							<Text key={idx} dimColor>
-								{">"} {block.name}
+								{">"} {prefix}
+								{block.name}
 								{argSummary ? ` ${argSummary}` : ""}
 							</Text>
 						);
