@@ -1846,4 +1846,158 @@ describe("ClientConnection type and WS message schemas", () => {
 			handler.cleanup();
 		});
 	});
+
+	describe("Protocol Extension — Content Widening (AC10)", () => {
+		it("AC10.1 & AC10.4: tool:result with string content is accepted by schema", () => {
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+			handler.open(mockWs);
+
+			// AC10.1: String content should be accepted without error (backward compatible)
+			expect(() => {
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "tool:result",
+						call_id: "call-123",
+						thread_id: "thread-1",
+						content: "hello world",
+					}),
+				);
+			}).not.toThrow();
+
+			// AC10.4: Legacy string-only messages should continue to work
+			expect(() => {
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "tool:result",
+						call_id: "call-legacy",
+						thread_id: "thread-1",
+						content: "legacy response",
+						is_error: false,
+					}),
+				);
+			}).not.toThrow();
+
+			handler.cleanup();
+		});
+
+		it("AC10.2: tool:result with ContentBlock[] accepts text, image, document blocks", () => {
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+			handler.open(mockWs);
+
+			// Should accept text block in array
+			expect(() => {
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "tool:result",
+						call_id: "call-456",
+						thread_id: "thread-1",
+						content: [{ type: "text", text: "result text" }],
+					}),
+				);
+			}).not.toThrow();
+
+			// Should accept image block
+			expect(() => {
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "tool:result",
+						call_id: "call-457",
+						thread_id: "thread-1",
+						content: [
+							{
+								type: "image",
+								source: { type: "base64", media_type: "image/png", data: "iVBORw0K..." },
+							},
+						],
+					}),
+				);
+			}).not.toThrow();
+
+			// Should accept document block
+			expect(() => {
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "tool:result",
+						call_id: "call-458",
+						thread_id: "thread-1",
+						content: [
+							{
+								type: "document",
+								source: { type: "file_ref", file_id: "file-1" },
+								text_representation: "Document text here",
+								title: "Report.pdf",
+							},
+						],
+					}),
+				);
+			}).not.toThrow();
+
+			handler.cleanup();
+		});
+
+		it("AC10.3: tool:result with invalid ContentBlock variants (tool_use, thinking) is rejected", () => {
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+			handler.open(mockWs);
+
+			// tool_use block should be rejected
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "tool:result",
+					call_id: "call-789",
+					thread_id: "thread-1",
+					content: [
+						{
+							type: "tool_use",
+							id: "x",
+							name: "y",
+							input: {},
+						},
+					],
+				}),
+			);
+
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages.length).toBeGreaterThan(0);
+			const msg = messages[0] as { type?: string; code?: string };
+			expect(msg.type).toBe("error");
+			expect(msg.code).toBe("invalid_message");
+
+			// Clear messages and test thinking block rejection
+			(mockWs as unknown as MockWebSocket).messages = [];
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "tool:result",
+					call_id: "call-790",
+					thread_id: "thread-1",
+					content: [
+						{
+							type: "thinking",
+							thinking: "internal thought",
+						},
+					],
+				}),
+			);
+
+			const messages2 = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages2.length).toBeGreaterThan(0);
+			const msg2 = messages2[0] as { type?: string; code?: string };
+			expect(msg2.type).toBe("error");
+			expect(msg2.code).toBe("invalid_message");
+
+			handler.cleanup();
+		});
+	});
 });

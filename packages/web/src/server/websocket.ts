@@ -47,11 +47,37 @@ const threadUnsubscribeSchema = z.object({
 	thread_id: z.string(),
 });
 
+// ContentBlock variants allowed in tool:result (excludes tool_use and thinking)
+const toolResultContentBlockSchema = z.discriminatedUnion("type", [
+	z.object({ type: z.literal("text"), text: z.string() }),
+	z.object({
+		type: z.literal("image"),
+		source: z.object({
+			type: z.enum(["base64", "file_ref"]),
+			media_type: z.string().optional(),
+			data: z.string().optional(),
+			file_id: z.string().optional(),
+		}),
+		description: z.string().optional(),
+	}),
+	z.object({
+		type: z.literal("document"),
+		source: z.object({
+			type: z.enum(["base64", "file_ref"]),
+			media_type: z.string().optional(),
+			data: z.string().optional(),
+			file_id: z.string().optional(),
+		}),
+		text_representation: z.string(),
+		title: z.string().optional(),
+	}),
+]);
+
 const toolResultSchema = z.object({
 	type: z.literal("tool:result"),
 	call_id: z.string(),
 	thread_id: z.string(),
-	content: z.string(),
+	content: z.union([z.string(), z.array(toolResultContentBlockSchema)]),
 	is_error: z.boolean().optional(),
 });
 
@@ -544,7 +570,19 @@ export function createWebSocketHandler(
 
 			// Persist the tool_result message
 			const messageId = randomUUID();
-			const toolResultContent = msg.is_error ? `Error: ${msg.content}` : msg.content;
+
+			// Handle content: normalize string to ContentBlock[], or persist array as-is
+			let persistedContent: string;
+			if (typeof msg.content === "string") {
+				// AC10.1: Normalize string to ContentBlock array
+				const contentBlocks = [{ type: "text" as const, text: msg.content }];
+				persistedContent = msg.is_error
+					? JSON.stringify([{ type: "text", text: `Error: ${msg.content}` }])
+					: JSON.stringify(contentBlocks);
+			} else {
+				// AC10.2: Persist ContentBlock array verbatim
+				persistedContent = JSON.stringify(msg.content);
+			}
 
 			insertRow(
 				db,
@@ -553,7 +591,7 @@ export function createWebSocketHandler(
 					id: messageId,
 					thread_id: msg.thread_id,
 					role: "tool_result",
-					content: toolResultContent,
+					content: persistedContent,
 					model_id: null,
 					tool_name: msg.call_id,
 					created_at: now,
