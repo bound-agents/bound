@@ -4,6 +4,8 @@ import { Box, Text } from "ink";
 import type React from "react";
 import { Collapsible } from "./Collapsible";
 
+const TOOL_RESULT_MAX_LINES = 5;
+
 /** Summarize tool arguments for display, showing the most relevant arg value. */
 function summarizeToolArgs(toolName: string, input: Record<string, unknown>): string {
 	// For common tools, show the primary argument
@@ -149,9 +151,25 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 				filteredContent = nonProvenance;
 			}
 		}
+
+		// Flatten all text into lines and truncate to keep the TUI compact
+		const fullText =
+			typeof filteredContent === "string"
+				? filteredContent
+				: filteredContent
+						.filter((b) => b.type === "text")
+						.map((b) => (b as { type: "text"; text: string }).text)
+						.join("\n");
+		const allLines = fullText.split("\n");
+		const truncated = allLines.length > TOOL_RESULT_MAX_LINES;
+		const displayText = truncated ? allLines.slice(0, TOOL_RESULT_MAX_LINES).join("\n") : fullText;
+
 		return (
 			<Collapsible header={`Tool Result: ${message.tool_name}`} defaultOpen={true}>
-				{renderContent(filteredContent)}
+				<Text>{displayText}</Text>
+				{truncated && (
+					<Text dimColor>... {allLines.length - TOOL_RESULT_MAX_LINES} more lines</Text>
+				)}
 			</Collapsible>
 		);
 	}

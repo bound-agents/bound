@@ -160,6 +160,79 @@ describe("MessageBlock", () => {
 	});
 
 	describe("tool_result rendering", () => {
+		it("truncates tool_result string content to 5 lines", async () => {
+			const lines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
+			const content = lines.join("\n");
+
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-trunc-1",
+						role: "tool_result",
+						content,
+						tool_name: "boundless_bash",
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame();
+			expect(frame).toContain("line 1");
+			expect(frame).toContain("line 5");
+			expect(frame).not.toContain("line 6");
+			expect(frame).toContain("... 15 more lines");
+		});
+
+		it("truncates tool_result ContentBlock[] to 5 lines", async () => {
+			const lines = Array.from({ length: 12 }, (_, i) => `output ${i + 1}`);
+			const content = JSON.stringify([{ type: "text", text: lines.join("\n") }]);
+
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-trunc-2",
+						role: "tool_result",
+						content,
+						tool_name: "boundless_read",
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame();
+			expect(frame).toContain("output 1");
+			expect(frame).toContain("output 5");
+			expect(frame).not.toContain("output 6");
+			expect(frame).toContain("... 7 more lines");
+		});
+
+		it("does not truncate tool_result with 5 or fewer lines", async () => {
+			const content = "line 1\nline 2\nline 3";
+
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-trunc-3",
+						role: "tool_result",
+						content,
+						tool_name: "boundless_bash",
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame();
+			expect(frame).toContain("line 1");
+			expect(frame).toContain("line 3");
+			expect(frame).not.toContain("more lines");
+		});
+
 		it("renders tool_result with ContentBlock array without crashing", async () => {
 			const content = JSON.stringify([
 				{ type: "text", text: "boundless bash online: 2026-04-19T20:31:58Z on host" },
