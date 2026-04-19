@@ -26,6 +26,7 @@ const sessionConfigureSchema = z.object({
 			}),
 		}),
 	),
+	systemPromptAddition: z.string().optional(),
 });
 
 const messageSendSchema = z.object({
@@ -78,6 +79,8 @@ interface ClientConnection {
 			};
 		}
 	>;
+	systemPromptAddition: string | undefined;
+	systemPromptAdditions: Map<string, string>;
 }
 
 export interface WebSocketConfig {
@@ -101,6 +104,8 @@ export interface ConnectionRegistry {
 	>;
 	/** Get the connectionId of the connection that has a specific tool for a thread */
 	getConnectionForTool(threadId: string, toolName: string): string | undefined;
+	/** Get systemPromptAddition for a thread from the first subscribed connection that has one */
+	getSystemPromptAdditionForThread(threadId: string): string | undefined;
 }
 
 export interface WebSocketHandlerConfig {
@@ -279,6 +284,19 @@ export function createWebSocketHandler(
 			conn.clientTools.set(tool.function.name, tool);
 		}
 
+		// Store or clear systemPromptAddition per connection (AC2.4, AC2.6)
+		conn.systemPromptAddition = msg.systemPromptAddition;
+
+		// Update systemPromptAdditions for all subscribed threads (AC2.4)
+		if (msg.systemPromptAddition !== undefined) {
+			for (const threadId of conn.subscriptions) {
+				conn.systemPromptAdditions.set(threadId, msg.systemPromptAddition);
+			}
+		} else {
+			// Clear all per-thread entries when systemPromptAddition is undefined (AC2.4, AC2.6)
+			conn.systemPromptAdditions.clear();
+		}
+
 		// Re-deliver pending client tool calls for each subscribed thread (AC7.1-AC7.2)
 		for (const threadId of conn.subscriptions) {
 			redeliverPendingToolCalls(conn, threadId);
@@ -291,6 +309,11 @@ export function createWebSocketHandler(
 	): void {
 		conn.subscriptions.add(msg.thread_id);
 
+		// Propagate systemPromptAddition to the new subscription (AC2.3)
+		if (conn.systemPromptAddition !== undefined) {
+			conn.systemPromptAdditions.set(msg.thread_id, conn.systemPromptAddition);
+		}
+
 		// Re-deliver pending client tool calls on this thread (AC7.1-AC7.2)
 		// In case session:configure happened before thread:subscribe
 		redeliverPendingToolCalls(conn, msg.thread_id);
@@ -301,6 +324,9 @@ export function createWebSocketHandler(
 		msg: z.infer<typeof threadUnsubscribeSchema>,
 	): void {
 		conn.subscriptions.delete(msg.thread_id);
+
+		// Clean up systemPromptAddition for this thread (AC2.5)
+		conn.systemPromptAdditions.delete(msg.thread_id);
 	}
 
 	function handleMessageSend(conn: ClientConnection, msg: z.infer<typeof messageSendSchema>): void {
@@ -667,6 +693,18 @@ export function createWebSocketHandler(
 			}
 			return undefined;
 		},
+
+		getSystemPromptAdditionForThread(threadId: string): string | undefined {
+			for (const [, conn] of clients) {
+				if (conn.subscriptions.has(threadId)) {
+					const addition = conn.systemPromptAdditions.get(threadId);
+					if (addition !== undefined) {
+						return addition;
+					}
+				}
+			}
+			return undefined;
+		},
 	};
 
 	eventBus.on("message:created", handleMessageCreated);
@@ -687,6 +725,8 @@ export function createWebSocketHandler(
 				connectionId: crypto.randomUUID(),
 				subscriptions: new Set(),
 				clientTools: new Map(),
+				systemPromptAddition: undefined,
+				systemPromptAdditions: new Map(),
 			};
 			clients.set(ws, conn);
 		},

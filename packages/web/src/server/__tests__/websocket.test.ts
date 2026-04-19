@@ -1578,4 +1578,274 @@ describe("ClientConnection type and WS message schemas", () => {
 			handler.cleanup();
 		});
 	});
+
+	describe("systemPromptAddition (AC2.1-AC2.7)", () => {
+		it("AC2.1: should store systemPromptAddition per (connection, thread) pair", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			// Subscribe to thread first
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			// Send session:configure with systemPromptAddition
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [],
+					systemPromptAddition: "You are a coding assistant.",
+				}),
+			);
+
+			// Query registry for the stored addition
+			const addition = handler.registry.getSystemPromptAdditionForThread("thread-1");
+			expect(addition).toBe("You are a coding assistant.");
+
+			handler.cleanup();
+		});
+
+		it("AC2.3: thread:subscribe after session:configure inherits systemPromptAddition", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			// Send session:configure first
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [],
+					systemPromptAddition: "Test prompt",
+				}),
+			);
+
+			// Then subscribe to a new thread
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "new-thread",
+				}),
+			);
+
+			// The new thread should inherit the systemPromptAddition
+			const addition = handler.registry.getSystemPromptAdditionForThread("new-thread");
+			expect(addition).toBe("Test prompt");
+
+			handler.cleanup();
+		});
+
+		it("AC2.4: re-sending session:configure replaces stored value", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			// Subscribe to thread
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			// First session:configure
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [],
+					systemPromptAddition: "First prompt",
+				}),
+			);
+
+			let addition = handler.registry.getSystemPromptAdditionForThread("thread-1");
+			expect(addition).toBe("First prompt");
+
+			// Re-send with different value
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [],
+					systemPromptAddition: "Second prompt",
+				}),
+			);
+
+			addition = handler.registry.getSystemPromptAdditionForThread("thread-1");
+			expect(addition).toBe("Second prompt");
+
+			handler.cleanup();
+		});
+
+		it("AC2.4: omitting systemPromptAddition field clears stored value", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			// Subscribe to thread
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			// Set a value first
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [],
+					systemPromptAddition: "Some prompt",
+				}),
+			);
+
+			// Verify it's set
+			let addition = handler.registry.getSystemPromptAdditionForThread("thread-1");
+			expect(addition).toBe("Some prompt");
+
+			// Send without field
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [],
+				}),
+			);
+
+			// Should be cleared
+			addition = handler.registry.getSystemPromptAdditionForThread("thread-1");
+			expect(addition).toBeUndefined();
+
+			handler.cleanup();
+		});
+
+		it("AC2.5: thread:unsubscribe clears stored addition for that thread", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			// Subscribe and set
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [],
+					systemPromptAddition: "Test",
+				}),
+			);
+
+			let addition = handler.registry.getSystemPromptAdditionForThread("thread-1");
+			expect(addition).toBe("Test");
+
+			// Unsubscribe
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:unsubscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			// Should be cleared
+			addition = handler.registry.getSystemPromptAdditionForThread("thread-1");
+			expect(addition).toBeUndefined();
+
+			handler.cleanup();
+		});
+
+		it("AC2.6: session:configure without systemPromptAddition field does not error", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			expect(() => {
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "session:configure",
+						tools: [],
+					}),
+				);
+			}).not.toThrow();
+
+			// No error message should be sent
+			expect((mockWs as unknown as MockWebSocket).messages).toHaveLength(0);
+
+			handler.cleanup();
+		});
+
+		it("AC2.7: existing clients without systemPromptAddition field work unchanged", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			// Send session:configure with only tools (legacy behavior)
+			expect(() => {
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "session:configure",
+						tools: [
+							{
+								type: "function",
+								function: {
+									name: "my_tool",
+									description: "A tool",
+									parameters: { type: "object" },
+								},
+							},
+						],
+					}),
+				);
+			}).not.toThrow();
+
+			// Should be able to subscribe normally
+			expect(() => {
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "thread:subscribe",
+						thread_id: "thread-1",
+					}),
+				);
+			}).not.toThrow();
+
+			// No error messages
+			expect((mockWs as unknown as MockWebSocket).messages).toHaveLength(0);
+
+			handler.cleanup();
+		});
+	});
 });
