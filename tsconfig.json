@@ -24,6 +24,7 @@
 		{ "path": "packages/llm" },
 		{ "path": "packages/agent" },
 		{ "path": "packages/web" },
-		{ "path": "packages/platforms" }
+		{ "path": "packages/platforms" },
+		{ "path": "packages/less" }
 	]
 }
