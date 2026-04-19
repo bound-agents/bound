@@ -17,7 +17,13 @@ import {
 import type { ContentBlock, ModelRouter, StreamChunk, ToolDefinition } from "@bound/llm";
 import type { InferenceRequestPayload, StreamChunkPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
-import type { ContextDebugInfo, RelayInboxEntry, RelayKind, SyncConfig } from "@bound/shared";
+import type {
+	ContextDebugInfo,
+	EventMap,
+	RelayInboxEntry,
+	RelayKind,
+	SyncConfig,
+} from "@bound/shared";
 import {
 	countTokens,
 	errorPayloadSchema,
@@ -173,6 +179,28 @@ export class AgentLoop {
 		}
 	}
 
+	/** Create an alert message and broadcast it to WS clients so they see it immediately. */
+	private emitAlert(content: string): void {
+		const id = insertThreadMessage(
+			this.ctx.db,
+			{
+				threadId: this.config.threadId,
+				role: "alert",
+				content,
+				hostOrigin: this.ctx.siteId,
+			},
+			this.ctx.siteId,
+		);
+		// message:broadcast delivers to WS clients without re-triggering the agent loop
+		const message = this.ctx.db.prepare("SELECT * FROM messages WHERE id = ?").get(id);
+		if (message) {
+			this.ctx.eventBus.emit("message:broadcast", {
+				message: message as EventMap["message:broadcast"]["message"],
+				thread_id: this.config.threadId,
+			});
+		}
+	}
+
 	/** Read inference_timeout_ms from relay config (default 300s). */
 	private get inferenceTimeoutMs(): number {
 		if (this._inferenceTimeoutMs === null) {
@@ -250,16 +278,7 @@ export class AgentLoop {
 							fallbackModel: fallbackModelId,
 							tier: this.config.modelTier,
 						});
-						insertThreadMessage(
-							this.ctx.db,
-							{
-								threadId: this.config.threadId,
-								role: "alert",
-								content: alertMsg,
-								hostOrigin: this.ctx.siteId,
-							},
-							this.ctx.siteId,
-						);
+						this.emitAlert(alertMsg);
 						this.ctx.eventBus.emit("model:fallback", {
 							requested_model: this.config.modelId,
 							fallback_model: fallbackModelId ?? "unknown",
@@ -279,16 +298,7 @@ export class AgentLoop {
 						requestedModel: this.config.modelId,
 						reason: this.lastModelResolution.reason,
 					});
-					insertThreadMessage(
-						this.ctx.db,
-						{
-							threadId: this.config.threadId,
-							role: "alert",
-							content: errorMsg,
-							hostOrigin: this.ctx.siteId,
-						},
-						this.ctx.siteId,
-					);
+					this.emitAlert(errorMsg);
 					throw new Error(errorMsg);
 				}
 			}
@@ -644,16 +654,7 @@ export class AgentLoop {
 						durationMs: Date.now() - turnStartTime,
 					});
 
-					insertThreadMessage(
-						this.ctx.db,
-						{
-							threadId: this.config.threadId,
-							role: "alert",
-							content: `Error: ${errorMsg}`,
-							hostOrigin: this.ctx.siteId,
-						},
-						this.ctx.siteId,
-					);
+					this.emitAlert(`Error: ${errorMsg}`);
 
 					return {
 						messagesCreated: this.messagesCreated,
@@ -1190,16 +1191,7 @@ export class AgentLoop {
 			});
 
 			try {
-				insertThreadMessage(
-					this.ctx.db,
-					{
-						threadId: this.config.threadId,
-						role: "alert",
-						content: `Agent loop error: ${errorMsg}`,
-						hostOrigin: this.ctx.siteId,
-					},
-					this.ctx.siteId,
-				);
+				this.emitAlert(`Agent loop error: ${errorMsg}`);
 			} catch {
 				// DB itself may be the problem
 			}

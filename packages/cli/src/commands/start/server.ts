@@ -529,16 +529,21 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 		// message:created handler — enqueue and dispatch
 		appContext.eventBus.on("message:created", ({ message, thread_id }) => {
-			if (message.role !== "user") return;
+			// Only enqueue user messages (tool_result dispatch entries are
+			// created by handleToolResult in the WS handler via enqueueToolResult)
+			if (message.role === "user") {
+				enqueueMessage(appContext.db, message.id, thread_id);
+			}
 
-			// Enqueue for dispatch tracking (idempotent — safe for re-emits)
-			enqueueMessage(appContext.db, message.id, thread_id);
-
-			// handleThread acquires the lock — if already held, returns immediately.
-			// The active drain loop will pick up the new message on its next iteration.
-			handleThread(thread_id).catch((err) =>
-				appContext.logger.error("[agent] Unhandled dispatch error", { error: formatError(err) }),
-			);
+			// Trigger handleThread for user messages AND tool_result messages.
+			// tool_result entries wake the agent loop to resume after client tool execution.
+			if (message.role === "user" || message.role === "tool_result") {
+				handleThread(thread_id).catch((err) =>
+					appContext.logger.error("[agent] Unhandled dispatch error", {
+						error: formatError(err),
+					}),
+				);
+			}
 		});
 
 		// Proactive notifications: trigger inference for task completions
