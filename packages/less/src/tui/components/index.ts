@@ -33,3 +33,12 @@ export type { SpinnerProps } from "./Spinner.js";
 
 export { TextInput } from "./TextInput.js";
 export type { TextInputProps } from "./TextInput.js";
+
+export { MessageBlock } from "./MessageBlock.js";
+export type { MessageBlockProps } from "./MessageBlock.js";
+
+export { ToolCallCard } from "./ToolCallCard.js";
+export type { ToolCallCardProps } from "./ToolCallCard.js";
+
+export { StatusBar } from "./StatusBar.js";
+export type { StatusBarProps } from "./StatusBar.js";
