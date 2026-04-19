@@ -158,6 +158,8 @@ async function main(): Promise<void> {
 
 		// Step 10: SIGTERM handler for graceful shutdown
 		process.on("SIGTERM", async () => {
+			// Disable mouse reporting before exit to avoid leaving terminal in bad state
+			process.stdout.write("\x1B[?1000l\x1B[?1006l");
 			await mcpManager.terminateAll();
 			releaseLock(configDir, threadId);
 			client.disconnect();
@@ -169,6 +171,7 @@ async function main(): Promise<void> {
 		await waitUntilExit();
 
 		// Clean up on normal exit
+		process.stdout.write("\x1B[?1000l\x1B[?1006l");
 		await mcpManager.terminateAll();
 		releaseLock(configDir, threadId);
 		client.disconnect();
