@@ -13,6 +13,7 @@ import {
 	TextInput,
 	ToolCallCard,
 } from "../components";
+import { useScrollableMessages } from "../hooks/useScrollableMessages";
 import { useTerminalSize } from "../hooks/useTerminalSize";
 
 export interface ChatViewProps {
@@ -120,12 +121,11 @@ export function ChatView({
 	const bottomReserve = 6;
 	const scrollHeight = Math.max(5, rows - bottomReserve);
 
-	// Show only the most recent messages that fit in the viewport.
-	// Ink's overflow="hidden" clips from the bottom (wrong direction for chat).
-	// Estimate ~3 rows per message (content + margin + possible wrap).
-	const maxVisibleMessages = Math.max(3, Math.floor(scrollHeight / 3));
-	const visibleMessages =
-		messages.length > maxVisibleMessages ? messages.slice(-maxVisibleMessages) : messages;
+	// Scrollable message viewport — Up/Down/PageUp/PageDown to navigate history
+	const { visibleMessages, isAtBottom, hiddenAbove } = useScrollableMessages(
+		messages,
+		scrollHeight,
+	);
 
 	return (
 		<SplitView
@@ -146,12 +146,12 @@ export function ChatView({
 						</Box>
 					)}
 
-					{/* Message history — tail-sliced to fit viewport */}
+					{/* Message history — scrollable viewport */}
 					<Box flexDirection="column">
-						{messages.length > maxVisibleMessages && (
-							<Text dimColor>[{messages.length - maxVisibleMessages} earlier messages hidden]</Text>
+						{hiddenAbove > 0 && (
+							<Text dimColor>[{hiddenAbove} earlier messages — scroll up to see]</Text>
 						)}
-						{visibleMessages.length === 0 ? (
+						{visibleMessages.length === 0 && messages.length === 0 ? (
 							<Text dimColor>[No messages yet]</Text>
 						) : (
 							visibleMessages.map((msg) => (
@@ -161,21 +161,25 @@ export function ChatView({
 							))
 						)}
 
-						{/* In-flight tool calls */}
-						{Array.from(inFlightTools.entries()).map(
-							([callId, { toolName, startTime, stdout }]) => (
-								<Box key={callId} marginBottom={1}>
-									<ToolCallCard toolName={toolName} startTime={startTime} stdout={stdout} />
-								</Box>
-							),
-						)}
+						{/* In-flight tool calls (only at bottom) */}
+						{isAtBottom &&
+							Array.from(inFlightTools.entries()).map(
+								([callId, { toolName, startTime, stdout }]) => (
+									<Box key={callId} marginBottom={1}>
+										<ToolCallCard toolName={toolName} startTime={startTime} stdout={stdout} />
+									</Box>
+								),
+							)}
 
-						{/* Processing indicator */}
-						{isProcessing && inFlightTools.size === 0 && (
+						{/* Processing indicator (only at bottom) */}
+						{isAtBottom && isProcessing && inFlightTools.size === 0 && (
 							<Box>
 								<Spinner label="Thinking" />
 							</Box>
 						)}
+
+						{/* Scroll position indicator when not at bottom */}
+						{!isAtBottom && <Text dimColor>[Scrolled up — press Down or End to return]</Text>}
 					</Box>
 				</Box>
 			}
