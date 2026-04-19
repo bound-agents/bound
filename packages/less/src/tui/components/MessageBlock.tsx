@@ -3,6 +3,7 @@ import type { Message } from "@bound/shared";
 import { Box, Text } from "ink";
 import type React from "react";
 import { Collapsible } from "./Collapsible";
+import { Markdown } from "./Markdown";
 
 const TOOL_RESULT_MAX_LINES = 5;
 
@@ -43,10 +44,10 @@ export interface MessageBlockProps {
  * - Pending placeholder: dimmed "Waiting for tool result..." text
  */
 export function MessageBlock({ message }: MessageBlockProps): React.ReactElement {
-	// Helper to render content
+	// Helper to render content with markdown support
 	const renderContent = (content: string | ContentBlock[]): React.ReactElement => {
 		if (typeof content === "string") {
-			return <Text>{content}</Text>;
+			return <Markdown text={content} />;
 		}
 
 		// ContentBlock array - extract text blocks
@@ -55,14 +56,10 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 			return <Text dimColor>[Non-text content]</Text>;
 		}
 
-		return (
-			<Box flexDirection="column">
-				{textBlocks.map((block, index) => (
-					// biome-ignore lint/suspicious/noArrayIndexKey: ContentBlocks are immutable and won't reorder
-					<Text key={`text-${index}`}>{(block as { type: "text"; text: string }).text}</Text>
-				))}
-			</Box>
-		);
+		const combinedText = textBlocks
+			.map((block) => (block as { type: "text"; text: string }).text)
+			.join("\n\n");
+		return <Markdown text={combinedText} />;
 	};
 
 	// Parse content if it's a JSON string
