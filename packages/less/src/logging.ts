@@ -23,11 +23,11 @@ export class AppLogger {
 		fd: number,
 	): void {
 		const entry = {
+			...fields,
 			ts: new Date().toISOString(),
 			level,
 			pid: process.pid,
 			event,
-			...fields,
 		};
 		const line = `${JSON.stringify(entry)}\n`;
 		writeSync(fd, line);

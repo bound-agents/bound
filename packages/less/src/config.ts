@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 
@@ -64,7 +64,7 @@ export function loadConfig(configDir: string): Config & { _raw: Record<string, u
 		};
 	} catch (error) {
 		// File doesn't exist or parse error - return defaults
-		if (error instanceof Error && error.message.includes("ENOENT")) {
+		if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
 			return {
 				url: "http://localhost:3001",
 				model: null,
@@ -77,6 +77,7 @@ export function loadConfig(configDir: string): Config & { _raw: Record<string, u
 }
 
 export function saveConfig(configDir: string, config: Config): void {
+	mkdirSync(configDir, { recursive: true });
 	const configPath = join(configDir, "config.json");
 	const rawConfig = loadConfig(configDir);
 	const merged = {
@@ -117,7 +118,7 @@ export function loadMcpConfig(configDir: string): McpConfig & { _raw: Record<str
 		};
 	} catch (error) {
 		// File doesn't exist - return empty config
-		if (error instanceof Error && error.message.includes("ENOENT")) {
+		if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
 			return {
 				servers: [],
 				_raw: {},
@@ -129,6 +130,7 @@ export function loadMcpConfig(configDir: string): McpConfig & { _raw: Record<str
 }
 
 export function saveMcpConfig(configDir: string, config: McpConfig): void {
+	mkdirSync(configDir, { recursive: true });
 	const mcpPath = join(configDir, "mcp.json");
 	const rawConfig = loadMcpConfig(configDir);
 	const merged = {

@@ -39,7 +39,7 @@ describe("logging", () => {
 	describe("AppLogger", () => {
 		it("writes info messages as JSON lines to application.log", () => {
 			const logger = new AppLogger(testDir);
-			logger.info("startup", { event: "app_started", version: "1.0.0" });
+			logger.info("app_started", { version: "1.0.0" });
 			logger.close();
 
 			const logPath = join(testDir, "logs", "application.log");
