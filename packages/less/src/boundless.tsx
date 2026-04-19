@@ -16,12 +16,12 @@ import { performAttach } from "./session/attach";
 import { buildToolSet } from "./tools/registry";
 import { App } from "./tui/App";
 
-interface ParsedArgs {
+export interface ParsedArgs {
 	attachArg: string | null;
 	urlArg: string | null;
 }
 
-function parseArgs(args: string[]): ParsedArgs {
+export function parseArgs(args: string[]): ParsedArgs {
 	let attachArg: string | null = null;
 	let urlArg: string | null = null;
 
@@ -30,29 +30,45 @@ function parseArgs(args: string[]): ParsedArgs {
 
 		if (arg === "--attach") {
 			if (i + 1 >= args.length) {
-				process.stderr.write("Error: Flag --attach requires a value\n");
-				process.exit(1);
+				throw new Error("Flag --attach requires a value");
 			}
 			attachArg = args[++i];
 		} else if (arg === "--url") {
 			if (i + 1 >= args.length) {
-				process.stderr.write("Error: Flag --url requires a value\n");
-				process.exit(1);
+				throw new Error("Flag --url requires a value");
 			}
 			urlArg = args[++i];
 		} else if (arg.startsWith("--")) {
-			process.stderr.write(`Error: Unknown flag: ${arg}\n`);
-			process.exit(1);
+			throw new Error(`Unknown flag: ${arg}`);
 		}
 	}
 
 	return { attachArg, urlArg };
 }
 
+export async function resolveThreadId(
+	client: BoundClient,
+	attachArg: string | null,
+): Promise<string> {
+	if (attachArg) {
+		const thread = await client.getThread(attachArg);
+		return thread.id;
+	}
+	const thread = await client.createThread();
+	return thread.id;
+}
+
 async function main(): Promise<void> {
 	try {
 		// Step 1: Parse arguments
-		const { attachArg, urlArg } = parseArgs(process.argv.slice(2));
+		let attachArg: string | null = null;
+		let urlArg: string | null = null;
+		try {
+			({ attachArg, urlArg } = parseArgs(process.argv.slice(2)));
+		} catch (error) {
+			process.stderr.write(`Error: ${(error as Error).message}\n`);
+			process.exit(1);
+		}
 
 		// Step 2: Load config
 		const configDir = join(homedir(), ".bound", "less");
@@ -68,12 +84,17 @@ async function main(): Promise<void> {
 		// Step 3: Connect BoundClient with timeout
 		const client = new BoundClient(config.url);
 		try {
+			let timeoutHandle: NodeJS.Timeout | null = null;
 			await Promise.race([
 				client.connect(),
-				new Promise<void>((_resolve, reject) =>
-					setTimeout(() => reject(new Error("Connection timeout")), 10000),
-				),
-			]);
+				new Promise<void>((_resolve, reject) => {
+					timeoutHandle = setTimeout(() => reject(new Error("Connection timeout")), 10000);
+				}),
+			]).finally(() => {
+				if (timeoutHandle) {
+					clearTimeout(timeoutHandle);
+				}
+			});
 		} catch (error) {
 			process.stderr.write(`Error: Could not connect to bound server at ${config.url}\n`);
 			process.stderr.write(`${(error as Error).message}\n`);
@@ -82,17 +103,11 @@ async function main(): Promise<void> {
 
 		// Step 4: Get or create thread
 		let threadId: string;
-		if (attachArg) {
-			try {
-				const thread = await client.getThread(attachArg);
-				threadId = thread.id;
-			} catch {
-				process.stderr.write(`Error: Thread not found: ${attachArg}\n`);
-				process.exit(1);
-			}
-		} else {
-			const thread = await client.createThread();
-			threadId = thread.id;
+		try {
+			threadId = await resolveThreadId(client, attachArg);
+		} catch {
+			process.stderr.write(`Error: Thread not found: ${attachArg}\n`);
+			process.exit(1);
 		}
 
 		// Step 5: Acquire lockfile
