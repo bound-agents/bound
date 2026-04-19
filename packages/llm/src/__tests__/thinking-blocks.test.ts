@@ -98,7 +98,7 @@ describe("toBedrockMessages — thinking blocks", () => {
 		];
 
 		const result = toBedrockMessages(messages);
-		expect(result).toHaveLength(2);
+		expect(result).toHaveLength(3); // user + assistant(tool_call) + trailing user placeholder
 		// Second message is the assistant tool_call
 		const assistantMsg = result[1];
 		expect(assistantMsg.role).toBe("assistant");

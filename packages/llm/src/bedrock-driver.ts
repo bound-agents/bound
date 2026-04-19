@@ -174,6 +174,17 @@ export function toBedrockMessages(messages: LLMMessage[]): Message[] {
 		});
 	}
 
+	// Bedrock requires the conversation to end with a user message (no assistant
+	// prefill). This can happen when the sanitizer reorders messages and the last
+	// message ends up being an assistant (e.g., orphaned tool calls followed by
+	// the assistant's pre-tool-call thinking).
+	if (result.length > 0 && result.at(-1)?.role !== "user") {
+		result.push({
+			role: "user",
+			content: [{ text: "<continue />" }],
+		});
+	}
+
 	return result;
 }
 

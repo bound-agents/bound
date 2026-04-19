@@ -498,8 +498,10 @@ describe("BedrockDriver", () => {
 				expect(["user", "assistant"]).toContain(msg.role);
 			}
 
-			// Should have exactly 2 messages: user + assistant (alert and purge filtered)
-			expect(messages).toHaveLength(2);
+			// Should have exactly 3 messages: user + assistant + trailing user placeholder
+			// (alert and purge filtered; trailing user appended because last msg was assistant)
+			expect(messages).toHaveLength(3);
+			expect(messages.at(-1)?.role).toBe("user");
 		});
 
 		it.skipIf(shouldSkip)("handles tool_result with empty tool_use_id gracefully", async () => {
@@ -973,12 +975,13 @@ describe("toBedrockMessages — blank text guard", () => {
 	it("replaces empty tool_call fallback text with placeholder", () => {
 		const messages: LLMMessage[] = [{ role: "tool_call", content: [] }];
 		const result = toBedrockMessages(messages);
-		// [user(placeholder), assistant(tool_call fallback)]
-		expect(result).toHaveLength(2);
+		// [user(placeholder), assistant(tool_call fallback), user(trailing placeholder)]
+		expect(result).toHaveLength(3);
 		expect(result[0].role).toBe("user"); // prepended placeholder
 		const textBlock = result[1].content?.[0];
 		// biome-ignore lint/style/noNonNullAssertion: guarded by expect(textBlock).toBeDefined()
 		expect("text" in textBlock! && textBlock.text).toBeTruthy();
+		expect(result[2].role).toBe("user"); // trailing placeholder
 	});
 
 	it("does not modify non-empty text content", () => {
@@ -1021,6 +1024,35 @@ describe("toBedrockMessages — blank text guard", () => {
 		expect(result).toHaveLength(3);
 		expect(result[0].role).toBe("user");
 		expect(result[0].content).toEqual([{ text: "hello" }]);
+	});
+
+	it("appends placeholder user message when last message is assistant", () => {
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "do the thing" },
+			{
+				role: "tool_call",
+				content: JSON.stringify([{ type: "tool_use", id: "tc-1", name: "write", input: {} }]),
+			},
+			{ role: "tool_result", content: "Tool execution was interrupted", tool_use_id: "tc-1" },
+			{ role: "assistant", content: "I was trying to write a file..." },
+			{ role: "user", content: "Try again" },
+			{ role: "assistant", content: "Let me try again" },
+		];
+		const result = toBedrockMessages(messages);
+		// The last Bedrock message must be "user", not "assistant"
+		expect(result.at(-1)?.role).toBe("user");
+	});
+
+	it("does not append placeholder when last message is already user", () => {
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "hello" },
+			{ role: "assistant", content: "hi" },
+			{ role: "user", content: "bye" },
+		];
+		const result = toBedrockMessages(messages);
+		expect(result).toHaveLength(3);
+		expect(result.at(-1)?.role).toBe("user");
+		expect(result.at(-1)?.content).toEqual([{ text: "bye" }]);
 	});
 });
 
