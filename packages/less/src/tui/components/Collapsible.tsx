@@ -20,7 +20,7 @@ export function Collapsible({
 			<Text>
 				{isOpen ? "▾" : "▸"} {header}
 			</Text>
-			{isOpen && <Box>{children}</Box>}
+			{isOpen && <Box>{typeof children === "string" ? <Text>{children}</Text> : children}</Box>}
 		</Box>
 	);
 }

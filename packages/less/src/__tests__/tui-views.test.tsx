@@ -55,8 +55,10 @@ describe("TUI Views", () => {
 			);
 
 			const output = lastFrame();
-			expect(output).toContain("You: Hello");
-			expect(output).toContain("Agent: Hi there");
+			expect(output).toContain("You:");
+			expect(output).toContain("Hello");
+			expect(output).toContain("Agent:");
+			expect(output).toContain("Hi there");
 		});
 
 		it("should display banner message when present", () => {

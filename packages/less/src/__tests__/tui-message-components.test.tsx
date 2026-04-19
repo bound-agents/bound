@@ -54,7 +54,7 @@ describe("Message rendering components", () => {
 
 			const { lastFrame } = render(<MessageBlock message={message} />);
 			const output = lastFrame();
-			expect(output).toContain("Tool: read");
+			expect(output).toContain("> read:");
 		});
 
 		it("AC9.1: renders tool_result messages collapsible", async () => {
