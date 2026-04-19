@@ -398,6 +398,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							const resolvedConnectionId = firstToolName
 								? wsRegistry?.getConnectionForTool(thread_id, firstToolName)
 								: undefined;
+							const systemPromptAddition = wsRegistry?.getSystemPromptAdditionForThread(thread_id);
 
 							const { agentResult: result } = await runLocalAgentLoop({
 								eventBus: appContext.eventBus,
@@ -411,6 +412,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								platformTools: platformConfig?.platformTools,
 								clientTools: resolvedClientTools,
 								connectionId: resolvedConnectionId,
+								systemPromptAddition,
 							});
 
 							if (result.yielded) {
