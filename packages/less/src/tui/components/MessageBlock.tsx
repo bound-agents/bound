@@ -79,8 +79,8 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 	// Render based on role
 	if (message.role === "user") {
 		return (
-			<Box>
-				<Text color="green">You: </Text>
+			<Box flexDirection="column">
+				<Text color="green">You:</Text>
 				{renderContent(parsedContent)}
 			</Box>
 		);
@@ -88,8 +88,8 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 
 	if (message.role === "assistant") {
 		return (
-			<Box>
-				<Text color="blue">Agent: </Text>
+			<Box flexDirection="column">
+				<Text color="blue">Agent:</Text>
 				{renderContent(parsedContent)}
 			</Box>
 		);
