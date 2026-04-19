@@ -23,8 +23,12 @@ export function TextInput({
 
 			if (key.return) {
 				onSubmit(value);
-			} else if (key.backspace) {
+				setValue("");
+			} else if (key.backspace || key.delete) {
 				setValue((prev) => prev.slice(0, -1));
+			} else if (key.ctrl || key.meta || key.escape) {
+				// Ignore control sequences — don't append characters
+				return;
 			} else if (input && input.length > 0) {
 				setValue((prev) => prev + input);
 			}
