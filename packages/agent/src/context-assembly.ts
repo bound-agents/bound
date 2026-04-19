@@ -51,6 +51,8 @@ export interface ContextParams {
 	compactToolResults?: boolean;
 	/** Number of recent messages to keep intact during compaction. Defaults to 20. */
 	compactRecentWindow?: number;
+	/** Optional system prompt addition from client connection. Appended to system suffix. */
+	systemPromptAddition?: string;
 }
 
 export interface ContextAssemblyResult {
@@ -1261,6 +1263,12 @@ Original output was too large for the context window. If you need the full conte
 			suffixLines.push(`Referenced skill '${inactiveSkillRef}' is not active.`);
 		}
 
+		// Append systemPromptAddition if present (AC2.2)
+		if (params.systemPromptAddition) {
+			suffixLines.push("");
+			suffixLines.push(params.systemPromptAddition);
+		}
+
 		// Capture full suffix content for budget pressure rebuild
 		allVolatileLines = [...suffixLines];
 		suffixContent = suffixLines.join("\n");
@@ -1314,6 +1322,12 @@ Original output was too large for the context window. If you need the full conte
 			if (noHistTasks.length > 0) {
 				enrichmentLines.push("");
 				enrichmentLines.push(...noHistTasks);
+			}
+
+			// Append systemPromptAddition if present (AC2.2 for noHistory path)
+			if (params.systemPromptAddition) {
+				enrichmentLines.push("");
+				enrichmentLines.push(params.systemPromptAddition);
 			}
 
 			enrichmentMessageIndex = assembled.length;
