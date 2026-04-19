@@ -118,7 +118,15 @@ export interface WebSocketHandlerConfig {
 
 export function createWebSocketHandler(
 	config: WebSocketHandlerConfig | TypedEventEmitter,
-): WebSocketConfig & { cleanup: () => void; registry: ConnectionRegistry } {
+): WebSocketConfig & {
+	cleanup: () => void;
+	registry: ConnectionRegistry;
+	emitToolCancel: (
+		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
+		threadId: string,
+		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
+	) => void;
+} {
 	// Support both old (eventBus only) and new (config object) signatures for backwards compatibility
 	let eventBus: TypedEventEmitter;
 	let db: Database | undefined;
@@ -473,7 +481,7 @@ export function createWebSocketHandler(
 			const TTL_MS = 5 * 60 * 1000; // 5 minutes
 			const cutoff = new Date(Date.now() - TTL_MS).toISOString();
 
-			// First check for expired entries with this call_id (AC7.3)
+			// First check for expired entries with this call_id (AC3.4)
 			const expiredEntry = db
 				.prepare(
 					`SELECT * FROM dispatch_queue
@@ -489,14 +497,8 @@ export function createWebSocketHandler(
 				try {
 					const payload = JSON.parse(entry.event_payload) as { call_id?: string };
 					if (payload.call_id === msg.call_id) {
-						conn.ws.send(
-							JSON.stringify({
-								type: "error",
-								code: "tool_call_expired",
-								message: "This tool call has expired",
-								call_id: msg.call_id,
-							}),
-						);
+						// AC3.4: Late tool:result for canceled call is silently discarded
+						// (accepted but not persisted, no error response)
 						return;
 					}
 				} catch {
@@ -533,16 +535,10 @@ export function createWebSocketHandler(
 				return;
 			}
 
-			// Check if entry has expired based on TTL
+			// Check if entry has expired based on TTL (AC3.4)
 			if (matchingEntry.created_at < cutoff) {
-				conn.ws.send(
-					JSON.stringify({
-						type: "error",
-						code: "tool_call_expired",
-						message: "Tool call has expired",
-						call_id: msg.call_id,
-					}),
-				);
+				// Late tool:result for expired call is silently discarded
+				// (accepted but not persisted, no error response)
 				return;
 			}
 
@@ -660,6 +656,96 @@ export function createWebSocketHandler(
 			});
 		}
 	};
+
+	/**
+	 * Helper to emit tool:cancel for pending client tool calls.
+	 * Takes pre-fetched dispatch entries, threadId, and reason.
+	 * For TTL expiry and connection close, synthesizes error messages.
+	 */
+	function emitToolCancel(
+		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
+		threadId: string,
+		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
+		claimedByConnectionId?: string,
+	): void {
+		for (const entry of entries) {
+			if (!entry.event_payload) continue;
+			try {
+				const payload = JSON.parse(entry.event_payload) as { call_id?: string; tool_name?: string };
+				if (!payload.call_id) continue;
+
+				// Find the connection that claimed this entry
+				let targetConnection: ClientConnection | undefined;
+				if (claimedByConnectionId) {
+					// For connection close: find by claimed_by
+					for (const [, conn] of clients) {
+						if (conn.connectionId === claimedByConnectionId) {
+							targetConnection = conn;
+							break;
+						}
+					}
+				} else if (entry.claimed_by) {
+					// General case: find by claimed_by
+					for (const [, conn] of clients) {
+						if (conn.connectionId === entry.claimed_by) {
+							targetConnection = conn;
+							break;
+						}
+					}
+				} else {
+					// Fallback: find any subscribed connection
+					for (const [, conn] of clients) {
+						if (conn.subscriptions.has(threadId)) {
+							targetConnection = conn;
+							break;
+						}
+					}
+				}
+
+				if (targetConnection && targetConnection.ws.readyState === 1) {
+					targetConnection.ws.send(
+						JSON.stringify({
+							type: "tool:cancel",
+							call_id: payload.call_id,
+							thread_id: threadId,
+							reason,
+						}),
+					);
+				}
+
+				// For TTL expiry and connection close, synthesize error messages
+				if ((reason === "dispatch_expired" || reason === "session_reset") && db && siteId) {
+					const now = new Date().toISOString();
+					const errorContent =
+						reason === "dispatch_expired"
+							? "Error: Tool call expired (dispatch_expired)"
+							: "Error: Client tool call cancelled: client disconnected (session_reset)";
+
+					insertRow(
+						db,
+						"messages",
+						{
+							id: randomUUID(),
+							thread_id: threadId,
+							role: "tool_result",
+							content: errorContent,
+							model_id: null,
+							tool_name: payload.call_id,
+							created_at: now,
+							modified_at: now,
+							host_origin: hostOrigin,
+						},
+						siteId,
+					);
+
+					// Enqueue tool result to wake the agent loop
+					enqueueToolResult(db, threadId, payload.call_id);
+				}
+			} catch {
+				// Ignore parse errors and continue
+			}
+		}
+	}
 
 	// Connection registry implementation
 	const registry: ConnectionRegistry = {
@@ -790,6 +876,25 @@ export function createWebSocketHandler(
 		},
 
 		close(ws: ServerWebSocket<unknown>): void {
+			const conn = clients.get(ws);
+			if (conn && db && siteId) {
+				// Find all pending client tool calls claimed by this connection
+				const allThreads = db
+					.query(
+						`SELECT DISTINCT thread_id FROM dispatch_queue
+						 WHERE event_type = 'client_tool_call' AND status = 'pending' AND claimed_by = ?`,
+					)
+					.all(conn.connectionId) as Array<{ thread_id: string }>;
+
+				for (const row of allThreads) {
+					const threadId = row.thread_id;
+					const pending = getPendingClientToolCalls(db, threadId);
+					const claimedByThisConnection = pending.filter((e) => e.claimed_by === conn.connectionId);
+					if (claimedByThisConnection.length > 0) {
+						emitToolCancel(claimedByThisConnection, threadId, "session_reset", conn.connectionId);
+					}
+				}
+			}
 			clients.delete(ws);
 		},
 
@@ -806,5 +911,6 @@ export function createWebSocketHandler(
 		},
 
 		registry,
+		emitToolCancel,
 	};
 }

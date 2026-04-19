@@ -812,7 +812,7 @@ describe("ClientConnection type and WS message schemas", () => {
 			testHandler.cleanup();
 		});
 
-		it("should send error for expired tool call", () => {
+		it("should silently discard late tool:result for expired/canceled calls (AC3.4)", () => {
 			const eventBus = new TypedEventEmitter();
 			// Mock database with an old pending call (simulating expiration)
 			const oldTime = new Date(Date.now() - 10 * 60 * 1000).toISOString();
@@ -822,7 +822,7 @@ describe("ClientConnection type and WS message schemas", () => {
 						{
 							message_id: "msg-1",
 							thread_id: "thread-123",
-							status: "pending",
+							status: "expired",
 							claimed_by: null,
 							event_type: "client_tool_call",
 							event_payload: JSON.stringify({ call_id: "call-123" }),
@@ -860,10 +860,8 @@ describe("ClientConnection type and WS message schemas", () => {
 			);
 
 			const messages = (mockWs as unknown as MockWebSocket).messages;
-			expect(messages.length).toBeGreaterThan(0);
-			const lastMessage = messages[messages.length - 1] as Record<string, unknown>;
-			expect(lastMessage.type).toBe("error");
-			expect(lastMessage.code).toBe("tool_call_expired");
+			// AC3.4: Late tool:result for canceled calls is silently discarded (no error response)
+			expect(messages.length).toBe(0);
 
 			testHandler.cleanup();
 		});

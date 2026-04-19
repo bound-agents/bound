@@ -33,6 +33,11 @@ export interface WebAppConfig {
 	statusForwardCache?: Map<string, StatusForwardPayload>;
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	activeLoops?: Set<string>;
+	emitToolCancel?: (
+		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
+		threadId: string,
+		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
+	) => void;
 }
 
 export interface SyncAppConfig {
@@ -85,6 +90,7 @@ export async function createWebApp(
 		statusForwardCache: config.statusForwardCache,
 		activeDelegations: config.activeDelegations,
 		activeLoops: config.activeLoops,
+		emitToolCancel: config.emitToolCancel,
 	};
 
 	const app = new Hono();

@@ -49,6 +49,7 @@
       "name": "@bound/client",
       "version": "0.0.1",
       "dependencies": {
+        "@bound/llm": "workspace:*",
         "@bound/shared": "workspace:*",
         "zod": "^4.0.0",
       },

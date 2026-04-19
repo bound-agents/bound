@@ -1,3 +1,4 @@
+import type { ContentBlock } from "@bound/llm";
 import type { AgentFile, MemoryTier, Message, Task, Thread } from "@bound/shared";
 
 // ---- Thread responses ----
@@ -184,8 +185,14 @@ export interface ToolCallRequest {
 export interface ToolCallResult {
 	call_id: string;
 	thread_id: string;
-	content: string;
+	content: string | ContentBlock[];
 	is_error?: boolean;
+}
+
+export interface ToolCancelEvent {
+	callId: string;
+	threadId: string;
+	reason?: string;
 }
 
 export interface BoundClientEvents {
@@ -201,6 +208,7 @@ export interface BoundClientEvents {
 		model: string | null;
 	}) => void;
 	"tool:call": (call: ToolCallRequest) => void;
+	"tool:cancel": (event: ToolCancelEvent) => void;
 	error: (err: Event | Error | { code: string; message: string }) => void;
 	open: () => void;
 	close: () => void;

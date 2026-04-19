@@ -31,6 +31,11 @@ export interface WebServer {
 	address(): string;
 	wsConnectionManager?: WsConnectionManager;
 	wsRegistry?: ConnectionRegistry;
+	emitToolCancel?: (
+		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
+		threadId: string,
+		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
+	) => void;
 }
 
 /**
@@ -45,6 +50,14 @@ export async function createWebServer(
 	const port = config.port ?? 3001;
 	const host = config.host ?? "localhost";
 
+	// Create WebSocket handler first to get emitToolCancel
+	const wsHandler = createWebSocketHandler({
+		eventBus,
+		db,
+		siteId: config.siteId,
+		defaultUserId: config.operatorUserId,
+	});
+
 	const webAppConfig: WebAppConfig = {
 		modelsConfig: config.models,
 		hostName: config.hostName,
@@ -53,6 +66,7 @@ export async function createWebServer(
 		statusForwardCache: config.statusForwardCache,
 		activeDelegations: config.activeDelegations,
 		activeLoops: config.activeLoops,
+		emitToolCancel: wsHandler.emitToolCancel,
 	};
 
 	const app = await createWebApp(db, eventBus, webAppConfig);
@@ -63,14 +77,6 @@ export async function createWebServer(
 		const path = new URL(c.req.url).pathname;
 		console.log(`[web] ${method} ${path}`);
 		return next();
-	});
-
-	// Create WebSocket handler
-	const wsHandler = createWebSocketHandler({
-		eventBus,
-		db,
-		siteId: config.siteId,
-		defaultUserId: config.operatorUserId,
 	});
 
 	let server: ReturnType<typeof Bun.serve> | null = null;
@@ -109,6 +115,7 @@ export async function createWebServer(
 		},
 
 		wsRegistry: wsHandler.registry,
+		emitToolCancel: wsHandler.emitToolCancel,
 	};
 }
 

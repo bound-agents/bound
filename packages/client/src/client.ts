@@ -234,6 +234,16 @@ export class BoundClient {
 					return;
 				}
 
+				// Handle tool:cancel
+				if (msg.type === "tool:cancel") {
+					this.emit("tool:cancel", {
+						callId: msg.call_id,
+						threadId: msg.thread_id,
+						reason: msg.reason as string | undefined,
+					});
+					return;
+				}
+
 				// Emit other events
 				this.emit(msg.type, msg);
 			} catch {
