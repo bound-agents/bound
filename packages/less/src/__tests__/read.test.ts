@@ -24,15 +24,16 @@ describe("boundless_read", () => {
 
 		const result = await readTool({ file_path: "test.txt" }, new AbortController().signal, tempDir);
 
-		expect(result).toHaveLength(2);
-		const provenanceBlock = result[0];
+		expect(result.content).toHaveLength(2);
+		expect(result.isError).toBeUndefined();
+		const provenanceBlock = result.content[0];
 		expect(provenanceBlock).toEqual({
 			type: "text",
 			text: expect.stringContaining("[boundless]"),
 		});
 		expect(provenanceBlock.text).toContain("tool=boundless_read");
 
-		const contentBlock = result[1];
+		const contentBlock = result.content[1];
 		expect(contentBlock.type).toBe("text");
 		expect(contentBlock.text).toContain("1\tline one");
 		expect(contentBlock.text).toContain("2\tline two");
@@ -50,8 +51,9 @@ describe("boundless_read", () => {
 			tempDir,
 		);
 
-		expect(result).toHaveLength(2);
-		const contentBlock = result[1];
+		expect(result.content).toHaveLength(2);
+		expect(result.isError).toBeUndefined();
+		const contentBlock = result.content[1];
 		expect(contentBlock.text).toContain("5\tline 5");
 		expect(contentBlock.text).toContain("6\tline 6");
 		expect(contentBlock.text).toContain("7\tline 7");
@@ -67,8 +69,9 @@ describe("boundless_read", () => {
 			tempDir,
 		);
 
-		expect(result).toHaveLength(2);
-		const contentBlock = result[1];
+		expect(result.content).toHaveLength(2);
+		expect(result.isError).toBe(true);
+		const contentBlock = result.content[1];
 		expect(contentBlock.type).toBe("text");
 		expect(contentBlock.text).toContain("Error");
 		expect(contentBlock.text).toContain("ENOENT");
@@ -87,8 +90,9 @@ describe("boundless_read", () => {
 			tempDir,
 		);
 
-		expect(result).toHaveLength(2);
-		const contentBlock = result[1];
+		expect(result.content).toHaveLength(2);
+		expect(result.isError).toBeUndefined();
+		const contentBlock = result.content[1];
 		expect(contentBlock.type).toBe("text");
 		expect(contentBlock.text).toContain("Binary file");
 		expect(contentBlock.text).toContain("100 bytes");
@@ -102,8 +106,8 @@ describe("boundless_read", () => {
 
 		const result = await readTool({ file_path: "test.txt" }, new AbortController().signal, tempDir);
 
-		expect(result.length).toBeGreaterThanOrEqual(1);
-		const firstBlock = result[0];
+		expect(result.content.length).toBeGreaterThanOrEqual(1);
+		const firstBlock = result.content[0];
 		expect(firstBlock.type).toBe("text");
 		expect(firstBlock.text).toContain("[boundless]");
 		expect(firstBlock.text).toContain("boundless_read");
@@ -121,8 +125,9 @@ describe("boundless_read", () => {
 			tempDir,
 		);
 
-		expect(result).toHaveLength(2);
-		const contentBlock = result[1];
+		expect(result.content).toHaveLength(2);
+		expect(result.isError).toBeUndefined();
+		const contentBlock = result.content[1];
 		expect(contentBlock.type).toBe("text");
 		expect(contentBlock.text).toContain("content");
 	});
@@ -133,8 +138,9 @@ describe("boundless_read", () => {
 
 		const result = await readTool({ file_path: testFile }, new AbortController().signal, tempDir);
 
-		expect(result).toHaveLength(2);
-		const contentBlock = result[1];
+		expect(result.content).toHaveLength(2);
+		expect(result.isError).toBeUndefined();
+		const contentBlock = result.content[1];
 		expect(contentBlock.type).toBe("text");
 		expect(contentBlock.text).toContain("absolute path content");
 	});

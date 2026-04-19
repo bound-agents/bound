@@ -33,13 +33,14 @@ describe("boundless_edit", () => {
 			tempDir,
 		);
 
-		expect(result).toHaveLength(2);
-		const provenanceBlock = result[0];
+		expect(result.content).toHaveLength(2);
+		expect(result.isError).toBeUndefined();
+		const provenanceBlock = result.content[0];
 		expect(provenanceBlock.type).toBe("text");
 		expect(provenanceBlock.text).toContain("[boundless]");
 		expect(provenanceBlock.text).toContain("tool=boundless_edit");
 
-		const contentBlock = result[1];
+		const contentBlock = result.content[1];
 		expect(contentBlock.type).toBe("text");
 		expect(contentBlock.text).toContain("Edited");
 		expect(contentBlock.text).toContain("replaced 1 occurrence");
@@ -63,8 +64,9 @@ describe("boundless_edit", () => {
 			tempDir,
 		);
 
-		expect(result).toHaveLength(2);
-		const contentBlock = result[1];
+		expect(result.content).toHaveLength(2);
+		expect(result.isError).toBe(true);
+		const contentBlock = result.content[1];
 		expect(contentBlock.type).toBe("text");
 		expect(contentBlock.text).toContain("Error");
 		expect(contentBlock.text).toContain("old_string not found");
@@ -89,8 +91,9 @@ describe("boundless_edit", () => {
 			tempDir,
 		);
 
-		expect(result).toHaveLength(2);
-		const contentBlock = result[1];
+		expect(result.content).toHaveLength(2);
+		expect(result.isError).toBe(true);
+		const contentBlock = result.content[1];
 		expect(contentBlock.type).toBe("text");
 		expect(contentBlock.text).toContain("Error");
 		expect(contentBlock.text).toContain("3");
@@ -117,7 +120,7 @@ describe("boundless_edit", () => {
 			tempDir,
 		);
 
-		const contentBlock = result[1];
+		const contentBlock = result.content[1];
 		expect(contentBlock.text).toContain("3 matches found");
 	});
 
@@ -135,8 +138,8 @@ describe("boundless_edit", () => {
 			tempDir,
 		);
 
-		expect(result.length).toBeGreaterThanOrEqual(1);
-		const firstBlock = result[0];
+		expect(result.content.length).toBeGreaterThanOrEqual(1);
+		const firstBlock = result.content[0];
 		expect(firstBlock.type).toBe("text");
 		expect(firstBlock.text).toContain("[boundless]");
 		expect(firstBlock.text).toContain("boundless_edit");
@@ -156,7 +159,7 @@ describe("boundless_edit", () => {
 			tempDir,
 		);
 
-		expect(result[1].text).toContain("replaced 1 occurrence");
+		expect(result.content[1].text).toContain("replaced 1 occurrence");
 		const fileContent = readFileSync(testFile, "utf-8");
 		expect(fileContent).toBe("content edited\n");
 	});
@@ -176,7 +179,7 @@ describe("boundless_edit", () => {
 			tempDir,
 		);
 
-		expect(result[1].text).toContain("replaced 1 occurrence");
+		expect(result.content[1].text).toContain("replaced 1 occurrence");
 		const fileContent = readFileSync(testFile, "utf-8");
 		expect(fileContent).toBe("line 1\nreplaced\nline 4\n");
 	});

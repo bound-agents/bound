@@ -1,44 +1,61 @@
 import { formatProvenance } from "./provenance";
-import type { ToolHandler } from "./types";
+import type { ToolHandler, ToolResult } from "./types";
 
 const DEFAULT_TIMEOUT_MS = 300000; // 5 minutes
-const OUTPUT_LIMIT_BYTES = 102400; // 100KB
 const HALF_OUTPUT_BYTES = 50000; // 50KB per half
 
 export interface BashToolWithStreamingOptions {
 	onStdoutChunk?: (chunk: string) => void;
 }
 
-async function truncateOutput(output: string): Promise<string> {
+function truncateOutput(output: string, maxBytes: number): string {
 	const bytes = Buffer.byteLength(output, "utf-8");
 
-	if (bytes <= OUTPUT_LIMIT_BYTES) {
+	if (bytes <= maxBytes) {
 		return output;
 	}
 
 	// Truncate from the middle
-	const truncatedBytes = bytes - OUTPUT_LIMIT_BYTES;
+	const truncatedBytes = bytes - maxBytes;
+	const halfBytes = Math.floor(maxBytes / 2);
+
+	// Get first half
 	let first = output;
+	let charIdx = 0;
+	let byteCount = 0;
+
+	while (byteCount < halfBytes && charIdx < output.length) {
+		const charBytes = Buffer.byteLength(output[charIdx], "utf-8");
+		if (byteCount + charBytes > halfBytes) {
+			break;
+		}
+		byteCount += charBytes;
+		charIdx++;
+	}
+	first = output.substring(0, charIdx);
+
+	// Get last half
 	let last = output;
+	charIdx = output.length - 1;
+	byteCount = 0;
 
-	// Rough approach: truncate by character count first, then refine
-	const charCount = output.length;
-	const targetFirst = Math.floor((charCount * HALF_OUTPUT_BYTES) / bytes);
-	const targetLast = Math.floor((charCount * HALF_OUTPUT_BYTES) / bytes);
-
-	// Get first 50KB
-	first = output.substring(0, targetFirst);
-	while (Buffer.byteLength(first, "utf-8") > HALF_OUTPUT_BYTES) {
-		first = first.substring(0, first.length - 1);
+	while (byteCount < halfBytes && charIdx >= 0) {
+		const charBytes = Buffer.byteLength(output[charIdx], "utf-8");
+		if (byteCount + charBytes > halfBytes) {
+			break;
+		}
+		byteCount += charBytes;
+		charIdx--;
 	}
-
-	// Get last 50KB
-	last = output.substring(output.length - targetLast);
-	while (Buffer.byteLength(last, "utf-8") > HALF_OUTPUT_BYTES) {
-		last = last.substring(1);
-	}
+	last = output.substring(charIdx + 1);
 
 	return `${first}\n... [truncated ${truncatedBytes} bytes from middle] ...\n${last}`;
+}
+
+export function createBashTool(hostname: string): ToolHandler {
+	return (args, signal, cwd) => {
+		return bashToolWithStreaming(args, signal, cwd, undefined, hostname);
+	};
 }
 
 export async function bashToolWithStreaming(
@@ -46,24 +63,30 @@ export async function bashToolWithStreaming(
 	signal: AbortSignal,
 	cwd: string,
 	options?: BashToolWithStreamingOptions,
-): Promise<import("@bound/llm").ContentBlock[]> {
+	hostname = "unknown",
+): Promise<ToolResult> {
 	const { command, timeout } = args as {
 		command?: string;
 		timeout?: number;
 	};
 
+	const provenance = formatProvenance(hostname, cwd, "boundless_bash");
+
 	if (!command || typeof command !== "string") {
-		return [
-			formatProvenance("unknown", cwd, "boundless_bash"),
-			{
-				type: "text",
-				text: "Error: command is required and must be a string",
-			},
-		];
+		const result: ToolResult = {
+			content: [
+				provenance,
+				{
+					type: "text",
+					text: "Error: command is required and must be a string",
+				},
+			],
+			isError: true,
+		};
+		return result;
 	}
 
 	const timeoutMs = timeout ?? DEFAULT_TIMEOUT_MS;
-	const provenance = formatProvenance("unknown", cwd, "boundless_bash");
 
 	try {
 		// Create an AbortController that combines external signal + timeout
@@ -118,8 +141,9 @@ export async function bashToolWithStreaming(
 
 			internalController.signal.addEventListener("abort", abortHandler);
 
-			// Collect stdout
+			// Collect stdout with a single TextDecoder
 			let stdout = "";
+			const decoder = new TextDecoder();
 			if (proc.stdout) {
 				const reader = proc.stdout.getReader();
 				try {
@@ -127,7 +151,7 @@ export async function bashToolWithStreaming(
 						const { done, value } = await reader.read();
 						if (done) break;
 
-						const chunk = new TextDecoder().decode(value);
+						const chunk = decoder.decode(value, { stream: true });
 						stdout += chunk;
 
 						// Call streaming callback if provided
@@ -135,6 +159,8 @@ export async function bashToolWithStreaming(
 							options.onStdoutChunk(chunk);
 						}
 					}
+					// Flush any remaining bytes
+					stdout += decoder.decode();
 				} finally {
 					reader.releaseLock();
 				}
@@ -154,42 +180,45 @@ export async function bashToolWithStreaming(
 			signal.removeEventListener("abort", onAbort);
 			internalController.signal.removeEventListener("abort", abortHandler);
 
-			// Truncate output if needed
-			const allOutput = stdout + stderr;
-			const truncated =
-				Buffer.byteLength(allOutput, "utf-8") > OUTPUT_LIMIT_BYTES
-					? await truncateOutput(stdout + stderr)
-					: stdout + stderr;
+			// Truncate stdout and stderr independently, each with 50KB budget
+			const stdoutBytes = Buffer.byteLength(stdout, "utf-8");
+			const stderrBytes = Buffer.byteLength(stderr, "utf-8");
 
-			const formattedOutput = `Exit code: ${exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`;
-			const formattedTruncated =
-				Buffer.byteLength(formattedOutput, "utf-8") > OUTPUT_LIMIT_BYTES
-					? `Exit code: ${exitCode}\nstdout:\n${truncated}`
-					: formattedOutput;
+			const truncatedStdout =
+				stdoutBytes > HALF_OUTPUT_BYTES ? truncateOutput(stdout, HALF_OUTPUT_BYTES) : stdout;
+			const truncatedStderr =
+				stderrBytes > HALF_OUTPUT_BYTES ? truncateOutput(stderr, HALF_OUTPUT_BYTES) : stderr;
 
-			return [
-				provenance,
-				{
-					type: "text",
-					text: formattedTruncated,
-				},
-			];
+			const formattedOutput = `Exit code: ${exitCode}\nstdout:\n${truncatedStdout}\nstderr:\n${truncatedStderr}`;
+
+			const result: ToolResult = {
+				content: [
+					provenance,
+					{
+						type: "text",
+						text: formattedOutput,
+					},
+				],
+			};
+			return result;
 		} finally {
 			clearTimeout(timeoutHandle);
 			signal.removeEventListener("abort", onAbort);
 		}
 	} catch (err) {
 		const error = err as NodeJS.ErrnoException;
-		return [
-			provenance,
-			{
-				type: "text",
-				text: `Error: ${error?.message || String(err)}`,
-			},
-		];
+		const result: ToolResult = {
+			content: [
+				provenance,
+				{
+					type: "text",
+					text: `Error: ${error?.message || String(err)}`,
+				},
+			],
+			isError: true,
+		};
+		return result;
 	}
 }
 
-export const bashTool: ToolHandler = (args, signal, cwd) => {
-	return bashToolWithStreaming(args, signal, cwd);
-};
+export const bashTool: ToolHandler = createBashTool("unknown");

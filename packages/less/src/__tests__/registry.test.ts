@@ -150,13 +150,51 @@ describe("buildToolSet", () => {
 		expect(tools.find((t) => t.function.name === "boundless_mcp_testserver_test")).toBeDefined();
 	});
 
-	it("rejects MCP server when tool names would collide with previously merged servers", () => {
-		// Create a collision: github server with tool "list_repos" produces "boundless_mcp_github_list_repos"
-		// Then gitlab server also with "list_repos" would try to produce "boundless_mcp_gitlab_list_repos"
-		// These are different names, so no collision there.
-		// Real collision: same server+tool name
-		// Since that's hard to engineer with the namespace, let's test that both servers merge cleanly
-		// when their names don't collide.
+	it("rejects MCP servers that produce namespace collisions from underscore ambiguity", () => {
+		// Create underscore ambiguity collision:
+		// server "a_b" with tool "read" -> "boundless_mcp_a_b_read"
+		// server "a" with tool "b_read"  -> "boundless_mcp_a_b_read" (collision!)
+		const mcpTools = new Map<string, import("@bound/client").ToolDefinition[]>([
+			[
+				"a_b",
+				[
+					{
+						type: "function",
+						function: {
+							name: "read",
+							description: "Read from a_b server",
+							parameters: { type: "object" },
+						},
+					},
+				],
+			],
+			[
+				"a",
+				[
+					{
+						type: "function",
+						function: {
+							name: "b_read", // This creates collision: boundless_mcp_a_b_read
+							description: "Read from a server",
+							parameters: { type: "object" },
+						},
+					},
+				],
+			],
+		]);
+
+		const { tools } = buildToolSet("/tmp", "localhost", mcpTools);
+
+		// Should have 4 core tools only (both MCP servers rejected due to collision)
+		expect(tools).toHaveLength(4);
+
+		// Verify the colliding tools are NOT present
+		expect(tools.find((t) => t.function.name === "boundless_mcp_a_b_read")).toBeUndefined();
+		expect(tools.find((t) => t.function.name === "boundless_mcp_a_b_read")).toBeUndefined();
+	});
+
+	it("allows multiple MCP servers that do not have namespace collisions", () => {
+		// Test that both servers merge cleanly when their names don't collide
 		const mcpTools = new Map<string, import("@bound/client").ToolDefinition[]>([
 			[
 				"github",
@@ -185,7 +223,7 @@ describe("buildToolSet", () => {
 					{
 						type: "function",
 						function: {
-							name: "list_projects", // Different name
+							name: "list_projects", // Different naming scheme
 							description: "List projects",
 							parameters: { type: "object" },
 						},

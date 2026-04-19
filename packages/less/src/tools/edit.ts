@@ -1,48 +1,70 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { formatProvenance } from "./provenance";
-import type { ToolHandler } from "./types";
+import type { ToolHandler, ToolResult } from "./types";
 
-export const editTool: ToolHandler = async (args, _signal, cwd) => {
+export function createEditTool(hostname: string): ToolHandler {
+	return async (args, _signal, cwd) => {
+		return editToolImpl(hostname, args, cwd);
+	};
+}
+
+async function editToolImpl(
+	hostname: string,
+	args: Record<string, unknown>,
+	cwd: string,
+): Promise<ToolResult> {
 	const { file_path, old_string, new_string } = args as {
 		file_path?: string;
 		old_string?: string;
 		new_string?: string;
 	};
 
+	const provenance = formatProvenance(hostname, cwd, "boundless_edit");
+
 	if (!file_path || typeof file_path !== "string") {
-		return [
-			formatProvenance("unknown", cwd, "boundless_edit"),
-			{
-				type: "text",
-				text: "Error: file_path is required and must be a string",
-			},
-		];
+		const result: ToolResult = {
+			content: [
+				provenance,
+				{
+					type: "text",
+					text: "Error: file_path is required and must be a string",
+				},
+			],
+			isError: true,
+		};
+		return result;
 	}
 
 	if (old_string === undefined || typeof old_string !== "string") {
-		return [
-			formatProvenance("unknown", cwd, "boundless_edit"),
-			{
-				type: "text",
-				text: "Error: old_string is required and must be a string",
-			},
-		];
+		const result: ToolResult = {
+			content: [
+				provenance,
+				{
+					type: "text",
+					text: "Error: old_string is required and must be a string",
+				},
+			],
+			isError: true,
+		};
+		return result;
 	}
 
 	if (new_string === undefined || typeof new_string !== "string") {
-		return [
-			formatProvenance("unknown", cwd, "boundless_edit"),
-			{
-				type: "text",
-				text: "Error: new_string is required and must be a string",
-			},
-		];
+		const result: ToolResult = {
+			content: [
+				provenance,
+				{
+					type: "text",
+					text: "Error: new_string is required and must be a string",
+				},
+			],
+			isError: true,
+		};
+		return result;
 	}
 
 	const resolvedPath = isAbsolute(file_path) ? file_path : resolve(cwd, file_path);
-
-	const provenance = formatProvenance("unknown", cwd, "boundless_edit");
 
 	try {
 		const content = readFileSync(resolvedPath, "utf-8");
@@ -51,13 +73,17 @@ export const editTool: ToolHandler = async (args, _signal, cwd) => {
 		const occurrences = content.split(old_string).length - 1;
 
 		if (occurrences === 0) {
-			return [
-				provenance,
-				{
-					type: "text",
-					text: `Error: old_string not found in ${file_path}`,
-				},
-			];
+			const result: ToolResult = {
+				content: [
+					provenance,
+					{
+						type: "text",
+						text: `Error: old_string not found in ${file_path}`,
+					},
+				],
+				isError: true,
+			};
+			return result;
 		}
 
 		if (occurrences > 1) {
@@ -76,43 +102,60 @@ export const editTool: ToolHandler = async (args, _signal, cwd) => {
 				.map((m) => `  Line ${m.lineNum}: ${m.line}`)
 				.join("\n");
 
-			return [
-				provenance,
-				{
-					type: "text",
-					text: `Error: ${occurrences} matches found for old_string in ${file_path}. Cannot edit with multiple matches.\n\nFirst match locations:\n${context}`,
-				},
-			];
+			const result: ToolResult = {
+				content: [
+					provenance,
+					{
+						type: "text",
+						text: `Error: ${occurrences} matches found for old_string in ${file_path}. Cannot edit with multiple matches.\n\nFirst match locations:\n${context}`,
+					},
+				],
+				isError: true,
+			};
+			return result;
 		}
 
 		// Replace the single occurrence
 		const newContent = content.replace(old_string, new_string);
 		writeFileSync(resolvedPath, newContent, "utf-8");
 
-		return [
-			provenance,
-			{
-				type: "text",
-				text: `Edited ${file_path}: replaced 1 occurrence`,
-			},
-		];
-	} catch (err) {
-		const error = err as NodeJS.ErrnoException;
-		if (error?.code === "ENOENT") {
-			return [
+		const result: ToolResult = {
+			content: [
 				provenance,
 				{
 					type: "text",
-					text: `Error: ENOENT: no such file or directory: ${file_path}`,
+					text: `Edited ${file_path}: replaced 1 occurrence`,
 				},
-			];
+			],
+		};
+		return result;
+	} catch (err) {
+		const error = err as NodeJS.ErrnoException;
+		if (error?.code === "ENOENT") {
+			const result: ToolResult = {
+				content: [
+					provenance,
+					{
+						type: "text",
+						text: `Error: ENOENT: no such file or directory: ${file_path}`,
+					},
+				],
+				isError: true,
+			};
+			return result;
 		}
-		return [
-			provenance,
-			{
-				type: "text",
-				text: `Error: ${error?.message || String(err)}`,
-			},
-		];
+		const result: ToolResult = {
+			content: [
+				provenance,
+				{
+					type: "text",
+					text: `Error: ${error?.message || String(err)}`,
+				},
+			],
+			isError: true,
+		};
+		return result;
 	}
-};
+}
+
+export const editTool: ToolHandler = createEditTool("unknown");

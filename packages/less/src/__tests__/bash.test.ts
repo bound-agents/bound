@@ -21,13 +21,14 @@ describe("boundless_bash", () => {
 	it("AC5.9: executes command in cwd and returns stdout/stderr with exit code", async () => {
 		const result = await bashTool({ command: "echo hello" }, new AbortController().signal, tempDir);
 
-		expect(result).toHaveLength(2);
-		const provenanceBlock = result[0];
+		expect(result.content).toHaveLength(2);
+		expect(result.isError).toBeUndefined();
+		const provenanceBlock = result.content[0];
 		expect(provenanceBlock.type).toBe("text");
 		expect(provenanceBlock.text).toContain("[boundless]");
 		expect(provenanceBlock.text).toContain("tool=boundless_bash");
 
-		const contentBlock = result[1];
+		const contentBlock = result.content[1];
 		expect(contentBlock.type).toBe("text");
 		expect(contentBlock.text).toContain("Exit code: 0");
 		expect(contentBlock.text).toContain("hello");
@@ -40,7 +41,7 @@ describe("boundless_bash", () => {
 			tempDir,
 		);
 
-		const contentBlock = result[1];
+		const contentBlock = result.content[1];
 		expect(contentBlock.text).toContain("to stdout");
 		expect(contentBlock.text).toContain("to stderr");
 		expect(contentBlock.text).toContain("stdout:");
@@ -50,7 +51,7 @@ describe("boundless_bash", () => {
 	it("AC5.9: shows exit code for failed commands", async () => {
 		const result = await bashTool({ command: "exit 42" }, new AbortController().signal, tempDir);
 
-		const contentBlock = result[1];
+		const contentBlock = result.content[1];
 		expect(contentBlock.text).toContain("Exit code: 42");
 	});
 
@@ -66,7 +67,7 @@ describe("boundless_bash", () => {
 			setTimeout(() => controller.abort(), 100);
 
 			const result = await promise;
-			const contentBlock = result[1];
+			const contentBlock = result.content[1];
 
 			// Process should be terminated, not timed out (exit code should reflect SIGTERM/SIGKILL)
 			// On Unix, SIGTERM is signal 15, SIGKILL is signal 9
@@ -86,7 +87,7 @@ describe("boundless_bash", () => {
 			tempDir,
 		);
 
-		const contentBlock = result[1];
+		const contentBlock = result.content[1];
 		const text = contentBlock.text;
 
 		// Should contain the marker for truncation
@@ -101,8 +102,8 @@ describe("boundless_bash", () => {
 	it("AC5.12: always includes provenance block first", async () => {
 		const result = await bashTool({ command: "echo test" }, new AbortController().signal, tempDir);
 
-		expect(result.length).toBeGreaterThanOrEqual(1);
-		const firstBlock = result[0];
+		expect(result.content.length).toBeGreaterThanOrEqual(1);
+		const firstBlock = result.content[0];
 		expect(firstBlock.type).toBe("text");
 		expect(firstBlock.text).toContain("[boundless]");
 		expect(firstBlock.text).toContain("boundless_bash");
@@ -114,7 +115,7 @@ describe("boundless_bash", () => {
 
 		const result = await bashTool({ command: "pwd" }, new AbortController().signal, subdir);
 
-		const contentBlock = result[1];
+		const contentBlock = result.content[1];
 		expect(contentBlock.text).toContain(subdir);
 	});
 
@@ -125,7 +126,7 @@ describe("boundless_bash", () => {
 			tempDir,
 		);
 
-		const contentBlock = result[1];
+		const contentBlock = result.content[1];
 		expect(contentBlock.text).toContain("Exit code: 0");
 		expect(contentBlock.text).toContain("quick");
 	});
@@ -134,7 +135,7 @@ describe("boundless_bash", () => {
 		// This test just verifies the command runs within default timeout
 		const result = await bashTool({ command: "echo done" }, new AbortController().signal, tempDir);
 
-		const contentBlock = result[1];
+		const contentBlock = result.content[1];
 		expect(contentBlock.text).toContain("Exit code: 0");
 	});
 
@@ -145,7 +146,7 @@ describe("boundless_bash", () => {
 			tempDir,
 		);
 
-		const contentBlock = result[1];
+		const contentBlock = result.content[1];
 		expect(contentBlock.text).toContain("Exit code: 0");
 		expect(contentBlock.text).toContain("line");
 	});

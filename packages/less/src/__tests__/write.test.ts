@@ -28,16 +28,17 @@ describe("boundless_write", () => {
 			tempDir,
 		);
 
-		expect(result).toHaveLength(2);
+		expect(result.content).toHaveLength(2);
+		expect(result.isError).toBeUndefined();
 
 		// Check provenance block
-		const provenanceBlock = result[0];
+		const provenanceBlock = result.content[0];
 		expect(provenanceBlock.type).toBe("text");
 		expect(provenanceBlock.text).toContain("[boundless]");
 		expect(provenanceBlock.text).toContain("tool=boundless_write");
 
 		// Check result message
-		const resultBlock = result[1];
+		const resultBlock = result.content[1];
 		expect(resultBlock.type).toBe("text");
 		expect(resultBlock.text).toContain("Wrote");
 		expect(resultBlock.text).toContain("bytes to");
@@ -68,8 +69,8 @@ describe("boundless_write", () => {
 			tempDir,
 		);
 
-		expect(result.length).toBeGreaterThanOrEqual(1);
-		const firstBlock = result[0];
+		expect(result.content.length).toBeGreaterThanOrEqual(1);
+		const firstBlock = result.content[0];
 		expect(firstBlock.type).toBe("text");
 		expect(firstBlock.text).toContain("[boundless]");
 		expect(firstBlock.text).toContain("boundless_write");
@@ -110,7 +111,8 @@ describe("boundless_write", () => {
 			tempDir,
 		);
 
-		expect(result).toHaveLength(2);
+		expect(result.content).toHaveLength(2);
+		expect(result.isError).toBeUndefined();
 		expect(existsSync(absolutePath)).toBe(true);
 		const readContent = readFileSync(absolutePath, "utf-8");
 		expect(readContent).toBe(testContent);
@@ -131,12 +133,12 @@ describe("boundless_write", () => {
 		expect(readContent).toBe(testContent);
 
 		// Verify byte count is correct
-		const resultBlocks = await writeTool(
+		const result = await writeTool(
 			{ file_path: testPath, content: testContent },
 			new AbortController().signal,
 			tempDir,
 		);
-		const resultBlock = resultBlocks[1];
+		const resultBlock = result.content[1];
 		const expectedBytes = Buffer.byteLength(testContent, "utf-8");
 		expect(resultBlock.text).toContain(String(expectedBytes));
 	});
@@ -169,7 +171,8 @@ describe("boundless_write", () => {
 			tempDir,
 		);
 
-		expect(result).toHaveLength(2);
+		expect(result.content).toHaveLength(2);
+		expect(result.isError).toBeUndefined();
 		const fullPath = join(tempDir, testPath);
 		expect(existsSync(fullPath)).toBe(true);
 		const readContent = readFileSync(fullPath, "utf-8");

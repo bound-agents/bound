@@ -1,28 +1,42 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { formatProvenance } from "./provenance";
-import type { ToolHandler } from "./types";
+import type { ToolHandler, ToolResult } from "./types";
 
-export const readTool: ToolHandler = async (args, _signal, cwd) => {
+export function createReadTool(hostname: string): ToolHandler {
+	return async (args, _signal, cwd) => {
+		return readToolImpl(hostname, args, cwd);
+	};
+}
+
+async function readToolImpl(
+	hostname: string,
+	args: Record<string, unknown>,
+	cwd: string,
+): Promise<ToolResult> {
 	const { file_path, offset, limit } = args as {
 		file_path?: string;
 		offset?: number;
 		limit?: number;
 	};
 
+	const provenance = formatProvenance(hostname, cwd, "boundless_read");
+
 	if (!file_path || typeof file_path !== "string") {
-		return [
-			formatProvenance("unknown", cwd, "boundless_read"),
-			{
-				type: "text",
-				text: "Error: file_path is required and must be a string",
-			},
-		];
+		const result: ToolResult = {
+			content: [
+				provenance,
+				{
+					type: "text",
+					text: "Error: file_path is required and must be a string",
+				},
+			],
+			isError: true,
+		};
+		return result;
 	}
 
 	const resolvedPath = isAbsolute(file_path) ? file_path : resolve(cwd, file_path);
-
-	const provenance = formatProvenance("unknown", cwd, "boundless_read");
 
 	try {
 		const buffer = readFileSync(resolvedPath);
@@ -31,13 +45,16 @@ export const readTool: ToolHandler = async (args, _signal, cwd) => {
 		const isBinary = buffer.indexOf(0) !== -1 && buffer.indexOf(0) < 8192;
 
 		if (isBinary) {
-			return [
-				provenance,
-				{
-					type: "text",
-					text: `Binary file: ${file_path} (${buffer.length} bytes)`,
-				},
-			];
+			const result: ToolResult = {
+				content: [
+					provenance,
+					{
+						type: "text",
+						text: `Binary file: ${file_path} (${buffer.length} bytes)`,
+					},
+				],
+			};
+			return result;
 		}
 
 		const content = buffer.toString("utf-8");
@@ -67,30 +84,43 @@ export const readTool: ToolHandler = async (args, _signal, cwd) => {
 
 		const numberedContent = numberedLines.join("\n");
 
-		return [
-			provenance,
-			{
-				type: "text",
-				text: numberedContent,
-			},
-		];
-	} catch (err) {
-		const error = err as NodeJS.ErrnoException;
-		if (error?.code === "ENOENT") {
-			return [
+		const result: ToolResult = {
+			content: [
 				provenance,
 				{
 					type: "text",
-					text: `Error: ENOENT: no such file or directory: ${file_path}`,
+					text: numberedContent,
 				},
-			];
+			],
+		};
+		return result;
+	} catch (err) {
+		const error = err as NodeJS.ErrnoException;
+		if (error?.code === "ENOENT") {
+			const result: ToolResult = {
+				content: [
+					provenance,
+					{
+						type: "text",
+						text: `Error: ENOENT: no such file or directory: ${file_path}`,
+					},
+				],
+				isError: true,
+			};
+			return result;
 		}
-		return [
-			provenance,
-			{
-				type: "text",
-				text: `Error: ${error?.message || String(err)}`,
-			},
-		];
+		const result: ToolResult = {
+			content: [
+				provenance,
+				{
+					type: "text",
+					text: `Error: ${error?.message || String(err)}`,
+				},
+			],
+			isError: true,
+		};
+		return result;
 	}
-};
+}
+
+export const readTool: ToolHandler = createReadTool("unknown");

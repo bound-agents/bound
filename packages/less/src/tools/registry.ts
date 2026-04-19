@@ -1,9 +1,9 @@
 import type { ToolDefinition } from "@bound/client";
-import { bashTool } from "./bash";
-import { editTool } from "./edit";
-import { readTool } from "./read";
+import { createBashTool } from "./bash";
+import { createEditTool } from "./edit";
+import { createReadTool } from "./read";
 import type { ToolHandler } from "./types";
-import { writeTool } from "./write";
+import { createWriteTool } from "./write";
 
 export interface BuildToolSetResult {
 	tools: ToolDefinition[];
@@ -115,68 +115,92 @@ export function buildToolSet(
 	];
 
 	toolDefinitions.push(...coreToolDefs);
-	handlers.set("boundless_read", readTool);
-	handlers.set("boundless_write", writeTool);
-	handlers.set("boundless_edit", editTool);
-	handlers.set("boundless_bash", bashTool);
+	handlers.set("boundless_read", createReadTool(_hostname));
+	handlers.set("boundless_write", createWriteTool(_hostname));
+	handlers.set("boundless_edit", createEditTool(_hostname));
+	handlers.set("boundless_bash", createBashTool(_hostname));
 
-	// Track all existing tool names for collision detection
-	const existingNames = new Set<string>([
-		"boundless_read",
-		"boundless_write",
-		"boundless_edit",
-		"boundless_bash",
-	]);
+	// Detect potential namespace collisions from underscore ambiguity
+	// Example: server "a_b" with tool "c" -> "boundless_mcp_a_b_c"
+	//          server "a" with tool "b_c"  -> "boundless_mcp_a_b_c" (collision!)
+	function detectNamespaceCollision(mcpServersMap: Map<string, ToolDefinition[]>): {
+		collision: boolean;
+		servers: string[];
+	} {
+		const toolNamespacesToServers = new Map<string, string[]>();
+		const collisionServers = new Set<string>();
+
+		for (const [serverName, tools] of mcpServersMap) {
+			for (const tool of tools) {
+				const fullNamespace = `boundless_mcp_${serverName}_${tool.function.name}`;
+
+				let servers = toolNamespacesToServers.get(fullNamespace);
+				if (!servers) {
+					servers = [];
+					toolNamespacesToServers.set(fullNamespace, servers);
+				}
+
+				servers.push(serverName);
+
+				if (servers.length > 1) {
+					// Collision detected - mark all servers involved in this collision
+					for (const server of servers) {
+						collisionServers.add(server);
+					}
+				}
+			}
+		}
+
+		return {
+			collision: collisionServers.size > 0,
+			servers: Array.from(collisionServers),
+		};
+	}
 
 	// Add MCP tools with collision detection
 	if (mcpTools) {
+		// Check for underscore ambiguity collisions
+		const collisionCheck = detectNamespaceCollision(mcpTools);
+		if (collisionCheck.collision) {
+			console.warn(
+				`MCP servers produce namespace collisions (underscore ambiguity): ${collisionCheck.servers.join(", ")}. These servers will be rejected.`,
+			);
+		}
+
 		for (const [serverName, tools] of mcpTools) {
-			let serverRejected = false;
+			// Skip servers that have collision issues
+			if (collisionCheck.servers.includes(serverName)) {
+				continue;
+			}
 
 			for (const tool of tools) {
 				const mcpToolName = `boundless_mcp_${serverName}_${tool.function.name}`;
 
-				// Check for collision
-				if (existingNames.has(mcpToolName)) {
-					console.warn(
-						`MCP server '${serverName}' has tool '${tool.function.name}' that collides with existing tool '${mcpToolName}'. Rejecting entire server.`,
-					);
-					serverRejected = true;
-					break;
-				}
+				// Create a new tool definition with the namespaced name
+				const mcpToolDef: ToolDefinition = {
+					type: "function",
+					function: {
+						name: mcpToolName,
+						description: tool.function.description,
+						parameters: tool.function.parameters,
+					},
+				};
 
-				existingNames.add(mcpToolName);
-			}
+				toolDefinitions.push(mcpToolDef);
 
-			// If no collision, add all tools from this server
-			if (!serverRejected) {
-				for (const tool of tools) {
-					const mcpToolName = `boundless_mcp_${serverName}_${tool.function.name}`;
-
-					// Create a new tool definition with the namespaced name
-					const mcpToolDef: ToolDefinition = {
-						type: "function",
-						function: {
-							name: mcpToolName,
-							description: tool.function.description,
-							parameters: tool.function.parameters,
-						},
-					};
-
-					toolDefinitions.push(mcpToolDef);
-
-					// For MCP tools, we don't have actual handlers - they would be
-					// proxied through the MCP server. This is a placeholder.
-					// The actual handler would be implemented in a different layer.
-					handlers.set(mcpToolName, async () => {
-						return [
+				// For MCP tools, we don't have actual handlers - they would be
+				// proxied through the MCP server. This is a placeholder.
+				// The actual handler would be implemented in a different layer.
+				handlers.set(mcpToolName, async () => {
+					return {
+						content: [
 							{
 								type: "text",
 								text: `MCP tool ${mcpToolName} not directly executable`,
 							},
-						];
-					});
-				}
+						],
+					};
+				});
 			}
 		}
 	}
