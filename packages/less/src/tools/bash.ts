@@ -38,11 +38,7 @@ async function truncateOutput(output: string): Promise<string> {
 		last = last.substring(1);
 	}
 
-	return (
-		first +
-		`\n... [truncated ${truncatedBytes} bytes from middle] ...\n` +
-		last
-	);
+	return `${first}\n... [truncated ${truncatedBytes} bytes from middle] ...\n${last}`;
 }
 
 export async function bashToolWithStreaming(
@@ -72,10 +68,8 @@ export async function bashToolWithStreaming(
 	try {
 		// Create an AbortController that combines external signal + timeout
 		const internalController = new AbortController();
-		let timedOut = false;
 
 		const timeoutHandle = setTimeout(() => {
-			timedOut = true;
 			internalController.abort();
 		}, timeoutMs);
 
