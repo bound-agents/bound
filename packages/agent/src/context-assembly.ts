@@ -666,12 +666,64 @@ Original output was too large for the context window. If you need the full conte
 	const sanitized: Message[] = [];
 	let inActiveTool = false;
 	let lastToolId = "";
+	let lastToolUseIds: string[] = []; // track IDs from the last tool_call for synthetic results
 	let prevSanitizedRole: string | null = null;
+
+	/** Extract tool_use IDs from a tool_call message's content */
+	const extractToolUseIds = (content: string): string[] => {
+		try {
+			const blocks = JSON.parse(content);
+			if (Array.isArray(blocks)) {
+				return blocks
+					.filter((b: { type?: string; id?: string }) => b.type === "tool_use" && b.id)
+					.map((b: { id: string }) => b.id);
+			}
+		} catch {
+			// Non-parseable content
+		}
+		return [];
+	};
+
+	/** Generate synthetic tool_result messages for each tool_use ID */
+	const makeSyntheticResults = (
+		prefix: string,
+		toolUseIds: string[],
+		errContent: string,
+	): Message[] => {
+		if (toolUseIds.length === 0) {
+			// Fallback: single result with no tool_name (legacy behavior)
+			return [
+				{
+					id: `${prefix}-${lastToolId}`,
+					thread_id: threadId,
+					role: "tool_result",
+					content: errContent,
+					model_id: null,
+					tool_name: null,
+					created_at: new Date().toISOString(),
+					modified_at: new Date().toISOString(),
+					host_origin: "local",
+				},
+			];
+		}
+		return toolUseIds.map((tuId, idx) => ({
+			id: `${prefix}-${lastToolId}-${idx}`,
+			thread_id: threadId,
+			role: "tool_result",
+			content: errContent,
+			model_id: null,
+			tool_name: tuId,
+			created_at: new Date().toISOString(),
+			modified_at: new Date().toISOString(),
+			host_origin: "local",
+		}));
+	};
 
 	for (const msg of reordered) {
 		if (msg.role === "tool_call") {
 			inActiveTool = true;
 			lastToolId = msg.id;
+			lastToolUseIds = extractToolUseIds(msg.content);
 			sanitized.push(msg);
 			prevSanitizedRole = "tool_call";
 		} else if (msg.role === "tool_result") {
@@ -711,18 +763,17 @@ Original output was too large for the context window. If you need the full conte
 		} else {
 			if (inActiveTool) {
 				// Non-tool message during active tool-use with no real tool_result ahead
-				// (pass 1 already moved interleaved messages for real pairs)
-				sanitized.push({
-					id: `synthetic-${lastToolId}`,
-					thread_id: threadId,
-					role: "tool_result",
-					content: "Tool execution was interrupted",
-					model_id: null,
-					tool_name: null,
-					created_at: lastToolId,
-					modified_at: lastToolId,
-					host_origin: "local",
-				});
+				// (pass 1 already moved interleaved messages for real pairs).
+				// Generate one synthetic tool_result per tool_use ID so Bedrock
+				// sees matching toolResult blocks for every toolUse block.
+				const results = makeSyntheticResults(
+					"synthetic",
+					lastToolUseIds,
+					"Tool execution was interrupted",
+				);
+				for (const r of results) {
+					sanitized.push(r);
+				}
 				inActiveTool = false;
 				prevSanitizedRole = "tool_result";
 			}
@@ -733,17 +784,14 @@ Original output was too large for the context window. If you need the full conte
 
 	// Close any unclosed tool pair
 	if (inActiveTool) {
-		sanitized.push({
-			id: `synthetic-close-${lastToolId}`,
-			thread_id: threadId,
-			role: "tool_result",
-			content: "Tool execution completed",
-			model_id: null,
-			tool_name: null,
-			created_at: new Date().toISOString(),
-			modified_at: new Date().toISOString(),
-			host_origin: "local",
-		});
+		const results = makeSyntheticResults(
+			"synthetic-close",
+			lastToolUseIds,
+			"Tool execution completed",
+		);
+		for (const r of results) {
+			sanitized.push(r);
+		}
 	}
 
 	// Stage 4: MESSAGE_QUEUEING

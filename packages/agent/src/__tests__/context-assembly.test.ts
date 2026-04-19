@@ -5987,4 +5987,103 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			db.run("DELETE FROM semantic_memory WHERE id = ?", [memoryId]);
 		});
 	});
+
+	describe("orphaned multi-tool_use sanitization", () => {
+		it("should inject synthetic tool_result for EACH tool_use in an orphaned tool_call", () => {
+			const testThreadId = randomUUID();
+			const testUserId = randomUUID();
+
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					testUserId,
+					"web",
+					"local",
+					0,
+					"Orphan Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const now = new Date().toISOString();
+
+			// Insert user message
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), testThreadId, "user", "Do the thing", null, null, now, now, "local"],
+			);
+
+			// Insert tool_call with TWO tool_use blocks (no corresponding tool_results)
+			const toolUseId1 = "tooluse_aaa111";
+			const toolUseId2 = "tooluse_bbb222";
+			const toolCallContent = JSON.stringify([
+				{
+					type: "tool_use",
+					id: toolUseId1,
+					name: "boundless_write",
+					input: { file_path: "/tmp/test.txt", content: "hello" },
+				},
+				{ type: "tool_use", id: toolUseId2, name: "boundless_bash", input: { command: "echo hi" } },
+			]);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), testThreadId, "tool_call", toolCallContent, null, null, now, now, "local"],
+			);
+
+			// Insert system message (simulating the TTL expiry notification)
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"system",
+					"[Client tool call expired]",
+					null,
+					null,
+					now,
+					now,
+					"local",
+				],
+			);
+
+			// Insert follow-up user message
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), testThreadId, "user", "Try again", null, null, now, now, "local"],
+			);
+
+			const { messages } = assembleContext({
+				db,
+				threadId: testThreadId,
+				userId: testUserId,
+			});
+
+			// There should be a tool_result for EACH tool_use ID
+			// In LLMMessage format, tool results keep role "tool_result" and
+			// have tool_use_id set from the tool_name field.
+			const toolResultMsgs = messages.filter((m) => m.role === "tool_result");
+
+			// Serialize for easy searching
+			const allContent = toolResultMsgs.map((m) => JSON.stringify(m));
+
+			// Both tool_use_ids must have corresponding tool_results
+			const hasResult1 = allContent.some((c) => c.includes(toolUseId1));
+			const hasResult2 = allContent.some((c) => c.includes(toolUseId2));
+
+			expect(hasResult1).toBe(true);
+			expect(hasResult2).toBe(true);
+
+			// Cleanup
+			db.run("DELETE FROM messages WHERE thread_id = ?", [testThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [testThreadId]);
+		});
+	});
 });
