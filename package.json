@@ -9,7 +9,7 @@
 		"lint": "bunx @biomejs/biome check .",
 		"lint:fix": "bunx @biomejs/biome check --write .",
 		"check": "bun lint && bun typecheck",
-		"typecheck": "tsc -p packages/shared --noEmit && tsc -p packages/client --noEmit && tsc -p packages/core --noEmit && tsc -p packages/sync --noEmit && tsc -p packages/sandbox --noEmit && tsc -p packages/llm --noEmit && tsc -p packages/agent --noEmit && tsc -p packages/platforms --noEmit && tsc -p packages/web --noEmit && tsc -p packages/cli --noEmit && tsc -p packages/mcp-server --noEmit",
+		"typecheck": "tsc -p packages/shared --noEmit && tsc -p packages/client --noEmit && tsc -p packages/core --noEmit && tsc -p packages/sync --noEmit && tsc -p packages/sandbox --noEmit && tsc -p packages/llm --noEmit && tsc -p packages/agent --noEmit && tsc -p packages/platforms --noEmit && tsc -p packages/web --noEmit && tsc -p packages/cli --noEmit && tsc -p packages/mcp-server --noEmit && tsc -p packages/less --noEmit",
 		"build": "bun run scripts/build.ts",
 		"prepare": "git config core.hooksPath .githooks"
 	},

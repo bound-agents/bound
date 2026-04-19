@@ -54,7 +54,8 @@ const FULL_SCHEMA = `
 		tool_name TEXT,
 		created_at TEXT NOT NULL,
 		modified_at TEXT,
-		host_origin TEXT NOT NULL
+		host_origin TEXT NOT NULL,
+		deleted INTEGER NOT NULL DEFAULT 0
 	);
 
 	CREATE TABLE semantic_memory (
@@ -205,6 +206,34 @@ const FULL_SCHEMA = `
 		modified_at TEXT NOT NULL
 	);
 
+	CREATE TABLE turns (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		thread_id TEXT,
+		task_id TEXT,
+		dag_root_id TEXT,
+		model_id TEXT NOT NULL,
+		tokens_in INTEGER NOT NULL,
+		tokens_out INTEGER NOT NULL,
+		tokens_cache_write INTEGER,
+		tokens_cache_read INTEGER,
+		cost_usd REAL,
+		relay_target TEXT,
+		relay_latency_ms INTEGER,
+		context_debug TEXT,
+		created_at TEXT NOT NULL
+	) STRICT;
+
+	CREATE TABLE daily_summary (
+		date TEXT PRIMARY KEY,
+		total_tokens_in INTEGER DEFAULT 0,
+		total_tokens_out INTEGER DEFAULT 0,
+		total_cost_usd REAL DEFAULT 0,
+		turn_count INTEGER DEFAULT 0
+	) STRICT;
+
+	CREATE INDEX IF NOT EXISTS idx_turns_thread
+	ON turns(thread_id, created_at DESC);
+
 	CREATE TABLE change_log (
 		hlc TEXT PRIMARY KEY,
 		table_name TEXT NOT NULL,
@@ -259,6 +288,17 @@ const FULL_SCHEMA = `
 		latency_ms INTEGER NOT NULL,
 		success INTEGER NOT NULL
 	);
+
+	CREATE TABLE dispatch_queue (
+		message_id TEXT PRIMARY KEY,
+		thread_id TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'pending',
+		claimed_by TEXT,
+		event_type TEXT NOT NULL DEFAULT 'user_message',
+		event_payload TEXT,
+		created_at TEXT NOT NULL,
+		modified_at TEXT NOT NULL
+	) STRICT;
 `;
 
 /**

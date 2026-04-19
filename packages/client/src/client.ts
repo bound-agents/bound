@@ -66,6 +66,7 @@ export class BoundClient {
 	private shouldReconnect = false;
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private reconnectAttempt = 0;
+	private configureOptions?: { systemPromptAddition?: string };
 
 	/**
 	 * @param baseUrl Base URL for the Bound API. Defaults to "" (empty string)
@@ -164,9 +165,14 @@ export class BoundClient {
 		this.sendWsMessage({ type: "thread:unsubscribe", thread_id: threadId });
 	}
 
-	configureTools(tools: ToolDefinition[]): void {
+	configureTools(tools: ToolDefinition[], options?: { systemPromptAddition?: string }): void {
 		this.clientTools = tools;
-		this.sendWsMessage({ type: "session:configure", tools });
+		this.configureOptions = options;
+		const msg: Record<string, unknown> = { type: "session:configure", tools };
+		if (options?.systemPromptAddition !== undefined) {
+			msg.systemPromptAddition = options.systemPromptAddition;
+		}
+		this.sendWsMessage(msg);
 	}
 
 	onToolCall(handler: (call: ToolCallRequest) => Promise<ToolCallResult>): void {
@@ -228,6 +234,16 @@ export class BoundClient {
 					return;
 				}
 
+				// Handle tool:cancel
+				if (msg.type === "tool:cancel") {
+					this.emit("tool:cancel", {
+						callId: msg.call_id,
+						threadId: msg.thread_id,
+						reason: msg.reason as string | undefined,
+					});
+					return;
+				}
+
 				// Emit other events
 				this.emit(msg.type, msg);
 			} catch {
@@ -266,8 +282,12 @@ export class BoundClient {
 	}
 
 	private sendSessionConfigure(): void {
-		if (this.clientTools.length > 0) {
-			this.sendWsMessage({ type: "session:configure", tools: this.clientTools });
+		if (this.clientTools.length > 0 || this.configureOptions !== undefined) {
+			const msg: Record<string, unknown> = { type: "session:configure", tools: this.clientTools };
+			if (this.configureOptions?.systemPromptAddition !== undefined) {
+				msg.systemPromptAddition = this.configureOptions.systemPromptAddition;
+			}
+			this.sendWsMessage(msg);
 		}
 	}
 

@@ -398,6 +398,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							const resolvedConnectionId = firstToolName
 								? wsRegistry?.getConnectionForTool(thread_id, firstToolName)
 								: undefined;
+							const systemPromptAddition = wsRegistry?.getSystemPromptAdditionForThread(thread_id);
 
 							const { agentResult: result } = await runLocalAgentLoop({
 								eventBus: appContext.eventBus,
@@ -411,6 +412,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								platformTools: platformConfig?.platformTools,
 								clientTools: resolvedClientTools,
 								connectionId: resolvedConnectionId,
+								systemPromptAddition,
 							});
 
 							if (result.yielded) {
@@ -593,6 +595,13 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 					const now = new Date().toISOString();
 
 					for (const threadId of threadIds) {
+						const threadExpired = expired.filter((e) => e.thread_id === threadId);
+
+						// Emit tool:cancel for expired entries (AC3.2)
+						if (webServer?.emitToolCancel) {
+							webServer.emitToolCancel(threadExpired, threadId, "dispatch_expired");
+						}
+
 						// Inject interruption notice as system message
 						try {
 							insertRow(

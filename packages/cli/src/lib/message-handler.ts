@@ -29,6 +29,8 @@ export interface RunLocalLoopParams {
 	clientTools?: AgentLoopConfig["clientTools"];
 	/** Connection ID for the WS connection that provided client tools. */
 	connectionId?: string;
+	/** Optional system prompt addition from the WebSocket connection. */
+	systemPromptAddition?: string;
 }
 
 export interface RunLocalLoopResult {
@@ -74,6 +76,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 		platformTools,
 		clientTools,
 		connectionId,
+		systemPromptAddition,
 	} = params;
 
 	const abortController = new AbortController();
@@ -110,6 +113,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 			platformTools,
 			clientTools,
 			connectionId,
+			systemPromptAddition,
 		});
 		const agentResult = await agentLoop.run();
 		return { agentResult, signal: abortController.signal };

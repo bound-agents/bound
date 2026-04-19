@@ -29,4 +29,5 @@ export type {
 	ToolDefinition,
 	ToolCallRequest,
 	ToolCallResult,
+	ToolCancelEvent,
 } from "./types.js";

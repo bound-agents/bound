@@ -19,6 +19,11 @@ export interface RoutesConfig {
 	statusForwardCache?: Map<string, StatusForwardPayload>;
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	activeLoops?: Set<string>;
+	emitToolCancel?: (
+		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
+		threadId: string,
+		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
+	) => void;
 }
 
 export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config: RoutesConfig) {
@@ -30,6 +35,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		statusForwardCache,
 		activeDelegations,
 		activeLoops,
+		emitToolCancel,
 	} = config;
 
 	return {
@@ -43,7 +49,16 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		messages: createMessagesRoutes(db, eventBus),
 		files: createFilesRoutes(db),
 		memory: createMemoryRoutes(db),
-		status: createStatusRoutes(db, eventBus, hostName, siteId, modelsConfig, activeDelegations),
+		status: createStatusRoutes(
+			db,
+			eventBus,
+			hostName,
+			siteId,
+			modelsConfig,
+			activeDelegations,
+			undefined,
+			emitToolCancel,
+		),
 		tasks: createTasksRoutes(db),
 		advisories: createAdvisoriesRoutes(db),
 		mcp: createMcpRoutes(db),

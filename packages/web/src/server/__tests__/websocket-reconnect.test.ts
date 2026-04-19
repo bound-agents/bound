@@ -305,12 +305,9 @@ describe("WebSocket Reconnect and Expiry (AC7.1-AC7.3)", () => {
 			// Get the sent messages
 			const sentMessages = (ws as unknown as MockWebSocket).getSentMessages();
 
-			// Should have received an error with code 'tool_call_expired'
-			const errorMsg = sentMessages.find(
-				(msg: any) => msg.type === "error" && msg.code === "tool_call_expired",
-			);
-			expect(errorMsg).toBeDefined();
-			expect(errorMsg?.call_id).toBe(callId);
+			// AC3.4: Late tool:result for expired/canceled calls is silently discarded (no error response)
+			const errorMsg = sentMessages.find((msg: any) => msg.type === "error");
+			expect(errorMsg).toBeUndefined();
 		});
 
 		it("rejects tool:result with unknown_call_id error if entry doesn't exist", () => {

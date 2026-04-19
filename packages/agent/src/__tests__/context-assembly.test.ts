@@ -5919,4 +5919,72 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		// But suffixes should differ (different thread IDs)
 		expect(result1.systemSuffix).not.toEqual(result2.systemSuffix);
 	});
+
+	describe("systemPromptAddition (AC2.2)", () => {
+		it("should append systemPromptAddition to system suffix when present", () => {
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+				currentModel: "opus",
+				hostName: "test-host",
+				siteId: "test-site",
+				systemPromptAddition: "You are a coding assistant.",
+			});
+
+			// systemPromptAddition should be at the end of systemSuffix
+			expect(result.systemSuffix).toContain("You are a coding assistant.");
+			expect(result.systemSuffix?.endsWith("You are a coding assistant.")).toBe(true);
+		});
+
+		it("should not append systemPromptAddition when undefined", () => {
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+				currentModel: "opus",
+				hostName: "test-host",
+				siteId: "test-site",
+				// systemPromptAddition not provided
+			});
+
+			// systemSuffix should not contain a custom addition
+			expect(result.systemSuffix).not.toContain("You are a coding assistant.");
+		});
+
+		it("should append systemPromptAddition to noHistory enrichment message when noHistory=true", () => {
+			// First, add some memory to ensure enrichment message is created
+			const memoryId = randomUUID();
+			const now = new Date().toISOString();
+			db.run(
+				"INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[memoryId, "_standing:test", "Test memory", "pinned", now, now, 0],
+			);
+
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+				currentModel: "opus",
+				hostName: "test-host",
+				siteId: "test-site",
+				noHistory: true,
+				systemPromptAddition: "Task context: Be concise.",
+			});
+
+			// When noHistory=true with systemPromptAddition, it should be in a system message
+			// Look for any system message containing the addition
+			const hasAddition = result.messages.some(
+				(m) =>
+					m.role === "system" &&
+					typeof m.content === "string" &&
+					m.content.includes("Task context: Be concise."),
+			);
+
+			expect(hasAddition).toBe(true);
+
+			// Clean up
+			db.run("DELETE FROM semantic_memory WHERE id = ?", [memoryId]);
+		});
+	});
 });

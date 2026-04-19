@@ -26,6 +26,7 @@ const sessionConfigureSchema = z.object({
 			}),
 		}),
 	),
+	systemPromptAddition: z.string().optional(),
 });
 
 const messageSendSchema = z.object({
@@ -46,11 +47,37 @@ const threadUnsubscribeSchema = z.object({
 	thread_id: z.string(),
 });
 
+// ContentBlock variants allowed in tool:result (excludes tool_use and thinking)
+const toolResultContentBlockSchema = z.discriminatedUnion("type", [
+	z.object({ type: z.literal("text"), text: z.string() }),
+	z.object({
+		type: z.literal("image"),
+		source: z.object({
+			type: z.enum(["base64", "file_ref"]),
+			media_type: z.string().optional(),
+			data: z.string().optional(),
+			file_id: z.string().optional(),
+		}),
+		description: z.string().optional(),
+	}),
+	z.object({
+		type: z.literal("document"),
+		source: z.object({
+			type: z.enum(["base64", "file_ref"]),
+			media_type: z.string().optional(),
+			data: z.string().optional(),
+			file_id: z.string().optional(),
+		}),
+		text_representation: z.string(),
+		title: z.string().optional(),
+	}),
+]);
+
 const toolResultSchema = z.object({
 	type: z.literal("tool:result"),
 	call_id: z.string(),
 	thread_id: z.string(),
-	content: z.string(),
+	content: z.union([z.string(), z.array(toolResultContentBlockSchema)]),
 	is_error: z.boolean().optional(),
 });
 
@@ -78,6 +105,8 @@ interface ClientConnection {
 			};
 		}
 	>;
+	systemPromptAddition: string | undefined;
+	systemPromptAdditions: Map<string, string>;
 }
 
 export interface WebSocketConfig {
@@ -101,6 +130,8 @@ export interface ConnectionRegistry {
 	>;
 	/** Get the connectionId of the connection that has a specific tool for a thread */
 	getConnectionForTool(threadId: string, toolName: string): string | undefined;
+	/** Get systemPromptAddition for a thread from the first subscribed connection that has one */
+	getSystemPromptAdditionForThread(threadId: string): string | undefined;
 }
 
 export interface WebSocketHandlerConfig {
@@ -113,7 +144,15 @@ export interface WebSocketHandlerConfig {
 
 export function createWebSocketHandler(
 	config: WebSocketHandlerConfig | TypedEventEmitter,
-): WebSocketConfig & { cleanup: () => void; registry: ConnectionRegistry } {
+): WebSocketConfig & {
+	cleanup: () => void;
+	registry: ConnectionRegistry;
+	emitToolCancel: (
+		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
+		threadId: string,
+		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
+	) => void;
+} {
 	// Support both old (eventBus only) and new (config object) signatures for backwards compatibility
 	let eventBus: TypedEventEmitter;
 	let db: Database | undefined;
@@ -279,6 +318,19 @@ export function createWebSocketHandler(
 			conn.clientTools.set(tool.function.name, tool);
 		}
 
+		// Store or clear systemPromptAddition per connection (AC2.4, AC2.6)
+		conn.systemPromptAddition = msg.systemPromptAddition;
+
+		// Update systemPromptAdditions for all subscribed threads (AC2.4)
+		if (msg.systemPromptAddition !== undefined) {
+			for (const threadId of conn.subscriptions) {
+				conn.systemPromptAdditions.set(threadId, msg.systemPromptAddition);
+			}
+		} else {
+			// Clear all per-thread entries when systemPromptAddition is undefined (AC2.4, AC2.6)
+			conn.systemPromptAdditions.clear();
+		}
+
 		// Re-deliver pending client tool calls for each subscribed thread (AC7.1-AC7.2)
 		for (const threadId of conn.subscriptions) {
 			redeliverPendingToolCalls(conn, threadId);
@@ -291,6 +343,11 @@ export function createWebSocketHandler(
 	): void {
 		conn.subscriptions.add(msg.thread_id);
 
+		// Propagate systemPromptAddition to the new subscription (AC2.3)
+		if (conn.systemPromptAddition !== undefined) {
+			conn.systemPromptAdditions.set(msg.thread_id, conn.systemPromptAddition);
+		}
+
 		// Re-deliver pending client tool calls on this thread (AC7.1-AC7.2)
 		// In case session:configure happened before thread:subscribe
 		redeliverPendingToolCalls(conn, msg.thread_id);
@@ -301,6 +358,9 @@ export function createWebSocketHandler(
 		msg: z.infer<typeof threadUnsubscribeSchema>,
 	): void {
 		conn.subscriptions.delete(msg.thread_id);
+
+		// Clean up systemPromptAddition for this thread (AC2.5)
+		conn.systemPromptAdditions.delete(msg.thread_id);
 	}
 
 	function handleMessageSend(conn: ClientConnection, msg: z.infer<typeof messageSendSchema>): void {
@@ -447,7 +507,7 @@ export function createWebSocketHandler(
 			const TTL_MS = 5 * 60 * 1000; // 5 minutes
 			const cutoff = new Date(Date.now() - TTL_MS).toISOString();
 
-			// First check for expired entries with this call_id (AC7.3)
+			// First check for expired entries with this call_id (AC3.4)
 			const expiredEntry = db
 				.prepare(
 					`SELECT * FROM dispatch_queue
@@ -463,14 +523,8 @@ export function createWebSocketHandler(
 				try {
 					const payload = JSON.parse(entry.event_payload) as { call_id?: string };
 					if (payload.call_id === msg.call_id) {
-						conn.ws.send(
-							JSON.stringify({
-								type: "error",
-								code: "tool_call_expired",
-								message: "This tool call has expired",
-								call_id: msg.call_id,
-							}),
-						);
+						// AC3.4: Late tool:result for canceled call is silently discarded
+						// (accepted but not persisted, no error response)
 						return;
 					}
 				} catch {
@@ -507,22 +561,28 @@ export function createWebSocketHandler(
 				return;
 			}
 
-			// Check if entry has expired based on TTL
+			// Check if entry has expired based on TTL (AC3.4)
 			if (matchingEntry.created_at < cutoff) {
-				conn.ws.send(
-					JSON.stringify({
-						type: "error",
-						code: "tool_call_expired",
-						message: "Tool call has expired",
-						call_id: msg.call_id,
-					}),
-				);
+				// Late tool:result for expired call is silently discarded
+				// (accepted but not persisted, no error response)
 				return;
 			}
 
 			// Persist the tool_result message
 			const messageId = randomUUID();
-			const toolResultContent = msg.is_error ? `Error: ${msg.content}` : msg.content;
+
+			// Handle content: normalize string to ContentBlock[], or persist array as-is
+			let persistedContent: string;
+			if (typeof msg.content === "string") {
+				// AC10.1: Normalize string to ContentBlock array
+				const contentBlocks = [{ type: "text" as const, text: msg.content }];
+				persistedContent = msg.is_error
+					? JSON.stringify([{ type: "text", text: `Error: ${msg.content}` }])
+					: JSON.stringify(contentBlocks);
+			} else {
+				// AC10.2: Persist ContentBlock array verbatim
+				persistedContent = JSON.stringify(msg.content);
+			}
 
 			insertRow(
 				db,
@@ -531,7 +591,7 @@ export function createWebSocketHandler(
 					id: messageId,
 					thread_id: msg.thread_id,
 					role: "tool_result",
-					content: toolResultContent,
+					content: persistedContent,
 					model_id: null,
 					tool_name: msg.call_id,
 					created_at: now,
@@ -635,6 +695,96 @@ export function createWebSocketHandler(
 		}
 	};
 
+	/**
+	 * Helper to emit tool:cancel for pending client tool calls.
+	 * Takes pre-fetched dispatch entries, threadId, and reason.
+	 * For TTL expiry and connection close, synthesizes error messages.
+	 */
+	function emitToolCancel(
+		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
+		threadId: string,
+		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
+		claimedByConnectionId?: string,
+	): void {
+		for (const entry of entries) {
+			if (!entry.event_payload) continue;
+			try {
+				const payload = JSON.parse(entry.event_payload) as { call_id?: string; tool_name?: string };
+				if (!payload.call_id) continue;
+
+				// Find the connection that claimed this entry
+				let targetConnection: ClientConnection | undefined;
+				if (claimedByConnectionId) {
+					// For connection close: find by claimed_by
+					for (const [, conn] of clients) {
+						if (conn.connectionId === claimedByConnectionId) {
+							targetConnection = conn;
+							break;
+						}
+					}
+				} else if (entry.claimed_by) {
+					// General case: find by claimed_by
+					for (const [, conn] of clients) {
+						if (conn.connectionId === entry.claimed_by) {
+							targetConnection = conn;
+							break;
+						}
+					}
+				} else {
+					// Fallback: find any subscribed connection
+					for (const [, conn] of clients) {
+						if (conn.subscriptions.has(threadId)) {
+							targetConnection = conn;
+							break;
+						}
+					}
+				}
+
+				if (targetConnection && targetConnection.ws.readyState === 1) {
+					targetConnection.ws.send(
+						JSON.stringify({
+							type: "tool:cancel",
+							call_id: payload.call_id,
+							thread_id: threadId,
+							reason,
+						}),
+					);
+				}
+
+				// For TTL expiry and connection close, synthesize error messages
+				if ((reason === "dispatch_expired" || reason === "session_reset") && db && siteId) {
+					const now = new Date().toISOString();
+					const errorContent =
+						reason === "dispatch_expired"
+							? "Error: Tool call expired (dispatch_expired)"
+							: "Error: Client tool call cancelled: client disconnected (session_reset)";
+
+					insertRow(
+						db,
+						"messages",
+						{
+							id: randomUUID(),
+							thread_id: threadId,
+							role: "tool_result",
+							content: errorContent,
+							model_id: null,
+							tool_name: payload.call_id,
+							created_at: now,
+							modified_at: now,
+							host_origin: hostOrigin,
+						},
+						siteId,
+					);
+
+					// Enqueue tool result to wake the agent loop
+					enqueueToolResult(db, threadId, payload.call_id);
+				}
+			} catch {
+				// Ignore parse errors and continue
+			}
+		}
+	}
+
 	// Connection registry implementation
 	const registry: ConnectionRegistry = {
 		getClientToolsForThread(threadId: string) {
@@ -667,6 +817,18 @@ export function createWebSocketHandler(
 			}
 			return undefined;
 		},
+
+		getSystemPromptAdditionForThread(threadId: string): string | undefined {
+			for (const [, conn] of clients) {
+				if (conn.subscriptions.has(threadId)) {
+					const addition = conn.systemPromptAdditions.get(threadId);
+					if (addition !== undefined) {
+						return addition;
+					}
+				}
+			}
+			return undefined;
+		},
 	};
 
 	eventBus.on("message:created", handleMessageCreated);
@@ -687,6 +849,8 @@ export function createWebSocketHandler(
 				connectionId: crypto.randomUUID(),
 				subscriptions: new Set(),
 				clientTools: new Map(),
+				systemPromptAddition: undefined,
+				systemPromptAdditions: new Map(),
 			};
 			clients.set(ws, conn);
 		},
@@ -750,6 +914,25 @@ export function createWebSocketHandler(
 		},
 
 		close(ws: ServerWebSocket<unknown>): void {
+			const conn = clients.get(ws);
+			if (conn && db && siteId) {
+				// Find all pending client tool calls claimed by this connection
+				const allThreads = db
+					.query(
+						`SELECT DISTINCT thread_id FROM dispatch_queue
+						 WHERE event_type = 'client_tool_call' AND status = 'pending' AND claimed_by = ?`,
+					)
+					.all(conn.connectionId) as Array<{ thread_id: string }>;
+
+				for (const row of allThreads) {
+					const threadId = row.thread_id;
+					const pending = getPendingClientToolCalls(db, threadId);
+					const claimedByThisConnection = pending.filter((e) => e.claimed_by === conn.connectionId);
+					if (claimedByThisConnection.length > 0) {
+						emitToolCancel(claimedByThisConnection, threadId, "session_reset", conn.connectionId);
+					}
+				}
+			}
 			clients.delete(ws);
 		},
 
@@ -766,5 +949,6 @@ export function createWebSocketHandler(
 		},
 
 		registry,
+		emitToolCancel,
 	};
 }

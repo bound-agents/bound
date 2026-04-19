@@ -58,9 +58,20 @@ async function build() {
 		console.log("Use 'bun packages/mcp-server/src/server.ts' to run directly");
 	}
 
+	// Step 5: Compile boundless (terminal client)
+	console.log("\n5. Compiling boundless binary...");
+	try {
+		execSync("bun build --compile packages/less/src/boundless.tsx --outfile dist/boundless", {
+			stdio: "inherit",
+		});
+	} catch {
+		console.error("boundless compilation failed (expected - entrypoint not yet implemented)");
+		console.log("Use 'bun packages/less/src/boundless.tsx' to run directly");
+	}
+
 	// Summary
 	console.log("\n--- Build summary ---");
-	for (const binary of ["dist/bound", "dist/boundctl", "dist/bound-mcp"]) {
+	for (const binary of ["dist/bound", "dist/boundctl", "dist/bound-mcp", "dist/boundless"]) {
 		if (existsSync(binary)) {
 			const sizeMB = (statSync(binary).size / (1024 * 1024)).toFixed(2);
 			console.log(`  ${binary} (${sizeMB} MB)`);

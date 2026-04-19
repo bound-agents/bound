@@ -106,6 +106,11 @@ export interface AgentLoopConfig {
 	 * Required when clientTools are present.
 	 */
 	connectionId?: string;
+	/**
+	 * Optional system prompt addition from the WebSocket connection.
+	 * Passed through to ContextParams and appended to the system suffix.
+	 */
+	systemPromptAddition?: string;
 }
 
 export interface AgentLoopResult {

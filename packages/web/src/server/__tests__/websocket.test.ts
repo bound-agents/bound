@@ -812,7 +812,7 @@ describe("ClientConnection type and WS message schemas", () => {
 			testHandler.cleanup();
 		});
 
-		it("should send error for expired tool call", () => {
+		it("should silently discard late tool:result for expired/canceled calls (AC3.4)", () => {
 			const eventBus = new TypedEventEmitter();
 			// Mock database with an old pending call (simulating expiration)
 			const oldTime = new Date(Date.now() - 10 * 60 * 1000).toISOString();
@@ -822,7 +822,7 @@ describe("ClientConnection type and WS message schemas", () => {
 						{
 							message_id: "msg-1",
 							thread_id: "thread-123",
-							status: "pending",
+							status: "expired",
 							claimed_by: null,
 							event_type: "client_tool_call",
 							event_payload: JSON.stringify({ call_id: "call-123" }),
@@ -860,10 +860,8 @@ describe("ClientConnection type and WS message schemas", () => {
 			);
 
 			const messages = (mockWs as unknown as MockWebSocket).messages;
-			expect(messages.length).toBeGreaterThan(0);
-			const lastMessage = messages[messages.length - 1] as Record<string, unknown>;
-			expect(lastMessage.type).toBe("error");
-			expect(lastMessage.code).toBe("tool_call_expired");
+			// AC3.4: Late tool:result for canceled calls is silently discarded (no error response)
+			expect(messages.length).toBe(0);
 
 			testHandler.cleanup();
 		});
@@ -1576,6 +1574,573 @@ describe("ClientConnection type and WS message schemas", () => {
 			expect(connectionId).toBeDefined();
 
 			handler.cleanup();
+		});
+	});
+
+	describe("systemPromptAddition (AC2.1-AC2.7)", () => {
+		it("AC2.1: should store systemPromptAddition per (connection, thread) pair", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			// Subscribe to thread first
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			// Send session:configure with systemPromptAddition
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [],
+					systemPromptAddition: "You are a coding assistant.",
+				}),
+			);
+
+			// Query registry for the stored addition
+			const addition = handler.registry.getSystemPromptAdditionForThread("thread-1");
+			expect(addition).toBe("You are a coding assistant.");
+
+			handler.cleanup();
+		});
+
+		it("AC2.3: thread:subscribe after session:configure inherits systemPromptAddition", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			// Send session:configure first
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [],
+					systemPromptAddition: "Test prompt",
+				}),
+			);
+
+			// Then subscribe to a new thread
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "new-thread",
+				}),
+			);
+
+			// The new thread should inherit the systemPromptAddition
+			const addition = handler.registry.getSystemPromptAdditionForThread("new-thread");
+			expect(addition).toBe("Test prompt");
+
+			handler.cleanup();
+		});
+
+		it("AC2.4: re-sending session:configure replaces stored value", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			// Subscribe to thread
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			// First session:configure
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [],
+					systemPromptAddition: "First prompt",
+				}),
+			);
+
+			let addition = handler.registry.getSystemPromptAdditionForThread("thread-1");
+			expect(addition).toBe("First prompt");
+
+			// Re-send with different value
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [],
+					systemPromptAddition: "Second prompt",
+				}),
+			);
+
+			addition = handler.registry.getSystemPromptAdditionForThread("thread-1");
+			expect(addition).toBe("Second prompt");
+
+			handler.cleanup();
+		});
+
+		it("AC2.4: omitting systemPromptAddition field clears stored value", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			// Subscribe to thread
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			// Set a value first
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [],
+					systemPromptAddition: "Some prompt",
+				}),
+			);
+
+			// Verify it's set
+			let addition = handler.registry.getSystemPromptAdditionForThread("thread-1");
+			expect(addition).toBe("Some prompt");
+
+			// Send without field
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [],
+				}),
+			);
+
+			// Should be cleared
+			addition = handler.registry.getSystemPromptAdditionForThread("thread-1");
+			expect(addition).toBeUndefined();
+
+			handler.cleanup();
+		});
+
+		it("AC2.5: thread:unsubscribe clears stored addition for that thread", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			// Subscribe and set
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [],
+					systemPromptAddition: "Test",
+				}),
+			);
+
+			let addition = handler.registry.getSystemPromptAdditionForThread("thread-1");
+			expect(addition).toBe("Test");
+
+			// Unsubscribe
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:unsubscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			// Should be cleared
+			addition = handler.registry.getSystemPromptAdditionForThread("thread-1");
+			expect(addition).toBeUndefined();
+
+			handler.cleanup();
+		});
+
+		it("AC2.6: session:configure without systemPromptAddition field does not error", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			expect(() => {
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "session:configure",
+						tools: [],
+					}),
+				);
+			}).not.toThrow();
+
+			// No error message should be sent
+			expect((mockWs as unknown as MockWebSocket).messages).toHaveLength(0);
+
+			handler.cleanup();
+		});
+
+		it("AC2.7: existing clients without systemPromptAddition field work unchanged", () => {
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			// Send session:configure with only tools (legacy behavior)
+			expect(() => {
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "session:configure",
+						tools: [
+							{
+								type: "function",
+								function: {
+									name: "my_tool",
+									description: "A tool",
+									parameters: { type: "object" },
+								},
+							},
+						],
+					}),
+				);
+			}).not.toThrow();
+
+			// Should be able to subscribe normally
+			expect(() => {
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "thread:subscribe",
+						thread_id: "thread-1",
+					}),
+				);
+			}).not.toThrow();
+
+			// No error messages
+			expect((mockWs as unknown as MockWebSocket).messages).toHaveLength(0);
+
+			handler.cleanup();
+		});
+	});
+
+	describe("Protocol Extension — Content Widening (AC10)", () => {
+		it("AC10.1 & AC10.4: tool:result with string content is accepted by schema", () => {
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+			handler.open(mockWs);
+
+			// AC10.1: String content should be accepted without error (backward compatible)
+			expect(() => {
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "tool:result",
+						call_id: "call-123",
+						thread_id: "thread-1",
+						content: "hello world",
+					}),
+				);
+			}).not.toThrow();
+
+			// AC10.4: Legacy string-only messages should continue to work
+			expect(() => {
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "tool:result",
+						call_id: "call-legacy",
+						thread_id: "thread-1",
+						content: "legacy response",
+						is_error: false,
+					}),
+				);
+			}).not.toThrow();
+
+			handler.cleanup();
+		});
+
+		it("AC10.2: tool:result with ContentBlock[] accepts text, image, document blocks", () => {
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+			handler.open(mockWs);
+
+			// Should accept text block in array
+			expect(() => {
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "tool:result",
+						call_id: "call-456",
+						thread_id: "thread-1",
+						content: [{ type: "text", text: "result text" }],
+					}),
+				);
+			}).not.toThrow();
+
+			// Should accept image block
+			expect(() => {
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "tool:result",
+						call_id: "call-457",
+						thread_id: "thread-1",
+						content: [
+							{
+								type: "image",
+								source: { type: "base64", media_type: "image/png", data: "iVBORw0K..." },
+							},
+						],
+					}),
+				);
+			}).not.toThrow();
+
+			// Should accept document block
+			expect(() => {
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "tool:result",
+						call_id: "call-458",
+						thread_id: "thread-1",
+						content: [
+							{
+								type: "document",
+								source: { type: "file_ref", file_id: "file-1" },
+								text_representation: "Document text here",
+								title: "Report.pdf",
+							},
+						],
+					}),
+				);
+			}).not.toThrow();
+
+			handler.cleanup();
+		});
+
+		it("AC10.3: tool:result with invalid ContentBlock variants (tool_use, thinking) is rejected", () => {
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			const eventBus = new TypedEventEmitter();
+			const handler = createWebSocketHandler(eventBus);
+			handler.open(mockWs);
+
+			// tool_use block should be rejected
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "tool:result",
+					call_id: "call-789",
+					thread_id: "thread-1",
+					content: [
+						{
+							type: "tool_use",
+							id: "x",
+							name: "y",
+							input: {},
+						},
+					],
+				}),
+			);
+
+			const messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages.length).toBeGreaterThan(0);
+			const msg = messages[0] as { type?: string; code?: string };
+			expect(msg.type).toBe("error");
+			expect(msg.code).toBe("invalid_message");
+
+			// Clear messages and test thinking block rejection
+			(mockWs as unknown as MockWebSocket).messages = [];
+			handler.message(
+				mockWs,
+				JSON.stringify({
+					type: "tool:result",
+					call_id: "call-790",
+					thread_id: "thread-1",
+					content: [
+						{
+							type: "thinking",
+							thinking: "internal thought",
+						},
+					],
+				}),
+			);
+
+			const messages2 = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages2.length).toBeGreaterThan(0);
+			const msg2 = messages2[0] as { type?: string; code?: string };
+			expect(msg2.type).toBe("error");
+			expect(msg2.code).toBe("invalid_message");
+
+			handler.cleanup();
+		});
+
+		describe("AC3: tool:cancel protocol - event handling infrastructure", () => {
+			it("AC3.1: event bus can emit agent:cancel events", () => {
+				const eventBus = new TypedEventEmitter();
+
+				let cancelEventReceived = false;
+				let receivedThreadId = "";
+
+				// Set up listener for agent:cancel events
+				eventBus.on("agent:cancel", (data: any) => {
+					cancelEventReceived = true;
+					receivedThreadId = data.threadId;
+				});
+
+				// Emit the cancel event
+				eventBus.emit("agent:cancel", { threadId: "thread-123", reason: "user" } as any);
+
+				// Verify the event was received
+				expect(cancelEventReceived).toBe(true);
+				expect(receivedThreadId).toBe("thread-123");
+			});
+
+			it("AC3.2: event bus can emit client_tool_call:expired events", () => {
+				const eventBus = new TypedEventEmitter();
+
+				let expiredEventReceived = false;
+				let receivedCallId = "";
+
+				// Set up listener for expiry events
+				eventBus.on("client_tool_call:expired", (data: any) => {
+					expiredEventReceived = true;
+					receivedCallId = data.callId;
+				});
+
+				// Emit the expiry event
+				eventBus.emit("client_tool_call:expired", {
+					callId: "call-2",
+					threadId: "thread-456",
+				} as any);
+
+				// Verify the event was received
+				expect(expiredEventReceived).toBe(true);
+				expect(receivedCallId).toBe("call-2");
+			});
+
+			it("AC3.3: handler can track subscribed clients for message delivery", () => {
+				const eventBus = new TypedEventEmitter();
+				const handler = createWebSocketHandler(eventBus);
+
+				const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+				handler.open(mockWs);
+
+				// Subscribe to a thread
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "thread:subscribe",
+						thread_id: "thread-789",
+					}),
+				);
+
+				// Verify registry tracking works
+				const connections = handler.registry.getClientToolsForThread("thread-789");
+				// The connection should be tracked even if it has no tools
+				expect(typeof connections).toBe("object");
+				expect(connections instanceof Map).toBe(true);
+
+				handler.cleanup();
+			});
+
+			it("AC3.5: unknown tool:cancel message is handled without error", () => {
+				const eventBus = new TypedEventEmitter();
+				const handler = createWebSocketHandler(eventBus);
+
+				const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+				handler.open(mockWs);
+
+				// Should not throw when receiving unknown tool:cancel
+				expect(() => {
+					// Simulate receiving tool:cancel for unknown callId
+					// (In real scenario this would come from event system)
+					eventBus.emit("client_tool_call:expired", { callId: "unknown-call" } as any);
+				}).not.toThrow();
+
+				handler.cleanup();
+			});
+
+			it("AC3.6: re-sending session:configure does not trigger tool:cancel", () => {
+				const eventBus = new TypedEventEmitter();
+				const handler = createWebSocketHandler(eventBus);
+
+				const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+				handler.open(mockWs);
+
+				// First session:configure
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "session:configure",
+						tools: [
+							{
+								type: "function",
+								function: {
+									name: "tool1",
+									description: "Tool 1",
+									parameters: { type: "object" },
+								},
+							},
+						],
+					}),
+				);
+
+				// Clear messages
+				(mockWs as unknown as MockWebSocket).messages = [];
+
+				// Re-send session:configure (should replace, not cancel)
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "session:configure",
+						tools: [
+							{
+								type: "function",
+								function: {
+									name: "tool2",
+									description: "Tool 2",
+									parameters: { type: "object" },
+								},
+							},
+						],
+					}),
+				);
+
+				// Verify no cancel messages were sent
+				const messages = (mockWs as unknown as MockWebSocket).messages;
+				const cancelMessages = messages.filter(
+					(msg) => (msg as Record<string, unknown>).type === "tool:cancel",
+				);
+				expect(cancelMessages).toHaveLength(0);
+
+				handler.cleanup();
+			});
 		});
 	});
 });

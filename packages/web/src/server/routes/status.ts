@@ -1,5 +1,11 @@
 import { createRelayOutboxEntry } from "@bound/agent";
-import { cancelClientToolCalls, getSiteId, insertRow, writeOutbox } from "@bound/core";
+import {
+	cancelClientToolCalls,
+	getPendingClientToolCalls,
+	getSiteId,
+	insertRow,
+	writeOutbox,
+} from "@bound/core";
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
@@ -37,6 +43,11 @@ export function createStatusRoutes(
 	modelsConfig?: ModelsConfig,
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>,
 	logger?: ReturnType<typeof createLogger>,
+	emitToolCancel?: (
+		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
+		threadId: string,
+		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
+	) => void,
 ): Hono {
 	const log = logger ?? createLogger("@bound/web", "status");
 	const app = new Hono();
@@ -175,15 +186,24 @@ export function createStatusRoutes(
 			}
 
 			// Get siteId and hostName for message persistence
-			const siteId = getSiteId(db);
+			const localSiteId = getSiteId(db);
 
 			const hostNameRow = db.query("SELECT value FROM host_meta WHERE key = 'host_name'").get() as
 				| { value: string }
 				| undefined;
 			const hostNameValue = hostNameRow?.value ?? "unknown";
 
+			// Read pending client tool calls BEFORE expiring them (AC3.1)
+			const pendingBefore = getPendingClientToolCalls(db, threadId);
+
 			// Expire any pending client tool calls for this thread (AC4.5)
 			const cancelledToolCalls = cancelClientToolCalls(db, threadId);
+
+			// Emit tool:cancel for cancelled entries (AC3.1)
+			if (emitToolCancel && pendingBefore.length > 0) {
+				emitToolCancel(pendingBefore, threadId, "thread_canceled");
+			}
+
 			if (cancelledToolCalls > 0) {
 				log.info(
 					`[cancel] Expired ${cancelledToolCalls} pending client tool call(s) for thread ${threadId}`,
@@ -205,7 +225,7 @@ export function createStatusRoutes(
 						modified_at: new Date().toISOString(),
 						host_origin: hostNameValue,
 					},
-					siteId,
+					localSiteId,
 				);
 			}
 

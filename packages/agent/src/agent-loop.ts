@@ -357,6 +357,7 @@ export class AgentLoop {
 				toolTokenEstimate,
 				compactToolResults: true,
 				noHistory: this.config.noHistory,
+				systemPromptAddition: this.config.systemPromptAddition,
 			});
 
 			this.lastContextDebug = contextDebug;
