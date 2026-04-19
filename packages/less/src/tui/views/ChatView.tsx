@@ -151,11 +151,13 @@ export function ChatView({
 			{/* Input area */}
 			<Box>
 				<Text>{">>> "}</Text>
-				<TextInput
-					placeholder="Enter message or /help"
-					onSubmit={handleSubmit}
-					disabled={connectionState !== "connected"}
-				/>
+				<Box flexGrow={1} flexShrink={1}>
+					<TextInput
+						placeholder="Enter message or /help"
+						onSubmit={handleSubmit}
+						disabled={connectionState !== "connected"}
+					/>
+				</Box>
 			</Box>
 
 			{/* Status bar and action hints */}
