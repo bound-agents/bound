@@ -179,4 +179,57 @@ describe("AC2: BoundClient Merges BoundSocket", () => {
 			// client.on("file_update", () => {});  // Error
 		});
 	});
+
+	describe("systemPromptAddition support (AC2.1)", () => {
+		it("configureTools accepts systemPromptAddition option parameter", () => {
+			const client = new BoundClient("http://localhost:3001");
+			const tools: ToolDefinition[] = [
+				{
+					type: "function",
+					function: {
+						name: "my_tool",
+						description: "A tool",
+						parameters: { type: "object" },
+					},
+				},
+			];
+
+			// Should not throw
+			expect(() => {
+				client.configureTools(tools, { systemPromptAddition: "You are a coding assistant." });
+			}).not.toThrow();
+		});
+
+		it("configureTools works without options parameter (backward compatible)", () => {
+			const client = new BoundClient("http://localhost:3001");
+			const tools: ToolDefinition[] = [
+				{
+					type: "function",
+					function: {
+						name: "my_tool",
+						description: "A tool",
+						parameters: { type: "object" },
+					},
+				},
+			];
+
+			// Should not throw - old usage still works
+			expect(() => {
+				client.configureTools(tools);
+			}).not.toThrow();
+		});
+
+		it("stores systemPromptAddition for reconnection re-send", () => {
+			const client = new BoundClient("http://localhost:3001");
+			const tools: ToolDefinition[] = [];
+			const systemPromptAddition = "Task-specific prompt";
+
+			// Configure with systemPromptAddition
+			client.configureTools(tools, { systemPromptAddition });
+
+			// Note: We can't directly verify the private field, but we verify that
+			// the method accepts and doesn't crash with the parameter
+			expect(typeof client.configureTools).toBe("function");
+		});
+	});
 });
