@@ -32,7 +32,6 @@ function createMockClient() {
 describe("useCancelHandler", () => {
 	it("calls cancelThread on first Ctrl-C when turn is active", async () => {
 		const mockClient = createMockClient();
-		// biome-ignore lint/style/noNonNullAssertion: set synchronously in first render
 		let smRef: ReturnType<typeof useCancelHandler>["stateMachine"] | null = null;
 
 		function Harness() {
