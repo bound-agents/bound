@@ -18,6 +18,10 @@ describe("App Component", () => {
 			listThreads: vi.fn().mockResolvedValue([]),
 			listModels: vi.fn().mockResolvedValue([]),
 			subscribe: vi.fn(),
+			on: vi.fn().mockReturnValue(() => {}),
+			off: vi.fn(),
+			onToolCall: vi.fn(),
+			sendMessage: vi.fn().mockResolvedValue(undefined),
 		} as unknown as BoundClient;
 
 		mockMcpManager = {
@@ -41,6 +45,7 @@ describe("App Component", () => {
 				logger: mockLogger as any,
 				initialMessages: [],
 				model: "gpt-4",
+				toolHandlers: new Map(),
 			}),
 		);
 
@@ -62,6 +67,7 @@ describe("App Component", () => {
 				logger: mockLogger as any,
 				initialMessages: [],
 				model: "gpt-4",
+				toolHandlers: new Map(),
 			}),
 		);
 
@@ -88,6 +94,7 @@ describe("App Component", () => {
 				logger: mockLogger as any,
 				initialMessages: [],
 				model: "claude-opus",
+				toolHandlers: new Map(),
 			}),
 		);
 
@@ -124,6 +131,7 @@ describe("App Component", () => {
 					},
 				],
 				model: "gpt-4",
+				toolHandlers: new Map(),
 			}),
 		);
 
@@ -146,6 +154,7 @@ describe("App Component", () => {
 				logger: mockLogger as any,
 				initialMessages: [],
 				model: null,
+				toolHandlers: new Map(),
 			}),
 		);
 
@@ -168,6 +177,7 @@ describe("App Component", () => {
 				logger: mockLogger as any,
 				initialMessages: [],
 				model: "claude-opus-v1",
+				toolHandlers: new Map(),
 			}),
 		);
 
