@@ -1,8 +1,7 @@
+import type { BoundClient, ToolCallRequest, ToolCallResult, ToolCancelEvent } from "@bound/client";
 import { useEffect, useState } from "react";
-import type { BoundClient } from "@bound/client";
-import type { ToolCallRequest, ToolCallResult, ToolCancelEvent } from "@bound/client";
-import type { ToolHandler } from "../../tools/types";
 import { bashToolWithStreaming } from "../../tools/bash";
+import type { ToolHandler } from "../../tools/types";
 
 export interface InFlightTool {
 	controller: AbortController;
@@ -73,31 +72,28 @@ export function useToolCalls(
 				}
 
 				// For bash tool, use streaming with stdout callback
-				let result;
-				if (toolName === "boundless_bash") {
-					result = await bashToolWithStreaming(
-						args,
-						controller.signal,
-						cwd,
-						{
-							onStdoutChunk: (chunk: string) => {
-								setInFlightTools((prev) => {
-									const updated = new Map(prev);
-									const tool = updated.get(callId);
-									if (tool) {
-										tool.stdout = (tool.stdout || "") + chunk;
-										updated.set(callId, tool);
-									}
-									return updated;
-								});
-							},
-						},
-						hostname,
-					);
-				} else {
-					// Regular tool call
-					result = await handler(args, controller.signal, cwd);
-				}
+				const result =
+					toolName === "boundless_bash"
+						? await bashToolWithStreaming(
+								args,
+								controller.signal,
+								cwd,
+								{
+									onStdoutChunk: (chunk: string) => {
+										setInFlightTools((prev) => {
+											const updated = new Map(prev);
+											const tool = updated.get(callId);
+											if (tool) {
+												tool.stdout = (tool.stdout || "") + chunk;
+												updated.set(callId, tool);
+											}
+											return updated;
+										});
+									},
+								},
+								hostname,
+							)
+						: await handler(args, controller.signal, cwd);
 
 				// Return result to client
 				return {

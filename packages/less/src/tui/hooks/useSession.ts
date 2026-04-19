@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import { BoundClient } from "@bound/client";
+import { useEffect, useState } from "react";
 
 export type ConnectionState = "connecting" | "connected" | "disconnected";
 

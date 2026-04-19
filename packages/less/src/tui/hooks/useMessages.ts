@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
-import type { Message } from "@bound/shared";
 import type { BoundClient } from "@bound/client";
+import type { Message } from "@bound/shared";
+import { useEffect, useState } from "react";
 
 export interface UseMessagesResult {
 	messages: Message[];
@@ -62,9 +62,7 @@ export function useMessages(
 	};
 
 	const updateMessage = (messageId: string, updates: Partial<Message>) => {
-		setMessages((prev) =>
-			prev.map((m) => (m.id === messageId ? { ...m, ...updates } : m)),
-		);
+		setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, ...updates } : m)));
 	};
 
 	return {

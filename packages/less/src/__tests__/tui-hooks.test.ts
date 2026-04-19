@@ -1,8 +1,4 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
-import type { Message } from "@bound/shared";
-import type { BoundClient } from "@bound/client";
-import type { ToolHandler } from "../tools/types";
-import type { McpServerManager, McpServerState } from "../mcp/manager";
+import { describe, expect, it } from "bun:test";
 
 // Since these are custom React hooks, we test them by calling them directly
 // in a controlled environment. We won't use actual React rendering here —
