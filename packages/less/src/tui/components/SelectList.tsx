@@ -26,17 +26,17 @@ export function SelectList<T>({
 			onSelect(items[selectedIndex]);
 		} else if (input === "c" && key.ctrl) {
 			onCancel?.();
-		} else if (input === "\u001B") {
-			// Escape key
+		} else if (key.escape) {
 			onCancel?.();
 		}
 	});
 
 	return (
 		<Box flexDirection="column">
-			{items.map((item) => (
-				<Box key={`${selectedIndex}-${JSON.stringify(item)}`}>
-					<Text>{renderItem(item, items.indexOf(item) === selectedIndex)}</Text>
+			{items.map((item, index) => (
+				// biome-ignore lint/suspicious/noArrayIndexKey: Items are rendered in fixed order and lack inherent IDs
+				<Box key={`select-item-${index}`}>
+					<Text>{renderItem(item, index === selectedIndex)}</Text>
 				</Box>
 			))}
 		</Box>

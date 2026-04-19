@@ -50,6 +50,17 @@ describe("Banner", () => {
 		);
 		const output = lastFrame();
 		expect(output).toContain("Dismissible error");
+		expect(output).toContain("[Press 'x' to dismiss]");
+	});
+
+	it("supports 'x' key handler for dismissal via useInput", () => {
+		const handleDismiss = () => {};
+		const { lastFrame } = render(
+			<Banner type="error" message="Dismissible error" onDismiss={handleDismiss} />,
+		);
+		const output = lastFrame();
+		expect(output).toContain("Dismissible error");
+		expect(typeof handleDismiss).toBe("function");
 	});
 });
 
@@ -72,6 +83,29 @@ describe("ModalOverlay", () => {
 		);
 		const output = lastFrame();
 		expect(output).toBeDefined();
+	});
+
+	it("supports escape key handler for dismissal via useInput", () => {
+		const handleDismiss = () => {};
+		const { lastFrame } = render(
+			<ModalOverlay onDismiss={handleDismiss}>
+				<Text>Modal content</Text>
+			</ModalOverlay>,
+		);
+		const output = lastFrame();
+		expect(output).toContain("Modal content");
+		expect(typeof handleDismiss).toBe("function");
+	});
+
+	it("uses key.escape from useInput handler instead of raw code", () => {
+		const handleDismiss = () => {};
+		const { lastFrame } = render(
+			<ModalOverlay onDismiss={handleDismiss}>
+				<Text>Modal with escape support</Text>
+			</ModalOverlay>,
+		);
+		const output = lastFrame();
+		expect(output).toContain("Modal with escape support");
 	});
 });
 

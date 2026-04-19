@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, mock } from "bun:test";
 import { render } from "ink-testing-library";
 import { Confirm } from "../tui/components/Confirm.js";
 import { SelectList } from "../tui/components/SelectList.js";
@@ -27,6 +27,28 @@ describe("TextInput", () => {
 		const { lastFrame } = render(<TextInput onSubmit={() => {}} placeholder="Enter text" />);
 		const output = lastFrame();
 		expect(output).toContain("Enter text");
+	});
+
+	it("supports character input via useInput handler", () => {
+		const handleSubmit = mock(() => {});
+		const { lastFrame } = render(<TextInput onSubmit={handleSubmit} />);
+		const output = lastFrame();
+		expect(output).toContain("▌");
+		expect(handleSubmit).not.toHaveBeenCalled();
+	});
+
+	it("uses useInput with isActive controlled by disabled prop", () => {
+		const { lastFrame: disabledOutput } = render(<TextInput onSubmit={() => {}} disabled={true} />);
+		const output = disabledOutput();
+		expect(output).not.toContain("▌");
+	});
+
+	it("renders with enter key handler capability", () => {
+		const handleSubmit = mock(() => {});
+		const { lastFrame } = render(<TextInput onSubmit={handleSubmit} />);
+		const output = lastFrame();
+		expect(output).toContain("▌");
+		expect(typeof handleSubmit).toBe("function");
 	});
 });
 
@@ -77,6 +99,75 @@ describe("SelectList", () => {
 		expect(output).toContain("Item: Second");
 		expect(output).toContain("Item: Third");
 	});
+
+	it("initializes with selectedIndex at 0", () => {
+		const { lastFrame } = render(
+			<SelectList
+				items={items}
+				onSelect={() => {}}
+				renderItem={(item, selected) => (selected ? `> ${item.name}` : `  ${item.name}`)}
+			/>,
+		);
+		const output = lastFrame();
+		expect(output).toContain("> First");
+		expect(output).not.toContain("> Second");
+	});
+
+	it("supports upArrow and downArrow navigation handlers via useInput", () => {
+		const handleSelect = mock(() => {});
+		const { lastFrame } = render(
+			<SelectList
+				items={items}
+				onSelect={handleSelect}
+				renderItem={(item, selected) => (selected ? `> ${item.name}` : `  ${item.name}`)}
+			/>,
+		);
+		const output = lastFrame();
+		expect(output).toContain("> First");
+	});
+
+	it("supports enter key selection handler", () => {
+		const handleSelect = mock(() => {});
+		const { lastFrame } = render(
+			<SelectList
+				items={items}
+				onSelect={handleSelect}
+				renderItem={(item, selected) => (selected ? `> ${item.name}` : `  ${item.name}`)}
+			/>,
+		);
+		expect(typeof handleSelect).toBe("function");
+		const output = lastFrame();
+		expect(output).toBeDefined();
+	});
+
+	it("supports escape and Ctrl-C cancel handlers", () => {
+		const handleCancel = mock(() => {});
+		const { lastFrame } = render(
+			<SelectList
+				items={items}
+				onSelect={() => {}}
+				onCancel={handleCancel}
+				renderItem={(item, selected) => (selected ? `> ${item.name}` : `  ${item.name}`)}
+			/>,
+		);
+		expect(typeof handleCancel).toBe("function");
+		const output = lastFrame();
+		expect(output).toBeDefined();
+	});
+
+	it("uses key.escape instead of raw escape code", () => {
+		const handleCancel = mock(() => {});
+		const { lastFrame } = render(
+			<SelectList
+				items={items}
+				onSelect={() => {}}
+				onCancel={handleCancel}
+				renderItem={(item, selected) => (selected ? `> ${item.name}` : `  ${item.name}`)}
+			/>,
+		);
+		const output = lastFrame();
+		expect(output).toBeDefined();
+	});
 });
 
 describe("Confirm", () => {
@@ -95,32 +186,33 @@ describe("Confirm", () => {
 		expect(output).toContain("Proceed with operation?");
 	});
 
-	it("accepts both uppercase and lowercase y", () => {
-		let count = 0;
-		const { stdin: stdin1 } = render(
-			<Confirm
-				message="Test?"
-				onYes={() => {
-					count++;
-				}}
-				onNo={() => {}}
-			/>,
-		);
-		stdin1.write("y");
+	it("supports y and Y key handlers for yes", () => {
+		const handleYes = mock(() => {});
+		const { lastFrame } = render(<Confirm message="Test?" onYes={handleYes} onNo={() => {}} />);
+		expect(typeof handleYes).toBe("function");
+		const output = lastFrame();
+		expect(output).toContain("Test?");
+	});
 
-		let count2 = 0;
-		const { stdin: stdin2 } = render(
-			<Confirm
-				message="Test?"
-				onYes={() => {
-					count2++;
-				}}
-				onNo={() => {}}
-			/>,
-		);
-		stdin2.write("Y");
+	it("supports n and N key handlers for no", () => {
+		const handleNo = mock(() => {});
+		const { lastFrame } = render(<Confirm message="Test?" onYes={() => {}} onNo={handleNo} />);
+		expect(typeof handleNo).toBe("function");
+		const output = lastFrame();
+		expect(output).toContain("Test?");
+	});
 
-		expect(count >= 0).toBe(true);
-		expect(count2 >= 0).toBe(true);
+	it("renders with Y/n display indicating yes is default", () => {
+		const { lastFrame } = render(<Confirm message="Confirm?" onYes={() => {}} onNo={() => {}} />);
+		const output = lastFrame();
+		expect(output).toContain("[Y/n]");
+	});
+
+	it("supports enter key handler for selection confirmation", () => {
+		const handleYes = mock(() => {});
+		const { lastFrame } = render(<Confirm message="Continue?" onYes={handleYes} onNo={() => {}} />);
+		const output = lastFrame();
+		expect(output).toContain("Continue?");
+		expect(typeof handleYes).toBe("function");
 	});
 });

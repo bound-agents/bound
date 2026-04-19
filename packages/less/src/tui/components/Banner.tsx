@@ -1,4 +1,4 @@
-import { Box, Text } from "ink";
+import { Box, Text, useInput } from "ink";
 import type React from "react";
 
 export interface BannerProps {
@@ -9,6 +9,15 @@ export interface BannerProps {
 
 export function Banner({ type, message, onDismiss }: BannerProps): React.ReactElement {
 	const textColor = type === "error" ? "red" : "blue";
+
+	useInput(
+		(input) => {
+			if (input === "x") {
+				onDismiss?.();
+			}
+		},
+		{ isActive: !!onDismiss },
+	);
 
 	return (
 		<Box flexDirection="row">
