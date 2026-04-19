@@ -664,10 +664,19 @@ Original output was too large for the context window. If you need the full conte
 
 	// Pass 2: Handle any remaining structural issues (orphaned tool_results, unclosed tool_calls)
 	const sanitized: Message[] = [];
-	let inActiveTool = false;
+	// Track remaining expected tool_use_ids from the active tool_call.
+	// Non-empty = tool pair is open and waiting for results.
+	const activePendingIds = new Set<string>();
+	// Boolean fallback for tool_calls whose content can't be parsed for IDs.
+	// When true and activePendingIds is empty, the next tool_result still belongs
+	// to this tool_call (legacy single-tool or malformed content).
+	let inActiveToolCall = false;
 	let lastToolId = "";
 	let lastToolUseIds: string[] = []; // track IDs from the last tool_call for synthetic results
 	let prevSanitizedRole: string | null = null;
+	// Track the last synthetic tool_call injected for orphaned tool_results, so we
+	// can extend it when consecutive orphans from the same multi-tool call appear.
+	let lastSyntheticToolCall: Message | null = null;
 
 	/** Extract tool_use IDs from a tool_call message's content */
 	const extractToolUseIds = (content: string): string[] => {
@@ -719,20 +728,53 @@ Original output was too large for the context window. If you need the full conte
 		}));
 	};
 
+	/** Flush synthetic results for any remaining pending tool_use_ids */
+	const flushPendingIds = (prefix: string, errContent: string): void => {
+		if (activePendingIds.size > 0) {
+			const remaining = [...activePendingIds];
+			const results = makeSyntheticResults(prefix, remaining, errContent);
+			for (const r of results) {
+				sanitized.push(r);
+			}
+			activePendingIds.clear();
+		}
+	};
+
 	for (const msg of reordered) {
 		if (msg.role === "tool_call") {
-			inActiveTool = true;
+			// Close any prior incomplete tool pair
+			flushPendingIds("synthetic", "Tool execution was interrupted");
+			inActiveToolCall = true;
 			lastToolId = msg.id;
 			lastToolUseIds = extractToolUseIds(msg.content);
+			// Populate pending set — tool pair stays open until all IDs are matched
+			activePendingIds.clear();
+			for (const id of lastToolUseIds) activePendingIds.add(id);
+			lastSyntheticToolCall = null;
 			sanitized.push(msg);
 			prevSanitizedRole = "tool_call";
 		} else if (msg.role === "tool_result") {
-			if (inActiveTool) {
-				// First tool_result closing the active tool_call
+			if (activePendingIds.size > 0 || inActiveToolCall) {
+				// Part of active tool pair — remove matched ID from pending set
+				if (msg.tool_name) activePendingIds.delete(msg.tool_name);
+				inActiveToolCall = false; // first result received
 				sanitized.push(msg);
-				inActiveTool = false;
 				prevSanitizedRole = "tool_result";
 			} else if (prevSanitizedRole === "tool_result") {
+				if (lastSyntheticToolCall) {
+					// Consecutive orphaned tool_result — extend the synthetic tool_call
+					// with this result's tool_use_id so the Bedrock driver sees matching IDs.
+					const toolUseId = msg.tool_name || `synthetic-tc-${msg.id}`;
+					try {
+						const blocks = JSON.parse(lastSyntheticToolCall.content);
+						if (Array.isArray(blocks) && !blocks.some((b: { id?: string }) => b.id === toolUseId)) {
+							blocks.push({ type: "tool_use", id: toolUseId, name: "unknown", input: {} });
+							lastSyntheticToolCall.content = JSON.stringify(blocks);
+						}
+					} catch {
+						// Non-parseable synthetic content — shouldn't happen
+					}
+				}
 				// Additional tool_result in a multi-tool response — push directly,
 				// no synthetic tool_call needed. The driver merges these into one
 				// user message per the Bedrock/Anthropic multi-tool requirement.
@@ -744,7 +786,7 @@ Original output was too large for the context window. If you need the full conte
 				// driver emits a proper toolUse block instead of falling back to [{ text: "" }]
 				// which Bedrock rejects with "text field is blank".
 				const toolUseId = msg.tool_name || `synthetic-tc-${msg.id}`;
-				sanitized.push({
+				const syntheticMsg: Message = {
 					id: `synthetic-${msg.id}`,
 					thread_id: threadId,
 					role: "tool_call",
@@ -756,16 +798,16 @@ Original output was too large for the context window. If you need the full conte
 					created_at: msg.created_at,
 					modified_at: msg.modified_at,
 					host_origin: msg.host_origin,
-				});
+				};
+				lastSyntheticToolCall = syntheticMsg;
+				sanitized.push(syntheticMsg);
 				sanitized.push(msg);
 				prevSanitizedRole = "tool_result";
 			}
 		} else {
-			if (inActiveTool) {
-				// Non-tool message during active tool-use with no real tool_result ahead
-				// (pass 1 already moved interleaved messages for real pairs).
-				// Generate one synthetic tool_result per tool_use ID so Bedrock
-				// sees matching toolResult blocks for every toolUse block.
+			// Non-tool message — flush any remaining pending IDs first
+			if (inActiveToolCall) {
+				// Tool_call with no results at all — generate synthetics for ALL IDs
 				const results = makeSyntheticResults(
 					"synthetic",
 					lastToolUseIds,
@@ -774,16 +816,19 @@ Original output was too large for the context window. If you need the full conte
 				for (const r of results) {
 					sanitized.push(r);
 				}
-				inActiveTool = false;
-				prevSanitizedRole = "tool_result";
+				activePendingIds.clear();
+				inActiveToolCall = false;
+			} else {
+				flushPendingIds("synthetic", "Tool execution was interrupted");
 			}
+			lastSyntheticToolCall = null;
 			sanitized.push(msg);
 			prevSanitizedRole = msg.role;
 		}
 	}
 
-	// Close any unclosed tool pair
-	if (inActiveTool) {
+	// Close any unclosed tool pair (pending IDs remain)
+	if (inActiveToolCall) {
 		const results = makeSyntheticResults(
 			"synthetic-close",
 			lastToolUseIds,
@@ -792,6 +837,8 @@ Original output was too large for the context window. If you need the full conte
 		for (const r of results) {
 			sanitized.push(r);
 		}
+	} else {
+		flushPendingIds("synthetic-close", "Tool execution completed");
 	}
 
 	// Stage 4: MESSAGE_QUEUEING

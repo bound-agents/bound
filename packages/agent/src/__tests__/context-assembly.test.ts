@@ -6085,5 +6085,203 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			db.run("DELETE FROM messages WHERE thread_id = ?", [testThreadId]);
 			db.run("DELETE FROM threads WHERE id = ?", [testThreadId]);
 		});
+
+		it("should not produce duplicate tool_use_ids when consecutive orphaned tool_results share a parent", () => {
+			// Bug: MESSAGE_LOAD_LIMIT cuts through a multi-tool call. Both tool_results
+			// are loaded but the parent tool_call is NOT. Pass 2 creates a synthetic
+			// tool_call for the first orphan with one tool_use_id. The second orphan
+			// matches prevSanitizedRole==="tool_result" and gets pushed without its own
+			// synthetic. In annotation, the second's tool_name isn't in knownToolUseIds,
+			// so it falls through to toolCallIdToToolUseId — producing a DUPLICATE.
+			const testThreadId = randomUUID();
+			const testUserId = randomUUID();
+
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					testUserId,
+					"web",
+					"local",
+					0,
+					"Dup Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const now = new Date().toISOString();
+
+			// Simulate orphaned tool_results (parent tool_call NOT loaded due to MESSAGE_LOAD_LIMIT).
+			// Both are from the same multi-tool call, but the tool_call isn't in the DB
+			// (simulating it being outside the load window).
+			const toolUseIdA = "tooluse_orphanA111";
+			const toolUseIdB = "tooluse_orphanB222";
+
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"tool_result",
+					"Result A",
+					null,
+					toolUseIdA,
+					now,
+					now,
+					"local",
+				],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"tool_result",
+					"Result B",
+					null,
+					toolUseIdB,
+					now,
+					now,
+					"local",
+				],
+			);
+
+			// Follow-up user message
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), testThreadId, "user", "Continue", null, null, now, now, "local"],
+			);
+
+			const { messages } = assembleContext({
+				db,
+				threadId: testThreadId,
+				userId: testUserId,
+			});
+
+			// Both tool_results must have DISTINCT tool_use_ids
+			const toolResults = messages.filter((m) => m.role === "tool_result");
+			const toolUseIds = toolResults.map((m) => m.tool_use_id);
+			const uniqueIds = new Set(toolUseIds);
+
+			expect(toolResults.length).toBeGreaterThanOrEqual(2);
+			expect(uniqueIds.size).toBe(toolResults.length);
+
+			// Specifically, each should retain its original tool_use_id
+			expect(toolUseIds).toContain(toolUseIdA);
+			expect(toolUseIds).toContain(toolUseIdB);
+
+			// Cleanup
+			db.run("DELETE FROM messages WHERE thread_id = ?", [testThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [testThreadId]);
+		});
+
+		it("should generate synthetic tool_results for unmatched tool_use_ids in partial multi-tool responses", () => {
+			// Bug: Pass 2 sets inActiveTool=false after the FIRST tool_result,
+			// regardless of how many tool_uses the tool_call had. When only partial
+			// results arrive, the remaining tool_use_ids never get synthetic results.
+			const testThreadId = randomUUID();
+			const testUserId = randomUUID();
+
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					testUserId,
+					"web",
+					"local",
+					0,
+					"Partial Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const now = new Date().toISOString();
+			const later = new Date(Date.now() + 1000).toISOString();
+
+			// User message
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), testThreadId, "user", "Do things", null, null, now, now, "local"],
+			);
+
+			// Tool_call with 3 tool_uses
+			const tuA = "tooluse_partialA";
+			const tuB = "tooluse_partialB";
+			const tuC = "tooluse_partialC";
+			const toolCallContent = JSON.stringify([
+				{ type: "tool_use", id: tuA, name: "bash", input: { command: "echo a" } },
+				{ type: "tool_use", id: tuB, name: "bash", input: { command: "echo b" } },
+				{ type: "tool_use", id: tuC, name: "bash", input: { command: "echo c" } },
+			]);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), testThreadId, "tool_call", toolCallContent, null, null, now, now, "local"],
+			);
+
+			// Only 1 of 3 tool_results arrives
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), testThreadId, "tool_result", "Result A", null, tuA, now, now, "local"],
+			);
+
+			// Next user message (agent loop proceeds before other results arrive)
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), testThreadId, "user", "What happened?", null, null, later, later, "local"],
+			);
+
+			const { messages } = assembleContext({
+				db,
+				threadId: testThreadId,
+				userId: testUserId,
+			});
+
+			// Every tool_use_id from the tool_call must have a corresponding tool_result
+			const toolCalls = messages.filter((m) => m.role === "tool_call");
+			const toolResults = messages.filter((m) => m.role === "tool_result");
+
+			// Extract all tool_use_ids from tool_calls
+			const allToolUseIds = new Set<string>();
+			for (const tc of toolCalls) {
+				try {
+					const blocks = JSON.parse(
+						typeof tc.content === "string" ? tc.content : JSON.stringify(tc.content),
+					);
+					if (Array.isArray(blocks)) {
+						for (const b of blocks) {
+							if (b.type === "tool_use" && b.id) allToolUseIds.add(b.id);
+						}
+					}
+				} catch {}
+			}
+
+			// Every tool_use_id must have a matching tool_result
+			const resultIds = new Set(toolResults.map((m) => m.tool_use_id));
+			for (const tuId of allToolUseIds) {
+				expect(resultIds.has(tuId)).toBe(true);
+			}
+
+			// Specifically: tuB and tuC should have synthetic results
+			expect(resultIds.has(tuB)).toBe(true);
+			expect(resultIds.has(tuC)).toBe(true);
+
+			// Cleanup
+			db.run("DELETE FROM messages WHERE thread_id = ?", [testThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [testThreadId]);
+		});
 	});
 });
