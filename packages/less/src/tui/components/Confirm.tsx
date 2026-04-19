@@ -11,12 +11,12 @@ export interface ConfirmProps {
 export function Confirm({ message, onYes, onNo }: ConfirmProps): React.ReactElement {
 	const [selection, _setSelection] = useState<"yes" | "no">("yes");
 
-	useInput((input) => {
+	useInput((input, key) => {
 		if (input === "y" || input === "Y") {
 			onYes();
 		} else if (input === "n" || input === "N") {
 			onNo();
-		} else if (input === "\r") {
+		} else if (key.return) {
 			if (selection === "yes") {
 				onYes();
 			} else {
