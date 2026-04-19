@@ -27,7 +27,7 @@ export function ToolCallCard({
 	useEffect(() => {
 		const interval = setInterval(() => {
 			setElapsed(Math.floor((Date.now() - startTime) / 1000));
-		}, 100);
+		}, 1000);
 		return () => clearInterval(interval);
 	}, [startTime]);
 

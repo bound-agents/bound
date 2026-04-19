@@ -9,23 +9,22 @@ export interface SpinnerProps {
 }
 
 export function Spinner({ label }: SpinnerProps): React.ReactElement {
-	const [elapsed, setElapsed] = useState(0);
-	const [frame, setFrame] = useState(0);
+	// Single state counter drives both spinner frame and elapsed display
+	const [tick, setTick] = useState(0);
 
 	useEffect(() => {
 		const interval = setInterval(() => {
-			setElapsed((prev) => prev + 1);
-			setFrame((prev) => (prev + 1) % SPINNER_CHARS.length);
+			setTick((prev) => prev + 1);
 		}, 1000);
 
 		return () => clearInterval(interval);
 	}, []);
 
-	const spinner = SPINNER_CHARS[frame];
+	const spinner = SPINNER_CHARS[tick % SPINNER_CHARS.length];
 
 	return (
 		<Text>
-			{spinner} {elapsed}s{label ? ` ${label}` : ""}
+			{spinner} {tick}s{label ? ` ${label}` : ""}
 		</Text>
 	);
 }

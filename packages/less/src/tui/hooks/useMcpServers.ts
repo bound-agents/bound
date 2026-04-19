@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { McpServerManager, McpServerState } from "../../mcp/manager";
 
 export interface UseMcpServersResult {
@@ -14,19 +14,36 @@ export interface UseMcpServersResult {
  */
 export function useMcpServers(mcpManager: McpServerManager): UseMcpServersResult {
 	const [serverStates, setServerStates] = useState<Map<string, McpServerState>>(new Map());
+	const statesRef = useRef(serverStates);
+	statesRef.current = serverStates;
 
 	useEffect(() => {
 		// Get initial state
 		const states = mcpManager.getServerStates();
 		setServerStates(states);
 
-		// TODO: Replace 1s polling with event-driven updates from McpServerManager
-		// For now, we poll for state changes. This is a performance trade-off
-		// that works fine for the small number of MCP servers typically running.
+		// Poll for state changes, but only update React state when something changed.
+		// This avoids unnecessary re-renders that cause terminal flicker.
 		const interval = setInterval(() => {
 			const updatedStates = mcpManager.getServerStates();
-			setServerStates(updatedStates);
-		}, 1000);
+			const prev = statesRef.current;
+			// Only update if the count or any status changed
+			if (updatedStates.size !== prev.size) {
+				setServerStates(updatedStates);
+				return;
+			}
+			for (const [name, state] of updatedStates) {
+				const prevState = prev.get(name);
+				if (
+					!prevState ||
+					prevState.status !== state.status ||
+					prevState.tools.length !== state.tools.length
+				) {
+					setServerStates(updatedStates);
+					return;
+				}
+			}
+		}, 5000);
 
 		return () => clearInterval(interval);
 	}, [mcpManager]);
