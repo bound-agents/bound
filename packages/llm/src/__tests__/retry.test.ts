@@ -181,6 +181,23 @@ describe("withRetry", () => {
 		expect(callCount).toBe(1);
 	});
 
+	it("throws abort errors immediately without retrying", async () => {
+		const fn = async () => {
+			callCount++;
+			throw new LLMError(
+				"Bedrock request failed: Request aborted",
+				"bedrock",
+				undefined,
+				new Error("Request aborted"),
+			);
+		};
+
+		await expect(withRetry(fn, { baseDelayMs: 10 })).rejects.toThrow("Request aborted");
+
+		// Should NOT retry — abort errors are not recoverable
+		expect(callCount).toBe(1);
+	});
+
 	it("allows custom retry config", async () => {
 		const fn = async () => {
 			callCount++;

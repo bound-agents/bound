@@ -397,6 +397,12 @@ export class AgentLoop {
 			let transportRetries = 0;
 
 			while (continueLoop) {
+				// Reset the inactivity timeout at the start of each turn.
+				// Context assembly and LLM initial processing can take minutes
+				// for large threads (1000+ messages with extended thinking),
+				// and the timeout must not fire during that preparation.
+				this.config.onActivity?.();
+
 				if (this.aborted) {
 					this.ctx.logger.info("[agent-loop] Aborted before LLM call", {
 						threadId: this.config.threadId,
@@ -504,6 +510,10 @@ export class AgentLoop {
 
 							let silenceRetries = 0;
 							for (;;) {
+								// Reset inactivity timeout before each LLM call attempt.
+								// Bedrock may take 30-120s to produce the first chunk for
+								// large contexts with extended thinking enabled.
+								this.config.onActivity?.();
 								try {
 									const chatStream = resolution.backend.chat({
 										messages: nonSystemMessages,

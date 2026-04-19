@@ -32,6 +32,13 @@ export async function withRetry<T>(
 		} catch (error) {
 			lastError = error instanceof Error ? error : new Error(String(error));
 
+			// Never retry AbortErrors — the signal stays aborted, so the retry
+			// would fail immediately with the same error.
+			const errMsg = lastError.message;
+			if (errMsg.includes("aborted") || errMsg.includes("AbortError")) {
+				throw error;
+			}
+
 			// Check if it's an LLMError with a status code
 			const isRateLimit = error instanceof LLMError && error.statusCode === 429;
 			const isConnectionError =
