@@ -133,9 +133,22 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 	}
 
 	if (message.role === "tool_result") {
+		// Filter out [boundless] provenance blocks — they're useful for the agent
+		// but noise in the TUI (the tool name is already in the header).
+		let filteredContent = parsedContent;
+		if (Array.isArray(parsedContent)) {
+			const nonProvenance = parsedContent.filter(
+				(block) =>
+					block.type !== "text" ||
+					!(block as { type: "text"; text: string }).text.startsWith("[boundless]"),
+			);
+			if (nonProvenance.length > 0) {
+				filteredContent = nonProvenance;
+			}
+		}
 		return (
 			<Collapsible header={`Tool Result: ${message.tool_name}`} defaultOpen={true}>
-				{renderContent(parsedContent)}
+				{renderContent(filteredContent)}
 			</Collapsible>
 		);
 	}
