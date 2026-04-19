@@ -97,6 +97,33 @@ describe("MessageBlock", () => {
 		});
 	});
 
+	describe("tool_result rendering", () => {
+		it("renders tool_result with ContentBlock array without crashing", async () => {
+			const content = JSON.stringify([
+				{ type: "text", text: "boundless bash online: 2026-04-19T20:31:58Z on host" },
+			]);
+
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-1",
+						role: "tool_result",
+						content,
+						tool_name: "boundless_bash",
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame();
+			// Should render without Box-inside-Text crash
+			expect(frame).toContain("boundless_bash");
+			expect(frame).toContain("boundless bash online");
+		});
+	});
+
 	describe("system message rendering", () => {
 		it("renders system messages with dim styling", async () => {
 			const { lastFrame } = render(
