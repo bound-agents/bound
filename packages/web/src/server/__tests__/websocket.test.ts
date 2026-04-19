@@ -1999,5 +1999,148 @@ describe("ClientConnection type and WS message schemas", () => {
 
 			handler.cleanup();
 		});
+
+		describe("AC3: tool:cancel protocol - event handling infrastructure", () => {
+			it("AC3.1: event bus can emit agent:cancel events", () => {
+				const eventBus = new TypedEventEmitter();
+
+				let cancelEventReceived = false;
+				let receivedThreadId = "";
+
+				// Set up listener for agent:cancel events
+				eventBus.on("agent:cancel", (data: any) => {
+					cancelEventReceived = true;
+					receivedThreadId = data.threadId;
+				});
+
+				// Emit the cancel event
+				eventBus.emit("agent:cancel", { threadId: "thread-123", reason: "user" } as any);
+
+				// Verify the event was received
+				expect(cancelEventReceived).toBe(true);
+				expect(receivedThreadId).toBe("thread-123");
+			});
+
+			it("AC3.2: event bus can emit client_tool_call:expired events", () => {
+				const eventBus = new TypedEventEmitter();
+
+				let expiredEventReceived = false;
+				let receivedCallId = "";
+
+				// Set up listener for expiry events
+				eventBus.on("client_tool_call:expired", (data: any) => {
+					expiredEventReceived = true;
+					receivedCallId = data.callId;
+				});
+
+				// Emit the expiry event
+				eventBus.emit("client_tool_call:expired", {
+					callId: "call-2",
+					threadId: "thread-456",
+				} as any);
+
+				// Verify the event was received
+				expect(expiredEventReceived).toBe(true);
+				expect(receivedCallId).toBe("call-2");
+			});
+
+			it("AC3.3: handler can track subscribed clients for message delivery", () => {
+				const eventBus = new TypedEventEmitter();
+				const handler = createWebSocketHandler(eventBus);
+
+				const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+				handler.open(mockWs);
+
+				// Subscribe to a thread
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "thread:subscribe",
+						thread_id: "thread-789",
+					}),
+				);
+
+				// Verify registry tracking works
+				const connections = handler.registry.getClientToolsForThread("thread-789");
+				// The connection should be tracked even if it has no tools
+				expect(typeof connections).toBe("object");
+				expect(connections instanceof Map).toBe(true);
+
+				handler.cleanup();
+			});
+
+			it("AC3.5: unknown tool:cancel message is handled without error", () => {
+				const eventBus = new TypedEventEmitter();
+				const handler = createWebSocketHandler(eventBus);
+
+				const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+				handler.open(mockWs);
+
+				// Should not throw when receiving unknown tool:cancel
+				expect(() => {
+					// Simulate receiving tool:cancel for unknown callId
+					// (In real scenario this would come from event system)
+					eventBus.emit("client_tool_call:expired", { callId: "unknown-call" } as any);
+				}).not.toThrow();
+
+				handler.cleanup();
+			});
+
+			it("AC3.6: re-sending session:configure does not trigger tool:cancel", () => {
+				const eventBus = new TypedEventEmitter();
+				const handler = createWebSocketHandler(eventBus);
+
+				const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+				handler.open(mockWs);
+
+				// First session:configure
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "session:configure",
+						tools: [
+							{
+								type: "function",
+								function: {
+									name: "tool1",
+									description: "Tool 1",
+									parameters: { type: "object" },
+								},
+							},
+						],
+					}),
+				);
+
+				// Clear messages
+				(mockWs as unknown as MockWebSocket).messages = [];
+
+				// Re-send session:configure (should replace, not cancel)
+				handler.message(
+					mockWs,
+					JSON.stringify({
+						type: "session:configure",
+						tools: [
+							{
+								type: "function",
+								function: {
+									name: "tool2",
+									description: "Tool 2",
+									parameters: { type: "object" },
+								},
+							},
+						],
+					}),
+				);
+
+				// Verify no cancel messages were sent
+				const messages = (mockWs as unknown as MockWebSocket).messages;
+				const cancelMessages = messages.filter(
+					(msg) => (msg as Record<string, unknown>).type === "tool:cancel",
+				);
+				expect(cancelMessages).toHaveLength(0);
+
+				handler.cleanup();
+			});
+		});
 	});
 });

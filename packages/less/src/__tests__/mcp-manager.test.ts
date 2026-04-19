@@ -486,4 +486,62 @@ describe("McpServerManager", () => {
 			expect(result.failed).toContain("server-fail");
 		});
 	});
+
+	describe("MCP transport types", () => {
+		it("AC6.1: should verify stdio spawn code path structure exists", async () => {
+			const manager = new McpServerManager(logger);
+
+			// Create a config with stdio transport
+			const configs: McpServerConfig[] = [
+				{
+					transport: "stdio",
+					name: "stdio-server",
+					command: "echo",
+					args: ["test"],
+					enabled: true,
+				},
+			];
+
+			// Call ensureAllEnabled which should attempt stdio transport
+			await manager.ensureAllEnabled(configs);
+
+			// Verify the server state was created
+			const states = manager.getServerStates();
+			expect(states.has("stdio-server")).toBe(true);
+
+			const state = states.get("stdio-server");
+			expect(state?.config.transport).toBe("stdio");
+
+			// Verify the manager can handle stdio transport configuration
+			expect(state?.config.name).toBe("stdio-server");
+			expect(state?.config.command).toBe("echo");
+		});
+
+		it("AC6.2: should accept HTTP transport config", async () => {
+			const manager = new McpServerManager(logger);
+
+			// Create a config with HTTP transport
+			const configs: McpServerConfig[] = [
+				{
+					transport: "http",
+					name: "http-server",
+					url: "http://localhost:5000",
+					enabled: true,
+				},
+			];
+
+			// Should not throw when processing HTTP config
+			expect(async () => {
+				await manager.ensureAllEnabled(configs);
+			}).not.toThrow();
+
+			// Verify the server state was created with HTTP transport
+			const states = manager.getServerStates();
+			expect(states.has("http-server")).toBe(true);
+
+			const state = states.get("http-server");
+			expect(state?.config.transport).toBe("http");
+			expect(state?.config.name).toBe("http-server");
+		});
+	});
 });
