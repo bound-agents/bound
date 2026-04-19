@@ -198,7 +198,7 @@ export function buildToolSet(
 					type: "function",
 					function: {
 						name: mcpToolName,
-						description: tool.description,
+						description: tool.description ?? tool.name,
 						parameters: tool.inputSchema as Record<string, unknown>,
 					},
 				};

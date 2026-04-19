@@ -8,6 +8,14 @@ import { formatMcpProvenance } from "../tools/provenance";
 import type { ToolNameMapping } from "../tools/registry";
 import type { McpServerManager } from "./manager";
 
+// Supported image media types per ContentBlock.image.source specification
+const SUPPORTED_IMAGE_TYPES = new Set<string>([
+	"image/jpeg",
+	"image/png",
+	"image/gif",
+	"image/webp",
+]);
+
 /**
  * Proxy an MCP tool call through the server manager.
  *
@@ -27,6 +35,7 @@ export async function proxyToolCall(
 	hostname: string,
 	toolNameMapping: Map<string, ToolNameMapping>,
 ): Promise<ContentBlock[]> {
+	// _signal is reserved for future cancellation support when MCP SDK supports AbortSignal
 	// Step 1: Lookup prefixed name in mapping
 	const mapping = toolNameMapping.get(prefixedName);
 	if (!mapping) {
@@ -79,14 +88,28 @@ export async function proxyToolCall(
 					typeof mcpItem.mimeType === "string" &&
 					typeof mcpItem.data === "string"
 				) {
-					blocks.push({
-						type: "image",
-						source: {
-							type: "base64",
-							media_type: mcpItem.mimeType,
-							data: mcpItem.data,
-						},
-					});
+					// Validate media type against supported set, fall through to unsupported if invalid
+					if (SUPPORTED_IMAGE_TYPES.has(mcpItem.mimeType)) {
+						const mediaType = mcpItem.mimeType as
+							| "image/jpeg"
+							| "image/png"
+							| "image/gif"
+							| "image/webp";
+						blocks.push({
+							type: "image",
+							source: {
+								type: "base64",
+								media_type: mediaType,
+								data: mcpItem.data,
+							},
+						});
+					} else {
+						// Unsupported media type
+						blocks.push({
+							type: "text",
+							text: `[unsupported image media type: ${mcpItem.mimeType}]`,
+						});
+					}
 				} else {
 					// Graceful degradation for unsupported types
 					blocks.push({

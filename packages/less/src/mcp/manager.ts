@@ -39,33 +39,25 @@ function configsEqual(a: McpServerConfig, b: McpServerConfig): boolean {
 
 	// Check transport-specific fields
 	if (a.transport === "stdio" && b.transport === "stdio") {
-		// biome-ignore lint/suspicious/noExplicitAny: Discriminated union type narrowing
-		const aStdio = a as any;
-		// biome-ignore lint/suspicious/noExplicitAny: Discriminated union type narrowing
-		const bStdio = b as any;
-
-		if (aStdio.command !== bStdio.command) {
+		// TypeScript discriminated union narrowing — a and b are now StdioConfig type
+		if (a.command !== b.command) {
 			return false;
 		}
 
-		const aArgs = aStdio.args || [];
-		const bArgs = bStdio.args || [];
+		const aArgs = a.args || [];
+		const bArgs = b.args || [];
 		if (JSON.stringify(aArgs) !== JSON.stringify(bArgs)) {
 			return false;
 		}
 
-		const aEnv = aStdio.env || {};
-		const bEnv = bStdio.env || {};
+		const aEnv = a.env || {};
+		const bEnv = b.env || {};
 		if (JSON.stringify(aEnv) !== JSON.stringify(bEnv)) {
 			return false;
 		}
 	} else if (a.transport === "http" && b.transport === "http") {
-		// biome-ignore lint/suspicious/noExplicitAny: Discriminated union type narrowing
-		const aHttp = a as any;
-		// biome-ignore lint/suspicious/noExplicitAny: Discriminated union type narrowing
-		const bHttp = b as any;
-
-		if (aHttp.url !== bHttp.url) {
+		// TypeScript discriminated union narrowing — a and b are now HttpConfig type
+		if (a.url !== b.url) {
 			return false;
 		}
 	}
@@ -147,21 +139,18 @@ export class McpServerManager {
 
 		try {
 			if (config.transport === "stdio") {
-				// biome-ignore lint/suspicious/noExplicitAny: Discriminated union type narrowing
-				const stdioConfig = config as any;
+				// TypeScript discriminated union narrowing — config is now StdioConfig type
 				transport = new StdioClientTransport({
-					command: stdioConfig.command as string,
-					args: stdioConfig.args as string[] | undefined,
-					env: stdioConfig.env,
+					command: config.command,
+					args: config.args,
+					env: config.env,
 				});
 			} else if (config.transport === "http") {
-				// biome-ignore lint/suspicious/noExplicitAny: Discriminated union type narrowing
-				const httpConfig = config as any;
-				transport = new StreamableHTTPClientTransport(new URL(httpConfig.url as string));
+				// TypeScript discriminated union narrowing — config is now HttpConfig type
+				transport = new StreamableHTTPClientTransport(new URL(config.url));
 			} else {
-				// biome-ignore lint/suspicious/noExplicitAny: Exhaustiveness check
-				const unknownConfig = config as any;
-				throw new Error(`Unknown transport type: ${unknownConfig.transport}`);
+				// Exhaustiveness check — config is never type if a new transport is added
+				throw new Error(`Unknown transport type: ${(config as { transport: string }).transport}`);
 			}
 
 			// Connect client to transport
@@ -225,8 +214,17 @@ export class McpServerManager {
 
 			// For stdio transports, check if process still alive after 2s and send SIGKILL
 			if (isStdioTransport(state.transport)) {
-				// biome-ignore lint/suspicious/noExplicitAny: StdioClientTransport process field is internal SDK detail
-				const process = (state.transport as any).process as any;
+				// Note: Accessing StdioClientTransport.process is an internal SDK detail.
+				// This implementation verified against @modelcontextprotocol/sdk v1.0+.
+				// If the SDK changes this field location, this will need updating.
+				const processField = state.transport as {
+					process?: {
+						pid?: number;
+						killed?: boolean;
+						kill(signal: string): void;
+					};
+				};
+				const process = processField.process;
 				// Wait 2s for graceful shutdown
 				await new Promise((resolve) => setTimeout(resolve, 2000));
 
@@ -295,6 +293,33 @@ export class McpServerManager {
 	}
 
 	/**
+	 * Attempt to connect a server config or mark it as failed.
+	 * Helper method to reduce duplication in reload() logic.
+	 */
+	private async tryConnectOrFail(config: McpServerConfig, result: ReloadResult): Promise<void> {
+		try {
+			await this.connectServer(config);
+		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			this.logger.error("mcp_server_failed", {
+				serverName: config.name,
+				error: errorMessage,
+			});
+
+			this.servers.set(config.name, {
+				config,
+				status: "failed",
+				client: null,
+				tools: [],
+				error: errorMessage,
+				transport: null,
+			});
+
+			result.failed.push(config.name);
+		}
+	}
+
+	/**
 	 * Hot-reload: update server configurations and reconcile state.
 	 * AC6.8: Diffs old vs new configs by name.
 	 * - Added: new server name not in current state → spawn/connect
@@ -338,26 +363,7 @@ export class McpServerManager {
 
 				// Try to spawn the new config if enabled
 				if (newConfig.enabled) {
-					try {
-						await this.connectServer(newConfig);
-					} catch (error) {
-						const errorMessage = error instanceof Error ? error.message : String(error);
-						this.logger.error("mcp_server_failed", {
-							serverName: newConfig.name,
-							error: errorMessage,
-						});
-
-						this.servers.set(newConfig.name, {
-							config: newConfig,
-							status: "failed",
-							client: null,
-							tools: [],
-							error: errorMessage,
-							transport: null,
-						});
-
-						result.failed.push(newConfig.name);
-					}
+					await this.tryConnectOrFail(newConfig, result);
 				} else {
 					// Add disabled server
 					this.servers.set(newConfig.name, {
@@ -379,26 +385,7 @@ export class McpServerManager {
 				result.added.push(newConfig.name);
 
 				if (newConfig.enabled) {
-					try {
-						await this.connectServer(newConfig);
-					} catch (error) {
-						const errorMessage = error instanceof Error ? error.message : String(error);
-						this.logger.error("mcp_server_failed", {
-							serverName: newConfig.name,
-							error: errorMessage,
-						});
-
-						this.servers.set(newConfig.name, {
-							config: newConfig,
-							status: "failed",
-							client: null,
-							tools: [],
-							error: errorMessage,
-							transport: null,
-						});
-
-						result.failed.push(newConfig.name);
-					}
+					await this.tryConnectOrFail(newConfig, result);
 				} else {
 					// Add disabled server
 					this.servers.set(newConfig.name, {
@@ -417,26 +404,7 @@ export class McpServerManager {
 					// Re-enable the server
 					this.servers.delete(newConfig.name);
 
-					try {
-						await this.connectServer(newConfig);
-					} catch (error) {
-						const errorMessage = error instanceof Error ? error.message : String(error);
-						this.logger.error("mcp_server_failed", {
-							serverName: newConfig.name,
-							error: errorMessage,
-						});
-
-						this.servers.set(newConfig.name, {
-							config: newConfig,
-							status: "failed",
-							client: null,
-							tools: [],
-							error: errorMessage,
-							transport: null,
-						});
-
-						result.failed.push(newConfig.name);
-					}
+					await this.tryConnectOrFail(newConfig, result);
 				}
 			}
 		}
