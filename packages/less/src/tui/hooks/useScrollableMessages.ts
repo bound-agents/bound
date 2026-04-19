@@ -94,19 +94,19 @@ export function useScrollableMessages<T extends { id: string }>(
 		const handleData = (data: Buffer) => {
 			const str = data.toString();
 
-			// SGR extended mouse mode: ESC[<btn;x;yM — parse by finding the prefix
+			// SGR extended mouse mode: ESC[<btn;x;yM or ESC[<btn;x;ym (release)
 			const sgrPrefix = "\x1B[<";
 			const sgrIdx = str.indexOf(sgrPrefix);
-			const sgrMatch = sgrIdx >= 0 ? parseSgrMouse(str.slice(sgrIdx + sgrPrefix.length)) : null;
-			if (sgrMatch !== null) {
-				if (sgrMatch === 64) {
+			if (sgrIdx >= 0) {
+				const sgrBtn = parseSgrMouse(str.slice(sgrIdx + sgrPrefix.length));
+				if (sgrBtn === 64) {
 					scrollUpRef.current();
-					return;
-				}
-				if (sgrMatch === 65) {
+				} else if (sgrBtn === 65) {
 					scrollDownRef.current();
-					return;
 				}
+				// Consume ALL SGR mouse events (clicks, drags, releases) —
+				// prevents them from leaking into Ink's input handler as text
+				return;
 			}
 
 			// Legacy mouse mode: ESC[M followed by 3 bytes
@@ -114,12 +114,11 @@ export function useScrollableMessages<T extends { id: string }>(
 				const btn = str.charCodeAt(3) - 32;
 				if (btn === 64) {
 					scrollUpRef.current();
-					return;
-				}
-				if (btn === 65) {
+				} else if (btn === 65) {
 					scrollDownRef.current();
-					return;
 				}
+				// Consume all legacy mouse events
+				return;
 			}
 		};
 

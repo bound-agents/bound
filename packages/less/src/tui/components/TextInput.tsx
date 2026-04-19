@@ -30,6 +30,11 @@ export function TextInput({
 				// Ignore control sequences — don't append characters
 				return;
 			} else if (input && input.length > 0) {
+				// Filter out mouse escape sequences that leak through Ink's parser.
+				// After ESC stripping, they look like "[<0;17;23M" or "[M..."
+				if (input.startsWith("[<") || input.startsWith("[M")) {
+					return;
+				}
 				setValue((prev) => prev + input);
 			}
 		},
