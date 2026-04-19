@@ -212,43 +212,7 @@ export class BoundClient {
 		};
 
 		ws.onmessage = (event) => {
-			try {
-				const msg = JSON.parse(event.data as string) as {
-					type: string;
-					[key: string]: unknown;
-				};
-
-				// Handle tool:call specially - auto-respond if handler is registered
-				if (msg.type === "tool:call" && this.toolCallHandler) {
-					const toolCall = msg as unknown as ToolCallRequest;
-					this.toolCallHandler(toolCall)
-						.then((result) => {
-							this.sendWsMessage({ type: "tool:result", ...result });
-						})
-						.catch((err) => {
-							this.emit("error", {
-								code: "TOOL_CALL_ERROR",
-								message: String(err),
-							});
-						});
-					return;
-				}
-
-				// Handle tool:cancel
-				if (msg.type === "tool:cancel") {
-					this.emit("tool:cancel", {
-						callId: msg.call_id,
-						threadId: msg.thread_id,
-						reason: msg.reason as string | undefined,
-					});
-					return;
-				}
-
-				// Emit other events
-				this.emit(msg.type, msg);
-			} catch {
-				// Ignore malformed messages
-			}
+			this.handleWsMessage(event.data as string);
 		};
 
 		ws.onerror = (event) => {
@@ -264,6 +228,55 @@ export class BoundClient {
 		};
 
 		this.ws = ws;
+	}
+
+	/** Parse and dispatch a raw WS message. Extracted for testability. */
+	handleWsMessage(raw: string): void {
+		try {
+			const msg = JSON.parse(raw) as {
+				type: string;
+				data?: unknown;
+				[key: string]: unknown;
+			};
+
+			// Handle tool:call specially - auto-respond if handler is registered
+			if (msg.type === "tool:call" && this.toolCallHandler) {
+				const toolCall = msg as unknown as ToolCallRequest;
+				this.toolCallHandler(toolCall)
+					.then((result) => {
+						this.sendWsMessage({ type: "tool:result", ...result });
+					})
+					.catch((err) => {
+						this.emit("error", {
+							code: "TOOL_CALL_ERROR",
+							message: String(err),
+						});
+					});
+				return;
+			}
+
+			// Handle tool:cancel
+			if (msg.type === "tool:cancel") {
+				this.emit("tool:cancel", {
+					callId: msg.call_id,
+					threadId: msg.thread_id,
+					reason: msg.reason as string | undefined,
+				});
+				return;
+			}
+
+			// For events that wrap their payload under `data`, unwrap before emitting.
+			// The server uses this pattern for: message:created, task:updated,
+			// file:updated, context:debug, alert.
+			// Events like thread:status use flat format (no `data` wrapper).
+			if ("data" in msg) {
+				this.emit(msg.type, msg.data);
+			} else {
+				this.emit(msg.type, msg);
+			}
+		} catch {
+			// Ignore malformed messages
+		}
 	}
 
 	private emit(event: string, data?: unknown): void {
