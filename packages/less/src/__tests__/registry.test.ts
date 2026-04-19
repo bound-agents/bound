@@ -93,19 +93,30 @@ describe("buildToolSet", () => {
 	});
 
 	it("merges MCP tools with boundless_mcp_ prefix", () => {
-		const mcpTools = new Map<string, import("@bound/client").ToolDefinition[]>([
+		const mcpTools = new Map<
+			string,
+			{
+				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				config: import("../config").McpServerConfig;
+			}
+		>([
 			[
 				"github",
-				[
-					{
-						type: "function",
-						function: {
+				{
+					tools: [
+						{
 							name: "list_repos",
 							description: "List repositories",
-							parameters: { type: "object" },
+							inputSchema: { type: "object" },
 						},
+					],
+					config: {
+						transport: "stdio",
+						name: "github",
+						command: "echo",
+						enabled: true,
 					},
-				],
+				},
 			],
 		]);
 
@@ -124,20 +135,31 @@ describe("buildToolSet", () => {
 	});
 
 	it("accepts MCP server tools without collision", () => {
-		const mcpTools = new Map<string, import("@bound/client").ToolDefinition[]>([
+		const mcpTools = new Map<
+			string,
+			{
+				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				config: import("../config").McpServerConfig;
+			}
+		>([
 			[
 				"testserver",
-				[
-					{
-						type: "function",
-						function: {
+				{
+					tools: [
+						{
 							// This tool will be named: boundless_mcp_testserver_test
 							name: "test",
 							description: "Test tool",
-							parameters: { type: "object" },
+							inputSchema: { type: "object" },
 						},
+					],
+					config: {
+						transport: "stdio",
+						name: "testserver",
+						command: "echo",
+						enabled: true,
 					},
-				],
+				},
 			],
 		]);
 
@@ -154,32 +176,48 @@ describe("buildToolSet", () => {
 		// Create underscore ambiguity collision:
 		// server "a_b" with tool "read" -> "boundless_mcp_a_b_read"
 		// server "a" with tool "b_read"  -> "boundless_mcp_a_b_read" (collision!)
-		const mcpTools = new Map<string, import("@bound/client").ToolDefinition[]>([
+		const mcpTools = new Map<
+			string,
+			{
+				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				config: import("../config").McpServerConfig;
+			}
+		>([
 			[
 				"a_b",
-				[
-					{
-						type: "function",
-						function: {
+				{
+					tools: [
+						{
 							name: "read",
 							description: "Read from a_b server",
-							parameters: { type: "object" },
+							inputSchema: { type: "object" },
 						},
+					],
+					config: {
+						transport: "stdio",
+						name: "a_b",
+						command: "echo",
+						enabled: true,
 					},
-				],
+				},
 			],
 			[
 				"a",
-				[
-					{
-						type: "function",
-						function: {
+				{
+					tools: [
+						{
 							name: "b_read", // This creates collision: boundless_mcp_a_b_read
 							description: "Read from a server",
-							parameters: { type: "object" },
+							inputSchema: { type: "object" },
 						},
+					],
+					config: {
+						transport: "stdio",
+						name: "a",
+						command: "echo",
+						enabled: true,
 					},
-				],
+				},
 			],
 		]);
 
@@ -195,40 +233,53 @@ describe("buildToolSet", () => {
 
 	it("allows multiple MCP servers that do not have namespace collisions", () => {
 		// Test that both servers merge cleanly when their names don't collide
-		const mcpTools = new Map<string, import("@bound/client").ToolDefinition[]>([
+		const mcpTools = new Map<
+			string,
+			{
+				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				config: import("../config").McpServerConfig;
+			}
+		>([
 			[
 				"github",
-				[
-					{
-						type: "function",
-						function: {
+				{
+					tools: [
+						{
 							name: "list_repos",
 							description: "List repos",
-							parameters: { type: "object" },
+							inputSchema: { type: "object" },
 						},
-					},
-					{
-						type: "function",
-						function: {
+						{
 							name: "get_repo",
 							description: "Get repo",
-							parameters: { type: "object" },
+							inputSchema: { type: "object" },
 						},
+					],
+					config: {
+						transport: "stdio",
+						name: "github",
+						command: "echo",
+						enabled: true,
 					},
-				],
+				},
 			],
 			[
 				"gitlab",
-				[
-					{
-						type: "function",
-						function: {
+				{
+					tools: [
+						{
 							name: "list_projects", // Different naming scheme
 							description: "List projects",
-							parameters: { type: "object" },
+							inputSchema: { type: "object" },
 						},
+					],
+					config: {
+						transport: "stdio",
+						name: "gitlab",
+						command: "echo",
+						enabled: true,
 					},
-				],
+				},
 			],
 		]);
 
@@ -246,32 +297,48 @@ describe("buildToolSet", () => {
 	});
 
 	it("processes multiple MCP servers cleanly when no collisions", () => {
-		const mcpTools = new Map<string, import("@bound/client").ToolDefinition[]>([
+		const mcpTools = new Map<
+			string,
+			{
+				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				config: import("../config").McpServerConfig;
+			}
+		>([
 			[
 				"github",
-				[
-					{
-						type: "function",
-						function: {
+				{
+					tools: [
+						{
 							name: "list_repos",
 							description: "List repos",
-							parameters: { type: "object" },
+							inputSchema: { type: "object" },
 						},
+					],
+					config: {
+						transport: "stdio",
+						name: "github",
+						command: "echo",
+						enabled: true,
 					},
-				],
+				},
 			],
 			[
 				"slack",
-				[
-					{
-						type: "function",
-						function: {
+				{
+					tools: [
+						{
 							name: "send_message",
 							description: "Send message",
-							parameters: { type: "object" },
+							inputSchema: { type: "object" },
 						},
+					],
+					config: {
+						transport: "stdio",
+						name: "slack",
+						command: "echo",
+						enabled: true,
 					},
-				],
+				},
 			],
 		]);
 
@@ -287,6 +354,275 @@ describe("buildToolSet", () => {
 		// Check handlers
 		expect(handlers.has("boundless_mcp_github_list_repos")).toBe(true);
 		expect(handlers.has("boundless_mcp_slack_send_message")).toBe(true);
+	});
+	it("filters MCP tools using allowTools whitelist (AC6.4)", () => {
+		const mcpTools = new Map<
+			string,
+			{
+				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				config: import("../config").McpServerConfig;
+			}
+		>([
+			[
+				"fileserver",
+				{
+					tools: [
+						{
+							name: "read",
+							description: "Read file",
+							inputSchema: { type: "object" },
+						},
+						{
+							name: "write",
+							description: "Write file",
+							inputSchema: { type: "object" },
+						},
+						{
+							name: "delete",
+							description: "Delete file",
+							inputSchema: { type: "object" },
+						},
+					],
+					config: {
+						transport: "stdio",
+						name: "fileserver",
+						command: "echo",
+						enabled: true,
+						allowTools: ["read", "write"],
+					},
+				},
+			],
+		]);
+
+		const { tools } = buildToolSet("/tmp", "localhost", mcpTools);
+
+		// Should have 4 core + 2 MCP tools (delete excluded)
+		expect(tools).toHaveLength(6);
+
+		// Check allowed tools are present
+		expect(tools.find((t) => t.function.name === "boundless_mcp_fileserver_read")).toBeDefined();
+		expect(tools.find((t) => t.function.name === "boundless_mcp_fileserver_write")).toBeDefined();
+
+		// Check excluded tool is NOT present
+		expect(
+			tools.find((t) => t.function.name === "boundless_mcp_fileserver_delete"),
+		).toBeUndefined();
+	});
+
+	it("applies confirm gating to marked tools (AC6.5)", async () => {
+		let confirmCalled = false;
+		const confirmFn = async (toolName: string): Promise<boolean> => {
+			confirmCalled = true;
+			expect(toolName).toBe("boundless_mcp_admin_destroy_database");
+			return false; // User declines
+		};
+
+		const mcpTools = new Map<
+			string,
+			{
+				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				config: import("../config").McpServerConfig;
+			}
+		>([
+			[
+				"admin",
+				{
+					tools: [
+						{
+							name: "destroy_database",
+							description: "Destroy database",
+							inputSchema: { type: "object" },
+						},
+					],
+					config: {
+						transport: "stdio",
+						name: "admin",
+						command: "echo",
+						enabled: true,
+						confirm: ["destroy_database"],
+					},
+				},
+			],
+		]);
+
+		const { handlers } = buildToolSet("/tmp", "localhost", mcpTools, confirmFn);
+
+		const handler = handlers.get("boundless_mcp_admin_destroy_database");
+		expect(handler).toBeDefined();
+
+		if (!handler) return;
+
+		// Call the handler
+		const result = await handler({}, new AbortController().signal, "/tmp");
+
+		// Verify confirmFn was called
+		expect(confirmCalled).toBe(true);
+
+		// Verify result is an error
+		expect(result.isError).toBe(true);
+		expect(result.content[0]?.type).toBe("text");
+		if (result.content[0]?.type === "text") {
+			expect(result.content[0].text).toContain("declined");
+		}
+	});
+
+	it("allows confirmed tool calls when user approves (AC6.5)", async () => {
+		const confirmFn = async (_toolName: string): Promise<boolean> => {
+			return true; // User approves
+		};
+
+		const mcpTools = new Map<
+			string,
+			{
+				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				config: import("../config").McpServerConfig;
+			}
+		>([
+			[
+				"admin",
+				{
+					tools: [
+						{
+							name: "destroy_database",
+							description: "Destroy database",
+							inputSchema: { type: "object" },
+						},
+					],
+					config: {
+						transport: "stdio",
+						name: "admin",
+						command: "echo",
+						enabled: true,
+						confirm: ["destroy_database"],
+					},
+				},
+			],
+		]);
+
+		const { handlers } = buildToolSet("/tmp", "localhost", mcpTools, confirmFn);
+
+		const handler = handlers.get("boundless_mcp_admin_destroy_database");
+		expect(handler).toBeDefined();
+
+		if (!handler) return;
+
+		// Call the handler
+		const result = await handler({}, new AbortController().signal, "/tmp");
+
+		// Verify result is NOT an error
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toBeDefined();
+	});
+
+	it("handles missing confirmFn gracefully for confirm-marked tools", async () => {
+		// When confirmFn is not provided, confirm-marked tools should still work
+		const mcpTools = new Map<
+			string,
+			{
+				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				config: import("../config").McpServerConfig;
+			}
+		>([
+			[
+				"admin",
+				{
+					tools: [
+						{
+							name: "destroy_database",
+							description: "Destroy database",
+							inputSchema: { type: "object" },
+						},
+					],
+					config: {
+						transport: "stdio",
+						name: "admin",
+						command: "echo",
+						enabled: true,
+						confirm: ["destroy_database"],
+					},
+				},
+			],
+		]);
+
+		const { handlers } = buildToolSet("/tmp", "localhost", mcpTools);
+
+		const handler = handlers.get("boundless_mcp_admin_destroy_database");
+		expect(handler).toBeDefined();
+
+		if (!handler) return;
+
+		// Call the handler - should not throw even without confirmFn
+		const result = await handler({}, new AbortController().signal, "/tmp");
+
+		// Verify result is NOT an error (base handler returned)
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toBeDefined();
+	});
+
+	it("combines allowTools and confirm filtering", async () => {
+		const confirmFn = async (_toolName: string): Promise<boolean> => {
+			return false; // Always decline
+		};
+
+		const mcpTools = new Map<
+			string,
+			{
+				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				config: import("../config").McpServerConfig;
+			}
+		>([
+			[
+				"admin",
+				{
+					tools: [
+						{
+							name: "read",
+							description: "Read",
+							inputSchema: { type: "object" },
+						},
+						{
+							name: "write",
+							description: "Write",
+							inputSchema: { type: "object" },
+						},
+						{
+							name: "delete",
+							description: "Delete",
+							inputSchema: { type: "object" },
+						},
+					],
+					config: {
+						transport: "stdio",
+						name: "admin",
+						command: "echo",
+						enabled: true,
+						allowTools: ["read", "write"], // delete is excluded
+						confirm: ["write"], // write requires confirmation
+					},
+				},
+			],
+		]);
+
+		const { tools, handlers } = buildToolSet("/tmp", "localhost", mcpTools, confirmFn);
+
+		// Should have 4 core + 2 MCP tools (delete excluded)
+		expect(tools).toHaveLength(6);
+
+		// read should exist without confirmation
+		expect(tools.find((t) => t.function.name === "boundless_mcp_admin_read")).toBeDefined();
+
+		// write should exist with confirmation
+		expect(tools.find((t) => t.function.name === "boundless_mcp_admin_write")).toBeDefined();
+
+		// delete should NOT exist (filtered by allowTools)
+		expect(tools.find((t) => t.function.name === "boundless_mcp_admin_delete")).toBeUndefined();
+
+		// Test that write handler has confirmation gate
+		const writeHandler = handlers.get("boundless_mcp_admin_write");
+		if (writeHandler) {
+			const result = await writeHandler({}, new AbortController().signal, "/tmp");
+			expect(result.isError).toBe(true);
+		}
 	});
 });
 
