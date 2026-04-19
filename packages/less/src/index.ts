@@ -1,2 +1,3 @@
 // @bound/less — boundless terminal client
-// Placeholder for package scaffolding
+export * from "./config";
+export * from "./lockfile";
