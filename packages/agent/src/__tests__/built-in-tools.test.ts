@@ -315,4 +315,53 @@ describe("built-in-tools", () => {
 			expect(result).toMatch(/@@ -\d/);
 		});
 	});
+
+	describe("read (image files)", () => {
+		it("returns ContentBlock[] with image block for PNG files", async () => {
+			// Write a minimal PNG's raw bytes as a string into the VFS
+			const pngBuffer = Buffer.from(
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+				"base64",
+			);
+			await fs.writeFile("/image.png", pngBuffer.toString("binary"));
+
+			const result = await tool("read").execute({ path: "/image.png" });
+
+			// Should return ContentBlock[] with an image block, not an error string
+			expect(Array.isArray(result)).toBe(true);
+			const blocks = result as Array<Record<string, unknown>>;
+			const imageBlock = blocks.find((b) => b.type === "image");
+			expect(imageBlock).toBeDefined();
+			expect((imageBlock as Record<string, unknown>).source).toEqual({
+				type: "base64",
+				media_type: "image/png",
+				data: expect.any(String),
+			});
+		});
+
+		it("returns ContentBlock[] with image block for JPEG files", async () => {
+			const jpegBuffer = Buffer.from([
+				0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00,
+				0x01, 0x00, 0x01, 0x00, 0x00, 0xff, 0xd9,
+			]);
+			await fs.writeFile("/photo.jpg", jpegBuffer.toString("binary"));
+
+			const result = await tool("read").execute({ path: "/photo.jpg" });
+
+			expect(Array.isArray(result)).toBe(true);
+			const blocks = result as Array<Record<string, unknown>>;
+			const imageBlock = blocks.find((b) => b.type === "image");
+			expect(imageBlock).toBeDefined();
+		});
+
+		it("still returns error string for non-image binary files", async () => {
+			const binaryContent = String.fromCharCode(0, 1, 2, 3, 4, 5);
+			await fs.writeFile("/data.bin", binaryContent);
+
+			const result = await tool("read").execute({ path: "/data.bin" });
+
+			expect(typeof result).toBe("string");
+			expect(result as string).toContain("Error: binary content not supported");
+		});
+	});
 });

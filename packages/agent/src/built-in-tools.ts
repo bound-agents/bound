@@ -145,6 +145,44 @@ function unifiedDiff(path: string, oldText: string, newText: string): string {
 	return hunks.join("\n");
 }
 
+// ─── Image detection ────────────────────────────────────────────────
+
+/**
+ * Detect image type from magic bytes in a binary string.
+ * Returns the media type if recognized, undefined otherwise.
+ */
+function detectImageMagicBytes(raw: string): string | undefined {
+	if (raw.length < 4) return undefined;
+
+	const b0 = raw.charCodeAt(0);
+	const b1 = raw.charCodeAt(1);
+	const b2 = raw.charCodeAt(2);
+	const b3 = raw.charCodeAt(3);
+
+	// PNG: 89 50 4E 47
+	if (b0 === 0x89 && b1 === 0x50 && b2 === 0x4e && b3 === 0x47) return "image/png";
+	// JPEG: FF D8 FF
+	if (b0 === 0xff && b1 === 0xd8 && b2 === 0xff) return "image/jpeg";
+	// GIF: 47 49 46 38
+	if (b0 === 0x47 && b1 === 0x49 && b2 === 0x46 && b3 === 0x38) return "image/gif";
+	// WebP: RIFF....WEBP
+	if (
+		raw.length >= 12 &&
+		b0 === 0x52 &&
+		b1 === 0x49 &&
+		b2 === 0x46 &&
+		b3 === 0x46 &&
+		raw.charCodeAt(8) === 0x57 &&
+		raw.charCodeAt(9) === 0x45 &&
+		raw.charCodeAt(10) === 0x42 &&
+		raw.charCodeAt(11) === 0x50
+	) {
+		return "image/webp";
+	}
+
+	return undefined;
+}
+
 // ─── Tool implementations ───────────────────────────────────────────
 
 function createReadTool(fs: IFileSystem): BuiltInTool {
@@ -204,6 +242,22 @@ function createReadTool(fs: IFileSystem): BuiltInTool {
 			// Binary detection: check first 8KB for NUL byte
 			const checkSlice = raw.slice(0, BINARY_CHECK_BYTES);
 			if (checkSlice.includes("\0")) {
+				// Check if this is an image file before rejecting as binary
+				const imageType = detectImageMagicBytes(raw);
+				if (imageType) {
+					const base64Data = Buffer.from(raw, "binary").toString("base64");
+					return [
+						{ type: "text" as const, text: `Image file: ${path}` },
+						{
+							type: "image" as const,
+							source: {
+								type: "base64" as const,
+								media_type: imageType as "image/png" | "image/jpeg" | "image/gif" | "image/webp",
+								data: base64Data,
+							},
+						},
+					];
+				}
 				return "Error: binary content not supported by read tool; use bash with appropriate tooling";
 			}
 
