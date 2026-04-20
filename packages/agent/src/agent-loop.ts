@@ -63,6 +63,13 @@ import { isClientToolCallRequest } from "./types";
 export const SILENCE_TIMEOUT_MS = 60_000;
 export const MAX_SILENCE_RETRIES = 10;
 /**
+ * Maximum retries when the silence timeout fires before ANY chunks are received.
+ * First-chunk timeouts are almost always caused by model processing time (thinking,
+ * cold cache), not transient network issues. Retrying the same request just wastes
+ * time since the model needs the same processing time each attempt.
+ */
+export const MAX_FIRST_CHUNK_RETRIES = 2;
+/**
  * First-chunk timeout multiplier. The first iteration of withSilenceTimeout
  * uses timeoutMs * FIRST_CHUNK_TIMEOUT_MULTIPLIER to account for model
  * startup time, extended thinking processing, and Bedrock cold-cache delays.
@@ -565,14 +572,22 @@ export class AgentLoop {
 								} catch (silenceErr) {
 									const isSilenceTimeout =
 										silenceErr instanceof Error && silenceErr.message.includes("silence timeout");
-									if (isSilenceTimeout && silenceRetries < effectiveMaxRetries) {
+									// First-chunk timeouts (0 chunks received) are almost always model
+									// processing time, not transient issues. Cap retries to avoid
+									// wasting 10+ minutes resending identical requests.
+									const retryLimit =
+										chunks.length === 0
+											? Math.min(effectiveMaxRetries, MAX_FIRST_CHUNK_RETRIES)
+											: effectiveMaxRetries;
+									if (isSilenceTimeout && silenceRetries < retryLimit) {
 										silenceRetries++;
 										chunks.length = 0; // Clear any partial chunks
 										// Reset inactivity timeout — we're actively retrying, not stalled
 										this.config.onActivity?.();
 										this.ctx.logger.warn("[agent-loop] Silence timeout, retrying", {
 											attempt: silenceRetries,
-											max: effectiveMaxRetries,
+											max: retryLimit,
+											firstChunkTimeout: retryLimit <= MAX_FIRST_CHUNK_RETRIES,
 										});
 										continue;
 									}
