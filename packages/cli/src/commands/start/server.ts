@@ -400,6 +400,14 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								: undefined;
 							const systemPromptAddition = wsRegistry?.getSystemPromptAdditionForThread(thread_id);
 
+							// Emit "thinking" status so WebSocket clients (TUI) show thinking indicator
+							appContext.eventBus.emit("status:forward", {
+								thread_id: thread_id,
+								status: "thinking",
+								tokens: 0,
+								detail: null,
+							});
+
 							const { agentResult: result } = await runLocalAgentLoop({
 								eventBus: appContext.eventBus,
 								threadId: thread_id,
