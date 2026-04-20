@@ -11,6 +11,7 @@ import type {
 } from "@aws-sdk/client-bedrock-runtime";
 import { formatError } from "@bound/shared";
 import type { DocumentType } from "@smithy/types";
+import { sniffImageMediaType } from "./image-utils";
 import { withRetry } from "./retry";
 import { extractTextFromBlocks, sanitizeToolName } from "./stream-utils";
 import type { BackendCapabilities, ChatParams, LLMBackend, LLMMessage, StreamChunk } from "./types";
@@ -112,14 +113,9 @@ export function toBedrockMessages(messages: LLMMessage[]): Message[] {
 			if (Array.isArray(msg.content)) {
 				for (const block of msg.content) {
 					if (block.type === "image" && block.source?.type === "base64") {
-						const formatMap: Record<string, string> = {
-							"image/png": "png",
-							"image/jpeg": "jpeg",
-							"image/gif": "gif",
-							"image/webp": "webp",
-						};
-						const format = formatMap[block.source.media_type] || "png";
 						const bytes = Uint8Array.from(atob(block.source.data), (c) => c.charCodeAt(0));
+						const sniffed = sniffImageMediaType(bytes) ?? block.source.media_type;
+						const format = sniffed.replace("image/", "") as "png" | "jpeg" | "gif" | "webp";
 						toolResultContent.push({
 							image: {
 								format,
@@ -164,13 +160,13 @@ export function toBedrockMessages(messages: LLMMessage[]): Message[] {
 				} else if (block.type === "image" && block.source) {
 					const src = block.source;
 					if (src.type === "base64") {
-						const format = src.media_type.replace("image/", "") as "png" | "jpeg" | "gif" | "webp";
+						const bytes = Uint8Array.from(atob(src.data), (c) => c.charCodeAt(0));
+						const sniffed = sniffImageMediaType(bytes) ?? src.media_type;
+						const format = sniffed.replace("image/", "") as "png" | "jpeg" | "gif" | "webp";
 						content.push({
 							image: {
 								format,
-								source: {
-									bytes: Uint8Array.from(atob(src.data), (c) => c.charCodeAt(0)),
-								},
+								source: { bytes },
 							},
 						});
 					}

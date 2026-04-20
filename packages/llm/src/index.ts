@@ -42,3 +42,5 @@ export {
 } from "./stream-utils";
 
 export { wrapFetchError, checkHttpError } from "./error-utils";
+
+export { sniffImageMediaType, correctMediaType } from "./image-utils";

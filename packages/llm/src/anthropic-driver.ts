@@ -1,4 +1,5 @@
 import { checkHttpError, wrapFetchError } from "./error-utils";
+import { correctMediaType } from "./image-utils";
 import { withRetry } from "./retry";
 import {
 	SSE_DATA_PREFIX,
@@ -151,7 +152,7 @@ export function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] 
 								type: "image" as const,
 								source: {
 									type: "base64" as const,
-									media_type: block.source.media_type,
+									media_type: correctMediaType(block.source.data, block.source.media_type),
 									data: block.source.data,
 								},
 							});
@@ -188,7 +189,7 @@ export function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] 
 								type: "image",
 								source: {
 									type: "base64",
-									media_type: src.media_type,
+									media_type: correctMediaType(src.data, src.media_type),
 									data: src.data,
 								},
 							});
