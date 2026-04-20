@@ -939,15 +939,17 @@ describe("BedrockDriver", () => {
 					role: string;
 					content: Array<Record<string, unknown>>;
 				}>;
-				// Bedrock messages: [user(placeholder), assistant(tool_use), user(3 toolResults), user(text)]
-				// Placeholder prepended because first real message is assistant (tool_call)
-				expect(messages.length).toBe(4);
+				// Bedrock messages: [user(placeholder), assistant(tool_use), user(3 toolResults + text)]
+				// Placeholder prepended because first real message is assistant (tool_call).
+				// The consecutive user messages (toolResults + text) are merged into one.
+				expect(messages.length).toBe(3);
 				expect(messages[0].role).toBe("user");
-				// cachePoint should be on messages[2] (= 4 - 2), not out of bounds
-				const cachedMsg = messages[2].content;
+				// cachePoint should be on messages[1] (= 3 - 2), the assistant message
+				const cachedMsg = messages[1].content;
 				expect(cachedMsg.at(-1)).toEqual({ cachePoint: { type: "default" } });
-				// Last message should NOT have cachePoint
-				expect(messages[3].content).toEqual([{ text: "thanks" }]);
+				// Last (merged) user message should have toolResults + text
+				const lastContent = messages[2].content;
+				expect(lastContent.at(-1)).toEqual({ text: "thanks" });
 			},
 		);
 
@@ -1088,6 +1090,60 @@ describe("toBedrockMessages — blank text guard", () => {
 		expect(result).toHaveLength(3);
 		expect(result.at(-1)?.role).toBe("user");
 		expect(result.at(-1)?.content).toEqual([{ text: "bye" }]);
+	});
+});
+
+describe("toBedrockMessages — consecutive same-role merging", () => {
+	it("merges consecutive user messages into a single message", () => {
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "hello" },
+			{ role: "assistant", content: "hi" },
+			// These tool_result + user messages simulate what happens when alerts
+			// are filtered from between user messages in context assembly
+			{
+				role: "tool_call",
+				content: JSON.stringify([{ type: "tool_use", id: "tc-1", name: "bash", input: {} }]),
+			},
+			{ role: "tool_result", content: "done", tool_use_id: "tc-1" },
+			{ role: "user", content: "continue" },
+			{ role: "user", content: "continue (again)" },
+			{ role: "user", content: "bump" },
+		];
+		const result = toBedrockMessages(messages);
+
+		// Consecutive users should be merged — no two adjacent messages should have the same role
+		for (let i = 1; i < result.length; i++) {
+			if (result[i].role === result[i - 1].role) {
+				throw new Error(
+					`Adjacent messages at index ${i - 1} and ${i} have same role "${result[i].role}"`,
+				);
+			}
+		}
+
+		// The merged user message should contain all three text blocks
+		const lastUserMsg = result.at(-1);
+		expect(lastUserMsg?.role).toBe("user");
+		const textBlocks = (lastUserMsg?.content as Array<{ text?: string }>).filter((b) => b.text);
+		expect(textBlocks.length).toBe(3);
+	});
+
+	it("merges consecutive assistant messages into a single message", () => {
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "hello" },
+			{ role: "assistant", content: "thinking..." },
+			{ role: "assistant", content: "here is my answer" },
+			{ role: "user", content: "thanks" },
+		];
+		const result = toBedrockMessages(messages);
+
+		// No adjacent same-role
+		for (let i = 1; i < result.length; i++) {
+			if (result[i].role === result[i - 1].role) {
+				throw new Error(
+					`Adjacent messages at index ${i - 1} and ${i} have same role "${result[i].role}"`,
+				);
+			}
+		}
 	});
 });
 

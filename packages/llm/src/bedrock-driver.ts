@@ -163,12 +163,30 @@ export function toBedrockMessages(messages: LLMMessage[]): Message[] {
 		}
 	}
 
+	// Bedrock Converse API requires alternating user/assistant turns.
+	// When context assembly filters alerts/system messages between user messages,
+	// consecutive same-role messages can result. Merge them by combining content blocks.
+	const merged: Message[] = [];
+	for (const msg of result) {
+		const last = merged.at(-1);
+		if (
+			last &&
+			last.role === msg.role &&
+			Array.isArray(last.content) &&
+			Array.isArray(msg.content)
+		) {
+			(last.content as Array<unknown>).push(...(msg.content as Array<unknown>));
+		} else {
+			merged.push(msg);
+		}
+	}
+
 	// Bedrock requires the conversation to start with a user message.
 	// When the first message is not "user" (e.g. scheduled task threads
 	// that only have system wakeup + tool_call/tool_result), prepend a
 	// placeholder so the API doesn't reject the request.
-	if (result.length > 0 && result[0].role !== "user") {
-		result.unshift({
+	if (merged.length > 0 && merged[0].role !== "user") {
+		merged.unshift({
 			role: "user",
 			content: [{ text: "<system-notification />" }],
 		});
@@ -178,14 +196,14 @@ export function toBedrockMessages(messages: LLMMessage[]): Message[] {
 	// prefill). This can happen when the sanitizer reorders messages and the last
 	// message ends up being an assistant (e.g., orphaned tool calls followed by
 	// the assistant's pre-tool-call thinking).
-	if (result.length > 0 && result.at(-1)?.role !== "user") {
-		result.push({
+	if (merged.length > 0 && merged.at(-1)?.role !== "user") {
+		merged.push({
 			role: "user",
 			content: [{ text: "<continue />" }],
 		});
 	}
 
-	return result;
+	return merged;
 }
 
 export class BedrockDriver implements LLMBackend {
