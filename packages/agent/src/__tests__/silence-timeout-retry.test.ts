@@ -9,12 +9,7 @@ import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import {
-	AgentLoop,
-	MAX_FIRST_CHUNK_RETRIES,
-	MAX_SILENCE_RETRIES,
-	SILENCE_TIMEOUT_MS,
-} from "../agent-loop";
+import { AgentLoop, MAX_SILENCE_RETRIES, SILENCE_TIMEOUT_MS } from "../agent-loop";
 
 /**
  * LLM backend that throws silence timeout errors N times, then succeeds.
@@ -112,12 +107,12 @@ describe("Silence timeout retry", () => {
 		} as unknown as AppContext;
 	}
 
-	it("should export SILENCE_TIMEOUT_MS as 60000", () => {
-		expect(SILENCE_TIMEOUT_MS).toBe(60_000);
+	it("should export SILENCE_TIMEOUT_MS as 600000", () => {
+		expect(SILENCE_TIMEOUT_MS).toBe(600_000);
 	});
 
-	it("should export MAX_SILENCE_RETRIES as 10", () => {
-		expect(MAX_SILENCE_RETRIES).toBe(10);
+	it("should export MAX_SILENCE_RETRIES as 3", () => {
+		expect(MAX_SILENCE_RETRIES).toBe(3);
 	});
 
 	it("should retry on silence timeout and succeed if next attempt works", async () => {
@@ -150,9 +145,9 @@ describe("Silence timeout retry", () => {
 		expect(alerts.length).toBe(0);
 	});
 
-	it("should retry up to MAX_FIRST_CHUNK_RETRIES before succeeding", async () => {
-		// Fail MAX_FIRST_CHUNK_RETRIES times (within first-chunk cap), then succeed
-		const backend = new SilenceTimeoutBackend(MAX_FIRST_CHUNK_RETRIES);
+	it("should retry multiple times before succeeding", async () => {
+		// Fail MAX_SILENCE_RETRIES times, then succeed
+		const backend = new SilenceTimeoutBackend(MAX_SILENCE_RETRIES);
 
 		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
 			threadId,
@@ -162,12 +157,12 @@ describe("Silence timeout retry", () => {
 		const result = await loop.run();
 
 		expect(result.error).toBeUndefined();
-		expect(backend.getCallCount()).toBe(MAX_FIRST_CHUNK_RETRIES + 1); // failures + 1 success
+		expect(backend.getCallCount()).toBe(MAX_SILENCE_RETRIES + 1); // failures + 1 success
 	});
 
-	it("should fail after exhausting first-chunk retries", async () => {
-		// Fail more than MAX_FIRST_CHUNK_RETRIES times (all first-chunk timeouts)
-		const backend = new SilenceTimeoutBackend(MAX_FIRST_CHUNK_RETRIES + 2);
+	it("should fail after exhausting all retries", async () => {
+		// Fail more than MAX_SILENCE_RETRIES times
+		const backend = new SilenceTimeoutBackend(MAX_SILENCE_RETRIES + 1);
 
 		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
 			threadId,
@@ -176,12 +171,11 @@ describe("Silence timeout retry", () => {
 
 		const result = await loop.run();
 
-		// Should have an error
 		expect(result.error).toBeDefined();
 		expect(result.error).toContain("silence timeout");
 
-		// Backend was called MAX_FIRST_CHUNK_RETRIES + 1 times (initial + capped retries)
-		expect(backend.getCallCount()).toBe(MAX_FIRST_CHUNK_RETRIES + 1);
+		// Backend was called MAX_SILENCE_RETRIES + 1 times (initial + retries)
+		expect(backend.getCallCount()).toBe(MAX_SILENCE_RETRIES + 1);
 
 		// Alert should be persisted
 		const alerts = db
@@ -189,27 +183,6 @@ describe("Silence timeout retry", () => {
 			.all(threadId) as Array<{ content: string }>;
 		expect(alerts.length).toBe(1);
 		expect(alerts[0].content).toContain("silence timeout");
-	});
-
-	it("should export MAX_FIRST_CHUNK_RETRIES as 2", () => {
-		expect(MAX_FIRST_CHUNK_RETRIES).toBe(2);
-	});
-
-	it("should cap retries at MAX_FIRST_CHUNK_RETRIES when no chunks were received", async () => {
-		// SilenceTimeoutBackend throws before yielding any chunks (first-chunk timeout).
-		// With MAX_FIRST_CHUNK_RETRIES = 2, it should only try 3 times total (1 initial + 2 retries).
-		const backend = new SilenceTimeoutBackend(MAX_FIRST_CHUNK_RETRIES + 2); // more fails than retries allow
-		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
-			threadId,
-			userId: "test-user",
-		});
-
-		const result = await loop.run();
-
-		expect(result.error).toBeDefined();
-		expect(result.error).toContain("silence timeout");
-		// Should only call backend MAX_FIRST_CHUNK_RETRIES + 1 times (initial + capped retries)
-		expect(backend.getCallCount()).toBe(MAX_FIRST_CHUNK_RETRIES + 1);
 	});
 
 	it("should not retry on non-transient errors", async () => {

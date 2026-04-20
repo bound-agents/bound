@@ -60,58 +60,29 @@ import type {
 } from "./types";
 import { isClientToolCallRequest } from "./types";
 
-export const SILENCE_TIMEOUT_MS = 60_000;
-export const MAX_SILENCE_RETRIES = 10;
-/**
- * Maximum retries when the silence timeout fires before ANY chunks are received.
- * First-chunk timeouts are almost always caused by model processing time (thinking,
- * cold cache), not transient network issues. Retrying the same request just wastes
- * time since the model needs the same processing time each attempt.
- */
-export const MAX_FIRST_CHUNK_RETRIES = 2;
-/**
- * First-chunk timeout multiplier. The first iteration of withSilenceTimeout
- * uses timeoutMs * FIRST_CHUNK_TIMEOUT_MULTIPLIER to account for model
- * startup time, extended thinking processing, and Bedrock cold-cache delays.
- * Subsequent chunks use the base timeoutMs.
- */
-export const FIRST_CHUNK_TIMEOUT_MULTIPLIER = 5;
+export const SILENCE_TIMEOUT_MS = 600_000;
+export const MAX_SILENCE_RETRIES = 3;
 /** Default max output tokens. Bedrock defaults to 4096 if unset, which truncates large tool calls. */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 
 /**
  * Scale silence timeout based on estimated context size.
- * Bedrock cold-cache processing at 200k+ tokens can take 2-3+ minutes
- * for the first streaming chunk. Use tiered scaling:
- *   <= 50k: base (60s)
- *   50k-100k: base + 2s per 10k over 50k
- *   100k+: minimum 180s + 3s per 10k over 100k
+ * With a 10-minute base timeout, only very large contexts (100k+) need
+ * additional time for cold-cache processing.
  */
 export function scaledSilenceTimeout(baseMs: number, estimatedTokens: number): number {
-	if (estimatedTokens <= 50_000) return baseMs;
-	if (estimatedTokens <= 100_000) {
-		const extraMs = Math.floor((estimatedTokens - 50_000) / 10_000) * 2_000;
-		return baseMs + extraMs;
-	}
-	// Large context tier: 180s floor + 3s per 10k over 100k
-	const largeBaseMs = 180_000;
-	const extraMs = Math.floor((estimatedTokens - 100_000) / 10_000) * 3_000;
-	return Math.max(largeBaseMs, baseMs) + extraMs;
+	if (estimatedTokens <= 100_000) return baseMs;
+	// Large context: add 1 minute per 50k tokens over 100k
+	const extraMs = Math.floor((estimatedTokens - 100_000) / 50_000) * 60_000;
+	return baseMs + extraMs;
 }
 
 /**
- * Scale max silence retries based on context size.
- * For large cold-cache contexts, each retry resends the full context
- * and has the same chance of timing out. Retrying 10 times at 210s
- * each wastes 35 minutes. Use fewer retries for larger contexts.
- *   <= 100k: 10 retries (standard)
- *   100k-150k: 5 retries
- *   150k+: 3 retries
+ * Scale max silence retries. With 10-minute timeouts, each retry is expensive.
+ * Keep retries low to avoid multi-hour stalls.
  */
-export function scaledMaxRetries(estimatedTokens: number): number {
-	if (estimatedTokens <= 100_000) return MAX_SILENCE_RETRIES;
-	if (estimatedTokens <= 150_000) return 5;
-	return 3;
+export function scaledMaxRetries(_estimatedTokens: number): number {
+	return MAX_SILENCE_RETRIES;
 }
 
 const textEncoder = new TextEncoder();
@@ -575,22 +546,14 @@ export class AgentLoop {
 								} catch (silenceErr) {
 									const isSilenceTimeout =
 										silenceErr instanceof Error && silenceErr.message.includes("silence timeout");
-									// First-chunk timeouts (0 chunks received) are almost always model
-									// processing time, not transient issues. Cap retries to avoid
-									// wasting 10+ minutes resending identical requests.
-									const retryLimit =
-										chunks.length === 0
-											? Math.min(effectiveMaxRetries, MAX_FIRST_CHUNK_RETRIES)
-											: effectiveMaxRetries;
-									if (isSilenceTimeout && silenceRetries < retryLimit) {
+									if (isSilenceTimeout && silenceRetries < effectiveMaxRetries) {
 										silenceRetries++;
 										chunks.length = 0; // Clear any partial chunks
 										// Reset inactivity timeout — we're actively retrying, not stalled
 										this.config.onActivity?.();
 										this.ctx.logger.warn("[agent-loop] Silence timeout, retrying", {
 											attempt: silenceRetries,
-											max: retryLimit,
-											firstChunkTimeout: retryLimit <= MAX_FIRST_CHUNK_RETRIES,
+											max: effectiveMaxRetries,
 										});
 										continue;
 									}
@@ -1801,27 +1764,20 @@ export class AgentLoop {
 	}
 }
 
-/**
- * Rejects if no item yielded within timeoutMs. Uses a longer timeout
- * (timeoutMs * FIRST_CHUNK_TIMEOUT_MULTIPLIER) for the first chunk to
- * account for model startup, extended thinking, and cold-cache delays.
- */
+/** Rejects if no item yielded within timeoutMs. */
 export async function* withSilenceTimeout<T>(
 	source: AsyncIterable<T>,
 	timeoutMs: number,
 ): AsyncGenerator<T> {
 	const iterator = source[Symbol.asyncIterator]();
-	let firstChunk = true;
 
 	while (true) {
-		const effectiveTimeout = firstChunk ? timeoutMs * FIRST_CHUNK_TIMEOUT_MULTIPLIER : timeoutMs;
-
 		const nextChunkPromise = iterator.next();
 		let timerId: ReturnType<typeof setTimeout> | null = null;
 		const timeoutPromise = new Promise<never>((_, reject) => {
 			timerId = setTimeout(() => {
-				reject(new Error(`LLM silence timeout: no chunk received for ${effectiveTimeout}ms`));
-			}, effectiveTimeout);
+				reject(new Error(`LLM silence timeout: no chunk received for ${timeoutMs}ms`));
+			}, timeoutMs);
 		});
 
 		let result: IteratorResult<T>;
@@ -1840,7 +1796,6 @@ export async function* withSilenceTimeout<T>(
 			return;
 		}
 
-		firstChunk = false;
 		yield result.value;
 	}
 }
