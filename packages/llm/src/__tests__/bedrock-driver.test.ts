@@ -642,6 +642,71 @@ describe("BedrockDriver", () => {
 			},
 		);
 
+		it.skipIf(shouldSkip)("includes image blocks in tool_result content", async () => {
+			sendSpy.mockImplementation(() =>
+				Promise.resolve(
+					createMockStream([{ metadata: { usage: { inputTokens: 1, outputTokens: 1 } } }]),
+				),
+			);
+
+			const driver = makeDriver();
+			await collectChunks(
+				driver.chat({
+					model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+					messages: [
+						{ role: "user", content: "Take a screenshot" },
+						{
+							role: "tool_call",
+							content: JSON.stringify([
+								{ type: "tool_use", id: "tu-1", name: "screenshot", input: {} },
+							]),
+						},
+						{
+							role: "tool_result",
+							content: [
+								{ type: "text", text: "Here is the screenshot" },
+								{
+									type: "image",
+									source: {
+										type: "base64",
+										media_type: "image/png",
+										data: "iVBORw0KGgo=",
+									},
+								},
+							],
+							tool_use_id: "tu-1",
+						},
+					],
+				}),
+			);
+
+			const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
+			const messages = commandInput.messages as Array<{
+				role: string;
+				content: Array<{
+					toolResult?: { toolUseId: string; content: Array<Record<string, unknown>> };
+				}>;
+			}>;
+
+			// Find the user message with toolResult
+			const userMessages = messages.filter((m) => m.role === "user");
+			const lastUser = userMessages[userMessages.length - 1];
+			const toolResultBlocks = lastUser.content.filter((b) => b.toolResult);
+			expect(toolResultBlocks).toHaveLength(1);
+
+			// The toolResult content should include both text and image
+			// biome-ignore lint/style/noNonNullAssertion: test assertion after length check
+			const resultContent = toolResultBlocks[0].toolResult!.content;
+			expect(resultContent).toHaveLength(2);
+			expect(resultContent[0]).toEqual({ text: "Here is the screenshot" });
+			expect(resultContent[1]).toEqual({
+				image: {
+					format: "png",
+					source: { bytes: expect.any(Uint8Array) },
+				},
+			});
+		});
+
 		it.skipIf(shouldSkip)(
 			"converts tool_call with ContentBlock array to assistant with toolUse blocks",
 			async () => {

@@ -301,6 +301,76 @@ describe("AnthropicDriver", () => {
 		expect(toolResultBlocks[2].tool_use_id).toBe("tu-3");
 	});
 
+	it("should include image blocks in tool_result content", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-3-sonnet-20240229",
+			contextWindow: 200000,
+		});
+
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "What's in this screenshot?" },
+			{
+				role: "tool_call",
+				content: JSON.stringify([{ type: "tool_use", id: "tu-1", name: "screenshot", input: {} }]),
+			},
+			{
+				role: "tool_result",
+				content: [
+					{ type: "text", text: "Here is the screenshot" },
+					{
+						type: "image",
+						source: {
+							type: "base64",
+							media_type: "image/png",
+							data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+						},
+					},
+				],
+				tool_use_id: "tu-1",
+			},
+		];
+
+		let requestBody: string | null = null;
+
+		global.fetch = (async (url: string, options: RequestInit) => {
+			if (url.includes("anthropic.com")) {
+				requestBody = options.body as string;
+				return new Response("data: {}", {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			}
+			return new Response("Not found", { status: 404 });
+		}) as typeof fetch;
+
+		for await (const _ of driver.chat({ model: "claude-3-sonnet-20240229", messages })) {
+			// drain stream
+		}
+
+		expect(requestBody).not.toBeNull();
+		const request = JSON.parse(requestBody as string);
+
+		// Find the tool_result block in the user message
+		const userMessages = request.messages.filter((m: any) => m.role === "user");
+		const lastUser = userMessages[userMessages.length - 1];
+		const toolResultBlocks = lastUser.content.filter((b: any) => b.type === "tool_result");
+		expect(toolResultBlocks).toHaveLength(1);
+
+		// The tool_result content should contain both text and image blocks
+		const resultContent = toolResultBlocks[0].content;
+		expect(resultContent).toHaveLength(2);
+		expect(resultContent[0]).toEqual({ type: "text", text: "Here is the screenshot" });
+		expect(resultContent[1]).toEqual({
+			type: "image",
+			source: {
+				type: "base64",
+				media_type: "image/png",
+				data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+			},
+		});
+	});
+
 	it("should parse SSE stream correctly", async () => {
 		const driver = new AnthropicDriver({
 			apiKey: "test-key",

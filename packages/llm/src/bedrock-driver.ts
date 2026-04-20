@@ -107,12 +107,34 @@ export function toBedrockMessages(messages: LLMMessage[]): Message[] {
 			const textContent = Array.isArray(msg.content)
 				? extractTextFromBlocks(msg.content)
 				: msg.content;
+			const toolResultContent: Array<Record<string, unknown>> = [{ text: textContent }];
+			// Preserve image blocks from tool results (e.g. MCP tools returning screenshots)
+			if (Array.isArray(msg.content)) {
+				for (const block of msg.content) {
+					if (block.type === "image" && block.source?.type === "base64") {
+						const formatMap: Record<string, string> = {
+							"image/png": "png",
+							"image/jpeg": "jpeg",
+							"image/gif": "gif",
+							"image/webp": "webp",
+						};
+						const format = formatMap[block.source.media_type] || "png";
+						const bytes = Uint8Array.from(atob(block.source.data), (c) => c.charCodeAt(0));
+						toolResultContent.push({
+							image: {
+								format,
+								source: { bytes },
+							},
+						});
+					}
+				}
+			}
 			const toolResultBlock = {
 				toolResult: {
 					toolUseId,
-					content: [{ text: textContent }],
+					content: toolResultContent,
 				},
-			};
+			} as unknown as BedrockContentBlock;
 			// Merge consecutive tool_result messages into a single user message.
 			// Bedrock requires ALL toolResult blocks for a multi-tool response to be
 			// in one user message.

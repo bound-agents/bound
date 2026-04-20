@@ -18,7 +18,10 @@ interface AnthropicContentBlock {
 	name?: string;
 	input?: Record<string, unknown>;
 	tool_use_id?: string;
-	content?: Array<{ type: "text"; text: string }>;
+	content?: Array<
+		| { type: "text"; text: string }
+		| { type: "image"; source: { type: "base64"; media_type: string; data: string } }
+	>;
 	source?: {
 		type: "base64";
 		media_type: string;
@@ -132,11 +135,36 @@ export function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] 
 				// Merge consecutive tool_result messages into a single user message —
 				// Anthropic requires ALL tool_result blocks for a multi-tool response to be
 				// in one user message.
+				type ToolResultItem =
+					| { type: "text"; text: string }
+					| { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+				const toolResultContent: ToolResultItem[] = [];
 				const textContent = extractTextFromBlocks(msg.content);
+				if (textContent) {
+					toolResultContent.push({ type: "text" as const, text: textContent });
+				}
+				// Preserve image blocks from tool results (e.g. MCP tools returning screenshots)
+				if (Array.isArray(msg.content)) {
+					for (const block of msg.content) {
+						if (block.type === "image" && block.source?.type === "base64") {
+							toolResultContent.push({
+								type: "image" as const,
+								source: {
+									type: "base64" as const,
+									media_type: block.source.media_type,
+									data: block.source.data,
+								},
+							});
+						}
+					}
+				}
+				if (toolResultContent.length === 0) {
+					toolResultContent.push({ type: "text" as const, text: "" });
+				}
 				const toolResultBlock = {
 					type: "tool_result" as const,
 					tool_use_id: msg.tool_use_id,
-					content: [{ type: "text" as const, text: textContent }],
+					content: toolResultContent,
 				};
 				const lastMsg = result.at(-1);
 				if (lastMsg?.role === "user" && lastMsg.content.some((b) => b.type === "tool_result")) {
