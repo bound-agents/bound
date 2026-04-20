@@ -864,4 +864,45 @@ describe("MCP Bridge", () => {
 
 		db.close();
 	});
+
+	it("serializes image content blocks as JSON ContentBlock[] in stdout", async () => {
+		const imageClient = {
+			getConfig: () => ({ name: "image-server", transport: "stdio", command: "test" }),
+			isConnected: () => true,
+			listTools: async () => [
+				{ name: "screenshot", description: "Take a screenshot", inputSchema: {} },
+			],
+			listResources: async () => [],
+			listPrompts: async () => [],
+			callTool: async () => ({
+				content: "Here is the screenshot",
+				images: [{ media_type: "image/png", data: "iVBORw0KGgo=" }],
+				isError: false,
+			}),
+			readResource: async (uri: string) => ({ uri, content: "" }),
+			invokePrompt: async () => ({ messages: [] }),
+			connect: async () => {},
+			disconnect: async () => {},
+		} as unknown as MCPClient;
+
+		const clients = new Map([["image-server", imageClient]]);
+		const { commands } = await generateMCPCommands(clients);
+		const serverCmd = commands.find((c) => c.name === "image-server");
+		expect(serverCmd).toBeDefined();
+
+		const mockCtx = createMockCommandContext();
+		// biome-ignore lint/style/noNonNullAssertion: test assertion after expect(defined)
+		const result = await serverCmd!.handler({ subcommand: "screenshot" }, mockCtx);
+		expect(result.exitCode).toBe(0);
+
+		// stdout should be a JSON ContentBlock[] with text and image blocks
+		const blocks = JSON.parse(result.stdout);
+		expect(Array.isArray(blocks)).toBe(true);
+		expect(blocks).toHaveLength(2);
+		expect(blocks[0]).toEqual({ type: "text", text: "Here is the screenshot" });
+		expect(blocks[1]).toEqual({
+			type: "image",
+			source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" },
+		});
+	});
 });

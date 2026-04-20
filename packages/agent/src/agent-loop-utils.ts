@@ -1,8 +1,36 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertRow } from "@bound/core";
-import { type CapabilityRequirements, LLMError, type StreamChunk } from "@bound/llm";
+import {
+	type CapabilityRequirements,
+	type ContentBlock,
+	LLMError,
+	type StreamChunk,
+} from "@bound/llm";
 import type { ModelResolution } from "./model-resolution";
+
+/**
+ * Parse tool result content for the in-memory LLM message path.
+ * When content is a JSON-serialized ContentBlock[] containing image blocks,
+ * returns the parsed array so drivers can include images in the API call.
+ * Otherwise returns the original string unchanged.
+ */
+export function parseToolResultContent(content: string): string | ContentBlock[] {
+	try {
+		const parsed = JSON.parse(content);
+		if (
+			Array.isArray(parsed) &&
+			parsed.length > 0 &&
+			parsed[0]?.type &&
+			parsed.some((b: Record<string, unknown>) => b.type === "image")
+		) {
+			return parsed as ContentBlock[];
+		}
+	} catch {
+		// Not JSON — return as-is
+	}
+	return content;
+}
 
 /**
  * Determines whether an LLM error is a transient transport issue worth retrying.

@@ -40,6 +40,7 @@ import {
 	getResolvedModelId,
 	insertThreadMessage,
 	isTransientLLMError,
+	parseToolResultContent,
 } from "./agent-loop-utils";
 import { assembleContext } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
@@ -964,7 +965,7 @@ export class AgentLoop {
 
 						llmMessages.push({
 							role: "tool_result",
-							content,
+							content: parseToolResultContent(content),
 							tool_use_id: toolCall.id,
 						});
 					}

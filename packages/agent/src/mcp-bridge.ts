@@ -256,8 +256,30 @@ export async function generateMCPCommands(
 					const { subcommand: _, ...rawArgs } = args as Record<string, unknown>;
 					const toolArgs = coerceArgsFromSchema(rawArgs, entry.tool.inputSchema);
 					const result = await currentClient.callTool(subcommand, toolArgs);
+
+					// When images are present, serialize as JSON ContentBlock[] so
+					// the agent loop and context assembly can pass them through to the LLM.
+					let stdout = result.content;
+					if (result.images && result.images.length > 0) {
+						const blocks: Array<Record<string, unknown>> = [];
+						if (result.content) {
+							blocks.push({ type: "text", text: result.content });
+						}
+						for (const img of result.images) {
+							blocks.push({
+								type: "image",
+								source: {
+									type: "base64",
+									media_type: img.media_type,
+									data: img.data,
+								},
+							});
+						}
+						stdout = JSON.stringify(blocks);
+					}
+
 					return {
-						stdout: result.content,
+						stdout,
 						stderr: result.isError ? result.content : "",
 						exitCode: result.isError ? 1 : 0,
 					};

@@ -436,3 +436,61 @@ describe("isTransientLLMError", () => {
 		expect(isTransientLLMError(err)).toBe(false);
 	});
 });
+
+describe("parseToolResultContent", () => {
+	// Lazy import since we're adding this function
+	let parseToolResultContent: typeof import("../agent-loop-utils").parseToolResultContent;
+
+	beforeAll(async () => {
+		const mod = await import("../agent-loop-utils");
+		parseToolResultContent = mod.parseToolResultContent;
+	});
+
+	it("returns plain string as-is for regular text content", () => {
+		const result = parseToolResultContent("hello world");
+		expect(result).toBe("hello world");
+	});
+
+	it("returns plain string for invalid JSON", () => {
+		const result = parseToolResultContent("not json at all");
+		expect(result).toBe("not json at all");
+	});
+
+	it("returns plain string for JSON that is not a ContentBlock array", () => {
+		const result = parseToolResultContent(JSON.stringify({ key: "value" }));
+		expect(result).toBe(JSON.stringify({ key: "value" }));
+	});
+
+	it("returns plain string for JSON array without type fields", () => {
+		const result = parseToolResultContent(JSON.stringify([1, 2, 3]));
+		expect(result).toBe(JSON.stringify([1, 2, 3]));
+	});
+
+	it("returns ContentBlock[] when content is valid JSON with image blocks", () => {
+		const blocks = [
+			{ type: "text", text: "Here is the screenshot" },
+			{
+				type: "image",
+				source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" },
+			},
+		];
+		const result = parseToolResultContent(JSON.stringify(blocks));
+		expect(Array.isArray(result)).toBe(true);
+		expect(result).toHaveLength(2);
+		expect((result as Array<Record<string, unknown>>)[0]).toEqual({
+			type: "text",
+			text: "Here is the screenshot",
+		});
+		expect((result as Array<Record<string, unknown>>)[1]).toEqual({
+			type: "image",
+			source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" },
+		});
+	});
+
+	it("returns plain string for text-only ContentBlock[] (no images)", () => {
+		// Text-only arrays should stay as plain string to avoid unnecessary overhead
+		const blocks = [{ type: "text", text: "just text" }];
+		const result = parseToolResultContent(JSON.stringify(blocks));
+		expect(result).toBe(JSON.stringify(blocks));
+	});
+});
