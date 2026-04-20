@@ -5705,6 +5705,115 @@ This skill reviews pull requests.`;
 			expect(pinnedCount + summaryCount).toBe(25);
 		});
 	});
+
+	describe("tool_result JSON ContentBlock[] parsing", () => {
+		it("parses tool_result content containing image blocks as ContentBlock[]", () => {
+			const testThreadId = randomUUID();
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					userId,
+					"web",
+					"local",
+					0,
+					"Image Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const now = new Date().toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, model_id, tool_name, exit_code, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"user",
+					"What's in this image?",
+					"local",
+					null,
+					null,
+					null,
+					now,
+					now,
+					0,
+				],
+			);
+			const toolCallContent = JSON.stringify([
+				{ type: "tool_use", id: "tu-img-1", name: "screenshot", input: {} },
+			]);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, model_id, tool_name, exit_code, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"tool_call",
+					toolCallContent,
+					"local",
+					"test-model",
+					null,
+					null,
+					now,
+					now,
+					0,
+				],
+			);
+			const imageBlocks = JSON.stringify([
+				{ type: "text", text: "Here is the screenshot" },
+				{
+					type: "image",
+					source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" },
+				},
+			]);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, model_id, tool_name, exit_code, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"tool_result",
+					imageBlocks,
+					"local",
+					"test-model",
+					"tu-img-1",
+					0,
+					now,
+					now,
+					0,
+				],
+			);
+
+			const result = assembleContext({
+				db,
+				threadId: testThreadId,
+				siteId: "local",
+				contextWindow: 128000,
+				noHistory: false,
+			});
+
+			const toolResultMsg = result.messages.find(
+				(m) => m.role === "tool_result" && m.tool_use_id === "tu-img-1",
+			);
+			expect(toolResultMsg).toBeDefined();
+			expect(Array.isArray(toolResultMsg?.content)).toBe(true);
+			const blocks = toolResultMsg?.content as Array<Record<string, unknown>>;
+			expect(blocks).toHaveLength(2);
+			expect(blocks[0]).toEqual({ type: "text", text: "Here is the screenshot" });
+			expect(blocks[1]).toEqual({
+				type: "image",
+				source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" },
+			});
+
+			db.run("DELETE FROM messages WHERE thread_id = ?", [testThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [testThreadId]);
+		});
+	});
 });
 
 describe("formatTimestamp", () => {

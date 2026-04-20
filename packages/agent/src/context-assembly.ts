@@ -916,7 +916,10 @@ Original output was too large for the context window. If you need the full conte
 		// The DB stores image/document messages as JSON-serialized ContentBlock[].
 		// Parse them here so Stage 5b substitution and drivers receive proper arrays.
 		let annotatedContent: string | ContentBlock[] = m.content;
-		if (typeof m.content === "string" && (m.role === "user" || m.role === "assistant")) {
+		if (
+			typeof m.content === "string" &&
+			(m.role === "user" || m.role === "assistant" || m.role === "tool_result")
+		) {
 			try {
 				const parsed = JSON.parse(m.content);
 				if (Array.isArray(parsed) && parsed.length > 0 && parsed[0]?.type) {
