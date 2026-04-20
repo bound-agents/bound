@@ -28,6 +28,13 @@ export function useMessages(
 
 		const handleMessageCreated = (msg: Message) => {
 			setMessages((prev) => {
+				// Deduplicate: skip if a message with this ID is already present.
+				// The server may broadcast the same message twice (once from the
+				// agent loop and once from the post-loop handler).
+				if (msg.id && prev.some((m) => m.id === msg.id)) {
+					return prev;
+				}
+
 				// If this is a tool_call message, check if there's a pending placeholder to replace
 				// Pending placeholders are identified by missing id field
 				if (msg.role === "tool_call") {

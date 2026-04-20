@@ -13,7 +13,136 @@ import { useToolCalls } from "../tui/hooks/useToolCalls";
 // useMessages Tests
 // ============================================================================
 
+/** Minimal mock BoundClient with event emitter support for testing hooks. */
+function createMockClient() {
+	const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
+	return {
+		on(event: string, handler: (...args: unknown[]) => void) {
+			if (!listeners.has(event)) listeners.set(event, new Set());
+			listeners.get(event)?.add(handler);
+		},
+		off(event: string, handler: (...args: unknown[]) => void) {
+			listeners.get(event)?.delete(handler);
+		},
+		emit(event: string, data: unknown) {
+			for (const handler of listeners.get(event) ?? []) {
+				handler(data);
+			}
+		},
+	} as unknown as BoundClient & { emit: (event: string, data: unknown) => void };
+}
+
 describe("useMessages", () => {
+	it("deduplicates assistant messages received with the same id", async () => {
+		const mockClient = createMockClient();
+		const assistantMsg: Message = {
+			id: "msg-assistant-1",
+			role: "assistant",
+			content: "Hello from the agent!",
+			thread_id: "t1",
+			created_at: new Date().toISOString(),
+		};
+
+		let messageCount = 0;
+
+		function TestDedup() {
+			const { messages } = useMessages(mockClient as unknown as BoundClient, []);
+			messageCount = messages.length;
+			return React.createElement(Text, null, `count:${messages.length}`);
+		}
+
+		render(React.createElement(TestDedup));
+
+		// Wait for useEffect to register the listener
+		await new Promise((r) => setTimeout(r, 20));
+
+		// Simulate the server sending the same assistant message twice
+		// (once from agent-loop broadcastMessage, once from server.ts post-loop broadcast)
+		mockClient.emit("message:created", assistantMsg);
+		mockClient.emit("message:created", assistantMsg);
+
+		// Wait for React state to settle
+		await new Promise((r) => setTimeout(r, 50));
+
+		expect(messageCount).toBe(1);
+	});
+
+	it("allows distinct assistant messages with different ids", async () => {
+		const mockClient = createMockClient();
+		const msg1: Message = {
+			id: "msg-a1",
+			role: "assistant",
+			content: "First response",
+			thread_id: "t1",
+			created_at: new Date().toISOString(),
+		};
+		const msg2: Message = {
+			id: "msg-a2",
+			role: "assistant",
+			content: "Second response",
+			thread_id: "t1",
+			created_at: new Date().toISOString(),
+		};
+
+		let messageCount = 0;
+
+		function TestDistinct() {
+			const { messages } = useMessages(mockClient as unknown as BoundClient, []);
+			messageCount = messages.length;
+			return React.createElement(Text, null, `count:${messages.length}`);
+		}
+
+		render(React.createElement(TestDistinct));
+
+		await new Promise((r) => setTimeout(r, 20));
+
+		mockClient.emit("message:created", msg1);
+		mockClient.emit("message:created", msg2);
+
+		await new Promise((r) => setTimeout(r, 50));
+
+		expect(messageCount).toBe(2);
+	});
+
+	it("does not deduplicate messages without an id (e.g. tool_call placeholders)", async () => {
+		const mockClient = createMockClient();
+		const placeholder1: Message = {
+			id: "",
+			role: "tool_call",
+			content: "{}",
+			tool_name: "bash",
+			thread_id: "t1",
+			created_at: new Date().toISOString(),
+		};
+		const placeholder2: Message = {
+			id: "",
+			role: "tool_call",
+			content: "{}",
+			tool_name: "read",
+			thread_id: "t1",
+			created_at: new Date().toISOString(),
+		};
+
+		let messageCount = 0;
+
+		function TestNoIdDedup() {
+			const { messages } = useMessages(mockClient as unknown as BoundClient, []);
+			messageCount = messages.length;
+			return React.createElement(Text, null, `count:${messages.length}`);
+		}
+
+		render(React.createElement(TestNoIdDedup));
+
+		await new Promise((r) => setTimeout(r, 20));
+
+		mockClient.emit("message:created", placeholder1);
+		mockClient.emit("message:created", placeholder2);
+
+		await new Promise((r) => setTimeout(r, 50));
+
+		expect(messageCount).toBe(2);
+	});
+
 	it("initializes with provided messages array", () => {
 		const initialMessages: Message[] = [
 			{
