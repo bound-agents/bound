@@ -157,9 +157,22 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 						.filter((b) => b.type === "text")
 						.map((b) => (b as { type: "text"; text: string }).text)
 						.join("\n");
-		const allLines = fullText.split("\n");
+		// Strip leading/trailing blank lines so truncation shows meaningful content
+		const rawLines = fullText.split("\n");
+		const firstNonEmpty = rawLines.findIndex((l: string) => l.trim().length > 0);
+		let lastNonEmpty = -1;
+		for (let i = rawLines.length - 1; i >= 0; i--) {
+			if (rawLines[i].trim().length > 0) {
+				lastNonEmpty = i;
+				break;
+			}
+		}
+		const allLines =
+			firstNonEmpty >= 0 ? rawLines.slice(firstNonEmpty, lastNonEmpty + 1) : rawLines;
 		const truncated = allLines.length > TOOL_RESULT_MAX_LINES;
-		const displayText = truncated ? allLines.slice(0, TOOL_RESULT_MAX_LINES).join("\n") : fullText;
+		const displayText = truncated
+			? allLines.slice(0, TOOL_RESULT_MAX_LINES).join("\n")
+			: allLines.join("\n");
 
 		return (
 			<Collapsible header={`Tool Result: ${message.tool_name}`} defaultOpen={true}>

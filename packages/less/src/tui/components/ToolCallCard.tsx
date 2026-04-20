@@ -5,6 +5,9 @@ import { Badge } from "./Badge";
 import { Collapsible } from "./Collapsible";
 import { Spinner } from "./Spinner";
 
+/** Cap live stdout to avoid the dynamic area exceeding terminal height. */
+const MAX_STDOUT_LINES = 15;
+
 export interface ToolCallCardProps {
 	toolName: string;
 	startTime: number;
@@ -43,7 +46,11 @@ export function ToolCallCard({
 			</Box>
 			{stdout && (
 				<Collapsible header="Output" defaultOpen={true}>
-					<Text>{stdout}</Text>
+					<Text>
+						{stdout.split("\n").length > MAX_STDOUT_LINES
+							? `${stdout.split("\n").slice(-MAX_STDOUT_LINES).join("\n")}\n... (showing last ${MAX_STDOUT_LINES} lines)`
+							: stdout}
+					</Text>
 				</Collapsible>
 			)}
 		</Box>

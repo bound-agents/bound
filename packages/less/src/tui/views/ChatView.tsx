@@ -102,16 +102,19 @@ export function ChatView({
 
 	return (
 		<Box flexDirection="column">
-			{/* Messages rendered into terminal scrollback via <Static>.
-			    Each message is written once and persists in the terminal's
-			    native scroll buffer. Never redrawn by Ink. */}
-			<Static items={messages}>
-				{(msg) => (
-					<Box key={msg.id} marginBottom={1}>
-						<MessageBlock message={msg} />
-					</Box>
-				)}
-			</Static>
+			{/* Wrap <Static> in a zero-height Box to prevent Ink's Yoga layout
+			    bug where the absolute-positioned Static node's height leaks
+			    into the root output grid, creating a blank gap between the
+			    scrollback messages and the dynamic input area. */}
+			<Box height={0}>
+				<Static items={messages}>
+					{(msg) => (
+						<Box key={msg.id} marginBottom={1}>
+							<MessageBlock message={msg} />
+						</Box>
+					)}
+				</Static>
+			</Box>
 
 			{/* Dynamic area — redrawn by Ink on state changes */}
 

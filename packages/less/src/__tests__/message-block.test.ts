@@ -233,6 +233,39 @@ describe("MessageBlock", () => {
 			expect(frame).not.toContain("more lines");
 		});
 
+		it("strips leading/trailing blank lines before truncating", async () => {
+			const lines = [
+				"",
+				"",
+				"",
+				...Array.from({ length: 10 }, (_, i) => `content ${i + 1}`),
+				"",
+				"",
+			];
+			const content = lines.join("\n");
+
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-trunc-4",
+						role: "tool_result",
+						content,
+						tool_name: "boundless_bash",
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame();
+			// Should show first 5 content lines, not blank lines
+			expect(frame).toContain("content 1");
+			expect(frame).toContain("content 5");
+			expect(frame).not.toContain("content 6");
+			expect(frame).toContain("... 5 more lines");
+		});
+
 		it("renders tool_result with ContentBlock array without crashing", async () => {
 			const content = JSON.stringify([
 				{ type: "text", text: "boundless bash online: 2026-04-19T20:31:58Z on host" },
