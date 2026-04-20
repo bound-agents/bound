@@ -399,6 +399,131 @@ describe("Discord attachment ingestion", () => {
 		expect(fileRows.length).toBe(1);
 	});
 
+	it("sniffs actual image bytes when Discord contentType is wrong (webp header but PNG bytes)", async () => {
+		// PNG magic bytes: \x89PNG\r\n\x1a\n + padding to reach 12+ bytes for sniffing
+		const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13]);
+
+		// Discord claims webp, but actual bytes are PNG
+		(global as { fetch: typeof fetch }).fetch = async (url: string | URL | Request) => {
+			if (String(url).includes("cdn.discordapp.com")) {
+				return new Response(pngBytes, {
+					headers: { "Content-Type": "image/webp" },
+				});
+			}
+			return originalFetch(url as RequestInfo | URL, undefined);
+		};
+
+		const connector = new DiscordConnector(
+			config,
+			db,
+			"site-1",
+			eventBus,
+			mockLogger,
+			createMockClientManager(),
+		);
+
+		const attachment = {
+			id: "att-sniff",
+			name: "pasted-image.webp",
+			size: pngBytes.length,
+			contentType: "image/webp",
+			url: "https://cdn.discordapp.com/pasted-image.webp",
+			description: "copy-pasted image",
+		};
+
+		const mockMessage = {
+			id: "msg-sniff",
+			author: {
+				id: "user123",
+				bot: false,
+				username: "alice",
+				displayName: "Alice",
+			},
+			channel: { type: 1, sendTyping: async () => {} },
+			content: "check this out",
+			attachments: {
+				values: () => [attachment],
+			},
+		};
+
+		await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(mockMessage);
+
+		const messages = db
+			.query("SELECT content FROM messages WHERE role = ? ORDER BY created_at DESC LIMIT 1")
+			.all("user");
+		expect(messages.length).toBeGreaterThan(0);
+
+		const message = messages[0] as { content: string };
+		const blocks = JSON.parse(message.content);
+
+		const imageBlock = blocks.find((b: { type: string }) => b.type === "image");
+		expect(imageBlock).toBeDefined();
+		expect(imageBlock.source.type).toBe("base64");
+		// Key assertion: media_type should be image/png (sniffed), NOT image/webp (declared)
+		expect(imageBlock.source.media_type).toBe("image/png");
+	});
+
+	it("falls back to declared contentType when bytes are too short to sniff", async () => {
+		// Only 4 bytes — too short for the 12-byte minimum sniff check
+		const shortBytes = new Uint8Array([137, 80, 78, 71]);
+
+		(global as { fetch: typeof fetch }).fetch = async (url: string | URL | Request) => {
+			if (String(url).includes("cdn.discordapp.com")) {
+				return new Response(shortBytes, {
+					headers: { "Content-Type": "image/png" },
+				});
+			}
+			return originalFetch(url as RequestInfo | URL, undefined);
+		};
+
+		const connector = new DiscordConnector(
+			config,
+			db,
+			"site-1",
+			eventBus,
+			mockLogger,
+			createMockClientManager(),
+		);
+
+		const attachment = {
+			id: "att-short",
+			name: "tiny.png",
+			size: shortBytes.length,
+			contentType: "image/png",
+			url: "https://cdn.discordapp.com/tiny.png",
+		};
+
+		const mockMessage = {
+			id: "msg-short",
+			author: {
+				id: "user123",
+				bot: false,
+				username: "alice",
+				displayName: "Alice",
+			},
+			channel: { type: 1, sendTyping: async () => {} },
+			content: "tiny image",
+			attachments: {
+				values: () => [attachment],
+			},
+		};
+
+		await (connector as { onMessage: (msg: unknown) => Promise<void> }).onMessage(mockMessage);
+
+		const messages = db
+			.query("SELECT content FROM messages WHERE role = ? ORDER BY created_at DESC LIMIT 1")
+			.all("user");
+		expect(messages.length).toBeGreaterThan(0);
+
+		const message = messages[0] as { content: string };
+		const blocks = JSON.parse(message.content);
+
+		const imageBlock = blocks.find((b: { type: string }) => b.type === "image");
+		expect(imageBlock).toBeDefined();
+		// Falls back to declared contentType since bytes too short
+		expect(imageBlock.source.media_type).toBe("image/png");
+	});
+
 	it("attachment metadata included in intake payload", async () => {
 		const mockImageBytes = new Uint8Array([137, 80, 78, 71]); // PNG header
 
