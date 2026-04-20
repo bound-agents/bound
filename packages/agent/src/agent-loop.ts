@@ -62,6 +62,13 @@ import { isClientToolCallRequest } from "./types";
 
 export const SILENCE_TIMEOUT_MS = 60_000;
 export const MAX_SILENCE_RETRIES = 10;
+/**
+ * First-chunk timeout multiplier. The first iteration of withSilenceTimeout
+ * uses timeoutMs * FIRST_CHUNK_TIMEOUT_MULTIPLIER to account for model
+ * startup time, extended thinking processing, and Bedrock cold-cache delays.
+ * Subsequent chunks use the base timeoutMs.
+ */
+export const FIRST_CHUNK_TIMEOUT_MULTIPLIER = 5;
 /** Default max output tokens. Bedrock defaults to 4096 if unset, which truncates large tool calls. */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 
@@ -1770,39 +1777,52 @@ export class AgentLoop {
 		this.ctx.logger.info("Agent loop cancelled");
 	}
 
-	/** Rejects if no item yielded within timeoutMs. */
-	private async *withSilenceTimeout<T>(
-		source: AsyncIterable<T>,
-		timeoutMs: number,
-	): AsyncGenerator<T> {
-		const iterator = source[Symbol.asyncIterator]();
+	/** Delegates to the standalone withSilenceTimeout. */
+	private withSilenceTimeout<T>(source: AsyncIterable<T>, timeoutMs: number): AsyncGenerator<T> {
+		return withSilenceTimeout(source, timeoutMs);
+	}
+}
 
-		while (true) {
-			const nextChunkPromise = iterator.next();
-			let timerId: ReturnType<typeof setTimeout> | null = null;
-			const timeoutPromise = new Promise<never>((_, reject) => {
-				timerId = setTimeout(() => {
-					reject(new Error(`LLM silence timeout: no chunk received for ${timeoutMs}ms`));
-				}, timeoutMs);
-			});
+/**
+ * Rejects if no item yielded within timeoutMs. Uses a longer timeout
+ * (timeoutMs * FIRST_CHUNK_TIMEOUT_MULTIPLIER) for the first chunk to
+ * account for model startup, extended thinking, and cold-cache delays.
+ */
+export async function* withSilenceTimeout<T>(
+	source: AsyncIterable<T>,
+	timeoutMs: number,
+): AsyncGenerator<T> {
+	const iterator = source[Symbol.asyncIterator]();
+	let firstChunk = true;
 
-			let result: IteratorResult<T>;
-			try {
-				result = await Promise.race([nextChunkPromise, timeoutPromise]);
-				if (timerId) clearTimeout(timerId);
-			} catch (err) {
-				if (timerId) clearTimeout(timerId);
-				if (typeof iterator.return === "function") {
-					await iterator.return(undefined).catch(() => {});
-				}
-				throw err;
+	while (true) {
+		const effectiveTimeout = firstChunk ? timeoutMs * FIRST_CHUNK_TIMEOUT_MULTIPLIER : timeoutMs;
+
+		const nextChunkPromise = iterator.next();
+		let timerId: ReturnType<typeof setTimeout> | null = null;
+		const timeoutPromise = new Promise<never>((_, reject) => {
+			timerId = setTimeout(() => {
+				reject(new Error(`LLM silence timeout: no chunk received for ${effectiveTimeout}ms`));
+			}, effectiveTimeout);
+		});
+
+		let result: IteratorResult<T>;
+		try {
+			result = await Promise.race([nextChunkPromise, timeoutPromise]);
+			if (timerId) clearTimeout(timerId);
+		} catch (err) {
+			if (timerId) clearTimeout(timerId);
+			if (typeof iterator.return === "function") {
+				await iterator.return(undefined).catch(() => {});
 			}
-
-			if (result.done) {
-				return;
-			}
-
-			yield result.value;
+			throw err;
 		}
+
+		if (result.done) {
+			return;
+		}
+
+		firstChunk = false;
+		yield result.value;
 	}
 }
