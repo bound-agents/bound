@@ -3,6 +3,45 @@ import { isAbsolute, resolve } from "node:path";
 import { formatProvenance } from "./provenance";
 import type { ToolHandler, ToolResult } from "./types";
 
+type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+
+/**
+ * Detect image type from file magic bytes.
+ * Returns the media type if recognized, undefined otherwise.
+ */
+function detectImageType(buffer: Buffer): ImageMediaType | undefined {
+	if (buffer.length < 4) return undefined;
+
+	// PNG: 89 50 4E 47
+	if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+		return "image/png";
+	}
+	// JPEG: FF D8 FF
+	if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+		return "image/jpeg";
+	}
+	// GIF: 47 49 46 38
+	if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38) {
+		return "image/gif";
+	}
+	// WebP: RIFF....WEBP
+	if (
+		buffer.length >= 12 &&
+		buffer[0] === 0x52 &&
+		buffer[1] === 0x49 &&
+		buffer[2] === 0x46 &&
+		buffer[3] === 0x46 &&
+		buffer[8] === 0x57 &&
+		buffer[9] === 0x45 &&
+		buffer[10] === 0x42 &&
+		buffer[11] === 0x50
+	) {
+		return "image/webp";
+	}
+
+	return undefined;
+}
+
 export function createReadTool(hostname: string): ToolHandler {
 	return async (args, _signal, cwd) => {
 		return readToolImpl(hostname, args, cwd);
@@ -45,6 +84,25 @@ async function readToolImpl(
 		const isBinary = buffer.indexOf(0) !== -1 && buffer.indexOf(0) < 8192;
 
 		if (isBinary) {
+			// Check if this is an image file we can return as a visual ContentBlock
+			const imageType = detectImageType(buffer);
+			if (imageType) {
+				const result: ToolResult = {
+					content: [
+						provenance,
+						{
+							type: "image",
+							source: {
+								type: "base64",
+								media_type: imageType,
+								data: buffer.toString("base64"),
+							},
+						},
+					],
+				};
+				return result;
+			}
+
 			const result: ToolResult = {
 				content: [
 					provenance,
