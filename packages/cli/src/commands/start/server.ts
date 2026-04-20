@@ -438,30 +438,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								);
 							}
 
-							// Push last assistant message to WebSocket clients
-							if (!result.error && result.messagesCreated > 0) {
-								const lastMsg = appContext.db
-									.query(
-										"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
-									)
-									.get(thread_id) as {
-									id: string;
-									thread_id: string;
-									role: "user" | "assistant" | "system";
-									content: string;
-									model_id: string | null;
-									tool_name: string | null;
-									created_at: string;
-									modified_at: string | null;
-									host_origin: string;
-								} | null;
-								if (lastMsg) {
-									appContext.eventBus.emit("message:broadcast", {
-										message: lastMsg,
-										thread_id,
-									});
-								}
-							}
+							// NOTE: No post-loop message:broadcast needed here. The agent loop's
+							// broadcastMessage() already emits message:broadcast for every message
+							// (including the final assistant response) as it's created. A redundant
+							// broadcast here caused duplicate delivery to WebSocket clients.
 
 							// Emit status:forward with active: false to signal completion to MCP handler
 							appContext.eventBus.emit("status:forward", {
