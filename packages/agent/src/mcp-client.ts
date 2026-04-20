@@ -21,9 +21,47 @@ export interface MCPServerConfig {
 
 export type { Tool, Resource, Prompt };
 
+export interface ToolResultImage {
+	media_type: string;
+	data: string;
+}
+
 export interface ToolResult {
 	content: string;
+	images?: ToolResultImage[];
 	isError?: boolean;
+}
+
+/**
+ * Extract text and image content from MCP SDK content blocks.
+ * Images are preserved as base64 data for passthrough to the LLM.
+ */
+export function extractMCPToolResult(
+	contentBlocks: Array<Record<string, unknown>>,
+): Pick<ToolResult, "content" | "images"> {
+	const parts: string[] = [];
+	const images: ToolResultImage[] = [];
+
+	for (const item of contentBlocks) {
+		if (item.type === "text") {
+			parts.push(item.text as string);
+		} else if (item.type === "image") {
+			images.push({
+				media_type: item.mimeType as string,
+				data: item.data as string,
+			});
+		} else if (item.type === "audio") {
+			parts.push(`[audio: ${item.mimeType}]`);
+		} else if (item.type === "resource") {
+			const r = item.resource as Record<string, unknown>;
+			parts.push("text" in r ? (r.text as string) : `[blob: ${r.mimeType ?? "unknown"}]`);
+		}
+	}
+
+	return {
+		content: parts.join("\n"),
+		images: images.length > 0 ? images : undefined,
+	};
 }
 
 export interface ResourceContent {
@@ -126,25 +164,12 @@ export class MCPClient {
 
 		const result = await this.client.callTool({ name, arguments: args });
 
-		// Extract text content from the result's content array
-		const parts: string[] = [];
-		if (Array.isArray(result.content)) {
-			for (const item of result.content) {
-				if (item.type === "text") {
-					parts.push(item.text);
-				} else if (item.type === "image") {
-					parts.push(`[image: ${item.mimeType}]`);
-				} else if (item.type === "audio") {
-					parts.push(`[audio: ${item.mimeType}]`);
-				} else if (item.type === "resource") {
-					const r = item.resource;
-					parts.push("text" in r ? r.text : `[blob: ${r.mimeType ?? "unknown"}]`);
-				}
-			}
-		}
+		const extracted = Array.isArray(result.content)
+			? extractMCPToolResult(result.content as Array<Record<string, unknown>>)
+			: { content: "", images: undefined };
 
 		return {
-			content: parts.join("\n"),
+			...extracted,
 			isError: result.isError === true,
 		};
 	}
