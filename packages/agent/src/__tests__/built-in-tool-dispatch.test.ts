@@ -226,4 +226,65 @@ describe("built-in tool dispatch in AgentLoop", () => {
 		expect(toolResultMsg).not.toBeNull();
 		expect(toolResultMsg?.content).toContain("Error: file not found");
 	});
+
+	it("persists ContentBlock[] result as JSON and recognizes error blocks", async () => {
+		const fakeBuiltInTool: BuiltInTool = {
+			toolDefinition: {
+				type: "function",
+				function: {
+					name: "read",
+					description: "Read a file",
+					parameters: { type: "object", properties: {}, required: [] },
+				},
+			},
+			execute: async () => [
+				{ type: "text" as const, text: "Here is the screenshot" },
+				{
+					type: "image" as const,
+					source: {
+						type: "base64" as const,
+						media_type: "image/png" as const,
+						data: "iVBORw0KGgo=",
+					},
+				},
+			],
+		};
+
+		const builtInTools = new Map<string, BuiltInTool>();
+		builtInTools.set("read", fakeBuiltInTool);
+
+		const mockSandbox = { builtInTools };
+
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setToolThenTextResponse(
+			"tool-1",
+			"read",
+			{ path: "/image.png" },
+			"I can see the image.",
+		);
+
+		const ctx = makeCtx();
+		const loop = new AgentLoop(ctx, mockSandbox, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+			tools: [fakeBuiltInTool.toolDefinition],
+		});
+
+		const result = await loop.run();
+		expect(result.toolCallsMade).toBe(1);
+
+		// The persisted content should be JSON ContentBlock[]
+		const toolResultMsg = db
+			.prepare(
+				"SELECT content FROM messages WHERE thread_id = ? AND role = 'tool_result' ORDER BY created_at DESC LIMIT 1",
+			)
+			.get(threadId) as { content: string } | null;
+		expect(toolResultMsg).not.toBeNull();
+		// biome-ignore lint/style/noNonNullAssertion: test assertion after not-null check
+		const blocks = JSON.parse(toolResultMsg!.content);
+		expect(Array.isArray(blocks)).toBe(true);
+		expect(blocks).toHaveLength(2);
+		expect(blocks[0].type).toBe("text");
+		expect(blocks[1].type).toBe("image");
+	});
 });

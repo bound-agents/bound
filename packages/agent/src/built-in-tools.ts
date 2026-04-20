@@ -1,9 +1,11 @@
-import type { ToolDefinition } from "@bound/llm";
+import type { ContentBlock, ToolDefinition } from "@bound/llm";
 import type { IFileSystem } from "just-bash";
+
+export type BuiltInToolResult = string | ContentBlock[];
 
 export interface BuiltInTool {
 	toolDefinition: ToolDefinition;
-	execute: (input: Record<string, unknown>) => Promise<string>;
+	execute: (input: Record<string, unknown>) => Promise<BuiltInToolResult>;
 }
 
 const MAX_LINES = 2000;

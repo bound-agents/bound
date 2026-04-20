@@ -108,7 +108,7 @@ interface BashLike {
 				type: "function";
 				function: { name: string; description: string; parameters: Record<string, unknown> };
 			};
-			execute: (input: Record<string, unknown>) => Promise<string>;
+			execute: (input: Record<string, unknown>) => Promise<string | ContentBlock[]>;
 		}
 	>;
 }
@@ -1625,9 +1625,16 @@ export class AgentLoop {
 		// Built-in tools (read, write, edit) — dispatched before bash fallback
 		const builtIn = this.sandbox.builtInTools?.get(toolCall.name);
 		if (builtIn) {
-			const content = await builtIn.execute(toolCall.input);
-			const exitCode = content.startsWith("Error:") ? 1 : 0;
-			return { content, exitCode };
+			const result = await builtIn.execute(toolCall.input);
+			if (Array.isArray(result)) {
+				// ContentBlock[] — serialize for persistence, check text blocks for errors
+				const hasError = result.some(
+					(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
+				);
+				return { content: JSON.stringify(result), exitCode: hasError ? 1 : 0 };
+			}
+			const exitCode = result.startsWith("Error:") ? 1 : 0;
+			return { content: result, exitCode };
 		}
 
 		if (!this.sandbox.exec) {
