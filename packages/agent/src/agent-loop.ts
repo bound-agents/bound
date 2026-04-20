@@ -519,6 +519,7 @@ export class AgentLoop {
 								relayMetadataRef,
 							)) {
 								if (this.aborted) break;
+								if (chunk.type === "heartbeat") continue;
 								chunks.push(chunk);
 							}
 							break;
@@ -564,6 +565,8 @@ export class AgentLoop {
 											this.aborted = true;
 											break;
 										}
+										// Heartbeats reset the silence timeout but carry no data
+										if (chunk.type === "heartbeat") continue;
 										// Reset the inactivity timeout — the LLM is producing output
 										this.config.onActivity?.();
 										chunks.push(chunk);

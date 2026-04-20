@@ -92,7 +92,8 @@ export type StreamChunk =
 				estimated: boolean;
 			};
 	  }
-	| { type: "error"; error: string };
+	| { type: "error"; error: string }
+	| { type: "heartbeat" };
 
 export interface BackendCapabilities {
 	streaming: boolean;

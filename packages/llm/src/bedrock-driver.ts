@@ -332,7 +332,14 @@ export class BedrockDriver implements LLMBackend {
 		try {
 			// biome-ignore lint/style/noNonNullAssertion: stream existence already checked above
 			for await (const event of response.stream!) {
-				if (event.contentBlockStart) {
+				if (event.messageStart) {
+					// Yield heartbeat to reset the silence timeout timer.
+					// messageStart arrives early in the stream, before the model
+					// starts producing content (thinking/text). Without this,
+					// extended thinking can cause 60s+ gaps before the first
+					// content chunk, triggering false silence timeouts.
+					yield { type: "heartbeat" };
+				} else if (event.contentBlockStart) {
 					const { contentBlockIndex, start } = event.contentBlockStart;
 					if (start?.toolUse) {
 						const { toolUseId, name } = start.toolUse;

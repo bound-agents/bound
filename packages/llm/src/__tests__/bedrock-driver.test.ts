@@ -100,6 +100,41 @@ describe("BedrockDriver", () => {
 		});
 	});
 
+	describe("heartbeat on messageStart", () => {
+		it.skipIf(shouldSkip)(
+			"should yield heartbeat chunk when messageStart event arrives",
+			async () => {
+				sendSpy.mockImplementation(() =>
+					Promise.resolve(
+						createMockStream([
+							{ messageStart: { role: "assistant" } },
+							{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "Hello" } } },
+							{
+								metadata: {
+									usage: { inputTokens: 10, outputTokens: 5 },
+								},
+							},
+						]),
+					),
+				);
+
+				const driver = makeDriver();
+				const chunks = await collectChunks(
+					driver.chat({
+						model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+						messages: [{ role: "user", content: "Hi" }],
+					}),
+				);
+
+				// First chunk should be heartbeat from messageStart
+				expect(chunks[0]).toEqual({ type: "heartbeat" });
+				// Then text, then done
+				expect(chunks[1]).toEqual({ type: "text", content: "Hello" });
+				expect(chunks[2].type).toBe("done");
+			},
+		);
+	});
+
 	describe("cache token extraction", () => {
 		it.skipIf(shouldSkip)("AC4.2 — should extract cache tokens when present", async () => {
 			sendSpy.mockImplementation(() =>

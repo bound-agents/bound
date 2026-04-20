@@ -100,4 +100,30 @@ describe("withSilenceTimeout", () => {
 	it("should export FIRST_CHUNK_TIMEOUT_MULTIPLIER as 5", () => {
 		expect(FIRST_CHUNK_TIMEOUT_MULTIPLIER).toBe(5);
 	});
+
+	it("heartbeat chunk resets first-chunk timer so real data can follow", async () => {
+		// Heartbeat arrives at 50ms (within first-chunk timeout of 50*5=250ms).
+		// Real data arrives at 50ms after heartbeat (within regular 50ms? No, within
+		// subsequent timeout). The heartbeat counts as first chunk, so subsequent
+		// timeout applies. 50ms delay for real data within 50ms timeout is tight,
+		// so let's use safer numbers.
+		//
+		// Scenario: base timeout 100ms. First-chunk timeout = 500ms.
+		// Source: heartbeat at 50ms, then real data at 50ms (total 100ms).
+		// Without heartbeat counting: first-chunk timeout covers everything.
+		// With heartbeat counting: heartbeat at 50ms satisfies first chunk,
+		// real data at 50ms after that is within 100ms subsequent timeout.
+		async function* heartbeatThenData(): AsyncGenerator<string> {
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			yield "heartbeat";
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			yield "real-data";
+		}
+
+		const result: string[] = [];
+		for await (const item of withSilenceTimeout(heartbeatThenData(), 100)) {
+			result.push(item);
+		}
+		expect(result).toEqual(["heartbeat", "real-data"]);
+	});
 });
