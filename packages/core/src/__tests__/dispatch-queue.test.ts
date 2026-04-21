@@ -126,6 +126,34 @@ describe("hasPending", () => {
 
 		expect(hasPending(db, threadId)).toBe(false);
 	});
+
+	// Regression: a pending client_tool_call row must NOT make hasPending true,
+	// because claimPending skips them. Otherwise the executor drain loop spins
+	// (hasPending=true → claim=[] → hasPending=true → ...), pegging CPU at 100%.
+	it("returns false when only pending entry is a client_tool_call (drain-loop spin regression)", () => {
+		const threadId = randomUUID();
+		enqueueClientToolCall(
+			db,
+			threadId,
+			{ call_id: "call-1", tool_name: "boundless_read", arguments: {} },
+			"ws-conn-1",
+		);
+
+		expect(hasPending(db, threadId)).toBe(false);
+	});
+
+	it("returns true for a regular pending message even when a client_tool_call is also pending", () => {
+		const threadId = randomUUID();
+		enqueueClientToolCall(
+			db,
+			threadId,
+			{ call_id: "call-1", tool_name: "boundless_read", arguments: {} },
+			"ws-conn-1",
+		);
+		enqueueMessage(db, randomUUID(), threadId);
+
+		expect(hasPending(db, threadId)).toBe(true);
+	});
 });
 
 describe("claimPending", () => {

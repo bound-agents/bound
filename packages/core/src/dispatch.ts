@@ -185,12 +185,20 @@ export function resetProcessingForThread(db: Database, threadId: string): number
 }
 
 /**
- * Check if a thread has any pending (unclaimed) messages in the dispatch queue.
+ * Check if a thread has any pending (unclaimed) messages in the dispatch queue
+ * that the executor should drain. Excludes client_tool_call entries — those are
+ * waiting for client execution, not executor work, and would otherwise cause the
+ * drain loop to spin (claimPending skips them, but the loop re-enters while
+ * hasPending still reports true). See hasPendingClientToolCalls for the client
+ * side of the queue.
  */
 export function hasPending(db: Database, threadId: string): boolean {
 	const row = db
-		.prepare("SELECT COUNT(*) as c FROM dispatch_queue WHERE thread_id = ? AND status = 'pending'")
-		.get(threadId) as { c: number };
+		.prepare(
+			`SELECT COUNT(*) as c FROM dispatch_queue
+			 WHERE thread_id = ? AND status = 'pending' AND event_type != ?`,
+		)
+		.get(threadId, CLIENT_TOOL_CALL) as { c: number };
 	return row.c > 0;
 }
 
