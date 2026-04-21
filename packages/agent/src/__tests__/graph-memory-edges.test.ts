@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
+import { InvalidRelationError } from "@bound/core";
 import type { CommandContext } from "@bound/sandbox";
 import { BOUND_NAMESPACE, TypedEventEmitter, deterministicUUID } from "@bound/shared";
 import { memory } from "../commands/memory";
@@ -717,6 +718,413 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 
 			expect(result.exitCode).toBe(1);
 			expect(result.stderr).toContain("weight must be a number between 0 and 10");
+		});
+	});
+
+	describe("AC3.1: Runtime enforcement - upsertEdge validation", () => {
+		it("should throw InvalidRelationError when relation is not canonical", () => {
+			const sourceKey = "scheduler_v3";
+			const targetKey = "cron_rescheduling";
+			const invalidRelation = "not-a-relation";
+
+			const fn = () => {
+				upsertEdge(db, sourceKey, targetKey, invalidRelation, 1.0, siteId);
+			};
+
+			expect(fn).toThrow(InvalidRelationError);
+		});
+
+		it("should not write edge row when relation is invalid", () => {
+			const sourceKey = "scheduler_v3";
+			const targetKey = "cron_rescheduling";
+			const invalidRelation = "not-a-relation";
+			const badId = edgeId(sourceKey, targetKey, invalidRelation);
+
+			try {
+				upsertEdge(db, sourceKey, targetKey, invalidRelation, 1.0, siteId);
+			} catch {
+				// Expected to throw
+			}
+
+			// Verify no row was written
+			const edge = db.prepare("SELECT id FROM memory_edges WHERE id = ?").get(badId) as {
+				id: string;
+			} | null;
+
+			expect(edge).toBeNull();
+		});
+
+		it("should not emit change-log entry when relation is invalid", () => {
+			const sourceKey = "scheduler_v3";
+			const targetKey = "cron_rescheduling";
+			const invalidRelation = "not-a-relation";
+			const badId = edgeId(sourceKey, targetKey, invalidRelation);
+
+			try {
+				upsertEdge(db, sourceKey, targetKey, invalidRelation, 1.0, siteId);
+			} catch {
+				// Expected to throw
+			}
+
+			// Verify no changelog entry
+			const logEntry = db
+				.prepare("SELECT table_name FROM change_log WHERE table_name = ? AND row_id = ?")
+				.get("memory_edges", badId) as { table_name: string } | null;
+
+			expect(logEntry).toBeNull();
+		});
+	});
+
+	describe("AC4.1: CLI context flag - memory connect with context", () => {
+		it("should accept and persist context via --context flag", async () => {
+			const result = await memory.handler(
+				{
+					subcommand: "connect",
+					source: "scheduler_v3",
+					target: "cron_rescheduling",
+					relation: "related_to",
+					context: "both handle recurring work",
+				},
+				ctx,
+			);
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain("Edge created");
+
+			// Verify context was persisted in database
+			const edge = db
+				.prepare(
+					"SELECT context FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?",
+				)
+				.get("scheduler_v3", "cron_rescheduling", "related_to") as { context: string | null };
+
+			expect(edge.context).toBe("both handle recurring work");
+		});
+
+		it("should include context in success output when provided", async () => {
+			const result = await memory.handler(
+				{
+					subcommand: "connect",
+					source: "scheduler_v3",
+					target: "cron_rescheduling",
+					relation: "related_to",
+					context: "test context phrase",
+				},
+				ctx,
+			);
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain('context="test context phrase"');
+		});
+	});
+
+	describe("AC4.2: CLI error handling - invalid relation", () => {
+		it("should return error when relation is not canonical", async () => {
+			const result = await memory.handler(
+				{
+					subcommand: "connect",
+					source: "scheduler_v3",
+					target: "cron_rescheduling",
+					relation: "not-a-relation",
+				},
+				ctx,
+			);
+
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain("Invalid relation");
+		});
+
+		it("error message should list valid relations", async () => {
+			const result = await memory.handler(
+				{
+					subcommand: "connect",
+					source: "scheduler_v3",
+					target: "cron_rescheduling",
+					relation: "invalid_relation",
+				},
+				ctx,
+			);
+
+			expect(result.exitCode).toBe(1);
+			// Check for at least two canonical relations in error message
+			expect(result.stderr).toContain("related_to");
+			expect(result.stderr).toContain("synthesizes");
+		});
+
+		it("error message should hint at --context", async () => {
+			const result = await memory.handler(
+				{
+					subcommand: "connect",
+					source: "scheduler_v3",
+					target: "cron_rescheduling",
+					relation: "custom_relation",
+				},
+				ctx,
+			);
+
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr.toLowerCase()).toContain("context");
+		});
+	});
+
+	describe("AC4.3: Output formatting - context in traverse and neighbors", () => {
+		it("should include context in traverse output when present", async () => {
+			// Create edges with and without context
+			await memory.handler(
+				{
+					subcommand: "connect",
+					source: "scheduler_v3",
+					target: "cron_rescheduling",
+					relation: "related_to",
+					context: "shared scheduling concerns",
+				},
+				ctx,
+			);
+
+			// Create another entry for traversal
+			const thirdKey = "task_queue";
+			const now = new Date().toISOString();
+			insertRow(
+				db,
+				"semantic_memory",
+				{
+					id: deterministicUUID(BOUND_NAMESPACE, thirdKey),
+					key: thirdKey,
+					value: "Task queue system",
+					source: ctx.taskId || "test",
+					created_at: now,
+					modified_at: now,
+					deleted: 0,
+				},
+				siteId,
+			);
+
+			await memory.handler(
+				{
+					subcommand: "connect",
+					source: "cron_rescheduling",
+					target: thirdKey,
+					relation: "informs",
+				},
+				ctx,
+			);
+
+			const traverseResult = await memory.handler(
+				{
+					subcommand: "traverse",
+					source: "scheduler_v3",
+					depth: "2",
+				},
+				ctx,
+			);
+
+			expect(traverseResult.exitCode).toBe(0);
+			// First hop should show context
+			expect(traverseResult.stdout).toContain("shared scheduling concerns");
+		});
+
+		it("should include context in neighbors output when present", async () => {
+			await memory.handler(
+				{
+					subcommand: "connect",
+					source: "scheduler_v3",
+					target: "cron_rescheduling",
+					relation: "related_to",
+					context: "core scheduling logic",
+				},
+				ctx,
+			);
+
+			const result = await memory.handler(
+				{
+					subcommand: "neighbors",
+					source: "scheduler_v3",
+				},
+				ctx,
+			);
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain("core scheduling logic");
+		});
+
+		it("should not include context parenthetical when context is null", async () => {
+			await memory.handler(
+				{
+					subcommand: "connect",
+					source: "scheduler_v3",
+					target: "cron_rescheduling",
+					relation: "related_to",
+				},
+				ctx,
+			);
+
+			const result = await memory.handler(
+				{
+					subcommand: "neighbors",
+					source: "scheduler_v3",
+				},
+				ctx,
+			);
+
+			expect(result.exitCode).toBe(0);
+			// Should not have a parenthetical after the relation
+			const lines = result.stdout.split("\n");
+			const neighborLine = lines.find((l) => l.includes("cron_rescheduling"));
+			expect(neighborLine).toBeDefined();
+			// The format should be [relation, w=weight] without context parenthetical
+			expect(neighborLine).toMatch(/\[related_to, w=[\d.]+\]$/);
+		});
+
+		it("traverse output should exclude context when edges have no context", async () => {
+			// Create edge without context
+			await memory.handler(
+				{
+					subcommand: "connect",
+					source: "scheduler_v3",
+					target: "cron_rescheduling",
+					relation: "related_to",
+				},
+				ctx,
+			);
+
+			const result = await memory.handler(
+				{
+					subcommand: "traverse",
+					source: "scheduler_v3",
+					depth: "1",
+				},
+				ctx,
+			);
+
+			expect(result.exitCode).toBe(0);
+			// Traverse output format: [depth N, relation]
+			// Should not have parenthetical when no context
+			expect(result.stdout).toMatch(/\[depth \d+, related_to\]$/m);
+		});
+	});
+
+	describe("AC4.4: Backward compatibility - context is optional", () => {
+		it("should allow memory connect without --context flag", async () => {
+			const result = await memory.handler(
+				{
+					subcommand: "connect",
+					source: "scheduler_v3",
+					target: "cron_rescheduling",
+					relation: "related_to",
+				},
+				ctx,
+			);
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain("Edge created");
+		});
+
+		it("should store context as NULL when not provided", async () => {
+			await memory.handler(
+				{
+					subcommand: "connect",
+					source: "scheduler_v3",
+					target: "cron_rescheduling",
+					relation: "related_to",
+				},
+				ctx,
+			);
+
+			const edge = db
+				.prepare(
+					"SELECT context FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?",
+				)
+				.get("scheduler_v3", "cron_rescheduling", "related_to") as { context: string | null };
+
+			expect(edge.context).toBeNull();
+		});
+
+		it("should support optional context in upsertEdge at function level", () => {
+			// Call upsertEdge with only 6 parameters (no context)
+			const id = upsertEdge(db, "scheduler_v3", "cron_rescheduling", "supports", 1.0, siteId);
+
+			// Verify edge exists
+			const edge = db.prepare("SELECT id, context FROM memory_edges WHERE id = ?").get(id) as {
+				id: string;
+				context: string | null;
+			};
+
+			expect(edge).toBeDefined();
+			expect(edge.context).toBeNull();
+		});
+
+		it("should update existing edge without providing context", async () => {
+			// Create edge with context
+			await memory.handler(
+				{
+					subcommand: "connect",
+					source: "scheduler_v3",
+					target: "cron_rescheduling",
+					relation: "related_to",
+					context: "original context",
+				},
+				ctx,
+			);
+
+			// Update edge without providing context (should preserve original context)
+			await memory.handler(
+				{
+					subcommand: "connect",
+					source: "scheduler_v3",
+					target: "cron_rescheduling",
+					relation: "related_to",
+					weight: "2.0",
+				},
+				ctx,
+			);
+
+			const edge = db
+				.prepare(
+					"SELECT context, weight FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?",
+				)
+				.get("scheduler_v3", "cron_rescheduling", "related_to") as {
+				context: string | null;
+				weight: number;
+			};
+
+			// Weight should be updated
+			expect(edge.weight).toBe(2.0);
+			// Context should be preserved from original
+			expect(edge.context).toBe("original context");
+		});
+
+		it("should update edge context when provided on reconnect", async () => {
+			// Create edge with context
+			await memory.handler(
+				{
+					subcommand: "connect",
+					source: "scheduler_v3",
+					target: "cron_rescheduling",
+					relation: "related_to",
+					context: "original context",
+				},
+				ctx,
+			);
+
+			// Reconnect with new context
+			await memory.handler(
+				{
+					subcommand: "connect",
+					source: "scheduler_v3",
+					target: "cron_rescheduling",
+					relation: "related_to",
+					context: "updated context",
+				},
+				ctx,
+			);
+
+			const edge = db
+				.prepare(
+					"SELECT context FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?",
+				)
+				.get("scheduler_v3", "cron_rescheduling", "related_to") as { context: string | null };
+
+			expect(edge.context).toBe("updated context");
 		});
 	});
 });
