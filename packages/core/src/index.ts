@@ -85,3 +85,4 @@ export {
 	InvalidRelationError,
 	SPELLING_VARIANTS,
 } from "./memory-relations";
+export { normalizeEdgeRelations, type NormalizationSummary } from "./normalize-edge-relations";

@@ -12,6 +12,7 @@ import type { AppContext } from "@bound/core";
 import {
 	createAppContext,
 	insertRow,
+	normalizeEdgeRelations,
 	resetProcessing,
 	updateRow,
 	withChangeLog,
@@ -207,6 +208,19 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 	} catch (error) {
 		appContext.logger.warn("[skills] Failed to seed skill-authoring skill", {
 			error: String(error),
+		});
+	}
+
+	// 5.6. Edge graph normalization (idempotent — no-op after first run)
+	try {
+		const normSummary = normalizeEdgeRelations(appContext.db, appContext.siteId);
+		appContext.logger.info(
+			"[edges] Normalized edge relations",
+			normSummary as unknown as Record<string, unknown>,
+		);
+	} catch (error) {
+		appContext.logger.warn("[edges] Failed to normalize edge relations", {
+			error: error instanceof Error ? error.message : String(error),
 		});
 	}
 
