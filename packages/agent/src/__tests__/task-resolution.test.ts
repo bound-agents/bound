@@ -36,30 +36,53 @@ describe("task-resolution", () => {
 		it("parses simple cron expression", () => {
 			const from = new Date("2026-03-22T10:00:00Z");
 			const next = computeNextRunAt("0 11 * * *", from);
-			expect(next.getHours()).toBe(11);
-			expect(next.getMinutes()).toBe(0);
+			expect(next.getUTCHours()).toBe(11);
+			expect(next.getUTCMinutes()).toBe(0);
 		});
 
 		it("handles specific day/month", () => {
 			const from = new Date("2026-03-22T08:00:00Z");
 			const next = computeNextRunAt("30 9 22 * *", from);
-			// Next 9:30am on the 22nd (same day, future time)
-			expect(next.getDate()).toBe(22);
-			expect(next.getHours()).toBe(9);
-			expect(next.getMinutes()).toBe(30);
+			// Next 9:30am UTC on the 22nd (same day, future time)
+			expect(next.getUTCDate()).toBe(22);
+			expect(next.getUTCHours()).toBe(9);
+			expect(next.getUTCMinutes()).toBe(30);
 		});
 
 		it("handles intervals with /", () => {
 			const from = new Date("2026-03-22T10:15:00Z");
 			const next = computeNextRunAt("*/30 * * * *", from);
 			// Next 30-minute interval should be :30 or :00 of next hour
-			expect(next.getMinutes() % 30).toBe(0);
+			expect(next.getUTCMinutes() % 30).toBe(0);
 		});
 
 		it("throws on invalid cron expression", () => {
 			expect(() => {
 				computeNextRunAt("invalid");
 			}).toThrow();
+		});
+
+		// Regression: scheduler advisory 3e69a2bf (2026-04-19).
+		// Cron expressions must be interpreted in UTC, independent of host TZ,
+		// so that a given spec fires at the same wall-clock UTC moment on every
+		// node of a multi-host cluster. Prior impl used getHours/setMinutes (local
+		// time), causing "0 2 * * *" to schedule at 09:00 UTC on a UTC-7 host.
+		it("interprets cron fields in UTC, not host local time", () => {
+			// "0 2 * * *" must always produce a next_run_at whose UTC hour is 2,
+			// regardless of the host timezone the test runs in.
+			const from = new Date("2026-04-19T03:00:00Z");
+			const next = computeNextRunAt("0 2 * * *", from);
+			expect(next.getUTCHours()).toBe(2);
+			expect(next.getUTCMinutes()).toBe(0);
+			// And the ISO string (what gets persisted in next_run_at) must show 02:00 UTC.
+			expect(next.toISOString()).toBe("2026-04-20T02:00:00.000Z");
+		});
+
+		it("rolls over days in UTC (does not skip due to local-time DST)", () => {
+			// "0 0 * * *" (daily at UTC midnight), starting just before midnight.
+			const from = new Date("2026-04-20T23:30:00Z");
+			const next = computeNextRunAt("0 0 * * *", from);
+			expect(next.toISOString()).toBe("2026-04-21T00:00:00.000Z");
 		});
 	});
 

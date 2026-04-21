@@ -19,22 +19,28 @@ function parseCron(cronExpr: string, from: Date = new Date()): Date {
 	const month = parseCronField(monthStr, 1, 12);
 	const weekday = parseCronField(weekdayStr, 0, 6);
 
-	// Find the next matching time
+	// Find the next matching time.
+	//
+	// Cron expressions are interpreted in UTC. We use UTC getters/setters throughout
+	// so that a given cron spec fires at the same wall-clock UTC moment regardless of
+	// host timezone — critical for multi-host cluster deployment and for consistency
+	// with all other timestamps in the system (outcomes, messages, task metadata all
+	// serialize as UTC via toISOString()).
 	const next = new Date(from);
-	next.setSeconds(0);
-	next.setMilliseconds(0);
-	next.setMinutes(next.getMinutes() + 1);
+	next.setUTCSeconds(0);
+	next.setUTCMilliseconds(0);
+	next.setUTCMinutes(next.getUTCMinutes() + 1);
 
 	// Try up to 4 years in the future to avoid infinite loops
 	const maxDate = new Date(from);
-	maxDate.setFullYear(maxDate.getFullYear() + 4);
+	maxDate.setUTCFullYear(maxDate.getUTCFullYear() + 4);
 
 	while (next <= maxDate) {
-		const m = next.getMinutes();
-		const h = next.getHours();
-		const d = next.getDate();
-		const mon = next.getMonth() + 1;
-		const dow = next.getDay();
+		const m = next.getUTCMinutes();
+		const h = next.getUTCHours();
+		const d = next.getUTCDate();
+		const mon = next.getUTCMonth() + 1;
+		const dow = next.getUTCDay();
 
 		const minuteMatch = minute.has(m);
 		const hourMatch = hour.has(h);
@@ -49,7 +55,7 @@ function parseCron(cronExpr: string, from: Date = new Date()): Date {
 			return next;
 		}
 
-		next.setMinutes(next.getMinutes() + 1);
+		next.setUTCMinutes(next.getUTCMinutes() + 1);
 	}
 
 	throw new Error("Could not find next cron execution time");
