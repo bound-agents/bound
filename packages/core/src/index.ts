@@ -78,3 +78,10 @@ export {
 } from "./dispatch";
 export { ThreadExecutor, type ExecutorRunResult, type ExecutorOptions } from "./thread-executor";
 export { startHostHeartbeat, type HeartbeatOptions } from "./host-heartbeat";
+export {
+	CANONICAL_RELATIONS,
+	type CanonicalRelation,
+	isCanonicalRelation,
+	InvalidRelationError,
+	SPELLING_VARIANTS,
+} from "./memory-relations";
