@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { insertRow, softDelete, updateRow } from "@bound/core";
+import { InvalidRelationError, isCanonicalRelation } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 
 /**
@@ -26,7 +27,12 @@ export function upsertEdge(
 	relation: string,
 	weight: number,
 	siteId: string,
+	context?: string,
 ): string {
+	if (!isCanonicalRelation(relation)) {
+		throw new InvalidRelationError(relation);
+	}
+
 	const id = edgeId(sourceKey, targetKey, relation);
 	const now = new Date().toISOString();
 
@@ -38,7 +44,17 @@ export function upsertEdge(
 
 	if (existing) {
 		// Update existing (active or soft-deleted) — restores if deleted
-		updateRow(db, "memory_edges", id, { weight, deleted: 0 }, siteId);
+		updateRow(
+			db,
+			"memory_edges",
+			id,
+			{
+				weight,
+				deleted: 0,
+				...(context !== undefined && { context }),
+			},
+			siteId,
+		);
 	} else {
 		// Create new edge
 		insertRow(
@@ -50,6 +66,7 @@ export function upsertEdge(
 				target_key: targetKey,
 				relation,
 				weight,
+				...(context !== undefined && { context }),
 				created_at: now,
 				modified_at: now,
 				deleted: 0,
@@ -121,6 +138,7 @@ export interface TraversalResult {
 	depth: number;
 	viaRelation: string | null;
 	viaWeight: number | null;
+	viaContext: string | null;
 	modifiedAt: string;
 	source: string | null;
 	tier?: string; // Added for L2 stage tier filtering
@@ -132,6 +150,7 @@ export interface NeighborResult {
 	relation: string;
 	weight: number;
 	direction: "out" | "in";
+	context: string | null;
 }
 
 const MAX_DEPTH = 3;
@@ -155,12 +174,12 @@ export function traverseGraph(
 
 	const rows = db
 		.prepare(
-			`WITH RECURSIVE reachable(key, depth, path, via_relation, via_weight) AS (
-				SELECT ?, 0, '/' || ? || '/', NULL, NULL
+			`WITH RECURSIVE reachable(key, depth, path, via_relation, via_weight, via_context) AS (
+				SELECT ?, 0, '/' || ? || '/', NULL, NULL, NULL
 				UNION ALL
 				SELECT e.target_key, r.depth + 1,
 					   r.path || e.target_key || '/',
-					   e.relation, e.weight
+					   e.relation, e.weight, e.context
 				FROM memory_edges e
 				JOIN reachable r ON e.source_key = r.key
 				WHERE r.depth < ?
@@ -168,7 +187,7 @@ export function traverseGraph(
 				  AND INSTR(r.path, '/' || e.target_key || '/') = 0
 				  AND (? IS NULL OR e.relation = ?)
 			)
-			SELECT r.key, r.depth, r.via_relation, r.via_weight,
+			SELECT r.key, r.depth, r.via_relation, r.via_weight, r.via_context,
 				   m.value, m.modified_at, m.source, m.tier
 			FROM reachable r
 			JOIN semantic_memory m ON m.key = r.key AND m.deleted = 0
@@ -180,6 +199,7 @@ export function traverseGraph(
 		depth: number;
 		via_relation: string | null;
 		via_weight: number | null;
+		via_context: string | null;
 		value: string;
 		modified_at: string;
 		source: string | null;
@@ -195,6 +215,7 @@ export function traverseGraph(
 			depth: r.depth,
 			viaRelation: r.via_relation,
 			viaWeight: r.via_weight,
+			viaContext: r.via_context,
 			modifiedAt: r.modified_at,
 			source: r.source,
 			tier: r.tier,
@@ -224,7 +245,7 @@ export function getNeighbors(
 	if (direction === "out" || direction === "both") {
 		const outEdges = db
 			.prepare(
-				`SELECT e.target_key AS key, e.relation, e.weight, m.value
+				`SELECT e.target_key AS key, e.relation, e.weight, e.context, m.value
 				 FROM memory_edges e
 				 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
 				 WHERE e.source_key = ? AND e.deleted = 0
@@ -234,6 +255,7 @@ export function getNeighbors(
 			key: string;
 			relation: string;
 			weight: number;
+			context: string | null;
 			value: string;
 		}>;
 
@@ -244,6 +266,7 @@ export function getNeighbors(
 				relation: e.relation,
 				weight: e.weight,
 				direction: "out",
+				context: e.context,
 			});
 		}
 	}
@@ -251,7 +274,7 @@ export function getNeighbors(
 	if (direction === "in" || direction === "both") {
 		const inEdges = db
 			.prepare(
-				`SELECT e.source_key AS key, e.relation, e.weight, m.value
+				`SELECT e.source_key AS key, e.relation, e.weight, e.context, m.value
 				 FROM memory_edges e
 				 JOIN semantic_memory m ON m.key = e.source_key AND m.deleted = 0
 				 WHERE e.target_key = ? AND e.deleted = 0
@@ -261,6 +284,7 @@ export function getNeighbors(
 			key: string;
 			relation: string;
 			weight: number;
+			context: string | null;
 			value: string;
 		}>;
 
@@ -271,6 +295,7 @@ export function getNeighbors(
 				relation: e.relation,
 				weight: e.weight,
 				direction: "in",
+				context: e.context,
 			});
 		}
 	}
