@@ -339,12 +339,7 @@ export async function createTestInstance(config: {
 	db.run("PRAGMA foreign_keys = ON");
 
 	// Execute all schema statements
-	const statements = FULL_SCHEMA.split(";").filter((s) => s.trim());
-	for (const stmt of statements) {
-		if (stmt.trim()) {
-			db.run(stmt);
-		}
-	}
+	db.exec(FULL_SCHEMA);
 
 	return {
 		db,
@@ -434,12 +429,7 @@ export async function createWsTestCluster(config: {
 		const db = new Database(dbPath);
 		db.run("PRAGMA journal_mode = WAL");
 		db.run("PRAGMA foreign_keys = ON");
-		const statements = FULL_SCHEMA.split(";").filter((s) => s.trim());
-		for (const stmt of statements) {
-			if (stmt.trim()) {
-				db.run(stmt);
-			}
-		}
+		db.exec(FULL_SCHEMA);
 		return db;
 	};
 

@@ -65,3 +65,6 @@ export { WsSyncClient, type WsClientConfig } from "./ws-client.js";
 // WebSocket transport (push-on-write changelog replication)
 export { WsTransport, type WsTransportConfig } from "./ws-transport.js";
 export { MicrotaskCoalescer } from "./ws-coalescer.js";
+
+// Reducers and column cache
+export { clearColumnCache } from "./reducers.js";

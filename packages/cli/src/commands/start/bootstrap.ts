@@ -17,7 +17,7 @@ import {
 	withChangeLog,
 } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
-import { ensureKeypair } from "@bound/sync";
+import { clearColumnCache, ensureKeypair } from "@bound/sync";
 
 // Build metadata (generated at compile time, gitignored)
 let COMMIT_HASH = "dev";
@@ -128,6 +128,9 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 	let appContext: AppContext;
 	try {
 		appContext = createAppContext(resolve(configDir), dbPath);
+		// Clear the column cache after applySchema has run, so long-running
+		// agent processes pick up the new memory_edges.context column without restart.
+		clearColumnCache();
 	} catch (error) {
 		// Print a friendly message for the CLI path, then rethrow so callers
 		// (including tests) can observe the failure. The CLI entrypoint catches
