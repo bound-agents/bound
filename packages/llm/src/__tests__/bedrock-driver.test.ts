@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
-import { BedrockDriver, toBedrockMessages } from "../bedrock-driver";
+import { BedrockDriver } from "../bedrock-driver";
+import { toBedrockMessages } from "../bedrock/convert";
 import { LLMError } from "../types";
 import type { LLMMessage, StreamChunk } from "../types";
 

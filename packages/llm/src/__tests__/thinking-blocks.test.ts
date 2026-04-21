@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { toAnthropicMessages } from "../anthropic-driver";
-import { toBedrockMessages } from "../bedrock-driver";
+import { toBedrockMessages } from "../bedrock/convert";
 import { toOllamaMessages } from "../ollama-driver";
 import { toOpenAIMessages } from "../openai-driver";
 import type { LLMMessage } from "../types";
