@@ -537,10 +537,14 @@ export class AgentLoop {
 											this.aborted = true;
 											break;
 										}
-										// Heartbeats reset the silence timeout but carry no data
-										if (chunk.type === "heartbeat") continue;
-										// Reset the inactivity timeout — the LLM is producing output
+										// Reset the inactivity timeout — any chunk (including
+										// heartbeats) proves the LLM is still working. Heartbeats
+										// from Bedrock extended-thinking warm-up can take >5min
+										// before the first content chunk; without resetting here
+										// the outer timer in message-handler.ts aborts mid-session.
 										this.config.onActivity?.();
+										// Heartbeats reset the timeout but carry no data
+										if (chunk.type === "heartbeat") continue;
 										chunks.push(chunk);
 									}
 									break; // Stream completed — exit retry loop

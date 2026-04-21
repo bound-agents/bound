@@ -246,6 +246,64 @@ describe("AgentLoop", () => {
 		expect(msgs[0].content).toBe("The answer is 42.");
 	});
 
+	it("should fire onActivity for heartbeat chunks (regression: Bedrock stall)", async () => {
+		// Regression: thread b6a3ddba (2026-04-20/21) — Bedrock extended-thinking
+		// warmup emitted heartbeat chunks with no text for >5min. The outer
+		// inactivity timer in message-handler.ts ticks only on onActivity, so a
+		// long warmup aborted mid-session. Fix: heartbeat chunks must reset the
+		// timer by firing onActivity BEFORE the `continue`.
+		//
+		// We snapshot the activityCount at two points:
+		//  - after the consumer pulls heartbeat #1
+		//  - after the consumer pulls heartbeat #2
+		// and assert count strictly increased between those snapshots — i.e.
+		// the heartbeat alone (with no text chunk between) fired onActivity.
+		const mockBackend = new MockLLMBackend();
+		let activityCount = 0;
+		let countAfterFirstHeartbeat = -1;
+		let countAfterSecondHeartbeat = -1;
+
+		mockBackend.pushResponse(async function* () {
+			yield { type: "heartbeat" as const };
+			// After the consumer processes the heartbeat above, onActivity should
+			// have fired. Snapshot the count now, before any further chunks.
+			countAfterFirstHeartbeat = activityCount;
+			yield { type: "heartbeat" as const };
+			countAfterSecondHeartbeat = activityCount;
+			yield { type: "text" as const, content: "final answer" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+			onActivity: () => {
+				activityCount++;
+			},
+		});
+
+		await agentLoop.run();
+
+		// Heartbeat #2 must have incremented the counter beyond heartbeat #1.
+		// Without the fix, heartbeats hit `continue` before onActivity, so both
+		// snapshots would read the same value (whatever was last set by the
+		// pre-stream call sites).
+		expect(countAfterFirstHeartbeat).toBeGreaterThanOrEqual(0);
+		expect(countAfterSecondHeartbeat).toBeGreaterThan(countAfterFirstHeartbeat);
+	});
+
 	it("should execute tool calls via sandbox.exec()", async () => {
 		const mockBackend = new MockLLMBackend();
 		mockBackend.setToolThenTextResponse(
