@@ -1,6 +1,11 @@
 import type { Database } from "bun:sqlite";
-import { insertRow, softDelete, updateRow } from "@bound/core";
-import { InvalidRelationError, isCanonicalRelation } from "@bound/core";
+import {
+	InvalidRelationError,
+	insertRow,
+	isCanonicalRelation,
+	softDelete,
+	updateRow,
+} from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 
 /**

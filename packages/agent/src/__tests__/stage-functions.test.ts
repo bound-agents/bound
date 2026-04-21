@@ -38,6 +38,8 @@ describe("Stage Functions - L0 Pinned Entries", () => {
 				source_key TEXT NOT NULL,
 				target_key TEXT NOT NULL,
 				relation TEXT NOT NULL,
+				weight REAL DEFAULT 1.0,
+				context TEXT,
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
 				deleted INTEGER DEFAULT 0
@@ -199,6 +201,8 @@ describe("Stage Functions - L1 Summary Entries", () => {
 				source_key TEXT NOT NULL,
 				target_key TEXT NOT NULL,
 				relation TEXT NOT NULL,
+				weight REAL DEFAULT 1.0,
+				context TEXT,
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
 				deleted INTEGER DEFAULT 0
@@ -565,6 +569,8 @@ describe("loadSummaryEntries function", () => {
 				source_key TEXT NOT NULL,
 				target_key TEXT NOT NULL,
 				relation TEXT NOT NULL,
+				weight REAL DEFAULT 1.0,
+				context TEXT,
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
 				deleted INTEGER DEFAULT 0
@@ -761,6 +767,7 @@ describe("Stage Functions - L2 Graph Entries", () => {
 				target_key TEXT NOT NULL,
 				relation TEXT NOT NULL,
 				weight REAL DEFAULT 1.0,
+				context TEXT,
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
 				deleted INTEGER DEFAULT 0
@@ -1063,6 +1070,7 @@ describe("Stage Functions - L3 Recency Entries", () => {
 				target_key TEXT NOT NULL,
 				relation TEXT NOT NULL,
 				weight REAL DEFAULT 1.0,
+				context TEXT,
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
 				deleted INTEGER DEFAULT 0
@@ -1233,6 +1241,8 @@ describe("Deterministic ordering for cross-thread cache reuse", () => {
 				source_key TEXT NOT NULL,
 				target_key TEXT NOT NULL,
 				relation TEXT NOT NULL,
+				weight REAL DEFAULT 1.0,
+				context TEXT,
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
 				deleted INTEGER DEFAULT 0
