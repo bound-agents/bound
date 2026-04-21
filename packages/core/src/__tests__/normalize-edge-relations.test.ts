@@ -462,4 +462,180 @@ describe("normalizeEdgeRelations", () => {
 			expect(survivor.context).toBe("note | custom-rel"); // Deduplicated
 		});
 	});
+
+	describe("multi-node convergence (AC2.8)", () => {
+		it("two independent normalizations converge to the same logical state", async () => {
+			// Create a helper to set up identical seed data in a database
+			function seedTestData(db: ReturnType<typeof createDatabase>) {
+				// Helper to insert non-canonical edges (reuse the insertNonCanonicalEdge logic inline)
+				function insertNonCanonical(
+					id: string,
+					source_key: string,
+					target_key: string,
+					relation: string,
+					weight: number,
+					context: string | null,
+				) {
+					// Drop triggers temporarily
+					db.exec(`
+						DROP TRIGGER IF EXISTS memory_edges_canonical_relation_insert;
+						DROP TRIGGER IF EXISTS memory_edges_canonical_relation_update;
+					`);
+
+					// Insert the data
+					db.prepare(
+						`INSERT INTO memory_edges (id, source_key, target_key, relation, weight, context, created_at, modified_at, deleted)
+						 VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 0)`,
+					).run(id, source_key, target_key, relation, weight, context);
+
+					// Recreate the triggers
+					const canonicalList = [
+						"related_to",
+						"informs",
+						"supports",
+						"extends",
+						"complements",
+						"contrasts-with",
+						"competes-with",
+						"cites",
+						"summarizes",
+						"synthesizes",
+					]
+						.map((r) => `'${r}'`)
+						.join(", ");
+
+					db.run(`
+						CREATE TRIGGER IF NOT EXISTS memory_edges_canonical_relation_insert
+						BEFORE INSERT ON memory_edges
+						FOR EACH ROW WHEN NEW.relation NOT IN (${canonicalList})
+						BEGIN SELECT RAISE(ABORT, 'Invalid relation. Must be one of: related_to, informs, supports, extends, complements, contrasts-with, competes-with, cites, summarizes, synthesizes. Use context column for bespoke phrasing.'); END;
+					`);
+
+					db.run(`
+						CREATE TRIGGER IF NOT EXISTS memory_edges_canonical_relation_update
+						BEFORE UPDATE OF relation ON memory_edges
+						FOR EACH ROW WHEN NEW.relation NOT IN (${canonicalList})
+						BEGIN SELECT RAISE(ABORT, 'Invalid relation. Must be one of: related_to, informs, supports, extends, complements, contrasts-with, competes-with, cites, summarizes, synthesizes. Use context column for bespoke phrasing.'); END;
+					`);
+				}
+
+				// Seed scenario 1: variant collision
+				// Canonical row already exists
+				db.prepare(
+					`INSERT INTO memory_edges (id, source_key, target_key, relation, weight, context, created_at, modified_at, deleted)
+					 VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 0)`,
+				).run("edge1a", "mem1", "mem2", "related_to", 0.5, "note-a");
+
+				// Variant that will collide
+				insertNonCanonical("edge1b", "mem1", "mem2", "related-to", 0.8, null);
+
+				// Seed scenario 2: bespoke relations
+				insertNonCanonical("edge2", "mem3", "mem4", "custom-relation", 1.5, null);
+
+				// Seed scenario 3: multi-variant
+				insertNonCanonical("edge3", "mem5", "mem6", "relates_to", 2.0, "context-c");
+
+				// Seed scenario 4: bespoke collision
+				db.prepare(
+					`INSERT INTO memory_edges (id, source_key, target_key, relation, weight, context, created_at, modified_at, deleted)
+					 VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 0)`,
+				).run("edge4a", "mem7", "mem8", "related_to", 0.3, null);
+
+				insertNonCanonical("edge4b", "mem7", "mem8", "pattern-type", 0.9, "important");
+			}
+
+			// Create two independent databases with identical seed data
+			const tmpDir1 = mkdtempSync(join(tmpdir(), "normalize-edges-db1-"));
+			const dbPath1 = join(tmpDir1, "test.db");
+			const db1 = createDatabase(dbPath1);
+			applySchema(db1);
+			seedTestData(db1);
+
+			const tmpDir2 = mkdtempSync(join(tmpdir(), "normalize-edges-db2-"));
+			const dbPath2 = join(tmpDir2, "test.db");
+			const db2 = createDatabase(dbPath2);
+			applySchema(db2);
+			seedTestData(db2);
+
+			// Run normalization independently with different siteIds
+			const site1 = "site-001";
+			const site2 = "site-002";
+			normalizeEdgeRelations(db1, site1);
+			normalizeEdgeRelations(db2, site2);
+
+			// Query the logical state from both databases (ignoring timestamps and changelog site_id)
+			function getCanonicalState(db: ReturnType<typeof createDatabase>) {
+				return db
+					.prepare(
+						`SELECT source_key, target_key, relation, weight, context, deleted
+						 FROM memory_edges
+						 ORDER BY id`,
+					)
+					.all() as Array<{
+					source_key: string;
+					target_key: string;
+					relation: string;
+					weight: number;
+					context: string | null;
+					deleted: number;
+				}>;
+			}
+
+			const state1 = getCanonicalState(db1);
+			const state2 = getCanonicalState(db2);
+
+			// Both should have the same number of rows
+			expect(state1.length).toBe(state2.length);
+
+			// Both should have identical logical state (source, target, relation, weight, context, deleted)
+			for (let i = 0; i < state1.length; i++) {
+				const row1 = state1[i];
+				const row2 = state2[i];
+
+				expect(row1.source_key).toBe(row2.source_key);
+				expect(row1.target_key).toBe(row2.target_key);
+				expect(row1.relation).toBe(row2.relation);
+				expect(row1.weight).toBe(row2.weight);
+				expect(row1.context).toBe(row2.context);
+				expect(row1.deleted).toBe(row2.deleted);
+			}
+
+			// Verify the expected transformations occurred identically on both
+			// - edge1a should survive with weight 0.8 (max of 0.5 and 0.8)
+			// - edge1b should be soft-deleted
+			const edge1aSurvived = state1.find(
+				(r) => r.source_key === "mem1" && r.target_key === "mem2" && r.deleted === 0,
+			);
+			expect(edge1aSurvived).toBeDefined();
+			expect(edge1aSurvived?.weight).toBe(0.8);
+			expect(edge1aSurvived?.context).toBe("note-a");
+
+			// - edge2 should be normalized to related_to with context preserved
+			const edge2Normalized = state1.find(
+				(r) => r.source_key === "mem3" && r.target_key === "mem4" && r.deleted === 0,
+			);
+			expect(edge2Normalized).toBeDefined();
+			expect(edge2Normalized?.relation).toBe("related_to");
+			expect(edge2Normalized?.context).toBe("custom-relation");
+
+			// - edge3 should be normalized as variant to related_to
+			const edge3Normalized = state1.find(
+				(r) => r.source_key === "mem5" && r.target_key === "mem6" && r.deleted === 0,
+			);
+			expect(edge3Normalized).toBeDefined();
+			expect(edge3Normalized?.relation).toBe("related_to");
+			expect(edge3Normalized?.context).toBe("context-c");
+
+			// - edge4a should survive with merged context (pattern-type from bespoke + important from edge4b)
+			const edge4aSurvived = state1.find(
+				(r) => r.source_key === "mem7" && r.target_key === "mem8" && r.deleted === 0,
+			);
+			expect(edge4aSurvived).toBeDefined();
+			expect(edge4aSurvived?.weight).toBe(0.9);
+			expect(edge4aSurvived?.context).toBe("pattern-type | important");
+
+			db1.close();
+			db2.close();
+		});
+	});
 });
