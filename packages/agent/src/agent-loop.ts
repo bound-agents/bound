@@ -1809,14 +1809,18 @@ export const SILENCE_HEARTBEAT_INTERVAL_MS = 30_000;
 
 /**
  * Rejects if no item yielded within timeoutMs. Optionally calls `onHeartbeat`
- * every SILENCE_HEARTBEAT_INTERVAL_MS while waiting for the next chunk, so
- * upstream inactivity timers can distinguish "LLM is warming up / thinking
- * silently" from "request is wedged."
+ * every `heartbeatIntervalMs` (default SILENCE_HEARTBEAT_INTERVAL_MS) while
+ * waiting for the next chunk, so upstream inactivity timers can distinguish
+ * "LLM is warming up / thinking silently" from "request is wedged."
+ *
+ * heartbeatIntervalMs is primarily a test hook; production code should use
+ * the default.
  */
 export async function* withSilenceTimeout<T>(
 	source: AsyncIterable<T>,
 	timeoutMs: number,
 	onHeartbeat?: () => void,
+	heartbeatIntervalMs: number = SILENCE_HEARTBEAT_INTERVAL_MS,
 ): AsyncGenerator<T> {
 	const iterator = source[Symbol.asyncIterator]();
 
@@ -1836,7 +1840,7 @@ export async function* withSilenceTimeout<T>(
 				} catch {
 					// Heartbeat callbacks should never break the stream.
 				}
-			}, SILENCE_HEARTBEAT_INTERVAL_MS);
+			}, heartbeatIntervalMs);
 		}
 
 		let result: IteratorResult<T>;
