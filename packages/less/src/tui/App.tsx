@@ -98,7 +98,7 @@ export function App({
 	});
 
 	// Wire in React hooks for state management
-	// biome-ignore lint/correctness/noUnusedVariables: appendMessage and clearMessages are managed by the hook and exposed for future use
+	// biome-ignore lint/correctness/noUnusedVariables: appendMessage is managed by the hook and exposed for future use
 	const { messages, appendMessage, clearMessages } = useMessages(client, initialMessages);
 	const { inFlightTools, abortAll } = useToolCalls(client, toolHandlers, hostname, cwd);
 	const { runningCount: mcpServerCount } = useMcpServers(mcpManager);
@@ -167,6 +167,22 @@ export function App({
 		dispatch({ type: "DISMISS_BANNER" });
 	};
 
+	const handleClear = useCallback(async () => {
+		if (!client) return;
+		try {
+			const thread = await client.createThread();
+			clearMessages();
+			dispatch({ type: "SET_THREAD", threadId: thread.id });
+		} catch (error) {
+			const errorMsg = error instanceof Error ? error.message : String(error);
+			dispatch({
+				type: "SET_BANNER",
+				message: `Failed to create new thread: ${errorMsg}`,
+				bannerType: "error",
+			});
+		}
+	}, [client, clearMessages]);
+
 	const handleSendMessage = async (message: string) => {
 		if (client) {
 			try {
@@ -197,6 +213,7 @@ export function App({
 					onModelChange={handleSetModel}
 					onAttachThread={() => handleSetView("picker", "thread")}
 					onMcpView={() => handleSetView("mcp")}
+					onClear={handleClear}
 					onBannerDismiss={handleDismissBanner}
 					onSendMessage={handleSendMessage}
 				/>

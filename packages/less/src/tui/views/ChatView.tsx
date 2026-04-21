@@ -28,6 +28,7 @@ export interface ChatViewProps {
 	onModelChange: (model: string) => void;
 	onAttachThread: () => void;
 	onMcpView: () => void;
+	onClear: () => void;
 	onBannerDismiss: () => void;
 	onSendMessage: (message: string) => void;
 }
@@ -55,6 +56,7 @@ export function ChatView({
 	onModelChange,
 	onAttachThread,
 	onMcpView,
+	onClear,
 	onBannerDismiss,
 	onSendMessage,
 }: ChatViewProps): React.ReactElement {
@@ -96,7 +98,7 @@ export function ChatView({
 			}
 
 			if (command === "clear") {
-				setCommandError("Not implemented in ChatView");
+				onClear();
 				return;
 			}
 

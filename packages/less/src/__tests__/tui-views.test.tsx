@@ -307,6 +307,68 @@ describe("TUI Views", () => {
 			expect(onSendMessage).not.toHaveBeenCalled();
 		});
 
+		it("/clear calls onClear callback", async () => {
+			const onClear = vi.fn();
+			const { stdin } = render(
+				React.createElement(ChatView, {
+					client: mockClient,
+					threadId: "thread-1",
+					model: "gpt-4",
+					connectionState: "connected",
+					messages: [],
+					inFlightTools: new Map(),
+					mcpServerCount: 0,
+					bannerMessage: null,
+					bannerType: null,
+					onModelChange: vi.fn(),
+					onAttachThread: vi.fn(),
+					onMcpView: vi.fn(),
+					onClear,
+					onBannerDismiss: vi.fn(),
+					onSendMessage: vi.fn(),
+				}),
+			);
+
+			await tick();
+			stdin.write("/clear");
+			await tick();
+			stdin.write("\r");
+			await tick();
+
+			expect(onClear).toHaveBeenCalledTimes(1);
+		});
+
+		it("/clear does not send a message to the server", async () => {
+			const onSendMessage = vi.fn();
+			const { stdin } = render(
+				React.createElement(ChatView, {
+					client: mockClient,
+					threadId: "thread-1",
+					model: "gpt-4",
+					connectionState: "connected",
+					messages: [],
+					inFlightTools: new Map(),
+					mcpServerCount: 0,
+					bannerMessage: null,
+					bannerType: null,
+					onModelChange: vi.fn(),
+					onAttachThread: vi.fn(),
+					onMcpView: vi.fn(),
+					onClear: vi.fn(),
+					onBannerDismiss: vi.fn(),
+					onSendMessage,
+				}),
+			);
+
+			await tick();
+			stdin.write("/clear");
+			await tick();
+			stdin.write("\r");
+			await tick();
+
+			expect(onSendMessage).not.toHaveBeenCalled();
+		});
+
 		it("AC9.8: should show error for unknown slash command", () => {
 			const onSendMessage = vi.fn();
 			const { lastFrame } = render(
