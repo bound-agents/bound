@@ -273,9 +273,12 @@ function handleConnect(args: Record<string, string>, ctx: CommandContext) {
 	const tgt = args.target;
 	const rel = args.relation;
 	const weight = args.weight ? Number.parseFloat(args.weight) : 1.0;
+	const context = args.context || undefined;
 
 	if (!src || !tgt || !rel) {
-		return commandError("usage: memory connect <source> <target> <relation> [--weight N]");
+		return commandError(
+			'usage: memory connect <source> <target> <relation> [--weight N] [--context "phrase"]',
+		);
 	}
 
 	if (Number.isNaN(weight) || weight < 0 || weight > 10) {
@@ -297,7 +300,7 @@ function handleConnect(args: Record<string, string>, ctx: CommandContext) {
 		return commandError(`target memory not found: ${tgt}`);
 	}
 
-	const id = upsertEdge(ctx.db, src, tgt, rel, weight, ctx.siteId);
+	const id = upsertEdge(ctx.db, src, tgt, rel, weight, ctx.siteId, context);
 
 	// AC2.3-AC2.5: Handle tier transitions for summarizes edges
 	if (rel === "summarizes") {
@@ -310,7 +313,10 @@ function handleConnect(args: Record<string, string>, ctx: CommandContext) {
 		// pinned and summary targets are NOT demoted (AC2.4, AC2.5)
 	}
 
-	return commandSuccess(`Edge created: ${src} --[${rel}]--> ${tgt} (weight=${weight}, id=${id})\n`);
+	const contextSuffix = context ? `, context="${context}"` : "";
+	return commandSuccess(
+		`Edge created: ${src} --[${rel}]--> ${tgt} (weight=${weight}${contextSuffix}, id=${id})\n`,
+	);
 }
 
 function handleDisconnect(args: Record<string, string>, ctx: CommandContext) {
@@ -371,10 +377,10 @@ function handleTraverse(args: Record<string, string>, ctx: CommandContext) {
 		return commandSuccess(`No connected entries found from: ${key}\n`);
 	}
 
-	const lines = results.map(
-		(r) =>
-			`${"  ".repeat(r.depth)}${r.key}: ${r.value.substring(0, 80)}${r.value.length > 80 ? "..." : ""} [depth ${r.depth}, ${r.viaRelation}]`,
-	);
+	const lines = results.map((r) => {
+		const ctxSuffix = r.viaContext ? ` (${r.viaContext})` : "";
+		return `${"  ".repeat(r.depth)}${r.key}: ${r.value.substring(0, 80)}${r.value.length > 80 ? "..." : ""} [depth ${r.depth}, ${r.viaRelation}${ctxSuffix}]`;
+	});
 	return commandSuccess(
 		`Graph traversal from ${key} (depth=${Math.min(depth, 3)}, ${results.length} entries):\n${lines.join("\n")}\n`,
 	);
@@ -397,10 +403,10 @@ function handleNeighbors(args: Record<string, string>, ctx: CommandContext) {
 		return commandSuccess(`No neighbors found for: ${key}\n`);
 	}
 
-	const lines = results.map(
-		(r) =>
-			`  ${r.direction === "out" ? "-->" : "<--"} ${r.key}: ${r.value.substring(0, 80)}${r.value.length > 80 ? "..." : ""} [${r.relation}, w=${r.weight}]`,
-	);
+	const lines = results.map((r) => {
+		const ctxSuffix = r.context ? ` (${r.context})` : "";
+		return `  ${r.direction === "out" ? "-->" : "<--"} ${r.key}: ${r.value.substring(0, 80)}${r.value.length > 80 ? "..." : ""} [${r.relation}, w=${r.weight}${ctxSuffix}]`;
+	});
 	return commandSuccess(
 		`Neighbors of ${key} (${results.length} connections):\n${lines.join("\n")}\n`,
 	);
@@ -418,6 +424,11 @@ export const memory: CommandDefinition = {
 		{ name: "target", required: false, description: "Second positional arg (value/target_key)" },
 		{ name: "relation", required: false, description: "Relation type (for connect/disconnect)" },
 		{ name: "weight", required: false, description: "Edge weight (for connect)" },
+		{
+			name: "context",
+			required: false,
+			description: "Free-text context for the edge relationship",
+		},
 		{ name: "prefix", required: false, description: "Prefix for batch forget" },
 		{ name: "source_tag", required: false, description: "Source tag for store provenance" },
 		{ name: "depth", required: false, description: "Traversal depth (1-3, default 2)" },
