@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { HLC_ZERO } from "@bound/shared";
+import { CANONICAL_RELATIONS } from "./memory-relations";
 
 /**
  * Migrate change_log from seq INTEGER PK to hlc TEXT PK.
@@ -702,4 +703,35 @@ export function applySchema(db: Database): void {
 	} catch {
 		/* already exists */
 	}
+
+	// ── Edge graph normalization ─────────────────────────────────────────────────
+
+	// Add context column to memory_edges (nullable free-text annotation)
+	try {
+		db.run("ALTER TABLE memory_edges ADD COLUMN context TEXT");
+	} catch {
+		/* already exists */
+	}
+
+	// Generate trigger SQL from canonical set — single source of truth.
+	// Safety: CANONICAL_RELATIONS values are string literals defined in memory-relations.ts.
+	// None contain single quotes, so interpolation into SQL string literals is safe.
+	// If a value with a single quote were ever added to the set, the trigger CREATE
+	// would fail loudly at startup (SQL syntax error), not silently inject.
+	const canonicalList = CANONICAL_RELATIONS.map((r) => `'${r}'`).join(", ");
+	const triggerMsg = `Invalid relation. Must be one of: ${CANONICAL_RELATIONS.join(", ")}. Use context column for bespoke phrasing.`;
+
+	db.run(`
+		CREATE TRIGGER IF NOT EXISTS memory_edges_canonical_relation_insert
+		BEFORE INSERT ON memory_edges
+		FOR EACH ROW WHEN NEW.relation NOT IN (${canonicalList})
+		BEGIN SELECT RAISE(ABORT, '${triggerMsg}'); END
+	`);
+
+	db.run(`
+		CREATE TRIGGER IF NOT EXISTS memory_edges_canonical_relation_update
+		BEFORE UPDATE OF relation ON memory_edges
+		FOR EACH ROW WHEN NEW.relation NOT IN (${canonicalList})
+		BEGIN SELECT RAISE(ABORT, '${triggerMsg}'); END
+	`);
 }
