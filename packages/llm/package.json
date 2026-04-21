@@ -8,6 +8,7 @@
 	"dependencies": {
 		"@aws-sdk/client-bedrock-runtime": "^3.1014.0",
 		"@bound/shared": "workspace:*",
-		"@smithy/types": "^4.13.1"
+		"@smithy/types": "^4.13.1",
+		"zod": "^4.0.0"
 	}
 }
