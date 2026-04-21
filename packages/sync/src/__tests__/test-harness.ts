@@ -159,6 +159,7 @@ const FULL_SCHEMA = `
 		target_key  TEXT NOT NULL,
 		relation    TEXT NOT NULL,
 		weight      REAL DEFAULT 1.0,
+		context     TEXT,
 		created_at  TEXT NOT NULL,
 		modified_at TEXT NOT NULL,
 		deleted     INTEGER DEFAULT 0
@@ -168,6 +169,16 @@ const FULL_SCHEMA = `
 		ON memory_edges(source_key, target_key, relation) WHERE deleted = 0;
 	CREATE INDEX idx_edges_source ON memory_edges(source_key) WHERE deleted = 0;
 	CREATE INDEX idx_edges_target ON memory_edges(target_key) WHERE deleted = 0;
+
+	CREATE TRIGGER IF NOT EXISTS memory_edges_canonical_relation_insert
+	BEFORE INSERT ON memory_edges
+	FOR EACH ROW WHEN NEW.relation NOT IN ('related_to','informs','supports','extends','complements','contrasts-with','competes-with','cites','summarizes','synthesizes')
+	BEGIN SELECT RAISE(ABORT, 'Invalid relation. Must be one of: related_to, informs, supports, extends, complements, contrasts-with, competes-with, cites, summarizes, synthesizes. Use context column for bespoke phrasing.'); END;
+
+	CREATE TRIGGER IF NOT EXISTS memory_edges_canonical_relation_update
+	BEFORE UPDATE OF relation ON memory_edges
+	FOR EACH ROW WHEN NEW.relation NOT IN ('related_to','informs','supports','extends','complements','contrasts-with','competes-with','cites','summarizes','synthesizes')
+	BEGIN SELECT RAISE(ABORT, 'Invalid relation. Must be one of: related_to, informs, supports, extends, complements, contrasts-with, competes-with, cites, summarizes, synthesizes. Use context column for bespoke phrasing.'); END;
 
 	CREATE TABLE overlay_index (
 		id TEXT PRIMARY KEY,
