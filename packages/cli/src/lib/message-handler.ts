@@ -70,7 +70,13 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 		modelId,
 		activeLoopAbortControllers,
 		agentLoopFactory,
-		timeoutMs = 5 * 60 * 1000,
+		// Outer inactivity timeout. Must be longer than the inner stream-level
+		// silence budget in agent-loop.ts (SILENCE_TIMEOUT_MS * MAX_SILENCE_RETRIES
+		// = 10min * 3 = 30min worst case) so the inner retry logic gets a chance
+		// to recover before we tear down the whole request. Default 35min = 30min
+		// inner budget + 5min grace for pre-stream context assembly, capability
+		// resolution, and tool execution between turns.
+		timeoutMs = 35 * 60 * 1000,
 		shouldYield,
 		platform,
 		platformTools,
