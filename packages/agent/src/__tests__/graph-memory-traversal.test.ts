@@ -39,12 +39,12 @@ beforeEach(() => {
 		);
 	}
 
-	// Create edges: A→B (relates_to), B→C (relates_to), C→D (governs), A→D (part_of), D→B (derived_from, creates cycle)
-	upsertEdge(db, "A", "B", "relates_to", 1.0, siteId);
-	upsertEdge(db, "B", "C", "relates_to", 1.0, siteId);
-	upsertEdge(db, "C", "D", "governs", 1.0, siteId);
-	upsertEdge(db, "A", "D", "part_of", 1.0, siteId);
-	upsertEdge(db, "D", "B", "derived_from", 1.0, siteId);
+	// Create edges: A→B (related_to), B→C (related_to), C→D (informs), A→D (extends), D→B (cites, creates cycle)
+	upsertEdge(db, "A", "B", "related_to", 1.0, siteId);
+	upsertEdge(db, "B", "C", "related_to", 1.0, siteId);
+	upsertEdge(db, "C", "D", "informs", 1.0, siteId);
+	upsertEdge(db, "A", "D", "extends", 1.0, siteId);
+	upsertEdge(db, "D", "B", "cites", 1.0, siteId);
 });
 
 afterEach(() => {
@@ -110,17 +110,17 @@ describe("graph-memory.AC3.2: Depth parameter limits traversal", () => {
 });
 
 describe("graph-memory.AC3.3: Relation filter narrows traversal", () => {
-	it("should only follow edges of type relates_to", () => {
-		const results = traverseGraph(db, "A", 3, "relates_to");
+	it("should only follow edges of type related_to", () => {
+		const results = traverseGraph(db, "A", 3, "related_to");
 
 		const keys = results.map((r) => r.key);
-		// A→B (relates_to) should be included
+		// A→B (related_to) should be included
 		expect(keys).toContain("B");
-		// B→C (relates_to) should be included, so C should be at depth 2
+		// B→C (related_to) should be included, so C should be at depth 2
 		expect(keys).toContain("C");
 
-		// A→D is part_of, not relates_to, so D should not appear
-		// Relation filter narrows traversal so D is not reachable via relates_to only
+		// A→D is extends, not related_to, so D should not appear
+		// Relation filter narrows traversal so D is not reachable via related_to only
 		expect(keys).not.toContain("D");
 	});
 });
@@ -281,7 +281,7 @@ describe("traverseGraph: Additional edge cases", () => {
 			.prepare(
 				"SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?",
 			)
-			.get("A", "B", "relates_to") as { id: string } | null;
+			.get("A", "B", "related_to") as { id: string } | null;
 
 		if (edge) {
 			db.prepare("UPDATE memory_edges SET deleted = 1 WHERE id = ?").run(edge.id);

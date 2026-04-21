@@ -90,7 +90,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 		it("should create edge with correct deterministic UUID", () => {
 			const sourceKey = "scheduler_v3";
 			const targetKey = "cron_rescheduling";
-			const relation = "relates_to";
+			const relation = "related_to";
 
 			const edgeIdResult = edgeId(sourceKey, targetKey, relation);
 			const expectedId = deterministicUUID(
@@ -128,7 +128,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 		it("should set non-default weight when specified", () => {
 			const sourceKey = "scheduler_v3";
 			const targetKey = "cron_rescheduling";
-			const relation = "governs";
+			const relation = "informs";
 			const customWeight = 0.5;
 
 			const edgeIdResult = upsertEdge(db, sourceKey, targetKey, relation, customWeight, siteId);
@@ -146,7 +146,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 					subcommand: "connect",
 					source: "scheduler_v3",
 					target: "cron_rescheduling",
-					relation: "governs",
+					relation: "informs",
 					weight: "0.75",
 				},
 				ctx,
@@ -158,7 +158,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 				.prepare(
 					"SELECT weight FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?",
 				)
-				.get("scheduler_v3", "cron_rescheduling", "governs") as { weight: number };
+				.get("scheduler_v3", "cron_rescheduling", "informs") as { weight: number };
 
 			expect(edge.weight).toBe(0.75);
 		});
@@ -168,7 +168,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 		it("should update weight and modified_at on reconnection", () => {
 			const sourceKey = "scheduler_v3";
 			const targetKey = "cron_rescheduling";
-			const relation = "relates_to";
+			const relation = "related_to";
 
 			// Create initial edge
 			const edgeIdResult = upsertEdge(db, sourceKey, targetKey, relation, 1.0, siteId);
@@ -213,8 +213,8 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 			const targetKey = "cron_rescheduling";
 
 			// Create two edges with different relations
-			upsertEdge(db, sourceKey, targetKey, "relates_to", 1.0, siteId);
-			upsertEdge(db, sourceKey, targetKey, "governs", 1.0, siteId);
+			upsertEdge(db, sourceKey, targetKey, "related_to", 1.0, siteId);
+			upsertEdge(db, sourceKey, targetKey, "informs", 1.0, siteId);
 
 			// Verify both edges exist
 			const edges1 = db
@@ -231,7 +231,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 			expect(edges1.every((e) => e.deleted === 0)).toBe(true);
 
 			// Delete specific relation
-			const count = removeEdges(db, sourceKey, targetKey, "relates_to", siteId);
+			const count = removeEdges(db, sourceKey, targetKey, "related_to", siteId);
 			expect(count).toBe(1);
 
 			// Verify specific edge is soft-deleted
@@ -239,7 +239,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 				.prepare(
 					"SELECT deleted FROM memory_edges WHERE relation = ? AND source_key = ? AND target_key = ?",
 				)
-				.get("relates_to", sourceKey, targetKey) as { deleted: number };
+				.get("related_to", sourceKey, targetKey) as { deleted: number };
 
 			expect(deletedEdge.deleted).toBe(1);
 
@@ -248,7 +248,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 				.prepare(
 					"SELECT deleted FROM memory_edges WHERE relation = ? AND source_key = ? AND target_key = ?",
 				)
-				.get("governs", sourceKey, targetKey) as { deleted: number };
+				.get("informs", sourceKey, targetKey) as { deleted: number };
 
 			expect(activeEdge.deleted).toBe(0);
 		});
@@ -275,9 +275,9 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 			const targetKey = "cron_rescheduling";
 
 			// Create three edges with different relations
-			upsertEdge(db, sourceKey, targetKey, "relates_to", 1.0, siteId);
-			upsertEdge(db, sourceKey, targetKey, "governs", 1.0, siteId);
-			upsertEdge(db, sourceKey, targetKey, "depends_on", 1.0, siteId);
+			upsertEdge(db, sourceKey, targetKey, "related_to", 1.0, siteId);
+			upsertEdge(db, sourceKey, targetKey, "informs", 1.0, siteId);
+			upsertEdge(db, sourceKey, targetKey, "supports", 1.0, siteId);
 
 			// Verify all edges exist and are active
 			const edges1 = db
@@ -317,7 +317,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 					subcommand: "connect",
 					source: "scheduler_v3",
 					target: "cron_rescheduling",
-					relation: "relates_to",
+					relation: "related_to",
 				},
 				ctx,
 			);
@@ -327,7 +327,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 					subcommand: "connect",
 					source: "scheduler_v3",
 					target: "cron_rescheduling",
-					relation: "governs",
+					relation: "informs",
 				},
 				ctx,
 			);
@@ -354,7 +354,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 					subcommand: "connect",
 					source: "nonexistent_source",
 					target: "cron_rescheduling",
-					relation: "relates_to",
+					relation: "related_to",
 				},
 				ctx,
 			);
@@ -369,7 +369,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 					subcommand: "connect",
 					source: "scheduler_v3",
 					target: "nonexistent_target",
-					relation: "relates_to",
+					relation: "related_to",
 				},
 				ctx,
 			);
@@ -385,12 +385,12 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 			const targetKey = "nonexistent_key2";
 
 			// Graph-queries functions should not throw on missing keys
-			const id = edgeId(sourceKey, targetKey, "relates_to");
+			const id = edgeId(sourceKey, targetKey, "related_to");
 			expect(id).toBeDefined();
 
 			// upsertEdge should create the edge regardless
 			// (validation is at command handler level)
-			const returnedId = upsertEdge(db, sourceKey, targetKey, "relates_to", 1.0, siteId);
+			const returnedId = upsertEdge(db, sourceKey, targetKey, "related_to", 1.0, siteId);
 			expect(returnedId).toBe(id);
 
 			// Verify edge was created even with nonexistent keys
@@ -406,7 +406,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 		it("should restore soft-deleted edge by reconnecting same triple", () => {
 			const sourceKey = "scheduler_v3";
 			const targetKey = "cron_rescheduling";
-			const relation = "relates_to";
+			const relation = "related_to";
 
 			// Create edge
 			const edgeIdResult = upsertEdge(db, sourceKey, targetKey, relation, 1.0, siteId);
@@ -446,7 +446,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 		it("should generate change-log entry on edge creation", () => {
 			const sourceKey = "scheduler_v3";
 			const targetKey = "cron_rescheduling";
-			const relation = "relates_to";
+			const relation = "related_to";
 
 			const edgeIdResult = upsertEdge(db, sourceKey, targetKey, relation, 1.0, siteId);
 
@@ -475,7 +475,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 		it("should generate change-log entry on edge update", () => {
 			const sourceKey = "scheduler_v3";
 			const targetKey = "cron_rescheduling";
-			const relation = "relates_to";
+			const relation = "related_to";
 
 			const edgeIdResult = upsertEdge(db, sourceKey, targetKey, relation, 1.0, siteId);
 
@@ -507,7 +507,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 		it("should generate change-log entry on edge soft-delete", () => {
 			const sourceKey = "scheduler_v3";
 			const targetKey = "cron_rescheduling";
-			const relation = "relates_to";
+			const relation = "related_to";
 
 			const edgeIdResult = upsertEdge(db, sourceKey, targetKey, relation, 1.0, siteId);
 
@@ -539,7 +539,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 		it("should use idx_edges_triple index for unique constraint", () => {
 			const sourceKey = "scheduler_v3";
 			const targetKey = "cron_rescheduling";
-			const relation = "relates_to";
+			const relation = "related_to";
 
 			upsertEdge(db, sourceKey, targetKey, relation, 1.0, siteId);
 
@@ -587,8 +587,8 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 				siteId,
 			);
 
-			upsertEdge(db, sourceKey, target1, "relates_to", 1.0, siteId);
-			upsertEdge(db, sourceKey, target2, "relates_to", 1.0, siteId);
+			upsertEdge(db, sourceKey, target1, "related_to", 1.0, siteId);
+			upsertEdge(db, sourceKey, target2, "related_to", 1.0, siteId);
 
 			const edges = db
 				.prepare(
@@ -604,8 +604,8 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 			const sourceKey = "scheduler_v3";
 			const targetKey = "cron_rescheduling";
 
-			upsertEdge(db, sourceKey, targetKey, "relates_to", 1.0, siteId);
-			upsertEdge(db, sourceKey, targetKey, "governs", 1.0, siteId);
+			upsertEdge(db, sourceKey, targetKey, "related_to", 1.0, siteId);
+			upsertEdge(db, sourceKey, targetKey, "informs", 1.0, siteId);
 
 			// Lookup by source should be efficient
 			const edges = db
@@ -619,7 +619,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 			const sourceKey = "scheduler_v3";
 			const targetKey = "cron_rescheduling";
 
-			upsertEdge(db, sourceKey, targetKey, "relates_to", 1.0, siteId);
+			upsertEdge(db, sourceKey, targetKey, "related_to", 1.0, siteId);
 
 			// Lookup by target should be efficient
 			const edges = db
@@ -637,7 +637,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 					subcommand: "connect",
 					source: "scheduler_v3",
 					target: "cron_rescheduling",
-					relation: "relates_to",
+					relation: "related_to",
 				},
 				ctx,
 			);
@@ -655,7 +655,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 					subcommand: "connect",
 					source: "scheduler_v3",
 					target: "cron_rescheduling",
-					relation: "relates_to",
+					relation: "related_to",
 				},
 				ctx,
 			);
@@ -666,7 +666,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 					subcommand: "disconnect",
 					source: "scheduler_v3",
 					target: "cron_rescheduling",
-					relation: "relates_to",
+					relation: "related_to",
 				},
 				ctx,
 			);
@@ -693,7 +693,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 					subcommand: "connect",
 					source: "scheduler_v3",
 					target: "cron_rescheduling",
-					relation: "relates_to",
+					relation: "related_to",
 					weight: "15",
 				},
 				ctx,
@@ -709,7 +709,7 @@ describe("Graph Memory Edges - CRUD Operations", () => {
 					subcommand: "connect",
 					source: "scheduler_v3",
 					target: "cron_rescheduling",
-					relation: "relates_to",
+					relation: "related_to",
 					weight: "invalid",
 				},
 				ctx,

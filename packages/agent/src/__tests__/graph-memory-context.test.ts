@@ -35,7 +35,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const memA = {
 				id: randomBytes(8).toString("hex"),
 				key: "scheduler_design",
-				value: "The scheduler uses cron patterns for task scheduling",
+				value: "The scheduler informs cron patterns for task scheduling",
 				source: null,
 				created_at: "2026-02-01T00:00:00.000Z",
 				modified_at: "2026-02-15T12:00:00.000Z",
@@ -89,8 +89,8 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			}
 
 			// Create edges: A -> B -> C
-			upsertEdge(db, memA.key, memB.key, "refers_to", 0.8, siteId);
-			upsertEdge(db, memB.key, memC.key, "example_of", 0.7, siteId);
+			upsertEdge(db, memA.key, memB.key, "cites", 0.8, siteId);
+			upsertEdge(db, memB.key, memC.key, "supports", 0.7, siteId);
 
 			// User message with keyword that matches A's value
 			const userMessage = "How does the scheduler handle cron patterns?";
@@ -119,7 +119,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const seedMem = {
 				id: randomBytes(8).toString("hex"),
 				key: "sync_protocol",
-				value: "Sync uses Ed25519 signatures for authentication",
+				value: "Sync informs Ed25519 signatures for authentication",
 				source: null,
 				created_at: "2026-02-01T00:00:00.000Z",
 				modified_at: "2026-02-15T12:00:00.000Z",
@@ -141,7 +141,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			insertRow(db, "semantic_memory", linkedMem, siteId);
 
 			// Create edge to ensure graph path is taken
-			upsertEdge(db, seedMem.key, linkedMem.key, "uses", 0.8, siteId);
+			upsertEdge(db, seedMem.key, linkedMem.key, "informs", 0.8, siteId);
 
 			const userMessage = "Tell me about the sync protocol";
 			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, userMessage);
@@ -165,7 +165,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const mem2 = {
 				id: randomBytes(8).toString("hex"),
 				key: "semantic_search",
-				value: "Search uses keyword matching on keys and values",
+				value: "Search informs keyword matching on keys and values",
 				source: null,
 				created_at: "2026-02-01T00:00:00.000Z",
 				modified_at: "2026-02-20T12:00:00.000Z",
@@ -176,7 +176,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			insertRow(db, "semantic_memory", mem2, siteId);
 
 			// Create edge from mem1 to mem2 so mem1 becomes seed
-			upsertEdge(db, mem1.key, mem2.key, "enables", 0.9, siteId);
+			upsertEdge(db, mem1.key, mem2.key, "supports", 0.9, siteId);
 
 			const userMessage = "How does memory structure work?";
 			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, userMessage);
@@ -185,7 +185,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			expect(mem2Line).toBeDefined();
 			// Should have depth tag since it's traversed from seed
 			if (mem2Line?.match(/\[depth \d+/)) {
-				expect(mem2Line).toMatch(/\[depth \d+, enables\]/);
+				expect(mem2Line).toMatch(/\[depth \d+, supports\]/);
 			}
 		});
 	});
@@ -228,7 +228,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			insertRow(db, "semantic_memory", mem2, siteId);
 
 			// Create edges: mem0 -> mem1 -> mem2
-			upsertEdge(db, mem0.key, mem1.key, "leads_to", 0.8, siteId);
+			upsertEdge(db, mem0.key, mem1.key, "informs", 0.8, siteId);
 			upsertEdge(db, mem1.key, mem2.key, "related_to", 0.7, siteId);
 
 			// Create 5 recent unrelated memories for recency fallback
@@ -289,7 +289,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 				deleted: 0,
 			};
 			insertRow(db, "semantic_memory", connMem, siteId);
-			upsertEdge(db, seedMem.key, connMem.key, "relates_to", 0.8, siteId);
+			upsertEdge(db, seedMem.key, connMem.key, "related_to", 0.8, siteId);
 
 			// Create many recent memories to test limit
 			for (let i = 0; i < 15; i++) {
@@ -496,7 +496,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 				deleted: 0,
 			};
 			insertRow(db, "semantic_memory", connMem, siteId);
-			upsertEdge(db, seedMem.key, connMem.key, "relates", 0.8, siteId);
+			upsertEdge(db, seedMem.key, connMem.key, "related_to", 0.8, siteId);
 
 			// Create 10 recent memories
 			for (let i = 0; i < 10; i++) {
@@ -574,7 +574,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const mem1 = {
 				id: randomBytes(8).toString("hex"),
 				key: "blockchain_consensus",
-				value: "Proof of Work uses hash computation",
+				value: "Proof of Work informs hash computation",
 				source: null,
 				created_at: "2026-02-01T00:00:00.000Z",
 				modified_at: "2026-03-15T12:00:00.000Z",

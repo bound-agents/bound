@@ -55,7 +55,7 @@ describe("Graph Memory Lifecycle - Sync and Edge Cascading", () => {
 		it("should create changelog entry when upsertEdge is called", () => {
 			const sourceKey = "memory_a";
 			const targetKey = "memory_b";
-			const relation = "depends_on";
+			const relation = "supports";
 
 			// Create edge via upsertEdge
 			upsertEdge(db, sourceKey, targetKey, relation, 1.0, siteId);
@@ -81,7 +81,7 @@ describe("Graph Memory Lifecycle - Sync and Edge Cascading", () => {
 		it("should create changelog entry when edge is soft-deleted", () => {
 			const sourceKey = "memory_a";
 			const targetKey = "memory_b";
-			const relation = "depends_on";
+			const relation = "supports";
 
 			// Create edge
 			const edgeId = upsertEdge(db, sourceKey, targetKey, relation, 1.0, siteId);
@@ -146,7 +146,7 @@ describe("Graph Memory Lifecycle - Sync and Edge Cascading", () => {
 			);
 
 			// Create edge A -> B
-			upsertEdge(db, keyA, keyB, "relates_to", 1.0, siteId);
+			upsertEdge(db, keyA, keyB, "related_to", 1.0, siteId);
 
 			// Verify edge exists and is not deleted
 			let edge = db
@@ -237,7 +237,7 @@ describe("Graph Memory Lifecycle - Sync and Edge Cascading", () => {
 			);
 
 			// Create edge from thread memory to other memory
-			upsertEdge(db, keyA, keyB, "references", 1.0, siteId);
+			upsertEdge(db, keyA, keyB, "cites", 1.0, siteId);
 
 			// Verify setup
 			let edge = db
@@ -334,7 +334,7 @@ describe("Graph Memory Lifecycle - Sync and Edge Cascading", () => {
 			);
 
 			// Create edges A -> B and C -> B (B is target of both)
-			upsertEdge(db, keyA, keyB, "depends_on", 1.0, siteId);
+			upsertEdge(db, keyA, keyB, "supports", 1.0, siteId);
 			upsertEdge(db, keyC, keyB, "related_to", 1.0, siteId);
 
 			// Verify edges exist
