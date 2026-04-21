@@ -529,6 +529,7 @@ export class AgentLoop {
 									for await (const chunk of this.withSilenceTimeout(
 										chatStream,
 										effectiveSilenceTimeout,
+										() => this.config.onActivity?.(),
 									)) {
 										if (this.aborted) break;
 										// Cooperative yield: check on every chunk during streaming
@@ -841,27 +842,45 @@ export class AgentLoop {
 						}
 
 						try {
-							const result = await this.executeToolCall(toolCall);
+							// Fire onActivity periodically during tool execution so the outer
+							// inactivity timer doesn't trip on long-running tools (big bash
+							// commands, deep reads, relay waits, client tool calls, etc.).
+							// Covers both executeToolCall and the subsequent relayWait.
+							const toolHeartbeat = this.config.onActivity
+								? setInterval(() => {
+										try {
+											this.config.onActivity?.();
+										} catch {
+											// Never let a heartbeat callback throw from the loop.
+										}
+									}, SILENCE_HEARTBEAT_INTERVAL_MS)
+								: null;
 
-							if ("outboxEntryId" in result) {
-								resultContent = await this.relayWait(result, toolCall, currentTurnId);
-							} else if (isClientToolCallRequest(result)) {
-								// Client tool calls are deferred to the client — track but don't get result yet
-								pendingClientCalls.push({ toolCall, request: result });
-								resultContent = "";
-								exitCode = 0;
-								// Don't add to toolResults yet — no tool_result message to persist
-								const toolDurationMs = Date.now() - toolStartTime;
-								this.ctx.logger.info("[agent-loop] Client tool call deferred", {
-									turn: turnCount,
-									tool: toolCall.name,
-									durationMs: toolDurationMs,
-								});
-								this.config.onActivity?.();
-								continue;
-							} else {
-								resultContent = result.content;
-								exitCode = result.exitCode;
+							try {
+								const result = await this.executeToolCall(toolCall);
+
+								if ("outboxEntryId" in result) {
+									resultContent = await this.relayWait(result, toolCall, currentTurnId);
+								} else if (isClientToolCallRequest(result)) {
+									// Client tool calls are deferred to the client — track but don't get result yet
+									pendingClientCalls.push({ toolCall, request: result });
+									resultContent = "";
+									exitCode = 0;
+									// Don't add to toolResults yet — no tool_result message to persist
+									const toolDurationMs = Date.now() - toolStartTime;
+									this.ctx.logger.info("[agent-loop] Client tool call deferred", {
+										turn: turnCount,
+										tool: toolCall.name,
+										durationMs: toolDurationMs,
+									});
+									this.config.onActivity?.();
+									continue;
+								} else {
+									resultContent = result.content;
+									exitCode = result.exitCode;
+								}
+							} finally {
+								if (toolHeartbeat) clearInterval(toolHeartbeat);
 							}
 						} catch (error) {
 							const errorMsg = formatError(error);
@@ -1771,33 +1790,63 @@ export class AgentLoop {
 	}
 
 	/** Delegates to the standalone withSilenceTimeout. */
-	private withSilenceTimeout<T>(source: AsyncIterable<T>, timeoutMs: number): AsyncGenerator<T> {
-		return withSilenceTimeout(source, timeoutMs);
+	private withSilenceTimeout<T>(
+		source: AsyncIterable<T>,
+		timeoutMs: number,
+		onHeartbeat?: () => void,
+	): AsyncGenerator<T> {
+		return withSilenceTimeout(source, timeoutMs, onHeartbeat);
 	}
 }
 
-/** Rejects if no item yielded within timeoutMs. */
+/**
+ * Default interval between `onHeartbeat` firings while waiting for the next
+ * chunk. 30s is short enough to keep any upstream inactivity timer (e.g. the
+ * outer 35min timer in runLocalAgentLoop) from firing due to LLM warm-up or
+ * mid-stream extended-thinking silence, but long enough to not spam callbacks.
+ */
+export const SILENCE_HEARTBEAT_INTERVAL_MS = 30_000;
+
+/**
+ * Rejects if no item yielded within timeoutMs. Optionally calls `onHeartbeat`
+ * every SILENCE_HEARTBEAT_INTERVAL_MS while waiting for the next chunk, so
+ * upstream inactivity timers can distinguish "LLM is warming up / thinking
+ * silently" from "request is wedged."
+ */
 export async function* withSilenceTimeout<T>(
 	source: AsyncIterable<T>,
 	timeoutMs: number,
+	onHeartbeat?: () => void,
 ): AsyncGenerator<T> {
 	const iterator = source[Symbol.asyncIterator]();
 
 	while (true) {
 		const nextChunkPromise = iterator.next();
 		let timerId: ReturnType<typeof setTimeout> | null = null;
+		let heartbeatId: ReturnType<typeof setInterval> | null = null;
 		const timeoutPromise = new Promise<never>((_, reject) => {
 			timerId = setTimeout(() => {
 				reject(new Error(`LLM silence timeout: no chunk received for ${timeoutMs}ms`));
 			}, timeoutMs);
 		});
+		if (onHeartbeat) {
+			heartbeatId = setInterval(() => {
+				try {
+					onHeartbeat();
+				} catch {
+					// Heartbeat callbacks should never break the stream.
+				}
+			}, SILENCE_HEARTBEAT_INTERVAL_MS);
+		}
 
 		let result: IteratorResult<T>;
 		try {
 			result = await Promise.race([nextChunkPromise, timeoutPromise]);
 			if (timerId) clearTimeout(timerId);
+			if (heartbeatId) clearInterval(heartbeatId);
 		} catch (err) {
 			if (timerId) clearTimeout(timerId);
+			if (heartbeatId) clearInterval(heartbeatId);
 			if (typeof iterator.return === "function") {
 				await iterator.return(undefined).catch(() => {});
 			}
