@@ -26,6 +26,8 @@ import {
 	AssistantMessageSchema,
 	type InferenceConfig,
 	InferenceConfigSchema,
+	type PerformanceConfig,
+	PerformanceConfigSchema,
 	type SystemBlock,
 	SystemBlockSchema,
 	type ToolName,
@@ -88,6 +90,7 @@ export interface RawBedrockRequest {
 	messages: unknown;
 	system?: unknown;
 	inferenceConfig: unknown;
+	performanceConfig?: unknown;
 	toolConfig?: unknown;
 }
 
@@ -131,6 +134,32 @@ export function validateBedrockRequest(raw: RawBedrockRequest): BedrockValidated
 	// ── toolConfig (optional) ───────────────────────────────────────────────
 	const validatedToolConfig = validateToolConfig(raw.toolConfig, errors);
 
+	// ── performanceConfig (optional, thinking-only) ─────────────────────────
+	let validatedPerformance: PerformanceConfig | undefined;
+	if (raw.performanceConfig !== undefined && raw.performanceConfig !== null) {
+		const parsed = PerformanceConfigSchema.safeParse(raw.performanceConfig);
+		if (parsed.success) {
+			validatedPerformance = parsed.data;
+			// Cross-invariant: performanceConfig.thinking requires inferenceConfig.thinking=true.
+			// If inferenceConfig hasn't validated yet, defer — the main error set will catch it.
+			if (validatedInference && validatedInference.thinking !== true) {
+				errors.push(
+					detail(
+						"temperature_with_thinking",
+						"performanceConfig.thinking set but inferenceConfig.thinking is false; these must agree",
+					),
+				);
+			}
+		} else {
+			errors.push(
+				detail(
+					"invalid_inference_config",
+					`performanceConfig failed validation: ${parsed.error.message}`,
+				),
+			);
+		}
+	}
+
 	// ── tool_use ↔ tool_result pairing (runtime-only invariant) ─────────────
 	// This can't be expressed in TS — the IDs are string-equal runtime values.
 	// Check after per-message validation so we know the messages are at least
@@ -153,6 +182,7 @@ export function validateBedrockRequest(raw: RawBedrockRequest): BedrockValidated
 		system: validatedSystem,
 		// biome-ignore lint/style/noNonNullAssertion: errors would have accumulated above if undefined
 		inferenceConfig: validatedInference!,
+		performanceConfig: validatedPerformance,
 		toolConfig: validatedToolConfig,
 	};
 }

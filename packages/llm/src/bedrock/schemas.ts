@@ -114,16 +114,28 @@ export const ReasoningContentBlockSchema = z.object({
 // ─── Role-specific content-block unions ─────────────────────────────────────
 
 /**
+ * CachePoint block — an undocumented Bedrock feature for prompt caching.
+ *
+ * When present in a message's content, Bedrock caches all content up to and
+ * including that point. Not in the SDK's public types, but accepted by the
+ * Converse API. Can appear in both user and assistant messages, as well as
+ * inside system blocks (see SystemBlockSchema below).
+ */
+export const CachePointBlockSchema = z.object({
+	cachePoint: z.object({ type: z.literal("default") }),
+});
+
+/**
  * Content blocks a user message may contain.
  *
  * Bedrock allows user messages to contain text, images, and tool results.
- * (Documents are also allowed but we don't emit them; if we add them later,
- * the schema here is where they'd land.)
+ * CachePoint is a marker block that rides alongside.
  */
 export const UserContentBlockSchema = z.union([
 	TextBlockSchema,
 	ImageBlockSchema,
 	ToolResultBlockSchema,
+	CachePointBlockSchema,
 ]);
 
 /**
@@ -131,12 +143,14 @@ export const UserContentBlockSchema = z.union([
  *
  * Bedrock rejects images in assistant messages — the model emits text,
  * tool calls, and reasoning. Splitting the unions at the type level makes
- * "assistant with an image" impossible to construct.
+ * "assistant with an image" impossible to construct. CachePoint is allowed
+ * as a marker.
  */
 export const AssistantContentBlockSchema = z.union([
 	TextBlockSchema,
 	ToolUseBlockSchema,
 	ReasoningContentBlockSchema,
+	CachePointBlockSchema,
 ]);
 
 // ─── Messages ───────────────────────────────────────────────────────────────
@@ -167,10 +181,13 @@ export const ValidatedMessageSchema = z.union([UserMessageSchema, AssistantMessa
 /**
  * A system prompt block. Bedrock accepts an array of these; we emit one or two
  * (cached prefix + uncached suffix) depending on cache configuration.
+ *
+ * System blocks can also carry CachePoint markers between text blocks.
  */
-export const SystemBlockSchema = z.object({
-	text: NonEmptyStringSchema,
-});
+export const SystemBlockSchema = z.union([
+	z.object({ text: NonEmptyStringSchema }),
+	CachePointBlockSchema,
+]);
 
 // ─── Inference configuration ────────────────────────────────────────────────
 
@@ -202,6 +219,24 @@ export const InferenceConfigSchema = z.discriminatedUnion("thinking", [
 	InferenceConfigThinkingSchema,
 ]);
 
+// ─── Performance configuration (extended thinking) ──────────────────────────
+
+/**
+ * PerformanceConfiguration for extended thinking. The `thinking` field is not
+ * in the AWS SDK's public types but is accepted by the Converse API (same
+ * pattern as CachePointBlock).
+ *
+ * Only present when InferenceConfig has `thinking: true`. The driver should
+ * never emit performanceConfig without thinking, and the validator cross-checks
+ * this at the request level.
+ */
+export const PerformanceConfigSchema = z.object({
+	thinking: z.object({
+		type: z.literal("enabled"),
+		budgetTokens: z.number().int().positive(),
+	}),
+});
+
 // ─── Inferred TS types ──────────────────────────────────────────────────────
 
 export type NonEmptyString = z.infer<typeof NonEmptyStringSchema>;
@@ -224,3 +259,5 @@ export type ValidatedMessage = z.infer<typeof ValidatedMessageSchema>;
 
 export type SystemBlock = z.infer<typeof SystemBlockSchema>;
 export type InferenceConfig = z.infer<typeof InferenceConfigSchema>;
+export type PerformanceConfig = z.infer<typeof PerformanceConfigSchema>;
+export type CachePointBlock = z.infer<typeof CachePointBlockSchema>;

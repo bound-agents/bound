@@ -31,6 +31,7 @@ import type { Branded } from "./brand";
 import type {
 	AssistantMessage,
 	InferenceConfig,
+	PerformanceConfig,
 	SystemBlock,
 	ToolName,
 	UserMessage,
@@ -189,6 +190,14 @@ export interface BedrockValidatedRequest {
 	readonly messages: BedrockValidatedConversation;
 	readonly system?: readonly SystemBlock[];
 	readonly inferenceConfig: InferenceConfig;
+	/**
+	 * Performance configuration — only present when inferenceConfig.thinking
+	 * is true. The validator enforces this invariant; this interface doesn't
+	 * encode it structurally because doing so would require a second
+	 * discriminated union at the request level, which overcomplicates the
+	 * consumer API for one rarely-varied field.
+	 */
+	readonly performanceConfig?: PerformanceConfig;
 	readonly toolConfig?: {
 		readonly tools: readonly {
 			readonly toolSpec: {
@@ -204,6 +213,7 @@ export interface BedrockValidatedRequest {
 export type {
 	AssistantMessage,
 	InferenceConfig,
+	PerformanceConfig,
 	SystemBlock,
 	ToolName,
 	UserMessage,
