@@ -539,59 +539,55 @@ describe("BedrockDriver", () => {
 			expect(messages.at(-1)?.role).toBe("user");
 		});
 
-		it.skipIf(shouldSkip)("handles tool_result with empty tool_use_id gracefully", async () => {
-			sendSpy.mockImplementation(() =>
-				Promise.resolve(
-					createMockStream([{ metadata: { usage: { inputTokens: 1, outputTokens: 1 } } }]),
-				),
-			);
+		it.skipIf(shouldSkip)(
+			"rejects tool_result with empty tool_use_id at the validator (was: papered over with synthetic IDs)",
+			async () => {
+				// Previously the converter generated synthetic IDs for empty tool_use_ids
+				// and shipped the request to Bedrock, which would fail at the API layer
+				// with an opaque error. The airlock validator now catches it upfront.
+				sendSpy.mockImplementation(() =>
+					Promise.resolve(
+						createMockStream([{ metadata: { usage: { inputTokens: 1, outputTokens: 1 } } }]),
+					),
+				);
 
-			const driver = makeDriver();
-			await collectChunks(
-				driver.chat({
-					model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
-					messages: [
-						{ role: "user", content: "Run query" },
-						{
-							role: "tool_call",
-							content: [
+				const driver = makeDriver();
+				await expect(
+					collectChunks(
+						driver.chat({
+							model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+							messages: [
+								{ role: "user", content: "Run query" },
 								{
-									type: "tool_use",
-									id: "tu-abc",
-									name: "query",
-									input: { sql: "SELECT 1" },
+									role: "tool_call",
+									content: [
+										{
+											type: "tool_use",
+											id: "tu-abc",
+											name: "query",
+											input: { sql: "SELECT 1" },
+										},
+									],
+								},
+								{
+									role: "tool_result",
+									content: "Result: 1",
+									tool_use_id: "", // empty — the bug case
+								},
+								{
+									role: "tool_result",
+									content: "Result: 2",
+									// tool_use_id undefined — the bug case
 								},
 							],
-						},
-						{
-							role: "tool_result",
-							content: "Result: 1",
-							tool_use_id: "", // empty — simulates the bug
-						},
-						{
-							role: "tool_result",
-							content: "Result: 2",
-							// tool_use_id is undefined — simulates the bug
-						},
-					],
-				}),
-			);
+						}),
+					),
+				).rejects.toThrow(/tool_use_id_mismatch|tool_ids_empty|empty/i);
 
-			expect(sendSpy.mock.calls).toHaveLength(1);
-			const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
-			const messages = commandInput.messages as Array<{
-				role: string;
-				content: Array<{ toolResult?: { toolUseId: string } }>;
-			}>;
-
-			// Find all toolResult blocks
-			const toolResults = messages.flatMap((m) => (m.content || []).filter((b) => b.toolResult));
-
-			// Every toolResult must have a non-empty toolUseId
-			for (const tr of toolResults) {
-				expect(tr.toolResult?.toolUseId.length).toBeGreaterThan(0);
-			}
-		});
+				// And the request never went to Bedrock.
+				expect(sendSpy.mock.calls).toHaveLength(0);
+			},
+		);
 
 		it.skipIf(shouldSkip)(
 			"merges consecutive tool_result messages into a single user message for multi-tool responses",
@@ -739,6 +735,9 @@ describe("BedrockDriver", () => {
 									},
 								],
 							},
+							// The validator requires every tool_use to have a matching tool_result.
+							{ role: "tool_result", content: "file1\nfile2", tool_use_id: "tool-123" },
+							{ role: "tool_result", content: "ok", tool_use_id: "tool-456" },
 						],
 					}),
 				);
@@ -789,6 +788,8 @@ describe("BedrockDriver", () => {
 							role: "tool_call",
 							content: jsonString, // String instead of array (from DB)
 						},
+						// Validator requires a tool_result matching the tool_use above.
+						{ role: "tool_result", content: "hi", tool_use_id: "t1" },
 					],
 				}),
 			);

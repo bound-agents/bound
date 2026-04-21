@@ -11,6 +11,8 @@ import type {
 } from "@aws-sdk/client-bedrock-runtime";
 import { formatError } from "@bound/shared";
 import type { DocumentType } from "@smithy/types";
+import { toBedrockRequest } from "./bedrock/convert";
+import { validateBedrockRequest } from "./bedrock/validate";
 import { sniffImageMediaType } from "./image-utils";
 import { withRetry } from "./retry";
 import { extractTextFromBlocks, sanitizeToolName } from "./stream-utils";
@@ -20,12 +22,17 @@ import { LLMError } from "./types";
 // Bedrock rejects blank text in content blocks. Use this placeholder for empty content.
 const EMPTY_TEXT_PLACEHOLDER = "(empty)";
 
-// CachePointBlock represents an undocumented Bedrock caching feature.
-// This extends the official SDK types for prompt caching support.
-interface CachePointBlock {
-	cachePoint: { type: "default" };
-}
-
+/**
+ * LEGACY: this helper is retained as an exported function because the existing
+ * test suite (bedrock-driver.test.ts, thinking-blocks.test.ts) asserts against
+ * its SDK-typed output. The runtime chat() path no longer calls it — it now
+ * goes through toBedrockRequest() in ./bedrock/convert.ts and through
+ * validateBedrockRequest() in ./bedrock/validate.ts.
+ *
+ * TODO: migrate those tests to assert against toBedrockRequest() output, then
+ * delete this function. The convert.ts version is the single source of truth
+ * for the shape we send to Bedrock.
+ */
 export function toBedrockMessages(messages: LLMMessage[]): Message[] {
 	const result: Message[] = [];
 
@@ -244,92 +251,35 @@ export class BedrockDriver implements LLMBackend {
 	}
 
 	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
-		const modelId = params.model || this.model;
-		const messages = toBedrockMessages(params.messages);
+		// Airlock: shape the request, then hand it to the validator. Any
+		// invariant violation throws BedrockValidationError here, before any
+		// HTTP call. This replaces what used to be a mix of inline assembly
+		// and hope.
+		const raw = toBedrockRequest({ params, defaultModel: this.model });
+		const validated = validateBedrockRequest(raw);
 
-		// Inject cachePoint markers so Bedrock caches all content up to the
-		// marked message. The caller passes breakpoint indices relative to
-		// params.messages, but toBedrockMessages() may produce a shorter array
-		// (consecutive tool_result messages get merged into a single user
-		// message). We re-compute the breakpoint from the actual Bedrock
-		// messages array to avoid out-of-bounds indices that silently skip
-		// the cachePoint placement.
-		if (params.cache_breakpoints && params.cache_breakpoints.length > 0 && messages.length >= 2) {
-			const idx = messages.length - 2;
-			if (Array.isArray(messages[idx].content)) {
-				(messages[idx].content as Array<unknown>).push({
-					cachePoint: { type: "default" },
-				} as CachePointBlock);
-			}
-		}
-
-		// When cache breakpoints are present, also cache the system prompt.
-		// If system_suffix is present, place cachePoint between stable prefix and
-		// varying suffix so only the prefix is cached.
-		const effectiveSystem = params.system_suffix
-			? params.cache_breakpoints?.length
-				? params.system // Keep separate for three-block layout below
-				: `${params.system}\n\n${params.system_suffix}` // Append when no caching
-			: params.system;
-
-		const systemBlocks: SystemContentBlock[] | undefined = effectiveSystem
-			? params.cache_breakpoints?.length
-				? params.system_suffix
-					? [
-							{ text: effectiveSystem },
-							{ cachePoint: { type: "default" } } as CachePointBlock,
-							{ text: params.system_suffix },
-						]
-					: [{ text: effectiveSystem }, { cachePoint: { type: "default" } } as CachePointBlock]
-				: [{ text: effectiveSystem }]
-			: undefined;
-
-		const toolConfig =
-			params.tools && params.tools.length > 0
-				? {
-						tools: params.tools.map(
-							(t): Tool => ({
-								toolSpec: {
-									name: t.function.name,
-									description: t.function.description,
-									inputSchema: {
-										json: t.function.parameters as DocumentType,
-									},
-								},
-							}),
-						),
-					}
-				: undefined;
-
-		// When thinking is enabled, omit temperature (Anthropic/Bedrock requirement)
-		const effectiveTemperature = params.thinking ? undefined : params.temperature;
-
-		const inferenceConfig =
-			effectiveTemperature !== undefined || params.max_tokens
-				? {
-						...(effectiveTemperature !== undefined && { temperature: effectiveTemperature }),
-						...(params.max_tokens && { maxTokens: params.max_tokens }),
-					}
-				: undefined;
-
-		// PerformanceConfiguration for extended thinking — the thinking field is not yet in
-		// the AWS SDK types but is accepted by the Bedrock Converse API (same pattern as CachePointBlock).
-		const performanceConfig = params.thinking
-			? ({
-					thinking: {
-						type: "enabled",
-						budgetTokens: params.thinking.budget_tokens,
-					},
-				} as Record<string, unknown>)
-			: undefined;
-
+		// The validated shape is structurally compatible with ConverseStreamCommand's
+		// input; the brand is a compile-time marker, not a runtime difference.
+		// Spread into a plain object to satisfy the SDK's looser types.
 		const command = new ConverseStreamCommand({
-			modelId,
-			messages,
-			...(systemBlocks && { system: systemBlocks }),
-			...(toolConfig && { toolConfig }),
-			...(inferenceConfig && { inferenceConfig }),
-			...(performanceConfig && { performanceConfig }),
+			modelId: validated.modelId,
+			messages: validated.messages as unknown as Message[],
+			...(validated.system && { system: validated.system as unknown as SystemContentBlock[] }),
+			...(validated.toolConfig && {
+				toolConfig: validated.toolConfig as unknown as { tools: Tool[] },
+			}),
+			inferenceConfig: {
+				...(validated.inferenceConfig.thinking === false &&
+					validated.inferenceConfig.temperature !== undefined && {
+						temperature: validated.inferenceConfig.temperature,
+					}),
+				...(validated.inferenceConfig.maxTokens !== undefined && {
+					maxTokens: validated.inferenceConfig.maxTokens,
+				}),
+			},
+			...(validated.performanceConfig && {
+				performanceConfig: validated.performanceConfig as unknown as Record<string, unknown>,
+			}),
 		} as ConstructorParameters<typeof ConverseStreamCommand>[0]);
 
 		const response = await withRetry(async () => {
