@@ -161,9 +161,24 @@ export function App({
 			// (or the attach picker's ghost) into the new view.
 			dispatch({ type: "SET_THREAD", threadId });
 			clearMessages();
+			// Clear the terminal scrollback so the previous thread's messages
+			// (which Ink's <Static> has already flushed to the native scrollback
+			// and cannot retract) don't linger above the new thread. Uses the
+			// standard ANSI "clear entire screen + home cursor + clear scrollback"
+			// sequence. Safe in TTY contexts; no-op when stdout isn't a TTY.
+			if (process.stdout.isTTY) {
+				process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+			}
 			if (!client) return;
 			try {
-				const history = await client.listMessages(threadId);
+				// Cap rehydrated history at 200 messages to avoid OOM on large
+				// threads (17k+ messages observed in practice). Matches the
+				// startup-path cap in session/attach.ts performAttach(). The
+				// model's own context is built from the DB directly on the
+				// server side, so this only bounds the visual scrollback — no
+				// impact on agent behavior.
+				const MESSAGE_LIMIT = 200;
+				const history = await client.listMessages(threadId, { limit: MESSAGE_LIMIT });
 				replaceMessages(history);
 			} catch (error) {
 				const errorMsg = error instanceof Error ? error.message : String(error);
@@ -194,6 +209,12 @@ export function App({
 		try {
 			const thread = await client.createThread();
 			clearMessages();
+			// Clear terminal scrollback so the prior thread's <Static> output
+			// doesn't linger above the fresh thread. Same rationale as
+			// handleSetThread. See there for the escape-sequence breakdown.
+			if (process.stdout.isTTY) {
+				process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+			}
 			dispatch({ type: "SET_THREAD", threadId: thread.id });
 		} catch (error) {
 			const errorMsg = error instanceof Error ? error.message : String(error);
@@ -221,6 +242,7 @@ export function App({
 		<Box flexDirection="column">
 			{state.view === "chat" && (
 				<ChatView
+					key={state.threadId}
 					client={client}
 					threadId={state.threadId}
 					model={state.model}
