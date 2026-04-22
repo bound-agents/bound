@@ -6,6 +6,7 @@ import { useCallback, useEffect, useReducer, useState } from "react";
 import type { McpServerConfig } from "../config";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
+import { transitionThread } from "../session/transition";
 import type { ToolHandler } from "../tools/types";
 import { useCancelHandler } from "./hooks/useCancelHandler";
 import { useMcpServers } from "./hooks/useMcpServers";
@@ -78,12 +79,12 @@ export interface AppProps {
 export function App({
 	client,
 	threadId: initialThreadId,
-	configDir: _configDir,
+	configDir,
 	cwd,
 	hostname,
 	mcpManager,
 	mcpConfigs,
-	logger: _logger,
+	logger,
 	initialMessages,
 	model: initialModel,
 	toolHandlers,
@@ -156,40 +157,63 @@ export function App({
 
 	const handleSetThread = useCallback(
 		async (threadId: string) => {
-			// Switch to chat view + new thread id first, and clear the old
-			// message buffer so we don't leak the previous thread's history
-			// (or the attach picker's ghost) into the new view.
-			dispatch({ type: "SET_THREAD", threadId });
-			clearMessages();
-			// Clear the terminal scrollback so the previous thread's messages
-			// (which Ink's <Static> has already flushed to the native scrollback
-			// and cannot retract) don't linger above the new thread. Uses the
-			// standard ANSI "clear entire screen + home cursor + clear scrollback"
-			// sequence. Safe in TTY contexts; no-op when stdout isn't a TTY.
+			if (!client) return;
+			if (threadId === state.threadId) return;
+
+			// Adapt the InFlightTool map to the AbortController map that
+			// transitionThread expects for its drain step.
+			const abortMap = new Map(Array.from(inFlightTools, ([id, t]) => [id, t.controller]));
+
+			const result = await transitionThread({
+				client,
+				oldThreadId: state.threadId,
+				newThreadId: threadId,
+				configDir,
+				cwd,
+				hostname,
+				mcpManager,
+				mcpConfigs,
+				logger,
+				inFlightTools: abortMap,
+				model: state.model,
+			});
+
+			if (!result.ok) {
+				dispatch({
+					type: "SET_BANNER",
+					message: result.degraded
+						? `Attach failed and rollback failed: ${result.error}. Session may be degraded — consider restarting.`
+						: `Attach failed: ${result.error}. Staying on current thread.`,
+					bannerType: "error",
+				});
+				return;
+			}
+
+			// Clear terminal scrollback so the prior thread's <Static> output
+			// doesn't linger above the new thread. Standard ANSI clear+home+
+			// scrollback-clear; no-op when stdout isn't a TTY.
 			if (process.stdout.isTTY) {
 				process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
 			}
-			if (!client) return;
-			try {
-				// Cap rehydrated history at 200 messages to avoid OOM on large
-				// threads (17k+ messages observed in practice). Matches the
-				// startup-path cap in session/attach.ts performAttach(). The
-				// model's own context is built from the DB directly on the
-				// server side, so this only bounds the visual scrollback — no
-				// impact on agent behavior.
-				const MESSAGE_LIMIT = 200;
-				const history = await client.listMessages(threadId, { limit: MESSAGE_LIMIT });
-				replaceMessages(history);
-			} catch (error) {
-				const errorMsg = error instanceof Error ? error.message : String(error);
-				dispatch({
-					type: "SET_BANNER",
-					message: `Failed to load thread history: ${errorMsg}`,
-					bannerType: "error",
-				});
-			}
+
+			// performAttach already fetched the canonical message list
+			// (bounded by the same 200-msg cap used at startup).
+			replaceMessages(result.attachResult.messages);
+			dispatch({ type: "SET_THREAD", threadId: result.threadId });
 		},
-		[client, clearMessages, replaceMessages],
+		[
+			client,
+			state.threadId,
+			state.model,
+			configDir,
+			cwd,
+			hostname,
+			mcpManager,
+			mcpConfigs,
+			logger,
+			inFlightTools,
+			replaceMessages,
+		],
 	);
 
 	const handleSetModel = (model: string) => {
@@ -206,25 +230,55 @@ export function App({
 
 	const handleClear = useCallback(async () => {
 		if (!client) return;
-		try {
-			const thread = await client.createThread();
-			clearMessages();
-			// Clear terminal scrollback so the prior thread's <Static> output
-			// doesn't linger above the fresh thread. Same rationale as
-			// handleSetThread. See there for the escape-sequence breakdown.
-			if (process.stdout.isTTY) {
-				process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
-			}
-			dispatch({ type: "SET_THREAD", threadId: thread.id });
-		} catch (error) {
-			const errorMsg = error instanceof Error ? error.message : String(error);
+
+		const abortMap = new Map(Array.from(inFlightTools, ([id, t]) => [id, t.controller]));
+
+		const result = await transitionThread({
+			client,
+			oldThreadId: state.threadId,
+			newThreadId: null, // /clear → create fresh thread
+			configDir,
+			cwd,
+			hostname,
+			mcpManager,
+			mcpConfigs,
+			logger,
+			inFlightTools: abortMap,
+			model: state.model,
+		});
+
+		if (!result.ok) {
 			dispatch({
 				type: "SET_BANNER",
-				message: `Failed to create new thread: ${errorMsg}`,
+				message: result.degraded
+					? `Clear failed and rollback failed: ${result.error}. Session may be degraded — consider restarting.`
+					: `Clear failed: ${result.error}. Staying on current thread.`,
 				bannerType: "error",
 			});
+			return;
 		}
-	}, [client, clearMessages]);
+
+		clearMessages();
+		// Clear terminal scrollback so the prior thread's <Static> output
+		// doesn't linger above the fresh thread. Same rationale as
+		// handleSetThread.
+		if (process.stdout.isTTY) {
+			process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+		}
+		dispatch({ type: "SET_THREAD", threadId: result.threadId });
+	}, [
+		client,
+		state.threadId,
+		state.model,
+		configDir,
+		cwd,
+		hostname,
+		mcpManager,
+		mcpConfigs,
+		logger,
+		inFlightTools,
+		clearMessages,
+	]);
 
 	const handleSendMessage = async (message: string) => {
 		if (client) {
