@@ -36,9 +36,9 @@ All acceptance criteria are covered by automated tests. The manual steps below s
 
 | Step | Action | Expected |
 |------|--------|----------|
-| 2.1 | With the agent running and at least one MCP server connected, trigger the `commands` built-in command (either via LLM or direct invocation). | Output shows three sections: "Built-in:" (with help, query, memorize, etc.), "LOCAL (MCP):" (with server names, not per-tool names), and "REMOTE (via relay):" (only if remote hosts exist). |
-| 2.2 | Trigger `commands github` (replacing "github" with your configured server name). | Output shows the server's subcommand listing with tool names, descriptions, and parameter tables — the same output as calling the server command with `{ help: "true" }`. |
-| 2.3 | Verify `resources`, `resource`, `prompts`, and `prompt` appear under "Built-in:", not under "LOCAL (MCP):". | These four meta-commands are in the "Built-in:" section. |
+| 2.1 | With the agent running and at least one MCP server connected, ask the agent to list available tools or inspect the orientation block context. | Available tools are organized: "Built-in:" (query, memory, advisory, etc.), "LOCAL (MCP):" (with server names, not per-tool names), and "REMOTE (via relay):" (only if remote hosts exist). |
+| 2.2 | Ask the agent to show help for a server command (e.g., by invoking `<server> --help`). | Output shows the server's subcommand listing with tool names, descriptions, and parameter tables — the same output as calling the server command with `{ help: "true" }`. |
+| 2.3 | Verify `resources`, `resource`, `prompts`, and `prompt` appear as discoverable built-in commands via `<cmd> --help`. | These four meta-commands are available as built-in commands in the agent's command registry. |
 
 ---
 
@@ -56,7 +56,7 @@ All acceptance criteria are covered by automated tests. The manual steps below s
 | Step | Action | Expected |
 |------|--------|----------|
 | 4.1 | After the agent starts with MCP servers connected, query the local database: `SELECT mcp_tools FROM hosts WHERE site_id = '<local-site-id>'`. | The `mcp_tools` column contains a JSON array of server names (e.g., `["github", "notion"]`), not individual tool names. |
-| 4.2 | In a multi-host cluster, verify that remote host rows also store server-level names after sync. | Remote hosts' `mcp_tools` columns contain flat `string[]` of server names, parsed correctly by the `commands` listing. |
+| 4.2 | In a multi-host cluster, verify that remote host rows also store server-level names after sync. | Remote hosts' `mcp_tools` columns contain flat `string[]` of server names, discoverable via the agent's command registry and `<cmd> --help` mechanism. |
 
 ---
 
