@@ -56,7 +56,8 @@ export function createBoundChatHandler(
 			await completionPromise;
 
 			// Step 6: Return last assistant message (via HTTP listMessages)
-			const messages = await client.listMessages(threadId);
+			// Only fetch recent messages — we just need the last assistant reply
+			const messages = await client.listMessages(threadId, { limit: 20 });
 			const lastAssistant = [...messages].reverse().find((m: Message) => m.role === "assistant");
 
 			return {

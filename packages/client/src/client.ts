@@ -356,8 +356,11 @@ export class BoundClient {
 
 	// ---- Messages ----
 
-	async listMessages(threadId: string): Promise<Message[]> {
-		return this.fetchJson(`/api/threads/${threadId}/messages`);
+	async listMessages(threadId: string, options?: { limit?: number }): Promise<Message[]> {
+		const params = new URLSearchParams();
+		if (options?.limit) params.set("limit", String(options.limit));
+		const qs = params.toString();
+		return this.fetchJson(`/api/threads/${threadId}/messages${qs ? `?${qs}` : ""}`);
 	}
 
 	sendMessage(threadId: string, content: string, options?: SendMessageOptions): void {

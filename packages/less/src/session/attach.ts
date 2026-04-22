@@ -40,9 +40,11 @@ export interface AttachResult {
 export async function performAttach(params: AttachParams): Promise<AttachResult> {
 	const { client, threadId, mcpManager, mcpConfigs, cwd, hostname, logger, confirmFn } = params;
 
-	// Step 1: List messages and scan for pending tool calls (AC7.2)
+	// Step 1: List recent messages and scan for pending tool calls (AC7.2)
+	// Cap to 200 messages to avoid OOM on large threads (17k+ messages)
+	const MESSAGE_LIMIT = 200;
 	logger.info("attach_flow_start", { threadId, step: "listMessages" });
-	const messages = await client.listMessages(threadId);
+	const messages = await client.listMessages(threadId, { limit: MESSAGE_LIMIT });
 
 	// Scan for unpaired tool calls: role="tool_call" without matching tool_result
 	const pendingToolCallIds: string[] = [];

@@ -11,6 +11,7 @@ export function createMessagesRoutes(db: Database, _eventBus: TypedEventEmitter)
 	app.get("/:threadId/messages", (c) => {
 		try {
 			const { threadId } = c.req.param();
+			const limitParam = c.req.query("limit");
 
 			const thread = db.query("SELECT * FROM threads WHERE id = ? AND deleted = 0").get(threadId);
 
@@ -23,15 +24,33 @@ export function createMessagesRoutes(db: Database, _eventBus: TypedEventEmitter)
 				);
 			}
 
-			const messages = db
-				.query(
-					`
-				SELECT * FROM messages
-				WHERE thread_id = ? AND deleted = 0
-				ORDER BY created_at ASC
-			`,
-				)
-				.all(threadId) as Message[];
+			let messages: Message[];
+			if (limitParam) {
+				const limit = Math.max(1, Math.min(Number.parseInt(limitParam, 10) || 1000, 10000));
+				// Fetch the newest N messages, then return in chronological order
+				messages = db
+					.query(
+						`
+					SELECT * FROM (
+						SELECT * FROM messages
+						WHERE thread_id = ? AND deleted = 0
+						ORDER BY created_at DESC
+						LIMIT ?
+					) sub ORDER BY created_at ASC
+				`,
+					)
+					.all(threadId, limit) as Message[];
+			} else {
+				messages = db
+					.query(
+						`
+					SELECT * FROM messages
+					WHERE thread_id = ? AND deleted = 0
+					ORDER BY created_at ASC
+				`,
+					)
+					.all(threadId) as Message[];
+			}
 
 			return c.json(messages);
 		} catch (error) {
