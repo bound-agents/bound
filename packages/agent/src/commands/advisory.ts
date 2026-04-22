@@ -160,6 +160,27 @@ function handleList(args: Record<string, string>, ctx: CommandContext) {
 export const advisory: CommandDefinition = {
 	name: "advisory",
 	description: "Post a proactive advisory for operator review",
+	helpText: [
+		"Subcommands:",
+		"",
+		"  create --title T --detail D [--action A] [--impact I]",
+		"    Post a new advisory for operator review.",
+		"",
+		"  list [--status S]",
+		"    List advisories. Filter by status: proposed, approved, applied, dismissed, deferred.",
+		"",
+		"  approve <id>",
+		"    Approve a proposed advisory.",
+		"",
+		"  apply <id>",
+		"    Mark an approved advisory as applied.",
+		"",
+		"  dismiss <id>",
+		"    Dismiss a proposed advisory.",
+		"",
+		"  defer <id> [--until ISO]",
+		"    Defer an advisory until a given date.",
+	].join("\n"),
 	args: [
 		{
 			name: "subcommand",
