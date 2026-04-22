@@ -30,6 +30,7 @@ function updateClusterConfig(ctx: CommandContext, key: string, value: string): v
 
 export const cachePin: CommandDefinition = {
 	name: "cache-pin",
+	description: "Pin a cache entry to prevent eviction",
 	args: [{ name: "path", required: true, description: "File path to pin" }],
 	handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
 		try {

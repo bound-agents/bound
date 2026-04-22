@@ -43,6 +43,7 @@ interface ModelInfo {
 
 export const hostinfo: CommandDefinition = {
 	name: "hostinfo",
+	description: "Display registered host information",
 	args: [],
 	handler: async (_args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
 		try {

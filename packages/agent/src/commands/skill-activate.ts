@@ -38,6 +38,7 @@ export function parseFrontmatter(
 
 export const skillActivate: CommandDefinition = {
 	name: "skill-activate",
+	description: "Activate a skill from /home/user/skills/{name}/SKILL.md",
 	args: [
 		{
 			name: "name",

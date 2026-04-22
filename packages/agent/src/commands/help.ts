@@ -24,6 +24,7 @@ export function setCommandRegistry(
 
 export const help: CommandDefinition = {
 	name: "commands",
+	description: "List available commands and show per-command usage",
 	args: [
 		{ name: "command", required: false, description: "Command name to get detailed help for" },
 	],

@@ -7,6 +7,7 @@ import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
 export const emit: CommandDefinition = {
 	name: "emit",
+	description: "Emit a custom event on the event bus",
 	args: [
 		{ name: "event", required: true, description: "Event name" },
 		{ name: "payload", required: false, description: "Event payload as JSON" },

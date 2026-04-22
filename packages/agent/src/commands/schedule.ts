@@ -35,6 +35,7 @@ function parseTimeOffset(offset: string): Date {
 
 export const schedule: CommandDefinition = {
 	name: "schedule",
+	description: "Schedule a deferred, cron, or event-driven task",
 	args: [
 		{ name: "in", required: false, description: "Deferred time (e.g., 5m, 2h, 1d)" },
 		{ name: "every", required: false, description: "Cron expression" },

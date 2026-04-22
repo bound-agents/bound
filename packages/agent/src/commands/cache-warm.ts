@@ -4,6 +4,7 @@ import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sa
 
 export const cacheWarm: CommandDefinition = {
 	name: "cache-warm",
+	description: "Pre-warm the prompt cache for a thread",
 	args: [{ name: "patterns", required: false, description: "Glob patterns of paths to warm" }],
 	handler: async (_args: Record<string, string>, _ctx: CommandContext): Promise<CommandResult> => {
 		try {

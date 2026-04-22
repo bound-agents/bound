@@ -5,6 +5,7 @@ import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
 export const purge: CommandDefinition = {
 	name: "purge",
+	description: "Create a purge record targeting message IDs",
 	args: [
 		{ name: "last", required: false, description: "Number of last messages to purge" },
 		{ name: "ids", required: false, description: "Comma-separated message IDs to purge" },

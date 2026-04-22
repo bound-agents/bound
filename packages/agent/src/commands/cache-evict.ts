@@ -5,6 +5,7 @@ import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sa
 
 export const cacheEvict: CommandDefinition = {
 	name: "cache-evict",
+	description: "Evict a specific cache entry",
 	args: [{ name: "pattern", required: true, description: "Glob pattern of files to evict" }],
 	handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
 		try {

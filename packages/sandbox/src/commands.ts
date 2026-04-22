@@ -48,6 +48,9 @@ export interface CommandContext {
 
 export interface CommandDefinition {
 	name: string;
+	description: string;
+	helpText?: string;
+	customHelp?: boolean;
 	args: Array<{ name: string; required: boolean; description?: string }>;
 	handler: (args: Record<string, string>, ctx: CommandContext) => Promise<CommandResult>;
 }

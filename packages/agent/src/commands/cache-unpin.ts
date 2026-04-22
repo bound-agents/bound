@@ -30,6 +30,7 @@ function updateClusterConfig(ctx: CommandContext, key: string, value: string): v
 
 export const cacheUnpin: CommandDefinition = {
 	name: "cache-unpin",
+	description: "Unpin a previously pinned cache entry",
 	args: [{ name: "path", required: true, description: "File path to unpin" }],
 	handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
 		try {

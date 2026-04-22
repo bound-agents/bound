@@ -67,6 +67,7 @@ function enqueueAndSignal(
 
 export const notify: CommandDefinition = {
 	name: "notify",
+	description: "Send a notification to users on configured platforms",
 	args: [
 		{ name: "user", required: false, description: "Target bound username" },
 		{ name: "all", required: false, description: "Send to all users" },

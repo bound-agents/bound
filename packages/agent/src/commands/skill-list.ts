@@ -3,6 +3,7 @@ import { commandSuccess, handleCommandError } from "./helpers";
 
 export const skillList: CommandDefinition = {
 	name: "skill-list",
+	description: "List skills with status, activations, and description",
 	args: [
 		{
 			name: "status",

@@ -5,6 +5,7 @@ import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
 export const skillRetire: CommandDefinition = {
 	name: "skill-retire",
+	description: "Retire a skill; scans tasks and creates advisories",
 	args: [
 		{
 			name: "name",

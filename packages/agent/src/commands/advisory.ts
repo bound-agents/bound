@@ -159,6 +159,7 @@ function handleList(args: Record<string, string>, ctx: CommandContext) {
 
 export const advisory: CommandDefinition = {
 	name: "advisory",
+	description: "Post a proactive advisory for operator review",
 	args: [
 		{
 			name: "subcommand",

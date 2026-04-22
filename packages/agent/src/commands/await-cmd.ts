@@ -6,6 +6,7 @@ const TERMINAL_STATES = ["completed", "failed", "cancelled"];
 
 export const awaitCmd: CommandDefinition = {
 	name: "await",
+	description: "Poll until tasks reach a terminal state",
 	args: [
 		{
 			name: "task-ids",

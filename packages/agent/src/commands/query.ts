@@ -7,6 +7,7 @@ const MAX_OUTPUT_BYTES = 1_048_576; // 1MB
 
 export const query: CommandDefinition = {
 	name: "query",
+	description: "Execute a SELECT query against the database",
 	args: [{ name: "query", required: true, description: "SQL SELECT query to execute" }],
 	handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
 		try {

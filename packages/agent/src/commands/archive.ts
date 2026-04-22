@@ -33,6 +33,7 @@ function parseTimeOffset(offset: string): Date {
 
 export const archive: CommandDefinition = {
 	name: "archive",
+	description: "Archive a thread to long-term storage",
 	args: [
 		{ name: "thread-id", required: false, description: "Thread ID to archive" },
 		{

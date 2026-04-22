@@ -414,6 +414,7 @@ function handleNeighbors(args: Record<string, string>, ctx: CommandContext) {
 
 export const memory: CommandDefinition = {
 	name: "memory",
+	description: "Memory operations: store, forget, search, connect, disconnect (use subcommands)",
 	args: [
 		{
 			name: "subcommand",

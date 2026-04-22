@@ -4,6 +4,7 @@ import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
 export const cancel: CommandDefinition = {
 	name: "cancel",
+	description: "Cancel a scheduled task (supports --payload-match)",
 	args: [
 		{ name: "task-id", required: false, description: "Task ID to cancel" },
 		{

@@ -3,6 +3,7 @@ import { commandError, commandSuccess, handleCommandError } from "./helpers";
 
 export const skillRead: CommandDefinition = {
 	name: "skill-read",
+	description: "Read a skill's SKILL.md content with status header",
 	args: [
 		{
 			name: "name",

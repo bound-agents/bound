@@ -7,6 +7,7 @@ import { resolveModel } from "../model-resolution";
 
 export const modelHint: CommandDefinition = {
 	name: "model-hint",
+	description: "Set or clear the model hint for the current task",
 	args: [
 		{ name: "model", required: false, description: "Model ID or tier to switch to" },
 		{ name: "reset", required: false, description: "Clear the hint" },

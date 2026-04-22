@@ -148,6 +148,7 @@ export async function generateMCPCommands(
 
 		const command: CommandDefinition = {
 			name: serverName,
+			description: `Invoke tools from the MCP server "${serverName}"`,
 			args: [
 				{
 					name: "subcommand",
@@ -313,6 +314,7 @@ export async function generateMCPCommands(
 function createResourcesCommand(clients: Map<string, MCPClient>): CommandDefinition {
 	return {
 		name: "resources",
+		description: "List all resources across MCP servers",
 		args: [{ name: "server", required: false, description: "Optional server name to filter by" }],
 		handler: async (args: Record<string, string>, _ctx: CommandContext): Promise<CommandResult> => {
 			try {
@@ -361,6 +363,7 @@ function createResourcesCommand(clients: Map<string, MCPClient>): CommandDefinit
 function createResourceCommand(clients: Map<string, MCPClient>): CommandDefinition {
 	return {
 		name: "resource",
+		description: "Read a specific resource by URI",
 		args: [
 			{ name: "uri", required: true, description: "Resource URI to read" },
 			{ name: "server", required: false, description: "Server name (optional)" },
@@ -414,6 +417,7 @@ function createResourceCommand(clients: Map<string, MCPClient>): CommandDefiniti
 function createPromptsCommand(clients: Map<string, MCPClient>): CommandDefinition {
 	return {
 		name: "prompts",
+		description: "List all prompts across MCP servers",
 		args: [{ name: "server", required: false, description: "Optional server name to filter by" }],
 		handler: async (args: Record<string, string>, _ctx: CommandContext): Promise<CommandResult> => {
 			try {
@@ -462,6 +466,7 @@ function createPromptsCommand(clients: Map<string, MCPClient>): CommandDefinitio
 function createPromptCommand(clients: Map<string, MCPClient>): CommandDefinition {
 	return {
 		name: "prompt",
+		description: "Invoke a specific prompt by name",
 		args: [{ name: "name", required: true, description: "Prompt name (format: server/name)" }],
 		handler: async (args: Record<string, string>, _ctx: CommandContext): Promise<CommandResult> => {
 			try {
@@ -576,6 +581,7 @@ export function generateRemoteMCPProxyCommands(
 
 		const command: CommandDefinition = {
 			name: serverName,
+			description: `Invoke tools from the remote MCP server "${serverName}"`,
 			args: [
 				{
 					name: "subcommand",
