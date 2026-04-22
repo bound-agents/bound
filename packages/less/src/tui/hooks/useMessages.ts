@@ -6,6 +6,7 @@ export interface UseMessagesResult {
 	messages: Message[];
 	appendMessage: (message: Message) => void;
 	clearMessages: () => void;
+	replaceMessages: (messages: Message[]) => void;
 	updateMessage: (messageId: string, updates: Partial<Message>) => void;
 }
 
@@ -69,6 +70,10 @@ export function useMessages(
 		setMessages([]);
 	};
 
+	const replaceMessages = (next: Message[]) => {
+		setMessages(next);
+	};
+
 	const updateMessage = (messageId: string, updates: Partial<Message>) => {
 		setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, ...updates } : m)));
 	};
@@ -77,6 +82,7 @@ export function useMessages(
 		messages,
 		appendMessage,
 		clearMessages,
+		replaceMessages,
 		updateMessage,
 	};
 }

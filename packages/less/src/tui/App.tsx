@@ -99,7 +99,10 @@ export function App({
 
 	// Wire in React hooks for state management
 	// biome-ignore lint/correctness/noUnusedVariables: appendMessage is managed by the hook and exposed for future use
-	const { messages, appendMessage, clearMessages } = useMessages(client, initialMessages);
+	const { messages, appendMessage, clearMessages, replaceMessages } = useMessages(
+		client,
+		initialMessages,
+	);
 	const { inFlightTools, abortAll } = useToolCalls(client, toolHandlers, hostname, cwd);
 	const { runningCount: mcpServerCount } = useMcpServers(mcpManager);
 
@@ -151,9 +154,28 @@ export function App({
 		dispatch({ type: "SET_VIEW", view, pickerMode });
 	};
 
-	const handleSetThread = (threadId: string) => {
-		dispatch({ type: "SET_THREAD", threadId });
-	};
+	const handleSetThread = useCallback(
+		async (threadId: string) => {
+			// Switch to chat view + new thread id first, and clear the old
+			// message buffer so we don't leak the previous thread's history
+			// (or the attach picker's ghost) into the new view.
+			dispatch({ type: "SET_THREAD", threadId });
+			clearMessages();
+			if (!client) return;
+			try {
+				const history = await client.listMessages(threadId);
+				replaceMessages(history);
+			} catch (error) {
+				const errorMsg = error instanceof Error ? error.message : String(error);
+				dispatch({
+					type: "SET_BANNER",
+					message: `Failed to load thread history: ${errorMsg}`,
+					bannerType: "error",
+				});
+			}
+		},
+		[client, clearMessages, replaceMessages],
+	);
 
 	const handleSetModel = (model: string) => {
 		dispatch({ type: "SET_MODEL", model });

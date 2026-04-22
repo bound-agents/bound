@@ -45,9 +45,12 @@ export function PickerView({
 				if (mode === "thread") {
 					const threads = await client.listThreads();
 					setItems(
+						// Show full thread id — users need to be able to copy it
+						// for `--attach`. Pair it with the title (if any) so the
+						// list is still readable.
 						threads.map((t) => ({
 							id: t.id,
-							label: t.title || t.id.slice(0, 8),
+							label: t.title ? `${t.title}  (${t.id})` : t.id,
 						})),
 					);
 				} else if (mode === "model") {
