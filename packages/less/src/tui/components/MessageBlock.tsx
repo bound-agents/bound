@@ -7,6 +7,11 @@ import { Markdown } from "./Markdown";
 
 const TOOL_RESULT_MAX_LINES = 5;
 
+/** Strip the "boundless_" prefix from local tool names for cleaner display. */
+function displayToolName(name: string): string {
+	return name.startsWith("boundless_") ? name.slice("boundless_".length) : name;
+}
+
 /** Summarize tool arguments for display, showing the most relevant arg value. */
 function summarizeToolArgs(toolName: string, input: Record<string, unknown>): string {
 	// For common tools, show the primary argument
@@ -114,11 +119,12 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 						// Tools not prefixed with "boundless_" are server-side (remote)
 						const isRemote = !block.name.startsWith("boundless_");
 						const prefix = isRemote ? "[remote] " : "";
+						const name = displayToolName(block.name);
 						return (
 							// biome-ignore lint/suspicious/noArrayIndexKey: tool_use blocks are immutable
 							<Text key={idx} dimColor>
-								{">"} {prefix}
-								{block.name}
+								◆ {prefix}
+								{name}
 								{argSummary ? ` ${argSummary}` : ""}
 							</Text>
 						);
@@ -129,7 +135,7 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 
 		return (
 			<Text dimColor>
-				{">"} {message.tool_name || "tool"}: {message.content}
+				◆ {displayToolName(message.tool_name || "tool")}: {message.content}
 			</Text>
 		);
 	}
@@ -175,7 +181,7 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 			: allLines.join("\n");
 
 		return (
-			<Collapsible header={`Tool Result: ${message.tool_name}`} defaultOpen={true}>
+			<Collapsible header={displayToolName(message.tool_name || "tool")} defaultOpen={true}>
 				<Text>{displayText}</Text>
 				{truncated && (
 					<Text dimColor>... {allLines.length - TOOL_RESULT_MAX_LINES} more lines</Text>

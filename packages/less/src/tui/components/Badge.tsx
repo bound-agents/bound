@@ -18,5 +18,5 @@ export interface BadgeProps {
 export function Badge({ status }: BadgeProps): React.ReactElement {
 	const color = STATUS_COLORS[status];
 
-	return <Text color={color}>{status}</Text>;
+	return <Text color={color}>●</Text>;
 }

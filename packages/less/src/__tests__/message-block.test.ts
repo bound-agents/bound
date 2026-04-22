@@ -38,9 +38,10 @@ describe("MessageBlock", () => {
 			await tick();
 
 			const frame = lastFrame();
-			// Should show tool names clearly
-			expect(frame).toContain("boundless_write");
-			expect(frame).toContain("boundless_bash");
+			// Should show tool names with boundless_ prefix stripped
+			expect(frame).toContain("write");
+			expect(frame).toContain("bash");
+			expect(frame).not.toContain("boundless_");
 			// Should NOT dump raw JSON
 			expect(frame).not.toContain('"type":"tool_use"');
 			expect(frame).not.toContain("tool_use");
@@ -104,7 +105,9 @@ describe("MessageBlock", () => {
 			await tick();
 
 			const frame = lastFrame();
-			expect(frame).toContain("boundless_bash");
+			// Should strip boundless_ prefix for local tools
+			expect(frame).toContain("bash");
+			expect(frame).not.toContain("boundless_");
 			expect(frame).not.toContain("[remote]");
 		});
 
@@ -132,7 +135,9 @@ describe("MessageBlock", () => {
 			await tick();
 
 			const frame = lastFrame();
-			expect(frame).toContain("boundless_bash");
+			// Should strip boundless_ prefix
+			expect(frame).toContain("bash");
+			expect(frame).not.toContain("boundless_");
 			// Should show the command argument in some readable way
 			expect(frame).toContain("echo hello");
 		});
@@ -286,8 +291,9 @@ describe("MessageBlock", () => {
 			await tick();
 
 			const frame = lastFrame();
-			// Should render without Box-inside-Text crash
-			expect(frame).toContain("boundless_bash");
+			// Should render without Box-inside-Text crash; header strips prefix
+			expect(frame).toContain("bash");
+			expect(frame).not.toContain("boundless_bash");
 			expect(frame).toContain("boundless bash online");
 		});
 	});

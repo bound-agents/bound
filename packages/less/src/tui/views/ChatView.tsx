@@ -181,7 +181,7 @@ export function ChatView({
 
 			{/* Input area */}
 			<Box>
-				<Text>{">>> "}</Text>
+				<Text color="cyan">{"❯ "}</Text>
 				<Box flexGrow={1} flexShrink={1}>
 					<TextInput
 						placeholder="Enter message or /help"

@@ -30,10 +30,10 @@ export function StatusBar({
 		connectionState === "connected" ? "connected" : "disconnected";
 
 	return (
-		<Box borderStyle="round" paddingX={1}>
-			<Text>
-				Thread: {displayThreadId} | Model: {model || "default"} | Connection:{" "}
-				<Badge status={badgeStatus} /> | MCP Servers: {mcpServerCount}
+		<Box paddingX={1}>
+			<Text dimColor>
+				<Badge status={badgeStatus} /> {displayThreadId} · {model || "default"}
+				{mcpServerCount > 0 ? ` · ${mcpServerCount} MCP` : ""}
 			</Text>
 		</Box>
 	);

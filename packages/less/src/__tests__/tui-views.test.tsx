@@ -115,8 +115,9 @@ describe("TUI Views", () => {
 			);
 
 			const output = lastFrame();
-			// Check that tool card is rendered
-			expect(output).toContain("boundless_bash");
+			// Check that tool card is rendered with stripped prefix
+			expect(output).toContain("bash");
+			expect(output).not.toContain("boundless_bash");
 			expect(output).toBeDefined();
 		});
 
@@ -142,7 +143,9 @@ describe("TUI Views", () => {
 
 			const output = lastFrame();
 			expect(output).toContain("gpt-4");
-			expect(output).toContain("Thread");
+			// StatusBar uses dot separators, not verbose labels
+			expect(output).toContain("·");
+			expect(output).toContain("●");
 		});
 	});
 
