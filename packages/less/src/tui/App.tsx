@@ -211,6 +211,7 @@ export function App({
 					ctrlCHint={ctrlCHint}
 					isProcessing={isProcessing}
 					onModelChange={handleSetModel}
+					onModelPicker={() => handleSetView("picker", "model")}
 					onAttachThread={() => handleSetView("picker", "thread")}
 					onMcpView={() => handleSetView("mcp")}
 					onClear={handleClear}

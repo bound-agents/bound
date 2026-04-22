@@ -26,6 +26,7 @@ export interface ChatViewProps {
 	ctrlCHint: string | null;
 	isProcessing: boolean;
 	onModelChange: (model: string) => void;
+	onModelPicker: () => void;
 	onAttachThread: () => void;
 	onMcpView: () => void;
 	onClear: () => void;
@@ -54,6 +55,7 @@ export function ChatView({
 	ctrlCHint,
 	isProcessing,
 	onModelChange,
+	onModelPicker,
 	onAttachThread,
 	onMcpView,
 	onClear,
@@ -83,6 +85,8 @@ export function ChatView({
 			if (command === "model") {
 				if (args) {
 					onModelChange(args);
+				} else {
+					onModelPicker();
 				}
 				return;
 			}
