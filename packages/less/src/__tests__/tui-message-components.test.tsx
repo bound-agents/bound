@@ -54,7 +54,8 @@ describe("Message rendering components", () => {
 
 			const { lastFrame } = render(<MessageBlock message={message} />);
 			const output = lastFrame();
-			expect(output).toContain("> read:");
+			// Tool calls render as "◆ <tool>: <content>"
+			expect(output).toContain("◆ read:");
 		});
 
 		it("AC9.1: renders tool_result messages collapsible", async () => {
@@ -70,7 +71,9 @@ describe("Message rendering components", () => {
 
 			const { lastFrame } = render(<MessageBlock message={message} />);
 			const output = lastFrame();
-			expect(output).toContain("Tool Result: read");
+			// Tool results render via <Collapsible> with a ▾/▸ glyph and the tool name as header
+			expect(output).toContain("read");
+			expect(output).toMatch(/[▾▸]\s*read/);
 			expect(output).toContain("file contents here");
 		});
 
@@ -122,7 +125,9 @@ describe("Message rendering components", () => {
 			const { lastFrame } = render(<ToolCallCard toolName="bash" startTime={now} />);
 			const output = lastFrame();
 			expect(output).toContain("bash");
-			expect(output).toContain("running");
+			// While running, a spinner glyph appears alongside elapsed time (e.g. "⠋ 0s bash").
+			// The Badge component renders "running" as a green ● with no text label.
+			expect(output).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
 		});
 
 		it("AC9.3: renders stdout in collapsible when provided", async () => {
@@ -184,7 +189,9 @@ describe("Message rendering components", () => {
 				/>,
 			);
 			const output = lastFrame();
-			expect(output).toContain("connected");
+			// StatusBar delegates to <Badge status="connected"/>, which renders a colored ●
+			// glyph only — no text label. Presence of the glyph is the badge rendering.
+			expect(output).toContain("●");
 		});
 
 		it("AC9.4: renders MCP server count", async () => {

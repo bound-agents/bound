@@ -34,11 +34,9 @@ export function useMcpServers(mcpManager: McpServerManager): UseMcpServersResult
 			}
 			for (const [name, state] of updatedStates) {
 				const prevState = prev.get(name);
-				if (
-					!prevState ||
-					prevState.status !== state.status ||
-					prevState.tools.length !== state.tools.length
-				) {
+				const prevToolsLen = prevState?.tools?.length ?? -1;
+				const nextToolsLen = state?.tools?.length ?? -1;
+				if (!prevState || prevState.status !== state?.status || prevToolsLen !== nextToolsLen) {
 					setServerStates(updatedStates);
 					return;
 				}

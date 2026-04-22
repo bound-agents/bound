@@ -179,4 +179,11 @@ async function main(): Promise<void> {
 	}
 }
 
-main();
+// Only run main() when this file is executed directly as the CLI entrypoint,
+// not when imported by tests or other modules. Without this guard, importing
+// anything from boundless.tsx (e.g. parseArgs in boundless-startup.test.ts)
+// would trigger a full Ink render against the non-TTY test stdin and abort
+// the whole test suite with "Raw mode is not supported".
+if (import.meta.main) {
+	main();
+}
