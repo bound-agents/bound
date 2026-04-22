@@ -90,10 +90,10 @@ export function PickerView({
 							onSelect={(item) => onSelect(item.id)}
 							onCancel={onCancel}
 							renderItem={(item, selected) => (
-								<>
-									{selected && <Text color="cyan">▶ </Text>}
-									<Text>{item.label}</Text>
-								</>
+								<Text>
+									<Text color="cyan">{selected ? "› " : "  "}</Text>
+									{item.label}
+								</Text>
 							)}
 						/>
 					</Box>
