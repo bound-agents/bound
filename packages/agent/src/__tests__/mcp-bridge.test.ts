@@ -56,6 +56,8 @@ function makeMockClient(
 		}),
 		connect: async () => {},
 		disconnect: async () => {},
+		getServerDescription: () => undefined,
+		getServerInstructions: () => undefined,
 	} as unknown as MCPClient;
 }
 
@@ -442,6 +444,8 @@ describe("MCP Bridge", () => {
 			invokePrompt: async () => ({ messages: [] }),
 			connect: async () => {},
 			disconnect: async () => {},
+			getServerDescription: () => undefined,
+			getServerInstructions: () => undefined,
 		} as unknown as MCPClient;
 
 		const clients = new Map([["disconnected", disconnectedClient]]);
@@ -771,6 +775,8 @@ describe("MCP Bridge", () => {
 					content: "REPLACED_CLIENT_RESPONSE",
 					isError: false,
 				}),
+				getServerDescription: () => undefined,
+				getServerInstructions: () => undefined,
 			} as unknown as MCPClient;
 			clients.set("hot-server", replacementClient);
 
@@ -883,6 +889,8 @@ describe("MCP Bridge", () => {
 			invokePrompt: async () => ({ messages: [] }),
 			connect: async () => {},
 			disconnect: async () => {},
+			getServerDescription: () => undefined,
+			getServerInstructions: () => undefined,
 		} as unknown as MCPClient;
 
 		const clients = new Map([["image-server", imageClient]]);
