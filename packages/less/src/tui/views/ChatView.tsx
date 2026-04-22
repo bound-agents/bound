@@ -142,7 +142,7 @@ export function ChatView({
 					<Text bold>Available commands:</Text>
 					{[
 						["/help", "Show this help message"],
-						["/model <name>", "Switch to a different model"],
+						["/model [name]", "Switch model (opens picker if no name)"],
 						["/attach", "Switch to a different thread"],
 						["/mcp", "MCP server configuration"],
 						["/clear", "Start a new thread"],
