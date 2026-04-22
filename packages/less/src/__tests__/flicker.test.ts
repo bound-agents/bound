@@ -18,7 +18,7 @@ describe("ToolCallCard timer", () => {
 		await tick();
 
 		const frame = lastFrame();
-		expect(frame).toContain("boundless_bash");
+		expect(frame).toContain("bash");
 	});
 
 	it("does not update more than once per second", async () => {

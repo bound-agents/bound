@@ -73,7 +73,7 @@ describe("App Component", () => {
 
 		const output = lastFrame();
 		// ChatView should be rendered (contains status bar with thread/model info)
-		expect(output).toContain("Thread");
+		expect(output).toContain("thread-123");
 		expect(output).toContain("gpt-4");
 	});
 
@@ -186,6 +186,6 @@ describe("App Component", () => {
 		const output = lastFrame();
 		// Status bar should show model and thread
 		expect(output).toContain("claude-opus");
-		expect(output).toContain("Thread");
+		expect(output).toContain("abc-def-ghi");
 	});
 });
