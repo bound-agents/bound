@@ -20,6 +20,13 @@ import type { MCPClient } from "./mcp-client";
 import { type EligibleHost, createRelayOutboxEntry, findEligibleHosts } from "./relay-router";
 
 /**
+ * Cap a description string to maxLen characters, truncating with "…" if needed.
+ */
+function capDescription(s: string, maxLen = 80): string {
+	return s.length <= maxLen ? s : `${s.slice(0, maxLen - 1)}…`;
+}
+
+/**
  * Coerce string argument values to the types declared in an MCP tool's input schema.
  * The bash --key value parser produces strings for all values; MCP servers validate
  * against their JSON Schema and reject e.g. "10" when number is expected. This function
@@ -146,9 +153,29 @@ export async function generateMCPCommands(
 			});
 		}
 
+		// Description sourcing: serverInfo.description -> instructions (first sentence) -> synthesized
+		let serverDescription: string;
+		const specDescription = client.getServerDescription();
+		if (specDescription) {
+			serverDescription = capDescription(specDescription);
+		} else {
+			const instructions = client.getServerInstructions();
+			if (instructions) {
+				// Take first sentence: up to first period+space, period+end, or newline
+				const firstSentence = instructions.split(/(?<=\.)\s|\n/)[0] ?? instructions;
+				serverDescription = capDescription(firstSentence);
+			} else {
+				// Synthesized fallback from tool names
+				const toolNames = [...dispatchTable.keys()];
+				const synthesized = `MCP server exposing ${toolNames.length} tools: ${toolNames.join(", ")}`;
+				serverDescription = capDescription(synthesized);
+			}
+		}
+
 		const command: CommandDefinition = {
 			name: serverName,
-			description: `Invoke tools from the MCP server "${serverName}"`,
+			description: serverDescription,
+			customHelp: true,
 			args: [
 				{
 					name: "subcommand",
@@ -576,12 +603,13 @@ export function generateRemoteMCPProxyCommands(
 	}
 
 	// Create a proxy command for each remote server
-	for (const [serverName, _hostInfo] of remoteServers) {
+	for (const [serverName, hostInfo] of remoteServers) {
 		remoteServerNames.add(serverName);
 
 		const command: CommandDefinition = {
 			name: serverName,
-			description: `Invoke tools from the remote MCP server "${serverName}"`,
+			description: capDescription(`Remote MCP server on ${hostInfo.hostName}`),
+			customHelp: true,
 			args: [
 				{
 					name: "subcommand",

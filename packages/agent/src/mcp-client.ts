@@ -236,4 +236,20 @@ export class MCPClient {
 	isConnected(): boolean {
 		return this.connected;
 	}
+
+	/**
+	 * Get the server's description from its InitializeResult, if available.
+	 * Only available after connect().
+	 */
+	getServerDescription(): string | undefined {
+		return this.client.getServerVersion()?.description;
+	}
+
+	/**
+	 * Get the server's instructions from its InitializeResult, if available.
+	 * Only available after connect().
+	 */
+	getServerInstructions(): string | undefined {
+		return this.client.getInstructions();
+	}
 }
