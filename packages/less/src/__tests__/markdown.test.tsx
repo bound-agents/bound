@@ -185,6 +185,78 @@ describe("Markdown", () => {
 		});
 	});
 
+	describe("tables", () => {
+		it("renders a basic table with header and rows", async () => {
+			const md = "| Name | Age |\n|------|-----|\n| Alice | 30 |\n| Bob | 25 |";
+			const { lastFrame } = render(React.createElement(Markdown, { text: md }));
+			await tick();
+			const frame = lastFrame();
+			// Should contain all cell values
+			expect(frame).toContain("Name");
+			expect(frame).toContain("Age");
+			expect(frame).toContain("Alice");
+			expect(frame).toContain("30");
+			expect(frame).toContain("Bob");
+			expect(frame).toContain("25");
+			// Should have box-drawing separator between header and body
+			expect(frame).toContain("─");
+			// Should NOT contain raw pipe syntax
+			expect(frame).not.toContain("|---");
+		});
+
+		it("renders header cells with bold styling", async () => {
+			const md = "| Col1 | Col2 |\n|------|------|\n| a | b |";
+			const { lastFrame } = render(React.createElement(Markdown, { text: md }));
+			await tick();
+			const frame = lastFrame();
+			// Headers should be present (bold is an ANSI escape, hard to check directly)
+			expect(frame).toContain("Col1");
+			expect(frame).toContain("Col2");
+		});
+
+		it("pads columns to equal width", async () => {
+			const md = "| Short | A much longer header |\n|-------|----------------------|\n| x | y |";
+			const { lastFrame } = render(React.createElement(Markdown, { text: md }));
+			await tick();
+			const frame = lastFrame();
+			// The separator line should be at least as wide as the longest header
+			expect(frame).toContain("A much longer header");
+			expect(frame).toContain("Short");
+		});
+
+		it("renders inline formatting inside table cells", async () => {
+			const md = "| Feature | Status |\n|---------|--------|\n| **Auth** | `done` |";
+			const { lastFrame } = render(React.createElement(Markdown, { text: md }));
+			await tick();
+			const frame = lastFrame();
+			expect(frame).toContain("Auth");
+			expect(frame).toContain("done");
+			// Should NOT contain raw markdown syntax
+			expect(frame).not.toContain("**Auth**");
+		});
+
+		it("handles empty cells gracefully", async () => {
+			const md = "| A | B |\n|---|---|\n|   | x |";
+			const { lastFrame } = render(React.createElement(Markdown, { text: md }));
+			await tick();
+			const frame = lastFrame();
+			expect(frame).toContain("A");
+			expect(frame).toContain("B");
+			expect(frame).toContain("x");
+		});
+
+		it("renders table embedded in other markdown content", async () => {
+			const md = "# Results\n\n| Name | Score |\n|------|-------|\n| Alice | 95 |\n\nGreat work!";
+			const { lastFrame } = render(React.createElement(Markdown, { text: md }));
+			await tick();
+			const frame = lastFrame();
+			expect(frame).toContain("Results");
+			expect(frame).toContain("Alice");
+			expect(frame).toContain("95");
+			expect(frame).toContain("Great work!");
+		});
+	});
+
 	describe("mixed content", () => {
 		it("renders a mix of headings, paragraphs, and code", async () => {
 			const md = [

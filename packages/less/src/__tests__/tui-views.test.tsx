@@ -115,8 +115,9 @@ describe("TUI Views", () => {
 			);
 
 			const output = lastFrame();
-			// Check that tool card is rendered
-			expect(output).toContain("boundless_bash");
+			// Check that tool card is rendered with stripped prefix
+			expect(output).toContain("bash");
+			expect(output).not.toContain("boundless_bash");
 			expect(output).toBeDefined();
 		});
 
@@ -142,7 +143,9 @@ describe("TUI Views", () => {
 
 			const output = lastFrame();
 			expect(output).toContain("gpt-4");
-			expect(output).toContain("Thread");
+			// StatusBar uses dot separators, not verbose labels
+			expect(output).toContain("·");
+			expect(output).toContain("●");
 		});
 	});
 
@@ -238,6 +241,137 @@ describe("TUI Views", () => {
 	});
 
 	describe("TUI Commands", () => {
+		/** Let React effects flush */
+		const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+		it("/help displays available slash commands", async () => {
+			const { lastFrame, stdin } = render(
+				React.createElement(ChatView, {
+					client: mockClient,
+					threadId: "thread-1",
+					model: "gpt-4",
+					connectionState: "connected",
+					messages: [],
+					inFlightTools: new Map(),
+					mcpServerCount: 0,
+					bannerMessage: null,
+					bannerType: null,
+					onModelChange: vi.fn(),
+					onAttachThread: vi.fn(),
+					onMcpView: vi.fn(),
+					onClear: vi.fn(),
+					onBannerDismiss: vi.fn(),
+					onSendMessage: vi.fn(),
+				}),
+			);
+
+			await tick();
+			stdin.write("/help");
+			await tick();
+			stdin.write("\r");
+			await tick();
+
+			const output = lastFrame();
+			expect(output).toContain("/model");
+			expect(output).toContain("/attach");
+			expect(output).toContain("/mcp");
+			expect(output).toContain("/clear");
+			expect(output).toContain("/help");
+		});
+
+		it("/help does not send a message to the server", async () => {
+			const onSendMessage = vi.fn();
+			const { stdin } = render(
+				React.createElement(ChatView, {
+					client: mockClient,
+					threadId: "thread-1",
+					model: "gpt-4",
+					connectionState: "connected",
+					messages: [],
+					inFlightTools: new Map(),
+					mcpServerCount: 0,
+					bannerMessage: null,
+					bannerType: null,
+					onModelChange: vi.fn(),
+					onAttachThread: vi.fn(),
+					onMcpView: vi.fn(),
+					onClear: vi.fn(),
+					onBannerDismiss: vi.fn(),
+					onSendMessage,
+				}),
+			);
+
+			await tick();
+			stdin.write("/help");
+			await tick();
+			stdin.write("\r");
+			await tick();
+
+			expect(onSendMessage).not.toHaveBeenCalled();
+		});
+
+		it("/clear calls onClear callback", async () => {
+			const onClear = vi.fn();
+			const { stdin } = render(
+				React.createElement(ChatView, {
+					client: mockClient,
+					threadId: "thread-1",
+					model: "gpt-4",
+					connectionState: "connected",
+					messages: [],
+					inFlightTools: new Map(),
+					mcpServerCount: 0,
+					bannerMessage: null,
+					bannerType: null,
+					onModelChange: vi.fn(),
+					onAttachThread: vi.fn(),
+					onMcpView: vi.fn(),
+					onClear,
+					onBannerDismiss: vi.fn(),
+					onSendMessage: vi.fn(),
+				}),
+			);
+
+			await tick();
+			stdin.write("/clear");
+			await tick();
+			stdin.write("\r");
+			await tick();
+
+			expect(onClear).toHaveBeenCalledTimes(1);
+		});
+
+		it("/clear does not send a message to the server", async () => {
+			const onSendMessage = vi.fn();
+			const { stdin } = render(
+				React.createElement(ChatView, {
+					client: mockClient,
+					threadId: "thread-1",
+					model: "gpt-4",
+					connectionState: "connected",
+					messages: [],
+					inFlightTools: new Map(),
+					mcpServerCount: 0,
+					bannerMessage: null,
+					bannerType: null,
+					onModelChange: vi.fn(),
+					onAttachThread: vi.fn(),
+					onMcpView: vi.fn(),
+					onClear: vi.fn(),
+					onBannerDismiss: vi.fn(),
+					onSendMessage,
+				}),
+			);
+
+			await tick();
+			stdin.write("/clear");
+			await tick();
+			stdin.write("\r");
+			await tick();
+
+			expect(onSendMessage).not.toHaveBeenCalled();
+		});
+
 		it("AC9.8: should show error for unknown slash command", () => {
 			const onSendMessage = vi.fn();
 			const { lastFrame } = render(

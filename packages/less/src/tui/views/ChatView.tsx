@@ -28,6 +28,7 @@ export interface ChatViewProps {
 	onModelChange: (model: string) => void;
 	onAttachThread: () => void;
 	onMcpView: () => void;
+	onClear: () => void;
 	onBannerDismiss: () => void;
 	onSendMessage: (message: string) => void;
 }
@@ -55,21 +56,29 @@ export function ChatView({
 	onModelChange,
 	onAttachThread,
 	onMcpView,
+	onClear,
 	onBannerDismiss,
 	onSendMessage,
 }: ChatViewProps): React.ReactElement {
 	const [commandError, setCommandError] = useState<string | null>(null);
+	const [showHelp, setShowHelp] = useState(false);
 
 	/**
 	 * Parse and handle slash commands.
 	 */
 	const handleSubmit = async (input: string) => {
 		setCommandError(null);
+		setShowHelp(false);
 
 		if (input.startsWith("/")) {
 			const parts = input.slice(1).split(" ");
 			const command = parts[0];
 			const args = parts.slice(1).join(" ");
+
+			if (command === "help") {
+				setShowHelp(true);
+				return;
+			}
 
 			if (command === "model") {
 				if (args) {
@@ -89,7 +98,7 @@ export function ChatView({
 			}
 
 			if (command === "clear") {
-				setCommandError("Not implemented in ChatView");
+				onClear();
 				return;
 			}
 
@@ -124,6 +133,25 @@ export function ChatView({
 					<Banner type={bannerType} message={bannerMessage} onDismiss={onBannerDismiss} />
 				</Box>
 			)}
+			{showHelp && (
+				<Box flexDirection="column" marginBottom={1}>
+					<Text bold>Available commands:</Text>
+					{[
+						["/help", "Show this help message"],
+						["/model <name>", "Switch to a different model"],
+						["/attach", "Switch to a different thread"],
+						["/mcp", "MCP server configuration"],
+						["/clear", "Start a new thread"],
+					].map(([cmd, desc]) => (
+						<Box key={cmd}>
+							<Box width={18}>
+								<Text color="cyan">{cmd}</Text>
+							</Box>
+							<Text>{desc}</Text>
+						</Box>
+					))}
+				</Box>
+			)}
 			{commandError && (
 				<Box marginBottom={1}>
 					<Banner type="error" message={commandError} onDismiss={() => setCommandError(null)} />
@@ -153,7 +181,7 @@ export function ChatView({
 
 			{/* Input area */}
 			<Box>
-				<Text>{">>> "}</Text>
+				<Text color="cyan">{"❯ "}</Text>
 				<Box flexGrow={1} flexShrink={1}>
 					<TextInput
 						placeholder="Enter message or /help"

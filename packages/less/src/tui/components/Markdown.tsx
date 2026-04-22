@@ -154,6 +154,78 @@ function renderBlock(token: Token, index: number): React.ReactElement | null {
 				</Box>
 			);
 		}
+		case "table": {
+			const t = token as Tokens.Table;
+			const colCount = t.header.length;
+
+			// Compute column widths from plain text of header + all rows
+			const colWidths: number[] = new Array(colCount).fill(0);
+			for (let c = 0; c < colCount; c++) {
+				colWidths[c] = Math.max(colWidths[c], t.header[c].text.length);
+			}
+			for (const row of t.rows) {
+				for (let c = 0; c < colCount; c++) {
+					if (row[c]) {
+						colWidths[c] = Math.max(colWidths[c], row[c].text.length);
+					}
+				}
+			}
+
+			// Pad a plain string to a given width respecting alignment
+			const pad = (text: string, width: number, align: string | null): string => {
+				const diff = width - text.length;
+				if (diff <= 0) return text;
+				if (align === "right") return " ".repeat(diff) + text;
+				if (align === "center") {
+					const left = Math.floor(diff / 2);
+					return " ".repeat(left) + text + " ".repeat(diff - left);
+				}
+				return text + " ".repeat(diff);
+			};
+
+			// Render a row of cells (header or data)
+			const renderRow = (
+				cells: Tokens.TableCell[],
+				isHeader: boolean,
+				rowKey: string,
+			): React.ReactElement => (
+				<Box key={rowKey}>
+					{cells.map((cell, c) => {
+						const paddedWidth = colWidths[c] + 2; // 1 space padding each side
+						const inner = renderInline(cell.tokens, `${rowKey}-c${c}-`);
+						return (
+							// biome-ignore lint/suspicious/noArrayIndexKey: table cells are immutable tokens
+							<Box key={`${rowKey}-c${c}`} width={paddedWidth + 1}>
+								{isHeader ? (
+									<Text bold>
+										{" "}
+										{inner}
+										{" ".repeat(Math.max(0, colWidths[c] - cell.text.length))}
+									</Text>
+								) : (
+									<Text>
+										{" "}
+										{pad("", Math.max(0, colWidths[c] - cell.text.length), cell.align)}
+										{inner}
+									</Text>
+								)}
+							</Box>
+						);
+					})}
+				</Box>
+			);
+
+			// Separator line
+			const separatorStr = colWidths.map((w) => "─".repeat(w + 2)).join("─");
+
+			return (
+				<Box key={`block-${index}`} flexDirection="column">
+					{renderRow(t.header, true, `th-${index}`)}
+					<Text dimColor>{separatorStr}</Text>
+					{t.rows.map((row, ri) => renderRow(row, false, `tr-${index}-${ri}`))}
+				</Box>
+			);
+		}
 		case "blockquote": {
 			const t = token as Tokens.Blockquote;
 			// Blockquote contains block-level tokens; render them inline-ish
