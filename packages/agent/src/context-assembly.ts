@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { BackendCapabilities, ContentBlock, LLMMessage } from "@bound/llm";
 import type { ContextDebugInfo, ContextSection, CrossThreadSource, Message } from "@bound/shared";
 import { countContentTokens, countTokens, safeSlice } from "@bound/shared";
-import { getCommandRegistry } from "./commands/help";
+import { getCommandRegistry } from "./commands/registry";
 import { getFileThreadNotificationMessage, getLastThreadForFile } from "./file-thread-tracker";
 import { shedMemoryTiers } from "./memory-shedding.js";
 import {

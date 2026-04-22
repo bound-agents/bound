@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import type { CommandDefinition } from "@bound/sandbox";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { getCommandRegistry, setCommandRegistry } from "../commands/help";
+import { getCommandRegistry, setCommandRegistry } from "../commands/registry";
 import { assembleContext, estimateContentLength, formatTimestamp } from "../context-assembly";
 
 describe("Context Assembly Pipeline", () => {

@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,7 +15,6 @@ import { advisory } from "../commands/advisory";
 import { awaitCmd } from "../commands/await-cmd";
 import { cancel } from "../commands/cancel";
 import { emit } from "../commands/emit";
-import { help, setCommandRegistry } from "../commands/help";
 import { memory } from "../commands/memory";
 import { purge } from "../commands/purge";
 import { query } from "../commands/query";
@@ -965,222 +964,19 @@ describe("defineCommand implementations", () => {
 		});
 	});
 
-	describe("commands command", () => {
-		// Clean up hosts table before each test
-		beforeEach(() => {
-			db.run("DELETE FROM hosts WHERE deleted = 0");
+	describe("command-discovery-redesign.AC4: commands command removed", () => {
+		it("AC4.1: commands not in getAllCommands()", async () => {
+			const { getAllCommands } = await import("../commands/index");
+			const commands = getAllCommands();
+			const commandsCommand = commands.find((c) => c.name === "commands");
+			expect(commandsCommand).toBeUndefined();
 		});
 
-		it("should show LOCAL and REMOTE tiers with LOCAL MCP server (mcp-subcommand-dispatch.AC6.1, AC6.3)", async () => {
-			// Register: builtin + local MCP server "test-server" + unrelated builtin
-			setCommandRegistry(
-				[
-					help,
-					{
-						name: "query",
-						args: [],
-						handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
-					},
-					{
-						name: "test-server",
-						args: [
-							{
-								name: "subcommand",
-								required: false,
-								description: "Subcommand",
-							},
-						],
-						handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
-					},
-				],
-				new Set(["test-server"]),
-			);
-
-			// Insert a remote host with flat string[] mcp_tools
-			db.run(
-				`INSERT INTO hosts (site_id, host_name, mcp_tools, modified_at, deleted)
-				 VALUES (?, ?, ?, ?, ?)`,
-				[
-					"remote-site-id-2",
-					"remote-host",
-					JSON.stringify(["remote-server"]),
-					new Date().toISOString(),
-					0,
-				],
-			);
-
-			const result = await help.handler({}, ctx);
-
-			expect(result.exitCode).toBe(0);
-			expect(result.stdout).toContain("Built-in:");
-			expect(result.stdout).toContain("query");
-			expect(result.stdout).toContain("LOCAL (MCP):");
-			expect(result.stdout).toContain("test-server");
-			expect(result.stdout).toContain("REMOTE (via relay):");
-			expect(result.stdout).toContain("remote-server");
-			expect(result.stdout).toContain("[host: remote-host]");
-			// Must NOT contain old-style per-tool names
-			expect(result.stdout).not.toContain("test-server-tool1");
-			expect(result.stdout).not.toContain("remote-server-tool2");
-		});
-
-		it("should only show LOCAL (MCP) when no remote tools (mcp-subcommand-dispatch.AC6.1)", async () => {
-			// Set up command registry
-			setCommandRegistry(
-				[
-					help,
-					{
-						name: "query",
-						args: [],
-						handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
-					},
-					{
-						name: "local-server",
-						args: [
-							{
-								name: "subcommand",
-								required: false,
-								description: "Subcommand",
-							},
-						],
-						handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
-					},
-				],
-				new Set(["local-server"]),
-			);
-
-			const result = await help.handler({}, ctx);
-
-			expect(result.exitCode).toBe(0);
-			expect(result.stdout).toContain("Built-in:");
-			expect(result.stdout).toContain("LOCAL (MCP):");
-			expect(result.stdout).toContain("local-server");
-			expect(result.stdout).not.toContain("REMOTE (via relay):");
-		});
-
-		it("should work without serverNames registry (backwards compatibility)", async () => {
-			// Set up command registry without serverNames
-			setCommandRegistry([
-				help,
-				{
-					name: "query",
-					args: [],
-					handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
-				},
-			]);
-
-			const result = await help.handler({}, ctx);
-
-			expect(result.exitCode).toBe(0);
-			expect(result.stdout).toContain("Built-in:");
-			expect(result.stdout).toContain("query");
-		});
-
-		it("should render subcommand listing for MCP server command (mcp-subcommand-dispatch.AC6.2)", async () => {
-			setCommandRegistry(
-				[
-					help,
-					{
-						name: "github",
-						args: [
-							{
-								name: "subcommand",
-								required: false,
-								description: "Subcommand",
-							},
-						],
-						handler: async (args) => {
-							if (args.help !== undefined) {
-								return {
-									stdout:
-										"github subcommands:\n\n  create_issue — Create an issue\n  list_issues — List issues\n",
-									stderr: "",
-									exitCode: 0,
-								};
-							}
-							return {
-								stdout: "",
-								stderr: "no subcommand",
-								exitCode: 1,
-							};
-						},
-					},
-				],
-				new Set(["github"]),
-			);
-
-			const result = await help.handler({ command: "github" }, ctx);
-
-			expect(result.exitCode).toBe(0);
-			expect(result.stdout).toContain("github subcommands:");
-			expect(result.stdout).toContain("create_issue");
-		});
-
-		it("should list meta-commands as builtins (mcp-subcommand-dispatch.AC7.1, AC7.2)", async () => {
-			// Register meta-commands without adding them to serverNames
-			setCommandRegistry(
-				[
-					help,
-					{
-						name: "resources",
-						args: [],
-						handler: async () => ({
-							stdout: "resources output",
-							stderr: "",
-							exitCode: 0,
-						}),
-					},
-					{
-						name: "resource",
-						args: [
-							{
-								name: "uri",
-								required: true,
-								description: "Resource URI",
-							},
-						],
-						handler: async () => ({
-							stdout: "resource output",
-							stderr: "",
-							exitCode: 0,
-						}),
-					},
-					{
-						name: "prompts",
-						args: [],
-						handler: async () => ({
-							stdout: "prompts output",
-							stderr: "",
-							exitCode: 0,
-						}),
-					},
-					{
-						name: "prompt",
-						args: [
-							{
-								name: "name",
-								required: true,
-								description: "Prompt name",
-							},
-						],
-						handler: async () => ({
-							stdout: "prompt output",
-							stderr: "",
-							exitCode: 0,
-						}),
-					},
-				],
-				new Set(),
-			);
-
-			const result = await help.handler({}, ctx);
-
-			expect(result.exitCode).toBe(0);
-			expect(result.stdout).toContain("Built-in:");
-			expect(result.stdout).toContain("resources");
-			expect(result.stdout).toContain("resource <uri>");
-			expect(result.stdout).toContain("prompts");
-			expect(result.stdout).toContain("prompt <name>");
+		it("AC4.2: registry exports setCommandRegistry and getCommandRegistry, no help export", async () => {
+			const registry = await import("../commands/registry");
+			expect(registry.setCommandRegistry).toBeDefined();
+			expect(registry.getCommandRegistry).toBeDefined();
+			expect(registry.help).toBeUndefined();
 		});
 	});
 });
