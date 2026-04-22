@@ -55,12 +55,49 @@ export interface CommandDefinition {
 	handler: (args: Record<string, string>, ctx: CommandContext) => Promise<CommandResult>;
 }
 
+/**
+ * Render usage help for a command.
+ * If helpText is provided, uses it verbatim; otherwise auto-generates from args schema.
+ */
+export function formatHelp(def: CommandDefinition): CommandResult {
+	let body: string;
+	if (def.helpText) {
+		body = def.helpText;
+	} else {
+		const lines: string[] = [];
+		// Usage line
+		const argSyntax = def.args.map((a) => (a.required ? `<${a.name}>` : `[${a.name}]`)).join(" ");
+		lines.push(`Usage: ${def.name}${argSyntax ? ` ${argSyntax}` : ""}`);
+		// Arguments section
+		if (def.args.length > 0) {
+			lines.push("");
+			lines.push("Arguments:");
+			for (const a of def.args) {
+				const req = a.required ? "(required)" : "(optional)";
+				lines.push(`  ${a.name} ${req}${a.description ? ` — ${a.description}` : ""}`);
+			}
+		}
+		body = lines.join("\n");
+	}
+
+	return {
+		stdout: `${def.name} — ${def.description}\n\n${body}\n`,
+		stderr: "",
+		exitCode: 0,
+	};
+}
+
 export function createDefineCommands(
 	definitions: CommandDefinition[],
 	context: CommandContext,
 ): (CustomCommand & { handler: (argv: string[]) => Promise<CommandResult> })[] {
 	return definitions.map((def) => {
 		const handler = async (argv: string[]) => {
+			// --help / -h interception: sole argv, non-customHelp commands only
+			if (!def.customHelp && argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")) {
+				return formatHelp(def);
+			}
+
 			const args: Record<string, string> = {};
 
 			// Detect if argv uses --key value or key=value format.
@@ -68,7 +105,7 @@ export function createDefineCommands(
 			// (no whitespace before "="). This prevents SQL strings like
 			// "SELECT … WHERE deleted=0" from triggering key=value parsing — those
 			// tokens contain spaces before "=", so they fail /^[^\s=]+=/
-			const hasFlags = argv.some((a) => a.startsWith("--") || /^[^\s=]+=/.test(a));
+			const hasFlags = argv.some((a) => a === "-h" || a.startsWith("--") || /^[^\s=]+=/.test(a));
 
 			if (hasFlags) {
 				// Parse --key value pairs, key=value pairs, and leading positional args.
@@ -80,12 +117,24 @@ export function createDefineCommands(
 				let positionalCount = 0;
 				for (let i = 0; i < argv.length; i++) {
 					const arg = argv[i];
-					if (arg.startsWith("--") && i + 1 < argv.length) {
-						args[arg.slice(2)] = argv[++i];
+					if (arg === "-h") {
+						// Short-form alias: -h → args.help = "true"
+						args.help = "true";
+					} else if (arg.startsWith("--")) {
+						const flag = arg.slice(2);
+						const next = argv[i + 1];
+						if (next !== undefined && !next.startsWith("--")) {
+							// --flag value: consume next token as the value
+							args[flag] = next;
+							i++;
+						} else {
+							// Bare --flag (last token or followed by another --flag): boolean true
+							args[flag] = "true";
+						}
 					} else if (/^[^\s=]+=/.test(arg)) {
 						const eqIdx = arg.indexOf("=");
 						args[arg.slice(0, eqIdx)] = arg.slice(eqIdx + 1);
-					} else if (!arg.startsWith("--") && positionalCount < def.args.length) {
+					} else if (positionalCount < def.args.length) {
 						// Unmatched token — assign to next positional arg slot
 						args[def.args[positionalCount].name] = arg;
 						positionalCount++;
@@ -101,7 +150,7 @@ export function createDefineCommands(
 					} else if (argDef.required) {
 						return {
 							stdout: "",
-							stderr: `Missing required argument: ${argDef.name}\n`,
+							stderr: `Missing required argument: ${argDef.name}\n(run '${def.name} --help' for usage)\n`,
 							exitCode: 1,
 						};
 					}

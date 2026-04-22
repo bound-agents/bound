@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createDatabase } from "@bound/core";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
 import type { CommandDefinition } from "../commands";
-import { createDefineCommands, loopContextStorage } from "../commands";
+import { createDefineCommands, formatHelp, loopContextStorage } from "../commands";
 
 // Mock logger and event bus for testing
 const mockLogger: Logger = {
@@ -412,5 +412,350 @@ describe("loopContextStorage — per-loop thread/task injection", () => {
 		// Neither should have seen the other's threadId
 		expect(results.filter((r) => r === "thread-A")).toHaveLength(1);
 		expect(results.filter((r) => r === "thread-B")).toHaveLength(1);
+	});
+});
+
+describe("--help and missing-arg hint", () => {
+	const mockLogger: Logger = {
+		info: () => {},
+		warn: () => {},
+		error: () => {},
+		debug: () => {},
+	};
+
+	const mockEventBus: TypedEventEmitter = {
+		on: () => {},
+		emit: () => {},
+		off: () => {},
+	};
+
+	// command-discovery-redesign.AC1.1: --help returns usage information
+	test("AC1.1: schedule --help returns usage information with exit code 0", async () => {
+		const definitions: CommandDefinition[] = [
+			{
+				name: "schedule",
+				description: "Schedule a deferred task",
+				args: [{ name: "task", required: true }],
+				handler: async () => ({
+					stdout: "ok",
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		const result = await commands[0].handler(["--help"]);
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("schedule");
+		expect(result.stdout).toContain("Schedule a deferred task");
+		expect(result.stdout).toContain("task");
+	});
+
+	// command-discovery-redesign.AC1.3: -h returns same output as --help
+	test("AC1.3: schedule -h returns the same output as schedule --help", async () => {
+		const definitions: CommandDefinition[] = [
+			{
+				name: "schedule",
+				description: "Schedule a deferred task",
+				args: [{ name: "task", required: true }],
+				handler: async () => ({
+					stdout: "ok",
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		const resultHelp = await commands[0].handler(["--help"]);
+		const resultH = await commands[0].handler(["-h"]);
+
+		expect(resultH.exitCode).toBe(resultHelp.exitCode);
+		expect(resultH.stdout).toBe(resultHelp.stdout);
+	});
+
+	// command-discovery-redesign.AC1.4: customHelp: true gets args.help set, not formatHelp
+	test("AC1.4: atproto --help with customHelp: true receives args.help and returns custom response", async () => {
+		let capturedHelp: string | undefined;
+		let handlerCalled = false;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "atproto",
+				description: "ATProto bridge command",
+				customHelp: true,
+				args: [{ name: "subcommand", required: false }],
+				handler: async (args) => {
+					handlerCalled = true;
+					capturedHelp = args.help;
+					if (args.help === "true") {
+						return {
+							stdout: "Custom ATProto help\n",
+							stderr: "",
+							exitCode: 0,
+						};
+					}
+					return { stdout: "", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		const result = await commands[0].handler(["--help"]);
+
+		expect(handlerCalled).toBe(true);
+		expect(capturedHelp).toBe("true");
+		expect(result.stdout).toBe("Custom ATProto help\n");
+		expect(result.stdout).not.toContain("atproto —");
+	});
+
+	// command-discovery-redesign.AC1.4: -h also works with customHelp
+	test("AC1.4 (short form): atproto -h with customHelp: true receives args.help", async () => {
+		let capturedHelp: string | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "atproto",
+				description: "ATProto bridge command",
+				customHelp: true,
+				args: [],
+				handler: async (args) => {
+					capturedHelp = args.help;
+					if (args.help === "true") {
+						return { stdout: "Custom help\n", stderr: "", exitCode: 0 };
+					}
+					return { stdout: "", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		const result = await commands[0].handler(["-h"]);
+
+		expect(capturedHelp).toBe("true");
+		expect(result.stdout).toBe("Custom help\n");
+	});
+
+	// command-discovery-redesign.AC1.5: --help with extra-arg does NOT trigger interception
+	test("AC1.5: schedule --help extra-arg does NOT trigger interception", async () => {
+		let capturedHelp: string | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "schedule",
+				description: "Schedule a deferred task",
+				args: [{ name: "task", required: true }],
+				handler: async (args) => {
+					capturedHelp = args.help;
+					return { stdout: "executed\n", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		const result = await commands[0].handler(["--help", "extra-arg"]);
+
+		// Should NOT trigger formatHelp, instead handler is called with parsed args
+		expect(result.stdout).toBe("executed\n");
+		expect(result.exitCode).toBe(0);
+		// --help consumed with value extra-arg in flag parsing mode
+		expect(capturedHelp).toBe("extra-arg");
+	});
+
+	// command-discovery-redesign.AC1.6: bare --flag resolves to "true"
+	test("AC1.6: bare --verbose flag resolves to args.verbose = true", async () => {
+		let capturedVerbose: string | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "test-cmd",
+				description: "Test command",
+				args: [{ name: "verbose", required: false }],
+				handler: async (args) => {
+					capturedVerbose = args.verbose;
+					return { stdout: "ok\n", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		const result = await commands[0].handler(["--verbose"]);
+
+		expect(result.exitCode).toBe(0);
+		expect(capturedVerbose).toBe("true");
+	});
+
+	// command-discovery-redesign.AC1.6: multiple bare flags resolve to "true"
+	test("AC1.6 (multiple flags): --flag1 --flag2 both resolve to true", async () => {
+		let capturedFlag1: string | undefined;
+		let capturedFlag2: string | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "test-cmd",
+				description: "Test command",
+				args: [],
+				handler: async (args) => {
+					capturedFlag1 = args.flag1;
+					capturedFlag2 = args.flag2;
+					return { stdout: "ok\n", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		const result = await commands[0].handler(["--flag1", "--flag2"]);
+
+		expect(result.exitCode).toBe(0);
+		expect(capturedFlag1).toBe("true");
+		expect(capturedFlag2).toBe("true");
+	});
+
+	// command-discovery-redesign.AC2.1: Missing required argument includes hint
+	test("AC2.1: schedule with no arguments returns missing-arg error with hint", async () => {
+		const definitions: CommandDefinition[] = [
+			{
+				name: "schedule",
+				description: "Schedule a deferred task",
+				args: [{ name: "task", required: true }],
+				handler: async () => ({
+					stdout: "ok",
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		const result = await commands[0].handler([]);
+
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toContain("Missing required argument: task");
+		expect(result.stderr).toContain("(run 'schedule --help' for usage)");
+	});
+
+	// command-discovery-redesign.AC2.2: Exit code stays 1
+	test("AC2.2: missing-arg error exits with code 1", async () => {
+		const definitions: CommandDefinition[] = [
+			{
+				name: "schedule",
+				description: "Schedule a deferred task",
+				args: [{ name: "task", required: true }],
+				handler: async () => ({
+					stdout: "ok",
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		const result = await commands[0].handler([]);
+
+		expect(result.exitCode).toBe(1);
+	});
+
+	// Test formatHelp function directly
+	test("formatHelp generates correct usage text for command with required args", () => {
+		const def: CommandDefinition = {
+			name: "mycommand",
+			description: "Does something useful",
+			args: [
+				{ name: "arg1", required: true, description: "First argument" },
+				{ name: "arg2", required: false, description: "Second argument" },
+			],
+			handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+		};
+
+		const result = formatHelp(def);
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("mycommand — Does something useful");
+		expect(result.stdout).toContain("Usage: mycommand <arg1> [arg2]");
+		expect(result.stdout).toContain("arg1 (required) — First argument");
+		expect(result.stdout).toContain("arg2 (optional) — Second argument");
+	});
+
+	// Test formatHelp with custom helpText
+	test("formatHelp uses custom helpText when provided", () => {
+		const def: CommandDefinition = {
+			name: "special",
+			description: "Special command",
+			helpText: "This is a custom help message with special formatting.",
+			args: [],
+			handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+		};
+
+		const result = formatHelp(def);
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("special — Special command");
+		expect(result.stdout).toContain("This is a custom help message with special formatting.");
+		expect(result.stdout).not.toContain("Usage:");
 	});
 });
