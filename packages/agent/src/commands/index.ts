@@ -8,7 +8,7 @@ import { cacheUnpin } from "./cache-unpin";
 import { cacheWarm } from "./cache-warm";
 import { cancel } from "./cancel";
 import { emit } from "./emit";
-import { help, setCommandRegistry } from "./help";
+import { getCommandRegistry, help, setCommandRegistry } from "./help";
 import { hostinfo } from "./hostinfo";
 import { memory } from "./memory";
 import { modelHint } from "./model-hint";
@@ -51,7 +51,7 @@ export function getAllCommands(): CommandDefinition[] {
 	];
 }
 
-export { setCommandRegistry };
+export { setCommandRegistry, getCommandRegistry };
 
 /**
  * Add MCP-generated commands to the command list

@@ -22,6 +22,15 @@ export function setCommandRegistry(
 	}
 }
 
+/**
+ * Return the command registry populated at boot by setCommandRegistry.
+ * Used by context-assembly to render the orientation block's command list.
+ * Returns [] before boot; context-assembly must run after setCommandRegistry.
+ */
+export function getCommandRegistry(): readonly CommandDefinition[] {
+	return commandRegistry;
+}
+
 export const help: CommandDefinition = {
 	name: "commands",
 	description: "List available commands and show per-command usage",

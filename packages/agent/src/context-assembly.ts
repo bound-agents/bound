@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { BackendCapabilities, ContentBlock, LLMMessage } from "@bound/llm";
 import type { ContextDebugInfo, ContextSection, CrossThreadSource, Message } from "@bound/shared";
 import { countContentTokens, countTokens, safeSlice } from "@bound/shared";
+import { getCommandRegistry } from "./commands/help";
 import { getFileThreadNotificationMessage, getLastThreadForFile } from "./file-thread-tracker";
 import { shedMemoryTiers } from "./memory-shedding.js";
 import {
@@ -271,35 +272,6 @@ function substituteUnsupportedBlocks(
 
 	return { ...msg, content: substituted as LLMMessage["content"] };
 }
-
-// Static list of available built-in commands with brief descriptions
-const AVAILABLE_COMMANDS = [
-	{ name: "query", description: "Execute a SELECT query against the database" },
-	{
-		name: "memory",
-		description: "Memory operations: store, forget, search, connect, disconnect (use subcommands)",
-	},
-	{ name: "advisory", description: "Post a proactive advisory for operator review" },
-	{ name: "schedule", description: "Schedule a deferred, cron, or event-driven task" },
-	{ name: "cancel", description: "Cancel a scheduled task (supports --payload-match)" },
-	{ name: "emit", description: "Emit a custom event on the event bus" },
-	{ name: "purge", description: "Create a purge record targeting message IDs" },
-	{ name: "await", description: "Poll until tasks reach a terminal state" },
-	{ name: "cache-warm", description: "Pre-warm the prompt cache for a thread" },
-	{ name: "cache-pin", description: "Pin a cache entry to prevent eviction" },
-	{ name: "cache-unpin", description: "Unpin a previously pinned cache entry" },
-	{ name: "cache-evict", description: "Evict a specific cache entry" },
-	{ name: "model-hint", description: "Set or clear the model hint for the current task" },
-	{ name: "archive", description: "Archive a thread to long-term storage" },
-	{ name: "hostinfo", description: "Display registered host information" },
-	{
-		name: "skill-activate",
-		description: "Activate a skill from /home/user/skills/{name}/SKILL.md",
-	},
-	{ name: "skill-list", description: "List skills with status, activations, and description" },
-	{ name: "skill-read", description: "Read a skill's SKILL.md content with status header" },
-	{ name: "skill-retire", description: "Retire a skill; scans tasks and creates advisories" },
-] as const;
 
 export function assembleContext(params: ContextParams): ContextAssemblyResult {
 	const {
@@ -997,14 +969,18 @@ Original output was too large for the context window. If you need the full conte
 	}
 
 	// Stable orientation section: available commands, current model, host identity
-	const commandList = AVAILABLE_COMMANDS.map((c) => `  ${c.name} — ${c.description}`).join("\n");
+	const registry = getCommandRegistry();
+	const commandList = [...registry]
+		.sort((a, b) => a.name.localeCompare(b.name))
+		.map((c) => `  ${c.name} — ${c.description}`)
+		.join("\n");
 	const orientationLines: string[] = [
 		"## Orientation",
 		"",
 		"### Available Commands",
 		commandList,
 		"",
-		"Run `commands` to list all commands (including MCP tools), or `commands <name>` for detailed syntax.",
+		"Run `<cmd> --help` for details on any command.",
 		"",
 		`### Host Identity\nHost: ${hostName || "unknown"}\nSite ID: ${siteId || "unknown"}`,
 	];

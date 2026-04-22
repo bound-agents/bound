@@ -5,7 +5,9 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
+import type { CommandDefinition } from "@bound/sandbox";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
+import { getCommandRegistry, setCommandRegistry } from "../commands/help";
 import { assembleContext, estimateContentLength, formatTimestamp } from "../context-assembly";
 
 describe("Context Assembly Pipeline", () => {
@@ -6391,6 +6393,134 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			// Cleanup
 			db.run("DELETE FROM messages WHERE thread_id = ?", [testThreadId]);
 			db.run("DELETE FROM threads WHERE id = ?", [testThreadId]);
+		});
+	});
+
+	describe("orientation block command registry", () => {
+		let savedRegistry: readonly CommandDefinition[];
+
+		beforeAll(() => {
+			// Save the current registry state to restore after tests
+			savedRegistry = getCommandRegistry();
+		});
+
+		afterAll(() => {
+			// Restore the registry to its previous state to avoid polluting other tests
+			setCommandRegistry([...savedRegistry]);
+		});
+
+		it("command-discovery-redesign.AC3.1: new command appears in orientation block without editing context-assembly.ts", () => {
+			// Create a test command
+			const testCommand: CommandDefinition = {
+				name: "test-cmd",
+				description: "A test command",
+				args: [],
+				handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+			};
+
+			// Register it via setCommandRegistry
+			setCommandRegistry([testCommand]);
+
+			// Call assembleContext and get orientation system message
+			const { messages } = assembleContext({
+				db,
+				threadId,
+				userId,
+			});
+
+			const systemMessages = messages.filter((m) => m.role === "system");
+			const orientationMsg = systemMessages.find(
+				(m) => typeof m.content === "string" && m.content.includes("## Orientation"),
+			);
+
+			expect(orientationMsg).toBeDefined();
+			const orientationContent = orientationMsg?.content;
+			expect(typeof orientationContent).toBe("string");
+
+			// The test command must appear in the orientation block
+			expect((orientationContent as string).includes("test-cmd — A test command")).toBe(true);
+		});
+
+		it("command-discovery-redesign.AC3.2: MCP commands appear alphabetically sorted with built-ins", () => {
+			// Create a mix of built-in and MCP-style commands
+			const commands: CommandDefinition[] = [
+				{
+					name: "atproto",
+					description: "MCP server exposing 5 tools",
+					customHelp: true,
+					args: [],
+					handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+				},
+				{
+					name: "query",
+					description: "Execute a SELECT query",
+					args: [],
+					handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+				},
+			];
+
+			// Register them
+			setCommandRegistry(commands);
+
+			// Call assembleContext
+			const { messages } = assembleContext({
+				db,
+				threadId,
+				userId,
+			});
+
+			const systemMessages = messages.filter((m) => m.role === "system");
+			const orientationMsg = systemMessages.find(
+				(m) => typeof m.content === "string" && m.content.includes("## Orientation"),
+			);
+
+			expect(orientationMsg).toBeDefined();
+			const orientationContent = orientationMsg?.content as string;
+
+			// Both commands must appear
+			expect(orientationContent.includes("atproto")).toBe(true);
+			expect(orientationContent.includes("query")).toBe(true);
+
+			// atproto must come before query (alphabetical sort)
+			const atprotoIndex = orientationContent.indexOf("atproto");
+			const queryIndex = orientationContent.indexOf("query");
+			expect(atprotoIndex < queryIndex).toBe(true);
+		});
+
+		it("command-discovery-redesign.AC3.3: footer references <cmd> --help instead of commands", () => {
+			// Register a test command
+			const testCommand: CommandDefinition = {
+				name: "test",
+				description: "A test",
+				args: [],
+				handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+			};
+
+			setCommandRegistry([testCommand]);
+
+			// Call assembleContext
+			const { messages } = assembleContext({
+				db,
+				threadId,
+				userId,
+			});
+
+			const systemMessages = messages.filter((m) => m.role === "system");
+			const orientationMsg = systemMessages.find(
+				(m) => typeof m.content === "string" && m.content.includes("## Orientation"),
+			);
+
+			expect(orientationMsg).toBeDefined();
+			const orientationContent = orientationMsg?.content as string;
+
+			// Must contain the new footer with <cmd> --help
+			expect(orientationContent.includes("Run `<cmd> --help` for details on any command.")).toBe(
+				true,
+			);
+
+			// Must NOT contain the old commands references
+			expect(orientationContent.includes("commands <name>")).toBe(false);
+			expect(orientationContent.includes("Run `commands`")).toBe(false);
 		});
 	});
 });
