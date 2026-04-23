@@ -19,11 +19,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	acknowledgeBatch,
+	acknowledgeClientToolCall,
 	applySchema,
 	claimPending,
 	createDatabase,
+	enqueueClientToolCall,
 	enqueueMessage,
+	enqueueToolResult,
 	hasPending,
+	hasPendingClientToolCalls,
 	insertRow,
 	resetProcessing,
 } from "@bound/core";
@@ -427,6 +431,153 @@ describe("Dispatch Queue Wiring", () => {
 			eventBus.emit("agent:cancel", { thread_id: threadId });
 
 			expect(cancelledThreadId).toBe(threadId);
+		});
+	});
+
+	// -------------------------------------------------------------------
+	// Client tool result barrier
+	//
+	// When a single tool_call turn dispatches multiple client tools in
+	// parallel, their results arrive independently. The message:created
+	// handler must NOT fire handleThread on the first arrival — it must
+	// wait until EVERY outstanding client_tool_call for the thread has
+	// been acknowledged. Otherwise the agent loop resumes with an
+	// incomplete context and later stragglers land after the next
+	// tool_call turn, poisoning context assembly and triggering
+	// Bedrock tool_use_id_mismatch on the subsequent send.
+	// -------------------------------------------------------------------
+	describe("client tool result barrier", () => {
+		function insertToolResultMessage(threadId: string, callId: string): string {
+			const msgId = randomUUID();
+			const now = new Date().toISOString();
+			insertRow(
+				db,
+				"messages",
+				{
+					id: msgId,
+					thread_id: threadId,
+					role: "tool_result",
+					content: JSON.stringify([{ type: "tool_result", tool_use_id: callId, content: "ok" }]),
+					model_id: null,
+					tool_name: null,
+					created_at: now,
+					modified_at: now,
+					host_origin: "localhost",
+					deleted: 0,
+				},
+				siteId,
+			);
+			return msgId;
+		}
+
+		/**
+		 * Replicates the message:created handler logic from server.ts for
+		 * tool_result rows: only resume if no client tool calls remain
+		 * outstanding.
+		 */
+		function shouldResumeOnToolResult(threadId: string): boolean {
+			return !hasPendingClientToolCalls(db, threadId);
+		}
+
+		it("does not resume when one of two parallel client tool calls is still pending", () => {
+			const { threadId } = createThread();
+
+			// Simulate turn 1: two client tool calls dispatched in parallel.
+			const entryA = enqueueClientToolCall(
+				db,
+				threadId,
+				{ call_id: "call-A", tool_name: "run_bash", arguments: { cmd: "fast" } },
+				"ws-conn-1",
+			);
+			enqueueClientToolCall(
+				db,
+				threadId,
+				{ call_id: "call-B", tool_name: "run_bash", arguments: { cmd: "slow" } },
+				"ws-conn-1",
+			);
+
+			// Fast result for call-A lands first: ack + enqueue tool_result.
+			acknowledgeClientToolCall(db, entryA);
+			insertToolResultMessage(threadId, "call-A");
+			enqueueToolResult(db, threadId, "call-A");
+
+			// Barrier must hold — call-B is still outstanding.
+			expect(hasPendingClientToolCalls(db, threadId)).toBe(true);
+			expect(shouldResumeOnToolResult(threadId)).toBe(false);
+		});
+
+		it("resumes only after the final client tool call is acknowledged", () => {
+			const { threadId } = createThread();
+
+			const entryA = enqueueClientToolCall(
+				db,
+				threadId,
+				{ call_id: "call-A", tool_name: "run_bash", arguments: { cmd: "fast" } },
+				"ws-conn-1",
+			);
+			const entryB = enqueueClientToolCall(
+				db,
+				threadId,
+				{ call_id: "call-B", tool_name: "run_bash", arguments: { cmd: "slow" } },
+				"ws-conn-1",
+			);
+
+			// First result arrives, barrier holds.
+			acknowledgeClientToolCall(db, entryA);
+			insertToolResultMessage(threadId, "call-A");
+			enqueueToolResult(db, threadId, "call-A");
+			expect(shouldResumeOnToolResult(threadId)).toBe(false);
+
+			// Second result arrives, barrier clears.
+			acknowledgeClientToolCall(db, entryB);
+			insertToolResultMessage(threadId, "call-B");
+			enqueueToolResult(db, threadId, "call-B");
+			expect(hasPendingClientToolCalls(db, threadId)).toBe(false);
+			expect(shouldResumeOnToolResult(threadId)).toBe(true);
+		});
+
+		it("single client tool call resumes immediately on its result", () => {
+			const { threadId } = createThread();
+
+			const entryA = enqueueClientToolCall(
+				db,
+				threadId,
+				{ call_id: "call-solo", tool_name: "run_bash", arguments: { cmd: "x" } },
+				"ws-conn-1",
+			);
+
+			acknowledgeClientToolCall(db, entryA);
+			insertToolResultMessage(threadId, "call-solo");
+			enqueueToolResult(db, threadId, "call-solo");
+
+			expect(shouldResumeOnToolResult(threadId)).toBe(true);
+		});
+
+		it("user messages bypass the barrier even when client tools are outstanding", () => {
+			// User messages are not gated by pending client tool calls —
+			// they cancel-and-redispatch; the agent loop will abort the
+			// outstanding tool calls on its own.
+			const { threadId } = createThread();
+
+			enqueueClientToolCall(
+				db,
+				threadId,
+				{ call_id: "call-X", tool_name: "run_bash", arguments: { cmd: "y" } },
+				"ws-conn-1",
+			);
+
+			const userMsgId = insertUserMessage(threadId, "hello again");
+
+			// Replicate handler: user branch ignores the barrier.
+			const message = db.query("SELECT * FROM messages WHERE id = ?").get(userMsgId) as {
+				role: string;
+			};
+			if (message.role === "user") {
+				enqueueMessage(db, userMsgId, threadId);
+			}
+
+			expect(hasPendingClientToolCalls(db, threadId)).toBe(true);
+			expect(getDispatchStatus(userMsgId)).toBe("pending");
 		});
 	});
 

@@ -14,6 +14,7 @@ import {
 	enqueueMessage,
 	enqueueNotification,
 	expireClientToolCalls,
+	hasPendingClientToolCalls,
 	insertRow,
 	updateRow,
 	writeOutbox,
@@ -525,7 +526,21 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 			// Trigger handleThread for user messages AND tool_result messages.
 			// tool_result entries wake the agent loop to resume after client tool execution.
+			//
+			// Barrier: when a tool_call turn dispatches multiple client tools in
+			// parallel, their results arrive independently. Firing handleThread on
+			// the first arrival would re-enter inference before the remaining
+			// results land, letting the model emit a next turn whose tool_calls
+			// get interleaved with straggler tool_results. That poisons context
+			// assembly and triggers Bedrock tool_use_id_mismatch on the next send.
+			// Only resume once every outstanding client tool call for the thread
+			// has been acknowledged.
 			if (message.role === "user" || message.role === "tool_result") {
+				if (message.role === "tool_result" && hasPendingClientToolCalls(appContext.db, thread_id)) {
+					// Another client tool result is still outstanding for this
+					// turn; defer resume until the last one acks.
+					return;
+				}
 				handleThread(thread_id).catch((err) =>
 					appContext.logger.error("[agent] Unhandled dispatch error", {
 						error: formatError(err),
