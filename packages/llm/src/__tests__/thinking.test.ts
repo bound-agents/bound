@@ -303,7 +303,7 @@ describe("BedrockDriver extended thinking", () => {
 		sendSpy.mockRestore();
 	});
 
-	it("includes performanceConfig in command when thinking is set", async () => {
+	it("includes additionalModelRequestFields.thinking in command when thinking is set", async () => {
 		sendSpy.mockImplementation(() => {
 			return Promise.resolve(
 				createMockBedrockStream([{ metadata: { usage: { inputTokens: 10, outputTokens: 5 } } }]),
@@ -325,12 +325,20 @@ describe("BedrockDriver extended thinking", () => {
 
 		expect(sendSpy.mock.calls).toHaveLength(1);
 		const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
-		expect(commandInput.performanceConfig).toEqual({
+		// Bedrock Converse routes Anthropic-specific params through
+		// additionalModelRequestFields (a freeform DocumentType bag).
+		// The schema here is Anthropic's native one: budget_tokens (underscore),
+		// NOT budgetTokens (which would be the AWS-style camelCase the SDK never
+		// actually accepted for thinking).
+		expect(commandInput.additionalModelRequestFields).toEqual({
 			thinking: {
 				type: "enabled",
-				budgetTokens: 8000,
+				budget_tokens: 8000,
 			},
 		});
+		// performanceConfig is for latency tier selection only; must not leak
+		// thinking params into it.
+		expect(commandInput.performanceConfig).toBeUndefined();
 	});
 
 	it("omits temperature from inferenceConfig when thinking is enabled", async () => {
@@ -363,7 +371,7 @@ describe("BedrockDriver extended thinking", () => {
 		expect(inferenceConfig?.maxTokens).toBe(4096);
 	});
 
-	it("does not include performanceConfig when thinking is not set", async () => {
+	it("does not include additionalModelRequestFields when thinking is not set", async () => {
 		sendSpy.mockImplementation(() =>
 			Promise.resolve(
 				createMockBedrockStream([{ metadata: { usage: { inputTokens: 10, outputTokens: 5 } } }]),
@@ -383,30 +391,34 @@ describe("BedrockDriver extended thinking", () => {
 		);
 
 		const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
+		expect(commandInput.additionalModelRequestFields).toBeUndefined();
 		expect(commandInput.performanceConfig).toBeUndefined();
 	});
 
-	it("parses thinking blocks from Bedrock ConverseStream into thinking StreamChunks", async () => {
+	it("parses reasoningContent deltas from Bedrock ConverseStream into thinking StreamChunks", async () => {
 		sendSpy.mockImplementation(() =>
 			Promise.resolve(
 				createMockBedrockStream([
-					// Thinking block
+					// Reasoning content deltas. Per the Bedrock Converse stream spec,
+					// reasoning streams as contentBlockDelta events with
+					// delta.reasoningContent — there is no contentBlockStart variant
+					// for reasoning, and the field is reasoningContent (not thinking).
 					{
-						contentBlockStart: {
+						contentBlockDelta: {
 							contentBlockIndex: 0,
-							start: { thinking: {} },
+							delta: { reasoningContent: { text: "Analyzing the " } },
 						},
 					},
 					{
 						contentBlockDelta: {
 							contentBlockIndex: 0,
-							delta: { thinking: { text: "Analyzing the " } },
+							delta: { reasoningContent: { text: "problem..." } },
 						},
 					},
 					{
 						contentBlockDelta: {
 							contentBlockIndex: 0,
-							delta: { thinking: { text: "problem..." } },
+							delta: { reasoningContent: { signature: "sig-abc123" } },
 						},
 					},
 					{ contentBlockStop: { contentBlockIndex: 0 } },
@@ -436,11 +448,19 @@ describe("BedrockDriver extended thinking", () => {
 		);
 
 		const thinkingChunks = chunks.filter((c) => c.type === "thinking");
-		expect(thinkingChunks.length).toBe(2);
+		// Two text deltas + one signature delta = three thinking chunks.
+		expect(thinkingChunks.length).toBe(3);
 		expect(thinkingChunks[0].type === "thinking" && thinkingChunks[0].content).toBe(
 			"Analyzing the ",
 		);
 		expect(thinkingChunks[1].type === "thinking" && thinkingChunks[1].content).toBe("problem...");
+		// Signature chunk: empty content, signature field populated.
+		expect(
+			thinkingChunks[2].type === "thinking" && thinkingChunks[2].content,
+		).toBe("");
+		expect(
+			thinkingChunks[2].type === "thinking" && thinkingChunks[2].signature,
+		).toBe("sig-abc123");
 
 		const textChunks = chunks.filter((c) => c.type === "text");
 		expect(textChunks.length).toBe(1);

@@ -309,12 +309,20 @@ export function toBedrockRequest(input: ConvertInput): RawBedrockRequest {
 				...(params.max_tokens && { maxTokens: params.max_tokens }),
 			};
 
-	// ─── Performance config (extended thinking only) ─────────────────────────
-	const performanceConfig = params.thinking
+	// ─── Additional model request fields (extended thinking only) ───────────
+	// Bedrock Converse routes Anthropic-specific knobs through
+	// `additionalModelRequestFields`. Shape is Anthropic's native one, so
+	// `budget_tokens` (snake_case), NOT `budgetTokens`. Bedrock forwards this
+	// unchanged to the Claude API.
+	//
+	// Previously we sent this as `performanceConfig.thinking.budgetTokens`,
+	// which Bedrock silently ignored — the model would then emit reasoning as
+	// inline "[Thinking: …]" text instead of via the reasoningContent channel.
+	const additionalModelRequestFields = params.thinking
 		? {
 				thinking: {
 					type: "enabled" as const,
-					budgetTokens: params.thinking.budget_tokens,
+					budget_tokens: params.thinking.budget_tokens,
 				},
 			}
 		: undefined;
@@ -324,7 +332,7 @@ export function toBedrockRequest(input: ConvertInput): RawBedrockRequest {
 		messages,
 		system: systemBlocks,
 		inferenceConfig,
-		performanceConfig,
+		additionalModelRequestFields,
 		toolConfig,
 	};
 }

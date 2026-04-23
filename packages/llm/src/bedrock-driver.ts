@@ -61,8 +61,11 @@ export class BedrockDriver implements LLMBackend {
 					maxTokens: validated.inferenceConfig.maxTokens,
 				}),
 			},
-			...(validated.performanceConfig && {
-				performanceConfig: validated.performanceConfig as unknown as Record<string, unknown>,
+			...(validated.additionalModelRequestFields && {
+				additionalModelRequestFields: validated.additionalModelRequestFields as unknown as Record<
+					string,
+					unknown
+				>,
 			}),
 		} as ConstructorParameters<typeof ConverseStreamCommand>[0]);
 
@@ -96,7 +99,6 @@ export class BedrockDriver implements LLMBackend {
 		// Track which content block index is a tool use so we can emit tool_use_end
 		// when the corresponding contentBlockStop arrives.
 		const toolUseIndexToId = new Map<number, string>();
-		const thinkingBlockIndices = new Set<number>();
 		let outputText = "";
 
 		try {
@@ -116,24 +118,29 @@ export class BedrockDriver implements LLMBackend {
 						const id = toolUseId ?? "";
 						toolUseIndexToId.set(contentBlockIndex ?? 0, id);
 						yield { type: "tool_use_start", id, name: name ?? "" };
-					} else if ((start as unknown as Record<string, unknown>)?.thinking !== undefined) {
-						thinkingBlockIndices.add(contentBlockIndex ?? 0);
 					}
+					// Note: Bedrock Converse does NOT emit contentBlockStart for
+					// reasoning blocks. Reasoning shows up purely as contentBlockDelta
+					// events with delta.reasoningContent, and no tracking flag is
+					// needed — the delta shape itself is the discriminator.
 				} else if (event.contentBlockDelta) {
 					const { contentBlockIndex, delta } = event.contentBlockDelta;
 					const deltaRecord = delta as unknown as Record<string, unknown> | undefined;
-					// Handle thinking deltas (text and signature)
-					if (
-						thinkingBlockIndices.has(contentBlockIndex ?? 0) &&
-						deltaRecord?.thinking !== undefined
-					) {
-						const thinkingDelta = deltaRecord.thinking as
-							| { text?: string; signature?: string }
-							| undefined;
-						if (thinkingDelta?.signature) {
-							yield { type: "thinking", content: "", signature: thinkingDelta.signature };
-						} else if (thinkingDelta?.text) {
-							yield { type: "thinking", content: thinkingDelta.text };
+					// Reasoning deltas. Per the Bedrock Converse stream spec:
+					//   delta.reasoningContent: { text?, signature?, redactedContent? }
+					// Text and signature arrive as separate deltas on the same block.
+					// Redacted content is a Uint8Array we pass through as a
+					// thinking chunk with empty content and no signature (the
+					// downstream assembler preserves the raw bytes via a
+					// different path — for now we just signal a thinking tick).
+					const reasoning = deltaRecord?.reasoningContent as
+						| { text?: string; signature?: string; redactedContent?: Uint8Array }
+						| undefined;
+					if (reasoning !== undefined) {
+						if (reasoning.signature) {
+							yield { type: "thinking", content: "", signature: reasoning.signature };
+						} else if (reasoning.text !== undefined) {
+							yield { type: "thinking", content: reasoning.text };
 						}
 					} else if (delta?.text !== undefined) {
 						outputText += delta.text;

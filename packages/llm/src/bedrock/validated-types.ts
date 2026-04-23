@@ -29,9 +29,9 @@
 
 import type { Branded } from "./brand";
 import type {
+	AdditionalModelRequestFields,
 	AssistantMessage,
 	InferenceConfig,
-	PerformanceConfig,
 	SystemBlock,
 	ToolName,
 	UserMessage,
@@ -191,13 +191,17 @@ export interface BedrockValidatedRequest {
 	readonly system?: readonly SystemBlock[];
 	readonly inferenceConfig: InferenceConfig;
 	/**
-	 * Performance configuration — only present when inferenceConfig.thinking
-	 * is true. The validator enforces this invariant; this interface doesn't
-	 * encode it structurally because doing so would require a second
-	 * discriminated union at the request level, which overcomplicates the
-	 * consumer API for one rarely-varied field.
+	 * Anthropic-specific additional request fields — only present when
+	 * inferenceConfig.thinking is true. Routes `thinking: { type, budget_tokens }`
+	 * through Converse's `additionalModelRequestFields` bag to the underlying
+	 * Claude API.
+	 *
+	 * The validator enforces the cross-invariant that this is only set when
+	 * inferenceConfig.thinking === true; this interface doesn't encode it
+	 * structurally because doing so would require a second discriminated union
+	 * at the request level, which overcomplicates the consumer API.
 	 */
-	readonly performanceConfig?: PerformanceConfig;
+	readonly additionalModelRequestFields?: AdditionalModelRequestFields;
 	readonly toolConfig?: {
 		readonly tools: readonly {
 			readonly toolSpec: {
@@ -211,9 +215,9 @@ export interface BedrockValidatedRequest {
 
 // Re-export element-level types for convenience.
 export type {
+	AdditionalModelRequestFields,
 	AssistantMessage,
 	InferenceConfig,
-	PerformanceConfig,
 	SystemBlock,
 	ToolName,
 	UserMessage,

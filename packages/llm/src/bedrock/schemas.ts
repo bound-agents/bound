@@ -219,21 +219,37 @@ export const InferenceConfigSchema = z.discriminatedUnion("thinking", [
 	InferenceConfigThinkingSchema,
 ]);
 
-// ─── Performance configuration (extended thinking) ──────────────────────────
+// ─── Additional model request fields (extended thinking) ────────────────────
 
 /**
- * PerformanceConfiguration for extended thinking. The `thinking` field is not
- * in the AWS SDK's public types but is accepted by the Converse API (same
- * pattern as CachePointBlock).
+ * Anthropic-specific request parameters that Bedrock Converse routes to the
+ * underlying Claude API via `additionalModelRequestFields` — a freeform
+ * `DocumentType` bag for provider-specific knobs that aren't in the Converse
+ * schema proper.
+ *
+ * For extended thinking, the shape is Anthropic's *native* one:
+ *
+ *   { thinking: { type: "enabled", budget_tokens: N } }
+ *
+ * Note `budget_tokens` (snake_case) — NOT `budgetTokens`. Bedrock forwards
+ * this payload unchanged to Claude, so the field names must match the
+ * Anthropic API, not AWS-style camelCase.
  *
  * Only present when InferenceConfig has `thinking: true`. The driver should
- * never emit performanceConfig without thinking, and the validator cross-checks
- * this at the request level.
+ * never emit additionalModelRequestFields without thinking, and the validator
+ * cross-checks this at the request level.
+ *
+ * Historical note: an earlier version of this schema used
+ * `performanceConfig.thinking.budgetTokens`, which was wrong on both axes —
+ * performanceConfig is for latency-tier selection (optimized vs. standard),
+ * not reasoning. The wrong shape was silently ignored by Bedrock, causing
+ * the model to emit "[Thinking: …]" as inline text instead of routing it
+ * through a proper reasoning channel.
  */
-export const PerformanceConfigSchema = z.object({
+export const AdditionalModelRequestFieldsSchema = z.object({
 	thinking: z.object({
 		type: z.literal("enabled"),
-		budgetTokens: z.number().int().positive(),
+		budget_tokens: z.number().int().positive(),
 	}),
 });
 
@@ -259,5 +275,5 @@ export type ValidatedMessage = z.infer<typeof ValidatedMessageSchema>;
 
 export type SystemBlock = z.infer<typeof SystemBlockSchema>;
 export type InferenceConfig = z.infer<typeof InferenceConfigSchema>;
-export type PerformanceConfig = z.infer<typeof PerformanceConfigSchema>;
+export type AdditionalModelRequestFields = z.infer<typeof AdditionalModelRequestFieldsSchema>;
 export type CachePointBlock = z.infer<typeof CachePointBlockSchema>;

@@ -22,12 +22,12 @@ import {
 	type BedrockValidationErrorCode,
 } from "./errors";
 import {
+	type AdditionalModelRequestFields,
+	AdditionalModelRequestFieldsSchema,
 	type AssistantMessage,
 	AssistantMessageSchema,
 	type InferenceConfig,
 	InferenceConfigSchema,
-	type PerformanceConfig,
-	PerformanceConfigSchema,
 	type SystemBlock,
 	SystemBlockSchema,
 	type ToolName,
@@ -90,7 +90,7 @@ export interface RawBedrockRequest {
 	messages: unknown;
 	system?: unknown;
 	inferenceConfig: unknown;
-	performanceConfig?: unknown;
+	additionalModelRequestFields?: unknown;
 	toolConfig?: unknown;
 }
 
@@ -134,19 +134,20 @@ export function validateBedrockRequest(raw: RawBedrockRequest): BedrockValidated
 	// ── toolConfig (optional) ───────────────────────────────────────────────
 	const validatedToolConfig = validateToolConfig(raw.toolConfig, errors);
 
-	// ── performanceConfig (optional, thinking-only) ─────────────────────────
-	let validatedPerformance: PerformanceConfig | undefined;
-	if (raw.performanceConfig !== undefined && raw.performanceConfig !== null) {
-		const parsed = PerformanceConfigSchema.safeParse(raw.performanceConfig);
+	// ── additionalModelRequestFields (optional, thinking-only) ──────────────
+	let validatedAdditional: AdditionalModelRequestFields | undefined;
+	if (raw.additionalModelRequestFields !== undefined && raw.additionalModelRequestFields !== null) {
+		const parsed = AdditionalModelRequestFieldsSchema.safeParse(raw.additionalModelRequestFields);
 		if (parsed.success) {
-			validatedPerformance = parsed.data;
-			// Cross-invariant: performanceConfig.thinking requires inferenceConfig.thinking=true.
-			// If inferenceConfig hasn't validated yet, defer — the main error set will catch it.
+			validatedAdditional = parsed.data;
+			// Cross-invariant: additionalModelRequestFields.thinking requires
+			// inferenceConfig.thinking=true. If inferenceConfig hasn't validated
+			// yet, defer — the main error set will catch it.
 			if (validatedInference && validatedInference.thinking !== true) {
 				errors.push(
 					detail(
 						"temperature_with_thinking",
-						"performanceConfig.thinking set but inferenceConfig.thinking is false; these must agree",
+						"additionalModelRequestFields.thinking set but inferenceConfig.thinking is false; these must agree",
 					),
 				);
 			}
@@ -154,7 +155,7 @@ export function validateBedrockRequest(raw: RawBedrockRequest): BedrockValidated
 			errors.push(
 				detail(
 					"invalid_inference_config",
-					`performanceConfig failed validation: ${parsed.error.message}`,
+					`additionalModelRequestFields failed validation: ${parsed.error.message}`,
 				),
 			);
 		}
@@ -182,7 +183,7 @@ export function validateBedrockRequest(raw: RawBedrockRequest): BedrockValidated
 		system: validatedSystem,
 		// biome-ignore lint/style/noNonNullAssertion: errors would have accumulated above if undefined
 		inferenceConfig: validatedInference!,
-		performanceConfig: validatedPerformance,
+		additionalModelRequestFields: validatedAdditional,
 		toolConfig: validatedToolConfig,
 	};
 }
