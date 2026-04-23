@@ -4,7 +4,7 @@ import {
 	type ConverseStreamCommandOutput,
 } from "@aws-sdk/client-bedrock-runtime";
 import type { Message, SystemContentBlock, Tool } from "@aws-sdk/client-bedrock-runtime";
-import { formatError } from "@bound/shared";
+import { createLogger, formatError } from "@bound/shared";
 import { CryptoHasher } from "bun";
 import { toBedrockRequest } from "./bedrock/convert";
 import { validateBedrockRequest } from "./bedrock/validate";
@@ -25,6 +25,7 @@ import { LLMError } from "./types";
 // JSON (large — use only for targeted debugging).
 
 const CACHE_DEBUG = process.env.BOUND_DEBUG_BEDROCK_CACHE;
+const cacheLog = createLogger("@bound/llm", "bedrock-cache");
 let cacheDebugSeq = 0;
 
 /** SHA-256 fingerprint of a JSON-serializable value, truncated to 12 hex chars. */
@@ -115,18 +116,15 @@ function emitCacheDebug(raw: {
 		},
 	};
 
-	console.error(
-		`[bedrock-cache-debug] #${seq} msgs=${messages.length} cp=${cpIdx} ` +
-			`sys=${entry.fingerprints.system ?? "-"} ` +
-			`prefix=${entry.fingerprints.prefixMessages} ` +
-			`suffix=${entry.fingerprints.suffixMessages} ` +
-			`tools=${entry.fingerprints.toolConfig ?? "-"} ` +
-			`inf=${entry.fingerprints.inferenceConfig} ` +
-			`full=${entry.fingerprints.full}`,
-	);
+	cacheLog.debug("cache fingerprints", {
+		seq,
+		messageCount: messages.length,
+		cachePointIdx: cpIdx,
+		...entry.fingerprints,
+	});
 
 	if (CACHE_DEBUG === "full") {
-		console.error(`[bedrock-cache-debug] #${seq} raw=${stableStringify(raw)}`);
+		cacheLog.debug("raw request", { seq, raw: stableStringify(raw) });
 	}
 
 	return entry;

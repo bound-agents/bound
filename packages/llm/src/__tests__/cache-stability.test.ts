@@ -539,39 +539,26 @@ describe("cache stability: debug utilities", () => {
 
 	it("emitCacheDebug returns structured entry with fingerprints", () => {
 		const raw = toBedrockRequest(makeInput({ tools: SAMPLE_TOOLS }));
-		// Suppress console.error during test
-		const origError = console.error;
-		console.error = () => {};
-		try {
-			const entry = emitCacheDebug(raw);
-			expect(entry.seq).toBeGreaterThan(0);
-			expect(entry.messageCount).toBe(3);
-			expect(entry.cachePointIdx).toBe(1);
-			expect(entry.fingerprints.system).not.toBeNull();
-			expect(entry.fingerprints.prefixMessages).toHaveLength(12);
-			expect(entry.fingerprints.suffixMessages).toHaveLength(12);
-			expect(entry.fingerprints.toolConfig).not.toBeNull();
-			expect(entry.fingerprints.full).toHaveLength(12);
-		} finally {
-			console.error = origError;
-		}
+		const entry = emitCacheDebug(raw);
+		expect(entry.seq).toBeGreaterThan(0);
+		expect(entry.messageCount).toBe(3);
+		expect(entry.cachePointIdx).toBe(1);
+		expect(entry.fingerprints.system).not.toBeNull();
+		expect(entry.fingerprints.prefixMessages).toHaveLength(12);
+		expect(entry.fingerprints.suffixMessages).toHaveLength(12);
+		expect(entry.fingerprints.toolConfig).not.toBeNull();
+		expect(entry.fingerprints.full).toHaveLength(12);
 	});
 
 	it("emitCacheDebug fingerprints are stable for same input", () => {
 		const raw = toBedrockRequest(makeInput());
-		const origError = console.error;
-		console.error = () => {};
-		try {
-			const a = emitCacheDebug(raw);
-			const b = emitCacheDebug(raw);
-			expect(a.fingerprints.system).toBe(b.fingerprints.system);
-			expect(a.fingerprints.prefixMessages).toBe(b.fingerprints.prefixMessages);
-			expect(a.fingerprints.suffixMessages).toBe(b.fingerprints.suffixMessages);
-			expect(a.fingerprints.toolConfig).toBe(b.fingerprints.toolConfig);
-			expect(a.fingerprints.full).toBe(b.fingerprints.full);
-		} finally {
-			console.error = origError;
-		}
+		const a = emitCacheDebug(raw);
+		const b = emitCacheDebug(raw);
+		expect(a.fingerprints.system).toBe(b.fingerprints.system);
+		expect(a.fingerprints.prefixMessages).toBe(b.fingerprints.prefixMessages);
+		expect(a.fingerprints.suffixMessages).toBe(b.fingerprints.suffixMessages);
+		expect(a.fingerprints.toolConfig).toBe(b.fingerprints.toolConfig);
+		expect(a.fingerprints.full).toBe(b.fingerprints.full);
 	});
 });
 
