@@ -357,8 +357,23 @@ Original output was too large for the context window. If you need the full conte
 	// User messages and tool_call messages are kept intact; assistant and tool_result
 	// messages are replaced with compact stubs.
 	// Also injects the thread summary as a context anchor for compacted history.
+	// The recent window preserves the last N messages intact (no tool_result
+	// compaction, no thinking-block stripping). It's the agent's working memory
+	// for the current turn.
+	//
+	// A fixed default of 20 is too large for small-context backends: on a 49K
+	// window with dense tool-using threads, 20 uncompacted messages can easily
+	// consume 15-20K tokens (tool_result payloads are often multi-KB each).
+	// That leaves too little budget for system prompt + tools + compacted
+	// history + enrichment.
+	//
+	// Scale with contextWindow: allot roughly one message per 2.5K tokens of
+	// window, clamped to [4, 20]. So 49K → 19, 32K → 12, 16K → 6, 200K → 20
+	// (still capped at the historical default — larger windows don't need
+	// more recent working memory, they just tolerate it).
 	if (params.compactToolResults && messages.length > 0) {
-		const recentWindow = params.compactRecentWindow ?? 20;
+		const defaultRecentWindow = Math.max(4, Math.min(20, Math.floor(contextWindow / 2500)));
+		const recentWindow = params.compactRecentWindow ?? defaultRecentWindow;
 		const compactionBoundary = Math.max(0, messages.length - recentWindow);
 		const COLD_COMPACTION_THRESHOLD = 500;
 
@@ -386,10 +401,15 @@ Original output was too large for the context window. If you need the full conte
 		// Compact old tool results (everything before the recent window)
 		// The boundary shifts by 1 if we prepended the summary message.
 		// - tool_result: replace with pointer + short preview
+		// - tool_call: strip `thinking` blocks; keep `tool_use` block(s) intact
+		//   (tool_use is required for protocol-level tool_call/tool_result pairing;
+		//   thinking blocks are the model's own reasoning and the model does not
+		//   need to re-read its stale CoT on cold turns — the results are in
+		//   tool_result). On dense task threads with extended-thinking models,
+		//   this reclaims the single largest chunk of context.
 		// - assistant: NOT compacted — the LLM mimics the compaction format,
 		//   generating fake retrieval pointers instead of real responses
-		// - user / tool_call: kept intact (user msgs are ground truth; tool_call
-		//   messages are already compact)
+		// - user: kept intact (ground truth)
 		const adjustedBoundary = thread?.summary ? compactionBoundary + 1 : compactionBoundary;
 		for (let i = 0; i < adjustedBoundary; i++) {
 			const msg = messages[i];
@@ -397,6 +417,26 @@ Original output was too large for the context window. If you need the full conte
 				const originalLength = msg.content.length;
 				const preview = safeSlice(msg.content, 0, 200).trimEnd();
 				msg.content = `[Result truncated from context — ${originalLength} chars. Retrieve with: query SELECT content FROM messages WHERE id='${msg.id}']\n${preview}`;
+			} else if (msg.role === "tool_call") {
+				// tool_call content is stored as a JSON-serialised ContentBlock[].
+				// Strip any `thinking` / `redacted_thinking` blocks, keep `tool_use`.
+				// Only rewrite if the parse succeeds AND we actually dropped something;
+				// otherwise leave the raw string alone (preserves non-JSON or
+				// already-compact representations).
+				try {
+					const parsed = JSON.parse(msg.content);
+					if (Array.isArray(parsed) && parsed.length > 0) {
+						const kept = parsed.filter(
+							(b: { type?: string }) =>
+								b && b.type !== "thinking" && b.type !== "redacted_thinking",
+						);
+						if (kept.length > 0 && kept.length < parsed.length) {
+							msg.content = JSON.stringify(kept);
+						}
+					}
+				} catch {
+					// Not JSON — leave as-is. Old rows may store plain strings.
+				}
 			}
 		}
 	}
@@ -1560,12 +1600,21 @@ Original output was too large for the context window. If you need the full conte
 		}
 	}
 
-	// Token count estimate via tiktoken cl100k_base encoding (includes suffix)
+	// Token count estimate via tiktoken cl100k_base encoding.
+	// IMPORTANT: include every component the server will bill against the
+	// context window — messages, system suffix, AND tool schemas. Omitting
+	// tools here was the root cause of multi-K overshoots on small-context
+	// backends: the gate saw ~content-only~ tokens, decided "fits", and
+	// shipped a payload that exceeded the real limit by exactly the tool
+	// schema size.
 	const suffixTokensForBudget = suffixContent ? countTokens(suffixContent) : 0;
+	const toolTokensForBudget = params.toolTokenEstimate ?? 0;
 	const totalTokens =
 		assembled.reduce((sum, msg) => {
 			return sum + countContentTokens(msg.content);
-		}, 0) + suffixTokensForBudget;
+		}, 0) +
+		suffixTokensForBudget +
+		toolTokensForBudget;
 
 	if (totalTokens > contextWindow) {
 		// Truncate history from front — token-aware backward fill.
