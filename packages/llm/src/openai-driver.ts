@@ -72,6 +72,11 @@ export function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 	const result: OpenAIMessage[] = [];
 
 	for (const msg of messages) {
+		// Skip cache role — it's a marker for drivers. Developer is passed through natively.
+		if (msg.role === "cache") {
+			continue;
+		}
+
 		// Handle array content blocks
 		if (Array.isArray(msg.content)) {
 			if (msg.role === "tool_call") {

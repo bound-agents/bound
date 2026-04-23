@@ -100,6 +100,11 @@ export function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] 
 	const result: AnthropicMessage[] = [];
 
 	for (const msg of messages) {
+		// Skip developer and cache roles — they're handled by drivers separately
+		if (msg.role === "developer" || msg.role === "cache") {
+			continue;
+		}
+
 		// Handle array content blocks
 		if (Array.isArray(msg.content)) {
 			if (msg.role === "tool_call") {

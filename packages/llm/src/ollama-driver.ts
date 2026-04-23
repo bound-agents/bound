@@ -60,73 +60,75 @@ interface OllamaStreamResponse {
 }
 
 export function toOllamaMessages(messages: LLMMessage[]): OllamaMessage[] {
-	return messages.map((msg) => {
-		// Handle array content blocks
-		if (Array.isArray(msg.content)) {
-			const textContent = extractTextFromBlocks(msg.content);
+	return messages
+		.filter((msg) => msg.role !== "developer" && msg.role !== "cache")
+		.map((msg) => {
+			// Handle array content blocks
+			if (Array.isArray(msg.content)) {
+				const textContent = extractTextFromBlocks(msg.content);
 
-			if (msg.role === "tool_call") {
-				const toolBlocks = msg.content.filter(
-					(block): block is Extract<typeof block, { type: "tool_use" }> =>
-						block.type === "tool_use",
-				);
-				// Extract thinking text from thinking blocks
-				const thinkingBlocks = msg.content.filter(
-					(block): block is Extract<typeof block, { type: "thinking" }> =>
-						block.type === "thinking",
-				);
-				const thinkingText =
-					thinkingBlocks.length > 0 ? thinkingBlocks.map((b) => b.thinking).join("") : undefined;
+				if (msg.role === "tool_call") {
+					const toolBlocks = msg.content.filter(
+						(block): block is Extract<typeof block, { type: "tool_use" }> =>
+							block.type === "tool_use",
+					);
+					// Extract thinking text from thinking blocks
+					const thinkingBlocks = msg.content.filter(
+						(block): block is Extract<typeof block, { type: "thinking" }> =>
+							block.type === "thinking",
+					);
+					const thinkingText =
+						thinkingBlocks.length > 0 ? thinkingBlocks.map((b) => b.thinking).join("") : undefined;
 
-				if (toolBlocks.length > 0) {
-					const toolCalls = toolBlocks.map((block) => ({
-						function: {
-							name: block.name,
-							arguments: JSON.stringify(block.input),
-						},
-					}));
-					return {
-						role: "assistant",
-						content: textContent,
-						thinking: thinkingText,
-						tool_calls: toolCalls,
-					};
+					if (toolBlocks.length > 0) {
+						const toolCalls = toolBlocks.map((block) => ({
+							function: {
+								name: block.name,
+								arguments: JSON.stringify(block.input),
+							},
+						}));
+						return {
+							role: "assistant",
+							content: textContent,
+							thinking: thinkingText,
+							tool_calls: toolCalls,
+						};
+					}
 				}
+
+				return {
+					role:
+						msg.role === "tool_result"
+							? "tool"
+							: msg.role === "tool_call"
+								? "assistant"
+								: (msg.role as "system" | "user" | "assistant"),
+					content: textContent,
+					tool_name: msg.role === "tool_result" ? msg.tool_use_id : undefined,
+				};
+			}
+
+			// Handle string content
+			if (msg.role === "tool_call") {
+				return {
+					role: "assistant",
+					content: msg.content,
+				};
+			}
+
+			if (msg.role === "tool_result") {
+				return {
+					role: "tool",
+					content: msg.content,
+					tool_name: msg.tool_use_id,
+				};
 			}
 
 			return {
-				role:
-					msg.role === "tool_result"
-						? "tool"
-						: msg.role === "tool_call"
-							? "assistant"
-							: (msg.role as "system" | "user" | "assistant"),
-				content: textContent,
-				tool_name: msg.role === "tool_result" ? msg.tool_use_id : undefined,
-			};
-		}
-
-		// Handle string content
-		if (msg.role === "tool_call") {
-			return {
-				role: "assistant",
+				role: msg.role as "system" | "user" | "assistant",
 				content: msg.content,
 			};
-		}
-
-		if (msg.role === "tool_result") {
-			return {
-				role: "tool",
-				content: msg.content,
-				tool_name: msg.tool_use_id,
-			};
-		}
-
-		return {
-			role: msg.role as "system" | "user" | "assistant",
-			content: msg.content,
-		};
-	});
+		});
 }
 
 function* emitChunkEvents(
