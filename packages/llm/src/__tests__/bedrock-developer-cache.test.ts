@@ -11,7 +11,7 @@ describe("Bedrock developer and cache role mapping", () => {
 	describe("AC4.5 — developer role handling", () => {
 		it("prepends developer message to next user message in system-context wrapper", () => {
 			const messages: LLMMessage[] = [
-				{ role: "developer" as "user", content: "This is system context" },
+				{ role: "developer", content: "This is system context" },
 				{ role: "user", content: "What is 2+2?" },
 			];
 
@@ -34,7 +34,7 @@ describe("Bedrock developer and cache role mapping", () => {
 		it("developer message with no subsequent user message creates new user message", () => {
 			const messages: LLMMessage[] = [
 				{ role: "user", content: "Start" },
-				{ role: "developer" as "user", content: "Ending context" },
+				{ role: "developer", content: "Ending context" },
 			];
 
 			const result = toBedrockMessages(messages);
@@ -54,8 +54,8 @@ describe("Bedrock developer and cache role mapping", () => {
 
 		it("multiple consecutive developer messages buffered to next user message", () => {
 			const messages: LLMMessage[] = [
-				{ role: "developer" as "user", content: "Context line 1" },
-				{ role: "developer" as "user", content: "Context line 2" },
+				{ role: "developer", content: "Context line 1" },
+				{ role: "developer", content: "Context line 2" },
 				{ role: "user", content: "Question" },
 			];
 
@@ -80,7 +80,7 @@ describe("Bedrock developer and cache role mapping", () => {
 		it("developer content with ContentBlock array extracts text properly", () => {
 			const messages: LLMMessage[] = [
 				{
-					role: "developer" as "user",
+					role: "developer",
 					content: [
 						{ type: "text" as const, text: "Extracted from blocks" },
 						{ type: "text" as const, text: "Second block" },
@@ -105,7 +105,7 @@ describe("Bedrock developer and cache role mapping", () => {
 		it("cache message appends cachePoint block to previous message", () => {
 			const messages: LLMMessage[] = [
 				{ role: "user", content: "First message" },
-				{ role: "cache" as "user", content: "" },
+				{ role: "cache", content: "" },
 				{ role: "assistant", content: "Response" },
 				{ role: "user", content: "Second message" },
 			];
@@ -125,7 +125,7 @@ describe("Bedrock developer and cache role mapping", () => {
 
 		it("cache message with no previous message is dropped silently", () => {
 			const messages: LLMMessage[] = [
-				{ role: "cache" as "user", content: "" },
+				{ role: "cache", content: "" },
 				{ role: "user", content: "First user message" },
 			];
 
@@ -141,9 +141,9 @@ describe("Bedrock developer and cache role mapping", () => {
 		it("multiple cache messages each append to their preceding message", () => {
 			const messages: LLMMessage[] = [
 				{ role: "user", content: "Message 1" },
-				{ role: "cache" as "user", content: "" },
+				{ role: "cache", content: "" },
 				{ role: "assistant", content: "Response 1" },
-				{ role: "cache" as "user", content: "" },
+				{ role: "cache", content: "" },
 				{ role: "user", content: "Message 2" },
 			];
 
@@ -172,7 +172,7 @@ describe("Bedrock developer and cache role mapping", () => {
 				params: {
 					messages: [
 						{ role: "user", content: "Call bash" },
-						{ role: "cache" as "user", content: "" },
+						{ role: "cache", content: "" },
 					],
 					tools: [
 						{
@@ -202,7 +202,7 @@ describe("Bedrock developer and cache role mapping", () => {
 				params: {
 					messages: [
 						{ role: "user", content: "Just talking" },
-						{ role: "cache" as "user", content: "" },
+						{ role: "cache", content: "" },
 					],
 					tools: undefined,
 				},
@@ -221,7 +221,7 @@ describe("Bedrock developer and cache role mapping", () => {
 				params: {
 					messages: [
 						{ role: "user", content: "Multi-tool" },
-						{ role: "cache" as "user", content: "" },
+						{ role: "cache", content: "" },
 					],
 					tools: [
 						{
@@ -257,9 +257,9 @@ describe("Bedrock developer and cache role mapping", () => {
 	describe("combined developer + cache behavior", () => {
 		it("developer and cache messages work together in same conversation", () => {
 			const messages: LLMMessage[] = [
-				{ role: "developer" as "user", content: "System instruction" },
+				{ role: "developer", content: "System instruction" },
 				{ role: "user", content: "User question" },
-				{ role: "cache" as "user", content: "" },
+				{ role: "cache", content: "" },
 				{ role: "assistant", content: "Assistant response" },
 				{ role: "user", content: "Follow-up" },
 			];
@@ -287,9 +287,9 @@ describe("Bedrock developer and cache role mapping", () => {
 			const input = {
 				params: {
 					messages: [
-						{ role: "developer" as "user", content: "Context" },
+						{ role: "developer", content: "Context" },
 						{ role: "user", content: "Question" },
-						{ role: "cache" as "user", content: "" },
+						{ role: "cache", content: "" },
 					],
 					tools: [
 						{

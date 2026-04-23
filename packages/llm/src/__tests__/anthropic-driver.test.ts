@@ -1048,7 +1048,7 @@ data: ${JSON.stringify({
 	describe("developer and cache role mapping", () => {
 		it("AC4.6: developer message prepended to next user message in system-context wrapper", () => {
 			const messages: LLMMessage[] = [
-				{ role: "developer" as "user", content: "This is system context" },
+				{ role: "developer", content: "This is system context" },
 				{ role: "user", content: "What is 2+2?" },
 			];
 
@@ -1071,7 +1071,7 @@ data: ${JSON.stringify({
 		it("AC4.6 edge case: developer with no subsequent user message creates new user message", () => {
 			const messages: LLMMessage[] = [
 				{ role: "user", content: "Start" },
-				{ role: "developer" as "user", content: "Ending context" },
+				{ role: "developer", content: "Ending context" },
 			];
 
 			const result = toAnthropicMessages(messages);
@@ -1095,8 +1095,8 @@ data: ${JSON.stringify({
 
 		it("AC4.6 edge case: multiple consecutive developer messages buffered", () => {
 			const messages: LLMMessage[] = [
-				{ role: "developer" as "user", content: "Context line 1" },
-				{ role: "developer" as "user", content: "Context line 2" },
+				{ role: "developer", content: "Context line 1" },
+				{ role: "developer", content: "Context line 2" },
 				{ role: "user", content: "Question" },
 			];
 
@@ -1117,7 +1117,7 @@ data: ${JSON.stringify({
 		it("AC4.2: cache message adds cache_control to previous message", () => {
 			const messages: LLMMessage[] = [
 				{ role: "user", content: "First message" },
-				{ role: "cache" as "user", content: "" },
+				{ role: "cache", content: "" },
 				{ role: "assistant", content: "Response" },
 				{ role: "user", content: "Second message" },
 			];
@@ -1136,7 +1136,7 @@ data: ${JSON.stringify({
 
 		it("AC4.2 edge case: cache message with no previous message is dropped silently", () => {
 			const messages: LLMMessage[] = [
-				{ role: "cache" as "user", content: "" },
+				{ role: "cache", content: "" },
 				{ role: "user", content: "First user message" },
 			];
 
@@ -1166,7 +1166,7 @@ data: ${JSON.stringify({
 
 			const messages: LLMMessage[] = [
 				{ role: "user", content: "Hello" },
-				{ role: "cache" as "user", content: "" },
+				{ role: "cache", content: "" },
 			];
 
 			const tools = [
@@ -1223,7 +1223,7 @@ data: ${JSON.stringify({
 
 			const messages: LLMMessage[] = [
 				{ role: "user", content: "Hello" },
-				{ role: "cache" as "user", content: "" },
+				{ role: "cache", content: "" },
 			];
 
 			for await (const _ of driver.chat({

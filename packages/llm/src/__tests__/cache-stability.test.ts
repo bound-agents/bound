@@ -600,9 +600,9 @@ describe("cache stability: inference config", () => {
 		it("developer and cache messages produce deterministic output", () => {
 			const input = makeInput({
 				messages: [
-					{ role: "developer" as "user", content: "System context" },
+					{ role: "developer", content: "System context" },
 					{ role: "user", content: "User question" },
-					{ role: "cache" as "user", content: "" },
+					{ role: "cache", content: "" },
 				],
 			});
 
@@ -616,9 +616,9 @@ describe("cache stability: inference config", () => {
 		it("developer and cache messages with tools are deterministic", () => {
 			const input = makeInput({
 				messages: [
-					{ role: "developer" as "user", content: "Context" },
+					{ role: "developer", content: "Context" },
 					{ role: "user", content: "Call tool" },
-					{ role: "cache" as "user", content: "" },
+					{ role: "cache", content: "" },
 				],
 				tools: SAMPLE_TOOLS,
 			});
@@ -634,7 +634,7 @@ describe("cache stability: inference config", () => {
 			const inputA = makeInput({
 				messages: [
 					{ role: "user", content: "msg1" },
-					{ role: "cache" as "user", content: "" },
+					{ role: "cache", content: "" },
 					{ role: "assistant", content: "resp1" },
 					{ role: "user", content: "msg2" },
 				],
@@ -644,7 +644,7 @@ describe("cache stability: inference config", () => {
 				messages: [
 					{ role: "user", content: "msg1" },
 					{ role: "assistant", content: "resp1" },
-					{ role: "cache" as "user", content: "" },
+					{ role: "cache", content: "" },
 					{ role: "user", content: "msg2" },
 				],
 			});
@@ -675,8 +675,8 @@ describe("cache stability: inference config", () => {
 		it("multiple developer messages are merged stably", () => {
 			const input = makeInput({
 				messages: [
-					{ role: "developer" as "user", content: "Context A" },
-					{ role: "developer" as "user", content: "Context B" },
+					{ role: "developer", content: "Context A" },
+					{ role: "developer", content: "Context B" },
 					{ role: "user", content: "Question" },
 				],
 			});
@@ -701,7 +701,7 @@ describe("cache stability: inference config", () => {
 			const input = makeInput({
 				messages: [
 					{ role: "user", content: "Call tool" },
-					{ role: "cache" as "user", content: "" },
+					{ role: "cache", content: "" },
 				],
 				tools: SAMPLE_TOOLS,
 			});

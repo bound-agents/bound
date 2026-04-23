@@ -171,6 +171,8 @@ export function toBedrockMessages(messages: LLMMessage[]): Array<Record<string, 
 		// For user messages, prepend any pending developer content
 		if (role === "user" && pendingDeveloperContent.length > 0) {
 			const content: Array<Record<string, unknown>> = [];
+			// Save developer block count before clearing
+			const devBlockCount = pendingDeveloperContent.length;
 			// Add pending developer content as wrapped text blocks
 			for (const devContent of pendingDeveloperContent) {
 				content.push({ text: devContent });
@@ -192,7 +194,7 @@ export function toBedrockMessages(messages: LLMMessage[]): Array<Record<string, 
 						}
 					}
 				}
-				if (content.length <= pendingDeveloperContent.length) {
+				if (content.length <= devBlockCount) {
 					content.push({ text: extractTextFromBlocks(msg.content) || EMPTY_TEXT_PLACEHOLDER });
 				}
 			} else {
