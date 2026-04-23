@@ -4,6 +4,14 @@ import { Confirm } from "../tui/components/Confirm.js";
 import { SelectList } from "../tui/components/SelectList.js";
 import { TextInput } from "../tui/components/TextInput.js";
 
+// Note: ink-testing-library's lastFrame() strips ANSI escapes. The cursor
+// is drawn via inverse-video (SGR 7) *on top of* the character at `pos`,
+// so it doesn't show up as its own glyph in the plain-text frame. These
+// tests assert on the presence/absence of the extra cursor *cell*: when
+// enabled and empty, the frame starts with a leading space (the
+// inverse-video space that renders the cursor); when disabled, that cell
+// is not rendered at all.
+
 describe("TextInput", () => {
 	it("renders with placeholder when empty", () => {
 		const { lastFrame } = render(<TextInput onSubmit={() => {}} placeholder="Type here" />);
@@ -12,40 +20,81 @@ describe("TextInput", () => {
 	});
 
 	it("renders cursor indicator", () => {
-		const { lastFrame } = render(<TextInput onSubmit={() => {}} />);
-		const output = lastFrame();
-		expect(output).toContain("▌");
+		const { lastFrame } = render(<TextInput onSubmit={() => {}} placeholder="hi" />);
+		const output = lastFrame() ?? "";
+		// The cursor is the leading (inverse-video) space before the placeholder.
+		expect(output).toBe(" hi");
 	});
 
 	it("does not render cursor when disabled", () => {
-		const { lastFrame } = render(<TextInput onSubmit={() => {}} disabled={true} />);
-		const output = lastFrame();
-		expect(output).not.toContain("▌");
+		const { lastFrame } = render(
+			<TextInput onSubmit={() => {}} placeholder="hi" disabled={true} />,
+		);
+		const output = lastFrame() ?? "";
+		// No cursor cell — placeholder starts at column 0.
+		expect(output).toBe("hi");
 	});
 
 	it("handles useInput with character entry capability", () => {
 		const handleSubmit = mock(() => {});
-		const { lastFrame } = render(<TextInput onSubmit={handleSubmit} />);
-		const output = lastFrame();
-		expect(output).toContain("▌");
-		// Component is configured to handle keyboard input via useInput
+		const { lastFrame } = render(<TextInput onSubmit={handleSubmit} placeholder="hi" />);
+		const output = lastFrame() ?? "";
+		// Cursor cell present (leading space before placeholder).
+		expect(output).toBe(" hi");
 		expect(typeof handleSubmit).toBe("function");
 	});
 
 	it("uses useInput with isActive controlled by disabled prop", () => {
-		const { lastFrame: disabledOutput } = render(<TextInput onSubmit={() => {}} disabled={true} />);
-		const output = disabledOutput();
-		expect(output).not.toContain("▌");
-		// When disabled, useInput isActive is false
+		const { lastFrame: disabledOutput } = render(
+			<TextInput onSubmit={() => {}} placeholder="hi" disabled={true} />,
+		);
+		const output = disabledOutput() ?? "";
+		// No cursor cell when disabled.
+		expect(output).toBe("hi");
 	});
 
 	it("renders with enter key handler registered", () => {
 		const handleSubmit = mock(() => {});
-		const { lastFrame } = render(<TextInput onSubmit={handleSubmit} />);
-		const output = lastFrame();
-		expect(output).toContain("▌");
-		// Component has useInput hook configured to handle return key
+		const { lastFrame } = render(<TextInput onSubmit={handleSubmit} placeholder="hi" />);
+		const output = lastFrame() ?? "";
+		expect(output).toBe(" hi");
 		expect(typeof handleSubmit).toBe("function");
+	});
+
+	it("does not shift characters when the cursor moves through them", async () => {
+		// The cursor is rendered via inverse-video *on top of* the character
+		// at `pos`, not inserted between characters. Moving the cursor
+		// should not change the visible column position of any character.
+		const { lastFrame, stdin, unmount } = render(<TextInput onSubmit={() => {}} />);
+		const tick = () => new Promise((r) => setTimeout(r, 50));
+
+		try {
+			// Wait for useInput to register on the first render tick before
+			// writing to stdin — otherwise the keystrokes are dropped.
+			await tick();
+
+			stdin.write("abc");
+			await tick();
+			const frameAtEnd = lastFrame() ?? "";
+
+			// Move cursor left once.
+			stdin.write("\x1b[D");
+			await tick();
+			const frameAfterLeft = lastFrame() ?? "";
+
+			// Move cursor left again.
+			stdin.write("\x1b[D");
+			await tick();
+			const frameAfterLeft2 = lastFrame() ?? "";
+
+			// The visible (ANSI-stripped) frame must be identical across all
+			// three positions — nothing shifts as the cursor moves.
+			expect(frameAtEnd).toBe("abc");
+			expect(frameAfterLeft).toBe("abc");
+			expect(frameAfterLeft2).toBe("abc");
+		} finally {
+			unmount();
+		}
 	});
 });
 
