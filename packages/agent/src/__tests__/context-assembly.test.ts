@@ -1089,6 +1089,163 @@ describe("Context Assembly Pipeline", () => {
 			// No non-system messages should be between tool_call and tool_result
 			expect(nonSystemBetween.length).toBe(0);
 		});
+
+		// Regression: Bedrock tool_use_id_mismatch from thread 8c73f682 (2026-04-23).
+		// A parallel tool_call emitted two tool_use blocks. One result returned on
+		// schedule; the agent loop re-entered inference before the straggler landed
+		// and emitted a SECOND tool_call. The straggler result arrived AFTER the
+		// second tool_call, leaving the DB sequence:
+		//   tool_call[A,B] → assistant → result[A] → tool_call[C,D]
+		//     → result[C] → result[D] → result[B]   ← straggler
+		// Context assembly must still produce a context where every tool_use id on
+		// an assistant turn has a matching tool_result in the following user turn,
+		// with no extras, otherwise Bedrock rejects with tool_use_id_mismatch.
+		it("handles late-arriving parallel tool_result straggler without orphaning ids (thread 8c73f682)", () => {
+			const testThreadId = randomUUID();
+			const testUserId = randomUUID();
+
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					testUserId,
+					"web",
+					"local",
+					0,
+					"Bedrock straggler regression",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const base = Date.now();
+			const iso = (offsetMs: number) => new Date(base + offsetMs).toISOString();
+			const insertMsg = (
+				role: string,
+				content: string,
+				offsetMs: number,
+				toolName: string | null,
+			) => {
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						testThreadId,
+						role,
+						content,
+						null,
+						toolName,
+						iso(offsetMs),
+						iso(offsetMs),
+						"local",
+					],
+				);
+			};
+
+			insertMsg("user", "go", 0, null);
+			// Turn 1: parallel tool_call with two tool_use blocks
+			insertMsg(
+				"tool_call",
+				JSON.stringify([
+					{ type: "tool_use", id: "tu_A", name: "bash", input: { cmd: "one" } },
+					{ type: "tool_use", id: "tu_B", name: "bash", input: { cmd: "two" } },
+				]),
+				1000,
+				null,
+			);
+			// Inline assistant text co-emitted with the tool_call
+			insertMsg("assistant", "running two things in parallel", 1002, null);
+			// First result arrives promptly
+			insertMsg("tool_result", "output A", 1100, "tu_A");
+			// Turn 2: the agent loop fires again BEFORE tu_B's result lands
+			insertMsg(
+				"tool_call",
+				JSON.stringify([
+					{ type: "tool_use", id: "tu_C", name: "bash", input: { cmd: "three" } },
+					{ type: "tool_use", id: "tu_D", name: "bash", input: { cmd: "four" } },
+				]),
+				5000,
+				null,
+			);
+			insertMsg("tool_result", "output C", 5100, "tu_C");
+			insertMsg("tool_result", "output D", 5200, "tu_D");
+			// Straggler from turn 1 finally arrives AFTER turn 2 has completed
+			insertMsg("tool_result", "output B (late)", 5500, "tu_B");
+
+			const { messages: llmMessages } = assembleContext({
+				db,
+				threadId: testThreadId,
+				userId: testUserId,
+			});
+
+			// Walk llmMessages and verify Bedrock's invariant: every tool_use id on
+			// a tool_call turn MUST have a matching tool_result (by tool_use_id) in
+			// the contiguous tool_result run that immediately follows, with no
+			// extras before the next non-tool-result message.
+			for (let i = 0; i < llmMessages.length; i++) {
+				const m = llmMessages[i];
+				if (m.role !== "tool_call") continue;
+				const content = typeof m.content === "string" ? JSON.parse(m.content) : m.content;
+				const toolUseIds = (content as Array<{ type: string; id?: string }>)
+					.filter((b) => b.type === "tool_use")
+					.map((b) => b.id as string);
+				expect(toolUseIds.length).toBeGreaterThan(0);
+
+				// Collect the contiguous tool_result run that follows (skipping
+				// assistant text messages, which are legitimately interleaved).
+				const followingResultIds: string[] = [];
+				for (let j = i + 1; j < llmMessages.length; j++) {
+					const n = llmMessages[j];
+					if (n.role === "assistant") continue;
+					if (n.role !== "tool_result") break;
+					const id = (n as { tool_use_id?: string | null }).tool_use_id;
+					if (id) followingResultIds.push(id);
+				}
+
+				// No missing ids (every tool_use needs a result)
+				for (const id of toolUseIds) {
+					expect(followingResultIds).toContain(id);
+				}
+				// No extras (every result must match a tool_use \u2014 Bedrock rejects otherwise)
+				for (const id of followingResultIds) {
+					expect(toolUseIds).toContain(id);
+				}
+			}
+
+			// And the inverse: every tool_result in the assembled stream must have
+			// a tool_call with a matching tool_use_id somewhere earlier in the same
+			// tool-call\u2194tool_result run (no orphan stragglers).
+			let lastToolCallIds: string[] | null = null;
+			for (const m of llmMessages) {
+				if (m.role === "tool_call") {
+					const content = typeof m.content === "string" ? JSON.parse(m.content) : m.content;
+					lastToolCallIds = (content as Array<{ type: string; id?: string }>)
+						.filter((b) => b.type === "tool_use")
+						.map((b) => b.id as string);
+					continue;
+				}
+				if (m.role === "tool_result") {
+					const id = (m as { tool_use_id?: string | null }).tool_use_id;
+					expect(lastToolCallIds).not.toBeNull();
+					expect(lastToolCallIds ?? []).toContain(id);
+					continue;
+				}
+				if (m.role === "assistant") continue; // text interleaves fine
+				// system / user / anything else closes the run
+				lastToolCallIds = null;
+			}
+
+			// Straggler content should still appear somewhere — either paired with
+			// a synthetic tool_call wrapper, or folded back into turn 1's block.
+			const flattened = JSON.stringify(llmMessages);
+			expect(flattened).toContain("output B (late)");
+		});
 	});
 
 	describe("Relay Info Injection (AC5.4)", () => {

@@ -570,14 +570,35 @@ Original output was too large for the context window. If you need the full conte
 				// No logger available in this context
 			}
 
+			// Flag flips true once we scan past the next tool_call boundary while
+			// still chasing straggler results for this tool_call's pending ids.
+			let crossedToolCallBoundary = false;
 			for (let j = i + 1; j < messagesFiltered.length; j++) {
 				if (consumed.has(j)) continue;
 				const jMsg = messagesFiltered[j];
 				if (jMsg.role === "tool_call") {
-					// Hit the next tool_call — stop collecting
-					break;
+					// Hit the next tool_call. Normally this closes our scan, BUT if
+					// we still have unmatched tool_use_ids, a real tool_result for
+					// one of them may be a "straggler" that landed AFTER the next
+					// turn's tool_call (parallel tool racing: the agent loop
+					// re-entered inference before the slow result came back). Keep
+					// scanning past this next tool_call, but only to claim results
+					// whose tool_name is in OUR pending set — we never steal results
+					// that belong to the next tool_call.
+					if (pendingToolUseIds.size === 0) {
+						break;
+					}
+					crossedToolCallBoundary = true;
+					continue;
 				}
 				if (jMsg.role === "tool_result") {
+					if (crossedToolCallBoundary) {
+						// After crossing a later tool_call, only claim results whose
+						// tool_name is one of OUR outstanding pending ids.
+						if (!jMsg.tool_name || !pendingToolUseIds.has(jMsg.tool_name)) {
+							continue;
+						}
+					}
 					matchIndices.push(j);
 					// Remove matched tool_use_id from pending set
 					if (jMsg.tool_name) pendingToolUseIds.delete(jMsg.tool_name);
@@ -590,6 +611,12 @@ Original output was too large for the context window. If you need the full conte
 					// stop: this message legitimately follows the completed pair.
 					if (matchIndices.length > 0 && pendingToolUseIds.size === 0) {
 						break;
+					}
+					// Don't reorder messages from past the next tool_call boundary —
+					// they belong to a different turn. Only reorder system messages
+					// between us and our results (the original adjacent-reorder case).
+					if (crossedToolCallBoundary) {
+						continue;
 					}
 					// Only reorder system messages, NOT assistant messages.
 					// Assistant messages between tool_call and tool_result should stay
