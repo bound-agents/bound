@@ -47,7 +47,7 @@ export interface ChatParams {
 }
 
 export type LLMMessage = {
-	role: "user" | "assistant" | "system" | "tool_call" | "tool_result";
+	role: "user" | "assistant" | "system" | "tool_call" | "tool_result" | "developer" | "cache";
 	content: string | ContentBlock[];
 	tool_use_id?: string;
 	model_id?: string;
