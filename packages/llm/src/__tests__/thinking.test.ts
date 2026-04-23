@@ -455,12 +455,8 @@ describe("BedrockDriver extended thinking", () => {
 		);
 		expect(thinkingChunks[1].type === "thinking" && thinkingChunks[1].content).toBe("problem...");
 		// Signature chunk: empty content, signature field populated.
-		expect(
-			thinkingChunks[2].type === "thinking" && thinkingChunks[2].content,
-		).toBe("");
-		expect(
-			thinkingChunks[2].type === "thinking" && thinkingChunks[2].signature,
-		).toBe("sig-abc123");
+		expect(thinkingChunks[2].type === "thinking" && thinkingChunks[2].content).toBe("");
+		expect(thinkingChunks[2].type === "thinking" && thinkingChunks[2].signature).toBe("sig-abc123");
 
 		const textChunks = chunks.filter((c) => c.type === "text");
 		expect(textChunks.length).toBe(1);

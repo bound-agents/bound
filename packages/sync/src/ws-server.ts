@@ -194,7 +194,7 @@ export interface WsServerConfig {
  */
 export function createWsHandlers(config: WsServerConfig): {
 	websocket: WebSocketHandler<WsConnectionData>;
-	handleUpgrade: (req: Request, server: Server) => Promise<Response | undefined>;
+	handleUpgrade: (req: Request, server: Server<WsConnectionData>) => Promise<Response | undefined>;
 } {
 	const {
 		connectionManager,
@@ -205,7 +205,10 @@ export function createWsHandlers(config: WsServerConfig): {
 		backpressureLimit = 2097152,
 	} = config;
 
-	const handleUpgrade = async (req: Request, server: Server): Promise<Response | undefined> => {
+	const handleUpgrade = async (
+		req: Request,
+		server: Server<WsConnectionData>,
+	): Promise<Response | undefined> => {
 		const authResult = await authenticateWsUpgrade(req, keyring, keyManager, logger);
 
 		if (!authResult.ok) {
@@ -358,8 +361,8 @@ type ServerWebSocket<T = unknown> = {
 	data: T;
 };
 
-type Server = {
-	upgrade<T = unknown>(request: Request, options?: { data?: T }): boolean;
+type Server<T = unknown> = {
+	upgrade(request: Request, options: { data: T; headers?: HeadersInit }): boolean;
 };
 
 type WebSocketHandler<T = unknown> = {

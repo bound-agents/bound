@@ -87,7 +87,6 @@ export function useScrollableMessages<T extends { id: string }>(
 	// Listen for raw mouse escape sequences on stdin for scroll wheel.
 	// SGR format: ESC[<64;x;yM (scroll up) / ESC[<65;x;yM (scroll down)
 	// Legacy format: ESC[M + bytes where byte0-32: 96=up, 97=down
-	// biome-ignore lint/correctness/useExhaustiveDependencies: refs are stable
 	useEffect(() => {
 		if (!process.stdin.isTTY) return;
 		const stdin = process.stdin;

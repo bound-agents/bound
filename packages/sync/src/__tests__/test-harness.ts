@@ -469,8 +469,7 @@ export async function createWsTestCluster(config: {
 		fetch: async (req, server) => {
 			const url = new URL(req.url);
 			if (url.pathname === "/sync/ws") {
-				// biome-ignore lint/suspicious/noExplicitAny: Bun.serve Server type is structurally compatible
-				return (await wsHandlers.handleUpgrade(req, server as any)) ?? new Response("upgraded");
+				return (await wsHandlers.handleUpgrade(req, server)) ?? new Response("upgraded");
 			}
 			return new Response("not found", { status: 404 });
 		},
