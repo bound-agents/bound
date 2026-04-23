@@ -214,12 +214,30 @@ export function applyEvent(db: Database, event: ChangeLogEntry): { applied: bool
 	return applyLWWReducer(db, event);
 }
 
+/**
+ * Information about a single event that was successfully applied during replay.
+ * Used by transport-layer callers to emit local event-bus notifications so
+ * UI subscribers (TUI / web) see synced-in rows without needing to poll.
+ */
+export interface AppliedEventInfo {
+	table_name: string;
+	row_id: string;
+	site_id: string;
+	hlc: string;
+	row_data: RowData;
+}
+
 export function replayEvents(
 	db: Database,
 	events: ChangeLogEntry[],
+	options?: { onApplied?: (info: AppliedEventInfo) => void },
 ): { applied: number; skipped: number } {
 	let applied = 0;
 	let skipped = 0;
+	// Queue applied-event notifications and fire them AFTER COMMIT so that
+	// subscribers querying the DB in response see the committed state (and a
+	// reducer exception can't mislead listeners about rows that got rolled back).
+	const appliedInfos: AppliedEventInfo[] = [];
 
 	// Wrap in transaction so partial failures don't leave the DB in an
 	// inconsistent state (all-or-nothing for each sync batch).
@@ -245,6 +263,15 @@ export function replayEvents(
 				// Create a change_log entry preserving the original site_id
 				// Pass remoteHlc so the local HLC advances past the remote event
 				createChangeLogEntry(db, event.table_name, event.row_id, event.site_id, rowData, event.hlc);
+				if (options?.onApplied) {
+					appliedInfos.push({
+						table_name: event.table_name,
+						row_id: event.row_id,
+						site_id: event.site_id,
+						hlc: event.hlc,
+						row_data: rowData,
+					});
+				}
 			} else {
 				skipped++;
 			}
@@ -257,6 +284,18 @@ export function replayEvents(
 			// ROLLBACK failed, original error takes priority
 		}
 		throw error;
+	}
+
+	// Fire applied-event notifications AFTER successful commit. Individual
+	// listener failures must not poison the batch result or other listeners.
+	if (options?.onApplied && appliedInfos.length > 0) {
+		for (const info of appliedInfos) {
+			try {
+				options.onApplied(info);
+			} catch {
+				// Swallow listener errors — callers own their own error handling.
+			}
+		}
 	}
 
 	return { applied, skipped };

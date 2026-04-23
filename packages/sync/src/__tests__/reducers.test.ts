@@ -570,6 +570,124 @@ describe("reducers", () => {
 		});
 	});
 
+	describe("onApplied callback", () => {
+		it("fires once per applied event with row info", () => {
+			const events: ChangeLogEntry[] = [
+				{
+					hlc: "2026-03-22T10:00:00.000Z_0001_test",
+					table_name: "semantic_memory",
+					row_id: "mem-onapplied-1",
+					site_id: "remote-site",
+					timestamp: "2026-03-22T10:00:00Z",
+					row_data: JSON.stringify({
+						id: "mem-onapplied-1",
+						key: "k1",
+						value: "v1",
+						source: "training",
+						created_at: "2026-03-22T10:00:00Z",
+						modified_at: "2026-03-22T10:00:00Z",
+						last_accessed_at: "2026-03-22T10:00:00Z",
+					}),
+				},
+				{
+					hlc: "2026-03-22T10:01:00.000Z_0001_test",
+					table_name: "semantic_memory",
+					row_id: "mem-onapplied-2",
+					site_id: "remote-site",
+					timestamp: "2026-03-22T10:01:00Z",
+					row_data: JSON.stringify({
+						id: "mem-onapplied-2",
+						key: "k2",
+						value: "v2",
+						source: "training",
+						created_at: "2026-03-22T10:01:00Z",
+						modified_at: "2026-03-22T10:01:00Z",
+						last_accessed_at: "2026-03-22T10:01:00Z",
+					}),
+				},
+			];
+
+			const calls: Array<{ table_name: string; row_id: string; site_id: string }> = [];
+			const result = replayEvents(db, events, {
+				onApplied: (info) => {
+					calls.push({
+						table_name: info.table_name,
+						row_id: info.row_id,
+						site_id: info.site_id,
+					});
+				},
+			});
+
+			expect(result.applied).toBe(2);
+			expect(calls.length).toBe(2);
+			expect(calls[0]).toEqual({
+				table_name: "semantic_memory",
+				row_id: "mem-onapplied-1",
+				site_id: "remote-site",
+			});
+			expect(calls[1]).toEqual({
+				table_name: "semantic_memory",
+				row_id: "mem-onapplied-2",
+				site_id: "remote-site",
+			});
+		});
+
+		it("does not fire for skipped events (malformed JSON)", () => {
+			const badEvent: ChangeLogEntry = {
+				hlc: "2026-03-22T10:00:00.000Z_0001_test",
+				table_name: "semantic_memory",
+				row_id: "bad-onapplied",
+				site_id: "remote-site",
+				timestamp: "2026-03-22T10:00:00Z",
+				row_data: "{INVALID!!!",
+			};
+
+			let calls = 0;
+			const result = replayEvents(db, [badEvent], {
+				onApplied: () => {
+					calls++;
+				},
+			});
+
+			expect(result.applied).toBe(0);
+			expect(result.skipped).toBe(1);
+			expect(calls).toBe(0);
+		});
+
+		it("listener errors do not poison the batch or other listeners", () => {
+			const event: ChangeLogEntry = {
+				hlc: "2026-03-22T10:02:00.000Z_0001_test",
+				table_name: "semantic_memory",
+				row_id: "mem-onapplied-poison",
+				site_id: "remote-site",
+				timestamp: "2026-03-22T10:02:00Z",
+				row_data: JSON.stringify({
+					id: "mem-onapplied-poison",
+					key: "k3",
+					value: "v3",
+					source: "training",
+					created_at: "2026-03-22T10:02:00Z",
+					modified_at: "2026-03-22T10:02:00Z",
+					last_accessed_at: "2026-03-22T10:02:00Z",
+				}),
+			};
+
+			// Listener throws — result should still report applied:1, and the
+			// row should still be committed to the DB.
+			const result = replayEvents(db, [event], {
+				onApplied: () => {
+					throw new Error("listener exploded");
+				},
+			});
+
+			expect(result.applied).toBe(1);
+			const row = db
+				.prepare("SELECT id FROM semantic_memory WHERE id = ?")
+				.get("mem-onapplied-poison") as { id: string } | undefined;
+			expect(row?.id).toBe("mem-onapplied-poison");
+		});
+	});
+
 	describe("malformed JSON handling", () => {
 		it("does not crash on malformed row_data in replayEvents", () => {
 			const badEvent = {

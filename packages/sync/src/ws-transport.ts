@@ -3,6 +3,7 @@ import { insertInbox, markDelivered, readUndelivered, writeOutbox } from "@bound
 import type {
 	ChangeLogEntry,
 	Logger,
+	Message,
 	RelayInboxEntry,
 	RelayKind,
 	RelayOutboxEntry,
@@ -211,8 +212,35 @@ export class WsTransport {
 			row_data: JSON.stringify(entry.row_data),
 		}));
 
-		// Replay entries through reducers
-		const { applied, skipped } = replayEvents(this.config.db, entries);
+		// Replay entries through reducers. onApplied fires (post-commit) for
+		// every applied row so the local event bus mirrors what would have been
+		// emitted if the row had been produced locally. Without this hook the
+		// TUI / web clients don't see messages synced in from remote-model
+		// sessions running on another node until they manually refresh.
+		const { applied, skipped } = replayEvents(this.config.db, entries, {
+			onApplied: (info) => {
+				if (info.table_name !== "messages") return;
+				// Rehydrate the full row from the DB after commit rather than
+				// trusting the wire payload — listeners expect the same shape
+				// the rest of the system emits (post-trigger defaults, coerced
+				// types, etc.).
+				try {
+					const message = this.config.db
+						.prepare("SELECT * FROM messages WHERE id = ?")
+						.get(info.row_id) as Message | undefined;
+					if (!message) return;
+					this.config.eventBus.emit("message:broadcast", {
+						message,
+						thread_id: message.thread_id,
+					});
+				} catch (err) {
+					this.config.logger?.warn("WsTransport onApplied broadcast failed", {
+						row_id: info.row_id,
+						err: err instanceof Error ? err.message : String(err),
+					});
+				}
+			},
+		});
 		this.config.logger?.debug("WsTransport changelog_push received", {
 			peerSiteId,
 			entryCount: entries.length,
