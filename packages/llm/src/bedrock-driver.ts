@@ -116,7 +116,10 @@ function emitCacheDebug(raw: {
 		},
 	};
 
-	cacheLog.debug("cache fingerprints", {
+	// Log at info level — these only fire when BOUND_DEBUG_BEDROCK_CACHE is
+	// explicitly set, so the env var IS the gate. Using debug() here would
+	// require LOG_LEVEL=debug too, which is a double-gate nobody will remember.
+	cacheLog.info("cache fingerprints", {
 		seq,
 		messageCount: messages.length,
 		cachePointIdx: cpIdx,
@@ -124,7 +127,7 @@ function emitCacheDebug(raw: {
 	});
 
 	if (CACHE_DEBUG === "full") {
-		cacheLog.debug("raw request", { seq, raw: stableStringify(raw) });
+		cacheLog.info("raw request", { seq, raw: stableStringify(raw) });
 	}
 
 	return entry;
