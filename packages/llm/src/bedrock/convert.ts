@@ -37,10 +37,30 @@ const EMPTY_TEXT_PLACEHOLDER = "(empty)";
  */
 export function toBedrockMessages(messages: LLMMessage[]): Array<Record<string, unknown>> {
 	const result: Array<Record<string, unknown>> = [];
+	const pendingDeveloperContent: string[] = [];
 
 	for (const msg of messages) {
 		if (msg.role === "system") {
 			// System messages are handled separately via the system prompt param.
+			continue;
+		}
+
+		// Handle developer role: buffer content to prepend to next user message
+		if (msg.role === "developer") {
+			const text =
+				typeof msg.content === "string" ? msg.content : extractTextFromBlocks(msg.content);
+			pendingDeveloperContent.push(`<system-context>${text}</system-context>`);
+			continue;
+		}
+
+		// Handle cache role: append cachePoint to previous message
+		if (msg.role === "cache") {
+			const prev = result.at(-1);
+			if (prev && Array.isArray(prev.content)) {
+				(prev.content as Array<Record<string, unknown>>).push({
+					cachePoint: { type: "default" },
+				});
+			}
 			continue;
 		}
 
@@ -147,7 +167,39 @@ export function toBedrockMessages(messages: LLMMessage[]): Array<Record<string, 
 
 		// Plain user / assistant with text or structured content blocks.
 		const role = msg.role as "user" | "assistant";
-		if (Array.isArray(msg.content)) {
+
+		// For user messages, prepend any pending developer content
+		if (role === "user" && pendingDeveloperContent.length > 0) {
+			const content: Array<Record<string, unknown>> = [];
+			// Add pending developer content as wrapped text blocks
+			for (const devContent of pendingDeveloperContent) {
+				content.push({ text: devContent });
+			}
+			pendingDeveloperContent.length = 0;
+
+			// Then add the user's actual content
+			if (Array.isArray(msg.content)) {
+				for (const block of msg.content) {
+					if (block.type === "text" && block.text) {
+						content.push({ text: block.text });
+					} else if (block.type === "image" && block.source) {
+						const src = block.source;
+						if (src.type === "base64") {
+							const bytes = Uint8Array.from(atob(src.data), (c) => c.charCodeAt(0));
+							const sniffed = sniffImageMediaType(bytes) ?? src.media_type;
+							const format = sniffed.replace("image/", "") as "png" | "jpeg" | "gif" | "webp";
+							content.push({ image: { format, source: { bytes } } });
+						}
+					}
+				}
+				if (content.length <= pendingDeveloperContent.length) {
+					content.push({ text: extractTextFromBlocks(msg.content) || EMPTY_TEXT_PLACEHOLDER });
+				}
+			} else {
+				content.push({ text: msg.content || EMPTY_TEXT_PLACEHOLDER });
+			}
+			result.push({ role, content });
+		} else if (Array.isArray(msg.content)) {
 			const content: Array<Record<string, unknown>> = [];
 			for (const block of msg.content) {
 				if (block.type === "text" && block.text) {
@@ -169,6 +221,16 @@ export function toBedrockMessages(messages: LLMMessage[]): Array<Record<string, 
 		} else {
 			result.push({ role, content: [{ text: msg.content || EMPTY_TEXT_PLACEHOLDER }] });
 		}
+	}
+
+	// If there's still pending developer content (no user message followed it),
+	// inject it as a user message
+	if (pendingDeveloperContent.length > 0) {
+		const content: Array<Record<string, unknown>> = [];
+		for (const devContent of pendingDeveloperContent) {
+			content.push({ text: devContent });
+		}
+		result.push({ role: "user", content });
 	}
 
 	// Bedrock's alternation invariant: merge consecutive same-role messages.
@@ -290,6 +352,12 @@ export function toBedrockRequest(input: ConvertInput): RawBedrockRequest {
 					})),
 				}
 			: undefined;
+
+	// Place cachePoint in toolConfig when cache messages are present and tools exist
+	const hasCacheMessages = params.messages.some((m) => m.role === "cache");
+	if (hasCacheMessages && toolConfig) {
+		(toolConfig as Record<string, unknown>).cachePoint = { type: "default" };
+	}
 
 	// ─── Inference config ────────────────────────────────────────────────────
 	// Thinking mode flips the discriminant. When thinking is off and we have

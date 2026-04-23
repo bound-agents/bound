@@ -595,4 +595,126 @@ describe("cache stability: inference config", () => {
 			stableStringify(b.additionalModelRequestFields),
 		);
 	});
+
+	describe("cache stability: developer and cache role handling", () => {
+		it("developer and cache messages produce deterministic output", () => {
+			const input = makeInput({
+				messages: [
+					{ role: "developer" as "user", content: "System context" },
+					{ role: "user", content: "User question" },
+					{ role: "cache" as "user", content: "" },
+				],
+			});
+
+			const a = toBedrockRequest(input);
+			const b = toBedrockRequest(input);
+
+			// Output must be byte-for-byte identical
+			expect(stableStringify(a)).toBe(stableStringify(b));
+		});
+
+		it("developer and cache messages with tools are deterministic", () => {
+			const input = makeInput({
+				messages: [
+					{ role: "developer" as "user", content: "Context" },
+					{ role: "user", content: "Call tool" },
+					{ role: "cache" as "user", content: "" },
+				],
+				tools: SAMPLE_TOOLS,
+			});
+
+			const a = toBedrockRequest(input);
+			const b = toBedrockRequest(input);
+
+			expect(stableStringify(a)).toBe(stableStringify(b));
+		});
+
+		it("cache message placement doesn't affect prefix stability", () => {
+			// Two inputs with cache placed at different points
+			const inputA = makeInput({
+				messages: [
+					{ role: "user", content: "msg1" },
+					{ role: "cache" as "user", content: "" },
+					{ role: "assistant", content: "resp1" },
+					{ role: "user", content: "msg2" },
+				],
+			});
+
+			const inputB = makeInput({
+				messages: [
+					{ role: "user", content: "msg1" },
+					{ role: "assistant", content: "resp1" },
+					{ role: "cache" as "user", content: "" },
+					{ role: "user", content: "msg2" },
+				],
+			});
+
+			const rawA = toBedrockRequest(inputA);
+			const rawB = toBedrockRequest(inputB);
+
+			// Both should have the same content structure (cachePoint placement differs)
+			// but the prefix (message order) should be the same
+			const msgsA = rawA.messages as Array<Record<string, unknown>>;
+			const msgsB = rawB.messages as Array<Record<string, unknown>>;
+
+			// Same number of messages
+			expect(msgsA.length).toBe(msgsB.length);
+
+			// Message contents match (ignoring cachePoint positions)
+			const stripCachePoint = (msgs: Array<Record<string, unknown>>) =>
+				msgs.map((m) => ({
+					...m,
+					content: Array.isArray(m.content)
+						? (m.content as Array<Record<string, unknown>>).filter((b) => !("cachePoint" in b))
+						: m.content,
+				}));
+
+			expect(stableStringify(stripCachePoint(msgsA))).toBe(stableStringify(stripCachePoint(msgsB)));
+		});
+
+		it("multiple developer messages are merged stably", () => {
+			const input = makeInput({
+				messages: [
+					{ role: "developer" as "user", content: "Context A" },
+					{ role: "developer" as "user", content: "Context B" },
+					{ role: "user", content: "Question" },
+				],
+			});
+
+			const a = toBedrockRequest(input);
+			const b = toBedrockRequest(input);
+
+			expect(stableStringify(a)).toBe(stableStringify(b));
+
+			// Verify both developer contexts are present in the output
+			const messages = a.messages as Array<Record<string, unknown>>;
+			const userMsg = messages[0];
+			const textBlocks = userMsg.content as Array<{ text?: string }>;
+			const allText = textBlocks.map((b) => b.text).join("");
+
+			expect(allText).toContain("Context A");
+			expect(allText).toContain("Context B");
+			expect(allText).toContain("Question");
+		});
+
+		it("toolConfig cachePoint is stable when cache messages present", () => {
+			const input = makeInput({
+				messages: [
+					{ role: "user", content: "Call tool" },
+					{ role: "cache" as "user", content: "" },
+				],
+				tools: SAMPLE_TOOLS,
+			});
+
+			const a = toBedrockRequest(input);
+			const b = toBedrockRequest(input);
+
+			// toolConfig should be identical, including cachePoint
+			expect(stableStringify(a.toolConfig)).toBe(stableStringify(b.toolConfig));
+
+			// Verify cachePoint is present
+			const toolConfig = a.toolConfig as Record<string, unknown>;
+			expect(toolConfig.cachePoint).toEqual({ type: "default" });
+		});
+	});
 });
