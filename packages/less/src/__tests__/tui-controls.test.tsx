@@ -2,7 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { render } from "ink-testing-library";
 import { Confirm } from "../tui/components/Confirm.js";
 import { SelectList } from "../tui/components/SelectList.js";
-import { TextInput, computeViewport } from "../tui/components/TextInput.js";
+import { TextInput, breakLines } from "../tui/components/TextInput.js";
 
 // Note: ink-testing-library's lastFrame() strips ANSI escapes. The cursor
 // is drawn via inverse-video (SGR 7) *on top of* the character at `pos`,
@@ -95,69 +95,41 @@ describe("TextInput", () => {
 		}
 	});
 
-	describe("computeViewport", () => {
-		it("returns full range when text fits within viewport", () => {
-			// "hello" (5 chars) + cursor space = 6 cols; viewport = 20
-			const vp = computeViewport(5, 5, 20, 0);
-			expect(vp.start).toBe(0);
-			expect(vp.end).toBe(5);
-			expect(vp.offset).toBe(0);
+	describe("breakLines", () => {
+		it("returns single empty string for empty input", () => {
+			expect(breakLines("", 10)).toEqual([""]);
 		});
 
-		it("scrolls to keep cursor visible when text exceeds viewport", () => {
-			// 50 chars, cursor at end (50), viewport = 20
-			const vp = computeViewport(50, 50, 20, 0);
-			// Cursor must be within [start, end]
-			expect(vp.start).toBeGreaterThan(0);
-			expect(vp.end).toBe(50);
-			expect(vp.offset).toBe(vp.start);
+		it("returns text as-is when shorter than columns", () => {
+			expect(breakLines("hello", 10)).toEqual(["hello"]);
 		});
 
-		it("scrolls back when cursor moves to start of long text", () => {
-			// 50 chars, cursor at 0, viewport = 20, previous offset = 35
-			const vp = computeViewport(50, 0, 20, 35);
-			expect(vp.start).toBe(0);
-			expect(vp.offset).toBe(0);
+		it("splits text at column boundaries", () => {
+			expect(breakLines("abcdefghij", 5)).toEqual(["abcde", "fghij"]);
 		});
 
-		it("keeps viewport stable when cursor stays in range", () => {
-			// 50 chars, viewport = 20, offset was 10, cursor at 20 (within view)
-			const vp = computeViewport(50, 20, 20, 10);
-			// Cursor at 20 is within viewport [10, 29] — offset should stay
-			expect(vp.offset).toBe(10);
-		});
-
-		it("adjusts minimally when cursor exits right edge", () => {
-			// 50 chars, viewport = 20, offset was 0, cursor at 25 (out of view)
-			const vp = computeViewport(50, 25, 20, 0);
-			// Must scroll right so cursor is visible
-			expect(vp.start).toBeGreaterThan(0);
-			expect(vp.start).toBeLessThanOrEqual(25);
-			expect(vp.end).toBeGreaterThanOrEqual(25);
+		it("handles text that is not an exact multiple of columns", () => {
+			expect(breakLines("abcdefgh", 5)).toEqual(["abcde", "fgh"]);
 		});
 	});
 
-	it("does not wrap long text input to multiple lines", async () => {
-		// Render TextInput with a known width, type text longer than that width,
-		// verify the frame stays single-line.
-		const { lastFrame, stdin, unmount } = render(
-			<TextInput onSubmit={() => {}} viewportWidth={20} />,
-		);
+	it("wraps long text to multiple explicit lines with columns prop", async () => {
+		// With columns=10, text longer than 10 chars should render on
+		// multiple explicit lines (with real \n between them).
+		const { lastFrame, stdin, unmount } = render(<TextInput onSubmit={() => {}} columns={10} />);
 		const tick = () => new Promise((r) => setTimeout(r, 50));
 
 		try {
 			await tick();
-			const longText = "abcdefghijklmnopqrstuvwxyz0123456789";
-			stdin.write(longText);
+			stdin.write("abcdefghijklmno");
 			await tick();
 
 			const frame = lastFrame() ?? "";
-			// Frame should NOT contain the full text (it's viewport-clipped)
-			expect(frame.length).toBeLessThanOrEqual(20);
-			// Should contain the end of the text (cursor is at end)
-			expect(frame).toContain("9");
-			// Should NOT wrap to multiple lines
-			expect(frame.split("\n").length).toBe(1);
+			const lines = frame.split("\n");
+			// Should have 2 lines: "abcdefghij" and "klmno" + cursor
+			expect(lines.length).toBe(2);
+			expect(lines[0]).toBe("abcdefghij");
+			expect(lines[1]).toContain("klmno");
 		} finally {
 			unmount();
 		}

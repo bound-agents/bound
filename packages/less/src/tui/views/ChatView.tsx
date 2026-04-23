@@ -65,9 +65,9 @@ export function ChatView({
 }: ChatViewProps): React.ReactElement {
 	const [commandError, setCommandError] = useState<string | null>(null);
 	const [showHelp, setShowHelp] = useState(false);
-	const { columns } = useTerminalSize();
+	const { columns: termColumns } = useTerminalSize();
 	// "❯ " prompt takes 2 columns
-	const inputViewportWidth = columns - 2;
+	const inputColumns = termColumns - 2;
 
 	/**
 	 * Parse and handle slash commands.
@@ -195,7 +195,7 @@ export function ChatView({
 						placeholder="Enter message or /help"
 						onSubmit={handleSubmit}
 						disabled={connectionState !== "connected"}
-						viewportWidth={inputViewportWidth}
+						columns={inputColumns}
 					/>
 				</Box>
 			</Box>

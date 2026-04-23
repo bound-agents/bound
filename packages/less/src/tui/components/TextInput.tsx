@@ -1,64 +1,30 @@
-import { Text, useInput } from "ink";
+import { Box, Text, useInput } from "ink";
 import type React from "react";
-import { useRef, useState } from "react";
+import { useState } from "react";
 
 export interface TextInputProps {
 	onSubmit: (value: string) => void;
 	placeholder?: string;
 	disabled?: boolean;
-	/** When set, clips the rendered text to this many columns and scrolls
-	 *  horizontally to keep the cursor visible. Prevents line wrapping. */
-	viewportWidth?: number;
+	/** Available columns for text. When set, the component renders explicit
+	 *  line breaks at column boundaries instead of relying on terminal
+	 *  wrapping. This ensures Ink's logical line count matches the physical
+	 *  row count, preventing ghost lines when the input height changes. */
+	columns?: number;
 }
 
 /**
- * Compute the visible slice of text for a single-line viewport.
- *
- * Returns the string-index range [start, end) to render plus the new scroll
- * offset to feed back on the next call. The offset only changes when the
- * cursor exits the current viewport, so the view stays rock-steady during
- * normal typing.
- *
- * @param textLength  Total string length (value.length)
- * @param cursorPos   Current cursor position (string index, 0..textLength)
- * @param viewportWidth  Available columns
- * @param prevOffset  Previous scroll offset (pass 0 on first call)
+ * Break a string into lines of at most `cols` characters each.
+ * Each element is a substring; concatenating them with "" reproduces the
+ * original string. Exported for testing.
  */
-export function computeViewport(
-	textLength: number,
-	cursorPos: number,
-	viewportWidth: number,
-	prevOffset: number,
-): { start: number; end: number; offset: number } {
-	// Reserve 1 column for the cursor block (trailing inverse space at EOL,
-	// or the highlighted grapheme cluster mid-text — either way, 1 col).
-	const maxVisible = viewportWidth - 1;
-
-	// Everything fits — no scrolling needed.
-	if (textLength <= maxVisible) {
-		return { start: 0, end: textLength, offset: 0 };
+export function breakLines(value: string, cols: number): string[] {
+	if (value.length === 0) return [""];
+	const lines: string[] = [];
+	for (let i = 0; i < value.length; i += cols) {
+		lines.push(value.slice(i, i + cols));
 	}
-
-	let offset = prevOffset;
-
-	// Cursor moved past the right edge — scroll right.
-	if (cursorPos > offset + maxVisible) {
-		offset = cursorPos - maxVisible;
-	}
-
-	// Cursor moved before the left edge — scroll left.
-	if (cursorPos < offset) {
-		offset = cursorPos;
-	}
-
-	// Clamp.
-	offset = Math.max(0, offset);
-	offset = Math.min(offset, Math.max(0, textLength - maxVisible));
-
-	const start = offset;
-	const end = Math.min(start + maxVisible, textLength);
-
-	return { start, end, offset };
+	return lines;
 }
 
 /**
@@ -185,7 +151,7 @@ export function TextInput({
 	onSubmit,
 	placeholder = "",
 	disabled = false,
-	viewportWidth,
+	columns,
 }: TextInputProps): React.ReactElement {
 	// Combine value + cursor position in a single state atom so that
 	// rapid-fire keystrokes (which all close over the same render's state)
@@ -198,10 +164,6 @@ export function TextInput({
 		pos: 0,
 	});
 	const { value, pos } = state;
-
-	// Viewport scroll offset — persisted across renders via ref so the
-	// viewport stays stable when only the cursor moves within bounds.
-	const vpOffsetRef = useRef(0);
 
 	useInput(
 		(input, key) => {
@@ -312,20 +274,7 @@ export function TextInput({
 	// At end-of-string (pos === value.length), the cursor is rendered as a
 	// trailing inverse-video space so it remains visible.
 
-	// --- Viewport clipping (when viewportWidth is set) ---
-	// Compute the visible slice of the value string, keeping the cursor
-	// in view. Without viewportWidth the full string renders (legacy).
-	let visValue = value;
-	let visPos = pos;
-
-	if (viewportWidth != null && viewportWidth > 0) {
-		const vp = computeViewport(value.length, pos, viewportWidth, vpOffsetRef.current);
-		vpOffsetRef.current = vp.offset;
-		visValue = value.slice(vp.start, vp.end);
-		visPos = pos - vp.start;
-	}
-
-	const showPlaceholder = visValue.length === 0 && value.length === 0 && !disabled;
+	const showPlaceholder = value.length === 0 && !disabled;
 
 	if (showPlaceholder) {
 		return (
@@ -341,26 +290,74 @@ export function TextInput({
 		return <Text dimColor={value.length === 0}>{value.length === 0 ? placeholder : value}</Text>;
 	}
 
-	const cluster = graphemeAt(visValue, visPos);
+	// --- Explicit line breaking (when `columns` is set) ---
+	// Instead of relying on terminal wrapping (which creates physical rows
+	// without \n, causing Ink's log-update to under-erase and leave ghost
+	// lines), break the text into explicit lines so each physical row
+	// corresponds to a logical line in Ink's output.
+	if (columns != null && columns > 0) {
+		const lines = breakLines(value, columns);
+		const cursorLine = Math.floor(pos / columns);
+		const cursorCol = pos % columns;
+
+		return (
+			<Box flexDirection="column">
+				{lines.map((line, lineIdx) => {
+					if (lineIdx === cursorLine) {
+						// This line contains the cursor.
+						const cluster = graphemeAt(line, cursorCol);
+						if (cluster === null) {
+							// Cursor at end of this line (or end of string).
+							return (
+								// biome-ignore lint/suspicious/noArrayIndexKey: lines are immutable per render
+								<Text key={lineIdx}>
+									{line}
+									<Text inverse> </Text>
+								</Text>
+							);
+						}
+						const cStart = cursorCol;
+						const cEnd = cStart + cluster.length;
+						return (
+							// biome-ignore lint/suspicious/noArrayIndexKey: lines are immutable per render
+							<Text key={lineIdx}>
+								{line.slice(0, cStart)}
+								<Text inverse>{cluster}</Text>
+								{line.slice(cEnd)}
+							</Text>
+						);
+					}
+					// Non-cursor line.
+					return (
+						// biome-ignore lint/suspicious/noArrayIndexKey: lines are immutable per render
+						<Text key={lineIdx}>{line}</Text>
+					);
+				})}
+			</Box>
+		);
+	}
+
+	// --- Single-line rendering (no columns prop) ---
+	const cluster = graphemeAt(value, pos);
 
 	if (cluster === null) {
 		// Cursor is past end-of-string — render as a trailing inverse space.
 		return (
 			<Text>
-				{visValue}
+				{value}
 				<Text inverse> </Text>
 			</Text>
 		);
 	}
 
-	const clusterStart = visPos; // by invariant, pos sits on a boundary
+	const clusterStart = pos; // by invariant, pos sits on a boundary
 	const clusterEnd = clusterStart + cluster.length;
 
 	return (
 		<Text>
-			{visValue.slice(0, clusterStart)}
+			{value.slice(0, clusterStart)}
 			<Text inverse>{cluster}</Text>
-			{visValue.slice(clusterEnd)}
+			{value.slice(clusterEnd)}
 		</Text>
 	);
 }
