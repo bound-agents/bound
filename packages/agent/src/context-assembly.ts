@@ -68,6 +68,308 @@ export interface ContextAssemblyResult {
 	systemSuffix?: string;
 }
 
+export interface VolatileContext {
+	/** Joined content string of all volatile context lines */
+	content: string;
+	/** Token estimate for the volatile context */
+	tokenEstimate: number;
+	/** Enrichment section start index for budget pressure rebuild */
+	enrichmentStartIdx: number;
+	/** Enrichment section end index for budget pressure rebuild */
+	enrichmentEndIdx: number;
+	/** Snapshot of all volatile lines for budget pressure splicing */
+	allVolatileLines: string[];
+	/** Memory delta lines for tier-aware shedding */
+	memoryDeltaLines: string[];
+	/** Task digest lines for tier-aware shedding */
+	taskDigestLines: string[];
+	/** Tiered enrichment structure for shedding */
+	tiers?: TieredEnrichment;
+	/** Cross-thread sources for debug */
+	crossThreadSources?: CrossThreadSource[];
+	/** Total memory count for header reconstruction */
+	totalMemCount: number;
+}
+
+export function buildVolatileContext(params: {
+	db: Database;
+	threadId: string;
+	taskId?: string;
+	userId: string;
+	siteId?: string;
+	hostName?: string;
+	currentModel?: string;
+	relayInfo?: ContextParams["relayInfo"];
+	platformContext?: ContextParams["platformContext"];
+	systemPromptAddition?: string;
+	/** Last user message text for relevance-aware memory boosting */
+	userMessageText?: string;
+	/** Thread summary for keyword seeding */
+	threadSummary?: string;
+	/** Referenced inactive skill name, if any */
+	inactiveSkillRef?: string;
+}): VolatileContext {
+	const suffixLines: string[] = [];
+	suffixLines.push(`User ID: ${params.userId}, Thread ID: ${params.threadId}`);
+
+	// AC5.4: Model location when inference is relayed
+	if (params.relayInfo) {
+		suffixLines.push(
+			`You are: ${params.relayInfo.model} (via ${params.relayInfo.provider} on host ${params.relayInfo.remoteHost}, relayed from ${params.relayInfo.localHost})`,
+		);
+	}
+
+	// Platform silence semantics: user only sees what you explicitly send.
+	if (params.platformContext) {
+		const toolRef =
+			params.platformContext.toolNames && params.platformContext.toolNames.length > 0
+				? params.platformContext.toolNames.map((n) => `\`${n}\``).join(" or ")
+				: "the platform send tool";
+		suffixLines.push("");
+		suffixLines.push(`## Platform Context: ${params.platformContext.platform}`);
+		suffixLines.push(
+			"The user of this conversation is on an external platform and cannot see your responses directly.",
+		);
+		suffixLines.push(
+			`To send a message to the user, call ${toolRef}. If you do not call it, the user sees nothing (silence).`,
+		);
+		suffixLines.push(
+			"Each call to the tool produces one separate message to the user. " +
+				"Multiple calls are allowed and delivered in order.",
+		);
+
+		// Platform-specific formatting constraints
+		if (
+			params.platformContext.platform === "discord" ||
+			params.platformContext.platform === "discord-interaction"
+		) {
+			suffixLines.push(
+				"Discord formatting: **bold**, *italic*, __underline__, ~~strikethrough~~, " +
+					"`inline code`, ```code blocks```, > block quotes, >>> multi-line quotes, " +
+					"# ## ### headers, -# subtext, [masked links](url), ||spoilers||, " +
+					"- bulleted lists (2-space indent to nest). " +
+					"Tables do NOT render — use lists or code blocks instead. " +
+					"Messages over 2000 characters are rejected; split long content across multiple calls.",
+			);
+		}
+	}
+
+	// Include current model name (moved out of orientation for cache stability)
+	if (params.currentModel) {
+		suffixLines.push(`Current Model: ${params.currentModel}`);
+	}
+
+	// Stage 5.5: VOLATILE ENRICHMENT (replaces raw memory dump)
+	const enrichmentBaseline = computeBaseline(params.db, params.threadId, params.taskId, false);
+	const {
+		memoryDeltaLines,
+		taskDigestLines,
+		tiers: enrichmentTiers,
+		graphCount,
+		recencyCount,
+	} = buildVolatileEnrichment(
+		params.db,
+		enrichmentBaseline,
+		undefined,
+		undefined,
+		params.userMessageText,
+		params.threadSummary,
+	);
+
+	// Query total memory count for the header line
+	const totalMemCount = (
+		params.db.prepare("SELECT COUNT(*) AS c FROM semantic_memory WHERE deleted = 0").get() as {
+			c: number;
+		}
+	).c;
+
+	// Format and append enrichment, recording start/end indices
+	const memChangedCount = memoryDeltaLines.filter((l) => l.startsWith("- ")).length;
+	let memHeaderLine = `Memory: ${totalMemCount} entries`;
+	if (graphCount !== undefined && graphCount > 0) {
+		memHeaderLine += ` (${graphCount} via graph, ${recencyCount ?? 0} via recency)`;
+	} else if (memChangedCount > 0) {
+		memHeaderLine += ` (${memChangedCount} changed since your last turn in this thread)`;
+	}
+
+	// Record where enrichment section begins (in suffixLines)
+	const enrichmentStartIdx = suffixLines.length;
+	suffixLines.push("");
+	suffixLines.push(memHeaderLine);
+	if (memoryDeltaLines.length > 0) {
+		suffixLines.push(...memoryDeltaLines);
+	}
+	if (taskDigestLines.length > 0) {
+		suffixLines.push("");
+		suffixLines.push(...taskDigestLines);
+	}
+	// Record where enrichment section ends
+	const enrichmentEndIdx = suffixLines.length;
+
+	// Include cross-thread digest
+	let crossThreadSources: CrossThreadSource[] | undefined;
+	const crossThreadResult = buildCrossThreadDigest(params.db, params.userId, params.threadId);
+	if (crossThreadResult.text) {
+		suffixLines.push("");
+		suffixLines.push(crossThreadResult.text);
+	}
+	if (crossThreadResult.sources.length > 0) {
+		crossThreadSources = crossThreadResult.sources;
+	}
+
+	// R-E20: Inject cross-thread file modification notifications (capped at 10)
+	try {
+		const FILE_NOTIF_CAP = 10;
+		const threadFiles = params.db
+			.query(
+				"SELECT DISTINCT key FROM semantic_memory WHERE key LIKE '_internal.file_thread.%' AND deleted = 0",
+			)
+			.all() as Array<{ key: string }>;
+
+		let fileNotifCount = 0;
+		for (const { key } of threadFiles) {
+			if (fileNotifCount >= FILE_NOTIF_CAP) break;
+			const filePath = key.replace("_internal.file_thread.", "");
+			const lastThread = getLastThreadForFile(params.db, filePath);
+			if (lastThread && lastThread !== params.threadId) {
+				const threadRow2 = params.db
+					.query("SELECT title FROM threads WHERE id = ?")
+					.get(lastThread) as {
+					title: string | null;
+				} | null;
+				const threadTitle = threadRow2?.title || lastThread;
+				suffixLines.push("");
+				suffixLines.push(getFileThreadNotificationMessage(filePath, threadTitle));
+				fileNotifCount++;
+			}
+		}
+	} catch (_error) {
+		// Non-fatal: file thread notification query failed
+		// No logger available in this context
+	}
+
+	// Inject active skill index (AC3.1, AC3.2)
+	try {
+		const activeSkills = params.db
+			.query(
+				"SELECT name, description FROM skills WHERE status = 'active' AND deleted = 0 ORDER BY last_activated_at DESC",
+			)
+			.all() as Array<{ name: string; description: string }>;
+
+		if (activeSkills.length > 0) {
+			suffixLines.push("");
+			suffixLines.push(`SKILLS (${activeSkills.length} active):`);
+			for (const s of activeSkills) {
+				suffixLines.push(`  ${s.name} — ${s.description}`);
+			}
+		}
+	} catch (_error) {
+		// Non-fatal: active skills query failed
+		// No logger available in this context
+	}
+
+	// Inject operator retirement notifications (24h window) (AC3.6, AC3.7)
+	try {
+		const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+		const retiredByOperator = params.db
+			.query(
+				`SELECT name, retired_reason FROM skills
+				 WHERE status = 'retired'
+				   AND retired_by = 'operator'
+				   AND modified_at > ?
+				   AND deleted = 0`,
+			)
+			.all(cutoff24h) as Array<{ name: string; retired_reason: string | null }>;
+
+		for (const s of retiredByOperator) {
+			const reason = s.retired_reason ? `"${s.retired_reason}"` : "no reason given";
+			suffixLines.push("");
+			suffixLines.push(
+				`[Skill notification] Skill '${s.name}' was retired by operator: ${reason}.`,
+			);
+		}
+	} catch (_error) {
+		// Non-fatal: retired skills query failed
+		// No logger available in this context
+	}
+
+	// Inject advisory resolution notifications (24h window, capped at 5, deduped by title).
+	// Closes the feedback loop so the agent knows when its advisories were acted on.
+	if (params.siteId) {
+		try {
+			const ADVISORY_NOTIF_CAP = 5;
+			const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+			const resolvedAdvisories = params.db
+				.query(
+					`SELECT title, status FROM advisories
+					 WHERE created_by = ?
+					   AND status IN ('approved', 'applied', 'dismissed')
+					   AND resolved_at > ?
+					   AND deleted = 0
+					 ORDER BY resolved_at DESC`,
+				)
+				.all(params.siteId, cutoff24h) as Array<{ title: string; status: string }>;
+
+			// Deduplicate by title — group identical titles and emit a counted line.
+			const titleGroups = new Map<string, { status: string; count: number }>();
+			for (const adv of resolvedAdvisories) {
+				const existing = titleGroups.get(adv.title);
+				if (existing) {
+					existing.count++;
+				} else {
+					titleGroups.set(adv.title, { status: adv.status, count: 1 });
+				}
+			}
+
+			let notifCount = 0;
+			for (const [title, { status, count }] of titleGroups) {
+				if (notifCount >= ADVISORY_NOTIF_CAP) break;
+				const countStr = count > 1 ? ` (×${count})` : "";
+				suffixLines.push("");
+				suffixLines.push(
+					`[Advisory notification] Advisory '${title}' was ${status} by operator${countStr}.`,
+				);
+				notifCount++;
+			}
+		} catch (_error) {
+			// Non-fatal: resolved advisories query failed
+			// No logger available in this context
+		}
+	}
+
+	// Inject inactive skill reference note (AC3.4)
+	if (params.inactiveSkillRef) {
+		suffixLines.push("");
+		suffixLines.push(`Referenced skill '${params.inactiveSkillRef}' is not active.`);
+	}
+
+	// Append systemPromptAddition if present (AC2.2)
+	if (params.systemPromptAddition) {
+		suffixLines.push("");
+		suffixLines.push(params.systemPromptAddition);
+	}
+
+	// Capture full content for return
+	const allVolatileLines = [...suffixLines];
+	const content = suffixLines.join("\n");
+
+	// Calculate token estimate
+	const tokenEstimate = countTokens(content);
+
+	return {
+		content,
+		tokenEstimate,
+		enrichmentStartIdx,
+		enrichmentEndIdx,
+		allVolatileLines,
+		memoryDeltaLines,
+		taskDigestLines,
+		tiers: enrichmentTiers,
+		crossThreadSources,
+		totalMemCount,
+	};
+}
+
 /**
  * Estimates the character length of message content for token-budget purposes.
  * Handles both string content and ContentBlock[] content (produced by
@@ -1060,7 +1362,8 @@ Original output was too large for the context window. If you need the full conte
 	const systemMsgCount = assembled.length;
 
 	// Track inactive skill reference for volatile context note (AC3.4)
-	let inactiveSkillRef: string | null = null;
+	let inactiveSkillRef: string | undefined;
+	inactiveSkillRef = undefined;
 
 	// Inject task-referenced skill body as system message (AC3.3, AC3.5)
 	// Must be outside the !noHistory guard so it works when noHistory = true
@@ -1163,58 +1466,6 @@ Original output was too large for the context window. If you need the full conte
 	let suffixContent: string | undefined;
 	if (!noHistory) {
 		// --- VARYING SUFFIX: per-thread content that busts the cache ---
-		const suffixLines: string[] = [];
-		suffixLines.push(`User ID: ${userId}, Thread ID: ${threadId}`);
-
-		// AC5.4: Model location when inference is relayed
-		if (relayInfo) {
-			suffixLines.push(
-				`You are: ${relayInfo.model} (via ${relayInfo.provider} on host ${relayInfo.remoteHost}, relayed from ${relayInfo.localHost})`,
-			);
-		}
-
-		// Platform silence semantics: user only sees what you explicitly send.
-		if (platformContext) {
-			const toolRef =
-				platformContext.toolNames && platformContext.toolNames.length > 0
-					? platformContext.toolNames.map((n) => `\`${n}\``).join(" or ")
-					: "the platform send tool";
-			suffixLines.push("");
-			suffixLines.push(`## Platform Context: ${platformContext.platform}`);
-			suffixLines.push(
-				"The user of this conversation is on an external platform and cannot see your responses directly.",
-			);
-			suffixLines.push(
-				`To send a message to the user, call ${toolRef}. If you do not call it, the user sees nothing (silence).`,
-			);
-			suffixLines.push(
-				"Each call to the tool produces one separate message to the user. " +
-					"Multiple calls are allowed and delivered in order.",
-			);
-
-			// Platform-specific formatting constraints
-			if (
-				platformContext.platform === "discord" ||
-				platformContext.platform === "discord-interaction"
-			) {
-				suffixLines.push(
-					"Discord formatting: **bold**, *italic*, __underline__, ~~strikethrough~~, " +
-						"`inline code`, ```code blocks```, > block quotes, >>> multi-line quotes, " +
-						"# ## ### headers, -# subtext, [masked links](url), ||spoilers||, " +
-						"- bulleted lists (2-space indent to nest). " +
-						"Tables do NOT render — use lists or code blocks instead. " +
-						"Messages over 2000 characters are rejected; split long content across multiple calls.",
-				);
-			}
-		}
-
-		// Include current model name (moved out of orientation for cache stability)
-		if (currentModel) {
-			suffixLines.push(`Current Model: ${currentModel}`);
-		}
-
-		// Stage 5.5: VOLATILE ENRICHMENT (replaces raw memory dump)
-		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, false);
 		// Extract latest user message for relevance-aware memory boosting
 		const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
 		const userMessageText = lastUserMsg?.content ?? undefined;
@@ -1223,206 +1474,47 @@ Original output was too large for the context window. If you need the full conte
 			summary: string | null;
 		} | null;
 		const threadSummary = threadRow?.summary ?? undefined;
-		const {
-			memoryDeltaLines,
-			taskDigestLines,
-			tiers: enrichmentTiersL1,
-			graphCount,
-			recencyCount,
-		} = buildVolatileEnrichment(
+
+		const volatileCtx = buildVolatileContext({
 			db,
-			enrichmentBaseline,
-			undefined,
-			undefined,
+			threadId,
+			taskId: params.taskId,
+			userId,
+			siteId,
+			hostName,
+			currentModel,
+			relayInfo,
+			platformContext,
+			systemPromptAddition: params.systemPromptAddition,
 			userMessageText,
 			threadSummary,
-		);
-		enrichmentTiers = enrichmentTiersL1;
-		taskDigestLinesSnapshot = taskDigestLines;
+			inactiveSkillRef,
+		});
 
-		// Query total memory count for the header line
-		totalMemCount = (
-			db.prepare("SELECT COUNT(*) AS c FROM semantic_memory WHERE deleted = 0").get() as {
-				c: number;
-			}
-		).c;
-
-		// Format and append enrichment, recording start/end indices
-		const memChangedCount = memoryDeltaLines.filter((l) => l.startsWith("- ")).length;
-		let memHeaderLine = `Memory: ${totalMemCount} entries`;
-		if (graphCount !== undefined && graphCount > 0) {
-			memHeaderLine += ` (${graphCount} via graph, ${recencyCount ?? 0} via recency)`;
-		} else if (memChangedCount > 0) {
-			memHeaderLine += ` (${memChangedCount} changed since your last turn in this thread)`;
-		}
-
-		// Record where enrichment section begins (in suffixLines)
-		enrichmentStartIdx = suffixLines.length;
-		suffixLines.push("");
-		suffixLines.push(memHeaderLine);
-		if (memoryDeltaLines.length > 0) {
-			suffixLines.push(...memoryDeltaLines);
-		}
-		if (taskDigestLines.length > 0) {
-			suffixLines.push("");
-			suffixLines.push(...taskDigestLines);
-		}
-		// Record where enrichment section ends
-		enrichmentEndIdx = suffixLines.length;
-
-		// Include cross-thread digest
-		const crossThreadResult = buildCrossThreadDigest(db, userId, threadId);
-		if (crossThreadResult.text) {
-			suffixLines.push("");
-			suffixLines.push(crossThreadResult.text);
-		}
-		if (crossThreadResult.sources.length > 0) {
-			crossThreadSources = crossThreadResult.sources;
-		}
-
-		// R-E20: Inject cross-thread file modification notifications (capped at 10)
-		try {
-			const FILE_NOTIF_CAP = 10;
-			const threadFiles = db
-				.query(
-					"SELECT DISTINCT key FROM semantic_memory WHERE key LIKE '_internal.file_thread.%' AND deleted = 0",
-				)
-				.all() as Array<{ key: string }>;
-
-			let fileNotifCount = 0;
-			for (const { key } of threadFiles) {
-				if (fileNotifCount >= FILE_NOTIF_CAP) break;
-				const filePath = key.replace("_internal.file_thread.", "");
-				const lastThread = getLastThreadForFile(db, filePath);
-				if (lastThread && lastThread !== threadId) {
-					const threadRow2 = db.query("SELECT title FROM threads WHERE id = ?").get(lastThread) as {
-						title: string | null;
-					} | null;
-					const threadTitle = threadRow2?.title || lastThread;
-					suffixLines.push("");
-					suffixLines.push(getFileThreadNotificationMessage(filePath, threadTitle));
-					fileNotifCount++;
-				}
-			}
-		} catch (_error) {
-			// Non-fatal: file thread notification query failed
-			// No logger available in this context
-		}
-
-		// Inject active skill index (AC3.1, AC3.2)
-		try {
-			const activeSkills = db
-				.query(
-					"SELECT name, description FROM skills WHERE status = 'active' AND deleted = 0 ORDER BY last_activated_at DESC",
-				)
-				.all() as Array<{ name: string; description: string }>;
-
-			if (activeSkills.length > 0) {
-				suffixLines.push("");
-				suffixLines.push(`SKILLS (${activeSkills.length} active):`);
-				for (const s of activeSkills) {
-					suffixLines.push(`  ${s.name} — ${s.description}`);
-				}
-			}
-		} catch (_error) {
-			// Non-fatal: active skills query failed
-			// No logger available in this context
-		}
-
-		// Inject operator retirement notifications (24h window) (AC3.6, AC3.7)
-		try {
-			const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-			const retiredByOperator = db
-				.query(
-					`SELECT name, retired_reason FROM skills
-					 WHERE status = 'retired'
-					   AND retired_by = 'operator'
-					   AND modified_at > ?
-					   AND deleted = 0`,
-				)
-				.all(cutoff24h) as Array<{ name: string; retired_reason: string | null }>;
-
-			for (const s of retiredByOperator) {
-				const reason = s.retired_reason ? `"${s.retired_reason}"` : "no reason given";
-				suffixLines.push("");
-				suffixLines.push(
-					`[Skill notification] Skill '${s.name}' was retired by operator: ${reason}.`,
-				);
-			}
-		} catch (_error) {
-			// Non-fatal: retired skills query failed
-			// No logger available in this context
-		}
-
-		// Inject advisory resolution notifications (24h window, capped at 5, deduped by title).
-		// Closes the feedback loop so the agent knows when its advisories were acted on.
-		if (siteId) {
-			try {
-				const ADVISORY_NOTIF_CAP = 5;
-				const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-				const resolvedAdvisories = db
-					.query(
-						`SELECT title, status FROM advisories
-						 WHERE created_by = ?
-						   AND status IN ('approved', 'applied', 'dismissed')
-						   AND resolved_at > ?
-						   AND deleted = 0
-						 ORDER BY resolved_at DESC`,
-					)
-					.all(siteId, cutoff24h) as Array<{ title: string; status: string }>;
-
-				// Deduplicate by title — group identical titles and emit a counted line.
-				const titleGroups = new Map<string, { status: string; count: number }>();
-				for (const adv of resolvedAdvisories) {
-					const existing = titleGroups.get(adv.title);
-					if (existing) {
-						existing.count++;
-					} else {
-						titleGroups.set(adv.title, { status: adv.status, count: 1 });
-					}
-				}
-
-				let notifCount = 0;
-				for (const [title, { status, count }] of titleGroups) {
-					if (notifCount >= ADVISORY_NOTIF_CAP) break;
-					const countStr = count > 1 ? ` (×${count})` : "";
-					suffixLines.push("");
-					suffixLines.push(
-						`[Advisory notification] Advisory '${title}' was ${status} by operator${countStr}.`,
-					);
-					notifCount++;
-				}
-			} catch (_error) {
-				// Non-fatal: resolved advisories query failed
-				// No logger available in this context
-			}
-		}
-
-		// Inject inactive skill reference note (AC3.4)
-		if (inactiveSkillRef) {
-			suffixLines.push("");
-			suffixLines.push(`Referenced skill '${inactiveSkillRef}' is not active.`);
-		}
-
-		// Append systemPromptAddition if present (AC2.2)
-		if (params.systemPromptAddition) {
-			suffixLines.push("");
-			suffixLines.push(params.systemPromptAddition);
-		}
-
-		// Capture full suffix content for budget pressure rebuild
-		allVolatileLines = [...suffixLines];
-		suffixContent = suffixLines.join("\n");
+		suffixContent = volatileCtx.content;
+		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, false);
+		enrichmentTiers = volatileCtx.tiers;
+		crossThreadSources = volatileCtx.crossThreadSources;
+		enrichmentStartIdx = volatileCtx.enrichmentStartIdx;
+		enrichmentEndIdx = volatileCtx.enrichmentEndIdx;
+		allVolatileLines = volatileCtx.allVolatileLines;
+		totalMemCount = volatileCtx.totalMemCount;
+		taskDigestLinesSnapshot = volatileCtx.taskDigestLines;
 
 		// Track volatile section tokens (memory, task-digest, volatile-other)
 		// These now live in the suffix but are still tracked for debug
-		const memoryLines = suffixLines.slice(enrichmentStartIdx, enrichmentEndIdx);
+		const memoryLines = volatileCtx.allVolatileLines.slice(
+			volatileCtx.enrichmentStartIdx,
+			volatileCtx.enrichmentEndIdx,
+		);
 		const memoryTokens = memoryLines.length > 0 ? countTokens(memoryLines.join("\n")) : 0;
 
 		const taskDigestTokens =
-			taskDigestLines.length > 0 ? countTokens(taskDigestLines.join("\n")) : 0;
+			volatileCtx.taskDigestLines.length > 0
+				? countTokens(volatileCtx.taskDigestLines.join("\n"))
+				: 0;
 
-		const totalVolatileTokens = suffixLines.length > 0 ? countTokens(suffixLines.join("\n")) : 0;
+		const totalVolatileTokens = volatileCtx.tokenEstimate;
 		const volatileOtherTokens = totalVolatileTokens - memoryTokens - taskDigestTokens;
 
 		if (memoryTokens > 0) sections.push({ name: "memory", tokens: memoryTokens });
