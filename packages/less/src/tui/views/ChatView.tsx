@@ -12,6 +12,7 @@ import {
 	TextInput,
 	ToolCallCard,
 } from "../components";
+import { useTerminalSize } from "../hooks/useTerminalSize";
 
 export interface ChatViewProps {
 	client: BoundClient | null;
@@ -64,6 +65,9 @@ export function ChatView({
 }: ChatViewProps): React.ReactElement {
 	const [commandError, setCommandError] = useState<string | null>(null);
 	const [showHelp, setShowHelp] = useState(false);
+	const { columns } = useTerminalSize();
+	// "❯ " prompt takes 2 columns
+	const inputViewportWidth = columns - 2;
 
 	/**
 	 * Parse and handle slash commands.
@@ -191,6 +195,7 @@ export function ChatView({
 						placeholder="Enter message or /help"
 						onSubmit={handleSubmit}
 						disabled={connectionState !== "connected"}
+						viewportWidth={inputViewportWidth}
 					/>
 				</Box>
 			</Box>
