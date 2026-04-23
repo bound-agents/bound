@@ -2,7 +2,6 @@ import type { ContentBlock } from "@bound/llm";
 import type { Message } from "@bound/shared";
 import { Box, Text } from "ink";
 import type React from "react";
-import { Collapsible } from "./Collapsible";
 import { Markdown } from "./Markdown";
 
 const TOOL_RESULT_MAX_LINES = 5;
@@ -45,7 +44,7 @@ export interface MessageBlockProps {
  * - `"user"`: Green "You:" prefix + content text
  * - `"assistant"`: Blue "Agent:" prefix + content (handle both string and ContentBlock[])
  * - `"tool_call"`: Dimmed tool invocation with tool name and args summary
- * - `"tool_result"`: Collapsible output with tool name header
+ * - `"tool_result"`: Indented output with success/error indicator
  * - Pending placeholder: dimmed "Waiting for tool result..." text
  */
 export function MessageBlock({ message }: MessageBlockProps): React.ReactElement {
@@ -180,13 +179,23 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 			? allLines.slice(0, TOOL_RESULT_MAX_LINES).join("\n")
 			: allLines.join("\n");
 
+		// Render as indented output with a success/error indicator.
+		// The preceding tool_call message already identifies the tool,
+		// so no header or Collapsible wrapper is needed here.
+		const isError = message.exit_code != null && message.exit_code !== 0;
+		const indicator = isError ? "✗" : "✓";
+		const indicatorColor = isError ? "red" : "green";
+
 		return (
-			<Collapsible header={displayToolName(message.tool_name || "tool")} defaultOpen={true}>
-				<Text>{displayText}</Text>
+			<Box flexDirection="column" paddingLeft={2}>
+				<Box>
+					<Text color={indicatorColor}>{indicator} </Text>
+					<Text>{displayText}</Text>
+				</Box>
 				{truncated && (
-					<Text dimColor>... {allLines.length - TOOL_RESULT_MAX_LINES} more lines</Text>
+					<Text dimColor> ... {allLines.length - TOOL_RESULT_MAX_LINES} more lines</Text>
 				)}
-			</Collapsible>
+			</Box>
 		);
 	}
 

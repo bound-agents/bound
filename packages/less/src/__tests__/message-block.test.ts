@@ -165,6 +165,70 @@ describe("MessageBlock", () => {
 	});
 
 	describe("tool_result rendering", () => {
+		it("does not render a collapsible header with tool name", async () => {
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-no-header",
+						role: "tool_result",
+						content: "some output",
+						tool_name: "boundless_bash",
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame();
+			// Should NOT render a collapsible header like "▾ bash" or "▸ bash"
+			expect(frame).not.toContain("▾");
+			expect(frame).not.toContain("▸");
+			// Should render the output directly
+			expect(frame).toContain("some output");
+		});
+
+		it("shows a success indicator for non-error results", async () => {
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-success",
+						role: "tool_result",
+						content: "file written",
+						tool_name: "boundless_write",
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame();
+			// Should show a success marker (checkmark)
+			expect(frame).toContain("✓");
+		});
+
+		it("shows an error indicator for error results", async () => {
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-err",
+						role: "tool_result",
+						content: "command not found",
+						tool_name: "boundless_bash",
+						exit_code: 1,
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame();
+			// Should show an error marker (cross)
+			expect(frame).toContain("✗");
+		});
+
 		it("truncates tool_result string content to 5 lines", async () => {
 			const lines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
 			const content = lines.join("\n");

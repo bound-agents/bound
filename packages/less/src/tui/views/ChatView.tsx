@@ -126,7 +126,7 @@ export function ChatView({
 			<Box height={0}>
 				<Static items={messages}>
 					{(msg) => (
-						<Box key={msg.id} marginBottom={1}>
+						<Box key={msg.id} marginBottom={msg.role === "tool_call" ? 0 : 1}>
 							<MessageBlock message={msg} />
 						</Box>
 					)}
