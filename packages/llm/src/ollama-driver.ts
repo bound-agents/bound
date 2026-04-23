@@ -61,8 +61,18 @@ interface OllamaStreamResponse {
 
 export function toOllamaMessages(messages: LLMMessage[]): OllamaMessage[] {
 	return messages
-		.filter((msg) => msg.role !== "developer" && msg.role !== "cache")
+		.filter((msg) => msg.role !== "cache")
 		.map((msg) => {
+			// Developer role maps to system role in Ollama
+			if (msg.role === "developer") {
+				const text =
+					typeof msg.content === "string" ? msg.content : extractTextFromBlocks(msg.content);
+				return {
+					role: "system" as const,
+					content: text,
+				};
+			}
+
 			// Handle array content blocks
 			if (Array.isArray(msg.content)) {
 				const textContent = extractTextFromBlocks(msg.content);

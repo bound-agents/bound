@@ -13,7 +13,7 @@ type OpenAIContentPart =
 	| { type: "image_url"; image_url: { url: string; detail?: "auto" | "low" | "high" } };
 
 interface OpenAIMessage {
-	role: "user" | "assistant" | "tool" | "system";
+	role: "user" | "assistant" | "tool" | "system" | "developer";
 	content: string | OpenAIContentPart[] | null;
 	tool_calls?: Array<{
 		id: string;
@@ -72,7 +72,18 @@ export function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 	const result: OpenAIMessage[] = [];
 
 	for (const msg of messages) {
-		// Skip cache role — it's a marker for drivers. Developer is passed through natively.
+		// Developer role passes through natively to OpenAI. Cache role is dropped.
+		if (msg.role === "developer") {
+			const text =
+				typeof msg.content === "string" ? msg.content : extractTextFromBlocks(msg.content);
+			result.push({
+				role: "developer",
+				content: text,
+			});
+			continue;
+		}
+
+		// Skip cache role — it's a marker for drivers only
 		if (msg.role === "cache") {
 			continue;
 		}
