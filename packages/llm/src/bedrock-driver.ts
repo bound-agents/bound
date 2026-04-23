@@ -5,6 +5,7 @@ import {
 } from "@aws-sdk/client-bedrock-runtime";
 import type { Message, SystemContentBlock, Tool } from "@aws-sdk/client-bedrock-runtime";
 import { formatError } from "@bound/shared";
+import { CryptoHasher } from "bun";
 import { toBedrockRequest } from "./bedrock/convert";
 import { validateBedrockRequest } from "./bedrock/validate";
 import { withRetry } from "./retry";
@@ -14,6 +15,126 @@ import { LLMError } from "./types";
 // --- legacy helper removed: runtime path goes through toBedrockRequest() + ---
 // --- validateBedrockRequest(). Tests now import toBedrockMessages from    ---
 // --- ./bedrock/convert directly. See 2026-04-21 driver-swap commit.       ---
+
+// ─── Cache-stability debug logging ─────────────────────────────────────────
+// Enable with BOUND_DEBUG_BEDROCK_CACHE=1 to emit per-section fingerprints
+// of each Bedrock request. Compare consecutive lines to find which section
+// is busting the prompt cache.
+//
+// Set BOUND_DEBUG_BEDROCK_CACHE=full to also dump the complete raw request
+// JSON (large — use only for targeted debugging).
+
+const CACHE_DEBUG = process.env.BOUND_DEBUG_BEDROCK_CACHE;
+let cacheDebugSeq = 0;
+
+/** SHA-256 fingerprint of a JSON-serializable value, truncated to 12 hex chars. */
+function fingerprint(value: unknown): string {
+	const hasher = new CryptoHasher("sha256");
+	hasher.update(stableStringify(value));
+	return hasher.digest("hex").slice(0, 12);
+}
+
+/**
+ * Deterministic JSON serializer that replaces Uint8Array with a placeholder
+ * (binary image data is not useful for cache-key comparison and would bloat
+ * the output). Object keys are sorted to eliminate insertion-order jitter.
+ */
+function stableStringify(value: unknown): string {
+	return JSON.stringify(value, (_key, val) => {
+		if (val instanceof Uint8Array) return `<Uint8Array:${val.byteLength}>`;
+		if (val && typeof val === "object" && !Array.isArray(val)) {
+			const sorted: Record<string, unknown> = {};
+			for (const k of Object.keys(val).sort()) sorted[k] = (val as Record<string, unknown>)[k];
+			return sorted;
+		}
+		return val;
+	});
+}
+
+/**
+ * Find the index of the message carrying the cachePoint marker (if any).
+ * Returns -1 when no cachePoint is placed.
+ */
+function findCachePointIndex(messages: unknown[]): number {
+	for (let i = 0; i < messages.length; i++) {
+		const msg = messages[i] as Record<string, unknown>;
+		if (Array.isArray(msg.content)) {
+			for (const block of msg.content as Array<Record<string, unknown>>) {
+				if ("cachePoint" in block) return i;
+			}
+		}
+	}
+	return -1;
+}
+
+interface CacheDebugEntry {
+	seq: number;
+	messageCount: number;
+	cachePointIdx: number;
+	fingerprints: {
+		system: string | null;
+		prefixMessages: string;
+		suffixMessages: string;
+		toolConfig: string | null;
+		inferenceConfig: string;
+		additionalFields: string | null;
+		full: string;
+	};
+}
+
+function emitCacheDebug(raw: {
+	modelId: unknown;
+	messages: unknown;
+	system?: unknown;
+	inferenceConfig: unknown;
+	additionalModelRequestFields?: unknown;
+	toolConfig?: unknown;
+}): CacheDebugEntry {
+	const seq = ++cacheDebugSeq;
+	const messages = Array.isArray(raw.messages) ? raw.messages : [];
+	const cpIdx = findCachePointIndex(messages);
+
+	const prefix = cpIdx >= 0 ? messages.slice(0, cpIdx + 1) : messages;
+	const suffix = cpIdx >= 0 ? messages.slice(cpIdx + 1) : [];
+
+	const entry: CacheDebugEntry = {
+		seq,
+		messageCount: messages.length,
+		cachePointIdx: cpIdx,
+		fingerprints: {
+			system: raw.system != null ? fingerprint(raw.system) : null,
+			prefixMessages: fingerprint(prefix),
+			suffixMessages: fingerprint(suffix),
+			toolConfig: raw.toolConfig != null ? fingerprint(raw.toolConfig) : null,
+			inferenceConfig: fingerprint(raw.inferenceConfig),
+			additionalFields:
+				raw.additionalModelRequestFields != null
+					? fingerprint(raw.additionalModelRequestFields)
+					: null,
+			full: fingerprint(raw),
+		},
+	};
+
+	console.error(
+		`[bedrock-cache-debug] #${seq} msgs=${messages.length} cp=${cpIdx} ` +
+			`sys=${entry.fingerprints.system ?? "-"} ` +
+			`prefix=${entry.fingerprints.prefixMessages} ` +
+			`suffix=${entry.fingerprints.suffixMessages} ` +
+			`tools=${entry.fingerprints.toolConfig ?? "-"} ` +
+			`inf=${entry.fingerprints.inferenceConfig} ` +
+			`full=${entry.fingerprints.full}`,
+	);
+
+	if (CACHE_DEBUG === "full") {
+		console.error(`[bedrock-cache-debug] #${seq} raw=${stableStringify(raw)}`);
+	}
+
+	return entry;
+}
+
+/** Exported for testing. */
+export { fingerprint, stableStringify, findCachePointIndex, emitCacheDebug };
+export type { CacheDebugEntry };
 
 export class BedrockDriver implements LLMBackend {
 	private client: BedrockRuntimeClient;
@@ -40,6 +161,7 @@ export class BedrockDriver implements LLMBackend {
 		// HTTP call. This replaces what used to be a mix of inline assembly
 		// and hope.
 		const raw = toBedrockRequest({ params, defaultModel: this.model });
+		if (CACHE_DEBUG) emitCacheDebug(raw);
 		const validated = validateBedrockRequest(raw);
 
 		// The validated shape is structurally compatible with ConverseStreamCommand's
