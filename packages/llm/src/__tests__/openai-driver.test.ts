@@ -1230,4 +1230,59 @@ describe("toOpenAIMessages — dangling assistant-text replay artifacts", () => 
 		expect(result[3].content).toBe("Done — the file was empty.");
 		expect(result[4].role).toBe("user");
 	});
+
+	describe("developer and cache role mapping", () => {
+		it("AC4.7: developer message passed through with native role", () => {
+			const messages: LLMMessage[] = [
+				{ role: "developer", content: "You are a helpful assistant." },
+				{ role: "user", content: "Hello" },
+			];
+			const result = toOpenAIMessages(messages);
+			expect(result[0].role).toBe("developer");
+			expect(result[0].content).toBe("You are a helpful assistant.");
+		});
+
+		it("AC4.7 edge case: developer with array content extracted to text", () => {
+			const messages: LLMMessage[] = [
+				{
+					role: "developer",
+					content: [{ type: "text", text: "System instruction text" }],
+				},
+				{ role: "user", content: "Hello" },
+			];
+			const result = toOpenAIMessages(messages);
+			expect(result[0].role).toBe("developer");
+			expect(result[0].content).toBe("System instruction text");
+		});
+
+		it("AC4.3: cache messages dropped entirely from output", () => {
+			const messages: LLMMessage[] = [
+				{ role: "user", content: "First message" },
+				{ role: "cache", content: "" },
+				{ role: "user", content: "Second message" },
+			];
+			const result = toOpenAIMessages(messages);
+			// Should only have 2 user messages (no cache)
+			expect(result).toHaveLength(2);
+			expect(result[0].role).toBe("user");
+			expect(result[0].content).toBe("First message");
+			expect(result[1].role).toBe("user");
+			expect(result[1].content).toBe("Second message");
+		});
+
+		it("AC4.3 edge case: cache message between user messages drops cache", () => {
+			const messages: LLMMessage[] = [
+				{ role: "user", content: "User 1" },
+				{ role: "cache", content: "" },
+				{ role: "assistant", content: "Assistant response" },
+				{ role: "cache", content: "" },
+				{ role: "user", content: "User 2" },
+			];
+			const result = toOpenAIMessages(messages);
+			expect(result).toHaveLength(3);
+			expect(result[0].role).toBe("user");
+			expect(result[1].role).toBe("assistant");
+			expect(result[2].role).toBe("user");
+		});
+	});
 });

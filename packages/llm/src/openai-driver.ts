@@ -249,10 +249,10 @@ export function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 	}
 
 	// Many OpenAI-compatible providers (e.g. GLM/ZAI) require the conversation
-	// to start with a user message. When the first message is not "user" (e.g.
-	// scheduled task threads that only have tool_call/tool_result), prepend a
+	// to start with a user message. When the first message is not "user" or "developer"
+	// (e.g. scheduled task threads that only have tool_call/tool_result), prepend a
 	// placeholder so the API doesn't reject the request.
-	if (result.length > 0 && result[0].role !== "user") {
+	if (result.length > 0 && result[0].role !== "user" && result[0].role !== "developer") {
 		result.unshift({
 			role: "user",
 			content: "<system-notification />",

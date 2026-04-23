@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { OllamaDriver } from "../ollama-driver";
+import { OllamaDriver, toOllamaMessages } from "../ollama-driver";
 import type { LLMMessage, StreamChunk } from "../types";
 
 describe("OllamaDriver", () => {
@@ -537,5 +537,60 @@ describe("OllamaDriver", () => {
 
 		expect(ids[0]).toMatch(/^ollama-\d+-0$/);
 		expect(ids[1]).toMatch(/^ollama-\d+-1$/);
+	});
+
+	describe("developer and cache role mapping", () => {
+		it("AC4.8: developer message mapped to system role", () => {
+			const messages: LLMMessage[] = [
+				{ role: "developer", content: "You are a helpful assistant." },
+				{ role: "user", content: "Hello" },
+			];
+			const result = toOllamaMessages(messages);
+			expect(result[0].role).toBe("system");
+			expect(result[0].content).toBe("You are a helpful assistant.");
+		});
+
+		it("AC4.8 edge case: developer with array content extracted to text", () => {
+			const messages: LLMMessage[] = [
+				{
+					role: "developer",
+					content: [{ type: "text", text: "System instruction from array" }],
+				},
+				{ role: "user", content: "Hello" },
+			];
+			const result = toOllamaMessages(messages);
+			expect(result[0].role).toBe("system");
+			expect(result[0].content).toBe("System instruction from array");
+		});
+
+		it("AC4.4: cache messages filtered out entirely from output", () => {
+			const messages: LLMMessage[] = [
+				{ role: "user", content: "First message" },
+				{ role: "cache", content: "" },
+				{ role: "user", content: "Second message" },
+			];
+			const result = toOllamaMessages(messages);
+			// Should only have 2 user messages (no cache)
+			expect(result).toHaveLength(2);
+			expect(result[0].role).toBe("user");
+			expect(result[0].content).toBe("First message");
+			expect(result[1].role).toBe("user");
+			expect(result[1].content).toBe("Second message");
+		});
+
+		it("AC4.4 edge case: cache message between user messages filters cache", () => {
+			const messages: LLMMessage[] = [
+				{ role: "user", content: "User 1" },
+				{ role: "cache", content: "" },
+				{ role: "assistant", content: "Assistant response" },
+				{ role: "cache", content: "" },
+				{ role: "user", content: "User 2" },
+			];
+			const result = toOllamaMessages(messages);
+			expect(result).toHaveLength(3);
+			expect(result[0].role).toBe("user");
+			expect(result[1].role).toBe("assistant");
+			expect(result[2].role).toBe("user");
+		});
 	});
 });
