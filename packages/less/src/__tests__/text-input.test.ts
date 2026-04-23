@@ -359,4 +359,185 @@ describe("TextInput", () => {
 
 		expect(lastFrame()).toContain("submitted:Xfoo bar");
 	});
+
+	// --- Grapheme cluster navigation ---
+	//
+	// Emoji, flags, and combining marks are multi-code-unit grapheme
+	// clusters. The cursor must treat each cluster as one "character" —
+	// Left/Right step over the whole cluster, Backspace deletes the whole
+	// cluster, and insertion in the middle of a string with clusters lands
+	// at cluster boundaries (not inside surrogate pairs).
+	//
+	// Quick reference for what's in these tests:
+	//   "🐻"       — 1 grapheme, 2 JS code units (surrogate pair)
+	//   "🇯🇵"       — 1 grapheme, 4 JS code units (two regional indicators)
+	//   "é" (e+́)  — 1 grapheme, 2 JS code units (base + combining acute)
+
+	it("left arrow over an emoji skips the whole cluster, not half a surrogate", async () => {
+		const { lastFrame, stdin } = render(React.createElement(TestHarness));
+		await tick();
+
+		stdin.write("a🐻c");
+		await tick();
+		// Cursor at end. Left once should land between 🐻 and c (pos=3).
+		// Insert X there → "a🐻Xc".
+		stdin.write(LEFT);
+		await tick();
+		stdin.write("X");
+		await tick();
+		stdin.write("\r");
+		await tick();
+
+		expect(lastFrame()).toContain("submitted:a🐻Xc");
+	});
+
+	it("left arrow twice over an emoji lands before the cluster", async () => {
+		const { lastFrame, stdin } = render(React.createElement(TestHarness));
+		await tick();
+
+		stdin.write("a🐻c");
+		await tick();
+		// Left twice: end → between 🐻 and c → between a and 🐻 (pos=1).
+		stdin.write(LEFT);
+		stdin.write(LEFT);
+		await tick();
+		stdin.write("X");
+		await tick();
+		stdin.write("\r");
+		await tick();
+
+		expect(lastFrame()).toContain("submitted:aX🐻c");
+	});
+
+	it("backspace removes an entire emoji cluster, not half a surrogate", async () => {
+		const { lastFrame, stdin } = render(React.createElement(TestHarness));
+		await tick();
+
+		stdin.write("a🐻c");
+		await tick();
+		// Move cursor to between 🐻 and c (one Left from end).
+		stdin.write(LEFT);
+		await tick();
+		// Backspace: must delete 🐻 entirely, not leave a lone surrogate.
+		stdin.write("\x7F");
+		await tick();
+		stdin.write("\r");
+		await tick();
+
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("submitted:ac");
+		// And crucially, no stray "🐻" or broken replacement char.
+		expect(frame).not.toContain("🐻");
+		expect(frame).not.toContain("\uFFFD");
+	});
+
+	it("backspace at end removes the trailing emoji cluster", async () => {
+		const { lastFrame, stdin } = render(React.createElement(TestHarness));
+		await tick();
+
+		stdin.write("hi🐻");
+		await tick();
+		stdin.write("\x7F");
+		await tick();
+		stdin.write("\r");
+		await tick();
+
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("submitted:hi");
+		expect(frame).not.toContain("🐻");
+	});
+
+	it("navigates a flag emoji (2 regional indicators = 1 cluster)", async () => {
+		const { lastFrame, stdin } = render(React.createElement(TestHarness));
+		await tick();
+
+		stdin.write("a🇯🇵c");
+		await tick();
+		// Left once from end → between flag and c. Insert X → "a🇯🇵Xc".
+		stdin.write(LEFT);
+		await tick();
+		stdin.write("X");
+		await tick();
+		stdin.write("\r");
+		await tick();
+
+		expect(lastFrame()).toContain("submitted:a🇯🇵Xc");
+	});
+
+	it("backspace removes a whole flag cluster (both regional indicators)", async () => {
+		const { lastFrame, stdin } = render(React.createElement(TestHarness));
+		await tick();
+
+		stdin.write("a🇯🇵");
+		await tick();
+		stdin.write("\x7F");
+		await tick();
+		stdin.write("\r");
+		await tick();
+
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("submitted:a");
+		// Must not leave a lone regional indicator behind.
+		expect(frame).not.toContain("🇯");
+		expect(frame).not.toContain("🇵");
+	});
+
+	it("combining marks are treated as part of the same cluster", async () => {
+		const { lastFrame, stdin } = render(React.createElement(TestHarness));
+		await tick();
+
+		// "e" + combining acute accent (U+0301) — renders as é.
+		const eCombining = "e\u0301";
+		stdin.write(`a${eCombining}c`);
+		await tick();
+		// Left once from end → between é and c. Insert X → "aéXc".
+		stdin.write(LEFT);
+		await tick();
+		stdin.write("X");
+		await tick();
+		stdin.write("\r");
+		await tick();
+
+		expect(lastFrame()).toContain(`submitted:a${eCombining}Xc`);
+	});
+
+	it("backspace removes a base character and its combining mark together", async () => {
+		const { lastFrame, stdin } = render(React.createElement(TestHarness));
+		await tick();
+
+		const eCombining = "e\u0301";
+		stdin.write(`a${eCombining}`);
+		await tick();
+		stdin.write("\x7F");
+		await tick();
+		stdin.write("\r");
+		await tick();
+
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("submitted:a");
+		// The combining mark should not have survived on its own.
+		expect(frame).not.toContain("\u0301");
+	});
+
+	it("right arrow over an emoji skips the whole cluster", async () => {
+		const { lastFrame, stdin } = render(React.createElement(TestHarness));
+		await tick();
+
+		stdin.write("a🐻c");
+		await tick();
+		// Move cursor to start.
+		for (let i = 0; i < 10; i++) stdin.write(LEFT);
+		await tick();
+		// Right once → past 'a' (pos=1). Right again → past 🐻 (pos=3).
+		stdin.write(RIGHT);
+		stdin.write(RIGHT);
+		await tick();
+		// Insert X at pos=3 → between 🐻 and c.
+		stdin.write("X");
+		await tick();
+		stdin.write("\r");
+		await tick();
+
+		expect(lastFrame()).toContain("submitted:a🐻Xc");
+	});
 });
