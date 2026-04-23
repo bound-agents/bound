@@ -61,6 +61,40 @@ describe("TextInput", () => {
 		expect(typeof handleSubmit).toBe("function");
 	});
 
+	it("jumps words with ESC+b / ESC+f (Option+Arrow on macOS)", async () => {
+		// On macOS, Option+Left sends ESC+b (\x1bb) and Option+Right sends
+		// ESC+f (\x1bf). Ink parses these as { meta: true, input: 'b'/'f' }
+		// (NOT leftArrow/rightArrow). The TextInput must handle both.
+		const { lastFrame, stdin, unmount } = render(<TextInput onSubmit={() => {}} />);
+		const tick = () => new Promise((r) => setTimeout(r, 50));
+
+		try {
+			await tick();
+			stdin.write("hello world");
+			await tick();
+
+			// ESC+b: jump back one word (to start of "world", pos=6)
+			stdin.write("\x1bb");
+			await tick();
+
+			// Insert "X" at cursor — should appear between "hello " and "world"
+			stdin.write("X");
+			await tick();
+			expect(lastFrame()).toBe("hello Xworld");
+
+			// ESC+f: jump forward one word (past "world", pos=12)
+			stdin.write("\x1bf");
+			await tick();
+
+			// Insert "!" at end
+			stdin.write("!");
+			await tick();
+			expect(lastFrame()).toBe("hello Xworld!");
+		} finally {
+			unmount();
+		}
+	});
+
 	it("does not shift characters when the cursor moves through them", async () => {
 		// The cursor is rendered via inverse-video *on top of* the character
 		// at `pos`, not inserted between characters. Moving the cursor

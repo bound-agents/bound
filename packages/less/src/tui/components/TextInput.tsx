@@ -179,6 +179,18 @@ export function TextInput({
 				return;
 			}
 
+			// ESC+b / ESC+f: readline word-left / word-right. macOS Option+Arrow
+			// sends these in most terminals. Ink parses them as meta + 'b'/'f'
+			// (not as leftArrow/rightArrow), so they need separate handling.
+			if (key.meta && input === "b") {
+				setState((s) => ({ ...s, pos: wordLeft(s.value, s.pos) }));
+				return;
+			}
+			if (key.meta && input === "f") {
+				setState((s) => ({ ...s, pos: wordRight(s.value, s.pos) }));
+				return;
+			}
+
 			// Ctrl+A / Ctrl+E: jump to start/end (readline convention).
 			if (key.ctrl && input === "a") {
 				setState((s) => ({ ...s, pos: 0 }));
