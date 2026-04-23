@@ -58,7 +58,7 @@ describe("Message rendering components", () => {
 			expect(output).toContain("◆ read:");
 		});
 
-		it("AC9.1: renders tool_result messages collapsible", async () => {
+		it("AC9.1: renders tool_result with success indicator and content", async () => {
 			const message: Message = {
 				id: "msg-4",
 				thread_id: "thread-1",
@@ -71,9 +71,8 @@ describe("Message rendering components", () => {
 
 			const { lastFrame } = render(<MessageBlock message={message} />);
 			const output = lastFrame();
-			// Tool results render via <Collapsible> with a ▾/▸ glyph and the tool name as header
-			expect(output).toContain("read");
-			expect(output).toMatch(/[▾▸]\s*read/);
+			// Tool results render as indented output with ✓/✗ indicator
+			expect(output).toContain("✓");
 			expect(output).toContain("file contents here");
 		});
 
