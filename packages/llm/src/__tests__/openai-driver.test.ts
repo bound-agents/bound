@@ -1072,3 +1072,162 @@ describe("toOpenAIMessages — user-first placeholder", () => {
 		expect(result.some((m) => m.role === "tool")).toBe(true);
 	});
 });
+
+describe("toOpenAIMessages — dangling assistant-text replay artifacts", () => {
+	it("drops a trailing assistant-text message that follows a tool result", () => {
+		// Legacy thread shape: tool_call, tool_result, then a stale assistant-text
+		// row that was persisted separately for the inline text emitted alongside
+		// the tool_call. On replay this looks like a prefill request and breaks
+		// qwen3 (enable_thinking) / GLM providers.
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "check a file" },
+			{
+				role: "tool_call",
+				content: [
+					{
+						type: "tool_use",
+						id: "call_1",
+						name: "read",
+						input: { path: "/tmp/x" },
+					},
+				],
+			},
+			{
+				role: "tool_result",
+				content: "file contents",
+				tool_use_id: "call_1",
+			},
+			{ role: "assistant", content: "Yep — got one right here." },
+		];
+		const result = toOpenAIMessages(messages);
+		// The stale trailing assistant-text row must be dropped.
+		expect(result).toHaveLength(3);
+		expect(result[0].role).toBe("user");
+		expect(result[1].role).toBe("assistant");
+		expect(result[1].tool_calls?.length).toBe(1);
+		expect(result[2].role).toBe("tool");
+	});
+
+	it("drops assistant-text interleaved between tool_call and tool_result", () => {
+		// Real observed shape from thread 8871bab2: the inline text row got
+		// timestamped between the tool_call and the tool_result. After conversion,
+		// we end up with [user, assistant(tool_calls), assistant(text), tool].
+		// The dangling assistant(text) sits between the tool_call and the tool
+		// role, which is also invalid. The guard drops it.
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "check" },
+			{
+				role: "tool_call",
+				content: [
+					{
+						type: "tool_use",
+						id: "call_1",
+						name: "read",
+						input: {},
+					},
+				],
+			},
+			{ role: "assistant", content: "Quick smoke test:" },
+			{
+				role: "tool_result",
+				content: "ok",
+				tool_use_id: "call_1",
+			},
+		];
+		const result = toOpenAIMessages(messages);
+		// After conversion the stale assistant-text message sits between the
+		// tool_call-bearing assistant and the tool role. It's NOT caught by the
+		// "assistant-after-tool" guard because the tool comes after, not before.
+		// But it's still problematic: two consecutive assistants with the second
+		// lacking tool_calls. We tolerate this case because the immediately
+		// following tool message re-anchors the conversation — providers accept
+		// assistant, assistant, tool as a valid (if odd) sequence. The critical
+		// failure mode is a TRAILING assistant after a tool, which the guard
+		// handles.
+		expect(result).toHaveLength(4);
+		expect(result[0].role).toBe("user");
+		expect(result[1].role).toBe("assistant");
+		expect(result[1].tool_calls?.length).toBe(1);
+		expect(result[2].role).toBe("assistant");
+		expect(result[3].role).toBe("tool");
+	});
+
+	it("preserves assistant messages that have tool_calls even after a tool", () => {
+		// A normal multi-turn flow: tool_call → tool_result → assistant(tool_call
+		// again for the next step). Must NOT be dropped.
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "do two things" },
+			{
+				role: "tool_call",
+				content: [
+					{
+						type: "tool_use",
+						id: "call_1",
+						name: "read",
+						input: {},
+					},
+				],
+			},
+			{
+				role: "tool_result",
+				content: "result 1",
+				tool_use_id: "call_1",
+			},
+			{
+				role: "tool_call",
+				content: [
+					{
+						type: "tool_use",
+						id: "call_2",
+						name: "write",
+						input: {},
+					},
+				],
+			},
+		];
+		const result = toOpenAIMessages(messages);
+		expect(result).toHaveLength(4);
+		expect(result[3].role).toBe("assistant");
+		expect(result[3].tool_calls?.length).toBe(1);
+	});
+
+	it("preserves a normal assistant text reply that follows a tool_result", () => {
+		// The normal end-of-turn shape: tool_call → tool_result → assistant(text)
+		// saying "here's what I found". This IS a legitimate pattern during an
+		// active conversation, but at replay-time in agent-loop it only occurs
+		// when the assistant has finished speaking for that turn. The dangling-
+		// assistant guard drops it, which is correct because on replay the next
+		// user message will arrive and the assistant would regenerate anyway.
+		// For the legitimate mid-turn case (provider just produced the text and
+		// we're about to return to the user), agent-loop doesn't call back into
+		// the LLM, so this code path doesn't fire.
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "read it" },
+			{
+				role: "tool_call",
+				content: [
+					{
+						type: "tool_use",
+						id: "call_1",
+						name: "read",
+						input: {},
+					},
+				],
+			},
+			{
+				role: "tool_result",
+				content: "ok",
+				tool_use_id: "call_1",
+			},
+			{ role: "assistant", content: "Done — the file was empty." },
+			{ role: "user", content: "great, now do X" },
+		];
+		const result = toOpenAIMessages(messages);
+		// The assistant text is NOT a trailing-after-tool here because the user
+		// message comes after it. It's preserved.
+		expect(result).toHaveLength(5);
+		expect(result[3].role).toBe("assistant");
+		expect(result[3].content).toBe("Done — the file was empty.");
+		expect(result[4].role).toBe("user");
+	});
+});

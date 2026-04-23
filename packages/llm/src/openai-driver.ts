@@ -204,6 +204,34 @@ export function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
 		}
 	}
 
+	// Defensive guard: drop a TRAILING assistant-text message that immediately
+	// follows a tool message when it has no tool_calls of its own. This is a
+	// stale replay artifact from older threads where the inline text emitted
+	// alongside a tool_call was persisted as a separate assistant row and ended
+	// up sorting after the tool_result. Leaving it in place causes OpenAI-
+	// compatible providers (qwen3 with enable_thinking=true, GLM, etc.) to
+	// interpret the trailing assistant message as a prefill request and reject
+	// the call with a protocol error. The inline text is now folded into the
+	// tool_call message at persistence time (see agent-loop.ts), but old threads
+	// still contain these rows.
+	//
+	// Only the TAIL is trimmed. Mid-conversation assistant-text messages
+	// following a tool result (e.g. "here's what I found" before the next user
+	// turn) are legitimate and must be preserved.
+	while (result.length >= 2) {
+		const last = result[result.length - 1];
+		const prev = result[result.length - 2];
+		if (
+			last.role === "assistant" &&
+			(!last.tool_calls || last.tool_calls.length === 0) &&
+			prev.role === "tool"
+		) {
+			result.pop();
+		} else {
+			break;
+		}
+	}
+
 	// Many OpenAI-compatible providers (e.g. GLM/ZAI) require the conversation
 	// to start with a user message. When the first message is not "user" (e.g.
 	// scheduled task threads that only have tool_call/tool_result), prepend a

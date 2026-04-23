@@ -931,7 +931,9 @@ export class AgentLoop {
 
 					const toolCallBlocks: ContentBlock[] = [];
 
-					// Preserve thinking block for multi-turn reasoning continuity
+					// Preserve thinking block for multi-turn reasoning continuity.
+					// Anthropic requires the signed thinking block to come FIRST in the
+					// assistant message's content blocks during extended thinking.
 					if (parsed.thinking) {
 						const thinkingBlock: ContentBlock = {
 							type: "thinking",
@@ -941,6 +943,24 @@ export class AgentLoop {
 							thinkingBlock.signature = parsed.thinkingSignature;
 						}
 						toolCallBlocks.push(thinkingBlock);
+					}
+
+					// Fold inline assistant text ("I'll check that file") INTO this
+					// tool_call message's content blocks rather than persisting it as a
+					// separate assistant row. Two reasons:
+					//   1. It matches Anthropic's native shape (thinking → text → tool_use
+					//      in one assistant turn).
+					//   2. It avoids a trailing assistant-text row landing between the
+					//      tool_call and tool_result on replay, which OpenAI-compatible
+					//      providers (qwen3 with enable_thinking, GLM, etc.) reject as a
+					//      malformed prefill continuation.
+					// Both drivers already extract text blocks from tool_call messages
+					// (anthropic-driver.ts, openai-driver.ts toOpenAIMessages).
+					if (parsed.textContent) {
+						toolCallBlocks.push({
+							type: "text",
+							text: parsed.textContent,
+						});
 					}
 
 					for (const tc of parsed.toolCalls) {
@@ -993,23 +1013,12 @@ export class AgentLoop {
 						});
 					}
 
-					// Timestamp computed AFTER tool_result loop to sort after all results
-					// (avoids sub-ms collisions that break Bedrock tool_call pairing)
-					if (parsed.textContent) {
-						const inlineTextId = insertThreadMessage(
-							this.ctx.db,
-							{
-								threadId: this.config.threadId,
-								role: "assistant",
-								content: parsed.textContent,
-								hostOrigin: this.ctx.siteId,
-								modelId: resolvedModelId,
-							},
-							this.ctx.siteId,
-						);
-						this.broadcastMessage(inlineTextId);
-						this.messagesCreated++;
-					}
+					// Note: inline assistant text is no longer persisted as a separate
+					// row — it's folded into the tool_call message's content blocks above.
+					// This avoids a trailing assistant-text row sitting between the
+					// tool_call and tool_result on replay, which caused providers like
+					// qwen3 (enable_thinking=true) to reject the next request as a
+					// malformed prefill continuation.
 
 					if (this.sandbox.checkMemoryThreshold) {
 						const memCheck = this.sandbox.checkMemoryThreshold();
