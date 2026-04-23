@@ -98,10 +98,23 @@ interface AnthropicStreamEvent {
 
 export function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] {
 	const result: AnthropicMessage[] = [];
+	const pendingDeveloperContent: string[] = [];
 
 	for (const msg of messages) {
-		// Skip developer and cache roles — they're handled by drivers separately
-		if (msg.role === "developer" || msg.role === "cache") {
+		// Developer role mapping — buffer content to prepend to next user message
+		if (msg.role === "developer") {
+			const text =
+				typeof msg.content === "string" ? msg.content : extractTextFromBlocks(msg.content);
+			pendingDeveloperContent.push(`<system-context>${text}</system-context>`);
+			continue;
+		}
+
+		// Cache role mapping — append cache_control to previous message
+		if (msg.role === "cache") {
+			const prev = result.at(-1);
+			if (prev) {
+				prev.cache_control = { type: "ephemeral" };
+			}
 			continue;
 		}
 
@@ -184,6 +197,14 @@ export function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] 
 			} else {
 				// Regular message — preserve text, image, and document blocks
 				const content: AnthropicContentBlock[] = [];
+
+				// Prepend developer context if this is a user message
+				if (msg.role === "user" && pendingDeveloperContent.length > 0) {
+					const contextText = pendingDeveloperContent.join("\n");
+					content.push({ type: "text", text: contextText });
+					pendingDeveloperContent.length = 0;
+				}
+
 				for (const block of msg.content) {
 					if (block.type === "text" && block.text) {
 						content.push({ type: "text", text: block.text });
@@ -258,12 +279,31 @@ export function toAnthropicMessages(messages: LLMMessage[]): AnthropicMessage[] 
 					});
 				}
 			} else {
+				// User or assistant message — prepend developer context if user message
+				const content: AnthropicContentBlock[] = [];
+
+				if (msg.role === "user" && pendingDeveloperContent.length > 0) {
+					const contextText = pendingDeveloperContent.join("\n");
+					content.push({ type: "text", text: contextText });
+					pendingDeveloperContent.length = 0;
+				}
+
+				content.push({ type: "text", text: msg.content });
 				result.push({
 					role: msg.role as "user" | "assistant",
-					content: [{ type: "text", text: msg.content }],
+					content,
 				});
 			}
 		}
+	}
+
+	// After loop: if there's still pending developer content, create a user message for it
+	if (pendingDeveloperContent.length > 0) {
+		const contextText = pendingDeveloperContent.join("\n");
+		result.push({
+			role: "user",
+			content: [{ type: "text", text: contextText }],
+		});
 	}
 
 	return result;
@@ -507,6 +547,13 @@ export class AnthropicDriver implements LLMBackend {
 				description: tool.function.description,
 				input_schema: tool.function.parameters,
 			}));
+
+			// Add cache_control to last tool when cache messages are present
+			const hasCacheMessages = params.messages.some((m) => m.role === "cache");
+			if (hasCacheMessages && request.tools.length > 0) {
+				const lastTool = request.tools[request.tools.length - 1];
+				(lastTool as Record<string, unknown>).cache_control = { type: "ephemeral" };
+			}
 		}
 
 		const endpoint = "https://api.anthropic.com/v1/messages";

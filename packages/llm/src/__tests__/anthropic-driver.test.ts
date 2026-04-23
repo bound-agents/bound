@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { AnthropicDriver } from "../anthropic-driver";
+import { AnthropicDriver, toAnthropicMessages } from "../anthropic-driver";
 import type { LLMMessage, StreamChunk } from "../types";
 
 const _shouldSkip = process.env.SKIP_ANTHROPIC === "1";
@@ -1043,5 +1043,200 @@ data: ${JSON.stringify({
 		expect(typeof request.system).toBe("string");
 		expect(request.system).toContain("You are a helpful assistant.");
 		expect(request.system).toContain("Current Model: opus");
+	});
+
+	describe("developer and cache role mapping", () => {
+		it("AC4.6: developer message prepended to next user message in system-context wrapper", () => {
+			const messages: LLMMessage[] = [
+				{ role: "developer" as "user", content: "This is system context" },
+				{ role: "user", content: "What is 2+2?" },
+			];
+
+			const result = toAnthropicMessages(messages);
+
+			// Should have exactly one user message (developer + user merged)
+			expect(result).toHaveLength(1);
+			expect(result[0].role).toBe("user");
+
+			// Content should have developer context wrapped in system-context tags
+			const textBlocks = result[0].content as Array<{ text?: string }>;
+			const textContents = textBlocks.filter((b) => b.text).map((b) => b.text);
+			expect(textContents.length).toBeGreaterThan(0);
+			expect(textContents.join("")).toContain("<system-context>");
+			expect(textContents.join("")).toContain("This is system context");
+			expect(textContents.join("")).toContain("</system-context>");
+			expect(textContents.join("")).toContain("What is 2+2?");
+		});
+
+		it("AC4.6 edge case: developer with no subsequent user message creates new user message", () => {
+			const messages: LLMMessage[] = [
+				{ role: "user", content: "Start" },
+				{ role: "developer" as "user", content: "Ending context" },
+			];
+
+			const result = toAnthropicMessages(messages);
+
+			// Developer message at end creates a new user message
+			expect(result).toHaveLength(2);
+			expect(result[0].role).toBe("user");
+			expect(result[1].role).toBe("user");
+
+			// First message should be original user message
+			const firstText = (result[0].content as Array<{ text?: string }>)[0]?.text || "";
+			expect(firstText).toBe("Start");
+
+			// Second message should have the developer context
+			const secondAllText = (result[1].content as Array<{ text?: string }>)
+				.map((b) => b.text)
+				.join("");
+			expect(secondAllText).toContain("<system-context>");
+			expect(secondAllText).toContain("Ending context");
+		});
+
+		it("AC4.6 edge case: multiple consecutive developer messages buffered", () => {
+			const messages: LLMMessage[] = [
+				{ role: "developer" as "user", content: "Context line 1" },
+				{ role: "developer" as "user", content: "Context line 2" },
+				{ role: "user", content: "Question" },
+			];
+
+			const result = toAnthropicMessages(messages);
+
+			const userMessages = result.filter((m) => m.role === "user");
+			expect(userMessages).toHaveLength(1);
+
+			const allText = (userMessages[0].content as Array<{ text?: string }>)
+				.map((b) => b.text)
+				.join("");
+
+			expect(allText).toContain("Context line 1");
+			expect(allText).toContain("Context line 2");
+			expect(allText).toContain("Question");
+		});
+
+		it("AC4.2: cache message adds cache_control to previous message", () => {
+			const messages: LLMMessage[] = [
+				{ role: "user", content: "First message" },
+				{ role: "cache" as "user", content: "" },
+				{ role: "assistant", content: "Response" },
+				{ role: "user", content: "Second message" },
+			];
+
+			const result = toAnthropicMessages(messages);
+
+			// Should have three messages: user, assistant, user
+			expect(result).toHaveLength(3);
+			expect(result[0].role).toBe("user");
+			expect(result[1].role).toBe("assistant");
+			expect(result[2].role).toBe("user");
+
+			// First user message should have cache_control
+			expect(result[0].cache_control).toEqual({ type: "ephemeral" });
+		});
+
+		it("AC4.2 edge case: cache message with no previous message is dropped silently", () => {
+			const messages: LLMMessage[] = [
+				{ role: "cache" as "user", content: "" },
+				{ role: "user", content: "First user message" },
+			];
+
+			const result = toAnthropicMessages(messages);
+
+			// Cache message at start should be dropped
+			expect(result).toHaveLength(1);
+			expect(result[0].role).toBe("user");
+		});
+
+		it("AC4.10: cache messages present and tools provided — last tool gets cache_control", async () => {
+			const driver = new AnthropicDriver({
+				apiKey: "test-key",
+				model: "claude-3-sonnet-20240229",
+				contextWindow: 200000,
+			});
+
+			let requestBody: string | null = null;
+
+			global.fetch = (async (_url: string, options: RequestInit) => {
+				requestBody = options.body as string;
+				return new Response("data: {}", {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			}) as typeof fetch;
+
+			const messages: LLMMessage[] = [
+				{ role: "user", content: "Hello" },
+				{ role: "cache" as "user", content: "" },
+			];
+
+			const tools = [
+				{
+					type: "function" as const,
+					function: {
+						name: "get_weather",
+						description: "Get weather",
+						parameters: {},
+					},
+				},
+				{
+					type: "function" as const,
+					function: {
+						name: "send_message",
+						description: "Send message",
+						parameters: {},
+					},
+				},
+			];
+
+			for await (const _ of driver.chat({
+				model: "claude-3-sonnet-20240229",
+				messages,
+				tools,
+			})) {
+				// drain
+			}
+
+			expect(requestBody).not.toBeNull();
+			const request = JSON.parse(requestBody as string);
+			expect(request.tools).toHaveLength(2);
+			// Last tool should have cache_control
+			const lastTool = request.tools[request.tools.length - 1];
+			expect(lastTool.cache_control).toEqual({ type: "ephemeral" });
+		});
+
+		it("AC4.10 edge case: cache messages present but no tools — no crash", async () => {
+			const driver = new AnthropicDriver({
+				apiKey: "test-key",
+				model: "claude-3-sonnet-20240229",
+				contextWindow: 200000,
+			});
+
+			let requestBody: string | null = null;
+
+			global.fetch = (async (_url: string, options: RequestInit) => {
+				requestBody = options.body as string;
+				return new Response("data: {}", {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			}) as typeof fetch;
+
+			const messages: LLMMessage[] = [
+				{ role: "user", content: "Hello" },
+				{ role: "cache" as "user", content: "" },
+			];
+
+			for await (const _ of driver.chat({
+				model: "claude-3-sonnet-20240229",
+				messages,
+			})) {
+				// drain
+			}
+
+			expect(requestBody).not.toBeNull();
+			const request = JSON.parse(requestBody as string);
+			// Should not crash, tools should not be present
+			expect(request.tools).toBeUndefined();
+		});
 	});
 });
