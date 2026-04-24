@@ -92,16 +92,6 @@ describe("cache stability: deterministic output", () => {
 		expect(stableStringify(a)).toBe(stableStringify(b));
 	});
 
-	it("toBedrockRequest is deterministic with system_suffix", () => {
-		const input = makeInput({
-			system_suffix: "Current Model: opus\nThread: abc-123",
-		});
-		const a = toBedrockRequest(input);
-		const b = toBedrockRequest(input);
-
-		expect(stableStringify(a)).toBe(stableStringify(b));
-	});
-
 	it("toBedrockRequest is deterministic with thinking config", () => {
 		const input = makeInput({
 			thinking: { type: "enabled", budget_tokens: 10000 },
@@ -337,47 +327,30 @@ describe("cache stability: system blocks", () => {
 		expect(stableStringify(a.system)).toBe(stableStringify(b.system));
 	});
 
-	it("system cachePoint separates stable prefix from varying suffix", () => {
+	it("system cachePoint separates stable prefix when cache_breakpoints provided", () => {
 		const input = makeInput({
-			system_suffix: "Current Model: opus\nThread: abc-123",
+			cache_breakpoints: [1],
 		});
 		const raw = toBedrockRequest(input);
 		const system = raw.system as Array<Record<string, unknown>>;
 
-		// Three-block layout: prefix text, cachePoint, suffix text
-		expect(system).toHaveLength(3);
+		// Two-block layout: prefix text, cachePoint
+		expect(system).toHaveLength(2);
 		expect(system[0]).toEqual({ text: "You are a helpful assistant." });
 		expect(system[1]).toEqual({ cachePoint: { type: "default" } });
-		expect(system[2]).toEqual({ text: "Current Model: opus\nThread: abc-123" });
 	});
 
-	it("changing system_suffix does NOT change system prefix fingerprint", () => {
-		const a = toBedrockRequest(makeInput({ system_suffix: "Thread: abc-123" }));
-		const b = toBedrockRequest(makeInput({ system_suffix: "Thread: xyz-789" }));
-
-		const sysA = a.system as Array<Record<string, unknown>>;
-		const sysB = b.system as Array<Record<string, unknown>>;
-
-		// The prefix (blocks before cachePoint) should be identical
-		expect(stableStringify(sysA[0])).toBe(stableStringify(sysB[0]));
-		expect(stableStringify(sysA[1])).toBe(stableStringify(sysB[1]));
-
-		// The suffix (after cachePoint) should differ
-		expect(stableStringify(sysA[2])).not.toBe(stableStringify(sysB[2]));
-	});
-
-	it("system blocks without cache_breakpoints concatenate prefix and suffix", () => {
+	it("system blocks without cache_breakpoints use single text block", () => {
 		const input = makeInput({
-			system_suffix: "Thread: abc-123",
 			cache_breakpoints: undefined,
 		});
 		const raw = toBedrockRequest(input);
 		const system = raw.system as Array<Record<string, unknown>>;
 
-		// Single block with concatenated text
+		// Single block with system text only
 		expect(system).toHaveLength(1);
 		expect(system[0]).toEqual({
-			text: "You are a helpful assistant.\n\nThread: abc-123",
+			text: "You are a helpful assistant.",
 		});
 	});
 });

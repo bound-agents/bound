@@ -308,35 +308,16 @@ export function toBedrockRequest(input: ConvertInput): RawBedrockRequest {
 	}
 
 	// ─── System blocks ───────────────────────────────────────────────────────
-	// Three shapes, depending on presence of system_suffix and cache breakpoints:
+	// Two shapes:
 	//   - No system prompt → undefined
 	//   - System only, no cache → [{text}]
 	//   - System only, cache    → [{text},{cachePoint}]
-	//   - System + suffix, no cache → concatenated [{text}]
-	//   - System + suffix, cache → [{text},{cachePoint},{suffix}]  (prefix cached)
 	const hasCacheBreakpoints = !!params.cache_breakpoints?.length;
 	const systemBlocks: Array<Record<string, unknown>> | undefined = (() => {
-		if (!params.system && !params.system_suffix) return undefined;
-
-		if (params.system_suffix) {
-			if (hasCacheBreakpoints) {
-				// Three-block layout: prefix, cachePoint, suffix.
-				const blocks: Array<Record<string, unknown>> = [];
-				if (params.system) blocks.push({ text: params.system });
-				blocks.push({ cachePoint: { type: "default" } });
-				blocks.push({ text: params.system_suffix });
-				return blocks;
-			}
-			// Concatenate when not caching.
-			const combined = params.system
-				? `${params.system}\n\n${params.system_suffix}`
-				: params.system_suffix;
-			return [{ text: combined }];
-		}
+		if (!params.system) return undefined;
 
 		// System only.
-		// biome-ignore lint/style/noNonNullAssertion: first branch ensures at least one is set
-		const blocks: Array<Record<string, unknown>> = [{ text: params.system! }];
+		const blocks: Array<Record<string, unknown>> = [{ text: params.system }];
 		if (hasCacheBreakpoints) blocks.push({ cachePoint: { type: "default" } });
 		return blocks;
 	})();

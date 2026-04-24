@@ -965,7 +965,7 @@ data: ${JSON.stringify({
 		}
 	});
 
-	it("sends system_suffix as uncached second block when cache_breakpoints provided", async () => {
+	it("sends system as cached content block when cache_breakpoints provided", async () => {
 		const driver = new AnthropicDriver({
 			apiKey: "test-key",
 			model: "claude-3-sonnet-20240229",
@@ -990,7 +990,6 @@ data: ${JSON.stringify({
 				{ role: "user", content: "Message 2" },
 			],
 			system: "You are a helpful assistant.",
-			system_suffix: "Current Model: opus\nThread ID: abc-123",
 			cache_breakpoints: [1],
 		})) {
 			// drain
@@ -998,20 +997,16 @@ data: ${JSON.stringify({
 
 		expect(requestBody).not.toBeNull();
 		const request = JSON.parse(requestBody as string);
-		// System should be an array with two content blocks
+		// System should be an array with cached content block
 		expect(Array.isArray(request.system)).toBe(true);
-		expect(request.system).toHaveLength(2);
-		// First block: cached stable prefix
+		expect(request.system).toHaveLength(1);
+		// Block: cached stable prefix
 		expect(request.system[0].type).toBe("text");
 		expect(request.system[0].text).toBe("You are a helpful assistant.");
 		expect(request.system[0].cache_control).toEqual({ type: "ephemeral" });
-		// Second block: uncached varying suffix
-		expect(request.system[1].type).toBe("text");
-		expect(request.system[1].text).toBe("Current Model: opus\nThread ID: abc-123");
-		expect(request.system[1].cache_control).toBeUndefined();
 	});
 
-	it("ignores system_suffix when no cache_breakpoints provided", async () => {
+	it("sends system as plain string when no cache_breakpoints provided", async () => {
 		const driver = new AnthropicDriver({
 			apiKey: "test-key",
 			model: "claude-3-sonnet-20240229",
@@ -1032,17 +1027,15 @@ data: ${JSON.stringify({
 			model: "claude-3-sonnet-20240229",
 			messages: [{ role: "user", content: "Hello" }],
 			system: "You are a helpful assistant.",
-			system_suffix: "Current Model: opus",
 		})) {
 			// drain
 		}
 
 		expect(requestBody).not.toBeNull();
 		const request = JSON.parse(requestBody as string);
-		// Without cache_breakpoints, system_suffix is appended as plain string
+		// Without cache_breakpoints, system is plain string
 		expect(typeof request.system).toBe("string");
-		expect(request.system).toContain("You are a helpful assistant.");
-		expect(request.system).toContain("Current Model: opus");
+		expect(request.system).toBe("You are a helpful assistant.");
 	});
 
 	describe("developer and cache role mapping", () => {

@@ -492,41 +492,20 @@ export class AnthropicDriver implements LLMBackend {
 			anthropicMessages[idx].cache_control = { type: "ephemeral" };
 		}
 
-		// Combine system + system_suffix for the effective system prompt
-		const effectiveSystem = params.system_suffix
-			? params.cache_breakpoints?.length
-				? params.system // Keep separate for two-block caching below
-				: `${params.system}\n\n${params.system_suffix}` // Append when no caching
-			: params.system;
-
-		// When cache_breakpoints are provided, send system prompt as cacheable content blocks.
-		// If system_suffix is present, it becomes a second uncached block so it doesn't
-		// bust the prompt cache for the stable prefix.
+		// When cache_breakpoints are provided, send system prompt as cacheable content block.
 		const systemPayload:
 			| string
 			| Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }>
 			| undefined =
-			effectiveSystem && params.cache_breakpoints?.length
-				? params.system_suffix
-					? [
-							{
-								type: "text" as const,
-								text: effectiveSystem,
-								cache_control: { type: "ephemeral" as const },
-							},
-							{
-								type: "text" as const,
-								text: params.system_suffix,
-							},
-						]
-					: [
-							{
-								type: "text" as const,
-								text: effectiveSystem,
-								cache_control: { type: "ephemeral" as const },
-							},
-						]
-				: effectiveSystem;
+			params.system && params.cache_breakpoints?.length
+				? [
+						{
+							type: "text" as const,
+							text: params.system,
+							cache_control: { type: "ephemeral" as const },
+						},
+					]
+				: params.system;
 
 		const request: AnthropicRequest & { thinking?: { type: "enabled"; budget_tokens: number } } = {
 			model: params.model || this.model,

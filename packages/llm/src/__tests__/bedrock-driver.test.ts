@@ -1214,7 +1214,7 @@ describe("toBedrockMessages — consecutive same-role merging", () => {
 	});
 });
 
-describe("BedrockDriver system_suffix", () => {
+describe("BedrockDriver system blocks", () => {
 	let sendSpy: ReturnType<typeof spyOn<BedrockRuntimeClient, "send">>;
 
 	beforeEach(() => {
@@ -1226,7 +1226,7 @@ describe("BedrockDriver system_suffix", () => {
 	});
 
 	it.skipIf(shouldSkip)(
-		"places cachePoint between stable system and suffix when cache_breakpoints provided",
+		"places cachePoint after system block when cache_breakpoints provided",
 		async () => {
 			let capturedInput: Record<string, unknown> | undefined;
 			sendSpy.mockImplementation((command: unknown) => {
@@ -1257,25 +1257,22 @@ describe("BedrockDriver system_suffix", () => {
 						{ role: "user", content: "msg 2" },
 					],
 					system: "You are a helpful assistant.",
-					system_suffix: "Current Model: opus\nThread ID: abc-123",
 					cache_breakpoints: [1],
 				}),
 			);
 
 			const system = capturedInput?.system as Array<Record<string, unknown>>;
 			expect(system).toBeDefined();
-			expect(system).toHaveLength(3);
+			expect(system).toHaveLength(2);
 			// First block: stable system text
 			expect(system[0]).toEqual({ text: "You are a helpful assistant." });
 			// Second block: cachePoint marker (cache boundary)
 			expect(system[1]).toEqual({ cachePoint: { type: "default" } });
-			// Third block: uncached varying suffix
-			expect(system[2]).toEqual({ text: "Current Model: opus\nThread ID: abc-123" });
 		},
 	);
 
 	it.skipIf(shouldSkip)(
-		"appends system_suffix as plain text when no cache_breakpoints provided",
+		"sends system as single text block when no cache_breakpoints provided",
 		async () => {
 			let capturedInput: Record<string, unknown> | undefined;
 			sendSpy.mockImplementation((command: unknown) => {
@@ -1302,16 +1299,15 @@ describe("BedrockDriver system_suffix", () => {
 				driver.chat({
 					messages: [{ role: "user", content: "Hello" }],
 					system: "You are a helpful assistant.",
-					system_suffix: "Current Model: opus",
 				}),
 			);
 
 			const system = capturedInput?.system as Array<Record<string, unknown>>;
 			expect(system).toBeDefined();
-			// Without cache_breakpoints, suffix is just appended as another text block
+			// Without cache_breakpoints, just single text block
 			expect(system).toHaveLength(1);
 			expect(system[0]).toEqual({
-				text: "You are a helpful assistant.\n\nCurrent Model: opus",
+				text: "You are a helpful assistant.",
 			});
 		},
 	);
