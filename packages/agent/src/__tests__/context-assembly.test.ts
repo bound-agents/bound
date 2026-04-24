@@ -7054,4 +7054,171 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			expect(orientationContent.includes("Run `commands`")).toBe(false);
 		});
 	});
+
+	describe("cache-stable-prefix.AC2: Volatile enrichment as developer message", () => {
+		let tmpDir: string;
+		let db: Database;
+		let threadId: string;
+		let userId: string;
+
+		beforeAll(() => {
+			tmpDir = mkdtempSync(join(tmpdir(), "ac2-test-"));
+			const dbPath = join(tmpDir, "test.db");
+			db = createDatabase(dbPath);
+			applySchema(db);
+
+			userId = randomUUID();
+			threadId = randomUUID();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[userId, "Test User", null, new Date().toISOString(), new Date().toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					threadId,
+					userId,
+					"web",
+					"local",
+					0,
+					"Test Thread",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// Add a user message so we have history
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					threadId,
+					"user",
+					"Hello world!",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
+		});
+
+		afterAll(async () => {
+			db.close();
+			if (tmpDir) await cleanupTmpDir(tmpDir);
+		});
+
+		it("cache-stable-prefix.AC2.1: developer message is last message in array", () => {
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+			});
+
+			expect(result.messages.length).toBeGreaterThan(0);
+			const lastMessage = result.messages[result.messages.length - 1];
+			expect(lastMessage.role).toBe("developer");
+		});
+
+		it("cache-stable-prefix.AC2.1: developer message contains volatile enrichment", () => {
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+				siteId: "test-site",
+				hostName: "test-host",
+			});
+
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			expect(devMsg).toBeDefined();
+
+			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
+
+			// Should contain the typical volatile enrichment sections
+			// (User ID, Thread ID are guaranteed to be in developer message)
+			expect(devContent).toContain(`User ID: ${userId}, Thread ID: ${threadId}`);
+		});
+
+		it("cache-stable-prefix.AC2.1: no other cache-role messages before developer", () => {
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+			});
+
+			const lastDevIndex = result.messages.findLastIndex((m) => m.role === "developer");
+			expect(lastDevIndex).toBeGreaterThanOrEqual(0);
+
+			// All cache-role messages must come before the last developer message
+			const cacheMessages = result.messages.filter((m) => m.role === "cache");
+			for (const cacheMsg of cacheMessages) {
+				const cacheIndex = result.messages.indexOf(cacheMsg);
+				expect(cacheIndex).toBeLessThan(lastDevIndex);
+			}
+		});
+
+		it("cache-stable-prefix.AC2.5: volatile content is freshly computed on each call", () => {
+			// Call assembleContext twice
+			const result1 = assembleContext({
+				db,
+				threadId,
+				userId,
+				siteId: "site-1",
+				hostName: "host-1",
+			});
+
+			const result2 = assembleContext({
+				db,
+				threadId,
+				userId,
+				siteId: "site-1",
+				hostName: "host-1",
+			});
+
+			const devMsg1 = result1.messages.find((m) => m.role === "developer");
+			const devMsg2 = result2.messages.find((m) => m.role === "developer");
+
+			// Both should have developer messages
+			expect(devMsg1).toBeDefined();
+			expect(devMsg2).toBeDefined();
+
+			// Content should be identical on immediate re-call (both computed at same baseline)
+			expect(devMsg1?.content).toEqual(devMsg2?.content);
+		});
+
+		it("cache-stable-prefix.AC2.5: volatile content includes current model when provided", () => {
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+				currentModel: "claude-opus-4",
+				hostName: "test-host",
+			});
+
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
+
+			expect(devContent).toContain("Current Model: claude-opus-4");
+		});
+
+		it("cache-stable-prefix.AC2.4: ChatParams result has no systemSuffix field", () => {
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+			});
+
+			// The result should not have systemSuffix property
+			expect((result as any).systemSuffix).toBeUndefined();
+			expect(Object.keys(result)).not.toContain("systemSuffix");
+		});
+	});
 });

@@ -1038,6 +1038,53 @@ data: ${JSON.stringify({
 		expect(request.system).toBe("You are a helpful assistant.");
 	});
 
+	it("cache-stable-prefix.AC2.3: system blocks contain [{text, cache_control}] only (no suffix)", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-3-sonnet-20240229",
+			contextWindow: 200000,
+		});
+
+		let requestBody: string | null = null;
+
+		global.fetch = (async (_url: string, options: RequestInit) => {
+			requestBody = options.body as string;
+			return new Response("data: {}", {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		for await (const _ of driver.chat({
+			model: "claude-3-sonnet-20240229",
+			messages: [
+				{ role: "user", content: "Message 1" },
+				{ role: "developer", content: "volatile enrichment" },
+				{ role: "assistant", content: "Response 1" },
+				{ role: "user", content: "Message 2" },
+			],
+			system: "You are a helpful assistant.",
+			cache_breakpoints: [2],
+		})) {
+			// drain
+		}
+
+		expect(requestBody).not.toBeNull();
+		const request = JSON.parse(requestBody as string);
+
+		// AC2.3: System should be array with exactly one element
+		expect(Array.isArray(request.system)).toBe(true);
+		expect(request.system).toHaveLength(1);
+
+		// The single element should have text and cache_control
+		expect(request.system[0].type).toBe("text");
+		expect(request.system[0].text).toBe("You are a helpful assistant.");
+		expect(request.system[0].cache_control).toEqual({ type: "ephemeral" });
+
+		// Verify no volatile enrichment in system (it should be in developer message in messages array)
+		expect(request.system[0].text).not.toContain("volatile");
+	});
+
 	describe("developer and cache role mapping", () => {
 		it("AC4.6: developer message prepended to next user message in system-context wrapper", () => {
 			const messages: LLMMessage[] = [

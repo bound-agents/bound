@@ -1311,4 +1311,51 @@ describe("BedrockDriver system blocks", () => {
 			});
 		},
 	);
+
+	it.skipIf(shouldSkip)(
+		"cache-stable-prefix.AC2.2: system blocks contain [prefix, cachePoint] only (no suffix)",
+		async () => {
+			let capturedInput: Record<string, unknown> | undefined;
+			sendSpy.mockImplementation((command: unknown) => {
+				capturedInput = (command as any).input;
+				return Promise.resolve(
+					createMockStream([
+						{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "OK" } } },
+						{
+							metadata: {
+								usage: {
+									inputTokens: 100,
+									outputTokens: 5,
+									cacheWriteInputTokens: 50,
+									cacheReadInputTokens: 0,
+								},
+							},
+						},
+					]),
+				);
+			});
+
+			const driver = makeDriver();
+			await collectChunks(
+				driver.chat({
+					messages: [
+						{ role: "user", content: "msg 1" },
+						{ role: "developer", content: "volatile enrichment" },
+					],
+					system: "You are a helpful assistant.",
+					cache_breakpoints: [1],
+				}),
+			);
+
+			const system = capturedInput?.system as Array<Record<string, unknown>>;
+			// AC2.2: Exactly 2 blocks when cache_breakpoints present
+			expect(system).toHaveLength(2);
+			// First: system text
+			expect(system[0]).toEqual({ text: "You are a helpful assistant." });
+			// Second: cachePoint (NOT a suffix text block)
+			expect(system[1]).toEqual({ cachePoint: { type: "default" } });
+			// Verify no third suffix block
+			expect((system as Array<any>).some((b) => b.text?.includes("volatile"))).toBe(false);
+		},
+	);
 });
