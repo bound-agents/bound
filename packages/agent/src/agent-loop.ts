@@ -36,6 +36,7 @@ import {
 import {
 	buildCommandOutput,
 	calculateTurnCost,
+	convertDeltaMessages,
 	deriveCapabilityRequirements,
 	getResolvedModelId,
 	insertThreadMessage,
@@ -44,7 +45,7 @@ import {
 } from "./agent-loop-utils";
 import { CACHE_TTL_MS, predictCacheState, selectCacheTtl } from "./cache-prediction";
 import { type CachedTurnState, computeToolFingerprint } from "./cached-turn-state";
-import { assembleContext } from "./context-assembly";
+import { assembleContext, buildVolatileContext } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
 import { type ModelResolution, resolveModel, resolveSameTierFallback } from "./model-resolution";
@@ -426,23 +427,103 @@ export class AgentLoop {
 				// Reconstruct full context with system messages for LLM call
 				llmMessages = [...systemMessages, ...nonSystemMessages];
 			} else {
-				// WARM PATH: Reuse stored messages with delta append (implemented in Task 4)
-				// For now, fallback to stored state for this turn
+				// WARM PATH: Reuse stored messages and append delta
 				if (!this._cachedTurnState) {
 					throw new Error("Warm path requested but no cached state available");
 				}
 				const cached = this._cachedTurnState;
-				this.ctx.logger.debug("[agent-loop] Warm path: reusing cached state", {
+
+				// 1. Fetch delta messages from DB (created after lastMessageCreatedAt)
+				const deltaRows = this.ctx.db
+					.query(
+						"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted FROM messages WHERE thread_id = ? AND deleted = 0 AND created_at > ? ORDER BY created_at ASC, rowid ASC",
+					)
+					.all(this.config.threadId, cached.lastMessageCreatedAt) as Array<{
+					id: string;
+					thread_id: string;
+					role: string;
+					content: string;
+					model_id: string | null;
+					tool_name: string | null;
+					created_at: string;
+					modified_at: string | null;
+					host_origin: string;
+					deleted: number;
+				}>;
+
+				// 2. Convert and sanitize delta messages
+				const deltaMessages = convertDeltaMessages(deltaRows);
+
+				this.ctx.logger.debug("[agent-loop] Warm path: delta messages fetched", {
 					storedMessageCount: cached.messages.length,
+					deltaMessageCount: deltaMessages.length,
 				});
 
-				// Placeholder: full implementation in Task 4
-				// Use stored messages as-is for now (without delta append)
-				const systemMessages = cached.messages.filter((m) => m.role === "system");
-				const nonSystemMessages = cached.messages.filter((m) => m.role !== "system");
-				llmMessages = [...systemMessages, ...nonSystemMessages];
+				// 3. Rebuild message array: stored (without old developer tail) + delta
+				const storedMessages = [...cached.messages];
+				const lastIdx = storedMessages.length - 1;
+				if (storedMessages[lastIdx]?.role === "developer") {
+					storedMessages.pop();
+				}
 
-				// Dummy contextDebug for now
+				storedMessages.push(...deltaMessages);
+
+				// 4. Place rolling cache message at messages[length-2] (before last delta message)
+				if (storedMessages.length >= 2) {
+					storedMessages.splice(storedMessages.length - 1, 0, { role: "cache", content: "" });
+				}
+
+				// 5. Inject fresh volatile developer message at tail
+				const volatileContext = buildVolatileContext({
+					db: this.ctx.db,
+					threadId: this.config.threadId,
+					taskId: this.config.taskId,
+					userId: this.config.userId,
+					siteId: this.ctx.siteId,
+					hostName: this.ctx.hostName,
+					currentModel: resolvedModelForDebug,
+					relayInfo,
+					platformContext: this.config.platform
+						? {
+								platform: this.config.platform,
+								toolNames: this.config.platformTools
+									? Array.from(this.config.platformTools.keys())
+									: undefined,
+							}
+						: undefined,
+					systemPromptAddition: this.config.systemPromptAddition,
+				});
+
+				storedMessages.push({
+					role: "developer",
+					content: volatileContext.content,
+				});
+
+				// 6. Query latest message created_at for next turn
+				const newLastRow = this.ctx.db
+					.query(
+						"SELECT created_at FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+					)
+					.get(this.config.threadId) as { created_at: string } | null;
+
+				// 7. Update stored state
+				this._cachedTurnState = {
+					...cached,
+					messages: storedMessages,
+					cacheMessagePositions: [
+						...cached.cacheMessagePositions,
+						storedMessages.length - 2, // rolling cache position
+					],
+					lastMessageCreatedAt: newLastRow?.created_at ?? new Date().toISOString(),
+				};
+
+				// 8. Reconstruct full context with system messages
+				const systemMessages = cached.systemPrompt
+					? [{ role: "system" as const, content: cached.systemPrompt }]
+					: [];
+				llmMessages = [...systemMessages, ...storedMessages];
+
+				// Use cached debug for now
 				contextDebug = {
 					contextWindow: contextWindow,
 					totalEstimated: 0,

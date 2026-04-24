@@ -5,6 +5,7 @@ import {
 	type CapabilityRequirements,
 	type ContentBlock,
 	LLMError,
+	type LLMMessage,
 	type StreamChunk,
 } from "@bound/llm";
 import type { ModelResolution } from "./model-resolution";
@@ -396,4 +397,73 @@ export async function waitForRelayInbox(
 			}
 		}
 	});
+}
+
+// ---------------------------------------------------------------------------
+// Warm-path delta message conversion
+// ---------------------------------------------------------------------------
+
+interface DbMessageRow {
+	id: string;
+	thread_id: string;
+	role: string;
+	content: string;
+	model_id: string | null;
+	tool_name: string | null;
+	created_at: string;
+	modified_at: string | null;
+	host_origin: string;
+	deleted: number;
+}
+
+/**
+ * Convert a DB message row to an LLMMessage with minimal sanitization.
+ * Handles tool pair validation: drops tool_results without a matching tool_call.
+ */
+export function convertDbRowToLLMMessage(
+	row: DbMessageRow,
+	previousRole?: string,
+): LLMMessage | null {
+	const { role, content, tool_name, model_id, host_origin } = row;
+
+	// Validate tool pairs: if this is a tool_result without a prior tool_call, skip it
+	if (role === "tool_result" && previousRole !== "tool_call") {
+		return null; // Drop orphaned tool_result
+	}
+
+	const msg: LLMMessage = {
+		role: role as LLMMessage["role"],
+		content,
+	};
+
+	if (tool_name) {
+		msg.tool_use_id = tool_name;
+	}
+	if (model_id) {
+		msg.model_id = model_id;
+	}
+	if (host_origin) {
+		msg.host_origin = host_origin;
+	}
+
+	return msg;
+}
+
+/**
+ * Convert delta DB rows to LLMMessages, filtering orphaned tool_results.
+ * Returns array of valid messages with tool pairs intact.
+ */
+export function convertDeltaMessages(rows: DbMessageRow[]): LLMMessage[] {
+	const messages: LLMMessage[] = [];
+	let lastRole: string | undefined;
+
+	for (const row of rows) {
+		const msg = convertDbRowToLLMMessage(row, lastRole);
+		if (msg) {
+			messages.push(msg);
+			lastRole = msg.role;
+		}
+	}
+
+	return messages;
 }
