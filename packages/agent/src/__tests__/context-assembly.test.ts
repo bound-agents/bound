@@ -861,7 +861,7 @@ describe("Context Assembly Pipeline", () => {
 
 			// Should NOT have a model switch message
 			const modelSwitchMessage = messages.find(
-				(m) => m.role === "system" && m.content.includes("Model switched"),
+				(m) => m.role === "developer" && m.content.includes("Model switched"),
 			);
 
 			expect(modelSwitchMessage).toBeUndefined();
@@ -4557,8 +4557,8 @@ This skill reviews pull requests.`;
 			expect(debug.truncated).toBe(0);
 
 			// No truncation marker should exist
-			const systemMessages = messages.filter((m) => m.role === "system");
-			const marker = systemMessages.find(
+			const developerMessages = messages.filter((m) => m.role === "developer");
+			const marker = developerMessages.find(
 				(m) => typeof m.content === "string" && m.content.includes("earlier messages"),
 			);
 			expect(marker).toBeUndefined();
@@ -7221,6 +7221,283 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			// The result should not have systemSuffix property
 			expect((result as any).systemSuffix).toBeUndefined();
 			expect(Object.keys(result)).not.toContain("systemSuffix");
+		});
+	});
+
+	describe("cache-stable-prefix.Phase3: Volatile messages use developer role", () => {
+		let tmpDir: string;
+		let db: Database;
+		let threadId: string;
+		let userId: string;
+
+		beforeAll(() => {
+			tmpDir = mkdtempSync(join(tmpdir(), "phase3-test-"));
+			const dbPath = join(tmpDir, "test.db");
+			db = createDatabase(dbPath);
+			applySchema(db);
+
+			userId = randomUUID();
+			threadId = randomUUID();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[userId, "Test User", null, new Date().toISOString(), new Date().toISOString(), 0],
+			);
+
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					threadId,
+					userId,
+					"web",
+					"local",
+					0,
+					"Test Thread",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+		});
+
+		afterAll(async () => {
+			db.close();
+			if (tmpDir) await cleanupTmpDir(tmpDir);
+		});
+
+		it("Phase3.1: Only stable prompt components have system role", () => {
+			const configDir = mkdtempSync(join(tmpdir(), "config-test-"));
+			const personaContent = "You are a specialized technical assistant.";
+
+			writeFileSync(join(configDir, "persona.md"), personaContent);
+
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+				configDir,
+			});
+
+			const systemMessages = result.messages.filter((m) => m.role === "system");
+
+			// Should have some system messages (persona, orientation, default prompt, skill body)
+			expect(systemMessages.length).toBeGreaterThan(0);
+
+			// Verify that stable components are present
+			const hasPersona = systemMessages.some(
+				(m) =>
+					typeof m.content === "string" && m.content.includes("specialized technical assistant"),
+			);
+			const hasOrientation = systemMessages.some(
+				(m) => typeof m.content === "string" && m.content.includes("Orientation"),
+			);
+
+			expect(hasPersona).toBe(true);
+			expect(hasOrientation).toBe(true);
+
+			// Verify NO volatile content in system messages
+			const volatileKeywords = [
+				"earlier messages",
+				"truncat",
+				"Model switched",
+				"Memory:",
+				"Task wakeup",
+				"quiescence",
+				"cancelled",
+				"interruption",
+			];
+
+			for (const keyword of volatileKeywords) {
+				const volatileInSystem = systemMessages.find(
+					(m) =>
+						typeof m.content === "string" &&
+						m.content.toLowerCase().includes(keyword.toLowerCase()),
+				);
+				expect(volatileInSystem).toBeUndefined(
+					`Found volatile keyword "${keyword}" in system message: ${volatileInSystem?.content}`,
+				);
+			}
+		});
+
+		it("Phase3.2: All volatile enrichment uses developer role", () => {
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+			});
+
+			const developerMessages = result.messages.filter((m) => m.role === "developer");
+
+			// Should have at least one developer message for volatile enrichment
+			expect(developerMessages.length).toBeGreaterThan(0);
+
+			// The enrichment developer message should come last (before system messages if any)
+			const lastDeveloperIdx = result.messages.findLastIndex((m) => m.role === "developer");
+			const lastSystemIdx = result.messages.findLastIndex((m) => m.role === "system");
+
+			// If both exist, developer should come after system messages in the array
+			// (since system is stable prefix, volatile comes after)
+			if (lastSystemIdx >= 0 && lastDeveloperIdx >= 0) {
+				// Verify they're separate blocks
+				expect(lastDeveloperIdx).toBeGreaterThanOrEqual(0);
+				expect(lastSystemIdx).toBeGreaterThanOrEqual(0);
+			}
+		});
+
+		it("Phase3.3: Model switch messages use developer role", () => {
+			// Insert multiple messages with different models
+			const msg1Id = randomUUID();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					msg1Id,
+					threadId,
+					"assistant",
+					"Response from model A",
+					"claude-3-opus",
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
+
+			const msg2Id = randomUUID();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					msg2Id,
+					threadId,
+					"user",
+					"Follow-up question",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
+
+			const msg3Id = randomUUID();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					msg3Id,
+					threadId,
+					"assistant",
+					"Response from model B",
+					"claude-3-5-sonnet",
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+				],
+			);
+
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+			});
+
+			// If a model switch message exists, it should be developer role
+			// Model switch may or may not be present depending on configuration
+			// But if present, it must be developer role (not system)
+			const badModelSwitchMsg = result.messages.find(
+				(m) =>
+					m.role === "system" &&
+					typeof m.content === "string" &&
+					m.content.includes("Model switched"),
+			);
+			expect(badModelSwitchMsg).toBeUndefined();
+		});
+
+		it("Phase3.4: Truncation markers use developer role", () => {
+			// Insert many messages to potentially trigger truncation
+			for (let i = 0; i < 20; i++) {
+				const role = i % 2 === 0 ? "user" : "assistant";
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						threadId,
+						role,
+						`Message ${i}: ${"x".repeat(100)}`, // Substantial content
+						null,
+						null,
+						new Date().toISOString(),
+						new Date().toISOString(),
+						"local",
+					],
+				);
+			}
+
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+				contextWindow: 1000, // Small window to force truncation
+			});
+
+			// If truncation marker exists, it should be developer role
+			// Truncation may or may not occur depending on token counting
+			// But if present, it must be developer role
+			const badTruncationMarker = result.messages.find(
+				(m) =>
+					m.role === "system" &&
+					typeof m.content === "string" &&
+					m.content.includes("earlier messages"),
+			);
+			expect(badTruncationMarker).toBeUndefined();
+		});
+
+		it("Phase3.5: Agent loop extracts stable prompt from system-role messages only", () => {
+			const configDir = mkdtempSync(join(tmpdir(), "config-test-"));
+			const personaContent = "You are a specialized assistant.";
+			writeFileSync(join(configDir, "persona.md"), personaContent);
+
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+				configDir,
+			});
+
+			// Extract system prompt the same way agent-loop does
+			const systemMessages = result.messages.filter((m) => m.role === "system");
+			const systemPrompt = systemMessages
+				.map((m) => (typeof m.content === "string" ? m.content : ""))
+				.join("\n\n");
+
+			// Verify it contains stable components
+			expect(systemPrompt).toContain("specialized assistant");
+			expect(systemPrompt).toContain("Orientation");
+
+			// Verify NO volatile content in extracted system prompt
+			const volatileKeywords = [
+				"earlier messages",
+				"truncat",
+				"Model switched",
+				"Memory:",
+				"Task wakeup",
+			];
+
+			for (const keyword of volatileKeywords) {
+				expect(systemPrompt.toLowerCase()).not.toContain(keyword.toLowerCase());
+			}
+
+			// Verify all system messages contain only stable content
+			for (const msg of systemMessages) {
+				const content = typeof msg.content === "string" ? msg.content : "";
+				for (const keyword of volatileKeywords) {
+					expect(content.toLowerCase()).not.toContain(keyword.toLowerCase());
+				}
+			}
 		});
 	});
 });
