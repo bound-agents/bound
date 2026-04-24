@@ -80,7 +80,7 @@ describe("R-E14: Cancel persists system cancellation message with host name", ()
 
 		// Query messages table for the cancellation message
 		const messages = db
-			.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'system'")
+			.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer'")
 			.all(threadId) as Array<{
 			id: string;
 			thread_id: string;
@@ -92,7 +92,7 @@ describe("R-E14: Cancel persists system cancellation message with host name", ()
 		expect(messages.length).toBe(1);
 
 		const cancelMsg = messages[0];
-		expect(cancelMsg.role).toBe("system");
+		expect(cancelMsg.role).toBe("developer");
 		expect(cancelMsg.content).toContain("cancelled");
 		expect(cancelMsg.content).toContain("test-host");
 		expect(cancelMsg.host_origin).toBe("test-host");
