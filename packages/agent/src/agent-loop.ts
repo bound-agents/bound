@@ -25,6 +25,7 @@ import type {
 	SyncConfig,
 } from "@bound/shared";
 import {
+	countContentTokens,
 	countTokens,
 	errorPayloadSchema,
 	formatError,
@@ -352,8 +353,16 @@ export class AgentLoop {
 				this._cachedTurnState !== undefined &&
 				this._cachedTurnState.toolFingerprint === currentFingerprint;
 
-			let contextDebug: ContextDebugInfo;
-			let llmMessages: import("@bound/llm").LLMMessage[];
+			let contextDebug: ContextDebugInfo = {
+				contextWindow: contextWindow,
+				totalEstimated: 0,
+				model: resolvedModelForDebug ?? "unknown",
+				sections: [],
+				budgetPressure: false,
+				truncated: 0,
+			};
+			let llmMessages: import("@bound/llm").LLMMessage[] = [];
+			let usedWarmPath = false;
 
 			if (!isWarmPathEligible) {
 				// COLD PATH: Full assembly and cache message placement
@@ -425,11 +434,8 @@ export class AgentLoop {
 
 				// Reconstruct full context with system messages for LLM call
 				llmMessages = [...systemMessages, ...nonSystemMessages];
-			} else {
-				// WARM PATH: Reuse stored messages and append delta
-				if (!this._cachedTurnState) {
-					throw new Error("Warm path requested but no cached state available");
-				}
+			} else if (isWarmPathEligible && this._cachedTurnState) {
+				// WARM PATH: Try to reuse stored messages and append delta
 				const cached = this._cachedTurnState;
 
 				// 1. Fetch delta messages from DB (created after lastMessageCreatedAt)
@@ -498,39 +504,140 @@ export class AgentLoop {
 					content: volatileContext.content,
 				});
 
-				// 6. Query latest message created_at for next turn
-				const newLastRow = this.ctx.db
+				// 6. Check high-water mark: estimate total token count and compare against contextWindow
+				const storedTokens = storedMessages.reduce(
+					(sum, msg) => sum + countContentTokens(msg.content),
+					0,
+				);
+				const systemTokens = cached.systemPrompt ? countContentTokens(cached.systemPrompt) : 0;
+				const estimatedTotal = storedTokens + systemTokens + toolTokenEstimate;
+
+				if (estimatedTotal > contextWindow) {
+					// High-water mark exceeded — fall through to cold path
+					this.ctx.logger.info(
+						"[agent-loop] Warm path exceeded context budget, triggering cold reassembly",
+						{
+							estimatedTotal,
+							contextWindow,
+							storedTokens,
+							systemTokens,
+							toolTokenEstimate,
+						},
+					);
+					// Clear cached state to force cold path on next iteration
+					this._cachedTurnState = undefined;
+					// Fall through to cold path by not setting usedWarmPath or llmMessages
+				} else {
+					// Warm path succeeded within budget
+					usedWarmPath = true;
+
+					// 7. Query latest message created_at for next turn
+					const newLastRow = this.ctx.db
+						.query(
+							"SELECT created_at FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+						)
+						.get(this.config.threadId) as { created_at: string } | null;
+
+					// 8. Update stored state
+					this._cachedTurnState = {
+						...cached,
+						messages: storedMessages,
+						cacheMessagePositions: [
+							...cached.cacheMessagePositions,
+							storedMessages.length - 2, // rolling cache position
+						],
+						lastMessageCreatedAt: newLastRow?.created_at ?? new Date().toISOString(),
+					};
+
+					// 9. Reconstruct full context with system messages
+					const systemMessages = cached.systemPrompt
+						? [{ role: "system" as const, content: cached.systemPrompt }]
+						: [];
+					llmMessages = [...systemMessages, ...storedMessages];
+
+					// Use cached debug
+					contextDebug = {
+						contextWindow: contextWindow,
+						totalEstimated: estimatedTotal,
+						model: resolvedModelForDebug ?? "unknown",
+						sections: [],
+						budgetPressure: false,
+						truncated: 0,
+					};
+				}
+			}
+
+			// If warm path failed budget check or was ineligible, run cold path
+			if (!usedWarmPath) {
+				// COLD PATH: Full assembly and cache message placement
+				this.ctx.logger.debug("[agent-loop] Cold path: full context assembly", {
+					cacheState,
+					hasStoredState: this._cachedTurnState !== undefined,
+					fingerprintMatch: this._cachedTurnState?.toolFingerprint === currentFingerprint,
+				});
+
+				// Deterministic compaction keeps cached prefixes stable while reducing context size
+				const result = assembleContext({
+					db: this.ctx.db,
+					threadId: this.config.threadId,
+					taskId: this.config.taskId,
+					userId: this.config.userId,
+					currentModel: resolvedModelForDebug,
+					contextWindow: contextWindow,
+					hostName: this.ctx.hostName,
+					siteId: this.ctx.siteId,
+					relayInfo,
+					platformContext: this.config.platform
+						? {
+								platform: this.config.platform,
+								toolNames: this.config.platformTools
+									? Array.from(this.config.platformTools.keys())
+									: undefined,
+							}
+						: undefined,
+					targetCapabilities: resolvedCaps ?? undefined,
+					toolTokenEstimate,
+					compactToolResults: true,
+					noHistory: this.config.noHistory,
+					systemPromptAddition: this.config.systemPromptAddition,
+				});
+
+				const contextMessages = result.messages;
+				contextDebug = result.debug;
+
+				// Extract system messages for stable storage
+				const systemMessages = contextMessages.filter((m) => m.role === "system");
+				const nonSystemMessages = contextMessages.filter((m) => m.role !== "system");
+				const systemPrompt = systemMessages
+					.map((m) => (typeof m.content === "string" ? m.content : ""))
+					.join("\n\n");
+
+				// Place fixed cache message at messages[length-2] (before last message)
+				const fixedCacheIdx = nonSystemMessages.length >= 2 ? nonSystemMessages.length - 2 : -1;
+				if (fixedCacheIdx >= 0) {
+					nonSystemMessages.splice(fixedCacheIdx + 1, 0, { role: "cache", content: "" });
+				}
+
+				// Query last message created_at for delta queries
+				const lastRow = this.ctx.db
 					.query(
 						"SELECT created_at FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
 					)
 					.get(this.config.threadId) as { created_at: string } | null;
+				const lastMessageCreatedAt = lastRow?.created_at ?? new Date().toISOString();
 
-				// 7. Update stored state
+				// Store state for potential warm-path reuse on next turn
 				this._cachedTurnState = {
-					...cached,
-					messages: storedMessages,
-					cacheMessagePositions: [
-						...cached.cacheMessagePositions,
-						storedMessages.length - 2, // rolling cache position
-					],
-					lastMessageCreatedAt: newLastRow?.created_at ?? new Date().toISOString(),
+					messages: [...nonSystemMessages],
+					systemPrompt,
+					cacheMessagePositions: fixedCacheIdx >= 0 ? [fixedCacheIdx + 1] : [],
+					fixedCacheIdx: fixedCacheIdx >= 0 ? fixedCacheIdx + 1 : -1,
+					lastMessageCreatedAt,
+					toolFingerprint: currentFingerprint,
 				};
 
-				// 8. Reconstruct full context with system messages
-				const systemMessages = cached.systemPrompt
-					? [{ role: "system" as const, content: cached.systemPrompt }]
-					: [];
-				llmMessages = [...systemMessages, ...storedMessages];
-
-				// Use cached debug for now
-				contextDebug = {
-					contextWindow: contextWindow,
-					totalEstimated: 0,
-					model: resolvedModelForDebug ?? "unknown",
-					sections: [],
-					budgetPressure: false,
-					truncated: 0,
-				};
+				// Reconstruct full context with system messages for LLM call
+				llmMessages = [...systemMessages, ...nonSystemMessages];
 			}
 
 			this.lastContextDebug = contextDebug;

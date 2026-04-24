@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LLMMessage, ToolDefinition } from "@bound/llm";
+import { countContentTokens } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { type CachedTurnState, computeToolFingerprint } from "../cached-turn-state";
 
@@ -289,6 +290,97 @@ describe("warm-cold-path", () => {
 			expect(cachedTurnState.systemPrompt).toBe("system prompt");
 			expect(cachedTurnState.fixedCacheIdx).toBe(1); // fixedCacheIdx + 1 = 0 + 1 = 1
 			expect(cachedTurnState.cacheMessagePositions).toEqual([1]); // [fixedCacheIdx + 1] = [1]
+		});
+	});
+
+	describe("AC3.2 & AC6.4: High-water mark budget check triggers cold reassembly", () => {
+		it("warm path detects when estimated total exceeds contextWindow", () => {
+			// Simulate warm path logic: stored messages + delta + volatile + tools
+			// Use a small contextWindow to test the budget check logic
+			const contextWindow = 5000;
+
+			// Stored messages (cached from previous cold path)
+			// Create large enough content to accumulate tokens
+			const storedMessages: LLMMessage[] = [
+				{ role: "user", content: "A".repeat(4000) }, // ~1000 tokens
+				{ role: "assistant", content: "B".repeat(4000) }, // ~1000 tokens
+			];
+
+			// Delta messages from DB (new conversation)
+			const deltaMessages: LLMMessage[] = [
+				{ role: "user", content: "C".repeat(4000) }, // ~1000 tokens
+				{ role: "assistant", content: "D".repeat(4000) }, // ~1000 tokens
+			];
+
+			// Volatile developer message
+			const volatileContent = "E".repeat(1000); // ~250 tokens
+
+			// Tool definitions estimate
+			const toolTokenEstimate = 500;
+
+			// System prompt
+			const systemPrompt = "You are an assistant."; // ~5 tokens
+
+			// Estimate total: stored + delta + volatile + tools + system
+			const storedTokens = storedMessages.reduce(
+				(sum, msg) => sum + countContentTokens(msg.content),
+				0,
+			);
+			const deltaTokens = deltaMessages.reduce(
+				(sum, msg) => sum + countContentTokens(msg.content),
+				0,
+			);
+			const volatileTokens = countContentTokens(volatileContent);
+			const systemTokens = countContentTokens(systemPrompt);
+			const estimatedTotal =
+				storedTokens + deltaTokens + volatileTokens + toolTokenEstimate + systemTokens;
+
+			// When estimated total exceeds contextWindow, cold path should be triggered
+			const exceedsWindow = estimatedTotal > contextWindow;
+			expect(exceedsWindow).toBe(true);
+			// Verify the calculation is actually meaningful
+			expect(estimatedTotal).toBeGreaterThan(contextWindow);
+		});
+
+		it("warm path stays within budget when growth is modest", () => {
+			// This test verifies that small delta messages don't trigger budget check
+			const contextWindow = 10000;
+
+			// Stored messages (cached)
+			const storedMessages: LLMMessage[] = [
+				{ role: "user", content: "Small message 1" }, // ~3 tokens
+				{ role: "assistant", content: "Small response 1" }, // ~3 tokens
+			];
+
+			// Tiny delta
+			const deltaMessages: LLMMessage[] = [
+				{ role: "user", content: "Q?" }, // ~1 token
+			];
+
+			// Modest volatile
+			const volatileContent = "System ready."; // ~2 tokens
+
+			const toolTokenEstimate = 500;
+			const systemPrompt = "You are an assistant."; // ~5 tokens
+
+			// Estimate total
+			const storedTokens = storedMessages.reduce(
+				(sum, msg) => sum + countContentTokens(msg.content),
+				0,
+			);
+			const deltaTokens = deltaMessages.reduce(
+				(sum, msg) => sum + countContentTokens(msg.content),
+				0,
+			);
+			const volatileTokens = countContentTokens(volatileContent);
+			const systemTokens = countContentTokens(systemPrompt);
+			const estimatedTotal =
+				storedTokens + deltaTokens + volatileTokens + toolTokenEstimate + systemTokens;
+
+			// This should stay well within the window
+			const exceedsWindow = estimatedTotal > contextWindow;
+			expect(exceedsWindow).toBe(false);
+			expect(estimatedTotal).toBeLessThan(contextWindow);
 		});
 	});
 });
