@@ -296,45 +296,40 @@ describe("warm-cold-path", () => {
 
 	describe("AC3.2 & AC6.4: High-water mark budget check triggers cold reassembly", () => {
 		it("warm path detects when estimated total exceeds contextWindow", () => {
-			// Simulate warm path logic: stored messages + delta + volatile + tools
-			// Use a small contextWindow to test the budget check logic
+			// Simulate warm path budget check formula from agent-loop.ts line 513:
+			// estimatedTotal = storedTokens + systemTokens + toolTokenEstimate
+			// Note: storedTokens already includes delta and volatile by this point
+			// (they are part of storedMessages array after append and volatile injection)
 			const contextWindow = 5000;
 
-			// Stored messages (cached from previous cold path)
-			// Create large enough content to accumulate tokens
+			// Stored messages after append and volatile injection (agent-loop.ts line 468-505)
+			// This array already contains:
+			// - Original cached messages
+			// - Appended delta messages
+			// - Rolling cache message
+			// - Fresh volatile developer message
 			const storedMessages: LLMMessage[] = [
 				{ role: "user", content: "A".repeat(4000) }, // ~1000 tokens
 				{ role: "assistant", content: "B".repeat(4000) }, // ~1000 tokens
+				{ role: "user", content: "C".repeat(4000) }, // ~1000 tokens (delta)
+				{ role: "assistant", content: "D".repeat(4000) }, // ~1000 tokens (delta)
+				{ role: "cache", content: "" }, // 0 tokens
+				{ role: "developer", content: "E".repeat(1000) }, // ~250 tokens (volatile)
 			];
-
-			// Delta messages from DB (new conversation)
-			const deltaMessages: LLMMessage[] = [
-				{ role: "user", content: "C".repeat(4000) }, // ~1000 tokens
-				{ role: "assistant", content: "D".repeat(4000) }, // ~1000 tokens
-			];
-
-			// Volatile developer message
-			const volatileContent = "E".repeat(1000); // ~250 tokens
 
 			// Tool definitions estimate
 			const toolTokenEstimate = 500;
 
-			// System prompt
+			// System prompt (kept separately from storedMessages)
 			const systemPrompt = "You are an assistant."; // ~5 tokens
 
-			// Estimate total: stored + delta + volatile + tools + system
+			// Production formula: stored + system + tools (delta and volatile are already in stored)
 			const storedTokens = storedMessages.reduce(
 				(sum, msg) => sum + countContentTokens(msg.content),
 				0,
 			);
-			const deltaTokens = deltaMessages.reduce(
-				(sum, msg) => sum + countContentTokens(msg.content),
-				0,
-			);
-			const volatileTokens = countContentTokens(volatileContent);
 			const systemTokens = countContentTokens(systemPrompt);
-			const estimatedTotal =
-				storedTokens + deltaTokens + volatileTokens + toolTokenEstimate + systemTokens;
+			const estimatedTotal = storedTokens + systemTokens + toolTokenEstimate;
 
 			// When estimated total exceeds contextWindow, cold path should be triggered
 			const exceedsWindow = estimatedTotal > contextWindow;
@@ -347,36 +342,25 @@ describe("warm-cold-path", () => {
 			// This test verifies that small delta messages don't trigger budget check
 			const contextWindow = 10000;
 
-			// Stored messages (cached)
+			// Stored messages after append (agent-loop.ts line 468-505)
 			const storedMessages: LLMMessage[] = [
 				{ role: "user", content: "Small message 1" }, // ~3 tokens
 				{ role: "assistant", content: "Small response 1" }, // ~3 tokens
+				{ role: "user", content: "Q?" }, // ~1 token (delta)
+				{ role: "cache", content: "" }, // 0 tokens
+				{ role: "developer", content: "System ready." }, // ~2 tokens (volatile)
 			];
-
-			// Tiny delta
-			const deltaMessages: LLMMessage[] = [
-				{ role: "user", content: "Q?" }, // ~1 token
-			];
-
-			// Modest volatile
-			const volatileContent = "System ready."; // ~2 tokens
 
 			const toolTokenEstimate = 500;
 			const systemPrompt = "You are an assistant."; // ~5 tokens
 
-			// Estimate total
+			// Production formula: stored + system + tools
 			const storedTokens = storedMessages.reduce(
 				(sum, msg) => sum + countContentTokens(msg.content),
 				0,
 			);
-			const deltaTokens = deltaMessages.reduce(
-				(sum, msg) => sum + countContentTokens(msg.content),
-				0,
-			);
-			const volatileTokens = countContentTokens(volatileContent);
 			const systemTokens = countContentTokens(systemPrompt);
-			const estimatedTotal =
-				storedTokens + deltaTokens + volatileTokens + toolTokenEstimate + systemTokens;
+			const estimatedTotal = storedTokens + systemTokens + toolTokenEstimate;
 
 			// This should stay well within the window
 			const exceedsWindow = estimatedTotal > contextWindow;
