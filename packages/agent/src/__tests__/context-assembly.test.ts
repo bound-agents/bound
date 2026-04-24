@@ -77,6 +77,42 @@ describe("Context Assembly Pipeline", () => {
 		expect(Array.isArray(messages)).toBe(true);
 	});
 
+	describe("systemPrompt separation", () => {
+		it("returns systemPrompt as a separate string field", () => {
+			const result = assembleContext({ db, threadId, userId });
+
+			expect(typeof result.systemPrompt).toBe("string");
+			expect(result.systemPrompt.length).toBeGreaterThan(0);
+			// Should contain the base helpful assistant prompt
+			expect(result.systemPrompt).toContain("helpful AI assistant");
+		});
+
+		it("messages array contains no system-role messages", () => {
+			const result = assembleContext({ db, threadId, userId });
+
+			const systemMsgs = result.messages.filter((m) => m.role === "system");
+			expect(systemMsgs).toHaveLength(0);
+		});
+
+		it("systemPrompt includes orientation (commands, host identity)", () => {
+			const result = assembleContext({ db, threadId, userId });
+
+			expect(result.systemPrompt).toContain("Orientation");
+			expect(result.systemPrompt).toContain("Available Commands");
+		});
+
+		it("systemPrompt includes persona when persona.md exists", () => {
+			// Write a persona file to the config dir
+			const configDir = join(tmpDir, "config");
+			mkdirSync(configDir, { recursive: true });
+			writeFileSync(join(configDir, "persona.md"), "I am a test persona.");
+
+			const result = assembleContext({ db, threadId, userId, configDir });
+
+			expect(result.systemPrompt).toContain("test persona");
+		});
+	});
+
 	it("should assemble context with message history", async () => {
 		// Insert a user message
 		const msgId = randomUUID();
@@ -123,19 +159,16 @@ describe("Context Assembly Pipeline", () => {
 			"You are a specialized technical assistant focused on system architecture.";
 		writeFileSync(join(configDir, "persona.md"), personaContent);
 
-		const { messages } = assembleContext({
+		const { systemPrompt } = assembleContext({
 			db,
 			threadId,
 			userId,
 			configDir,
 		});
 
-		// Should have system message with persona content
-		const personaMessage = messages.find(
-			(m) => m.role === "system" && m.content.includes("specialized technical assistant"),
-		);
-		expect(personaMessage).toBeDefined();
-		expect(personaMessage?.content).toContain(personaContent);
+		// Should have system prompt with persona content
+		expect(systemPrompt).toContain("specialized technical assistant");
+		expect(systemPrompt).toContain(personaContent);
 	});
 
 	it("should work without persona when config/persona.md does not exist", async () => {
@@ -162,7 +195,7 @@ describe("Context Assembly Pipeline", () => {
 		writeFileSync(join(configDir, "persona.md"), personaContent);
 
 		// First call - loads from file
-		const { messages: messages1 } = assembleContext({
+		const { systemPrompt: systemPrompt1 } = assembleContext({
 			db,
 			threadId,
 			userId,
@@ -173,7 +206,7 @@ describe("Context Assembly Pipeline", () => {
 		writeFileSync(join(configDir, "persona.md"), "Modified content");
 
 		// Second call - should use cache
-		const { messages: messages2 } = assembleContext({
+		const { systemPrompt: systemPrompt2 } = assembleContext({
 			db,
 			threadId,
 			userId,
@@ -181,15 +214,8 @@ describe("Context Assembly Pipeline", () => {
 		});
 
 		// Both should have the original persona content due to caching
-		const persona1 = messages1.find(
-			(m) => m.role === "system" && m.content.includes("Cached persona"),
-		);
-		const persona2 = messages2.find(
-			(m) => m.role === "system" && m.content.includes("Cached persona"),
-		);
-
-		expect(persona1).toBeDefined();
-		expect(persona2).toBeDefined();
+		expect(systemPrompt1).toContain("Cached persona");
+		expect(systemPrompt2).toContain("Cached persona");
 	});
 
 	describe("Purge Message Substitution", () => {
@@ -1614,15 +1640,11 @@ This skill reviews pull requests.`;
 				userId: userId2,
 				taskId,
 			});
-			const { messages } = result;
+			const { messages, systemPrompt } = result;
 
-			// Find the skill body system message (should be before history)
-			const systemMessages = messages.filter((m) => m.role === "system");
-
-			// The skill body message should be present
-			const skillBodyMsg = systemMessages.find((m) => m.content.includes("PR Review Skill"));
-			expect(skillBodyMsg).toBeDefined();
-			expect(skillBodyMsg?.content).toContain(skillMdContent);
+			// The skill body should be present in systemPrompt
+			expect(systemPrompt).toContain("PR Review Skill");
+			expect(systemPrompt).toContain(skillMdContent);
 
 			// The skill index should appear in developer message
 			const devMsg = messages.find((m) => m.role === "developer");
@@ -1745,7 +1767,7 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const { messages } = assembleContext({
+			const { systemPrompt } = assembleContext({
 				db: db2,
 				threadId: threadId2,
 				userId: userId2,
@@ -1753,11 +1775,9 @@ This skill reviews pull requests.`;
 				noHistory: true,
 			});
 
-			// The skill body message should still be present even with noHistory = true
-			const systemMessages = messages.filter((m) => m.role === "system");
-			const skillBodyMsg = systemMessages.find((m) => m.content.includes("PR Review Skill"));
-			expect(skillBodyMsg).toBeDefined();
-			expect(skillBodyMsg?.content).toContain(skillMdContent);
+			// The skill body should still be present in systemPrompt even with noHistory = true
+			expect(systemPrompt).toContain("PR Review Skill");
+			expect(systemPrompt).toContain(skillMdContent);
 		});
 
 		it("AC3.6: should inject operator retirement notification within 24 hours", () => {
@@ -1814,19 +1834,22 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			const { messages } = assembleContext({
+			const result = assembleContext({
 				db: db2,
 				threadId: threadId2,
 				userId: userId2,
 			});
 
-			// Find the volatile context system message
-			const systemMessages = messages.filter((m) => m.role === "system");
-			const volatileMsg = systemMessages[systemMessages.length - 1];
+			// Check that systemPrompt doesn't contain the old retirement notification
+			// (volatile enrichment should be in developer message, not systemPrompt)
+			expect(result.systemPrompt).not.toContain("[Skill notification]");
+			expect(result.systemPrompt).not.toContain("old-skill");
 
-			expect(volatileMsg).toBeDefined();
-			expect(volatileMsg.content).not.toContain("[Skill notification]");
-			expect(volatileMsg.content).not.toContain("old-skill");
+			// Also check developer messages (volatile context)
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
+			expect(devContent).not.toContain("[Skill notification]");
+			expect(devContent).not.toContain("old-skill");
 		});
 	});
 
@@ -6439,21 +6462,16 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 	});
 
 	it("does not include Current Model in orientation system message", () => {
-		const { messages } = assembleContext({
+		const result = assembleContext({
 			db,
 			threadId,
 			userId,
 			currentModel: "opus",
 		});
 
-		const systemMessages = messages.filter((m) => m.role === "system");
-		const orientationMsg = systemMessages.find(
-			(m) => typeof m.content === "string" && m.content.includes("## Orientation"),
-		);
-		expect(orientationMsg).toBeDefined();
-		const orientationContent = orientationMsg?.content;
-		expect(typeof orientationContent).toBe("string");
-		expect(orientationContent as string).not.toContain("### Current Model");
+		// Check systemPrompt for orientation section
+		expect(result.systemPrompt).toContain("## Orientation");
+		expect(result.systemPrompt).not.toContain("### Current Model");
 	});
 
 	it("returns developer message containing current model and thread identifiers", () => {
@@ -6958,24 +6976,17 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			// Register it via setCommandRegistry
 			setCommandRegistry([testCommand]);
 
-			// Call assembleContext and get orientation system message
-			const { messages } = assembleContext({
+			// Call assembleContext and get orientation from systemPrompt
+			const { systemPrompt } = assembleContext({
 				db,
 				threadId,
 				userId,
 			});
 
-			const systemMessages = messages.filter((m) => m.role === "system");
-			const orientationMsg = systemMessages.find(
-				(m) => typeof m.content === "string" && m.content.includes("## Orientation"),
-			);
-
-			expect(orientationMsg).toBeDefined();
-			const orientationContent = orientationMsg?.content;
-			expect(typeof orientationContent).toBe("string");
+			expect(systemPrompt).toContain("## Orientation");
 
 			// The test command must appear in the orientation block
-			expect((orientationContent as string).includes("test-cmd — A test command")).toBe(true);
+			expect(systemPrompt).toContain("test-cmd — A test command");
 		});
 
 		it("command-discovery-redesign.AC3.2: MCP commands appear alphabetically sorted with built-ins", () => {
@@ -7000,27 +7011,19 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			setCommandRegistry(commands);
 
 			// Call assembleContext
-			const { messages } = assembleContext({
+			const { systemPrompt } = assembleContext({
 				db,
 				threadId,
 				userId,
 			});
 
-			const systemMessages = messages.filter((m) => m.role === "system");
-			const orientationMsg = systemMessages.find(
-				(m) => typeof m.content === "string" && m.content.includes("## Orientation"),
-			);
-
-			expect(orientationMsg).toBeDefined();
-			const orientationContent = orientationMsg?.content as string;
-
 			// Both commands must appear
-			expect(orientationContent.includes("atproto")).toBe(true);
-			expect(orientationContent.includes("query")).toBe(true);
+			expect(systemPrompt).toContain("atproto");
+			expect(systemPrompt).toContain("query");
 
 			// atproto must come before query (alphabetical sort)
-			const atprotoIndex = orientationContent.indexOf("atproto");
-			const queryIndex = orientationContent.indexOf("query");
+			const atprotoIndex = systemPrompt.indexOf("atproto");
+			const queryIndex = systemPrompt.indexOf("query");
 			expect(atprotoIndex < queryIndex).toBe(true);
 		});
 
@@ -7036,28 +7039,18 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			setCommandRegistry([testCommand]);
 
 			// Call assembleContext
-			const { messages } = assembleContext({
+			const { systemPrompt } = assembleContext({
 				db,
 				threadId,
 				userId,
 			});
 
-			const systemMessages = messages.filter((m) => m.role === "system");
-			const orientationMsg = systemMessages.find(
-				(m) => typeof m.content === "string" && m.content.includes("## Orientation"),
-			);
-
-			expect(orientationMsg).toBeDefined();
-			const orientationContent = orientationMsg?.content as string;
-
 			// Must contain the new footer with <cmd> --help
-			expect(orientationContent.includes("Run `<cmd> --help` for details on any command.")).toBe(
-				true,
-			);
+			expect(systemPrompt).toContain("Run `<cmd> --help` for details on any command.");
 
 			// Must NOT contain the old commands references
-			expect(orientationContent.includes("commands <name>")).toBe(false);
-			expect(orientationContent.includes("Run `commands`")).toBe(false);
+			expect(systemPrompt).not.toContain("commands <name>");
+			expect(systemPrompt).not.toContain("Run `commands`");
 		});
 	});
 
@@ -7287,24 +7280,15 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 				configDir,
 			});
 
+			// NOW: No system-role messages in array - all stable content is in systemPrompt
 			const systemMessages = result.messages.filter((m) => m.role === "system");
+			expect(systemMessages.length).toBe(0);
 
-			// Should have some system messages (persona, orientation, default prompt, skill body)
-			expect(systemMessages.length).toBeGreaterThan(0);
+			// Verify that stable components are present in systemPrompt
+			expect(result.systemPrompt).toContain("specialized technical assistant");
+			expect(result.systemPrompt).toContain("Orientation");
 
-			// Verify that stable components are present
-			const hasPersona = systemMessages.some(
-				(m) =>
-					typeof m.content === "string" && m.content.includes("specialized technical assistant"),
-			);
-			const hasOrientation = systemMessages.some(
-				(m) => typeof m.content === "string" && m.content.includes("Orientation"),
-			);
-
-			expect(hasPersona).toBe(true);
-			expect(hasOrientation).toBe(true);
-
-			// Verify NO volatile content in system messages
+			// Verify NO volatile content in systemPrompt
 			const volatileKeywords = [
 				"earlier messages",
 				"truncat",
@@ -7317,14 +7301,7 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			];
 
 			for (const keyword of volatileKeywords) {
-				const volatileInSystem = systemMessages.find(
-					(m) =>
-						typeof m.content === "string" &&
-						m.content.toLowerCase().includes(keyword.toLowerCase()),
-				);
-				expect(volatileInSystem).toBeUndefined(
-					`Found volatile keyword "${keyword}" in system message: ${volatileInSystem?.content}`,
-				);
+				expect(result.systemPrompt.toLowerCase()).not.toContain(keyword.toLowerCase());
 			}
 		});
 
@@ -7472,17 +7449,16 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 				configDir,
 			});
 
-			// Extract system prompt the same way agent-loop does
+			// NOW: systemPrompt is directly available as a field
+			// No need to extract from system messages - there are none in messages array
 			const systemMessages = result.messages.filter((m) => m.role === "system");
-			const systemPrompt = systemMessages
-				.map((m) => (typeof m.content === "string" ? m.content : ""))
-				.join("\n\n");
+			expect(systemMessages.length).toBe(0);
 
-			// Verify it contains stable components
-			expect(systemPrompt).toContain("specialized assistant");
-			expect(systemPrompt).toContain("Orientation");
+			// Verify systemPrompt contains stable components
+			expect(result.systemPrompt).toContain("specialized assistant");
+			expect(result.systemPrompt).toContain("Orientation");
 
-			// Verify NO volatile content in extracted system prompt
+			// Verify NO volatile content in systemPrompt
 			const volatileKeywords = [
 				"earlier messages",
 				"truncat",
@@ -7492,15 +7468,7 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			];
 
 			for (const keyword of volatileKeywords) {
-				expect(systemPrompt.toLowerCase()).not.toContain(keyword.toLowerCase());
-			}
-
-			// Verify all system messages contain only stable content
-			for (const msg of systemMessages) {
-				const content = typeof msg.content === "string" ? msg.content : "";
-				for (const keyword of volatileKeywords) {
-					expect(content.toLowerCase()).not.toContain(keyword.toLowerCase());
-				}
+				expect(result.systemPrompt.toLowerCase()).not.toContain(keyword.toLowerCase());
 			}
 		});
 	});

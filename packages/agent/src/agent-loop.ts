@@ -481,11 +481,8 @@ export class AgentLoop {
 						lastMessageCreatedAt: newLastRow?.created_at ?? new Date().toISOString(),
 					};
 
-					// 9. Reconstruct full context with system messages
-					const systemMessages = cached.systemPrompt
-						? [{ role: "system" as const, content: cached.systemPrompt }]
-						: [];
-					llmMessages = [...systemMessages, ...storedMessages];
+					// 9. Use stored messages directly (no system messages in the array)
+					llmMessages = storedMessages;
 
 					// Use cached debug
 					contextDebug = {
@@ -551,20 +548,16 @@ export class AgentLoop {
 					systemPromptAddition: this.config.systemPromptAddition,
 				});
 
+				// assembleContext now returns systemPrompt separately — no system-role
+				// messages in the array, no filtering needed.
 				const contextMessages = result.messages;
+				const systemPrompt = result.systemPrompt;
 				contextDebug = result.debug;
 
-				// Extract system messages for stable storage
-				const systemMessages = contextMessages.filter((m) => m.role === "system");
-				const nonSystemMessages = contextMessages.filter((m) => m.role !== "system");
-				const systemPrompt = systemMessages
-					.map((m) => (typeof m.content === "string" ? m.content : ""))
-					.join("\n\n");
-
 				// Place fixed cache message at messages[length-2] (before last message)
-				const fixedCacheIdx = nonSystemMessages.length >= 2 ? nonSystemMessages.length - 2 : -1;
+				const fixedCacheIdx = contextMessages.length >= 2 ? contextMessages.length - 2 : -1;
 				if (fixedCacheIdx >= 0) {
-					nonSystemMessages.splice(fixedCacheIdx + 1, 0, { role: "cache", content: "" });
+					contextMessages.splice(fixedCacheIdx + 1, 0, { role: "cache", content: "" });
 				}
 
 				// Query last message created_at for delta queries
@@ -577,7 +570,7 @@ export class AgentLoop {
 
 				// Store state for potential warm-path reuse on next turn
 				this._cachedTurnState = {
-					messages: [...nonSystemMessages],
+					messages: [...contextMessages],
 					systemPrompt,
 					cacheMessagePositions: fixedCacheIdx >= 0 ? [fixedCacheIdx + 1] : [],
 					fixedCacheIdx: fixedCacheIdx >= 0 ? fixedCacheIdx + 1 : -1,
@@ -585,8 +578,7 @@ export class AgentLoop {
 					toolFingerprint: currentFingerprint,
 				};
 
-				// Reconstruct full context with system messages for LLM call
-				llmMessages = [...systemMessages, ...nonSystemMessages];
+				llmMessages = contextMessages;
 			}
 
 			this.lastContextDebug = contextDebug;
@@ -654,11 +646,9 @@ export class AgentLoop {
 				});
 
 				try {
-					const systemMessages = llmMessages.filter((m) => m.role === "system");
-					const nonSystemMessages = llmMessages.filter((m) => m.role !== "system");
-					const systemPrompt = systemMessages
-						.map((m) => (typeof m.content === "string" ? m.content : ""))
-						.join("\n\n");
+					// System prompt comes from assembleContext (cold path) or cached state (warm path).
+					// No filtering needed — llmMessages contains no system-role messages.
+					const systemPrompt = this._cachedTurnState?.systemPrompt ?? "";
 
 					const resolution = this.lastModelResolution;
 					if (!resolution) {
@@ -672,7 +662,7 @@ export class AgentLoop {
 						case "remote": {
 							let inferencePayload: InferenceRequestPayload = {
 								model: resolution.modelId,
-								messages: nonSystemMessages,
+								messages: llmMessages,
 								tools: mergedTools,
 								system: systemPrompt || undefined,
 								max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
@@ -738,7 +728,7 @@ export class AgentLoop {
 								this.config.onActivity?.();
 								try {
 									const chatStream = resolution.backend.chat({
-										messages: nonSystemMessages,
+										messages: llmMessages,
 										system: systemPrompt || undefined,
 										tools: mergedTools,
 										max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,

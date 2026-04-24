@@ -66,6 +66,8 @@ export interface ContextParams {
 
 export interface ContextAssemblyResult {
 	messages: LLMMessage[];
+	/** Stable system prompt (persona + orientation + skill body). Passed as the `system` param to drivers. */
+	systemPrompt: string;
 	debug: ContextDebugInfo;
 	/** Volatile context token estimate for warm-path reuse */
 	volatileTokenEstimate?: number;
@@ -1328,23 +1330,17 @@ Original output was too large for the context window. If you need the full conte
 		: annotated;
 
 	// Stage 6: ASSEMBLY
-	// Start with system prompt
-	const assembled: LLMMessage[] = [
-		{
-			role: "system",
-			content:
-				"You are a helpful AI assistant. You have access to tools to help the user. " +
-				"Be concise and direct in your responses.",
-		},
+	// Build stable system prompt as a string (returned separately, not in messages array).
+	// Drivers receive this via the `system` param, keeping it out of the message prefix.
+	const systemParts: string[] = [
+		"You are a helpful AI assistant. You have access to tools to help the user. " +
+			"Be concise and direct in your responses.",
 	];
 
 	// Load and inject persona if it exists
 	const persona = loadPersona(configDir);
 	if (persona) {
-		assembled.push({
-			role: "system",
-			content: persona,
-		});
+		systemParts.push(persona);
 	}
 
 	// Stable orientation section: available commands, current model, host identity
@@ -1363,18 +1359,17 @@ Original output was too large for the context window. If you need the full conte
 		"",
 		`### Host Identity\nHost: ${hostName || "unknown"}\nSite ID: ${siteId || "unknown"}`,
 	];
-	assembled.push({
-		role: "system",
-		content: orientationLines.join("\n"),
-	});
+	systemParts.push(orientationLines.join("\n"));
 
-	// Track system message count before skill injection (for AC2.2 tracking)
-	const systemMsgCount = assembled.length;
+	const assembled: LLMMessage[] = [];
+
+	// Track part count before skill injection (for token tracking)
+	const systemPartCountBeforeSkill = systemParts.length;
 
 	// Track inactive skill reference for volatile context note (AC3.4)
 	let inactiveSkillRef: string | undefined;
 
-	// Inject task-referenced skill body as system message (AC3.3, AC3.5)
+	// Inject task-referenced skill body into system prompt (AC3.3, AC3.5)
 	// Must be outside the !noHistory guard so it works when noHistory = true
 	if (params.taskId) {
 		try {
@@ -1411,10 +1406,7 @@ Original output was too large for the context window. If you need the full conte
 						} | null;
 
 						if (skillMdRow?.content) {
-							assembled.push({
-								role: "system",
-								content: skillMdRow.content,
-							});
+							systemParts.push(skillMdRow.content);
 						}
 					} else {
 						// Skill referenced but not active — note will appear in volatile context
@@ -1428,15 +1420,18 @@ Original output was too large for the context window. If you need the full conte
 		}
 	}
 
-	// Track system section tokens (only messages before skill injection)
-	const systemTokens = assembled
-		.slice(0, systemMsgCount)
-		.reduce((sum, msg) => sum + countContentTokens(msg.content), 0);
+	// Build the final system prompt string
+	const systemPrompt = systemParts.join("\n\n");
+
+	// Track system section tokens (parts before skill injection)
+	const systemTokens = systemParts
+		.slice(0, systemPartCountBeforeSkill)
+		.reduce((sum, part) => sum + countTokens(part), 0);
 	sections.push({ name: "system", tokens: systemTokens });
 
-	// Track skill section if a skill message was added
-	if (assembled.length > systemMsgCount) {
-		const skillTokens = countContentTokens(assembled[assembled.length - 1].content);
+	// Track skill section if a skill part was added
+	if (systemParts.length > systemPartCountBeforeSkill) {
+		const skillTokens = countTokens(systemParts[systemParts.length - 1]);
 		if (skillTokens > 0) {
 			sections.push({ name: "skill-context", tokens: skillTokens });
 		}
@@ -1861,6 +1856,7 @@ Original output was too large for the context window. If you need the full conte
 
 			return {
 				messages: truncatedMessages,
+				systemPrompt,
 				...(suffixContent !== undefined
 					? { volatileTokenEstimate: countTokens(suffixContent) }
 					: {}),
@@ -1884,6 +1880,7 @@ Original output was too large for the context window. If you need the full conte
 
 	return {
 		messages: assembled,
+		systemPrompt,
 		...(suffixContent !== undefined ? { volatileTokenEstimate: countTokens(suffixContent) } : {}),
 		debug: {
 			contextWindow: contextWindow,
