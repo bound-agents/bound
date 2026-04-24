@@ -15,6 +15,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { toAnthropicMessages } from "../anthropic-driver";
 import {
 	emitCacheDebug,
 	findCachePointIndex,
@@ -770,10 +771,13 @@ describe("cache stability: inference config", () => {
 				{ role: "user", content: "msg2" },
 			];
 
-			// Import anthropic conversion to verify it also handles cache
-			// For now, document the expected behavior via test that cache is recognized
-			const converted = toBedrockMessages(messages);
+			const converted = toAnthropicMessages(messages);
 			expect(converted.length).toBe(3); // cache role is consumed
+
+			// Verify cache_control was added to the assistant message
+			const assistantMsg = converted.find((m) => m.role === "assistant");
+			expect(assistantMsg).toBeDefined();
+			expect(assistantMsg?.cache_control).toEqual({ type: "ephemeral" });
 		});
 
 		it("anthropic with developer messages maps to user-message prepend", () => {
@@ -782,35 +786,39 @@ describe("cache stability: inference config", () => {
 				{ role: "user", content: "Question" },
 			];
 
-			const converted = toBedrockMessages(messages);
+			const converted = toAnthropicMessages(messages);
 			expect(converted.length).toBe(1); // developer role is consumed
 
 			// Developer content should be prepended to user message
 			const userMsg = converted[0];
 			expect(userMsg.role).toBe("user");
 
-			const content = userMsg.content as Array<Record<string, unknown>>;
-			const allText = content.map((b) => (b.text ? String(b.text) : "")).join("");
-			expect(allText).toContain("<system-context>");
-			expect(allText).toContain("Context");
+			// Anthropic stores content as string or as ContentBlock array
+			const contentStr =
+				typeof userMsg.content === "string"
+					? userMsg.content
+					: Array.isArray(userMsg.content)
+						? userMsg.content.map((b) => (b.type === "text" ? b.text : "")).join("")
+						: "";
+			expect(contentStr).toContain("<system-context>");
+			expect(contentStr).toContain("Context");
+			expect(contentStr).toContain("Question");
 		});
 
-		it("anthropic with cache messages and tools places cache_control on last tool", () => {
-			// Verify toolConfig cachePoint is set when both cache and tools present
-			const input = makeInput({
-				messages: [
-					{ role: "user", content: "Tool call" },
-					{ role: "cache", content: "" },
-				],
-				tools: SAMPLE_TOOLS,
-			});
+		it("anthropic with cache messages and tools places cache_control on last user message", () => {
+			// Verify cache_control is added to last user message when cache is present
+			const messages: LLMMessage[] = [
+				{ role: "user", content: "Call tool" },
+				{ role: "cache", content: "" },
+			];
 
-			const raw = toBedrockRequest(input);
-			const toolConfig = raw.toolConfig as Record<string, unknown>;
+			const converted = toAnthropicMessages(messages);
+			expect(converted.length).toBe(1); // cache role is consumed
 
-			// cachePoint should be present in toolConfig
-			expect(toolConfig.cachePoint).toBeDefined();
-			expect(toolConfig.cachePoint).toEqual({ type: "default" });
+			// The user message should have cache_control attached
+			const userMsg = converted[0];
+			expect(userMsg.role).toBe("user");
+			expect(userMsg.cache_control).toEqual({ type: "ephemeral" });
 		});
 	});
 

@@ -1,0 +1,34 @@
+bun test v1.3.7 (ba426210)
+
+Config initialized successfully!
+
+Created:
+  - bound-test-WguNrC/allowlist.json
+  - bound-test-WguNrC/model_backends.json
+
+Operator: user
+Provider: ollama
+Model: llama3
+
+Next steps:
+  1. Review the config files
+  2. Run: bound start
+  3. Open http://localhost:3000 in your browser
+
+
+Config initialized successfully!
+
+Created:
+  - bound-test-0vJLaw/allowlist.json
+  - bound-test-0vJLaw/model_backends.json
+
+Operator: user
+Provider: ollama
+Model: llama3
+
+Next steps:
+  1. Review the config files
+  2. Run: bound start
+  3. Open http://localhost:3000 in your browser
+
+Config already exists. Use --force to overwrite.

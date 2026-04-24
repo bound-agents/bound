@@ -36,6 +36,9 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+	// Each test gets a unique thread ID, providing isolation within the shared DB.
+	// This avoids the cost of re-creating the schema per test while keeping
+	// thread-level state independent.
 	globalThreadId = randomUUID();
 });
 

@@ -86,14 +86,17 @@ interface CacheDebugEntry {
 	};
 }
 
-function emitCacheDebug(raw: {
-	modelId: unknown;
-	messages: unknown;
-	system?: unknown;
-	inferenceConfig: unknown;
-	additionalModelRequestFields?: unknown;
-	toolConfig?: unknown;
-}): CacheDebugEntry {
+function emitCacheDebug(
+	raw: {
+		modelId: unknown;
+		messages: unknown;
+		system?: unknown;
+		inferenceConfig: unknown;
+		additionalModelRequestFields?: unknown;
+		toolConfig?: unknown;
+	},
+	originalMessages?: unknown,
+): CacheDebugEntry {
 	const seq = ++cacheDebugSeq;
 	const messages = Array.isArray(raw.messages) ? raw.messages : [];
 	const cpIdx = findCachePointIndex(messages);
@@ -111,9 +114,10 @@ function emitCacheDebug(raw: {
 		}
 	}
 
-	// Count developer role messages
+	// Count developer role messages from ORIGINAL messages (before conversion)
 	let developerMessageCount = 0;
-	for (const msg of messages) {
+	const msgArray = Array.isArray(originalMessages) ? originalMessages : [];
+	for (const msg of msgArray) {
 		const msgRecord = msg as Record<string, unknown>;
 		if (msgRecord.role === "developer") {
 			developerMessageCount++;
@@ -199,7 +203,7 @@ export class BedrockDriver implements LLMBackend {
 		// HTTP call. This replaces what used to be a mix of inline assembly
 		// and hope.
 		const raw = toBedrockRequest({ params, defaultModel: this.model });
-		if (CACHE_DEBUG) emitCacheDebug(raw);
+		if (CACHE_DEBUG) emitCacheDebug(raw, params.messages);
 		const validated = validateBedrockRequest(raw);
 
 		// The validated shape is structurally compatible with ConverseStreamCommand's

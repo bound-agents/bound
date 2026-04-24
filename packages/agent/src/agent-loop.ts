@@ -363,6 +363,7 @@ export class AgentLoop {
 			};
 			let llmMessages: import("@bound/llm").LLMMessage[] = [];
 			let usedWarmPath = false;
+			let deltaMessageCount = 0;
 
 			if (isWarmPathEligible && this._cachedTurnState) {
 				// WARM PATH: Try to reuse stored messages and append delta
@@ -388,6 +389,7 @@ export class AgentLoop {
 
 				// 2. Convert and sanitize delta messages
 				const deltaMessages = convertDeltaMessages(deltaRows);
+				deltaMessageCount = deltaMessages.length;
 
 				this.ctx.logger.debug("[agent-loop] Warm path: delta messages fetched", {
 					storedMessageCount: cached.messages.length,
@@ -510,10 +512,7 @@ export class AgentLoop {
 								? "budget-exceeded"
 								: "warm-eligible",
 				storedMessageCount: this._cachedTurnState?.messages.length,
-				deltaMessageCount:
-					this._cachedTurnState !== undefined && usedWarmPath === false
-						? 0
-						: this._cachedTurnState?.messages.length,
+				deltaMessageCount,
 				cacheMessagePositions: this._cachedTurnState?.cacheMessagePositions,
 			});
 
