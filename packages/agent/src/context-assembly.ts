@@ -15,6 +15,14 @@ import {
 } from "./summary-extraction.js";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
 
+/**
+ * The cold path targets this fraction of contextWindow, leaving headroom for warm-path growth.
+ * At 200k contextWindow, this leaves ~30k tokens (15%) for warm-path turns before triggering
+ * high-water mark reassembly. With 10-15% underestimation by tiktoken, this also protects
+ * against exceeding the model's true context limit.
+ */
+export const TRUNCATION_TARGET_RATIO = 0.85;
+
 export interface ContextParams {
 	db: Database;
 	threadId: string;
@@ -1733,7 +1741,6 @@ Original output was too large for the context window. If you need the full conte
 		// 90%+ cache hit rates on long threads. Additionally, tiktoken cl100k_base
 		// underestimates Claude's actual token count by ~10-15%, so the headroom
 		// also prevents the actual context from exceeding the model's limit.
-		const TRUNCATION_TARGET_RATIO = 0.85;
 		const truncationTarget = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
 
 		const systemMessages = assembled.filter((m) => m.role === "system");
