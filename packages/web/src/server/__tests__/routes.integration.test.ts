@@ -624,7 +624,7 @@ describe("API Routes", () => {
 
 			// Verify an interruption notice was injected
 			const messages = db
-				.prepare(`SELECT content FROM messages WHERE thread_id = ? AND role = 'system'`)
+				.prepare(`SELECT content FROM messages WHERE thread_id = ? AND role = 'developer'`)
 				.all(thread.id) as Array<{ content: string }>;
 
 			const cancelNotice = messages.find((m) =>

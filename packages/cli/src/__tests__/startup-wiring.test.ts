@@ -276,7 +276,7 @@ describe("Startup Wiring", () => {
 						{
 							id: randomUUID(),
 							thread_id,
-							role: "system",
+							role: "developer",
 							content: `Agent response was interrupted on host ${hostName}. The previous tool interaction may be incomplete.`,
 							model_id: null,
 							tool_name: null,
@@ -289,16 +289,16 @@ describe("Startup Wiring", () => {
 				}
 			}
 
-			// Verify the system message was inserted
-			const systemMsgs = db
+			// Verify the developer message was inserted
+			const developerMsgs = db
 				.query(
-					"SELECT * FROM messages WHERE thread_id = ? AND role = 'system' ORDER BY created_at DESC",
+					"SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' ORDER BY created_at DESC",
 				)
 				.all(threadId) as Array<{ content: string }>;
 
-			expect(systemMsgs.length).toBeGreaterThanOrEqual(1);
-			expect(systemMsgs[0].content).toContain("interrupted");
-			expect(systemMsgs[0].content).toContain(hostName);
+			expect(developerMsgs.length).toBeGreaterThanOrEqual(1);
+			expect(developerMsgs[0].content).toContain("interrupted");
+			expect(developerMsgs[0].content).toContain(hostName);
 		});
 
 		it("does not flag threads where the last message is an assistant response", () => {
