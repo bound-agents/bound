@@ -196,6 +196,37 @@ describe("AgentLoop", () => {
 		} as unknown as AppContext;
 	}
 
+	// Backend that captures chat params for inspection
+	class CaptureParamsBackend implements LLMBackend {
+		capturedParams: ChatParams[] = [];
+
+		async *chat(params: ChatParams) {
+			this.capturedParams.push(params);
+			yield { type: "text" as const, content: "Test response" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		}
+
+		capabilities() {
+			return {
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: false,
+				vision: false,
+				max_context: 8000,
+			};
+		}
+	}
+
 	it("should return a valid result from running the agent loop with text response", async () => {
 		const mockBackend = new MockLLMBackend();
 		mockBackend.setTextResponse("Hello, I understand.");
@@ -1780,324 +1811,324 @@ describe("AgentLoop", () => {
 		// system_suffix should no longer be passed
 		expect(params.system_suffix).toBeUndefined();
 	});
-});
 
-describe("context_debug freshness per turn", () => {
-	it("should update context_debug totalEstimated for each turn in a multi-turn loop", async () => {
-		const mockBackend = new MockLLMBackend();
+	describe("context_debug freshness per turn", () => {
+		it("should update context_debug totalEstimated for each turn in a multi-turn loop", async () => {
+			const mockBackend = new MockLLMBackend();
 
-		// First call: tool use (input_tokens = 100)
-		mockBackend.pushResponse(async function* () {
-			yield { type: "tool_use_start" as const, id: "t-cd1", name: "bash" };
-			yield {
-				type: "tool_use_args" as const,
-				id: "t-cd1",
-				partial_json: '{"command":"echo test"}',
-			};
-			yield { type: "tool_use_end" as const, id: "t-cd1" };
-			yield {
-				type: "done" as const,
-				usage: {
-					input_tokens: 100,
-					output_tokens: 15,
-					cache_write_tokens: null,
-					cache_read_tokens: null,
-					estimated: false,
-				},
-			};
+			// First call: tool use (input_tokens = 100)
+			mockBackend.pushResponse(async function* () {
+				yield { type: "tool_use_start" as const, id: "t-cd1", name: "bash" };
+				yield {
+					type: "tool_use_args" as const,
+					id: "t-cd1",
+					partial_json: '{"command":"echo test"}',
+				};
+				yield { type: "tool_use_end" as const, id: "t-cd1" };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 100,
+						output_tokens: 15,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			});
+
+			// Second call: text response (input_tokens = 500 — context grew)
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "All done." };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 500,
+						output_tokens: 10,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			});
+
+			const mockBash = createMockSandbox(() => ({
+				stdout: "test output",
+				stderr: "",
+				exitCode: 0,
+			}));
+			const ctx = makeCtx();
+
+			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				threadId,
+				userId: "test-user",
+			});
+
+			await agentLoop.run();
+
+			// Query the turns table for context_debug
+			const turns = db
+				.query("SELECT id, tokens_in, context_debug FROM turns WHERE thread_id = ? ORDER BY id ASC")
+				.all(threadId) as Array<{
+				id: number;
+				tokens_in: number;
+				context_debug: string | null;
+			}>;
+
+			expect(turns.length).toBe(2);
+
+			// Both turns should have context_debug
+			expect(turns[0].context_debug).not.toBeNull();
+			expect(turns[1].context_debug).not.toBeNull();
+
+			const debug1 = JSON.parse(turns[0].context_debug ?? "{}") as { totalEstimated: number };
+			const debug2 = JSON.parse(turns[1].context_debug ?? "{}") as { totalEstimated: number };
+
+			// The second turn's totalEstimated should reflect the actual input tokens (500),
+			// not be stale from the first assembly. At minimum it should differ from turn 1.
+			expect(debug2.totalEstimated).not.toBe(debug1.totalEstimated);
+
+			// The second turn's totalEstimated should be >= the actual input tokens for that turn
+			// (since the LLM reported 500 input tokens)
+			expect(debug2.totalEstimated).toBeGreaterThanOrEqual(500);
 		});
-
-		// Second call: text response (input_tokens = 500 — context grew)
-		mockBackend.pushResponse(async function* () {
-			yield { type: "text" as const, content: "All done." };
-			yield {
-				type: "done" as const,
-				usage: {
-					input_tokens: 500,
-					output_tokens: 10,
-					cache_write_tokens: null,
-					cache_read_tokens: null,
-					estimated: false,
-				},
-			};
-		});
-
-		const mockBash = createMockSandbox(() => ({
-			stdout: "test output",
-			stderr: "",
-			exitCode: 0,
-		}));
-		const ctx = makeCtx();
-
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
-			threadId,
-			userId: "test-user",
-		});
-
-		await agentLoop.run();
-
-		// Query the turns table for context_debug
-		const turns = db
-			.query("SELECT id, tokens_in, context_debug FROM turns WHERE thread_id = ? ORDER BY id ASC")
-			.all(threadId) as Array<{
-			id: number;
-			tokens_in: number;
-			context_debug: string | null;
-		}>;
-
-		expect(turns.length).toBe(2);
-
-		// Both turns should have context_debug
-		expect(turns[0].context_debug).not.toBeNull();
-		expect(turns[1].context_debug).not.toBeNull();
-
-		const debug1 = JSON.parse(turns[0].context_debug ?? "{}") as { totalEstimated: number };
-		const debug2 = JSON.parse(turns[1].context_debug ?? "{}") as { totalEstimated: number };
-
-		// The second turn's totalEstimated should reflect the actual input tokens (500),
-		// not be stale from the first assembly. At minimum it should differ from turn 1.
-		expect(debug2.totalEstimated).not.toBe(debug1.totalEstimated);
-
-		// The second turn's totalEstimated should be >= the actual input tokens for that turn
-		// (since the LLM reported 500 input tokens)
-		expect(debug2.totalEstimated).toBeGreaterThanOrEqual(500);
 	});
-});
 
-describe("spoke node (no local backends)", () => {
-	function createEmptyRouter(): ModelRouter {
-		return new ModelRouter(new Map(), "");
-	}
+	describe("spoke node (no local backends)", () => {
+		function createEmptyRouter(): ModelRouter {
+			return new ModelRouter(new Map(), "");
+		}
 
-	function insertRemoteHost(siteId: string) {
-		const now = new Date().toISOString();
-		db.run(
-			`INSERT OR REPLACE INTO hosts
+		function insertRemoteHost(siteId: string) {
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT OR REPLACE INTO hosts
 				 (site_id, host_name, sync_url, models, mcp_tools, platforms, online_at, modified_at, deleted)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-			[
-				siteId,
-				"remote-hub",
-				"http://hub:3000",
-				JSON.stringify([
-					{
-						id: "claude-opus",
-						tier: 1,
-						capabilities: {
-							max_context: 200000,
-							streaming: true,
-							tool_use: true,
-							system_prompt: true,
+				[
+					siteId,
+					"remote-hub",
+					"http://hub:3000",
+					JSON.stringify([
+						{
+							id: "claude-opus",
+							tier: 1,
+							capabilities: {
+								max_context: 200000,
+								streaming: true,
+								tool_use: true,
+								system_prompt: true,
+							},
 						},
-					},
-				]),
-				null,
-				null,
-				now,
-				now,
-			],
-		);
-	}
+					]),
+					null,
+					null,
+					now,
+					now,
+				],
+			);
+		}
 
-	it("should not crash on context window calculation when model resolves to remote", async () => {
-		// On a spoke with no local backends, getDefault() throws.
-		// The context window calculation must use remote host capabilities instead.
-		const remoteSiteId = `remote-site-${randomUUID().slice(0, 8)}`;
-		insertRemoteHost(remoteSiteId);
+		it("should not crash on context window calculation when model resolves to remote", async () => {
+			// On a spoke with no local backends, getDefault() throws.
+			// The context window calculation must use remote host capabilities instead.
+			const remoteSiteId = `remote-site-${randomUUID().slice(0, 8)}`;
+			insertRemoteHost(remoteSiteId);
 
-		const controller = new AbortController();
-		// Abort after short delay — gives the loop time to pass context assembly
-		// but aborts before relay stream timeout (which would take 120s)
-		setTimeout(() => controller.abort(), 10);
+			const controller = new AbortController();
+			// Abort after short delay — gives the loop time to pass context assembly
+			// but aborts before relay stream timeout (which would take 120s)
+			setTimeout(() => controller.abort(), 10);
 
-		const agentLoop = new AgentLoop(makeCtx(), createMockSandbox(), createEmptyRouter(), {
-			threadId,
-			userId: "test-user",
-			abortSignal: controller.signal,
+			const agentLoop = new AgentLoop(makeCtx(), createMockSandbox(), createEmptyRouter(), {
+				threadId,
+				userId: "test-user",
+				abortSignal: controller.signal,
+			});
+
+			// This should NOT throw — previously crashed with "Default backend not found"
+			const result = await agentLoop.run();
+			expect(result.error).toBeUndefined();
 		});
 
-		// This should NOT throw — previously crashed with "Default backend not found"
-		const result = await agentLoop.run();
-		expect(result.error).toBeUndefined();
-	});
+		it("should not crash on summary extraction when no local backend available", async () => {
+			// After the loop completes, extractSummaryAndMemories is called with getDefault()
+			// which throws on spoke nodes. It must gracefully skip or handle missing backends.
+			const remoteSiteId = `remote-site-${randomUUID().slice(0, 8)}`;
+			insertRemoteHost(remoteSiteId);
 
-	it("should not crash on summary extraction when no local backend available", async () => {
-		// After the loop completes, extractSummaryAndMemories is called with getDefault()
-		// which throws on spoke nodes. It must gracefully skip or handle missing backends.
-		const remoteSiteId = `remote-site-${randomUUID().slice(0, 8)}`;
-		insertRemoteHost(remoteSiteId);
+			const controller = new AbortController();
+			setTimeout(() => controller.abort(), 10);
 
-		const controller = new AbortController();
-		setTimeout(() => controller.abort(), 10);
-
-		const ctx = makeCtx();
-		const infos: string[] = [];
-		ctx.logger.info = (msg: string) => {
-			infos.push(msg);
-		};
-
-		const agentLoop = new AgentLoop(ctx, createMockSandbox(), createEmptyRouter(), {
-			threadId,
-			userId: "test-user",
-			abortSignal: controller.signal,
-		});
-
-		// Should complete without throwing — previously crashed at extractSummaryAndMemories
-		const result = await agentLoop.run();
-		expect(result.error).toBeUndefined();
-		// Verify the skip was logged
-		expect(infos.some((m) => m.includes("Skipping summary extraction"))).toBe(true);
-	});
-});
-
-describe("cooperative cancellation (shouldYield)", () => {
-	it("stops before executing tool call when shouldYield returns true", async () => {
-		const backend = new MockLLMBackend();
-
-		// LLM wants to call a tool, then produce text
-		backend.setToolThenTextResponse("tool-1", "bash", { command: "query SELECT 1" }, "Done!");
-
-		const sandbox = createMockSandbox();
-
-		// shouldYield returns true after the first LLM call (before tool execution)
-		let llmCallCount = 0;
-		const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
-			threadId,
-			userId: "test-user",
-			shouldYield: () => {
-				// Yield after LLM returns tool_call but before tool executes
-				return llmCallCount > 0;
-			},
-		});
-
-		// Intercept LLM calls to track count
-		const origChat = backend.chat.bind(backend);
-		backend.chat = async function* (...args: [ChatParams]) {
-			llmCallCount++;
-			yield* origChat(...args);
-		};
-
-		const result = await loop.run();
-
-		// Tool should NOT have been executed
-		expect(sandbox.calls).toHaveLength(0);
-
-		// The loop should have yielded, not errored
-		expect(result.error).toBeUndefined();
-
-		// Only 1 LLM call (the one that requested the tool), not 2
-		expect(backend.getCallCount()).toBe(1);
-	});
-
-	it("yields during LLM streaming when shouldYield returns true", async () => {
-		const backend = new MockLLMBackend();
-
-		// LLM will produce a text response (slow streaming simulated by multiple chunks)
-		backend.pushResponse(async function* () {
-			yield { type: "text" as const, content: "Starting to " };
-			yield { type: "text" as const, content: "respond to " };
-			yield { type: "text" as const, content: "the user..." };
-			yield {
-				type: "done" as const,
-				usage: {
-					input_tokens: 10,
-					output_tokens: 5,
-					cache_write_tokens: null,
-					cache_read_tokens: null,
-					estimated: false,
-				},
+			const ctx = makeCtx();
+			const infos: string[] = [];
+			ctx.logger.info = (msg: string) => {
+				infos.push(msg);
 			};
+
+			const agentLoop = new AgentLoop(ctx, createMockSandbox(), createEmptyRouter(), {
+				threadId,
+				userId: "test-user",
+				abortSignal: controller.signal,
+			});
+
+			// Should complete without throwing — previously crashed at extractSummaryAndMemories
+			const result = await agentLoop.run();
+			expect(result.error).toBeUndefined();
+			// Verify the skip was logged
+			expect(infos.some((m) => m.includes("Skipping summary extraction"))).toBe(true);
+		});
+	});
+
+	describe("cooperative cancellation (shouldYield)", () => {
+		it("stops before executing tool call when shouldYield returns true", async () => {
+			const backend = new MockLLMBackend();
+
+			// LLM wants to call a tool, then produce text
+			backend.setToolThenTextResponse("tool-1", "bash", { command: "query SELECT 1" }, "Done!");
+
+			const sandbox = createMockSandbox();
+
+			// shouldYield returns true after the first LLM call (before tool execution)
+			let llmCallCount = 0;
+			const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
+				threadId,
+				userId: "test-user",
+				shouldYield: () => {
+					// Yield after LLM returns tool_call but before tool executes
+					return llmCallCount > 0;
+				},
+			});
+
+			// Intercept LLM calls to track count
+			const origChat = backend.chat.bind(backend);
+			backend.chat = async function* (...args: [ChatParams]) {
+				llmCallCount++;
+				yield* origChat(...args);
+			};
+
+			const result = await loop.run();
+
+			// Tool should NOT have been executed
+			expect(sandbox.calls).toHaveLength(0);
+
+			// The loop should have yielded, not errored
+			expect(result.error).toBeUndefined();
+
+			// Only 1 LLM call (the one that requested the tool), not 2
+			expect(backend.getCallCount()).toBe(1);
 		});
 
-		const sandbox = createMockSandbox();
+		it("yields during LLM streaming when shouldYield returns true", async () => {
+			const backend = new MockLLMBackend();
 
-		// shouldYield returns true after first chunk — simulates new message arriving mid-stream
-		let chunksSeen = 0;
-		const originalChat = backend.chat.bind(backend);
-		backend.chat = async function* (...args: [ChatParams]) {
-			for await (const chunk of originalChat(...args)) {
-				if (chunk.type === "text") chunksSeen++;
-				yield chunk;
+			// LLM will produce a text response (slow streaming simulated by multiple chunks)
+			backend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Starting to " };
+				yield { type: "text" as const, content: "respond to " };
+				yield { type: "text" as const, content: "the user..." };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			});
+
+			const sandbox = createMockSandbox();
+
+			// shouldYield returns true after first chunk — simulates new message arriving mid-stream
+			let chunksSeen = 0;
+			const originalChat = backend.chat.bind(backend);
+			backend.chat = async function* (...args: [ChatParams]) {
+				for await (const chunk of originalChat(...args)) {
+					if (chunk.type === "text") chunksSeen++;
+					yield chunk;
+				}
+			};
+
+			const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
+				threadId,
+				userId: "test-user",
+				shouldYield: () => chunksSeen >= 2, // yield after 2 text chunks
+			});
+
+			const result = await loop.run();
+
+			// Loop should have yielded
+			expect(result.yielded).toBe(true);
+			// No error — yield is not an error condition
+			expect(result.error).toBeUndefined();
+		});
+
+		it("sets yielded=false on normal completion", async () => {
+			const backend = new MockLLMBackend();
+			backend.setTextResponse("Normal response");
+
+			const sandbox = createMockSandbox();
+
+			const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
+				threadId,
+				userId: "test-user",
+				shouldYield: () => false,
+			});
+
+			const result = await loop.run();
+
+			expect(result.yielded).toBeUndefined(); // not set or false
+			expect(result.error).toBeUndefined();
+		});
+
+		it("does not interfere when shouldYield always returns false", async () => {
+			const backend = new MockLLMBackend();
+			backend.setToolThenTextResponse("tool-1", "bash", { command: "query SELECT 1" }, "Done!");
+
+			const sandbox = createMockSandbox();
+
+			const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
+				threadId,
+				userId: "test-user",
+				shouldYield: () => false,
+			});
+
+			await loop.run();
+
+			// Normal execution: tool was called, final text produced
+			expect(sandbox.calls.length).toBeGreaterThanOrEqual(1);
+			expect(backend.getCallCount()).toBe(2); // tool_call turn + final text turn
+		});
+
+		it("persists messages with siteId as host_origin, not hostName", async () => {
+			// After this fix, host_origin should be the stable site_id (survives
+			// container restarts) rather than the ephemeral hostname.
+			const mockBackend = new MockLLMBackend();
+			mockBackend.setTextResponse("Hello from stable origin.");
+
+			const mockBash = createMockSandbox();
+			const ctx = makeCtx();
+			// ctx has hostName: "test-host" and siteId: "test-site-id"
+
+			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				threadId,
+				userId: "test-user",
+			});
+
+			await agentLoop.run();
+
+			const msgs = db
+				.query("SELECT host_origin FROM messages WHERE thread_id = ?")
+				.all(threadId) as Array<{ host_origin: string }>;
+
+			expect(msgs.length).toBeGreaterThan(0);
+			for (const msg of msgs) {
+				// Must be site_id, NOT hostname
+				expect(msg.host_origin).toBe("test-site-id");
+				expect(msg.host_origin).not.toBe("test-host");
 			}
-		};
-
-		const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
-			threadId,
-			userId: "test-user",
-			shouldYield: () => chunksSeen >= 2, // yield after 2 text chunks
 		});
-
-		const result = await loop.run();
-
-		// Loop should have yielded
-		expect(result.yielded).toBe(true);
-		// No error — yield is not an error condition
-		expect(result.error).toBeUndefined();
 	});
-
-	it("sets yielded=false on normal completion", async () => {
-		const backend = new MockLLMBackend();
-		backend.setTextResponse("Normal response");
-
-		const sandbox = createMockSandbox();
-
-		const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
-			threadId,
-			userId: "test-user",
-			shouldYield: () => false,
-		});
-
-		const result = await loop.run();
-
-		expect(result.yielded).toBeUndefined(); // not set or false
-		expect(result.error).toBeUndefined();
-	});
-
-	it("does not interfere when shouldYield always returns false", async () => {
-		const backend = new MockLLMBackend();
-		backend.setToolThenTextResponse("tool-1", "bash", { command: "query SELECT 1" }, "Done!");
-
-		const sandbox = createMockSandbox();
-
-		const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
-			threadId,
-			userId: "test-user",
-			shouldYield: () => false,
-		});
-
-		await loop.run();
-
-		// Normal execution: tool was called, final text produced
-		expect(sandbox.calls.length).toBeGreaterThanOrEqual(1);
-		expect(backend.getCallCount()).toBe(2); // tool_call turn + final text turn
-	});
-});
-
-it("persists messages with siteId as host_origin, not hostName", async () => {
-	// After this fix, host_origin should be the stable site_id (survives
-	// container restarts) rather than the ephemeral hostname.
-	const mockBackend = new MockLLMBackend();
-	mockBackend.setTextResponse("Hello from stable origin.");
-
-	const mockBash = createMockSandbox();
-	const ctx = makeCtx();
-	// ctx has hostName: "test-host" and siteId: "test-site-id"
-
-	const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
-		threadId,
-		userId: "test-user",
-	});
-
-	await agentLoop.run();
-
-	const msgs = db
-		.query("SELECT host_origin FROM messages WHERE thread_id = ?")
-		.all(threadId) as Array<{ host_origin: string }>;
-
-	expect(msgs.length).toBeGreaterThan(0);
-	for (const msg of msgs) {
-		// Must be site_id, NOT hostname
-		expect(msg.host_origin).toBe("test-site-id");
-		expect(msg.host_origin).not.toBe("test-host");
-	}
 });

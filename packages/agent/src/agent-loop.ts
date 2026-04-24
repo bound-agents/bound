@@ -352,7 +352,6 @@ export class AgentLoop {
 				this._cachedTurnState !== undefined &&
 				this._cachedTurnState.toolFingerprint === currentFingerprint;
 
-			let contextMessages: import("@bound/llm").LLMMessage[];
 			let contextDebug: ContextDebugInfo;
 			let llmMessages: import("@bound/llm").LLMMessage[];
 
@@ -390,7 +389,7 @@ export class AgentLoop {
 					systemPromptAddition: this.config.systemPromptAddition,
 				});
 
-				contextMessages = result.messages;
+				const contextMessages = result.messages;
 				contextDebug = result.debug;
 
 				// Extract system messages for stable storage
