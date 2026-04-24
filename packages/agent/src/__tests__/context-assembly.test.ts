@@ -8,7 +8,12 @@ import { applySchema, createDatabase } from "@bound/core";
 import type { CommandDefinition } from "@bound/sandbox";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { getCommandRegistry, setCommandRegistry } from "../commands/registry";
-import { assembleContext, estimateContentLength, formatTimestamp } from "../context-assembly";
+import {
+	TRUNCATION_TARGET_RATIO,
+	assembleContext,
+	estimateContentLength,
+	formatTimestamp,
+} from "../context-assembly";
 
 describe("Context Assembly Pipeline", () => {
 	let tmpDir: string;
@@ -4153,7 +4158,6 @@ This skill reviews pull requests.`;
 			// The resulting context should be ~85% of contextWindow (15% headroom),
 			// not right at the limit. This ensures the prefix stays stable for
 			// multiple turns, enabling prompt caching.
-			const TRUNCATION_TARGET_RATIO = 0.85;
 			const targetBudget = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
 			expect(result.debug.totalEstimated).toBeLessThanOrEqual(targetBudget + 100); // small tolerance for system msgs
 		});
