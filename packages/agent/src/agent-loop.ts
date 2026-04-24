@@ -622,7 +622,6 @@ export class AgentLoop {
 								system: systemPrompt || undefined,
 								max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
 								temperature: undefined,
-								cache_breakpoints: undefined,
 								timeout_ms: this.inferenceTimeoutMs,
 							};
 							const MAX_INLINE_BYTES = 2 * 1024 * 1024;
@@ -669,10 +668,6 @@ export class AgentLoop {
 						}
 
 						case "local": {
-							// Place cache breakpoint at second-to-last message for prompt-cache reuse
-							const cacheBreakpoints: number[] | undefined =
-								nonSystemMessages.length >= 2 ? [nonSystemMessages.length - 2] : undefined;
-
 							const totalEstimatedTokens = contextDebug.totalEstimated + toolTokenEstimate;
 							const effectiveSilenceTimeout = scaledSilenceTimeout(
 								SILENCE_TIMEOUT_MS,
@@ -692,7 +687,6 @@ export class AgentLoop {
 										system: systemPrompt || undefined,
 										tools: mergedTools,
 										max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
-										cache_breakpoints: cacheBreakpoints,
 										thinking: resolution.thinkingConfig,
 										signal: this.config.abortSignal,
 									});

@@ -477,27 +477,13 @@ export class AnthropicDriver implements LLMBackend {
 	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
 		const anthropicMessages = toAnthropicMessages(params.messages);
 
-		// Add cache_control to the second-to-last message so everything before
-		// it is eligible for prompt cache reuse. The caller passes breakpoint
-		// indices relative to params.messages, but toAnthropicMessages() may
-		// produce a shorter array (consecutive tool_result messages get merged
-		// into a single user message). We re-compute the index from the actual
-		// Anthropic messages array to avoid silent out-of-bounds misses.
-		if (
-			params.cache_breakpoints &&
-			params.cache_breakpoints.length > 0 &&
-			anthropicMessages.length >= 2
-		) {
-			const idx = anthropicMessages.length - 2;
-			anthropicMessages[idx].cache_control = { type: "ephemeral" };
-		}
-
-		// When cache_breakpoints are provided, send system prompt as cacheable content block.
+		// When cache messages are present, send system prompt as cacheable content block.
+		const hasCacheMessages = params.messages.some((m) => m.role === "cache");
 		const systemPayload:
 			| string
 			| Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }>
 			| undefined =
-			params.system && params.cache_breakpoints?.length
+			params.system && hasCacheMessages
 				? [
 						{
 							type: "text" as const,
@@ -528,7 +514,6 @@ export class AnthropicDriver implements LLMBackend {
 			}));
 
 			// Add cache_control to last tool when cache messages are present
-			const hasCacheMessages = params.messages.some((m) => m.role === "cache");
 			if (hasCacheMessages && request.tools.length > 0) {
 				const lastTool = request.tools[request.tools.length - 1];
 				(lastTool as Record<string, unknown>).cache_control = { type: "ephemeral" };
@@ -542,7 +527,7 @@ export class AnthropicDriver implements LLMBackend {
 			"anthropic-version": "2023-06-01",
 			"content-type": "application/json",
 		};
-		if (params.cache_breakpoints?.length) {
+		if (hasCacheMessages) {
 			headers["anthropic-beta"] = "prompt-caching-2024-07-31";
 		}
 

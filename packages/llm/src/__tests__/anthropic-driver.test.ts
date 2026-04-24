@@ -684,7 +684,7 @@ data: ${JSON.stringify({
 		});
 	});
 
-	it("should send anthropic-beta prompt-caching header when cache_breakpoints provided", async () => {
+	it("should send anthropic-beta prompt-caching header when cache messages present", async () => {
 		const driver = new AnthropicDriver({
 			apiKey: "test-key",
 			model: "claude-3-sonnet-20240229",
@@ -707,9 +707,9 @@ data: ${JSON.stringify({
 			messages: [
 				{ role: "user", content: "Message 1" },
 				{ role: "assistant", content: "Response 1" },
+				{ role: "cache", content: "" },
 				{ role: "user", content: "Message 2" },
 			],
-			cache_breakpoints: [1],
 		})) {
 			// drain
 		}
@@ -718,47 +718,7 @@ data: ${JSON.stringify({
 		expect(capturedHeaders["anthropic-beta"]).toContain("prompt-caching");
 	});
 
-	it("should ignore cache_ttl and use plain ephemeral for Anthropic direct API", async () => {
-		const driver = new AnthropicDriver({
-			apiKey: "test-key",
-			model: "claude-3-sonnet-20240229",
-			contextWindow: 200000,
-		});
-
-		let requestBody: string | null = null;
-		let capturedHeaders: Record<string, string> = {};
-
-		global.fetch = (async (_url: string, options: RequestInit) => {
-			requestBody = options.body as string;
-			capturedHeaders = { ...(options.headers as Record<string, string>) };
-			return new Response("data: {}", {
-				status: 200,
-				headers: { "Content-Type": "text/event-stream" },
-			});
-		}) as typeof fetch;
-
-		for await (const _ of driver.chat({
-			model: "claude-3-sonnet-20240229",
-			messages: [
-				{ role: "user", content: "Message 1" },
-				{ role: "assistant", content: "Response 1" },
-				{ role: "user", content: "Message 2" },
-			],
-			cache_breakpoints: [1],
-			cache_ttl: "1h",
-		})) {
-			// drain
-		}
-
-		const request = JSON.parse(requestBody as string);
-		// cache_ttl should NOT be passed through — extended TTL breaks Anthropic caching
-		expect(request.messages[1].cache_control).toEqual({ type: "ephemeral" });
-		// No extended-cache-ttl beta header
-		expect(capturedHeaders["anthropic-beta"]).toBe("prompt-caching-2024-07-31");
-		expect(capturedHeaders["anthropic-beta"]).not.toContain("extended-cache-ttl");
-	});
-
-	it("should NOT send prompt-caching beta header when no cache_breakpoints", async () => {
+	it("should NOT send prompt-caching beta header when no cache messages", async () => {
 		const driver = new AnthropicDriver({
 			apiKey: "test-key",
 			model: "claude-3-sonnet-20240229",
@@ -783,11 +743,11 @@ data: ${JSON.stringify({
 			// drain
 		}
 
-		// No beta header needed when not caching
+		// No beta header needed when no cache messages
 		expect(capturedHeaders["anthropic-beta"]).toBeUndefined();
 	});
 
-	it("should send system prompt as cacheable content blocks when cache_breakpoints provided", async () => {
+	it("should send system prompt as cacheable content blocks when cache messages present", async () => {
 		const driver = new AnthropicDriver({
 			apiKey: "test-key",
 			model: "claude-3-sonnet-20240229",
@@ -809,10 +769,10 @@ data: ${JSON.stringify({
 			messages: [
 				{ role: "user", content: "Message 1" },
 				{ role: "assistant", content: "Response 1" },
+				{ role: "cache", content: "" },
 				{ role: "user", content: "Message 2" },
 			],
 			system: "You are a helpful assistant.",
-			cache_breakpoints: [1],
 		})) {
 			// drain
 		}
@@ -826,7 +786,7 @@ data: ${JSON.stringify({
 		expect(request.system[0].cache_control).toEqual({ type: "ephemeral" });
 	});
 
-	it("should add cache_control at breakpoint indices", async () => {
+	it("should add cache_control to messages before cache role", async () => {
 		const driver = new AnthropicDriver({
 			apiKey: "test-key",
 			model: "claude-3-sonnet-20240229",
@@ -841,6 +801,10 @@ data: ${JSON.stringify({
 			{
 				role: "assistant",
 				content: "Response 1",
+			},
+			{
+				role: "cache",
+				content: "",
 			},
 			{
 				role: "user",
@@ -865,7 +829,6 @@ data: ${JSON.stringify({
 		for await (const chunk of driver.chat({
 			model: "claude-3-sonnet-20240229",
 			messages,
-			cache_breakpoints: [1], // Cache after message at index 1
 		})) {
 			chunks.push(chunk);
 		}
@@ -873,6 +836,7 @@ data: ${JSON.stringify({
 		expect(requestBody).not.toBeNull();
 		if (!requestBody) throw new Error("requestBody is null");
 		const request = JSON.parse(requestBody);
+		// The cache message causes cache_control to be added to the previous message
 		expect(request.messages[1].cache_control).toEqual({ type: "ephemeral" });
 		expect(request.messages[0].cache_control).toBeUndefined();
 		expect(request.messages[2].cache_control).toBeUndefined();
@@ -965,7 +929,7 @@ data: ${JSON.stringify({
 		}
 	});
 
-	it("sends system as cached content block when cache_breakpoints provided", async () => {
+	it("sends system as cached content block when cache messages present", async () => {
 		const driver = new AnthropicDriver({
 			apiKey: "test-key",
 			model: "claude-3-sonnet-20240229",
@@ -987,10 +951,10 @@ data: ${JSON.stringify({
 			messages: [
 				{ role: "user", content: "Message 1" },
 				{ role: "assistant", content: "Response 1" },
+				{ role: "cache", content: "" },
 				{ role: "user", content: "Message 2" },
 			],
 			system: "You are a helpful assistant.",
-			cache_breakpoints: [1],
 		})) {
 			// drain
 		}
@@ -1006,7 +970,7 @@ data: ${JSON.stringify({
 		expect(request.system[0].cache_control).toEqual({ type: "ephemeral" });
 	});
 
-	it("sends system as plain string when no cache_breakpoints provided", async () => {
+	it("sends system as plain string when no cache messages", async () => {
 		const driver = new AnthropicDriver({
 			apiKey: "test-key",
 			model: "claude-3-sonnet-20240229",
@@ -1033,7 +997,7 @@ data: ${JSON.stringify({
 
 		expect(requestBody).not.toBeNull();
 		const request = JSON.parse(requestBody as string);
-		// Without cache_breakpoints, system is plain string
+		// Without cache messages, system is plain string
 		expect(typeof request.system).toBe("string");
 		expect(request.system).toBe("You are a helpful assistant.");
 	});
@@ -1061,10 +1025,10 @@ data: ${JSON.stringify({
 				{ role: "user", content: "Message 1" },
 				{ role: "developer", content: "volatile enrichment" },
 				{ role: "assistant", content: "Response 1" },
+				{ role: "cache", content: "" },
 				{ role: "user", content: "Message 2" },
 			],
 			system: "You are a helpful assistant.",
-			cache_breakpoints: [2],
 		})) {
 			// drain
 		}

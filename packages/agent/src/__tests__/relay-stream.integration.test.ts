@@ -488,7 +488,6 @@ describe("relay-stream integration tests", () => {
 				system: "",
 				max_tokens: 1000,
 				temperature: 0.7,
-				cache_breakpoints: [],
 			}),
 			expires_at: new Date(Date.now() + 60000).toISOString(),
 			received_at: new Date().toISOString(),
@@ -543,7 +542,6 @@ describe("relay-stream integration tests", () => {
 				system: "",
 				max_tokens: 1000,
 				temperature: 0.7,
-				cache_breakpoints: [],
 			}),
 			expires_at: new Date(Date.now() - 1000).toISOString(), // In the past
 			received_at: new Date().toISOString(),

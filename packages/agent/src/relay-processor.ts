@@ -1266,7 +1266,6 @@ export class RelayProcessor {
 				system: payload.system,
 				max_tokens: payload.max_tokens,
 				temperature: payload.temperature,
-				cache_breakpoints: payload.cache_breakpoints,
 				thinking: effectiveThinking,
 				signal: abortController.signal,
 			});

@@ -32,10 +32,10 @@ function makeInput(overrides?: Partial<ChatParams>): ConvertInput {
 			messages: [
 				{ role: "user", content: "Hello" },
 				{ role: "assistant", content: "Hi there!" },
+				{ role: "cache", content: "" },
 				{ role: "user", content: "How are you?" },
 			],
 			system: "You are a helpful assistant.",
-			cache_breakpoints: [1],
 			...overrides,
 		},
 		defaultModel: "anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -254,6 +254,7 @@ describe("cache stability: cachePoint placement", () => {
 				{ role: "assistant", content: "Hi there!" },
 				{ role: "user", content: "How are you?" },
 				{ role: "assistant", content: "I'm doing well!" },
+				{ role: "cache", content: "" },
 				{ role: "user", content: "Great" },
 			],
 		});
@@ -290,16 +291,14 @@ describe("cache stability: cachePoint placement", () => {
 		}
 	});
 
-	it("no cachePoint when cache_breakpoints is empty", () => {
-		const input = makeInput({ cache_breakpoints: [] });
-		const raw = toBedrockRequest(input);
-		const messages = raw.messages as Array<Record<string, unknown>>;
-
-		expect(findCachePointIndex(messages)).toBe(-1);
-	});
-
-	it("no cachePoint when cache_breakpoints is undefined", () => {
-		const input = makeInput({ cache_breakpoints: undefined });
+	it("no cachePoint when no cache messages", () => {
+		const input = makeInput({
+			messages: [
+				{ role: "user", content: "Hello" },
+				{ role: "assistant", content: "Hi there!" },
+				{ role: "user", content: "How are you?" },
+			],
+		});
 		const raw = toBedrockRequest(input);
 		const messages = raw.messages as Array<Record<string, unknown>>;
 
@@ -327,10 +326,8 @@ describe("cache stability: system blocks", () => {
 		expect(stableStringify(a.system)).toBe(stableStringify(b.system));
 	});
 
-	it("system cachePoint separates stable prefix when cache_breakpoints provided", () => {
-		const input = makeInput({
-			cache_breakpoints: [1],
-		});
+	it("system cachePoint separates stable prefix when cache messages present", () => {
+		const input = makeInput();
 		const raw = toBedrockRequest(input);
 		const system = raw.system as Array<Record<string, unknown>>;
 
@@ -340,9 +337,13 @@ describe("cache stability: system blocks", () => {
 		expect(system[1]).toEqual({ cachePoint: { type: "default" } });
 	});
 
-	it("system blocks without cache_breakpoints use single text block", () => {
+	it("system blocks without cache messages use single text block", () => {
 		const input = makeInput({
-			cache_breakpoints: undefined,
+			messages: [
+				{ role: "user", content: "Hello" },
+				{ role: "assistant", content: "Hi there!" },
+				{ role: "user", content: "How are you?" },
+			],
 		});
 		const raw = toBedrockRequest(input);
 		const system = raw.system as Array<Record<string, unknown>>;

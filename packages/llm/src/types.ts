@@ -17,13 +17,6 @@ export interface ChatParams {
 	max_tokens?: number;
 	temperature?: number;
 	system?: string;
-	cache_breakpoints?: number[];
-	/**
-	 * Cache TTL hint. Currently UNIMPLEMENTED — do not set.
-	 * Adding TTL to cache_control breaks caching on both Anthropic and Bedrock.
-	 * @deprecated Unimplemented. Will be removed or implemented in a future version.
-	 */
-	cache_ttl?: "5m" | "1h";
 	/**
 	 * Extended thinking configuration. When set, the model produces reasoning
 	 * content blocks before the final response. The budget_tokens field controls
@@ -142,7 +135,6 @@ export interface InferenceRequestPayload {
 	system?: string;
 	max_tokens?: number;
 	temperature?: number;
-	cache_breakpoints?: number[];
 	thinking?: {
 		type: "enabled";
 		budget_tokens: number;

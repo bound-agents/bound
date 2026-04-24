@@ -855,7 +855,7 @@ describe("BedrockDriver", () => {
 			expect(driver.capabilities().prompt_caching).toBe(true);
 		});
 
-		it.skipIf(shouldSkip)("injects cachePoint at breakpoint message indices", async () => {
+		it.skipIf(shouldSkip)("injects cachePoint when cache message present", async () => {
 			let capturedInput: Record<string, unknown> | undefined;
 			sendSpy.mockImplementation((command: unknown) => {
 				capturedInput = (command as any).input;
@@ -882,13 +882,13 @@ describe("BedrockDriver", () => {
 					messages: [
 						{ role: "user", content: "message 1" },
 						{ role: "assistant", content: "response 1" },
+						{ role: "cache", content: "" },
 						{ role: "user", content: "message 2" },
 					],
-					cache_breakpoints: [1], // Mark the assistant response (index 1)
 				}),
 			);
 
-			// The message at index 1 should have cachePoint appended to its content
+			// The message at index 1 should have cachePoint appended to its content (placed by cache message)
 			expect(capturedInput).toBeDefined();
 			const messages = capturedInput?.messages as Array<{
 				role: string;
@@ -909,47 +909,6 @@ describe("BedrockDriver", () => {
 				expect(done.usage.cache_write_tokens).toBe(50);
 				expect(done.usage.cache_read_tokens).toBe(0);
 			}
-		});
-
-		it.skipIf(shouldSkip)("ignores cache_ttl and uses plain default cachePoint", async () => {
-			let capturedInput: Record<string, unknown> | undefined;
-			sendSpy.mockImplementation((command: unknown) => {
-				capturedInput = (command as any).input;
-				return Promise.resolve(
-					createMockStream([
-						{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "OK" } } },
-						{ metadata: { usage: { inputTokens: 100, outputTokens: 5 } } },
-					]),
-				);
-			});
-
-			const driver = makeDriver();
-			await collectChunks(
-				driver.chat({
-					messages: [
-						{ role: "user", content: "message 1" },
-						{ role: "assistant", content: "response 1" },
-						{ role: "user", content: "message 2" },
-					],
-					system: "You are helpful.",
-					cache_breakpoints: [1],
-					cache_ttl: "1h",
-				}),
-			);
-
-			// cache_ttl should NOT be passed through — ttl on cachePoint broke
-			// message-level caching for large contexts
-			const messages = capturedInput?.messages as Array<{
-				role: string;
-				content: Array<Record<string, unknown>>;
-			}>;
-			expect(messages[1].content).toEqual([
-				{ text: "response 1" },
-				{ cachePoint: { type: "default" } },
-			]);
-
-			const system = capturedInput?.system as Array<Record<string, unknown>>;
-			expect(system[1]).toEqual({ cachePoint: { type: "default" } });
 		});
 
 		it.skipIf(shouldSkip)(
@@ -975,12 +934,10 @@ describe("BedrockDriver", () => {
 					);
 				});
 
-				// 5 input messages: tool_call + 3 consecutive tool_results + user
+				// 5 input messages: tool_call + 3 consecutive tool_results + cache + user
 				// toBedrockMessages merges the 3 tool_results into 1 user message,
 				// producing only 3 Bedrock messages (assistant, user, user).
-				// The caller passes breakpoint index 3 (= 5 - 2) which would be
-				// out of bounds on the 3-element Bedrock array. The fix re-computes
-				// the breakpoint from messages.length - 2 = 1.
+				// The cache message triggers cachePoint placement at messages.length - 2 = 1.
 				const driver = makeDriver();
 				await collectChunks(
 					driver.chat({
@@ -996,9 +953,9 @@ describe("BedrockDriver", () => {
 							{ role: "tool_result", content: "result 1", tool_use_id: "tc-1" },
 							{ role: "tool_result", content: "result 2", tool_use_id: "tc-2" },
 							{ role: "tool_result", content: "result 3", tool_use_id: "tc-3" },
+							{ role: "cache", content: "" },
 							{ role: "user", content: "thanks" },
 						],
-						cache_breakpoints: [3], // 5 - 2 = 3, but Bedrock array is only 3 elements
 					}),
 				);
 
@@ -1006,21 +963,25 @@ describe("BedrockDriver", () => {
 					role: string;
 					content: Array<Record<string, unknown>>;
 				}>;
-				// Bedrock messages: [user(placeholder), assistant(tool_use), user(3 toolResults + text)]
+				// Bedrock messages: [user(placeholder), assistant(tool_use), user(3 toolResults + cachePoint + text)]
 				// Placeholder prepended because first real message is assistant (tool_call).
-				// The consecutive user messages (toolResults + text) are merged into one.
+				// The cache message causes cachePoint to be appended to the previous message (tool_results).
+				// Then the consecutive user messages get merged at the end.
 				expect(messages.length).toBe(3);
 				expect(messages[0].role).toBe("user");
-				// cachePoint should be on messages[1] (= 3 - 2), the assistant message
-				const cachedMsg = messages[1].content;
-				expect(cachedMsg.at(-1)).toEqual({ cachePoint: { type: "default" } });
-				// Last (merged) user message should have toolResults + text
+				// messages[1] is the assistant message with tool_uses (no cachePoint here)
+				expect(messages[1].role).toBe("assistant");
+				// Last (merged) user message has toolResults + cachePoint + text
 				const lastContent = messages[2].content;
+				// The cachePoint should be in the content array (placed by cache message handler)
+				const hasCachePoint = lastContent.some((block: any) => block.cachePoint);
+				expect(hasCachePoint).toBe(true);
+				// Text "thanks" should be at the end
 				expect(lastContent.at(-1)).toEqual({ text: "thanks" });
 			},
 		);
 
-		it.skipIf(shouldSkip)("caches system prompt when breakpoints are provided", async () => {
+		it.skipIf(shouldSkip)("caches system prompt when cache messages present", async () => {
 			let capturedInput: Record<string, unknown> | undefined;
 			sendSpy.mockImplementation((command: unknown) => {
 				capturedInput = (command as any).input;
@@ -1038,10 +999,10 @@ describe("BedrockDriver", () => {
 					messages: [
 						{ role: "user", content: "msg 1" },
 						{ role: "assistant", content: "resp 1" },
+						{ role: "cache", content: "" },
 						{ role: "user", content: "msg 2" },
 					],
 					system: "You are a helpful assistant.",
-					cache_breakpoints: [1],
 				}),
 			);
 
@@ -1226,7 +1187,7 @@ describe("BedrockDriver system blocks", () => {
 	});
 
 	it.skipIf(shouldSkip)(
-		"places cachePoint after system block when cache_breakpoints provided",
+		"places cachePoint after system block when cache messages present",
 		async () => {
 			let capturedInput: Record<string, unknown> | undefined;
 			sendSpy.mockImplementation((command: unknown) => {
@@ -1254,10 +1215,10 @@ describe("BedrockDriver system blocks", () => {
 					messages: [
 						{ role: "user", content: "msg 1" },
 						{ role: "assistant", content: "resp 1" },
+						{ role: "cache", content: "" },
 						{ role: "user", content: "msg 2" },
 					],
 					system: "You are a helpful assistant.",
-					cache_breakpoints: [1],
 				}),
 			);
 
@@ -1271,46 +1232,43 @@ describe("BedrockDriver system blocks", () => {
 		},
 	);
 
-	it.skipIf(shouldSkip)(
-		"sends system as single text block when no cache_breakpoints provided",
-		async () => {
-			let capturedInput: Record<string, unknown> | undefined;
-			sendSpy.mockImplementation((command: unknown) => {
-				capturedInput = (command as any).input;
-				return Promise.resolve(
-					createMockStream([
-						{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "OK" } } },
-						{
-							metadata: {
-								usage: {
-									inputTokens: 100,
-									outputTokens: 5,
-									cacheWriteInputTokens: 0,
-									cacheReadInputTokens: 0,
-								},
+	it.skipIf(shouldSkip)("sends system as single text block when no cache messages", async () => {
+		let capturedInput: Record<string, unknown> | undefined;
+		sendSpy.mockImplementation((command: unknown) => {
+			capturedInput = (command as any).input;
+			return Promise.resolve(
+				createMockStream([
+					{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "OK" } } },
+					{
+						metadata: {
+							usage: {
+								inputTokens: 100,
+								outputTokens: 5,
+								cacheWriteInputTokens: 0,
+								cacheReadInputTokens: 0,
 							},
 						},
-					]),
-				);
-			});
-
-			const driver = makeDriver();
-			await collectChunks(
-				driver.chat({
-					messages: [{ role: "user", content: "Hello" }],
-					system: "You are a helpful assistant.",
-				}),
+					},
+				]),
 			);
+		});
 
-			const system = capturedInput?.system as Array<Record<string, unknown>>;
-			expect(system).toBeDefined();
-			// Without cache_breakpoints, just single text block
-			expect(system).toHaveLength(1);
-			expect(system[0]).toEqual({
-				text: "You are a helpful assistant.",
-			});
-		},
-	);
+		const driver = makeDriver();
+		await collectChunks(
+			driver.chat({
+				messages: [{ role: "user", content: "Hello" }],
+				system: "You are a helpful assistant.",
+			}),
+		);
+
+		const system = capturedInput?.system as Array<Record<string, unknown>>;
+		expect(system).toBeDefined();
+		// Without cache messages, just single text block
+		expect(system).toHaveLength(1);
+		expect(system[0]).toEqual({
+			text: "You are a helpful assistant.",
+		});
+	});
 
 	it.skipIf(shouldSkip)(
 		"cache-stable-prefix.AC2.2: system blocks contain [prefix, cachePoint] only (no suffix)",
@@ -1341,14 +1299,14 @@ describe("BedrockDriver system blocks", () => {
 					messages: [
 						{ role: "user", content: "msg 1" },
 						{ role: "developer", content: "volatile enrichment" },
+						{ role: "cache", content: "" },
 					],
 					system: "You are a helpful assistant.",
-					cache_breakpoints: [1],
 				}),
 			);
 
 			const system = capturedInput?.system as Array<Record<string, unknown>>;
-			// AC2.2: Exactly 2 blocks when cache_breakpoints present
+			// AC2.2: Exactly 2 blocks when cache messages present
 			expect(system).toHaveLength(2);
 			// First: system text
 			expect(system[0]).toEqual({ text: "You are a helpful assistant." });

@@ -291,34 +291,21 @@ export function toBedrockRequest(input: ConvertInput): RawBedrockRequest {
 	const { params, defaultModel } = input;
 	const modelId = params.model || defaultModel;
 
-	// ─── Messages + cachePoint placement ─────────────────────────────────────
+	// ─── Messages + cache message handling ──────────────────────────────────
 	const messages = toBedrockMessages(params.messages);
-
-	// The caller passes breakpoints relative to params.messages, but the merged
-	// array may be shorter. Place the cachePoint marker on the second-to-last
-	// message (Bedrock caches everything up to and including that point).
-	if (params.cache_breakpoints && params.cache_breakpoints.length > 0 && messages.length >= 2) {
-		const idx = messages.length - 2;
-		const m = messages[idx];
-		if (Array.isArray(m.content)) {
-			(m.content as Array<Record<string, unknown>>).push({
-				cachePoint: { type: "default" },
-			});
-		}
-	}
 
 	// ─── System blocks ───────────────────────────────────────────────────────
 	// Two shapes:
 	//   - No system prompt → undefined
 	//   - System only, no cache → [{text}]
 	//   - System only, cache    → [{text},{cachePoint}]
-	const hasCacheBreakpoints = !!params.cache_breakpoints?.length;
+	const hasCacheMessages = params.messages.some((m) => m.role === "cache");
 	const systemBlocks: Array<Record<string, unknown>> | undefined = (() => {
 		if (!params.system) return undefined;
 
 		// System only.
 		const blocks: Array<Record<string, unknown>> = [{ text: params.system }];
-		if (hasCacheBreakpoints) blocks.push({ cachePoint: { type: "default" } });
+		if (hasCacheMessages) blocks.push({ cachePoint: { type: "default" } });
 		return blocks;
 	})();
 
@@ -337,7 +324,6 @@ export function toBedrockRequest(input: ConvertInput): RawBedrockRequest {
 			: undefined;
 
 	// Place cachePoint in toolConfig when cache messages are present and tools exist
-	const hasCacheMessages = params.messages.some((m) => m.role === "cache");
 	if (hasCacheMessages && toolConfig) {
 		(toolConfig as Record<string, unknown>).cachePoint = { type: "default" };
 	}

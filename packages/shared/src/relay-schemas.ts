@@ -42,7 +42,6 @@ export const inferenceRequestPayloadSchema = z.object({
 	system: z.string().optional(),
 	max_tokens: z.number().int().positive().optional(),
 	temperature: z.number().optional(),
-	cache_breakpoints: z.array(z.number()).optional(),
 	thinking: z
 		.object({
 			type: z.literal("enabled"),
