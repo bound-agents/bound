@@ -1261,7 +1261,8 @@ describe("Context Assembly Pipeline", () => {
 					provider: "remote",
 				},
 			});
-			const { systemSuffix } = result;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
 			// Relay info should be in systemSuffix
 			expect(systemSuffix).toBeDefined();
@@ -1277,7 +1278,8 @@ describe("Context Assembly Pipeline", () => {
 				threadId,
 				userId,
 			});
-			const { systemSuffix } = result;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
 			// Ensure no relay info in systemSuffix
 			expect(systemSuffix).toBeDefined();
@@ -1391,7 +1393,8 @@ describe("Context Assembly Pipeline", () => {
 				userId,
 				platformContext: { platform: "discord", toolNames: ["discord_send_message"] },
 			});
-			const { systemSuffix } = result;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
 			// Platform context should be in systemSuffix
 			expect(systemSuffix).toBeDefined();
@@ -1426,7 +1429,8 @@ describe("Context Assembly Pipeline", () => {
 				userId,
 				platformContext: { platform: "telegram", toolNames: ["telegram_send_message"] },
 			});
-			const { systemSuffix } = result;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
 			expect(systemSuffix).toBeDefined();
 			// Tool name should be from platformContext.toolNames, not hardcoded
@@ -1518,7 +1522,8 @@ describe("Context Assembly Pipeline", () => {
 				threadId: threadId2,
 				userId: userId2,
 			});
-			const { systemSuffix } = result;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
 			// Skill index should be in systemSuffix
 			expect(systemSuffix).toBeDefined();
@@ -1534,7 +1539,8 @@ describe("Context Assembly Pipeline", () => {
 				threadId: threadId2,
 				userId: userId2,
 			});
-			const { systemSuffix } = result;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
 			// Should not contain SKILLS block
 			expect(systemSuffix).toBeDefined();
@@ -1603,7 +1609,7 @@ This skill reviews pull requests.`;
 				userId: userId2,
 				taskId,
 			});
-			const { messages, systemSuffix } = result;
+			const { messages } = result;
 
 			// Find the skill body system message (should be before history)
 			const systemMessages = messages.filter((m) => m.role === "system");
@@ -1613,9 +1619,11 @@ This skill reviews pull requests.`;
 			expect(skillBodyMsg).toBeDefined();
 			expect(skillBodyMsg?.content).toContain(skillMdContent);
 
-			// The skill index should appear in systemSuffix
-			expect(systemSuffix).toBeDefined();
-			expect(systemSuffix).toContain("SKILLS (1 active):");
+			// The skill index should appear in developer message
+			const devMsg = messages.find((m) => m.role === "developer");
+			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
+			expect(devContent).toBeDefined();
+			expect(devContent).toContain("SKILLS (1 active):");
 		});
 
 		it("AC3.4: should inject inactive skill reference note when skill is not active", () => {
@@ -1658,7 +1666,7 @@ This skill reviews pull requests.`;
 				userId: userId2,
 				taskId,
 			});
-			const { messages, systemSuffix } = result;
+			const { messages } = result;
 
 			// Find system messages
 			const systemMessages = messages.filter((m) => m.role === "system");
@@ -1669,9 +1677,11 @@ This skill reviews pull requests.`;
 			);
 			expect(skillBodyMsg).toBeUndefined();
 
-			// But the inactive reference note should appear in systemSuffix
-			expect(systemSuffix).toBeDefined();
-			expect(systemSuffix).toContain("Referenced skill 'pr-review' is not active.");
+			// But the inactive reference note should appear in developer message
+			const devMsg = messages.find((m) => m.role === "developer");
+			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
+			expect(devContent).toBeDefined();
+			expect(devContent).toContain("Referenced skill 'pr-review' is not active.");
 		});
 
 		it("AC3.5: should inject task-referenced skill body even when noHistory = true", () => {
@@ -1770,7 +1780,8 @@ This skill reviews pull requests.`;
 				threadId: threadId2,
 				userId: userId2,
 			});
-			const { systemSuffix } = result;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
 			expect(systemSuffix).toBeDefined();
 			expect(systemSuffix).toContain(
@@ -2212,7 +2223,8 @@ This skill reviews pull requests.`;
 				threadId: testThreadId,
 				userId: enrichTestUserId,
 			});
-			const { systemSuffix } = result;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
 			// Memory delta should be in systemSuffix
 			expect(systemSuffix).toBeDefined();
@@ -2323,7 +2335,8 @@ This skill reviews pull requests.`;
 				threadId: testThreadId,
 				userId: enrichTestUserId,
 			});
-			const { systemSuffix } = result;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
 			// Task digest should be in systemSuffix
 			expect(systemSuffix).toBeDefined();
@@ -2388,10 +2401,10 @@ This skill reviews pull requests.`;
 				taskId: testTaskId,
 			});
 
-			// Find system message with enrichment
+			// Find developer message with enrichment
 			const enrichMsg = messages.find(
 				(m) =>
-					m.role === "system" && typeof m.content === "string" && m.content.includes("Memory:"),
+					m.role === "developer" && typeof m.content === "string" && m.content.includes("Memory:"),
 			);
 
 			expect(enrichMsg).toBeDefined();
@@ -2563,7 +2576,8 @@ This skill reviews pull requests.`;
 				userId: enrichTestUserId,
 				contextWindow: 500,
 			});
-			const { systemSuffix } = result;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
 			// Memory should be in systemSuffix
 			expect(systemSuffix).toBeDefined();
@@ -3107,7 +3121,8 @@ This skill reviews pull requests.`;
 				siteId: localSiteId,
 				contextWindow: 200000,
 			});
-			const { systemSuffix } = result;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
 			// Advisory notification should be in systemSuffix
 			expect(systemSuffix).toBeDefined();
@@ -3261,7 +3276,8 @@ This skill reviews pull requests.`;
 				siteId: localSiteId,
 				contextWindow: 200000,
 			});
-			const { systemSuffix } = result;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
 			// All 5 should be collapsed into a single notification line (with count)
 			expect(systemSuffix).toBeDefined();
@@ -3340,7 +3356,8 @@ This skill reviews pull requests.`;
 				siteId: localSiteId,
 				contextWindow: 200000,
 			});
-			const { systemSuffix } = result;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
 			expect(systemSuffix).toBeDefined();
 			const notifLines = systemSuffix
@@ -4324,7 +4341,7 @@ This skill reviews pull requests.`;
 				contextWindow: 1000,
 			});
 
-			const historyMessages = messages.filter((m) => m.role !== "system");
+			const historyMessages = messages.filter((m) => m.role !== "system" && m.role !== "developer");
 			const lastMsg = historyMessages[historyMessages.length - 1];
 			expect(
 				typeof lastMsg.content === "string" && lastMsg.content.includes("FINAL_SENTINEL_MESSAGE"),
@@ -5892,12 +5909,14 @@ This skill reviews pull requests.`;
 			expect(result.debug.budgetPressure).toBe(true);
 
 			// L3 (recency) entries should be entirely shed from the context
-			// Check both system messages and systemSuffix
+			// Check both system messages and developer message
 			const systemText = result.messages
 				.filter((m) => m.role === "system")
 				.map((m) => (typeof m.content === "string" ? m.content : ""))
 				.join("\n");
-			const contextText = `${systemText}\n${result.systemSuffix || ""}`;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
+			const contextText = `${systemText}\n${devContent}`;
 
 			// L3 entries have keys "recency_key_N" — should not appear
 			for (let i = 0; i < 10; i++) {
@@ -5978,7 +5997,9 @@ This skill reviews pull requests.`;
 				.filter((m) => m.role === "system")
 				.map((m) => (typeof m.content === "string" ? m.content : ""))
 				.join("\n");
-			const contextText = `${systemText}\n${result.systemSuffix || ""}`;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
+			const contextText = `${systemText}\n${devContent}`;
 
 			// Count how many default entries appear (default_key_*)
 			const defaultMatches = contextText.match(/default_key_\d+/g) || [];
@@ -6075,7 +6096,9 @@ This skill reviews pull requests.`;
 				.filter((m) => m.role === "system")
 				.map((m) => (typeof m.content === "string" ? m.content : ""))
 				.join("\n");
-			const contextText = `${systemText}\n${result.systemSuffix || ""}`;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
+			const contextText = `${systemText}\n${devContent}`;
 
 			// All L0 pinned entries should survive
 			for (let i = 0; i < 5; i++) {
@@ -6174,13 +6197,14 @@ This skill reviews pull requests.`;
 			});
 
 			expect(result.debug.budgetPressure).toBe(true);
-			expect(result.systemSuffix).toBeDefined();
 
 			const systemText = result.messages
 				.filter((m) => m.role === "system")
 				.map((m) => (typeof m.content === "string" ? m.content : ""))
 				.join("\n");
-			const contextText = `${systemText}\n${result.systemSuffix || ""}`;
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
+			const contextText = `${systemText}\n${devContent}`;
 
 			// All 25 entries should still be present (no truncation)
 			let pinnedCount = 0;
@@ -6426,7 +6450,7 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		expect(orientationContent as string).not.toContain("### Current Model");
 	});
 
-	it("returns systemSuffix containing current model and thread identifiers", () => {
+	it("returns developer message containing current model and thread identifiers", () => {
 		const result = assembleContext({
 			db,
 			threadId,
@@ -6436,9 +6460,11 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			siteId: "test-site",
 		});
 
-		expect(result.systemSuffix).toBeDefined();
-		expect(result.systemSuffix).toContain("Current Model: opus");
-		expect(result.systemSuffix).toContain(`Thread ID: ${threadId}`);
+		const devMsg = result.messages.find((m) => m.role === "developer");
+		expect(devMsg).toBeDefined();
+		const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
+		expect(devContent).toContain("Current Model: opus");
+		expect(devContent).toContain(`Thread ID: ${threadId}`);
 	});
 
 	it("stable system messages do not contain per-thread varying content", () => {
@@ -6523,8 +6549,12 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 
 		expect(sys1).toEqual(sys2);
 
-		// But suffixes should differ (different thread IDs)
-		expect(result1.systemSuffix).not.toEqual(result2.systemSuffix);
+		// But developer messages should differ (different thread IDs)
+		const dev1 = result1.messages.find((m) => m.role === "developer");
+		const dev2 = result2.messages.find((m) => m.role === "developer");
+		const dev1Content = typeof dev1?.content === "string" ? dev1.content : "";
+		const dev2Content = typeof dev2?.content === "string" ? dev2.content : "";
+		expect(dev1Content).not.toEqual(dev2Content);
 	});
 
 	describe("systemPromptAddition (AC2.2)", () => {
@@ -6539,9 +6569,12 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 				systemPromptAddition: "You are a coding assistant.",
 			});
 
-			// systemPromptAddition should be at the end of systemSuffix
-			expect(result.systemSuffix).toContain("You are a coding assistant.");
-			expect(result.systemSuffix?.endsWith("You are a coding assistant.")).toBe(true);
+			// systemPromptAddition should be in the developer message
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			expect(devMsg).toBeDefined();
+			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
+			expect(devContent).toContain("You are a coding assistant.");
+			expect(devContent.endsWith("You are a coding assistant.")).toBe(true);
 		});
 
 		it("should not append systemPromptAddition when undefined", () => {
@@ -6555,8 +6588,10 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 				// systemPromptAddition not provided
 			});
 
-			// systemSuffix should not contain a custom addition
-			expect(result.systemSuffix).not.toContain("You are a coding assistant.");
+			// Developer message should not contain a custom addition
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
+			expect(devContent).not.toContain("You are a coding assistant.");
 		});
 
 		it("should append systemPromptAddition to noHistory enrichment message when noHistory=true", () => {
@@ -6579,11 +6614,11 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 				systemPromptAddition: "Task context: Be concise.",
 			});
 
-			// When noHistory=true with systemPromptAddition, it should be in a system message
-			// Look for any system message containing the addition
+			// When noHistory=true with systemPromptAddition, it should be in a developer message
+			// Look for any developer message containing the addition
 			const hasAddition = result.messages.some(
 				(m) =>
-					m.role === "system" &&
+					m.role === "developer" &&
 					typeof m.content === "string" &&
 					m.content.includes("Task context: Be concise."),
 			);

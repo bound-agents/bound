@@ -331,11 +331,7 @@ export class AgentLoop {
 			);
 
 			// Deterministic compaction keeps cached prefixes stable while reducing context size
-			const {
-				messages: contextMessages,
-				debug: contextDebug,
-				systemSuffix,
-			} = assembleContext({
+			const { messages: contextMessages, debug: contextDebug } = assembleContext({
 				db: this.ctx.db,
 				threadId: this.config.threadId,
 				taskId: this.config.taskId,
@@ -448,7 +444,6 @@ export class AgentLoop {
 								messages: nonSystemMessages,
 								tools: mergedTools,
 								system: systemPrompt || undefined,
-								system_suffix: systemSuffix || undefined,
 								max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
 								temperature: undefined,
 								cache_breakpoints: undefined,
@@ -519,7 +514,6 @@ export class AgentLoop {
 									const chatStream = resolution.backend.chat({
 										messages: nonSystemMessages,
 										system: systemPrompt || undefined,
-										system_suffix: systemSuffix || undefined,
 										tools: mergedTools,
 										max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
 										cache_breakpoints: cacheBreakpoints,

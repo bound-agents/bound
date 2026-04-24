@@ -1856,7 +1856,7 @@ describe("AgentLoop", () => {
 			).toBe(true);
 		});
 
-		it("passes system_suffix from context assembly to backend", async () => {
+		it("includes developer message with volatile context in messages", async () => {
 			const localThreadId = randomUUID();
 			const ctx = makeCtx();
 			const backend = new CaptureParamsBackend();
@@ -1872,11 +1872,14 @@ describe("AgentLoop", () => {
 
 			expect(backend.capturedParams.length).toBeGreaterThan(0);
 			const params = backend.capturedParams[0];
-			// system_suffix should contain per-thread volatile context
-			expect(params.system_suffix).toBeDefined();
-			expect(typeof params.system_suffix).toBe("string");
-			// Should contain thread ID (per-thread varying content)
-			expect(params.system_suffix).toContain(localThreadId);
+			// messages should include a developer message with volatile context
+			const developerMsg = params.messages.find((m: any) => m.role === "developer");
+			expect(developerMsg).toBeDefined();
+			expect(typeof developerMsg?.content).toBe("string");
+			// Developer message should contain thread ID (per-thread varying content)
+			expect(developerMsg?.content).toContain(localThreadId);
+			// system_suffix should no longer be passed
+			expect(params.system_suffix).toBeUndefined();
 		});
 	});
 

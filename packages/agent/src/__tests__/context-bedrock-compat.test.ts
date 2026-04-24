@@ -136,7 +136,14 @@ describe("Context assembly Bedrock compatibility", () => {
 
 		const { messages } = assembleContext({ db, threadId, userId });
 
-		const validRoles = new Set(["user", "assistant", "system", "tool_call", "tool_result"]);
+		const validRoles = new Set([
+			"user",
+			"assistant",
+			"system",
+			"tool_call",
+			"tool_result",
+			"developer",
+		]);
 		for (const msg of messages) {
 			expect(validRoles.has(msg.role)).toBe(true);
 		}
@@ -415,14 +422,15 @@ describe("Context assembly Bedrock compatibility", () => {
 
 		const { messages } = assembleContext({ db, threadId, userId });
 
-		// Helper: extract the history portion (skip assembly-injected system messages)
+		// Helper: extract the history portion (skip assembly-injected system and developer messages)
 		const isAssemblySystem = (m: { role: string; content: string | unknown }) =>
-			m.role === "system" &&
-			typeof m.content === "string" &&
-			(m.content.startsWith("You are a helpful") ||
-				m.content.startsWith("## Orientation") ||
-				m.content.startsWith("User ID:") ||
-				m.content.startsWith("Model switched"));
+			(m.role === "system" &&
+				typeof m.content === "string" &&
+				(m.content.startsWith("You are a helpful") ||
+					m.content.startsWith("## Orientation") ||
+					m.content.startsWith("User ID:") ||
+					m.content.startsWith("Model switched"))) ||
+			m.role === "developer";
 
 		const history = messages.filter((m) => !isAssemblySystem(m));
 
@@ -456,7 +464,14 @@ describe("Context assembly Bedrock compatibility", () => {
 		expect(keptAssistant).toBe(true);
 
 		// 5. Only LLM-compatible roles remain in the entire output
-		const validRoles = new Set(["user", "assistant", "system", "tool_call", "tool_result"]);
+		const validRoles = new Set([
+			"user",
+			"assistant",
+			"system",
+			"tool_call",
+			"tool_result",
+			"developer",
+		]);
 		for (const msg of messages) {
 			expect(validRoles.has(msg.role)).toBe(true);
 		}
@@ -667,7 +682,14 @@ describe("Context assembly Bedrock compatibility", () => {
 		expect(keptAssistant).toBe(true);
 
 		// Only valid LLM roles in the output
-		const validRoles = new Set(["user", "assistant", "system", "tool_call", "tool_result"]);
+		const validRoles = new Set([
+			"user",
+			"assistant",
+			"system",
+			"tool_call",
+			"tool_result",
+			"developer",
+		]);
 		for (const msg of messages) {
 			expect(validRoles.has(msg.role)).toBe(true);
 		}

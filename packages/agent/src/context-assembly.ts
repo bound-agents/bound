@@ -59,13 +59,8 @@ export interface ContextParams {
 export interface ContextAssemblyResult {
 	messages: LLMMessage[];
 	debug: ContextDebugInfo;
-	/**
-	 * Per-thread varying system context that should be placed AFTER the cached
-	 * system prefix. Contains: model identifier, user/thread IDs, L2/L3 memory,
-	 * cross-thread digest, file notifications, task digest.
-	 * Undefined when noHistory is true (autonomous tasks use standalone enrichment).
-	 */
-	systemSuffix?: string;
+	/** Volatile context token estimate for warm-path reuse */
+	volatileTokenEstimate?: number;
 }
 
 export interface VolatileContext {
@@ -1491,6 +1486,9 @@ Original output was too large for the context window. If you need the full conte
 			inactiveSkillRef,
 		});
 
+		// Append volatile context as developer message at tail
+		assembled.push({ role: "developer", content: volatileCtx.content });
+
 		suffixContent = volatileCtx.content;
 		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, false);
 		enrichmentTiers = volatileCtx.tiers;
@@ -1502,7 +1500,7 @@ Original output was too large for the context window. If you need the full conte
 		taskDigestLinesSnapshot = volatileCtx.taskDigestLines;
 
 		// Track volatile section tokens (memory, task-digest, volatile-other)
-		// These now live in the suffix but are still tracked for debug
+		// These now live in the developer message but are still tracked for debug
 		const memoryLines = volatileCtx.allVolatileLines.slice(
 			volatileCtx.enrichmentStartIdx,
 			volatileCtx.enrichmentEndIdx,
@@ -1564,7 +1562,7 @@ Original output was too large for the context window. If you need the full conte
 			}
 
 			enrichmentMessageIndex = assembled.length;
-			assembled.push({ role: "system", content: enrichmentLines.join("\n") });
+			assembled.push({ role: "developer", content: enrichmentLines.join("\n") });
 
 			// Track noHistory volatile section tokens (memory, task-digest)
 			const noHistMemTokens = noHistDelta.length > 0 ? countTokens(noHistDelta.join("\n")) : 0;
@@ -1587,7 +1585,7 @@ Original output was too large for the context window. If you need the full conte
 	// fixed-size context (system prompt, volatile enrichment, tools) genuinely
 	// crowds the window.
 
-	// Helper to apply reduced enrichment to the assembled context or suffix
+	// Helper to apply reduced enrichment to the assembled context or developer message
 	const applyReducedEnrichment = (shortDelta: string[], shortDigest: string[]): void => {
 		const shortMemChangedCount = shortDelta.filter((l) => l.startsWith("- ")).length;
 		let shortMemHeader = `Memory: ${totalMemCount} entries`;
@@ -1607,28 +1605,36 @@ Original output was too large for the context window. If you need the full conte
 			shortEnrichmentLines.push(...shortDigest);
 		}
 
-		if (!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0) {
-			// Splice the reduced enrichment into the suffix content, preserving
-			// all post-enrichment content (cross-thread digest, file notifications, skill index, etc.)
-			const rebuiltSuffix = [
-				...allVolatileLines.slice(0, enrichmentStartIdx),
-				...shortEnrichmentLines,
-				...allVolatileLines.slice(enrichmentEndIdx),
-			];
-			suffixContent = rebuiltSuffix.join("\n");
-		} else if (params.noHistory) {
-			// For noHistory path, standalone message — just replace with reduced
-			const shortStandaloneLines: string[] = [shortMemHeader];
-			if (shortDelta.length > 0) {
-				shortStandaloneLines.push(...shortDelta);
+		// Find and update the developer message at the tail
+		let devIdx = -1;
+		for (let i = assembled.length - 1; i >= 0; i--) {
+			if (assembled[i].role === "developer") {
+				devIdx = i;
+				break;
 			}
-			if (shortDigest.length > 0) {
-				shortStandaloneLines.push("");
-				shortStandaloneLines.push(...shortDigest);
-			}
-			if (enrichmentMessageIndex < assembled.length) {
-				assembled[enrichmentMessageIndex] = {
-					role: "system",
+		}
+		if (devIdx >= 0) {
+			if (!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0) {
+				// Splice the reduced enrichment into the developer message, preserving
+				// all post-enrichment content (cross-thread digest, file notifications, skill index, etc.)
+				const rebuiltContent = [
+					...allVolatileLines.slice(0, enrichmentStartIdx),
+					...shortEnrichmentLines,
+					...allVolatileLines.slice(enrichmentEndIdx),
+				];
+				assembled[devIdx] = { role: "developer", content: rebuiltContent.join("\n") };
+			} else if (params.noHistory) {
+				// For noHistory path, just replace with reduced
+				const shortStandaloneLines: string[] = [shortMemHeader];
+				if (shortDelta.length > 0) {
+					shortStandaloneLines.push(...shortDelta);
+				}
+				if (shortDigest.length > 0) {
+					shortStandaloneLines.push("");
+					shortStandaloneLines.push(...shortDigest);
+				}
+				assembled[devIdx] = {
+					role: "developer",
 					content: shortStandaloneLines.join("\n"),
 				};
 			}
@@ -1846,7 +1852,9 @@ Original output was too large for the context window. If you need the full conte
 
 			return {
 				messages: truncatedMessages,
-				...(suffixContent !== undefined ? { systemSuffix: suffixContent } : {}),
+				...(suffixContent !== undefined
+					? { volatileTokenEstimate: countTokens(suffixContent) }
+					: {}),
 				debug: {
 					contextWindow: contextWindow,
 					totalEstimated,
@@ -1867,7 +1875,7 @@ Original output was too large for the context window. If you need the full conte
 
 	return {
 		messages: assembled,
-		...(suffixContent !== undefined ? { systemSuffix: suffixContent } : {}),
+		...(suffixContent !== undefined ? { volatileTokenEstimate: countTokens(suffixContent) } : {}),
 		debug: {
 			contextWindow: contextWindow,
 			totalEstimated,
