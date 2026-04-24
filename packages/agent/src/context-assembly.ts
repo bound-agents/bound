@@ -1358,7 +1358,6 @@ Original output was too large for the context window. If you need the full conte
 
 	// Track inactive skill reference for volatile context note (AC3.4)
 	let inactiveSkillRef: string | undefined;
-	inactiveSkillRef = undefined;
 
 	// Inject task-referenced skill body as system message (AC3.3, AC3.5)
 	// Must be outside the !noHistory guard so it works when noHistory = true
@@ -1739,11 +1738,7 @@ Original output was too large for the context window. If you need the full conte
 				0,
 			);
 			const toolTokens = params.toolTokenEstimate ?? 0;
-			const suffixTokensForTrunc = suffixContent ? countTokens(suffixContent) : 0;
-			const historyBudget = Math.max(
-				0,
-				truncationTarget - systemTokens - toolTokens - suffixTokensForTrunc,
-			);
+			const historyBudget = Math.max(0, truncationTarget - systemTokens - toolTokens);
 
 			// Walk backwards from end, accumulating tokens until we exceed budget
 			let accumulatedTokens = 0;

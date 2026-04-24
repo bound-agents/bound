@@ -229,8 +229,17 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 				system?: string;
 				messages: Array<{ role: string; content: string }>;
 			}): AsyncGenerator<StreamChunk> {
-				const lastMsg = params.messages[params.messages.length - 1];
-				const userPrompt = typeof lastMsg?.content === "string" ? lastMsg.content : "";
+				// Find the actual user message (skip developer/system messages added by volatile context)
+				// by searching backward for the last "user" role message
+				let userPrompt = "";
+				for (let i = params.messages.length - 1; i >= 0; i--) {
+					if (params.messages[i].role === "user") {
+						const content = params.messages[i].content;
+						userPrompt = typeof content === "string" ? content : "";
+						break;
+					}
+				}
+
 				if (
 					userPrompt.toLowerCase().includes("summarize") ||
 					userPrompt.toLowerCase().includes("reflecting") ||
@@ -289,33 +298,36 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 		expect(result.error).toBeUndefined();
 		expect(result.messagesCreated).toBeGreaterThan(0);
 
-		// Wait briefly for the fire-and-forget extractSummaryAndMemories to complete
-		await new Promise((resolve) => setTimeout(resolve, 500));
+		// Wait for the fire-and-forget extractSummaryAndMemories to complete
+		await new Promise((resolve) => setTimeout(resolve, 1000));
 
-		// The main loop made at least 1 call; extraction may make summary and facts calls
-		// This test is checking that the extraction wiring exists, not the exact sequence
-		expect(chatCalls.length).toBeGreaterThanOrEqual(1);
-		// Verify summary was generated as proof that extraction ran
+		// Extract all three call purposes. The main loop makes 1 call; extraction makes 2 more.
+		// Due to async execution, the calls may arrive in any order, but all three purposes
+		// must eventually be present (R-E17: extraction fires and completes).
+		expect(chatCalls.length).toBe(3);
+		const purposes = chatCalls.map((c) => c.purpose);
+		expect(purposes).toContain("main");
+		expect(purposes).toContain("summary");
+		expect(purposes).toContain("facts");
+
+		// Verify the thread's summary was updated
 		const thread = db.prepare("SELECT summary FROM threads WHERE id = ?").get(threadId) as {
 			summary: string | null;
 		};
-		// The extraction wiring should have triggered summarization
-		// Skip strict call sequence validation since it may vary with implementation changes
 		expect(thread.summary).toBeTruthy();
 
-		// If there's a summary call, verify it includes first-person framing
+		// The summarization call must include first-person framing
 		// so the agent experiences summarization as its own reflection, not as a third-party
 		// observer. This ensures summaries read "I helped..." rather than "The user asked..."
 		const summaryCall = chatCalls.find((c) => c.purpose === "summary");
-		if (summaryCall) {
-			// Either the system prompt or the user prompt must convey first-person perspective
-			const summaryContext = (summaryCall.systemPrompt ?? "") + summaryCall.userPrompt;
-			const hasFirstPersonFraming =
-				summaryContext.toLowerCase().includes("first person") ||
-				summaryContext.toLowerCase().includes("your own") ||
-				summaryContext.toLowerCase().includes("you are") ||
-				summaryContext.toLowerCase().includes("reflecting");
-			expect(hasFirstPersonFraming).toBe(true);
-		}
+		expect(summaryCall).toBeDefined();
+		// Either the system prompt or the user prompt must convey first-person perspective
+		const summaryContext = (summaryCall?.systemPrompt ?? "") + (summaryCall?.userPrompt ?? "");
+		const hasFirstPersonFraming =
+			summaryContext.toLowerCase().includes("first person") ||
+			summaryContext.toLowerCase().includes("your own") ||
+			summaryContext.toLowerCase().includes("you are") ||
+			summaryContext.toLowerCase().includes("reflecting");
+		expect(hasFirstPersonFraming).toBe(true);
 	});
 });
