@@ -349,7 +349,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 					WHERE m2.thread_id = m.thread_id
 					AND m2.created_at > m.created_at
 					AND (m2.role = 'assistant'
-					  OR (m2.role = 'system' AND (m2.content LIKE '%interrupted%' OR m2.content LIKE '%cancelled%')))
+					  OR (m2.role IN ('system', 'developer') AND (m2.content LIKE '%interrupted%' OR m2.content LIKE '%cancelled%')))
 				 )
 				 AND NOT EXISTS (
 					SELECT 1 FROM dispatch_queue dq
