@@ -40,7 +40,6 @@ export const inferenceRequestPayloadSchema = z.object({
 	messages: z.array(z.unknown()),
 	tools: z.array(z.unknown()).optional(),
 	system: z.string().optional(),
-	system_suffix: z.string().optional(),
 	max_tokens: z.number().int().positive().optional(),
 	temperature: z.number().optional(),
 	cache_breakpoints: z.array(z.number()).optional(),
