@@ -72,6 +72,9 @@ interface CacheDebugEntry {
 	seq: number;
 	messageCount: number;
 	cachePointIdx: number;
+	cacheMessageCount: number;
+	developerMessageCount: number;
+	toolConfigCached: boolean;
 	fingerprints: {
 		system: string | null;
 		prefixMessages: string;
@@ -95,6 +98,34 @@ function emitCacheDebug(raw: {
 	const messages = Array.isArray(raw.messages) ? raw.messages : [];
 	const cpIdx = findCachePointIndex(messages);
 
+	// Count cache marker blocks across all messages
+	let cacheMessageCount = 0;
+	for (const msg of messages) {
+		const msgRecord = msg as Record<string, unknown>;
+		if (Array.isArray(msgRecord.content)) {
+			for (const block of msgRecord.content as Array<Record<string, unknown>>) {
+				if ("cachePoint" in block) {
+					cacheMessageCount++;
+				}
+			}
+		}
+	}
+
+	// Count developer role messages
+	let developerMessageCount = 0;
+	for (const msg of messages) {
+		const msgRecord = msg as Record<string, unknown>;
+		if (msgRecord.role === "developer") {
+			developerMessageCount++;
+		}
+	}
+
+	// Check if toolConfig has cachePoint marker
+	const toolConfigCached =
+		raw.toolConfig != null &&
+		typeof raw.toolConfig === "object" &&
+		"cachePoint" in (raw.toolConfig as Record<string, unknown>);
+
 	const prefix = cpIdx >= 0 ? messages.slice(0, cpIdx + 1) : messages;
 	const suffix = cpIdx >= 0 ? messages.slice(cpIdx + 1) : [];
 
@@ -102,6 +133,9 @@ function emitCacheDebug(raw: {
 		seq,
 		messageCount: messages.length,
 		cachePointIdx: cpIdx,
+		cacheMessageCount,
+		developerMessageCount,
+		toolConfigCached,
 		fingerprints: {
 			system: raw.system != null ? fingerprint(raw.system) : null,
 			prefixMessages: fingerprint(prefix),
@@ -123,6 +157,9 @@ function emitCacheDebug(raw: {
 		seq,
 		messageCount: messages.length,
 		cachePointIdx: cpIdx,
+		cacheMessageCount,
+		developerMessageCount,
+		toolConfigCached,
 		...entry.fingerprints,
 	});
 

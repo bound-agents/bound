@@ -497,6 +497,26 @@ export class AgentLoop {
 				}
 			}
 
+			// Log warm/cold path decision with reason and counts
+			this.ctx.logger.info("[agent-loop] Cache path selected", {
+				path: usedWarmPath ? "warm" : "cold",
+				reason: !this._cachedTurnState
+					? "no-stored-state"
+					: cacheState === "cold"
+						? "cache-expired"
+						: !isWarmPathEligible && this._cachedTurnState?.toolFingerprint !== currentFingerprint
+							? "tool-change"
+							: usedWarmPath === false
+								? "budget-exceeded"
+								: "warm-eligible",
+				storedMessageCount: this._cachedTurnState?.messages.length,
+				deltaMessageCount:
+					this._cachedTurnState !== undefined && usedWarmPath === false
+						? 0
+						: this._cachedTurnState?.messages.length,
+				cacheMessagePositions: this._cachedTurnState?.cacheMessagePositions,
+			});
+
 			// If warm path failed budget check or was ineligible, run cold path
 			if (!usedWarmPath) {
 				// COLD PATH: Full assembly and cache message placement
