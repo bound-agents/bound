@@ -42,6 +42,8 @@ import {
 	isTransientLLMError,
 	parseToolResultContent,
 } from "./agent-loop-utils";
+import { CACHE_TTL_MS, predictCacheState, selectCacheTtl } from "./cache-prediction";
+import { type CachedTurnState, computeToolFingerprint } from "./cached-turn-state";
 import { assembleContext } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
@@ -151,6 +153,9 @@ export class AgentLoop {
 
 	/** Resolved inference relay timeout from sync.relay config, cached on first access. */
 	private _inferenceTimeoutMs: number | null = null;
+
+	/** Cached turn state for warm-path message reuse. */
+	private _cachedTurnState?: CachedTurnState;
 
 	constructor(
 		private ctx: AppContext,
@@ -330,36 +335,128 @@ export class AgentLoop {
 				this.config.modelId,
 			);
 
-			// Deterministic compaction keeps cached prefixes stable while reducing context size
-			const { messages: contextMessages, debug: contextDebug } = assembleContext({
-				db: this.ctx.db,
-				threadId: this.config.threadId,
-				taskId: this.config.taskId,
-				userId: this.config.userId,
-				currentModel: resolvedModelForDebug,
-				contextWindow: contextWindow,
-				hostName: this.ctx.hostName,
-				siteId: this.ctx.siteId,
-				relayInfo,
-				platformContext: this.config.platform
-					? {
-							platform: this.config.platform,
-							toolNames: this.config.platformTools
-								? Array.from(this.config.platformTools.keys())
-								: undefined,
-						}
-					: undefined,
-				targetCapabilities: resolvedCaps ?? undefined,
-				toolTokenEstimate,
-				compactToolResults: true,
-				noHistory: this.config.noHistory,
-				systemPromptAddition: this.config.systemPromptAddition,
-			});
+			// Determine cache state for warm/cold path decision
+			const threadInterface = this.config.platform ?? "web";
+			const cacheTtl = selectCacheTtl(threadInterface);
+			const cacheState = predictCacheState(
+				this.ctx.db,
+				this.config.threadId,
+				CACHE_TTL_MS[cacheTtl],
+			);
+			const currentFingerprint = computeToolFingerprint(this.config.tools);
+
+			// Check if warm path is eligible
+			const isWarmPathEligible =
+				cacheState === "warm" &&
+				this._cachedTurnState !== undefined &&
+				this._cachedTurnState.toolFingerprint === currentFingerprint;
+
+			let contextMessages: import("@bound/llm").LLMMessage[];
+			let contextDebug: ContextDebugInfo;
+			let llmMessages: import("@bound/llm").LLMMessage[];
+
+			if (!isWarmPathEligible) {
+				// COLD PATH: Full assembly and cache message placement
+				this.ctx.logger.debug("[agent-loop] Cold path: full context assembly", {
+					cacheState,
+					hasStoredState: this._cachedTurnState !== undefined,
+					fingerprintMatch: this._cachedTurnState?.toolFingerprint === currentFingerprint,
+				});
+
+				// Deterministic compaction keeps cached prefixes stable while reducing context size
+				const result = assembleContext({
+					db: this.ctx.db,
+					threadId: this.config.threadId,
+					taskId: this.config.taskId,
+					userId: this.config.userId,
+					currentModel: resolvedModelForDebug,
+					contextWindow: contextWindow,
+					hostName: this.ctx.hostName,
+					siteId: this.ctx.siteId,
+					relayInfo,
+					platformContext: this.config.platform
+						? {
+								platform: this.config.platform,
+								toolNames: this.config.platformTools
+									? Array.from(this.config.platformTools.keys())
+									: undefined,
+							}
+						: undefined,
+					targetCapabilities: resolvedCaps ?? undefined,
+					toolTokenEstimate,
+					compactToolResults: true,
+					noHistory: this.config.noHistory,
+					systemPromptAddition: this.config.systemPromptAddition,
+				});
+
+				contextMessages = result.messages;
+				contextDebug = result.debug;
+
+				// Extract system messages for stable storage
+				const systemMessages = contextMessages.filter((m) => m.role === "system");
+				const nonSystemMessages = contextMessages.filter((m) => m.role !== "system");
+				const systemPrompt = systemMessages
+					.map((m) => (typeof m.content === "string" ? m.content : ""))
+					.join("\n\n");
+
+				// Place fixed cache message at messages[length-2] (before last message)
+				const fixedCacheIdx = nonSystemMessages.length >= 2 ? nonSystemMessages.length - 2 : -1;
+				if (fixedCacheIdx >= 0) {
+					nonSystemMessages.splice(fixedCacheIdx + 1, 0, { role: "cache", content: "" });
+				}
+
+				// Query last message created_at for delta queries
+				const lastRow = this.ctx.db
+					.query(
+						"SELECT created_at FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+					)
+					.get(this.config.threadId) as { created_at: string } | null;
+				const lastMessageCreatedAt = lastRow?.created_at ?? new Date().toISOString();
+
+				// Store state for potential warm-path reuse on next turn
+				this._cachedTurnState = {
+					messages: [...nonSystemMessages],
+					systemPrompt,
+					cacheMessagePositions: fixedCacheIdx >= 0 ? [fixedCacheIdx + 1] : [],
+					fixedCacheIdx: fixedCacheIdx >= 0 ? fixedCacheIdx + 1 : -1,
+					lastMessageCreatedAt,
+					toolFingerprint: currentFingerprint,
+				};
+
+				// Reconstruct full context with system messages for LLM call
+				llmMessages = [...systemMessages, ...nonSystemMessages];
+			} else {
+				// WARM PATH: Reuse stored messages with delta append (implemented in Task 4)
+				// For now, fallback to stored state for this turn
+				if (!this._cachedTurnState) {
+					throw new Error("Warm path requested but no cached state available");
+				}
+				const cached = this._cachedTurnState;
+				this.ctx.logger.debug("[agent-loop] Warm path: reusing cached state", {
+					storedMessageCount: cached.messages.length,
+				});
+
+				// Placeholder: full implementation in Task 4
+				// Use stored messages as-is for now (without delta append)
+				const systemMessages = cached.messages.filter((m) => m.role === "system");
+				const nonSystemMessages = cached.messages.filter((m) => m.role !== "system");
+				llmMessages = [...systemMessages, ...nonSystemMessages];
+
+				// Dummy contextDebug for now
+				contextDebug = {
+					contextWindow: contextWindow,
+					totalEstimated: 0,
+					model: resolvedModelForDebug ?? "unknown",
+					sections: [],
+					budgetPressure: false,
+					truncated: 0,
+				};
+			}
 
 			this.lastContextDebug = contextDebug;
 
 			this.ctx.logger.info("[agent-loop] Context assembled", {
-				messageCount: contextMessages.length,
+				messageCount: llmMessages.length,
 				contextWindow,
 				toolTokenEstimate,
 				totalEstimatedTokens: contextDebug.totalEstimated,
@@ -387,8 +484,6 @@ export class AgentLoop {
 					);
 				}
 			}
-
-			const llmMessages = [...contextMessages];
 			let continueLoop = true;
 			let transportRetries = 0;
 
