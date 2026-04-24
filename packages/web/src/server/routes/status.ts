@@ -216,7 +216,7 @@ export function createStatusRoutes(
 					{
 						id: randomUUID(),
 						thread_id: threadId,
-						role: "system",
+						role: "developer",
 						content:
 							"[Client tool calls cancelled] Pending client tool calls were cancelled by user request.",
 						model_id: null,
@@ -238,7 +238,7 @@ export function createStatusRoutes(
 				{
 					id: cancelMsgId,
 					thread_id: threadId,
-					role: "system",
+					role: "developer",
 					content: `Agent cancelled by user on host ${hostNameValue}`,
 					model_id: null,
 					tool_name: null,

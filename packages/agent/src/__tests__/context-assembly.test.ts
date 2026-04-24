@@ -291,14 +291,14 @@ describe("Context Assembly Pipeline", () => {
 
 			// Should have system messages + purge summary + msg3
 			const userMessages = messages.filter((m) => m.role === "user");
-			const systemMessages = messages.filter((m) => m.role === "system");
+			const developerMessages = messages.filter((m) => m.role === "developer");
 
 			// Only msg3 should remain as a user message
 			expect(userMessages.length).toBe(1);
 			expect(userMessages[0].content).toBe("Message 3");
 
-			// Should have a system message with the purge summary
-			const purgeSummary = systemMessages.find((m) => m.content.includes("purged 2 messages"));
+			// Should have a developer message with the purge summary
+			const purgeSummary = developerMessages.find((m) => m.content.includes("purged 2 messages"));
 			expect(purgeSummary).toBeDefined();
 			expect(purgeSummary?.content).toContain("Removed initial greeting messages");
 		});
@@ -415,8 +415,8 @@ describe("Context Assembly Pipeline", () => {
 			expect(userMessages[0].content).toBe("Keep this message");
 
 			// Should have purge summary indicating 2 messages (tool_call + tool_result)
-			const systemMessages = messages.filter((m) => m.role === "system");
-			const purgeSummary = systemMessages.find((m) => m.content.includes("purged 2 messages"));
+			const developerMessages = messages.filter((m) => m.role === "developer");
+			const purgeSummary = developerMessages.find((m) => m.content.includes("purged 2 messages"));
 			expect(purgeSummary).toBeDefined();
 		});
 
@@ -556,8 +556,8 @@ describe("Context Assembly Pipeline", () => {
 			});
 
 			// Should have two purge summary messages
-			const systemMessages = messages.filter((m) => m.role === "system");
-			const purgeSummaries = systemMessages.filter((m) => m.content.includes("purged"));
+			const developerMessages = messages.filter((m) => m.role === "developer");
+			const purgeSummaries = developerMessages.filter((m) => m.content.includes("purged"));
 			expect(purgeSummaries.length).toBe(2);
 
 			// Should have the two non-purged messages
@@ -734,10 +734,10 @@ describe("Context Assembly Pipeline", () => {
 				userId: testUserId,
 			});
 
-			// Find the system message about model switch
+			// Find the developer message about model switch
 			const modelSwitchMessage = messages.find(
 				(m) =>
-					m.role === "system" &&
+					m.role === "developer" &&
 					m.content.includes("Model switched from claude-3-opus to claude-3-5-sonnet"),
 			);
 
@@ -758,7 +758,7 @@ describe("Context Assembly Pipeline", () => {
 			const firstAssistantIdx = messages.findIndex((m) => m.content === "Answer from model A");
 			const switchMsgIdx = messages.findIndex(
 				(m) =>
-					m.role === "system" &&
+					m.role === "developer" &&
 					m.content.includes("Model switched from claude-3-opus to claude-3-5-sonnet"),
 			);
 			const secondAssistantIdx = messages.findIndex((m) => m.content === "Answer from model B");
@@ -3048,7 +3048,9 @@ This skill reviews pull requests.`;
 			});
 
 			// Truncation must have fired: returned history should be fewer than 12
-			const historyMessages = messagesWithFix.filter((m) => m.role !== "system");
+			const historyMessages = messagesWithFix.filter(
+				(m) => m.role !== "system" && m.role !== "developer",
+			);
 			expect(historyMessages.length).toBeLessThan(12);
 
 			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
@@ -4418,9 +4420,9 @@ This skill reviews pull requests.`;
 			// Truncation must have happened
 			expect(debug.truncated).toBeGreaterThan(0);
 
-			// A system message should indicate truncation occurred
-			const systemMessages = messages.filter((m) => m.role === "system");
-			const marker = systemMessages.find(
+			// A developer message should indicate truncation occurred
+			const developerMessages = messages.filter((m) => m.role === "developer");
+			const marker = developerMessages.find(
 				(m) => typeof m.content === "string" && m.content.includes("earlier messages"),
 			);
 			expect(marker).toBeDefined();
@@ -4492,8 +4494,8 @@ This skill reviews pull requests.`;
 
 			expect(debug.truncated).toBeGreaterThan(0);
 
-			const systemMessages = messages.filter((m) => m.role === "system");
-			const marker = systemMessages.find(
+			const developerMessages = messages.filter((m) => m.role === "developer");
+			const marker = developerMessages.find(
 				(m) => typeof m.content === "string" && m.content.includes("earlier messages"),
 			);
 			expect(marker).toBeDefined();
@@ -5030,10 +5032,10 @@ This skill reviews pull requests.`;
 			expect((toolResult?.content as string).length).toBeLessThan(1000);
 			expect(toolResult?.content).toContain(largeResultId);
 
-			// Thread summary should be injected
+			// Thread summary should be injected in developer message
 			const summaryMsg = result.messages.find(
 				(m) =>
-					m.role === "system" &&
+					m.role === "developer" &&
 					typeof m.content === "string" &&
 					m.content.includes("discussed testing"),
 			);

@@ -628,7 +628,7 @@ export class Scheduler {
 					{
 						id: randomUUID(),
 						thread_id: threadId,
-						role: "system",
+						role: "developer",
 						content: `[Task wakeup] Scheduled ${task.type} task ${task.id} triggered.`,
 						model_id: null,
 						tool_name: null,
@@ -723,7 +723,7 @@ export class Scheduler {
 							{
 								id: randomUUID(),
 								thread_id: threadId,
-								role: "system",
+								role: "developer",
 								content: quiescenceNote,
 								model_id: null,
 								tool_name: null,

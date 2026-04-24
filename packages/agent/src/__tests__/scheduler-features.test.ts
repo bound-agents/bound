@@ -1000,8 +1000,8 @@ describe("Scheduler features", () => {
 				tool_name: string | null;
 			}[];
 
-			// First message: system wakeup notification (not user "." anymore)
-			expect(allMsgs[0].role).toBe("system");
+			// First message: developer wakeup notification (not user "." anymore)
+			expect(allMsgs[0].role).toBe("developer");
 			expect(allMsgs[0].content).toContain("[Task wakeup]");
 
 			// Second message: synthetic assistant tool_call

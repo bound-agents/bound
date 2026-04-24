@@ -603,12 +603,12 @@ export class AgentLoop {
 
 								if (previousModelId !== newModelId) {
 									const switchMsg = `Model switched from ${previousModelId} to ${newModelId} (rate limit on ${previousModelId})`;
-									llmMessages.push({ role: "system", content: switchMsg });
+									llmMessages.push({ role: "developer", content: switchMsg });
 									const switchMsgId = insertThreadMessage(
 										this.ctx.db,
 										{
 											threadId: this.config.threadId,
-											role: "system",
+											role: "developer",
 											content: switchMsg,
 											hostOrigin: this.ctx.siteId,
 										},
@@ -685,7 +685,7 @@ export class AgentLoop {
 							this.ctx.db,
 							{
 								threadId: this.config.threadId,
-								role: "system",
+								role: "developer",
 								content:
 									"[Turn cancelled] The previous inference was cancelled before it could complete. " +
 									"No response was generated for the last user message.",

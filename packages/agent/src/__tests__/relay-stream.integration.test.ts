@@ -460,7 +460,7 @@ describe("relay-stream integration tests", () => {
 		// path itself is correctly exercised as shown by the "[Turn cancelled]" message.
 		const cancelMsg = requesterDb
 			.query(
-				"SELECT content FROM messages WHERE thread_id = ? AND role = 'system' AND content LIKE '%cancelled%' LIMIT 1",
+				"SELECT content FROM messages WHERE thread_id = ? AND role = 'developer' AND content LIKE '%cancelled%' LIMIT 1",
 			)
 			.get(threadId) as { content: string } | null;
 		expect(cancelMsg).not.toBeNull();

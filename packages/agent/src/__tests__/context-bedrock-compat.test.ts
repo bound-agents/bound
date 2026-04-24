@@ -527,9 +527,9 @@ describe("Context assembly Bedrock compatibility", () => {
 		// Use a tiny contextWindow to force the Stage 7 truncation path
 		const { messages } = assembleContext({ db, threadId, userId, contextWindow: 500 });
 
-		// The first non-system message must be a user message — never assistant/tool_call.
+		// The first non-system non-developer message must be a user message — never assistant/tool_call.
 		// Otherwise Bedrock rejects with "A conversation must start with a user message."
-		const firstNonSystem = messages.find((m) => m.role !== "system");
+		const firstNonSystem = messages.find((m) => m.role !== "system" && m.role !== "developer");
 		expect(firstNonSystem).toBeDefined();
 		expect(firstNonSystem?.role).toBe("user");
 	});

@@ -2,6 +2,7 @@ export type MessageRole =
 	| "user"
 	| "assistant"
 	| "system"
+	| "developer"
 	| "alert"
 	| "tool_call"
 	| "tool_result"

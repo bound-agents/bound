@@ -157,10 +157,10 @@ describe("Abort state tracking", () => {
 
 		await loop.run();
 
-		// Should have a system message about the abort
+		// Should have a developer message about the abort
 		const msgs = db
 			.query(
-				"SELECT role, content FROM messages WHERE thread_id = ? AND role = 'system' ORDER BY created_at DESC",
+				"SELECT role, content FROM messages WHERE thread_id = ? AND role = 'developer' ORDER BY created_at DESC",
 			)
 			.all(threadId) as Array<{ role: string; content: string }>;
 

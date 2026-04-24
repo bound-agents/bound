@@ -679,12 +679,12 @@ Original output was too large for the context window. If you need the full conte
 			summary: string | null;
 		} | null;
 		if (thread?.summary) {
-			// Prepend a synthetic system-role summary message.
+			// Prepend a synthetic developer-role summary message.
 			// It will be picked up naturally by later stages.
 			messages.unshift({
 				id: "__compaction_summary__",
 				thread_id: threadId,
-				role: "system",
+				role: "developer",
 				content: `[Conversation compacted — ${compactionBoundary} older messages summarized. Use "query" to retrieve specific messages if needed.]\n\nSummary: ${thread.summary}`,
 				model_id: null,
 				tool_name: null,
@@ -827,11 +827,11 @@ Original output was too large for the context window. If you need the full conte
 				const group = purgeGroups[groupIndex];
 				processedPurgeGroups.add(groupIndex);
 
-				// Create a system message with the purge summary
+				// Create a developer message with the purge summary
 				messagesAfterPurge.push({
 					id: `purge-summary-${groupIndex}`,
 					thread_id: threadId,
-					role: "system",
+					role: "developer",
 					content: `(purged ${group.ids.size} messages) ${group.summary}`,
 					model_id: null,
 					tool_name: null,
@@ -1184,7 +1184,14 @@ Original output was too large for the context window. If you need the full conte
 	// Convert Message to LLMMessage format with annotations
 	// Also detect model switches between consecutive assistant messages per spec R-U11
 	// Defense-in-depth: filter non-LLM roles in case any survived Stage 2.5
-	const LLM_COMPATIBLE_ROLES = new Set(["user", "assistant", "system", "tool_call", "tool_result"]);
+	const LLM_COMPATIBLE_ROLES = new Set([
+		"user",
+		"assistant",
+		"system",
+		"developer",
+		"tool_call",
+		"tool_result",
+	]);
 
 	// Build a map from tool_call message ID to the tool_use IDs contained within,
 	// so we can propagate tool_use_id to the subsequent tool_result messages.
@@ -1239,7 +1246,7 @@ Original output was too large for the context window. If you need the full conte
 			if (lastAssistantModel && lastAssistantModel !== m.model_id) {
 				if (modelSwitchCount < MODEL_SWITCH_CAP) {
 					annotated.push({
-						role: "system",
+						role: "developer",
 						content: `Model switched from ${lastAssistantModel} to ${m.model_id}`,
 					});
 					modelSwitchCount++;
@@ -1803,7 +1810,7 @@ Original output was too large for the context window. If you need the full conte
 					: "";
 
 				truncationMarker.push({
-					role: "system",
+					role: "developer",
 					content: `[Context note: ${truncatedCount} earlier messages in this conversation were truncated to fit the context window. This thread has ${totalInThread} total messages. You are seeing only the most recent portion. If you need to reference earlier context, you can use the query command to search the messages table, e.g.: query "SELECT role, substr(content, 1, 200), created_at FROM messages WHERE thread_id = '${params.threadId}' ORDER BY created_at DESC LIMIT 50"]${summarySection}`,
 				});
 			}

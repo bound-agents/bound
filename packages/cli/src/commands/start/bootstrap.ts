@@ -370,7 +370,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 						{
 							id: randomUUID(),
 							thread_id: thread_id,
-							role: "system",
+							role: "developer",
 							content: `Agent response was interrupted on host ${appContext.hostName}. The previous tool interaction may be incomplete.`,
 							model_id: null,
 							tool_name: null,
