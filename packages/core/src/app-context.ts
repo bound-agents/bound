@@ -6,6 +6,7 @@ import type { OptionalConfigs, RequiredConfig } from "./config-loader";
 import { loadOptionalConfigs } from "./config-loader";
 import { bootstrapContainer } from "./container";
 import { ConfigService, DatabaseService, EventBusService, LoggerService } from "./container";
+import { InMemoryTurnStateStore, type TurnStateStore } from "./turn-state-store";
 
 export interface AppContext {
 	db: Database;
@@ -15,6 +16,13 @@ export interface AppContext {
 	logger: Logger;
 	siteId: string;
 	hostName: string;
+	/**
+	 * Per-thread agent turn-state cache. Keyed by threadId. Survives
+	 * AgentLoop instance teardown so warm-path cache reuse works across
+	 * client-tool defer/wakeup cycles. Lifetime is process-scoped with
+	 * internal TTL shorter than upstream prompt-cache TTL.
+	 */
+	turnStateStore: TurnStateStore;
 }
 
 export function createAppContext(configDir: string, dbPath: string): AppContext {
@@ -61,5 +69,6 @@ export function createAppContext(configDir: string, dbPath: string): AppContext 
 		logger,
 		siteId,
 		hostName,
+		turnStateStore: new InMemoryTurnStateStore(),
 	};
 }

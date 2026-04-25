@@ -156,8 +156,25 @@ export class AgentLoop {
 	/** Resolved inference relay timeout from sync.relay config, cached on first access. */
 	private _inferenceTimeoutMs: number | null = null;
 
-	/** Cached turn state for warm-path message reuse. */
-	private _cachedTurnState?: CachedTurnState;
+	/**
+	 * Accessor for this thread's cached turn state. Lives in ctx.turnStateStore
+	 * so it survives AgentLoop instance teardown (e.g. across client-tool
+	 * defer/wakeup cycles). Previously an instance field, which meant every
+	 * fresh AgentLoop started cold regardless of upstream cache liveness.
+	 */
+	private getCachedTurnState(): CachedTurnState | undefined {
+		return this.ctx.turnStateStore?.get(this.config.threadId) as CachedTurnState | undefined;
+	}
+
+	private setCachedTurnState(state: CachedTurnState): void {
+		if (this.ctx.turnStateStore) {
+			this.ctx.turnStateStore.set(this.config.threadId, state);
+		}
+	}
+
+	private clearCachedTurnState(): void {
+		this.ctx.turnStateStore?.delete(this.config.threadId);
+	}
 
 	constructor(
 		private ctx: AppContext,
@@ -350,8 +367,8 @@ export class AgentLoop {
 			// Check if warm path is eligible
 			const isWarmPathEligible =
 				cacheState === "warm" &&
-				this._cachedTurnState !== undefined &&
-				this._cachedTurnState.toolFingerprint === currentFingerprint;
+				this.getCachedTurnState() !== undefined &&
+				this.getCachedTurnState()?.toolFingerprint === currentFingerprint;
 
 			let contextDebug: ContextDebugInfo = {
 				contextWindow: contextWindow,
@@ -365,9 +382,10 @@ export class AgentLoop {
 			let usedWarmPath = false;
 			let deltaMessageCount = 0;
 
-			if (isWarmPathEligible && this._cachedTurnState) {
+			const cachedForWarm = this.getCachedTurnState();
+			if (isWarmPathEligible && cachedForWarm) {
 				// WARM PATH: Try to reuse stored messages and append delta
-				const cached = this._cachedTurnState;
+				const cached = cachedForWarm;
 
 				// 1. Fetch delta messages from DB (created after lastMessageCreatedAt)
 				const deltaRows = this.ctx.db
@@ -457,7 +475,7 @@ export class AgentLoop {
 						},
 					);
 					// Clear cached state to force cold path on next iteration
-					this._cachedTurnState = undefined;
+					this.clearCachedTurnState();
 					// Fall through to cold path by not setting usedWarmPath or llmMessages
 				} else {
 					// Warm path succeeded within budget
@@ -471,7 +489,7 @@ export class AgentLoop {
 						.get(this.config.threadId) as { created_at: string } | null;
 
 					// 8. Update stored state
-					this._cachedTurnState = {
+					this.setCachedTurnState({
 						...cached,
 						messages: storedMessages,
 						cacheMessagePositions: [
@@ -479,7 +497,7 @@ export class AgentLoop {
 							storedMessages.length - 2, // rolling cache position
 						],
 						lastMessageCreatedAt: newLastRow?.created_at ?? new Date().toISOString(),
-					};
+					});
 
 					// 9. Use stored messages directly (no system messages in the array)
 					llmMessages = storedMessages;
@@ -499,18 +517,19 @@ export class AgentLoop {
 			// Log warm/cold path decision with reason and counts
 			this.ctx.logger.info("[agent-loop] Cache path selected", {
 				path: usedWarmPath ? "warm" : "cold",
-				reason: !this._cachedTurnState
+				reason: !this.getCachedTurnState()
 					? "no-stored-state"
 					: cacheState === "cold"
 						? "cache-expired"
-						: !isWarmPathEligible && this._cachedTurnState?.toolFingerprint !== currentFingerprint
+						: !isWarmPathEligible &&
+								this.getCachedTurnState()?.toolFingerprint !== currentFingerprint
 							? "tool-change"
 							: usedWarmPath === false
 								? "budget-exceeded"
 								: "warm-eligible",
-				storedMessageCount: this._cachedTurnState?.messages.length,
+				storedMessageCount: this.getCachedTurnState()?.messages.length,
 				deltaMessageCount,
-				cacheMessagePositions: this._cachedTurnState?.cacheMessagePositions,
+				cacheMessagePositions: this.getCachedTurnState()?.cacheMessagePositions,
 			});
 
 			// If warm path failed budget check or was ineligible, run cold path
@@ -518,8 +537,8 @@ export class AgentLoop {
 				// COLD PATH: Full assembly and cache message placement
 				this.ctx.logger.debug("[agent-loop] Cold path: full context assembly", {
 					cacheState,
-					hasStoredState: this._cachedTurnState !== undefined,
-					fingerprintMatch: this._cachedTurnState?.toolFingerprint === currentFingerprint,
+					hasStoredState: this.getCachedTurnState() !== undefined,
+					fingerprintMatch: this.getCachedTurnState()?.toolFingerprint === currentFingerprint,
 				});
 
 				// Deterministic compaction keeps cached prefixes stable while reducing context size
@@ -569,14 +588,14 @@ export class AgentLoop {
 				const lastMessageCreatedAt = lastRow?.created_at ?? new Date().toISOString();
 
 				// Store state for potential warm-path reuse on next turn
-				this._cachedTurnState = {
+				this.setCachedTurnState({
 					messages: [...contextMessages],
 					systemPrompt,
 					cacheMessagePositions: fixedCacheIdx >= 0 ? [fixedCacheIdx + 1] : [],
 					fixedCacheIdx: fixedCacheIdx >= 0 ? fixedCacheIdx + 1 : -1,
 					lastMessageCreatedAt,
 					toolFingerprint: currentFingerprint,
-				};
+				});
 
 				llmMessages = contextMessages;
 			}
@@ -648,7 +667,7 @@ export class AgentLoop {
 				try {
 					// System prompt comes from assembleContext (cold path) or cached state (warm path).
 					// No filtering needed — llmMessages contains no system-role messages.
-					const systemPrompt = this._cachedTurnState?.systemPrompt ?? "";
+					const systemPrompt = this.getCachedTurnState()?.systemPrompt ?? "";
 
 					const resolution = this.lastModelResolution;
 					if (!resolution) {

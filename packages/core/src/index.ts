@@ -30,6 +30,10 @@ export {
 } from "./container";
 export { createAppContext, type AppContext } from "./app-context";
 export {
+	InMemoryTurnStateStore,
+	type TurnStateStore,
+} from "./turn-state-store";
+export {
 	applyMetricsSchema,
 	recordTurn,
 	recordContextDebug,

@@ -4,7 +4,12 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
+import {
+	InMemoryTurnStateStore,
+	applyMetricsSchema,
+	applySchema,
+	createDatabase,
+} from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { ChatParams, LLMBackend, StreamChunk, ToolDefinition } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
@@ -588,12 +593,29 @@ describe("warm-cold-path", () => {
 			return new ModelRouter(backends, "claude-opus");
 		}
 
-		function makeCtx(): AppContext {
+		type CachePathLog = { path: "warm" | "cold"; reason: string };
+
+		function makeCtx(
+			pathLogs?: CachePathLog[],
+			turnStateStore?: InMemoryTurnStateStore,
+		): AppContext {
 			return {
 				db: globalDb,
 				logger: {
 					debug: () => {},
-					info: () => {},
+					info: (msg: string, fields?: Record<string, unknown>) => {
+						if (
+							pathLogs &&
+							msg === "[agent-loop] Cache path selected" &&
+							fields &&
+							(fields.path === "warm" || fields.path === "cold")
+						) {
+							pathLogs.push({
+								path: fields.path as "warm" | "cold",
+								reason: String(fields.reason),
+							});
+						}
+					},
 					warn: () => {},
 					error: () => {},
 				},
@@ -604,6 +626,7 @@ describe("warm-cold-path", () => {
 				},
 				hostName: "test-host",
 				siteId: "test-site-id",
+				turnStateStore: turnStateStore ?? new InMemoryTurnStateStore(),
 			} as unknown as AppContext;
 		}
 
@@ -641,11 +664,40 @@ describe("warm-cold-path", () => {
 			);
 
 			const mockBackend = new MockLLMBackend();
-			mockBackend.setTextResponse("Hello");
-			mockBackend.setTextResponse("Follow-up response");
+			// First response: report cache_write so predictCacheState sees cache activity
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Hello" };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 100,
+						output_tokens: 5,
+						cache_write_tokens: 100,
+						cache_read_tokens: 0,
+						estimated: false,
+					},
+				};
+			});
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Follow-up response" };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_write_tokens: 0,
+						cache_read_tokens: 100,
+						estimated: false,
+					},
+				};
+			});
+
+			// Shared store so warm-path state survives across AgentLoop instances
+			const sharedStore = new InMemoryTurnStateStore();
 
 			// First invocation (cold path expected)
-			const ctx1 = makeCtx();
+			const pathLogs1: CachePathLog[] = [];
+			const ctx1 = makeCtx(pathLogs1, sharedStore);
 			const agentLoop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
@@ -654,6 +706,10 @@ describe("warm-cold-path", () => {
 			const result1 = await agentLoop1.run();
 			expect(result1).toHaveProperty("messagesCreated");
 			expect(result1.messagesCreated).toBeGreaterThan(0);
+
+			// First invocation's first LLM call must be cold (no prior state).
+			expect(pathLogs1.length).toBeGreaterThanOrEqual(1);
+			expect(pathLogs1[0]?.path).toBe("cold");
 
 			// Insert a new message to simulate user follow-up
 			const newMsgId = randomUUID();
@@ -673,8 +729,11 @@ describe("warm-cold-path", () => {
 				],
 			);
 
-			// Second invocation (warm path expected)
-			const ctx2 = makeCtx();
+			// Second invocation: FRESH AgentLoop instance (simulates client-tool defer + wakeup,
+			// or any other path that tears down the agent loop between turns).
+			// Warm path expected IF cached turn state survives instance teardown.
+			const pathLogs2: CachePathLog[] = [];
+			const ctx2 = makeCtx(pathLogs2, sharedStore);
 			const agentLoop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
@@ -685,6 +744,12 @@ describe("warm-cold-path", () => {
 
 			// Verify both invocations completed
 			expect(mockBackend.getCallCount()).toBeGreaterThanOrEqual(2);
+
+			// THE ACTUAL ASSERTION: second invocation's first LLM call should take the warm path.
+			// If this fails with reason="no-stored-state", it confirms cached turn state
+			// is instance-scoped and cannot survive AgentLoop teardown.
+			expect(pathLogs2.length).toBeGreaterThanOrEqual(1);
+			expect(pathLogs2[0]).toEqual({ path: "warm", reason: "warm-eligible" });
 		});
 
 		it("AC3.1: cold cache state forces full reassembly", async () => {
@@ -710,10 +775,24 @@ describe("warm-cold-path", () => {
 
 			const mockBackend = new MockLLMBackend();
 			mockBackend.setTextResponse("Response 1");
-			mockBackend.setTextResponse("Response 2");
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Response 2" };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			});
+
+			const sharedStore = new InMemoryTurnStateStore();
 
 			// First run
-			const ctx1 = makeCtx();
+			const ctx1 = makeCtx(undefined, sharedStore);
 			const agentLoop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
@@ -721,7 +800,7 @@ describe("warm-cold-path", () => {
 			await agentLoop1.run();
 
 			// Second run (should trigger reassembly if DB cache is invalidated)
-			const ctx2 = makeCtx();
+			const ctx2 = makeCtx(undefined, sharedStore);
 			const agentLoop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
@@ -754,7 +833,19 @@ describe("warm-cold-path", () => {
 
 			const mockBackend = new MockLLMBackend();
 			mockBackend.setTextResponse("Response with tool 1");
-			mockBackend.setTextResponse("Response with tools 1 and 2");
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Response with tools 1 and 2" };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			});
 
 			const tool1: ToolDefinition = {
 				type: "function",
@@ -780,8 +871,10 @@ describe("warm-cold-path", () => {
 				},
 			};
 
+			const sharedStore = new InMemoryTurnStateStore();
+
 			// First invocation with one tool
-			const ctx1 = makeCtx();
+			const ctx1 = makeCtx(undefined, sharedStore);
 			const agentLoop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
@@ -790,7 +883,7 @@ describe("warm-cold-path", () => {
 			await agentLoop1.run();
 
 			// Second invocation with added tool (fingerprint changed)
-			const ctx2 = makeCtx();
+			const ctx2 = makeCtx(undefined, sharedStore);
 			const agentLoop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
@@ -826,10 +919,24 @@ describe("warm-cold-path", () => {
 
 			const mockBackend = new MockLLMBackend();
 			mockBackend.setTextResponse("First response");
-			mockBackend.setTextResponse("Second response");
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Second response" };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			});
+
+			const sharedStore = new InMemoryTurnStateStore();
 
 			// First invocation: generates volatile context
-			const ctx1 = makeCtx();
+			const ctx1 = makeCtx(undefined, sharedStore);
 			const agentLoop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
@@ -838,7 +945,7 @@ describe("warm-cold-path", () => {
 			expect(result1).toHaveProperty("messagesCreated");
 
 			// Second invocation: generates fresh volatile context (even if warm path)
-			const ctx2 = makeCtx();
+			const ctx2 = makeCtx(undefined, sharedStore);
 			const agentLoop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
@@ -873,10 +980,24 @@ describe("warm-cold-path", () => {
 
 			const mockBackend = new MockLLMBackend();
 			mockBackend.setTextResponse("First turn (cold)");
-			mockBackend.setTextResponse("Second turn (warm reuse)");
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Second turn (warm reuse)" };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			});
+
+			const sharedStore = new InMemoryTurnStateStore();
 
 			// First invocation: cold path, caches state
-			const ctx1 = makeCtx();
+			const ctx1 = makeCtx(undefined, sharedStore);
 			const loop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
@@ -903,7 +1024,7 @@ describe("warm-cold-path", () => {
 			);
 
 			// Second invocation: should use warm path from cached state
-			const ctx2 = makeCtx();
+			const ctx2 = makeCtx(undefined, sharedStore);
 			const loop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
