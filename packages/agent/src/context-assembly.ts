@@ -695,7 +695,7 @@ Original output was too large for the context window. If you need the full conte
 				id: "__compaction_summary__",
 				thread_id: threadId,
 				role: "developer",
-				content: `[Conversation compacted — ${compactionBoundary} older messages summarized. Use "query" to retrieve specific messages if needed.]\n\nSummary: ${thread.summary}`,
+				content: `[Conversation context — ${compactionBoundary} earlier messages are compacted below as stubs. Use "query SELECT content FROM messages WHERE id='...'" to retrieve any specific message.]\n\n${thread.summary}`,
 				model_id: null,
 				tool_name: null,
 				created_at: messages[0]?.created_at ?? new Date().toISOString(),

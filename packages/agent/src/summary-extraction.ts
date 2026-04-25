@@ -84,6 +84,72 @@ export interface ExtractionResult {
 	memoriesExtracted: number;
 }
 
+/** Maximum character length for formatted delta messages sent to the summarization LLM. */
+const DELTA_MESSAGE_CAP = 15_000;
+
+/** Maximum character length for a single tool result in the formatted delta. */
+const TOOL_RESULT_TRUNCATE = 200;
+
+/**
+ * Formats delta messages for the summarization prompt. Compresses tool
+ * interactions and filters out internal plumbing (system/developer messages)
+ * to give the summarization LLM a concise view of what happened.
+ */
+export function formatDeltaMessages(messages: Array<{ role: string; content: string }>): string {
+	const lines: string[] = [];
+
+	for (const msg of messages) {
+		switch (msg.role) {
+			case "user":
+			case "assistant":
+				// Include full content — these carry intent and reasoning
+				lines.push(`[${msg.role}] ${msg.content}`);
+				break;
+			case "tool_call": {
+				// Compress to one-liner with tool name
+				try {
+					const parsed = JSON.parse(msg.content);
+					const calls = Array.isArray(parsed) ? parsed : [parsed];
+					for (const call of calls) {
+						const name = call.name ?? call.function?.name ?? "unknown";
+						lines.push(`[tool_call: ${name}]`);
+					}
+				} catch {
+					lines.push("[tool_call]");
+				}
+				break;
+			}
+			case "tool_result": {
+				// Truncate aggressively — full content is in the DB
+				const preview =
+					msg.content.length > TOOL_RESULT_TRUNCATE
+						? `${msg.content.slice(0, TOOL_RESULT_TRUNCATE)}...`
+						: msg.content;
+				lines.push(`[Tool result: ${preview}]`);
+				break;
+			}
+			// system, developer — skip (internal plumbing)
+			default:
+				break;
+		}
+	}
+
+	let result = lines.join("\n");
+
+	// Cap total length, truncating from the front (oldest messages) since
+	// recency matters more for the progress section of the summary.
+	if (result.length > DELTA_MESSAGE_CAP) {
+		const truncated = result.slice(result.length - DELTA_MESSAGE_CAP);
+		// Find a clean line break to avoid cutting mid-message
+		const firstNewline = truncated.indexOf("\n");
+		const cleanStart = firstNewline >= 0 ? firstNewline + 1 : 0;
+		const omittedApprox = messages.length - truncated.split("\n").length;
+		result = `[${omittedApprox} earlier messages omitted]\n${truncated.slice(cleanStart)}`;
+	}
+
+	return result;
+}
+
 export async function extractSummaryAndMemories(
 	db: Database,
 	threadId: string,
@@ -91,10 +157,10 @@ export async function extractSummaryAndMemories(
 	siteId: string,
 ): Promise<Result<ExtractionResult, Error>> {
 	try {
-		// Get thread state
-		const thread = db.prepare("SELECT summary_through FROM threads WHERE id = ?").get(threadId) as
-			| { summary_through: string | null }
-			| undefined;
+		// Get thread state — read existing summary for rolling synthesis
+		const thread = db
+			.prepare("SELECT summary, summary_through FROM threads WHERE id = ?")
+			.get(threadId) as { summary: string | null; summary_through: string | null } | undefined;
 
 		if (!thread) {
 			return {
@@ -104,13 +170,14 @@ export async function extractSummaryAndMemories(
 		}
 
 		const summaryThrough = thread.summary_through || "1970-01-01T00:00:00Z";
+		const previousSummary = thread.summary;
 
-		// Get messages after summary_through
+		// Get messages after summary_through with role for delta formatting
 		const messages = db
 			.prepare(
-				"SELECT content FROM messages WHERE thread_id = ? AND created_at > ? ORDER BY created_at",
+				"SELECT role, content FROM messages WHERE thread_id = ? AND created_at > ? ORDER BY created_at",
 			)
-			.all(threadId, summaryThrough) as Array<{ content: string }>;
+			.all(threadId, summaryThrough) as Array<{ role: string; content: string }>;
 
 		if (messages.length === 0) {
 			return {
@@ -119,22 +186,63 @@ export async function extractSummaryAndMemories(
 			};
 		}
 
-		// Build prompt for summarization — framed as the agent's own first-person reflection
-		// so summaries read "I helped..." rather than "The assistant was asked..."
-		const messageText = messages.map((m) => m.content).join("\n\n");
-		const summarizationSystem =
-			"You are an AI assistant reflecting on a conversation you just had. " +
-			"Write from your own first-person perspective (use 'I' or 'we'). " +
-			"Do not refer to yourself as 'the assistant'.";
-		const prompt = `Write a 2-3 sentence summary of this conversation from your own perspective:\n\n${messageText}`;
+		// Format delta messages for the summarization prompt.
+		// User and assistant messages carry semantic intent and are included in full.
+		// Tool calls are compressed to one-liners. Tool results are truncated.
+		// System and developer messages are internal plumbing and are skipped.
+		const deltaText = formatDeltaMessages(messages);
 
-		// Call LLM to generate summary
+		// Rolling synthesis: two prompt variants depending on whether a previous
+		// summary exists. The system message is shared — first-person orientation
+		// anchor framing, not a recap.
+		const summarizationSystem =
+			"You are maintaining a running summary of a conversation thread. " +
+			"Your summary serves as an orientation anchor — it will be shown " +
+			"alongside recent messages to help you understand the broader context " +
+			"of the conversation. You can always query the message database for " +
+			"specific details, so your job is to capture the WHY and WHERE-ARE-WE, " +
+			"not the exact WHAT. Write in first person ('I investigated...', 'We decided...').";
+
+		let prompt: string;
+		if (previousSummary) {
+			// Update variant: build on the previous summary
+			prompt = `Here is the current summary of this conversation:
+
+${previousSummary}
+
+Here are the new messages since the last summary update:
+
+${deltaText}
+
+Write an UPDATED summary that:
+- PRESERVES the goal and key decisions from the previous summary unless the user has explicitly changed direction
+- INCORPORATES important new developments from the new messages
+- DROPS details that are no longer relevant
+- Stays under ~500 tokens
+
+Do not start from scratch. Build on the previous summary. If nothing materially changed, return the previous summary with minor updates.`;
+		} else {
+			// First-run variant: generate from scratch
+			prompt = `Here is the beginning of a conversation thread:
+
+${deltaText}
+
+Write an initial summary covering:
+- GOAL: What is the user trying to accomplish?
+- KEY CONTEXT: Important decisions, constraints, or discoveries
+- CURRENT STATE: What has been done, what is in progress
+
+Keep the summary under 500 tokens. Focus on information that helps continue the conversation — not a recap of what was said, but what matters going forward.`;
+		}
+
+		// Call LLM to generate summary — 800 token budget gives room for ~500 token
+		// summaries without cutting the LLM off mid-thought.
 		const chunks: string[] = [];
 		for await (const chunk of llmBackend.chat({
 			model: "",
 			system: summarizationSystem,
 			messages: [{ role: "user", content: prompt }],
-			max_tokens: 200,
+			max_tokens: 800,
 		})) {
 			if (chunk.type === "text") {
 				chunks.push(chunk.content);
