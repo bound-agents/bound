@@ -8,7 +8,10 @@ import type { AppContext } from "@bound/core";
 import { updateRow } from "@bound/core";
 import { createModelRouter } from "@bound/llm";
 import type { BackendConfig, ModelBackendsConfig } from "@bound/llm";
-import type { HostModelEntry } from "@bound/shared";
+import type {
+	HostModelEntry,
+	ModelBackendsConfig as SharedModelBackendsConfig,
+} from "@bound/shared";
 import { formatError } from "@bound/shared";
 
 export interface InferenceResult {
@@ -17,14 +20,20 @@ export interface InferenceResult {
 	backendModelMap: Map<string, string>;
 }
 
-export async function initInference(
-	appContext: AppContext,
-	commandContext: Record<string, unknown> | null,
-): Promise<InferenceResult> {
-	// 11. LLM setup — use ModelRouter to support all configured backends
-	appContext.logger.info("Initializing LLM...");
-	const rawBackends = appContext.config.modelBackends;
-	const routerConfig: ModelBackendsConfig = {
+/**
+ * Translates a schema-validated ModelBackendsConfig (snake_case, Zod-typed)
+ * into the ModelRouter's BackendConfig shape (camelCase, loose interface).
+ *
+ * This is a pure, allocation-only function — extracted so that the
+ * hand-off can be covered by a focused regression test. Historically any
+ * field omitted here was silently dropped on the way to the router; the
+ * `thinking` field was the most recent casualty (2026-04-25). When adding
+ * a new backend config field, update this mapping AND add a test in
+ * packages/cli/src/__tests__/inference-config.test.ts asserting the field
+ * is observable on the resulting router.
+ */
+export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBackendsConfig {
+	return {
 		backends: rawBackends.backends.map(
 			(b): BackendConfig => ({
 				id: b.id,
@@ -38,10 +47,21 @@ export async function initInference(
 				capabilities: b.capabilities,
 				tier: b.tier,
 				pricePerMInput: b.price_per_m_input,
+				thinking: b.thinking,
 			}),
 		),
 		default: rawBackends.default,
 	};
+}
+
+export async function initInference(
+	appContext: AppContext,
+	commandContext: Record<string, unknown> | null,
+): Promise<InferenceResult> {
+	// 11. LLM setup — use ModelRouter to support all configured backends
+	appContext.logger.info("Initializing LLM...");
+	const rawBackends = appContext.config.modelBackends;
+	const routerConfig = toRouterConfig(rawBackends);
 
 	// Map backend IDs to their provider-specific model names for chat() calls
 	const backendModelMap = new Map<string, string>();

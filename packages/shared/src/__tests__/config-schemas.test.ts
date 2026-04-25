@@ -216,6 +216,122 @@ describe("Config schemas", () => {
 			const result = modelBackendsSchema.safeParse(config);
 			expect(result.success).toBe(true);
 		});
+
+		describe("thinking field", () => {
+			// Regression: prior to 2026-04-25, `thinking` was not declared on the
+			// schema. Zod's default strip mode silently dropped it from parse
+			// output, which meant ModelRouter.getThinkingConfig() returned
+			// undefined for every backend even when the JSON config set
+			// `"thinking": { "type": "enabled" }`. The Bedrock driver then sent
+			// `inferenceConfig.thinking: false` and no
+			// `additionalModelRequestFields`, so the model produced fake thinking
+			// blocks in plain text output.
+			it("preserves `thinking: { type: 'enabled' }` through parse", () => {
+				const config = {
+					backends: [
+						{
+							id: "opus",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							thinking: { type: "enabled" },
+						},
+					],
+					default: "opus",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(true);
+				if (!result.success) return;
+				expect(result.data.backends[0]).toHaveProperty("thinking");
+				expect(result.data.backends[0].thinking).toEqual({ type: "enabled" });
+			});
+
+			it("preserves `thinking: { type: 'enabled', budget_tokens: 12000 }` through parse", () => {
+				const config = {
+					backends: [
+						{
+							id: "opus",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							thinking: { type: "enabled", budget_tokens: 12000 },
+						},
+					],
+					default: "opus",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(true);
+				if (!result.success) return;
+				expect(result.data.backends[0].thinking).toEqual({
+					type: "enabled",
+					budget_tokens: 12000,
+				});
+			});
+
+			it("accepts `thinking: true` shorthand through parse", () => {
+				const config = {
+					backends: [
+						{
+							id: "opus",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							thinking: true,
+						},
+					],
+					default: "opus",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(true);
+				if (!result.success) return;
+				expect(result.data.backends[0].thinking).toBe(true);
+			});
+
+			it("allows backends without a thinking field (thinking is optional)", () => {
+				const config = {
+					backends: [
+						{
+							id: "opus",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+						},
+					],
+					default: "opus",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(true);
+				if (!result.success) return;
+				expect(result.data.backends[0].thinking).toBeUndefined();
+			});
+
+			it("rejects negative budget_tokens", () => {
+				const config = {
+					backends: [
+						{
+							id: "opus",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							thinking: { type: "enabled", budget_tokens: -1 },
+						},
+					],
+					default: "opus",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(false);
+			});
+		});
 	});
 
 	describe("networkSchema", () => {
@@ -702,6 +818,123 @@ describe("RELAY_KIND_REGISTRY completeness", () => {
 			.map(([kind]) => kind);
 		for (const kind of syncKinds) {
 			expect(RELAY_REQUEST_KINDS).toContain(kind);
+		}
+	});
+});
+
+/**
+ * Guardrail: every top-level config schema must REJECT unknown keys
+ * (Zod strict mode) rather than silently stripping them.
+ *
+ * Background — on 2026-04-25 a `thinking` key on model_backends.json was
+ * silently dropped by the default Zod strip behavior, which meant
+ * extended thinking was fully disabled at runtime while the user's
+ * config file appeared correct. Tests, typecheck, and config-load all
+ * looked green. The Bedrock driver emitted `inferenceConfig.thinking:
+ * false` and the model produced fake <frosting>...</frosting> reasoning
+ * inline.
+ *
+ * Structural fix: treat config files as closed schemas. Any unknown key
+ * should fail parse so the user sees the exact key name and can correct
+ * it, instead of the field disappearing into a black hole.
+ *
+ * Each entry below is a MINIMAL valid config for the schema. The
+ * guardrail: add an unknown key, expect parse failure.
+ */
+describe("Config schemas — unknown-key rejection (strict mode guardrail)", () => {
+	const sentinelKey = "__unknown_field_guardrail_sentinel__";
+	const sentinelValue = "should-fail";
+
+	// Minimal, valid configs for each top-level schema registered in
+	// configSchemaMap. Adding a new schema to configSchemaMap requires
+	// adding a fixture here — intentional, because the whole point is
+	// that every config schema participates in the guardrail.
+	const fixtures: Record<keyof typeof configSchemaMap, unknown> = {
+		"allowlist.json": {
+			default_web_user: "alice",
+			users: { alice: { display_name: "Alice" } },
+		},
+		"model_backends.json": {
+			backends: [
+				{
+					id: "ollama-local",
+					provider: "ollama",
+					model: "llama2",
+					base_url: "http://localhost:11434",
+					context_window: 4096,
+					tier: 1,
+				},
+			],
+			default: "ollama-local",
+		},
+		"network.json": {
+			allowedUrlPrefixes: ["https://api.example.com"],
+			allowedMethods: ["GET"],
+		},
+		"platforms.json": {
+			connectors: [],
+		},
+		"sync.json": {
+			hub: "https://hub.example.com",
+		},
+		"keyring.json": {
+			hosts: {
+				peer1: { public_key: "abc123", url: "https://peer1.example.com" },
+			},
+		},
+		"mcp.json": {
+			servers: [],
+		},
+		"overlay.json": {
+			mounts: {},
+		},
+		"cron_schedules.json": {},
+	};
+
+	for (const [filename, baseConfig] of Object.entries(fixtures)) {
+		const schema = configSchemaMap[filename as keyof typeof configSchemaMap];
+
+		it(`${filename}: rejects an unknown top-level key`, () => {
+			const configWithExtra = { ...(baseConfig as object), [sentinelKey]: sentinelValue };
+			const result = schema.safeParse(configWithExtra);
+			expect(result.success).toBe(false);
+			if (!result.success) {
+				// Error message should name the offending key so users
+				// can find and fix it immediately.
+				expect(result.error.message).toContain(sentinelKey);
+			}
+		});
+
+		it(`${filename}: accepts the baseline fixture (sanity — fixture is valid)`, () => {
+			const result = schema.safeParse(baseConfig);
+			// If this fails, the fixture needs updating; the guardrail
+			// test above is meaningless otherwise.
+			expect(result.success).toBe(true);
+		});
+	}
+
+	// Nested schemas: extras on nested objects are just as dangerous as
+	// extras on the root. A `thinking` field on a backend entry was the
+	// original incident — cover that directly.
+	it("model_backends.json: rejects an unknown key nested inside a backend entry", () => {
+		const config = {
+			backends: [
+				{
+					id: "ollama-local",
+					provider: "ollama",
+					model: "llama2",
+					base_url: "http://localhost:11434",
+					context_window: 4096,
+					tier: 1,
+					[sentinelKey]: sentinelValue,
+				},
+			],
+			default: "ollama-local",
+		};
+		const result = configSchemaMap["model_backends.json"].safeParse(config);
+		expect(result.success).toBe(false);
+		if (!result.success) {
+			expect(result.error.message).toContain(sentinelKey);
 		}
 	});
 });
