@@ -1,27 +1,23 @@
 <script lang="ts">
-import type { Thread } from "@bound/shared";
+import type { ThreadListEntry } from "@bound/client";
 import { onDestroy, onMount } from "svelte";
+import Btn from "../components/Btn.svelte";
 import MemoryGraph from "../components/MemoryGraph.svelte";
+import TextInput from "../components/TextInput.svelte";
 import ThreadList from "../components/ThreadList.svelte";
-import { SectionHeader } from "../components/shared";
-import { client } from "../lib/bound";
+import { client, connectWebSocket, subscribeToThread } from "../lib/bound";
 import { navigateTo } from "../lib/router";
 
 interface ThreadStatus {
 	active: boolean;
 }
 
-let threads: Thread[] = $state([]);
+let threads: ThreadListEntry[] = $state([]);
 let threadStatuses: Map<string, ThreadStatus> = $state(new Map());
-let selectedThreadId: string | null = $state(null);
 let hoveredThreadId: string | null = $state(null);
-let mapCollapsed = $state(false);
-let creating = $state(false);
-let resizing = $state(false);
 let searchQuery = $state("");
-let panelRatio = $state(0.4);
-
-let containerEl: HTMLDivElement | null = null;
+let creating = $state(false);
+let subscribedIds = new Set<string>();
 
 const filteredThreads = $derived(
 	searchQuery.trim()
@@ -35,25 +31,45 @@ const filteredThreads = $derived(
 		: threads,
 );
 
+const hoveredThread = $derived(
+	hoveredThreadId ? threads.find((t) => t.id === hoveredThreadId) : null,
+);
+
+// Refresh the thread list. Does NOT fan out per-thread status requests —
+// the list response carries `active` per thread, and live changes arrive via
+// the WebSocket `thread:status` channel.
 async function loadThreads(): Promise<void> {
 	try {
-		threads = await client.listThreads();
-
-		const statusMap = new Map<string, ThreadStatus>();
-		await Promise.all(
-			threads.map(async (t) => {
-				try {
-					const data = await client.getThreadStatus(t.id);
-					statusMap.set(t.id, data);
-				} catch {
-					// Ignore individual status fetch failures
-				}
-			}),
-		);
-		threadStatuses = statusMap;
+		const next = await client.listThreads();
+		threads = next;
+		const status = new Map(threadStatuses);
+		for (const t of next) {
+			// Only seed from the list if we haven't already received a fresher
+			// status via WS (WS writes win on subsequent polls).
+			if (!status.has(t.id)) {
+				status.set(t.id, { active: t.active });
+			}
+			// Subscribe so the server starts emitting `thread:status` events.
+			if (!subscribedIds.has(t.id)) {
+				subscribeToThread(t.id);
+				subscribedIds.add(t.id);
+			}
+		}
+		threadStatuses = status;
 	} catch (error) {
 		console.error("Failed to load threads:", error);
 	}
+}
+
+function handleThreadStatus(data: unknown): void {
+	const s = data as {
+		thread_id?: string;
+		active?: boolean;
+	};
+	if (!s.thread_id) return;
+	const next = new Map(threadStatuses);
+	next.set(s.thread_id, { active: s.active ?? false });
+	threadStatuses = next;
 }
 
 async function newThread(): Promise<void> {
@@ -67,227 +83,156 @@ async function newThread(): Promise<void> {
 	}
 }
 
-function toggleMap(): void {
-	mapCollapsed = !mapCollapsed;
-}
-
-function handlePointerDown(): void {
-	resizing = true;
-}
-
-function handlePointerMove(event: PointerEvent): void {
-	if (!resizing || !containerEl) return;
-
-	const rect = containerEl.getBoundingClientRect();
-	const newRatio = (event.clientX - rect.left) / rect.width;
-	panelRatio = Math.max(0.2, Math.min(0.8, newRatio));
-}
-
-function handlePointerUp(): void {
-	resizing = false;
+function goToThread(id: string): void {
+	navigateTo(`/line/${id}`);
 }
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
 onMount(async () => {
+	connectWebSocket();
+	client.on("thread:status", handleThreadStatus);
 	await loadThreads();
-	pollInterval = setInterval(loadThreads, 5000);
-
-	window.addEventListener("pointermove", handlePointerMove);
-	window.addEventListener("pointerup", handlePointerUp);
-
-	return () => {
-		window.removeEventListener("pointermove", handlePointerMove);
-		window.removeEventListener("pointerup", handlePointerUp);
-	};
+	// Re-fetch the list less aggressively; status updates come via WS.
+	pollInterval = setInterval(loadThreads, 15000);
 });
 
 onDestroy(() => {
 	if (pollInterval !== null) clearInterval(pollInterval);
-	window.removeEventListener("pointermove", handlePointerMove);
-	window.removeEventListener("pointerup", handlePointerUp);
+	client.off("thread:status", handleThreadStatus);
 });
 </script>
 
-<div class="system-map" bind:this={containerEl}>
-	<SectionHeader title="System Map">
-		{#snippet actions()}
-			<input
-				class="search-input"
-				type="text"
-				placeholder="Search threads..."
-				bind:value={searchQuery}
-			/>
-			<button
-				class="header-btn"
-				onclick={toggleMap}
-				title={mapCollapsed ? "Show map" : "Hide map"}
+<div class="system-map">
+	<!-- Left — thread directory -->
+	<div class="thread-panel">
+		<div class="panel-header">
+			<div class="header-top">
+				<div>
+					<div class="kicker">Active Lines · {threads.length}</div>
+					<h2 class="panel-title">Directory</h2>
+				</div>
+				<Btn variant="accent" size="sm" onclick={newThread} disabled={creating} title="Start a new thread">
+					{#snippet children()}
+						+ New Line
+					{/snippet}
+				</Btn>
+			</div>
+			<TextInput
+				value={searchQuery}
+				onchange={(v) => (searchQuery = v)}
+				placeholder="Search threads…"
+				fullWidth={true}
 			>
-				{mapCollapsed ? "Show Map" : "Hide Map"}
-			</button>
-			<button
-				class="header-btn"
-				onclick={newThread}
-				disabled={creating}
-				title="Create new thread"
-			>
-				+ New Line
-			</button>
-		{/snippet}
-	</SectionHeader>
+				{#snippet icon()}
+					<svg
+						width="12"
+						height="12"
+						viewBox="0 0 16 16"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="1.8"
+					>
+						<circle cx="7" cy="7" r="5" />
+						<path d="M11 11l3.5 3.5" />
+					</svg>
+				{/snippet}
+			</TextInput>
+		</div>
 
-	<div class="split-view" class:map-collapsed={mapCollapsed} style={mapCollapsed ? '' : `grid-template-columns: ${(panelRatio * 100).toFixed(1)}% 4px 1fr`}>
-		<div class="thread-panel">
+		<div class="thread-scroll">
 			<ThreadList
 				threads={filteredThreads}
 				{threadStatuses}
-				{selectedThreadId}
-				onSelectThread={(id) => (selectedThreadId = id)}
-				onNavigateThread={(id) => navigateTo(`/line/${id}`)}
+				selectedThreadId={hoveredThreadId}
+				onSelectThread={(id) => goToThread(id)}
+				onNavigateThread={goToThread}
 				onHoverThread={(id) => (hoveredThreadId = id)}
 			/>
 		</div>
+	</div>
 
-		{#if !mapCollapsed}
-			<div
-				class="resizer"
-				onpointerdown={handlePointerDown}
-				role="separator"
-				aria-orientation="vertical"
-				aria-valuenow={Math.round(panelRatio * 100)}
-			>
-				<!-- drag handle -->
-			</div>
-			<div class="map-panel">
-				<MemoryGraph selectedThreadId={hoveredThreadId} />
-			</div>
-		{/if}
+	<!-- Right — memory graph -->
+	<div class="map-panel">
+		<MemoryGraph
+			selectedThreadId={hoveredThreadId}
+			hoveredThreadTitle={hoveredThread?.title ?? null}
+			hoveredThreadColor={hoveredThread?.color ?? null}
+			threads={filteredThreads}
+			onNavigate={navigateTo}
+		/>
 	</div>
 </div>
 
 <style>
 	.system-map {
-		display: flex;
-		flex-direction: column;
-		height: 100%;
-		overflow: hidden;
-		padding: 32px 40px;
-		gap: 16px;
-	}
-
-	.search-input {
-		padding: 8px 12px;
-		background: var(--bg-secondary);
-		color: var(--text-primary);
-		border: 1px solid var(--bg-surface);
-		border-radius: 6px;
-		font-family: var(--font-body);
-		font-size: var(--text-sm);
-		width: 180px;
-		transition: border-color 0.2s ease;
-	}
-
-	.search-input:focus {
-		outline: none;
-		border-color: var(--line-0);
-	}
-
-	.search-input::placeholder {
-		color: var(--text-muted);
-	}
-
-	.header-btn {
-		padding: 8px 16px;
-		background: var(--bg-surface);
-		color: var(--text-primary);
-		border: 1px solid var(--bg-surface);
-		border-radius: 6px;
-		cursor: pointer;
-		font-family: var(--font-display);
-		font-size: var(--text-sm);
-		font-weight: 600;
-		transition: all 0.2s ease;
-	}
-
-	.header-btn:hover:not(:disabled) {
-		background: rgba(42, 48, 68, 0.3);
-		border-color: var(--line-0);
-	}
-
-	.header-btn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
-	.split-view {
 		display: grid;
-		grid-template-columns: 40% 4px 1fr;
-		gap: 0;
-		height: calc(100vh - 200px);
-		overflow: hidden;
-	}
-
-	.split-view.map-collapsed {
-		grid-template-columns: 1fr;
+		grid-template-columns: 420px 1fr;
+		flex: 1;
+		min-height: 0;
+		border-top: 1px solid var(--rule-soft);
 	}
 
 	.thread-panel {
+		display: flex;
+		flex-direction: column;
+		background: var(--paper-2);
+		border-right: 1px solid var(--rule-soft);
+		overflow: hidden;
+		min-height: 0;
+	}
+
+	.panel-header {
+		padding: 20px 20px 14px;
+		border-bottom: 1px solid var(--ink);
+	}
+
+	.header-top {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		margin-bottom: 10px;
+		gap: 16px;
+	}
+
+	.kicker {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.16em;
+		text-transform: uppercase;
+		color: var(--ink-3);
+	}
+
+	.panel-title {
+		margin: 2px 0 0;
+		font-family: var(--font-header);
+		font-size: 26px;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		color: var(--ink);
+	}
+
+	.thread-scroll {
 		overflow-y: auto;
-		background: var(--bg-primary);
-		border-right: 1px solid var(--bg-surface);
-		padding-right: 12px;
-	}
-
-	.resizer {
-		cursor: col-resize;
-		background: var(--bg-surface);
-		width: 4px;
-		user-select: none;
-		transition: background 0.2s ease;
-	}
-
-	.resizer:hover {
-		background: var(--line-0);
+		flex: 1;
+		min-height: 0;
 	}
 
 	.map-panel {
-		overflow: hidden;
-		background: var(--bg-primary);
 		display: flex;
 		flex-direction: column;
+		min-height: 0;
+		overflow: hidden;
 	}
 
-	@media (max-width: 900px) {
+	@media (max-width: 960px) {
 		.system-map {
-			padding: 16px 24px;
-		}
-
-		.split-view {
 			grid-template-columns: 1fr;
-			height: auto;
 		}
-
 		.thread-panel {
 			border-right: none;
-			border-bottom: 1px solid var(--bg-surface);
-			padding-right: 0;
-			padding-bottom: 12px;
-			max-height: 60vh;
-		}
-
-		.resizer {
-			display: none;
-		}
-
-		.map-panel {
+			border-bottom: 1px solid var(--rule-soft);
 			max-height: 50vh;
-		}
-	}
-
-	@media (prefers-reduced-motion: reduce) {
-		.header-btn,
-		.resizer {
-			transition: none;
 		}
 	}
 </style>

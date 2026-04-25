@@ -1,7 +1,15 @@
 <script lang="ts">
 import { renderMarkdown } from "../lib/markdown";
 import { getLineColor } from "../lib/metro-lines";
-import { MetroCard } from "./shared";
+
+interface Props {
+	role: "user" | "assistant" | "tool_call" | "tool_result" | "alert" | "system";
+	content: string;
+	toolName?: string | null;
+	modelId?: string | null;
+	exitCode?: number | null;
+	threadColor?: number;
+}
 
 const {
 	role,
@@ -10,26 +18,29 @@ const {
 	modelId = null,
 	exitCode = null,
 	threadColor = 0,
-} = $props<{
-	role: "user" | "assistant" | "tool_call" | "tool_result" | "alert" | "system";
-	content: string;
-	toolName?: string | null;
-	modelId?: string | null;
-	exitCode?: number | null;
-	threadColor?: number;
-}>();
+}: Props = $props();
 
 const isError = $derived(role === "tool_result" && exitCode !== null && exitCode !== 0);
 
-// Compute accent color based on role
-const accentColor = $derived.by(() => {
-	if (role === "user") {
-		return "var(--line-7)"; // Emerald
+const lineColor = $derived(getLineColor(threadColor));
+
+const roleLabel = $derived.by(() => {
+	switch (role) {
+		case "user":
+			return "You";
+		case "assistant":
+			return "Agent";
+		case "alert":
+			return "System";
+		case "system":
+			return "";
+		case "tool_result":
+			return isError ? "Error" : "Result";
+		case "tool_call":
+			return "Tool";
+		default:
+			return role;
 	}
-	if (role === "assistant") {
-		return getLineColor(threadColor);
-	}
-	return undefined;
 });
 
 let rendered = $state("");
@@ -50,172 +61,138 @@ $effect(() => {
 </script>
 
 {#if role === "tool_result"}
-	<div class="message-bubble tool_result" class:tool_error={isError}>
-		<div class="role-badge" class:result-badge={!isError} class:error-badge={isError}>
-			{isError ? "error" : "result"}
+	<div class="message tool-result" class:tool-error={isError} style="--line-color: {lineColor}">
+		<div class="role-row">
+			<span class="role role-result" class:role-error={isError}>
+				{roleLabel}
+			</span>
 		</div>
 		<pre class="tool-output" class:tool-output-error={isError}>{content}</pre>
 	</div>
 {:else if role === "alert"}
-	<div class="message-bubble alert">
-		<div class="role-badge alert-badge">! alert</div>
-		<div class="content">{content}</div>
+	<div class="message alert" style="--line-color: {lineColor}">
+		<div class="role-row">
+			<span class="role role-alert">Advisory posted</span>
+		</div>
+		<div class="alert-body">{content}</div>
 	</div>
 {:else if role === "system"}
-	<div class="message-bubble system">
-		<div class="content system-text">{content}</div>
+	<div class="message system">
+		<div class="system-text">{content}</div>
 	</div>
 {:else}
-	<MetroCard {accentColor}>
-		<div class="message-content {role}">
-			<div class="role-badge">
-				{role}
-			</div>
-			{#if rendered}
-				<div class="content md-content">{@html rendered}</div>
-			{:else}
-				<div class="content">{content}</div>
-			{/if}
+	<div class="message {role}" style="--line-color: {lineColor}">
+		<div class="role-row">
+			<span class="role">{roleLabel}</span>
 			{#if role === "assistant" && modelId}
-				<div class="metadata">
-					<span class="model-pill">{modelId}</span>
-				</div>
+				<span class="model mono">{modelId}</span>
 			{/if}
 		</div>
-	</MetroCard>
+		{#if rendered}
+			<div class="content md-content">{@html rendered}</div>
+		{:else}
+			<div class="content">{content}</div>
+		{/if}
+	</div>
 {/if}
 
 <style>
-	.message-bubble {
+	.message {
 		position: relative;
-		padding: 10px 14px;
-		margin: 6px 0;
-		border-radius: 8px;
-		background: var(--bg-secondary);
-		border: 1px solid var(--bg-surface);
-		transition: background 0.15s ease;
+		padding: 4px 0 16px;
 		line-height: 1.55;
-		--bubble-accent: transparent;
+		margin: 0;
 	}
 
-	/* Ticket stripe on message bubbles — 32px to match MetroCard siblings in chat */
-	.message-bubble:not(.system)::after {
-		content: "";
-		position: absolute;
-		top: 0;
-		left: 12px;
-		width: 32px;
-		height: 2px;
-		background: var(--bubble-accent);
-		border-radius: 0 0 1px 1px;
-	}
-
-	.message-content {
-		padding: 10px 14px;
-		line-height: 1.55;
-	}
-
-	/* User messages */
-	.message-content.user {
-		/* Ticket stripe applied via MetroCard */
-	}
-
-	/* Assistant messages */
-	.message-content.assistant {
-		/* Ticket stripe applied via MetroCard */
-	}
-
-	/* Tool results: Chiyoda green stripe */
-	.tool_result {
-		background: rgba(0, 153, 68, 0.06);
-		--bubble-accent: var(--line-4);
-	}
-
-	/* Failed tool results: disruption red stripe */
-	.tool_error {
-		background: rgba(255, 23, 68, 0.06);
-		--bubble-accent: var(--alert-disruption);
-	}
-
-	/* Alerts: disruption red stripe */
-	.alert {
-		background: rgba(255, 23, 68, 0.08);
-		--bubble-accent: var(--alert-disruption);
-	}
-
-	/* System: subtle, centered, no stripe */
-	.system {
-		background: transparent;
-		border: none;
-		text-align: center;
-		padding: 6px 18px;
-	}
-
-	.role-badge {
-		font-family: var(--font-display);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		color: var(--text-muted);
+	.role-row {
+		display: flex;
+		align-items: center;
+		gap: 10px;
 		margin-bottom: 6px;
+	}
+
+	.role {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.1em;
 		text-transform: uppercase;
+		color: var(--ink-2);
+	}
+
+	.message.user .role {
+		color: var(--ink);
+	}
+
+	.role-alert {
+		color: var(--accent);
+	}
+
+	.role-result {
+		color: var(--ok);
+	}
+
+	.role-error {
+		color: var(--err);
+	}
+
+	.model {
+		font-family: var(--font-mono);
+		font-size: 10.5px;
+		color: var(--ink-4);
 		letter-spacing: 0.04em;
 	}
 
-	.metadata {
-		margin-top: 8px;
-		padding-top: 8px;
-		border-top: 1px solid rgba(255, 255, 255, 0.08);
-	}
-
-	.model-pill {
-		display: inline-block;
-		padding: 2px 8px;
-		background: rgba(243, 151, 0, 0.12);
-		border: 1px solid rgba(243, 151, 0, 0.25);
-		border-radius: 10px;
-		font-family: var(--font-mono);
-		font-size: 11px;
-		font-weight: 500;
-		color: var(--line-0);
-		text-transform: none;
-		letter-spacing: 0;
-	}
-
-	.result-badge {
-		color: var(--line-4);
-	}
-
-	.error-badge {
-		color: var(--alert-disruption);
-		font-weight: 700;
-	}
-
-	.alert-badge {
-		color: var(--alert-warning);
-		font-weight: 700;
-	}
-
 	.content {
+		font-size: 14.5px;
+		line-height: 1.65;
+		color: var(--ink);
+		font-family: var(--font-display);
+		font-weight: 400;
 		word-wrap: break-word;
-		font-size: var(--text-base);
-		color: var(--text-primary);
 	}
 
-	.system-text {
+	.system {
+		padding: 10px 16px;
+		background: var(--paper-2);
+		border-left: 3px solid var(--rule-soft);
 		font-style: italic;
-		color: var(--text-muted);
-		font-size: var(--text-sm);
+		color: var(--ink-3);
+		font-size: 13px;
+	}
+
+	.alert {
+		padding: 12px 14px;
+		background: var(--accent-wash);
+		border: 1px solid var(--accent);
+		border-left: 3px solid var(--accent);
+	}
+
+	.alert-body {
+		font-size: 13.5px;
+		color: var(--ink);
+		line-height: 1.55;
+	}
+
+	.tool-result {
+		padding: 8px 12px;
+		background: var(--paper-2);
+		border: 1px solid var(--rule-faint);
+		border-left: 3px solid var(--line-color);
+	}
+
+	.tool-error {
+		border-left-color: var(--err);
+		background: rgba(178, 34, 34, 0.06);
 	}
 
 	.tool-output {
 		margin: 6px 0 0;
-		padding: 12px;
-		background: rgba(0, 153, 68, 0.05);
-		border: 1px solid rgba(0, 153, 68, 0.12);
-		border-radius: 6px;
+		padding: 8px 10px;
+		background: var(--paper);
+		border: 1px solid var(--rule-soft);
 		font-family: var(--font-mono);
-		font-size: 12px;
-		color: var(--status-active);
+		font-size: 11.5px;
+		color: var(--ink-2);
 		white-space: pre-wrap;
 		word-break: break-all;
 		overflow-x: auto;
@@ -223,53 +200,43 @@ $effect(() => {
 	}
 
 	.tool-output-error {
-		background: rgba(255, 23, 68, 0.05);
-		border-color: rgba(255, 23, 68, 0.2);
-		color: var(--alert-disruption);
+		color: var(--err);
+		border-color: var(--err);
 	}
 
-	/* -----------------------------------------------------------------------
-	   Markdown content — .md-content
-	   :global() is required because marked generates HTML outside Svelte's
-	   scoped class system. All selectors are prefixed with .md-content to
-	   avoid leaking styles to non-markdown elements.
-	   ----------------------------------------------------------------------- */
+	/* ---- Markdown rendering ---- */
+	:global(.md-content > *:first-child) { margin-top: 0; }
 
-	:global(.md-content > *:first-child) {
-		margin-top: 0;
-	}
-
-	/* Headings — scaled down from browser defaults; messages are not documents */
 	:global(.md-content h1) {
-		font-size: 1.25rem;
+		font-size: 1.3rem;
 		font-weight: 700;
-		color: var(--text-primary);
+		color: var(--ink);
 		margin: 0.75em 0 0.4em;
-		line-height: 1.3;
+		line-height: 1.25;
+		letter-spacing: -0.015em;
 	}
 
 	:global(.md-content h2) {
 		font-size: 1.1rem;
 		font-weight: 600;
-		color: var(--text-primary);
+		color: var(--ink);
 		margin: 0.65em 0 0.35em;
 		line-height: 1.3;
+		letter-spacing: -0.01em;
 	}
 
 	:global(.md-content h3) {
 		font-size: 1rem;
 		font-weight: 600;
-		color: var(--text-primary);
+		color: var(--ink);
 		margin: 0.6em 0 0.3em;
 	}
 
-	/* Paragraphs */
 	:global(.md-content p) {
 		margin: 0.5em 0;
-		line-height: 1.6;
+		line-height: 1.65;
 	}
 
-	/* Lists */
 	:global(.md-content ul),
 	:global(.md-content ol) {
 		margin: 0.4em 0;
@@ -281,128 +248,119 @@ $effect(() => {
 		line-height: 1.55;
 	}
 
-	/* Inline code — IBM Plex Mono, distinct background, 3px radius */
+	:global(.md-content strong) {
+		font-weight: 600;
+	}
+
+	:global(.md-content em) {
+		font-style: italic;
+		font-family: var(--font-serif);
+	}
+
 	:global(.md-content code:not(pre > code)) {
 		font-family: var(--font-mono);
-		font-size: 0.875em;
-		background: var(--bg-surface);
-		color: var(--text-primary);
-		padding: 0.15em 0.4em;
-		border-radius: 3px;
-		border: 1px solid rgba(255, 255, 255, 0.06);
+		font-size: 0.88em;
+		background: var(--paper-3);
+		color: var(--ink);
+		padding: 1px 5px;
+		border: 1px solid var(--rule-faint);
 	}
 
-	/* Shiki-highlighted fenced code blocks */
-	:global(.md-content pre.shiki) {
-		margin: 0.6em 0;
-		padding: 12px 16px;
-		border-radius: 6px;
-		overflow-x: auto;
-		line-height: 1.5;
-		font-size: 0.875rem;
-		font-family: var(--font-mono);
-		/* Shiki sets background via inline style from the tokyo-night theme */
-	}
-
-	:global(.md-content pre.shiki code) {
-		background: none;
-		border: none;
-		padding: 0;
-		font-size: inherit;
-	}
-
-	/* Default fenced code blocks (no language — not Shiki-highlighted) */
+	:global(.md-content pre.shiki),
 	:global(.md-content pre:not(.shiki)) {
 		margin: 0.6em 0;
-		padding: 12px 16px;
-		background: rgba(10, 10, 20, 0.6);
-		border: 1px solid rgba(255, 255, 255, 0.06);
-		border-radius: 6px;
-		font-family: var(--font-mono);
-		font-size: 0.875rem;
+		padding: 12px 14px;
+		background: var(--paper-2);
+		border: 1px solid var(--rule-soft);
+		border-left: 3px solid var(--accent);
 		overflow-x: auto;
-		line-height: 1.5;
-		color: var(--text-primary);
+		line-height: 1.55;
+		font-size: 12px;
+		font-family: var(--font-mono);
 	}
 
-	:global(.md-content pre:not(.shiki) code) {
+	:global(.md-content pre code) {
 		background: none;
 		border: none;
 		padding: 0;
 		font-size: inherit;
-		color: inherit;
 	}
 
-	/* Blockquotes */
 	:global(.md-content blockquote) {
 		margin: 0.5em 0;
-		padding: 0.3em 0 0.3em 1em;
-		border-left: 3px solid rgba(255, 255, 255, 0.12);
-		color: var(--text-secondary);
+		padding: 6px 14px;
+		border-left: 3px solid var(--ink-4);
+		color: var(--ink-2);
+		font-family: var(--font-serif);
+		font-style: italic;
 	}
 
-	/* Horizontal rule */
 	:global(.md-content hr) {
 		border: none;
-		border-top: 1px solid rgba(255, 255, 255, 0.08);
+		border-top: 1px solid var(--rule-soft);
 		margin: 0.8em 0;
 	}
 
-	/* Links */
 	:global(.md-content a) {
-		color: var(--line-3);
+		color: var(--accent);
 		text-decoration: underline;
 		text-underline-offset: 2px;
 	}
 
 	:global(.md-content a:hover) {
-		color: var(--line-0);
+		color: var(--ink);
 	}
 
-	/* Tables — .table-wrap is injected by the custom table renderer in markdown.ts */
 	:global(.md-content .table-wrap) {
 		overflow-x: auto;
 		margin: 0.6em 0;
-		border-radius: 4px;
+		border: 1px solid var(--rule-soft);
 	}
 
 	:global(.md-content table) {
 		border-collapse: collapse;
 		min-width: 100%;
-		font-size: var(--text-sm);
+		font-size: 13px;
 	}
 
 	:global(.md-content th) {
-		background: rgba(255, 255, 255, 0.04);
-		color: var(--text-secondary);
+		background: var(--paper-3);
+		color: var(--ink);
 		font-weight: 600;
-		padding: 6px 12px;
+		padding: 6px 10px;
 		text-align: left;
-		border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+		border-bottom: 1px solid var(--ink);
+		letter-spacing: 0.04em;
 	}
 
 	:global(.md-content td) {
-		padding: 5px 12px;
-		border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-		color: var(--text-primary);
+		padding: 6px 10px;
+		border-bottom: 1px solid var(--rule-faint);
+		color: var(--ink-2);
 	}
 
-	/* Thinking blocks — Hanzomon purple (--line-6) left border at 0.75 opacity */
 	:global(.md-content .thinking-block) {
-		border-left: 3px solid rgba(143, 118, 214, 0.75);
-		padding: 0.3em 0 0.3em 0.75em;
+		border-left: 3px solid var(--rule-soft);
+		padding: 4px 0 4px 10px;
 		margin: 0.5em 0;
+		font-family: var(--font-serif);
+		font-style: italic;
+		color: var(--ink-2);
 	}
 
 	:global(.md-content .thinking-block > summary) {
-		font-size: var(--text-sm);
-		color: var(--text-secondary);
+		font-family: var(--font-display);
+		font-style: normal;
+		font-size: 11.5px;
+		font-weight: 500;
+		letter-spacing: 0.02em;
+		color: var(--ink-3);
 		cursor: pointer;
 		user-select: none;
 		padding: 2px 0;
 	}
 
 	:global(.md-content .thinking-block > summary:hover) {
-		color: var(--text-primary);
+		color: var(--ink);
 	}
 </style>

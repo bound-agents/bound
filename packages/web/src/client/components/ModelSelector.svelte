@@ -50,7 +50,7 @@ function handleChange(): void {
 
 <style>
 	.model-selector {
-		display: flex;
+		display: inline-flex;
 		gap: 8px;
 		align-items: center;
 	}
@@ -58,37 +58,38 @@ function handleChange(): void {
 	label {
 		display: flex;
 		align-items: center;
-		color: var(--text-muted);
+		color: var(--ok);
 	}
 
 	select {
-		padding: 6px 12px;
-		border-radius: 6px;
-		border: 1px solid var(--bg-surface);
-		background: var(--bg-primary);
-		color: var(--text-secondary);
-		font-family: var(--font-mono);
+		padding: 5px 10px;
+		border: 1px solid var(--rule-soft);
+		background: transparent;
+		color: var(--ink-2);
+		font-family: var(--font-display);
 		font-size: 12px;
+		font-weight: 500;
 		cursor: pointer;
 		transition: border-color 0.2s ease;
 		appearance: auto;
+		border-radius: 0;
 	}
 
 	select:hover {
-		border-color: var(--line-3);
+		border-color: var(--ink);
 	}
 
 	select:focus {
 		outline: none;
-		border-color: var(--line-3);
+		border-color: var(--ink);
 	}
 
 	option.relay {
-		color: var(--text-muted);
+		color: var(--ink-3);
 	}
 
 	option.stale {
-		color: var(--text-muted);
+		color: var(--ink-4);
 		font-style: italic;
 	}
 </style>

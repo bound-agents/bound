@@ -1,7 +1,6 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
 import { client } from "../lib/bound";
-import ModelSelector from "./ModelSelector.svelte";
 
 function navigate(hash: string): void {
 	window.location.hash = hash;
@@ -15,13 +14,12 @@ function isActive(hash: string): boolean {
 	return current.startsWith(hash.slice(1));
 }
 
-// Navigation items with their metro line color associations
-const navItems = [
-	{ hash: "#/", label: "System Map", color: "var(--line-0)" },
-	{ hash: "#/timetable", label: "Timetable", color: "var(--line-1)" },
-	{ hash: "#/network", label: "Network", color: "var(--line-4)" },
-	{ hash: "#/files", label: "Files", color: "var(--line-3)" },
-	{ hash: "#/advisories", label: "Advisories", color: "var(--line-9)" },
+const NAV = [
+	{ hash: "#/", route: "01", label: "System Map" },
+	{ hash: "#/timetable", route: "02", label: "Timetable" },
+	{ hash: "#/network", route: "03", label: "Network" },
+	{ hash: "#/advisories", route: "04", label: "Advisories" },
+	{ hash: "#/files", route: "05", label: "Files" },
 ];
 
 let advisoryCount = $state(0);
@@ -32,7 +30,7 @@ async function loadAdvisoryCount(): Promise<void> {
 		const data = await client.countAdvisories();
 		advisoryCount = data.count;
 	} catch {
-		// Ignore fetch errors for count
+		// Ignore count fetch errors
 	}
 }
 
@@ -40,7 +38,31 @@ function onHashChange(): void {
 	currentHash = window.location.hash;
 }
 
+// Local-time clock with the IANA TZ short name derived from Intl.
+let clock = $state("");
+let tz = $state("");
+let clockInterval: ReturnType<typeof setInterval> | null = null;
+
+function tick(): void {
+	const d = new Date();
+	const hh = String(d.getHours()).padStart(2, "0");
+	const mm = String(d.getMinutes()).padStart(2, "0");
+	const ss = String(d.getSeconds()).padStart(2, "0");
+	clock = `${hh}:${mm}:${ss}`;
+}
+
 onMount(() => {
+	try {
+		const name = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+		const short = name.split("/").pop()?.replace(/_/g, " ") ?? "";
+		tz = short || "Local";
+	} catch {
+		tz = "Local";
+	}
+
+	tick();
+	clockInterval = setInterval(tick, 1000);
+
 	window.addEventListener("hashchange", onHashChange);
 	loadAdvisoryCount();
 	advisoryPollInterval = setInterval(loadAdvisoryCount, 10000);
@@ -49,202 +71,187 @@ onMount(() => {
 onDestroy(() => {
 	window.removeEventListener("hashchange", onHashChange);
 	if (advisoryPollInterval !== null) clearInterval(advisoryPollInterval);
+	if (clockInterval !== null) clearInterval(clockInterval);
 });
 </script>
 
-<div class="top-bar">
-	<div class="app-name" onclick={() => navigate("#/")} onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") navigate("#/"); }} role="button" tabindex={0}>
-		<span class="app-logo">
-			<svg width="20" height="20" viewBox="0 0 20 20">
-				<circle cx="10" cy="10" r="9" fill="none" stroke="var(--line-0)" stroke-width="2" />
-				<circle cx="10" cy="10" r="4" fill="var(--line-0)" />
-			</svg>
-		</span>
-		<span class="app-title">Bound</span>
-	</div>
+<header class="top-bar">
+	<!-- Brandmark block — black ink against paper -->
+	<button
+		class="brand"
+		onclick={() => navigate("#/")}
+		aria-label="Bound home"
+	>
+		<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+			<circle cx="9" cy="9" r="7.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+			<circle cx="9" cy="9" r="2.4" fill="currentColor" />
+		</svg>
+		BOUND
+	</button>
 
 	<nav class="nav-links">
-		{#each navItems as item}
+		{#each NAV as item}
+			{@const active = isActive(item.hash)}
 			<button
 				class="nav-btn"
-				class:active={isActive(item.hash)}
+				class:active
 				onclick={() => navigate(item.hash)}
-				style="--nav-color: {item.color}"
 			>
-				<span class="nav-dot" style="background: {item.color}"></span>
-				{item.label}
+				<span class="route">{item.route}</span>
+				<span class="label">{item.label}</span>
 				{#if item.hash === "#/advisories" && advisoryCount > 0}
-					<span class="nav-count">{advisoryCount}</span>
+					<span class="count"><span class="count-inner">{advisoryCount}</span></span>
+				{/if}
+				{#if active}
+					<span class="active-rail"></span>
 				{/if}
 			</button>
 		{/each}
 	</nav>
 
 	<div class="spacer"></div>
-	<ModelSelector />
-	<button class="indicators" onclick={() => navigate("#/advisories")} class:has-advisories={advisoryCount > 0}>
-		<span class="indicator-dot" class:indicator-alert={advisoryCount > 0}></span>
-		<span class="indicator-label">{advisoryCount} advisor{advisoryCount !== 1 ? "ies" : "y"}</span>
-	</button>
-</div>
+
+	<div class="clock">
+		<div class="clock-kicker">Local time · {tz}</div>
+		<div class="clock-time mono tnum">{clock}</div>
+	</div>
+</header>
 
 <style>
 	.top-bar {
+		position: relative;
+		z-index: 10;
 		display: flex;
 		align-items: center;
-		padding: 0 24px;
-		height: 56px;
-		background: var(--bg-secondary);
-		border-bottom: 2px solid var(--bg-surface);
-		gap: 24px;
+		border-bottom: 1px solid var(--ink);
+		background: var(--paper);
 		flex-shrink: 0;
 	}
 
-	.app-name {
+	.brand {
 		display: flex;
 		align-items: center;
 		gap: 10px;
+		padding: 14px 22px;
+		background: var(--ink);
+		color: var(--paper);
+		border: none;
 		cursor: pointer;
-		user-select: none;
-		padding: 4px 0;
-	}
-
-	.app-name:focus-visible {
-		outline: 2px solid var(--line-0);
-		outline-offset: 4px;
-		border-radius: 4px;
-	}
-
-	.app-logo {
-		display: flex;
-		align-items: center;
-	}
-
-	.app-title {
 		font-family: var(--font-display);
+		font-size: 18px;
 		font-weight: 700;
-		font-size: var(--text-lg);
 		letter-spacing: 0.04em;
-		color: var(--text-primary);
+	}
+
+	.brand:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: -4px;
 	}
 
 	.nav-links {
 		display: flex;
-		gap: 4px;
+		align-items: stretch;
 	}
 
 	.nav-btn {
+		position: relative;
+		padding: 14px 16px;
+		background: transparent;
+		border: none;
+		border-right: 1px solid var(--rule-faint);
+		cursor: pointer;
 		display: flex;
 		align-items: center;
-		gap: 8px;
-		padding: 8px 16px;
-		background: transparent;
-		color: var(--text-secondary);
-		border: 1px solid transparent;
-		border-radius: 6px;
-		cursor: pointer;
-		font-family: var(--font-display);
-		font-size: var(--text-sm);
-		font-weight: 600;
-		transition: all 0.2s ease;
-		white-space: nowrap;
+		gap: 10px;
+		color: var(--ink-2);
+		transition: background 0.12s ease;
 	}
 
-	.nav-btn:hover {
-		background: rgba(42, 48, 68, 0.5);
-		color: var(--text-primary);
+	.nav-btn:hover:not(.active) {
+		background: rgba(26, 24, 20, 0.04);
 	}
 
 	.nav-btn.active {
-		background: var(--bg-surface);
-		color: var(--text-primary);
-		border-color: var(--nav-color);
+		background: var(--paper-3);
+		color: var(--ink);
 	}
 
-	.nav-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		flex-shrink: 0;
-		transition: transform 0.2s ease;
+	.route {
+		font-family: var(--font-mono);
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.16em;
+		color: var(--ink-4);
 	}
 
-	.nav-btn:hover .nav-dot {
-		transform: scale(1.3);
+	.nav-btn.active .route {
+		color: var(--accent);
 	}
 
-	.nav-btn.active .nav-dot {
-		box-shadow: 0 0 6px var(--nav-color);
+	.label {
+		font-family: var(--font-display);
+		font-size: 14px;
+		font-weight: 600;
+		letter-spacing: -0.005em;
+	}
+
+	.count {
+		display: inline-grid;
+		grid-template-columns: 1fr;
+		min-width: 20px;
+		height: 20px;
+		padding: 0 6px;
+		background: var(--accent);
+		color: #fff;
+		font-family: var(--font-header);
+		font-size: 12px;
+		font-weight: 700;
+		border-radius: 999px;
+		font-variant-numeric: tabular-nums lining-nums;
+		box-sizing: border-box;
+	}
+
+	.count-inner {
+		line-height: 18px;
+		text-align: center;
+		display: block;
+	}
+
+	.active-rail {
+		position: absolute;
+		left: 0;
+		right: 0;
+		bottom: -1px;
+		height: 3px;
+		background: var(--accent);
 	}
 
 	.spacer {
 		flex: 1;
 	}
 
-	.nav-count {
-		font-family: var(--font-mono);
-		font-size: 10px;
-		font-weight: 700;
-		color: var(--alert-warning);
-		background: rgba(255, 145, 0, 0.15);
-		padding: 1px 6px;
-		border-radius: 8px;
-		min-width: 16px;
-		text-align: center;
-	}
-
-	.indicators {
+	.clock {
 		display: flex;
 		align-items: center;
-		gap: 8px;
-		font-family: var(--font-display);
-		font-size: var(--text-sm);
-		color: var(--text-muted);
-		background: transparent;
-		border: 1px solid transparent;
-		border-radius: 6px;
-		padding: 6px 12px;
-		cursor: pointer;
-		transition: all 0.2s ease;
+		gap: 18px;
+		padding: 0 22px;
+		color: var(--ink-2);
 	}
 
-	.indicators:hover {
-		background: rgba(42, 48, 68, 0.5);
-		color: var(--text-primary);
-	}
-
-	.indicators.has-advisories {
-		border-color: rgba(255, 145, 0, 0.3);
-	}
-
-	.indicator-dot {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-		background: var(--status-active);
-		transition: background 0.2s ease;
-	}
-
-	.indicator-dot.indicator-alert {
-		background: var(--alert-warning);
-		box-shadow: 0 0 6px rgba(255, 145, 0, 0.4);
-		animation: indicator-pulse 2s ease-in-out infinite;
-	}
-
-	@keyframes indicator-pulse {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.5; }
-	}
-
-	.indicator-label {
-		font-size: var(--text-xs);
+	.clock-kicker {
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.16em;
 		text-transform: uppercase;
-		letter-spacing: 0.05em;
+		color: var(--ink-4);
+		text-align: right;
 	}
 
-	@media (prefers-reduced-motion: reduce) {
-		.indicator-dot.indicator-alert {
-			animation: none;
-		}
+	.clock-time {
+		font-size: 16px;
+		font-weight: 500;
+		letter-spacing: 0.04em;
+		color: var(--ink);
+		text-align: right;
 	}
 </style>

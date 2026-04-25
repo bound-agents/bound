@@ -15,9 +15,19 @@ onMount(() => {
 		route = window.location.hash.slice(1) || "/";
 	});
 });
+
+function screenLabel(r: string): string {
+	if (r === "/" || r === "") return "01 System Map";
+	if (r.startsWith("/line/")) return "02 Line";
+	if (r === "/timetable") return "03 Timetable";
+	if (r === "/network") return "04 Network";
+	if (r === "/advisories") return "05 Advisories";
+	if (r === "/files") return "06 Files";
+	return "00 Unknown";
+}
 </script>
 
-<div class="container">
+<div class="container" data-screen-label={screenLabel(route)}>
 	<TopBar />
 	<main>
 		<div class="view-transition">
@@ -42,31 +52,67 @@ onMount(() => {
 
 <style>
 	:global(:root) {
-		/* Tokyo Metro line palette */
-		--line-0: #F39700;   /* Ginza (G)        — orange   */
-		--line-1: #E60012;   /* Marunouchi (M)   — red      */
-		--line-2: #9CAEB7;   /* Hibiya (H)       — silver   */
-		--line-3: #009BBF;   /* Tozai (T)        — sky blue */
-		--line-4: #009944;   /* Chiyoda (C)      — green    */
-		--line-5: #C1A470;   /* Yurakucho (Y)    — gold     */
-		--line-6: #8F76D6;   /* Hanzomon (Z)     — purple   */
-		--line-7: #00AC9B;   /* Namboku (N)      — emerald  */
-		--line-8: #9C5E31;   /* Fukutoshin (F)   — brown    */
-		--line-9: #B6007A;   /* Oedo (E)         — ruby     */
+		/* Signage paper — warm, matte, not quite white */
+		--paper:       #EFEAE0;
+		--paper-2:     #E8E2D5;
+		--paper-3:     #DFD8C7;
+		--rule:        #1A1814;
+		--rule-soft:   rgba(26,24,20,0.18);
+		--rule-faint:  rgba(26,24,20,0.08);
+		--ink:         #1A1814;
+		--ink-2:       #3A342B;
+		--ink-3:       #6B6558;
+		--ink-4:       #9A937F;
 
-		/* Surface — warm slate to let metro colors pop */
-		--bg-primary: #191C24;
-		--bg-secondary: #1E2230;
-		--bg-surface: #2A3044;
-		--text-primary: #F0ECE6;
-		--text-secondary: #ADA8A0;
-		--text-muted: #706B66;
+		/* One signal accent — vermilion */
+		--accent:      #C8331C;
+		--accent-2:    #9B2613;
+		--accent-wash: rgba(200, 51, 28, 0.08);
 
-		/* Semantic */
-		--alert-disruption: #FF1744;
-		--alert-warning: #FF9100;
-		--status-active: #69F0AE;
-		--status-idle: #A0A0B0;
+		/* Line identity palette — muted to sit on paper. Indexes 0..9 mirror the
+		   canonical Tokyo Metro order (G, M, H, T, C, Y, Z, N, F, E). */
+		--line-0: #D9861A;   /* Ginza      — amber   */
+		--line-1: #C8331C;   /* Marunouchi — red     */
+		--line-2: #7D8B93;   /* Hibiya     — silver  */
+		--line-3: #1E7FA8;   /* Tozai      — blue    */
+		--line-4: #2E7D47;   /* Chiyoda    — green   */
+		--line-5: #A8885A;   /* Yurakucho  — gold    */
+		--line-6: #6B5BB3;   /* Hanzomon   — violet  */
+		--line-7: #0E8E83;   /* Namboku    — teal    */
+		--line-8: #8B5E34;   /* Fukutoshin — brown   */
+		--line-9: #9B2A6E;   /* Oedo       — ruby    */
+
+		/* Mirror the line-N vars under single-letter aliases for code that
+		   prefers --line-M / --line-T / etc. */
+		--line-G: var(--line-0);
+		--line-M: var(--line-1);
+		--line-H: var(--line-2);
+		--line-T: var(--line-3);
+		--line-C: var(--line-4);
+		--line-Y: var(--line-5);
+		--line-Z: var(--line-6);
+		--line-N: var(--line-7);
+		--line-F: var(--line-8);
+		--line-E: var(--line-9);
+
+		/* Semantic (back-compat + new names) */
+		--ok:        #2E7D47;
+		--warn:      #C37A0F;
+		--err:       #B82817;
+		--idle:      #9A937F;
+		--status-active:    var(--ok);
+		--status-idle:      var(--idle);
+		--alert-warning:    var(--warn);
+		--alert-disruption: var(--err);
+
+		/* Back-compat — maps old bg / text vars to signage tones so any
+		   uncorrected component still reads as paper. */
+		--bg-primary:   var(--paper);
+		--bg-secondary: var(--paper-2);
+		--bg-surface:   var(--paper-3);
+		--text-primary:   var(--ink);
+		--text-secondary: var(--ink-2);
+		--text-muted:     var(--ink-3);
 
 		/* Dimensions */
 		--line-weight: 4px;
@@ -75,49 +121,124 @@ onMount(() => {
 		--station-radius-hover: 9px;
 
 		/* Typography */
-		--font-display: 'Nunito Sans', 'Overpass', 'Source Sans 3', sans-serif;
-		--font-body: 'Nunito Sans', 'IBM Plex Sans', 'Noto Sans', sans-serif;
-		--font-mono: 'IBM Plex Mono', 'JetBrains Mono', 'Fira Code', monospace;
+		--font-display: "Space Grotesk", "Helvetica Neue", Helvetica, Arial, sans-serif;
+		--font-body:    "Space Grotesk", "Helvetica Neue", Helvetica, Arial, sans-serif;
+		--font-header:  "Helvetica Neue", Helvetica, "Arial Black", Arial, sans-serif;
+		--font-mono:    "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+		--font-serif:   "Fraunces", Georgia, serif;
 
 		--text-xs: 0.75rem;
 		--text-sm: 0.875rem;
 		--text-base: 1rem;
-		--text-lg: 1.25rem;
+		--text-lg: 1.125rem;
 		--text-xl: 1.5rem;
+
+		--r-sm: 3px;
+		--r-md: 4px;
+
+		color-scheme: light;
 	}
+
+	:global(*), :global(*::before), :global(*::after) { box-sizing: border-box; }
+	:global(html), :global(body), :global(#app) { height: 100%; }
 
 	:global(body) {
 		margin: 0;
 		padding: 0;
+		background: var(--paper);
+		color: var(--ink);
 		font-family: var(--font-body);
-		background: var(--bg-primary);
-		color: var(--text-primary);
+		font-size: 14px;
+		line-height: 1.45;
 		-webkit-font-smoothing: antialiased;
 		-moz-osx-font-smoothing: grayscale;
+		font-feature-settings: "ss01", "cv11";
 	}
 
-	/* Scrollbar styling */
-	:global(::-webkit-scrollbar) {
-		width: 8px;
-		height: 8px;
+	/* Paper texture — a very subtle printed-paper feel */
+	:global(body::before) {
+		content: "";
+		position: fixed;
+		inset: 0;
+		pointer-events: none;
+		z-index: 1;
+		background-image:
+			radial-gradient(rgba(26,24,20,0.035) 1px, transparent 1px),
+			radial-gradient(rgba(26,24,20,0.02) 1px, transparent 1px);
+		background-size: 3px 3px, 7px 7px;
+		background-position: 0 0, 1px 2px;
+		mix-blend-mode: multiply;
+		opacity: 0.6;
 	}
 
-	:global(::-webkit-scrollbar-track) {
-		background: var(--bg-primary);
-	}
+	:global(button) { font-family: inherit; color: inherit; }
+	:global(input), :global(textarea), :global(select) { font-family: inherit; }
 
+	/* Scrollbars */
+	:global(::-webkit-scrollbar) { width: 10px; height: 10px; }
+	:global(::-webkit-scrollbar-track) { background: transparent; }
 	:global(::-webkit-scrollbar-thumb) {
-		background: var(--bg-surface);
-		border-radius: 4px;
+		background: rgba(26,24,20,0.18);
+		border-radius: 10px;
+		border: 2px solid var(--paper);
 	}
-
-	:global(::-webkit-scrollbar-thumb:hover) {
-		background: #3a4060;
-	}
-
+	:global(::-webkit-scrollbar-thumb:hover) { background: rgba(26,24,20,0.3); }
 	:global(*) {
 		scrollbar-width: thin;
-		scrollbar-color: var(--bg-surface) var(--bg-primary);
+		scrollbar-color: rgba(26,24,20,0.18) transparent;
+	}
+
+	/* Reusable helpers */
+	:global(.mono) {
+		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
+	}
+	:global(.tnum) { font-variant-numeric: tabular-nums; }
+	:global(.kicker) {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.16em;
+		text-transform: uppercase;
+		color: var(--ink-3);
+	}
+	:global(.rule) {
+		height: 1px;
+		background: var(--ink);
+	}
+	:global(.rule-faint) {
+		height: 1px;
+		background: var(--rule-soft);
+	}
+
+	/* Global keyframes — placed inside :global {} so Svelte doesn't scope them. */
+	:global {
+		@keyframes pulse {
+			0%, 100% { opacity: 1; }
+			50% { opacity: 0.25; }
+		}
+		@keyframes marquee {
+			from { transform: translateX(0); }
+			to { transform: translateX(-50%); }
+		}
+		@keyframes fadeIn {
+			from { opacity: 0; transform: translateY(4px); }
+			to { opacity: 1; transform: translateY(0); }
+		}
+	}
+
+	/* Loading splash that appears before the app mounts */
+	:global(.loading-splash) {
+		position: fixed;
+		inset: 0;
+		display: grid;
+		place-items: center;
+		background: var(--paper);
+		z-index: 1000;
+		color: var(--ink-3);
+		font-family: var(--font-mono);
+		font-size: 12px;
+		letter-spacing: 0.2em;
+		text-transform: uppercase;
 	}
 
 	.container {
@@ -125,6 +246,8 @@ onMount(() => {
 		flex-direction: column;
 		height: 100vh;
 		width: 100vw;
+		position: relative;
+		z-index: 2;
 	}
 
 	main {
@@ -132,10 +255,11 @@ onMount(() => {
 		overflow: hidden;
 		display: flex;
 		flex-direction: column;
+		min-height: 0;
 	}
 
 	.view-transition {
-		animation: viewFadeIn 0.25s ease-out;
+		animation: viewFadeIn 0.22s ease-out;
 		flex: 1;
 		display: flex;
 		flex-direction: column;
@@ -148,8 +272,6 @@ onMount(() => {
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.view-transition {
-			animation: none;
-		}
+		.view-transition { animation: none; }
 	}
 </style>

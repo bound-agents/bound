@@ -10,6 +10,8 @@ interface Message {
 	tool_name?: string | null;
 	model_id?: string | null;
 	created_at?: string;
+	id?: string;
+	exit_code?: number | null;
 }
 
 interface ToolEntry {
@@ -40,6 +42,10 @@ type DisplayItem =
 			earliest: string;
 			timestamps: string[];
 	  };
+
+type Pass1Entry =
+	| { kind: "message"; msg: Message; earliest: string }
+	| { kind: "toolCall"; item: ToolCallItem };
 
 interface TurnRange {
 	from: string;
@@ -97,7 +103,7 @@ function handleScroll(): void {
 
 // Scroll to bottom on mount (case 2: opening a thread)
 onMount(() => {
-	tick().then(scrollToBottom);
+	tick().then(() => scrollToBottom());
 });
 
 // React to message changes
@@ -111,7 +117,7 @@ $effect(() => {
 	// Case 1: user sent a message → always scroll
 	// Case 3: non-user message arrived while already at bottom → scroll
 	if (isNewUserMessage || isAtBottom) {
-		tick().then(scrollToBottom);
+		tick().then(() => scrollToBottom());
 	}
 
 	prevMessageCount = count;
@@ -236,8 +242,7 @@ let displayItems = $derived.by((): DisplayItem[] => {
 	// Pass 1: pair tool_call with nearby tool_results.
 	// Skips over assistant/system messages between tool_call and tool_result,
 	// since LLMs may emit reasoning text mid-tool-turn.
-	const pass1: Array<{ kind: "message"; msg: Message } | { kind: "toolCall"; item: ToolCallItem }> =
-		[];
+	const pass1: Pass1Entry[] = [];
 	let i = 0;
 	while (i < messages.length) {
 		const msg = messages[i];
@@ -359,7 +364,7 @@ let displayItems = $derived.by((): DisplayItem[] => {
 						<ToolCallGroup segments={item.segments} {turnRange} />
 					{:else}
 						<MessageBubble
-							role={item.msg.role}
+							role={item.msg.role as "user" | "assistant" | "system" | "alert" | "tool_call" | "tool_result"}
 							content={item.msg.content}
 							toolName={item.msg.tool_name}
 							modelId={item.msg.model_id}
@@ -383,9 +388,8 @@ let displayItems = $derived.by((): DisplayItem[] => {
 
 <style>
 	.board {
-		background: rgba(10, 10, 20, 0.5);
-		border: 1px solid var(--bg-surface);
-		border-radius: 8px;
+		background: var(--paper);
+		border: none;
 		display: flex;
 		flex-direction: column;
 		flex: 1;
@@ -397,7 +401,7 @@ let displayItems = $derived.by((): DisplayItem[] => {
 	.messages {
 		flex: 1;
 		overflow-y: auto;
-		padding: 12px 12px 0 36px;
+		padding: 24px 36px 0 36px;
 		min-height: 0;
 		position: relative;
 	}
@@ -411,64 +415,55 @@ let displayItems = $derived.by((): DisplayItem[] => {
 
 	.display-item {
 		transition: opacity 0.3s ease;
-		margin-bottom: 8px;
+		margin-bottom: 4px;
 	}
 
 	.display-item.dimmed {
-		opacity: 0.3;
+		opacity: 0.32;
 	}
 
 	.empty-state {
 		padding: 32px 16px;
 		text-align: center;
-		color: var(--text-muted);
-		font-family: var(--font-body);
-		font-size: var(--text-sm);
+		color: var(--ink-4);
+		font-family: var(--font-display);
+		font-size: 13px;
+		font-style: italic;
 	}
 
 	.waiting-indicator {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		padding: 12px 16px;
-		margin-top: 8px;
+		gap: 8px;
+		padding: 10px 0;
+		margin-top: 6px;
 	}
 
 	.waiting-dot {
-		width: 8px;
-		height: 8px;
+		width: 6px;
+		height: 6px;
 		border-radius: 50%;
-		background: var(--status-active);
+		background: var(--ink-3);
 		animation: waiting-bounce 1.2s ease-in-out infinite;
 	}
 
-	.waiting-dot:nth-child(2) {
-		animation-delay: 0.2s;
-	}
-
-	.waiting-dot:nth-child(3) {
-		animation-delay: 0.4s;
-	}
+	.waiting-dot:nth-child(2) { animation-delay: 0.2s; }
+	.waiting-dot:nth-child(3) { animation-delay: 0.4s; }
 
 	@keyframes waiting-bounce {
-		0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+		0%, 80%, 100% { opacity: 0.3; transform: scale(0.85); }
 		40% { opacity: 1; transform: scale(1); }
 	}
 
 	.waiting-label {
 		font-family: var(--font-display);
-		font-size: var(--text-sm);
-		color: var(--text-muted);
+		font-size: 13px;
+		color: var(--ink-2);
 		margin-left: 4px;
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.waiting-dot {
-			animation: none;
-		}
-
-		.messages {
-			scroll-behavior: auto;
-		}
+		.waiting-dot { animation: none; }
+		.messages { scroll-behavior: auto; }
 	}
 </style>

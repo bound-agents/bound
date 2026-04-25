@@ -4,18 +4,28 @@ import type { Snippet } from "svelte";
 interface Props {
 	title: string;
 	subtitle?: string;
+	number?: number;
 	actions?: Snippet;
 }
 
-let { title, subtitle, actions }: Props = $props();
+let { title, subtitle, number, actions }: Props = $props();
+
+const paddedNumber = $derived(number != null ? String(number).padStart(2, "0") : null);
 </script>
 
 <div class="section-header">
 	<div class="header-content">
-		<h1 class="title">{title}</h1>
-		{#if subtitle}
-			<span class="subtitle">{subtitle}</span>
+		{#if paddedNumber || subtitle}
+			<div class="kicker">
+				{#if paddedNumber}
+					<span class="number">Nº{paddedNumber}</span>
+				{/if}
+				{#if subtitle}
+					<span class="subtitle">{subtitle}</span>
+				{/if}
+			</div>
 		{/if}
+		<h1 class="title">{title}</h1>
 	</div>
 	{#if actions}
 		<div class="actions">
@@ -27,32 +37,53 @@ let { title, subtitle, actions }: Props = $props();
 <style>
 	.section-header {
 		display: flex;
-		align-items: center;
-		gap: 12px;
-		margin-bottom: 16px;
+		align-items: flex-end;
+		gap: 24px;
+		margin-bottom: 20px;
 	}
 
 	.header-content {
-		display: flex;
-		align-items: center;
-		gap: 12px;
+		flex: 1;
+		min-width: 0;
 	}
 
-	.title {
-		font-size: var(--text-xl);
-		font-weight: 700;
-		color: var(--text-primary);
-		margin: 0;
+	.kicker {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.16em;
+		text-transform: uppercase;
+		color: var(--ink-3);
+		margin-bottom: 6px;
+		display: inline-flex;
+		align-items: baseline;
+		gap: 10px;
+	}
+
+	.number {
+		font-family: var(--font-mono);
+		font-size: 10.5px;
 	}
 
 	.subtitle {
-		font-size: var(--text-sm);
-		text-transform: uppercase;
-		color: var(--text-muted);
-		letter-spacing: 0.06em;
+		font-size: 11px;
+		letter-spacing: 0.16em;
+		color: var(--ink-3);
+	}
+
+	.title {
+		margin: 0;
+		font-family: var(--font-header);
+		font-size: 38px;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		line-height: 1.02;
+		color: var(--ink);
 	}
 
 	.actions {
-		margin-left: auto;
+		display: flex;
+		gap: 8px;
+		align-items: center;
+		flex-shrink: 0;
 	}
 </style>

@@ -11,7 +11,7 @@ interface Props {
 	contextWindow: number;
 }
 
-const { sections, contextWindow } = $props<Props>();
+const { sections, contextWindow }: Props = $props();
 
 let expandedSections = $state(new Set<string>());
 
@@ -22,7 +22,7 @@ function toggleSection(name: string): void {
 	expandedSections = next;
 }
 
-const usedTokens = $derived(sections.reduce((s, sec) => s + sec.tokens, 0));
+const usedTokens = $derived(sections.reduce((s: number, sec) => s + sec.tokens, 0));
 const freeTokens = $derived(contextWindow - usedTokens);
 const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 : 0);
 </script>
@@ -82,8 +82,9 @@ const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		padding: 3px 0;
-		font-size: 12px;
+		padding: 4px 0;
+		font-size: 11.5px;
+		border-bottom: 1px solid var(--rule-faint);
 	}
 
 	.section-row.child {
@@ -96,13 +97,13 @@ const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 
 		gap: 6px;
 		background: none;
 		border: none;
-		color: var(--text-secondary);
+		color: var(--ink);
 		cursor: default;
 		padding: 0;
 		flex: 1;
 		min-width: 0;
-		font-size: 12px;
-		font-family: var(--font-body);
+		font-size: 11.5px;
+		font-family: var(--font-display);
 	}
 
 	.section-toggle:not(:disabled) {
@@ -110,7 +111,7 @@ const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 
 	}
 
 	.section-toggle:not(:disabled):hover .name {
-		color: var(--text-primary);
+		color: var(--ink);
 	}
 
 	.chevron {
@@ -118,6 +119,7 @@ const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 
 		transition: transform 0.15s;
 		display: inline-block;
 		width: 10px;
+		color: var(--ink-3);
 	}
 
 	.chevron.expanded {
@@ -125,15 +127,15 @@ const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 
 	}
 
 	.dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
+		width: 6px;
+		height: 12px;
+		border-radius: 0;
 		flex-shrink: 0;
 	}
 
 	.dot.small {
-		width: 6px;
-		height: 6px;
+		width: 5px;
+		height: 9px;
 	}
 
 	.name {
@@ -146,16 +148,17 @@ const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 
 
 	.tokens {
 		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
 		font-size: 11px;
-		color: var(--text-primary);
+		color: var(--ink-2);
 		text-align: right;
-		min-width: 48px;
+		min-width: 56px;
 	}
 
 	.pct {
 		font-family: var(--font-mono);
-		font-size: 11px;
-		color: var(--text-muted);
+		font-size: 10px;
+		color: var(--ink-4);
 		text-align: right;
 		min-width: 40px;
 	}

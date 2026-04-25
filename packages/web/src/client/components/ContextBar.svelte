@@ -10,9 +10,9 @@ interface Props {
 	contextWindow: number;
 }
 
-const { sections, contextWindow } = $props<Props>();
+const { sections, contextWindow }: Props = $props();
 
-const usedTokens = $derived(sections.reduce((s, sec) => s + sec.tokens, 0));
+const usedTokens = $derived(sections.reduce((s: number, sec) => s + sec.tokens, 0));
 const usedPct = $derived((usedTokens / contextWindow) * 100);
 const freePct = $derived(100 - usedPct);
 </script>
@@ -40,19 +40,26 @@ const freePct = $derived(100 - usedPct);
 <style>
 	.context-bar {
 		display: flex;
-		height: 12px;
-		border-radius: 3px;
+		height: 14px;
+		border: 1px solid var(--rule-soft);
+		background: var(--paper-3);
 		overflow: hidden;
-		margin-bottom: 12px;
-		gap: 1px;
+		margin-bottom: 10px;
 	}
 
 	.bar-segment {
 		min-width: 2px;
 		transition: flex-basis 0.3s ease;
+		border-right: 1px solid rgba(255, 255, 255, 0.15);
+		opacity: 0.85;
+	}
+
+	.bar-segment:last-child {
+		border-right: none;
 	}
 
 	.bar-segment.free {
-		opacity: 0.3;
+		opacity: 1;
+		background: var(--paper-3) !important;
 	}
 </style>

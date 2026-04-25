@@ -1,15 +1,12 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
-import {
-	DataTable,
-	LineBadge,
-	MetroCard,
-	SectionHeader,
-	StatusChip,
-	TopologyDiagram,
-} from "../components/shared";
+import LineBadge from "../components/LineBadge.svelte";
+import Page from "../components/Page.svelte";
+import SectionHeader from "../components/SectionHeader.svelte";
+import StatusChip from "../components/StatusChip.svelte";
+import TicketTab from "../components/TicketTab.svelte";
+import TopologyDiagram from "../components/TopologyDiagram.svelte";
 import { client } from "../lib/bound";
-import { getLineColor } from "../lib/metro-lines";
 
 interface HostInfo {
 	site_id: string;
@@ -37,7 +34,7 @@ interface NetworkData {
 	localSiteId: string;
 }
 
-const ONLINE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+const ONLINE_THRESHOLD_MS = 5 * 60 * 1000;
 
 let networkData: NetworkData | null = $state(null);
 let loading = $state(true);
@@ -47,7 +44,7 @@ let pollInterval: ReturnType<typeof setInterval> | null = null;
 
 async function loadNetwork(): Promise<void> {
 	try {
-		networkData = await client.getNetwork();
+		networkData = (await client.getNetwork()) as unknown as NetworkData;
 		error = null;
 	} catch (err) {
 		console.error("Failed to load network status:", err);
@@ -70,29 +67,20 @@ function isLocal(host: HostInfo): boolean {
 }
 
 function isOnline(host: HostInfo): boolean {
-	// Local host is always online — it's serving this page
 	if (isLocal(host)) return true;
 	if (!host.online_at) return false;
-	const lastSeen = new Date(host.online_at).getTime();
-	return Date.now() - lastSeen < ONLINE_THRESHOLD_MS;
+	return Date.now() - new Date(host.online_at).getTime() < ONLINE_THRESHOLD_MS;
 }
 
 function relativeTime(iso: string | null): string {
 	if (!iso) return "never";
 	const diff = Date.now() - new Date(iso).getTime();
 	const mins = Math.floor(diff / 60_000);
-	if (mins < 0) return "just now";
 	if (mins < 1) return "just now";
 	if (mins < 60) return `${mins}m ago`;
 	const hours = Math.floor(mins / 60);
 	if (hours < 24) return `${hours}h ago`;
-	const days = Math.floor(hours / 24);
-	return `${days}d ago`;
-}
-
-function truncateSiteId(siteId: string): string {
-	if (siteId.length <= 12) return siteId;
-	return `${siteId.substring(0, 6)}...${siteId.substring(siteId.length - 4)}`;
+	return `${Math.floor(hours / 24)}d ago`;
 }
 
 function getSyncForPeer(peerSiteId: string): SyncStateInfo | null {
@@ -101,16 +89,14 @@ function getSyncForPeer(peerSiteId: string): SyncStateInfo | null {
 }
 
 function computeSyncHealth(
-	syncState: SyncStateInfo | null,
+	s: SyncStateInfo | null,
 ): "healthy" | "degraded" | "unreachable" | "unknown" {
-	if (!syncState) return "unknown";
-	if (!syncState.last_sync_at) return "unknown";
-	const lastSyncMs = Date.now() - new Date(syncState.last_sync_at).getTime();
+	if (!s || !s.last_sync_at) return "unknown";
+	const lastSyncMs = Date.now() - new Date(s.last_sync_at).getTime();
 	const fiveMinutesMs = 5 * 60 * 1000;
 	const tenMinutesMs = 10 * 60 * 1000;
-
 	if (lastSyncMs > tenMinutesMs) return "unreachable";
-	if (syncState.sync_errors > 0) return "degraded";
+	if (s.sync_errors > 0) return "degraded";
 	if (lastSyncMs < fiveMinutesMs) return "healthy";
 	return "degraded";
 }
@@ -139,432 +125,386 @@ function parseMcpTools(toolsStr: string | null): string[] {
 	}
 }
 
-function buildSyncHealthMap(): Map<string, "healthy" | "degraded" | "unreachable" | "unknown"> {
+const syncHealthMap = $derived.by(() => {
 	const map = new Map<string, "healthy" | "degraded" | "unreachable" | "unknown">();
 	if (!networkData) return map;
-
 	for (const host of networkData.hosts) {
-		const syncState = getSyncForPeer(host.site_id);
-		map.set(host.site_id, computeSyncHealth(syncState));
+		const s = getSyncForPeer(host.site_id);
+		map.set(host.site_id, computeSyncHealth(s));
 	}
 	return map;
+});
+
+interface MeshRow {
+	id: string;
+	peer: string;
+	sent: string;
+	received: string;
+	lastSync: string;
+	errors: number;
 }
 
-function copyToClipboard(text: string): void {
-	navigator.clipboard.writeText(text);
-}
-
-const syncHealthMap = $derived(buildSyncHealthMap());
-
-const syncMeshRows = $derived(
-	networkData
-		? networkData.syncState
-				.map((sync) => {
-					const hostEntry = networkData?.hosts.find((h) => h.site_id === sync.peer_site_id);
-					return {
-						id: sync.peer_site_id,
-						peer: hostEntry?.host_name || truncateSiteId(sync.peer_site_id),
-						sent: sync.last_sent,
-						received: sync.last_received,
-						lastSync: relativeTime(sync.last_sync_at),
-						errors: sync.sync_errors,
-					};
-				})
-				.sort((a, b) => a.peer.localeCompare(b.peer))
-		: [],
-);
-
-const syncMeshColumns = [
-	{ key: "peer", label: "Peer", width: "1fr" },
-	{ key: "sent", label: "Sent", width: "120px", mono: true },
-	{ key: "received", label: "Received", width: "120px", mono: true },
-	{ key: "lastSync", label: "Last Sync", width: "100px", mono: true },
-	{ key: "errors", label: "Errors", width: "60px", mono: true },
-];
+const syncMeshRows = $derived.by<MeshRow[]>(() => {
+	const nd = networkData;
+	if (!nd) return [];
+	return nd.syncState
+		.map((sync: SyncStateInfo): MeshRow => {
+			const hostEntry = nd.hosts.find((h) => h.site_id === sync.peer_site_id);
+			return {
+				id: sync.peer_site_id,
+				peer: hostEntry?.host_name ?? sync.peer_site_id.slice(0, 10),
+				sent: sync.last_sent,
+				received: sync.last_received,
+				lastSync: relativeTime(sync.last_sync_at),
+				errors: sync.sync_errors,
+			};
+		})
+		.sort((a: MeshRow, b: MeshRow) => a.peer.localeCompare(b.peer));
+});
 </script>
 
-<div class="network-status">
-	<SectionHeader title="Network Status" subtitle="CLUSTER TOPOLOGY" />
+<Page>
+	{#snippet children()}
+		<SectionHeader number={3} subtitle="Cluster Topology" title="Network">
+			{#snippet actions()}
+				<TicketTab>
+					{#snippet children()}Auto-refresh 10s{/snippet}
+				</TicketTab>
+			{/snippet}
+		</SectionHeader>
 
-	{#if loading}
-		<div class="loading-state">
-			<div class="loading-ring"></div>
-			<p>Scanning network...</p>
-		</div>
-	{:else if error}
-		<div class="error-state">
-			<svg width="32" height="32" viewBox="0 0 32 32">
-				<circle cx="16" cy="16" r="14" fill="none" stroke="var(--alert-disruption)" stroke-width="2" opacity="0.6" />
-				<path d="M16 10V18" stroke="var(--alert-disruption)" stroke-width="2.5" stroke-linecap="round" />
-				<circle cx="16" cy="22" r="1.5" fill="var(--alert-disruption)" />
-			</svg>
-			<p>{error}</p>
-		</div>
-	{:else if networkData}
-		<!-- Topology Diagram -->
-		<TopologyDiagram hosts={networkData.hosts} hub={networkData.hub} syncHealth={syncHealthMap} />
-
-		{#if networkData.hosts.length === 0}
-			<div class="empty-state">
-				<p>No hosts registered in the cluster.</p>
+		{#if loading}
+			<div class="state">
+				<p>Scanning network…</p>
 			</div>
-		{:else}
-			<!-- Host Cards Grid -->
-			<div class="hosts-grid">
-				{#each networkData.hosts as host, idx}
+		{:else if error}
+			<div class="state err">
+				<p>{error}</p>
+			</div>
+		{:else if networkData}
+			<TopologyDiagram
+				hosts={networkData.hosts}
+				hub={networkData.hub}
+				syncHealth={syncHealthMap}
+				localSiteId={networkData.localSiteId}
+			/>
+
+			<div class="host-grid">
+				{#each networkData.hosts as host, idx (host.site_id)}
 					{@const online = isOnline(host)}
 					{@const isHub = networkData.hub?.hostName === host.host_name}
 					{@const syncState = getSyncForPeer(host.site_id)}
+					{@const health = computeSyncHealth(syncState)}
 					{@const models = parseModels(host.models)}
 					{@const mcpTools = parseMcpTools(host.mcp_tools)}
-					{@const health = computeSyncHealth(syncState)}
-					{@const accentColor = getLineColor(idx)}
-					<MetroCard {accentColor}>
-						<div class="card-content">
-							<div class="card-header">
-								<LineBadge lineIndex={idx} size="compact" />
-								<div class="header-text">
-									<div class="host-title">
-										<h3>{host.host_name}</h3>
-										{#if isLocal(host)}
-											<span class="local-badge">LOCAL</span>
-										{/if}
-										{#if isHub}
-											<span class="hub-badge">HUB</span>
-										{/if}
-									</div>
-									<StatusChip status={online ? "healthy" : "unreachable"} label={online ? "Online" : "Offline"} animate={false} />
+					{@const stateColor =
+						!online
+							? "var(--err)"
+							: health === "healthy"
+								? "var(--ok)"
+								: health === "degraded"
+									? "var(--warn)"
+									: health === "unreachable"
+										? "var(--err)"
+										: "var(--ink-3)"}
+					<div class="host-card">
+						<div class="band" style="background: {stateColor}"></div>
+						<div class="card-body">
+							<div class="card-top">
+								<LineBadge lineIndex={idx + 2} size="compact" />
+								<div class="card-title">
+									<h3>{host.host_name}</h3>
+									<div class="site-id mono">{host.site_id.slice(0, 12)}</div>
+								</div>
+								<div class="card-right">
+									{#if isHub}
+										<span class="hub-badge">HUB</span>
+									{/if}
+									<StatusChip status={online ? "online" : "offline"} />
 								</div>
 							</div>
 
-							<div class="card-details">
-								<div class="detail-row">
-									<span class="detail-label">Site ID</span>
-									<div class="detail-value-with-action">
-										<code>{host.site_id}</code>
-										<button
-											class="copy-button"
-											onclick={() => copyToClipboard(host.site_id)}
-											title="Copy site ID"
-											type="button"
-										>
-											📋
-										</button>
-									</div>
-								</div>
-
-								<div class="detail-row">
-									<span class="detail-label">Last Seen</span>
-									<span class="detail-value mono-value">{relativeTime(host.online_at)}</span>
-								</div>
-
+							<div class="fields">
 								{#if host.version}
-									<div class="detail-row">
-										<span class="detail-label">Version</span>
-										<span class="detail-value mono-value">{host.version}</span>
+									<div class="row">
+										<span class="kicker">Version</span>
+										<span class="mono">{host.version}</span>
 									</div>
 								{/if}
-
-								{#if !isLocal(host)}
-									<div class="detail-row">
-										<span class="detail-label">Sync Status</span>
-										<div class="sync-status">
-											<StatusChip status={health} animate={false} />
-										</div>
-									</div>
-								{/if}
-
-								{#if syncState?.last_sync_at && !isLocal(host)}
-									<div class="detail-row">
-										<span class="detail-label">Last Sync</span>
-										<span class="detail-value mono-value">{relativeTime(syncState.last_sync_at)}</span>
-									</div>
-								{/if}
-
-								{#if models.length > 0}
-									<div class="detail-row">
-										<span class="detail-label">Models</span>
-										<div class="pills-list">
-											{#each models.slice(0, 3) as model}
-												<span class="pill">{model}</span>
-											{/each}
-											{#if models.length > 3}
-												<span class="pill pill-overflow">+{models.length - 3}</span>
-											{/if}
-										</div>
-									</div>
-								{/if}
-
-								{#if mcpTools.length > 0}
-									<div class="detail-row">
-										<span class="detail-label">MCP Tools</span>
-										<div class="pills-list">
-											{#each mcpTools.slice(0, 3) as tool}
-												<span class="pill pill-secondary">{tool}</span>
-											{/each}
-											{#if mcpTools.length > 3}
-												<span class="pill pill-secondary pill-overflow">+{mcpTools.length - 3}</span>
-											{/if}
-										</div>
-									</div>
-								{/if}
+								<div class="row">
+									<span class="kicker">Last seen</span>
+									<span class="mono">{relativeTime(host.online_at)}</span>
+								</div>
+								<div class="row">
+									<span class="kicker">Sync</span>
+									<span class="mono" style="color: {stateColor}">
+										{health.toUpperCase()}
+									</span>
+								</div>
+								<div class="row">
+									<span class="kicker">Errors (24h)</span>
+									<span
+										class="mono"
+										style="color: {syncState && syncState.sync_errors > 0 ? 'var(--err)' : 'var(--ink-2)'}"
+									>
+										{syncState?.sync_errors ?? 0}
+									</span>
+								</div>
 							</div>
+
+							{#if models.length > 0}
+								<div class="pill-area">
+									<div class="kicker pill-label">Models</div>
+									<div class="pills">
+										{#each models as m}
+											<span class="pill">{m}</span>
+										{/each}
+									</div>
+								</div>
+							{/if}
+
+							{#if mcpTools.length > 0}
+								<div class="pill-area">
+									<div class="kicker pill-label">MCP Tools</div>
+									<div class="pills">
+										{#each mcpTools as t}
+											<span class="pill pill-outline">{t}</span>
+										{/each}
+									</div>
+								</div>
+							{/if}
 						</div>
-					</MetroCard>
+					</div>
 				{/each}
 			</div>
 
-			<!-- Sync Mesh Table -->
-			{#if networkData.syncState.length > 0}
-				<div class="sync-mesh-section">
-					<h2>Sync Mesh</h2>
-					<DataTable
-						columns={syncMeshColumns}
-						rows={syncMeshRows}
-						sortable={true}
-						rowAccent={(row) => {
-							if (row.errors > 0) return "var(--alert-disruption)";
-							return null;
-						}}
-					/>
+			{#if syncMeshRows.length > 0}
+				<div class="mesh">
+					<div class="mesh-header">
+						<h2 class="mesh-title">Sync Mesh</h2>
+						<span class="mesh-sub kicker">Peer → Peer Replication</span>
+					</div>
+					<div class="mesh-columns">
+						<span>Peer</span>
+						<span>Sent</span>
+						<span>Received</span>
+						<span>Last Sync</span>
+						<span class="right">Errors</span>
+					</div>
+					{#each syncMeshRows as row (row.id)}
+						<div class="mesh-row">
+							<span class="peer">{row.peer}</span>
+							<span class="mono tnum">{row.sent?.toString().slice(0, 10) ?? "—"}</span>
+							<span class="mono tnum">{row.received?.toString().slice(0, 10) ?? "—"}</span>
+							<span class="mono">{row.lastSync}</span>
+							<span
+								class="mono tnum right"
+								style="color: {row.errors > 0 ? 'var(--err)' : 'var(--ink-3)'}"
+							>
+								{row.errors}
+							</span>
+						</div>
+					{/each}
 				</div>
 			{/if}
 		{/if}
-	{/if}
-</div>
+	{/snippet}
+</Page>
 
 <style>
-	.network-status {
-		padding: 32px 40px;
-		max-width: 1400px;
-		margin: 0 auto;
-		flex: 1;
-		overflow-y: auto;
-		min-height: 0;
-	}
-
-	.loading-state {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 16px;
-		padding: 64px 0;
-	}
-
-	.loading-ring {
-		width: 32px;
-		height: 32px;
-		border: 3px solid var(--bg-surface);
-		border-top-color: var(--line-4);
-		border-radius: 50%;
-		animation: spin 1s linear infinite;
-	}
-
-	@keyframes spin {
-		to {
-			transform: rotate(360deg);
-		}
-	}
-
-	.loading-state p {
-		color: var(--text-muted);
-		font-size: var(--text-sm);
-		margin: 0;
-	}
-
-	.error-state {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 16px;
-		padding: 64px 0;
-	}
-
-	.error-state p {
-		color: var(--alert-disruption);
-		font-size: var(--text-sm);
-		margin: 0;
-	}
-
-	.empty-state {
-		padding: 48px 0;
+	.state {
+		padding: 40px 16px;
 		text-align: center;
+		color: var(--ink-3);
+		font-style: italic;
 	}
 
-	.empty-state p {
-		color: var(--text-muted);
-		font-size: var(--text-sm);
-		margin: 0;
+	.state.err {
+		color: var(--err);
 	}
 
-	.hosts-grid {
+	.host-grid {
+		margin-top: 28px;
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+		grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
 		gap: 16px;
-		margin-bottom: 40px;
-		--stripe-width: 20px;
 	}
 
-	.card-content {
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
+	.host-card {
+		background: var(--paper);
+		border: 1px solid var(--rule-soft);
+		position: relative;
+		overflow: hidden;
 	}
 
-	.card-header {
-		display: flex;
-		gap: 10px;
-		align-items: flex-start;
+	.band {
+		height: 6px;
 	}
 
-	.header-text {
-		flex: 1;
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
+	.card-body {
+		padding: 16px 18px 14px;
 	}
 
-	.host-title {
+	.card-top {
 		display: flex;
 		align-items: center;
-		gap: 8px;
+		gap: 10px;
+		margin-bottom: 10px;
 	}
 
-	h3 {
+	.card-title {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.card-title h3 {
 		margin: 0;
-		font-size: var(--text-lg);
-		color: var(--text-primary);
-		font-weight: 700;
+		font-family: var(--font-display);
+		font-size: 17px;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+		color: var(--ink);
 	}
 
-	.local-badge {
-		font-size: 10px;
-		font-weight: 700;
-		color: var(--line-0);
-		background: rgba(243, 151, 0, 0.12);
-		border: 1px solid rgba(243, 151, 0, 0.3);
-		padding: 2px 6px;
-		border-radius: 3px;
-		letter-spacing: 0.06em;
+	.site-id {
+		font-family: var(--font-mono);
+		font-size: 10.5px;
+		color: var(--ink-4);
+		letter-spacing: 0.08em;
+		margin-top: 1px;
+	}
+
+	.card-right {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		align-items: flex-end;
 	}
 
 	.hub-badge {
-		font-size: 10px;
-		font-weight: 700;
-		color: var(--line-4);
-		background: rgba(0, 153, 68, 0.12);
-		border: 1px solid rgba(0, 153, 68, 0.3);
+		font-family: var(--font-mono);
+		font-size: 9.5px;
+		font-weight: 600;
+		letter-spacing: 0.22em;
+		color: var(--paper);
+		background: var(--ink);
 		padding: 2px 6px;
-		border-radius: 3px;
-		letter-spacing: 0.06em;
 	}
 
-	.card-details {
+	.fields {
+		border-top: 1px solid var(--rule-faint);
+		padding-top: 12px;
 		display: flex;
 		flex-direction: column;
-		gap: 8px;
-		padding-top: 8px;
-		border-top: 1px solid var(--bg-surface);
 	}
 
-	.detail-row {
+	.row {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
+		padding: 4px 0;
 	}
 
-	.detail-label {
-		font-size: var(--text-xs);
-		font-weight: 600;
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-	}
-
-	.detail-value {
-		font-size: var(--text-sm);
-		color: var(--text-secondary);
-	}
-
-	.mono-value {
-		font-family: var(--font-mono);
-		font-size: 12px;
-	}
-
-	code {
-		font-family: var(--font-mono);
+	.kicker {
 		font-size: 11px;
-		color: var(--text-secondary);
-		word-break: break-all;
+		font-weight: 600;
+		letter-spacing: 0.16em;
+		text-transform: uppercase;
+		color: var(--ink-4);
 	}
 
-	.detail-value-with-action {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-	}
-
-	.copy-button {
-		background: none;
-		border: none;
-		cursor: pointer;
+	.mono {
+		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
 		font-size: 12px;
-		padding: 2px 4px;
-		opacity: 0.6;
-		transition: opacity 0.15s ease;
+		color: var(--ink);
 	}
 
-	.copy-button:hover {
-		opacity: 1;
+	.pill-area {
+		margin-top: 12px;
 	}
 
-	.sync-status {
-		display: flex;
-		align-items: center;
+	.pill-label {
+		margin-bottom: 6px;
 	}
 
-	.pills-list {
+	.pills {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 6px;
+		gap: 4px;
 	}
 
 	.pill {
+		padding: 3px 7px;
+		background: var(--paper-3);
+		font-family: var(--font-mono);
+		font-size: 10.5px;
+		color: var(--ink-2);
+	}
+
+	.pill-outline {
+		background: transparent;
+		border: 1px solid var(--rule-soft);
+		color: var(--ink-3);
+	}
+
+	.mesh {
+		margin-top: 36px;
+	}
+
+	.mesh-header {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		margin-bottom: 12px;
+		padding-bottom: 8px;
+		border-bottom: 1px solid var(--ink);
+	}
+
+	.mesh-title {
+		margin: 0;
+		font-family: var(--font-display);
+		font-size: 20px;
+		font-weight: 600;
+		color: var(--ink);
+	}
+
+	.mesh-sub {
 		font-size: 11px;
-		padding: 4px 8px;
-		border-radius: 12px;
-		background: rgba(0, 153, 68, 0.1);
-		color: var(--line-4);
-		border: 1px solid rgba(0, 153, 68, 0.2);
+		color: var(--ink-3);
+	}
+
+	.mesh-columns {
+		display: grid;
+		grid-template-columns: 1fr 120px 120px 120px 90px;
+		gap: 14px;
+		padding: 10px 0;
+		border-bottom: 1px solid var(--rule-soft);
+		font-family: var(--font-mono);
+		font-size: 10.5px;
+		font-weight: 600;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+		color: var(--ink-3);
+	}
+
+	.right {
+		text-align: right;
+	}
+
+	.mesh-row {
+		display: grid;
+		grid-template-columns: 1fr 120px 120px 120px 90px;
+		gap: 14px;
+		padding: 14px 0;
+		border-bottom: 1px solid var(--rule-faint);
+		align-items: center;
+	}
+
+	.peer {
+		font-family: var(--font-display);
+		font-size: 13.5px;
 		font-weight: 500;
-	}
-
-	.pill-secondary {
-		background: rgba(100, 100, 150, 0.1);
-		color: var(--text-secondary);
-		border-color: rgba(100, 100, 150, 0.2);
-	}
-
-	.pill-overflow {
-		background: rgba(42, 48, 68, 0.4);
-		color: var(--text-muted);
-		border-color: var(--bg-surface);
-	}
-
-	.sync-mesh-section {
-		margin-top: 40px;
-	}
-
-	.sync-mesh-section h2 {
-		margin: 0 0 16px 0;
-		font-size: var(--text-lg);
-		font-weight: 700;
-		color: var(--text-primary);
-	}
-
-	@media (prefers-reduced-motion: reduce) {
-		.loading-ring {
-			animation: none;
-		}
+		color: var(--ink);
 	}
 </style>

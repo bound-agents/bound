@@ -1,19 +1,33 @@
-// Tokyo Metro line colors — same palette as SystemMap.svelte and App.svelte CSS vars
+// Line identity palette — muted to sit on warm paper. Used ONLY inside badges,
+// dots, and thin rule lines — never as backgrounds or glows.
+// Index order mirrors the canonical Tokyo Metro letters (G, M, H, T, C, Y, Z,
+// N, F, E); the matching CSS vars live in App.svelte.
 export const LINE_COLORS = [
-	"#F39700", // Ginza (G)        — orange
-	"#E60012", // Marunouchi (M)   — red
-	"#9CAEB7", // Hibiya (H)       — silver
-	"#009BBF", // Tozai (T)        — sky blue
-	"#009944", // Chiyoda (C)      — green
-	"#C1A470", // Yurakucho (Y)    — gold
-	"#8F76D6", // Hanzomon (Z)     — purple
-	"#00AC9B", // Namboku (N)      — emerald
-	"#9C5E31", // Fukutoshin (F)   — brown
-	"#B6007A", // Oedo (E)         — ruby
+	"#D9861A", // 0 — Ginza      · amber
+	"#C8331C", // 1 — Marunouchi · red (same hue as the signal accent)
+	"#7D8B93", // 2 — Hibiya     · silver
+	"#1E7FA8", // 3 — Tozai      · blue
+	"#2E7D47", // 4 — Chiyoda    · green
+	"#A8885A", // 5 — Yurakucho  · gold
+	"#6B5BB3", // 6 — Hanzomon   · violet
+	"#0E8E83", // 7 — Namboku    · teal
+	"#8B5E34", // 8 — Fukutoshin · brown
+	"#9B2A6E", // 9 — Oedo       · ruby
 ];
 
-// Tokyo Metro line letter codes
 export const LINE_CODES = ["G", "M", "H", "T", "C", "Y", "Z", "N", "F", "E"];
+export const LINE_NAMES = [
+	"Ginza",
+	"Marunouchi",
+	"Hibiya",
+	"Tozai",
+	"Chiyoda",
+	"Yurakucho",
+	"Hanzomon",
+	"Namboku",
+	"Fukutoshin",
+	"Oedo",
+];
 
 export function getLineColor(colorIndex: number): string {
 	return LINE_COLORS[colorIndex % LINE_COLORS.length];
@@ -21,4 +35,12 @@ export function getLineColor(colorIndex: number): string {
 
 export function getLineCode(colorIndex: number): string {
 	return LINE_CODES[colorIndex % LINE_CODES.length];
+}
+
+export function getLineName(colorIndex: number): string {
+	return LINE_NAMES[colorIndex % LINE_NAMES.length];
+}
+
+export function getLineCssVar(colorIndex: number): string {
+	return `var(--line-${colorIndex % LINE_COLORS.length})`;
 }

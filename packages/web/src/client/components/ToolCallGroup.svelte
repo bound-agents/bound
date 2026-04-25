@@ -19,13 +19,17 @@ type ToolGroupSegment =
 	| { kind: "tools"; entries: ToolEntry[] }
 	| { kind: "reasoning"; text: string };
 
-const { segments = [], turnRange = null } = $props<{
+interface Props {
 	segments?: ToolGroupSegment[];
 	turnRange?: TurnRange | null;
-}>();
+}
+
+const { segments = [], turnRange = null }: Props = $props();
 
 // Flatten all tool entries for summary
-const allEntries = $derived(segments.flatMap((s) => (s.kind === "tools" ? s.entries : [])));
+const allEntries = $derived(
+	segments.flatMap((s: ToolGroupSegment) => (s.kind === "tools" ? s.entries : [])),
+);
 
 function entryInRange(entry: ToolEntry): boolean {
 	if (!turnRange || !entry.timestamp) return true;
@@ -58,12 +62,12 @@ function formatInput(input: unknown): string {
 }
 
 function summaryLabel(): string {
-	const names = [...new Set(allEntries.map((e) => e.name))];
+	const names = [...new Set(allEntries.map((e: ToolEntry) => e.name))];
 	if (names.length <= 3) return names.join(", ");
 	return `${names.slice(0, 2).join(", ")} +${names.length - 2} more`;
 }
 
-const doneCount = $derived(allEntries.filter((e) => e.result !== undefined).length);
+const doneCount = $derived(allEntries.filter((e: ToolEntry) => e.result !== undefined).length);
 </script>
 
 <div class="tool-group">
@@ -128,23 +132,10 @@ const doneCount = $derived(allEntries.filter((e) => e.result !== undefined).leng
 <style>
 	.tool-group {
 		position: relative;
-		margin: 6px 0;
-		padding: 8px 12px;
-		border-radius: 8px;
-		background: rgba(143, 118, 214, 0.06);
-		border: 1px solid var(--bg-surface);
-	}
-
-	/* Hanzomon purple ticket stripe — 32px to match MetroCard siblings in chat */
-	.tool-group::after {
-		content: "";
-		position: absolute;
-		top: 0;
-		left: 12px;
-		width: 32px;
-		height: 2px;
-		background: var(--line-6);
-		border-radius: 0 0 1px 1px;
+		margin: 10px 0;
+		padding: 0;
+		background: transparent;
+		border: none;
 	}
 
 	.tool-group-header {
@@ -153,26 +144,28 @@ const doneCount = $derived(allEntries.filter((e) => e.result !== undefined).leng
 		gap: 8px;
 		cursor: pointer;
 		user-select: none;
-		padding: 2px 0;
+		padding: 8px 12px;
+		background: var(--paper-2);
+		border: 1px solid var(--rule-soft);
+		border-left: 3px solid var(--line-M);
 	}
 
 	.tool-group-header:focus-visible {
-		outline: 2px solid var(--line-6);
-		outline-offset: 2px;
-		border-radius: 4px;
+		outline: 2px solid var(--accent);
+		outline-offset: -2px;
 	}
 
 	.tg-icon {
-		color: var(--line-6);
+		color: var(--ink-3);
 		display: flex;
 		align-items: center;
 	}
 
 	.tg-summary {
-		font-family: var(--font-mono);
-		font-size: 13px;
+		font-family: var(--font-display);
+		font-size: 12px;
 		font-weight: 600;
-		color: #c4b5f4;
+		color: var(--ink-2);
 		flex: 1;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -182,7 +175,7 @@ const doneCount = $derived(allEntries.filter((e) => e.result !== undefined).leng
 	.tg-count {
 		font-family: var(--font-mono);
 		font-size: 11px;
-		color: var(--text-muted);
+		color: var(--ink-4);
 		flex-shrink: 0;
 		display: flex;
 		align-items: center;
@@ -190,47 +183,48 @@ const doneCount = $derived(allEntries.filter((e) => e.result !== undefined).leng
 	}
 
 	.tg-toggle {
-		color: var(--text-muted);
+		color: var(--ink-4);
 		display: flex;
 		align-items: center;
 	}
 
-	/* Reasoning text — nested bubble between tool segments */
+	/* Reasoning text — serif italic to echo the "thinking" block aesthetic */
 	.reasoning-bubble {
-		margin: 6px 0;
-		padding: 6px 10px;
-		background: rgba(243, 151, 0, 0.06);
-		border: 1px solid rgba(243, 151, 0, 0.12);
-		border-radius: 6px;
+		margin: 8px 0;
+		padding: 10px 14px;
+		background: var(--paper-2);
+		border-left: 3px solid var(--ink-4);
 	}
 
 	.reasoning-text {
 		margin: 0;
-		font-family: var(--font-body);
-		font-size: var(--text-sm);
-		color: var(--text-secondary);
-		line-height: 1.5;
+		font-family: var(--font-serif);
+		font-style: italic;
+		font-size: 13px;
+		color: var(--ink-2);
+		line-height: 1.55;
 	}
 
-	/* Level 1: tool list */
 	.tool-list {
-		margin-top: 4px;
+		margin-top: 6px;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
 	}
 
 	.tool-row {
-		border-radius: 5px;
-		margin-top: 4px;
-		background: rgba(10, 10, 20, 0.3);
-		border: 1px solid rgba(143, 118, 214, 0.08);
+		background: var(--paper-2);
+		border: 1px solid var(--rule-faint);
+		border-left: 3px solid var(--line-M);
 		overflow: hidden;
 	}
 
 	.tool-row-expanded {
-		border-color: rgba(143, 118, 214, 0.2);
+		border-color: var(--rule-soft);
 	}
 
 	.tool-row-dimmed {
-		opacity: 0.3;
+		opacity: 0.35;
 		transition: opacity 0.3s ease;
 	}
 
@@ -238,82 +232,81 @@ const doneCount = $derived(allEntries.filter((e) => e.result !== undefined).leng
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		padding: 6px 10px;
+		padding: 7px 11px;
 		cursor: pointer;
 		user-select: none;
 	}
 
 	.tool-row-header:focus-visible {
-		outline: 2px solid var(--line-6);
+		outline: 2px solid var(--accent);
 		outline-offset: -2px;
-		border-radius: 4px;
 	}
 
 	.tr-icon {
-		color: var(--line-6);
+		color: var(--accent);
 		display: flex;
 		align-items: center;
-		opacity: 0.6;
+		opacity: 0.85;
 	}
 
 	.tr-name {
 		font-family: var(--font-mono);
 		font-weight: 600;
-		font-size: 12px;
-		color: #c4b5f4;
+		font-size: 11.5px;
+		color: var(--accent);
 		flex: 1;
 	}
 
 	.tr-done {
-		color: var(--line-4);
+		color: var(--ok);
 		display: flex;
 		align-items: center;
 	}
 
 	.tr-error {
-		color: var(--alert-disruption);
+		color: var(--err);
 	}
 
 	.tr-toggle {
-		color: var(--text-muted);
+		color: var(--ink-4);
 		display: flex;
 		align-items: center;
 	}
 
-	/* Level 2: request/response detail */
 	.tr-input {
 		margin: 0;
-		padding: 8px 10px;
-		background: rgba(10, 10, 20, 0.5);
+		padding: 8px 11px;
+		background: var(--paper);
+		border-top: 1px solid var(--rule-faint);
 		font-family: var(--font-mono);
 		font-size: 11px;
-		color: #c4b5f4;
+		color: var(--ink-2);
 		white-space: pre-wrap;
 		word-break: break-all;
 		overflow-x: auto;
-		line-height: 1.45;
+		line-height: 1.5;
 	}
 
 	.tr-divider {
 		height: 1px;
-		background: rgba(255, 255, 255, 0.06);
+		background: var(--rule-faint);
 	}
 
 	.tr-output {
 		margin: 0;
-		padding: 8px 10px;
-		background: rgba(0, 153, 68, 0.04);
+		padding: 8px 11px;
+		background: var(--paper);
 		font-family: var(--font-mono);
 		font-size: 11px;
-		color: var(--status-active);
+		color: var(--ok);
 		white-space: pre-wrap;
 		word-break: break-all;
 		overflow-x: auto;
-		line-height: 1.45;
+		line-height: 1.5;
 	}
 
 	.tr-output-error {
-		background: rgba(255, 23, 68, 0.06);
-		color: var(--alert-disruption);
+		background: rgba(178, 34, 34, 0.06);
+		color: var(--err);
 	}
 </style>

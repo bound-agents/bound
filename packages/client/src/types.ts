@@ -7,6 +7,9 @@ import type { AgentFile, MemoryTier, Message, Task, Thread } from "@bound/shared
 export interface ThreadListEntry extends Thread {
 	messageCount: number;
 	lastModel: string | null;
+	/** Whether the thread currently has an active agent loop or running task.
+	 *  Server-side derived so clients don't need to poll /status per-thread. */
+	active: boolean;
 }
 
 /** GET /api/threads/:id/status */

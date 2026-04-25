@@ -12,7 +12,7 @@ interface Props {
 	onTurnChange?: (range: { from: string; to: string | null } | null) => void;
 }
 
-const { threadId, wsEvents: wsEventsStore, onTurnChange } = $props<Props>();
+const { threadId, wsEvents: wsEventsStore, onTurnChange }: Props = $props();
 
 let turns = $state<ContextDebugTurn[]>([]);
 let selectedTurnIdx = $state(-1);
@@ -208,103 +208,126 @@ function navigateTurn(direction: number): void {
 
 <style>
 	.debug-panel {
-		width: 320px;
-		min-width: 320px;
+		width: 100%;
 		height: 100%;
 		overflow-y: auto;
-		border-left: 1px solid var(--bg-surface);
-		background: var(--bg-secondary);
-		padding: 16px;
-		font-family: var(--font-body);
+		padding: 0;
+		font-family: var(--font-display);
 		font-size: 13px;
-		color: var(--text-secondary);
+		color: var(--ink-2);
 	}
 
 	.panel-header {
-		display: flex;
-		align-items: center;
-		margin-bottom: 16px;
-	}
-
-	.panel-title {
-		font-family: var(--font-display);
-		font-size: 14px;
-		font-weight: 600;
-		color: var(--text-primary);
+		display: none;
 	}
 
 	.turn-nav {
 		display: flex;
 		align-items: center;
-		gap: 8px;
-		margin-bottom: 12px;
+		gap: 6px;
+		margin-bottom: 14px;
+		padding: 8px 10px;
+		background: var(--paper);
+		border: 1px solid var(--rule-soft);
 	}
 
 	.turn-nav button {
-		background: var(--bg-surface);
-		border: none;
-		color: var(--text-primary);
-		padding: 4px 8px;
-		border-radius: 4px;
+		background: transparent;
+		border: 1px solid var(--rule-soft);
+		color: var(--ink);
+		padding: 3px 8px;
 		cursor: pointer;
-		font-size: 12px;
+		font-family: var(--font-mono);
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.12em;
+		min-width: 26px;
 	}
 
 	.turn-nav button:disabled {
-		opacity: 0.3;
-		cursor: default;
+		opacity: 0.35;
+		cursor: not-allowed;
+		color: var(--ink-4);
+	}
+
+	.turn-nav button:not(:disabled):hover {
+		background: var(--paper-2);
 	}
 
 	.turn-label {
 		flex: 1;
-		text-align: center;
-		font-size: 12px;
+		font-family: var(--font-mono);
+		font-size: 11px;
+		color: var(--ink-2);
+		letter-spacing: 0.04em;
 	}
 
 	.latest-badge {
-		font-size: 10px;
+		font-family: var(--font-mono);
+		font-size: 9.5px;
 		padding: 2px 6px;
-		border-radius: 3px;
-		background: var(--line-7);
-		color: var(--bg-primary);
+		background: var(--accent);
+		color: #fff;
 		font-weight: 600;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
 	}
 
 	.turn-summary {
 		margin-bottom: 16px;
+		padding: 10px 12px;
+		background: var(--paper-2);
+		border: 1px solid var(--rule-soft);
 	}
 
 	.summary-row {
 		display: flex;
 		justify-content: space-between;
-		padding: 4px 0;
-		font-size: 12px;
+		align-items: baseline;
+		padding: 3px 0;
+		gap: 12px;
 	}
 
-	.mono {
+	.summary-row > span:first-child {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+		color: var(--ink-4);
+	}
+
+	.summary-row .mono {
 		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
+		font-size: 12px;
+		color: var(--ink);
 	}
 
 	.variance {
-		font-size: 11px;
-		color: var(--text-muted);
+		font-size: 10.5px !important;
+	}
+
+	.variance .mono {
+		color: var(--ink-3) !important;
 	}
 
 	.budget-warning {
-		margin-top: 8px;
-		padding: 4px 8px;
-		border-radius: 4px;
-		background: rgba(255, 145, 0, 0.15);
-		color: var(--alert-warning);
-		font-size: 11px;
-		font-weight: 500;
+		margin-top: 10px;
+		padding: 6px 10px;
+		background: rgba(178, 34, 34, 0.08);
+		border: 1px solid var(--err);
+		color: var(--err);
+		font-size: 11.5px;
+		font-weight: 600;
+		letter-spacing: 0.04em;
 	}
 
 	.loading,
 	.empty {
 		text-align: center;
-		padding: 32px 0;
-		color: var(--text-muted);
-		font-size: 12px;
+		padding: 32px 12px;
+		color: var(--ink-4);
+		font-size: 13px;
+		font-style: italic;
 	}
 </style>

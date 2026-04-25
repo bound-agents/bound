@@ -1,10 +1,12 @@
 <script lang="ts">
 import type { Thread } from "@bound/shared";
-import { ChevronLeft, Paperclip, Send, Settings, X } from "lucide-svelte";
-import { onDestroy, onMount, tick } from "svelte";
-import DebugPanelWrapper from "../components/DebugPanelWrapper.svelte";
+import { onDestroy, onMount } from "svelte";
+import Btn from "../components/Btn.svelte";
+import ContextDebugPanel from "../components/ContextDebugPanel.svelte";
+import LineBadge from "../components/LineBadge.svelte";
 import MessageList from "../components/MessageList.svelte";
-import { LineBadge, StatusChip } from "../components/shared";
+import ModelSelector from "../components/ModelSelector.svelte";
+import StatusChip from "../components/StatusChip.svelte";
 import {
 	client,
 	connectWebSocket,
@@ -12,27 +14,40 @@ import {
 	subscribeToThread,
 	wsEvents,
 } from "../lib/bound";
-import { getLineColor } from "../lib/metro-lines";
+import { formatRelativeTime } from "../lib/format-time";
+import { getLineColor, getLineName } from "../lib/metro-lines";
 import { modelStore } from "../lib/modelStore";
 import { navigateTo } from "../lib/router";
 import { shouldClearWaiting } from "../utils/waiting";
 
 const { threadId } = $props<{ threadId: string }>();
 
-let messages = $state([]);
+interface LocalMessage {
+	id: string;
+	role: string;
+	content: string;
+	tool_name?: string | null;
+	model_id?: string | null;
+	created_at?: string;
+}
+
+let messages = $state<LocalMessage[]>([]);
 let inputText = $state("");
 let sending = $state(false);
 let waiting = $state(false);
 let waitingSinceMessageCount = $state(0);
 let agentActive = $state(false);
 let agentState = $state<string | null>(null);
-let fileInput = $state<HTMLInputElement | null>(null);
 let uploadStatus = $state<string | null>(null);
 let pendingFileId = $state<string | null>(null);
 let thread = $state<Thread | null>(null);
+let panelMode = $state<"context" | "debugger">("context");
+
+// A selected-turn range emitted by the debugger's turn scrubber. When set, the
+// conversation dims other turns and scrolls the selected one into view.
+let turnRange = $state<{ from: string; to: string | null } | null>(null);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
-let messageListElement = $state<HTMLDivElement | null>(null);
 
 // Subscribe to WebSocket events and append new messages
 const unsubscribeWs = wsEvents.subscribe((events) => {
@@ -46,12 +61,10 @@ const unsubscribeWs = wsEvents.subscribe((events) => {
 	) {
 		const msg = last.data as { thread_id?: string; id?: string; role?: string };
 		if (msg.thread_id === threadId) {
-			// Avoid duplicates by id
-			const exists = messages.some((m: { id: string }) => m.id === msg.id);
+			const exists = messages.some((m) => m.id === msg.id);
 			if (!exists) {
-				messages = [...messages, last.data];
+				messages = [...messages, last.data as LocalMessage];
 			}
-			// Clear waiting indicator when an assistant or alert message arrives
 			if (shouldClearWaiting(msg.role ?? "")) {
 				waiting = false;
 			}
@@ -61,15 +74,12 @@ const unsubscribeWs = wsEvents.subscribe((events) => {
 
 async function pollMessages(): Promise<void> {
 	try {
-		const latest = await client.listMessages(threadId);
+		const latest = (await client.listMessages(threadId)) as unknown as LocalMessage[];
 		messages = latest;
-		// Clear waiting indicator if a new assistant or alert message arrived after we started waiting
 		if (
 			waiting &&
 			latest.length > waitingSinceMessageCount &&
-			latest
-				.slice(waitingSinceMessageCount)
-				.some((m: { role: string }) => shouldClearWaiting(m.role))
+			latest.slice(waitingSinceMessageCount).some((m) => shouldClearWaiting(m.role))
 		) {
 			waiting = false;
 		}
@@ -82,29 +92,22 @@ function handleThreadStatus(data: unknown): void {
 	const status = data as { active?: boolean; state?: string | null };
 	agentActive = status.active ?? false;
 	agentState = status.state ?? null;
-	// Clear stale waiting indicator if agent is no longer active
-	if (waiting && !status.active) {
-		waiting = false;
-	}
+	if (waiting && !status.active) waiting = false;
 }
 
 onMount(async () => {
 	try {
 		thread = await client.getThread(threadId);
-		messages = await client.listMessages(threadId);
+		messages = (await client.listMessages(threadId)) as unknown as LocalMessage[];
 		connectWebSocket();
 		subscribeToThread(threadId);
 	} catch (error) {
 		console.error("Failed to load thread:", error);
 	}
 
-	// Poll messages periodically (WebSocket events don't include all updates)
 	pollInterval = setInterval(pollMessages, 5000);
-
-	// Listen for real-time thread status updates instead of polling
 	client.on("thread:status", handleThreadStatus);
 
-	// Initial status load
 	try {
 		const data = await client.getThreadStatus(threadId);
 		handleThreadStatus(data);
@@ -122,10 +125,8 @@ onDestroy(() => {
 
 function handleSendMessage(): void {
 	if (!inputText.trim() && !pendingFileId) return;
-
 	sending = true;
 	try {
-		// Fire-and-forget over WebSocket; message arrives via message:created event
 		client.sendMessage(threadId, inputText.trim(), {
 			modelId: modelStore.getModel() || undefined,
 			fileId: pendingFileId ?? undefined,
@@ -150,23 +151,22 @@ async function handleCancel(): Promise<void> {
 	}
 }
 
+let fileInputEl: HTMLInputElement | null = null;
+
 async function handleFileChange(e: Event): Promise<void> {
 	const input = e.target as HTMLInputElement;
 	if (!input.files || input.files.length === 0) return;
 	const file = input.files[0];
-	const form = new FormData();
-	form.append("file", file);
-	uploadStatus = "Uploading...";
+	uploadStatus = "Uploading…";
 	pendingFileId = null;
 	try {
 		const uploaded = await client.uploadFile(file, file.name);
 		pendingFileId = uploaded.id ?? null;
-		uploadStatus = `Attached: ${file.name}`;
+		uploadStatus = `Attached · ${file.name}`;
 	} catch (error) {
 		console.error("Failed to upload file:", error);
 		uploadStatus = "Upload failed";
 	}
-	// Reset the input so the same file can be uploaded again
 	input.value = "";
 }
 
@@ -182,98 +182,177 @@ function handleKeydown(e: KeyboardEvent): void {
 }
 
 function viewTitle(): string {
-	if (thread?.title && thread.title.trim().length > 0) {
-		return thread.title.trim();
-	}
-	if (messages.length === 0) {
-		return "New Conversation";
-	}
+	if (thread?.title && thread.title.trim().length > 0) return thread.title.trim();
+	if (messages.length === 0) return "New Conversation";
 	return "Conversation";
 }
+
+const lineColor = $derived(thread ? getLineColor(thread.color) : "#999");
+const lineName = $derived(thread ? getLineName(thread.color) : "");
+
+// Right-side Context pane info
+const allToolCalls = $derived(messages.filter((m) => m.role === "tool_call").length);
+const firstMessageAt = $derived(messages[0]?.created_at ?? null);
 </script>
 
-<DebugPanelWrapper {threadId} {wsEvents}>
-	{#snippet children({ debugOpen, toggleDebug, turnRange })}
-	<div class="line-view">
-		<div class="header">
-			<button onclick={handleBackClick} class="back-button">
-				<ChevronLeft size={16} />
-				Map
-			</button>
+<div class="line-view" style="--line-color: {lineColor}">
+	<!-- Header -->
+	<div class="line-header">
+		<button class="back-btn" onclick={handleBackClick}>
+			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
+				<path d="M10 12L6 8l4-4" />
+			</svg>
+			Map
+		</button>
+
+		<div class="title-block">
 			{#if thread}
-				<LineBadge lineIndex={thread.color} />
+				<LineBadge lineIndex={thread.color} size="large" />
 			{/if}
-			<h1>{viewTitle()}</h1>
+			<div class="title-text">
+				{#if thread}
+					<div class="kicker">{lineName} Line</div>
+				{/if}
+				<h1 class="title">{viewTitle()}</h1>
+			</div>
 			{#if thread}
 				<StatusChip status={agentActive ? "active" : "idle"} />
 			{/if}
 			{#if agentActive}
-				<span class="thinking-indicator">
-					<span class="thinking-dot"></span>
-					{agentState === "tool_call" ? "Using tool..." : "Thinking..."}
+				<span class="agent-state mono">
+					{agentState === "tool_call" ? "Using tool…" : "Thinking…"}
 				</span>
-				<button onclick={handleCancel} class="cancel-button">Cancel</button>
+				<Btn variant="danger" size="sm" onclick={handleCancel}>
+					{#snippet children()}Cancel{/snippet}
+				</Btn>
 			{/if}
-			<button class="debug-toggle" onclick={toggleDebug} title="Context Debug">
-				{#if debugOpen}<X size={14} />{:else}<Settings size={14} />{/if}
-			</button>
 		</div>
+	</div>
 
-	<div class="line-content">
-		<div class="message-container" bind:this={messageListElement}>
+	<!-- Body: conversation + right panel -->
+	<div class="body">
+		<div class="conversation">
 			<MessageList
 				{messages}
 				{waiting}
 				{turnRange}
 				threadColor={thread?.color ?? 0}
-				lineColor={thread ? getLineColor(thread.color) : "#999"}
+				{lineColor}
 				isAgentActive={agentActive}
 			/>
-		</div>
-	</div>
 
-	<div class="bottom-area">
-		<div class="file-upload-area">
-			<label class="file-label" for="file-input">
-				<Paperclip size={14} />
-				Attach
-				<input
-					id="file-input"
-					type="file"
-					class="file-input"
-					onchange={handleFileChange}
-					bind:this={fileInput}
-				/>
-			</label>
-			{#if uploadStatus}
-				<span class="upload-status">{uploadStatus}</span>
-			{/if}
+			<!-- Input bar -->
+			<div class="input-wrap">
+				<div class="input-row">
+					<textarea
+						bind:value={inputText}
+						placeholder="Address the agent…"
+						rows={2}
+						disabled={sending}
+						onkeydown={handleKeydown}
+					></textarea>
+					<button
+						class="dispatch"
+						class:active={inputText.trim().length > 0}
+						onclick={handleSendMessage}
+						disabled={sending || !inputText.trim()}
+					>
+						{sending ? "Sending" : "Dispatch"}
+					</button>
+				</div>
+				<div class="input-meta">
+					<ModelSelector />
+					<label class="attach">
+						<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
+							<path d="M12 4l-6 6c-1 1-1 3 0 4s3 1 4 0l6-6c2-2 2-5 0-7s-5-2-7 0l-7 7c-3 3-3 7 0 10s7 3 10 0l5-5" />
+						</svg>
+						Attach
+						<input
+							type="file"
+							class="file-input"
+							onchange={handleFileChange}
+							bind:this={fileInputEl}
+						/>
+					</label>
+					{#if uploadStatus}
+						<span class="upload-status mono">{uploadStatus}</span>
+					{/if}
+					<div class="spacer"></div>
+					<span class="hint">⏎ send · ⇧⏎ newline</span>
+				</div>
+			</div>
 		</div>
 
-		<div class="input-area">
-			<textarea
-				bind:value={inputText}
-				placeholder="Type your message..."
-				disabled={sending}
-				onkeydown={handleKeydown}
-			></textarea>
-			<button
-				onclick={handleSendMessage}
-				disabled={sending || !inputText.trim()}
-				class="send-button"
-			>
-				{#if sending}
-					<span class="sending-indicator"></span>
+		<aside class="right-panel">
+			<div class="panel-toggle">
+				<button
+					class="mode-btn"
+					class:active={panelMode === "context"}
+					onclick={() => (panelMode = "context")}
+				>
+					Context
+				</button>
+				<button
+					class="mode-btn"
+					class:active={panelMode === "debugger"}
+					onclick={() => (panelMode = "debugger")}
+				>
+					Debugger
+				</button>
+			</div>
+
+			<div class="panel-body">
+				{#if panelMode === "context"}
+					<div class="context-pane">
+						{#if thread}
+							<div class="context-header">
+								<LineBadge lineIndex={thread.color} size="compact" />
+								<span class="line-title">{lineName} Line</span>
+							</div>
+							<div class="fields">
+								<div class="field">
+									<span class="kicker">Reference</span>
+									<span class="mono">{thread.id.slice(0, 10)}</span>
+								</div>
+								<div class="field">
+									<span class="kicker">Opened</span>
+									<span class="mono">
+										{firstMessageAt ? formatRelativeTime(firstMessageAt) : "—"}
+									</span>
+								</div>
+								<div class="field">
+									<span class="kicker">Messages</span>
+									<span class="mono tnum">{messages.length}</span>
+								</div>
+								<div class="field">
+									<span class="kicker">Tool calls</span>
+									<span class="mono tnum">{allToolCalls}</span>
+								</div>
+								<div class="field">
+									<span class="kicker">Status</span>
+									<span
+										class="mono"
+										style="color: {agentActive ? 'var(--ok)' : 'var(--ink-3)'}"
+									>
+										{agentActive ? "Live" : "Idle"}
+									</span>
+								</div>
+							</div>
+						{:else}
+							<div class="empty">Loading thread…</div>
+						{/if}
+					</div>
 				{:else}
-					<Send size={18} />
+					<ContextDebugPanel
+						{threadId}
+						{wsEvents}
+						onTurnChange={(range) => (turnRange = range)}
+					/>
 				{/if}
-				<span class="send-label">{sending ? "Sending" : "Send"}</span>
-			</button>
-		</div>
+			</div>
+		</aside>
 	</div>
-	</div>
-	{/snippet}
-</DebugPanelWrapper>
+</div>
 
 <style>
 	.line-view {
@@ -281,151 +360,177 @@ function viewTitle(): string {
 		flex-direction: column;
 		flex: 1;
 		min-height: 0;
-		max-width: 72rem;
-		width: 100%;
-		margin: 0 auto;
-		padding: 24px;
-		overflow: hidden;
-		box-sizing: border-box;
-	}
-
-	.header {
-		display: flex;
-		gap: 10px;
-		align-items: center;
-		margin-bottom: 12px;
-		flex-shrink: 0;
-	}
-
-	h1 {
-		margin: 0;
-		color: var(--text-primary);
-		font-family: var(--font-display);
-		font-size: var(--text-lg);
-		font-weight: 700;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.line-content {
-		max-width: 1100px;
-		margin: 0 auto;
-		width: 100%;
-		flex: 1;
-		min-height: 0;
-		display: flex;
-		flex-direction: column;
-	}
-
-	.message-container {
-		position: relative;
-		flex: 1;
-		min-height: 0;
-		display: flex;
-		flex-direction: column;
 		overflow: hidden;
 	}
 
-	.back-button {
+	.line-header {
 		display: flex;
-		align-items: center;
-		gap: 6px;
-		padding: 8px 16px;
-		background: var(--bg-secondary);
-		border: 1px solid var(--bg-surface);
-		color: var(--text-secondary);
-		border-radius: 6px;
+		align-items: stretch;
+		border-bottom: 1px solid var(--ink);
+		background: var(--paper);
+	}
+
+	.back-btn {
+		padding: 0 18px;
+		background: var(--paper-3);
+		border: none;
+		border-right: 1px solid var(--rule-soft);
 		cursor: pointer;
-		font-family: var(--font-display);
-		font-size: var(--text-sm);
-		font-weight: 600;
-		transition: all 0.2s ease;
-		flex-shrink: 0;
-	}
-
-	.back-button:hover {
-		background: var(--bg-surface);
-		color: var(--text-primary);
-	}
-
-	.thinking-indicator {
 		display: flex;
 		align-items: center;
 		gap: 8px;
+		color: var(--ink-2);
 		font-family: var(--font-display);
-		font-size: var(--text-sm);
-		color: var(--status-active);
-		flex-shrink: 0;
+		font-size: 12.5px;
+		font-weight: 500;
 	}
 
-	.thinking-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--status-active);
-		animation: pulse 1.5s ease-in-out infinite;
+	.back-btn:hover {
+		background: var(--paper-2);
 	}
 
-	@keyframes pulse {
-		0%, 100% { opacity: 1; transform: scale(1); }
-		50% { opacity: 0.4; transform: scale(0.8); }
-	}
-
-	.cancel-button {
-		padding: 8px 16px;
-		background: rgba(255, 23, 68, 0.1);
-		border: 1px solid var(--alert-disruption);
-		color: var(--alert-disruption);
-		border-radius: 6px;
-		cursor: pointer;
-		font-family: var(--font-display);
-		font-size: var(--text-sm);
-		font-weight: 600;
-		transition: all 0.2s ease;
-		flex-shrink: 0;
-	}
-
-	.cancel-button:hover {
-		background: rgba(255, 23, 68, 0.2);
-	}
-
-	.bottom-area {
-		flex-shrink: 0;
-		padding-top: 10px;
-		border-top: 1px solid var(--bg-surface);
-		max-width: 1100px;
-		margin: 0 auto;
-		width: 100%;
-	}
-
-	.file-upload-area {
+	.title-block {
+		flex: 1;
+		padding: 16px 22px;
 		display: flex;
 		align-items: center;
-		gap: 12px;
-		margin-bottom: 12px;
+		gap: 14px;
+		min-width: 0;
 	}
 
-	.file-label {
+	.title-text {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.kicker {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+		color: var(--ink-3);
+	}
+
+	.title {
+		margin: 2px 0 0;
+		font-family: var(--font-header);
+		font-size: 26px;
+		font-weight: 700;
+		letter-spacing: -0.018em;
+		line-height: 1.08;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		color: var(--ink);
+	}
+
+	.agent-state {
+		font-family: var(--font-mono);
+		font-size: 11.5px;
+		color: var(--ok);
+	}
+
+	.body {
+		flex: 1;
+		min-height: 0;
+		display: grid;
+		grid-template-columns: 1fr 380px;
+		border-top: 1px solid var(--rule-soft);
+	}
+
+	.conversation {
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		background: var(--paper);
+		min-width: 0;
+	}
+
+	.input-wrap {
+		border-top: 1px solid var(--rule-soft);
+		background: var(--paper-2);
+		padding: 14px 36px 18px;
+		flex-shrink: 0;
+	}
+
+	.input-row {
+		display: flex;
+		gap: 0;
+		align-items: stretch;
+		border: 1px solid var(--ink);
+		background: var(--paper);
+	}
+
+	textarea {
+		flex: 1;
+		padding: 12px 14px;
+		border: none;
+		outline: none;
+		background: transparent;
+		resize: none;
+		font-family: var(--font-display);
+		font-size: 14px;
+		line-height: 1.5;
+		color: var(--ink);
+		min-height: 44px;
+	}
+
+	textarea::placeholder {
+		color: var(--ink-4);
+	}
+
+	textarea:disabled {
+		opacity: 0.5;
+	}
+
+	.dispatch {
+		background: var(--paper-3);
+		color: var(--ink-4);
+		border: none;
+		padding: 0 24px;
+		font-family: var(--font-mono);
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.2em;
+		text-transform: uppercase;
+		cursor: not-allowed;
+	}
+
+	.dispatch.active {
+		background: var(--accent);
+		color: #fff;
+		cursor: pointer;
+	}
+
+	.dispatch.active:hover:not(:disabled) {
+		background: var(--accent-2);
+	}
+
+	.input-meta {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin-top: 10px;
+	}
+
+	.attach {
 		display: inline-flex;
 		align-items: center;
 		gap: 6px;
-		padding: 6px 14px;
-		background: var(--bg-surface);
-		border: 1px solid rgba(156, 174, 183, 0.2);
-		color: var(--text-secondary);
-		border-radius: 6px;
+		padding: 5px 10px;
+		border: 1px dashed var(--rule-soft);
+		background: transparent;
 		cursor: pointer;
+		font-size: 11.5px;
+		color: var(--ink-3);
 		font-family: var(--font-display);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		transition: all 0.2s ease;
+		font-weight: 500;
 		user-select: none;
 	}
 
-	.file-label:hover {
-		background: var(--bg-surface);
-		color: var(--text-primary);
+	.attach:hover {
+		color: var(--ink-2);
+		border-color: var(--ink-4);
 	}
 
 	.file-input {
@@ -434,112 +539,120 @@ function viewTitle(): string {
 
 	.upload-status {
 		font-family: var(--font-mono);
-		font-size: 12px;
-		color: var(--status-active);
+		font-size: 11px;
+		color: var(--ok);
 	}
 
-	.input-area {
-		display: flex;
-		gap: 12px;
-		align-items: flex-end;
-	}
-
-	textarea {
+	.spacer {
 		flex: 1;
-		padding: 8px 12px;
-		background: var(--bg-secondary);
-		border: 1px solid var(--bg-surface);
-		color: var(--text-primary);
-		border-radius: 8px;
-		font-family: var(--font-body);
-		font-size: var(--text-base);
-		resize: vertical;
-		min-height: 44px;
-		max-height: 180px;
-		transition: border-color 0.2s ease;
-		line-height: 1.5;
 	}
 
-	textarea:focus {
-		outline: none;
-		border-color: var(--line-7);
+	.hint {
+		font-size: 11px;
+		color: var(--ink-4);
 	}
 
-	textarea::placeholder {
-		color: var(--text-muted);
-	}
-
-	textarea:disabled {
-		opacity: 0.4;
-	}
-
-	.send-button {
+	.right-panel {
+		background: var(--paper-2);
+		border-left: 1px solid var(--rule-soft);
 		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 8px;
-		padding: 12px 24px;
-		background: var(--line-7);
-		border: none;
-		color: #fff;
-		border-radius: 8px;
+		flex-direction: column;
+		overflow: hidden;
+	}
+
+	.panel-toggle {
+		display: flex;
+		padding: 12px 14px;
+		border-bottom: 1px solid var(--rule-soft);
+		background: var(--paper);
+		gap: 0;
+		flex-shrink: 0;
+	}
+
+	.mode-btn {
+		flex: 1;
+		padding: 7px 10px;
+		background: transparent;
+		color: var(--ink-2);
+		border: 1px solid var(--rule-soft);
 		cursor: pointer;
 		font-family: var(--font-display);
-		font-size: var(--text-sm);
+		font-size: 12px;
+		font-weight: 500;
+	}
+
+	.mode-btn:first-child {
+		border-right: none;
+	}
+
+	.mode-btn.active {
+		background: var(--ink);
+		color: var(--paper);
+		border-color: var(--ink);
+	}
+
+	.panel-body {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		padding: 20px 22px;
+	}
+
+	.context-pane .context-header {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin-bottom: 12px;
+	}
+
+	.line-title {
+		font-family: var(--font-display);
 		font-weight: 600;
-		transition: all 0.2s ease;
-		flex-shrink: 0;
-		height: 48px;
-	}
-
-	.send-button:hover:not(:disabled) {
-		background: var(--line-7);
-		box-shadow: 0 0 16px rgba(0, 172, 155, 0.25);
-	}
-
-	.send-button:disabled {
-		opacity: 0.35;
-		cursor: not-allowed;
-	}
-
-	.send-label {
-		font-size: var(--text-sm);
-	}
-
-	.sending-indicator {
-		width: 14px;
-		height: 14px;
-		border: 2px solid rgba(255, 255, 255, 0.3);
-		border-top-color: #fff;
-		border-radius: 50%;
-		animation: spin 0.8s linear infinite;
-	}
-
-	@keyframes spin {
-		to { transform: rotate(360deg); }
-	}
-
-
-	.debug-toggle {
-		background: var(--bg-surface);
-		border: 1px solid var(--bg-surface);
-		color: var(--text-secondary);
-		padding: 4px 8px;
-		border-radius: 4px;
-		cursor: pointer;
 		font-size: 14px;
-		transition: color 0.2s;
-		flex-shrink: 0;
+		color: var(--ink);
 	}
 
-	.debug-toggle:hover {
-		color: var(--text-primary);
-		border-color: var(--line-7);
+	.fields {
+		display: grid;
+		row-gap: 8px;
+		border-top: 1px solid var(--rule-faint);
+		padding-top: 12px;
 	}
 
-	@media (prefers-reduced-motion: reduce) {
-		.thinking-dot, .sending-indicator {
-			animation: none;
+	.field {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 12px;
+	}
+
+	.field .kicker {
+		color: var(--ink-4);
+	}
+
+	.field .mono {
+		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
+		font-size: 12px;
+		color: var(--ink);
+	}
+
+	.empty {
+		color: var(--ink-4);
+		font-style: italic;
+		font-size: 13px;
+		text-align: center;
+		padding: 32px 0;
+	}
+
+	@media (max-width: 960px) {
+		.body {
+			grid-template-columns: 1fr;
+		}
+		.right-panel {
+			border-left: none;
+			border-top: 1px solid var(--rule-soft);
+			max-height: 40vh;
 		}
 	}
 </style>

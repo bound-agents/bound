@@ -1,9 +1,11 @@
 <script lang="ts">
 import type { Advisory } from "@bound/shared";
-import { ChevronDown } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
-import { LineBadge, MetroCard, SectionHeader, StatusChip } from "../components/shared";
-import { type DedupedAdvisory, deduplicateAdvisories } from "../lib/advisory-utils";
+import Btn from "../components/Btn.svelte";
+import Page from "../components/Page.svelte";
+import SectionHeader from "../components/SectionHeader.svelte";
+import StatusChip from "../components/StatusChip.svelte";
+import TicketTab from "../components/TicketTab.svelte";
 import { client } from "../lib/bound";
 
 let advisories: Advisory[] = $state([]);
@@ -12,16 +14,24 @@ let expandedId = $state<string | null>(null);
 let resolvedExpanded = $state(false);
 let actionInProgress = $state<string | null>(null);
 let hostNameMap = $state<Map<string, string>>(new Map());
+let sort = $state<"modified-desc" | "modified-asc" | "posted-desc">("modified-desc");
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
-const deduped = $derived(deduplicateAdvisories(advisories));
-const unresolved = $derived(
-	deduped.filter((a) => ["proposed", "approved"].includes(a.representative.status)),
-);
-const resolved = $derived(
-	deduped.filter((a) => !["proposed", "approved"].includes(a.representative.status)),
-);
+type Severity = "warn" | "info";
+
+// Map Advisory.type → severity token. The prototype had "err" too, but the
+// production enum is just (info, warn), matching Service Advisory / Notice.
+function severityOf(a: Advisory): Severity {
+	const t = a.type as string;
+	if (t === "warn" || t === "warning" || t === "alert") return "warn";
+	return "info";
+}
+
+const SEV_LABEL: Record<Severity, { accent: string; label: string }> = {
+	warn: { accent: "var(--warn)", label: "Service Advisory" },
+	info: { accent: "var(--line-T)", label: "Notice" },
+};
 
 async function loadAdvisories(): Promise<void> {
 	try {
@@ -39,9 +49,7 @@ async function loadNetworkStatus(): Promise<void> {
 			const map = new Map<string, string>();
 			for (const host of data.hosts) {
 				const h = host as { site_id?: string; host_name?: string };
-				if (h.site_id && h.host_name) {
-					map.set(h.site_id, h.host_name);
-				}
+				if (h.site_id && h.host_name) map.set(h.site_id, h.host_name);
 			}
 			hostNameMap = map;
 		}
@@ -73,8 +81,6 @@ async function performAction(id: string, action: string): Promise<void> {
 		if (fn) {
 			await fn(id);
 			await loadAdvisories();
-		} else {
-			console.error(`Unknown advisory action: ${action}`);
 		}
 	} catch (error) {
 		console.error(`Failed to ${action} advisory:`, error);
@@ -86,734 +92,491 @@ function toggleExpand(id: string): void {
 	expandedId = expandedId === id ? null : id;
 }
 
-function isActionInProgress(id: string, action: string): boolean {
-	return actionInProgress === `${id}:${action}`;
-}
-
-function canApprove(status: string): boolean {
-	return status === "proposed" || status === "deferred";
-}
-
-function canDismiss(status: string): boolean {
-	return status === "proposed" || status === "deferred";
-}
-
-function canDefer(status: string): boolean {
-	return status === "proposed";
-}
-
-function canApply(status: string): boolean {
-	return status === "approved";
-}
-
 function relativeTime(iso: string): string {
 	const diff = Date.now() - new Date(iso).getTime();
 	const mins = Math.floor(diff / 60_000);
-	if (mins < 0 || mins < 1) return "just now";
+	if (mins < 1) return "just now";
 	if (mins < 60) return `${mins}m ago`;
 	const hours = Math.floor(mins / 60);
 	if (hours < 24) return `${hours}h ago`;
-	const days = Math.floor(hours / 24);
-	return `${days}d ago`;
+	return `${Math.floor(hours / 24)}d ago`;
 }
 
-function getLineIndex(siteId: string | null): number {
-	if (!siteId) return 0;
-	const hash = siteId.split("").reduce((h, c) => h + c.charCodeAt(0), 0);
-	return hash % 10;
+function hostLabel(a: Advisory): string {
+	if (!a.created_by) return "unknown";
+	return hostNameMap.get(a.created_by) ?? a.created_by.slice(0, 10);
 }
 
-function getSourceBadgeLabel(advisory: Advisory): string {
-	const hostName = advisory.created_by ? hostNameMap.get(advisory.created_by) : null;
-	return hostName || "unknown";
-}
-
-function getStatusColor(status: string): string {
-	switch (status) {
-		case "proposed":
-			return "var(--alert-warning)";
-		case "approved":
-			return "var(--status-active)";
-		case "dismissed":
-			return "var(--text-muted)";
-		case "deferred":
-			return "var(--line-3)";
-		case "applied":
-			return "var(--line-6)";
-		default:
-			return "var(--text-muted)";
+function sortFn(a: Advisory, b: Advisory): number {
+	if (sort === "modified-desc") {
+		return new Date(b.modified_at).getTime() - new Date(a.modified_at).getTime();
 	}
+	if (sort === "modified-asc") {
+		return new Date(a.modified_at).getTime() - new Date(b.modified_at).getTime();
+	}
+	return new Date(b.proposed_at).getTime() - new Date(a.proposed_at).getTime();
 }
 
-function getSeverityBandClass(status: string): string {
-	switch (status) {
-		case "proposed":
-			return "severity-band-proposed";
-		case "approved":
-			return "severity-band-approved";
-		case "dismissed":
-			return "severity-band-dismissed";
-		case "deferred":
-			return "severity-band-deferred";
-		case "applied":
-			return "severity-band-applied";
-		default:
-			return "";
-	}
-}
+const unresolved = $derived(
+	advisories.filter((a) => ["proposed", "approved"].includes(a.status)).sort(sortFn),
+);
+
+const resolved = $derived(
+	advisories.filter((a) => !["proposed", "approved"].includes(a.status)).sort(sortFn),
+);
 </script>
 
-<div class="advisory-view">
-	<SectionHeader title="Advisories" subtitle="Service Notices" />
+<Page>
+	{#snippet children()}
+		<SectionHeader number={4} subtitle="Service Notices to Passengers" title="Advisories">
+			{#snippet actions()}
+				<TicketTab color="var(--accent)">
+					{#snippet children()}{unresolved.length} open{/snippet}
+				</TicketTab>
+			{/snippet}
+		</SectionHeader>
 
-	{#if loading}
-		<div class="loading-state">
-			<div class="loading-bar"></div>
-			<p>Loading advisories...</p>
-		</div>
-	{:else if advisories.length === 0}
-		<div class="empty-state">
-			<svg width="80" height="48" viewBox="0 0 80 48">
-				<circle cx="40" cy="24" r="16" fill="none" stroke="var(--text-muted)" stroke-width="1.5" opacity="0.3" />
-				<path d="M40 16V26" stroke="var(--text-muted)" stroke-width="2" stroke-linecap="round" opacity="0.3" />
-				<circle cx="40" cy="30" r="1.5" fill="var(--text-muted)" opacity="0.3" />
-			</svg>
-			<p>No advisories found.</p>
-		</div>
-	{:else}
-		<div class="advisory-sections">
-			{#if unresolved.length > 0}
-				<div class="section">
-					<h2 class="section-title">Unresolved</h2>
-					<div class="advisory-list">
-						{#each unresolved as dedup (dedup.representative.id)}
-							<div class={getSeverityBandClass(dedup.representative.status)}>
-								<MetroCard accentColor={getStatusColor(dedup.representative.status)}>
-									<button
-										class="card-main"
-										onclick={() => toggleExpand(dedup.representative.id)}
-									>
-										<div class="card-left">
-											<LineBadge
-												lineIndex={getLineIndex(dedup.representative.created_by)}
-												size="standard"
-											/>
-											<div class="card-info">
-												<div class="card-title-row">
-													<span class="card-title">{dedup.representative.title}</span>
-													{#if dedup.count > 1}
-														<span class="count-badge">×{dedup.count}</span>
-													{/if}
-												</div>
-												<div class="card-meta">
-													<StatusChip
-														status={dedup.representative.status}
-														label={dedup.representative.status.toUpperCase()}
-													/>
-													<span class="card-time">{relativeTime(dedup.representative.proposed_at)}</span>
-													<span class="card-source">
-														from {getSourceBadgeLabel(dedup.representative)}
-													</span>
-												</div>
+		{#if loading}
+			<div class="state">
+				<p>Loading advisories…</p>
+			</div>
+		{:else}
+			<div class="sort-bar">
+				<h2 class="section-title">Open · {unresolved.length}</h2>
+				<div class="spacer"></div>
+				<label class="sort-select">
+					<span>Sort</span>
+					<select bind:value={sort}>
+						<option value="modified-desc">Modified · newest</option>
+						<option value="modified-asc">Modified · oldest</option>
+						<option value="posted-desc">Posted · newest</option>
+					</select>
+				</label>
+			</div>
+
+			<div class="adv-list">
+				{#each unresolved as adv (adv.id)}
+					{@const sev = SEV_LABEL[severityOf(adv)]}
+					{@const expanded = expandedId === adv.id}
+					{@const dimmed = adv.status === "dismissed" || adv.status === "applied"}
+					<div class="adv-card" class:dimmed>
+						<div class="sev-bar" style="background: {sev.accent}"></div>
+						<button class="adv-head" onclick={() => toggleExpand(adv.id)}>
+							<div class="sev-sigil" style="background: {sev.accent}">i</div>
+							<div class="adv-title-block">
+								<div class="kicker" style="color: {sev.accent}">{sev.label}</div>
+								<h3 class="adv-title">{adv.title}</h3>
+								<div class="adv-meta">
+									<span>{relativeTime(adv.modified_at ?? adv.proposed_at)}</span>
+									<span class="sep">·</span>
+									<span>from {hostLabel(adv)}</span>
+									<span class="sep">·</span>
+									<StatusChip status={adv.status as never} />
+								</div>
+							</div>
+							<span class="caret" class:open={expanded}>▼</span>
+						</button>
+
+						{#if expanded}
+							<div class="adv-body">
+								<div class="body-grid">
+									<div>
+										<div class="field-block">
+											<div class="kicker">Detail</div>
+											<p class="field-body">{adv.detail}</p>
+										</div>
+										{#if adv.action}
+											<div class="field-block">
+												<div class="kicker accent-label">Recommended Action</div>
+												<p class="field-body accent-body">{adv.action}</p>
+											</div>
+										{/if}
+										{#if adv.impact}
+											<div class="field-block">
+												<div class="kicker">Impact</div>
+												<p class="field-body">{adv.impact}</p>
+											</div>
+										{/if}
+									</div>
+									<div>
+										{#if adv.evidence}
+											<div class="kicker">Evidence</div>
+											<pre class="evidence">{adv.evidence}</pre>
+										{/if}
+									</div>
+								</div>
+
+								{#if ["proposed", "deferred", "approved"].includes(adv.status)}
+									<div class="action-bar">
+										{#if adv.status === "approved"}
+											<Btn
+												variant="accent"
+												size="sm"
+												disabled={actionInProgress === `${adv.id}:apply`}
+												onclick={() => performAction(adv.id, "apply")}
+											>
+												{#snippet children()}Apply{/snippet}
+											</Btn>
+										{:else}
+											<Btn
+												variant="primary"
+												size="sm"
+												disabled={actionInProgress === `${adv.id}:approve`}
+												onclick={() => performAction(adv.id, "approve")}
+											>
+												{#snippet children()}Approve{/snippet}
+											</Btn>
+											<Btn
+												variant="default"
+												size="sm"
+												disabled={actionInProgress === `${adv.id}:defer`}
+												onclick={() => performAction(adv.id, "defer")}
+											>
+												{#snippet children()}Defer{/snippet}
+											</Btn>
+											<Btn
+												variant="ghost"
+												size="sm"
+												disabled={actionInProgress === `${adv.id}:dismiss`}
+												onclick={() => performAction(adv.id, "dismiss")}
+											>
+												{#snippet children()}Dismiss{/snippet}
+											</Btn>
+										{/if}
+										<div class="spacer"></div>
+										<span class="adv-id-stamp mono">ID · {adv.id.slice(0, 12)}</span>
+									</div>
+								{/if}
+							</div>
+						{/if}
+					</div>
+				{/each}
+
+				{#if unresolved.length === 0}
+					<div class="empty">No open advisories. Systems nominal.</div>
+				{/if}
+			</div>
+
+			{#if resolved.length > 0}
+				<div class="resolved-section">
+					<button
+						class="resolved-toggle"
+						onclick={() => (resolvedExpanded = !resolvedExpanded)}
+					>
+						<span>Resolved · {resolved.length}</span>
+						<div class="spacer"></div>
+						<span class="resolved-caret mono">
+							{resolvedExpanded ? "Hide" : "Show"} ▼
+						</span>
+					</button>
+					{#if resolvedExpanded}
+						<div class="adv-list resolved-list">
+							{#each resolved as adv (adv.id)}
+								{@const sev = SEV_LABEL[severityOf(adv)]}
+								{@const expanded = expandedId === adv.id}
+								<div class="adv-card dimmed">
+									<div class="sev-bar" style="background: {sev.accent}"></div>
+									<button class="adv-head" onclick={() => toggleExpand(adv.id)}>
+										<div class="sev-sigil" style="background: {sev.accent}">i</div>
+										<div class="adv-title-block">
+											<div class="kicker" style="color: {sev.accent}">{sev.label}</div>
+											<h3 class="adv-title">{adv.title}</h3>
+											<div class="adv-meta">
+												<span>{relativeTime(adv.modified_at ?? adv.proposed_at)}</span>
+												<span class="sep">·</span>
+												<span>from {hostLabel(adv)}</span>
+												<span class="sep">·</span>
+												<StatusChip status={adv.status as never} />
 											</div>
 										</div>
-										<div class="card-right">
-											<span class="expand-icon" class:rotated={expandedId === dedup.representative.id}>
-												<ChevronDown size={12} />
-											</span>
-										</div>
+										<span class="caret" class:open={expanded}>▼</span>
 									</button>
-
-									{#if expandedId === dedup.representative.id}
-										<div class="card-expanded-content">
-											<div class="detail-section">
-												<h4>Detail</h4>
-												<p class="detail-text">{dedup.representative.detail}</p>
-											</div>
-
-											{#if dedup.representative.action}
-												<div class="detail-section">
-													<h4>Recommended Action</h4>
-													<p class="detail-text">{dedup.representative.action}</p>
-												</div>
-											{/if}
-
-											{#if dedup.representative.impact}
-												<div class="detail-section">
-													<h4>Impact</h4>
-													<p class="detail-text">{dedup.representative.impact}</p>
-												</div>
-											{/if}
-
-											{#if dedup.representative.evidence}
-												<div class="detail-section">
-													<h4>Evidence</h4>
-													<pre class="evidence-block">{dedup.representative.evidence}</pre>
-												</div>
-											{/if}
-
-											{#if dedup.representative.defer_until}
-												<div class="detail-section">
-													<h4>Deferred Until</h4>
-													<p class="detail-text">
-														{new Date(dedup.representative.defer_until).toLocaleString()}
-													</p>
-												</div>
-											{/if}
-
-											{#if dedup.count > 1}
-												<div class="detail-section">
-													<h4>Sources ({dedup.count})</h4>
-													<div class="sources-list">
-														{#each dedup.sources as source}
-															<div class="source-item">
-																<span class="source-time">
-																	{relativeTime(source.proposed_at)}
-																</span>
-																{#if source.created_by && hostNameMap.has(source.created_by)}
-																	<span class="source-host">
-																		{hostNameMap.get(source.created_by)}
-																	</span>
-																{/if}
-															</div>
-														{/each}
+									{#if expanded && (adv.detail || adv.evidence)}
+										<div class="adv-body">
+											<div class="body-grid">
+												<div>
+													<div class="field-block">
+														<div class="kicker">Detail</div>
+														<p class="field-body">{adv.detail}</p>
 													</div>
 												</div>
-											{/if}
-
-											<div class="action-bar">
-												{#if canApprove(dedup.representative.status)}
-													<button
-														class="action-btn"
-														onclick={() => performAction(dedup.representative.id, "approve")}
-														disabled={actionInProgress !== null}
-													>
-														{isActionInProgress(dedup.representative.id, "approve") ? "..." : "Approve"}
-													</button>
-												{/if}
-												{#if canDismiss(dedup.representative.status)}
-													<button
-														class="action-btn"
-														onclick={() => performAction(dedup.representative.id, "dismiss")}
-														disabled={actionInProgress !== null}
-													>
-														{isActionInProgress(dedup.representative.id, "dismiss") ? "..." : "Dismiss"}
-													</button>
-												{/if}
-												{#if canDefer(dedup.representative.status)}
-													<button
-														class="action-btn"
-														onclick={() => performAction(dedup.representative.id, "defer")}
-														disabled={actionInProgress !== null}
-													>
-														{isActionInProgress(dedup.representative.id, "defer") ? "..." : "Defer"}
-													</button>
-												{/if}
-												{#if canApply(dedup.representative.status)}
-													<button
-														class="action-btn"
-														onclick={() => performAction(dedup.representative.id, "apply")}
-														disabled={actionInProgress !== null}
-													>
-														{isActionInProgress(dedup.representative.id, "apply") ? "..." : "Apply"}
-													</button>
-												{/if}
-											</div>
-
-											<div class="card-footer-meta">
-												<span class="footer-id" title={dedup.representative.id}>
-													ID: {dedup.representative.id.substring(0, 8)}
-												</span>
-												<span class="footer-modified">
-													Modified: {relativeTime(dedup.representative.modified_at)}
-												</span>
+												<div>
+													{#if adv.evidence}
+														<div class="kicker">Evidence</div>
+														<pre class="evidence">{adv.evidence}</pre>
+													{/if}
+												</div>
 											</div>
 										</div>
 									{/if}
-								</MetroCard>
-							</div>
-						{/each}
-					</div>
-				</div>
-			{/if}
-
-			{#if resolved.length > 0}
-				<div class="section resolved-section">
-					<button class="section-toggle" onclick={() => (resolvedExpanded = !resolvedExpanded)}>
-						<h2 class="section-title">
-							Resolved ({resolved.length})
-						</h2>
-						<span class="toggle-icon" class:rotated={resolvedExpanded}>
-							<ChevronDown size={16} />
-						</span>
-					</button>
-
-					{#if resolvedExpanded}
-						<div class="advisory-list">
-							{#each resolved as dedup (dedup.representative.id)}
-								<div class={getSeverityBandClass(dedup.representative.status)}>
-									<MetroCard accentColor={getStatusColor(dedup.representative.status)}>
-										<button
-											class="card-main"
-											onclick={() => toggleExpand(dedup.representative.id)}
-										>
-											<div class="card-left">
-												<LineBadge
-													lineIndex={getLineIndex(dedup.representative.created_by)}
-													size="standard"
-												/>
-												<div class="card-info">
-													<div class="card-title-row">
-														<span class="card-title">{dedup.representative.title}</span>
-														{#if dedup.count > 1}
-															<span class="count-badge">×{dedup.count}</span>
-														{/if}
-													</div>
-													<div class="card-meta">
-														<StatusChip
-															status={dedup.representative.status}
-															label={dedup.representative.status.toUpperCase()}
-														/>
-														<span class="card-time">{relativeTime(dedup.representative.proposed_at)}</span>
-														<span class="card-source">
-															from {getSourceBadgeLabel(dedup.representative)}
-														</span>
-													</div>
-												</div>
-											</div>
-											<div class="card-right">
-												<span class="expand-icon" class:rotated={expandedId === dedup.representative.id}>
-													<ChevronDown size={12} />
-												</span>
-											</div>
-										</button>
-
-										{#if expandedId === dedup.representative.id}
-											<div class="card-expanded-content">
-												<div class="detail-section">
-													<h4>Detail</h4>
-													<p class="detail-text">{dedup.representative.detail}</p>
-												</div>
-
-												{#if dedup.representative.action}
-													<div class="detail-section">
-														<h4>Recommended Action</h4>
-														<p class="detail-text">{dedup.representative.action}</p>
-													</div>
-												{/if}
-
-												{#if dedup.representative.impact}
-													<div class="detail-section">
-														<h4>Impact</h4>
-														<p class="detail-text">{dedup.representative.impact}</p>
-													</div>
-												{/if}
-
-												{#if dedup.representative.evidence}
-													<div class="detail-section">
-														<h4>Evidence</h4>
-														<pre class="evidence-block">{dedup.representative.evidence}</pre>
-													</div>
-												{/if}
-
-												{#if dedup.representative.resolved_at}
-													<div class="detail-section">
-														<h4>Resolved At</h4>
-														<p class="detail-text">
-															{new Date(dedup.representative.resolved_at).toLocaleString()}
-														</p>
-													</div>
-												{/if}
-
-												{#if dedup.count > 1}
-													<div class="detail-section">
-														<h4>Sources ({dedup.count})</h4>
-														<div class="sources-list">
-															{#each dedup.sources as source}
-																<div class="source-item">
-																	<span class="source-time">
-																		{relativeTime(source.proposed_at)}
-																	</span>
-																	{#if source.created_by && hostNameMap.has(source.created_by)}
-																		<span class="source-host">
-																			{hostNameMap.get(source.created_by)}
-																		</span>
-																	{/if}
-																</div>
-															{/each}
-														</div>
-													</div>
-												{/if}
-											</div>
-										{/if}
-									</MetroCard>
 								</div>
 							{/each}
 						</div>
 					{/if}
 				</div>
 			{/if}
-		</div>
-	{/if}
-</div>
+		{/if}
+	{/snippet}
+</Page>
 
 <style>
-	.advisory-view {
-		padding: 32px 40px;
-		max-width: 860px;
-		margin: 0 auto;
-		flex: 1;
-		overflow-y: auto;
-		min-height: 0;
-	}
-
-	.loading-state {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 16px;
-		padding: 48px 0;
-	}
-
-	.loading-bar {
-		width: 120px;
-		height: 3px;
-		background: var(--bg-surface);
-		border-radius: 2px;
-		position: relative;
-		overflow: hidden;
-	}
-
-	.loading-bar::after {
-		content: "";
-		position: absolute;
-		top: 0;
-		left: -40%;
-		width: 40%;
-		height: 100%;
-		background: var(--line-5);
-		border-radius: 2px;
-		animation: loadingSlide 1.2s ease-in-out infinite;
-	}
-
-	@keyframes loadingSlide {
-		0% {
-			left: -40%;
-		}
-		100% {
-			left: 100%;
-		}
-	}
-
-	.loading-state p,
-	.empty-state p {
-		color: var(--text-muted);
-		font-size: var(--text-sm);
-		margin: 0;
-	}
-
-	.empty-state {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 16px;
-		padding: 48px 0;
+	.state {
+		padding: 40px 16px;
 		text-align: center;
+		color: var(--ink-3);
+		font-style: italic;
 	}
 
-	.advisory-sections {
+	.sort-bar {
 		display: flex;
-		flex-direction: column;
-		gap: 24px;
-	}
-
-	.section {
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
+		align-items: baseline;
+		gap: 16px;
+		margin: 2px 0 12px 0;
+		padding-bottom: 8px;
+		border-bottom: 1px solid var(--rule-soft);
 	}
 
 	.section-title {
 		margin: 0;
 		font-family: var(--font-display);
-		font-size: var(--text-sm);
-		font-weight: 700;
-		color: var(--text-primary);
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-		padding: 0 4px;
+		font-size: 16px;
+		font-weight: 600;
+		letter-spacing: -0.005em;
+		color: var(--ink);
 	}
 
-	.resolved-section {
-		gap: 8px;
+	.spacer {
+		flex: 1;
 	}
 
-	.section-toggle {
-		display: flex;
+	.sort-select {
+		display: inline-flex;
 		align-items: center;
-		justify-content: space-between;
+		gap: 8px;
+		font-size: 12px;
+		color: var(--ink-3);
+	}
+
+	.sort-select span {
+		font-weight: 500;
+	}
+
+	.sort-select select {
+		padding: 4px 8px;
+		background: var(--paper);
+		border: 1px solid var(--rule-soft);
+		color: var(--ink);
+		font-family: var(--font-display);
+		font-size: 12px;
+		font-weight: 500;
+		cursor: pointer;
+		border-radius: 0;
+	}
+
+	.adv-list {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.adv-card {
+		position: relative;
+		background: var(--paper);
+		border: 1px solid var(--rule-soft);
+	}
+
+	.adv-card.dimmed {
+		opacity: 0.66;
+	}
+
+	.sev-bar {
+		position: absolute;
+		left: 0;
+		top: 0;
+		bottom: 0;
+		width: 6px;
+	}
+
+	.adv-head {
+		display: grid;
+		grid-template-columns: 40px 1fr auto;
+		align-items: center;
+		width: 100%;
+		padding: 16px 18px 16px 22px;
 		background: transparent;
 		border: none;
 		cursor: pointer;
-		padding: 0;
-		color: inherit;
-		font-family: inherit;
 		text-align: left;
+		gap: 14px;
+		color: inherit;
+		font: inherit;
 	}
 
-	.section-toggle:hover .section-title {
-		color: var(--line-5);
-	}
-
-	.toggle-icon {
-		flex-shrink: 0;
-		color: var(--text-muted);
-		transition: transform 0.2s ease;
-		display: flex;
+	.sev-sigil {
+		width: 28px;
+		height: 28px;
+		border-radius: 50%;
+		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-	}
-
-	.toggle-icon.rotated {
-		transform: rotate(180deg);
-	}
-
-	.advisory-list {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-	}
-
-	.severity-band-proposed,
-	.severity-band-approved,
-	.severity-band-dismissed,
-	.severity-band-deferred,
-	.severity-band-applied {
-		border-radius: 8px;
-		overflow: hidden;
-	}
-
-	.severity-band-dismissed {
-		opacity: 0.6;
-	}
-
-	.severity-band-deferred {
-		opacity: 0.6;
-	}
-
-	/* Atmosphere accent handled by MetroCard accentColor prop */
-
-	.card-main {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		width: 100%;
-		padding: 12px;
-		background: transparent;
-		border: none;
-		cursor: pointer;
-		color: inherit;
-		font-family: inherit;
-		text-align: left;
-	}
-
-	.card-main:focus-visible {
-		outline: 2px solid var(--line-5);
-		outline-offset: -2px;
-		border-radius: 8px;
-	}
-
-	.card-left {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		flex: 1;
-		min-width: 0;
-	}
-
-	.card-info {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		min-width: 0;
-	}
-
-	.card-title-row {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-
-	.card-title {
-		font-family: var(--font-display);
-		font-size: var(--text-sm);
+		color: #fff;
+		font-family: var(--font-serif);
+		font-style: italic;
+		font-size: 17px;
 		font-weight: 600;
-		color: var(--text-primary);
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
 	}
 
-	.count-badge {
-		font-family: var(--font-mono);
-		font-size: 10px;
-		font-weight: 700;
-		color: var(--text-muted);
-		background: rgba(107, 107, 128, 0.1);
-		padding: 2px 6px;
-		border-radius: 3px;
-		flex-shrink: 0;
+	.adv-title-block {
+		min-width: 0;
+		padding-right: 20px;
 	}
 
-	.card-meta {
+	.kicker {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.16em;
+		text-transform: uppercase;
+		color: var(--ink-3);
+		margin-bottom: 3px;
+	}
+
+	.adv-title {
+		margin: 0;
+		font-family: var(--font-display);
+		font-size: 15.5px;
+		font-weight: 600;
+		letter-spacing: -0.005em;
+		color: var(--ink);
+	}
+
+	.adv-meta {
 		display: flex;
 		align-items: center;
-		gap: 8px;
+		gap: 10px;
+		margin-top: 6px;
+		font-size: 12px;
+		color: var(--ink-3);
+	}
+
+	.sep {
+		color: var(--ink-4);
+	}
+
+	.caret {
+		font-family: var(--font-mono);
 		font-size: 11px;
+		color: var(--ink-3);
+		transition: transform 0.15s ease;
 	}
 
-	.card-time {
-		color: var(--text-muted);
-		font-family: var(--font-mono);
-	}
-
-	.card-source {
-		color: var(--text-muted);
-		font-family: var(--font-mono);
-	}
-
-	.card-right {
-		flex-shrink: 0;
-		color: var(--text-muted);
-	}
-
-	.expand-icon {
-		transition: transform 0.2s ease;
-	}
-
-	.expand-icon.rotated {
+	.caret.open {
 		transform: rotate(180deg);
 	}
 
-	.card-expanded-content {
-		padding: 12px;
-		border-top: 1px solid var(--bg-surface);
+	.adv-body {
+		padding: 0 22px 20px 22px;
+		border-top: 1px solid var(--rule-faint);
 	}
 
-	.detail-section {
-		margin-top: 12px;
+	.body-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 28px;
+		padding-top: 16px;
 	}
 
-	.detail-section h4 {
-		margin: 0 0 6px 0;
-		font-family: var(--font-display);
-		font-size: var(--text-xs);
-		font-weight: 700;
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
+	.field-block {
+		margin-bottom: 16px;
 	}
 
-	.detail-text {
+	.field-body {
 		margin: 0;
-		font-size: var(--text-sm);
-		color: var(--text-primary);
+		font-size: 13.5px;
 		line-height: 1.6;
+		color: var(--ink);
 	}
 
-	.evidence-block {
-		margin: 0;
+	.accent-label {
+		color: var(--accent) !important;
+	}
+
+	.accent-body {
+		padding-left: 12px;
+		border-left: 3px solid var(--accent);
+		font-family: var(--font-serif);
+		font-size: 14px;
+	}
+
+	.evidence {
+		margin: 8px 0 0;
 		padding: 12px;
-		background: rgba(10, 10, 20, 0.6);
-		border: 1px solid var(--bg-surface);
-		border-radius: 6px;
+		background: var(--paper-2);
+		border: 1px solid var(--rule-soft);
 		font-family: var(--font-mono);
-		font-size: 12px;
-		color: var(--text-secondary);
-		white-space: pre-wrap;
-		word-break: break-all;
-		line-height: 1.5;
-		overflow-x: auto;
-	}
-
-	.sources-list {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-	}
-
-	.source-item {
-		display: flex;
-		align-items: center;
-		gap: 8px;
 		font-size: 11px;
-		color: var(--text-muted);
-		font-family: var(--font-mono);
-	}
-
-	.source-time {
-		flex-shrink: 0;
-	}
-
-	.source-host {
-		color: var(--text-secondary);
+		color: var(--ink-2);
+		line-height: 1.55;
+		white-space: pre-wrap;
+		word-break: break-word;
+		max-height: 180px;
+		overflow-y: auto;
 	}
 
 	.action-bar {
+		margin-top: 18px;
+		padding-top: 14px;
+		border-top: 1px dashed var(--rule-soft);
 		display: flex;
-		gap: 6px;
-		margin-top: 12px;
-		padding-top: 12px;
-		border-top: 1px solid var(--bg-surface);
-		flex-wrap: wrap;
+		gap: 8px;
+		align-items: center;
 	}
 
-	.action-btn {
-		background: transparent;
-		border: 1px solid var(--text-muted);
-		border-radius: 4px;
-		padding: 4px 12px;
-		font-size: var(--text-xs);
-		font-weight: 600;
-		color: var(--text-primary);
-		cursor: pointer;
-		transition: all 0.2s ease;
-		font-family: var(--font-display);
-	}
-
-	.action-btn:hover:not(:disabled) {
-		border-color: var(--line-5);
-		color: var(--line-5);
-	}
-
-	.action-btn:disabled {
-		opacity: 0.4;
-		cursor: not-allowed;
-	}
-
-	.card-footer-meta {
-		display: flex;
-		justify-content: space-between;
-		margin-top: 8px;
-		padding-top: 8px;
-		font-size: 11px;
-		color: var(--text-muted);
+	.adv-id-stamp {
 		font-family: var(--font-mono);
+		font-size: 10px;
+		color: var(--ink-4);
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
 	}
 
-	.footer-id,
-	.footer-modified {
-		opacity: 0.6;
+	.empty {
+		padding: 32px;
+		text-align: center;
+		color: var(--ink-3);
+		font-style: italic;
 	}
 
-	@media (prefers-reduced-motion: reduce) {
-		.loading-bar::after {
-			animation: none;
-		}
+	.resolved-section {
+		margin-top: 32px;
+	}
 
-		.expand-icon,
-		.toggle-icon {
-			transition: none;
-		}
+	.resolved-toggle {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 0;
+		background: transparent;
+		border: none;
+		cursor: pointer;
+		font-family: var(--font-display);
+		font-size: 16px;
+		font-weight: 600;
+		color: var(--ink-2);
+		width: 100%;
+		text-align: left;
+		padding-bottom: 8px;
+		border-bottom: 1px solid var(--rule-soft);
+	}
+
+	.resolved-caret {
+		font-family: var(--font-mono);
+		font-size: 11px;
+		color: var(--ink-3);
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+	}
+
+	.resolved-list {
+		margin-top: 14px;
 	}
 </style>

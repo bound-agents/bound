@@ -23,15 +23,37 @@ export function createThreadsRoutes(
 					`
 				SELECT t.*,
 					(SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id AND m.deleted = 0) as messageCount,
-					(SELECT tu.model_id FROM turns tu WHERE tu.thread_id = t.id ORDER BY tu.id DESC LIMIT 1) as lastModel
+					(SELECT tu.model_id FROM turns tu WHERE tu.thread_id = t.id ORDER BY tu.id DESC LIMIT 1) as lastModel,
+					EXISTS(
+						SELECT 1 FROM tasks
+						WHERE thread_id = t.id AND status = 'running' AND deleted = 0
+					) as hasRunningTask
 				FROM threads t
 				WHERE t.deleted = 0 AND t.user_id = ?
 				ORDER BY t.last_message_at DESC
 			`,
 				)
-				.all(webUserId) as Array<Thread & { messageCount: number; lastModel: string | null }>;
+				.all(webUserId) as Array<
+				Thread & { messageCount: number; lastModel: string | null; hasRunningTask: number }
+			>;
 
-			return c.json(threads);
+			// Decorate each thread with `active` using the same logic as the
+			// per-thread /status endpoint: local loop, running task, or a
+			// non-idle forwarded status. This lets the client render accurate
+			// "Live" indicators without fanning out one HTTP request per thread.
+			const enriched = threads.map((t) => {
+				const forwarded = statusForwardCache?.get(t.id);
+				const localLoopActive = activeLoops?.has(t.id) ?? false;
+				const active =
+					localLoopActive ||
+					!!t.hasRunningTask ||
+					forwarded?.status === "thinking" ||
+					forwarded?.status === "tool_call";
+				const { hasRunningTask: _, ...rest } = t;
+				return { ...rest, active };
+			});
+
+			return c.json(enriched);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json(
