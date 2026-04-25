@@ -3,11 +3,21 @@ import { Check, ChevronDown, ChevronUp, Cog, Wrench } from "lucide-svelte";
 import { renderMarkdown } from "../lib/markdown";
 import ReasoningBlock from "./ReasoningBlock.svelte";
 
-// Renders a single tool_call message. The message's `content` field is a
-// JSON-stringified array of ContentBlocks (see packages/llm/src/types.ts
-// ContentBlock): typically [thinking?, text?, ...tool_use]. This component
-// treats the persisted block order as the source of truth — no cross-message
-// grouping, no scooping assistant-text blocks from adjacent messages.
+// Renders a run of consecutive tool_call messages as a single Agent turn.
+// Each message's `content` is a JSON-stringified ContentBlock[] (see
+// packages/llm/src/types.ts): typically [thinking?, text?, ...tool_use].
+// The persisted block order is the source of truth — we never scoop text
+// from adjacent assistant messages.
+//
+// Grouping rules (see MessageList for the message-level grouping):
+//   - The first message's reasoning + inline text render OUTSIDE the
+//     collapsible (they frame the run and are always visible).
+//   - A single "N tool calls" collapsible aggregates ALL tool_uses.
+//   - When expanded, the body interleaves per-source-message content:
+//     for the 2nd-and-later tool_call messages, their reasoning and
+//     inline text render inside the collapsible, right before their
+//     tool_use rows, so the thought that preceded each tool stays
+//     attached to the tool.
 
 interface ToolUseBlock {
 	type: "tool_use";
@@ -16,43 +26,25 @@ interface ToolUseBlock {
 	input: unknown;
 }
 
-interface ThinkingBlock {
+interface ThinkingContentBlock {
 	type: "thinking";
 	thinking: string;
 	signature?: string;
 	redacted_data?: string;
 }
 
-interface TextBlock {
+interface TextContentBlock {
 	type: "text";
 	text: string;
 }
 
-type Block = ThinkingBlock | TextBlock | ToolUseBlock | { type: string; [k: string]: unknown };
+type Block =
+	| ThinkingContentBlock
+	| TextContentBlock
+	| ToolUseBlock
+	| { type: string; [k: string]: unknown };
 
-interface ToolResultMsg {
-	content: string;
-	exit_code?: number | null;
-	tool_name?: string | null;
-}
-
-interface Props {
-	content: string;
-	resultsByToolUseId?: Record<string, ToolResultMsg>;
-	lineColor?: string;
-	modelId?: string | null;
-}
-
-const {
-	content,
-	resultsByToolUseId = {},
-	lineColor = "var(--rule-soft)",
-	modelId = null,
-}: Props = $props();
-
-// Parse ContentBlock[] defensively — a malformed JSON should degrade to
-// showing the raw string rather than throwing.
-interface Parsed {
+interface ParsedMessage {
 	thinkingText: string;
 	redactedThinking: boolean;
 	inlineText: string;
@@ -60,7 +52,28 @@ interface Parsed {
 	raw: string | null;
 }
 
-function parseBlocks(raw: string): Parsed {
+interface ToolResultMsg {
+	content: string;
+	exit_code?: number | null;
+	tool_name?: string | null;
+}
+
+interface ToolMessage {
+	id?: string;
+	content: string;
+	model_id?: string | null;
+	created_at?: string;
+}
+
+interface Props {
+	messages: ToolMessage[];
+	resultsByToolUseId?: Record<string, ToolResultMsg>;
+	lineColor?: string;
+}
+
+const { messages, resultsByToolUseId = {}, lineColor = "var(--rule-soft)" }: Props = $props();
+
+function parseBlocks(raw: string): ParsedMessage {
 	try {
 		const blocks = JSON.parse(raw) as Block[];
 		if (!Array.isArray(blocks)) {
@@ -72,11 +85,11 @@ function parseBlocks(raw: string): Parsed {
 		const toolUses: ToolUseBlock[] = [];
 		for (const block of blocks) {
 			if (block.type === "thinking") {
-				const tb = block as ThinkingBlock;
+				const tb = block as ThinkingContentBlock;
 				if (tb.thinking) thinkingText += tb.thinking;
 				if (tb.redacted_data) redactedThinking = true;
 			} else if (block.type === "text") {
-				const text = (block as TextBlock).text;
+				const text = (block as TextContentBlock).text;
 				if (text) inlineText += (inlineText ? "\n\n" : "") + text;
 			} else if (block.type === "tool_use") {
 				toolUses.push(block as ToolUseBlock);
@@ -88,25 +101,87 @@ function parseBlocks(raw: string): Parsed {
 	}
 }
 
-const parsed = $derived(parseBlocks(content));
+const parsedMessages = $derived(messages.map((m) => parseBlocks(m.content)));
+const firstParsed = $derived(parsedMessages[0]);
+const headModelId = $derived(messages[0]?.model_id ?? null);
 
-let renderedText = $state("");
+const allToolUses = $derived(parsedMessages.flatMap((p) => p.toolUses));
+const totalCount = $derived(allToolUses.length);
+
+const summaryNames = $derived.by(() => {
+	const names = allToolUses.map((t) => t.name);
+	const uniq: string[] = [];
+	for (const n of names) {
+		if (!uniq.includes(n)) uniq.push(n);
+		if (uniq.length > 3) break;
+	}
+	return uniq;
+});
+
+// Render the first message's inline text via markdown up front. Each
+// subsequent message's inline text renders with a lazily-loaded render
+// cached by message index inside `innerRendered`.
+let renderedFirstText = $state("");
 
 $effect(() => {
-	const txt = parsed.inlineText;
+	const txt = firstParsed?.inlineText ?? "";
 	if (!txt) {
-		renderedText = "";
+		renderedFirstText = "";
 		return;
 	}
 	renderMarkdown(txt)
 		.then((html) => {
-			renderedText = html;
+			renderedFirstText = html;
 		})
 		.catch((err: unknown) => {
 			console.error("[markdown] renderMarkdown failed:", err);
-			renderedText = "";
+			renderedFirstText = "";
 		});
 });
+
+let innerRendered = $state<Record<number, string>>({});
+
+$effect(() => {
+	// Only render inline text for 2nd-and-later messages; index 0 is
+	// handled by renderedFirstText above.
+	const next: Record<number, string> = {};
+	for (let i = 1; i < parsedMessages.length; i++) {
+		const txt = parsedMessages[i].inlineText;
+		if (!txt) continue;
+		const existing = innerRendered[i];
+		if (existing) {
+			next[i] = existing;
+			continue;
+		}
+		// Snapshot index into the closure.
+		const idx = i;
+		renderMarkdown(txt)
+			.then((html) => {
+				innerRendered = { ...innerRendered, [idx]: html };
+			})
+			.catch((err: unknown) => {
+				console.error("[markdown] renderMarkdown failed:", err);
+			});
+	}
+	// Seed immediate hits so existing results survive re-runs.
+	if (Object.keys(next).length > 0) {
+		innerRendered = { ...innerRendered, ...next };
+	}
+});
+
+let expanded = $state(false);
+let expandedTools = $state(new Set<string>());
+
+function toggleGroup(): void {
+	expanded = !expanded;
+}
+
+function toggleTool(id: string): void {
+	const next = new Set(expandedTools);
+	if (next.has(id)) next.delete(id);
+	else next.add(id);
+	expandedTools = next;
+}
 
 function formatInput(input: unknown): string {
 	if (input === null || input === undefined) return "";
@@ -119,85 +194,110 @@ function previewInput(input: unknown): string {
 	if (str.length <= 80) return str;
 	return `${str.slice(0, 77)}…`;
 }
-
-let expandedTools = $state(new Set<string>());
-
-function toggleTool(id: string): void {
-	const next = new Set(expandedTools);
-	if (next.has(id)) next.delete(id);
-	else next.add(id);
-	expandedTools = next;
-}
 </script>
 
 <div class="tool-call-card" style="--line-color: {lineColor}">
 	<div class="role-row">
 		<span class="role">Agent</span>
-		{#if modelId}
-			<span class="model mono">{modelId}</span>
+		{#if headModelId}
+			<span class="model mono">{headModelId}</span>
 		{/if}
 	</div>
 
-	{#if parsed.thinkingText || parsed.redactedThinking}
+	{#if firstParsed && (firstParsed.thinkingText || firstParsed.redactedThinking)}
 		<ReasoningBlock
-			text={parsed.thinkingText}
-			redacted={parsed.redactedThinking && !parsed.thinkingText}
+			text={firstParsed.thinkingText}
+			redacted={firstParsed.redactedThinking && !firstParsed.thinkingText}
 			{lineColor}
 		/>
 	{/if}
 
-	{#if renderedText}
-		<div class="inline-text md-content">{@html renderedText}</div>
-	{:else if parsed.inlineText}
-		<div class="inline-text">{parsed.inlineText}</div>
+	{#if firstParsed?.inlineText}
+		{#if renderedFirstText}
+			<div class="inline-text md-content">{@html renderedFirstText}</div>
+		{:else}
+			<div class="inline-text">{firstParsed.inlineText}</div>
+		{/if}
 	{/if}
 
-	{#if parsed.raw}
-		<pre class="raw-fallback">{parsed.raw}</pre>
+	{#if firstParsed?.raw}
+		<pre class="raw-fallback">{firstParsed.raw}</pre>
 	{/if}
 
-	{#if parsed.toolUses.length > 0}
-		<div class="tool-list">
-			{#each parsed.toolUses as tu (tu.id)}
-				{@const result = resultsByToolUseId[tu.id]}
-				{@const isErr = result && result.exit_code != null && result.exit_code !== 0}
-				{@const expanded = expandedTools.has(tu.id)}
-				<div class="tool-row" class:tool-row-expanded={expanded}>
-					<button
-						type="button"
-						class="tool-row-header"
-						onclick={() => toggleTool(tu.id)}
-					>
-						<span class="tr-icon"><Wrench size={12} /></span>
-						<span class="tr-name">{tu.name}</span>
-						{#if !expanded}
-							<span class="tr-preview">{previewInput(tu.input)}</span>
+	{#if totalCount > 0}
+		<div class="tg">
+			<button
+				type="button"
+				class="tg-header"
+				onclick={toggleGroup}
+				aria-expanded={expanded}
+			>
+				<span class="tg-chevron">
+					{#if expanded}<ChevronUp size={12} />{:else}<ChevronDown size={12} />{/if}
+				</span>
+				<span class="tg-count">{totalCount} tool call{totalCount === 1 ? "" : "s"}</span>
+				<span class="tg-summary">
+					{summaryNames.slice(0, 3).join(" · ")}{#if summaryNames.length === 3 && totalCount > 3} · +{totalCount - 3}{/if}
+				</span>
+			</button>
+
+			{#if expanded}
+				<div class="tg-body">
+					{#each parsedMessages as p, idx}
+						{#if idx > 0 && (p.thinkingText || p.redactedThinking)}
+							<ReasoningBlock
+								text={p.thinkingText}
+								redacted={p.redactedThinking && !p.thinkingText}
+								{lineColor}
+							/>
 						{/if}
-						{#if result}
-							<span class="tr-done" class:tr-error={isErr}><Check size={11} /></span>
-						{/if}
-						<span class="tr-toggle">
-							{#if expanded}
-								<ChevronUp size={11} />
+						{#if idx > 0 && p.inlineText}
+							{@const inner = innerRendered[idx]}
+							{#if inner}
+								<div class="inline-text md-content inner-inline">{@html inner}</div>
 							{:else}
-								<ChevronDown size={11} />
+								<div class="inline-text inner-inline">{p.inlineText}</div>
 							{/if}
-						</span>
-					</button>
-
-					{#if expanded}
-						<pre class="tr-input">{formatInput(tu.input)}</pre>
-						{#if result}
-							<div class="tr-divider"></div>
-							<pre class="tr-output" class:tr-output-error={isErr}>{result.content}</pre>
-						{:else}
-							<div class="tr-pending">
-								<Cog size={11} /> <span>Awaiting result…</span>
-							</div>
 						{/if}
-					{/if}
+						{#each p.toolUses as tu (tu.id)}
+							{@const result = resultsByToolUseId[tu.id]}
+							{@const isErr = result && result.exit_code != null && result.exit_code !== 0}
+							{@const isOpen = expandedTools.has(tu.id)}
+							<div class="tool-row" class:tool-row-expanded={isOpen}>
+								<button
+									type="button"
+									class="tool-row-header"
+									onclick={() => toggleTool(tu.id)}
+								>
+									<span class="tr-icon"><Wrench size={12} /></span>
+									<span class="tr-name">{tu.name}</span>
+									{#if !isOpen}
+										<span class="tr-preview">{previewInput(tu.input)}</span>
+									{/if}
+									{#if result}
+										<span class="tr-done" class:tr-error={isErr}><Check size={11} /></span>
+									{/if}
+									<span class="tr-toggle">
+										{#if isOpen}<ChevronUp size={11} />{:else}<ChevronDown size={11} />{/if}
+									</span>
+								</button>
+
+								{#if isOpen}
+									<pre class="tr-input">{formatInput(tu.input)}</pre>
+									{#if result}
+										<div class="tr-divider"></div>
+										<pre class="tr-output" class:tr-output-error={isErr}>{result.content}</pre>
+									{:else}
+										<div class="tr-pending">
+											<Cog size={11} /> <span>Awaiting result…</span>
+										</div>
+									{/if}
+								{/if}
+							</div>
+						{/each}
+					{/each}
 				</div>
-			{/each}
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -241,6 +341,10 @@ function toggleTool(id: string): void {
 		margin-bottom: 10px;
 	}
 
+	.inner-inline {
+		margin-bottom: 6px;
+	}
+
 	.raw-fallback {
 		margin: 6px 0;
 		padding: 8px 10px;
@@ -253,10 +357,60 @@ function toggleTool(id: string): void {
 		word-break: break-all;
 	}
 
-	.tool-list {
+	.tg {
+		margin: 0;
+	}
+
+	.tg-header {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		width: 100%;
+		padding: 8px 12px;
+		background: var(--paper-2);
+		border: 1px solid var(--rule-soft);
+		border-left: 3px solid var(--line-color);
+		cursor: pointer;
+		text-align: left;
+		font: inherit;
+		color: inherit;
+	}
+
+	.tg-header:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: -2px;
+	}
+
+	.tg-chevron {
+		color: var(--ink-3);
+		display: flex;
+		align-items: center;
+	}
+
+	.tg-count {
+		font-family: var(--font-display);
+		font-size: 12px;
+		font-weight: 600;
+		color: var(--ink);
+		flex-shrink: 0;
+	}
+
+	.tg-summary {
+		font-family: var(--font-mono);
+		font-size: 11.5px;
+		color: var(--ink-4);
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.tg-body {
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
+		margin-top: 6px;
 	}
 
 	.tool-row {

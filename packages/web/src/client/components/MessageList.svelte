@@ -123,11 +123,6 @@ function tsInRange(ts: string | undefined, range: TurnRange): boolean {
 	return true;
 }
 
-function isInRange(msg: Message): boolean {
-	if (!turnRange) return true;
-	return tsInRange(msg.created_at, turnRange);
-}
-
 let prevTurnFrom: string | null = null;
 $effect(() => {
 	const from = turnRange?.from ?? null;
@@ -150,10 +145,7 @@ $effect(() => {
 });
 
 // Build a lookup from tool_use id → tool_result message so ToolCallCard can
-// surface the result inline beneath its originating tool_use row. Results are
-// still persisted as separate messages (the pairing invariant), but they no
-// longer need to appear as standalone bubbles in the stream — the tool_call
-// message's ContentBlock[] is the authoritative record of what was called.
+// surface the result inline beneath its originating tool_use row.
 interface ToolResultMsg {
 	content: string;
 	exit_code?: number | null;
@@ -174,10 +166,76 @@ const resultsByToolUseId = $derived.by((): Record<string, ToolResultMsg> => {
 	return map;
 });
 
-// Tool_result messages are now collapsed into their originating ToolCallCard,
-// so they don't render as standalone rows. Every other persisted role renders
-// as its own turn — no cross-message grouping, no assistant-text scooping.
-const visibleMessages = $derived(messages.filter((m) => m.role !== "tool_result"));
+// Group consecutive tool_call messages into a single display item so the
+// resulting ToolCallCard can render ONE "N tool calls" collapsible for the
+// whole run, interleaving each source message's reasoning + inline text
+// inside the collapsible before its own tool_uses. Tool_result messages
+// are filtered out — ToolCallCard looks them up by tool_use id and
+// renders them inline.
+type DisplayItem =
+	| { kind: "message"; msg: Message; key: string; earliest: string | undefined }
+	| {
+			kind: "toolGroup";
+			messages: Message[];
+			key: string;
+			earliest: string | undefined;
+			timestamps: string[];
+	  };
+
+const displayItems = $derived.by((): DisplayItem[] => {
+	const items: DisplayItem[] = [];
+	let i = 0;
+	while (i < messages.length) {
+		const m = messages[i];
+		if (m.role === "tool_result") {
+			i++;
+			continue;
+		}
+		if (m.role === "tool_call") {
+			const group: Message[] = [m];
+			let j = i + 1;
+			while (j < messages.length) {
+				const next = messages[j];
+				if (next.role === "tool_call") {
+					group.push(next);
+					j++;
+				} else if (next.role === "tool_result") {
+					// tool_result messages interleave with tool_calls; skip but
+					// don't break the run.
+					j++;
+				} else {
+					break;
+				}
+			}
+			const key = group.map((g) => g.id ?? g.created_at ?? "").join("|");
+			items.push({
+				kind: "toolGroup",
+				messages: group,
+				key: key || `tg-${i}`,
+				earliest: group[0].created_at,
+				timestamps: group.map((g) => g.created_at ?? "").filter(Boolean),
+			});
+			i = j;
+		} else {
+			items.push({
+				kind: "message",
+				msg: m,
+				key: m.id ?? m.created_at ?? `m-${i}`,
+				earliest: m.created_at,
+			});
+			i++;
+		}
+	}
+	return items;
+});
+
+function isItemInRange(item: DisplayItem): boolean {
+	if (!turnRange) return true;
+	if (item.kind === "toolGroup") {
+		return item.timestamps.some((ts) => tsInRange(ts, turnRange));
+	}
+	return tsInRange(item.earliest, turnRange);
+}
 </script>
 
 <div class="board">
@@ -188,34 +246,33 @@ const visibleMessages = $derived(messages.filter((m) => m.role !== "tool_result"
 			turnBoundaryOffsets={computedTurnOffsets}
 			scrollHeight={contentScrollHeight}
 		/>
-		{#if visibleMessages.length === 0 && emptyText}
+		{#if displayItems.length === 0 && emptyText}
 			<div class="empty-state">
 				<p>{emptyText}</p>
 			</div>
 		{:else}
-			{#each visibleMessages as msg (msg.id ?? msg.created_at)}
-				{@const active = isInRange(msg)}
+			{#each displayItems as item (item.key)}
+				{@const active = isItemInRange(item)}
 				<div
 					class="display-item"
 					class:dimmed={turnRange !== null && !active}
 					data-turn-active={active && turnRange ? "" : undefined}
-					data-message-id={msg.id}
-					data-message-role={msg.role}
+					data-message-id={item.kind === "message" ? item.msg.id : undefined}
+					data-message-role={item.kind === "message" ? item.msg.role : "tool_call"}
 				>
-					{#if msg.role === "tool_call"}
+					{#if item.kind === "toolGroup"}
 						<ToolCallCard
-							content={msg.content}
+							messages={item.messages}
 							resultsByToolUseId={resultsByToolUseId}
 							{lineColor}
-							modelId={msg.model_id}
 						/>
 					{:else}
 						<MessageBubble
-							role={msg.role as "user" | "assistant" | "system" | "alert" | "tool_call" | "tool_result"}
-							content={msg.content}
-							toolName={msg.tool_name}
-							modelId={msg.model_id}
-							exitCode={msg.exit_code}
+							role={item.msg.role as "user" | "assistant" | "system" | "alert" | "tool_call" | "tool_result"}
+							content={item.msg.content}
+							toolName={item.msg.tool_name}
+							modelId={item.msg.model_id}
+							exitCode={item.msg.exit_code}
 							{threadColor}
 						/>
 					{/if}
