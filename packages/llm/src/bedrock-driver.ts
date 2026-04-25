@@ -18,6 +18,7 @@
 
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import type { AmazonBedrockProvider } from "@ai-sdk/amazon-bedrock";
+import { fromIni } from "@aws-sdk/credential-providers";
 import { streamText } from "ai";
 import { mapChunks, mapError, toModelMessages, toToolSet } from "./ai-sdk-bridge";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "./types";
@@ -42,10 +43,26 @@ export class BedrockDriver implements LLMBackend {
 	}) {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
-		// API key auto-loaded from AWS_BEARER_TOKEN_BEDROCK; otherwise falls
-		// back to the AWS credential chain (honors profile, SSO, IMDS).
+		// Auth precedence (matches @ai-sdk/amazon-bedrock@4 behavior):
+		//   1. apiKey / AWS_BEARER_TOKEN_BEDROCK if set (handled by the SDK)
+		//   2. explicit profile via fromIni (honors SSO, sts:AssumeRole, MFA)
+		//   3. fall-through to the default AWS credential chain
+		// The SDK only consults credentialProvider when no bearer token is
+		// present, so wiring fromIni here is safe even when a user has a
+		// bearer token configured.
+		const credentialProvider = config.profile
+			? async () => {
+					const creds = await fromIni({ profile: config.profile })();
+					return {
+						accessKeyId: creds.accessKeyId,
+						secretAccessKey: creds.secretAccessKey,
+						sessionToken: creds.sessionToken,
+					};
+				}
+			: undefined;
 		this.provider = createAmazonBedrock({
 			region: config.region,
+			...(credentialProvider && { credentialProvider }),
 		});
 	}
 
