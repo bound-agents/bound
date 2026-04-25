@@ -45,6 +45,8 @@ export async function createSandbox(config: SandboxConfig): Promise<Sandbox> {
 	const bashOptions: ConstructorParameters<typeof Bash>[0] = {
 		fs: config.clusterFs,
 		customCommands: config.commands,
+		python: true,
+		javascript: true,
 	};
 
 	// Apply network configuration if provided
