@@ -414,8 +414,27 @@ export class AgentLoop {
 					deltaMessageCount: deltaMessages.length,
 				});
 
-				// 3. Rebuild message array: stored (without old developer tail) + delta
-				const storedMessages = [...cached.messages];
+				// 3. Rebuild message array: stored (without old developer tail) + delta.
+				//
+				// Evict any prior rolling cache-role markers. Anthropic caps each
+				// request at 4 cache_control blocks across system + tools + messages.
+				// The cold path places a FIXED cache marker at `cached.fixedCacheIdx`;
+				// the warm path then appends a ROLLING marker at the tail on every
+				// turn. Without eviction, each successive warm turn adds a new
+				// rolling marker on top of the previous one — after a few turns
+				// the accumulated message-level cache_control count alone can hit
+				// or exceed 4, yielding "Found 5" 400s from the Claude API.
+				// We keep the fixed marker (it anchors the stable prefix) and
+				// strip every other cache-role entry before placing the new one.
+				const storedMessages: import("@bound/llm").LLMMessage[] = [];
+				for (let i = 0; i < cached.messages.length; i++) {
+					const m = cached.messages[i];
+					if (m.role === "cache" && i !== cached.fixedCacheIdx) {
+						// Drop stale rolling cache markers from earlier warm turns.
+						continue;
+					}
+					storedMessages.push(m);
+				}
 				const lastIdx = storedMessages.length - 1;
 				if (storedMessages[lastIdx]?.role === "developer") {
 					storedMessages.pop();
@@ -495,13 +514,24 @@ export class AgentLoop {
 					// caused the next warm iteration to re-append the delta on
 					// top of an already-appended tool_call, producing duplicated
 					// tool_use blocks and a Bedrock tool_use_id_mismatch.
+					//
+					// Recompute cacheMessagePositions from the freshly rebuilt
+					// array since stale rolling markers were evicted in step 3.
+					// The fixed cache (cold-path anchor) survived at its original
+					// index; the new rolling cache sits at length-2.
+					const fixedIdx = cached.fixedCacheIdx;
+					const rollingIdx = storedMessages.length - 2;
+					const newCachePositions: number[] = [];
+					if (fixedIdx >= 0 && fixedIdx < storedMessages.length) {
+						newCachePositions.push(fixedIdx);
+					}
+					if (rollingIdx !== fixedIdx && rollingIdx >= 0) {
+						newCachePositions.push(rollingIdx);
+					}
 					this.setCachedTurnState({
 						...cached,
 						messages: [...storedMessages],
-						cacheMessagePositions: [
-							...cached.cacheMessagePositions,
-							storedMessages.length - 2, // rolling cache position
-						],
+						cacheMessagePositions: newCachePositions,
 						lastMessageCreatedAt: newLastRow?.created_at ?? new Date().toISOString(),
 					});
 

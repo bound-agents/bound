@@ -178,6 +178,103 @@ describe("warm-cold-path", () => {
 		});
 	});
 
+	// Regression: live thread 5cfc62f6 hit Anthropic's "Found 5" cache_control
+	// limit because each warm turn appends a rolling cache-role message on top
+	// of the prior turn's rolling marker instead of replacing it. Across N warm
+	// turns the message array accumulates N rolling caches plus the fixed
+	// cold-path cache, and with system+tools breakpoints the total blows past
+	// Claude's hard 4-block ceiling.
+	describe("regression: rolling cache does not accumulate across warm turns", () => {
+		function simulateWarmTurn(
+			stored: LLMMessage[],
+			delta: LLMMessage[],
+			fixedCacheIdx: number,
+		): LLMMessage[] {
+			// Mirror agent-loop.ts warm-path logic: evict stale rolling cache
+			// markers (keep only the fixed cold-path cache), pop developer tail,
+			// append delta, splice a new rolling cache at length-1, push fresh
+			// developer tail.
+			const next: LLMMessage[] = [];
+			for (let i = 0; i < stored.length; i++) {
+				const m = stored[i];
+				if (m.role === "cache" && i !== fixedCacheIdx) continue;
+				next.push(m);
+			}
+			if (next[next.length - 1]?.role === "developer") next.pop();
+			next.push(...delta);
+			if (next.length >= 2) {
+				next.splice(next.length - 1, 0, { role: "cache", content: "" });
+			}
+			next.push({ role: "developer", content: `volatile-turn-${stored.length}` });
+			return next;
+		}
+
+		it("after multiple warm turns, at most 2 cache markers exist in messages (fixed + rolling)", () => {
+			// Start from cold-path state: a fixed cache at the prefix, then one
+			// warm-path turn already applied (consistent with the prod failure
+			// shape, where seq=10 had 3 in-message cachePoints after a few warm
+			// turns).
+			const fixedCacheIdx = 1;
+			let state: LLMMessage[] = [
+				{ role: "user", content: "initial user" },
+				{ role: "cache", content: "" }, // fixed cache from cold path
+				{ role: "assistant", content: "initial assistant" },
+				{ role: "developer", content: "volatile-cold" },
+			];
+
+			// Three consecutive warm turns, each adding a user+assistant delta.
+			for (let turn = 0; turn < 3; turn++) {
+				state = simulateWarmTurn(
+					state,
+					[
+						{ role: "user", content: `delta-user-${turn}` },
+						{ role: "assistant", content: `delta-asst-${turn}` },
+					],
+					fixedCacheIdx,
+				);
+			}
+
+			const cacheCount = state.filter((m) => m.role === "cache").length;
+
+			// Expected: one fixed cache (from cold path) + one rolling cache
+			// (the most recent warm turn's marker). Older rolling markers must
+			// be evicted, otherwise system+tools+accumulated-message caches
+			// exceed Anthropic's 4-block limit on downstream requests.
+			expect(cacheCount).toBeLessThanOrEqual(2);
+		});
+
+		it("combined request cachePoint count stays within Anthropic's 4-block limit", () => {
+			// Simulate the per-turn request shape: system carries 1 cachePoint,
+			// toolConfig carries 1 cachePoint, messages carry the cold-path
+			// fixed cache + any rolling caches the warm path has accumulated.
+			const fixedCacheIdx = 1;
+			let state: LLMMessage[] = [
+				{ role: "user", content: "initial user" },
+				{ role: "cache", content: "" },
+				{ role: "assistant", content: "initial assistant" },
+				{ role: "developer", content: "volatile-cold" },
+			];
+
+			for (let turn = 0; turn < 5; turn++) {
+				state = simulateWarmTurn(
+					state,
+					[
+						{ role: "user", content: `delta-user-${turn}` },
+						{ role: "assistant", content: `delta-asst-${turn}` },
+					],
+					fixedCacheIdx,
+				);
+			}
+
+			const messageCachePoints = state.filter((m) => m.role === "cache").length;
+			const systemCachePoints = 1; // driver adds one when cache messages present
+			const toolCachePoints = 1; // driver adds one when cache messages + tools
+
+			const total = messageCachePoints + systemCachePoints + toolCachePoints;
+			expect(total).toBeLessThanOrEqual(4);
+		});
+	});
+
 	describe("AC1.5: Thread with only 1 message skips cache message placement", () => {
 		it("skips cache message when fewer than 2 messages", () => {
 			// When nonSystemMessages.length < 2, fixedCacheIdx = -1, skip cache placement
