@@ -8,4 +8,3 @@ export { default as StatusChip } from "./StatusChip.svelte";
 export { default as TextInput } from "./TextInput.svelte";
 export { default as TicketTab } from "./TicketTab.svelte";
 export { default as TopologyDiagram } from "./TopologyDiagram.svelte";
-export { default as TurnIndicator } from "./TurnIndicator.svelte";
