@@ -7,12 +7,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import {
-	mapChunks,
-	mapError,
-	toModelMessages,
-	toToolSet,
-} from "../ai-sdk-bridge";
+import { mapChunks, mapError, toModelMessages, toToolSet } from "../ai-sdk-bridge";
 import type { LLMMessage, StreamChunk } from "../types";
 import { LLMError } from "../types";
 
@@ -24,9 +19,7 @@ async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
 }
 
 // Helper: AI SDK fullStream is an AsyncIterable of events; synthesize one.
-async function* events(
-	...parts: Array<Record<string, unknown>>
-): AsyncIterable<unknown> {
+async function* events(...parts: Array<Record<string, unknown>>): AsyncIterable<unknown> {
 	for (const p of parts) yield p;
 }
 
@@ -245,9 +238,7 @@ describe("toModelMessages — content blocks", () => {
 				],
 			},
 		]);
-		expect(out[0].content).toEqual([
-			{ type: "text", text: "extracted pdf text" },
-		]);
+		expect(out[0].content).toEqual([{ type: "text", text: "extracted pdf text" }]);
 	});
 
 	it("drops document blocks with neither base64 source nor text_representation", () => {
@@ -436,17 +427,11 @@ describe("toModelMessages — tool call / result wrapping", () => {
 	});
 
 	it("parses JSON string content on tool_call (DB serialization path)", () => {
-		const blocks = [
-			{ type: "tool_use", id: "x", name: "y", input: { a: 1 } },
-		];
-		const out = toModelMessages([
-			{ role: "tool_call", content: JSON.stringify(blocks) },
-		]);
+		const blocks = [{ type: "tool_use", id: "x", name: "y", input: { a: 1 } }];
+		const out = toModelMessages([{ role: "tool_call", content: JSON.stringify(blocks) }]);
 		expect(out[0]).toEqual({
 			role: "assistant",
-			content: [
-				{ type: "tool-call", toolCallId: "x", toolName: "y", input: { a: 1 } },
-			],
+			content: [{ type: "tool-call", toolCallId: "x", toolName: "y", input: { a: 1 } }],
 		});
 	});
 
@@ -547,8 +532,9 @@ describe("toToolSet", () => {
 			},
 		]);
 		expect(tools).toBeDefined();
-		expect(Object.keys(tools!)).toEqual(["get_weather"]);
-		expect(tools!.get_weather.description).toBe("Get weather for a city");
+		if (!tools) throw new Error("tools undefined");
+		expect(Object.keys(tools)).toEqual(["get_weather"]);
+		expect(tools.get_weather.description).toBe("Get weather for a city");
 	});
 });
 
@@ -725,9 +711,7 @@ describe("mapChunks — finish / usage", () => {
 				{ usageProvider: "bedrock" },
 			),
 		);
-		const done = out.find((c) => c.type === "done") as
-			| (StreamChunk & { type: "done" })
-			| undefined;
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
 		expect(done?.usage).toEqual({
 			input_tokens: 500,
 			output_tokens: 50,
@@ -757,9 +741,7 @@ describe("mapChunks — finish / usage", () => {
 				{ usageProvider: "anthropic" },
 			),
 		);
-		const done = out.find((c) => c.type === "done") as
-			| (StreamChunk & { type: "done" })
-			| undefined;
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
 		expect(done?.usage.cache_write_tokens).toBe(500);
 	});
 
@@ -776,18 +758,14 @@ describe("mapChunks — finish / usage", () => {
 				),
 			),
 		);
-		const done = out.find((c) => c.type === "done") as
-			| (StreamChunk & { type: "done" })
-			| undefined;
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
 		expect(done?.usage.cache_write_tokens).toBeNull();
 		expect(done?.usage.cache_read_tokens).toBeNull();
 		expect(done?.usage.estimated).toBe(false);
 	});
 
 	it("falls back to char-based estimation when zero-usage + output text", async () => {
-		const messages: LLMMessage[] = [
-			{ role: "user", content: "this is a prompt of some length" },
-		];
+		const messages: LLMMessage[] = [{ role: "user", content: "this is a prompt of some length" }];
 		const out = await collect(
 			mapChunks(
 				events(
@@ -801,9 +779,7 @@ describe("mapChunks — finish / usage", () => {
 				{ estimateInputFromMessages: messages },
 			),
 		);
-		const done = out.find((c) => c.type === "done") as
-			| (StreamChunk & { type: "done" })
-			| undefined;
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
 		expect(done?.usage.estimated).toBe(true);
 		expect(done?.usage.input_tokens).toBeGreaterThan(0);
 		expect(done?.usage.output_tokens).toBeGreaterThan(0);
@@ -820,9 +796,7 @@ describe("mapChunks — finish / usage", () => {
 				{ estimateInputFromMessages: [{ role: "user", content: "x" }] },
 			),
 		);
-		const done = out.find((c) => c.type === "done") as
-			| (StreamChunk & { type: "done" })
-			| undefined;
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
 		expect(done?.usage.estimated).toBe(false);
 	});
 

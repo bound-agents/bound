@@ -549,12 +549,8 @@ function substituteUnsupportedBlocks(
 			// agent at least gets the pre-extracted text form.
 			if (source?.type === "file_ref" && source.file_id) {
 				const fileRow = db
-					.query(
-						"SELECT content, is_binary FROM files WHERE id = ? AND deleted = 0",
-					)
-					.get(source.file_id) as
-					| { content: string | null; is_binary: number }
-					| null;
+					.query("SELECT content, is_binary FROM files WHERE id = ? AND deleted = 0")
+					.get(source.file_id) as { content: string | null; is_binary: number } | null;
 
 				if (fileRow?.content) {
 					// Resolve to base64 inline document with the declared media
@@ -572,14 +568,8 @@ function substituteUnsupportedBlocks(
 							typeof block.text_representation === "string"
 								? (block.text_representation as string)
 								: undefined,
-						title:
-							typeof block.title === "string"
-								? (block.title as string)
-								: undefined,
-						filename:
-							typeof block.filename === "string"
-								? (block.filename as string)
-								: undefined,
+						title: typeof block.title === "string" ? (block.title as string) : undefined,
+						filename: typeof block.filename === "string" ? (block.filename as string) : undefined,
 					};
 				}
 			}
@@ -616,8 +606,7 @@ function substituteUnsupportedBlocks(
 				// image/jpeg was wrong because Discord uploads include png,
 				// webp, and gif — and the provider uses mediaType to pick the
 				// right tokenizer.
-				const mediaType = (source.media_type ??
-					"image/jpeg") as
+				const mediaType = (source.media_type ?? "image/jpeg") as
 					| "image/jpeg"
 					| "image/png"
 					| "image/gif"

@@ -35,7 +35,8 @@ describe("Model resolution thinkingConfig", () => {
 			backends: [
 				{
 					id: "claude",
-					provider: "bedrock", region: "us-east-1",
+					provider: "bedrock",
+					region: "us-east-1",
 					model: "claude-sonnet-4-20250514",
 					apiKey: "test-key",
 					contextWindow: 200000,
@@ -59,7 +60,8 @@ describe("Model resolution thinkingConfig", () => {
 			backends: [
 				{
 					id: "claude",
-					provider: "bedrock", region: "us-east-1",
+					provider: "bedrock",
+					region: "us-east-1",
 					model: "claude-sonnet-4-20250514",
 					apiKey: "test-key",
 					contextWindow: 200000,
@@ -103,7 +105,8 @@ describe("Model resolution thinkingConfig", () => {
 			backends: [
 				{
 					id: "claude",
-					provider: "bedrock", region: "us-east-1",
+					provider: "bedrock",
+					region: "us-east-1",
 					model: "claude-sonnet-4-20250514",
 					apiKey: "test-key",
 					contextWindow: 200000,

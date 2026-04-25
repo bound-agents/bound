@@ -59,11 +59,7 @@ export type LLMMessage = {
 	host_origin?: string;
 };
 
-export type ImageMediaType =
-	| "image/jpeg"
-	| "image/png"
-	| "image/gif"
-	| "image/webp";
+export type ImageMediaType = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
 
 /**
  * Source for an image block. `base64` carries inline data; `file_ref` is a

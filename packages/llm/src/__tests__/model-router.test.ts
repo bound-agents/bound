@@ -127,7 +127,8 @@ describe("ModelRouter", () => {
 			backends: [
 				{
 					id: "ollama-local",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama2",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -149,7 +150,8 @@ describe("ModelRouter", () => {
 			backends: [
 				{
 					id: "ollama-local",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama2",
 				},
 			],
@@ -199,7 +201,8 @@ describe("ModelRouter", () => {
 			backends: [
 				{
 					id: "ollama-local",
-					provider: "OPENAI-COMPATIBLE", apiKey: "test",
+					provider: "OPENAI-COMPATIBLE",
+					apiKey: "test",
 					model: "llama2",
 				},
 			],
@@ -218,7 +221,8 @@ describe("Phase 4: capability management", () => {
 			backends: [
 				{
 					id: "test",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -241,7 +245,8 @@ describe("Phase 4: capability management", () => {
 			backends: [
 				{
 					id: "test",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llava",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -262,7 +267,8 @@ describe("Phase 4: capability management", () => {
 			backends: [
 				{
 					id: "test",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -286,7 +292,8 @@ describe("Phase 4: capability management", () => {
 			backends: [
 				{
 					id: "claude",
-					provider: "bedrock", region: "us-east-1",
+					provider: "bedrock",
+					region: "us-east-1",
 					model: "claude-3-opus",
 					apiKey: "test-key",
 					contextWindow: 200000,
@@ -306,7 +313,8 @@ describe("Phase 4: capability management", () => {
 			backends: [
 				{
 					id: "test",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -325,7 +333,8 @@ describe("Phase 4: capability management", () => {
 			backends: [
 				{
 					id: "test",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -345,7 +354,8 @@ describe("Phase 4: capability management", () => {
 			backends: [
 				{
 					id: "a",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -353,7 +363,8 @@ describe("Phase 4: capability management", () => {
 				},
 				{
 					id: "b",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -373,7 +384,8 @@ describe("Phase 4: capability management", () => {
 			backends: [
 				{
 					id: "vision-backend",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llava",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -382,7 +394,8 @@ describe("Phase 4: capability management", () => {
 				},
 				{
 					id: "no-vision",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -402,7 +415,8 @@ describe("Phase 4: capability management", () => {
 			backends: [
 				{
 					id: "a",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -410,7 +424,8 @@ describe("Phase 4: capability management", () => {
 				},
 				{
 					id: "b",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -431,7 +446,8 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 			backends: [
 				{
 					id: "vision-backend-1",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llava",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -440,7 +456,8 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 				},
 				{
 					id: "vision-backend-2",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llava",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -449,7 +466,8 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 				},
 				{
 					id: "no-vision",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -481,7 +499,8 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 			backends: [
 				{
 					id: "vision-backend",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llava",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -490,7 +509,8 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 				},
 				{
 					id: "no-vision",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -515,7 +535,8 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 			backends: [
 				{
 					id: "vision-backend",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llava",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -536,7 +557,8 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 			backends: [
 				{
 					id: "backend-a",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -544,7 +566,8 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 				},
 				{
 					id: "backend-b",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -572,7 +595,8 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 			backends: [
 				{
 					id: "full-featured",
-					provider: "bedrock", region: "us-east-1",
+					provider: "bedrock",
+					region: "us-east-1",
 					model: "claude-3",
 					apiKey: "test-key",
 					contextWindow: 200000,
@@ -586,7 +610,8 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 				},
 				{
 					id: "limited",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -615,7 +640,8 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 			backends: [
 				{
 					id: "partial-1",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llava",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -624,7 +650,8 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 				},
 				{
 					id: "partial-2",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -653,7 +680,8 @@ describe("ModelRouter tier awareness", () => {
 			backends: [
 				{
 					id: "cheap",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -662,7 +690,8 @@ describe("ModelRouter tier awareness", () => {
 				},
 				{
 					id: "expensive",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -682,7 +711,8 @@ describe("ModelRouter tier awareness", () => {
 			backends: [
 				{
 					id: "test",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -700,7 +730,8 @@ describe("ModelRouter tier awareness", () => {
 			backends: [
 				{
 					id: "cheap-a",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -708,7 +739,8 @@ describe("ModelRouter tier awareness", () => {
 				},
 				{
 					id: "cheap-b",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "phi3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -716,7 +748,8 @@ describe("ModelRouter tier awareness", () => {
 				},
 				{
 					id: "expensive",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -741,7 +774,8 @@ describe("ModelRouter tier awareness", () => {
 			backends: [
 				{
 					id: "vision-cheap",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llava",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -750,7 +784,8 @@ describe("ModelRouter tier awareness", () => {
 				},
 				{
 					id: "no-vision-cheap",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -770,7 +805,8 @@ describe("ModelRouter tier awareness", () => {
 			backends: [
 				{
 					id: "a",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -778,7 +814,8 @@ describe("ModelRouter tier awareness", () => {
 				},
 				{
 					id: "b",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "phi3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -940,7 +977,8 @@ describe("ModelRouter thinking config", () => {
 			backends: [
 				{
 					id: "test",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -956,7 +994,8 @@ describe("ModelRouter thinking config", () => {
 			backends: [
 				{
 					id: "claude",
-					provider: "bedrock", region: "us-east-1",
+					provider: "bedrock",
+					region: "us-east-1",
 					model: "claude-sonnet-4-20250514",
 					apiKey: "test-key",
 					contextWindow: 200000,
@@ -976,7 +1015,8 @@ describe("ModelRouter thinking config", () => {
 			backends: [
 				{
 					id: "claude",
-					provider: "bedrock", region: "us-east-1",
+					provider: "bedrock",
+					region: "us-east-1",
 					model: "claude-sonnet-4-20250514",
 					apiKey: "test-key",
 					contextWindow: 200000,
@@ -996,7 +1036,8 @@ describe("ModelRouter thinking config", () => {
 			backends: [
 				{
 					id: "test",
-					provider: "openai-compatible", apiKey: "test",
+					provider: "openai-compatible",
+					apiKey: "test",
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
@@ -1017,7 +1058,8 @@ describe("ModelRouter thinking config", () => {
 			backends: [
 				{
 					id: "opus",
-					provider: "bedrock", region: "us-east-1",
+					provider: "bedrock",
+					region: "us-east-1",
 					model: "claude-opus-4-7",
 					apiKey: "test-key",
 					contextWindow: 1_000_000,
@@ -1036,7 +1078,8 @@ describe("ModelRouter thinking config", () => {
 			backends: [
 				{
 					id: "opus",
-					provider: "bedrock", region: "us-east-1",
+					provider: "bedrock",
+					region: "us-east-1",
 					model: "claude-opus-4-7",
 					apiKey: "test-key",
 					contextWindow: 1_000_000,
@@ -1055,7 +1098,8 @@ describe("ModelRouter thinking config", () => {
 			backends: [
 				{
 					id: "opus",
-					provider: "bedrock", region: "us-east-1",
+					provider: "bedrock",
+					region: "us-east-1",
 					model: "claude-opus-4-7",
 					apiKey: "test-key",
 					contextWindow: 1_000_000,
@@ -1073,7 +1117,8 @@ describe("ModelRouter thinking config", () => {
 			backends: [
 				{
 					id: "opus",
-					provider: "bedrock", region: "us-east-1",
+					provider: "bedrock",
+					region: "us-east-1",
 					model: "claude-opus-4-7",
 					apiKey: "test-key",
 					contextWindow: 1_000_000,

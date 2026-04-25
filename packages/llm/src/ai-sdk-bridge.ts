@@ -18,15 +18,9 @@
  */
 
 import { formatError } from "@bound/shared";
-import { jsonSchema, tool as aiTool } from "ai";
+import { tool as aiTool, jsonSchema } from "ai";
 import type { ModelMessage, ToolSet } from "ai";
-import type {
-	ChatParams,
-	ContentBlock,
-	LLMMessage,
-	StreamChunk,
-	ToolDefinition,
-} from "./types";
+import type { ContentBlock, LLMMessage, StreamChunk, ToolDefinition } from "./types";
 import { LLMError } from "./types";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -73,9 +67,7 @@ export function toModelMessages(
 	const toolNameById = new Map<string, string>();
 	for (const msg of messages) {
 		if (msg.role !== "assistant" && msg.role !== "tool_call") continue;
-		const blocks = Array.isArray(msg.content)
-			? msg.content
-			: normalizeBlocks(msg.content);
+		const blocks = Array.isArray(msg.content) ? msg.content : normalizeBlocks(msg.content);
 		for (const b of blocks) {
 			if (b.type === "tool_use") toolNameById.set(b.id, b.name);
 		}
@@ -86,11 +78,10 @@ export function toModelMessages(
 			// Attach a cache breakpoint to the most recently emitted message.
 			const prev = result[result.length - 1];
 			if (!prev || !opts.cacheProvider) continue;
-			const provOpts = (prev.providerOptions ??= {}) as Record<
-				string,
-				Record<string, unknown>
-			>;
-			const bucket = (provOpts[opts.cacheProvider] ??= {});
+			if (!prev.providerOptions) prev.providerOptions = {};
+			const provOpts = prev.providerOptions as Record<string, Record<string, unknown>>;
+			if (!provOpts[opts.cacheProvider]) provOpts[opts.cacheProvider] = {};
+			const bucket = provOpts[opts.cacheProvider];
 			if (opts.cacheProvider === "bedrock") {
 				bucket.cachePoint = { type: "default" };
 			} else if (opts.cacheProvider === "anthropic") {
@@ -145,10 +136,7 @@ export function toModelMessages(
 		}
 
 		if (msg.role === "developer") {
-			const text =
-				typeof msg.content === "string"
-					? msg.content
-					: extractText(msg.content);
+			const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
 			result.push({ role: "system", content: text });
 			continue;
 		}
@@ -240,8 +228,7 @@ function buildReasoningPart(b: Extract<ContentBlock, { type: "thinking" }>) {
 	const bedrock: Record<string, unknown> = {};
 	if (b.signature) bedrock.signature = b.signature;
 	if (b.redacted_data) bedrock.redactedData = b.redacted_data;
-	const providerOptions =
-		Object.keys(bedrock).length > 0 ? { bedrock } : undefined;
+	const providerOptions = Object.keys(bedrock).length > 0 ? { bedrock } : undefined;
 	return {
 		type: "reasoning" as const,
 		text: b.thinking,
@@ -466,11 +453,7 @@ export async function* mapChunks(
 				const totalUsage = part.totalUsage as FinishState["totalUsage"];
 				yield {
 					type: "done",
-					usage: extractUsage(
-						{ totalUsage, providerMetadata: lastStepMetadata },
-						outputText,
-						opts,
-					),
+					usage: extractUsage({ totalUsage, providerMetadata: lastStepMetadata }, outputText, opts),
 				};
 				break;
 			}
@@ -504,11 +487,7 @@ interface DoneUsage {
 	estimated: boolean;
 }
 
-function extractUsage(
-	finish: FinishState,
-	outputText: string,
-	opts: MapChunksOptions,
-): DoneUsage {
+function extractUsage(finish: FinishState, outputText: string, opts: MapChunksOptions): DoneUsage {
 	const u = finish.totalUsage ?? {};
 	let inputTokens = u.inputTokens ?? 0;
 	let outputTokens = u.outputTokens ?? 0;
@@ -520,14 +499,10 @@ function extractUsage(
 	const meta = finish.providerMetadata;
 	if (meta) {
 		if (opts.usageProvider === "bedrock") {
-			const bedrockUsage = meta.bedrock?.usage as
-				| { cacheWriteInputTokens?: number }
-				| undefined;
+			const bedrockUsage = meta.bedrock?.usage as { cacheWriteInputTokens?: number } | undefined;
 			cacheWriteTokens = bedrockUsage?.cacheWriteInputTokens ?? null;
 		} else if (opts.usageProvider === "anthropic") {
-			cacheWriteTokens =
-				(meta.anthropic?.cacheCreationInputTokens as number | undefined) ??
-				null;
+			cacheWriteTokens = (meta.anthropic?.cacheCreationInputTokens as number | undefined) ?? null;
 		}
 	}
 
@@ -543,9 +518,7 @@ function extractUsage(
 			opts.estimateInputFromMessages.reduce(
 				(sum, m) =>
 					sum +
-					(typeof m.content === "string"
-						? m.content.length
-						: JSON.stringify(m.content).length),
+					(typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length),
 				0,
 			) / 4,
 		);
@@ -586,13 +559,10 @@ export function mapError(err: unknown, provider: string): LLMError {
 		  }
 		| null
 		| undefined;
-	const statusCode =
-		e?.statusCode ?? e?.status ?? e?.$metadata?.httpStatusCode;
+	const statusCode = e?.statusCode ?? e?.status ?? e?.$metadata?.httpStatusCode;
 	const retryAfterHeader =
 		e?.responseHeaders?.["retry-after"] ?? e?.responseHeaders?.["Retry-After"];
-	const retryAfterMs = retryAfterHeader
-		? parseRetryAfter(retryAfterHeader)
-		: undefined;
+	const retryAfterMs = retryAfterHeader ? parseRetryAfter(retryAfterHeader) : undefined;
 	return new LLMError(
 		`${provider} request failed: ${formatError(err)}`,
 		provider,
