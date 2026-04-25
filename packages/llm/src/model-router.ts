@@ -1,7 +1,5 @@
-import { AnthropicDriver } from "./anthropic-driver";
 import { BedrockDriver } from "./bedrock-driver";
-import { OllamaDriver } from "./ollama-driver";
-import { OpenAICompatibleDriver } from "./openai-driver";
+import { OpenAICompatibleDriver } from "./openai-compatible-driver";
 import type {
 	BackendCapabilities,
 	BackendConfig,
@@ -355,19 +353,6 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 	const provider = config.provider.toLowerCase();
 
 	switch (provider) {
-		case "anthropic": {
-			const apiKey = config.apiKey as string | undefined;
-			if (!apiKey) {
-				throw new Error("Anthropic driver requires apiKey in config");
-			}
-			const contextWindow = config.contextWindow ?? 200000;
-			return new AnthropicDriver({
-				apiKey,
-				model: config.model,
-				contextWindow,
-			});
-		}
-
 		case "bedrock": {
 			const region = config.region as string | undefined;
 			if (!region) {
@@ -395,16 +380,7 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 				apiKey,
 				model: config.model,
 				contextWindow,
-			});
-		}
-
-		case "ollama": {
-			const baseUrl = config.baseUrl ?? "http://localhost:11434";
-			const contextWindow = config.contextWindow ?? 4096;
-			return new OllamaDriver({
-				baseUrl,
-				model: config.model,
-				contextWindow,
+				providerName: "openai-compatible",
 			});
 		}
 
@@ -420,6 +396,7 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 				apiKey,
 				model: config.model,
 				contextWindow,
+				providerName: "cerebras",
 			});
 		}
 
@@ -435,11 +412,17 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 				apiKey,
 				model: config.model,
 				contextWindow,
+				providerName: "zai",
 			});
 		}
 
 		default:
-			throw new Error(`Provider not yet implemented: ${config.provider}`);
+			// anthropic, ollama, and other providers deliberately removed in the
+			// 2026-04-25 AI SDK migration. If a config still references them, it
+			// needs to be updated — anthropic backends should use bedrock, and
+			// local inference should go through the relay to a spoke host that
+			// runs bedrock or openai-compatible.
+			throw new Error(`Provider not supported: ${config.provider}`);
 	}
 }
 

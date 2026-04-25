@@ -132,6 +132,14 @@ interface ParsedResponse {
 	textContent: string;
 	thinking: string | null;
 	thinkingSignature: string | null;
+	/**
+	 * Opaque Bedrock redacted-reasoning blob. When safety filters redact the
+	 * model's thinking, this is emitted instead of (or alongside) visible
+	 * thinking text. Must be echoed back on the next assistant turn via
+	 * providerOptions.bedrock.redactedData — the bridge handles that when a
+	 * thinking ContentBlock carries redacted_data.
+	 */
+	thinkingRedactedData: string | null;
 	toolCalls: ParsedToolCall[];
 	usage: {
 		inputTokens: number;
@@ -1199,13 +1207,19 @@ export class AgentLoop {
 					// Preserve thinking block for multi-turn reasoning continuity.
 					// Anthropic requires the signed thinking block to come FIRST in the
 					// assistant message's content blocks during extended thinking.
-					if (parsed.thinking) {
+					// Emit a thinking block when EITHER visible thinking text OR
+					// redacted-reasoning data is present — redacted-only turns still
+					// need to round-trip the blob back on the next request.
+					if (parsed.thinking || parsed.thinkingRedactedData) {
 						const thinkingBlock: ContentBlock = {
 							type: "thinking",
-							thinking: parsed.thinking,
+							thinking: parsed.thinking ?? "",
 						};
 						if (parsed.thinkingSignature) {
 							thinkingBlock.signature = parsed.thinkingSignature;
+						}
+						if (parsed.thinkingRedactedData) {
+							thinkingBlock.redacted_data = parsed.thinkingRedactedData;
 						}
 						toolCallBlocks.push(thinkingBlock);
 					}
@@ -1992,6 +2006,7 @@ export class AgentLoop {
 		let textContent = "";
 		let thinkingContent = "";
 		let thinkingSignature: string | null = null;
+		let thinkingRedactedData: string | null = null;
 		const toolCalls: ParsedToolCall[] = [];
 		const argsAccumulator = new Map<string, string>();
 		const nameMap = new Map<string, string>();
@@ -2007,6 +2022,7 @@ export class AgentLoop {
 			} else if (chunk.type === "thinking") {
 				thinkingContent += chunk.content;
 				if (chunk.signature) thinkingSignature = chunk.signature;
+				if (chunk.redacted_data) thinkingRedactedData = chunk.redacted_data;
 			} else if (chunk.type === "tool_use_start") {
 				argsAccumulator.set(chunk.id, "");
 				nameMap.set(chunk.id, chunk.name);
@@ -2047,6 +2063,7 @@ export class AgentLoop {
 			textContent,
 			thinking: thinkingContent || null,
 			thinkingSignature,
+			thinkingRedactedData,
 			toolCalls,
 			usage: {
 				inputTokens,

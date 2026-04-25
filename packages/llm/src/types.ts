@@ -59,20 +59,73 @@ export type LLMMessage = {
 	host_origin?: string;
 };
 
+export type ImageMediaType =
+	| "image/jpeg"
+	| "image/png"
+	| "image/gif"
+	| "image/webp";
+
+/**
+ * Source for an image block. `base64` carries inline data; `file_ref` is a
+ * pointer into the `files` table that context-assembly.ts resolves to base64
+ * before the driver layer sees it. `media_type` on file_ref is a hint: if
+ * known at upload time (e.g. Discord contentType), it avoids guessing during
+ * resolution. Images constrain media_type to the four AI-SDK-supported image
+ * IANA types.
+ */
 export type ImageSource =
-	| {
-			type: "base64";
-			media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
-			data: string;
-	  }
-	| { type: "file_ref"; file_id: string };
+	| { type: "base64"; media_type: ImageMediaType; data: string }
+	| { type: "file_ref"; file_id: string; media_type?: ImageMediaType };
+
+/**
+ * Source for a document block. Unlike ImageSource, media_type is an open
+ * IANA string (application/pdf, text/csv, application/json, text/markdown,
+ * text/plain, etc.) because AI SDK FilePart accepts any media type the
+ * provider supports and Bedrock specifically accepts a wide document set.
+ */
+export type DocumentSource =
+	| { type: "base64"; media_type: string; data: string }
+	| { type: "file_ref"; file_id: string; media_type?: string };
 
 export type ContentBlock =
 	| { type: "text"; text: string }
 	| { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
-	| { type: "thinking"; thinking: string; signature?: string }
+	| {
+			type: "thinking";
+			thinking: string;
+			/**
+			 * Bedrock/Anthropic cryptographic signature over the reasoning text.
+			 * Required on the next turn to prove we didn't tamper with thinking
+			 * content. Stored verbatim and passed through via
+			 * providerOptions.{bedrock|anthropic}.signature on replay.
+			 */
+			signature?: string;
+			/**
+			 * Opaque redacted-reasoning blob. Bedrock emits this on
+			 * reasoning-delta with empty text when safety filters redact the
+			 * model's thinking. Must be echoed back on the next turn via
+			 * providerOptions.bedrock.redactedData. Cannot coexist meaningfully
+			 * with `thinking` text on the same block, but both fields are
+			 * optional so replay shapes stay flexible.
+			 */
+			redacted_data?: string;
+	  }
 	| { type: "image"; source: ImageSource; description?: string }
-	| { type: "document"; source: ImageSource; text_representation: string; title?: string };
+	| {
+			type: "document";
+			source: DocumentSource;
+			/**
+			 * Pre-extracted plain-text form of the document. Used as the wire
+			 * representation when the target provider doesn't support native
+			 * document parts (openai-compatible, most third-party backends) and
+			 * when context-assembly downgrades documents for capability reasons.
+			 * Optional because some callers may create a document block with
+			 * only raw source data and let the bridge route it as a FilePart.
+			 */
+			text_representation?: string;
+			title?: string;
+			filename?: string;
+	  };
 
 export interface CapabilityRequirements {
 	vision?: boolean;
@@ -83,7 +136,19 @@ export interface CapabilityRequirements {
 
 export type StreamChunk =
 	| { type: "text"; content: string }
-	| { type: "thinking"; content: string; signature?: string }
+	| {
+			type: "thinking";
+			content: string;
+			/** See ContentBlock "thinking".signature. */
+			signature?: string;
+			/**
+			 * See ContentBlock "thinking".redacted_data. Emitted on a separate
+			 * chunk with content:"" when the provider sends redacted reasoning
+			 * data on an empty-text reasoning-delta event. Downstream stitches
+			 * this onto the assembled thinking ContentBlock.
+			 */
+			redacted_data?: string;
+	  }
 	| { type: "tool_use_start"; id: string; name: string }
 	| { type: "tool_use_args"; id: string; partial_json: string }
 	| { type: "tool_use_end"; id: string }

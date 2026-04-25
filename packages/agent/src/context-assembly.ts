@@ -525,7 +525,66 @@ function substituteUnsupportedBlocks(
 		}
 
 		if (block.type === "document") {
-			// Always replace document blocks with their text_representation
+			const source = block.source as
+				| {
+						type?: string;
+						file_id?: string;
+						data?: string;
+						media_type?: string;
+				  }
+				| undefined;
+
+			// base64 documents pass through as-is — the driver bridge routes
+			// them to an AI SDK FilePart with the declared IANA mediaType.
+			// Bedrock accepts pdf/csv/json/md/html/docx/xlsx/txt; openai-
+			// compatible providers vary but accept text/* universally. If the
+			// target can't render the media type, the provider surfaces the
+			// error and the caller retries with a text-only turn.
+			if (source?.type === "base64") {
+				return block;
+			}
+
+			// file_ref documents: resolve from files table. If the row is
+			// missing or empty, fall back to text_representation so the
+			// agent at least gets the pre-extracted text form.
+			if (source?.type === "file_ref" && source.file_id) {
+				const fileRow = db
+					.query(
+						"SELECT content, is_binary FROM files WHERE id = ? AND deleted = 0",
+					)
+					.get(source.file_id) as
+					| { content: string | null; is_binary: number }
+					| null;
+
+				if (fileRow?.content) {
+					// Resolve to base64 inline document with the declared media
+					// type. If no media_type hint was stored on the file_ref
+					// (legacy rows), fall back to application/octet-stream —
+					// the provider may reject it but that's better than guessing.
+					return {
+						type: "document" as const,
+						source: {
+							type: "base64" as const,
+							media_type: source.media_type ?? "application/octet-stream",
+							data: fileRow.content,
+						},
+						text_representation:
+							typeof block.text_representation === "string"
+								? (block.text_representation as string)
+								: undefined,
+						title:
+							typeof block.title === "string"
+								? (block.title as string)
+								: undefined,
+						filename:
+							typeof block.filename === "string"
+								? (block.filename as string)
+								: undefined,
+					};
+				}
+			}
+
+			// Fall back to text_representation if available, else a stub.
 			const textRep =
 				typeof block.text_representation === "string"
 					? block.text_representation
@@ -551,12 +610,23 @@ function substituteUnsupportedBlocks(
 						text: `[Image file unavailable: ${source.file_id}]`,
 					};
 				}
-				// Resolve to base64 inline block
+				// Resolve to base64 inline block. Use the media_type hint on
+				// the file_ref if present; fall back to image/jpeg only when
+				// the connector didn't stamp a type (legacy path). Hardcoding
+				// image/jpeg was wrong because Discord uploads include png,
+				// webp, and gif — and the provider uses mediaType to pick the
+				// right tokenizer.
+				const mediaType = (source.media_type ??
+					"image/jpeg") as
+					| "image/jpeg"
+					| "image/png"
+					| "image/gif"
+					| "image/webp";
 				return {
 					type: "image" as const,
 					source: {
 						type: "base64" as const,
-						media_type: "image/jpeg" as const, // default; ideally stored in files table
+						media_type: mediaType,
 						data: fileRow.content,
 					},
 					description: block.description,

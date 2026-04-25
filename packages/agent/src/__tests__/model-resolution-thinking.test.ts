@@ -35,7 +35,7 @@ describe("Model resolution thinkingConfig", () => {
 			backends: [
 				{
 					id: "claude",
-					provider: "anthropic",
+					provider: "bedrock", region: "us-east-1",
 					model: "claude-sonnet-4-20250514",
 					apiKey: "test-key",
 					contextWindow: 200000,
@@ -59,7 +59,7 @@ describe("Model resolution thinkingConfig", () => {
 			backends: [
 				{
 					id: "claude",
-					provider: "anthropic",
+					provider: "bedrock", region: "us-east-1",
 					model: "claude-sonnet-4-20250514",
 					apiKey: "test-key",
 					contextWindow: 200000,
@@ -80,17 +80,18 @@ describe("Model resolution thinkingConfig", () => {
 		const router = createModelRouter({
 			backends: [
 				{
-					id: "ollama",
-					provider: "ollama",
+					id: "local",
+					provider: "openai-compatible",
 					model: "llama3",
-					baseUrl: "http://localhost:11434",
+					baseUrl: "http://localhost:11434/v1",
+					apiKey: "test-key",
 					contextWindow: 4096,
 				},
 			],
-			default: "ollama",
+			default: "local",
 		});
 
-		const resolution = resolveModel("ollama", router, db, "local-site-id");
+		const resolution = resolveModel("local", router, db, "local-site-id");
 		expect(resolution.kind).toBe("local");
 		if (resolution.kind === "local") {
 			expect(resolution.thinkingConfig).toBeUndefined();
@@ -102,7 +103,7 @@ describe("Model resolution thinkingConfig", () => {
 			backends: [
 				{
 					id: "claude",
-					provider: "anthropic",
+					provider: "bedrock", region: "us-east-1",
 					model: "claude-sonnet-4-20250514",
 					apiKey: "test-key",
 					contextWindow: 200000,
