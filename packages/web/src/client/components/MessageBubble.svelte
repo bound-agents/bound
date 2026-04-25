@@ -1,6 +1,7 @@
 <script lang="ts">
-import { renderMarkdown } from "../lib/markdown";
+import { renderMarkdown, splitOnThinkingBlocks } from "../lib/markdown";
 import { getLineColor } from "../lib/metro-lines";
+import ReasoningBlock from "./ReasoningBlock.svelte";
 
 interface Props {
 	role: "user" | "assistant" | "tool_call" | "tool_result" | "alert" | "system";
@@ -14,7 +15,7 @@ interface Props {
 const {
 	role,
 	content,
-	toolName = null,
+	toolName: _toolName = null,
 	modelId = null,
 	exitCode = null,
 	threadColor = 0,
@@ -43,11 +44,46 @@ const roleLabel = $derived.by(() => {
 	}
 });
 
+// For assistant messages we split <thinking>...</thinking> sections out of
+// the content and render them as a ReasoningBlock disclosure above the
+// prose. This is a legacy compatibility path — modern agent runs store
+// reasoning as a structured ContentBlock on the tool_call message, which
+// ToolCallCard surfaces directly. But older assistant messages (and some
+// providers' plain-text output) still embed <thinking> inline, so we keep
+// the fallback here so those turns still display correctly.
+const segments = $derived.by(() => {
+	if (role !== "assistant") return null;
+	return splitOnThinkingBlocks(content);
+});
+
+const thinkingText = $derived.by(() => {
+	if (!segments) return "";
+	return segments
+		.filter((s) => s.kind === "thinking")
+		.map((s) => s.text)
+		.join("\n\n")
+		.trim();
+});
+
+const proseText = $derived.by(() => {
+	if (!segments) return content;
+	return segments
+		.filter((s) => s.kind === "text")
+		.map((s) => s.text)
+		.join("")
+		.trim();
+});
+
 let rendered = $state("");
 
 $effect(() => {
+	const source = role === "assistant" ? proseText : content;
 	if (role === "assistant" || role === "user") {
-		renderMarkdown(content)
+		if (!source) {
+			rendered = "";
+			return;
+		}
+		renderMarkdown(source)
 			.then((html) => {
 				rendered = html;
 			})
@@ -88,6 +124,9 @@ $effect(() => {
 				<span class="model mono">{modelId}</span>
 			{/if}
 		</div>
+		{#if role === "assistant" && thinkingText}
+			<ReasoningBlock text={thinkingText} {lineColor} />
+		{/if}
 		{#if rendered}
 			<div class="content md-content">{@html rendered}</div>
 		{:else}
@@ -337,30 +376,5 @@ $effect(() => {
 		padding: 6px 10px;
 		border-bottom: 1px solid var(--rule-faint);
 		color: var(--ink-2);
-	}
-
-	:global(.md-content .thinking-block) {
-		border-left: 3px solid var(--rule-soft);
-		padding: 4px 0 4px 10px;
-		margin: 0.5em 0;
-		font-family: var(--font-serif);
-		font-style: italic;
-		color: var(--ink-2);
-	}
-
-	:global(.md-content .thinking-block > summary) {
-		font-family: var(--font-display);
-		font-style: normal;
-		font-size: 11.5px;
-		font-weight: 500;
-		letter-spacing: 0.02em;
-		color: var(--ink-3);
-		cursor: pointer;
-		user-select: none;
-		padding: 2px 0;
-	}
-
-	:global(.md-content .thinking-block > summary:hover) {
-		color: var(--ink);
 	}
 </style>

@@ -1,7 +1,7 @@
 <script lang="ts">
 import { onMount, tick } from "svelte";
 import MessageBubble from "./MessageBubble.svelte";
-import ToolCallGroup from "./ToolCallGroup.svelte";
+import ToolCallCard from "./ToolCallCard.svelte";
 import TurnIndicator from "./TurnIndicator.svelte";
 
 interface Message {
@@ -13,39 +13,6 @@ interface Message {
 	id?: string;
 	exit_code?: number | null;
 }
-
-interface ToolEntry {
-	name: string;
-	input: unknown;
-	id: string;
-	result?: string;
-	exitCode?: number | null;
-	timestamp?: string;
-}
-
-interface ToolCallItem {
-	content: string;
-	toolResults?: Message[];
-	reasoning?: string[];
-	earliest: string;
-}
-
-type ToolGroupSegment =
-	| { kind: "tools"; entries: ToolEntry[] }
-	| { kind: "reasoning"; text: string };
-
-type DisplayItem =
-	| { kind: "message"; msg: Message; earliest: string }
-	| {
-			kind: "toolGroup";
-			segments: ToolGroupSegment[];
-			earliest: string;
-			timestamps: string[];
-	  };
-
-type Pass1Entry =
-	| { kind: "message"; msg: Message; earliest: string }
-	| { kind: "toolCall"; item: ToolCallItem };
 
 interface TurnRange {
 	from: string;
@@ -76,7 +43,7 @@ const {
 let scrollContainer = $state<HTMLDivElement | null>(null);
 let prevMessageCount = 0;
 let isAtBottom = true;
-const BOTTOM_THRESHOLD = 80; // px of slack for "at bottom" detection
+const BOTTOM_THRESHOLD = 80;
 
 function checkIsAtBottom(): boolean {
 	if (!scrollContainer) return true;
@@ -86,7 +53,6 @@ function checkIsAtBottom(): boolean {
 
 function scrollToBottom(smooth = true): void {
 	if (!scrollContainer) return;
-	// Wait for browser layout so scrollHeight reflects new content
 	requestAnimationFrame(() => {
 		if (!scrollContainer) return;
 		scrollContainer.scrollTo({
@@ -101,12 +67,10 @@ function handleScroll(): void {
 	updateScrollMetrics();
 }
 
-// Scroll to bottom on mount (case 2: opening a thread)
 onMount(() => {
 	tick().then(() => scrollToBottom());
 });
 
-// React to message changes
 $effect(() => {
 	const count = messages.length;
 	if (count === prevMessageCount) return;
@@ -114,8 +78,6 @@ $effect(() => {
 	const lastMsg = messages[count - 1];
 	const isNewUserMessage = lastMsg?.role === "user";
 
-	// Case 1: user sent a message → always scroll
-	// Case 3: non-user message arrived while already at bottom → scroll
 	if (isNewUserMessage || isAtBottom) {
 		tick().then(() => scrollToBottom());
 	}
@@ -131,25 +93,22 @@ function updateScrollMetrics(): void {
 	if (!scrollContainer) return;
 	contentScrollHeight = scrollContainer.scrollHeight;
 
-	// Compute turn boundaries relative to scroll container content
 	const offsets: number[] = [];
 	let lastWasUser = false;
 	const items = scrollContainer.querySelectorAll("[data-message-role]");
 	for (const el of items) {
 		const role = el.getAttribute("data-message-role");
 		if (role === "user" && !lastWasUser) {
-			// offsetTop relative to scroll container
 			const offset = (el as HTMLElement).offsetTop;
 			offsets.push(offset);
 			lastWasUser = true;
-		} else if (role === "assistant") {
+		} else if (role === "assistant" || role === "tool_call") {
 			lastWasUser = false;
 		}
 	}
 	computedTurnOffsets = offsets;
 }
 
-// Update metrics when messages change
 $effect(() => {
 	if (messages.length > 0) {
 		tick().then(updateScrollMetrics);
@@ -157,24 +116,18 @@ $effect(() => {
 });
 
 // --- Turn range highlighting + scroll ---
-function tsInRange(ts: string, range: TurnRange): boolean {
+function tsInRange(ts: string | undefined, range: TurnRange): boolean {
+	if (!ts) return false;
 	if (ts < range.from) return false;
 	if (range.to !== null && ts >= range.to) return false;
 	return true;
 }
 
-function isInTurnRange(item: DisplayItem): boolean {
-	if (!turnRange) return false;
-	// Tool groups span multiple turns — check if ANY constituent timestamp matches
-	if (item.kind === "toolGroup") {
-		return item.timestamps.some((ts) => tsInRange(ts, turnRange));
-	}
-	const ts = item.earliest;
-	if (!ts) return false;
-	return tsInRange(ts, turnRange);
+function isInRange(msg: Message): boolean {
+	if (!turnRange) return true;
+	return tsInRange(msg.created_at, turnRange);
 }
 
-// Scroll to first item in the selected turn range
 let prevTurnFrom: string | null = null;
 $effect(() => {
 	const from = turnRange?.from ?? null;
@@ -196,146 +149,35 @@ $effect(() => {
 	});
 });
 
-// Parse a tool_call content + results into ToolEntry items
-function parseToolCallEntries(item: ToolCallItem): ToolEntry[] {
-	try {
-		const parsed = JSON.parse(item.content);
-		if (!Array.isArray(parsed))
-			return [
-				{
-					name: "tool",
-					input: item.content,
-					id: "",
-					result: item.toolResults?.[0]?.content,
-					exitCode: item.toolResults?.[0]?.exit_code,
-					timestamp: item.earliest,
-				},
-			];
-		return (parsed as Array<{ type: string; id: string; name: string; input: unknown }>).map(
-			(use) => {
-				const matched = item.toolResults?.find((r) => r.tool_name === use.id);
-				return {
-					name: use.name,
-					input: use.input,
-					id: use.id,
-					result: matched?.content,
-					exitCode: matched?.exit_code,
-					timestamp: item.earliest,
-				};
-			},
-		);
-	} catch {
-		return [
-			{
-				name: "tool",
-				input: item.content,
-				id: "",
-				result: item.toolResults?.[0]?.content,
-				exitCode: item.toolResults?.[0]?.exit_code,
-				timestamp: item.earliest,
-			},
-		];
-	}
+// Build a lookup from tool_use id → tool_result message so ToolCallCard can
+// surface the result inline beneath its originating tool_use row. Results are
+// still persisted as separate messages (the pairing invariant), but they no
+// longer need to appear as standalone bubbles in the stream — the tool_call
+// message's ContentBlock[] is the authoritative record of what was called.
+interface ToolResultMsg {
+	content: string;
+	exit_code?: number | null;
+	tool_name?: string | null;
 }
 
-let displayItems = $derived.by((): DisplayItem[] => {
-	// Pass 1: pair tool_call with nearby tool_results.
-	// Skips over assistant/system messages between tool_call and tool_result,
-	// since LLMs may emit reasoning text mid-tool-turn.
-	const pass1: Pass1Entry[] = [];
-	let i = 0;
-	while (i < messages.length) {
-		const msg = messages[i];
-		if (msg.role === "tool_call") {
-			const results: Message[] = [];
-			const inlineReasoning: string[] = [];
-			let j = i + 1;
-			while (j < messages.length) {
-				const next = messages[j];
-				if (next.role === "tool_result") {
-					results.push(next);
-					j++;
-				} else if (
-					(next.role === "assistant" || next.role === "system") &&
-					j + 1 < messages.length &&
-					(messages[j + 1].role === "tool_result" || messages[j + 1].role === "tool_call")
-				) {
-					// Collect reasoning/system between tool messages
-					const text = next.content?.trim();
-					if (text) inlineReasoning.push(text);
-					j++;
-				} else {
-					break;
-				}
-			}
-			pass1.push({
-				kind: "toolCall",
-				item: {
-					content: msg.content,
-					toolResults: results.length > 0 ? results : undefined,
-					reasoning: inlineReasoning.length > 0 ? inlineReasoning : undefined,
-					earliest: msg.created_at ?? "",
-				},
-			});
-			i = j;
-		} else {
-			pass1.push({ kind: "message", msg, earliest: msg.created_at ?? "" });
-			i++;
+const resultsByToolUseId = $derived.by((): Record<string, ToolResultMsg> => {
+	const map: Record<string, ToolResultMsg> = {};
+	for (const m of messages) {
+		if (m.role === "tool_result" && m.tool_name) {
+			map[m.tool_name] = {
+				content: m.content,
+				exit_code: m.exit_code ?? null,
+				tool_name: m.tool_name,
+			};
 		}
 	}
-
-	// Pass 2: merge consecutive toolCall items into groups with interleaved reasoning.
-	const items: DisplayItem[] = [];
-	let k = 0;
-	while (k < pass1.length) {
-		const entry = pass1[k];
-		if (entry.kind === "toolCall") {
-			const segments: ToolGroupSegment[] = [];
-			const timestamps: string[] = [];
-			let earliest = "";
-
-			while (k < pass1.length) {
-				const cur = pass1[k];
-				if (cur.kind === "toolCall") {
-					if (!earliest) earliest = cur.item.earliest;
-					timestamps.push(cur.item.earliest);
-					// Add inline reasoning from Pass 1 (between tool_call and tool_result)
-					if (cur.item.reasoning && cur.item.reasoning.length > 0) {
-						for (const text of cur.item.reasoning) {
-							segments.push({ kind: "reasoning", text });
-						}
-					}
-					// Add tool entries
-					const entries = parseToolCallEntries(cur.item);
-					segments.push({ kind: "tools", entries });
-					k++;
-				} else if (
-					cur.kind === "message" &&
-					cur.msg.role === "assistant" &&
-					k + 1 < pass1.length &&
-					pass1[k + 1].kind === "toolCall"
-				) {
-					// Reasoning between tool turns — add as separate segment
-					const text = cur.msg.content?.trim();
-					if (text) segments.push({ kind: "reasoning", text });
-					k++;
-				} else {
-					break;
-				}
-			}
-			items.push({
-				kind: "toolGroup",
-				segments,
-				earliest,
-				timestamps: timestamps.filter(Boolean),
-			});
-		} else {
-			items.push({ kind: "message", msg: entry.msg, earliest: entry.earliest });
-			k++;
-		}
-	}
-	return items;
+	return map;
 });
+
+// Tool_result messages are now collapsed into their originating ToolCallCard,
+// so they don't render as standalone rows. Every other persisted role renders
+// as its own turn — no cross-message grouping, no assistant-text scooping.
+const visibleMessages = $derived(messages.filter((m) => m.role !== "tool_result"));
 </script>
 
 <div class="board">
@@ -346,29 +188,34 @@ let displayItems = $derived.by((): DisplayItem[] => {
 			turnBoundaryOffsets={computedTurnOffsets}
 			scrollHeight={contentScrollHeight}
 		/>
-		{#if messages.length === 0 && emptyText}
+		{#if visibleMessages.length === 0 && emptyText}
 			<div class="empty-state">
 				<p>{emptyText}</p>
 			</div>
 		{:else}
-			{#each displayItems as item}
-				{@const active = turnRange ? isInTurnRange(item) : true}
+			{#each visibleMessages as msg (msg.id ?? msg.created_at)}
+				{@const active = isInRange(msg)}
 				<div
 					class="display-item"
 					class:dimmed={turnRange !== null && !active}
 					data-turn-active={active && turnRange ? "" : undefined}
-					data-message-id={item.kind === "message" ? item.msg.id : undefined}
-					data-message-role={item.kind === "message" ? item.msg.role : undefined}
+					data-message-id={msg.id}
+					data-message-role={msg.role}
 				>
-					{#if item.kind === "toolGroup"}
-						<ToolCallGroup segments={item.segments} {turnRange} />
+					{#if msg.role === "tool_call"}
+						<ToolCallCard
+							content={msg.content}
+							resultsByToolUseId={resultsByToolUseId}
+							{lineColor}
+							modelId={msg.model_id}
+						/>
 					{:else}
 						<MessageBubble
-							role={item.msg.role as "user" | "assistant" | "system" | "alert" | "tool_call" | "tool_result"}
-							content={item.msg.content}
-							toolName={item.msg.tool_name}
-							modelId={item.msg.model_id}
-							exitCode={item.msg.exit_code}
+							role={msg.role as "user" | "assistant" | "system" | "alert" | "tool_call" | "tool_result"}
+							content={msg.content}
+							toolName={msg.tool_name}
+							modelId={msg.model_id}
+							exitCode={msg.exit_code}
 							{threadColor}
 						/>
 					{/if}
