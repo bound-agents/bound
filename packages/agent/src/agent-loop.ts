@@ -488,10 +488,16 @@ export class AgentLoop {
 						)
 						.get(this.config.threadId) as { created_at: string } | null;
 
-					// 8. Update stored state
+					// 8. Update stored state.
+					// Spread-copy so later mutations of `llmMessages` (e.g. the
+					// loop appending tool_call blocks after the LLM response) do
+					// NOT leak into the cached state. Aliasing here previously
+					// caused the next warm iteration to re-append the delta on
+					// top of an already-appended tool_call, producing duplicated
+					// tool_use blocks and a Bedrock tool_use_id_mismatch.
 					this.setCachedTurnState({
 						...cached,
-						messages: storedMessages,
+						messages: [...storedMessages],
 						cacheMessagePositions: [
 							...cached.cacheMessagePositions,
 							storedMessages.length - 2, // rolling cache position

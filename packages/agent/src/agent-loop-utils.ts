@@ -418,17 +418,33 @@ interface DbMessageRow {
 
 /**
  * Convert a DB message row to an LLMMessage with minimal sanitization.
- * Handles tool pair validation: drops tool_results without a matching tool_call.
+ *
+ * Handles tool pair validation: a `tool_result` is valid when it follows
+ * either a `tool_call` (single or first of a parallel batch) OR another
+ * `tool_result` that is itself part of the ongoing parallel-tool-call
+ * response. Only a `tool_result` with no `tool_call` anywhere upstream in
+ * the conversion is considered orphaned and dropped.
+ *
+ * The caller (`convertDeltaMessages`) tracks whether a `tool_call` has
+ * been seen via the `toolCallSeen` flag so the predicate is accurate even
+ * when the delta contains many consecutive `tool_result` rows.
  */
 export function convertDbRowToLLMMessage(
 	row: DbMessageRow,
 	previousRole?: string,
+	toolCallSeen?: boolean,
 ): LLMMessage | null {
 	const { role, content, tool_name, model_id, host_origin } = row;
 
-	// Validate tool pairs: if this is a tool_result without a prior tool_call, skip it
-	if (role === "tool_result" && previousRole !== "tool_call") {
-		return null; // Drop orphaned tool_result
+	// Validate tool pairs. `tool_result` must follow `tool_call` directly OR
+	// be part of a run of `tool_result` messages responding to that call
+	// (parallel tool calls emit N consecutive `tool_result` DB rows).
+	if (role === "tool_result") {
+		const followsToolCall = previousRole === "tool_call";
+		const followsToolResultAfterCall = previousRole === "tool_result" && toolCallSeen === true;
+		if (!followsToolCall && !followsToolResultAfterCall) {
+			return null; // Drop orphaned tool_result
+		}
 	}
 
 	const msg: LLMMessage = {
@@ -452,16 +468,27 @@ export function convertDbRowToLLMMessage(
 /**
  * Convert delta DB rows to LLMMessages, filtering orphaned tool_results.
  * Returns array of valid messages with tool pairs intact.
+ *
+ * Tracks `toolCallSeen` so consecutive `tool_result` rows following a
+ * parallel `tool_call` are preserved rather than dropped after the first.
+ * The flag resets whenever a non-tool message breaks the run.
  */
 export function convertDeltaMessages(rows: DbMessageRow[]): LLMMessage[] {
 	const messages: LLMMessage[] = [];
 	let lastRole: string | undefined;
+	let toolCallSeen = false;
 
 	for (const row of rows) {
-		const msg = convertDbRowToLLMMessage(row, lastRole);
+		const msg = convertDbRowToLLMMessage(row, lastRole, toolCallSeen);
 		if (msg) {
 			messages.push(msg);
 			lastRole = msg.role;
+			if (msg.role === "tool_call") {
+				toolCallSeen = true;
+			} else if (msg.role !== "tool_result") {
+				// Any non-tool message ends the parallel-tool-call run.
+				toolCallSeen = false;
+			}
 		}
 	}
 

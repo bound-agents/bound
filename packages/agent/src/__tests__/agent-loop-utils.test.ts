@@ -8,6 +8,7 @@ import { applySchema, createDatabase, insertRow } from "@bound/core";
 import {
 	buildCommandOutput,
 	calculateTurnCost,
+	convertDeltaMessages,
 	deriveCapabilityRequirements,
 	getResolvedModelId,
 	insertThreadMessage,
@@ -492,5 +493,98 @@ describe("parseToolResultContent", () => {
 		const blocks = [{ type: "text", text: "just text" }];
 		const result = parseToolResultContent(JSON.stringify(blocks));
 		expect(result).toBe(JSON.stringify(blocks));
+	});
+});
+
+// ---------------------------------------------------------------------------
+// convertDeltaMessages — regression coverage for parallel tool-call delta
+// ---------------------------------------------------------------------------
+//
+// Context: thread 0ab688b2 hit a Bedrock `tool_use_id_mismatch` after a
+// parallel-tool-call turn. The LLM emitted two tool_use blocks in one
+// assistant message; two client-tool results arrived back-to-back and were
+// inserted as two consecutive `tool_result` DB rows. The warm-path delta
+// converter dropped the second one because its `previousRole !== "tool_call"`
+// predicate saw `tool_result` preceding it and treated it as orphaned.
+//
+// These tests pin the expected behavior: a `tool_result` whose predecessor is
+// itself a `tool_result` tied to an earlier `tool_call` in the same delta is
+// valid and must be preserved.
+
+function mkRow(overrides: {
+	role: string;
+	content: string;
+	tool_name?: string | null;
+	created_at?: string;
+}) {
+	return {
+		id: randomUUID(),
+		thread_id: "t",
+		role: overrides.role,
+		content: overrides.content,
+		model_id: null,
+		tool_name: overrides.tool_name ?? null,
+		created_at: overrides.created_at ?? new Date().toISOString(),
+		modified_at: null,
+		host_origin: "h",
+		deleted: 0,
+	};
+}
+
+describe("convertDeltaMessages", () => {
+	it("preserves two consecutive tool_result rows that follow a tool_call (parallel tool calls)", () => {
+		const rows = [
+			mkRow({
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "tu_A", name: "foo", input: {} },
+					{ type: "tool_use", id: "tu_B", name: "bar", input: {} },
+				]),
+			}),
+			mkRow({ role: "tool_result", content: "result-A", tool_name: "tu_A" }),
+			mkRow({ role: "tool_result", content: "result-B", tool_name: "tu_B" }),
+		];
+
+		const out = convertDeltaMessages(rows);
+
+		// Regression: previous behavior dropped the second tool_result.
+		expect(out).toHaveLength(3);
+		expect(out[0].role).toBe("tool_call");
+		expect(out[1].role).toBe("tool_result");
+		expect(out[1].tool_use_id).toBe("tu_A");
+		expect(out[2].role).toBe("tool_result");
+		expect(out[2].tool_use_id).toBe("tu_B");
+	});
+
+	it("preserves three consecutive tool_result rows after a 3-way parallel tool_call", () => {
+		const rows = [
+			mkRow({
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "tu_1", name: "a", input: {} },
+					{ type: "tool_use", id: "tu_2", name: "b", input: {} },
+					{ type: "tool_use", id: "tu_3", name: "c", input: {} },
+				]),
+			}),
+			mkRow({ role: "tool_result", content: "r1", tool_name: "tu_1" }),
+			mkRow({ role: "tool_result", content: "r2", tool_name: "tu_2" }),
+			mkRow({ role: "tool_result", content: "r3", tool_name: "tu_3" }),
+		];
+
+		const out = convertDeltaMessages(rows);
+		expect(out).toHaveLength(4);
+		expect(out.filter((m) => m.role === "tool_result")).toHaveLength(3);
+	});
+
+	it("still drops a tool_result that has no preceding tool_call anywhere in the delta", () => {
+		const rows = [
+			mkRow({ role: "user", content: "hi" }),
+			mkRow({ role: "tool_result", content: "orphan", tool_name: "tu_X" }),
+		];
+
+		const out = convertDeltaMessages(rows);
+		// The tool_result has no tool_call ancestor — it's a genuine orphan.
+		expect(out).toHaveLength(1);
+		expect(out[0].role).toBe("user");
 	});
 });
