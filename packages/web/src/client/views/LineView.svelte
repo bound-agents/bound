@@ -193,6 +193,38 @@ const lineName = $derived(thread ? getLineName(thread.color) : "");
 // Right-side Context pane info
 const allToolCalls = $derived(messages.filter((m) => m.role === "tool_call").length);
 const firstMessageAt = $derived(messages[0]?.created_at ?? null);
+
+// Thread's active model: prefer the most recent assistant/tool_call message's
+// model_id (reflects any operator model switch mid-thread), falling back to
+// the global modelStore's selection.
+const activeModel = $derived.by((): string => {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const mid = messages[i].model_id;
+		if (mid) return mid;
+	}
+	return modelStore.getModel() || "—";
+});
+
+// User-message turn stops for the mini-timeline in the Context pane. Each
+// user message is a "stop" on the line; the last is the current turn.
+const userTurns = $derived(messages.filter((m) => m.role === "user"));
+
+function fmtHhmm(iso: string | undefined | null): string {
+	if (!iso) return "";
+	try {
+		const d = new Date(iso);
+		if (Number.isNaN(d.getTime())) return "";
+		return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+	} catch {
+		return "";
+	}
+}
+
+function turnPreview(content: string): string {
+	const compact = (content ?? "").replace(/\s+/g, " ").trim();
+	if (compact.length <= 56) return compact;
+	return `${compact.slice(0, 55)}…`;
+}
 </script>
 
 <div class="line-view" style="--line-color: {lineColor}">
@@ -315,6 +347,10 @@ const firstMessageAt = $derived(messages[0]?.created_at ?? null);
 									<span class="mono">{thread.id.slice(0, 10)}</span>
 								</div>
 								<div class="field">
+									<span class="kicker">Model</span>
+									<span class="mono">{activeModel}</span>
+								</div>
+								<div class="field">
 									<span class="kicker">Opened</span>
 									<span class="mono">
 										{firstMessageAt ? formatRelativeTime(firstMessageAt) : "—"}
@@ -338,6 +374,40 @@ const firstMessageAt = $derived(messages[0]?.created_at ?? null);
 									</span>
 								</div>
 							</div>
+
+							{#if userTurns.length > 0}
+								<div class="turns-section">
+									<div class="turns-kicker">Turns · {userTurns.length}</div>
+									<div class="turns-list">
+										{#each userTurns as turn, i}
+											{@const isLast = i === userTurns.length - 1}
+											<div class="turn-stop" class:turn-stop-current={isLast}>
+												<div class="turn-rail">
+													{#if !isLast}
+														<div
+															class="turn-rail-line"
+															style="background: {lineColor}"
+														></div>
+													{/if}
+													<div
+														class="turn-dot"
+														class:turn-dot-current={isLast}
+														style={isLast
+															? `border-color: ${lineColor}; background: var(--paper)`
+															: `background: ${lineColor}; border-color: ${lineColor}`}
+													></div>
+												</div>
+												<div class="turn-body">
+													<div class="turn-preview" class:turn-preview-current={isLast}>
+														{turnPreview(turn.content)}
+													</div>
+													<div class="turn-time mono">{fmtHhmm(turn.created_at)}</div>
+												</div>
+											</div>
+										{/each}
+									</div>
+								</div>
+							{/if}
 						{:else}
 							<div class="empty">Loading thread…</div>
 						{/if}
@@ -643,6 +713,85 @@ const firstMessageAt = $derived(messages[0]?.created_at ?? null);
 		font-size: 13px;
 		text-align: center;
 		padding: 32px 0;
+	}
+
+	.turns-section {
+		margin-top: 20px;
+	}
+
+	.turns-kicker {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+		color: var(--ink-3);
+		margin-bottom: 10px;
+	}
+
+	.turns-list {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.turn-stop {
+		display: grid;
+		grid-template-columns: 24px 1fr;
+		align-items: flex-start;
+		min-height: 32px;
+	}
+
+	.turn-rail {
+		position: relative;
+		height: 100%;
+		display: flex;
+		justify-content: center;
+	}
+
+	.turn-rail-line {
+		position: absolute;
+		top: 14px;
+		bottom: -14px;
+		width: 3px;
+	}
+
+	.turn-dot {
+		margin-top: 6px;
+		width: 9px;
+		height: 9px;
+		border-radius: 50%;
+		border: 2px solid;
+		z-index: 1;
+	}
+
+	.turn-dot-current {
+		width: 12px;
+		height: 12px;
+	}
+
+	.turn-body {
+		padding: 4px 0;
+		min-width: 0;
+	}
+
+	.turn-preview {
+		font-size: 12.5px;
+		color: var(--ink-2);
+		font-weight: 400;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.turn-preview-current {
+		color: var(--ink);
+		font-weight: 600;
+	}
+
+	.turn-time {
+		font-size: 10.5px;
+		color: var(--ink-4);
+		letter-spacing: 0.06em;
+		margin-top: 1px;
 	}
 
 	@media (max-width: 960px) {
