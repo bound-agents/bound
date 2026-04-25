@@ -329,40 +329,67 @@ export function toBedrockRequest(input: ConvertInput): RawBedrockRequest {
 	}
 
 	// ─── Inference config ────────────────────────────────────────────────────
-	// Thinking mode flips the discriminant. When thinking is off and we have
-	// nothing to say, omit the temperature/maxTokens but keep the thinking=false
-	// discriminant so the shape matches the schema.
-	const inferenceConfig = params.thinking
+	// Bedrock's own `inferenceConfig.thinking` discriminant governs its
+	// legacy reasoning pathway, which corresponds 1:1 with Anthropic's
+	// `{type: "enabled", budget_tokens}` shape. Adaptive thinking (Opus
+	// 4.6+, required on 4.7) is a native Anthropic concept Bedrock does
+	// not model — we pass `inferenceConfig.thinking: false` and route
+	// the full adaptive spec through additionalModelRequestFields.
+	//
+	// Opus 4.7 rejects temperature/top_p/top_k entirely; Anthropic's
+	// legacy thinking mode rejected temperature anyway. Drop temperature
+	// when either thinking mode is active to stay safe on both paths.
+	const isLegacyThinking = params.thinking?.type === "enabled";
+	const isAdaptiveThinking = params.thinking?.type === "adaptive";
+	const anyThinkingActive = isLegacyThinking || isAdaptiveThinking;
+	const inferenceConfig = isLegacyThinking
 		? {
 				thinking: true as const,
 				// Thinking requires maxTokens; use max_tokens if set, otherwise
 				// fall back to the thinking budget + some headroom. Bedrock rejects
 				// maxTokens < budget_tokens.
-				maxTokens: params.max_tokens ?? params.thinking.budget_tokens + 4096,
+				maxTokens:
+					params.max_tokens ??
+					(params.thinking as { type: "enabled"; budget_tokens: number }).budget_tokens + 4096,
 			}
 		: {
 				thinking: false as const,
-				...(params.temperature !== undefined && { temperature: params.temperature }),
+				...(!anyThinkingActive &&
+					params.temperature !== undefined && { temperature: params.temperature }),
 				...(params.max_tokens && { maxTokens: params.max_tokens }),
 			};
 
-	// ─── Additional model request fields (extended thinking only) ───────────
+	// ─── Additional model request fields ────────────────────────────────────
 	// Bedrock Converse routes Anthropic-specific knobs through
-	// `additionalModelRequestFields`. Shape is Anthropic's native one, so
-	// `budget_tokens` (snake_case), NOT `budgetTokens`. Bedrock forwards this
-	// unchanged to the Claude API.
+	// `additionalModelRequestFields` — a passthrough bag forwarded
+	// unchanged to the Claude API. Field names follow Anthropic's native
+	// snake_case (e.g. `budget_tokens`, `output_config`).
 	//
-	// Previously we sent this as `performanceConfig.thinking.budgetTokens`,
-	// which Bedrock silently ignored — the model would then emit reasoning as
-	// inline "[Thinking: …]" text instead of via the reasoningContent channel.
-	const additionalModelRequestFields = params.thinking
-		? {
-				thinking: {
-					type: "enabled" as const,
-					budget_tokens: params.thinking.budget_tokens,
-				},
-			}
-		: undefined;
+	// Historical note: an earlier version sent this as
+	// `performanceConfig.thinking.budgetTokens`, which Bedrock silently
+	// ignored — the model would then emit reasoning as inline
+	// "[Thinking: …]" text instead of via the reasoningContent channel.
+	const additionalBag: Record<string, unknown> = {};
+	if (isLegacyThinking) {
+		additionalBag.thinking = {
+			type: "enabled" as const,
+			budget_tokens: (params.thinking as { type: "enabled"; budget_tokens: number }).budget_tokens,
+		};
+	} else if (isAdaptiveThinking) {
+		const adaptive = params.thinking as {
+			type: "adaptive";
+			display?: "omitted" | "summarized";
+		};
+		additionalBag.thinking = {
+			type: "adaptive" as const,
+			...(adaptive.display !== undefined && { display: adaptive.display }),
+		};
+	}
+	if (params.effort) {
+		additionalBag.output_config = { effort: params.effort };
+	}
+	const additionalModelRequestFields =
+		Object.keys(additionalBag).length > 0 ? additionalBag : undefined;
 
 	return {
 		modelId,

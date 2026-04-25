@@ -134,20 +134,28 @@ export function validateBedrockRequest(raw: RawBedrockRequest): BedrockValidated
 	// ── toolConfig (optional) ───────────────────────────────────────────────
 	const validatedToolConfig = validateToolConfig(raw.toolConfig, errors);
 
-	// ── additionalModelRequestFields (optional, thinking-only) ──────────────
+	// ── additionalModelRequestFields (optional) ────────────────────────────
 	let validatedAdditional: AdditionalModelRequestFields | undefined;
 	if (raw.additionalModelRequestFields !== undefined && raw.additionalModelRequestFields !== null) {
 		const parsed = AdditionalModelRequestFieldsSchema.safeParse(raw.additionalModelRequestFields);
 		if (parsed.success) {
 			validatedAdditional = parsed.data;
-			// Cross-invariant: additionalModelRequestFields.thinking requires
-			// inferenceConfig.thinking=true. If inferenceConfig hasn't validated
-			// yet, defer — the main error set will catch it.
-			if (validatedInference && validatedInference.thinking !== true) {
+			// Cross-invariant: LEGACY thinking (`type:"enabled"`) requires
+			// `inferenceConfig.thinking: true` because that's Bedrock's own
+			// flag for the legacy reasoning pathway. ADAPTIVE thinking is a
+			// native Anthropic concept Bedrock doesn't model — adaptive
+			// rides on `inferenceConfig.thinking: false` and delegates
+			// entirely to the passthrough bag. `output_config` has no
+			// cross-dependency with inferenceConfig.
+			if (
+				validatedAdditional.thinking?.type === "enabled" &&
+				validatedInference &&
+				validatedInference.thinking !== true
+			) {
 				errors.push(
 					detail(
 						"temperature_with_thinking",
-						"additionalModelRequestFields.thinking set but inferenceConfig.thinking is false; these must agree",
+						"additionalModelRequestFields.thinking.enabled set but inferenceConfig.thinking is false; these must agree",
 					),
 				);
 			}

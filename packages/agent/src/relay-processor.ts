@@ -1255,11 +1255,12 @@ export class RelayProcessor {
 			// that the model router already resolved to this backend. The backend has
 			// its own configured model identifier (e.g., the full Bedrock ARN).
 			// Passing the alias would override the ARN and cause Bedrock to reject it.
-			// Fall back to the local model router's thinking config when the requester
-			// doesn't include thinking in the payload — the remote host knows its own
-			// backend capabilities.
+			// Fall back to the local model router's thinking / effort config when
+			// the requester doesn't include them in the payload — the remote host
+			// knows its own backend capabilities better than a distant caller.
 			const effectiveThinking =
 				payload.thinking ?? this.modelRouter.getThinkingConfig(payload.model);
+			const effectiveEffort = payload.effort ?? this.modelRouter.getEffort(payload.model);
 			const chatStream = backend.chat({
 				messages,
 				tools: payload.tools,
@@ -1267,6 +1268,7 @@ export class RelayProcessor {
 				max_tokens: payload.max_tokens,
 				temperature: payload.temperature,
 				thinking: effectiveThinking,
+				effort: effectiveEffort,
 				signal: abortController.signal,
 			});
 

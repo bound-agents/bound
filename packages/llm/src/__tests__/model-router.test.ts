@@ -998,4 +998,81 @@ describe("ModelRouter thinking config", () => {
 		});
 		expect(router.getThinkingConfig("nonexistent")).toBeUndefined();
 	});
+
+	// Opus 4.7 requires `thinking: {type: "adaptive"}` — the old
+	// `{type: "enabled", budget_tokens: N}` shape 400s on 4.7. The router must
+	// preserve `adaptive` end-to-end instead of translating it to `enabled`,
+	// and must also carry `display` (opt back into visible summarized thinking
+	// on 4.7 — default is "omitted" / empty text).
+	it("getThinkingConfig passes adaptive thinking through unchanged", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "opus",
+					provider: "anthropic",
+					model: "claude-opus-4-7",
+					apiKey: "test-key",
+					contextWindow: 1_000_000,
+					thinking: { type: "adaptive" },
+				},
+			],
+			default: "opus",
+		});
+		const config = router.getThinkingConfig("opus");
+		expect(config).toBeDefined();
+		expect(config?.type).toBe("adaptive");
+	});
+
+	it("getThinkingConfig preserves display on adaptive thinking", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "opus",
+					provider: "anthropic",
+					model: "claude-opus-4-7",
+					apiKey: "test-key",
+					contextWindow: 1_000_000,
+					thinking: { type: "adaptive", display: "summarized" },
+				},
+			],
+			default: "opus",
+		});
+		const config = router.getThinkingConfig("opus");
+		expect(config?.type).toBe("adaptive");
+		expect(config?.display).toBe("summarized");
+	});
+
+	it("getEffort returns configured effort", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "opus",
+					provider: "anthropic",
+					model: "claude-opus-4-7",
+					apiKey: "test-key",
+					contextWindow: 1_000_000,
+					thinking: { type: "adaptive" },
+					effort: "xhigh",
+				},
+			],
+			default: "opus",
+		});
+		expect(router.getEffort("opus")).toBe("xhigh");
+	});
+
+	it("getEffort returns undefined when not configured", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "opus",
+					provider: "anthropic",
+					model: "claude-opus-4-7",
+					apiKey: "test-key",
+					contextWindow: 1_000_000,
+				},
+			],
+			default: "opus",
+		});
+		expect(router.getEffort("opus")).toBeUndefined();
+	});
 });

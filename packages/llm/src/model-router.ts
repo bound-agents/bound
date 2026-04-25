@@ -298,9 +298,13 @@ export class ModelRouter {
 	 * Extracts thinking configuration from a backend's config.
 	 * Returns undefined if no thinking config exists or the backend is not found.
 	 *
-	 * Supports two config styles:
-	 * - `thinking: true` → enable with default budget (10000 tokens)
-	 * - `thinking: { budget_tokens: N }` → enable with custom budget
+	 * Supported config shapes:
+	 * - `thinking: true` → `{type: "enabled", budget_tokens: 10000}` (legacy default)
+	 * - `thinking: {type: "enabled", budget_tokens?}` → legacy; defaults budget to 10000
+	 * - `thinking: {type: "adaptive", display?}` → model-controlled depth (required on Opus 4.7).
+	 *   `display` defaults to `"summarized"` so callers get visible reasoning text by default
+	 *   on 4.7 — the wire default there is `"omitted"`, which silently empties thinking chunks.
+	 * - `thinking: {budget_tokens: N}` (no `type`) → treated as legacy enabled
 	 */
 	getThinkingConfig(backendId: string): ChatParams["thinking"] | undefined {
 		const config = this.backendConfigs.get(backendId);
@@ -309,12 +313,33 @@ export class ModelRouter {
 			return { type: "enabled", budget_tokens: 10000 };
 		}
 		if (typeof config.thinking === "object" && config.thinking !== null) {
+			const t = config.thinking as {
+				type?: "enabled" | "adaptive";
+				budget_tokens?: number;
+				display?: "omitted" | "summarized";
+			};
+			if (t.type === "adaptive") {
+				return { type: "adaptive", display: t.display ?? "summarized" };
+			}
 			return {
 				type: "enabled",
-				budget_tokens: (config.thinking as { budget_tokens?: number }).budget_tokens ?? 10000,
+				budget_tokens: t.budget_tokens ?? 10000,
 			};
 		}
 		return undefined;
+	}
+
+	/**
+	 * Returns the `effort` level configured for a backend, or undefined if
+	 * unset. Effort is a top-level output_config knob on the Claude API
+	 * (low | medium | high | xhigh | max) and replaces `budget_tokens` as
+	 * the depth control on Opus 4.7.
+	 */
+	getEffort(backendId: string): ChatParams["effort"] | undefined {
+		const config = this.backendConfigs.get(backendId);
+		if (!config) return undefined;
+		const effort = config.effort as ChatParams["effort"] | undefined;
+		return effort ?? undefined;
 	}
 
 	/**

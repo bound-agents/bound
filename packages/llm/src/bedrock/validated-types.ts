@@ -191,15 +191,17 @@ export interface BedrockValidatedRequest {
 	readonly system?: readonly SystemBlock[];
 	readonly inferenceConfig: InferenceConfig;
 	/**
-	 * Anthropic-specific additional request fields — only present when
-	 * inferenceConfig.thinking is true. Routes `thinking: { type, budget_tokens }`
-	 * through Converse's `additionalModelRequestFields` bag to the underlying
-	 * Claude API.
+	 * Anthropic-specific additional request fields. Two kinds of payload
+	 * can appear here:
 	 *
-	 * The validator enforces the cross-invariant that this is only set when
-	 * inferenceConfig.thinking === true; this interface doesn't encode it
-	 * structurally because doing so would require a second discriminated union
-	 * at the request level, which overcomplicates the consumer API.
+	 *  - `thinking` — legacy `{type:"enabled", budget_tokens}` or adaptive
+	 *    `{type:"adaptive", display?}`. Legacy requires
+	 *    `inferenceConfig.thinking: true` (the validator enforces this
+	 *    cross-invariant); adaptive does not — Bedrock doesn't model
+	 *    adaptive thinking in inferenceConfig, so the discriminant stays
+	 *    `false` and the full adaptive spec rides here.
+	 *  - `output_config` — top-level knobs like `effort` (depth lever on
+	 *    Opus 4.6+; required on Opus 4.7). Independent of thinking.
 	 */
 	readonly additionalModelRequestFields?: AdditionalModelRequestFields;
 	readonly toolConfig?: {

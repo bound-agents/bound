@@ -286,6 +286,124 @@ data: ${JSON.stringify({
 		});
 		expect(driver.capabilities().extended_thinking).toBe(true);
 	});
+
+	// Opus 4.7 breaking changes — `{type: "enabled", budget_tokens: N}` 400s.
+	// Native /v1/messages shape: thinking.type="adaptive", optional
+	// thinking.display, and `output_config.effort` at the top level of the
+	// request body (NOT wrapped inside additionalModelRequestFields — that's
+	// Bedrock's envelope only).
+	it("sends `thinking: {type: 'adaptive'}` unchanged in request body", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-opus-4-7",
+			contextWindow: 1_000_000,
+		});
+
+		let requestBody: string | null = null;
+		global.fetch = (async (_url: string, options: RequestInit) => {
+			requestBody = options.body as string;
+			return new Response("data: {}", {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		for await (const _ of driver.chat({
+			messages: [{ role: "user", content: "Think carefully" }],
+			thinking: { type: "adaptive" },
+		})) {
+			// drain
+		}
+
+		expect(requestBody).not.toBeNull();
+		const request = JSON.parse(requestBody as string);
+		expect(request.thinking).toEqual({ type: "adaptive" });
+	});
+
+	it("forwards `display: 'summarized'` in the thinking field", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-opus-4-7",
+			contextWindow: 1_000_000,
+		});
+
+		let requestBody: string | null = null;
+		global.fetch = (async (_url: string, options: RequestInit) => {
+			requestBody = options.body as string;
+			return new Response("data: {}", {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		for await (const _ of driver.chat({
+			messages: [{ role: "user", content: "Think carefully" }],
+			thinking: { type: "adaptive", display: "summarized" },
+		})) {
+			// drain
+		}
+
+		const request = JSON.parse(requestBody as string);
+		expect(request.thinking).toEqual({ type: "adaptive", display: "summarized" });
+	});
+
+	it("sends output_config.effort at the top level when effort is provided", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-opus-4-7",
+			contextWindow: 1_000_000,
+		});
+
+		let requestBody: string | null = null;
+		global.fetch = (async (_url: string, options: RequestInit) => {
+			requestBody = options.body as string;
+			return new Response("data: {}", {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		for await (const _ of driver.chat({
+			messages: [{ role: "user", content: "Hello" }],
+			thinking: { type: "adaptive" },
+			effort: "xhigh",
+		})) {
+			// drain
+		}
+
+		const request = JSON.parse(requestBody as string);
+		// Native shape: output_config is a top-level request field, not
+		// nested inside thinking.
+		expect(request.output_config).toEqual({ effort: "xhigh" });
+	});
+
+	it("emits output_config.effort without thinking (non-thinking workloads on 4.7)", async () => {
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-opus-4-7",
+			contextWindow: 1_000_000,
+		});
+
+		let requestBody: string | null = null;
+		global.fetch = (async (_url: string, options: RequestInit) => {
+			requestBody = options.body as string;
+			return new Response("data: {}", {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		}) as typeof fetch;
+
+		for await (const _ of driver.chat({
+			messages: [{ role: "user", content: "Hello" }],
+			effort: "medium",
+		})) {
+			// drain
+		}
+
+		const request = JSON.parse(requestBody as string);
+		expect(request.output_config).toEqual({ effort: "medium" });
+		expect(request.thinking).toBeUndefined();
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -472,6 +590,152 @@ describe("BedrockDriver extended thinking", () => {
 			contextWindow: 200000,
 		});
 		expect(driver.capabilities().extended_thinking).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// BedrockDriver — adaptive thinking (Opus 4.7+)
+// ---------------------------------------------------------------------------
+//
+// Opus 4.7 removed manual extended thinking. The old
+// `thinking: {type: "enabled", budget_tokens: N}` shape returns 400 on 4.7;
+// the replacement is `thinking: {type: "adaptive"}` + `output_config.effort`
+// to control depth. `thinking.display: "summarized"` opts back into visible
+// reasoning (default on 4.7 is "omitted" — thinking blocks stream with
+// empty text unless display is set).
+//
+// Bedrock Converse routes these through the passthrough
+// `additionalModelRequestFields` bag using Anthropic's native snake_case
+// shape; the driver must never translate `adaptive` back to `enabled`.
+
+describe("BedrockDriver adaptive thinking (Opus 4.7+)", () => {
+	let sendSpy: ReturnType<typeof spyOn<BedrockRuntimeClient, "send">>;
+
+	beforeEach(() => {
+		sendSpy = spyOn(BedrockRuntimeClient.prototype, "send");
+		sendSpy.mockImplementation(() =>
+			Promise.resolve(
+				createMockBedrockStream([{ metadata: { usage: { inputTokens: 10, outputTokens: 5 } } }]),
+			),
+		);
+	});
+
+	afterEach(() => {
+		sendSpy.mockRestore();
+	});
+
+	it("routes `thinking: {type: 'adaptive'}` into additionalModelRequestFields verbatim", async () => {
+		const driver = new BedrockDriver({
+			region: "us-east-1",
+			model: "global.anthropic.claude-opus-4-7",
+			contextWindow: 200000,
+		});
+
+		await collectChunks(
+			driver.chat({
+				messages: [{ role: "user", content: "Think about this" }],
+				thinking: { type: "adaptive" },
+			}),
+		);
+
+		expect(sendSpy.mock.calls).toHaveLength(1);
+		const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
+		const additional = commandInput.additionalModelRequestFields as
+			| Record<string, unknown>
+			| undefined;
+		expect(additional).toBeDefined();
+		// No budget_tokens on adaptive — it was removed in 4.7.
+		expect(additional?.thinking).toEqual({ type: "adaptive" });
+	});
+
+	it("carries display: 'summarized' through to additionalModelRequestFields", async () => {
+		const driver = new BedrockDriver({
+			region: "us-east-1",
+			model: "global.anthropic.claude-opus-4-7",
+			contextWindow: 200000,
+		});
+
+		await collectChunks(
+			driver.chat({
+				messages: [{ role: "user", content: "Think about this" }],
+				thinking: { type: "adaptive", display: "summarized" },
+			}),
+		);
+
+		const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
+		const additional = commandInput.additionalModelRequestFields as
+			| Record<string, unknown>
+			| undefined;
+		expect(additional?.thinking).toEqual({
+			type: "adaptive",
+			display: "summarized",
+		});
+	});
+
+	it("emits output_config.effort alongside thinking when effort is set", async () => {
+		const driver = new BedrockDriver({
+			region: "us-east-1",
+			model: "global.anthropic.claude-opus-4-7",
+			contextWindow: 200000,
+		});
+
+		await collectChunks(
+			driver.chat({
+				messages: [{ role: "user", content: "Think about this" }],
+				thinking: { type: "adaptive", display: "summarized" },
+				effort: "xhigh",
+			}),
+		);
+
+		const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
+		const additional = commandInput.additionalModelRequestFields as
+			| Record<string, unknown>
+			| undefined;
+		expect(additional?.output_config).toEqual({ effort: "xhigh" });
+	});
+
+	it("emits output_config.effort even without thinking (non-thinking workloads on 4.7)", async () => {
+		const driver = new BedrockDriver({
+			region: "us-east-1",
+			model: "global.anthropic.claude-opus-4-7",
+			contextWindow: 200000,
+		});
+
+		await collectChunks(
+			driver.chat({
+				messages: [{ role: "user", content: "Hello" }],
+				effort: "medium",
+			}),
+		);
+
+		const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
+		const additional = commandInput.additionalModelRequestFields as
+			| Record<string, unknown>
+			| undefined;
+		expect(additional?.output_config).toEqual({ effort: "medium" });
+		expect(additional?.thinking).toBeUndefined();
+	});
+
+	it("does not send temperature when adaptive thinking is enabled (4.7 rejects sampling params)", async () => {
+		const driver = new BedrockDriver({
+			region: "us-east-1",
+			model: "global.anthropic.claude-opus-4-7",
+			contextWindow: 200000,
+		});
+
+		await collectChunks(
+			driver.chat({
+				messages: [{ role: "user", content: "Hello" }],
+				thinking: { type: "adaptive" },
+				temperature: 0.7,
+				max_tokens: 16000,
+			}),
+		);
+
+		const commandInput = (sendSpy.mock.calls[0][0] as { input: Record<string, unknown> }).input;
+		const inferenceConfig = commandInput.inferenceConfig as Record<string, unknown> | undefined;
+		expect(inferenceConfig?.temperature).toBeUndefined();
+		expect(inferenceConfig?.maxTokens).toBe(16000);
 	});
 });
 

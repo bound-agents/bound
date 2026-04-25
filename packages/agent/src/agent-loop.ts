@@ -752,6 +752,7 @@ export class AgentLoop {
 										tools: mergedTools,
 										max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
 										thinking: resolution.thinkingConfig,
+										effort: resolution.effort,
 										signal: this.config.abortSignal,
 									});
 									for await (const chunk of this.withSilenceTimeout(

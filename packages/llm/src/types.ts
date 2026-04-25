@@ -18,17 +18,36 @@ export interface ChatParams {
 	temperature?: number;
 	system?: string;
 	/**
-	 * Extended thinking configuration. When set, the model produces reasoning
-	 * content blocks before the final response. The budget_tokens field controls
-	 * the maximum tokens the model may use for thinking.
+	 * Extended thinking configuration. When set, the model produces
+	 * reasoning content blocks before the final response.
 	 *
-	 * Only supported by Anthropic (direct) and Bedrock (Converse API) backends.
-	 * Other backends silently ignore this field.
+	 * Two discriminants:
+	 *  - `{type: "enabled", budget_tokens: N}` — legacy shape. Claude
+	 *    thinks for up to N tokens. 400s on Opus 4.7.
+	 *  - `{type: "adaptive", display?}` — model-controlled depth; works
+	 *    on Opus 4.6+ and required on Opus 4.7. Pair with `effort` below
+	 *    to control how much thinking the model does. `display` defaults
+	 *    to "omitted" on Opus 4.7 — set "summarized" to get visible
+	 *    reasoning text in stream chunks.
+	 *
+	 * Only supported by Anthropic (direct) and Bedrock (Converse API)
+	 * backends. Other backends silently ignore this field.
 	 */
-	thinking?: {
-		type: "enabled";
-		budget_tokens: number;
-	};
+	thinking?:
+		| { type: "enabled"; budget_tokens: number }
+		| { type: "adaptive"; display?: "omitted" | "summarized" };
+	/**
+	 * `output_config.effort` — controls thinking depth and overall token
+	 * spend. Replaces `budget_tokens` as the depth lever on Opus 4.7 and
+	 * is recommended alongside adaptive thinking on Opus 4.6. Levels:
+	 *  - `low` / `medium` — scoped work, lower cost
+	 *  - `high` — recommended minimum for intelligence-sensitive tasks
+	 *  - `xhigh` — new on 4.7; sweet spot for coding/agentic workloads
+	 *  - `max` — Opus-tier only; ceiling, can over-think on small tasks
+	 *
+	 * Supported by Anthropic (direct) and Bedrock (Converse API) backends.
+	 */
+	effort?: "low" | "medium" | "high" | "xhigh" | "max";
 	signal?: AbortSignal;
 }
 
@@ -127,7 +146,11 @@ export class LLMError extends Error {
 	}
 }
 
-// Inference relay payload types
+// Inference relay payload types.
+// Mirrors the wire schema in @bound/shared `inferenceRequestPayloadSchema`
+// — both the legacy `{type:"enabled", budget_tokens}` thinking shape and
+// the Opus 4.7 adaptive shape are forwarded to remote hosts. `effort`
+// forwards the top-level output_config.effort knob.
 export interface InferenceRequestPayload {
 	model: string;
 	messages: LLMMessage[];
@@ -135,10 +158,10 @@ export interface InferenceRequestPayload {
 	system?: string;
 	max_tokens?: number;
 	temperature?: number;
-	thinking?: {
-		type: "enabled";
-		budget_tokens: number;
-	};
+	thinking?:
+		| { type: "enabled"; budget_tokens: number }
+		| { type: "adaptive"; display?: "omitted" | "summarized" };
+	effort?: "low" | "medium" | "high" | "xhigh" | "max";
 	timeout_ms: number;
 	messages_file_ref?: string; // Set when messages are written to synced file (large prompt path)
 }

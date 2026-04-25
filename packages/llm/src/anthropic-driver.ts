@@ -493,17 +493,34 @@ export class AnthropicDriver implements LLMBackend {
 					]
 				: params.system;
 
-		const request: AnthropicRequest & { thinking?: { type: "enabled"; budget_tokens: number } } = {
+		const request: AnthropicRequest & {
+			thinking?:
+				| { type: "enabled"; budget_tokens: number }
+				| { type: "adaptive"; display?: "omitted" | "summarized" };
+			output_config?: { effort: "low" | "medium" | "high" | "xhigh" | "max" };
+		} = {
 			model: params.model || this.model,
 			max_tokens: params.max_tokens || 4096,
 			system: systemPayload,
 			messages: anthropicMessages,
+			// Temperature is incompatible with any thinking mode on Claude's
+			// native API — legacy thinking rejected it, and Opus 4.7 removed
+			// sampling params entirely. Drop temperature whenever thinking
+			// is set.
 			temperature: params.thinking ? undefined : params.temperature,
 		};
 
-		// Add thinking parameter if provided
+		// Forward thinking config verbatim — both legacy (enabled) and
+		// adaptive shapes pass straight through to /v1/messages.
 		if (params.thinking) {
 			request.thinking = params.thinking;
+		}
+
+		// `effort` is a top-level output_config knob on the Claude API —
+		// the depth lever that replaces `budget_tokens` on Opus 4.7 and is
+		// the recommended pairing with adaptive thinking on Opus 4.6.
+		if (params.effort) {
+			request.output_config = { effort: params.effort };
 		}
 
 		if (params.tools && params.tools.length > 0) {

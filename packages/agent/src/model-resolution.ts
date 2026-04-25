@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import type {
 	BackendCapabilities,
 	CapabilityRequirements,
+	ChatParams,
 	LLMBackend,
 	ModelRouter,
 } from "@bound/llm";
@@ -16,7 +17,11 @@ export type ModelResolution =
 			backend: LLMBackend;
 			modelId: string;
 			reResolved?: boolean;
-			thinkingConfig?: { type: "enabled"; budget_tokens: number };
+			// Carries both legacy `{type:"enabled", budget_tokens}` and
+			// adaptive `{type:"adaptive", display?}` shapes; see ChatParams.
+			thinkingConfig?: ChatParams["thinking"];
+			// Top-level output_config.effort — depth control for Opus 4.7.
+			effort?: ChatParams["effort"];
 	  }
 	| { kind: "remote"; hosts: EligibleHost[]; modelId: string; reResolved?: boolean }
 	| {
@@ -113,6 +118,7 @@ export function resolveSameTierFallback(
 				modelId: localAlt.id,
 				reResolved: true,
 				thinkingConfig: modelRouter.getThinkingConfig(localAlt.id),
+				effort: modelRouter.getEffort(localAlt.id),
 			};
 		}
 	}
@@ -239,6 +245,7 @@ export function resolveModel(
 							modelId: altId,
 							reResolved: true,
 							thinkingConfig: modelRouter.getThinkingConfig(altId),
+							effort: modelRouter.getEffort(altId),
 						};
 					}
 				}
@@ -273,6 +280,7 @@ export function resolveModel(
 			backend: localBackend,
 			modelId: effectiveModelId,
 			thinkingConfig: modelRouter.getThinkingConfig(effectiveModelId),
+			effort: modelRouter.getEffort(effectiveModelId),
 		};
 	}
 

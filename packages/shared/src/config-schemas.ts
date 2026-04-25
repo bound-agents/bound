@@ -51,20 +51,41 @@ const backendCapabilitiesOverrideSchema = z
 	.partial()
 	.strict();
 
-// Extended-thinking / reasoning config. Consumed by
-// ModelRouter.getThinkingConfig(), which accepts either `true` (default
-// budget) or an object with an optional budget. The `type` field is accepted
-// for symmetry with the Anthropic/Bedrock wire shape but is effectively a
-// literal marker — only `budget_tokens` alters behavior downstream.
+// Extended-thinking / reasoning config.
+//
+// Two shapes are supported, matching the two generations of the
+// Anthropic API:
+//
+//  1. Legacy (Opus 4.6 and older) — `{type: "enabled", budget_tokens: N}`
+//     tells the model exactly how many tokens to spend on thinking.
+//     `budget_tokens` was removed on Opus 4.7 (400 if sent).
+//
+//  2. Adaptive (Opus 4.6+, required on 4.7) — `{type: "adaptive"}` lets the
+//     model decide how much to think. Depth is controlled by the
+//     top-level `effort` field on the backend, not here. The optional
+//     `display` field opts into visible reasoning text on Opus 4.7,
+//     where the default is `"omitted"` (thinking blocks stream with
+//     empty text).
+//
+// The boolean-true shorthand preserves backward compatibility with the
+// earliest schema shape. Consumed by ModelRouter.getThinkingConfig().
 const thinkingConfigSchema = z.union([
 	z.literal(true),
 	z
 		.object({
-			type: z.literal("enabled").optional(),
+			type: z.enum(["enabled", "adaptive"]).optional(),
 			budget_tokens: z.number().int().positive().optional(),
+			display: z.enum(["omitted", "summarized"]).optional(),
 		})
 		.strict(),
 ]);
+
+// `effort` is a top-level output_config knob on the Claude API. It
+// replaces `budget_tokens` as the depth control on Opus 4.7 and is
+// recommended alongside adaptive thinking on Opus 4.6. Valid levels:
+// low | medium | high | xhigh | max. `xhigh` is new on 4.7 and the
+// recommended default for coding/agentic work; `max` is Opus-tier only.
+const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max"]);
 
 const modelBackendSchema = z
 	.object({
@@ -83,6 +104,7 @@ const modelBackendSchema = z
 		price_per_m_cache_read: z.number().min(0).optional(),
 		capabilities: backendCapabilitiesOverrideSchema.optional(),
 		thinking: thinkingConfigSchema.optional(),
+		effort: effortSchema.optional(),
 	})
 	.strict();
 

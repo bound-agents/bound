@@ -331,6 +331,185 @@ describe("Config schemas", () => {
 				const result = modelBackendsSchema.safeParse(config);
 				expect(result.success).toBe(false);
 			});
+
+			// Opus 4.7 replaced `{type: "enabled", budget_tokens: N}` with
+			// adaptive thinking. The model errors on `thinking.type.enabled` and
+			// requires `thinking.type.adaptive` plus `output_config.effort`
+			// (xhigh is the 4.7-recommended default for coding/agentic work).
+			// Also: on 4.7, thinking content is OMITTED by default — display
+			// must be "summarized" to get the text back in stream chunks.
+			it("accepts `thinking: { type: 'adaptive' }`", () => {
+				const config = {
+					backends: [
+						{
+							id: "opus",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							thinking: { type: "adaptive" },
+						},
+					],
+					default: "opus",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(true);
+				if (!result.success) return;
+				expect(result.data.backends[0].thinking).toEqual({ type: "adaptive" });
+			});
+
+			it("accepts `thinking: { type: 'adaptive', display: 'summarized' }`", () => {
+				const config = {
+					backends: [
+						{
+							id: "opus",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							thinking: { type: "adaptive", display: "summarized" },
+						},
+					],
+					default: "opus",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(true);
+				if (!result.success) return;
+				expect(result.data.backends[0].thinking).toEqual({
+					type: "adaptive",
+					display: "summarized",
+				});
+			});
+
+			it("accepts `display: 'omitted'`", () => {
+				const config = {
+					backends: [
+						{
+							id: "opus",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							thinking: { type: "adaptive", display: "omitted" },
+						},
+					],
+					default: "opus",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(true);
+			});
+
+			it("rejects unknown display values", () => {
+				const config = {
+					backends: [
+						{
+							id: "opus",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							thinking: { type: "adaptive", display: "verbose" },
+						},
+					],
+					default: "opus",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(false);
+			});
+
+			it("rejects unknown thinking type values (e.g. 'auto')", () => {
+				const config = {
+					backends: [
+						{
+							id: "opus",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							thinking: { type: "auto" },
+						},
+					],
+					default: "opus",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(false);
+			});
+		});
+
+		describe("effort field", () => {
+			// `effort` is an output_config knob on the Claude API, not a
+			// thinking sub-field. It's Opus-tier on 4.6+ and required on 4.7
+			// to control thinking depth (since budget_tokens was removed).
+			// Valid values per Anthropic docs: low | medium | high | xhigh | max.
+			// xhigh is new on Opus 4.7 and the recommended default for
+			// coding/agentic work; max is Opus-tier only.
+			for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+				it(`accepts effort: '${effort}'`, () => {
+					const config = {
+						backends: [
+							{
+								id: "opus",
+								provider: "bedrock",
+								model: "global.anthropic.claude-opus-4-7",
+								region: "us-west-2",
+								context_window: 200000,
+								tier: 1,
+								thinking: { type: "adaptive" },
+								effort,
+							},
+						],
+						default: "opus",
+					};
+					const result = modelBackendsSchema.safeParse(config);
+					expect(result.success).toBe(true);
+					if (!result.success) return;
+					expect(result.data.backends[0].effort).toBe(effort);
+				});
+			}
+
+			it("rejects unknown effort values", () => {
+				const config = {
+					backends: [
+						{
+							id: "opus",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							thinking: { type: "adaptive" },
+							effort: "extreme",
+						},
+					],
+					default: "opus",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(false);
+			});
+
+			it("allows effort without thinking (e.g. non-thinking Opus workloads)", () => {
+				const config = {
+					backends: [
+						{
+							id: "opus",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							effort: "medium",
+						},
+					],
+					default: "opus",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(true);
+			});
 		});
 	});
 

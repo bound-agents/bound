@@ -219,6 +219,37 @@ export const InferenceConfigSchema = z.discriminatedUnion("thinking", [
 	InferenceConfigThinkingSchema,
 ]);
 
+/**
+ * Anthropic native `thinking` field shape, routed through Bedrock
+ * Converse via additionalModelRequestFields. Union of the legacy
+ * `{type:"enabled", budget_tokens}` and the Opus 4.7 adaptive shape.
+ * `display` is optional and only meaningful on adaptive — controls
+ * whether streamed reasoning contains text or empty chunks.
+ */
+const ThinkingBagSchema = z.discriminatedUnion("type", [
+	z.object({
+		type: z.literal("enabled"),
+		budget_tokens: z.number().int().positive(),
+	}),
+	z
+		.object({
+			type: z.literal("adaptive"),
+			display: z.enum(["omitted", "summarized"]).optional(),
+		})
+		.strict(),
+]);
+
+/**
+ * `output_config` bag. Used for `effort` today; Anthropic may add more
+ * knobs here (e.g. `task_budget`). Kept as a `.passthrough()` object so
+ * future fields forward unchanged without a schema bump.
+ */
+const OutputConfigBagSchema = z
+	.object({
+		effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+	})
+	.passthrough();
+
 // ─── Additional model request fields (extended thinking) ────────────────────
 
 /**
@@ -246,12 +277,18 @@ export const InferenceConfigSchema = z.discriminatedUnion("thinking", [
  * the model to emit "[Thinking: …]" as inline text instead of routing it
  * through a proper reasoning channel.
  */
-export const AdditionalModelRequestFieldsSchema = z.object({
-	thinking: z.object({
-		type: z.literal("enabled"),
-		budget_tokens: z.number().int().positive(),
-	}),
-});
+/**
+ * Bedrock's passthrough bag, carrying Anthropic-specific request
+ * parameters. May include `thinking`, `output_config`, or both. All
+ * fields optional; the driver only emits this object when at least one
+ * field is set.
+ */
+export const AdditionalModelRequestFieldsSchema = z
+	.object({
+		thinking: ThinkingBagSchema.optional(),
+		output_config: OutputConfigBagSchema.optional(),
+	})
+	.strict();
 
 // ─── Inferred TS types ──────────────────────────────────────────────────────
 

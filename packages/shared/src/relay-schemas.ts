@@ -42,12 +42,22 @@ export const inferenceRequestPayloadSchema = z.object({
 	system: z.string().optional(),
 	max_tokens: z.number().int().positive().optional(),
 	temperature: z.number().optional(),
+	// Mirrors ChatParams.thinking in @bound/llm — both the legacy
+	// `{type:"enabled", budget_tokens}` shape (pre-4.7) and the adaptive
+	// shape (Opus 4.6+, required on 4.7) are supported over the wire.
 	thinking: z
-		.object({
-			type: z.literal("enabled"),
-			budget_tokens: z.number().int().positive(),
-		})
+		.union([
+			z.object({
+				type: z.literal("enabled"),
+				budget_tokens: z.number().int().positive(),
+			}),
+			z.object({
+				type: z.literal("adaptive"),
+				display: z.enum(["omitted", "summarized"]).optional(),
+			}),
+		])
 		.optional(),
+	effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
 	messages_file_ref: z.string().optional(),
 });
 
