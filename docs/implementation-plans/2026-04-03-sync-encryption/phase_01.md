@@ -63,10 +63,10 @@ Add three dependencies to `packages/sync/package.json` in the `dependencies` obj
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun install`
+Run: `bun install`
 Expected: Installs without errors, lockfile updated.
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun -e "import { ed25519, x25519 } from '@noble/curves/ed25519'; import { xchacha20poly1305 } from '@noble/ciphers/chacha'; import { hkdf } from '@noble/hashes/hkdf'; import { sha256 } from '@noble/hashes/sha2'; console.log('All noble imports OK')"`
+Run: `bun -e "import { ed25519, x25519 } from '@noble/curves/ed25519'; import { xchacha20poly1305 } from '@noble/ciphers/chacha'; import { hkdf } from '@noble/hashes/hkdf'; import { sha256 } from '@noble/hashes/sha2'; console.log('All noble imports OK')"`
 Expected: Prints "All noble imports OK"
 
 **Commit:** `chore(sync): add noble crypto dependencies`
@@ -196,7 +196,7 @@ function base64urlToBytes(b64url: string): Uint8Array {
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun -e "import { encryptBody, decryptBody } from './packages/sync/src/encryption'; const key = crypto.getRandomValues(new Uint8Array(32)); const pt = new TextEncoder().encode('hello'); const { ciphertext, nonce } = encryptBody(pt, key); const dec = decryptBody(ciphertext, nonce, key); console.log(new TextDecoder().decode(dec))"`
+Run: `bun -e "import { encryptBody, decryptBody } from './packages/sync/src/encryption'; const key = crypto.getRandomValues(new Uint8Array(32)); const pt = new TextEncoder().encode('hello'); const { ciphertext, nonce } = encryptBody(pt, key); const dec = decryptBody(ciphertext, nonce, key); console.log(new TextDecoder().decode(dec))"`
 Expected: Prints "hello"
 
 **Commit:** `feat(sync): add encryption.ts with stateless crypto primitives`
@@ -234,7 +234,7 @@ Additional edge case tests:
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync/src/__tests__/encryption.test.ts`
+Run: `bun test packages/sync/src/__tests__/encryption.test.ts`
 Expected: All tests pass.
 
 **Commit:** `test(sync): add encryption.ts unit tests`
@@ -404,7 +404,7 @@ export class KeyManager {
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun -e "import { KeyManager } from './packages/sync/src/key-manager'; console.log('KeyManager imported OK')"`
+Run: `bun -e "import { KeyManager } from './packages/sync/src/key-manager'; console.log('KeyManager imported OK')"`
 Expected: Prints "KeyManager imported OK"
 
 **Commit:** `feat(sync): add KeyManager class for peer key management`
@@ -440,7 +440,7 @@ Additional tests:
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync/src/__tests__/key-manager.test.ts`
+Run: `bun test packages/sync/src/__tests__/key-manager.test.ts`
 Expected: All tests pass.
 
 **Commit:** `test(sync): add KeyManager unit tests`
@@ -474,10 +474,10 @@ export { KeyManager } from "./key-manager.js";
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && tsc -p packages/sync --noEmit`
+Run: `tsc -p packages/sync --noEmit`
 Expected: No type errors.
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync`
+Run: `bun test packages/sync`
 Expected: All existing sync tests still pass (zero regressions) plus new encryption and key-manager tests pass.
 
 **Commit:** `feat(sync): export encryption and key-manager modules`

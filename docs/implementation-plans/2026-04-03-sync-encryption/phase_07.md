@@ -236,7 +236,7 @@ main().catch((err) => {
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && tsc -p packages/cli --noEmit`
+Run: `tsc -p packages/cli --noEmit`
 Expected: No type errors.
 
 **Commit:** `feat(cli): add boundcurl diagnostic tool`
@@ -286,10 +286,10 @@ In `packages/cli/package.json`, add bin entry:
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun run build`
+Run: `bun run build`
 Expected: Build succeeds, `dist/boundcurl` binary is created alongside `dist/bound`, `dist/boundctl`, `dist/bound-mcp`.
 
-Run: `ls -la /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption/dist/boundcurl`
+Run: `ls -la .worktrees/sync-encryption/dist/boundcurl`
 Expected: File exists and is executable.
 
 **Commit:** `chore(build): add boundcurl as 4th compiled binary`
@@ -320,7 +320,7 @@ Additional tests:
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/cli/src/__tests__/boundcurl.test.ts`
+Run: `bun test packages/cli/src/__tests__/boundcurl.test.ts`
 Expected: All tests pass.
 
 **Commit:** `test(cli): add boundcurl unit tests`

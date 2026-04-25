@@ -73,7 +73,7 @@ Extend existing test file `packages/sync/src/__tests__/signing.test.ts` with a n
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync/src/__tests__/signing.test.ts`
+Run: `bun test packages/sync/src/__tests__/signing.test.ts`
 Expected: All existing tests pass plus new Uint8Array tests pass.
 
 **Commit:** `feat(sync): extend signRequest to accept Uint8Array body`
@@ -99,7 +99,7 @@ Note: The `verifyRequest` type change (also to `string | Uint8Array`) was includ
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync/src/__tests__/signing.test.ts`
+Run: `bun test packages/sync/src/__tests__/signing.test.ts`
 Expected: All tests pass.
 
 **Commit:** `test(sync): add signing tests for Uint8Array body support`
@@ -241,7 +241,7 @@ export class SyncTransport {
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && tsc -p packages/sync --noEmit`
+Run: `tsc -p packages/sync --noEmit`
 Expected: No type errors.
 
 **Commit:** `feat(sync): add SyncTransport encrypt-sign-fetch-decrypt pipeline`
@@ -283,7 +283,7 @@ Additional tests:
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync/src/__tests__/transport.test.ts`
+Run: `bun test packages/sync/src/__tests__/transport.test.ts`
 Expected: All tests pass.
 
 **Commit:** `test(sync): add SyncTransport unit tests`
@@ -385,10 +385,10 @@ Apply the same pattern to ack (simple — just checks status).
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && tsc -p packages/sync --noEmit`
+Run: `tsc -p packages/sync --noEmit`
 Expected: No type errors.
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync`
+Run: `bun test packages/sync`
 Expected: All existing sync tests pass (they don't provide transport, so they use the existing fetch path).
 
 **Commit:** `refactor(sync): SyncClient uses optional SyncTransport`
@@ -460,10 +460,10 @@ const syncClient = new SyncClient(
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && tsc -p packages/cli --noEmit`
+Run: `tsc -p packages/cli --noEmit`
 Expected: No type errors.
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync`
+Run: `bun test packages/sync`
 Expected: All sync tests pass (no regression — transport is optional).
 
 **Commit:** `feat(cli): wire KeyManager and SyncTransport into bootstrap`

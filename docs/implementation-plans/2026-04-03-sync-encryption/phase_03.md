@@ -229,7 +229,7 @@ return async (c: Context<AppContext>, next) => {
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && tsc -p packages/sync --noEmit`
+Run: `tsc -p packages/sync --noEmit`
 Expected: No type errors.
 
 **Commit:** `feat(sync): add encryption verification and response encryption to middleware`
@@ -263,7 +263,7 @@ Tests must verify each AC:
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync/src/__tests__/encrypted-middleware.test.ts`
+Run: `bun test packages/sync/src/__tests__/encrypted-middleware.test.ts`
 Expected: All tests pass.
 
 **Commit:** `test(sync): add encrypted middleware unit tests`
@@ -318,10 +318,10 @@ In `packages/cli/src/commands/start.ts`, the `keyManager` instance created in Ph
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && tsc -p packages/sync --noEmit && tsc -p packages/web --noEmit && tsc -p packages/cli --noEmit`
+Run: `tsc -p packages/sync --noEmit && tsc -p packages/web --noEmit && tsc -p packages/cli --noEmit`
 Expected: No type errors.
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync`
+Run: `bun test packages/sync`
 Expected: All tests pass (existing tests pass keyManager as undefined, using signature-only path).
 
 **Commit:** `feat(sync): pass KeyManager through routes to middleware`
@@ -346,7 +346,7 @@ export { verifyRequest } from "./signing.js";
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync`
+Run: `bun test packages/sync`
 Expected: All tests pass, zero regressions.
 
 **Commit:** `chore(sync): verify Phase 3 exports`

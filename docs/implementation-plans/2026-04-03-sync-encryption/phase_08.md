@@ -68,7 +68,7 @@ Tests:
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync/src/__tests__/encrypted-sync.integration.test.ts`
+Run: `bun test packages/sync/src/__tests__/encrypted-sync.integration.test.ts`
 Expected: All tests pass.
 
 **Commit:** `test(sync): add encrypted sync cycle integration tests`
@@ -95,7 +95,7 @@ Tests:
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync/src/__tests__/keyring-mismatch.integration.test.ts`
+Run: `bun test packages/sync/src/__tests__/keyring-mismatch.integration.test.ts`
 Expected: All tests pass.
 
 **Commit:** `test(sync): add keyring mismatch diagnostic integration tests`
@@ -121,7 +121,7 @@ Tests:
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync/src/__tests__/eager-push-encrypted.integration.test.ts`
+Run: `bun test packages/sync/src/__tests__/eager-push-encrypted.integration.test.ts`
 Expected: All tests pass.
 
 **Commit:** `test(sync): add encrypted eager push integration tests`
@@ -148,7 +148,7 @@ Tests:
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync/src/__tests__/sighup-reload.integration.test.ts`
+Run: `bun test packages/sync/src/__tests__/sighup-reload.integration.test.ts`
 Expected: All tests pass.
 
 **Commit:** `test(sync): add SIGHUP keyring reload integration tests`
@@ -176,10 +176,10 @@ Run the complete test suite to verify zero regressions. This covers:
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test --recursive`
+Run: `bun test --recursive`
 Expected: All tests pass. Zero failures. Zero regressions.
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun run typecheck`
+Run: `bun run typecheck`
 Expected: All packages typecheck clean.
 
 **Commit:** `test: verify zero regressions after sync encryption implementation`

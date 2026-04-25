@@ -134,10 +134,10 @@ const eagerPushConfig =
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && tsc -p packages/sync --noEmit`
+Run: `tsc -p packages/sync --noEmit`
 Expected: No type errors.
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync/src/__tests__/eager-push.test.ts`
+Run: `bun test packages/sync/src/__tests__/eager-push.test.ts`
 Expected: Existing tests pass (no transport provided, uses plaintext path).
 
 **Commit:** `feat(sync): add encryption support to eager push`
@@ -167,7 +167,7 @@ Additional tests:
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync/src/__tests__/eager-push-encrypted.test.ts`
+Run: `bun test packages/sync/src/__tests__/eager-push-encrypted.test.ts`
 Expected: All tests pass.
 
 **Commit:** `test(sync): add encrypted eager push tests`

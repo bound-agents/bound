@@ -139,7 +139,7 @@ export function registerSighupHandler(config: SighupHandlerConfig): void {
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && tsc -p packages/cli --noEmit`
+Run: `tsc -p packages/cli --noEmit`
 Expected: No type errors.
 
 **Commit:** `feat(cli): add SIGHUP handler for config hot-reload`
@@ -170,7 +170,7 @@ Tests must verify each AC:
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/cli/src/__tests__/sighup.test.ts`
+Run: `bun test packages/cli/src/__tests__/sighup.test.ts`
 Expected: All tests pass.
 
 **Commit:** `test(cli): add SIGHUP handler unit tests`
@@ -210,7 +210,7 @@ The `configDir` is available as a parameter to the `runStart()` function. The `k
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && tsc -p packages/cli --noEmit`
+Run: `tsc -p packages/cli --noEmit`
 Expected: No type errors.
 
 Manual verification: Start the process, modify keyring.json, send `kill -HUP <pid>`. Check logs for "Config reload complete" with keyring in the changed list.

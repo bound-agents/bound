@@ -66,7 +66,7 @@ Verify that:
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && tsc -p packages/sync --noEmit`
+Run: `tsc -p packages/sync --noEmit`
 Expected: No type errors.
 
 **Commit:** `fix(sync): standardize encryption error response format`
@@ -174,7 +174,7 @@ app.use("/api/relay-deliver", createSyncAuthMiddleware(keyring, keyManager, logg
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && tsc -p packages/sync --noEmit`
+Run: `tsc -p packages/sync --noEmit`
 Expected: No type errors.
 
 **Commit:** `feat(sync): add structured logging to encryption pipeline`
@@ -310,7 +310,7 @@ Tests:
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync/src/__tests__/encryption-errors.test.ts`
+Run: `bun test packages/sync/src/__tests__/encryption-errors.test.ts`
 Expected: All tests pass.
 
 **Commit:** `test(sync): add encryption error handling and logging tests`
@@ -356,7 +356,7 @@ This is primarily a verification task — Phase 2 already implemented the core l
 
 **Verification:**
 
-Run: `cd /Users/user/Documents/GitHub/bound/.worktrees/sync-encryption && bun test packages/sync/src/__tests__/transport.test.ts`
+Run: `bun test packages/sync/src/__tests__/transport.test.ts`
 Expected: All tests pass (including plaintext error response tests from Phase 2).
 
 **Commit:** `feat(sync): add logging for plaintext error responses in transport`
