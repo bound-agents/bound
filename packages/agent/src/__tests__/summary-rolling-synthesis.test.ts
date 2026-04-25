@@ -17,6 +17,12 @@ beforeAll(() => {
 	db = createDatabase(dbPath);
 	applySchema(db);
 	db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', 'test-site-id')");
+	// Create a test user so summary extraction can resolve the display name
+	const now = new Date().toISOString();
+	db.run(
+		"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+		["test-user", "Kara", null, now, now, 0],
+	);
 });
 
 afterAll(async () => {
@@ -302,5 +308,23 @@ describe("rolling synthesis summary extraction", () => {
 			summary: string;
 		};
 		expect(thread2.summary).toContain("TurnStateStore");
+	});
+
+	it("includes user display name in the system prompt and instructs not to use 'you'", async () => {
+		const threadId = randomUUID();
+		insertThread(db, threadId);
+		insertMessage(db, threadId, "user", "What's the status of the deployment?");
+
+		const mock = new CapturingMockLLM();
+		const { extractSummaryAndMemories } = await import("../summary-extraction");
+		await extractSummaryAndMemories(db, threadId, mock, "test-site");
+
+		expect(mock.capturedCalls.length).toBeGreaterThanOrEqual(1);
+		const systemPrompt = mock.capturedCalls[0].system ?? "";
+
+		// Should include the user's name
+		expect(systemPrompt).toContain("Kara");
+		// Should instruct against using "you"
+		expect(systemPrompt).toContain('never as "you"');
 	});
 });

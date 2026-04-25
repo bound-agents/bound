@@ -192,16 +192,21 @@ export async function extractSummaryAndMemories(
 		// System and developer messages are internal plumbing and are skipped.
 		const deltaText = formatDeltaMessages(messages);
 
+		// Resolve the user's display name so the summary references them by name
+		// instead of "you" (which is meaningless in cross-thread digests or when
+		// a different agent instance reads the summary).
+		const threadMeta = db
+			.prepare(
+				"SELECT u.display_name FROM threads t JOIN users u ON t.user_id = u.id WHERE t.id = ?",
+			)
+			.get(threadId) as { display_name: string } | null;
+		const userName = threadMeta?.display_name;
+		const userClause = userName ? ` The user in this conversation is named ${userName}.` : "";
+
 		// Rolling synthesis: two prompt variants depending on whether a previous
 		// summary exists. The system message is shared — first-person orientation
 		// anchor framing, not a recap.
-		const summarizationSystem =
-			"You are maintaining a running summary of a conversation thread. " +
-			"Your summary serves as an orientation anchor — it will be shown " +
-			"alongside recent messages to help you understand the broader context " +
-			"of the conversation. You can always query the message database for " +
-			"specific details, so your job is to capture the WHY and WHERE-ARE-WE, " +
-			"not the exact WHAT. Write in first person ('I investigated...', 'We decided...').";
+		const summarizationSystem = `You are maintaining a running summary of a conversation thread. Your summary serves as an orientation anchor — it will be shown alongside recent messages to help you understand the broader context of the conversation. You can always query the message database for specific details, so your job is to capture the WHY and WHERE-ARE-WE, not the exact WHAT. Write in first person ('I investigated...', 'We decided...').${userClause} Refer to the user by name when possible, never as "you" (the summary is read by other systems, not the user).`;
 
 		let prompt: string;
 		if (previousSummary) {
