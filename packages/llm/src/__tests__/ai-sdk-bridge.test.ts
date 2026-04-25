@@ -39,12 +39,50 @@ describe("toModelMessages — basic role mapping", () => {
 		expect(out).toEqual([{ role: "system", content: "sys" }]);
 	});
 
-	it("maps developer role to system", () => {
-		const out = toModelMessages([{ role: "developer", content: "dev note" }]);
-		expect(out).toEqual([{ role: "system", content: "dev note" }]);
+	// developer-role messages carry volatile context (enrichment, platform
+	// context, model switches). They are emitted interleaved with history —
+	// the agent loop always appends one at the tail before calling the LLM,
+	// so they can appear between user/assistant turns. Bedrock rejects
+	// multiple system messages separated by user/assistant, so we merge
+	// developer content into the neighboring user message, wrapped in a
+	// <system-context> tag so the model can tell it apart from user input.
+	// Contract: "mapped by drivers to <system-context>-wrapped text prepended
+	// to the next user message" (CLAUDE.md).
+
+	it("prepends developer content to the next user message", () => {
+		const out = toModelMessages([
+			{ role: "developer", content: "dev note" },
+			{ role: "user", content: "hi" },
+		]);
+		expect(out).toEqual([
+			{ role: "user", content: "<system-context>\ndev note\n</system-context>\n\nhi" },
+		]);
 	});
 
-	it("extracts text from developer block content", () => {
+	it("appends developer content to the last user message when none follows", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "hi" },
+			{ role: "assistant", content: "there" },
+			{ role: "developer", content: "enrichment tail" },
+		]);
+		expect(out).toEqual([
+			{ role: "user", content: "hi\n\n<system-context>\nenrichment tail\n</system-context>" },
+			{ role: "assistant", content: "there" },
+		]);
+	});
+
+	it("merges multiple developer messages into one wrapped block", () => {
+		const out = toModelMessages([
+			{ role: "developer", content: "first" },
+			{ role: "developer", content: "second" },
+			{ role: "user", content: "hi" },
+		]);
+		expect(out).toEqual([
+			{ role: "user", content: "<system-context>\nfirst\n\nsecond\n</system-context>\n\nhi" },
+		]);
+	});
+
+	it("extracts text from developer block content before merging", () => {
 		const out = toModelMessages([
 			{
 				role: "developer",
@@ -53,8 +91,45 @@ describe("toModelMessages — basic role mapping", () => {
 					{ type: "text", text: "part-b" },
 				],
 			},
+			{ role: "user", content: "hi" },
 		]);
-		expect(out).toEqual([{ role: "system", content: "part-a part-b" }]);
+		expect(out).toEqual([
+			{
+				role: "user",
+				content: "<system-context>\npart-a part-b\n</system-context>\n\nhi",
+			},
+		]);
+	});
+
+	it("emits no output when developer is the only message and no user exists", () => {
+		// Degenerate input — callers should always have at least one user
+		// message. We drop the developer tail rather than produce an
+		// unsendable system-only message.
+		const out = toModelMessages([{ role: "developer", content: "orphan" }]);
+		expect(out).toEqual([]);
+	});
+
+	it("merges developer into a user message that has content blocks", () => {
+		const out = toModelMessages([
+			{ role: "developer", content: "dev note" },
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: "keep" },
+					{ type: "text", text: "also" },
+				],
+			},
+		]);
+		expect(out).toEqual([
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: "<system-context>\ndev note\n</system-context>" },
+					{ type: "text", text: "keep" },
+					{ type: "text", text: "also" },
+				],
+			},
+		]);
 	});
 });
 

@@ -45,9 +45,16 @@ export interface ToModelMessagesOptions {
  *   user       → user
  *   assistant  → assistant
  *   system     → system
- *   developer  → system (AI SDK has no developer role at the input shape;
- *                the OpenAI-compatible provider re-promotes this on the wire
- *                when the upstream model supports it)
+ *   developer  → merged into an adjacent user message, wrapped in a
+ *                `<system-context>` tag. Developer messages are emitted
+ *                interleaved with history (the agent loop appends one at the
+ *                tail every turn), so promoting them to AI SDK `system`
+ *                messages produces the "Multiple system messages separated by
+ *                user/assistant" failure on Bedrock. Merge into the next user
+ *                message when one follows, or append to the most recent user
+ *                message when none does. Orphan developer messages (no user
+ *                anywhere) are dropped — the resulting request would be
+ *                unsendable otherwise.
  *   tool_call  → assistant { parts: [tool-call...] }
  *   tool_result → tool { parts: [tool-result...] }
  *   cache      → marker only — attached to the previous message via
@@ -73,7 +80,18 @@ export function toModelMessages(
 		}
 	}
 
+	// Developer content accumulated since the last user message. Flushed by
+	// prepending into the next user message; any remainder is appended onto
+	// the last emitted user message after the loop.
+	const pendingDev: string[] = [];
+
 	for (const msg of messages) {
+		if (msg.role === "developer") {
+			const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
+			if (text) pendingDev.push(text);
+			continue;
+		}
+
 		if (msg.role === "cache") {
 			// Attach a cache breakpoint to the most recently emitted message.
 			const prev = result[result.length - 1];
@@ -135,18 +153,21 @@ export function toModelMessages(
 			continue;
 		}
 
-		if (msg.role === "developer") {
-			const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
-			result.push({ role: "system", content: text });
-			continue;
-		}
-
 		// user / assistant / system with content blocks
+		const isUser = msg.role === "user";
 		if (typeof msg.content === "string") {
-			result.push({
-				role: msg.role as "user" | "assistant" | "system",
-				content: msg.content,
-			} as ModelMessage);
+			if (isUser && pendingDev.length > 0) {
+				result.push({
+					role: "user",
+					content: `${wrapDev(pendingDev)}\n\n${msg.content}`,
+				});
+				pendingDev.length = 0;
+			} else {
+				result.push({
+					role: msg.role as "user" | "assistant" | "system",
+					content: msg.content,
+				} as ModelMessage);
+			}
 			continue;
 		}
 
@@ -181,6 +202,11 @@ export function toModelMessages(
 			}
 		}
 
+		if (isUser && pendingDev.length > 0) {
+			parts.unshift({ type: "text", text: wrapDev(pendingDev) });
+			pendingDev.length = 0;
+		}
+
 		if (parts.length === 0) {
 			// Tool-call-only assistant messages with no parts would be dropped
 			// by the SDK; synthesize an empty text part to keep ordering stable.
@@ -193,7 +219,39 @@ export function toModelMessages(
 		});
 	}
 
+	// Any developer content still pending here appeared after the last user
+	// message (e.g., the rolling volatile-context tail the agent loop appends
+	// every turn). Append to the most recent user message so it still reaches
+	// the model in the right position relative to history.
+	if (pendingDev.length > 0) {
+		for (let i = result.length - 1; i >= 0; i--) {
+			if (result[i].role === "user") {
+				appendDevToUser(result[i], pendingDev);
+				pendingDev.length = 0;
+				break;
+			}
+		}
+		// If we found no user message, drop the developer content silently —
+		// a system-only request would throw at the provider layer anyway, and
+		// this input shape isn't something callers should produce.
+	}
+
 	return result;
+}
+
+function wrapDev(lines: string[]): string {
+	return `<system-context>\n${lines.join("\n\n")}\n</system-context>`;
+}
+
+function appendDevToUser(userMsg: ModelMessage, devLines: string[]): void {
+	const wrapped = wrapDev(devLines);
+	if (typeof userMsg.content === "string") {
+		userMsg.content = `${userMsg.content}\n\n${wrapped}`;
+		return;
+	}
+	// Content-block user message: push as a trailing text part so we don't
+	// have to merge with any final block's internals (image/file parts, etc.).
+	(userMsg.content as Array<Record<string, unknown>>).push({ type: "text", text: wrapped });
 }
 
 function normalizeBlocks(content: string | ContentBlock[]): ContentBlock[] {
