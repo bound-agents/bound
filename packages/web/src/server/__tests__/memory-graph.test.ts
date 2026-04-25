@@ -86,7 +86,7 @@ describe("GET /api/memory/graph", () => {
 
 			db.prepare(
 				"INSERT INTO memory_edges (id, source_key, target_key, relation, weight, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
-			).run(randomUUID(), "key2", "key3", "relates-to", 0.8, now, now);
+			).run(randomUUID(), "key2", "key3", "related_to", 0.8, now, now);
 
 			// Fetch via API
 			const res = await app.fetch(new Request("http://localhost/graph"));
@@ -120,7 +120,7 @@ describe("GET /api/memory/graph", () => {
 			expect(edge1?.targetKey).toBe("key2");
 			expect(edge1?.relation).toBe("summarizes");
 			expect(edge2?.targetKey).toBe("key3");
-			expect(edge2?.relation).toBe("relates-to");
+			expect(edge2?.relation).toBe("related_to");
 		});
 	});
 
@@ -140,11 +140,11 @@ describe("GET /api/memory/graph", () => {
 			// Insert 2 active and 1 deleted edge
 			db.prepare(
 				"INSERT INTO memory_edges (id, source_key, target_key, relation, weight, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
-			).run(randomUUID(), "key1", "key2", "links", 1.0, now, now);
+			).run(randomUUID(), "key1", "key2", "related_to", 1.0, now, now);
 
 			db.prepare(
 				"INSERT INTO memory_edges (id, source_key, target_key, relation, weight, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
-			).run(randomUUID(), "key2", "key3", "links", 1.0, now, now);
+			).run(randomUUID(), "key2", "key3", "related_to", 1.0, now, now);
 
 			// Fetch via API
 			const res = await app.fetch(new Request("http://localhost/graph"));
