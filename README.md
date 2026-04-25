@@ -77,22 +77,27 @@ bun run packages/cli/src/boundctl.ts restore --before "2026-03-20T10:00:00Z" --p
 
 ```
 packages/
-  shared/     Cross-cutting types, events, config schemas (Zod)
-  core/       SQLite database (13 tables, WAL mode), DI container, config loader
-  sync/       Ed25519-signed HTTP sync protocol, LWW/append-only reducers
-  sandbox/    Virtual filesystem (ClusterFs), OCC persistence, command framework
-  llm/        LLM drivers (Ollama, Anthropic, Bedrock, OpenAI), model router
-  agent/      Agent loop state machine, 16 commands, scheduler, MCP bridge
-  web/        Hono API server, WebSocket, Svelte 5 metro-themed UI
-  discord/    Discord bot for DM-based agent interaction
-  cli/        CLI commands (init, start, boundctl)
+  shared/       Cross-cutting types, events, config schemas (Zod)
+  core/         SQLite database (WAL mode, STRICT tables), DI container, config loader, outbox
+  sync/         Ed25519-signed WebSocket sync with XChaCha20 encryption, LWW/append-only reducers
+  sandbox/      Virtual filesystem (InMemoryFs/ClusterFs), OCC persistence, command framework
+  llm/          LLM drivers (Bedrock, OpenAI-compatible) over the Vercel AI SDK, model router
+  agent/        Agent loop state machine, 8-stage context pipeline, 20+ commands, scheduler, MCP bridge
+  platforms/    PlatformConnector framework (Discord, webhook)
+  web/          Hono API server, WebSocket, Svelte 5 UI
+  client/       BoundClient: unified HTTP + WebSocket client for external consumers
+  mcp-server/   Standalone MCP stdio server (bound-mcp)
+  less/         Terminal coding agent client (boundless)
+  cli/          CLI commands (bound init/start, boundctl); compiles to four binaries
 ```
+
+See [docs/design/architecture.md](docs/design/architecture.md) for the package dependency graph and data flow, and [CONTRIBUTING.md](CONTRIBUTING.md) for developer-facing setup, testing conventions, and invariants.
 
 ## Development
 
 ```bash
 # Run all tests
-bun test packages/shared packages/core packages/sync packages/sandbox packages/llm packages/agent packages/web packages/discord
+bun test --recursive
 
 # Lint
 bun run lint
@@ -104,6 +109,8 @@ bun run typecheck
 bun run lint:fix
 ```
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for testing conventions, critical invariants, and contributor checklists.
+
 ### Config files
 
 After `bound init`, the `config/` directory contains:
@@ -112,12 +119,15 @@ After `bound init`, the `config/` directory contains:
 |------|----------|-------------|
 | `allowlist.json` | Yes | Users allowed to interact with the agent |
 | `model_backends.json` | Yes | LLM backend configuration |
-| `discord.json` | No | Discord bot token and host assignment |
-| `sync.json` | No | Hub URL and sync interval for multi-host |
+| `platforms.json` | No | Platform connector config (Discord bot token, webhook stubs) |
+| `sync.json` | No | Hub URL, sync interval, relay and WS settings |
+| `keyring.json` | No | Per-host identity keys (auto-populated) |
 | `mcp.json` | No | MCP server connections (stdio or http transport) |
 | `overlay.json` | No | Codebase mount points |
 | `cron_schedules.json` | No | Recurring task definitions |
 | `persona.md` | No | Custom system prompt personality |
+
+All config schemas are **strict** — unknown keys fail parse. Declare new fields in the Zod schema (`packages/shared/src/config-schemas.ts`) before using them.
 
 ### MCP Server Configuration
 
@@ -146,10 +156,10 @@ The system uses an event-sourced architecture with SQLite as the storage layer:
 
 - **Agent loop** processes messages through a state machine: hydrate filesystem, assemble context, call LLM, execute tools, persist results
 - **Scheduler** fires cron, deferred, and event-driven tasks with DAG dependency resolution
-- **Sync protocol** replicates state between hosts via a three-phase push/pull/ack cycle with Ed25519 authentication. Keypair is auto-generated and stored in `data/host.key` and `data/host.pub`
-- **16 built-in commands** available to the agent: `query`, `memorize`, `forget`, `schedule`, `await`, `cancel`, `emit`, `purge`, `cache-warm`, `cache-pin`, `cache-unpin`, `cache-evict`, `model-hint`, `archive`, `hostinfo`, `commands`
-- **MCP integration** auto-generates commands from connected MCP servers (stdio or http transport). Tools are available to the agent during chat and accessible via the MCP proxy for cross-host scenarios
-- **Web UI** is built as a Svelte SPA and embedded into the compiled binary for zero external dependencies
+- **Sync protocol** replicates state between hosts over encrypted WebSocket frames (Ed25519 identity, XChaCha20-Poly1305 at frame level, HLC-ordered change log). Keypair is auto-generated at `data/host.key` / `data/host.pub`.
+- **20+ built-in commands** available to the agent (`query`, `memorize`, `schedule`, `purge`, `skill-*`, `advisory`, cache controls, etc.). The full list is auto-generated into the agent's orientation message from the command registry.
+- **MCP integration** auto-generates one command per connected MCP server (stdio or http transport), dispatched via a `subcommand` parameter. Tools are available during chat and via a cross-host MCP proxy.
+- **Web UI** is built as a Svelte 5 SPA and embedded into the compiled binary for zero external dependencies.
 
 ## License
 
