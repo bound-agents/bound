@@ -684,12 +684,16 @@ describe("cache stability: inference config", () => {
 			const a = toBedrockRequest(input);
 			const b = toBedrockRequest(input);
 
-			// toolConfig should be identical, including cachePoint
+			// toolConfig should be identical, including cachePoint placement
 			expect(stableStringify(a.toolConfig)).toBe(stableStringify(b.toolConfig));
 
-			// Verify cachePoint is present
+			// Verify cachePoint is appended as the last element of the tools array
+			// (per AWS Converse schema: ToolConfiguration.cachePoint does not exist;
+			// cachePoint is a Tool union member and lives inside tools[]).
 			const toolConfig = a.toolConfig as Record<string, unknown>;
-			expect(toolConfig.cachePoint).toEqual({ type: "default" });
+			expect(toolConfig.cachePoint).toBeUndefined();
+			const tools = toolConfig.tools as Array<Record<string, unknown>>;
+			expect(tools.at(-1)).toEqual({ cachePoint: { type: "default" } });
 		});
 	});
 
@@ -747,7 +751,7 @@ describe("cache stability: inference config", () => {
 			expect(allText).toContain("Question");
 		});
 
-		it("toBedrockRequest with cache messages and tools places cachePoint in toolConfig", () => {
+		it("toBedrockRequest with cache messages and tools appends cachePoint to tools array", () => {
 			const input = makeInput({
 				messages: [
 					{ role: "user", content: "Run tool" },
@@ -758,9 +762,12 @@ describe("cache stability: inference config", () => {
 
 			const raw = toBedrockRequest(input);
 
-			// toolConfig should have cachePoint
+			// cachePoint is a Tool union member — it must live inside tools[],
+			// not at toolConfig.cachePoint (which does not exist in AWS's schema).
 			const toolConfig = raw.toolConfig as Record<string, unknown>;
-			expect(toolConfig.cachePoint).toEqual({ type: "default" });
+			expect(toolConfig.cachePoint).toBeUndefined();
+			const tools = toolConfig.tools as Array<Record<string, unknown>>;
+			expect(tools.at(-1)).toEqual({ cachePoint: { type: "default" } });
 		});
 
 		it("anthropic toAnthropicMessages with cache messages adds cache_control to previous message", () => {

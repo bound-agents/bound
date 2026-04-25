@@ -310,7 +310,18 @@ export function toBedrockRequest(input: ConvertInput): RawBedrockRequest {
 	})();
 
 	// ─── Tool config ─────────────────────────────────────────────────────────
-	const toolConfig =
+	// Per the AWS SDK shape (ToolConfiguration), there is no top-level
+	// `cachePoint` field — the ToolConfiguration interface only carries
+	// `tools: Tool[]` and an optional `toolChoice`. The Tool union itself
+	// has a `CachePointMember` variant, so the cachePoint marker must be
+	// appended as the final element of the `tools` array.
+	//
+	// Putting `cachePoint` at `toolConfig.cachePoint` (the old shape) caused
+	// Bedrock to forward it to the underlying Claude API as cache_control
+	// on multiple tools, inflating the total cache_control count past the
+	// hard 4-block API limit and producing:
+	//   "A maximum of 4 blocks with cache_control may be provided. Found 5."
+	const toolConfig: Record<string, unknown> | undefined =
 		params.tools && params.tools.length > 0
 			? {
 					tools: params.tools.map((t: ToolDefinition) => ({
@@ -319,13 +330,17 @@ export function toBedrockRequest(input: ConvertInput): RawBedrockRequest {
 							description: t.function.description,
 							inputSchema: { json: t.function.parameters as Record<string, unknown> },
 						},
-					})),
+					})) as Array<Record<string, unknown>>,
 				}
 			: undefined;
 
-	// Place cachePoint in toolConfig when cache messages are present and tools exist
+	// Append cachePoint as the last element of the tools array when cache
+	// messages are present. This caches all preceding tool definitions per
+	// Bedrock's contiguous-prefix caching rule.
 	if (hasCacheMessages && toolConfig) {
-		(toolConfig as Record<string, unknown>).cachePoint = { type: "default" };
+		(toolConfig.tools as Array<Record<string, unknown>>).push({
+			cachePoint: { type: "default" },
+		});
 	}
 
 	// ─── Inference config ────────────────────────────────────────────────────

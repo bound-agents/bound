@@ -166,7 +166,7 @@ describe("Bedrock developer and cache role mapping", () => {
 	});
 
 	describe("AC4.9 — tool caching with cache messages", () => {
-		it("cache messages + tools place cachePoint in toolConfig", () => {
+		it("cache messages + tools append cachePoint element to tools array", () => {
 			const { toBedrockRequest } = require("../bedrock/convert");
 			const input = {
 				params: {
@@ -190,10 +190,13 @@ describe("Bedrock developer and cache role mapping", () => {
 
 			const raw = toBedrockRequest(input);
 
-			// toolConfig should have cachePoint when cache messages are present
+			// Per the AWS Converse API schema, cachePoint is a Tool union member
+			// and must live inside the tools array, not at toolConfig.cachePoint.
 			const toolConfig = raw.toolConfig as Record<string, unknown>;
 			expect(toolConfig).toBeDefined();
-			expect(toolConfig.cachePoint).toEqual({ type: "default" });
+			expect(toolConfig.cachePoint).toBeUndefined();
+			const tools = toolConfig.tools as Array<Record<string, unknown>>;
+			expect(tools.at(-1)).toEqual({ cachePoint: { type: "default" } });
 		});
 
 		it("cache messages present but no tools — no crash", () => {
@@ -215,7 +218,7 @@ describe("Bedrock developer and cache role mapping", () => {
 			expect(raw.toolConfig).toBeUndefined();
 		});
 
-		it("multiple tools with cache messages — cachePoint on all tools", () => {
+		it("multiple tools with cache messages — cachePoint placed inside tools array", () => {
 			const { toBedrockRequest } = require("../bedrock/convert");
 			const input = {
 				params: {
@@ -247,10 +250,99 @@ describe("Bedrock developer and cache role mapping", () => {
 
 			const raw = toBedrockRequest(input);
 
-			// toolConfig should exist and have cachePoint
+			// toolConfig should have exactly one cachePoint, placed as the last
+			// element of the tools array (per AWS Converse API schema — the
+			// ToolConfiguration shape has no top-level cachePoint field; cachePoint
+			// is a member of the Tool union and must live inside tools[]).
 			const toolConfig = raw.toolConfig as Record<string, unknown>;
-			expect(toolConfig.cachePoint).toEqual({ type: "default" });
-			expect(toolConfig.tools as Array<unknown>).toHaveLength(2);
+			expect(toolConfig.cachePoint).toBeUndefined();
+			const tools = toolConfig.tools as Array<Record<string, unknown>>;
+			expect(tools).toHaveLength(3);
+			expect(tools[0]).toHaveProperty("toolSpec");
+			expect(tools[1]).toHaveProperty("toolSpec");
+			expect(tools[2]).toEqual({ cachePoint: { type: "default" } });
+		});
+	});
+
+	// Regression test for: "A maximum of 4 blocks with cache_control may be
+	// provided. Found 5." from thread 89488a28 (2026-04-25). Root cause:
+	// cachePoint was being placed at toolConfig.cachePoint (an invalid API
+	// field — ToolConfiguration has no cachePoint member), causing Bedrock
+	// to forward cache_control on multiple tools to Anthropic and exceed
+	// the 4-block limit.
+	describe("Bedrock cachePoint stays within the 4-block Claude limit", () => {
+		it("cachePoint is never placed as a direct toolConfig field", () => {
+			const { toBedrockRequest } = require("../bedrock/convert");
+			const input = {
+				params: {
+					messages: [
+						{ role: "user", content: "Can you review the thinking fixes?" },
+						{ role: "cache", content: "" },
+						{ role: "developer", content: "volatile enrichment content" },
+					],
+					system: "You are a helpful assistant.",
+					tools: Array.from({ length: 8 }, (_, i) => ({
+						type: "function" as const,
+						function: {
+							name: `tool_${i}`,
+							description: `Tool ${i}`,
+							parameters: { type: "object", properties: {} },
+						},
+					})),
+				},
+				defaultModel: "global.anthropic.claude-opus-4-7",
+			};
+
+			const raw = toBedrockRequest(input);
+			const toolConfig = raw.toolConfig as Record<string, unknown>;
+
+			// ToolConfiguration schema (AWS SDK @aws-sdk/client-bedrock-runtime):
+			//   interface ToolConfiguration { tools: Tool[]; toolChoice?: ToolChoice; }
+			// cachePoint is NOT a member of ToolConfiguration; it's a Tool union
+			// member and must be placed as an element inside the tools array.
+			expect(toolConfig.cachePoint).toBeUndefined();
+		});
+
+		it("total cachePoint count stays within Claude's 4-block cache_control limit", () => {
+			const { toBedrockRequest } = require("../bedrock/convert");
+			const input = {
+				params: {
+					messages: [
+						{ role: "user", content: "Can you review the thinking fixes?" },
+						{ role: "cache", content: "" },
+						{ role: "developer", content: "volatile enrichment content" },
+					],
+					system: "You are a helpful assistant.",
+					tools: Array.from({ length: 8 }, (_, i) => ({
+						type: "function" as const,
+						function: {
+							name: `tool_${i}`,
+							description: `Tool ${i}`,
+							parameters: { type: "object", properties: {} },
+						},
+					})),
+				},
+				defaultModel: "global.anthropic.claude-opus-4-7",
+			};
+
+			const raw = toBedrockRequest(input);
+
+			// Count every cachePoint marker across the entire request. Claude
+			// maps each cachePoint to a cache_control block; the API limit is
+			// 4 per request.
+			let cachePointCount = 0;
+			const walk = (obj: unknown): void => {
+				if (Array.isArray(obj)) {
+					for (const item of obj) walk(item);
+				} else if (obj && typeof obj === "object") {
+					const rec = obj as Record<string, unknown>;
+					if ("cachePoint" in rec) cachePointCount++;
+					for (const v of Object.values(rec)) walk(v);
+				}
+			};
+			walk(raw);
+
+			expect(cachePointCount).toBeLessThanOrEqual(4);
 		});
 	});
 

@@ -325,14 +325,18 @@ function validateSystem(
 
 // ─── Tool-config check ──────────────────────────────────────────────────────
 
+type ValidatedToolElement =
+	| {
+			readonly toolSpec: {
+				readonly name: ToolName;
+				readonly description: string;
+				readonly inputSchema: { readonly json: Record<string, unknown> };
+			};
+	  }
+	| { readonly cachePoint: { readonly type: "default" } };
+
 interface ValidatedToolConfig {
-	readonly tools: readonly {
-		readonly toolSpec: {
-			readonly name: ToolName;
-			readonly description: string;
-			readonly inputSchema: { readonly json: Record<string, unknown> };
-		};
-	}[];
+	readonly tools: readonly ValidatedToolElement[];
 }
 
 function validateToolConfig(
@@ -352,21 +356,24 @@ function validateToolConfig(
 	}
 	const tools = (raw as { tools: unknown[] }).tools;
 	// Mutable accumulator; we cast to the readonly shape at return time.
-	const validated: {
-		readonly toolSpec: {
-			readonly name: ToolName;
-			readonly description: string;
-			readonly inputSchema: { readonly json: Record<string, unknown> };
-		};
-	}[] = [];
+	const validated: ValidatedToolElement[] = [];
 	for (let i = 0; i < tools.length; i++) {
 		const t = tools[i];
-		if (
-			typeof t !== "object" ||
-			t === null ||
-			!("toolSpec" in t) ||
-			typeof (t as { toolSpec: unknown }).toolSpec !== "object"
-		) {
+		if (typeof t !== "object" || t === null) {
+			errors.push(detail("invalid_tool_name", `tool at index ${i} missing toolSpec`));
+			continue;
+		}
+		// cachePoint member: { cachePoint: { type: "default" } }
+		if ("cachePoint" in t) {
+			const cp = (t as { cachePoint: unknown }).cachePoint;
+			if (typeof cp === "object" && cp !== null && (cp as { type: unknown }).type === "default") {
+				validated.push({ cachePoint: { type: "default" } });
+				continue;
+			}
+			errors.push(detail("invalid_tool_name", `tool at index ${i} has invalid cachePoint shape`));
+			continue;
+		}
+		if (!("toolSpec" in t) || typeof (t as { toolSpec: unknown }).toolSpec !== "object") {
 			errors.push(detail("invalid_tool_name", `tool at index ${i} missing toolSpec`));
 			continue;
 		}

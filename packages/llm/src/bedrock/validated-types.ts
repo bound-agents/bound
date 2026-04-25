@@ -205,13 +205,20 @@ export interface BedrockValidatedRequest {
 	 */
 	readonly additionalModelRequestFields?: AdditionalModelRequestFields;
 	readonly toolConfig?: {
-		readonly tools: readonly {
-			readonly toolSpec: {
-				readonly name: ToolName;
-				readonly description: string;
-				readonly inputSchema: { readonly json: Record<string, unknown> };
-			};
-		}[];
+		// The tools array may contain two kinds of entries, matching the AWS
+		// Converse API's `Tool` union: a `toolSpec` member (a regular tool
+		// definition) or a `cachePoint` member (the cache marker placed after
+		// some prefix of tools to cache their definitions).
+		readonly tools: readonly (
+			| {
+					readonly toolSpec: {
+						readonly name: ToolName;
+						readonly description: string;
+						readonly inputSchema: { readonly json: Record<string, unknown> };
+					};
+			  }
+			| { readonly cachePoint: { readonly type: "default" } }
+		)[];
 	};
 }
 
