@@ -129,6 +129,10 @@ const syncHealthMap = $derived.by(() => {
 	const map = new Map<string, "healthy" | "degraded" | "unreachable" | "unknown">();
 	if (!networkData) return map;
 	for (const host of networkData.hosts) {
+		if (isLocal(host)) {
+			map.set(host.site_id, "healthy");
+			continue;
+		}
 		const s = getSyncForPeer(host.site_id);
 		map.set(host.site_id, computeSyncHealth(s));
 	}
@@ -194,7 +198,7 @@ const syncMeshRows = $derived.by<MeshRow[]>(() => {
 					{@const online = isOnline(host)}
 					{@const isHub = networkData.hub?.hostName === host.host_name}
 					{@const syncState = getSyncForPeer(host.site_id)}
-					{@const health = computeSyncHealth(syncState)}
+					{@const health = isLocal(host) ? "healthy" : computeSyncHealth(syncState)}
 					{@const models = parseModels(host.models)}
 					{@const mcpTools = parseMcpTools(host.mcp_tools)}
 					{@const stateColor =
