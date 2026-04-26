@@ -151,18 +151,21 @@ describe("Message rendering components", () => {
 	});
 
 	describe("StatusBar", () => {
-		it("AC9.4: renders thread ID truncated", async () => {
+		it("renders the full thread ID without truncation so operators can copy it", async () => {
+			const fullId = "thread-12345678-very-long-id";
 			const { lastFrame } = render(
 				<StatusBar
-					threadId="thread-12345678-very-long-id"
+					threadId={fullId}
 					model="claude-opus"
 					connectionState="connected"
 					mcpServerCount={2}
 				/>,
 			);
-			const output = lastFrame();
-			// Thread ID should be present (truncated or full)
-			expect(output).toContain("thread");
+			const output = lastFrame() ?? "";
+			expect(output).toContain(fullId);
+			// The old truncation used "…" or "...". Neither should follow the id now.
+			expect(output).not.toContain(`${fullId.slice(0, 12)}...`);
+			expect(output).not.toMatch(/thread-12345678\s*\.{3}/);
 		});
 
 		it("AC9.4: renders model name", async () => {
