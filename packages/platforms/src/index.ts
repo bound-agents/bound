@@ -1,4 +1,4 @@
-export type { PlatformConnector } from "./connector.js";
+export type { DeliveryVerdict, PlatformConnector } from "./connector.js";
 export { PlatformLeaderElection } from "./leader-election.js";
 export { PlatformConnectorRegistry } from "./registry.js";
 export { DiscordClientManager } from "./connectors/discord-client-manager.js";

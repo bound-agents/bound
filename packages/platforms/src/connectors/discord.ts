@@ -16,8 +16,27 @@ import {
 	type User,
 	formatFileAttachment,
 } from "@bound/shared";
-import type { PlatformConnector } from "../connector.js";
+import type { DeliveryVerdict, PlatformConnector } from "../connector.js";
 import type { DiscordClientManager } from "./discord-client-manager.js";
+
+/**
+ * Developer-role nudge text enqueued when verifyDelivery returns "missing".
+ * Factual framing ("the user did not see your response") rather than scolding,
+ * with an explicit permission to stay silent on the retry turn.
+ */
+const DISCORD_DELIVERY_RETRY_NUDGE =
+	"[Delivery retry] Your previous response did not reach the user on Discord. " +
+	"The user only sees content emitted via the `discord_send_message` tool. " +
+	"If you intend to reply, call `discord_send_message` now. " +
+	"If you intend to stay silent this turn, produce no output and do not call any tool — " +
+	"your silence will be respected and you will not be nudged again for this turn.";
+
+/**
+ * Metadata key used on a developer-role nudge message to mark it as a
+ * platform_delivery_retry tombstone. verifyDelivery treats any message
+ * with this key present in `messages.metadata` as "nudge already issued."
+ */
+const DISCORD_RETRY_METADATA_KEY = "discord_platform_delivery_retry";
 
 // Discord.js types only — imported dynamically in connect() to avoid hard dep at module load
 type DiscordMessage = import("discord.js").Message;
@@ -154,6 +173,99 @@ export class DiscordConnector implements PlatformConnector {
 
 	onLoopComplete(threadId: string): void {
 		this.stopTyping(threadId);
+	}
+
+	/**
+	 * Decide whether the current turn actually reached the Discord user.
+	 *
+	 * - `delivered`: a `discord_send_message` tool_call in this turn has a
+	 *   matching successful tool_result (content starts with "sent"). The
+	 *   execute() closure returns exactly "sent" on success.
+	 * - `intentional-silence`: a prior delivery-retry nudge (message with
+	 *   `discord_platform_delivery_retry` in metadata) sits between the most
+	 *   recent user trigger and the start of this turn. The agent has already
+	 *   been told the user cannot see plain text; respect the silence.
+	 * - `missing`: otherwise — the turn terminated without a send and no
+	 *   nudge has been issued yet. `nudge` is the developer-role message
+	 *   text the caller should enqueue as a notification.
+	 */
+	async verifyDelivery(threadId: string, turnStartAt: string): Promise<DeliveryVerdict> {
+		// 1. Did any discord_send_message call succeed in this turn?
+		//    We join tool_call to tool_result via the tool_use id embedded in
+		//    the tool_call's JSON content blocks. tool_result rows store the
+		//    tool_use id in their `tool_name` column (a historical naming
+		//    wrinkle — see agent-loop.ts:1463).
+		const toolCalls = this.db
+			.query<{ content: string }, [string, string]>(
+				"SELECT content FROM messages WHERE thread_id = ? AND role = 'tool_call' AND created_at > ? AND deleted = 0",
+			)
+			.all(threadId, turnStartAt);
+
+		const sendToolUseIds: string[] = [];
+		for (const row of toolCalls) {
+			try {
+				const blocks = JSON.parse(row.content) as Array<{
+					type: string;
+					id?: string;
+					name?: string;
+				}>;
+				if (!Array.isArray(blocks)) continue;
+				for (const block of blocks) {
+					if (block.type === "tool_use" && block.name === "discord_send_message" && block.id) {
+						sendToolUseIds.push(block.id);
+					}
+				}
+			} catch {
+				// Non-JSON tool_call content (legacy or synthetic) — skip.
+			}
+		}
+
+		for (const toolUseId of sendToolUseIds) {
+			const result = this.db
+				.query<{ content: string }, [string, string]>(
+					"SELECT content FROM messages WHERE thread_id = ? AND role = 'tool_result' AND tool_name = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+				)
+				.get(threadId, toolUseId);
+			if (result?.content.startsWith("sent")) {
+				return { kind: "delivered" };
+			}
+		}
+
+		// 2. Has a delivery-retry nudge already been issued in the current
+		//    conversation window? Window = from the most recent user message
+		//    (or earlier if none exists) up to turnStartAt, exclusive of this
+		//    turn itself. If any message in that window carries the retry
+		//    metadata key, the agent has been told once; respect silence.
+		const lastUserMsg = this.db
+			.query<{ created_at: string }, [string]>(
+				"SELECT created_at FROM messages WHERE thread_id = ? AND role = 'user' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+			)
+			.get(threadId);
+		const windowStart = lastUserMsg?.created_at ?? "";
+
+		const priorNudge = this.db
+			.query<{ id: string }, [string, string, string]>(
+				"SELECT id FROM messages WHERE thread_id = ? AND created_at > ? AND created_at < ? AND metadata IS NOT NULL AND deleted = 0",
+			)
+			.all(threadId, windowStart, turnStartAt);
+
+		for (const row of priorNudge) {
+			const meta = this.db
+				.query<{ metadata: string | null }, [string]>("SELECT metadata FROM messages WHERE id = ?")
+				.get(row.id);
+			if (!meta?.metadata) continue;
+			try {
+				const parsed = JSON.parse(meta.metadata) as Record<string, unknown>;
+				if (DISCORD_RETRY_METADATA_KEY in parsed) {
+					return { kind: "intentional-silence" };
+				}
+			} catch {
+				// Malformed metadata — ignore.
+			}
+		}
+
+		// 3. First terminal without a send — issue the nudge.
+		return { kind: "missing", nudge: DISCORD_DELIVERY_RETRY_NUDGE };
 	}
 
 	getPlatformTools(

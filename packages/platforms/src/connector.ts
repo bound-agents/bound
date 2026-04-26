@@ -1,6 +1,15 @@
 import type { ToolDefinition } from "@bound/llm";
 
 /**
+ * Post-loop delivery verdict returned by `PlatformConnector.verifyDelivery`.
+ * Discriminated on `kind` so the caller can branch without type-checking.
+ */
+export type DeliveryVerdict =
+	| { kind: "delivered" }
+	| { kind: "intentional-silence" }
+	| { kind: "missing"; nudge: string };
+
+/**
  * A PlatformConnector integrates one external messaging platform (Discord, Slack, Telegram, etc.)
  * with the bound relay pipeline.
  *
@@ -75,6 +84,33 @@ export interface PlatformConnector {
 	 * Connectors can use this to clean up per-thread state like typing indicators.
 	 */
 	onLoopComplete?(threadId: string): void;
+
+	/**
+	 * Decide whether the agent's turn actually reached the user through this
+	 * platform. Called after the loop completes for a thread whose interface
+	 * matches this connector.
+	 *
+	 * @param threadId     - The thread the loop just processed.
+	 * @param turnStartAt  - ISO timestamp marking the start of this turn.
+	 *   Messages produced in this turn are newer than this.
+	 *
+	 * Return value semantics:
+	 *   - `delivered`            — the agent emitted at least one successful
+	 *     egress tool call (e.g. `discord_send_message`) in this turn; the
+	 *     reply reached the user and no follow-up is required.
+	 *   - `intentional-silence`  — the turn was triggered by a prior
+	 *     delivery-retry nudge, and the agent deliberately chose not to reply.
+	 *     Respect the silence; do not nudge again.
+	 *   - `missing`              — no egress tool call landed this turn and no
+	 *     nudge has been issued. `nudge` is the developer-role message text
+	 *     the caller should enqueue as a notification so the next turn has a
+	 *     chance to call the egress tool.
+	 *
+	 * Connectors without an explicit egress-tool contract (webhook stub,
+	 * auto-send platforms) need not implement this method — the absence is
+	 * treated as "delivered".
+	 */
+	verifyDelivery?(threadId: string, turnStartAt: string): Promise<DeliveryVerdict>;
 
 	getPlatformTools?(
 		threadId: string,
