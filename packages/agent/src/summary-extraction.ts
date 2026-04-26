@@ -667,6 +667,7 @@ export function buildVolatileEnrichment(
 				`SELECT COUNT(*) AS cnt FROM semantic_memory m
 				 WHERE m.deleted = 0
 				   AND m.modified_at > ?
+				   AND m.key NOT LIKE '_internal.%'
 				   AND (
 				     m.tier NOT IN ('detail', 'pinned', 'summary')
 				     OR (m.tier = 'detail' AND NOT EXISTS (
@@ -999,6 +1000,7 @@ export function loadRecencyEntries(
 			 LEFT JOIN tasks   t_src  ON m.source = t_src.id
 			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
 			 WHERE m.modified_at > ?
+			   AND m.key NOT LIKE '_internal.%'
 			   AND (
 			     m.tier NOT IN ('detail', 'pinned', 'summary')
 			     OR (m.tier = 'detail' AND NOT EXISTS (

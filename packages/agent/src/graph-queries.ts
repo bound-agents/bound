@@ -375,6 +375,7 @@ export function graphSeededRetrieval(
 			 FROM semantic_memory m
 			 WHERE deleted = 0
 			   AND key NOT LIKE '_policy%' AND key NOT LIKE '_pinned%' AND key NOT LIKE '_standing%' AND key NOT LIKE '_feedback%'
+			   AND key NOT LIKE '_internal.%'
 			   ${tierFilter}
 			   AND (${likeConditions.join(" OR ")})
 			 ORDER BY modified_at DESC
