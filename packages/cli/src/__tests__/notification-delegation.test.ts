@@ -111,7 +111,10 @@ describe("Notification delegation message_id invariant", () => {
 			.query("SELECT id, role, content FROM messages WHERE id = ?")
 			.get(delegationMessageId) as { id: string; role: string; content: string } | null;
 		expect(row).not.toBeNull();
-		expect(row?.role).toBe("system");
+		// Invariant #19: notifications are persisted with role='developer',
+		// not 'system' — 'system' is reserved for the LLM driver layer and
+		// rejected by insertRow for the messages table.
+		expect(row?.role).toBe("developer");
 		expect(row?.content).toContain("Heartbeat complete");
 	});
 

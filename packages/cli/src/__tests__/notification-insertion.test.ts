@@ -1,6 +1,8 @@
 /**
  * Test that notification messages can be inserted into the messages table
  * via insertRow — reproduces the exact path from server.ts handleThread.
+ * Notifications use role='developer' (Invariant #19: role='system' is
+ * reserved for the LLM driver layer's stable-prefix system prompt).
  */
 
 import type { Database } from "bun:sqlite";
@@ -60,7 +62,7 @@ describe("Notification message insertion", () => {
 		return threadId;
 	}
 
-	it("inserts a proactive notification as a user message via insertRow", () => {
+	it("inserts a proactive notification as a developer-role message via insertRow", () => {
 		const threadId = createThread();
 
 		// Step 1: Enqueue notification (exactly as notify command does)
@@ -89,7 +91,7 @@ describe("Notification message insertion", () => {
 			{
 				id: entry.message_id,
 				thread_id: threadId,
-				role: "system",
+				role: "developer",
 				content: notifText,
 				model_id: null,
 				tool_name: null,
@@ -110,7 +112,7 @@ describe("Notification message insertion", () => {
 
 		expect(msg).not.toBeNull();
 		expect(msg?.content).toContain("goose deep read completed");
-		expect(msg?.role).toBe("system");
+		expect(msg?.role).toBe("developer");
 	});
 
 	it("survives retry — notification message uses fresh UUID, not dispatch entry ID", () => {
@@ -137,7 +139,7 @@ describe("Notification message insertion", () => {
 			{
 				id: msgId1,
 				thread_id: threadId,
-				role: "system",
+				role: "developer",
 				content: notifText,
 				model_id: null,
 				tool_name: null,
@@ -166,7 +168,7 @@ describe("Notification message insertion", () => {
 			{
 				id: msgId2,
 				thread_id: threadId,
-				role: "system",
+				role: "developer",
 				content: notifText,
 				model_id: null,
 				tool_name: null,
@@ -185,7 +187,7 @@ describe("Notification message insertion", () => {
 		expect(msgs).toHaveLength(2);
 	});
 
-	it("inserts a task_complete notification as a user message", () => {
+	it("inserts a task_complete notification as a developer-role message", () => {
 		const threadId = createThread();
 
 		enqueueNotification(db, threadId, {
@@ -207,7 +209,7 @@ describe("Notification message insertion", () => {
 			{
 				id: entry.message_id,
 				thread_id: threadId,
-				role: "system",
+				role: "developer",
 				content: notifText,
 				model_id: null,
 				tool_name: null,

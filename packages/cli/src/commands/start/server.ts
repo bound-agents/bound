@@ -104,7 +104,10 @@ export function resolveDelegationMessageId(
 					{
 						id: messageId,
 						thread_id: threadId,
-						role: "system",
+						// Invariant #19: role='system' is reserved for the LLM driver layer.
+						// Injected system-generated context uses role='developer' so it
+						// survives Stage 2.5 of context assembly and reaches the agent.
+						role: "developer",
 						content: notifText,
 						model_id: null,
 						tool_name: null,
@@ -703,7 +706,9 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							webServer.emitToolCancel(threadExpired, threadId, "dispatch_expired");
 						}
 
-						// Inject interruption notice as system message
+						// Inject interruption notice as a developer-role message so
+						// Stage 2.5 of context assembly delivers it to the agent.
+						// Invariant #19 forbids role='system' in the messages table.
 						try {
 							insertRow(
 								appContext.db,
@@ -711,7 +716,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								{
 									id: randomUUID(),
 									thread_id: threadId,
-									role: "system",
+									role: "developer",
 									content: `[Client tool call expired] One or more client tool calls timed out after ${CLIENT_TOOL_CALL_TTL_MS / 1000}s without receiving results. The client may have disconnected permanently.`,
 									model_id: null,
 									tool_name: null,
