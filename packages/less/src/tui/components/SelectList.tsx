@@ -88,9 +88,16 @@ export function SelectList<T>({
 			{hasMoreAbove && <Text color="gray">↑ {start} more above</Text>}
 			{visible.map((item, i) => {
 				const absoluteIndex = start + i;
+				const rendered = renderItem(item, absoluteIndex === selectedIndex);
+				// Callers may return either a primitive (string/number) — in
+				// which case we wrap in <Text> for them — or a React element
+				// that already handles its own layout. Wrapping an existing
+				// <Box> in <Text> crashes Ink ("<Box> can’t be nested inside
+				// <Text>").
+				const needsTextWrap = typeof rendered === "string" || typeof rendered === "number";
 				return (
 					<Box key={`select-item-${absoluteIndex}`}>
-						<Text>{renderItem(item, absoluteIndex === selectedIndex)}</Text>
+						{needsTextWrap ? <Text>{rendered}</Text> : rendered}
 					</Box>
 				);
 			})}

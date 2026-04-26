@@ -222,6 +222,52 @@ describe("App Component", () => {
 			expect(output).toContain("thread-esc");
 		});
 
+		it("Esc returns to ChatView from /mcp view (no servers configured)", async () => {
+			const { lastFrame, stdin } = renderApp();
+			await tick();
+			stdin.write("/mcp");
+			await tick();
+			stdin.write("\r");
+			await tick();
+			expect(lastFrame() ?? "").toContain("MCP Server Configuration");
+
+			stdin.write(ESC);
+			await tick();
+			const output = lastFrame() ?? "";
+			expect(output).not.toContain("MCP Server Configuration");
+			expect(output).toContain("thread-esc");
+		});
+
+		it("Esc returns to ChatView from /mcp with configured servers", async () => {
+			mockMcpManager.getServerStates = vi.fn().mockReturnValue(
+				new Map([
+					["github", { status: "running" }],
+					["slack", { status: "stopped" }],
+				]),
+			);
+			const { lastFrame, stdin } = renderApp({
+				mcpConfigs: [
+					{ name: "github", transport: "stdio", command: "x", args: [], enabled: true },
+					{ name: "slack", transport: "stdio", command: "y", args: [], enabled: true },
+				],
+			});
+			await tick();
+			stdin.write("/mcp");
+			await tick();
+			stdin.write("\r");
+			await tick();
+			// The view must render (no "<Box> can’t be nested inside <Text>"
+			// crash) before Esc can possibly dismiss it.
+			expect(lastFrame() ?? "").toContain("MCP Server Configuration");
+			expect(lastFrame() ?? "").toContain("github");
+
+			stdin.write(ESC);
+			await tick();
+			const output = lastFrame() ?? "";
+			expect(output).not.toContain("MCP Server Configuration");
+			expect(output).toContain("thread-esc");
+		});
+
 		it("Esc returns to ChatView from /model picker with populated model list", async () => {
 			mockClient.listModels = vi
 				.fn()
