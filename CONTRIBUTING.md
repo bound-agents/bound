@@ -170,6 +170,8 @@ Accumulated the hard way — check here before writing a bug report.
 - **`bound-mcp` polling**: `polaris.bound_chat()` may return a prior turn's content if the new turn hasn't completed by poll time. The DB is ground truth — check the `messages` table directly when debugging.
 - **bound CLI config dir**: defaults to `./config` (relative to cwd) and data to `./data`. Use `--config-dir` / `--data-dir` to override, or run from the directory where your config lives.
 - **Stale binaries**: `bun run build && cp dist/bound* ~/.local/bin/` is the install step. Running a stale compiled binary in one shell while iterating on source in another has burned us repeatedly. Check `bound --version` if behavior doesn't match source.
+- **`query` accepts PRAGMAs**: the agent `query` command allows `SELECT` plus a small read-only PRAGMA allowlist (`table_info`, `index_list`, `foreign_key_list`, `integrity_check`, etc.; see `SAFE_PRAGMA_ALLOWLIST` in `packages/agent/src/commands/query.ts`). The `PRAGMA x = y` assignment form is rejected regardless of name. Anything else (INSERT/UPDATE/DELETE/ATTACH/unknown PRAGMA) errors out. `LIMIT 1000` is still auto-appended to SELECTs but skipped for PRAGMAs.
+- **Thread `interface` tag**: POST `/api/threads` accepts an optional body `{ interface?: string }` (default `"web"`, regex `/^[a-z0-9-]+$/i`, ≤32 chars; 400 otherwise). The value lives in `threads.interface` and flows into the agent's volatile context as a platform tag. `isUserFacingInterface()` in `packages/cli/src/commands/start/server.ts` is the single gate for "should the agent see `platform: <name>`?" — currently allows everything except `scheduler` and `mcp`. Adding a new user-facing surface usually needs no code change beyond setting the tag on thread creation; adding a new system-driven surface means extending the filter. `BoundClient.createThread(options?: { interface?: string })` is the client-side counterpart — `boundless` sets `interface: "boundless"`.
 
 ## Recurring Checklists
 
@@ -182,6 +184,7 @@ Accumulated the hard way — check here before writing a bug report.
 5. Use only `insertRow` / `updateRow` / `softDelete` for writes — never raw SQL.
 6. Add migration logic if upgrading existing deployments (see `metrics-schema.ts` for the `turns` INTEGER→TEXT id migration as a template).
 7. Update `docs/design/sync-protocol.md` if the reducer behavior is non-obvious.
+8. Add the table to `SYNCED_TABLE_NAMES` in `packages/core/src/schema-introspection.ts` so `getSyncedTableSchemas()` exposes its columns in the agent's stable-prefix `## Database Schema` block. Tables not listed there are invisible to the `query` command's schema hint.
 
 ### Adding a config field
 
