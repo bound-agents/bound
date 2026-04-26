@@ -54,7 +54,9 @@ export async function resolveThreadId(
 		const thread = await client.getThread(attachArg);
 		return thread.id;
 	}
-	const thread = await client.createThread();
+	// Tag new threads as `boundless` so the remote bound daemon can inject
+	// the right platform context into the agent's volatile state.
+	const thread = await client.createThread({ interface: "boundless" });
 	return thread.id;
 }
 

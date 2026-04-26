@@ -5,6 +5,7 @@ export { BoundClient, BoundNotRunningError, BoundApiError } from "./client.js";
 export type {
 	ThreadListEntry,
 	ThreadStatus,
+	CreateThreadOptions,
 	SendMessageOptions,
 	RedactMessageResult,
 	RedactThreadResult,

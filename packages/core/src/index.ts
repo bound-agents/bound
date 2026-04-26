@@ -1,6 +1,11 @@
 export { createDatabase, getSiteId } from "./database";
 export { applySchema } from "./schema";
 export {
+	getSyncedTableSchemas,
+	type ColumnInfo,
+	type TableSchemaInfo,
+} from "./schema-introspection";
+export {
 	createChangeLogEntry,
 	setChangelogEventBus,
 	withChangeLog,

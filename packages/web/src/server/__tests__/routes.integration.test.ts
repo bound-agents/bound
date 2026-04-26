@@ -31,6 +31,56 @@ describe("API Routes", () => {
 		});
 	});
 
+	describe("POST /api/threads - interface option", () => {
+		it("defaults interface to 'web' when body is empty", async () => {
+			const request = new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({}),
+			});
+			const response = await app.fetch(request);
+			const thread = await response.json();
+
+			expect(response.status).toBe(201);
+			expect(thread.interface).toBe("web");
+		});
+
+		it("accepts explicit interface value from request body", async () => {
+			const request = new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ interface: "boundless" }),
+			});
+			const response = await app.fetch(request);
+			const thread = await response.json();
+
+			expect(response.status).toBe(201);
+			expect(thread.interface).toBe("boundless");
+		});
+
+		it("rejects interface values that aren't alphanumeric/dash tokens", async () => {
+			const request = new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ interface: "web; DROP TABLE threads;" }),
+			});
+			const response = await app.fetch(request);
+
+			expect(response.status).toBe(400);
+		});
+
+		it("handles missing/non-JSON body by defaulting to 'web'", async () => {
+			const request = new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+			});
+			const response = await app.fetch(request);
+			const thread = await response.json();
+
+			expect(response.status).toBe(201);
+			expect(thread.interface).toBe("web");
+		});
+	});
+
 	describe("GET /api/threads - enhanced fields", () => {
 		it("includes messageCount for threads with messages", async () => {
 			// Create a thread via API

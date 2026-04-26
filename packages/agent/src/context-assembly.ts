@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { getSyncedTableSchemas } from "@bound/core";
 import type { BackendCapabilities, ContentBlock, LLMMessage } from "@bound/llm";
 import type { ContextDebugInfo, ContextSection, CrossThreadSource, Message } from "@bound/shared";
 import { countContentTokens, countTokens, safeSlice } from "@bound/shared";
@@ -1419,10 +1420,41 @@ Original output was too large for the context window. If you need the full conte
 	// Stage 6: ASSEMBLY
 	// Build stable system prompt as a string (returned separately, not in messages array).
 	// Drivers receive this via the `system` param, keeping it out of the message prefix.
-	const systemParts: string[] = [
-		"You are a helpful AI assistant. You have access to tools to help the user. " +
-			"Be concise and direct in your responses.",
-	];
+	const systemParts: string[] = [];
+
+	// Environment paragraph: explains what bound and boundless are so the
+	// agent has a grounded mental model of its runtime, its memory, and the
+	// user-facing surfaces it can be invoked from. Static / cache-friendly.
+	const environmentParagraph =
+		"**Environment.** You run inside **bound**, a persistent, model-agnostic personal agent " +
+		"daemon. Bound owns a local SQLite database that is the source of truth for your memory — " +
+		"semantic memory entries, thread summaries, activated skills, and advisories all persist " +
+		"across conversations, hosts, and user-facing surfaces, which is what lets you stay " +
+		"coherent with the user between sessions. You read and write that memory through commands " +
+		"like `memorize`, `memory`, and `query` (read-only SQL and read-only PRAGMAs). Users can " +
+		"reach you through several surfaces: the bound web UI, Discord (via a platform " +
+		"connector), or **boundless** — a terminal coding client that connects to a bound daemon " +
+		"over WebSocket and renders your responses in an Ink-based TUI. Boundless provides its " +
+		"own filesystem tools (`boundless_read`, `boundless_write`, `boundless_edit`, " +
+		"`boundless_bash`) scoped to the user's local working directory; those tools are only " +
+		"present when the current thread is a boundless thread. You may also be invoked " +
+		"indirectly through `bound-mcp`, a stdio MCP proxy that forwards a single `bound_chat` " +
+		"tool call into a bound thread. Which surface originated the current turn is noted in " +
+		"the volatile context that follows this prompt.";
+	const concurrencyParagraph =
+		"**Concurrency model.** Each conversation is a *thread*, and bound can run many threads " +
+		"in parallel — including threads you spawn for yourself. Use `schedule` to fan work out " +
+		"into sibling threads (deferred `--in`, recurring `--every`, or event-driven `--on`); " +
+		"each scheduled task runs in its own thread with its own context window, so they don't " +
+		"consume this conversation's budget. Use `--after` to chain dependencies, `--inject " +
+		"results|all|file` to feed a child thread's output back into this one, and `await` to " +
+		"block on specific task IDs when you need their results before proceeding. Treat " +
+		"parallel threads as a primary tool for long-running research, exploration, and " +
+		"multi-step plans: fan out first, synthesize later. This is an implementation detail of " +
+		"how you operate — don't narrate it to the user unless they ask how the work is being " +
+		"done.";
+	systemParts.push(environmentParagraph);
+	systemParts.push(concurrencyParagraph);
 
 	// Load and inject persona if it exists
 	const persona = loadPersona(configDir);
@@ -1447,6 +1479,37 @@ Original output was too large for the context window. If you need the full conte
 		`### Host Identity\nHost: ${hostName || "unknown"}\nSite ID: ${siteId || "unknown"}`,
 	];
 	systemParts.push(orientationLines.join("\n"));
+
+	// Live schema block: lists every synced table and its columns by
+	// introspecting the DB with PRAGMA table_info. Read-only; part of the
+	// stable prefix (cached once per cold assembly).
+	try {
+		const schemaInfos = getSyncedTableSchemas(db);
+		const schemaLines: string[] = [
+			"## Database Schema",
+			"",
+			"Synced tables available via the `query` command:",
+			"",
+		];
+		for (const info of schemaInfos) {
+			// Skip tables that aren't materialized in this DB yet (e.g.,
+			// partial test setup that skipped applyMetricsSchema). Emitting
+			// a table header with zero columns is noise.
+			if (info.columns.length === 0) continue;
+			schemaLines.push(`### ${info.table}`);
+			for (const col of info.columns) {
+				const parts: string[] = [col.name, col.type || "TEXT"];
+				if (col.pk) parts.push("PK");
+				if (col.notnull) parts.push("NOT NULL");
+				schemaLines.push(`- ${parts.join(" ")}`);
+			}
+			schemaLines.push("");
+		}
+		systemParts.push(schemaLines.join("\n").trimEnd());
+	} catch (_error) {
+		// Non-fatal: if introspection fails (e.g., synthetic test DB missing
+		// a table), skip the schema block rather than blocking assembly.
+	}
 
 	const assembled: LLMMessage[] = [];
 
@@ -1803,10 +1866,16 @@ Original output was too large for the context window. If you need the full conte
 	// schema size.
 	const suffixTokensForBudget = suffixContent ? countTokens(suffixContent) : 0;
 	const toolTokensForBudget = params.toolTokenEstimate ?? 0;
+	// The stable system prompt is sent to the LLM separately from
+	// `assembled` but still counts against the context window on the
+	// backend. Including it here keeps the budget gate honest regardless of
+	// stable-prefix size.
+	const stablePrefixTokensForBudget = countTokens(systemPrompt);
 	const totalTokens =
 		assembled.reduce((sum, msg) => {
 			return sum + countContentTokens(msg.content);
 		}, 0) +
+		stablePrefixTokensForBudget +
 		suffixTokensForBudget +
 		toolTokensForBudget;
 
@@ -1843,12 +1912,21 @@ Original output was too large for the context window. If you need the full conte
 		const historyMessages = assembled.filter((m) => m.role !== "system");
 
 		if (historyMessages.length > 0) {
-			const systemTokens = systemMessages.reduce(
+			const systemMsgTokens = systemMessages.reduce(
 				(sum, m) => sum + countContentTokens(m.content),
 				0,
 			);
+			// The stable system prompt (environment + concurrency + persona +
+			// orientation + schema + skill) is returned separately from
+			// `assembled` but still consumes window budget for the LLM call.
+			// Fold its token cost into the truncation calculation so the 15%
+			// headroom invariant holds regardless of stable-prefix size.
+			const stablePrefixTokens = countTokens(systemPrompt);
 			const toolTokens = params.toolTokenEstimate ?? 0;
-			const historyBudget = Math.max(0, truncationTarget - systemTokens - toolTokens);
+			const historyBudget = Math.max(
+				0,
+				truncationTarget - systemMsgTokens - stablePrefixTokens - toolTokens,
+			);
 
 			// Walk backwards from end, accumulating tokens until we exceed budget
 			let accumulatedTokens = 0;

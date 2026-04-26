@@ -137,6 +137,20 @@ export function resolveDelegationMessageId(
 	return { delegationMessageId, insertedMessageIds };
 }
 
+/**
+ * Returns true when a thread's `interface` value maps to a user-facing
+ * surface that should be exposed to the agent as `platform: <name>` in the
+ * volatile context. False for system-initiated interfaces (scheduler, mcp)
+ * and for missing/empty values.
+ *
+ * Exported for unit testing.
+ */
+export function isUserFacingInterface(threadInterface: string | null | undefined): boolean {
+	if (!threadInterface) return false;
+	if (threadInterface === "scheduler" || threadInterface === "mcp") return false;
+	return true;
+}
+
 export interface ServerResult {
 	webServer: Awaited<ReturnType<typeof createWebServer>> | null;
 	syncServer: Awaited<ReturnType<typeof createSyncServer>> | null;
@@ -427,35 +441,43 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							);
 							await dispatchDelegation(delegationTarget, thread_id, delegationMessageId, userId);
 						} else {
-							// Inject platform tools for non-web threads so the agent can
-							// send messages via discord_send_message, etc.
+							// Derive the platform tag and (optionally) platform tools for
+							// this thread. The tag tells the agent which surface the
+							// current turn originated from — web, boundless, discord, etc.
+							// — which is injected into the volatile context as
+							// "## Platform Context: <name>". Scheduler- and MCP-driven
+							// threads have no user-facing surface and stay filtered out.
+							//
+							// Platform tools (e.g., discord_send_message) are only
+							// injected when a matching platform connector exists. Web
+							// and boundless are user-facing surfaces but have no
+							// server-side connector — the agent still learns their
+							// identity via the platform tag.
 							const threadInterface = threadRow?.interface;
 							let platformConfig:
 								| { platform: string; platformTools: AgentLoopConfig["platformTools"] }
 								| undefined;
-							if (
-								threadInterface &&
-								threadInterface !== "web" &&
-								threadInterface !== "scheduler" &&
-								threadInterface !== "mcp" &&
-								platformRegistry
-							) {
-								const connector = (
-									platformRegistry as {
-										getConnector?(p: string): {
-											getPlatformTools?(
-												threadId: string,
-												readFileFn?: (path: string) => Promise<Uint8Array>,
-											): AgentLoopConfig["platformTools"];
-										} | null;
+							if (threadInterface && isUserFacingInterface(threadInterface)) {
+								let platformTools: AgentLoopConfig["platformTools"] | undefined;
+								if (platformRegistry) {
+									const connector = (
+										platformRegistry as {
+											getConnector?(p: string): {
+												getPlatformTools?(
+													threadId: string,
+													readFileFn?: (path: string) => Promise<Uint8Array>,
+												): AgentLoopConfig["platformTools"];
+											} | null;
+										}
+									).getConnector?.(threadInterface);
+									if (connector?.getPlatformTools) {
+										platformTools = connector.getPlatformTools(thread_id);
 									}
-								).getConnector?.(threadInterface);
-								if (connector?.getPlatformTools) {
-									platformConfig = {
-										platform: threadInterface,
-										platformTools: connector.getPlatformTools(thread_id),
-									};
 								}
+								platformConfig = {
+									platform: threadInterface,
+									platformTools,
+								};
 							}
 
 							// Resolve client tools from WS connections subscribed to this thread

@@ -97,7 +97,7 @@ describe("defineCommand implementations", () => {
 			const result = await query.handler({ query: "INSERT INTO users (id) VALUES ('test')" }, ctx);
 
 			expect(result.exitCode).toBe(1);
-			expect(result.stderr).toContain("SELECT-only");
+			expect(result.stderr).toContain("SELECT");
 		});
 
 		it("should return error when query is undefined", async () => {

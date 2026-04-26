@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, createDatabase } from "@bound/core";
+import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import type { CommandDefinition } from "@bound/sandbox";
 import { countContentTokens } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
@@ -33,6 +33,7 @@ describe("Context Assembly Pipeline", () => {
 		// Create database and apply schema
 		db = createDatabase(dbPath);
 		applySchema(db);
+		applyMetricsSchema(db);
 
 		// Create a test user and thread
 		userId = randomUUID();
@@ -87,8 +88,37 @@ describe("Context Assembly Pipeline", () => {
 
 			expect(typeof result.systemPrompt).toBe("string");
 			expect(result.systemPrompt.length).toBeGreaterThan(0);
-			// Should contain the base helpful assistant prompt
-			expect(result.systemPrompt).toContain("helpful AI assistant");
+			// Base block leads with the Environment paragraph
+			expect(result.systemPrompt).toContain("Environment.");
+			expect(result.systemPrompt).toContain("bound");
+		});
+
+		it("systemPrompt explains bound and boundless surfaces", () => {
+			const result = assembleContext({ db, threadId, userId });
+
+			expect(result.systemPrompt).toContain("boundless");
+			// Mentions the bound-mcp proxy so the agent knows about that path too
+			expect(result.systemPrompt).toContain("bound-mcp");
+			// Points the agent at the volatile context for the per-turn platform tag
+			expect(result.systemPrompt).toContain("volatile context");
+		});
+
+		it("systemPrompt describes the concurrency model", () => {
+			const result = assembleContext({ db, threadId, userId });
+
+			expect(result.systemPrompt).toContain("Concurrency model");
+			expect(result.systemPrompt).toContain("schedule");
+			expect(result.systemPrompt).toContain("await");
+		});
+
+		it("systemPrompt includes a Database Schema block with synced tables", () => {
+			const result = assembleContext({ db, threadId, userId });
+
+			expect(result.systemPrompt).toContain("## Database Schema");
+			// Samples: one LWW table, one append-only-ish table, the turns obs table
+			expect(result.systemPrompt).toContain("### users");
+			expect(result.systemPrompt).toContain("### messages");
+			expect(result.systemPrompt).toContain("### turns");
 		});
 
 		it("messages array contains no system-role messages", () => {
@@ -4349,7 +4379,10 @@ This skill reviews pull requests.`;
 				db: debugTestDb,
 				threadId: testThreadId,
 				userId: debugTestUserId,
-				contextWindow: 2000, // Small window to force heavy truncation
+				// Window sized to force truncation while still fitting the
+				// stable prefix (environment + concurrency paragraphs +
+				// orientation + schema block ≈ 2-3k tokens).
+				contextWindow: 4000,
 			});
 
 			expect(result.debug.truncated).toBeGreaterThan(0);
@@ -4525,12 +4558,12 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			// Insert 50 messages (alternating user/assistant, ~60 chars each ≈ 15 tokens).
-			// 50 × 15 = 750 history tokens. System overhead ≈ 300-500 tokens.
-			// Absolute timestamp annotations add ~15 chars each (e.g. "[Feb 1, 00:00]").
-			// With contextWindow: 1000, truncation fires. Token-aware truncation
-			// should keep ~20 messages, well over the old hardcoded 10.
-			for (let i = 0; i < 50; i++) {
+			// Insert 300 messages (alternating user/assistant, ~60 chars
+			// each ≈ 15 tokens). History ≈ 4500 tokens + stable prefix ≈
+			// 2-3k tokens ≫ 6000-token contextWindow, forcing truncation
+			// while still leaving room for WAY more than 10 short messages
+			// to survive.
+			for (let i = 0; i < 300; i++) {
 				const role = i % 2 === 0 ? "user" : "assistant";
 				const ts = new Date(nowBase.getTime() + i * 1000).toISOString();
 				db.run(
@@ -4553,15 +4586,21 @@ This skill reviews pull requests.`;
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
-				contextWindow: 1000,
+				// Window big enough to clear the stable prefix (environment +
+				// concurrency + orientation + schema ≈ 1.5k tokens) plus
+				// some short messages, but small enough that the full 100
+				// retrieved messages won't fit — so truncation fires while
+				// still leaving > 10 messages in the kept set.
+				contextWindow: 3000,
 			});
 
 			const historyMessages = messages.filter((m) => m.role !== "system");
 
-			// With token-aware truncation, budget for ~2000 tokens should keep
+			// With token-aware truncation, a reasonable budget should keep
 			// WAY more than 10 short messages. The old code always kept exactly 10.
 			expect(historyMessages.length).toBeGreaterThan(10);
-			// But it should still have truncated some (50 messages + system overhead > 2000)
+			// But it should still have truncated some (50 short messages push
+			// the total above the budget once the stable prefix is counted).
 			expect(debug.truncated).toBeGreaterThan(0);
 
 			// Clean up
@@ -5907,21 +5946,27 @@ This skill reviews pull requests.`;
 				);
 			}
 
-			// Without tool estimate: should NOT truncate (fits in 2000-token window)
+			// Window is sized to fit both the stable prefix (environment +
+			// concurrency + orientation + schema ≈ 1.5k tokens) and the
+			// ~800 tokens of message content without truncating. The tool
+			// estimate below is what should push it over the edge.
+			const contextWindow = 5000;
+
+			// Without tool estimate: should NOT truncate
 			const without = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
-				contextWindow: 2000,
+				contextWindow,
 			});
 
-			// With a 1500-token tool estimate: total exceeds window → must truncate
+			// With a 3000-token tool estimate: total exceeds window → must truncate
 			const withTools = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
-				contextWindow: 2000,
-				toolTokenEstimate: 1500,
+				contextWindow,
+				toolTokenEstimate: 3000,
 			});
 
 			expect(withTools.debug.truncated).toBeGreaterThan(without.debug.truncated);
@@ -6659,6 +6704,7 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		const dbPath = join(tmpDir, "test.db");
 		db = createDatabase(dbPath);
 		applySchema(db);
+		applyMetricsSchema(db);
 
 		userId = randomUUID();
 		threadId = randomUUID();
@@ -7370,9 +7416,14 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			expect(systemPrompt).toContain("atproto");
 			expect(systemPrompt).toContain("query");
 
-			// atproto must come before query (alphabetical sort)
-			const atprotoIndex = systemPrompt.indexOf("atproto");
-			const queryIndex = systemPrompt.indexOf("query");
+			// atproto must come before query in the Available Commands list
+			// (the static environment paragraph may mention `query` earlier, so
+			// we slice to the orientation section before comparing positions).
+			const orientationStart = systemPrompt.indexOf("### Available Commands");
+			expect(orientationStart).toBeGreaterThanOrEqual(0);
+			const orientation = systemPrompt.slice(orientationStart);
+			const atprotoIndex = orientation.indexOf("atproto");
+			const queryIndex = orientation.indexOf("query");
 			expect(atprotoIndex < queryIndex).toBe(true);
 		});
 
@@ -7414,6 +7465,7 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			const dbPath = join(tmpDir, "test.db");
 			db = createDatabase(dbPath);
 			applySchema(db);
+			applyMetricsSchema(db);
 
 			userId = randomUUID();
 			threadId = randomUUID();
@@ -7581,6 +7633,7 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			const dbPath = join(tmpDir, "test.db");
 			db = createDatabase(dbPath);
 			applySchema(db);
+			applyMetricsSchema(db);
 
 			userId = randomUUID();
 			threadId = randomUUID();
@@ -7637,7 +7690,18 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			expect(result.systemPrompt).toContain("specialized technical assistant");
 			expect(result.systemPrompt).toContain("Orientation");
 
-			// Verify NO volatile content in systemPrompt
+			// Verify NO volatile content in systemPrompt. The Database Schema
+			// block lists synced table column names verbatim, some of which
+			// happen to contain substrings that are also volatile keywords
+			// (e.g., `no_quiescence` on the `tasks` table). The spirit of
+			// this check is about phrases like "truncated" or "Task wakeup"
+			// that only appear when volatile state leaks into the stable
+			// prefix, so we scope the search to content before the schema
+			// block.
+			const schemaHeaderIdx = result.systemPrompt.indexOf("## Database Schema");
+			const preSchema =
+				schemaHeaderIdx >= 0 ? result.systemPrompt.slice(0, schemaHeaderIdx) : result.systemPrompt;
+
 			const volatileKeywords = [
 				"earlier messages",
 				"truncat",
@@ -7650,7 +7714,7 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			];
 
 			for (const keyword of volatileKeywords) {
-				expect(result.systemPrompt.toLowerCase()).not.toContain(keyword.toLowerCase());
+				expect(preSchema.toLowerCase()).not.toContain(keyword.toLowerCase());
 			}
 		});
 

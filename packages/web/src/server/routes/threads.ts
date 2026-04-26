@@ -77,12 +77,43 @@ export function createThreadsRoutes(
 		}
 	});
 
-	app.post("/", (c) => {
+	app.post("/", async (c) => {
 		try {
+			// Parse optional body; callers may omit it or send `{}`. The only
+			// recognized field today is `interface`, which lets non-web
+			// clients (notably `boundless`) self-identify so the agent can
+			// inject the right platform context. Values must be a simple
+			// alphanumeric/dash token — the column feeds directly into the
+			// agent's volatile context and server-side routing checks.
+			let interfaceTag = "web";
+			let rawBody: unknown = null;
+			try {
+				rawBody = await c.req.json();
+			} catch {
+				// No body or non-JSON body — use defaults.
+			}
+			if (rawBody && typeof rawBody === "object" && "interface" in rawBody) {
+				const candidate = (rawBody as Record<string, unknown>).interface;
+				if (typeof candidate === "string") {
+					if (!/^[a-z0-9-]+$/i.test(candidate) || candidate.length > 32) {
+						return c.json(
+							{
+								error: "Invalid interface value",
+								details: "interface must match /^[a-z0-9-]+$/i and be <= 32 chars",
+							},
+							400,
+						);
+					}
+					interfaceTag = candidate;
+				}
+			}
+
 			const threadId = randomUUID();
 			const now = new Date().toISOString();
 
-			console.log(`[web] POST /api/threads - creating thread ${threadId}`);
+			console.log(
+				`[web] POST /api/threads - creating thread ${threadId} (interface=${interfaceTag})`,
+			);
 
 			const siteId = getSiteId(db);
 
@@ -99,7 +130,7 @@ export function createThreadsRoutes(
 				{
 					id: threadId,
 					user_id: webUserId,
-					interface: "web",
+					interface: interfaceTag,
 					host_origin: "localhost:3000",
 					color: nextColor,
 					title: "",

@@ -7,6 +7,7 @@ import type {
 	CancelResult,
 	ContextDebugTurn,
 	CreateMcpThreadResult,
+	CreateThreadOptions,
 	FileListEntry,
 	HostStatus,
 	MemoryGraphResponse,
@@ -330,11 +331,21 @@ export class BoundClient {
 		return this.fetchJson(`/api/threads${qs}`);
 	}
 
-	async createThread(): Promise<Thread> {
+	/**
+	 * Creates a new thread on the connected bound daemon. Callers may tag
+	 * the thread with an `interface` value (e.g., "boundless") so the agent
+	 * can inject the right platform context on every turn. Omitting the
+	 * option results in `interface: "web"`, preserving prior behavior.
+	 */
+	async createThread(options?: CreateThreadOptions): Promise<Thread> {
+		const body: Record<string, unknown> = {};
+		if (options?.interface) {
+			body.interface = options.interface;
+		}
 		return this.fetchJson("/api/threads", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({}),
+			body: JSON.stringify(body),
 		});
 	}
 

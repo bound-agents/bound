@@ -21,6 +21,17 @@ export interface ThreadStatus {
 	model: string | null;
 }
 
+// ---- Threads ----
+
+export interface CreateThreadOptions {
+	/**
+	 * Optional interface/surface tag for the new thread. Must match
+	 * `/^[a-z0-9-]+$/i` and be <= 32 chars. Defaults to `"web"` on the
+	 * server when omitted. Typical values: `"web"`, `"boundless"`.
+	 */
+	interface?: string;
+}
+
 // ---- Messages ----
 
 export interface SendMessageOptions {
