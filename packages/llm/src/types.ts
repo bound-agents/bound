@@ -186,6 +186,13 @@ export interface BackendConfig {
 	model: string;
 	baseUrl?: string;
 	contextWindow?: number;
+	/**
+	 * Per-backend cap on `maxOutputTokens` forwarded to the provider. When
+	 * set, the agent-loop clamps the default via
+	 * `min(maxOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS)` so lower caps (e.g.
+	 * Nova Pro = 10_000) don't trigger "max_tokens exceeds model limit of N".
+	 */
+	maxOutputTokens?: number;
 	[key: string]: unknown;
 }
 

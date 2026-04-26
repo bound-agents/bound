@@ -37,6 +37,7 @@ import {
 import {
 	buildCommandOutput,
 	calculateTurnCost,
+	clampMaxOutputTokens,
 	convertDeltaMessages,
 	deriveCapabilityRequirements,
 	getResolvedModelId,
@@ -835,7 +836,10 @@ export class AgentLoop {
 										messages: llmMessages,
 										system: systemPrompt || undefined,
 										tools: mergedTools,
-										max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+										max_tokens: clampMaxOutputTokens(
+											DEFAULT_MAX_OUTPUT_TOKENS,
+											resolution.maxOutputTokens,
+										),
 										thinking: resolution.thinkingConfig,
 										effort: resolution.effort,
 										signal: this.config.abortSignal,

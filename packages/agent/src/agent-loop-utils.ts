@@ -190,6 +190,28 @@ export function getResolvedModelId(resolution: ModelResolution | null, fallback?
 	return fallback ?? "unknown";
 }
 
+/**
+ * Reconciles the agent-loop default `max_tokens` budget with a per-backend
+ * cap configured in `model_backends.json#max_output_tokens`. Returns
+ * `min(defaultMax, cap)` when `cap` is a positive integer, otherwise
+ * returns `defaultMax` unchanged.
+ *
+ * Exists because some Bedrock models reject the default
+ * `DEFAULT_MAX_OUTPUT_TOKENS` (16_384) with
+ * `max_tokens exceeds model limit of N` — notably Nova Pro (N=10_000).
+ * The backend cap is treated as an upper bound only: if an operator
+ * misconfigures a cap above the default, the default still wins so the
+ * per-turn budget can never be raised behind the loop's back.
+ *
+ * Exported so both the agent-loop (local path) and the relay-processor
+ * (receiver side) can reuse a single definition — defence-in-depth against
+ * stale requester payloads that still carry the old default.
+ */
+export function clampMaxOutputTokens(defaultMax: number, cap: number | undefined): number {
+	if (typeof cap !== "number" || !Number.isFinite(cap) || cap <= 0) return defaultMax;
+	return Math.min(defaultMax, Math.floor(cap));
+}
+
 // ---------------------------------------------------------------------------
 // Capability requirement detection
 // ---------------------------------------------------------------------------

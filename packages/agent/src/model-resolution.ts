@@ -22,6 +22,11 @@ export type ModelResolution =
 			thinkingConfig?: ChatParams["thinking"];
 			// Top-level output_config.effort — depth control for Opus 4.7.
 			effort?: ChatParams["effort"];
+			// Per-backend cap on `maxOutputTokens`. When set, the agent-loop
+			// takes `min(maxOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS)` so
+			// backends with tight limits (e.g. Nova Pro = 10_000) don't 400
+			// with "max_tokens exceeds model limit of N".
+			maxOutputTokens?: number;
 	  }
 	| { kind: "remote"; hosts: EligibleHost[]; modelId: string; reResolved?: boolean }
 	| {
@@ -246,6 +251,7 @@ export function resolveModel(
 							reResolved: true,
 							thinkingConfig: modelRouter.getThinkingConfig(altId),
 							effort: modelRouter.getEffort(altId),
+							maxOutputTokens: modelRouter.getMaxOutputTokens(altId),
 						};
 					}
 				}
@@ -281,6 +287,7 @@ export function resolveModel(
 			modelId: effectiveModelId,
 			thinkingConfig: modelRouter.getThinkingConfig(effectiveModelId),
 			effort: modelRouter.getEffort(effectiveModelId),
+			maxOutputTokens: modelRouter.getMaxOutputTokens(effectiveModelId),
 		};
 	}
 

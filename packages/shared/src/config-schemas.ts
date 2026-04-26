@@ -105,6 +105,12 @@ const modelBackendSchema = z
 		capabilities: backendCapabilitiesOverrideSchema.optional(),
 		thinking: thinkingConfigSchema.optional(),
 		effort: effortSchema.optional(),
+		// Per-backend cap on `maxOutputTokens` forwarded to the provider.
+		// Some Bedrock models reject DEFAULT_MAX_OUTPUT_TOKENS (16_384) with
+		// "max_tokens exceeds model limit of N" — e.g. Nova Pro caps at 10_000.
+		// The agent-loop takes `min(max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS)`
+		// at call time so lowering it is always safe.
+		max_output_tokens: z.number().int().positive().optional(),
 	})
 	.strict();
 

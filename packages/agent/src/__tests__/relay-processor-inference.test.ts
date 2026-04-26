@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { applySchema } from "@bound/core";
-import type { LLMBackend, StreamChunk } from "@bound/llm";
+import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import type { Logger, RelayInboxEntry, RelayOutboxEntry } from "@bound/shared";
 import { RelayProcessor } from "../relay-processor";
@@ -11,6 +11,9 @@ import { waitFor } from "./helpers";
 class MockBackend implements LLMBackend {
 	private responses: Array<() => AsyncGenerator<StreamChunk>> = [];
 	private callCount = 0;
+	/** Parameters captured from each chat() invocation — used by tests that
+	 * assert the relay-processor's clamping / aliasing behaviour. */
+	public capturedParams: ChatParams[] = [];
 
 	pushResponse(gen: () => AsyncGenerator<StreamChunk>) {
 		this.responses.push(gen);
@@ -33,7 +36,8 @@ class MockBackend implements LLMBackend {
 		});
 	}
 
-	async *chat() {
+	async *chat(params: ChatParams) {
+		this.capturedParams.push(params);
 		const gen = this.responses[this.callCount];
 		this.callCount++;
 		if (gen) {
@@ -956,5 +960,165 @@ describe("RelayProcessor - executeInference", () => {
 		// Should have text chunks
 		const textChunks = allChunks.filter((c) => c.type === "text");
 		expect(textChunks.length).toBeGreaterThan(0);
+	});
+
+	it("clamps payload.max_tokens to the local backend's maxOutputTokens cap", async () => {
+		// Defense-in-depth: a stale requester binary (or a hub routing
+		// decision made against a peer's old capability record) can still
+		// send DEFAULT_MAX_OUTPUT_TOKENS (16_384) for a model whose
+		// provider rejects it with "max_tokens exceeds model limit of N".
+		// The receiver-side clamp takes min(payload.max_tokens, localCap)
+		// so Nova Pro's 10_000 ceiling is honored regardless of what the
+		// requester sent.
+		const mockBackend = new MockBackend();
+		mockBackend.setTextResponse("ok");
+
+		const backends = new Map<string, LLMBackend>();
+		backends.set("nova-pro", mockBackend);
+		const backendConfigs = new Map<string, import("@bound/llm").BackendConfig>();
+		backendConfigs.set("nova-pro", {
+			id: "nova-pro",
+			provider: "bedrock",
+			model: "us.amazon.nova-pro-v1:0",
+			maxOutputTokens: 8192,
+		});
+		const mockRouter = new ModelRouter(backends, "nova-pro", undefined, undefined, backendConfigs);
+
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			mockRouter,
+			new Set(["requester-site"]),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+
+		const now = new Date();
+		const streamId = randomUUID();
+		const inboxEntry: RelayInboxEntry = {
+			id: randomUUID(),
+			source_site_id: "requester-site",
+			kind: "inference",
+			ref_id: null,
+			idempotency_key: null,
+			stream_id: streamId,
+			payload: JSON.stringify({
+				model: "nova-pro",
+				messages: [{ role: "user" as const, content: "hi" }],
+				max_tokens: 16384, // Default from a pre-fix requester
+				timeout_ms: 5000,
+			}),
+			expires_at: new Date(now.getTime() + 60000).toISOString(),
+			received_at: now.toISOString(),
+			processed: 0,
+		};
+
+		db.run(
+			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				inboxEntry.id,
+				inboxEntry.source_site_id,
+				inboxEntry.kind,
+				inboxEntry.ref_id,
+				inboxEntry.idempotency_key,
+				inboxEntry.stream_id,
+				inboxEntry.payload,
+				inboxEntry.expires_at,
+				inboxEntry.received_at,
+				inboxEntry.processed,
+			],
+		);
+
+		const handle = processor.start(10);
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+						)
+						.get(streamId) as { n: number } | null
+				)?.n > 0,
+			{ message: "stream_end not written for clamp test" },
+		);
+		handle.stop();
+
+		expect(mockBackend.capturedParams).toHaveLength(1);
+		expect(mockBackend.capturedParams[0].max_tokens).toBe(8192);
+	});
+
+	it("leaves payload.max_tokens untouched when no local cap is configured", async () => {
+		const mockBackend = new MockBackend();
+		mockBackend.setTextResponse("ok");
+
+		const backends = new Map<string, LLMBackend>();
+		backends.set("opus", mockBackend);
+		const mockRouter = new ModelRouter(backends, "opus");
+
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			mockRouter,
+			new Set(["requester-site"]),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+
+		const now = new Date();
+		const streamId = randomUUID();
+		const inboxEntry: RelayInboxEntry = {
+			id: randomUUID(),
+			source_site_id: "requester-site",
+			kind: "inference",
+			ref_id: null,
+			idempotency_key: null,
+			stream_id: streamId,
+			payload: JSON.stringify({
+				model: "opus",
+				messages: [{ role: "user" as const, content: "hi" }],
+				max_tokens: 16384,
+				timeout_ms: 5000,
+			}),
+			expires_at: new Date(now.getTime() + 60000).toISOString(),
+			received_at: now.toISOString(),
+			processed: 0,
+		};
+
+		db.run(
+			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				inboxEntry.id,
+				inboxEntry.source_site_id,
+				inboxEntry.kind,
+				inboxEntry.ref_id,
+				inboxEntry.idempotency_key,
+				inboxEntry.stream_id,
+				inboxEntry.payload,
+				inboxEntry.expires_at,
+				inboxEntry.received_at,
+				inboxEntry.processed,
+			],
+		);
+
+		const handle = processor.start(10);
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+						)
+						.get(streamId) as { n: number } | null
+				)?.n > 0,
+			{ message: "stream_end not written for no-cap test" },
+		);
+		handle.stop();
+
+		expect(mockBackend.capturedParams).toHaveLength(1);
+		expect(mockBackend.capturedParams[0].max_tokens).toBe(16384);
 	});
 });

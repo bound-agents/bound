@@ -511,6 +511,95 @@ describe("Config schemas", () => {
 				expect(result.success).toBe(true);
 			});
 		});
+
+		describe("max_output_tokens field", () => {
+			// Per-backend cap on the response-side `maxOutputTokens` parameter.
+			// Some Bedrock models reject the default DEFAULT_MAX_OUTPUT_TOKENS
+			// (16_384) with "max_tokens exceeds model limit of 10000" — notably
+			// Nova Pro (10k cap). This field lets operators pin a lower cap per
+			// backend without touching code. The agent-loop takes
+			// `min(backend.max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS)`.
+			it("accepts a positive integer max_output_tokens", () => {
+				const config = {
+					backends: [
+						{
+							id: "nova-pro",
+							provider: "bedrock",
+							model: "us.amazon.nova-pro-v1:0",
+							region: "us-west-2",
+							context_window: 300000,
+							tier: 2,
+							max_output_tokens: 8192,
+						},
+					],
+					default: "nova-pro",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(true);
+				if (!result.success) return;
+				expect(result.data.backends[0].max_output_tokens).toBe(8192);
+			});
+
+			it("allows backends to omit max_output_tokens (optional)", () => {
+				const config = {
+					backends: [
+						{
+							id: "opus",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+						},
+					],
+					default: "opus",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(true);
+				if (!result.success) return;
+				expect(result.data.backends[0].max_output_tokens).toBeUndefined();
+			});
+
+			it("rejects zero and negative max_output_tokens", () => {
+				for (const bad of [0, -1, -100]) {
+					const config = {
+						backends: [
+							{
+								id: "nova-pro",
+								provider: "bedrock",
+								model: "us.amazon.nova-pro-v1:0",
+								region: "us-west-2",
+								context_window: 300000,
+								tier: 2,
+								max_output_tokens: bad,
+							},
+						],
+						default: "nova-pro",
+					};
+					const result = modelBackendsSchema.safeParse(config);
+					expect(result.success).toBe(false);
+				}
+			});
+
+			it("rejects non-integer max_output_tokens", () => {
+				const config = {
+					backends: [
+						{
+							id: "nova-pro",
+							provider: "bedrock",
+							model: "us.amazon.nova-pro-v1:0",
+							region: "us-west-2",
+							context_window: 300000,
+							tier: 2,
+							max_output_tokens: 8192.5,
+						},
+					],
+					default: "nova-pro",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(false);
+			});
+		});
 	});
 
 	describe("networkSchema", () => {

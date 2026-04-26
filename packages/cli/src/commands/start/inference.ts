@@ -49,6 +49,7 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 				pricePerMInput: b.price_per_m_input,
 				thinking: b.thinking,
 				effort: b.effort,
+				maxOutputTokens: b.max_output_tokens,
 			}),
 		),
 		default: rawBackends.default,

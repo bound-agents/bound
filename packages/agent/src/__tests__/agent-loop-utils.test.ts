@@ -8,6 +8,7 @@ import { applySchema, createDatabase, insertRow } from "@bound/core";
 import {
 	buildCommandOutput,
 	calculateTurnCost,
+	clampMaxOutputTokens,
 	convertDeltaMessages,
 	deriveCapabilityRequirements,
 	getResolvedModelId,
@@ -586,5 +587,43 @@ describe("convertDeltaMessages", () => {
 		// The tool_result has no tool_call ancestor — it's a genuine orphan.
 		expect(out).toHaveLength(1);
 		expect(out[0].role).toBe("user");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// clampMaxOutputTokens
+// ---------------------------------------------------------------------------
+describe("clampMaxOutputTokens", () => {
+	// This pure helper is the single point that reconciles the agent-loop's
+	// DEFAULT_MAX_OUTPUT_TOKENS (16_384) with per-backend caps like Nova Pro's
+	// 10_000 ceiling. Both agent-loop (local path) and relay-processor
+	// (receiver side) must go through it so a misconfigured payload can never
+	// slip a too-high value past the provider.
+	it("returns the default when no cap is configured", () => {
+		expect(clampMaxOutputTokens(16384, undefined)).toBe(16384);
+	});
+
+	it("returns the cap when it is smaller than the default", () => {
+		// Nova Pro case: default 16_384, backend cap 10_000 → clamp to 10_000
+		expect(clampMaxOutputTokens(16384, 10000)).toBe(10000);
+	});
+
+	it("returns the default when the cap is larger (cap is an upper bound, not a floor)", () => {
+		// If an operator mistakenly sets max_output_tokens higher than
+		// DEFAULT_MAX_OUTPUT_TOKENS, the default still wins — we treat the
+		// backend cap as "at most this", never "at least this", so we never
+		// raise the per-turn budget beyond what the loop expects.
+		expect(clampMaxOutputTokens(16384, 32000)).toBe(16384);
+	});
+
+	it("returns the cap when it equals the default", () => {
+		expect(clampMaxOutputTokens(16384, 16384)).toBe(16384);
+	});
+
+	it("ignores a non-positive cap (defensive against malformed config)", () => {
+		// Schema rejects <=0 at load time, but in case a relay payload sneaks
+		// through with 0 or a negative value we fall back to the default.
+		expect(clampMaxOutputTokens(16384, 0)).toBe(16384);
+		expect(clampMaxOutputTokens(16384, -500)).toBe(16384);
 	});
 });

@@ -70,4 +70,34 @@ describe("toRouterConfig", () => {
 		const router = createModelRouter(toRouterConfig(cfg));
 		expect(router.getThinkingConfig("opus")).toBeUndefined();
 	});
+
+	it("propagates `max_output_tokens` so router.getMaxOutputTokens() returns it", () => {
+		// Nova Pro caps at 10_000; without this hand-off the default
+		// DEFAULT_MAX_OUTPUT_TOKENS (16_384) lands at Bedrock and triggers
+		// "max_tokens exceeds model limit of 10000". Locking in the
+		// snake_case → camelCase copy here prevents silent regressions.
+		const cfg: SharedModelBackendsConfig = {
+			backends: [
+				{
+					id: "nova-pro",
+					provider: "bedrock",
+					model: "us.amazon.nova-pro-v1:0",
+					region: "us-west-2",
+					context_window: 300000,
+					tier: 2,
+					price_per_m_input: 0.8,
+					price_per_m_output: 3.2,
+					max_output_tokens: 8192,
+				},
+			],
+			default: "nova-pro",
+		};
+		const router = createModelRouter(toRouterConfig(cfg));
+		expect(router.getMaxOutputTokens("nova-pro")).toBe(8192);
+	});
+
+	it("leaves max_output_tokens undefined when not configured", () => {
+		const router = createModelRouter(toRouterConfig(bedrockOpusWithThinking()));
+		expect(router.getMaxOutputTokens("opus")).toBeUndefined();
+	});
 });
