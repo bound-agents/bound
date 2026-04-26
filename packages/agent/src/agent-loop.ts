@@ -356,6 +356,20 @@ export class AgentLoop {
 					? this.modelRouter.getEffectiveCapabilities(this.lastModelResolution.modelId)
 					: undefined;
 
+			// Separate caps view for the cache-marker gate. For remote resolutions
+			// we don't have the full BackendCapabilities, but EligibleHost publishes
+			// `prompt_caching` in its partial capability bag — enough for the gate
+			// to decide. Without this, relay requests to a non-caching spoke would
+			// carry `{role:"cache"}` markers that the spoke's backend then forwards
+			// to AWS as providerOptions.bedrock.cachePoint, triggering 403
+			// "unsupported model or your request did not allow prompt caching."
+			const cacheMarkerCaps =
+				this.lastModelResolution?.kind === "local"
+					? resolvedCaps
+					: this.lastModelResolution?.kind === "remote"
+						? this.lastModelResolution.hosts[0]?.capabilities
+						: undefined;
+
 			// Resolve max_context from local capabilities, remote host, or safe fallback.
 			// On spoke nodes with no local backends, getDefault() would throw, so we
 			// read max_context from the remote host's advertised capabilities instead.
@@ -467,7 +481,7 @@ export class AgentLoop {
 				//    message). Gated on effective backend capabilities — skipped when
 				//    prompt_caching is explicitly disabled (e.g. MiniMax on Bedrock)
 				//    to avoid the 403 "unsupported model / prompt caching not allowed".
-				maybePlaceCacheMarker(storedMessages, "rolling", resolvedCaps ?? undefined);
+				maybePlaceCacheMarker(storedMessages, "rolling", cacheMarkerCaps ?? undefined);
 
 				// 5. Inject fresh volatile developer message at tail
 				const volatileContext = buildVolatileContext({
@@ -646,7 +660,7 @@ export class AgentLoop {
 				const placedFixedMarker = maybePlaceCacheMarker(
 					contextMessages,
 					"fixed",
-					resolvedCaps ?? undefined,
+					cacheMarkerCaps ?? undefined,
 				);
 				const fixedCacheIdx = placedFixedMarker ? contextMessages.length - 2 : -1;
 

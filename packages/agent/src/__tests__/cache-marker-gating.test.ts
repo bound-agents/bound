@@ -59,18 +59,57 @@ describe("maybePlaceCacheMarker — fixed (cold path)", () => {
 		expect(messages.some((m) => m.role === "cache")).toBe(false);
 	});
 
-	it("skips marker when caps are undefined (no resolution info)", () => {
+	it("places marker when caps are undefined (no resolution info)", () => {
 		const messages: LLMMessage[] = [
 			{ role: "user", content: "msg1" },
 			{ role: "assistant", content: "msg2" },
 		];
 		const placed = maybePlaceCacheMarker(messages, "fixed", undefined);
-		// Undefined means "don't know" — safest is to place (matches prior
-		// behavior for remote resolutions where caps aren't fetched). If the
-		// receiving backend rejects caching, it surfaces loudly, which is the
-		// correct failure mode for a misconfigured cluster.
+		// Undefined means "no caps info at all" (rare — misconfigured cluster).
+		// Historically permissive; the relay-processor receiver-side strip now
+		// catches unsupported markers before they reach AWS.
 		expect(placed).toBe(true);
-		expect(messages.some((m) => m.role === "cache")).toBe(true);
+	});
+
+	it("accepts a partial capabilities shape (EligibleHost.capabilities) and skips when prompt_caching:false", () => {
+		// Remote-host capability entries in `hosts.models` carry only a subset
+		// of BackendCapabilities (streaming, tool_use, system_prompt,
+		// prompt_caching, vision, max_context — no extended_thinking). The
+		// gate accepts that partial shape so requester agent-loops can pass
+		// `resolution.hosts[0].capabilities` directly without synthesizing a
+		// full BackendCapabilities object.
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "msg1" },
+			{ role: "assistant", content: "msg2" },
+		];
+		const remoteCaps = { prompt_caching: false };
+		const placed = maybePlaceCacheMarker(messages, "fixed", remoteCaps);
+		expect(placed).toBe(false);
+		expect(messages.some((m) => m.role === "cache")).toBe(false);
+	});
+
+	it("accepts a partial capabilities shape and places when prompt_caching:true", () => {
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "msg1" },
+			{ role: "assistant", content: "msg2" },
+		];
+		const remoteCaps = { prompt_caching: true };
+		const placed = maybePlaceCacheMarker(messages, "fixed", remoteCaps);
+		expect(placed).toBe(true);
+	});
+
+	it("places marker when partial caps omit prompt_caching (unknown → permissive)", () => {
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "msg1" },
+			{ role: "assistant", content: "msg2" },
+		];
+		// An EligibleHost could legally have capabilities without
+		// prompt_caching set (legacy hosts.models format). Treat that as
+		// "unknown, place optimistically" — defense-in-depth strip on the
+		// receiver side catches mismatches.
+		const remoteCaps = { streaming: true };
+		const placed = maybePlaceCacheMarker(messages, "fixed", remoteCaps);
+		expect(placed).toBe(true);
 	});
 
 	it("does not place when messages.length < 2", () => {

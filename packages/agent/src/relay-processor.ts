@@ -17,7 +17,7 @@ import {
 	writeOutbox,
 } from "@bound/core";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
-import type { ModelRouter } from "@bound/llm";
+import { LLMError, type ModelRouter } from "@bound/llm";
 import type {
 	CacheWarmPayload,
 	ErrorPayload,
@@ -51,6 +51,7 @@ import {
 	processPayloadSchema,
 } from "@bound/shared";
 import { AgentLoop } from "./agent-loop.js";
+import { stripCacheMarkersIfUnsupported } from "./cache-marker.js";
 import type { MCPClient } from "./mcp-client.js";
 import type { AgentLoopConfig } from "./types.js";
 
@@ -1186,6 +1187,16 @@ export class RelayProcessor {
 			}
 		}
 
+		// Defense-in-depth: strip `{role:"cache"}` markers if the local backend
+		// can't cache. Requesters gate placement on the remote host's advertised
+		// capabilities, but stale hosts-table data or pre-fix requester binaries
+		// can still send markers to a non-caching backend. Without this strip,
+		// those markers reach AWS as providerOptions.bedrock.cachePoint and
+		// trigger 403 "unsupported model or your request did not allow prompt
+		// caching." See docs/design/sync-protocol.md for the capability flow.
+		const backendCaps = this.modelRouter.getEffectiveCapabilities(payload.model) ?? undefined;
+		messages = stripCacheMarkersIfUnsupported(messages, backendCaps);
+
 		// AC4.3: Record relay cycle for inference request receipt
 		try {
 			recordRelayCycle(this.db, {
@@ -1298,6 +1309,18 @@ export class RelayProcessor {
 				flush(true);
 			}
 		} catch (err) {
+			// Surface the failure locally before bouncing it back to the requester.
+			// Without this, relayed inference errors only appear on the requester's
+			// side (as a relay error response) and the serving spoke's own logs
+			// are silent — operators can't see WHY their host returned errors.
+			this.logger.error("[relay] Inference failed", {
+				model: payload.model,
+				source: entry.source_site_id,
+				streamId: entry.stream_id,
+				elapsedMs: Date.now() - inferenceStartTime,
+				error: err instanceof Error ? err.message : String(err),
+				statusCode: err instanceof LLMError ? err.statusCode : undefined,
+			});
 			this.writeResponse(entry, "error", JSON.stringify({ error: String(err), retriable: true }));
 			try {
 				recordRelayCycle(this.db, {

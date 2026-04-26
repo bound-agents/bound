@@ -11,15 +11,22 @@
  * `providerOptions.bedrock.cachePoint` — rejected by AWS with a 403 for
  * models that don't support the Converse API cache feature.
  *
- * When caps are `undefined` (e.g. a remote resolution where capabilities
- * weren't prefetched), we DO place the marker — preserving historical
- * behavior. The receiving host remains responsible for stripping or
- * honoring the marker based on its own backend.
+ * Caps shape: accepts either the full `BackendCapabilities` (local resolution)
+ * or a partial `{ prompt_caching?: boolean, ... }` bag (remote resolution —
+ * `EligibleHost.capabilities` is a subset of the driver shape). `undefined`
+ * means "no caps info at all"; the helper places the marker optimistically.
+ * The relay-processor receiver-side strip is the defense-in-depth line for
+ * that case.
  */
 
-import type { BackendCapabilities, LLMMessage } from "@bound/llm";
+import type { LLMMessage } from "@bound/llm";
 
 export type CacheMarkerKind = "fixed" | "rolling";
+
+/** Minimal capability shape the gate actually inspects. */
+export interface CacheMarkerCaps {
+	prompt_caching?: boolean;
+}
 
 /**
  * Splice a `{ role: "cache", content: "" }` marker into `messages` at
@@ -30,10 +37,28 @@ export type CacheMarkerKind = "fixed" | "rolling";
 export function maybePlaceCacheMarker(
 	messages: LLMMessage[],
 	_kind: CacheMarkerKind,
-	caps: BackendCapabilities | undefined,
+	caps: CacheMarkerCaps | undefined,
 ): boolean {
 	if (caps && caps.prompt_caching === false) return false;
 	if (messages.length < 2) return false;
 	messages.splice(messages.length - 1, 0, { role: "cache", content: "" });
 	return true;
+}
+
+/**
+ * Defense-in-depth receiver-side strip: if a relayed inference payload
+ * arrives with `{ role: "cache" }` markers but the local backend can't
+ * cache, drop them before dispatch so we don't send
+ * `providerOptions.bedrock.cachePoint` to AWS for a model that 403s on it.
+ *
+ * Returns the same array reference when there's nothing to do (fast path)
+ * so callers don't need to re-bind. Does NOT mutate the input.
+ */
+export function stripCacheMarkersIfUnsupported(
+	messages: LLMMessage[],
+	caps: CacheMarkerCaps | undefined,
+): LLMMessage[] {
+	if (!caps || caps.prompt_caching !== false) return messages;
+	if (!messages.some((m) => m.role === "cache")) return messages;
+	return messages.filter((m) => m.role !== "cache");
 }
