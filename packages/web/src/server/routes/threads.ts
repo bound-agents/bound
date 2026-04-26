@@ -18,6 +18,10 @@ export function createThreadsRoutes(
 
 	app.get("/", (c) => {
 		try {
+			// Directory hides threads with no user messages by default to reduce
+			// clutter from task-only / system-only threads. Opt in to the full
+			// list with ?include_empty=true.
+			const includeEmpty = c.req.query("include_empty") === "true";
 			const threads = db
 				.query(
 					`
@@ -30,10 +34,17 @@ export function createThreadsRoutes(
 					) as hasRunningTask
 				FROM threads t
 				WHERE t.deleted = 0 AND t.user_id = ?
+					AND (
+						? = 1
+						OR EXISTS(
+							SELECT 1 FROM messages m
+							WHERE m.thread_id = t.id AND m.role = 'user' AND m.deleted = 0
+						)
+					)
 				ORDER BY t.last_message_at DESC
 			`,
 				)
-				.all(webUserId) as Array<
+				.all(webUserId, includeEmpty ? 1 : 0) as Array<
 				Thread & { messageCount: number; lastModel: string | null; hasRunningTask: number }
 			>;
 

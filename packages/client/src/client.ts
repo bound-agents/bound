@@ -325,8 +325,9 @@ export class BoundClient {
 
 	// ---- Threads ----
 
-	async listThreads(): Promise<ThreadListEntry[]> {
-		return this.fetchJson("/api/threads");
+	async listThreads(opts?: { includeEmpty?: boolean }): Promise<ThreadListEntry[]> {
+		const qs = opts?.includeEmpty ? "?include_empty=true" : "";
+		return this.fetchJson(`/api/threads${qs}`);
 	}
 
 	async createThread(): Promise<Thread> {
