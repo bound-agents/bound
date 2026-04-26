@@ -23,7 +23,6 @@ import type {
 	ErrorPayload,
 	EventMap,
 	Logger,
-	Message,
 	PlatformDeliverPayload,
 	ProcessPayload,
 	PromptInvokePayload,
@@ -1371,18 +1370,45 @@ export class RelayProcessor {
 			return;
 		}
 
-		// Look up user message
-		const userMessage = this.db
-			.query("SELECT * FROM messages WHERE id = ? AND thread_id = ? AND deleted = 0")
-			.get(payload.message_id, payload.thread_id) as Message | null;
+		// Sanity-check that the target thread exists. The agent loop reads
+		// messages from the thread directly — we don't need payload.message_id
+		// to anchor the turn, so we no longer reject when it references a row
+		// that doesn't exist locally. That reject was the silent-drop path
+		// for notification-triggered delegations: spokes historically
+		// forwarded the dispatch_queue entry id (a synthetic UUID) as
+		// message_id, and the lookup failed here. (The spoke-side fix in
+		// server.ts/resolveDelegationMessageId now forwards a real
+		// messages.id, but older spokes may still send a stale id during
+		// rollout.)
+		const thread = this.db
+			.query("SELECT id FROM threads WHERE id = ? AND deleted = 0")
+			.get(payload.thread_id) as { id: string } | null;
 
-		if (!userMessage) {
+		if (!thread) {
 			this.writeResponse(
 				entry,
 				"error",
-				JSON.stringify({ error: `Message not found: ${payload.message_id}`, retriable: false }),
+				JSON.stringify({ error: `Thread not found: ${payload.thread_id}`, retriable: false }),
 			);
 			return;
+		}
+
+		// Warn once if the caller passed a message_id that doesn't resolve.
+		// Doesn't block execution; logged for diagnostics during rollout.
+		if (payload.message_id) {
+			const userMessage = this.db
+				.query("SELECT id FROM messages WHERE id = ? AND thread_id = ? AND deleted = 0")
+				.get(payload.message_id, payload.thread_id) as { id: string } | null;
+			if (!userMessage) {
+				this.logger.warn(
+					"[relay] Process delegation payload.message_id does not match any row in messages; proceeding on thread state alone",
+					{
+						threadId: payload.thread_id,
+						messageId: payload.message_id,
+						source: entry.source_site_id,
+					},
+				);
+			}
 		}
 
 		// For the delegated AgentLoop, we need the full AppContext passed to RelayProcessor
