@@ -108,6 +108,17 @@ export function insertRow(
 	row: Record<string, unknown>,
 	siteId: string,
 ): void {
+	// Invariant #19: role='system' is reserved for the LLM driver layer
+	// (stable-prefix system prompt). Persisting it into `messages` is silently
+	// invisible to the agent — Stage 2.5 of context assembly drops such rows.
+	// Reject loudly at the write boundary so the failure surfaces in tests/CI.
+	if (table === "messages" && row.role === "system") {
+		throw new Error(
+			"Invariant: role='system' is not permitted in the messages table. " +
+				"Use role='developer' for injected system-generated context intended for the agent.",
+		);
+	}
+
 	const pkColumn = getTablePkColumn(table);
 	const rowId = row[pkColumn] as string;
 	const columns = Object.keys(row);

@@ -394,4 +394,126 @@ describe("Change Log Producer", () => {
 		const entry = db.query("SELECT * FROM change_log WHERE row_id = ?").get(userId);
 		expect(entry).toBeNull();
 	});
+
+	it("rejects role='system' inserts into the messages table", () => {
+		// Invariant #19: role='system' is reserved for the LLM driver layer
+		// (stable-prefix system prompt). It must never be persisted into the
+		// messages table — Stage 2.5 of context assembly strips such rows, so
+		// anything written with role:'system' is silently invisible to the
+		// agent. Enforce at insertRow() so the failure is loud and immediate.
+		const userId = randomUUID();
+		const threadId = randomUUID();
+		const now = new Date().toISOString();
+
+		// Minimal fixture: a user + thread that satisfies FK-free STRICT inserts.
+		insertRow(
+			db,
+			"users",
+			{ id: userId, display_name: "Invariant", first_seen_at: now, modified_at: now, deleted: 0 },
+			siteId,
+		);
+		insertRow(
+			db,
+			"threads",
+			{
+				id: threadId,
+				user_id: userId,
+				interface: "discord",
+				host_origin: "test",
+				color: 0,
+				title: "t",
+				summary: null,
+				created_at: now,
+				last_message_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		const messageId = randomUUID();
+		expect(() =>
+			insertRow(
+				db,
+				"messages",
+				{
+					id: messageId,
+					thread_id: threadId,
+					role: "system",
+					content: "should be rejected",
+					model_id: null,
+					tool_name: null,
+					created_at: now,
+					modified_at: now,
+					host_origin: "test",
+					deleted: 0,
+				},
+				siteId,
+			),
+		).toThrow(/role.*system.*messages/i);
+
+		// And the row must NOT have landed in the DB.
+		const row = db.query("SELECT * FROM messages WHERE id = ?").get(messageId);
+		expect(row).toBeNull();
+	});
+
+	it("accepts role='developer' inserts into the messages table", () => {
+		// Sibling assertion to the invariant above: the intended replacement
+		// for injected system-generated context is role='developer', which
+		// passes Stage 2.5 and reaches the LLM.
+		const userId = randomUUID();
+		const threadId = randomUUID();
+		const now = new Date().toISOString();
+
+		insertRow(
+			db,
+			"users",
+			{ id: userId, display_name: "Dev", first_seen_at: now, modified_at: now, deleted: 0 },
+			siteId,
+		);
+		insertRow(
+			db,
+			"threads",
+			{
+				id: threadId,
+				user_id: userId,
+				interface: "discord",
+				host_origin: "test",
+				color: 0,
+				title: "t",
+				summary: null,
+				created_at: now,
+				last_message_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		const messageId = randomUUID();
+		insertRow(
+			db,
+			"messages",
+			{
+				id: messageId,
+				thread_id: threadId,
+				role: "developer",
+				content: "injected context",
+				model_id: null,
+				tool_name: null,
+				created_at: now,
+				modified_at: now,
+				host_origin: "test",
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		const row = db.query("SELECT role, content FROM messages WHERE id = ?").get(messageId) as {
+			role: string;
+			content: string;
+		};
+		expect(row.role).toBe("developer");
+		expect(row.content).toBe("injected context");
+	});
 });
