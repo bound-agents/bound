@@ -105,10 +105,12 @@ These rules exist because violating them has historically caused real production
 
 ```
 users, threads, messages, semantic_memory, tasks, files, hosts,
-overlay_index, cluster_config, advisories, skills, memory_edges
+overlay_index, cluster_config, advisories, skills, memory_edges, turns
 ```
 
 The source-of-truth type is `SyncedTableName` in `packages/shared/src/types.ts`. Writes bypassing the outbox never generate a `change_log` entry, so other hosts never learn about them.
+
+**Narrow exception — local-only columns on a synced table.** `turns` (append-only) carries three host-local columns — `context_debug`, `relay_target`, `relay_latency_ms` — that are populated by post-insert UPDATEs and MUST NOT be replicated. `recordTurn()` in `packages/core/src/metrics-schema.ts` bypasses `insertRow()` and calls `createChangeLogEntry()` directly so it can strip those columns from `row_data`; `recordContextDebug()` and `recordTurnRelayMetrics()` write with raw SQL intentionally (no change_log). This is the only supported form of outbox bypass: the write path itself emits a properly-scoped `change_log` entry, just with a filtered column set. Do not copy this pattern without an explicit design reason.
 
 **2. Soft deletes only.** Synced tables use a `deleted = 0|1` column. Never physically `DELETE` rows — use `softDelete()`.
 
@@ -173,13 +175,15 @@ Accumulated the hard way — check here before writing a bug report.
 
 ### Adding a new synced table
 
-1. Declare the CREATE TABLE in `packages/core/src/schema.ts` as a STRICT table with `deleted INTEGER NOT NULL DEFAULT 0` and `modified_at TEXT NOT NULL`.
-2. Add the name to `SyncedTableName` in `packages/shared/src/types.ts`.
+1. Declare the CREATE TABLE in `packages/core/src/schema.ts` (or `metrics-schema.ts` for observability tables) as a STRICT table with `deleted INTEGER NOT NULL DEFAULT 0` (if LWW) and `modified_at TEXT NOT NULL`.
+2. Add the name to `SyncedTableName` and `TABLE_REDUCER_MAP` in `packages/shared/src/types.ts`.
 3. If its primary key is not `id`, add an entry to `TABLE_PK_COLUMN` in `packages/core/src/change-log.ts`.
-4. Decide the reducer (`lww` or `append-only`) and wire it in `packages/sync/src/reducers`.
+4. Decide the reducer (`lww` or `append-only`) — wiring lives in `packages/sync/src/reducers.ts`, keyed off `TABLE_REDUCER_MAP`.
 5. Use only `insertRow` / `updateRow` / `softDelete` for writes — never raw SQL.
-6. Add migration logic if upgrading existing deployments.
+6. Add migration logic if upgrading existing deployments (see `metrics-schema.ts` for the `turns` INTEGER→TEXT id migration as a template).
 7. Update `docs/design/sync-protocol.md` if the reducer behavior is non-obvious.
+
+**If the table needs host-local columns** (large debug blobs, post-insert metrics, per-host annotations): follow the `turns` pattern — call `createChangeLogEntry()` directly from the insert path with the local-only columns stripped from `row_data`, and document the exception next to the CREATE TABLE. See invariant #1 and `packages/core/src/metrics-schema.ts` for the reference implementation.
 
 ### Adding a config field
 

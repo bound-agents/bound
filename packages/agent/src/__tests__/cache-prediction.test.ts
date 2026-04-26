@@ -1,6 +1,6 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { applyMetricsSchema, applySchema } from "@bound/core";
+import { applyMetricsSchema, applySchema, recordTurn } from "@bound/core";
 import { predictCacheState, selectCacheTtl } from "../cache-prediction";
 
 describe("Cache Prediction", () => {
@@ -25,10 +25,15 @@ describe("Cache Prediction", () => {
 
 		it("returns 'warm' when last turn had cache_write and is within TTL", () => {
 			const recentTime = new Date(Date.now() - 60_000).toISOString(); // 1 min ago
-			db.run(
-				"INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-				[threadId, "opus", 100, 50, 0, 50000, recentTime],
-			);
+			recordTurn(db, {
+				thread_id: threadId,
+				model_id: "opus",
+				tokens_in: 100,
+				tokens_out: 50,
+				tokens_cache_read: 0,
+				tokens_cache_write: 50000,
+				created_at: recentTime,
+			});
 
 			const state = predictCacheState(db, threadId, 5 * 60_000);
 			expect(state).toBe("warm");
@@ -36,10 +41,15 @@ describe("Cache Prediction", () => {
 
 		it("returns 'warm' when last turn had cache_read and is within TTL", () => {
 			const recentTime = new Date(Date.now() - 2 * 60_000).toISOString(); // 2 min ago
-			db.run(
-				"INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-				[threadId, "opus", 100, 50, 200000, 500, recentTime],
-			);
+			recordTurn(db, {
+				thread_id: threadId,
+				model_id: "opus",
+				tokens_in: 100,
+				tokens_out: 50,
+				tokens_cache_read: 200000,
+				tokens_cache_write: 500,
+				created_at: recentTime,
+			});
 
 			const state = predictCacheState(db, threadId, 5 * 60_000);
 			expect(state).toBe("warm");
@@ -47,10 +57,15 @@ describe("Cache Prediction", () => {
 
 		it("returns 'cold' when last turn is beyond TTL", () => {
 			const oldTime = new Date(Date.now() - 10 * 60_000).toISOString(); // 10 min ago
-			db.run(
-				"INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-				[threadId, "opus", 100, 50, 200000, 500, oldTime],
-			);
+			recordTurn(db, {
+				thread_id: threadId,
+				model_id: "opus",
+				tokens_in: 100,
+				tokens_out: 50,
+				tokens_cache_read: 200000,
+				tokens_cache_write: 500,
+				created_at: oldTime,
+			});
 
 			const state = predictCacheState(db, threadId, 5 * 60_000);
 			expect(state).toBe("cold");
@@ -58,10 +73,15 @@ describe("Cache Prediction", () => {
 
 		it("returns 'cold' when last turn had no cache activity", () => {
 			const recentTime = new Date(Date.now() - 60_000).toISOString();
-			db.run(
-				"INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-				[threadId, "opus", 100, 50, 0, 0, recentTime],
-			);
+			recordTurn(db, {
+				thread_id: threadId,
+				model_id: "opus",
+				tokens_in: 100,
+				tokens_out: 50,
+				tokens_cache_read: 0,
+				tokens_cache_write: 0,
+				created_at: recentTime,
+			});
 
 			const state = predictCacheState(db, threadId, 5 * 60_000);
 			expect(state).toBe("cold");
@@ -69,10 +89,15 @@ describe("Cache Prediction", () => {
 
 		it("returns 'cold' when cache columns are NULL (e.g. Ollama)", () => {
 			const recentTime = new Date(Date.now() - 30_000).toISOString();
-			db.run(
-				"INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, created_at) VALUES (?, ?, ?, ?, ?)",
-				[threadId, "llama3", 100, 50, recentTime],
-			);
+			recordTurn(db, {
+				thread_id: threadId,
+				model_id: "llama3",
+				tokens_in: 100,
+				tokens_out: 50,
+				tokens_cache_read: null,
+				tokens_cache_write: null,
+				created_at: recentTime,
+			});
 
 			const state = predictCacheState(db, threadId, 5 * 60_000);
 			expect(state).toBe("cold");
@@ -83,15 +108,25 @@ describe("Cache Prediction", () => {
 			const recentTime = new Date(Date.now() - 60_000).toISOString();
 
 			// Old turn with cache activity (beyond TTL)
-			db.run(
-				"INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-				[threadId, "opus", 100, 50, 200000, 500, oldTime],
-			);
+			recordTurn(db, {
+				thread_id: threadId,
+				model_id: "opus",
+				tokens_in: 100,
+				tokens_out: 50,
+				tokens_cache_read: 200000,
+				tokens_cache_write: 500,
+				created_at: oldTime,
+			});
 			// Recent turn with cache activity (within TTL)
-			db.run(
-				"INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-				[threadId, "opus", 100, 50, 200000, 100, recentTime],
-			);
+			recordTurn(db, {
+				thread_id: threadId,
+				model_id: "opus",
+				tokens_in: 100,
+				tokens_out: 50,
+				tokens_cache_read: 200000,
+				tokens_cache_write: 100,
+				created_at: recentTime,
+			});
 
 			const state = predictCacheState(db, threadId, 5 * 60_000);
 			expect(state).toBe("warm");

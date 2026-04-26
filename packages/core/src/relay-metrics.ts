@@ -29,7 +29,7 @@ export function recordRelayCycle(db: Database, entry: RelayCycleEntry): void {
 
 export function recordTurnRelayMetrics(
 	db: Database,
-	turnId: number,
+	turnId: string,
 	relayTarget: string,
 	relayLatencyMs: number,
 ): void {

@@ -146,7 +146,7 @@ export interface ContextDebugInfo {
 }
 
 export interface ContextDebugTurn {
-	turn_id: number;
+	turn_id: string;
 	model_id: string;
 	tokens_in: number;
 	tokens_out: number;

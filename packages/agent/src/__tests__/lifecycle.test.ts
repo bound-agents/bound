@@ -264,10 +264,11 @@ describe("AgentLoop lifecycle", () => {
 
 		expect(turnsAfter).toBeGreaterThan(turnsBefore);
 
-		// Verify the turn record has expected fields
+		// Verify the turn record has expected fields. Ordering by rowid
+		// (insertion order) because id is a UUID post-observability-gap fix.
 		const turn = db
 			.query(
-				"SELECT thread_id, model_id, tokens_in, tokens_out FROM turns WHERE thread_id = ? ORDER BY id DESC LIMIT 1",
+				"SELECT thread_id, model_id, tokens_in, tokens_out FROM turns WHERE thread_id = ? ORDER BY rowid DESC LIMIT 1",
 			)
 			.get(threadId) as {
 			thread_id: string;
@@ -297,7 +298,7 @@ describe("AgentLoop lifecycle", () => {
 		await agentLoop.run();
 
 		const turns = db
-			.query("SELECT * FROM turns WHERE thread_id = ? ORDER BY id ASC")
+			.query("SELECT * FROM turns WHERE thread_id = ? ORDER BY rowid ASC")
 			.all(threadId) as Array<{ tokens_in: number; tokens_out: number }>;
 
 		// Two LLM calls = two turns

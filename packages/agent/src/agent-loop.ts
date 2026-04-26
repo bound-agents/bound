@@ -739,7 +739,7 @@ export class AgentLoop {
 				const turnStartTime = Date.now();
 				this.state = "LLM_CALL";
 				const chunks: StreamChunk[] = [];
-				let currentTurnId: number | null = null;
+				let currentTurnId: string | null = null;
 				let resolvedModelId: string | null = null;
 				const relayMetadataRef: { hostName?: string; firstChunkLatencyMs?: number } = {};
 
@@ -971,6 +971,39 @@ export class AgentLoop {
 						durationMs: Date.now() - turnStartTime,
 					});
 
+					// Record the failed attempt so cross-host cost/usage queries
+					// can see which model/task failed (bound_issue:turns-table:
+					// observability-gap sub-gap 2c). Pre-stream errors used to
+					// leave no row at all.
+					try {
+						const failedModelId = getResolvedModelId(
+							this.lastModelResolution,
+							this.config.modelId || "unknown",
+						);
+						recordTurn(
+							this.ctx.db,
+							{
+								thread_id: this.config.threadId,
+								task_id: this.config.taskId || undefined,
+								dag_root_id: undefined,
+								model_id: failedModelId,
+								tokens_in: 0,
+								tokens_out: 0,
+								tokens_cache_write: null,
+								tokens_cache_read: null,
+								cost_usd: 0,
+								status: "error",
+								created_at: new Date().toISOString(),
+							},
+							this.ctx.siteId,
+						);
+					} catch (recordErr) {
+						this.ctx.logger.warn("Failed to record error turn", {
+							threadId: this.config.threadId,
+							error: recordErr instanceof Error ? recordErr.message : String(recordErr),
+						});
+					}
+
 					this.emitAlert(`Error: ${errorMsg}`);
 
 					return {
@@ -1004,6 +1037,39 @@ export class AgentLoop {
 				// Skip the notice if this was a cooperative yield (shouldYield) — the
 				// executor will retry the loop and the message will be processed.
 				if (this.aborted && parsed.usage.inputTokens === 0 && parsed.usage.outputTokens === 0) {
+					// Record the aborted attempt so cross-host cost/usage queries
+					// can attribute it to the right model/task (bound_issue:turns-
+					// table:observability-gap sub-gap 2c). The status='aborted'
+					// marker keeps it out of success-path rollups.
+					try {
+						const abortedModelId = getResolvedModelId(
+							this.lastModelResolution,
+							this.config.modelId || "unknown",
+						);
+						recordTurn(
+							this.ctx.db,
+							{
+								thread_id: this.config.threadId,
+								task_id: this.config.taskId || undefined,
+								dag_root_id: undefined,
+								model_id: abortedModelId,
+								tokens_in: 0,
+								tokens_out: 0,
+								tokens_cache_write: null,
+								tokens_cache_read: null,
+								cost_usd: 0,
+								status: "aborted",
+								created_at: new Date().toISOString(),
+							},
+							this.ctx.siteId,
+						);
+					} catch (recordErr) {
+						this.ctx.logger.warn("Failed to record aborted turn", {
+							threadId: this.config.threadId,
+							error: recordErr instanceof Error ? recordErr.message : String(recordErr),
+						});
+					}
+
 					if (!this.yielded) {
 						const cancelId = insertThreadMessage(
 							this.ctx.db,
@@ -1032,18 +1098,22 @@ export class AgentLoop {
 					const backends = this.ctx.config?.modelBackends?.backends ?? [];
 					const cost_usd = calculateTurnCost(resolvedModelId, parsed.usage, backends);
 
-					currentTurnId = recordTurn(this.ctx.db, {
-						thread_id: this.config.threadId,
-						task_id: this.config.taskId || undefined,
-						dag_root_id: undefined,
-						model_id: resolvedModelId,
-						tokens_in: parsed.usage.inputTokens,
-						tokens_out: parsed.usage.outputTokens,
-						tokens_cache_write: parsed.usage.cacheWriteTokens,
-						tokens_cache_read: parsed.usage.cacheReadTokens,
-						cost_usd,
-						created_at: new Date().toISOString(),
-					});
+					currentTurnId = recordTurn(
+						this.ctx.db,
+						{
+							thread_id: this.config.threadId,
+							task_id: this.config.taskId || undefined,
+							dag_root_id: undefined,
+							model_id: resolvedModelId,
+							tokens_in: parsed.usage.inputTokens,
+							tokens_out: parsed.usage.outputTokens,
+							tokens_cache_write: parsed.usage.cacheWriteTokens,
+							tokens_cache_read: parsed.usage.cacheReadTokens,
+							cost_usd,
+							created_at: new Date().toISOString(),
+						},
+						this.ctx.siteId,
+					);
 				} catch (error) {
 					this.ctx.logger.warn("Failed to record turn metrics", {
 						threadId: this.config.threadId,
@@ -1607,7 +1677,7 @@ export class AgentLoop {
 	private async relayWait(
 		relayRequest: RelayToolCallRequest,
 		toolCall: ParsedToolCall,
-		currentTurnId: number | null,
+		currentTurnId: string | null,
 	): Promise<string> {
 		const previousState = this.state;
 		this.state = "RELAY_WAIT";
@@ -1622,7 +1692,7 @@ export class AgentLoop {
 	private async _relayWaitImpl(
 		relayRequest: RelayToolCallRequest,
 		toolCall: ParsedToolCall,
-		currentTurnId: number | null,
+		currentTurnId: string | null,
 	): Promise<string> {
 		let { outboxEntryId } = relayRequest;
 		const { toolName, eligibleHosts } = relayRequest;

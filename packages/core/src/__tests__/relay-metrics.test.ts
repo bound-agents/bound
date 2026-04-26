@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDatabase } from "../database";
-import { applyMetricsSchema } from "../metrics-schema";
+import { applyMetricsSchema, recordTurn } from "../metrics-schema";
 import {
 	type RelayCycleEntry,
 	pruneRelayCycles,
@@ -116,14 +116,16 @@ describe("Relay Metrics", () => {
 			applySchema(db);
 			applyMetricsSchema(db);
 
-			// Create a turn
-			db.run(
-				`INSERT INTO turns (model_id, tokens_in, tokens_out, created_at)
-				 VALUES (?, ?, ?, ?)`,
-				["claude-3-5-sonnet", 100, 50, new Date().toISOString()],
-			);
-
-			const turnId = (db.query("SELECT id FROM turns LIMIT 1").get() as { id: number }).id;
+			// Create a turn (now UUID-keyed — use recordTurn so we don't have
+			// to mint an id by hand)
+			const turnId = recordTurn(db, {
+				model_id: "claude-3-5-sonnet",
+				tokens_in: 100,
+				tokens_out: 50,
+				tokens_cache_write: null,
+				tokens_cache_read: null,
+				created_at: new Date().toISOString(),
+			});
 
 			// Record relay metrics
 			recordTurnRelayMetrics(db, turnId, "spoke-a", 150);
@@ -147,11 +149,14 @@ describe("Relay Metrics", () => {
 			applyMetricsSchema(db);
 
 			// Create a turn without relay metrics
-			db.run(
-				`INSERT INTO turns (model_id, tokens_in, tokens_out, created_at)
-				 VALUES (?, ?, ?, ?)`,
-				["claude-3-5-sonnet", 100, 50, new Date().toISOString()],
-			);
+			recordTurn(db, {
+				model_id: "claude-3-5-sonnet",
+				tokens_in: 100,
+				tokens_out: 50,
+				tokens_cache_write: null,
+				tokens_cache_read: null,
+				created_at: new Date().toISOString(),
+			});
 
 			const turn = db.query("SELECT relay_target, relay_latency_ms FROM turns LIMIT 1").get() as {
 				relay_target: string | null;

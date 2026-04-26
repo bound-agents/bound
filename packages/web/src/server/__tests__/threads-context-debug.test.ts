@@ -94,7 +94,7 @@ describe("GET /api/threads/:id/context-debug", () => {
 
 			expect(res.status).toBe(200);
 			const body = (await res.json()) as Array<{
-				turn_id: number;
+				turn_id: string;
 				model_id: string;
 				tokens_in: number;
 				tokens_out: number;
@@ -177,7 +177,7 @@ describe("GET /api/threads/:id/context-debug", () => {
 
 			expect(res.status).toBe(200);
 			const body = (await res.json()) as Array<{
-				turn_id: number;
+				turn_id: string;
 			}>;
 
 			expect(body.length).toBe(1);

@@ -34,7 +34,8 @@ export type SyncedTableName =
 	| "cluster_config"
 	| "advisories"
 	| "skills"
-	| "memory_edges";
+	| "memory_edges"
+	| "turns";
 
 export type ReducerType = "lww" | "append-only";
 
@@ -274,6 +275,12 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	advisories: "lww",
 	skills: "lww",
 	memory_edges: "lww",
+	// turns are append-only facts about what the model did on a given host.
+	// Recorded once when the turn completes; never mutated after insert except
+	// for local-only columns (context_debug, relay_target, relay_latency_ms)
+	// that are excluded from replicated row_data. See metrics-schema.ts and
+	// bound_issue:turns-table:observability-gap for the full story.
+	turns: "append-only",
 };
 
 // --- Relay transport types (local-only, not synced) ---

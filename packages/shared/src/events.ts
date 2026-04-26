@@ -19,7 +19,7 @@ export interface EventMap {
 	"status:forward": StatusForwardPayload;
 	"platform:deliver": PlatformDeliverPayload;
 	"platform:webhook": { platform: string; rawBody: string; headers: Record<string, string> };
-	"context:debug": { thread_id: string; turn_id: number; debug: ContextDebugInfo };
+	"context:debug": { thread_id: string; turn_id: string; debug: ContextDebugInfo };
 	"notify:enqueued": { thread_id: string };
 	"model:fallback": {
 		requested_model: string;

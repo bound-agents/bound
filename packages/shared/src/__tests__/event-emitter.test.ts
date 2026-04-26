@@ -180,7 +180,7 @@ describe("TypedEventEmitter", () => {
 		let receivedData:
 			| {
 					thread_id: string;
-					turn_id: number;
+					turn_id: string;
 					debug: ContextDebugInfo;
 			  }
 			| undefined;
