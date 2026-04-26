@@ -71,6 +71,15 @@ export const MAX_SILENCE_RETRIES = 3;
 export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 
 /**
+ * Circuit breaker for consecutive truncated tool calls on the same tool name.
+ * If the parser flags N turns in a row as truncated for the same tool, we abort
+ * the loop rather than let it spin. Guards against parser bugs (e.g. the
+ * empty-args false-truncation regression from 2026-04-24 that burned 23M tokens
+ * across 3,654 turns before Kara cancelled manually).
+ */
+export const MAX_CONSECUTIVE_TRUNCATED_TURNS = 5;
+
+/**
  * Scale silence timeout based on estimated context size.
  * With a 10-minute base timeout, only very large contexts (100k+) need
  * additional time for cold-cache processing.
@@ -237,6 +246,9 @@ export class AgentLoop {
 	async run(): Promise<AgentLoopResult> {
 		const loopStartTime = Date.now();
 		let turnCount = 0;
+		// Circuit breaker state for MAX_CONSECUTIVE_TRUNCATED_TURNS guardrail.
+		let consecutiveTruncatedTurns = 0;
+		let lastTruncatedToolName: string | null = null;
 
 		this.ctx.logger.info("[agent-loop] Starting", {
 			threadId: this.config.threadId,
@@ -1066,6 +1078,47 @@ export class AgentLoop {
 				}
 
 				if (parsed.toolCalls.length > 0) {
+					// Circuit breaker: if the parser keeps flagging the same tool as truncated
+					// turn after turn, we're in a loop — likely a parser bug or a model that
+					// won't stop retrying. Abort before executing (and re-prompting) again.
+					const firstTruncated = parsed.toolCalls.find((tc) => tc.truncated);
+					if (firstTruncated) {
+						if (lastTruncatedToolName === firstTruncated.name) {
+							consecutiveTruncatedTurns++;
+						} else {
+							consecutiveTruncatedTurns = 1;
+							lastTruncatedToolName = firstTruncated.name;
+						}
+
+						if (consecutiveTruncatedTurns >= MAX_CONSECUTIVE_TRUNCATED_TURNS) {
+							this.ctx.logger.error("[agent-loop] Aborting: consecutive truncated tool-call loop", {
+								threadId: this.config.threadId,
+								taskId: this.config.taskId ?? null,
+								toolName: firstTruncated.name,
+								consecutiveTurns: consecutiveTruncatedTurns,
+								threshold: MAX_CONSECUTIVE_TRUNCATED_TURNS,
+								turn: turnCount,
+							});
+							const noticeId = insertThreadMessage(
+								this.ctx.db,
+								{
+									threadId: this.config.threadId,
+									role: "developer",
+									content: `[Agent loop aborted] Detected ${consecutiveTruncatedTurns} consecutive turns with truncated "${firstTruncated.name}" tool calls. This typically indicates a parser bug or a model stuck in a retry loop. Aborting to prevent runaway token usage.`,
+									hostOrigin: this.ctx.siteId,
+								},
+								this.ctx.siteId,
+							);
+							this.broadcastMessage(noticeId);
+							this.messagesCreated++;
+							continueLoop = false;
+							break;
+						}
+					} else {
+						consecutiveTruncatedTurns = 0;
+						lastTruncatedToolName = null;
+					}
+
 					// Cooperative cancellation: check before executing tools
 					if (this.config.shouldYield?.()) {
 						this.ctx.logger.info(
@@ -2030,7 +2083,11 @@ export class AgentLoop {
 				const existing = argsAccumulator.get(chunk.id) ?? "";
 				argsAccumulator.set(chunk.id, existing + chunk.partial_json);
 			} else if (chunk.type === "tool_use_end") {
-				const fullArgsJson = argsAccumulator.get(chunk.id) ?? "{}";
+				// Empty accumulator = zero-argument tool call (no tool_use_args chunks streamed).
+				// `??` only catches undefined, so empty-string would fall through to JSON.parse("")
+				// and spuriously flag the call as truncated. Treat "" and undefined alike as "{}".
+				const rawArgs = argsAccumulator.get(chunk.id);
+				const fullArgsJson = rawArgs && rawArgs.length > 0 ? rawArgs : "{}";
 				const name = nameMap.get(chunk.id) ?? chunk.id;
 				let input: Record<string, unknown> = {};
 				let truncated = false;

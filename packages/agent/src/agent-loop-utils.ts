@@ -291,7 +291,11 @@ export function parseStreamChunks(chunks: StreamChunk[]): ParsedResponse {
 			const existing = argsAccumulator.get(chunk.id) ?? "";
 			argsAccumulator.set(chunk.id, existing + chunk.partial_json);
 		} else if (chunk.type === "tool_use_end") {
-			const fullArgsJson = argsAccumulator.get(chunk.id) ?? "{}";
+			// Empty accumulator = zero-argument tool call (no tool_use_args chunks streamed).
+			// `??` only catches undefined, so empty-string would fall through to JSON.parse("")
+			// and spuriously flag the call as truncated. Treat "" and undefined alike as "{}".
+			const rawArgs = argsAccumulator.get(chunk.id);
+			const fullArgsJson = rawArgs && rawArgs.length > 0 ? rawArgs : "{}";
 			const name = nameMap.get(chunk.id) ?? chunk.id;
 			let input: Record<string, unknown> = {};
 			let truncated = false;

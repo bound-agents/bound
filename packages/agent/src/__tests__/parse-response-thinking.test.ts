@@ -193,3 +193,79 @@ describe("parseStreamChunks thinking handling", () => {
 		expect(result.usage.cacheReadTokens).toBe(150);
 	});
 });
+
+describe("parseStreamChunks truncation handling", () => {
+	// Regression: 2026-04-24 empty-args false-truncation bug (burned 23M tokens).
+	// A zero-argument tool call emits tool_use_start + tool_use_end with no
+	// tool_use_args chunks in between. Accumulator becomes "" (not undefined),
+	// so `?? "{}"` fallback didn't catch it and JSON.parse("") threw.
+	it("zero-argument tool call parses as {} (not truncated)", () => {
+		const chunks: StreamChunk[] = [
+			{ type: "tool_use_start", id: "tool-1", name: "retrieve_task" },
+			// No tool_use_args chunks — zero-arg call.
+			{ type: "tool_use_end", id: "tool-1" },
+			{
+				type: "done",
+				usage: {
+					input_tokens: 100,
+					output_tokens: 20,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			},
+		];
+
+		const result = parseStreamChunks(chunks);
+		expect(result.toolCalls).toHaveLength(1);
+		expect(result.toolCalls[0].name).toBe("retrieve_task");
+		expect(result.toolCalls[0].input).toEqual({});
+		expect(result.toolCalls[0].truncated).toBe(false);
+		expect(result.toolCalls[0].argsJson).toBe("{}");
+	});
+
+	it("explicit empty-object args parses as {} (not truncated)", () => {
+		const chunks: StreamChunk[] = [
+			{ type: "tool_use_start", id: "tool-1", name: "ping" },
+			{ type: "tool_use_args", id: "tool-1", partial_json: "{}" },
+			{ type: "tool_use_end", id: "tool-1" },
+			{
+				type: "done",
+				usage: {
+					input_tokens: 50,
+					output_tokens: 10,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			},
+		];
+
+		const result = parseStreamChunks(chunks);
+		expect(result.toolCalls[0].input).toEqual({});
+		expect(result.toolCalls[0].truncated).toBe(false);
+	});
+
+	it("genuinely malformed args are still flagged truncated", () => {
+		const chunks: StreamChunk[] = [
+			{ type: "tool_use_start", id: "tool-1", name: "bash" },
+			// Cut off mid-JSON — classic output truncation shape.
+			{ type: "tool_use_args", id: "tool-1", partial_json: '{"command":"ls -la /very/long' },
+			{ type: "tool_use_end", id: "tool-1" },
+			{
+				type: "done",
+				usage: {
+					input_tokens: 100,
+					output_tokens: 50,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			},
+		];
+
+		const result = parseStreamChunks(chunks);
+		expect(result.toolCalls[0].truncated).toBe(true);
+		expect(result.toolCalls[0].input).toEqual({});
+	});
+});
