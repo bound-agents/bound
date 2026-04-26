@@ -7885,4 +7885,128 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			}
 		});
 	});
+
+	describe("Stage 2.5 role filter (Invariant #19 defense-in-depth)", () => {
+		// These tests insert rows via raw db.run to bypass insertRow()'s P1.1
+		// guard, simulating legacy data or corruption. Stage 2.5 must continue
+		// to drop role:'system' from the LLM input regardless of id prefix.
+
+		it("drops role:'system' messages that leak past the insertRow guard", () => {
+			const testThreadId = randomUUID();
+			const testUserId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[testUserId, "Stage25 User", null, now, now, 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					testUserId,
+					"web",
+					"local",
+					0,
+					"Stage25",
+					null,
+					null,
+					null,
+					null,
+					now,
+					now,
+					now,
+					0,
+				],
+			);
+
+			// Raw-insert a role:'system' message — this simulates legacy data
+			// or corruption; insertRow() would reject it now.
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"system",
+					"LEAKED_SYSTEM_MESSAGE_CONTENT",
+					null,
+					null,
+					now,
+					now,
+					"local",
+				],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), testThreadId, "user", "a user message", null, null, now, now, "local"],
+			);
+
+			const { messages } = assembleContext({
+				db,
+				threadId: testThreadId,
+				userId: testUserId,
+			});
+
+			const serialized = messages
+				.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+				.join("\n");
+			expect(serialized).not.toContain("LEAKED_SYSTEM_MESSAGE_CONTENT");
+		});
+
+		it("keeps role:'developer' injected context (e.g. notifications)", () => {
+			const testThreadId = randomUUID();
+			const testUserId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[testUserId, "Dev User", null, now, now, 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					testUserId,
+					"web",
+					"local",
+					0,
+					"Dev",
+					null,
+					null,
+					null,
+					null,
+					now,
+					now,
+					now,
+					0,
+				],
+			);
+
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"developer",
+					"INJECTED_DEVELOPER_CONTENT",
+					null,
+					null,
+					now,
+					now,
+					"local",
+				],
+			);
+
+			const { messages } = assembleContext({
+				db,
+				threadId: testThreadId,
+				userId: testUserId,
+			});
+
+			const serialized = messages
+				.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+				.join("\n");
+			expect(serialized).toContain("INJECTED_DEVELOPER_CONTENT");
+		});
+	});
 });

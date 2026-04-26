@@ -947,22 +947,15 @@ Original output was too large for the context window. If you need the full conte
 	}
 
 	// Stage 2.5: NON-LLM ROLE FILTERING
-	// Remove alert and DB-originated system messages BEFORE the tool pair sanitizer runs.
-	// These non-LLM roles confuse the sanitizer's reordering logic when they appear
-	// between tool_call/tool_result pairs. Purge-summary system messages (created in
-	// Stage 2 with id prefix "purge-summary-") are preserved as meaningful context.
-	const NON_LLM_ROLES = new Set(["alert", "purge"]);
-	const messagesFiltered = messagesAfterPurge.filter((m) => {
-		if (NON_LLM_ROLES.has(m.role)) return false;
-		// Filter DB-originated system messages but keep purge summaries
-		if (
-			m.role === "system" &&
-			!m.id.startsWith("purge-summary-") &&
-			!m.id.startsWith("__compaction_")
-		)
-			return false;
-		return true;
-	});
+	// Drop non-LLM-compatible roles before Stage 3 sanitizer runs. Per
+	// Invariant #19, role='system' must never be persisted into the messages
+	// table — insertRow() enforces this at the write boundary. Any row
+	// reaching this filter with role='system' is legacy/corrupt data; drop it.
+	// The prior prefix allowlist for "purge-summary-" / "__compaction_" was
+	// dead code — those synthetic messages (inserted earlier in this function
+	// at lines 783 and 930) are role='developer', not 'system'.
+	const NON_LLM_ROLES = new Set(["alert", "purge", "system"]);
+	const messagesFiltered = messagesAfterPurge.filter((m) => !NON_LLM_ROLES.has(m.role));
 
 	// Stage 3: TOOL_PAIR_SANITIZATION
 	// Ensure tool_call/tool_result pairs are adjacent (no messages between them).
