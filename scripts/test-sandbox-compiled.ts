@@ -26,7 +26,7 @@ async function main() {
 	const outfile = "dist/sandbox-smoke";
 	console.log(`Compiling ${outfile}...`);
 	const build = await Bun.build({
-		entrypoints: [resolve("packages/cli/src/sandbox-smoke.ts")],
+		entrypoints: [resolve("scripts/fixtures/sandbox-smoke.ts")],
 		compile: {
 			target: `bun-${process.platform}-${process.arch}` as `bun-${string}-${string}`,
 			outfile,

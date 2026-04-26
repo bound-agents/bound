@@ -3,12 +3,13 @@
  *
  * This entrypoint exists so we can test the sandbox's python3 and js-exec
  * commands after `bun build --compile`, without spinning up the full
- * bound agent server. It's build-time wiring only — not shipped to end
- * users, not registered in any CLI. The build target is produced ad-hoc
- * by scripts/test-sandbox-compiled.ts.
+ * bound agent server. It's a build-time fixture only — not shipped to
+ * end users, not registered in any CLI. The build target is produced
+ * ad-hoc by scripts/test-sandbox-compiled.ts, which is this file's sole
+ * consumer.
  */
 
-import { createClusterFs, createSandbox } from "@bound/sandbox";
+import { createClusterFs, createSandbox } from "../../packages/sandbox/src";
 
 async function main() {
 	// biome-ignore lint/suspicious/noExplicitAny: testing multiple overloads
