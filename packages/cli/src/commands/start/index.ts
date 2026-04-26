@@ -11,7 +11,7 @@ import { registerSighupHandler } from "../../sighup.js";
 import { createAgentLoopFactory } from "./agent-factory.js";
 import { initBootstrap } from "./bootstrap.js";
 import type { StartArgs } from "./bootstrap.js";
-import { initInference } from "./inference.js";
+import { advertiseLocalModels, initInference, toRouterConfig } from "./inference.js";
 import { initMcp, reloadMcpServers } from "./mcp.js";
 import { initRelay } from "./relay.js";
 import { initSandbox } from "./sandbox.js";
@@ -113,6 +113,27 @@ export async function runStart(args: StartArgs): Promise<void> {
 				oldConfig,
 				newConfig,
 			});
+		},
+		onModelBackendsChanged: async (_oldConfig, newConfig) => {
+			if (!modelRouter) {
+				appContext.logger.warn(
+					"[sighup] model_backends.json changed but no router is registered — restart to apply",
+				);
+				return;
+			}
+			try {
+				modelRouter.reload(toRouterConfig(newConfig));
+				advertiseLocalModels(appContext, modelRouter, newConfig);
+				appContext.logger.info("[sighup] Model router reloaded", {
+					backends: modelRouter.listBackends().map((b) => b.id),
+					default: modelRouter.getDefaultId(),
+				});
+			} catch (err) {
+				appContext.logger.error(
+					"[sighup] Failed to reload model router — keeping previous backends",
+					{ error: err instanceof Error ? err.message : String(err) },
+				);
+			}
 		},
 		onWsConfigChanged: async (newWsConfig) => {
 			// Update WS client config. Changes take effect on next reconnection/connection.

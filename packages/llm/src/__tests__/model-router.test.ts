@@ -1129,3 +1129,203 @@ describe("ModelRouter thinking config", () => {
 		expect(router.getEffort("opus")).toBeUndefined();
 	});
 });
+
+describe("ModelRouter.reload — in-place config swap", () => {
+	const initialConfig: ModelBackendsConfig = {
+		backends: [
+			{
+				id: "old-backend",
+				provider: "openai-compatible",
+				apiKey: "test",
+				model: "llama3",
+				baseUrl: "http://localhost:11434",
+				contextWindow: 4096,
+				tier: 3,
+			},
+		],
+		default: "old-backend",
+	};
+
+	it("replaces backends and default when called with a new config", () => {
+		const router = createModelRouter(initialConfig);
+		expect(router.getDefaultId()).toBe("old-backend");
+		expect(router.listBackends().map((b) => b.id)).toEqual(["old-backend"]);
+
+		router.reload({
+			backends: [
+				{
+					id: "new-backend",
+					provider: "openai-compatible",
+					apiKey: "test",
+					model: "llama4",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 8192,
+					tier: 2,
+				},
+			],
+			default: "new-backend",
+		});
+
+		expect(router.getDefaultId()).toBe("new-backend");
+		expect(router.listBackends().map((b) => b.id)).toEqual(["new-backend"]);
+		expect(() => router.getBackend("old-backend")).toThrow("Unknown backend ID");
+	});
+
+	it("preserves router identity so held references see the updated state", () => {
+		const router = createModelRouter(initialConfig);
+		// Simulate long-held reference (agent-loop, scheduler, server).
+		const heldRef = router;
+
+		router.reload({
+			backends: [
+				{
+					id: "swapped",
+					provider: "openai-compatible",
+					apiKey: "test",
+					model: "llama4",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 8192,
+					tier: 1,
+				},
+			],
+			default: "swapped",
+		});
+
+		// The previously held reference must reflect the new state — no indirection needed.
+		expect(heldRef.getDefaultId()).toBe("swapped");
+		expect(heldRef.listBackends().map((b) => b.id)).toEqual(["swapped"]);
+	});
+
+	it("refreshes effective capabilities and tiers after reload", () => {
+		const router = createModelRouter(initialConfig);
+		expect(router.getEffectiveCapabilities("old-backend")).not.toBeNull();
+		expect(router.getBackendTier("old-backend")).toBe(3);
+
+		router.reload({
+			backends: [
+				{
+					id: "vision-capable",
+					provider: "openai-compatible",
+					apiKey: "test",
+					model: "llava",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 4096,
+					tier: 1,
+					capabilities: { vision: true },
+				},
+			],
+			default: "vision-capable",
+		});
+
+		expect(router.getEffectiveCapabilities("old-backend")).toBeNull();
+		const caps = router.getEffectiveCapabilities("vision-capable");
+		expect(caps?.vision).toBe(true);
+		expect(router.getBackendTier("vision-capable")).toBe(1);
+	});
+
+	it("refreshes thinking/effort config after reload", () => {
+		const router = createModelRouter(initialConfig);
+		expect(router.getThinkingConfig("old-backend")).toBeUndefined();
+
+		router.reload({
+			backends: [
+				{
+					id: "opus",
+					provider: "bedrock",
+					region: "us-east-1",
+					model: "claude-opus-4-7",
+					apiKey: "test-key",
+					contextWindow: 1_000_000,
+					thinking: { type: "adaptive" },
+					effort: "xhigh",
+				},
+			],
+			default: "opus",
+		});
+
+		const thinking = router.getThinkingConfig("opus");
+		expect(thinking).toEqual({ type: "adaptive", display: "summarized" });
+		expect(router.getEffort("opus")).toBe("xhigh");
+	});
+
+	it("clears rate-limit state for backends that disappear", () => {
+		const router = createModelRouter(initialConfig);
+		router.markRateLimited("old-backend", 60_000);
+		expect(router.isRateLimited("old-backend")).toBe(true);
+
+		router.reload({
+			backends: [
+				{
+					id: "fresh",
+					provider: "openai-compatible",
+					apiKey: "test",
+					model: "llama4",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 8192,
+				},
+			],
+			default: "fresh",
+		});
+
+		// old-backend no longer exists, so any query about it should return false,
+		// and the new backend must start un-rate-limited.
+		expect(router.isRateLimited("old-backend")).toBe(false);
+		expect(router.isRateLimited("fresh")).toBe(false);
+	});
+
+	it("supports hub-only mode (empty backends) on reload", () => {
+		const router = createModelRouter(initialConfig);
+		router.reload({ backends: [], default: "" });
+
+		expect(router.listBackends()).toEqual([]);
+		expect(router.getDefaultId()).toBe("");
+	});
+
+	it("throws when new config's default is not present in backends", () => {
+		const router = createModelRouter(initialConfig);
+		expect(() =>
+			router.reload({
+				backends: [
+					{
+						id: "only-one",
+						provider: "openai-compatible",
+						apiKey: "test",
+						model: "llama4",
+						baseUrl: "http://localhost:11434",
+						contextWindow: 8192,
+					},
+				],
+				default: "not-in-backends",
+			}),
+		).toThrow(/Default backend .* not found/);
+	});
+
+	it("leaves router state unchanged when reload throws (invalid default)", () => {
+		const router = createModelRouter(initialConfig);
+		const before = {
+			defaultId: router.getDefaultId(),
+			ids: router.listBackends().map((b) => b.id),
+		};
+
+		try {
+			router.reload({
+				backends: [
+					{
+						id: "x",
+						provider: "openai-compatible",
+						apiKey: "test",
+						model: "y",
+						baseUrl: "http://localhost:11434",
+						contextWindow: 8192,
+					},
+				],
+				default: "not-x",
+			});
+		} catch {
+			// expected
+		}
+
+		expect(router.getDefaultId()).toBe(before.defaultId);
+		expect(router.listBackends().map((b) => b.id)).toEqual(before.ids);
+	});
+});

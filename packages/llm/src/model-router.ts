@@ -155,6 +155,30 @@ export class ModelRouter {
 		this.backendConfigs = backendConfigs ?? new Map();
 	}
 
+	/**
+	 * Rebuilds internal backend state from a new ModelBackendsConfig. Held
+	 * references to this router see the updated state immediately — callers
+	 * (agent-loop, scheduler, server, command context) do not need to swap
+	 * the instance.
+	 *
+	 * Atomicity: if the new config is invalid (e.g. default not in backends,
+	 * unsupported provider), the router is left in its prior state and the
+	 * error propagates to the caller.
+	 *
+	 * Side effect: rate-limit counters are reset — backends are reconstructed
+	 * from scratch, so any prior 429 state is no longer meaningful against
+	 * the new driver instances.
+	 */
+	reload(config: ModelBackendsConfig): void {
+		const next = buildRouterState(config);
+		this.backends = next.backends;
+		this.defaultId = next.defaultId;
+		this.effectiveCaps = next.effectiveCaps;
+		this.tiers = next.tiers;
+		this.backendConfigs = next.backendConfigs;
+		this.rateLimits = new Map();
+	}
+
 	getBackend(modelId?: string): LLMBackend {
 		const id = modelId ?? this.defaultId;
 		const backend = this.backends.get(id);
@@ -426,7 +450,15 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 	}
 }
 
-export function createModelRouter(config: ModelBackendsConfig): ModelRouter {
+interface RouterState {
+	backends: Map<string, LLMBackend>;
+	defaultId: string;
+	effectiveCaps: Map<string, BackendCapabilities>;
+	tiers: Map<string, number>;
+	backendConfigs: Map<string, BackendConfig>;
+}
+
+function buildRouterState(config: ModelBackendsConfig): RouterState {
 	// Group backend configs by ID to support pooling (multiple providers for the same logical model)
 	const groups = new Map<string, { entries: PoolEntry[]; caps: BackendCapabilities[] }>();
 
@@ -483,7 +515,7 @@ export function createModelRouter(config: ModelBackendsConfig): ModelRouter {
 	// Hub-only mode: empty backends array is valid (inference proxied to spokes).
 	// In this case the default is "" and no local backends are available.
 	if (config.backends.length === 0) {
-		return new ModelRouter(backends, "", effectiveCaps, tiers, backendConfigs);
+		return { backends, defaultId: "", effectiveCaps, tiers, backendConfigs };
 	}
 
 	// Verify default backend exists
@@ -492,5 +524,16 @@ export function createModelRouter(config: ModelBackendsConfig): ModelRouter {
 		throw new LLMError(`Default backend "${config.default}" not found in backends`, "router");
 	}
 
-	return new ModelRouter(backends, config.default, effectiveCaps, tiers, backendConfigs);
+	return { backends, defaultId: config.default, effectiveCaps, tiers, backendConfigs };
+}
+
+export function createModelRouter(config: ModelBackendsConfig): ModelRouter {
+	const state = buildRouterState(config);
+	return new ModelRouter(
+		state.backends,
+		state.defaultId,
+		state.effectiveCaps,
+		state.tiers,
+		state.backendConfigs,
+	);
 }

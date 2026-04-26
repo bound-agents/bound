@@ -1,6 +1,13 @@
 import type { AppContext } from "@bound/core";
-import { loadOptionalConfigs } from "@bound/core";
-import type { KeyringConfig, Logger, McpConfig, WsConfig } from "@bound/shared";
+import { loadConfigFile, loadOptionalConfigs } from "@bound/core";
+import type {
+	KeyringConfig,
+	Logger,
+	McpConfig,
+	ModelBackendsConfig,
+	WsConfig,
+} from "@bound/shared";
+import { modelBackendsSchema } from "@bound/shared";
 import type { KeyManager } from "@bound/sync";
 
 interface SighupHandlerConfig {
@@ -19,6 +26,19 @@ interface SighupHandlerConfig {
 	 * idle_timeout changes take effect on next connection only.
 	 */
 	onWsConfigChanged?: (newWsConfig: WsConfig | undefined) => Promise<void>;
+	/**
+	 * Callback invoked when model_backends.json changes during a reload.
+	 * Allows the caller to rebuild the ModelRouter in place (see
+	 * ModelRouter.reload) and refresh anything that captured derived state
+	 * (hosts.models advertisement, commandContext.modelRouter, etc.).
+	 *
+	 * Parse failures are non-fatal: the previous modelBackends value is
+	 * retained on appContext.config and this callback is NOT invoked.
+	 */
+	onModelBackendsChanged?: (
+		oldConfig: ModelBackendsConfig,
+		newConfig: ModelBackendsConfig,
+	) => Promise<void>;
 	// For testing: inject a delay into the reload work to allow true concurrency testing
 	delayMs?: number;
 }
@@ -38,6 +58,7 @@ export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> 
 		keyManager,
 		onMcpConfigChanged,
 		onWsConfigChanged,
+		onModelBackendsChanged,
 		logger,
 		delayMs,
 	} = config;
@@ -126,6 +147,45 @@ export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> 
 					logger.error("MCP reload failed", {
 						error: err instanceof Error ? err.message : String(err),
 					});
+				}
+			}
+		}
+
+		// Handle model_backends.json — this is a required config, not in
+		// loadOptionalConfigs. Bad config files are non-fatal: errors are
+		// logged and the previous appContext.config.modelBackends is kept.
+		const modelBackendsResult = loadConfigFile(
+			configDir,
+			"model_backends.json",
+			modelBackendsSchema,
+		);
+		if (!modelBackendsResult.ok) {
+			// Suppress File-not-found: spokes can run without a local backends file
+			// (hub-only mode) and the startup loader already enforced presence.
+			if (!modelBackendsResult.error.message.includes("File not found")) {
+				errors.push("model_backends");
+				logger.error("Failed to reload model_backends config", {
+					error: modelBackendsResult.error,
+				});
+			}
+		} else if (appContext.config) {
+			const oldModelBackends = appContext.config.modelBackends as ModelBackendsConfig | undefined;
+			const newModelBackends = modelBackendsResult.value;
+			const oldJson = oldModelBackends ? JSON.stringify(oldModelBackends) : null;
+			const newJson = JSON.stringify(newModelBackends);
+			if (oldJson !== newJson) {
+				changes.push("model_backends");
+				// Mutate in place so all holders of appContext observe the update.
+				(appContext.config as { modelBackends: ModelBackendsConfig }).modelBackends =
+					newModelBackends;
+				if (onModelBackendsChanged && oldModelBackends) {
+					try {
+						await onModelBackendsChanged(oldModelBackends, newModelBackends);
+					} catch (err) {
+						logger.error("Model backends reload callback failed", {
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
 				}
 			}
 		}

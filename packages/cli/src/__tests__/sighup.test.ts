@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { KeyringConfig, Logger } from "@bound/shared";
+import type { KeyringConfig, Logger, ModelBackendsConfig } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import type { KeyManager } from "@bound/sync";
 
@@ -9,6 +9,10 @@ import type { KeyManager } from "@bound/sync";
 interface TestAppContext {
 	logger: Logger;
 	optionalConfig: Record<string, { ok: boolean; value?: unknown; error?: unknown }>;
+	config?: {
+		modelBackends?: ModelBackendsConfig;
+		allowlist?: unknown;
+	};
 }
 
 // Mock logger for testing
@@ -320,6 +324,156 @@ describe("SIGHUP handler", () => {
 		});
 
 		expect(reloadCalled).toBe(false);
+	});
+
+	it("reloads model_backends.json and updates appContext.config.modelBackends", async () => {
+		const { reloadConfigs } = await import("../sighup.js");
+
+		const initialBackends: ModelBackendsConfig = {
+			backends: [
+				{
+					id: "old",
+					provider: "openai-compatible",
+					model: "llama3",
+					base_url: "http://localhost:11434",
+					api_key: "test",
+					context_window: 4096,
+					tier: 3,
+					price_per_m_input: 0,
+					price_per_m_output: 0,
+				},
+			],
+			default: "old",
+		};
+
+		const newBackends = {
+			backends: [
+				{
+					id: "new",
+					provider: "openai-compatible",
+					model: "llama4",
+					base_url: "http://localhost:11434",
+					api_key: "test",
+					context_window: 8192,
+					tier: 2,
+					price_per_m_input: 0,
+					price_per_m_output: 0,
+				},
+			],
+			default: "new",
+		};
+
+		const mockAppContext: TestAppContext = {
+			logger: testLogger,
+			optionalConfig: {},
+			config: { modelBackends: initialBackends },
+		};
+
+		writeFileSync(join(tempDir, "model_backends.json"), JSON.stringify(newBackends));
+
+		let callbackInvoked = false;
+		let receivedNew: ModelBackendsConfig | null = null;
+		await reloadConfigs({
+			appContext: mockAppContext,
+			configDir: tempDir,
+			logger: testLogger,
+			onModelBackendsChanged: async (_old, next) => {
+				callbackInvoked = true;
+				receivedNew = next;
+			},
+		});
+
+		expect(callbackInvoked).toBe(true);
+		expect(receivedNew?.default).toBe("new");
+		expect(mockAppContext.config?.modelBackends?.default).toBe("new");
+		expect(mockAppContext.config?.modelBackends?.backends[0].id).toBe("new");
+	});
+
+	it("does not invoke onModelBackendsChanged when model_backends.json is unchanged", async () => {
+		const { reloadConfigs } = await import("../sighup.js");
+
+		const backends: ModelBackendsConfig = {
+			backends: [
+				{
+					id: "same",
+					provider: "openai-compatible",
+					model: "llama3",
+					base_url: "http://localhost:11434",
+					api_key: "test",
+					context_window: 4096,
+					tier: 3,
+					price_per_m_input: 0,
+					price_per_m_output: 0,
+				},
+			],
+			default: "same",
+		};
+
+		const mockAppContext: TestAppContext = {
+			logger: testLogger,
+			optionalConfig: {},
+			config: { modelBackends: backends },
+		};
+
+		// Write same backends — Zod will parse to same shape, so no-op.
+		writeFileSync(join(tempDir, "model_backends.json"), JSON.stringify(backends));
+
+		let callbackInvoked = false;
+		await reloadConfigs({
+			appContext: mockAppContext,
+			configDir: tempDir,
+			logger: testLogger,
+			onModelBackendsChanged: async () => {
+				callbackInvoked = true;
+			},
+		});
+
+		expect(callbackInvoked).toBe(false);
+	});
+
+	it("keeps previous model_backends when new file has invalid JSON", async () => {
+		const { reloadConfigs } = await import("../sighup.js");
+
+		const priorBackends: ModelBackendsConfig = {
+			backends: [
+				{
+					id: "prior",
+					provider: "openai-compatible",
+					model: "llama3",
+					base_url: "http://localhost:11434",
+					api_key: "test",
+					context_window: 4096,
+					tier: 3,
+					price_per_m_input: 0,
+					price_per_m_output: 0,
+				},
+			],
+			default: "prior",
+		};
+
+		const mockAppContext: TestAppContext = {
+			logger: testLogger,
+			optionalConfig: {},
+			config: { modelBackends: priorBackends },
+		};
+
+		writeFileSync(join(tempDir, "model_backends.json"), "{ not valid json");
+
+		let callbackInvoked = false;
+		await reloadConfigs({
+			appContext: mockAppContext,
+			configDir: tempDir,
+			logger: testLogger,
+			onModelBackendsChanged: async () => {
+				callbackInvoked = true;
+			},
+		});
+
+		// Prior value retained, callback not invoked, error logged.
+		expect(mockAppContext.config?.modelBackends?.default).toBe("prior");
+		expect(callbackInvoked).toBe(false);
+		const errors = testLogger.getMessages("error");
+		expect(errors.some((e) => e.includes("model_backends"))).toBe(true);
 	});
 
 	it("AC12.6: concurrent reloads handled gracefully", async () => {

@@ -55,6 +55,40 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 	};
 }
 
+/**
+ * Writes the current router's backend set to hosts.models so peers learn
+ * what we can serve. Idempotent — safe to call both at startup and after
+ * a SIGHUP-driven router reload.
+ */
+export function advertiseLocalModels(
+	appContext: AppContext,
+	modelRouter: ReturnType<typeof createModelRouter>,
+	rawBackends: SharedModelBackendsConfig,
+): void {
+	const modelEntries: HostModelEntry[] = modelRouter.listBackends().map((b) => {
+		const rawBackend = rawBackends.backends.find((rb) => rb.id === b.id);
+		return {
+			id: b.id,
+			tier: rawBackend?.tier,
+			capabilities: b.capabilities,
+		};
+	});
+
+	const existingHost = appContext.db
+		.query("SELECT site_id FROM hosts WHERE site_id = ?")
+		.get(appContext.siteId) as { site_id: string } | null;
+
+	if (existingHost) {
+		updateRow(
+			appContext.db,
+			"hosts",
+			appContext.siteId,
+			{ models: JSON.stringify(modelEntries) },
+			appContext.siteId,
+		);
+	}
+}
+
 export async function initInference(
 	appContext: AppContext,
 	commandContext: Record<string, unknown> | null,
@@ -90,28 +124,7 @@ export async function initInference(
 
 	// Register local model capabilities in hosts.models for sync advertisement
 	if (modelRouter) {
-		const modelEntries: HostModelEntry[] = modelRouter.listBackends().map((b) => {
-			const rawBackend = rawBackends.backends.find((rb) => rb.id === b.id);
-			return {
-				id: b.id,
-				tier: rawBackend?.tier,
-				capabilities: b.capabilities,
-			};
-		});
-
-		const existingHost = appContext.db
-			.query("SELECT site_id FROM hosts WHERE site_id = ?")
-			.get(appContext.siteId) as { site_id: string } | null;
-
-		if (existingHost) {
-			updateRow(
-				appContext.db,
-				"hosts",
-				appContext.siteId,
-				{ models: JSON.stringify(modelEntries) },
-				appContext.siteId,
-			);
-		}
+		advertiseLocalModels(appContext, modelRouter, rawBackends);
 	}
 
 	// 11a. Post-restart summary extraction
