@@ -141,6 +141,102 @@ export function resolveDelegationMessageId(
 }
 
 /**
+ * Connector surface required by runPostLoopDeliveryCheck. Intentionally a
+ * structural subset of PlatformConnector so call sites don't need to
+ * import from @bound/platforms just to call this function, and so tests
+ * can pass plain objects.
+ */
+export interface DeliveryCheckConnector {
+	verifyDelivery?: (
+		threadId: string,
+		turnStartAt: string,
+	) => Promise<
+		{ kind: "delivered" } | { kind: "intentional-silence" } | { kind: "missing"; nudge: string }
+	>;
+}
+
+export interface RunPostLoopDeliveryCheckParams {
+	db: Database;
+	siteId: string;
+	hostName: string;
+	threadId: string;
+	/** ISO timestamp of when the turn being evaluated began. */
+	turnStartAt: string;
+	/** Platform key — used to namespace the metadata tombstone key. */
+	platform: string;
+	connector: DeliveryCheckConnector;
+	logger?: Logger;
+}
+
+/**
+ * Consult the platform connector's verifyDelivery hook after an agent
+ * turn completes. When the verdict is "missing", inserts a
+ * developer-role nudge message with a platform-scoped tombstone in
+ * messages.metadata AND enqueues it via dispatch_queue so the next loop
+ * cycle picks it up as a trigger. The tombstone lets the connector's
+ * verifyDelivery on the FOLLOWING turn recognize "agent already nudged;
+ * respect silence."
+ *
+ * No-op when:
+ *   - The connector has no verifyDelivery method.
+ *   - The verdict is "delivered" or "intentional-silence".
+ *   - verifyDelivery throws — logged but swallowed to avoid crashing the
+ *     post-loop path for an observability feature.
+ */
+export async function runPostLoopDeliveryCheck(
+	params: RunPostLoopDeliveryCheckParams,
+): Promise<void> {
+	const { db, siteId, hostName, threadId, turnStartAt, platform, connector, logger } = params;
+	if (!connector.verifyDelivery) return;
+
+	let verdict: Awaited<ReturnType<NonNullable<DeliveryCheckConnector["verifyDelivery"]>>>;
+	try {
+		verdict = await connector.verifyDelivery(threadId, turnStartAt);
+	} catch (err) {
+		logger?.warn("[delivery-check] verifyDelivery threw — skipping nudge", {
+			threadId,
+			platform,
+			error: formatError(err),
+		});
+		return;
+	}
+
+	if (verdict.kind !== "missing") return;
+
+	// Insert the nudge as a developer-role message with a platform-scoped
+	// tombstone so the NEXT turn's verifyDelivery can recognize "nudge
+	// already issued" and respect silence. Enqueue the message via
+	// dispatch_queue so the agent loop re-triggers on this row (Invariant
+	// #18: ProcessPayload.message_id must reference a real messages row —
+	// enqueueMessage stores the real id, so delegation is safe).
+	const tombstoneUuid = randomUUID();
+	const messageId = randomUUID();
+	const now = new Date().toISOString();
+	const metadataKey = `${platform}_platform_delivery_retry`;
+
+	insertRow(
+		db,
+		"messages",
+		{
+			id: messageId,
+			thread_id: threadId,
+			role: "developer",
+			content: verdict.nudge,
+			model_id: null,
+			tool_name: null,
+			created_at: now,
+			modified_at: now,
+			host_origin: hostName,
+			deleted: 0,
+			metadata: JSON.stringify({ [metadataKey]: tombstoneUuid }),
+		},
+		siteId,
+	);
+
+	enqueueMessage(db, messageId, threadId);
+}
+
+/**
  * Returns true when a thread's `interface` value maps to a user-facing
  * surface that should be exposed to the agent as `platform: <name>` in the
  * volatile context. False for system-initiated interfaces (scheduler, mcp)
@@ -460,6 +556,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							let platformConfig:
 								| { platform: string; platformTools: AgentLoopConfig["platformTools"] }
 								| undefined;
+							let deliveryCheckConnector: DeliveryCheckConnector | undefined;
 							if (threadInterface && isUserFacingInterface(threadInterface)) {
 								let platformTools: AgentLoopConfig["platformTools"] | undefined;
 								if (platformRegistry) {
@@ -470,11 +567,19 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 													threadId: string,
 													readFileFn?: (path: string) => Promise<Uint8Array>,
 												): AgentLoopConfig["platformTools"];
+												verifyDelivery?: DeliveryCheckConnector["verifyDelivery"];
 											} | null;
 										}
 									).getConnector?.(threadInterface);
 									if (connector?.getPlatformTools) {
 										platformTools = connector.getPlatformTools(thread_id);
+									}
+									// Stash the connector for the post-loop delivery check so
+									// we don't look it up twice per turn.
+									if (connector?.verifyDelivery) {
+										deliveryCheckConnector = {
+											verifyDelivery: connector.verifyDelivery.bind(connector),
+										};
 									}
 								}
 								platformConfig = {
@@ -505,6 +610,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								detail: null,
 							});
 
+							// Capture turn boundary BEFORE the loop runs so verifyDelivery
+							// can scope its tool_call query to messages this turn produced.
+							const turnStartAt = new Date().toISOString();
+
 							const { agentResult: result } = await runLocalAgentLoop({
 								eventBus: appContext.eventBus,
 								threadId: thread_id,
@@ -533,6 +642,32 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								appContext.logger.info(
 									`[agent] Done: ${result.messagesCreated} messages, ${result.toolCallsMade} tool calls`,
 								);
+							}
+
+							// Post-loop platform delivery check: for connectors that
+							// define verifyDelivery (e.g. Discord — ensures the agent
+							// actually called discord_send_message), ask the connector
+							// whether the reply reached the user. A "missing" verdict
+							// inserts a developer-role nudge + enqueues a dispatch
+							// entry so the next turn has a chance to send. A prior
+							// nudge with a platform tombstone flips the verdict to
+							// "intentional-silence" so the agent is never nudged more
+							// than once per conversation window.
+							if (
+								!result.error &&
+								platformConfig?.platform &&
+								deliveryCheckConnector?.verifyDelivery
+							) {
+								await runPostLoopDeliveryCheck({
+									db: appContext.db,
+									siteId: appContext.siteId,
+									hostName: appContext.hostName,
+									threadId: thread_id,
+									turnStartAt,
+									platform: platformConfig.platform,
+									connector: deliveryCheckConnector,
+									logger: appContext.logger,
+								});
 							}
 
 							// NOTE: No post-loop message:broadcast needed here. The agent loop's
