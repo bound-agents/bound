@@ -1,12 +1,13 @@
 <script lang="ts">
 import type { Advisory } from "@bound/shared";
-import { onDestroy, onMount } from "svelte";
+import { onDestroy, onMount, untrack } from "svelte";
 import Btn from "../components/Btn.svelte";
 import Page from "../components/Page.svelte";
 import SectionHeader from "../components/SectionHeader.svelte";
 import StatusChip from "../components/StatusChip.svelte";
 import TicketTab from "../components/TicketTab.svelte";
 import { client } from "../lib/bound";
+import { renderMarkdown } from "../lib/markdown";
 
 let advisories: Advisory[] = $state([]);
 let loading = $state(true);
@@ -124,6 +125,34 @@ const unresolved = $derived(
 const resolved = $derived(
 	advisories.filter((a) => !["proposed", "approved"].includes(a.status)).sort(sortFn),
 );
+
+// Markdown-rendered advisory details, keyed by `${id}::${detail-length}`.
+// Including the length (a cheap proxy for content identity) invalidates the
+// cache when a detail is edited, so a replaced advisory doesn't keep showing
+// the old HTML. Reads go through untrack() so the write-back in the .then()
+// handler doesn't retrigger the effect and create the kind of infinite
+// reactive loop that previously broke unrelated click handlers on the page.
+let renderedDetail = $state<Record<string, string>>({});
+
+function detailCacheKey(a: Advisory): string {
+	return `${a.id}::${a.detail?.length ?? 0}`;
+}
+
+$effect(() => {
+	for (const a of advisories) {
+		if (!a.detail) continue;
+		const key = detailCacheKey(a);
+		const cached = untrack(() => renderedDetail[key]);
+		if (cached) continue;
+		renderMarkdown(a.detail)
+			.then((html) => {
+				renderedDetail = { ...renderedDetail, [key]: html };
+			})
+			.catch((err: unknown) => {
+				console.error("[markdown] renderMarkdown failed:", err);
+			});
+	}
+});
 </script>
 
 <Page>
@@ -183,7 +212,11 @@ const resolved = $derived(
 									<div>
 										<div class="field-block">
 											<div class="kicker">Detail</div>
-											<p class="field-body">{adv.detail}</p>
+											{#if renderedDetail[detailCacheKey(adv)]}
+												<div class="field-body md-content">{@html renderedDetail[detailCacheKey(adv)]}</div>
+											{:else}
+												<p class="field-body">{adv.detail}</p>
+											{/if}
 										</div>
 										{#if adv.action}
 											<div class="field-block">
@@ -297,7 +330,11 @@ const resolved = $derived(
 												<div>
 													<div class="field-block">
 														<div class="kicker">Detail</div>
-														<p class="field-body">{adv.detail}</p>
+														{#if renderedDetail[detailCacheKey(adv)]}
+															<div class="field-body md-content">{@html renderedDetail[detailCacheKey(adv)]}</div>
+														{:else}
+															<p class="field-body">{adv.detail}</p>
+														{/if}
 													</div>
 												</div>
 												<div>
