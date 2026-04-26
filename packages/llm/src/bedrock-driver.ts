@@ -67,7 +67,9 @@ export class BedrockDriver implements LLMBackend {
 	}
 
 	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
-		const modelId = params.model ?? this.model;
+		// Use `||` not `??` — callers sometimes pass `model: ""` as a "use default"
+		// sentinel (see openai-compatible-driver.ts for the same note).
+		const modelId = params.model || this.model;
 		const messages = toModelMessages(params.messages, { cacheProvider: "bedrock" });
 		const tools = toToolSet(params.tools);
 		const reasoningConfig = buildReasoningConfig(params);

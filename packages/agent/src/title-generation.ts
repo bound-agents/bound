@@ -81,7 +81,6 @@ ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
 		// Call the LLM to generate title
 		const chunks: string[] = [];
 		for await (const chunk of llmBackend.chat({
-			model: "", // Will use default
 			messages: [
 				{
 					role: "user",

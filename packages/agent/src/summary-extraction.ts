@@ -244,7 +244,6 @@ Keep the summary under 500 tokens. Focus on information that helps continue the 
 		// summaries without cutting the LLM off mid-thought.
 		const chunks: string[] = [];
 		for await (const chunk of llmBackend.chat({
-			model: "",
 			system: summarizationSystem,
 			messages: [{ role: "user", content: prompt }],
 			max_tokens: 800,
@@ -289,7 +288,6 @@ Keep the summary under 500 tokens. Focus on information that helps continue the 
 		const factChunks: string[] = [];
 		try {
 			for await (const chunk of llmBackend.chat({
-				model: "",
 				system: summarizationSystem,
 				messages: [
 					{

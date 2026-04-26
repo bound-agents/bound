@@ -44,7 +44,11 @@ export class OpenAICompatibleDriver implements LLMBackend {
 	}
 
 	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
-		const modelId = params.model ?? this.model;
+		// Use `||` not `??` — callers sometimes pass `model: ""` as a "use default"
+		// sentinel (the old hand-rolled driver treated empty string as missing).
+		// Without this, empty string flows through and the upstream server rejects
+		// with 400 "Unknown model:".
+		const modelId = params.model || this.model;
 		// OpenAI-compatible endpoints don't have a cache-breakpoint marker —
 		// drop cache-role messages silently via null cacheProvider.
 		const messages = toModelMessages(params.messages, { cacheProvider: null });
