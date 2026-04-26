@@ -18,11 +18,12 @@ describe("built-in-tools", () => {
 		return t;
 	}
 
-	it("creates exactly three tools: read, write, edit", () => {
-		expect(tools.size).toBe(3);
+	it("creates exactly four tools: read, write, edit, retrieve_task", () => {
+		expect(tools.size).toBe(4);
 		expect(tools.has("read")).toBe(true);
 		expect(tools.has("write")).toBe(true);
 		expect(tools.has("edit")).toBe(true);
+		expect(tools.has("retrieve_task")).toBe(true);
 	});
 
 	it("each tool has a valid toolDefinition", () => {
@@ -362,6 +363,38 @@ describe("built-in-tools", () => {
 
 			expect(typeof result).toBe("string");
 			expect(result as string).toContain("Error: binary content not supported");
+		});
+	});
+
+	// ─── retrieve_task ──────────────────────────────────────────────────
+
+	describe("retrieve_task", () => {
+		it("declares itself as a zero-argument tool", () => {
+			const def = tool("retrieve_task").toolDefinition;
+			expect(def.function.name).toBe("retrieve_task");
+			const params = def.function.parameters as {
+				type: string;
+				properties: Record<string, unknown>;
+				required?: string[];
+			};
+			expect(params.type).toBe("object");
+			expect(params.properties).toEqual({});
+			expect(params.required).toBeUndefined();
+		});
+
+		it("returns a stable proceed-with-payload message for empty input", async () => {
+			const result = await tool("retrieve_task").execute({});
+			expect(typeof result).toBe("string");
+			const msg = result as string;
+			expect(msg).toContain("delivered at wake-up");
+			expect(msg).toContain("[Task wakeup]");
+			expect(msg).toContain("Proceed");
+		});
+
+		it("ignores unexpected arguments gracefully", async () => {
+			const result = await tool("retrieve_task").execute({ task_id: "abc", extra: 42 });
+			expect(typeof result).toBe("string");
+			expect((result as string).length).toBeGreaterThan(0);
 		});
 	});
 });

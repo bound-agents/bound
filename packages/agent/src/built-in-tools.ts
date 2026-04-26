@@ -487,6 +487,58 @@ function createEditTool(fs: IFileSystem): BuiltInTool {
 	};
 }
 
+// ─── retrieve_task ──────────────────────────────────────────────────
+//
+// Zero-argument tool that exists primarily to absorb the model's reflex
+// call on scheduled task wake-up. The scheduler (packages/agent/src/
+// scheduler.ts) delivers task payloads as a synthetic tool_call +
+// tool_result pair using the name "retrieve_task" — models pattern-match
+// off that injected history and sometimes emit their own retrieve_task({})
+// call mid-session. Before this tool existed, those reflex calls fell
+// through to the bash fallback and returned "unknown tool" errors; pre
+// 2026-04-26 they also tripped the empty-args truncation bug and caused
+// runaway retry loops (see bound_issue:agent-loop:empty-args-false-
+// truncation and the 2026-04-24 repo_watch incident).
+//
+// The tool intentionally returns a short, stable message telling the
+// model the payload is already in conversation history and that it
+// should proceed. It does NOT re-fetch the payload — that would require
+// plumbing thread/task context into the built-in interface, and the
+// payload is already above in history in every realistic case.
+function createRetrieveTaskTool(): BuiltInTool {
+	const toolDefinition: ToolDefinition = {
+		type: "function",
+		function: {
+			name: "retrieve_task",
+			description:
+				"Acknowledge the current task's instructions. The scheduler delivers " +
+				"task payloads automatically on wake-up via a synthetic tool_result " +
+				"earlier in this conversation, so you normally do not need to call " +
+				"this tool. If you do call it, it returns a reminder to proceed with " +
+				"the instructions you have already received. Takes no arguments.",
+			parameters: {
+				type: "object",
+				properties: {},
+			},
+		},
+	};
+
+	return {
+		toolDefinition,
+		async execute(_input) {
+			return (
+				"The current task's payload was delivered at wake-up and appears " +
+				"earlier in this conversation (the tool_result immediately after the " +
+				"`[Task wakeup]` developer notice). Proceed with those instructions; " +
+				"no separate retrieval step is required. If you cannot locate the " +
+				"payload (e.g. it was summarized out of the current window), query " +
+				"the tasks table directly: " +
+				"`query \"SELECT payload FROM tasks WHERE id = '<task_id>'\"`."
+			);
+		},
+	};
+}
+
 // ─── Public API ─────────────────────────────────────────────────────
 
 export function createBuiltInTools(fs: IFileSystem): Map<string, BuiltInTool> {
@@ -494,5 +546,6 @@ export function createBuiltInTools(fs: IFileSystem): Map<string, BuiltInTool> {
 	map.set("read", createReadTool(fs));
 	map.set("write", createWriteTool(fs));
 	map.set("edit", createEditTool(fs));
+	map.set("retrieve_task", createRetrieveTaskTool());
 	return map;
 }
