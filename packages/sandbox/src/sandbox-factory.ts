@@ -5,6 +5,7 @@ import {
 	MemoryTracker,
 	wrapWithMemoryTracking,
 } from "./memory-tracker";
+import { materializeSandboxRuntime } from "./runtime/materialize";
 import { UrlFilter } from "./url-filter";
 
 export interface ExecutionLimits {
@@ -35,6 +36,12 @@ export interface Sandbox {
 }
 
 export async function createSandbox(config: SandboxConfig): Promise<Sandbox> {
+	// Materialize embedded worker assets to disk before any python3/js-exec
+	// command can spawn its Worker. Idempotent after the first call per
+	// process — see packages/sandbox/src/runtime/materialize.ts for why
+	// this copy step is load-bearing under `bun build --compile`.
+	materializeSandboxRuntime();
+
 	// Set up memory tracking on the filesystem
 	const memoryTracker = new MemoryTracker(config.memoryThresholdBytes);
 	wrapWithMemoryTracking(config.clusterFs, memoryTracker);

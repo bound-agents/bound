@@ -165,3 +165,5 @@ packages/cli/src/build-info.ts
 binaries/
 
 .DS_Store
+# Sandbox runtime assets staged from just-bash by scripts/build-sandbox-runtime.ts
+packages/sandbox/src/_runtime/
