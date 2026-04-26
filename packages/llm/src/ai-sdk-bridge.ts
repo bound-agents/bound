@@ -516,12 +516,19 @@ export async function* mapChunks(
 				break;
 			}
 			case "error": {
+				// AI SDK converts initial request failures (e.g. Bedrock 403
+				// AccessDeniedException on converse-stream, 400 invalid-model) into
+				// `{ type: "error", error }` events on fullStream — the iterator
+				// does NOT reject. Throwing here lets the driver's existing
+				// try/catch wrap the thrown value via mapError and the agent-loop
+				// catch then flows to the non-retryable alert path, so operators
+				// see the failure in logs + as a role:"alert" DB message instead
+				// of watching a task quietly complete with zero output tokens.
 				const err = part.error;
-				yield {
-					type: "error",
-					error: err instanceof Error ? err.message : String(err),
-				};
-				break;
+				const message = err instanceof Error ? err.message : String(err);
+				throw err instanceof LLMError
+					? err
+					: new LLMError(message, "ai-sdk", undefined, err instanceof Error ? err : undefined);
 			}
 			// start, text-start, text-end, reasoning-start, reasoning-end,
 			// tool-call, tool-result, response-metadata, start-step, raw,

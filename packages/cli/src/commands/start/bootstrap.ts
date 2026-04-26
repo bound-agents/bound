@@ -17,7 +17,8 @@ import {
 	updateRow,
 	withChangeLog,
 } from "@bound/core";
-import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
+import { installAiSdkWarningHook } from "@bound/llm";
+import { BOUND_NAMESPACE, createLogger, deterministicUUID, formatError } from "@bound/shared";
 import { clearColumnCache, ensureKeypair } from "@bound/sync";
 
 // Build metadata (generated at compile time, gitignored)
@@ -132,6 +133,9 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		// Clear the column cache after applySchema has run, so long-running
 		// agent processes pick up the new memory_edges.context column without restart.
 		clearColumnCache();
+		// Route AI SDK warnings (previously spilled straight to stderr via
+		// console.warn) through the pino logger so they land in logs/bound.log.
+		installAiSdkWarningHook(createLogger("@bound/llm", "ai-sdk"));
 	} catch (error) {
 		// Print a friendly message for the CLI path, then rethrow so callers
 		// (including tests) can observe the failure. The CLI entrypoint catches

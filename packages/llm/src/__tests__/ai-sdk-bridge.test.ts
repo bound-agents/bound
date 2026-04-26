@@ -875,19 +875,48 @@ describe("mapChunks — finish / usage", () => {
 		expect(done?.usage.estimated).toBe(false);
 	});
 
-	it("forwards error events", async () => {
-		const out = await collect(
-			mapChunks(
-				events(
-					{ type: "error", error: new Error("boom") },
-					{ type: "finish", finishReason: "error", totalUsage: {} },
-				),
+	it("throws an LLMError when the SDK emits a fullStream error event", async () => {
+		// Background: AI SDK converts initial request failures (e.g. Bedrock
+		// 403 AccessDeniedException on converse-stream) into
+		// `{ type: "error", error }` chunks on `fullStream` — it does NOT
+		// reject the iterator. Before this regression test, mapChunks
+		// forwarded the chunk as a `{type:"error"}` StreamChunk, which
+		// agent-loop silently dropped: the turn appeared to succeed with
+		// empty output, no alert was emitted, and scheduled tasks quietly
+		// hung forever. mapChunks now throws so the driver's try/catch
+		// wraps it via mapError and the agent-loop alert path fires.
+		const iter = mapChunks(
+			events(
+				{ type: "error", error: new Error("boom") },
+				{ type: "finish", finishReason: "error", totalUsage: {} },
 			),
 		);
-		const err = out.find((c) => c.type === "error") as
-			| (StreamChunk & { type: "error" })
-			| undefined;
-		expect(err?.error).toBe("boom");
+		await expect(collect(iter)).rejects.toThrow("boom");
+	});
+
+	it("throws an LLMError that carries the original provider message verbatim", async () => {
+		const iter = mapChunks(
+			events({
+				type: "error",
+				error: new Error(
+					"You invoked an unsupported model or your request did not allow prompt caching.",
+				),
+			}),
+		);
+		await expect(collect(iter)).rejects.toThrow(/unsupported model/);
+	});
+
+	it("throws an LLMError even if the error is a plain object with no message", async () => {
+		const iter = mapChunks(events({ type: "error", error: { statusCode: 403 } }));
+		// Should still throw, not silently resolve
+		let threw = false;
+		try {
+			await collect(iter);
+		} catch (err) {
+			threw = true;
+			expect(err).toBeInstanceOf(LLMError);
+		}
+		expect(threw).toBe(true);
 	});
 
 	it("ignores events we don't model (start, text-start, reasoning-end, etc.)", async () => {
