@@ -78,7 +78,7 @@ describe("File-Thread Tracker (R-E20)", () => {
 				"/home/user/.tool-results/call_xyz.txt",
 				"/home/user/.cache/bound/agent-cache.json",
 				"/home/user/.cache/bash_history",
-				"/Users/user/.cache/something.json",
+				"/Users/karashiiro/.cache/something.json",
 				"/private/tmp/foo.md",
 			];
 
@@ -92,7 +92,7 @@ describe("File-Thread Tracker (R-E20)", () => {
 			const threadId = randomUUID();
 
 			const durablePaths = [
-				"/Users/user/Documents/GitHub/bound/packages/core/src/schema.ts",
+				"/Users/karashiiro/Documents/GitHub/bound/packages/core/src/schema.ts",
 				"/home/user/bound/config/platforms.json",
 				"/workspace/src/foo.ts",
 			];
