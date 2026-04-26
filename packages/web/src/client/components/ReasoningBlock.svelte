@@ -1,9 +1,13 @@
 <script lang="ts">
 // Collapsible disclosure widget for model reasoning/thinking content.
 // Mirrors the ThinkingBlock pattern from the redesign spec: italic-serif
-// label with a word count, left-border accent in the thread's line color,
-// expanded body renders the raw reasoning text verbatim (no markdown —
-// thinking output from the model is plain prose, not structured markup).
+// label with a word count, left-border accent in the thread's line color.
+// The expanded body renders the reasoning text as markdown so numbered
+// lists, emphasis, inline code, and fenced blocks (which modern models
+// routinely emit inside reasoning) display the same way they would in a
+// normal assistant turn.
+
+import { renderMarkdown } from "../lib/markdown";
 
 interface Props {
 	text: string;
@@ -16,6 +20,23 @@ const { text, lineColor = "var(--rule-soft)", redacted = false }: Props = $props
 let open = $state(false);
 
 const wordCount = $derived(text.trim().split(/\s+/).filter(Boolean).length);
+
+let rendered = $state("");
+
+$effect(() => {
+	if (!text || redacted) {
+		rendered = "";
+		return;
+	}
+	renderMarkdown(text)
+		.then((html) => {
+			rendered = html;
+		})
+		.catch((err: unknown) => {
+			console.error("[markdown] renderMarkdown failed:", err);
+			rendered = "";
+		});
+});
 
 function toggle(): void {
 	open = !open;
@@ -54,8 +75,10 @@ function onKey(e: KeyboardEvent): void {
 				<em class="reasoning-redacted-note">
 					Reasoning was redacted by the provider's safety filters.
 				</em>
+			{:else if rendered}
+				<div class="reasoning-prose md-content">{@html rendered}</div>
 			{:else}
-				{text}
+				<div class="reasoning-prose">{text}</div>
 			{/if}
 		</div>
 	{/if}
@@ -121,13 +144,25 @@ function onKey(e: KeyboardEvent): void {
 		padding: 12px 14px;
 		background: var(--paper-2);
 		border-left: 3px solid var(--rule-soft);
-		font-family: var(--font-serif);
-		font-style: italic;
 		font-size: 13.5px;
 		line-height: 1.65;
 		color: var(--ink-2);
+	}
+
+	/* Raw-text fallback: keep the italic-serif "reasoning" vibe when the
+	 * markdown render hasn't landed yet (or for non-markdown prose). */
+	.reasoning-prose:not(.md-content) {
+		font-family: var(--font-serif);
+		font-style: italic;
 		white-space: pre-wrap;
 		word-wrap: break-word;
+	}
+
+	/* Markdown-rendered path: let the shared .md-content styles govern
+	 * structure (paragraphs, lists, code, tables). Only first-child margin
+	 * needs a local reset so the body doesn't grow a double top gap. */
+	.reasoning-prose.md-content :global(> *:first-child) {
+		margin-top: 0;
 	}
 
 	.reasoning-redacted-note {
