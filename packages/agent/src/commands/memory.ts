@@ -247,7 +247,9 @@ function handleSearch(args: Record<string, string>, ctx: CommandContext) {
 	const results = ctx.db
 		.prepare(
 			`SELECT key, value, source, modified_at FROM semantic_memory
-             WHERE deleted = 0 AND (${likeConditions.join(" OR ")})
+             WHERE deleted = 0
+               AND key NOT LIKE '_internal.%'
+               AND (${likeConditions.join(" OR ")})
              ORDER BY modified_at DESC LIMIT 20`,
 		)
 		.all(...params) as Array<{

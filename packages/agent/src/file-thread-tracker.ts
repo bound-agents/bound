@@ -4,12 +4,30 @@ import { insertRow, updateRow } from "@bound/core";
 
 const MEMORY_KEY_PREFIX = "_internal.file_thread.";
 
+// Paths matching these patterns are ephemeral — they are unique per tool call,
+// scratch writes, or OS pseudo-files that will never be meaningfully revisited
+// across threads. Tracking them pollutes semantic_memory with unbounded,
+// un-actionable rows. Skip them at the write site.
+const EPHEMERAL_PATH_PATTERNS: RegExp[] = [
+	/^\/tmp\//,
+	/^\/private\/tmp\//,
+	/^\/dev\//,
+	/(^|\/)\.tool-results\//,
+	/(^|\/)\.cache\//,
+];
+
+export function isEphemeralPath(filePath: string): boolean {
+	return EPHEMERAL_PATH_PATTERNS.some((re) => re.test(filePath));
+}
+
 export function trackFilePath(
 	db: Database,
 	filePath: string,
 	threadId: string,
 	siteId: string,
 ): void {
+	if (isEphemeralPath(filePath)) return;
+
 	const key = MEMORY_KEY_PREFIX + filePath;
 	const now = new Date().toISOString();
 

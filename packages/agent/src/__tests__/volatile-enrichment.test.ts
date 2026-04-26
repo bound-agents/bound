@@ -264,6 +264,78 @@ describe("buildVolatileEnrichment — memory delta", () => {
 	});
 });
 
+describe("buildVolatileEnrichment — _internal key filtering", () => {
+	const baseline = "2026-03-01T00:00:00.000Z";
+	const siteId = randomBytes(8).toString("hex");
+
+	it("excludes _internal.* keys from L3 recency surface", () => {
+		// Insert an _internal.file_thread entry recent enough to normally surface via L3
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: randomBytes(8).toString("hex"),
+				key: "_internal.file_thread./workspace/some/file.ts",
+				value: "some-thread-id",
+				source: "/workspace/some/file.ts",
+				created_at: new Date().toISOString(),
+				modified_at: "2026-03-15T12:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		const enrichment = buildVolatileEnrichment(db, baseline);
+		const hasInternal = enrichment.memoryDeltaLines.some((l) =>
+			l.includes("_internal.file_thread"),
+		);
+		expect(hasInternal).toBe(false);
+	});
+
+	it("does not count _internal.* keys in the 'N more' overflow line", () => {
+		// Seed 3 real default-tier entries AND 5 _internal entries, all recent.
+		// With maxMemory=2, overflow should count only the 3 real entries (1 more after 2 shown),
+		// not 8 (3 real + 5 internal).
+		for (let i = 0; i < 3; i++) {
+			insertRow(
+				db,
+				"semantic_memory",
+				{
+					id: randomBytes(8).toString("hex"),
+					key: `real-key-${i}`,
+					value: `real-value-${i}`,
+					source: null,
+					created_at: new Date().toISOString(),
+					modified_at: "2026-03-15T12:00:00.000Z",
+					deleted: 0,
+				},
+				siteId,
+			);
+		}
+		for (let i = 0; i < 5; i++) {
+			insertRow(
+				db,
+				"semantic_memory",
+				{
+					id: randomBytes(8).toString("hex"),
+					key: `_internal.file_thread./workspace/noise-${i}.ts`,
+					value: "thread-id",
+					source: `/workspace/noise-${i}.ts`,
+					created_at: new Date().toISOString(),
+					modified_at: "2026-03-15T12:00:00.000Z",
+					deleted: 0,
+				},
+				siteId,
+			);
+		}
+
+		const enrichment = buildVolatileEnrichment(db, baseline, 2);
+		const overflowLine = enrichment.memoryDeltaLines.find((l) => l.includes("... and"));
+		expect(overflowLine).toBeDefined();
+		expect(overflowLine).toContain("... and 1 more");
+	});
+});
+
 describe("buildVolatileEnrichment — pinned/policy entries", () => {
 	const siteId = randomBytes(8).toString("hex");
 

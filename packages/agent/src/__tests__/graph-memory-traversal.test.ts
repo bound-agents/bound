@@ -265,6 +265,29 @@ describe("graphSeededRetrieval: Seeds and traversal", () => {
 		// All keys should be unique
 		expect(keys.length).toBe(uniqueKeys.size);
 	});
+
+	it("should exclude _internal.* keys from seed matches", () => {
+		// Seed an _internal.file_thread entry whose key matches the keyword
+		const now = new Date().toISOString();
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: deterministicUUID(BOUND_NAMESPACE, "_internal.file_thread./workspace/Memory-foo.ts"),
+				key: "_internal.file_thread./workspace/Memory-foo.ts",
+				value: "some-thread-id",
+				source: "/workspace/Memory-foo.ts",
+				created_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		const results = graphSeededRetrieval(db, ["Memory"], 50);
+		const hasInternal = results.some((r) => r.key.startsWith("_internal."));
+		expect(hasInternal).toBe(false);
+	});
 });
 
 describe("traverseGraph: Additional edge cases", () => {

@@ -217,6 +217,33 @@ describe("memory search command", () => {
 		expect(result.stdout).toContain("custom_source");
 	});
 
+	it("should exclude _internal.* keys from search results", async () => {
+		// Insert an _internal.file_thread entry whose source matches a keyword
+		db.prepare(
+			`INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted, tier)
+			 VALUES (?, ?, ?, ?, ?, ?, 0, 'default')`,
+		).run(
+			randomUUID(),
+			"_internal.file_thread./workspace/scheduler_internal.ts",
+			"some-thread-id",
+			"/workspace/scheduler_internal.ts",
+			new Date().toISOString(),
+			new Date().toISOString(),
+		);
+
+		// Also insert a legitimate user memory so we know search is working
+		await memory.handler(
+			{ subcommand: "store", source: "real_scheduler_key", target: "scheduler note" },
+			ctx,
+		);
+
+		const result = await memory.handler({ subcommand: "search", source: "scheduler" }, ctx);
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("real_scheduler_key");
+		expect(result.stdout).not.toContain("_internal.file_thread");
+	});
+
 	it("should handle case-insensitive search", async () => {
 		await memory.handler(
 			{

@@ -65,6 +65,43 @@ describe("File-Thread Tracker (R-E20)", () => {
 			trackFilePath(db, filePath, thread2, "test-site-id");
 			expect(getLastThreadForFile(db, filePath)).toBe(thread2);
 		});
+
+		it("does not track ephemeral paths (skip /tmp, /dev, tool-results, cache)", () => {
+			const threadId = randomUUID();
+
+			const ephemeralPaths = [
+				"/tmp/scratch.txt",
+				"/tmp/trial-prompts/trial_A.txt",
+				"/dev/null",
+				"/dev/stdin",
+				"/home/user/.tool-results/tooluse_abc123.txt",
+				"/home/user/.tool-results/call_xyz.txt",
+				"/home/user/.cache/bound/agent-cache.json",
+				"/home/user/.cache/bash_history",
+				"/Users/user/.cache/something.json",
+				"/private/tmp/foo.md",
+			];
+
+			for (const fp of ephemeralPaths) {
+				trackFilePath(db, fp, threadId, "test-site-id");
+				expect(getLastThreadForFile(db, fp)).toBeNull();
+			}
+		});
+
+		it("still tracks durable repo and config paths", () => {
+			const threadId = randomUUID();
+
+			const durablePaths = [
+				"/Users/user/Documents/GitHub/bound/packages/core/src/schema.ts",
+				"/home/user/bound/config/platforms.json",
+				"/workspace/src/foo.ts",
+			];
+
+			for (const fp of durablePaths) {
+				trackFilePath(db, fp, threadId, "test-site-id");
+				expect(getLastThreadForFile(db, fp)).toBe(threadId);
+			}
+		});
 	});
 
 	describe("agent loop integration", () => {
