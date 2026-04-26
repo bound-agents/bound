@@ -72,7 +72,7 @@ export class BedrockDriver implements LLMBackend {
 		const modelId = params.model || this.model;
 		const messages = toModelMessages(params.messages, { cacheProvider: "bedrock" });
 		const tools = toToolSet(params.tools);
-		const reasoningConfig = buildReasoningConfig(params);
+		const reasoningConfig = buildReasoningConfig(params, modelId);
 
 		// Emit heartbeat immediately. Extended thinking can produce a 60s+ gap
 		// before the first content event, which would trip the relay silence
@@ -120,16 +120,42 @@ export class BedrockDriver implements LLMBackend {
 	}
 }
 
-function buildReasoningConfig(params: ChatParams): BedrockReasoningConfig | undefined {
+/**
+ * Build the `providerOptions.bedrock.reasoningConfig` payload, filtered by
+ * model family so we don't send features the target model doesn't support.
+ *
+ * The @ai-sdk/amazon-bedrock SDK emits warnings when non-Anthropic models
+ * receive `budgetTokens` or `type: "adaptive"` — those features are routed
+ * through Anthropic-specific `additionalModelRequestFields.thinking`. For
+ * other providers (Moonshot, MiniMax, DeepSeek, OpenAI-on-Bedrock, …) only
+ * `maxReasoningEffort` is honored, forwarded as either `reasoning_effort`
+ * (OpenAI) or raw `reasoningConfig.maxReasoningEffort`.
+ *
+ * Detection mirrors the SDK: substring match on `"anthropic"` in the model
+ * id, which covers both plain ids (`anthropic.claude-opus-4-7`) and
+ * inference-profile ARNs (`.../us.anthropic.claude-opus-4-7`).
+ *
+ * Exported so the gating behavior can be unit-tested without stubbing the
+ * full AI SDK streaming stack.
+ */
+export function buildReasoningConfig(
+	params: ChatParams,
+	modelId: string,
+): BedrockReasoningConfig | undefined {
 	if (!params.thinking && !params.effort) return undefined;
+	const isAnthropicModel = modelId.includes("anthropic");
 	const config: BedrockReasoningConfig = {};
-	if (params.thinking?.type === "enabled") {
-		config.type = "enabled";
-		config.budgetTokens = params.thinking.budget_tokens;
-	} else if (params.thinking?.type === "adaptive") {
-		config.type = "adaptive";
-		if (params.thinking.display) config.display = params.thinking.display;
+	if (isAnthropicModel) {
+		if (params.thinking?.type === "enabled") {
+			config.type = "enabled";
+			config.budgetTokens = params.thinking.budget_tokens;
+		} else if (params.thinking?.type === "adaptive") {
+			config.type = "adaptive";
+			if (params.thinking.display) config.display = params.thinking.display;
+		}
 	}
+	// Non-Anthropic thinking-related fields are dropped intentionally —
+	// sending them triggers AI SDK "unsupported feature" warnings.
 	if (params.effort) config.maxReasoningEffort = params.effort;
 	return Object.keys(config).length > 0 ? config : undefined;
 }
