@@ -168,11 +168,18 @@ const displayItems = $derived.by((): DisplayItem[] => {
 					break;
 				}
 			}
-			const key = group.map((g) => g.id ?? g.created_at ?? "").join("|");
+			// Key on the group's first message id so appending a new
+			// tool_call to the in-progress run doesn't mutate the key and
+			// remount the ToolCallCard. A remount would reset the group's
+			// expanded state, every per-tool expandedTools entry, and every
+			// child ReasoningBlock's open disclosure — producing the "my
+			// collapsible snaps shut when a new message arrives" bug.
+			const anchor = group[0];
+			const key = anchor.id ?? anchor.created_at ?? `tg-${i}`;
 			items.push({
 				kind: "toolGroup",
 				messages: group,
-				key: key || `tg-${i}`,
+				key,
 				earliest: group[0].created_at,
 				timestamps: group.map((g) => g.created_at ?? "").filter(Boolean),
 			});
