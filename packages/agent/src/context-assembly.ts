@@ -23,6 +23,34 @@ import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
  */
 export const TRUNCATION_TARGET_RATIO = 0.85;
 
+/**
+ * Safety margin between the estimated token count and the backend's true context window.
+ *
+ * tiktoken's cl100k_base is an APPROXIMATION of the actual tokenizers used by Claude, GLM,
+ * qwen, etc. — variance is typically 5-10%, but for short payloads it can be as small as
+ * 0.6%, which is exactly enough to slip past a zero-margin gate and overflow on the wire
+ * (see bound_issue:context-assembly:missing-safety-margin — incident estimate was 48,902,
+ * actual was 49,196 against a 49,152 window).
+ *
+ * The gate in assembleContext compares the estimate against
+ *   effectiveBudget = contextWindow - safetyMargin(contextWindow)
+ * rather than contextWindow directly, so any undercount up to the margin is absorbed before
+ * the backend sees the payload. The ratio is conservative (2%) with a floor (512 tokens) so
+ * small contexts still get meaningful headroom.
+ *
+ * Note: TRUNCATION_TARGET_RATIO (0.85) is a separate concept — it controls how aggressively
+ * truncation cuts once it fires. The safety margin controls WHEN truncation fires.
+ */
+export const CONTEXT_SAFETY_MARGIN_RATIO = 0.02;
+export const CONTEXT_SAFETY_MARGIN_FLOOR = 512;
+
+export function computeSafetyMargin(contextWindow: number): number {
+	return Math.max(
+		CONTEXT_SAFETY_MARGIN_FLOOR,
+		Math.floor(contextWindow * CONTEXT_SAFETY_MARGIN_RATIO),
+	);
+}
+
 export interface ContextParams {
 	db: Database;
 	threadId: string;
@@ -1782,7 +1810,14 @@ Original output was too large for the context window. If you need the full conte
 		suffixTokensForBudget +
 		toolTokensForBudget;
 
-	if (totalTokens > contextWindow) {
+	// Compute the safety-margined gate. The estimator (tiktoken cl100k_base) is an
+	// approximation of each backend's real tokenizer; a zero-margin gate would allow
+	// undercounts of even 1% to overflow the backend's true window. Subtracting
+	// safetyMargin before comparing gives the estimator room to be wrong.
+	const safetyMargin = computeSafetyMargin(contextWindow);
+	const effectiveBudget = Math.max(0, contextWindow - safetyMargin);
+
+	if (totalTokens > effectiveBudget) {
 		// Truncate history from front — token-aware backward fill.
 		// Instead of keeping a hardcoded last-N messages, we fill from the end
 		// until we hit the remaining token budget. This ensures recent conversations
@@ -1795,7 +1830,14 @@ Original output was too large for the context window. If you need the full conte
 		// 90%+ cache hit rates on long threads. Additionally, tiktoken cl100k_base
 		// underestimates Claude's actual token count by ~10-15%, so the headroom
 		// also prevents the actual context from exceeding the model's limit.
-		const truncationTarget = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
+		//
+		// The truncation target is clamped to effectiveBudget so that even if a
+		// future change raises TRUNCATION_TARGET_RATIO above (1 - safety ratio),
+		// the post-truncation payload still respects the safety margin.
+		const truncationTarget = Math.min(
+			Math.floor(contextWindow * TRUNCATION_TARGET_RATIO),
+			effectiveBudget,
+		);
 
 		const systemMessages = assembled.filter((m) => m.role === "system");
 		const historyMessages = assembled.filter((m) => m.role !== "system");
@@ -1921,6 +1963,8 @@ Original output was too large for the context window. If you need the full conte
 					: {}),
 				debug: {
 					contextWindow: contextWindow,
+					safetyMargin,
+					effectiveBudget,
 					totalEstimated,
 					model: params.currentModel ?? "unknown",
 					sections,
@@ -1943,6 +1987,8 @@ Original output was too large for the context window. If you need the full conte
 		...(suffixContent !== undefined ? { volatileTokenEstimate: countTokens(suffixContent) } : {}),
 		debug: {
 			contextWindow: contextWindow,
+			safetyMargin,
+			effectiveBudget,
 			totalEstimated,
 			model: params.currentModel ?? "unknown",
 			sections,

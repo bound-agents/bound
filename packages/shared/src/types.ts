@@ -495,6 +495,18 @@ export interface CrossThreadSource {
 
 export interface ContextDebugInfo {
 	contextWindow: number;
+	/**
+	 * Safety margin (in tokens) subtracted from contextWindow before the truncation
+	 * gate fires. Absorbs variance between the cl100k_base estimator and the backend's
+	 * real tokenizer. Optional so older context_debug rows (pre-2026-04-26) still parse.
+	 */
+	safetyMargin?: number;
+	/**
+	 * contextWindow - safetyMargin. The gate that actually triggers truncation compares
+	 * the token estimate against this value, NOT against contextWindow. Optional so older
+	 * context_debug rows (pre-2026-04-26) still parse.
+	 */
+	effectiveBudget?: number;
 	totalEstimated: number;
 	model: string;
 	sections: ContextSection[];

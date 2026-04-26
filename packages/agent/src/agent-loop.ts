@@ -46,7 +46,7 @@ import {
 } from "./agent-loop-utils";
 import { CACHE_TTL_MS, predictCacheState, selectCacheTtl } from "./cache-prediction";
 import { type CachedTurnState, computeToolFingerprint } from "./cached-turn-state";
-import { assembleContext, buildVolatileContext } from "./context-assembly";
+import { assembleContext, buildVolatileContext, computeSafetyMargin } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
 import { type ModelResolution, resolveModel, resolveSameTierFallback } from "./model-resolution";
@@ -493,21 +493,29 @@ export class AgentLoop {
 					content: volatileContext.content,
 				});
 
-				// 6. Check high-water mark: estimate total token count and compare against contextWindow
+				// 6. Check high-water mark: estimate total token count and compare against
+				//    the safety-margined effective budget. Using raw contextWindow here would
+				//    allow the warm path to ship a payload that overflows on the wire when the
+				//    estimator undercounts vs the backend's real tokenizer — same failure mode
+				//    as the cold-path gate in context-assembly.ts.
 				const storedTokens = storedMessages.reduce(
 					(sum, msg) => sum + countContentTokens(msg.content),
 					0,
 				);
 				const systemTokens = cached.systemPrompt ? countContentTokens(cached.systemPrompt) : 0;
 				const estimatedTotal = storedTokens + systemTokens + toolTokenEstimate;
+				const warmSafetyMargin = computeSafetyMargin(contextWindow);
+				const warmEffectiveBudget = Math.max(0, contextWindow - warmSafetyMargin);
 
-				if (estimatedTotal > contextWindow) {
+				if (estimatedTotal > warmEffectiveBudget) {
 					// High-water mark exceeded — fall through to cold path
 					this.ctx.logger.info(
 						"[agent-loop] Warm path exceeded context budget, triggering cold reassembly",
 						{
 							estimatedTotal,
 							contextWindow,
+							effectiveBudget: warmEffectiveBudget,
+							safetyMargin: warmSafetyMargin,
 							storedTokens,
 							systemTokens,
 							toolTokenEstimate,

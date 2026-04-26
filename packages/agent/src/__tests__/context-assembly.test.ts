@@ -6,11 +6,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import type { CommandDefinition } from "@bound/sandbox";
+import { countContentTokens } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { getCommandRegistry, setCommandRegistry } from "../commands/registry";
 import {
+	CONTEXT_SAFETY_MARGIN_FLOOR,
+	CONTEXT_SAFETY_MARGIN_RATIO,
 	TRUNCATION_TARGET_RATIO,
 	assembleContext,
+	computeSafetyMargin,
 	estimateContentLength,
 	formatTimestamp,
 } from "../context-assembly";
@@ -1410,6 +1414,250 @@ describe("Context Assembly Pipeline", () => {
 			}
 
 			// Clean up
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+	});
+
+	// bound_issue:context-assembly:missing-safety-margin
+	// The truncation gate must leave a safety margin between estimated tokens and the
+	// backend's real context window, because the cl100k_base estimator is an approximation
+	// of each backend's actual tokenizer and a zero-margin gate allows undercounts to
+	// slip through and overflow on the wire.
+	describe("context-assembly safety margin", () => {
+		it("computeSafetyMargin uses the 2% ratio above the floor", () => {
+			// 200k window: 2% = 4000, well above the 512 floor
+			expect(computeSafetyMargin(200_000)).toBe(4000);
+			// 128k window: 2% = 2560
+			expect(computeSafetyMargin(128_000)).toBe(2560);
+			// 49152 (the incident window): 2% floored = 983
+			expect(computeSafetyMargin(49_152)).toBe(983);
+		});
+
+		it("computeSafetyMargin enforces the 512-token floor for small windows", () => {
+			// 8k window: 2% = 160 → floor wins → 512
+			expect(computeSafetyMargin(8_000)).toBe(CONTEXT_SAFETY_MARGIN_FLOOR);
+			// 1k window: 2% = 20 → floor wins
+			expect(computeSafetyMargin(1_000)).toBe(CONTEXT_SAFETY_MARGIN_FLOOR);
+			// 25600 is the boundary: 2% = 512 exactly
+			expect(computeSafetyMargin(25_600)).toBe(512);
+		});
+
+		it("constants are the documented values", () => {
+			expect(CONTEXT_SAFETY_MARGIN_RATIO).toBe(0.02);
+			expect(CONTEXT_SAFETY_MARGIN_FLOOR).toBe(512);
+		});
+
+		it("debug metadata exposes safetyMargin and effectiveBudget", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-01-01T00:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Margin User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Margin Test",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					localThreadId,
+					"user",
+					"hi",
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					"local",
+				],
+			);
+
+			const { debug } = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 200_000,
+			});
+
+			expect(debug.contextWindow).toBe(200_000);
+			expect(debug.safetyMargin).toBe(4000);
+			expect(debug.effectiveBudget).toBe(196_000);
+
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+
+		it("triggers truncation when estimate is below contextWindow but above effectiveBudget", () => {
+			// Reproduces the failure mode described in bound_issue:context-assembly:missing-safety-margin.
+			// We craft a thread where totalEstimated sits in the margin — i.e. > effectiveBudget but
+			// ≤ contextWindow — and verify truncation fires (the old gate would have let it through).
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-01-01T00:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Gate User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Gate Test",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			// Use a 2000-token contextWindow (so safetyMargin floor = 512, effectiveBudget = 1488).
+			// Build ~20 medium messages so the truncation gate has room to drop prefix messages
+			// without hitting the 2-message floor.
+			const filler = "word ".repeat(200); // ~200 tokens each
+			const msgCreated = (i: number) => new Date(nowBase.getTime() + i * 1000).toISOString();
+			for (let i = 0; i < 20; i++) {
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						localThreadId,
+						i % 2 === 0 ? "user" : "assistant",
+						filler,
+						null,
+						null,
+						msgCreated(i),
+						msgCreated(i),
+						"local",
+					],
+				);
+			}
+
+			const { messages, volatileTokenEstimate, debug } = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 2000,
+			});
+
+			expect(debug.safetyMargin).toBe(CONTEXT_SAFETY_MARGIN_FLOOR);
+			expect(debug.effectiveBudget).toBe(2000 - CONTEXT_SAFETY_MARGIN_FLOOR);
+			// Gate fired: truncation actually ran.
+			expect(debug.truncated).toBeGreaterThan(0);
+			// Compute the exact quantity the gate would check (messages + suffix + tools)
+			// and assert the post-truncation payload fits the effective budget.
+			const wireTokens =
+				messages.reduce((sum, m) => sum + countContentTokens(m.content), 0) +
+				(volatileTokenEstimate ?? 0);
+			expect(wireTokens).toBeLessThanOrEqual(debug.effectiveBudget ?? 0);
+
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+
+		it("truncation target never exceeds effective budget", () => {
+			// The post-truncation total must land ≤ effectiveBudget even when
+			// TRUNCATION_TARGET_RATIO is very close to (1 - safety ratio). With the current
+			// ratios (0.85 and 0.02) the 0.85 side wins, but clamping to effectiveBudget
+			// protects the invariant against future ratio tuning.
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-01-01T00:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Clamp User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Clamp Test",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			// Insert ~10 bulky messages to guarantee truncation fires.
+			const filler = "word ".repeat(1500);
+			for (let i = 0; i < 10; i++) {
+				const ts = new Date(nowBase.getTime() + i * 1000).toISOString();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						localThreadId,
+						i % 2 === 0 ? "user" : "assistant",
+						filler,
+						null,
+						null,
+						ts,
+						ts,
+						"local",
+					],
+				);
+			}
+
+			const { messages, volatileTokenEstimate, debug } = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 4000,
+			});
+
+			expect(debug.truncated).toBeGreaterThan(0);
+			expect(debug.effectiveBudget).toBeDefined();
+			// Truncation target is min(contextWindow * 0.85, effectiveBudget); post-truncation
+			// wire tokens (messages + suffix) must land at or under that.
+			const target = Math.min(
+				Math.floor(4000 * TRUNCATION_TARGET_RATIO),
+				debug.effectiveBudget ?? 0,
+			);
+			const wireTokens =
+				messages.reduce((sum, m) => sum + countContentTokens(m.content), 0) +
+				(volatileTokenEstimate ?? 0);
+			expect(wireTokens).toBeLessThanOrEqual(target);
+
 			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
 			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
