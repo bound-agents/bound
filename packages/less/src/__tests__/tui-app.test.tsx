@@ -165,6 +165,83 @@ describe("App Component", () => {
 		expect(output).toBeDefined();
 	});
 
+	describe("Esc closes modal views consistently", () => {
+		const tick = () => new Promise((resolve) => setTimeout(resolve, 150));
+		const ESC = "\x1b";
+
+		function renderApp(overrides: Partial<Record<string, unknown>> = {}) {
+			return render(
+				React.createElement(App, {
+					client: mockClient,
+					threadId: "thread-esc",
+					configDir: "/tmp",
+					cwd: "/home/user",
+					hostname: "localhost",
+					mcpManager: mockMcpManager,
+					mcpConfigs: [],
+					// biome-ignore lint/suspicious/noExplicitAny: test setup pattern
+					logger: mockLogger as any,
+					initialMessages: [],
+					model: "gpt-4",
+					toolHandlers: new Map(),
+					...overrides,
+				}),
+			);
+		}
+
+		it("Esc returns to ChatView from /attach picker", async () => {
+			const { lastFrame, stdin } = renderApp();
+			await tick();
+			stdin.write("/attach");
+			await tick();
+			stdin.write("\r");
+			await tick();
+			expect(lastFrame() ?? "").toContain("Select Thread");
+
+			stdin.write(ESC);
+			await tick();
+			const output = lastFrame() ?? "";
+			expect(output).not.toContain("Select Thread");
+			// Back in chat: status bar is visible
+			expect(output).toContain("thread-esc");
+		});
+
+		it("Esc returns to ChatView from /model picker", async () => {
+			const { lastFrame, stdin } = renderApp();
+			await tick();
+			stdin.write("/model");
+			await tick();
+			stdin.write("\r");
+			await tick();
+			expect(lastFrame() ?? "").toContain("Select Model");
+
+			stdin.write(ESC);
+			await tick();
+			const output = lastFrame() ?? "";
+			expect(output).not.toContain("Select Model");
+			expect(output).toContain("thread-esc");
+		});
+
+		it("Esc returns to ChatView from /model picker with populated model list", async () => {
+			mockClient.listModels = vi
+				.fn()
+				.mockResolvedValue({ models: [{ id: "claude-opus" }, { id: "haiku" }] });
+			const { lastFrame, stdin } = renderApp();
+			await tick();
+			stdin.write("/model");
+			await tick();
+			stdin.write("\r");
+			await tick();
+			expect(lastFrame() ?? "").toContain("Select Model");
+
+			stdin.write(ESC);
+			await tick();
+			const output = lastFrame() ?? "";
+			expect(output).not.toContain("Select Model");
+			expect(output).toContain("thread-esc");
+		});
+	});
+
 	it("should render with model and thread info", () => {
 		const { lastFrame } = render(
 			React.createElement(App, {

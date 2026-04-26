@@ -62,6 +62,91 @@ describe("formatThreadPickerLabel", () => {
 	});
 });
 
+describe("PickerView Esc handling", () => {
+	const tick = () => new Promise((resolve) => setTimeout(resolve, 60));
+	const ESC = "";
+
+	it("calls onCancel when Esc is pressed in /attach (thread) mode", async () => {
+		const mockClient = {
+			listThreads: vi.fn().mockResolvedValue([{ id: "thread-1", title: "Hello" }]),
+			listModels: vi.fn(),
+		} as unknown as BoundClient;
+
+		const onCancel = vi.fn();
+		const { stdin } = render(
+			React.createElement(PickerView, {
+				mode: "thread",
+				client: mockClient,
+				onSelect: vi.fn(),
+				onCancel,
+			}),
+		);
+
+		await tick();
+		stdin.write(ESC);
+		await tick();
+
+		expect(onCancel).toHaveBeenCalled();
+	});
+
+	it("calls onCancel when Esc is pressed in /model mode", async () => {
+		const mockClient = {
+			listThreads: vi.fn(),
+			listModels: vi.fn().mockResolvedValue({ models: [{ id: "claude-opus" }] }),
+		} as unknown as BoundClient;
+
+		const onCancel = vi.fn();
+		const { stdin } = render(
+			React.createElement(PickerView, {
+				mode: "model",
+				client: mockClient,
+				onSelect: vi.fn(),
+				onCancel,
+			}),
+		);
+
+		await tick();
+		stdin.write(ESC);
+		await tick();
+
+		expect(onCancel).toHaveBeenCalled();
+	});
+
+	it("calls onCancel when Esc is pressed in /model mode while loading (before items arrive)", async () => {
+		let resolveModels: ((v: { models: { id: string }[] }) => void) | null = null;
+		const mockClient = {
+			listThreads: vi.fn(),
+			listModels: vi.fn(
+				() =>
+					new Promise<{ models: { id: string }[] }>((resolve) => {
+						resolveModels = resolve;
+					}),
+			),
+		} as unknown as BoundClient;
+
+		const onCancel = vi.fn();
+		const { stdin } = render(
+			React.createElement(PickerView, {
+				mode: "model",
+				client: mockClient,
+				onSelect: vi.fn(),
+				onCancel,
+			}),
+		);
+
+		// Wait for initial render so useInput is bound, then Esc while the
+		// loader is still spinning — the modal should still dismiss.
+		await tick();
+		stdin.write(ESC);
+		await tick();
+
+		expect(onCancel).toHaveBeenCalled();
+
+		// Let the pending promise settle to avoid unhandled-rejection noise.
+		resolveModels?.({ models: [] });
+	});
+});
+
 describe("PickerView thread labels", () => {
 	it("does not render newlines from thread titles in the visible label", async () => {
 		const mockClient = {
