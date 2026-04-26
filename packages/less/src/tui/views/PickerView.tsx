@@ -3,6 +3,8 @@ import { Box, Text } from "ink";
 import type React from "react";
 import { useEffect, useState } from "react";
 import { ActionBar, ModalOverlay, SelectList, Spinner } from "../components";
+import { useTerminalSize } from "../hooks/useTerminalSize";
+import { formatThreadPickerLabel } from "./picker-label";
 
 export type PickerMode = "thread" | "model";
 
@@ -32,6 +34,10 @@ export function PickerView({
 	const [items, setItems] = useState<PickerItem[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
+	const { columns: termColumns } = useTerminalSize();
+	// Leave room for the "› " cursor prefix (2 cols) and the modal's padding
+	// + border (paddingX=1 + 2 border cols on each side = 4 cols).
+	const labelColumns = Math.max(20, termColumns - 6);
 
 	useEffect(() => {
 		if (!client) {
@@ -45,12 +51,13 @@ export function PickerView({
 				if (mode === "thread") {
 					const threads = await client.listThreads();
 					setItems(
-						// Show full thread id — users need to be able to copy it
-						// for `--attach`. Pair it with the title (if any) so the
-						// list is still readable.
+						// Collapse any newlines in the title and truncate so
+						// the row stays a single line. The full thread id is
+						// kept whenever possible so users can still copy it
+						// for `--attach`.
 						threads.map((t) => ({
 							id: t.id,
-							label: t.title ? `${t.title}  (${t.id})` : t.id,
+							label: formatThreadPickerLabel(t.title, t.id, labelColumns),
 						})),
 					);
 				} else if (mode === "model") {
@@ -70,7 +77,7 @@ export function PickerView({
 		};
 
 		loadItems();
-	}, [client, mode]);
+	}, [client, mode, labelColumns]);
 
 	const title = mode === "thread" ? "Select Thread" : "Select Model";
 
