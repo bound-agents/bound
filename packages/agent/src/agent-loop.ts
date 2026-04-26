@@ -44,6 +44,7 @@ import {
 	isTransientLLMError,
 	parseToolResultContent,
 } from "./agent-loop-utils";
+import { maybePlaceCacheMarker } from "./cache-marker";
 import { CACHE_TTL_MS, predictCacheState, selectCacheTtl } from "./cache-prediction";
 import { type CachedTurnState, computeToolFingerprint } from "./cached-turn-state";
 import { assembleContext, buildVolatileContext, computeSafetyMargin } from "./context-assembly";
@@ -462,10 +463,11 @@ export class AgentLoop {
 
 				storedMessages.push(...deltaMessages);
 
-				// 4. Place rolling cache message at messages[length-2] (before last delta message)
-				if (storedMessages.length >= 2) {
-					storedMessages.splice(storedMessages.length - 1, 0, { role: "cache", content: "" });
-				}
+				// 4. Place rolling cache message at messages[length-2] (before last delta
+				//    message). Gated on effective backend capabilities — skipped when
+				//    prompt_caching is explicitly disabled (e.g. MiniMax on Bedrock)
+				//    to avoid the 403 "unsupported model / prompt caching not allowed".
+				maybePlaceCacheMarker(storedMessages, "rolling", resolvedCaps ?? undefined);
 
 				// 5. Inject fresh volatile developer message at tail
 				const volatileContext = buildVolatileContext({
@@ -637,11 +639,16 @@ export class AgentLoop {
 				const systemPrompt = result.systemPrompt;
 				contextDebug = result.debug;
 
-				// Place fixed cache message at messages[length-2] (before last message)
-				const fixedCacheIdx = contextMessages.length >= 2 ? contextMessages.length - 2 : -1;
-				if (fixedCacheIdx >= 0) {
-					contextMessages.splice(fixedCacheIdx + 1, 0, { role: "cache", content: "" });
-				}
+				// Place fixed cache marker before the last message. Gated on
+				// effective backend capabilities — skipped when prompt_caching is
+				// explicitly disabled (e.g. MiniMax on Bedrock) to avoid the 403
+				// "unsupported model / prompt caching not allowed" from AWS.
+				const placedFixedMarker = maybePlaceCacheMarker(
+					contextMessages,
+					"fixed",
+					resolvedCaps ?? undefined,
+				);
+				const fixedCacheIdx = placedFixedMarker ? contextMessages.length - 2 : -1;
 
 				// Query last message created_at for delta queries
 				const lastRow = this.ctx.db
@@ -655,8 +662,8 @@ export class AgentLoop {
 				this.setCachedTurnState({
 					messages: [...contextMessages],
 					systemPrompt,
-					cacheMessagePositions: fixedCacheIdx >= 0 ? [fixedCacheIdx + 1] : [],
-					fixedCacheIdx: fixedCacheIdx >= 0 ? fixedCacheIdx + 1 : -1,
+					cacheMessagePositions: placedFixedMarker ? [fixedCacheIdx] : [],
+					fixedCacheIdx,
 					lastMessageCreatedAt,
 					toolFingerprint: currentFingerprint,
 				});
