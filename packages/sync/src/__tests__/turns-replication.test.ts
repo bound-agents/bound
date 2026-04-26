@@ -4,14 +4,20 @@
  *
  * These tests exercise the append-only reducer against the `turns` table:
  * change_log events produced by host A must replay cleanly on host B,
- * preserving token counts, cost, and status. `context_debug` is local-only
- * and must never appear in replicated row_data.
+ * preserving token counts, cost, status, and `context_debug` so the
+ * web context-debug panel works for threads that bounced between hosts.
  */
 
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { applyMetricsSchema, applySchema, recordTurn } from "@bound/core";
-import type { ChangeLogEntry } from "@bound/shared";
+import {
+	applyMetricsSchema,
+	applySchema,
+	recordContextDebug,
+	recordTurn,
+	recordTurnRelayMetrics,
+} from "@bound/core";
+import type { ChangeLogEntry, ContextDebugInfo } from "@bound/shared";
 import { TABLE_REDUCER_MAP } from "@bound/shared";
 import { replayEvents } from "../reducers.js";
 
@@ -94,7 +100,7 @@ describe("turns-observability — sync replication", () => {
 			expect(row.status).toBe("ok");
 		});
 
-		it("context_debug is NEVER populated on the receiving host (excluded from replication)", () => {
+		it("context_debug from recordContextDebug replicates to other hosts", () => {
 			const turnId = recordTurn(
 				hostA,
 				{
@@ -107,26 +113,62 @@ describe("turns-observability — sync replication", () => {
 				siteA,
 			);
 
-			// Write context_debug locally on host A after the turn row is created
-			// (this is the real-world ordering from agent-loop.ts).
-			hostA.run("UPDATE turns SET context_debug = ? WHERE id = ?", [
-				JSON.stringify({ local: "debug blob" }),
-				turnId,
-			]);
+			const debug: ContextDebugInfo = {
+				totalEstimated: 1234,
+				contextWindow: 200_000,
+				effectiveBudget: 170_000,
+				budgetPressure: false,
+				truncated: 0,
+				sections: [{ name: "history", tokens: 1000, items: 5 }],
+			} as unknown as ContextDebugInfo;
 
+			recordContextDebug(hostA, turnId, debug, siteA);
+
+			// Two change_log entries: INSERT from recordTurn, UPDATE from
+			// recordContextDebug. Both must replay on host B so the
+			// context-debug panel works when a thread bounces hosts.
 			const events = pullChangeLog(hostA, "turns");
-			replayEvents(hostB, events);
+			expect(events.length).toBe(2);
+
+			const result = replayEvents(hostB, events);
+			expect(result.applied).toBe(2);
 
 			const row = hostB.query("SELECT context_debug FROM turns WHERE id = ?").get(turnId) as {
 				context_debug: string | null;
 			};
-			expect(row.context_debug).toBeNull();
+			expect(row.context_debug).not.toBeNull();
+			const parsed = JSON.parse(row.context_debug as string);
+			expect(parsed.totalEstimated).toBe(1234);
+			expect(parsed.sections[0].name).toBe("history");
+		});
 
-			// Host A still has its local debug blob
-			const localRow = hostA.query("SELECT context_debug FROM turns WHERE id = ?").get(turnId) as {
-				context_debug: string | null;
+		it("relay metrics from recordTurnRelayMetrics replicate to other hosts", () => {
+			const turnId = recordTurn(
+				hostA,
+				{
+					thread_id: "thread-1",
+					model_id: "opus",
+					tokens_in: 100,
+					tokens_out: 50,
+					created_at: "2026-04-26T12:00:00.000Z",
+				},
+				siteA,
+			);
+
+			recordTurnRelayMetrics(hostA, turnId, "hub.example.com", 237, siteA);
+
+			const events = pullChangeLog(hostA, "turns");
+			expect(events.length).toBe(2);
+			replayEvents(hostB, events);
+
+			const row = hostB
+				.query("SELECT relay_target, relay_latency_ms FROM turns WHERE id = ?")
+				.get(turnId) as {
+				relay_target: string | null;
+				relay_latency_ms: number | null;
 			};
-			expect(localRow.context_debug).toBe(JSON.stringify({ local: "debug blob" }));
+			expect(row.relay_target).toBe("hub.example.com");
+			expect(row.relay_latency_ms).toBe(237);
 		});
 
 		it("status='error' rows also replicate", () => {

@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { updateRow } from "./change-log.js";
 
 export interface RelayCycleEntry {
 	direction: "outbound" | "inbound";
@@ -32,12 +33,23 @@ export function recordTurnRelayMetrics(
 	turnId: string,
 	relayTarget: string,
 	relayLatencyMs: number,
+	siteId?: string,
 ): void {
-	db.run("UPDATE turns SET relay_target = ?, relay_latency_ms = ? WHERE id = ?", [
-		relayTarget,
-		relayLatencyMs,
-		turnId,
-	]);
+	if (siteId) {
+		updateRow(
+			db,
+			"turns",
+			turnId,
+			{ relay_target: relayTarget, relay_latency_ms: relayLatencyMs },
+			siteId,
+		);
+	} else {
+		db.run("UPDATE turns SET relay_target = ?, relay_latency_ms = ? WHERE id = ?", [
+			relayTarget,
+			relayLatencyMs,
+			turnId,
+		]);
+	}
 }
 
 export function pruneRelayCycles(db: Database, retentionDays = 30): number {

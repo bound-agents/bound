@@ -1132,6 +1132,7 @@ export class AgentLoop {
 							currentTurnId,
 							relayMetadataRef.hostName,
 							relayMetadataRef.firstChunkLatencyMs,
+							this.ctx.siteId,
 						);
 					} catch (error) {
 						this.ctx.logger.warn("Failed to record turn relay metrics", {
@@ -1165,7 +1166,7 @@ export class AgentLoop {
 
 				if (currentTurnId !== null && this.lastContextDebug) {
 					try {
-						recordContextDebug(this.ctx.db, currentTurnId, this.lastContextDebug);
+						recordContextDebug(this.ctx.db, currentTurnId, this.lastContextDebug, this.ctx.siteId);
 						this.ctx.eventBus.emit("context:debug", {
 							thread_id: this.config.threadId,
 							turn_id: currentTurnId,
@@ -1770,7 +1771,13 @@ export class AgentLoop {
 				const currentHost = eligibleHosts[currentHostIndex];
 				if (currentTurnId !== null) {
 					try {
-						recordTurnRelayMetrics(this.ctx.db, currentTurnId, currentHost.host_name, latencyMs);
+						recordTurnRelayMetrics(
+							this.ctx.db,
+							currentTurnId,
+							currentHost.host_name,
+							latencyMs,
+							this.ctx.siteId,
+						);
 					} catch (error) {
 						this.ctx.logger.warn("Failed to record turn relay metrics", {
 							threadId: this.config.threadId,

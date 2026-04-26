@@ -218,7 +218,7 @@ const FULL_SCHEMA = `
 	);
 
 	CREATE TABLE turns (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id TEXT PRIMARY KEY,
 		thread_id TEXT,
 		task_id TEXT,
 		dag_root_id TEXT,
@@ -231,6 +231,9 @@ const FULL_SCHEMA = `
 		relay_target TEXT,
 		relay_latency_ms INTEGER,
 		context_debug TEXT,
+		status TEXT,
+		host_origin TEXT,
+		modified_at TEXT,
 		created_at TEXT NOT NULL
 	) STRICT;
 

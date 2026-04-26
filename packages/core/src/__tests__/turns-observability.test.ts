@@ -302,7 +302,7 @@ describe("turns-observability — change_log integration", () => {
 		expect(entries.n).toBe(0);
 	});
 
-	it("change_log row_data excludes context_debug (stays local)", () => {
+	it("recordContextDebug with siteId emits a change_log UPDATE carrying context_debug", () => {
 		const turnId = recordTurn(
 			db,
 			{
@@ -314,7 +314,6 @@ describe("turns-observability — change_log integration", () => {
 			siteId,
 		);
 
-		// Set context_debug locally (post-insert, as real callers do)
 		const debug: ContextDebugInfo = {
 			contextWindow: 200000,
 			totalEstimated: 1000,
@@ -323,19 +322,21 @@ describe("turns-observability — change_log integration", () => {
 			budgetPressure: false,
 			truncated: 0,
 		};
-		recordContextDebug(db, turnId, debug);
+		recordContextDebug(db, turnId, debug, siteId);
 
-		// The INSERT change_log entry must never mention context_debug.
+		// Two entries: INSERT from recordTurn, UPDATE from recordContextDebug.
+		// The UPDATE carries context_debug so peer hosts can render the
+		// context-debug panel for threads that bounced between hosts.
 		const entries = db
-			.query("SELECT row_data FROM change_log WHERE row_id = ?")
+			.query("SELECT row_data FROM change_log WHERE row_id = ? ORDER BY hlc")
 			.all(turnId) as Array<{ row_data: string }>;
-		for (const entry of entries) {
-			const rowData = JSON.parse(entry.row_data) as Record<string, unknown>;
-			expect(rowData).not.toHaveProperty("context_debug");
-		}
+		expect(entries.length).toBe(2);
+		const latest = JSON.parse(entries[entries.length - 1].row_data) as Record<string, unknown>;
+		expect(latest).toHaveProperty("context_debug");
+		expect(JSON.parse(latest.context_debug as string).totalEstimated).toBe(1000);
 	});
 
-	it("recordContextDebug does NOT emit a change_log entry (local only)", () => {
+	it("recordContextDebug without siteId is local-only (no change_log entry)", () => {
 		const turnId = recordTurn(
 			db,
 			{
@@ -357,6 +358,7 @@ describe("turns-observability — change_log integration", () => {
 			budgetPressure: false,
 			truncated: 0,
 		};
+		// No siteId → stays local; matches the test / utility-script path.
 		recordContextDebug(db, turnId, debug);
 
 		const after = (db.query("SELECT COUNT(*) as n FROM change_log").get() as { n: number }).n;

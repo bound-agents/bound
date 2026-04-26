@@ -547,8 +547,8 @@ describe("Task Display Utilities", () => {
 			);
 
 			db.prepare(
-				"INSERT INTO turns (thread_id, task_id, model_id, tokens_in, tokens_out, cost_usd, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-			).run(threadId, taskId, "opus", 100, 50, 0.01, lastTurnAt);
+				"INSERT INTO turns (id, thread_id, task_id, model_id, tokens_in, tokens_out, cost_usd, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			).run(randomUUID(), threadId, taskId, "opus", 100, 50, 0.01, lastTurnAt);
 
 			const response = await app.fetch(new Request("http://localhost:3000/api/tasks"));
 			expect(response.status).toBe(200);

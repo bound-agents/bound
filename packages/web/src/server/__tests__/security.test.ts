@@ -192,9 +192,17 @@ describe("API Security", () => {
 
 			// Insert a turn with malformed JSON in context_debug
 			db.exec(
-				`INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, context_debug, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?)`,
-				[threadId, "test-model", 100, 50, "NOT VALID JSON {{{", new Date().toISOString()],
+				`INSERT INTO turns (id, thread_id, model_id, tokens_in, tokens_out, context_debug, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[
+					randomUUID(),
+					threadId,
+					"test-model",
+					100,
+					50,
+					"NOT VALID JSON {{{",
+					new Date().toISOString(),
+				],
 			);
 
 			const res = await app.fetch(

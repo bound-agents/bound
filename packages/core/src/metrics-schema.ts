@@ -1,14 +1,16 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { ContextDebugInfo } from "@bound/shared";
-import { createChangeLogEntry } from "./change-log.js";
+import { insertRow, updateRow } from "./change-log.js";
 
 /**
  * A single LLM turn, recorded once per inference attempt. Rows replicate
- * across hosts via the change_log (append-only reducer) so cost/usage
- * queries span the whole cluster. `context_debug`, `relay_target`, and
- * `relay_latency_ms` are host-local columns — they are populated by
- * post-insert UPDATEs that DO NOT emit change_log entries.
+ * across hosts via the change_log (append-only / hybrid reducer) so
+ * cost/usage queries and the web context-debug panel span the whole
+ * cluster. All columns replicate, including `context_debug`,
+ * `relay_target`, and `relay_latency_ms` — a thread can bounce between
+ * hosts mid-run, so any host may be asked to render the full context
+ * history for a thread.
  *
  * Related: bound_issue:turns-table:observability-gap (2026-04-26).
  */
@@ -31,12 +33,6 @@ export interface TurnRecord {
 	 */
 	status?: "ok" | "error" | "aborted";
 }
-
-// Columns that must never be included in replicated row_data. context_debug
-// is a large JSON blob only useful to the host that produced it. relay_target
-// and relay_latency_ms are populated by recordTurnRelayMetrics after the row
-// is inserted and are local-view columns about the local relay cycle.
-const LOCAL_ONLY_COLUMNS = new Set(["context_debug", "relay_target", "relay_latency_ms"]);
 
 export function applyMetricsSchema(db: Database): void {
 	// Migrate legacy schema: older bound versions used INTEGER PRIMARY KEY
@@ -93,9 +89,8 @@ export function applyMetricsSchema(db: Database): void {
 		// who ran the inference.
 		["host_origin", "TEXT"],
 		// Append-only hybrid reducer honors modified_at when present. We
-		// don't actually mutate turn rows after insert (relay_target and
-		// context_debug are local-only), so this stays equal to created_at.
-		// Included for forward compatibility with redaction flows.
+		// bump it in updateRow() when recordContextDebug / recordTurnRelayMetrics
+		// run, so post-insert column writes replicate correctly.
 		["modified_at", "TEXT"],
 	] as const) {
 		try {
@@ -169,18 +164,14 @@ function migrateTurnsIntToText(
 }
 
 /**
- * Insert a turn row. If `siteId` is provided, also emit a change_log entry
- * so the row replicates across hosts via the sync pipeline. The change_log
- * row_data EXCLUDES local-only columns (context_debug, relay_target,
- * relay_latency_ms).
- *
- * Backward-compat: callers that omit siteId get a local-only insert, same
- * as before. Tests and utility scripts use this path.
+ * Insert a turn row. If `siteId` is provided, the row replicates via the
+ * standard outbox (`insertRow`) so cost/usage and context-debug data are
+ * visible from every host. Without `siteId` the row stays local — tests
+ * and utility scripts use this path.
  */
 export function recordTurn(db: Database, turn: TurnRecord, siteId?: string): string {
 	const id = randomUUID();
 	const status = turn.status ?? "ok";
-	const modifiedAt = turn.created_at;
 
 	const row: Record<string, unknown> = {
 		id,
@@ -194,57 +185,63 @@ export function recordTurn(db: Database, turn: TurnRecord, siteId?: string): str
 		tokens_cache_read: turn.tokens_cache_read ?? null,
 		cost_usd: turn.cost_usd ?? 0,
 		created_at: turn.created_at,
-		modified_at: modifiedAt,
+		modified_at: turn.created_at,
 		status,
 		host_origin: siteId ?? null,
 	};
 
-	const tx = db.transaction(() => {
+	if (siteId) {
+		insertRow(db, "turns", row, siteId);
+	} else {
 		const colsInOrder = Object.keys(row);
 		const placeholders = colsInOrder.map(() => "?").join(", ");
 		const values = colsInOrder.map((k) => row[k]) as Array<string | number | null>;
 		db.prepare(`INSERT INTO turns (${colsInOrder.join(", ")}) VALUES (${placeholders})`).run(
 			...values,
 		);
+	}
 
-		// Update daily_summary for the calendar date of this turn.
-		const date = turn.created_at.split("T")[0];
-		const existing = db.prepare("SELECT 1 FROM daily_summary WHERE date = ?").get(date);
-		if (existing) {
-			db.prepare(
-				`UPDATE daily_summary
-				 SET total_tokens_in = total_tokens_in + ?,
-				     total_tokens_out = total_tokens_out + ?,
-				     total_cost_usd = total_cost_usd + ?,
-				     turn_count = turn_count + 1
-				 WHERE date = ?`,
-			).run(turn.tokens_in, turn.tokens_out, turn.cost_usd ?? 0, date);
-		} else {
-			db.prepare(
-				`INSERT INTO daily_summary (date, total_tokens_in, total_tokens_out, total_cost_usd, turn_count)
-				 VALUES (?, ?, ?, ?, 1)`,
-			).run(date, turn.tokens_in, turn.tokens_out, turn.cost_usd ?? 0);
-		}
+	// Update daily_summary for the calendar date of this turn. daily_summary
+	// is a local rollup — not synced — so this runs outside the outbox path.
+	const date = turn.created_at.split("T")[0];
+	const existing = db.prepare("SELECT 1 FROM daily_summary WHERE date = ?").get(date);
+	if (existing) {
+		db.prepare(
+			`UPDATE daily_summary
+			 SET total_tokens_in = total_tokens_in + ?,
+			     total_tokens_out = total_tokens_out + ?,
+			     total_cost_usd = total_cost_usd + ?,
+			     turn_count = turn_count + 1
+			 WHERE date = ?`,
+		).run(turn.tokens_in, turn.tokens_out, turn.cost_usd ?? 0, date);
+	} else {
+		db.prepare(
+			`INSERT INTO daily_summary (date, total_tokens_in, total_tokens_out, total_cost_usd, turn_count)
+			 VALUES (?, ?, ?, ?, 1)`,
+		).run(date, turn.tokens_in, turn.tokens_out, turn.cost_usd ?? 0);
+	}
 
-		if (siteId) {
-			const replicated: Record<string, unknown> = {};
-			for (const [k, v] of Object.entries(row)) {
-				if (!LOCAL_ONLY_COLUMNS.has(k)) replicated[k] = v;
-			}
-			createChangeLogEntry(db, "turns", id, siteId, replicated);
-		}
-	});
-
-	tx();
 	return id;
 }
 
 /**
- * Record context debug metadata for a turn. Local-only: never emits a
- * change_log entry. Called after recordTurn() returns the turn id.
+ * Record context debug metadata for a turn. When `siteId` is provided the
+ * update replicates via the outbox so the context-debug panel shows the
+ * full turn history on any host, even when a thread bounced between hosts
+ * mid-run. Without `siteId` the update stays local (tests / utilities).
  */
-export function recordContextDebug(db: Database, turnId: string, debug: ContextDebugInfo): void {
-	db.run("UPDATE turns SET context_debug = ? WHERE id = ?", [JSON.stringify(debug), turnId]);
+export function recordContextDebug(
+	db: Database,
+	turnId: string,
+	debug: ContextDebugInfo,
+	siteId?: string,
+): void {
+	const serialized = JSON.stringify(debug);
+	if (siteId) {
+		updateRow(db, "turns", turnId, { context_debug: serialized }, siteId);
+	} else {
+		db.run("UPDATE turns SET context_debug = ? WHERE id = ?", [serialized, turnId]);
+	}
 }
 
 export function getDailySpend(db: Database, date: string): number {
