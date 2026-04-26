@@ -78,14 +78,14 @@ All routes are mounted under `/api` and registered in `packages/web/src/server/r
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/threads` | List all non-deleted threads for the configured `operatorUserId` (resolved from the allowlist's `default_web_user`), ordered by `last_message_at` descending. Each row is enriched with `messageCount` and `lastModel`. |
+| GET | `/api/threads` | List non-deleted threads for the configured `operatorUserId` (resolved from the allowlist's `default_web_user`), ordered by `last_message_at` descending. Each row is enriched with `messageCount`, `lastModel`, and `hasRunningTask`. By default, threads with zero non-deleted `role='user'` messages are hidden from the directory to reduce clutter from task-only / system-only threads; pass `?include_empty=true` to include them. |
 | POST | `/api/threads` | Create a new thread. |
 | GET | `/api/threads/:id` | Fetch a single thread by ID. |
 | GET | `/api/threads/:id/status` | Fetch the current agent status for a thread. |
 | GET | `/api/threads/:id/context-debug` | Fetch per-turn context-debug records for a thread (for the debug panel). |
 | POST | `/api/mcp/threads` | Create a thread owned by the deterministic `mcp` system user (interface `"mcp"`). Used by `bound-mcp` stdio server. Response `201`: `{ thread_id: string }`. |
 
-**GET /api/threads** — Response: `Thread[]`
+**GET /api/threads** — Optional query param `?include_empty=true` disables the default filter that hides threads with no user messages (evaluated via an `EXISTS` correlated subquery against `messages` with `role='user' AND deleted=0`). Response: `Thread[]`.
 
 **POST /api/threads** — No request body required. Inserts a new row with `interface = "web"`, `host_origin = "localhost:3000"`, a `color` cycling from the last thread's value (mod 10), and an empty `title`. The row is owned by the configured `operatorUserId`. Response `201`: `Thread`.
 
@@ -388,7 +388,7 @@ Internal helper `fetchJson<T>(url, options?)` calls `fetch`, throws an `Error` c
 
 | Method | Signature | Endpoint called |
 |--------|-----------|-----------------|
-| `listThreads` | `() => Promise<Thread[]>` | `GET /api/threads` |
+| `listThreads` | `(opts?: { includeEmpty?: boolean }) => Promise<Thread[]>` | `GET /api/threads` (appends `?include_empty=true` when `opts.includeEmpty`) |
 | `createThread` | `() => Promise<Thread>` | `POST /api/threads` |
 | `getThread` | `(id: string) => Promise<Thread>` | `GET /api/threads/:id` |
 | `getTask` | `(id: string) => Promise<Task>` | `GET /api/tasks/:id` |

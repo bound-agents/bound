@@ -102,8 +102,9 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
-	async listThreads(): Promise<Thread[]> {
-		return fetchJson("/api/threads");
+	async listThreads(opts?: { includeEmpty?: boolean }): Promise<Thread[]> {
+		const qs = opts?.includeEmpty ? "?include_empty=true" : "";
+		return fetchJson(`/api/threads${qs}`);
 	},
 
 	async createThread(): Promise<Thread> {

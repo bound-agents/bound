@@ -70,8 +70,9 @@ describe("API Routes", () => {
 			});
 			await app.fetch(createRequest);
 
-			// Fetch threads list
-			const request = new Request("http://localhost:3000/api/threads");
+			// Fetch threads list (include_empty=true so the filter-by-default
+			// doesn't hide the bare thread we just created).
+			const request = new Request("http://localhost:3000/api/threads?include_empty=true");
 			const response = await app.fetch(request);
 			const threads = await response.json();
 
@@ -97,8 +98,9 @@ describe("API Routes", () => {
 				[randomUUID(), thread.id, "opus", 100, 50, now],
 			);
 
-			// Fetch threads list
-			const request = new Request("http://localhost:3000/api/threads");
+			// Fetch threads list (include_empty=true — this test covers a thread
+			// with a turn but no user messages).
+			const request = new Request("http://localhost:3000/api/threads?include_empty=true");
 			const response = await app.fetch(request);
 			const threads = await response.json();
 
@@ -115,8 +117,8 @@ describe("API Routes", () => {
 			});
 			await app.fetch(createRequest);
 
-			// Fetch threads list
-			const request = new Request("http://localhost:3000/api/threads");
+			// Fetch threads list (include_empty=true — bare thread, no user msgs).
+			const request = new Request("http://localhost:3000/api/threads?include_empty=true");
 			const response = await app.fetch(request);
 			const threads = await response.json();
 
@@ -149,8 +151,8 @@ describe("API Routes", () => {
 				[randomUUID(), thread.id, "claude", 200, 100, later],
 			);
 
-			// Fetch threads list
-			const request = new Request("http://localhost:3000/api/threads");
+			// Fetch threads list (include_empty=true — turns but no user messages).
+			const request = new Request("http://localhost:3000/api/threads?include_empty=true");
 			const response = await app.fetch(request);
 			const threads = await response.json();
 
@@ -195,8 +197,12 @@ describe("API Routes", () => {
 				[now, now, now],
 			);
 
-			// GET should only return threads with the configured operator ID
-			const response = await app.fetch(new Request("http://localhost:3000/api/threads"));
+			// GET should only return threads with the configured operator ID.
+			// Use include_empty=true because neither seeded thread has a user
+			// message, and the assertion here is about user_id filtering.
+			const response = await app.fetch(
+				new Request("http://localhost:3000/api/threads?include_empty=true"),
+			);
 			const threads = await response.json();
 			expect(threads.length).toBe(1);
 			expect(threads[0].user_id).toBe("test-operator");
