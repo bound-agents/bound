@@ -520,3 +520,93 @@ export function convertDeltaMessages(rows: DbMessageRow[]): LLMMessage[] {
 
 	return messages;
 }
+
+/**
+ * Scan an LLMMessage[] for tool_calls whose tool_use ids are not matched by a
+ * following tool_result before any non-tool message appears.
+ *
+ * The warm path appends delta messages to a previously-assembled prefix
+ * WITHOUT re-running the full tool-pair sanitizer in `context-assembly.ts`.
+ * When a tool_call was left pending at turn boundary (e.g. a long-running
+ * client tool that hadn't returned before the user sent a follow-up, or the
+ * agent loop yielded mid-batch), the merged warm-path array can contain a
+ * tool_call with no tool_result. Sending that to the AI SDK raises
+ * `MissingToolResultsError` and the whole turn errors out. Detect the
+ * condition so the caller can fall through to the cold path, where Stage 3
+ * sanitization synthesizes the missing results.
+ *
+ * Matches the semantics used by the AI SDK's prompt validator: a tool_call's
+ * tool_use ids are considered answered only when every id is followed by a
+ * tool_result (in any order) BEFORE the next user / assistant / system turn.
+ * Tool-call content that fails to parse as JSON ContentBlock[] is treated as
+ * a single opaque tool_use — absent any matching tool_result it is still an
+ * orphan.
+ */
+export function hasOrphanedToolCall(messages: LLMMessage[]): boolean {
+	const pending = new Set<string>();
+	let inActiveToolCall = false;
+
+	const closeWindow = (): boolean => {
+		if (pending.size > 0 || inActiveToolCall) return true;
+		return false;
+	};
+
+	for (const msg of messages) {
+		if (msg.role === "tool_call") {
+			// A new tool_call opens a fresh pending window. If the previous
+			// tool_call still has unmatched ids, that's already an orphan —
+			// report it up.
+			if (closeWindow()) return true;
+			pending.clear();
+			inActiveToolCall = true;
+			const content = Array.isArray(msg.content) ? msg.content : msg.content;
+			try {
+				const blocks =
+					typeof content === "string" ? JSON.parse(content) : (content as ContentBlock[]);
+				if (Array.isArray(blocks)) {
+					for (const b of blocks) {
+						if ((b as { type?: string }).type === "tool_use" && (b as { id?: string }).id) {
+							pending.add((b as { id: string }).id);
+						}
+					}
+				}
+			} catch {
+				// Non-parseable content: treat as one opaque tool_use. The
+				// inActiveToolCall flag alone is enough to flag it as an
+				// orphan if no tool_result follows.
+			}
+			continue;
+		}
+
+		if (msg.role === "tool_result") {
+			if (!inActiveToolCall) {
+				// Orphan tool_result on its own — no tool_call in scope.
+				return true;
+			}
+			if (msg.tool_use_id) {
+				pending.delete(msg.tool_use_id);
+			}
+			// Any result satisfies the opaque single-tool case.
+			if (pending.size === 0) {
+				inActiveToolCall = false;
+			}
+			continue;
+		}
+
+		if (msg.role === "cache" || msg.role === "developer") {
+			// Cache markers and developer tails are protocol-internal and
+			// can legitimately appear anywhere — they do NOT close a tool
+			// pair window.
+			continue;
+		}
+
+		// Any real conversation role (user / assistant / system) closes the
+		// tool pair window. Unmatched ids at this point are orphans.
+		if (closeWindow()) return true;
+		pending.clear();
+		inActiveToolCall = false;
+	}
+
+	// End of messages — surviving pending ids are orphans.
+	return closeWindow();
+}

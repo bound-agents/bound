@@ -1132,5 +1132,208 @@ describe("warm-cold-path", () => {
 			// Both should have completed successfully
 			expect(mockBackend.getCallCount()).toBeGreaterThanOrEqual(2);
 		});
+
+		it("falls back to cold reassembly when warm-path delta would leave an orphaned tool_call", async () => {
+			// Regression for thread 6b6ddeb0-ad1 (2026-04-26). Setup: the prior
+			// agent-loop had dispatched a boundless_bash client tool and yielded
+			// while waiting for the WS reply. The tool_call was persisted to the
+			// DB but no tool_result had arrived yet. When the user typed a
+			// follow-up ("Why does the diff have 295 files?"), a NEW agent-loop
+			// started, predictCacheState returned "warm" (1.5 min elapsed), and
+			// the warm path appended [tool_call, user] to the stored prefix
+			// without running tool-pair sanitization. The AI SDK prompt
+			// validator then raised `MissingToolResultsError`.
+			//
+			// After the fix, the warm path detects the orphan before dispatching
+			// to the LLM and falls through to the cold path, which has Stage 3
+			// sanitization to synthesize a tool_result for every unmatched
+			// tool_use_id.
+			globalDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					globalThreadId,
+					globalUserId,
+					"web",
+					"local",
+					0,
+					"Interrupt Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// Seed an initial user message.
+			globalDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					globalThreadId,
+					"user",
+					"Run the test sweep",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+					0,
+				],
+			);
+
+			const mockBackend = new MockLLMBackend();
+			// First turn: emit a simple text response so cold-path assembly
+			// completes and a CachedTurnState is written. cache_write_tokens>0
+			// so predictCacheState flips to "warm" for the next invocation.
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Kicking off tests" };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 100,
+						output_tokens: 5,
+						cache_write_tokens: 100,
+						cache_read_tokens: 0,
+						estimated: false,
+					},
+				};
+			});
+			// Second turn: respond to the user interrupt with plain text.
+			// This only runs if the warm-path orphan guard correctly falls
+			// through to the cold path — otherwise the AI SDK would reject
+			// the request before it reaches the mock.
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "295 files is unexpected" };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 20,
+						output_tokens: 10,
+						cache_write_tokens: 0,
+						cache_read_tokens: 100,
+						estimated: false,
+					},
+				};
+			});
+
+			const sharedStore = new InMemoryTurnStateStore();
+
+			// First invocation: cold path, populates cached turn state.
+			const pathLogs1: CachePathLog[] = [];
+			const ctx1 = makeCtx(pathLogs1, sharedStore);
+			const loop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
+				threadId: globalThreadId,
+				userId: globalUserId,
+			});
+			await loop1.run();
+			expect(pathLogs1[0]?.path).toBe("cold");
+
+			// Now simulate what happens when the agent-loop persists a
+			// tool_call and yields for a client tool (no matching tool_result
+			// yet), then the user types a follow-up before the result arrives.
+			const pendingToolUseId = "tooluse_cBtTP010NOWBe6yiRFVIDb";
+			const toolCallContent = JSON.stringify([
+				{
+					type: "tool_use",
+					id: pendingToolUseId,
+					name: "boundless_bash",
+					input: { command: "bun test" },
+				},
+			]);
+			globalDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					globalThreadId,
+					"tool_call",
+					toolCallContent,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+					0,
+				],
+			);
+			globalDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					globalThreadId,
+					"user",
+					"Why does the diff have 295 files?",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+					0,
+				],
+			);
+
+			// Second invocation: warm is eligible BUT the delta contains an
+			// unmatched tool_call. The guard should redirect to cold
+			// reassembly rather than shipping an orphan to the backend.
+			const pathLogs2: CachePathLog[] = [];
+			const ctx2 = makeCtx(pathLogs2, sharedStore);
+			const loop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
+				threadId: globalThreadId,
+				userId: globalUserId,
+			});
+			const result2 = await loop2.run();
+
+			// The loop must not fatally error. The pre-fix behavior surfaced
+			// the AI SDK error as `agent-loop error: ... MissingToolResultsError`.
+			expect(result2).toHaveProperty("messagesCreated");
+			expect(result2).not.toHaveProperty("error");
+
+			// The second turn must take the cold path (warm fell back because
+			// of the orphan). Reason should reflect the fallback — we log
+			// "budget-exceeded" for the other fall-through branch so this
+			// new path gets its own bucket implicitly via usedWarmPath=false.
+			expect(pathLogs2[0]?.path).toBe("cold");
+
+			// Every captured LLM payload MUST NOT contain a dangling tool_call.
+			// (i.e. each tool_use_id must be followed by a matching tool_result
+			// in the same messages array.)
+			for (const params of mockBackend.getCapturedParams()) {
+				const messages = params.messages;
+				const pendingIds = new Set<string>();
+				let inToolCall = false;
+				for (const m of messages) {
+					if (m.role === "tool_call") {
+						inToolCall = true;
+						const content = Array.isArray(m.content) ? m.content : m.content;
+						try {
+							const blocks =
+								typeof content === "string" ? JSON.parse(content) : (content as unknown[]);
+							if (Array.isArray(blocks)) {
+								for (const b of blocks) {
+									const block = b as { type?: string; id?: string };
+									if (block.type === "tool_use" && block.id) {
+										pendingIds.add(block.id);
+									}
+								}
+							}
+						} catch {
+							// opaque tool_call — just track inToolCall
+						}
+					} else if (m.role === "tool_result") {
+						if (m.tool_use_id) pendingIds.delete(m.tool_use_id);
+						if (pendingIds.size === 0) inToolCall = false;
+					} else if (m.role !== "cache" && m.role !== "developer") {
+						expect(pendingIds.size).toBe(0);
+						expect(inToolCall).toBe(false);
+					}
+				}
+				// End-of-array: no leftover pending ids.
+				expect(pendingIds.size).toBe(0);
+				expect(inToolCall).toBe(false);
+			}
+		});
 	});
 });

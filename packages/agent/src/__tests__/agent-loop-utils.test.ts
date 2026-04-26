@@ -12,6 +12,7 @@ import {
 	convertDeltaMessages,
 	deriveCapabilityRequirements,
 	getResolvedModelId,
+	hasOrphanedToolCall,
 	insertThreadMessage,
 	isTransientLLMError,
 } from "../agent-loop-utils";
@@ -625,5 +626,160 @@ describe("clampMaxOutputTokens", () => {
 		// through with 0 or a negative value we fall back to the default.
 		expect(clampMaxOutputTokens(16384, 0)).toBe(16384);
 		expect(clampMaxOutputTokens(16384, -500)).toBe(16384);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// hasOrphanedToolCall
+// ---------------------------------------------------------------------------
+describe("hasOrphanedToolCall", () => {
+	it("returns false for an empty message array", () => {
+		expect(hasOrphanedToolCall([])).toBe(false);
+	});
+
+	it("returns false for conversation with no tool_calls", () => {
+		expect(
+			hasOrphanedToolCall([
+				{ role: "user", content: "hi" },
+				{ role: "assistant", content: "hello" },
+			]),
+		).toBe(false);
+	});
+
+	it("returns false for a matched single-tool_use pair", () => {
+		const toolCallContent = JSON.stringify([
+			{ type: "tool_use", id: "tu_1", name: "bash", input: { command: "ls" } },
+		]);
+		expect(
+			hasOrphanedToolCall([
+				{ role: "user", content: "run ls" },
+				{ role: "tool_call", content: toolCallContent },
+				{ role: "tool_result", content: "file1", tool_use_id: "tu_1" },
+				{ role: "assistant", content: "done" },
+			]),
+		).toBe(false);
+	});
+
+	it("returns false for parallel tool_uses when all ids are matched", () => {
+		const toolCallContent = JSON.stringify([
+			{ type: "tool_use", id: "tu_a", name: "bash", input: {} },
+			{ type: "tool_use", id: "tu_b", name: "bash", input: {} },
+		]);
+		expect(
+			hasOrphanedToolCall([
+				{ role: "tool_call", content: toolCallContent },
+				{ role: "tool_result", content: "A", tool_use_id: "tu_a" },
+				{ role: "tool_result", content: "B", tool_use_id: "tu_b" },
+				{ role: "user", content: "next" },
+			]),
+		).toBe(false);
+	});
+
+	it("returns true when a tool_call has no tool_result before a user message", () => {
+		// The prod failure shape: a client tool was in flight when the user
+		// typed a follow-up. The warm path appends the new user message to
+		// the stored prefix without synthesizing a tool_result.
+		const toolCallContent = JSON.stringify([
+			{ type: "tool_use", id: "tooluse_cBtTP010NOWBe6yiRFVIDb", name: "boundless_bash", input: {} },
+		]);
+		expect(
+			hasOrphanedToolCall([
+				{ role: "user", content: "run bun test" },
+				{ role: "tool_call", content: toolCallContent },
+				{ role: "user", content: "Why does the diff have 295 files?" },
+			]),
+		).toBe(true);
+	});
+
+	it("returns true when a parallel tool_call has only some ids matched", () => {
+		const toolCallContent = JSON.stringify([
+			{ type: "tool_use", id: "tu_a", name: "bash", input: {} },
+			{ type: "tool_use", id: "tu_b", name: "bash", input: {} },
+		]);
+		expect(
+			hasOrphanedToolCall([
+				{ role: "tool_call", content: toolCallContent },
+				{ role: "tool_result", content: "A", tool_use_id: "tu_a" },
+				{ role: "user", content: "hold on" },
+			]),
+		).toBe(true);
+	});
+
+	it("returns true when a tool_result appears without any preceding tool_call", () => {
+		expect(
+			hasOrphanedToolCall([
+				{ role: "user", content: "hi" },
+				{ role: "tool_result", content: "stale", tool_use_id: "tu_ghost" },
+			]),
+		).toBe(true);
+	});
+
+	it("returns true when the array ends mid tool_call with no results", () => {
+		const toolCallContent = JSON.stringify([
+			{ type: "tool_use", id: "tu_x", name: "bash", input: {} },
+		]);
+		expect(
+			hasOrphanedToolCall([
+				{ role: "user", content: "do it" },
+				{ role: "tool_call", content: toolCallContent },
+			]),
+		).toBe(true);
+	});
+
+	it("ignores cache and developer markers when checking tool pair windows", () => {
+		const toolCallContent = JSON.stringify([
+			{ type: "tool_use", id: "tu_1", name: "bash", input: {} },
+		]);
+		expect(
+			hasOrphanedToolCall([
+				{ role: "tool_call", content: toolCallContent },
+				{ role: "cache", content: "" },
+				{ role: "tool_result", content: "ok", tool_use_id: "tu_1" },
+				{ role: "developer", content: "volatile" },
+				{ role: "user", content: "next" },
+			]),
+		).toBe(false);
+	});
+
+	it("treats non-parseable tool_call content as an opaque single tool_use", () => {
+		// Synthetic tool_calls produced by context assembly may carry JSON
+		// content that's still parseable, but legacy / malformed rows must
+		// still be treated as a tool pair that needs a following result.
+		expect(
+			hasOrphanedToolCall([
+				{ role: "tool_call", content: "not-json-at-all" },
+				{ role: "user", content: "hi" },
+			]),
+		).toBe(true);
+		expect(
+			hasOrphanedToolCall([
+				{ role: "tool_call", content: "not-json-at-all" },
+				{ role: "tool_result", content: "fine", tool_use_id: "whatever" },
+				{ role: "user", content: "hi" },
+			]),
+		).toBe(false);
+	});
+
+	it("accepts ContentBlock[] content in addition to JSON strings", () => {
+		expect(
+			hasOrphanedToolCall([
+				{
+					role: "tool_call",
+					content: [{ type: "tool_use", id: "tu_1", name: "bash", input: {} }],
+				},
+				{ role: "user", content: "hi" },
+			]),
+		).toBe(true);
+
+		expect(
+			hasOrphanedToolCall([
+				{
+					role: "tool_call",
+					content: [{ type: "tool_use", id: "tu_1", name: "bash", input: {} }],
+				},
+				{ role: "tool_result", content: "ok", tool_use_id: "tu_1" },
+				{ role: "user", content: "hi" },
+			]),
+		).toBe(false);
 	});
 });

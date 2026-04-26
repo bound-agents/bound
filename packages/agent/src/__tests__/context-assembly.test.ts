@@ -7197,6 +7197,107 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			db.run("DELETE FROM messages WHERE thread_id = ?", [testThreadId]);
 			db.run("DELETE FROM threads WHERE id = ?", [testThreadId]);
 		});
+
+		it("should inject synthetic tool_result when user interrupts a pending client tool_call", () => {
+			// Regression for thread 6b6ddeb0-ad14-44ee-99d6-96b9debc32c7 (2026-04-26):
+			// 1. Agent dispatched a boundless_bash client tool, persisted the tool_call,
+			//    and yielded while waiting for the result over WS.
+			// 2. User typed a follow-up message before the long-running bash returned.
+			// 3. A new agent-loop started, ran context assembly, and emitted a request
+			//    that had an open tool_call with NO tool_result anywhere.
+			// 4. AI SDK rejected with MissingToolResultsError: "Tool result is missing
+			//    for tool call tooluse_cBtTP010NOWBe6yiRFVIDb."
+			//
+			// The sanitizer must inject a synthetic tool_result for every pending
+			// tool_use_id when a non-tool role (here: user) arrives before the results.
+			const testThreadId = randomUUID();
+			const testUserId = randomUUID();
+
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					testUserId,
+					"web",
+					"local",
+					0,
+					"Interrupt Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const t0 = new Date(Date.now() - 120_000).toISOString();
+			const t1 = new Date(Date.now() - 60_000).toISOString();
+			const t2 = new Date().toISOString();
+
+			// Earlier user turn
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), testThreadId, "user", "Run the test sweep", null, null, t0, t0, "local"],
+			);
+
+			// Pending tool_call — single tool_use, no tool_result yet
+			const pendingToolUseId = "tooluse_cBtTP010NOWBe6yiRFVIDb";
+			const toolCallContent = JSON.stringify([
+				{
+					type: "tool_use",
+					id: pendingToolUseId,
+					name: "boundless_bash",
+					input: { command: "bun test" },
+				},
+			]);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), testThreadId, "tool_call", toolCallContent, null, null, t1, t1, "local"],
+			);
+
+			// User interrupts before the tool_result arrives
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					testThreadId,
+					"user",
+					"Why does the diff have 295 files?",
+					null,
+					null,
+					t2,
+					t2,
+					"local",
+				],
+			);
+
+			const { messages } = assembleContext({
+				db,
+				threadId: testThreadId,
+				userId: testUserId,
+			});
+
+			// The pending tool_use_id MUST have a corresponding tool_result in the
+			// assembled output — otherwise the LLM request will fail with
+			// MissingToolResultsError.
+			const toolResults = messages.filter((m) => m.role === "tool_result");
+			const hasResultForPending = toolResults.some((m) => m.tool_use_id === pendingToolUseId);
+			expect(hasResultForPending).toBe(true);
+
+			// And the user interrupt message should still be present (not dropped).
+			const userMsgs = messages.filter(
+				(m) =>
+					m.role === "user" && typeof m.content === "string" && m.content.includes("295 files"),
+			);
+			expect(userMsgs.length).toBe(1);
+
+			// Cleanup
+			db.run("DELETE FROM messages WHERE thread_id = ?", [testThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [testThreadId]);
+		});
 	});
 
 	describe("orientation block command registry", () => {

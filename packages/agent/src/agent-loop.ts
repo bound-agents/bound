@@ -41,6 +41,7 @@ import {
 	convertDeltaMessages,
 	deriveCapabilityRequirements,
 	getResolvedModelId,
+	hasOrphanedToolCall,
 	insertThreadMessage,
 	isTransientLLMError,
 	parseToolResultContent,
@@ -478,120 +479,145 @@ export class AgentLoop {
 
 				storedMessages.push(...deltaMessages);
 
-				// 4. Place rolling cache message at messages[length-2] (before last delta
-				//    message). Gated on effective backend capabilities — skipped when
-				//    prompt_caching is explicitly disabled (e.g. MiniMax on Bedrock)
-				//    to avoid the 403 "unsupported model / prompt caching not allowed".
-				maybePlaceCacheMarker(storedMessages, "rolling", cacheMarkerCaps ?? undefined);
-
-				// 5. Inject fresh volatile developer message at tail
-				const volatileContext = buildVolatileContext({
-					db: this.ctx.db,
-					threadId: this.config.threadId,
-					taskId: this.config.taskId,
-					userId: this.config.userId,
-					siteId: this.ctx.siteId,
-					hostName: this.ctx.hostName,
-					currentModel: resolvedModelForDebug,
-					relayInfo,
-					platformContext: this.config.platform
-						? {
-								platform: this.config.platform,
-								toolNames: this.config.platformTools
-									? Array.from(this.config.platformTools.keys())
-									: undefined,
-							}
-						: undefined,
-					systemPromptAddition: this.config.systemPromptAddition,
-				});
-
-				storedMessages.push({
-					role: "developer",
-					content: volatileContext.content,
-				});
-
-				// 6. Check high-water mark: estimate total token count and compare against
-				//    the safety-margined effective budget. Using raw contextWindow here would
-				//    allow the warm path to ship a payload that overflows on the wire when the
-				//    estimator undercounts vs the backend's real tokenizer — same failure mode
-				//    as the cold-path gate in context-assembly.ts.
-				const storedTokens = storedMessages.reduce(
-					(sum, msg) => sum + countContentTokens(msg.content),
-					0,
-				);
-				const systemTokens = cached.systemPrompt ? countContentTokens(cached.systemPrompt) : 0;
-				const estimatedTotal = storedTokens + systemTokens + toolTokenEstimate;
-				const warmSafetyMargin = computeSafetyMargin(contextWindow);
-				const warmEffectiveBudget = Math.max(0, contextWindow - warmSafetyMargin);
-
-				if (estimatedTotal > warmEffectiveBudget) {
-					// High-water mark exceeded — fall through to cold path
+				// 3b. If the merged stored+delta array contains a tool_call with no
+				//    matching tool_result before a non-tool turn (common when a
+				//    client tool was in flight and the user typed a follow-up, or
+				//    when the loop yielded mid-batch), the warm path cannot safely
+				//    ship this payload — the AI SDK prompt validator raises
+				//    `MissingToolResultsError` and the whole turn fails. Fall
+				//    through to the cold path so Stage 3 sanitization can
+				//    synthesize the missing result. Clearing the cached state
+				//    forces a full re-assembly on the next iteration as well.
+				const warmOrphanedToolCall = hasOrphanedToolCall(storedMessages);
+				if (warmOrphanedToolCall) {
 					this.ctx.logger.info(
-						"[agent-loop] Warm path exceeded context budget, triggering cold reassembly",
+						"[agent-loop] Warm path detected orphaned tool_call, falling back to cold reassembly",
 						{
-							estimatedTotal,
-							contextWindow,
-							effectiveBudget: warmEffectiveBudget,
-							safetyMargin: warmSafetyMargin,
-							storedTokens,
-							systemTokens,
-							toolTokenEstimate,
+							threadId: this.config.threadId,
+							storedMessageCount: cached.messages.length,
+							deltaMessageCount: deltaMessages.length,
 						},
 					);
-					// Clear cached state to force cold path on next iteration
 					this.clearCachedTurnState();
-					// Fall through to cold path by not setting usedWarmPath or llmMessages
-				} else {
-					// Warm path succeeded within budget
-					usedWarmPath = true;
+					// Fall through to the cold path by leaving usedWarmPath=false.
+				}
 
-					// 7. Query latest message created_at for next turn
-					const newLastRow = this.ctx.db
-						.query(
-							"SELECT created_at FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
-						)
-						.get(this.config.threadId) as { created_at: string } | null;
+				if (!warmOrphanedToolCall) {
+					// 4. Place rolling cache message at messages[length-2] (before last delta
+					//    message). Gated on effective backend capabilities — skipped when
+					//    prompt_caching is explicitly disabled (e.g. MiniMax on Bedrock)
+					//    to avoid the 403 "unsupported model / prompt caching not allowed".
+					maybePlaceCacheMarker(storedMessages, "rolling", cacheMarkerCaps ?? undefined);
 
-					// 8. Update stored state.
-					// Spread-copy so later mutations of `llmMessages` (e.g. the
-					// loop appending tool_call blocks after the LLM response) do
-					// NOT leak into the cached state. Aliasing here previously
-					// caused the next warm iteration to re-append the delta on
-					// top of an already-appended tool_call, producing duplicated
-					// tool_use blocks and a Bedrock tool_use_id_mismatch.
-					//
-					// Recompute cacheMessagePositions from the freshly rebuilt
-					// array since stale rolling markers were evicted in step 3.
-					// The fixed cache (cold-path anchor) survived at its original
-					// index; the new rolling cache sits at length-2.
-					const fixedIdx = cached.fixedCacheIdx;
-					const rollingIdx = storedMessages.length - 2;
-					const newCachePositions: number[] = [];
-					if (fixedIdx >= 0 && fixedIdx < storedMessages.length) {
-						newCachePositions.push(fixedIdx);
-					}
-					if (rollingIdx !== fixedIdx && rollingIdx >= 0) {
-						newCachePositions.push(rollingIdx);
-					}
-					this.setCachedTurnState({
-						...cached,
-						messages: [...storedMessages],
-						cacheMessagePositions: newCachePositions,
-						lastMessageCreatedAt: newLastRow?.created_at ?? new Date().toISOString(),
+					// 5. Inject fresh volatile developer message at tail
+					const volatileContext = buildVolatileContext({
+						db: this.ctx.db,
+						threadId: this.config.threadId,
+						taskId: this.config.taskId,
+						userId: this.config.userId,
+						siteId: this.ctx.siteId,
+						hostName: this.ctx.hostName,
+						currentModel: resolvedModelForDebug,
+						relayInfo,
+						platformContext: this.config.platform
+							? {
+									platform: this.config.platform,
+									toolNames: this.config.platformTools
+										? Array.from(this.config.platformTools.keys())
+										: undefined,
+								}
+							: undefined,
+						systemPromptAddition: this.config.systemPromptAddition,
 					});
 
-					// 9. Use stored messages directly (no system messages in the array)
-					llmMessages = storedMessages;
+					storedMessages.push({
+						role: "developer",
+						content: volatileContext.content,
+					});
 
-					// Use cached debug
-					contextDebug = {
-						contextWindow: contextWindow,
-						totalEstimated: estimatedTotal,
-						model: resolvedModelForDebug ?? "unknown",
-						sections: [],
-						budgetPressure: false,
-						truncated: 0,
-					};
+					// 6. Check high-water mark: estimate total token count and compare against
+					//    the safety-margined effective budget. Using raw contextWindow here would
+					//    allow the warm path to ship a payload that overflows on the wire when the
+					//    estimator undercounts vs the backend's real tokenizer — same failure mode
+					//    as the cold-path gate in context-assembly.ts.
+					const storedTokens = storedMessages.reduce(
+						(sum, msg) => sum + countContentTokens(msg.content),
+						0,
+					);
+					const systemTokens = cached.systemPrompt ? countContentTokens(cached.systemPrompt) : 0;
+					const estimatedTotal = storedTokens + systemTokens + toolTokenEstimate;
+					const warmSafetyMargin = computeSafetyMargin(contextWindow);
+					const warmEffectiveBudget = Math.max(0, contextWindow - warmSafetyMargin);
+
+					if (estimatedTotal > warmEffectiveBudget) {
+						// High-water mark exceeded — fall through to cold path
+						this.ctx.logger.info(
+							"[agent-loop] Warm path exceeded context budget, triggering cold reassembly",
+							{
+								estimatedTotal,
+								contextWindow,
+								effectiveBudget: warmEffectiveBudget,
+								safetyMargin: warmSafetyMargin,
+								storedTokens,
+								systemTokens,
+								toolTokenEstimate,
+							},
+						);
+						// Clear cached state to force cold path on next iteration
+						this.clearCachedTurnState();
+						// Fall through to cold path by not setting usedWarmPath or llmMessages
+					} else {
+						// Warm path succeeded within budget
+						usedWarmPath = true;
+
+						// 7. Query latest message created_at for next turn
+						const newLastRow = this.ctx.db
+							.query(
+								"SELECT created_at FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+							)
+							.get(this.config.threadId) as { created_at: string } | null;
+
+						// 8. Update stored state.
+						// Spread-copy so later mutations of `llmMessages` (e.g. the
+						// loop appending tool_call blocks after the LLM response) do
+						// NOT leak into the cached state. Aliasing here previously
+						// caused the next warm iteration to re-append the delta on
+						// top of an already-appended tool_call, producing duplicated
+						// tool_use blocks and a Bedrock tool_use_id_mismatch.
+						//
+						// Recompute cacheMessagePositions from the freshly rebuilt
+						// array since stale rolling markers were evicted in step 3.
+						// The fixed cache (cold-path anchor) survived at its original
+						// index; the new rolling cache sits at length-2.
+						const fixedIdx = cached.fixedCacheIdx;
+						const rollingIdx = storedMessages.length - 2;
+						const newCachePositions: number[] = [];
+						if (fixedIdx >= 0 && fixedIdx < storedMessages.length) {
+							newCachePositions.push(fixedIdx);
+						}
+						if (rollingIdx !== fixedIdx && rollingIdx >= 0) {
+							newCachePositions.push(rollingIdx);
+						}
+						this.setCachedTurnState({
+							...cached,
+							messages: [...storedMessages],
+							cacheMessagePositions: newCachePositions,
+							lastMessageCreatedAt: newLastRow?.created_at ?? new Date().toISOString(),
+						});
+
+						// 9. Use stored messages directly (no system messages in the array)
+						llmMessages = storedMessages;
+
+						// Use cached debug
+						contextDebug = {
+							contextWindow: contextWindow,
+							totalEstimated: estimatedTotal,
+							model: resolvedModelForDebug ?? "unknown",
+							sections: [],
+							budgetPressure: false,
+							truncated: 0,
+						};
+					}
 				}
 			}
 
