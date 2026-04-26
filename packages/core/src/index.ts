@@ -13,6 +13,8 @@ export {
 	updateRow,
 	softDelete,
 	insertMessage,
+	readMessageMetadata,
+	writeMessageMetadata,
 	validateColumnName,
 } from "./change-log";
 export {

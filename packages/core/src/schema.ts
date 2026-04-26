@@ -628,6 +628,18 @@ export function applySchema(db: Database): void {
 		/* already exists */
 	}
 
+	// metadata column on messages — opaque JSON property bag scoped to
+	// platform connectors (e.g. Discord delivery-retry tombstones). Most of
+	// the application treats this field as "does not exist." Platform-specific
+	// code reads/writes it via readMessageMetadata / writeMessageMetadata.
+	// Convention: platform writers prefix keys with their platform name
+	// (discord_*, slack_*) to avoid collisions.
+	try {
+		db.run("ALTER TABLE messages ADD COLUMN metadata TEXT");
+	} catch {
+		/* already exists */
+	}
+
 	// Performance indexes for scheduler task queries (run every tick)
 	db.run(`
 		CREATE INDEX IF NOT EXISTS idx_tasks_pending_schedule

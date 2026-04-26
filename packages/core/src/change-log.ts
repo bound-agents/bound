@@ -247,3 +247,47 @@ export function insertMessage(
 	);
 	return id;
 }
+
+/**
+ * Read the opaque platform-scoped metadata property bag from a message.
+ * Returns null when the message does not exist or has no metadata.
+ *
+ * Convention: platform connectors prefix their keys (discord_*, slack_*)
+ * to avoid collisions. This field is invisible to the agent loop and
+ * context assembly; only platform-specific code reads or writes it.
+ */
+export function readMessageMetadata(
+	db: Database,
+	messageId: string,
+): Record<string, unknown> | null {
+	const row = db.query("SELECT metadata FROM messages WHERE id = ?").get(messageId) as {
+		metadata: string | null;
+	} | null;
+	if (!row || row.metadata === null) {
+		return null;
+	}
+	try {
+		return JSON.parse(row.metadata) as Record<string, unknown>;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Merge the given entries into the message's metadata property bag.
+ * Existing keys not mentioned in `entries` are preserved; mentioned keys
+ * are overwritten. Flows through updateRow() so a change_log entry is
+ * created for sync and modified_at is bumped.
+ *
+ * Throws if the message row does not exist.
+ */
+export function writeMessageMetadata(
+	db: Database,
+	messageId: string,
+	entries: Record<string, unknown>,
+	siteId: string,
+): void {
+	const existing = readMessageMetadata(db, messageId) ?? {};
+	const merged = { ...existing, ...entries };
+	updateRow(db, "messages", messageId, { metadata: JSON.stringify(merged) }, siteId);
+}
