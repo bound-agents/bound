@@ -1,5 +1,6 @@
 <script lang="ts">
 import { Check, ChevronDown, ChevronUp, Cog, Wrench } from "lucide-svelte";
+import { untrack } from "svelte";
 import { renderMarkdown } from "../lib/markdown";
 import ReasoningBlock from "./ReasoningBlock.svelte";
 
@@ -143,17 +144,16 @@ let innerRendered = $state<Record<number, string>>({});
 
 $effect(() => {
 	// Only render inline text for 2nd-and-later messages; index 0 is
-	// handled by renderedFirstText above.
-	const next: Record<number, string> = {};
+	// handled by renderedFirstText above. Read innerRendered via
+	// untrack() so writing the freshly-rendered HTML back into it
+	// doesn't retrigger this effect — that used to produce an
+	// infinite update loop that tripped Svelte's scheduler and broke
+	// unrelated click handlers elsewhere on the page.
 	for (let i = 1; i < parsedMessages.length; i++) {
 		const txt = parsedMessages[i].inlineText;
 		if (!txt) continue;
-		const existing = innerRendered[i];
-		if (existing) {
-			next[i] = existing;
-			continue;
-		}
-		// Snapshot index into the closure.
+		const alreadyRendered = untrack(() => innerRendered[i]);
+		if (alreadyRendered) continue;
 		const idx = i;
 		renderMarkdown(txt)
 			.then((html) => {
@@ -162,10 +162,6 @@ $effect(() => {
 			.catch((err: unknown) => {
 				console.error("[markdown] renderMarkdown failed:", err);
 			});
-	}
-	// Seed immediate hits so existing results survive re-runs.
-	if (Object.keys(next).length > 0) {
-		innerRendered = { ...innerRendered, ...next };
 	}
 });
 
