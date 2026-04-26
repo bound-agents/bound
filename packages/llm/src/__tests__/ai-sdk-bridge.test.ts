@@ -860,7 +860,9 @@ describe("mapChunks — finish / usage", () => {
 		expect(done?.usage.output_tokens).toBeGreaterThan(0);
 	});
 
-	it("does not estimate when output text is empty", async () => {
+	it("does not estimate when there was no output at all", async () => {
+		// Truly silent response — no text, no thinking, no tool calls. Without
+		// any signal that work happened, we don't phantom-bill input tokens.
 		const out = await collect(
 			mapChunks(
 				events({
@@ -873,6 +875,53 @@ describe("mapChunks — finish / usage", () => {
 		);
 		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
 		expect(done?.usage.estimated).toBe(false);
+	});
+
+	// bound_issue:turns-table:observability-gap — non-text responses (tool
+	// calls, thinking-only) were being recorded as tokens_in=0/tokens_out=0
+	// because the zero-usage fallback only fired when `outputText.length > 0`.
+	// haiku cron turns (a single retrieve_task call, no text) and qwen3.6
+	// threads that produced only thinking+tool_call output were the canaries.
+	it("estimates usage when only a tool call was emitted (no text output)", async () => {
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "tool-input-start", id: "t1", toolName: "retrieve_task" },
+					{ type: "tool-input-delta", id: "t1", delta: "{}" },
+					{ type: "tool-input-end", id: "t1" },
+					{
+						type: "finish",
+						finishReason: "tool-calls",
+						totalUsage: { inputTokens: 0, outputTokens: 0 },
+					},
+				),
+				{ estimateInputFromMessages: [{ role: "user", content: "please retrieve the task" }] },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.estimated).toBe(true);
+		expect(done?.usage.input_tokens).toBeGreaterThan(0);
+		expect(done?.usage.output_tokens).toBeGreaterThan(0);
+	});
+
+	it("estimates usage when only thinking was emitted (no text output)", async () => {
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "reasoning-delta", id: "r1", text: "let me think about this for a moment" },
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: { inputTokens: 0, outputTokens: 0 },
+					},
+				),
+				{ estimateInputFromMessages: [{ role: "user", content: "think carefully" }] },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.estimated).toBe(true);
+		expect(done?.usage.input_tokens).toBeGreaterThan(0);
+		expect(done?.usage.output_tokens).toBeGreaterThan(0);
 	});
 
 	it("throws an LLMError when the SDK emits a fullStream error event", async () => {

@@ -1866,11 +1866,15 @@ describe("AgentLoop", () => {
 
 			await agentLoop.run();
 
-			// Query the turns table for context_debug
+			// Query the turns table for context_debug. Ordering by rowid
+			// gives us insertion order — turn ids are UUIDs now, so id ASC
+			// isn't meaningful, and created_at can tie at ms resolution.
 			const turns = db
-				.query("SELECT id, tokens_in, context_debug FROM turns WHERE thread_id = ? ORDER BY id ASC")
+				.query(
+					"SELECT id, tokens_in, context_debug FROM turns WHERE thread_id = ? ORDER BY rowid ASC",
+				)
 				.all(threadId) as Array<{
-				id: number;
+				id: string;
 				tokens_in: number;
 				context_debug: string | null;
 			}>;

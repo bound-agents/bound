@@ -441,6 +441,16 @@ export async function* mapChunks(
 	opts: MapChunksOptions = {},
 ): AsyncIterable<StreamChunk> {
 	let outputText = "";
+	// Widened "something happened" signal for the zero-usage estimator.
+	// Pre-2026-04-26, estimation only kicked in when outputText.length > 0,
+	// so tool-only and thinking-only responses (haiku cron turns that just
+	// called retrieve_task; qwen3.6 threads that emitted only thinking
+	// + tool calls) were recorded with tokens_in=tokens_out=0. We now
+	// accumulate reasoning text and tool-input-delta bytes here so those
+	// responses get a reasonable char-based estimate.
+	// bound_issue:turns-table:observability-gap sub-gap 2b.
+	let reasoningText = "";
+	let toolInputText = "";
 	// Track tool-input-start names since tool-input-delta only carries the id.
 	const toolNameById = new Map<string, string>();
 	// Accumulate providerMetadata across finish-step events so we have it
@@ -462,6 +472,7 @@ export async function* mapChunks(
 				const text = (part.text as string | undefined) ?? "";
 				const meta = part.providerMetadata as ProviderMetadata | undefined;
 				if (text) {
+					reasoningText += text;
 					yield { type: "thinking", content: text };
 				}
 				// Signatures and redacted data arrive on reasoning-delta with
@@ -486,12 +497,16 @@ export async function* mapChunks(
 				const id = (part.id as string | undefined) ?? "";
 				const name = (part.toolName as string | undefined) ?? "";
 				toolNameById.set(id, name);
+				// Count the tool name towards output size so a plain
+				// tool call without args still gets estimated.
+				toolInputText += name;
 				yield { type: "tool_use_start", id, name };
 				break;
 			}
 			case "tool-input-delta": {
 				const id = (part.id as string | undefined) ?? "";
 				const delta = (part.delta as string | undefined) ?? "";
+				toolInputText += delta;
 				yield { type: "tool_use_args", id, partial_json: delta };
 				break;
 			}
@@ -511,7 +526,11 @@ export async function* mapChunks(
 				const totalUsage = part.totalUsage as FinishState["totalUsage"];
 				yield {
 					type: "done",
-					usage: extractUsage({ totalUsage, providerMetadata: lastStepMetadata }, outputText, opts),
+					usage: extractUsage(
+						{ totalUsage, providerMetadata: lastStepMetadata },
+						{ text: outputText, reasoning: reasoningText, toolInput: toolInputText },
+						opts,
+					),
 				};
 				break;
 			}
@@ -552,7 +571,17 @@ interface DoneUsage {
 	estimated: boolean;
 }
 
-function extractUsage(finish: FinishState, outputText: string, opts: MapChunksOptions): DoneUsage {
+interface OutputWitness {
+	text: string;
+	reasoning: string;
+	toolInput: string;
+}
+
+function extractUsage(
+	finish: FinishState,
+	output: OutputWitness,
+	opts: MapChunksOptions,
+): DoneUsage {
 	const u = finish.totalUsage ?? {};
 	let inputTokens = u.inputTokens ?? 0;
 	let outputTokens = u.outputTokens ?? 0;
@@ -571,12 +600,19 @@ function extractUsage(finish: FinishState, outputText: string, opts: MapChunksOp
 		}
 	}
 
-	// Zero-usage guard — matches legacy BedrockDriver behavior.
+	// Zero-usage guard — widened to cover any observable output, not just
+	// text. Responses that only emitted tool calls (haiku cron turns that
+	// called retrieve_task) or only thinking (qwen3.6 threads where the
+	// model reasoned extensively but produced no text before a tool call)
+	// were silently recorded as tokens_in=tokens_out=0, breaking cost/
+	// usage accounting per-host. bound_issue:turns-table:observability-gap
+	// sub-gap 2b.
 	let estimated = false;
+	const observableOutput = output.text + output.reasoning + output.toolInput;
 	if (
 		inputTokens === 0 &&
 		outputTokens === 0 &&
-		outputText.length > 0 &&
+		observableOutput.length > 0 &&
 		opts.estimateInputFromMessages
 	) {
 		inputTokens = Math.ceil(
@@ -587,7 +623,7 @@ function extractUsage(finish: FinishState, outputText: string, opts: MapChunksOp
 				0,
 			) / 4,
 		);
-		outputTokens = Math.ceil(outputText.length / 4);
+		outputTokens = Math.ceil(observableOutput.length / 4);
 		estimated = true;
 	}
 

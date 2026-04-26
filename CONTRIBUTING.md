@@ -105,7 +105,7 @@ These rules exist because violating them has historically caused real production
 
 ```
 users, threads, messages, semantic_memory, tasks, files, hosts,
-overlay_index, cluster_config, advisories, skills, memory_edges
+overlay_index, cluster_config, advisories, skills, memory_edges, turns
 ```
 
 The source-of-truth type is `SyncedTableName` in `packages/shared/src/types.ts`. Writes bypassing the outbox never generate a `change_log` entry, so other hosts never learn about them.
@@ -173,12 +173,12 @@ Accumulated the hard way — check here before writing a bug report.
 
 ### Adding a new synced table
 
-1. Declare the CREATE TABLE in `packages/core/src/schema.ts` as a STRICT table with `deleted INTEGER NOT NULL DEFAULT 0` and `modified_at TEXT NOT NULL`.
-2. Add the name to `SyncedTableName` in `packages/shared/src/types.ts`.
+1. Declare the CREATE TABLE in `packages/core/src/schema.ts` (or `metrics-schema.ts` for observability tables) as a STRICT table with `deleted INTEGER NOT NULL DEFAULT 0` (if LWW) and `modified_at TEXT NOT NULL`.
+2. Add the name to `SyncedTableName` and `TABLE_REDUCER_MAP` in `packages/shared/src/types.ts`.
 3. If its primary key is not `id`, add an entry to `TABLE_PK_COLUMN` in `packages/core/src/change-log.ts`.
-4. Decide the reducer (`lww` or `append-only`) and wire it in `packages/sync/src/reducers`.
+4. Decide the reducer (`lww` or `append-only`) — wiring lives in `packages/sync/src/reducers.ts`, keyed off `TABLE_REDUCER_MAP`.
 5. Use only `insertRow` / `updateRow` / `softDelete` for writes — never raw SQL.
-6. Add migration logic if upgrading existing deployments.
+6. Add migration logic if upgrading existing deployments (see `metrics-schema.ts` for the `turns` INTEGER→TEXT id migration as a template).
 7. Update `docs/design/sync-protocol.md` if the reducer behavior is non-obvious.
 
 ### Adding a config field

@@ -92,9 +92,9 @@ describe("API Routes", () => {
 			// Insert a turn with model_id = "opus"
 			const now = new Date().toISOString();
 			db.run(
-				`INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, created_at)
-				 VALUES (?, ?, ?, ?, ?)`,
-				[thread.id, "opus", 100, 50, now],
+				`INSERT INTO turns (id, thread_id, model_id, tokens_in, tokens_out, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[randomUUID(), thread.id, "opus", 100, 50, now],
 			);
 
 			// Fetch threads list
@@ -134,17 +134,19 @@ describe("API Routes", () => {
 			const createResponse = await app.fetch(createRequest);
 			const thread = await createResponse.json();
 
-			// Insert multiple turns with different models
-			const now = new Date().toISOString();
+			// Insert multiple turns with different models and distinct created_at
+			// so the ORDER BY created_at DESC tie-break is deterministic.
+			const earlier = new Date(Date.now() - 1000).toISOString();
+			const later = new Date().toISOString();
 			db.run(
-				`INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, created_at)
-				 VALUES (?, ?, ?, ?, ?)`,
-				[thread.id, "gpt-4", 100, 50, now],
+				`INSERT INTO turns (id, thread_id, model_id, tokens_in, tokens_out, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[randomUUID(), thread.id, "gpt-4", 100, 50, earlier],
 			);
 			db.run(
-				`INSERT INTO turns (thread_id, model_id, tokens_in, tokens_out, created_at)
-				 VALUES (?, ?, ?, ?, ?)`,
-				[thread.id, "claude", 200, 100, now],
+				`INSERT INTO turns (id, thread_id, model_id, tokens_in, tokens_out, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[randomUUID(), thread.id, "claude", 200, 100, later],
 			);
 
 			// Fetch threads list
@@ -153,7 +155,7 @@ describe("API Routes", () => {
 			const threads = await response.json();
 
 			expect(threads.length).toBe(1);
-			// Should be "claude" since it has the highest id (most recent)
+			// Should be "claude" since it has the latest created_at
 			expect(threads[0].lastModel).toBe("claude");
 		});
 	});

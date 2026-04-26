@@ -293,7 +293,7 @@ export function createWebSocketHandler(
 
 	const handleContextDebug = (data: {
 		thread_id: string;
-		turn_id: number;
+		turn_id: string;
 		debug: unknown;
 	}): void => {
 		for (const [ws, conn] of clients) {

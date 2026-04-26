@@ -23,7 +23,7 @@ export function createThreadsRoutes(
 					`
 				SELECT t.*,
 					(SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id AND m.deleted = 0) as messageCount,
-					(SELECT tu.model_id FROM turns tu WHERE tu.thread_id = t.id ORDER BY tu.id DESC LIMIT 1) as lastModel,
+					(SELECT tu.model_id FROM turns tu WHERE tu.thread_id = t.id ORDER BY tu.created_at DESC LIMIT 1) as lastModel,
 					EXISTS(
 						SELECT 1 FROM tasks
 						WHERE thread_id = t.id AND status = 'running' AND deleted = 0
