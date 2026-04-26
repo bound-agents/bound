@@ -30,13 +30,28 @@ describe("toModelMessages — basic role mapping", () => {
 	});
 
 	it("passes string assistant content through", () => {
-		const out = toModelMessages([{ role: "assistant", content: "hi" }]);
-		expect(out).toEqual([{ role: "assistant", content: "hi" }]);
+		// Prefix with a user message — the conversation-start invariant
+		// (covered in its own describe block below) would otherwise prepend
+		// a placeholder. We want to isolate the assistant-passthrough behavior.
+		const out = toModelMessages([
+			{ role: "user", content: "hi there" },
+			{ role: "assistant", content: "hi" },
+		]);
+		expect(out).toEqual([
+			{ role: "user", content: "hi there" },
+			{ role: "assistant", content: "hi" },
+		]);
 	});
 
 	it("passes string system content through", () => {
-		const out = toModelMessages([{ role: "system", content: "sys" }]);
-		expect(out).toEqual([{ role: "system", content: "sys" }]);
+		const out = toModelMessages([
+			{ role: "user", content: "hi" },
+			{ role: "system", content: "sys" },
+		]);
+		expect(out).toEqual([
+			{ role: "user", content: "hi" },
+			{ role: "system", content: "sys" },
+		]);
 	});
 
 	// developer-role messages carry volatile context (enrichment, platform
@@ -101,12 +116,15 @@ describe("toModelMessages — basic role mapping", () => {
 		]);
 	});
 
-	it("emits no output when developer is the only message and no user exists", () => {
-		// Degenerate input — callers should always have at least one user
-		// message. We drop the developer tail rather than produce an
-		// unsendable system-only message.
+	it("wraps developer-only input as a user message (conversation-start invariant)", () => {
+		// Scheduler wakeup threads can have no pre-existing user message in
+		// history; the bridge promotes the developer content into a synthetic
+		// user-role message so the provider accepts the request. See the
+		// "conversation-start invariant" describe block below for full coverage.
 		const out = toModelMessages([{ role: "developer", content: "orphan" }]);
-		expect(out).toEqual([]);
+		expect(out.length).toBe(1);
+		expect(out[0].role).toBe("user");
+		expect(out[0].content).toEqual("<system-context>\norphan\n</system-context>");
 	});
 
 	it("merges developer into a user message that has content blocks", () => {
@@ -133,6 +151,81 @@ describe("toModelMessages — basic role mapping", () => {
 	});
 });
 
+// Bedrock (and most providers) require the conversation to start with a
+// user-role message. The scheduler produces wakeup threads shaped as
+// [developer(wakeup), tool_call(retrieve_task), tool_result(payload)] with
+// NO user message in history (by design — the task payload rides on the
+// synthetic tool_result). The bridge must guarantee the resulting AI SDK
+// ModelMessage[] starts with a user message, otherwise Bedrock returns
+// "A conversation must start with a user message".
+//
+// This is the layer where the provider contract is enforced — individual
+// drivers (bedrock-driver, openai-compatible-driver) both route through
+// toModelMessages and share this invariant.
+describe("toModelMessages — conversation-start invariant", () => {
+	it("prepends a user message wrapping dev content when history starts with non-user (scheduler wakeup shape)", () => {
+		const out = toModelMessages([
+			{ role: "developer", content: "[Task wakeup] task triggered." },
+			{
+				role: "tool_call",
+				content: [{ type: "tool_use", id: "tc1", name: "retrieve_task", input: {} }],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: "tc1",
+				content: [{ type: "text", text: "payload" }],
+			},
+		]);
+		expect(out.length).toBe(3);
+		expect(out[0].role).toBe("user");
+		// Developer wakeup content survives — wrapped in <system-context>
+		// so the model can distinguish it from user-authored input.
+		expect(out[0].content).toEqual(
+			"<system-context>\n[Task wakeup] task triggered.\n</system-context>",
+		);
+		expect(out[1].role).toBe("assistant");
+		expect(out[2].role).toBe("tool");
+	});
+
+	it("prepends a neutral placeholder when no dev content and first message is non-user", () => {
+		// Defense-in-depth: even without developer content, if the history
+		// happens to lead with assistant/tool/system, the bridge must still
+		// produce a user-starting conversation. The old toBedrockMessages
+		// used "<system-notification />" for this; we preserve that shape.
+		const out = toModelMessages([
+			{
+				role: "tool_call",
+				content: [{ type: "tool_use", id: "tc1", name: "x", input: {} }],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: "tc1",
+				content: [{ type: "text", text: "r" }],
+			},
+		]);
+		expect(out[0].role).toBe("user");
+	});
+
+	it("does nothing when the first message is already user", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "hi" },
+			{ role: "assistant", content: "hello" },
+		]);
+		expect(out.length).toBe(2);
+		expect(out[0]).toEqual({ role: "user", content: "hi" });
+	});
+
+	it("wraps a developer-only input as a sendable user message (was: silently dropped)", () => {
+		// Previously this returned [] — sendable nowhere. With the invariant
+		// enforced, we produce a single user message carrying the dev content
+		// so the model at least sees the context.
+		const out = toModelMessages([{ role: "developer", content: "orphan dev" }]);
+		expect(out.length).toBe(1);
+		expect(out[0].role).toBe("user");
+		expect(out[0].content).toEqual("<system-context>\norphan dev\n</system-context>");
+	});
+});
+
 describe("toModelMessages — content blocks", () => {
 	it("converts text blocks to text parts, dropping empty", () => {
 		const out = toModelMessages([
@@ -149,6 +242,7 @@ describe("toModelMessages — content blocks", () => {
 
 	it("converts thinking blocks to reasoning parts", () => {
 		const out = toModelMessages([
+			{ role: "user", content: "ask" },
 			{
 				role: "assistant",
 				content: [
@@ -157,7 +251,7 @@ describe("toModelMessages — content blocks", () => {
 				],
 			},
 		]);
-		expect(out[0].content).toEqual([
+		expect(out[1].content).toEqual([
 			{
 				type: "reasoning",
 				text: "reasoning text",
@@ -169,12 +263,13 @@ describe("toModelMessages — content blocks", () => {
 
 	it("omits providerOptions on reasoning when no signature", () => {
 		const out = toModelMessages([
+			{ role: "user", content: "ask" },
 			{
 				role: "assistant",
 				content: [{ type: "thinking", thinking: "bare" }],
 			},
 		]);
-		expect(out[0].content).toEqual([{ type: "reasoning", text: "bare" }]);
+		expect(out[1].content).toEqual([{ type: "reasoning", text: "bare" }]);
 	});
 
 	it("converts base64 image blocks on user messages", () => {
@@ -219,6 +314,7 @@ describe("toModelMessages — content blocks", () => {
 	it("routes image blocks on assistant messages through FilePart (AssistantContent forbids ImagePart but allows FilePart)", () => {
 		const data = Buffer.from("x").toString("base64");
 		const out = toModelMessages([
+			{ role: "user", content: "plot please" },
 			{
 				role: "assistant",
 				content: [
@@ -231,7 +327,7 @@ describe("toModelMessages — content blocks", () => {
 				],
 			},
 		]);
-		const parts = out[0].content as Array<Record<string, unknown>>;
+		const parts = out[1].content as Array<Record<string, unknown>>;
 		expect(parts[0]).toMatchObject({
 			type: "file",
 			mediaType: "image/png",
@@ -284,6 +380,7 @@ describe("toModelMessages — content blocks", () => {
 	it("routes document base64 on assistant messages through FilePart", () => {
 		const data = Buffer.from("...").toString("base64");
 		const out = toModelMessages([
+			{ role: "user", content: "csv please" },
 			{
 				role: "assistant",
 				content: [
@@ -295,7 +392,7 @@ describe("toModelMessages — content blocks", () => {
 				],
 			},
 		]);
-		expect(out[0].content).toMatchObject([
+		expect(out[1].content).toMatchObject([
 			{ type: "file", mediaType: "text/csv", filename: "out.csv" },
 		]);
 	});
@@ -334,6 +431,7 @@ describe("toModelMessages — content blocks", () => {
 
 	it("propagates thinking.redacted_data to providerOptions.bedrock.redactedData", () => {
 		const out = toModelMessages([
+			{ role: "user", content: "ask" },
 			{
 				role: "assistant",
 				content: [
@@ -346,7 +444,7 @@ describe("toModelMessages — content blocks", () => {
 				],
 			},
 		]);
-		expect(out[0].content).toEqual([
+		expect(out[1].content).toEqual([
 			{
 				type: "reasoning",
 				text: "",
@@ -358,6 +456,7 @@ describe("toModelMessages — content blocks", () => {
 
 	it("merges signature and redacted_data under the same bedrock bucket", () => {
 		const out = toModelMessages([
+			{ role: "user", content: "ask" },
 			{
 				role: "assistant",
 				content: [
@@ -370,7 +469,7 @@ describe("toModelMessages — content blocks", () => {
 				],
 			},
 		]);
-		expect(out[0].content).toEqual([
+		expect(out[1].content).toEqual([
 			{
 				type: "reasoning",
 				text: "visible reasoning",
@@ -380,14 +479,22 @@ describe("toModelMessages — content blocks", () => {
 	});
 
 	it("synthesizes empty text part when parts list would be empty", () => {
-		const out = toModelMessages([{ role: "assistant", content: [] }]);
-		expect(out[0].content).toEqual([{ type: "text", text: "" }]);
+		const out = toModelMessages([
+			{ role: "user", content: "ask" },
+			{ role: "assistant", content: [] },
+		]);
+		expect(out[1].content).toEqual([{ type: "text", text: "" }]);
 	});
 });
 
 describe("toModelMessages — tool call / result wrapping", () => {
+	// These tests all prepend a user message so they exercise tool-call /
+	// tool-result wrapping in isolation, unaffected by the conversation-start
+	// invariant (covered separately above). out[0] is the user prefix;
+	// wrapping outputs start at out[1].
 	it("wraps tool_call message as assistant with tool-call part", () => {
 		const out = toModelMessages([
+			{ role: "user", content: "weather?" },
 			{
 				role: "tool_call",
 				content: [
@@ -400,23 +507,22 @@ describe("toModelMessages — tool call / result wrapping", () => {
 				],
 			},
 		]);
-		expect(out).toEqual([
-			{
-				role: "assistant",
-				content: [
-					{
-						type: "tool-call",
-						toolCallId: "call_1",
-						toolName: "get_weather",
-						input: { city: "Tokyo" },
-					},
-				],
-			},
-		]);
+		expect(out[1]).toEqual({
+			role: "assistant",
+			content: [
+				{
+					type: "tool-call",
+					toolCallId: "call_1",
+					toolName: "get_weather",
+					input: { city: "Tokyo" },
+				},
+			],
+		});
 	});
 
 	it("wraps tool_result with resolved toolName from prior tool_call", () => {
 		const out = toModelMessages([
+			{ role: "user", content: "weather?" },
 			{
 				role: "tool_call",
 				content: [
@@ -434,7 +540,7 @@ describe("toModelMessages — tool call / result wrapping", () => {
 				content: [{ type: "text", text: "72F" }],
 			},
 		]);
-		expect(out[1]).toEqual({
+		expect(out[2]).toEqual({
 			role: "tool",
 			content: [
 				{
@@ -449,6 +555,7 @@ describe("toModelMessages — tool call / result wrapping", () => {
 
 	it("resolves toolName when tool_call appears inline in assistant message", () => {
 		const out = toModelMessages([
+			{ role: "user", content: "search x" },
 			{
 				role: "assistant",
 				content: [
@@ -467,7 +574,7 @@ describe("toModelMessages — tool call / result wrapping", () => {
 				content: [{ type: "text", text: "ok" }],
 			},
 		]);
-		expect(out[1]).toEqual({
+		expect(out[2]).toEqual({
 			role: "tool",
 			content: [
 				{
@@ -482,13 +589,14 @@ describe("toModelMessages — tool call / result wrapping", () => {
 
 	it("falls back to empty toolName when no matching call", () => {
 		const out = toModelMessages([
+			{ role: "user", content: "hi" },
 			{
 				role: "tool_result",
 				tool_use_id: "orphan",
 				content: [{ type: "text", text: "?" }],
 			},
 		]);
-		expect(out[0]).toEqual({
+		expect(out[1]).toEqual({
 			role: "tool",
 			content: [
 				{
@@ -503,8 +611,11 @@ describe("toModelMessages — tool call / result wrapping", () => {
 
 	it("parses JSON string content on tool_call (DB serialization path)", () => {
 		const blocks = [{ type: "tool_use", id: "x", name: "y", input: { a: 1 } }];
-		const out = toModelMessages([{ role: "tool_call", content: JSON.stringify(blocks) }]);
-		expect(out[0]).toEqual({
+		const out = toModelMessages([
+			{ role: "user", content: "go" },
+			{ role: "tool_call", content: JSON.stringify(blocks) },
+		]);
+		expect(out[1]).toEqual({
 			role: "assistant",
 			content: [{ type: "tool-call", toolCallId: "x", toolName: "y", input: { a: 1 } }],
 		});
@@ -512,13 +623,14 @@ describe("toModelMessages — tool call / result wrapping", () => {
 
 	it("treats unparseable string on tool_result as text", () => {
 		const out = toModelMessages([
+			{ role: "user", content: "do it" },
 			{
 				role: "tool_result",
 				tool_use_id: "z",
 				content: "plain string result",
 			},
 		]);
-		expect(out[0]).toEqual({
+		expect(out[1]).toEqual({
 			role: "tool",
 			content: [
 				{

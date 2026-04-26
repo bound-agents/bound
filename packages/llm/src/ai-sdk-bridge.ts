@@ -224,16 +224,37 @@ export function toModelMessages(
 	// every turn). Append to the most recent user message so it still reaches
 	// the model in the right position relative to history.
 	if (pendingDev.length > 0) {
+		let attached = false;
 		for (let i = result.length - 1; i >= 0; i--) {
 			if (result[i].role === "user") {
 				appendDevToUser(result[i], pendingDev);
 				pendingDev.length = 0;
+				attached = true;
 				break;
 			}
 		}
-		// If we found no user message, drop the developer content silently —
-		// a system-only request would throw at the provider layer anyway, and
-		// this input shape isn't something callers should produce.
+		// No user message exists anywhere — scheduler wakeup threads look
+		// like [developer, tool_call, tool_result] by design (the task
+		// payload rides on the synthetic tool_result; see scheduler.ts).
+		// Promote the pending dev content into a synthetic user-role message
+		// at the head so the conversation is sendable. Previously this was
+		// silently dropped, which surfaced downstream as a Bedrock 400
+		// "A conversation must start with a user message".
+		if (!attached) {
+			result.unshift({ role: "user", content: wrapDev(pendingDev) });
+			pendingDev.length = 0;
+		}
+	}
+
+	// Conversation-start invariant: most providers (Bedrock, Anthropic
+	// direct, Mistral, …) reject requests whose first message isn't from the
+	// user. Defense-in-depth for inputs that start with assistant/tool/system
+	// even without developer content (e.g., post-restart retries where the
+	// history begins mid-turn). The old hand-rolled toBedrockMessages carried
+	// an equivalent guard; we preserve the "<system-notification />" shape
+	// for continuity with any operator tooling that looks for it.
+	if (result.length > 0 && result[0].role !== "user") {
+		result.unshift({ role: "user", content: "<system-notification />" });
 	}
 
 	return result;

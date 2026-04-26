@@ -608,8 +608,12 @@ export class Scheduler {
 				// The model treats tool results as factual context it retrieved,
 				// so it follows the instructions naturally (unlike system messages
 				// which it may ignore as background context). The conversation
-				// structure is: user(".") -> assistant(tool_call) -> tool_result(payload).
-				// The user stub satisfies Bedrock's "must start with user" requirement.
+				// structure is: developer(wakeup) -> tool_call(retrieve_task) ->
+				// tool_result(payload). No user message exists in this path by
+				// design — providers that require a user-first message (Bedrock,
+				// Anthropic direct) receive a synthetic leading user message
+				// carrying the wakeup content, constructed in the ai-sdk-bridge's
+				// toModelMessages() conversation-start invariant.
 				const toolCallId = `tooluse_${randomUUID().replace(/-/g, "").slice(0, 22)}`;
 				const taskContent =
 					task.type === "heartbeat"
