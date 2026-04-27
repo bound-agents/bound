@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -7,12 +7,18 @@ import { runInit } from "../commands/init.js";
 
 describe("bound init", () => {
 	let tempDir: string;
+	// runInit() prints a multi-line banner to stdout by design (human UX).
+	// Capture it so test runs don't leak ~12 lines per case into the
+	// verification output — the suite only asserts filesystem state.
+	let logSpy: ReturnType<typeof spyOn<Console, "log">>;
 
 	beforeEach(() => {
 		tempDir = mkdtempSync("bound-test-");
+		logSpy = spyOn(console, "log").mockImplementation(() => {});
 	});
 
 	afterEach(async () => {
+		logSpy.mockRestore();
 		await cleanupTmpDir(tempDir);
 	});
 
