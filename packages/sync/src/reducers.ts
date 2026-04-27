@@ -1,9 +1,40 @@
 import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { createChangeLogEntry } from "@bound/core";
-import type { ChangeLogEntry, SyncedTableName } from "@bound/shared";
+import type { ChangeLogEntry, Logger, SyncedTableName } from "@bound/shared";
 import { TABLE_REDUCER_MAP, parseJsonUntyped } from "@bound/shared";
 
 type RowData = Record<string, SQLQueryBindings>;
+
+export interface ReducerOptions {
+	/** Optional logger. Used to surface invariant violations on replay. */
+	logger?: Logger;
+}
+
+/**
+ * Invariant #19: role='system' is forbidden in the `messages` table.
+ * insertRow() enforces this at the write boundary, but sync reducers
+ * replay rows produced by remote peers — a peer running pre-fix code
+ * (or a buggy fork) can still emit role='system'. Stage 2.5 of context
+ * assembly silently drops such rows, producing the "agent received a
+ * notification but didn't respond" symptom. Reject here so the defense
+ * matches insertRow(), and log a warning so operators can trace the
+ * source (site_id + row_id) and redeploy the offending peer.
+ */
+function violatesMessageRoleInvariant(
+	event: ChangeLogEntry,
+	rowData: RowData,
+	logger: Logger | undefined,
+): boolean {
+	if (event.table_name !== "messages") return false;
+	if (rowData.role !== "system") return false;
+	logger?.warn("[reducers] Dropping incoming messages row with role='system' (invariant #19)", {
+		row_id: event.row_id,
+		site_id: event.site_id,
+		hlc: event.hlc,
+		host_origin: rowData.host_origin ?? null,
+	});
+	return true;
+}
 
 const columnCache: Record<string, string[]> = {};
 
@@ -50,7 +81,11 @@ export function clearColumnCache(): void {
 	}
 }
 
-export function applyAppendOnlyReducer(db: Database, event: ChangeLogEntry): { applied: boolean } {
+export function applyAppendOnlyReducer(
+	db: Database,
+	event: ChangeLogEntry,
+	options?: ReducerOptions,
+): { applied: boolean } {
 	// Validate table name
 	if (!validateTableName(event.table_name)) {
 		return { applied: false };
@@ -65,6 +100,11 @@ export function applyAppendOnlyReducer(db: Database, event: ChangeLogEntry): { a
 		return { applied: false };
 	}
 	const rowData = value as RowData;
+
+	if (violatesMessageRoleInvariant(event, rowData, options?.logger)) {
+		return { applied: false };
+	}
+
 	const hasModifiedAt = rowData.modified_at !== null && rowData.modified_at !== undefined;
 
 	const columns = Object.keys(rowData);
@@ -123,7 +163,11 @@ export function applyAppendOnlyReducer(db: Database, event: ChangeLogEntry): { a
 	return { applied: changes.count > 0 };
 }
 
-export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied: boolean } {
+export function applyLWWReducer(
+	db: Database,
+	event: ChangeLogEntry,
+	options?: ReducerOptions,
+): { applied: boolean } {
 	// Validate table name
 	if (!validateTableName(event.table_name)) {
 		return { applied: false };
@@ -138,6 +182,11 @@ export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied:
 		return { applied: false };
 	}
 	const rowData = value as RowData;
+
+	if (violatesMessageRoleInvariant(event, rowData, options?.logger)) {
+		return { applied: false };
+	}
+
 	const schemaColumns = getTableColumns(db, event.table_name);
 
 	// Determine primary key column from schema (most tables use 'id', but some don't)
@@ -204,14 +253,18 @@ export function applyLWWReducer(db: Database, event: ChangeLogEntry): { applied:
 	return { applied: changes.count > 0 };
 }
 
-export function applyEvent(db: Database, event: ChangeLogEntry): { applied: boolean } {
+export function applyEvent(
+	db: Database,
+	event: ChangeLogEntry,
+	options?: ReducerOptions,
+): { applied: boolean } {
 	const reducerType = TABLE_REDUCER_MAP[event.table_name];
 
 	if (reducerType === "append-only") {
-		return applyAppendOnlyReducer(db, event);
+		return applyAppendOnlyReducer(db, event, options);
 	}
 
-	return applyLWWReducer(db, event);
+	return applyLWWReducer(db, event, options);
 }
 
 /**
@@ -230,7 +283,11 @@ export interface AppliedEventInfo {
 export function replayEvents(
 	db: Database,
 	events: ChangeLogEntry[],
-	options?: { onApplied?: (info: AppliedEventInfo) => void },
+	options?: {
+		onApplied?: (info: AppliedEventInfo) => void;
+		/** Optional logger, forwarded to reducers to surface invariant violations. */
+		logger?: Logger;
+	},
 ): { applied: number; skipped: number } {
 	let applied = 0;
 	let skipped = 0;
@@ -256,7 +313,7 @@ export function replayEvents(
 			}
 			const rowData = value as RowData;
 
-			const result = applyEvent(db, event);
+			const result = applyEvent(db, event, { logger: options?.logger });
 
 			if (result.applied) {
 				applied++;

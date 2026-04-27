@@ -955,4 +955,152 @@ describe("reducers", () => {
 			expect(result.skipped).toBe(2);
 		});
 	});
+
+	describe("invariant #19 — role='system' forbidden in messages", () => {
+		// Regression: a hub running pre-dc73ff3 code wrote role='system'
+		// notifications into its messages table. Those rows synced to peer
+		// spokes verbatim because the reducer bypassed insertRow()'s invariant
+		// check. Stage 2.5 of context assembly then silently dropped them,
+		// producing the "agent received a notification but didn't respond"
+		// symptom observed on thread a83b945f-d4b1-4b77-904f-bb9b465edc1d.
+		//
+		// Defense-in-depth: the reducer MUST reject role='system' on incoming
+		// messages rows, matching insertRow()'s write-side check.
+
+		it("applyAppendOnlyReducer rejects incoming messages row with role='system'", () => {
+			const event: ChangeLogEntry = {
+				hlc: "2026-04-26T21:01:56.000Z_0001_hub",
+				table_name: "messages",
+				row_id: "sys-notif-1",
+				site_id: "site-hub",
+				timestamp: "2026-04-26T21:01:56Z",
+				row_data: JSON.stringify({
+					id: "sys-notif-1",
+					thread_id: "thread-1",
+					role: "system",
+					content: "[notification from background task] heads up",
+					created_at: "2026-04-26T21:01:56Z",
+					host_origin: "00dbcaa4d6f9",
+				}),
+			};
+
+			const warnings: Array<{ msg: string; ctx?: Record<string, unknown> }> = [];
+			const logger = {
+				warn: (msg: string, ctx?: Record<string, unknown>) => {
+					warnings.push({ msg, ctx });
+				},
+				info: () => {},
+				error: () => {},
+				debug: () => {},
+			};
+
+			const result = applyAppendOnlyReducer(db, event, { logger });
+
+			expect(result.applied).toBe(false);
+			const row = db.query("SELECT * FROM messages WHERE id = ?").get("sys-notif-1");
+			expect(row).toBeNull();
+
+			// Must log a warning so operators can trace the source.
+			expect(warnings.length).toBe(1);
+			expect(warnings[0].msg).toContain("role='system'");
+			expect(warnings[0].ctx?.row_id).toBe("sys-notif-1");
+			expect(warnings[0].ctx?.site_id).toBe("site-hub");
+		});
+
+		it("applyAppendOnlyReducer still applies messages with legitimate roles", () => {
+			for (const role of ["user", "assistant", "developer", "tool_call", "tool_result"]) {
+				const event: ChangeLogEntry = {
+					hlc: `2026-04-26T21:01:56.000Z_0001_${role}`,
+					table_name: "messages",
+					row_id: `ok-${role}`,
+					site_id: "site-hub",
+					timestamp: "2026-04-26T21:01:56Z",
+					row_data: JSON.stringify({
+						id: `ok-${role}`,
+						thread_id: "thread-1",
+						role,
+						content: "hi",
+						created_at: "2026-04-26T21:01:56Z",
+						host_origin: "hub",
+					}),
+				};
+
+				const result = applyAppendOnlyReducer(db, event);
+
+				expect(result.applied).toBe(true);
+			}
+		});
+
+		it("replayEvents filters role='system' out of a batch and counts it as skipped", () => {
+			const events: ChangeLogEntry[] = [
+				{
+					hlc: "2026-04-26T21:00:00.000Z_0001_hub",
+					table_name: "messages",
+					row_id: "ok-user",
+					site_id: "site-hub",
+					timestamp: "2026-04-26T21:00:00Z",
+					row_data: JSON.stringify({
+						id: "ok-user",
+						thread_id: "thread-1",
+						role: "user",
+						content: "hello",
+						created_at: "2026-04-26T21:00:00Z",
+						host_origin: "hub",
+					}),
+				},
+				{
+					hlc: "2026-04-26T21:00:01.000Z_0001_hub",
+					table_name: "messages",
+					row_id: "bad-system",
+					site_id: "site-hub",
+					timestamp: "2026-04-26T21:00:01Z",
+					row_data: JSON.stringify({
+						id: "bad-system",
+						thread_id: "thread-1",
+						role: "system",
+						content: "[notification from background task] heads up",
+						created_at: "2026-04-26T21:00:01Z",
+						host_origin: "hub",
+					}),
+				},
+				{
+					hlc: "2026-04-26T21:00:02.000Z_0001_hub",
+					table_name: "messages",
+					row_id: "ok-developer",
+					site_id: "site-hub",
+					timestamp: "2026-04-26T21:00:02Z",
+					row_data: JSON.stringify({
+						id: "ok-developer",
+						thread_id: "thread-1",
+						role: "developer",
+						content: "[notification from background task] heads up, take 2",
+						created_at: "2026-04-26T21:00:02Z",
+						host_origin: "hub",
+					}),
+				},
+			];
+
+			const warnings: Array<{ msg: string; ctx?: Record<string, unknown> }> = [];
+			const logger = {
+				warn: (msg: string, ctx?: Record<string, unknown>) => {
+					warnings.push({ msg, ctx });
+				},
+				info: () => {},
+				error: () => {},
+				debug: () => {},
+			};
+
+			const result = replayEvents(db, events, { logger });
+
+			expect(result.applied).toBe(2);
+			expect(result.skipped).toBe(1);
+
+			const rows = db.query("SELECT id FROM messages ORDER BY id").all() as Array<{ id: string }>;
+			expect(rows.map((r) => r.id).sort()).toEqual(["ok-developer", "ok-user"]);
+
+			expect(warnings.length).toBe(1);
+			expect(warnings[0].msg).toContain("role='system'");
+			expect(warnings[0].ctx?.row_id).toBe("bad-system");
+		});
+	});
 });

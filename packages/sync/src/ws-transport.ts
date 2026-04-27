@@ -218,6 +218,7 @@ export class WsTransport {
 		// TUI / web clients don't see messages synced in from remote-model
 		// sessions running on another node until they manually refresh.
 		const { applied, skipped } = replayEvents(this.config.db, entries, {
+			logger: this.config.logger,
 			onApplied: (info) => {
 				if (info.table_name !== "messages") return;
 				// Rehydrate the full row from the DB after commit rather than
