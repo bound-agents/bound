@@ -15,8 +15,10 @@
  */
 
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
 import { mapChunks, mapError, toModelMessages, toToolSet } from "./ai-sdk-bridge";
+import { createLoggingFetch } from "./fetch-logger";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "./types";
 
 export class OpenAICompatibleDriver implements LLMBackend {
@@ -32,6 +34,13 @@ export class OpenAICompatibleDriver implements LLMBackend {
 		contextWindow: number;
 		/** Optional provider tag used in error messages and telemetry. */
 		providerName?: string;
+		/**
+		 * Optional logger for debug-level interception of outgoing AI SDK
+		 * request bodies. When provided, raw request payloads are routed
+		 * through pino at `LOG_LEVEL=debug`; otherwise the SDK's default
+		 * fetch is used with zero overhead.
+		 */
+		logger?: Logger;
 	}) {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
@@ -40,6 +49,7 @@ export class OpenAICompatibleDriver implements LLMBackend {
 			name: this.providerName,
 			baseURL: config.baseUrl,
 			apiKey: config.apiKey,
+			...(config.logger && { fetch: createLoggingFetch(config.logger, this.providerName) }),
 		});
 	}
 

@@ -1,10 +1,13 @@
 import type { Database } from "bun:sqlite";
 import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
+import { createLogger } from "@bound/shared";
 import { WsConnectionManager, createWsHandlers } from "@bound/sync";
 import type { ModelsConfig, SyncAppConfig, WebAppConfig } from "./index";
 import { createWebApp } from "./index";
 import { createWebSocketHandler } from "./websocket";
 import type { ConnectionRegistry } from "./websocket";
+
+const logger = createLogger("@bound/web", "server-start");
 
 export type { ModelsConfig };
 
@@ -71,11 +74,11 @@ export async function createWebServer(
 
 	const app = await createWebApp(db, eventBus, webAppConfig);
 
-	// Request logging middleware
+	// Request logging middleware (debug level — access logs are noisy by default)
 	app.use("*", async (c, next) => {
 		const method = c.req.method;
 		const path = new URL(c.req.url).pathname;
-		console.log(`[web] ${method} ${path}`);
+		logger.debug("request", { method, path });
 		return next();
 	});
 
@@ -99,7 +102,7 @@ export async function createWebServer(
 				websocket: wsHandler,
 			});
 
-			console.log(`Web server listening on http://${host}:${port}`);
+			logger.info("Web server listening", { host, port, url: `http://${host}:${port}` });
 		},
 
 		async stop(): Promise<void> {
@@ -174,7 +177,7 @@ export async function createSyncServer(
 				websocket: wsHandlers.websocket,
 			});
 
-			console.log(`Sync server listening on http://${host}:${port}`);
+			logger.info("Sync server listening", { host, port, url: `http://${host}:${port}` });
 		},
 
 		async stop(): Promise<void> {

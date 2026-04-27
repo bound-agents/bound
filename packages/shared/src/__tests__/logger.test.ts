@@ -103,4 +103,19 @@ describe("createLogger", () => {
 		createLogger("@bound/test", "TestComponent");
 		expect(existsSync(logDir)).toBe(true);
 	});
+
+	it("isLevelEnabled reflects the configured LOG_LEVEL", () => {
+		process.env.LOG_LEVEL = "warn";
+		const logger = createLogger("@bound/test", "TestComponent");
+		expect(logger.isLevelEnabled("debug")).toBe(false);
+		expect(logger.isLevelEnabled("info")).toBe(false);
+		expect(logger.isLevelEnabled("warn")).toBe(true);
+		expect(logger.isLevelEnabled("error")).toBe(true);
+	});
+
+	it("isLevelEnabled is true for debug when LOG_LEVEL=debug", () => {
+		process.env.LOG_LEVEL = "debug";
+		const logger = createLogger("@bound/test", "TestComponent");
+		expect(logger.isLevelEnabled("debug")).toBe(true);
+	});
 });

@@ -1,3 +1,4 @@
+import type { Logger } from "@bound/shared";
 import { BedrockDriver } from "./bedrock-driver";
 import { OpenAICompatibleDriver } from "./openai-compatible-driver";
 import type {
@@ -386,7 +387,7 @@ export class ModelRouter {
 	}
 }
 
-function createBackendFromConfig(config: BackendConfig): LLMBackend {
+function createBackendFromConfig(config: BackendConfig, logger?: Logger): LLMBackend {
 	const provider = config.provider.toLowerCase();
 
 	switch (provider) {
@@ -402,6 +403,7 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 				model: config.model,
 				contextWindow,
 				profile,
+				logger,
 			});
 		}
 
@@ -418,6 +420,7 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 				model: config.model,
 				contextWindow,
 				providerName: "openai-compatible",
+				logger,
 			});
 		}
 
@@ -434,6 +437,7 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 				model: config.model,
 				contextWindow,
 				providerName: "cerebras",
+				logger,
 			});
 		}
 
@@ -450,6 +454,7 @@ function createBackendFromConfig(config: BackendConfig): LLMBackend {
 				model: config.model,
 				contextWindow,
 				providerName: "zai",
+				logger,
 			});
 		}
 
@@ -471,12 +476,12 @@ interface RouterState {
 	backendConfigs: Map<string, BackendConfig>;
 }
 
-function buildRouterState(config: ModelBackendsConfig): RouterState {
+function buildRouterState(config: ModelBackendsConfig, logger?: Logger): RouterState {
 	// Group backend configs by ID to support pooling (multiple providers for the same logical model)
 	const groups = new Map<string, { entries: PoolEntry[]; caps: BackendCapabilities[] }>();
 
 	for (const backendConfig of config.backends) {
-		const backend = createBackendFromConfig(backendConfig);
+		const backend = createBackendFromConfig(backendConfig, logger);
 		const baseline = backend.capabilities();
 		const capOverride =
 			(backendConfig.capabilities as Partial<BackendCapabilities> | undefined) ?? {};
@@ -540,8 +545,20 @@ function buildRouterState(config: ModelBackendsConfig): RouterState {
 	return { backends, defaultId: config.default, effectiveCaps, tiers, backendConfigs };
 }
 
-export function createModelRouter(config: ModelBackendsConfig): ModelRouter {
-	const state = buildRouterState(config);
+export interface CreateModelRouterOptions {
+	/**
+	 * Optional logger forwarded to each constructed driver for debug-level
+	 * AI SDK request-body interception. Drivers will wire this into their
+	 * provider factory's `fetch` option (see `createLoggingFetch`).
+	 */
+	logger?: Logger;
+}
+
+export function createModelRouter(
+	config: ModelBackendsConfig,
+	options?: CreateModelRouterOptions,
+): ModelRouter {
+	const state = buildRouterState(config, options?.logger);
 	return new ModelRouter(
 		state.backends,
 		state.defaultId,

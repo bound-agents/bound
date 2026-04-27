@@ -139,7 +139,10 @@ export function createStatusRoutes(
 		for (const host of remoteHosts) {
 			const modelsResult = parseJsonSafe(hostModelsSchema, host.models, "host.models");
 			if (!modelsResult.ok) {
-				console.warn(`Invalid host models JSON for ${host.host_name}: ${modelsResult.error}`);
+				log.warn("Invalid host models JSON", {
+					hostName: host.host_name,
+					error: modelsResult.error,
+				});
 				continue;
 			}
 

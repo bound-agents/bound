@@ -19,8 +19,10 @@
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import type { AmazonBedrockProvider } from "@ai-sdk/amazon-bedrock";
 import { fromIni } from "@aws-sdk/credential-providers";
+import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
 import { mapChunks, mapError, toModelMessages, toToolSet } from "./ai-sdk-bridge";
+import { createLoggingFetch } from "./fetch-logger";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "./types";
 
 interface BedrockReasoningConfig {
@@ -40,6 +42,13 @@ export class BedrockDriver implements LLMBackend {
 		model: string;
 		contextWindow: number;
 		profile?: string;
+		/**
+		 * Optional logger for debug-level interception of outgoing AI SDK
+		 * request bodies. When provided, raw request payloads are routed
+		 * through pino at `LOG_LEVEL=debug`; otherwise the SDK's default
+		 * fetch is used with zero overhead.
+		 */
+		logger?: Logger;
 	}) {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
@@ -63,6 +72,7 @@ export class BedrockDriver implements LLMBackend {
 		this.provider = createAmazonBedrock({
 			region: config.region,
 			...(credentialProvider && { credentialProvider }),
+			...(config.logger && { fetch: createLoggingFetch(config.logger, "bedrock") }),
 		});
 	}
 

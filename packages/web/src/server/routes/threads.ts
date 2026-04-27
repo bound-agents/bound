@@ -4,7 +4,10 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertRow } from "@bound/core";
 import type { StatusForwardPayload, Thread } from "@bound/shared";
+import { createLogger } from "@bound/shared";
 import { Hono } from "hono";
+
+const logger = createLogger("@bound/web", "threads-routes");
 
 export function createThreadsRoutes(
 	db: Database,
@@ -111,9 +114,7 @@ export function createThreadsRoutes(
 			const threadId = randomUUID();
 			const now = new Date().toISOString();
 
-			console.log(
-				`[web] POST /api/threads - creating thread ${threadId} (interface=${interfaceTag})`,
-			);
+			logger.info("Creating thread", { threadId, interfaceTag });
 
 			const siteId = getSiteId(db);
 

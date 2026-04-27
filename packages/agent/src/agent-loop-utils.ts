@@ -8,7 +8,10 @@ import {
 	type LLMMessage,
 	type StreamChunk,
 } from "@bound/llm";
+import { createLogger } from "@bound/shared";
 import type { ModelResolution } from "./model-resolution";
+
+const logger = createLogger("@bound/agent", "agent-loop-utils");
 
 /**
  * Parse tool result content for the in-memory LLM message path.
@@ -325,11 +328,12 @@ export function parseStreamChunks(chunks: StreamChunk[]): ParsedResponse {
 				input = JSON.parse(fullArgsJson);
 			} catch {
 				truncated = true;
-				console.warn(
-					`[parseStreamChunks] Failed to parse tool_use args for "${name}" (id=${chunk.id}), ` +
-						`args length=${fullArgsJson.length}. Output likely truncated by max_tokens limit. ` +
-						`Raw args prefix: ${fullArgsJson.slice(0, 200)}`,
-				);
+				logger.warn("Failed to parse tool_use args; output likely truncated by max_tokens", {
+					toolName: name,
+					id: chunk.id,
+					argsLength: fullArgsJson.length,
+					rawArgsPrefix: fullArgsJson.slice(0, 200),
+				});
 			}
 			toolCalls.push({
 				id: chunk.id,

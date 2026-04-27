@@ -10,6 +10,12 @@ export interface Logger {
 	info(message: string, context?: Record<string, unknown>): void;
 	warn(message: string, context?: Record<string, unknown>): void;
 	error(message: string, context?: Record<string, unknown>): void;
+	/**
+	 * True when the underlying logger would emit at `level` given the current
+	 * LOG_LEVEL. Useful to short-circuit expensive context-building (e.g.,
+	 * stringifying a large request body for debug-level logging).
+	 */
+	isLevelEnabled(level: LogLevel): boolean;
 }
 
 let rootLogger: pino.Logger | undefined;
@@ -52,6 +58,7 @@ export function createLogger(pkg: string, component: string): Logger {
 		info: (message, context) => child.info(context ?? {}, message),
 		warn: (message, context) => child.warn(context ?? {}, message),
 		error: (message, context) => child.error(context ?? {}, message),
+		isLevelEnabled: (level) => child.isLevelEnabled(level),
 	};
 }
 

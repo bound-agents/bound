@@ -42,3 +42,5 @@ export { wrapFetchError, checkHttpError } from "./error-utils";
 export { sniffImageMediaType, correctMediaType } from "./image-utils";
 
 export { installAiSdkWarningHook, uninstallAiSdkWarningHook } from "./ai-sdk-warning-hook";
+
+export { createLoggingFetch } from "./fetch-logger";

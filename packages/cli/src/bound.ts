@@ -3,6 +3,7 @@
 // Handles: bound init, bound start
 import "reflect-metadata";
 
+import { createLogger } from "@bound/shared";
 import { runInit } from "./commands/init.js";
 import { runStart } from "./commands/start/index.js";
 
@@ -87,7 +88,13 @@ EXAMPLES:
 			await runStart(startArgs);
 			process.exit(0);
 		} catch (error) {
-			console.error("Start failed:", error);
+			// At this point bootstrap may or may not have initialized the logger;
+			// createLogger is idempotent and safe to call either way — it lazily
+			// materializes the pino root and reuses it.
+			createLogger("@bound/cli", "bound").error("Start failed", {
+				error: error instanceof Error ? error.message : String(error),
+				stack: error instanceof Error ? error.stack : undefined,
+			});
 			process.exit(1);
 		}
 	}

@@ -12,7 +12,7 @@ import type {
 	HostModelEntry,
 	ModelBackendsConfig as SharedModelBackendsConfig,
 } from "@bound/shared";
-import { formatError } from "@bound/shared";
+import { createLogger, formatError } from "@bound/shared";
 
 export interface InferenceResult {
 	modelRouter: ReturnType<typeof createModelRouter> | null;
@@ -105,9 +105,14 @@ export async function initInference(
 		backendModelMap.set(b.id, b.model);
 	}
 
+	// Debug-level logger that drivers use to intercept raw AI SDK request bodies.
+	// Gated on LOG_LEVEL=debug inside createLoggingFetch; info-level runs pay no
+	// cost beyond one `isLevelEnabled` check per request.
+	const aiSdkFetchLogger = createLogger("@bound/llm", "ai-sdk-fetch");
+
 	let modelRouter: ReturnType<typeof createModelRouter> | null = null;
 	try {
-		modelRouter = createModelRouter(routerConfig);
+		modelRouter = createModelRouter(routerConfig, { logger: aiSdkFetchLogger });
 		const ids = [...new Set(routerConfig.backends.map((b) => b.id))].join(", ");
 		appContext.logger.info(
 			`[llm] Model router ready — backends: ${ids} (default: ${routerConfig.default})`,

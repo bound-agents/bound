@@ -33,6 +33,8 @@ try {
 	// Running from source without build — use dev values
 }
 
+const bootstrapLogger = createLogger("@bound/cli", "start-bootstrap");
+
 export interface StartArgs {
 	configDir?: string;
 }
@@ -72,10 +74,13 @@ export function ensureMcpUser(db: Database, siteId: string): void {
 export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 	const configDir = args.configDir || "config";
 
-	console.log(`Starting Bound orchestrator (commit ${COMMIT_HASH}, built ${BUILD_TIME})...`);
+	bootstrapLogger.info("Starting Bound orchestrator", {
+		commit: COMMIT_HASH,
+		buildTime: BUILD_TIME,
+	});
 
 	// 1. Load and validate all config files
-	console.log("Loading configuration...");
+	bootstrapLogger.info("Loading configuration");
 	mkdirSync("data", { recursive: true });
 
 	// PID lockfile: prevent multiple bound processes from sharing the same data dir.
@@ -93,13 +98,14 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 				// Process doesn't exist — stale lockfile
 			}
 			if (alive) {
-				console.error(
-					`Another bound process is already running (PID ${existingPid}).\n` +
-						`If this is stale, remove ${pidFile} and try again.`,
-				);
+				bootstrapLogger.error("Another bound process is already running", {
+					existingPid,
+					pidFile,
+					hint: `If this is stale, remove ${pidFile} and try again.`,
+				});
 				process.exit(1);
 			}
-			console.warn(`Cleaning up stale PID lockfile (previous PID ${existingPid}).`);
+			bootstrapLogger.warn("Cleaning up stale PID lockfile", { existingPid });
 		}
 	}
 	writeFileSync(pidFile, String(process.pid), "utf-8");
@@ -135,12 +141,14 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		clearColumnCache();
 		// Route AI SDK warnings (previously spilled straight to stderr via
 		// console.warn) through the pino logger so they land in logs/bound.log.
+		// Companion: `createLoggingFetch` in @bound/llm routes raw AI SDK
+		// request bodies through pino at LOG_LEVEL=debug (see inference.ts).
 		installAiSdkWarningHook(createLogger("@bound/llm", "ai-sdk"));
 	} catch (error) {
 		// Print a friendly message for the CLI path, then rethrow so callers
 		// (including tests) can observe the failure. The CLI entrypoint catches
 		// this and exits with code 1.
-		console.error("Configuration error:", formatError(error));
+		bootstrapLogger.error("Configuration error", { error: formatError(error) });
 		throw error;
 	}
 
