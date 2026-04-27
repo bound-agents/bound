@@ -26,6 +26,7 @@ export async function initSync(
 	appContext: AppContext,
 	keypair: { privateKey: CryptoKey; siteId: string },
 	keyManager: KeyManager | undefined,
+	reseed?: boolean,
 ): Promise<SyncResult> {
 	let wsTransport: WsTransportType | undefined;
 	let wsClient: { close: () => void } | null = null;
@@ -92,6 +93,7 @@ export async function initSync(
 							logger: appContext.logger,
 							reconnectMaxInterval,
 							backpressureLimit,
+							reseed,
 						});
 
 						await wsClientInstance.connect();

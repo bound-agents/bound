@@ -357,3 +357,96 @@ export function replayEvents(
 
 	return { applied, skipped };
 }
+
+/**
+ * Bulk-apply snapshot rows directly into the DB without creating changelog entries.
+ *
+ * Used when a new spoke joins the cluster and the hub seeds it with a full copy
+ * of the synced tables. These rows represent historical state that predates the
+ * spoke's existence — they MUST NOT generate change_log entries (which would
+ * cause the hub to echo them back and create an infinite replication loop).
+ *
+ * Each row is upserted via INSERT OR REPLACE so replayed chunks are idempotent
+ * (safe on reconnect / resume after partial application).
+ *
+ * @returns Number of rows successfully applied.
+ */
+export function applySnapshotRows(
+	db: Database,
+	tableName: string,
+	rows: Array<Record<string, unknown>>,
+	logger?: Logger,
+): number {
+	if (!validateTableName(tableName)) {
+		logger?.warn("[snapshot] Invalid table name in snapshot chunk", { tableName });
+		return 0;
+	}
+
+	if (rows.length === 0) return 0;
+
+	// Gather column names from the first row (all rows in a table share columns).
+	const firstRow = rows[0];
+	const columns = Object.keys(firstRow);
+
+	// Validate all column names
+	for (const col of columns) {
+		if (!validateColumnName(col)) {
+			logger?.warn("[snapshot] Invalid column name in snapshot row", { tableName, column: col });
+			return 0;
+		}
+	}
+
+	let applied = 0;
+
+	// Wrap everything in a single transaction for atomicity.
+	db.exec("BEGIN IMMEDIATE");
+	try {
+		const placeholders = columns.map(() => "?").join(", ");
+		const stmt = db.prepare(
+			`INSERT OR REPLACE INTO ${tableName} (${columns.join(", ")})
+			 VALUES (${placeholders})`,
+		);
+
+		for (const row of rows) {
+			// Map row values to SQL-compatible bindings (string | number | bigint | boolean | Uint8Array | null).
+			// bun:sqlite rejects arbitrary objects, so we coerce unknown values.
+			const values: Array<string | number | bigint | boolean | Uint8Array | null> = columns.map(
+				(k) => {
+					const v = row[k];
+					if (v === null || v === undefined) return null;
+					if (
+						typeof v === "string" ||
+						typeof v === "number" ||
+						typeof v === "bigint" ||
+						typeof v === "boolean" ||
+						v instanceof Uint8Array
+					) {
+						return v;
+					}
+					// Coerce objects (e.g. JSON columns) to their string representation.
+					return JSON.stringify(v);
+				},
+			);
+			stmt.run(...values);
+			applied++;
+		}
+
+		stmt.finalize();
+		db.exec("COMMIT");
+	} catch (err) {
+		try {
+			db.exec("ROLLBACK");
+		} catch {
+			// ROLLBACK failure — original error takes priority.
+		}
+		logger?.error("[snapshot] Failed to apply snapshot chunk", {
+			tableName,
+			rowCount: rows.length,
+			error: err instanceof Error ? err.message : String(err),
+		});
+		return 0;
+	}
+
+	logger?.debug("[snapshot] Applied snapshot chunk", { tableName, applied });
+	return applied;
+}

@@ -15,6 +15,11 @@ export enum WsMessageType {
 	RELAY_ACK = 0x05,
 	DRAIN_REQUEST = 0x06,
 	DRAIN_COMPLETE = 0x07,
+	SNAPSHOT_BEGIN = 0x10,
+	SNAPSHOT_CHUNK = 0x11,
+	SNAPSHOT_END = 0x12,
+	SNAPSHOT_ACK = 0x13,
+	RESEED_REQUEST = 0x14,
 	ERROR = 0xff,
 }
 
@@ -73,6 +78,40 @@ export type DrainCompletePayload = {
 	success: boolean;
 };
 
+export type SnapshotBeginPayload = {
+	/** HLC at the moment seeding started — changelog catchup starts from here. */
+	snapshot_hlc: string;
+	/** Ordered list of table names that will be seeded. */
+	tables: string[];
+};
+
+export type SnapshotChunkPayload = {
+	table_name: string;
+	/** Byte offset within the table (for resume). */
+	offset: number;
+	/** Rows in this chunk. Each row is { column: value }. */
+	rows: Array<Record<string, unknown>>;
+	/** Whether this is the final chunk for this table. */
+	last: boolean;
+};
+
+export type SnapshotEndPayload = {
+	/** Total tables seeded. */
+	table_count: number;
+	/** Total rows seeded. */
+	row_count: number;
+};
+
+export type SnapshotAckPayload = {
+	/** The snapshot_hlc from SNAPSHOT_BEGIN, confirming successful application. */
+	snapshot_hlc: string;
+};
+
+export type ReseedRequestPayload = {
+	/** Human-readable reason for this reseed request (logged, not acted upon). */
+	reason: string;
+};
+
 export type ErrorPayload = {
 	code: string;
 	message: string;
@@ -107,6 +146,26 @@ export type WsFrame =
 	| {
 			type: WsMessageType.DRAIN_COMPLETE;
 			payload: DrainCompletePayload;
+	  }
+	| {
+			type: WsMessageType.SNAPSHOT_BEGIN;
+			payload: SnapshotBeginPayload;
+	  }
+	| {
+			type: WsMessageType.SNAPSHOT_CHUNK;
+			payload: SnapshotChunkPayload;
+	  }
+	| {
+			type: WsMessageType.SNAPSHOT_END;
+			payload: SnapshotEndPayload;
+	  }
+	| {
+			type: WsMessageType.SNAPSHOT_ACK;
+			payload: SnapshotAckPayload;
+	  }
+	| {
+			type: WsMessageType.RESEED_REQUEST;
+			payload: ReseedRequestPayload;
 	  }
 	| {
 			type: WsMessageType.ERROR;
@@ -247,6 +306,23 @@ function isValidPayloadForType(type: WsMessageType, payload: unknown): boolean {
 		case WsMessageType.RELAY_ACK:
 			// Required: ids array
 			return Array.isArray(p.ids);
+		case WsMessageType.SNAPSHOT_BEGIN:
+			// Required: snapshot_hlc string, tables array
+			return typeof p.snapshot_hlc === "string" && Array.isArray(p.tables);
+		case WsMessageType.SNAPSHOT_CHUNK:
+			// Required: table_name string, offset number, rows array
+			return (
+				typeof p.table_name === "string" && typeof p.offset === "number" && Array.isArray(p.rows)
+			);
+		case WsMessageType.SNAPSHOT_END:
+			// Required: table_count number, row_count number
+			return typeof p.table_count === "number" && typeof p.row_count === "number";
+		case WsMessageType.SNAPSHOT_ACK:
+			// Required: snapshot_hlc string
+			return typeof p.snapshot_hlc === "string";
+		case WsMessageType.RESEED_REQUEST:
+			// Required: reason string
+			return typeof p.reason === "string";
 		case WsMessageType.DRAIN_REQUEST:
 			// Lenient: allow any object (reason is optional or may be in different format)
 			return true;

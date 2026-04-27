@@ -5,7 +5,15 @@
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { resolve } from "node:path";
 import { seedSkillAuthoring } from "@bound/agent";
 import type { AppContext } from "@bound/core";
@@ -37,6 +45,8 @@ const bootstrapLogger = createLogger("@bound/cli", "start-bootstrap");
 
 export interface StartArgs {
 	configDir?: string;
+	/** If true, wipes the local DB and requests a full reseed from the hub. */
+	reseed?: boolean;
 }
 
 export interface BootstrapResult {
@@ -78,6 +88,46 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		commit: COMMIT_HASH,
 		buildTime: BUILD_TIME,
 	});
+
+	// 0. If --reseed is set, back up the local database before wiping it.
+	// The keypair (host.key / host.pub) is preserved — only bound.db goes.
+	if (args.reseed) {
+		const dbPath = resolve("data", "bound.db");
+		const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+		const backupPath = `${dbPath}.backup.${timestamp}`;
+
+		// Back up the existing DB if present.
+		if (existsSync(dbPath)) {
+			// Warn if a previous .backup file already exists (old flat name) so
+			// operators know they may have already lost an earlier backup.
+			const oldFlatBackup = `${dbPath}.backup`;
+			if (existsSync(oldFlatBackup)) {
+				bootstrapLogger.warn(
+					"--reseed: an older bound.db.backup already exists; previous backup may be overwritten if you run --reseed again with the old code",
+				);
+			}
+
+			try {
+				copyFileSync(dbPath, backupPath);
+				bootstrapLogger.info(`--reseed: backed up local database to ${backupPath}`);
+			} catch (err) {
+				bootstrapLogger.warn("--reseed: failed to back up database, proceeding with wipe", {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+
+		const walPath = `${dbPath}-wal`;
+		const shmPath = `${dbPath}-shm`;
+		for (const p of [dbPath, walPath, shmPath]) {
+			try {
+				unlinkSync(p);
+			} catch {
+				// File doesn't exist — not an error.
+			}
+		}
+		bootstrapLogger.info("--reseed: wiped local database, will request full hub snapshot");
+	}
 
 	// 1. Load and validate all config files
 	bootstrapLogger.info("Loading configuration");

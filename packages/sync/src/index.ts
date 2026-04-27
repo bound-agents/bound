@@ -47,6 +47,11 @@ export {
 	type RelayAckPayload,
 	type DrainRequestPayload,
 	type DrainCompletePayload,
+	type SnapshotBeginPayload,
+	type SnapshotChunkPayload,
+	type SnapshotEndPayload,
+	type SnapshotAckPayload,
+	type ReseedRequestPayload,
 	type ErrorPayload,
 } from "./ws-frames.js";
 
@@ -67,4 +72,4 @@ export { WsTransport, type WsTransportConfig } from "./ws-transport.js";
 export { MicrotaskCoalescer } from "./ws-coalescer.js";
 
 // Reducers and column cache
-export { clearColumnCache } from "./reducers.js";
+export { clearColumnCache, applySnapshotRows } from "./reducers.js";

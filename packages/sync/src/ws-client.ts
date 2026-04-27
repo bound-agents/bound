@@ -6,8 +6,12 @@ import type {
 	ChangelogPushPayload,
 	RelayAckPayload,
 	RelayDeliverPayload,
+	SnapshotAckPayload,
+	SnapshotBeginPayload,
+	SnapshotChunkPayload,
+	SnapshotEndPayload,
 } from "./ws-frames.js";
-import { WsMessageType, decodeFrame } from "./ws-frames.js";
+import { WsMessageType, decodeFrame, encodeFrame } from "./ws-frames.js";
 
 export interface WsClientConfig {
 	hubUrl: string; // e.g., "https://polaris.karashiiro.moe"
@@ -28,10 +32,14 @@ export interface WsClientConfig {
 		handleRelayDeliver: (sourceSiteId: string, payload: RelayDeliverPayload) => void;
 		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
 		drainRelayOutbox: (peerSiteId: string) => void;
+		/** Apply a snapshot chunk to the local DB (spoke-side). */
+		applySnapshotChunk: (tableName: string, rows: Array<Record<string, unknown>>) => number;
 	};
 	logger?: Logger;
 	reconnectMaxInterval?: number; // seconds, default 60
 	backpressureLimit?: number; // bytes, default 2097152
+	/** If true, sends RESEED_REQUEST to the hub after connecting. */
+	reseed?: boolean;
 }
 
 /**
@@ -46,6 +54,11 @@ export class WsSyncClient {
 	private reconnectInterval = 1;
 	private reconnectTimer: Timer | null = null;
 	private stopped = false;
+
+	/** Snapshot seeding state (spoke-side): tracks the current snapshot_hlc. */
+	private snapshotHlc: string | null = null;
+	/** Count of rows applied during the current snapshot session. */
+	private snapshotRowCount = 0;
 
 	onMessage: ((data: Uint8Array) => void) | null = null;
 	onConnected: (() => void) | null = null;
@@ -224,7 +237,24 @@ export class WsSyncClient {
 			this.config.wsTransport.drainRelayOutbox(this.config.hubSiteId);
 		}
 
+		// If --reseed was requested, tell the hub to send a full snapshot.
+		if (this.config.reseed && this.symmetricKey) {
+			this.sendReseedRequest();
+		}
+
 		this.onConnected?.();
+	}
+
+	/**
+	 * Send a RESEED_REQUEST frame to the hub asking for a full DB snapshot.
+	 * Called after connection open when the --reseed flag is set.
+	 */
+	private sendReseedRequest(): void {
+		if (!this.symmetricKey) return;
+		const payload = { reason: "spoke requested full reseed via --reseed flag" };
+		const frame = encodeFrame(WsMessageType.RESEED_REQUEST, payload, this.symmetricKey);
+		this.send(frame);
+		this.config.logger?.info("[reseed] Sent RESEED_REQUEST to hub");
 	}
 
 	private handleMessage(event: MessageEvent): void {
@@ -278,6 +308,16 @@ export class WsSyncClient {
 						this.config.logger?.warn("WsSyncClient: received relay_send from hub (unexpected)", {});
 					}
 				}
+
+				// Handle snapshot seeding frames (hub → spoke initial state handoff).
+				// Applied immediately per-chunk; SNAPSHOT_ACK sent after SNAPSHOT_END.
+				if (decodedFrame.type === WsMessageType.SNAPSHOT_BEGIN) {
+					this.handleSnapshotBegin(decodedFrame.payload as SnapshotBeginPayload);
+				} else if (decodedFrame.type === WsMessageType.SNAPSHOT_CHUNK) {
+					this.handleSnapshotChunk(decodedFrame.payload as SnapshotChunkPayload);
+				} else if (decodedFrame.type === WsMessageType.SNAPSHOT_END) {
+					this.handleSnapshotEnd(decodedFrame.payload as SnapshotEndPayload);
+				}
 			}
 
 			this.onMessage?.(data);
@@ -287,6 +327,10 @@ export class WsSyncClient {
 	private handleClose(): void {
 		this.config.logger?.debug("WsSyncClient: connection closed");
 		this.ws = null;
+
+		// Reset snapshot state — a reconnection starts a fresh seeding session.
+		this.snapshotHlc = null;
+		this.snapshotRowCount = 0;
 
 		// Remove WsTransport peer
 		if (this.config.wsTransport) {
@@ -306,6 +350,65 @@ export class WsSyncClient {
 		this.config.logger?.warn("WsSyncClient: WebSocket error", {
 			message: event instanceof ErrorEvent ? event.message : String(event),
 		});
+	}
+
+	// ── Snapshot seeding handlers (spoke-side) ────────────────────────────
+
+	/**
+	 * SNAPSHOT_BEGIN: prepares the spoke to receive a full DB snapshot.
+	 * Resets the per-session counter so interrupted seeding can be retried cleanly.
+	 */
+	private handleSnapshotBegin(payload: SnapshotBeginPayload): void {
+		this.snapshotHlc = payload.snapshot_hlc;
+		this.snapshotRowCount = 0;
+		this.config.logger?.info(
+			`[snapshot] Receiving snapshot (hlc: ${payload.snapshot_hlc}, tables: ${payload.tables.length})`,
+		);
+	}
+
+	/**
+	 * SNAPSHOT_CHUNK: applies a batch of rows to the spoke's local DB.
+	 * Uses INSERT OR REPLACE so chunks are idempotent — safe to resume after
+	 * a partial application on reconnect.
+	 */
+	private handleSnapshotChunk(payload: SnapshotChunkPayload): void {
+		if (!this.config.wsTransport) return;
+
+		const applied = this.config.wsTransport.applySnapshotChunk(payload.table_name, payload.rows);
+
+		this.snapshotRowCount += applied;
+		// Log progress every 10k rows to avoid log spam.
+		if (this.snapshotRowCount > 0 && this.snapshotRowCount % 10_000 === 0) {
+			this.config.logger?.info(
+				`[snapshot] Progress: ${this.snapshotRowCount} rows applied (table: ${payload.table_name})`,
+			);
+		}
+
+		if (payload.last) {
+			this.config.logger?.debug(
+				`[snapshot] Finished table ${payload.table_name} at offset ${payload.offset}`,
+			);
+		}
+	}
+
+	/**
+	 * SNAPSHOT_END: finalizes the snapshot and sends SNAPSHOT_ACK back to the hub.
+	 * The hub then triggers the normal changelog drain for catchup.
+	 */
+	private handleSnapshotEnd(payload: SnapshotEndPayload): void {
+		this.config.logger?.info(
+			`[snapshot] Snapshot complete: ${payload.table_count} tables, ${this.snapshotRowCount} rows applied`,
+		);
+
+		// Send acknowledgement so the hub can clean up and start the changelog drain.
+		if (this.snapshotHlc && this.symmetricKey) {
+			const ackPayload: SnapshotAckPayload = { snapshot_hlc: this.snapshotHlc };
+			const frame = encodeFrame(WsMessageType.SNAPSHOT_ACK, ackPayload, this.symmetricKey);
+			this.send(frame);
+		}
+
+		this.snapshotHlc = null;
+		this.snapshotRowCount = 0;
 	}
 
 	/**

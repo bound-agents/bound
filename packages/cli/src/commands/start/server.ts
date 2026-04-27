@@ -181,6 +181,11 @@ export interface ServerResult {
 		handleRelaySend: (sourceSiteId: string, payload: Record<string, unknown>) => void;
 		handleRelayAck: (sourceSiteId: string, payload: Record<string, unknown>) => void;
 		drainRelayInbox: (siteId: string) => void;
+		seedNewPeer: (siteId: string) => void;
+		handleSnapshotAck: (siteId: string, payload: unknown) => void;
+		continueSnapshotSeed: (siteId: string) => void;
+		applySnapshotChunk: (tableName: string, rows: Array<Record<string, unknown>>) => number;
+		handleReseedRequest: (siteId: string, payload: unknown) => void;
 	};
 }
 
@@ -235,6 +240,11 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		handleRelaySend: () => {},
 		handleRelayAck: () => {},
 		drainRelayInbox: () => {},
+		seedNewPeer: () => {},
+		handleSnapshotAck: () => {},
+		continueSnapshotSeed: () => {},
+		applySnapshotChunk: () => 0,
+		handleReseedRequest: () => {},
 	};
 
 	// Wire the executor into the relay processor for Discord/platform process relays.

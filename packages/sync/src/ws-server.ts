@@ -7,6 +7,7 @@ import type {
 	ChangelogPushPayload,
 	RelayAckPayload,
 	RelaySendPayload,
+	SnapshotAckPayload,
 } from "./ws-frames.js";
 import { WsMessageType, decodeFrame } from "./ws-frames.js";
 
@@ -181,6 +182,14 @@ export interface WsServerConfig {
 		handleRelaySend: (sourceSiteId: string, payload: RelaySendPayload) => void;
 		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
 		drainRelayInbox: (spokesSiteId: string) => void;
+		/** Seed a newly-connected peer with a full DB snapshot. */
+		seedNewPeer: (peerSiteId: string) => void;
+		/** Called when a spoke acks the final snapshot. Triggers changelog drain. */
+		handleSnapshotAck: (peerSiteId: string, payload: SnapshotAckPayload) => void;
+		/** Resume snapshot seeding after backpressure clears. */
+		continueSnapshotSeed: (peerSiteId: string) => void;
+		/** Handle a spoke's request for a full DB reseed. */
+		handleReseedRequest: (peerSiteId: string, payload: unknown) => void;
 	};
 	logger?: Logger;
 	idleTimeout?: number; // seconds, default 120
@@ -258,6 +267,12 @@ export function createWsHandlers(config: WsServerConfig): {
 				};
 
 				config.wsTransport.addPeer(ws.data.siteId, sendFrame, ws.data.symmetricKey);
+
+				// Seed new peers with a full DB snapshot before the normal
+				// changelog drain (which only contains entries newer than
+				// what the pruning window already deleted).
+				config.wsTransport.seedNewPeer(ws.data.siteId);
+
 				config.wsTransport.drainChangelog(ws.data.siteId);
 				config.wsTransport.drainRelayInbox(ws.data.siteId);
 			}
@@ -312,6 +327,10 @@ export function createWsHandlers(config: WsServerConfig): {
 						ws.data.siteId,
 						decodedFrame.payload as RelayAckPayload,
 					);
+				} else if (decodedFrame.type === WsMessageType.SNAPSHOT_ACK) {
+					config.wsTransport.handleSnapshotAck(ws.data.siteId, decodedFrame.payload);
+				} else if (decodedFrame.type === WsMessageType.RESEED_REQUEST) {
+					config.wsTransport.handleReseedRequest(ws.data.siteId, decodedFrame.payload);
 				}
 			}
 		},
@@ -333,6 +352,10 @@ export function createWsHandlers(config: WsServerConfig): {
 
 		drain(ws) {
 			ws.data.sendState = "ready";
+			// Resume snapshot seeding if it was paused on backpressure.
+			if (config.wsTransport) {
+				config.wsTransport.continueSnapshotSeed(ws.data.siteId);
+			}
 			if (ws.data.pendingDrain) {
 				ws.data.pendingDrain();
 				ws.data.pendingDrain = null;

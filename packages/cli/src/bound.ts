@@ -42,6 +42,7 @@ OPTIONS:
   bound init --force               Overwrite existing config
 
   bound start                       Start the orchestrator
+  bound start --reseed              Wipe local DB, request full hub snapshot, then catch up via changelog
 
 EXAMPLES:
   bound init --ollama
@@ -87,6 +88,7 @@ EXAMPLES:
 		const startConfigIdx = args.indexOf("--config-dir");
 		const startArgs = {
 			configDir: startConfigIdx !== -1 ? args[startConfigIdx + 1] : "config",
+			reseed: args.includes("--reseed"),
 		};
 
 		// Lazy import: keeps `bound init` off the start-subtree load path, which

@@ -87,6 +87,11 @@ export async function runStart(args: StartArgs): Promise<void> {
 						handleRelaySend: () => {},
 						handleRelayAck: () => {},
 						drainRelayInbox: () => {},
+						seedNewPeer: () => {},
+						handleSnapshotAck: () => {},
+						continueSnapshotSeed: () => {},
+						applySnapshotChunk: () => 0,
+						handleReseedRequest: () => {},
 					},
 				};
 
@@ -153,7 +158,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	});
 
 	// Phase 8: Sync loop, pruning, overlay scanner
-	const syncResult = await initSync(appContext, keypair, keyManager);
+	const syncResult = await initSync(appContext, keypair, keyManager, args.reseed);
 	wsClient = syncResult.wsClient;
 	const { pruningHandle, overlayHandle, wsTransport } = syncResult;
 
@@ -168,6 +173,11 @@ export async function runStart(args: StartArgs): Promise<void> {
 			handleRelaySend: wsTransport.handleRelaySend.bind(wsTransport),
 			handleRelayAck: wsTransport.handleRelayAck.bind(wsTransport),
 			drainRelayInbox: wsTransport.drainRelayInbox.bind(wsTransport),
+			seedNewPeer: wsTransport.seedNewPeer.bind(wsTransport),
+			handleSnapshotAck: wsTransport.handleSnapshotAck.bind(wsTransport),
+			continueSnapshotSeed: wsTransport.continueSnapshotSeed.bind(wsTransport),
+			applySnapshotChunk: wsTransport.applySnapshotChunk.bind(wsTransport),
+			handleReseedRequest: wsTransport.handleReseedRequest.bind(wsTransport),
 		});
 	}
 

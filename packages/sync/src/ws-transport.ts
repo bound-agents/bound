@@ -7,11 +7,12 @@ import type {
 	RelayInboxEntry,
 	RelayKind,
 	RelayOutboxEntry,
+	SyncedTableName,
 	TypedEventEmitter,
 } from "@bound/shared";
-import { HLC_ZERO } from "@bound/shared";
+import { HLC_ZERO, generateHlc } from "@bound/shared";
 import { getPeerCursor, updatePeerCursor } from "./peer-cursor.js";
-import { replayEvents } from "./reducers.js";
+import { applySnapshotRows, replayEvents } from "./reducers.js";
 import { MicrotaskCoalescer } from "./ws-coalescer.js";
 import type {
 	ChangelogAckPayload,
@@ -19,6 +20,10 @@ import type {
 	RelayAckPayload,
 	RelayDeliverPayload,
 	RelaySendPayload,
+	SnapshotAckPayload,
+	SnapshotBeginPayload,
+	SnapshotChunkPayload,
+	SnapshotEndPayload,
 } from "./ws-frames.js";
 import { WsMessageType, encodeFrame } from "./ws-frames.js";
 
@@ -45,6 +50,38 @@ interface PeerConnection {
  * - Receives changelog_push/ack frames from peers
  * - Drains missed entries on reconnection
  */
+/**
+ * Canonical order for snapshot seeding: parent tables before children,
+ * so foreign-key dependencies are satisfied on INSERT OR REPLACE.
+ */
+const SNAPSHOT_TABLE_ORDER: SyncedTableName[] = [
+	"users",
+	"hosts",
+	"cluster_config",
+	"threads",
+	"messages",
+	"turns",
+	"semantic_memory",
+	"memory_edges",
+	"tasks",
+	"files",
+	"advisories",
+	"skills",
+	"overlay_index",
+];
+
+/** Per-peer snapshot seeding progress (hub-side). */
+interface SnapshotState {
+	/** Index into SNAPSHOT_TABLE_ORDER for the current table. */
+	tableIndex: number;
+	/** Row offset within the current table. */
+	offset: number;
+	/** HLC at the moment seeding started. */
+	snapshotHlc: string;
+	/** Whether we're waiting for backpressure to clear. */
+	draining: boolean;
+}
+
 export class WsTransport {
 	private changelogCoalescer: MicrotaskCoalescer<ChangeLogEntry>;
 	private peerConnections: Map<string, PeerConnection> = new Map();
@@ -58,6 +95,8 @@ export class WsTransport {
 	private relayOutboxWrittenListener:
 		| ((event: { id: string; target_site_id: string }) => void)
 		| null = null;
+	/** Per-peer snapshot seeding progress. */
+	private snapshotStates = new Map<string, SnapshotState>();
 
 	constructor(private config: WsTransportConfig) {
 		// Create coalescer with flush callback
@@ -85,10 +124,36 @@ export class WsTransport {
 
 	/**
 	 * Remove a peer connection (called when WS disconnects).
+	 * Also cleans up the sync_state row if the peer was mid-seed
+	 * (HLC_ZERO cursor would permanently block pruning).
 	 */
 	removePeer(peerSiteId: string): void {
 		this.peerConnections.delete(peerSiteId);
+
+		const wasSeeding = this.snapshotStates.has(peerSiteId);
+		this.snapshotStates.delete(peerSiteId);
+
+		if (wasSeeding) {
+			// Remove the HLC_ZERO cursor so pruning can resume for other peers.
+			this.config.db.run("DELETE FROM sync_state WHERE peer_site_id = ?", [peerSiteId]);
+			this.config.logger?.info(
+				"[snapshot] Cleaned up stalled snapshot state for disconnected peer",
+				{
+					peerSiteId,
+				},
+			);
+		}
+
 		this.config.logger?.debug("WsTransport peer removed", { peerSiteId });
+	}
+
+	/**
+	 * Apply a snapshot chunk to the local DB (spoke-side).
+	 * Delegates to the reducers layer; rows are upserted without changelog entries.
+	 * @returns Number of rows applied.
+	 */
+	applySnapshotChunk(tableName: string, rows: Array<Record<string, unknown>>): number {
+		return applySnapshotRows(this.config.db, tableName, rows, this.config.logger);
 	}
 
 	/**
@@ -292,6 +357,17 @@ export class WsTransport {
 		const peer = this.peerConnections.get(peerSiteId);
 		if (!peer) {
 			this.config.logger?.debug("WsTransport drain skipped - peer not connected", {
+				peerSiteId,
+			});
+			return;
+		}
+
+		// Skip changelog drain while snapshot seeding is in progress — the
+		// snapshot already covers all historical data, and the post-snapshot
+		// drain in handleSnapshotAck() handles catchup. Draining concurrently
+		// causes redundant data transfer and potential ordering issues.
+		if (this.snapshotStates.has(peerSiteId)) {
+			this.config.logger?.debug("WsTransport drain skipped - snapshot seeding active", {
 				peerSiteId,
 			});
 			return;
@@ -813,6 +889,239 @@ export class WsTransport {
 
 		const frame = encodeFrame(WsMessageType.RELAY_DELIVER, payload, peer.symmetricKey);
 		peer.sendFrame(frame);
+	}
+
+	// ── Snapshot seeding (new-spoke initial state handoff) ────────────────
+
+	/**
+	 * Seed a newly-connected peer with a full snapshot of all synced tables.
+	 *
+	 * Detects whether the peer needs seeding (cursor is HLC_ZERO, meaning it has
+	 * never received any data from this node). If so, sends a SNAPSHOT_BEGIN frame
+	 * followed by chunked SNAPSHOT_CHUNK frames for every synced table.
+	 *
+	 * On the hub, this is called from ws-server's open handler right after addPeer().
+	 * On a spoke, this is a no-op (spokes don't seed other spokes).
+	 */
+	seedNewPeer(peerSiteId: string): void {
+		// Only the hub seeds new peers. A spoke receiving a connection from
+		// another spoke shouldn't dump its local state.
+		if (!this.config.isHub) return;
+
+		const peer = this.peerConnections.get(peerSiteId);
+		if (!peer) return;
+
+		// Only seed if this peer has never received data from us.
+		const cursor = getPeerCursor(this.config.db, peerSiteId);
+		if (cursor && cursor.last_received !== HLC_ZERO) return;
+
+		// Snapshot HLC: everything in the DB up to this point is included.
+		// Post-snapshot changelog catchup starts from here.
+		const now = new Date().toISOString();
+		const snapshotHlc = generateHlc(now, null, this.config.siteId);
+
+		this.snapshotStates.set(peerSiteId, {
+			tableIndex: 0,
+			offset: 0,
+			snapshotHlc,
+			draining: false,
+		});
+
+		// Create a sync_state row early so pruning is blocked while seeding
+		// (getMinConfirmedHlc sees HLC_ZERO → pruning paused).
+		updatePeerCursor(this.config.db, peerSiteId, {});
+
+		// Send SNAPSHOT_BEGIN with the table list and snapshot HLC.
+		const beginPayload: SnapshotBeginPayload = {
+			snapshot_hlc: snapshotHlc,
+			tables: SNAPSHOT_TABLE_ORDER.slice(),
+		};
+		const beginFrame = encodeFrame(WsMessageType.SNAPSHOT_BEGIN, beginPayload, peer.symmetricKey);
+		peer.sendFrame(beginFrame);
+
+		this.config.logger?.info("[snapshot] Seeding new peer", {
+			peerSiteId,
+			snapshotHlc,
+			tableCount: SNAPSHOT_TABLE_ORDER.length,
+		});
+
+		// Start sending chunks (yield to event loop so the SNAPSHOT_BEGIN frame
+		// is flushed before we start pushing table data).
+		setTimeout(() => this.continueSnapshotSeed(peerSiteId), 0);
+	}
+
+	/**
+	 * Called by the hub when the spoke sends SNAPSHOT_ACK (all snapshot rows applied).
+	 * Cleans up seeding state and triggers the normal changelog drain to catch up
+	 * on any entries that arrived during seeding.
+	 */
+	handleSnapshotAck(peerSiteId: string, _payload: SnapshotAckPayload): void {
+		this.snapshotStates.delete(peerSiteId);
+		this.config.logger?.info("[snapshot] Spoke acknowledged snapshot", { peerSiteId });
+
+		// Now run the normal changelog drain (from the snapshot HLC forward).
+		this.drainChangelog(peerSiteId);
+	}
+
+	/**
+	 * Handle a RESEED_REQUEST from a spoke that wants a full DB snapshot.
+	 *
+	 * Used when a spoke has an existing cursor but knows its local state is
+	 * incomplete (e.g. it was restored from an old backup or missed pruned
+	 * changelog entries). Clears the peer's sync_state so seedNewPeer()
+	 * treats it as a fresh node and sends the full snapshot.
+	 */
+	handleReseedRequest(peerSiteId: string, _payload: unknown): void {
+		// Only the hub handles reseed requests.
+		if (!this.config.isHub) return;
+
+		this.config.logger?.info("[reseed] Spoke requested full reseed", { peerSiteId });
+
+		// Reset the peer's cursor to HLC_ZERO so seedNewPeer triggers.
+		updatePeerCursor(this.config.db, peerSiteId, {
+			last_received: HLC_ZERO,
+			last_sent: HLC_ZERO,
+		});
+
+		// Now seed as if this were a brand-new peer.
+		this.seedNewPeer(peerSiteId);
+	}
+
+	/**
+	 * Resume snapshot seeding after backpressure clears.
+	 * Called by ws-server's drain handler when the WebSocket buffer flushes.
+	 */
+	continueSnapshotSeed(peerSiteId: string): void {
+		const state = this.snapshotStates.get(peerSiteId);
+		if (!state) return;
+		if (!state.draining) return;
+
+		state.draining = false;
+		this.sendSnapshotChunks(peerSiteId);
+	}
+
+	// ── Private snapshot helpers ──────────────────────────────────────────
+
+	/**
+	 * Send chunks for the current table (and subsequent tables) until
+	 * backpressure or completion.
+	 */
+	private sendSnapshotChunks(peerSiteId: string): void {
+		const peer = this.peerConnections.get(peerSiteId);
+		if (!peer) {
+			this.snapshotStates.delete(peerSiteId);
+			return;
+		}
+
+		const state = this.snapshotStates.get(peerSiteId);
+		if (!state) return;
+
+		// Iterate tables
+		while (state.tableIndex < SNAPSHOT_TABLE_ORDER.length) {
+			const table = SNAPSHOT_TABLE_ORDER[state.tableIndex];
+			if (!this.sendSnapshotTableChunks(peerSiteId, table)) {
+				// Backpressure or chunk limit reached — stop for now.
+				return;
+			}
+
+			// Table fully sent — advance to next.
+			state.tableIndex++;
+			state.offset = 0;
+		}
+
+		// All tables done.
+		this.sendSnapshotEnd(peerSiteId);
+	}
+
+	/**
+	 * Send chunks for a single table. Returns false if we should stop
+	 * (backpressured or yielded to event loop), true if table is fully sent.
+	 */
+	private sendSnapshotTableChunks(peerSiteId: string, table: string): boolean {
+		const peer = this.peerConnections.get(peerSiteId);
+		if (!peer) return false;
+
+		const state = this.snapshotStates.get(peerSiteId);
+		if (!state) return false;
+
+		const chunkSize = 500; // rows per chunk
+		let chunksSent = 0;
+
+		while (true) {
+			// NOTE: ORDER BY rowid assumes no synced table is WITHOUT ROWID.
+			// If a WITHOUT ROWID table is ever added to SNAPSHOT_TABLE_ORDER,
+			// this query must use an explicit PK ORDER BY instead.
+			const rows = this.config.db
+				.query(`SELECT * FROM ${table} WHERE deleted = 0 ORDER BY rowid LIMIT ? OFFSET ?`)
+				.all(chunkSize, state.offset) as Array<Record<string, unknown>>;
+
+			if (rows.length === 0) return true; // Table done.
+
+			const isLast = rows.length < chunkSize;
+			const chunkPayload: SnapshotChunkPayload = {
+				table_name: table,
+				offset: state.offset,
+				rows,
+				last: isLast,
+			};
+
+			const frame = encodeFrame(WsMessageType.SNAPSHOT_CHUNK, chunkPayload, peer.symmetricKey);
+			const sent = peer.sendFrame(frame);
+
+			if (!sent) {
+				state.draining = true;
+				this.config.logger?.debug("[snapshot] Backpressured, waiting for drain", {
+					peerSiteId,
+					table,
+					offset: state.offset,
+				});
+				return false;
+			}
+
+			state.offset += rows.length;
+			chunksSent++;
+
+			if (isLast) return true; // Table done.
+
+			// Yield to event loop every 20 chunks (10,000 rows) to avoid
+			// blocking the hub for too long during large-table seeding.
+			if (chunksSent % 20 === 0) {
+				setTimeout(() => this.sendSnapshotChunks(peerSiteId), 0);
+				return false;
+			}
+		}
+	}
+
+	/**
+	 * Send SNAPSHOT_END frame indicating all tables have been seeded.
+	 */
+	private sendSnapshotEnd(peerSiteId: string): void {
+		const peer = this.peerConnections.get(peerSiteId);
+		if (!peer) return;
+
+		const state = this.snapshotStates.get(peerSiteId);
+		if (!state) return;
+
+		// Count total rows seeded across all tables for the payload.
+		const totalRows = SNAPSHOT_TABLE_ORDER.reduce((sum, table) => {
+			const row = this.config.db
+				.query(`SELECT COUNT(*) as cnt FROM ${table} WHERE deleted = 0`)
+				.get() as { cnt: number } | null;
+			return sum + (row?.cnt ?? 0);
+		}, 0);
+
+		const endPayload: SnapshotEndPayload = {
+			table_count: SNAPSHOT_TABLE_ORDER.length,
+			row_count: totalRows,
+		};
+		const frame = encodeFrame(WsMessageType.SNAPSHOT_END, endPayload, peer.symmetricKey);
+		peer.sendFrame(frame);
+
+		this.config.logger?.info("[snapshot] Snapshot seeding complete", {
+			peerSiteId,
+			tables: SNAPSHOT_TABLE_ORDER.length,
+			rows: totalRows,
+		});
 	}
 
 	/**

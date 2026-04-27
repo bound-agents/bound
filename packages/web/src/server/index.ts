@@ -64,6 +64,11 @@ export interface SyncAppConfig {
 		handleRelaySend: (sourceSiteId: string, payload: RelaySendPayload) => void;
 		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
 		drainRelayInbox: (siteId: string) => void;
+		seedNewPeer: (siteId: string) => void;
+		handleSnapshotAck: (siteId: string, payload: unknown) => void;
+		continueSnapshotSeed: (siteId: string) => void;
+		applySnapshotChunk: (tableName: string, rows: Array<Record<string, unknown>>) => number;
+		handleReseedRequest: (siteId: string, payload: unknown) => void;
 	} | null;
 }
 
