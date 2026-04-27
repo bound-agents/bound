@@ -14,6 +14,7 @@ import {
 	readUndelivered,
 	readUnprocessed,
 	recordRelayCycle,
+	runPostLoopDeliveryCheck,
 	writeOutbox,
 } from "@bound/core";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
@@ -105,6 +106,14 @@ interface ConnectorRegistry {
 						};
 						execute: (input: Record<string, unknown>) => Promise<string>;
 					}
+				>;
+				verifyDelivery?(
+					threadId: string,
+					turnStartAt: string,
+				): Promise<
+					| { kind: "delivered" }
+					| { kind: "intentional-silence" }
+					| { kind: "missing"; nudge: string }
 				>;
 		  }
 		| undefined;
@@ -1543,6 +1552,13 @@ export class RelayProcessor {
 			shouldYield,
 		};
 
+		// Stash the connector for the post-loop delivery check so we don't
+		// look it up twice. The connector type returned by
+		// ConnectorRegistry already exposes the (optional) verifyDelivery hook
+		// used below.
+		let connectorForDelivery:
+			| ReturnType<NonNullable<ConnectorRegistry["getConnector"]>>
+			| undefined;
 		if (payload.platform && this.platformConnectorRegistry) {
 			const connector = this.platformConnectorRegistry.getConnector(payload.platform);
 			if (connector?.getPlatformTools) {
@@ -1556,6 +1572,7 @@ export class RelayProcessor {
 					tools: Array.from(platformTools.keys()),
 				});
 			}
+			connectorForDelivery = connector;
 		}
 
 		const agentLoop = this.agentLoopFactory
@@ -1570,7 +1587,43 @@ export class RelayProcessor {
 					loopConfig,
 				);
 
+		// Capture turn boundary BEFORE the loop runs so verifyDelivery can
+		// scope its query to messages THIS turn produced.
+		const turnStartAt = new Date().toISOString();
 		const result = await agentLoop.run();
+
+		// Post-loop platform delivery check: when the connector implements
+		// verifyDelivery (e.g. Discord — ensures the agent actually called
+		// discord_send_message), ask whether the reply reached the user. A
+		// "missing" verdict inserts a developer-role nudge + enqueues a
+		// dispatch entry so the next turn has a chance to send. A prior
+		// nudge with a platform tombstone flips the verdict to
+		// "intentional-silence" so the agent is never nudged more than once
+		// per conversation window.
+		//
+		// This is the HUB-side counterpart to the same call in server.ts —
+		// delegated turns execute here, not in runLocalAgentLoop, so the
+		// spoke-side wiring alone does not cover them.
+		if (
+			!result.error &&
+			!result.yielded &&
+			payload.platform &&
+			connectorForDelivery?.verifyDelivery
+		) {
+			await runPostLoopDeliveryCheck({
+				db: this.db,
+				siteId: this.siteId,
+				hostName: delegatedCtx.hostName,
+				threadId: payload.thread_id,
+				turnStartAt,
+				platform: payload.platform,
+				connector: {
+					verifyDelivery: connectorForDelivery.verifyDelivery.bind(connectorForDelivery),
+				},
+				logger: this.logger,
+			});
+		}
+
 		return {
 			yielded: result.yielded,
 			error: result.error,

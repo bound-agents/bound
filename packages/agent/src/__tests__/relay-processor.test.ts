@@ -4075,4 +4075,235 @@ describe("RelayProcessor", () => {
 			expect(errors.length).toBe(0);
 		});
 	});
+
+	describe("executeProcess post-loop delivery check (P3.2)", () => {
+		// Regression for the hub-side delivery-retry bug: on spoke nodes that
+		// delegate inference to polaris, every text-only terminal on a Discord
+		// thread went unnoticed because runPostLoopDeliveryCheck was only wired
+		// into the local runLocalAgentLoop path. Thread
+		// a83b945f-d4b1-4b77-904f-bb9b465edc1d logged plain assistant turns
+		// with no matching discord_send_message tool_call, and no nudge ever
+		// fired until the reporter manually typed "discord_send_message?".
+		//
+		// The hook must also run at the end of runDelegatedLoop on the hub.
+		it("enqueues a nudge with tombstone when delegated loop terminates without a send", async () => {
+			const threadId = "thread-p32-missing";
+			const userId = "user-p32";
+			const userMsgId = "msg-user-p32";
+			const nowIso = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, nowIso, "discord", "local", nowIso, nowIso],
+			);
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+				[userId, "Reporter", nowIso, nowIso],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				[userMsgId, threadId, "user", "hey there", "local", nowIso],
+			);
+
+			const eventBus = createMockEventBus();
+			const mockAppCtx = {
+				db,
+				config: {},
+				optionalConfig: {},
+				eventBus,
+				logger: createMockLogger(),
+				siteId: "hub-site",
+				hostName: "hubhost",
+			};
+
+			// Mock loop that simulates a text-only terminal — it doesn't insert
+			// any tool_call row for discord_send_message, just claims success.
+			const mockAgentLoop = {
+				run: async () => ({
+					error: null,
+					messagesCreated: 1,
+					toolCallsMade: 0,
+					filesChanged: 0,
+				}),
+			};
+			const mockAgentLoopFactory = (_config: AgentLoopConfig) => mockAgentLoop as any;
+
+			const processor = new RelayProcessor(
+				db,
+				"hub-site",
+				new Map(),
+				createMockModelRouter(),
+				new Set(["requester-site"]),
+				createMockLogger(),
+				eventBus,
+				mockAppCtx as any,
+				undefined,
+				new Map(),
+				mockAgentLoopFactory,
+			);
+
+			// Discord connector whose verifyDelivery always reports "missing"
+			// for this scenario — the real implementation lives in
+			// packages/platforms and is exercised by discord-verify-delivery.test.ts.
+			// Here we're testing the wiring, not the detection logic.
+			const mockConnector = {
+				getPlatformTools: () => new Map(),
+				verifyDelivery: async () => ({
+					kind: "missing" as const,
+					nudge: "[Delivery retry] Your previous response did not reach the user on Discord.",
+				}),
+			};
+			processor.setPlatformConnectorRegistry({
+				getConnector: (platform: string) => (platform === "discord" ? mockConnector : undefined),
+			} as any);
+
+			const now = new Date();
+			const processInboxEntry: RelayInboxEntry = {
+				id: "process-p32",
+				source_site_id: "requester-site",
+				kind: "process",
+				ref_id: null,
+				idempotency_key: null,
+				payload: JSON.stringify({
+					thread_id: threadId,
+					message_id: userMsgId,
+					user_id: userId,
+					platform: "discord",
+				}),
+				expires_at: new Date(now.getTime() + 60000).toISOString(),
+				received_at: now.toISOString(),
+				processed: 0,
+				stream_id: null,
+			};
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					processInboxEntry.id,
+					processInboxEntry.source_site_id,
+					processInboxEntry.kind,
+					processInboxEntry.ref_id,
+					processInboxEntry.idempotency_key,
+					processInboxEntry.payload,
+					processInboxEntry.expires_at,
+					processInboxEntry.received_at,
+					processInboxEntry.processed,
+					processInboxEntry.stream_id,
+				],
+			);
+
+			const handle = processor.start(10);
+			await sleep(150);
+			handle.stop();
+
+			// The wiring must have produced a developer-role nudge message
+			// with the discord_platform_delivery_retry tombstone in metadata.
+			const nudges = db
+				.query(
+					"SELECT id, content, metadata FROM messages WHERE thread_id = ? AND role = 'developer' AND metadata IS NOT NULL",
+				)
+				.all(threadId) as Array<{ id: string; content: string; metadata: string }>;
+			expect(nudges).toHaveLength(1);
+			expect(nudges[0].content).toContain("Delivery retry");
+			const parsed = JSON.parse(nudges[0].metadata);
+			expect(parsed).toHaveProperty("discord_platform_delivery_retry");
+
+			// And a dispatch_queue entry pointing at the nudge so the loop
+			// re-triggers on the next cycle.
+			const pending = db
+				.query(
+					"SELECT message_id FROM dispatch_queue WHERE thread_id = ? AND status = 'pending' AND message_id = ?",
+				)
+				.all(threadId, nudges[0].id) as Array<{ message_id: string }>;
+			expect(pending).toHaveLength(1);
+		});
+
+		it("does not nudge when delegated connector's verifyDelivery returns delivered", async () => {
+			const threadId = "thread-p32-delivered";
+			const userId = "user-p32-d";
+			const userMsgId = "msg-user-p32-d";
+			const nowIso = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO threads (id, user_id, created_at, interface, host_origin, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[threadId, userId, nowIso, "discord", "local", nowIso, nowIso],
+			);
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+				[userId, "R", nowIso, nowIso],
+			);
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, host_origin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				[userMsgId, threadId, "user", "hi", "local", nowIso],
+			);
+
+			const eventBus = createMockEventBus();
+			const mockAppCtx = {
+				db,
+				config: {},
+				optionalConfig: {},
+				eventBus,
+				logger: createMockLogger(),
+				siteId: "hub-site",
+				hostName: "hubhost",
+			};
+			const mockAgentLoopFactory = (_config: AgentLoopConfig) =>
+				({ run: async () => ({ error: null, messagesCreated: 1, toolCallsMade: 1 }) }) as any;
+
+			const processor = new RelayProcessor(
+				db,
+				"hub-site",
+				new Map(),
+				createMockModelRouter(),
+				new Set(["requester-site"]),
+				createMockLogger(),
+				eventBus,
+				mockAppCtx as any,
+				undefined,
+				new Map(),
+				mockAgentLoopFactory,
+			);
+			const mockConnector = {
+				getPlatformTools: () => new Map(),
+				verifyDelivery: async () => ({ kind: "delivered" as const }),
+			};
+			processor.setPlatformConnectorRegistry({
+				getConnector: (platform: string) => (platform === "discord" ? mockConnector : undefined),
+			} as any);
+
+			const now = new Date();
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					"process-p32-d",
+					"requester-site",
+					"process",
+					null,
+					null,
+					JSON.stringify({
+						thread_id: threadId,
+						message_id: userMsgId,
+						user_id: userId,
+						platform: "discord",
+					}),
+					new Date(now.getTime() + 60000).toISOString(),
+					now.toISOString(),
+					0,
+					null,
+				],
+			);
+
+			const handle = processor.start(10);
+			await sleep(150);
+			handle.stop();
+
+			const nudges = db
+				.query(
+					"SELECT id FROM messages WHERE thread_id = ? AND role = 'developer' AND metadata IS NOT NULL",
+				)
+				.all(threadId) as unknown[];
+			expect(nudges).toHaveLength(0);
+		});
+	});
 });
