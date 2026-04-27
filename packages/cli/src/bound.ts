@@ -1,11 +1,16 @@
 #!/usr/bin/env bun
 // Main entry for `bound` command
 // Handles: bound init, bound start
+//
+// `runStart` and `createLogger` are imported LAZILY below. `bound init` must
+// not evaluate any module that calls `createLogger()` at module scope: doing
+// so materializes the pino root (which opens a sonic-boom async file stream
+// for logs/bound.log). When `bound init` then calls `process.exit(0)`, the
+// stream has not yet been "ready" and pino throws "sonic boom is not ready
+// yet" on shutdown. Dynamic import keeps init entirely logger-free.
 import "reflect-metadata";
 
-import { createLogger } from "@bound/shared";
 import { runInit } from "./commands/init.js";
-import { runStart } from "./commands/start/index.js";
 
 async function main() {
 	const args = process.argv.slice(2);
@@ -84,13 +89,19 @@ EXAMPLES:
 			configDir: startConfigIdx !== -1 ? args[startConfigIdx + 1] : "config",
 		};
 
+		// Lazy import: keeps `bound init` off the start-subtree load path, which
+		// avoids materializing the pino logger (sonic-boom) before we need it.
+		const [{ runStart }, { createLogger }] = await Promise.all([
+			import("./commands/start/index.js"),
+			import("@bound/shared"),
+		]);
+
 		try {
 			await runStart(startArgs);
 			process.exit(0);
 		} catch (error) {
-			// At this point bootstrap may or may not have initialized the logger;
-			// createLogger is idempotent and safe to call either way — it lazily
-			// materializes the pino root and reuses it.
+			// createLogger is idempotent; bootstrap may or may not have already
+			// materialized the pino root, either way we reuse it here.
 			createLogger("@bound/cli", "bound").error("Start failed", {
 				error: error instanceof Error ? error.message : String(error),
 				stack: error instanceof Error ? error.stack : undefined,
