@@ -13,10 +13,12 @@ import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { unlinkSync } from "node:fs";
-import { applySchema, createDatabase, insertRow, readMessageMetadata } from "@bound/core";
-import { runPostLoopDeliveryCheck } from "../commands/start/server";
+import { insertRow, readMessageMetadata } from "../change-log";
+import { createDatabase } from "../database";
+import { runPostLoopDeliveryCheck } from "../delivery-check";
+import { applySchema } from "../schema";
 
-describe("runPostLoopDeliveryCheck (P2.2)", () => {
+describe("runPostLoopDeliveryCheck", () => {
 	let db: Database;
 	let dbPath: string;
 	const siteId = "hook-site";
