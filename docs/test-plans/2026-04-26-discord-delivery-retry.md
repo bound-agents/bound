@@ -4,14 +4,21 @@
 
 Thread `a83b945f-d4b1-4b77-904f-bb9b465edc1d` (the reporter's own Discord thread) has historically seen turns where the model responds as plain assistant text instead of calling `discord_send_message`, and the reply silently never reaches Discord. This work adds a post-loop hook that detects the missing send and enqueues a one-shot nudge so the agent gets a second attempt without forcing the tool call.
 
-See commits `963c849`..`1da5f6f` on `main` for the code path.
+See commits `963c849`..`1da5f6f` for the Phase-1/2 base. `e3c24de` and `221b973` (Phase 3) add the hub-side wiring — required for spoke nodes whose turns delegate to polaris.
+
+## Deployment note
+
+**Both spoke AND hub must run the new binary** for the nudge to fire on this user's setup. On spoke nodes that delegate inference to a remote hub, turns execute inside `relay-processor.ts:runDelegatedLoop` on the hub; the spoke-side hook in `server.ts:handleThread` only covers turns that run locally. The Phase-2-only rollout (commits 40e045e/1da5f6f alone) would leave every delegated Discord turn uncovered — which is every turn on the user's primary node.
+
+Deploy order does not matter — the hub can roll first or second without breaking the spoke. But both must be running post-`221b973` before Phase 1 below will pass.
 
 ## Prerequisites
 
-- Fresh install: `bun run build && cp ./dist/bound* ~/.local/bin/` on the node that owns the Discord connector.
-- `bun run packages/cli/src/bound.ts start` running, with Discord platform connector configured and a bot running.
+- Fresh install on the spoke: `bun run build && cp ./dist/bound* ~/.local/bin/`.
+- Fresh hub deploy via the polaris GHA + terraform pipeline (10–15 min per cycle; see `reference_hub_deploy_pipeline.md` in local memory).
+- `bun run packages/cli/src/bound.ts start` running locally, with Discord platform connector configured on the hub (the connector lives where the Discord bot token is — here, polaris).
 - Access to the Discord DM thread used for testing (e.g. the reporter's own DM).
-- `sqlite3 ~/bound/data/bound.db` available for spot-checks.
+- `sqlite3 ~/bound/data/bound.db` available on the spoke for spot-checks. State is LWW-synced from the hub, so messages inserted on the hub appear here within seconds.
 - `bun test --recursive` passing with 0 failures.
 - `bun run typecheck` clean.
 
@@ -68,10 +75,11 @@ A `verifyDelivery` throw (transient DB error, unexpected shape) is logged at `wa
 
 ## Rollback
 
-Revert `40e045e..1da5f6f` (the two Phase 2 commits) to disable the nudge while keeping Invariant #19 enforcement. The Phase 1 commits (`963c849..0f96e89`) are the notification-reaches-LLM fix and should remain even if Phase 2 is reverted, since they address a separate live bug.
+Revert `40e045e..221b973` (the Phase 2 + Phase 3 commits) to disable the nudge while keeping Invariant #19 enforcement. Phase 3 alone (`e3c24de`, `221b973`) can be reverted without touching Phase 2 — that leaves the hook wired on the local path only (safe no-op for delegated-only nodes). The Phase 1 commits (`963c849..0f96e89`) are the notification-reaches-LLM fix and should remain regardless, since they address a separate live bug.
 
 ## Notes
 
 - `DISCORD_DELIVERY_RETRY_NUDGE` text is a const in `packages/platforms/src/connectors/discord.ts`; tweak if the wording needs adjustment after observation.
 - The metadata key `discord_platform_delivery_retry` is platform-namespaced per `messages.metadata` convention; a future Slack connector would use `slack_platform_delivery_retry` with the same structural pattern.
-- The turn boundary is captured as an ISO timestamp in JS in `handleThread` before `runLocalAgentLoop`; it does NOT rely on SQLite `datetime('now')` (which would risk the space-vs-T comparison trap in `Common Gotchas`).
+- The turn boundary is captured as an ISO timestamp in JS — in `handleThread` (spoke) and in `runDelegatedLoop` (hub), both before `agentLoop.run()`. Neither path relies on SQLite `datetime('now')` (which would risk the space-vs-T comparison trap in `Common Gotchas`).
+- The hook helper lives in `@bound/core/delivery-check.ts` and is called from two sites: `@bound/cli/server.ts:handleThread` (local path) and `@bound/agent/relay-processor.ts:runDelegatedLoop` (hub path for delegated turns). Both sites share the same Invariant-#18-safe enqueue via `enqueueMessage(db, messageId, threadId)`.
