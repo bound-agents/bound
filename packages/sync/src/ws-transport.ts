@@ -74,8 +74,11 @@ const SNAPSHOT_TABLE_ORDER: SyncedTableName[] = [
 interface SnapshotState {
 	/** Index into SNAPSHOT_TABLE_ORDER for the current table. */
 	tableIndex: number;
-	/** Row offset within the current table. */
+	/** Row count offset — purely for diagnostics in payload. */
 	offset: number;
+	/** Cursor for fast pagination: next query uses rowid > lastRowid.
+	 *  Replaces OFFSET which degrades linearly in SQLite. */
+	lastRowid: number;
 	/** HLC at the moment seeding started. */
 	snapshotHlc: string;
 	/** Whether we're waiting for backpressure to clear. */
@@ -923,6 +926,7 @@ export class WsTransport {
 		this.snapshotStates.set(peerSiteId, {
 			tableIndex: 0,
 			offset: 0,
+			lastRowid: 0,
 			snapshotHlc,
 			draining: false,
 		});
@@ -1027,6 +1031,7 @@ export class WsTransport {
 			// Table fully sent — advance to next.
 			state.tableIndex++;
 			state.offset = 0;
+			state.lastRowid = 0;
 		}
 
 		// All tables done.
@@ -1048,16 +1053,31 @@ export class WsTransport {
 		let chunksSent = 0;
 
 		while (true) {
+			// Cursor-based pagination via rowid — O(chunkSize) per query regardless
+			// of position in the table. OFFSET degrades linearly in SQLite because
+			// it must scan and discard all rows up to the offset.
 			// NOTE: ORDER BY rowid assumes no synced table is WITHOUT ROWID.
-			// If a WITHOUT ROWID table is ever added to SNAPSHOT_TABLE_ORDER,
-			// this query must use an explicit PK ORDER BY instead.
-			const rows = this.config.db
-				.query(`SELECT * FROM ${table} WHERE deleted = 0 ORDER BY rowid LIMIT ? OFFSET ?`)
-				.all(chunkSize, state.offset) as Array<Record<string, unknown>>;
+			const rowsRaw = this.config.db
+				.query(
+					`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE deleted = 0 AND rowid > ? ORDER BY rowid LIMIT ?`,
+				)
+				.all(state.lastRowid, chunkSize) as Array<Record<string, unknown>>;
 
-			if (rows.length === 0) return true; // Table done.
+			if (rowsRaw.length === 0) return true; // Table done.
 
-			const isLast = rows.length < chunkSize;
+			// Advance the rowid cursor so the next query starts after this batch.
+			const lastRowid = rowsRaw[rowsRaw.length - 1]?._bound_rowid as number;
+			if (typeof lastRowid === "number") {
+				state.lastRowid = lastRowid;
+			}
+
+			// Strip the internal rowid column before sending rows to the spoke.
+			const rows = rowsRaw.map((r) => {
+				const { _bound_rowid, ...rest } = r;
+				return rest;
+			});
+
+			const isLast = rowsRaw.length < chunkSize;
 			const chunkPayload: SnapshotChunkPayload = {
 				table_name: table,
 				offset: state.offset,
@@ -1074,6 +1094,7 @@ export class WsTransport {
 					peerSiteId,
 					table,
 					offset: state.offset,
+					lastRowid: state.lastRowid,
 				});
 				return false;
 			}

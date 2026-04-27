@@ -262,6 +262,7 @@ describe("snapshot seeding (integration)", () => {
 		(transportAny.snapshotStates as Map<string, unknown>).set("stalled-peer", {
 			tableIndex: 0,
 			offset: 0,
+			lastRowid: 0,
 			snapshotHlc: "2025-01-01T00:00:00.000Z_0000_aaaa",
 			draining: false,
 		});
