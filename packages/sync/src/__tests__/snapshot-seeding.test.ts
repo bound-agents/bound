@@ -379,6 +379,20 @@ describe("snapshot frame codec", () => {
 		expect(decoded.ok).toBe(false);
 		expect(decoded.error).toBe("invalid_payload");
 	});
+
+	it("round-trips DRAIN_REQUEST heartbeat payload", () => {
+		// This is the exact payload sent by the spoke heartbeat during
+		// snapshot seeding. It must pass validation or the hub will log
+		// WS frame decode failed: invalid_payload every 30 seconds.
+		const payload = { reason: "snapshot heartbeat" };
+		const frame = encodeFrame(WsMessageType.DRAIN_REQUEST, payload, symKey);
+		const decoded = decodeFrame(frame, symKey);
+		expect(decoded.ok).toBe(true);
+		if (!decoded.ok) return;
+		expect(decoded.value.type).toBe(WsMessageType.DRAIN_REQUEST);
+		const p = decoded.value.payload as { reason: string };
+		expect(p.reason).toBe("snapshot heartbeat");
+	});
 });
 
 // ── seedNewPeer detection logic ───────────────────────────────────────

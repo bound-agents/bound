@@ -3,7 +3,7 @@
 // without requiring real WebSocket servers.
 
 import { Database } from "bun:sqlite";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 
 import { EventEmitter } from "node:events";
 import { applySchema } from "@bound/core";
@@ -66,6 +66,12 @@ describe("snapshot seeding (integration)", () => {
 			eventBus: new NoopEventBus() as unknown as TypedEventEmitter,
 			isHub: true,
 		});
+	});
+
+	afterEach(() => {
+		// Clean up peer connection, snapshot state, and sync_state row
+		// so every test starts from a known empty state.
+		hubTransport.removePeer(spokeSiteId);
 	});
 
 	afterAll(() => {
@@ -181,7 +187,7 @@ describe("snapshot seeding (integration)", () => {
 		expect(sentFrames[0]).toBe(0x10); // SNAPSHOT_BEGIN
 	});
 
-	it("handleReseedRequest resets and restarts an in-progress snapshot", async () => {
+	it("handleReseedRequest is idempotent — second call while active is a no-op", async () => {
 		// Give the spoke an existing cursor so it doesn't auto-seed on addPeer.
 		updatePeerCursor(hubDb, spokeSiteId, {
 			last_received: "2025-01-02T00:00:00.000Z_0000_zzzz",
@@ -196,7 +202,7 @@ describe("snapshot seeding (integration)", () => {
 		const symKey = new Uint8Array(32);
 		hubTransport.addPeer(spokeSiteId, mockSendFrame, symKey);
 
-		// Manually start a snapshot (simulating an in-progress seed).
+		// Start a snapshot.
 		hubTransport.handleReseedRequest(spokeSiteId, "first reseed");
 		await new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -207,7 +213,7 @@ describe("snapshot seeding (integration)", () => {
 		const transportAny = hubTransport as Record<string, unknown>;
 		expect((transportAny.snapshotStates as Map<string, unknown>).has(spokeSiteId)).toBe(true);
 
-		// Now request another reseed while the first is still "active".
+		// Second call while the snapshot is still active should be ignored.
 		hubTransport.handleReseedRequest(spokeSiteId, "second reseed while active");
 		await new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -217,12 +223,37 @@ describe("snapshot seeding (integration)", () => {
 			.get(spokeSiteId) as { last_received: string } | null;
 		expect(cursorAfter?.last_received).toBe(HLC_ZERO);
 
-		// A second SNAPSHOT_BEGIN should have been sent (restarted seed).
+		// Should NOT have sent a second SNAPSHOT_BEGIN (idempotent).
 		const secondBeginCount = sentFrames.filter((t) => t === 0x10).length;
-		expect(secondBeginCount).toBe(2);
+		expect(secondBeginCount).toBe(1);
+	});
 
-		// Clean up.
-		hubTransport.removePeer(spokeSiteId);
+	it("handleReseedRequest is a no-op when snapshot is already active for the peer", async () => {
+		// Simulate the race: hub auto-detects new peer and starts seeding,
+		// then spoke (which hasn't received SNAPSHOT_BEGIN yet) sends
+		// RESEED_REQUEST. The hub should ignore the duplicate request.
+		const sentFrames: number[] = [];
+		const mockSendFrame = (frame: Uint8Array): boolean => {
+			sentFrames.push(frame[0]);
+			return true;
+		};
+		const symKey = new Uint8Array(32);
+		hubTransport.addPeer(spokeSiteId, mockSendFrame, symKey);
+
+		// Fresh peer (HLC_ZERO cursor) — hub auto-starts seeding.
+		hubTransport.seedNewPeer(spokeSiteId);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		const beginCountBeforeReseed = sentFrames.filter((t) => t === 0x10).length;
+		expect(beginCountBeforeReseed).toBe(1);
+
+		// Now spoke sends RESEED_REQUEST (simulating the race).
+		hubTransport.handleReseedRequest(spokeSiteId, "duplicate reseed race");
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		// Should NOT have sent a second SNAPSHOT_BEGIN.
+		const beginCountAfterReseed = sentFrames.filter((t) => t === 0x10).length;
+		expect(beginCountAfterReseed).toBe(1);
 	});
 
 	it("drainChangelog skips when snapshot is active for the peer", () => {

@@ -992,6 +992,16 @@ export class WsTransport {
 		// Only the hub handles reseed requests.
 		if (!this.config.isHub) return;
 
+		// Guard against duplicate reseed requests while a snapshot is already
+		// in progress (race: hub auto-starts seeding on connect, spoke sends
+		// RESEED_REQUEST before receiving SNAPSHOT_BEGIN).
+		if (this.snapshotStates.has(peerSiteId)) {
+			this.config.logger?.debug("[reseed] Ignoring duplicate request — snapshot already active", {
+				peerSiteId,
+			});
+			return;
+		}
+
 		this.config.logger?.info("[reseed] Spoke requested full reseed", { peerSiteId });
 
 		// Reset the peer's cursor to HLC_ZERO so seedNewPeer triggers.
