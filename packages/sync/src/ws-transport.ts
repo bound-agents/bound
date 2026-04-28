@@ -83,6 +83,8 @@ interface SnapshotState {
 	snapshotHlc: string;
 	/** Whether we're waiting for backpressure to clear. */
 	draining: boolean;
+	/** Prepared statement for the current table (reused across chunks). */
+	stmt: Statement | null;
 }
 
 export class WsTransport {
@@ -133,7 +135,15 @@ export class WsTransport {
 	removePeer(peerSiteId: string): void {
 		this.peerConnections.delete(peerSiteId);
 
-		const wasSeeding = this.snapshotStates.has(peerSiteId);
+		const state = this.snapshotStates.get(peerSiteId);
+		const wasSeeding = !!state;
+		if (state?.stmt) {
+			try {
+				state.stmt.finalize();
+			} catch {
+				/* best effort */
+			}
+		}
 		this.snapshotStates.delete(peerSiteId);
 
 		if (wasSeeding) {
@@ -929,6 +939,7 @@ export class WsTransport {
 			lastRowid: 0,
 			snapshotHlc,
 			draining: false,
+			stmt: null,
 		});
 
 		// Create a sync_state row early so pruning is blocked while seeding
@@ -1026,7 +1037,7 @@ export class WsTransport {
 		while (state.tableIndex < SNAPSHOT_TABLE_ORDER.length) {
 			const table = SNAPSHOT_TABLE_ORDER[state.tableIndex];
 			if (!this.sendSnapshotTableChunks(peerSiteId, table)) {
-				// Backpressure or chunk limit reached — stop for now.
+				// Backpressure or yielded to event loop — stop for now.
 				return;
 			}
 
@@ -1034,6 +1045,7 @@ export class WsTransport {
 			state.tableIndex++;
 			state.offset = 0;
 			state.lastRowid = 0;
+			state.stmt = null;
 		}
 
 		// All tables done.
@@ -1041,8 +1053,13 @@ export class WsTransport {
 	}
 
 	/**
-	 * Send chunks for a single table. Returns false if we should stop
+	 * Send exactly one chunk for a single table. Returns false if we should stop
 	 * (backpressured or yielded to event loop), true if table is fully sent.
+	 *
+	 * The prepared statement is stored in SnapshotState.stmt and reused across
+	 * calls for the same table. This avoids re-parsing SQL on every chunk while
+	 * still yielding to the event loop after each chunk so WebSocket keepalives
+	 * can fire.
 	 */
 	private sendSnapshotTableChunks(peerSiteId: string, table: string): boolean {
 		const peer = this.peerConnections.get(peerSiteId);
@@ -1052,88 +1069,81 @@ export class WsTransport {
 		if (!state) return false;
 
 		const chunkSize = 500; // rows per chunk
-		let chunksSent = 0;
 
-		// Prepare once per table — reusing the statement avoids re-parsing SQL
-		// on every chunk iteration (2,000+ times for a 1M-row table).
+		// Prepare statement on first chunk for this table, then reuse.
 		// Gracefully skip tables that don't exist (e.g. in test DBs with partial
 		// schemas, or future tables not yet created by migrations).
-		let stmt: Statement | null = null;
-		try {
-			stmt = this.config.db.prepare(
-				`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE deleted = 0 AND rowid > ? ORDER BY rowid LIMIT ?`,
-			);
-		} catch {
-			this.config.logger?.warn("[snapshot] Skipping missing table during seed", {
-				table,
-				peerSiteId,
-			});
-			return true;
-		}
-
-		while (true) {
-			// Cursor-based pagination via rowid — O(chunkSize) per query regardless
-			// of position in the table. OFFSET degrades linearly in SQLite because
-			// it must scan and discard all rows up to the offset.
-			// NOTE: ORDER BY rowid assumes no synced table is WITHOUT ROWID.
-			const rowsRaw = stmt.all(state.lastRowid, chunkSize) as Array<Record<string, unknown>>;
-
-			if (rowsRaw.length === 0) {
-				stmt.finalize();
-				return true; // Table done.
-			}
-
-			// Advance the rowid cursor so the next query starts after this batch.
-			const lastRowid = rowsRaw[rowsRaw.length - 1]?._bound_rowid as number;
-			if (typeof lastRowid === "number") {
-				state.lastRowid = lastRowid;
-			}
-
-			// Strip the internal rowid column before sending rows to the spoke.
-			const rows = rowsRaw.map((r) => {
-				const { _bound_rowid, ...rest } = r;
-				return rest;
-			});
-
-			const isLast = rowsRaw.length < chunkSize;
-			const chunkPayload: SnapshotChunkPayload = {
-				table_name: table,
-				offset: state.offset,
-				rows,
-				last: isLast,
-			};
-
-			const frame = encodeFrame(WsMessageType.SNAPSHOT_CHUNK, chunkPayload, peer.symmetricKey);
-			const sent = peer.sendFrame(frame);
-
-			if (!sent) {
-				state.draining = true;
-				stmt.finalize();
-				this.config.logger?.debug("[snapshot] Backpressured, waiting for drain", {
-					peerSiteId,
+		if (!state.stmt) {
+			try {
+				state.stmt = this.config.db.prepare(
+					`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE deleted = 0 AND rowid > ? ORDER BY rowid LIMIT ?`,
+				);
+			} catch {
+				this.config.logger?.warn("[snapshot] Skipping missing table during seed", {
 					table,
-					offset: state.offset,
-					lastRowid: state.lastRowid,
+					peerSiteId,
 				});
-				return false;
-			}
-
-			state.offset += rows.length;
-			chunksSent++;
-
-			if (isLast) {
-				stmt.finalize();
-				return true; // Table done.
-			}
-
-			// Yield to event loop every 20 chunks (10,000 rows) to avoid
-			// blocking the hub for too long during large-table seeding.
-			if (chunksSent % 20 === 0) {
-				stmt.finalize();
-				setTimeout(() => this.sendSnapshotChunks(peerSiteId), 0);
-				return false;
+				return true;
 			}
 		}
+
+		const rowsRaw = state.stmt.all(state.lastRowid, chunkSize) as Array<Record<string, unknown>>;
+
+		if (rowsRaw.length === 0) {
+			state.stmt.finalize();
+			state.stmt = null;
+			return true; // Table done.
+		}
+
+		// Advance the rowid cursor so the next query starts after this batch.
+		const lastRowid = rowsRaw[rowsRaw.length - 1]?._bound_rowid as number;
+		if (typeof lastRowid === "number") {
+			state.lastRowid = lastRowid;
+		}
+
+		// Strip the internal rowid column before sending rows to the spoke.
+		const rows = rowsRaw.map((r) => {
+			const { _bound_rowid, ...rest } = r;
+			return rest;
+		});
+
+		const isLast = rowsRaw.length < chunkSize;
+		const chunkPayload: SnapshotChunkPayload = {
+			table_name: table,
+			offset: state.offset,
+			rows,
+			last: isLast,
+		};
+
+		const frame = encodeFrame(WsMessageType.SNAPSHOT_CHUNK, chunkPayload, peer.symmetricKey);
+		const sent = peer.sendFrame(frame);
+
+		if (!sent) {
+			state.draining = true;
+			state.stmt.finalize();
+			state.stmt = null;
+			this.config.logger?.debug("[snapshot] Backpressured, waiting for drain", {
+				peerSiteId,
+				table,
+				offset: state.offset,
+				lastRowid: state.lastRowid,
+			});
+			return false;
+		}
+
+		state.offset += rows.length;
+
+		if (isLast) {
+			state.stmt.finalize();
+			state.stmt = null;
+			return true; // Table done.
+		}
+
+		// Yield to event loop after every chunk so Bun can process WebSocket
+		// ping/pong frames and other I/O. Without this, a large table can block
+		// the event loop for 30+ seconds and the connection times out.
+		setTimeout(() => this.sendSnapshotChunks(peerSiteId), 0);
+		return false;
 	}
 
 	/**

@@ -265,6 +265,7 @@ describe("snapshot seeding (integration)", () => {
 			lastRowid: 0,
 			snapshotHlc: "2025-01-01T00:00:00.000Z_0000_aaaa",
 			draining: false,
+			stmt: null,
 		});
 		(transportAny.peerConnections as Map<string, unknown>).set("stalled-peer", {
 			peerSiteId: "stalled-peer",
