@@ -1140,6 +1140,13 @@ export class WsTransport {
 			return this.sendOneSubChunk(peerSiteId, table, peer, state);
 		}
 
+		this.config.logger?.info("[snapshot] Querying table", {
+			peerSiteId,
+			table,
+			lastRowid: state.lastRowid,
+			stateOffset: state.offset,
+		});
+
 		const chunkSize = 100;
 
 		if (!state.stmt) {
@@ -1291,6 +1298,14 @@ export class WsTransport {
 	}
 
 	private finishSubChunk(peerSiteId: string, state: SnapshotState): boolean {
+		this.config.logger?.info("[snapshot] finishSubChunk", {
+			peerSiteId,
+			pendingCursor: state.pendingCursor,
+			pendingRowsLen: state.pendingRows?.length,
+			isLastBatch: state.pendingIsLastBatch,
+			stateOffset: state.offset,
+			tableIndex: state.tableIndex,
+		});
 		if ((state.pendingCursor ?? 0) >= (state.pendingRows?.length ?? 0)) {
 			const isLastBatch = state.pendingIsLastBatch;
 			this.clearPendingRows(state);
