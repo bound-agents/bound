@@ -1075,19 +1075,26 @@ export class WsTransport {
 		const chunkSize = 100; // rows per chunk (small = less memory/IO per query)
 
 		// Prepare statement on first chunk for this table, then reuse.
-		// Gracefully skip tables that don't exist (e.g. in test DBs with partial
-		// schemas, or future tables not yet created by migrations).
+		// Not all synced tables have a deleted column (e.g. cluster_config),
+		// so we try the soft-delete filter first and fall back to a plain query.
 		if (!state.stmt) {
 			try {
 				state.stmt = this.config.db.prepare(
 					`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE deleted = 0 AND rowid > ? ORDER BY rowid LIMIT ?`,
 				);
 			} catch {
-				this.config.logger?.warn("[snapshot] Skipping missing table during seed", {
-					table,
-					peerSiteId,
-				});
-				return true;
+				// Table may lack a deleted column — retry without the filter.
+				try {
+					state.stmt = this.config.db.prepare(
+						`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE rowid > ? ORDER BY rowid LIMIT ?`,
+					);
+				} catch {
+					this.config.logger?.warn("[snapshot] Skipping missing table during seed", {
+						table,
+						peerSiteId,
+					});
+					return true;
+				}
 			}
 		}
 
