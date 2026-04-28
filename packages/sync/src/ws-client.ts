@@ -389,6 +389,7 @@ export class WsSyncClient {
 	private handleSnapshotBegin(payload: SnapshotBeginPayload): void {
 		this.snapshotHlc = payload.snapshot_hlc;
 		this.snapshotRowCount = 0;
+		this.reseedSent = true; // Hub is already seeding us — no need to request reseed
 		this.startSnapshotHeartbeat();
 		this.config.logger?.info(
 			`[snapshot] Receiving snapshot (hlc: ${payload.snapshot_hlc}, tables: ${payload.tables.length})`,
