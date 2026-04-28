@@ -301,6 +301,7 @@ describe("snapshot seeding (integration)", () => {
 		(transportAny.peerConnections as Map<string, unknown>).set("stalled-peer", {
 			peerSiteId: "stalled-peer",
 			sendFrame: () => true,
+			ping: () => {},
 			symmetricKey: new Uint8Array(32),
 		});
 
@@ -365,5 +366,19 @@ describe("snapshot seeding (integration)", () => {
 
 		// Clean up test rows.
 		hubDb.run("DELETE FROM sync_state WHERE peer_site_id IN ('confirmed-peer', 'fresh-peer')");
+	});
+
+	it("ping() is called during snapshot seeding to keep the connection alive", async () => {
+		let pingCount = 0;
+		const mockPing = () => {
+			pingCount++;
+		};
+		const symKey = new Uint8Array(32);
+		hubTransport.addPeer(spokeSiteId, (_frame: Uint8Array): boolean => true, symKey, mockPing);
+
+		hubTransport.seedNewPeer(spokeSiteId);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+
+		expect(pingCount).toBeGreaterThanOrEqual(1);
 	});
 });

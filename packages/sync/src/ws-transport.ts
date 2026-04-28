@@ -37,6 +37,7 @@ export interface WsTransportConfig {
 
 interface PeerConnection {
 	sendFrame: (frame: Uint8Array) => boolean;
+	ping: () => void;
 	symmetricKey: Uint8Array;
 	peerSiteId: string;
 }
@@ -118,10 +119,12 @@ export class WsTransport {
 		peerSiteId: string,
 		sendFrame: (frame: Uint8Array) => boolean,
 		symmetricKey: Uint8Array,
+		ping?: () => void,
 	): void {
 		this.peerConnections.set(peerSiteId, {
 			peerSiteId,
 			sendFrame,
+			ping: ping ?? (() => {}),
 			symmetricKey,
 		});
 		this.config.logger?.debug("WsTransport peer added", { peerSiteId });
@@ -1042,6 +1045,15 @@ export class WsTransport {
 
 		const state = this.snapshotStates.get(peerSiteId);
 		if (!state) return;
+
+		// Send a WebSocket ping to reset the server-side idle timer.
+		// uWebSockets (underlying Bun's WS) does NOT reset its idle timer
+		// on application-level message frames from the client. Only sends
+		// from the server (including ping frames) reset it. During long
+		// snapshot transfers the hub may pause between tables (DB queries,
+		// backpressure waits), and without this ping the idle timer fires
+		// and kills the connection mid-seed.
+		peer.ping();
 
 		// Iterate tables
 		while (state.tableIndex < SNAPSHOT_TABLE_ORDER.length) {

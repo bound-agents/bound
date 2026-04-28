@@ -62,9 +62,10 @@ export class WsSyncClient {
 	/** Guard: only send RESEED_REQUEST once per WsSyncClient lifetime.
 	 *  Prevents duplicate snapshots on every reconnection. */
 	private reseedSent = false;
-	/** Timer for periodic heartbeat during snapshot reception.
-	 *  Keeps the WebSocket connection alive when the spoke is only receiving
-	 *  data and not sending anything for minutes at a time. */
+	/** @deprecated Heartbeat timer is no longer used — the hub now sends
+	 *  WebSocket ping frames during snapshot seeding to keep the connection
+	 *  alive. Application-level frames from the spoke do not reset the
+	 *  server-side idle timer in uWebSockets/Bun. */
 	private heartbeatTimer: Timer | null = null;
 
 	onMessage: ((data: Uint8Array) => void) | null = null;
@@ -358,7 +359,6 @@ export class WsSyncClient {
 		// Reset snapshot state — a reconnection starts a fresh seeding session.
 		this.snapshotHlc = null;
 		this.snapshotRowCount = 0;
-		this.stopSnapshotHeartbeat();
 
 		// Remove WsTransport peer
 		if (this.config.wsTransport) {
@@ -390,7 +390,6 @@ export class WsSyncClient {
 		this.snapshotHlc = payload.snapshot_hlc;
 		this.snapshotRowCount = 0;
 		this.reseedSent = true; // Hub is already seeding us — no need to request reseed
-		this.startSnapshotHeartbeat();
 		this.config.logger?.info(
 			`[snapshot] Receiving snapshot (hlc: ${payload.snapshot_hlc}, tables: ${payload.tables.length})`,
 		);
@@ -434,8 +433,6 @@ export class WsSyncClient {
 			`[snapshot] Snapshot complete: ${payload.table_count} tables, ${this.snapshotRowCount} rows applied`,
 		);
 
-		this.stopSnapshotHeartbeat();
-
 		// Send acknowledgement so the hub can clean up and start the changelog drain.
 		if (this.snapshotHlc && this.symmetricKey) {
 			const ackPayload: SnapshotAckPayload = { snapshot_hlc: this.snapshotHlc };
@@ -447,42 +444,7 @@ export class WsSyncClient {
 		this.snapshotRowCount = 0;
 	}
 
-	/**
-	 * Start a periodic heartbeat during snapshot reception.
-	 * The WebSocket server (hub) has an idle timeout that closes connections
-	 * when no data is received from the client for ~120 seconds. During a
-	 * long snapshot the spoke only receives data and sends nothing, so the
-	 * connection gets killed mid-seed. A lightweight frame every 30 seconds
-	 * resets the server's idle timer and keeps the connection alive.
-	 */
-	private startSnapshotHeartbeat(): void {
-		this.stopSnapshotHeartbeat();
-		this.config.logger?.info("[snapshot] Starting heartbeat (every 10s)");
-		this.heartbeatTimer = setInterval(() => {
-			if (!this.symmetricKey) return;
-			if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-				this.config.logger?.warn("[snapshot] Heartbeat skipped — WebSocket not open");
-				return;
-			}
-			// Send a DRAIN_REQUEST frame — the hub validates it (lenient:
-			// any object is accepted) but does not handle it in the spoke→hub
-			// dispatch path, so it's a no-op. This purely resets the server's
-			// idle timer so it doesn't close the connection during long
-			// snapshots where the spoke only receives data.
-			const frame = encodeFrame(
-				WsMessageType.DRAIN_REQUEST,
-				{ reason: "snapshot heartbeat" },
-				this.symmetricKey,
-			);
-			const sent = this.send(frame);
-			if (sent) {
-				this.config.logger?.info("[snapshot] Sent heartbeat to hub");
-			} else {
-				this.config.logger?.warn("[snapshot] Heartbeat send failed (backpressure or closed)");
-			}
-		}, 10_000);
-	}
-
+	/** @deprecated No longer used — hub-side pings keep the connection alive. */
 	private stopSnapshotHeartbeat(): void {
 		if (this.heartbeatTimer) {
 			clearInterval(this.heartbeatTimer);

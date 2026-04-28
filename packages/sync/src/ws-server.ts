@@ -174,6 +174,7 @@ export interface WsServerConfig {
 			peerSiteId: string,
 			sendFrame: (frame: Uint8Array) => boolean,
 			symmetricKey: Uint8Array,
+			ping?: () => void,
 		) => void;
 		removePeer: (peerSiteId: string) => void;
 		handleChangelogPush: (peerSiteId: string, payload: ChangelogPushPayload) => void;
@@ -266,7 +267,14 @@ export function createWsHandlers(config: WsServerConfig): {
 					}
 				};
 
-				config.wsTransport.addPeer(ws.data.siteId, sendFrame, ws.data.symmetricKey);
+				const ping = (): void => {
+					try {
+						(ws as unknown as { ping(data?: unknown): void }).ping();
+					} catch {
+						/* best effort — older Bun builds may lack .ping() */
+					}
+				};
+				config.wsTransport.addPeer(ws.data.siteId, sendFrame, ws.data.symmetricKey, ping);
 
 				// Seed new peers with a full DB snapshot before the normal
 				// changelog drain (which only contains entries newer than
