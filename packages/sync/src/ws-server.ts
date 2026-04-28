@@ -260,6 +260,11 @@ export function createWsHandlers(config: WsServerConfig): {
 							return false;
 						}
 						// result === 0: socket closed
+						logger?.warn("WS send returned 0 (socket closed)", {
+							siteId: ws.data.siteId,
+							frameSize: frame.length,
+							sendState: ws.data.sendState,
+						});
 						ws.close(1011, "Internal server error");
 						return false;
 					} catch {

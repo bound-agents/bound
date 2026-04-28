@@ -262,6 +262,11 @@ export class WsTransport {
 	 */
 	private flushChangelogEntries(entries: ChangeLogEntry[]): void {
 		for (const [peerSiteId, peer] of this.peerConnections) {
+			// Skip peers that are mid-snapshot — the post-snapshot drain handles catchup.
+			if (this.snapshotStates.has(peerSiteId)) {
+				continue;
+			}
+
 			// Echo suppression: filter out entries from this peer
 			const entriesToSend = entries.filter((entry) => entry.site_id !== peerSiteId);
 
