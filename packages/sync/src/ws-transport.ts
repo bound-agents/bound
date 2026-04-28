@@ -55,6 +55,15 @@ interface PeerConnection {
  * Canonical order for snapshot seeding: parent tables before children,
  * so foreign-key dependencies are satisfied on INSERT OR REPLACE.
  */
+/**
+ * Max encoded frame size for a single snapshot chunk (4 MB).
+ * Bun's default maxPayloadLength is 16 MB — staying well under this
+ * prevents the server from dropping oversized frames. Tables like
+ * `files` can have rows with large content blobs that easily exceed
+ * 16 MB when 100 rows are batched together.
+ */
+const MAX_SNAPSHOT_FRAME_BYTES = 4 * 1024 * 1024;
+
 const SNAPSHOT_TABLE_ORDER: SyncedTableName[] = [
 	"users",
 	"hosts",
@@ -1094,18 +1103,14 @@ export class WsTransport {
 		const state = this.snapshotStates.get(peerSiteId);
 		if (!state) return false;
 
-		const chunkSize = 100; // rows per chunk (small = less memory/IO per query)
+		const chunkSize = 100;
 
-		// Prepare statement on first chunk for this table, then reuse.
-		// Not all synced tables have a deleted column (e.g. cluster_config),
-		// so we try the soft-delete filter first and fall back to a plain query.
 		if (!state.stmt) {
 			try {
 				state.stmt = this.config.db.prepare(
 					`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE deleted = 0 AND rowid > ? ORDER BY rowid LIMIT ?`,
 				);
 			} catch {
-				// Table may lack a deleted column — retry without the filter.
 				try {
 					state.stmt = this.config.db.prepare(
 						`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE rowid > ? ORDER BY rowid LIMIT ?`,
@@ -1125,56 +1130,89 @@ export class WsTransport {
 		if (rowsRaw.length === 0) {
 			state.stmt.finalize();
 			state.stmt = null;
-			return true; // Table done.
+			return true;
 		}
 
-		// Advance the rowid cursor so the next query starts after this batch.
 		const lastRowid = rowsRaw[rowsRaw.length - 1]?._bound_rowid as number;
 		if (typeof lastRowid === "number") {
 			state.lastRowid = lastRowid;
 		}
 
-		// Strip the internal rowid column before sending rows to the spoke.
-		const rows = rowsRaw.map((r) => {
+		const allRows = rowsRaw.map((r) => {
 			const { _bound_rowid, ...rest } = r;
 			return rest;
 		});
 
-		const isLast = rowsRaw.length < chunkSize;
-		const chunkPayload: SnapshotChunkPayload = {
-			table_name: table,
-			offset: state.offset,
-			rows,
-			last: isLast,
-		};
+		const isLastBatch = rowsRaw.length < chunkSize;
 
-		const frame = encodeFrame(WsMessageType.SNAPSHOT_CHUNK, chunkPayload, peer.symmetricKey);
-		const sent = peer.sendFrame(frame);
+		// Send rows in sub-chunks that stay under MAX_SNAPSHOT_FRAME_BYTES.
+		// Tables like `files` can have rows with large content blobs — a single
+		// 100-row chunk may encode to 18+ MB, exceeding Bun's default 16 MB
+		// maxPayloadLength and causing the server to drop the connection.
+		let rowCursor = 0;
+		while (rowCursor < allRows.length) {
+			let sliceEnd = allRows.length;
+			let frame: Uint8Array | null = null;
 
-		if (!sent) {
-			state.draining = true;
-			state.stmt.finalize();
-			state.stmt = null;
-			this.config.logger?.debug("[snapshot] Backpressured, waiting for drain", {
+			// Binary-search for the largest slice that fits within the frame limit.
+			while (sliceEnd > rowCursor) {
+				const slice = allRows.slice(rowCursor, sliceEnd);
+				const isLast = isLastBatch && sliceEnd === allRows.length;
+				const payload: SnapshotChunkPayload = {
+					table_name: table,
+					offset: state.offset + rowCursor,
+					rows: slice,
+					last: isLast,
+				};
+
+				const candidate = encodeFrame(WsMessageType.SNAPSHOT_CHUNK, payload, peer.symmetricKey);
+
+				if (candidate.length <= MAX_SNAPSHOT_FRAME_BYTES || sliceEnd - rowCursor === 1) {
+					frame = candidate;
+					break;
+				}
+
+				// Frame too large — halve the slice and retry.
+				sliceEnd = rowCursor + Math.max(1, Math.floor((sliceEnd - rowCursor) / 2));
+			}
+
+			if (!frame) break;
+
+			const sent = peer.sendFrame(frame);
+			if (!sent) {
+				// Backpressured — rewind rowid cursor so the unsent rows are
+				// re-queried on the next invocation.
+				const firstUnsentRowid = rowsRaw[rowCursor]?._bound_rowid as number;
+				if (typeof firstUnsentRowid === "number") {
+					state.lastRowid = firstUnsentRowid - 1;
+				}
+				state.draining = true;
+				state.stmt.finalize();
+				state.stmt = null;
+				this.config.logger?.debug("[snapshot] Backpressured, waiting for drain", {
+					peerSiteId,
+					table,
+					offset: state.offset,
+					lastRowid: state.lastRowid,
+				});
+				return false;
+			}
+
+			const sentCount = sliceEnd - rowCursor;
+			state.offset += sentCount;
+			rowCursor = sliceEnd;
+
+			this.config.logger?.debug("[snapshot] Sent chunk", {
 				peerSiteId,
 				table,
-				offset: state.offset,
+				rows: sentCount,
+				totalOffset: state.offset,
 				lastRowid: state.lastRowid,
+				frameBytes: frame.length,
 			});
-			return false;
 		}
 
-		state.offset += rows.length;
-
-		this.config.logger?.debug("[snapshot] Sent chunk", {
-			peerSiteId,
-			table,
-			rows: rows.length,
-			totalOffset: state.offset,
-			lastRowid: state.lastRowid,
-		});
-
-		if (isLast) {
+		if (isLastBatch) {
 			this.config.logger?.debug("[snapshot] Table complete", {
 				peerSiteId,
 				table,
@@ -1182,15 +1220,11 @@ export class WsTransport {
 			});
 			state.stmt.finalize();
 			state.stmt = null;
-			return true; // Table done.
+			return true;
 		}
 
 		// Yield to event loop after every chunk so Bun can process WebSocket
-		// ping/pong frames and other I/O. Without this, a large table can block
-		// the event loop for 30+ seconds and the connection times out.
-		// A 100ms delay paces the hub at ~10 chunks/sec (1,000 rows/sec) so the
-		// spoke has time to commit each transaction and the hub CPU/disk can
-		// breathe between queries. Prevents 300+ MB/s disk spikes.
+		// ping/pong frames and other I/O.
 		setTimeout(() => this.sendSnapshotChunks(peerSiteId), 100);
 		return false;
 	}

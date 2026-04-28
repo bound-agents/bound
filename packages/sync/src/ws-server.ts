@@ -344,7 +344,7 @@ export function createWsHandlers(config: WsServerConfig): {
 		},
 
 		close(ws, code, reason) {
-			logger?.debug("WS connection closed", {
+			logger?.info("WS connection closed", {
 				siteId: ws.data.siteId,
 				code,
 				reason,

@@ -368,6 +368,43 @@ describe("snapshot seeding (integration)", () => {
 		hubDb.run("DELETE FROM sync_state WHERE peer_site_id IN ('confirmed-peer', 'fresh-peer')");
 	});
 
+	it("splits oversized chunks into smaller frames when rows are large", async () => {
+		const now = new Date().toISOString();
+		for (let i = 0; i < 5; i++) {
+			hubDb.run(
+				"INSERT INTO files (id, path, content, is_binary, size_bytes, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, 0, ?, ?, ?, 'hub', 0)",
+				[`large-file-${i}`, `/test/large-${i}.txt`, "X".repeat(2_000_000), 2_000_000, now, now],
+			);
+		}
+
+		const sentFrames: Uint8Array[] = [];
+		const symKey = new Uint8Array(32);
+		hubTransport.addPeer(
+			spokeSiteId,
+			(frame: Uint8Array): boolean => {
+				sentFrames.push(frame);
+				return true;
+			},
+			symKey,
+		);
+
+		hubTransport.seedNewPeer(spokeSiteId);
+		await new Promise((resolve) => setTimeout(resolve, 2000));
+
+		const maxFrameBytes = 4 * 1024 * 1024;
+		const oversizedFrames = sentFrames.filter((f) => f.length > maxFrameBytes);
+		expect(oversizedFrames).toHaveLength(0);
+
+		// Verify we got multiple frames for the files table (the 5 rows
+		// total ~10MB of content, so they should be split across frames).
+		const snapshotChunkType = 0x11;
+		const chunkFrames = sentFrames.filter((f) => f[0] === snapshotChunkType);
+		expect(chunkFrames.length).toBeGreaterThan(5);
+
+		// Clean up test data
+		hubDb.run("DELETE FROM files WHERE id LIKE 'large-file-%'");
+	});
+
 	it("ping() is called during snapshot seeding to keep the connection alive", async () => {
 		let pingCount = 0;
 		const mockPing = () => {
