@@ -34,6 +34,14 @@ export interface WsClientConfig {
 		drainRelayOutbox: (peerSiteId: string) => void;
 		/** Apply a snapshot chunk to the local DB (spoke-side). */
 		applySnapshotChunk: (tableName: string, rows: Array<Record<string, unknown>>) => number;
+		/** Apply a column chunk for sub-row seeding of oversized rows. */
+		applyColumnChunk: (
+			tableName: string,
+			pkValue: string,
+			columnName: string,
+			chunkIndex: number,
+			chunkData: string,
+		) => void;
 	};
 	logger?: Logger;
 	reconnectMaxInterval?: number; // seconds, default 60
@@ -403,18 +411,33 @@ export class WsSyncClient {
 	private handleSnapshotChunk(payload: SnapshotChunkPayload): void {
 		if (!this.config.wsTransport) return;
 
-		this.config.logger?.debug(
-			`[snapshot] Received chunk: ${payload.rows.length} rows for ${payload.table_name} (offset: ${payload.offset})`,
-		);
-
-		const applied = this.config.wsTransport.applySnapshotChunk(payload.table_name, payload.rows);
-
-		this.snapshotRowCount += applied;
-		// Log progress every 10k rows to avoid log spam.
-		if (this.snapshotRowCount > 0 && this.snapshotRowCount % 10_000 === 0) {
-			this.config.logger?.info(
-				`[snapshot] Progress: ${this.snapshotRowCount} rows applied (table: ${payload.table_name})`,
+		// Column-chunk frame: append data to an existing row's column.
+		if (
+			payload.col_chunk_row_id !== undefined &&
+			payload.col_chunk_column !== undefined &&
+			payload.col_chunk_data !== undefined
+		) {
+			this.config.logger?.debug(
+				`[snapshot] Received column chunk: ${payload.col_chunk_column}[${payload.col_chunk_index}] for ${payload.table_name} pk=${payload.col_chunk_row_id}`,
 			);
+			this.config.wsTransport.applyColumnChunk(
+				payload.table_name,
+				payload.col_chunk_row_id,
+				payload.col_chunk_column,
+				payload.col_chunk_index ?? 0,
+				payload.col_chunk_data,
+			);
+		} else if (payload.rows.length > 0) {
+			this.config.logger?.debug(
+				`[snapshot] Received chunk: ${payload.rows.length} rows for ${payload.table_name} (offset: ${payload.offset})`,
+			);
+			const applied = this.config.wsTransport.applySnapshotChunk(payload.table_name, payload.rows);
+			this.snapshotRowCount += applied;
+			if (this.snapshotRowCount > 0 && this.snapshotRowCount % 10_000 === 0) {
+				this.config.logger?.info(
+					`[snapshot] Progress: ${this.snapshotRowCount} rows applied (table: ${payload.table_name})`,
+				);
+			}
 		}
 
 		if (payload.last) {

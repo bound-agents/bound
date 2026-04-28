@@ -12,7 +12,12 @@ import type {
 } from "@bound/shared";
 import { HLC_ZERO, generateHlc } from "@bound/shared";
 import { getPeerCursor, updatePeerCursor } from "./peer-cursor.js";
-import { applySnapshotRows, replayEvents } from "./reducers.js";
+import {
+	applyColumnChunk as applyColumnChunkFn,
+	applySnapshotRows,
+	getPkColumn,
+	replayEvents,
+} from "./reducers.js";
 import { MicrotaskCoalescer } from "./ws-coalescer.js";
 import type {
 	ChangelogAckPayload,
@@ -179,6 +184,24 @@ export class WsTransport {
 	 */
 	applySnapshotChunk(tableName: string, rows: Array<Record<string, unknown>>): number {
 		return applySnapshotRows(this.config.db, tableName, rows, this.config.logger);
+	}
+
+	applyColumnChunk(
+		tableName: string,
+		pkValue: string,
+		columnName: string,
+		chunkIndex: number,
+		chunkData: string,
+	): void {
+		applyColumnChunkFn(
+			this.config.db,
+			tableName,
+			pkValue,
+			columnName,
+			chunkIndex,
+			chunkData,
+			this.config.logger,
+		);
 	}
 
 	/**
@@ -1145,16 +1168,11 @@ export class WsTransport {
 
 		const isLastBatch = rowsRaw.length < chunkSize;
 
-		// Send rows in sub-chunks that stay under MAX_SNAPSHOT_FRAME_BYTES.
-		// Tables like `files` can have rows with large content blobs — a single
-		// 100-row chunk may encode to 18+ MB, exceeding Bun's default 16 MB
-		// maxPayloadLength and causing the server to drop the connection.
 		let rowCursor = 0;
 		while (rowCursor < allRows.length) {
 			let sliceEnd = allRows.length;
 			let frame: Uint8Array | null = null;
 
-			// Binary-search for the largest slice that fits within the frame limit.
 			while (sliceEnd > rowCursor) {
 				const slice = allRows.slice(rowCursor, sliceEnd);
 				const isLast = isLastBatch && sliceEnd === allRows.length;
@@ -1167,21 +1185,48 @@ export class WsTransport {
 
 				const candidate = encodeFrame(WsMessageType.SNAPSHOT_CHUNK, payload, peer.symmetricKey);
 
-				if (candidate.length <= MAX_SNAPSHOT_FRAME_BYTES || sliceEnd - rowCursor === 1) {
+				if (candidate.length <= MAX_SNAPSHOT_FRAME_BYTES) {
 					frame = candidate;
 					break;
 				}
 
-				// Frame too large — halve the slice and retry.
+				if (sliceEnd - rowCursor === 1) {
+					// Single row exceeds frame limit — use sub-row column chunking.
+					const isLastRow = isLastBatch && sliceEnd === allRows.length;
+					const result = this.sendOversizedRow(
+						peerSiteId,
+						table,
+						allRows[rowCursor],
+						state,
+						isLastRow,
+					);
+					if (!result) {
+						const firstUnsentRowid = rowsRaw[rowCursor]?._bound_rowid as number;
+						if (typeof firstUnsentRowid === "number") {
+							state.lastRowid = firstUnsentRowid - 1;
+						}
+						state.draining = true;
+						state.stmt.finalize();
+						state.stmt = null;
+						return false;
+					}
+					state.offset += 1;
+					rowCursor = sliceEnd;
+					frame = null; // already sent via sendOversizedRow
+					break;
+				}
+
 				sliceEnd = rowCursor + Math.max(1, Math.floor((sliceEnd - rowCursor) / 2));
 			}
 
+			if (frame === null && rowCursor <= sliceEnd - 1) {
+				// sendOversizedRow handled this row; continue to next
+				continue;
+			}
 			if (!frame) break;
 
 			const sent = peer.sendFrame(frame);
 			if (!sent) {
-				// Backpressured — rewind rowid cursor so the unsent rows are
-				// re-queried on the next invocation.
 				const firstUnsentRowid = rowsRaw[rowCursor]?._bound_rowid as number;
 				if (typeof firstUnsentRowid === "number") {
 					state.lastRowid = firstUnsentRowid - 1;
@@ -1227,6 +1272,134 @@ export class WsTransport {
 		// ping/pong frames and other I/O.
 		setTimeout(() => this.sendSnapshotChunks(peerSiteId), 100);
 		return false;
+	}
+
+	/**
+	 * Send a single oversized row using skeleton-then-column-chunk protocol.
+	 * Returns true if all frames sent successfully, false on backpressure.
+	 */
+	private sendOversizedRow(
+		peerSiteId: string,
+		table: string,
+		row: Record<string, unknown>,
+		state: SnapshotState,
+		isLastRowInTable: boolean,
+	): boolean {
+		const peer = this.peerConnections.get(peerSiteId);
+		if (!peer) return false;
+
+		const pkColumn = getPkColumn(table);
+		const pkValue = String(row[pkColumn] ?? "");
+
+		// Identify oversized TEXT columns (encoded size > half the frame budget).
+		const oversizedColumns: Array<{ column: string; value: string }> = [];
+		for (const [col, val] of Object.entries(row)) {
+			if (typeof val === "string" && val.length > MAX_SNAPSHOT_FRAME_BYTES / 4) {
+				oversizedColumns.push({ column: col, value: val });
+			}
+		}
+
+		// Build skeleton row with oversized columns replaced by empty strings.
+		const skeleton: Record<string, unknown> = { ...row };
+		for (const { column } of oversizedColumns) {
+			skeleton[column] = "";
+		}
+
+		// Send skeleton row. last=true only if there are no column chunks to follow.
+		const skeletonIsLast = isLastRowInTable && oversizedColumns.length === 0;
+		const skeletonPayload: SnapshotChunkPayload = {
+			table_name: table,
+			offset: state.offset,
+			rows: [skeleton],
+			last: skeletonIsLast,
+		};
+		const skeletonFrame = encodeFrame(
+			WsMessageType.SNAPSHOT_CHUNK,
+			skeletonPayload,
+			peer.symmetricKey,
+		);
+		if (!peer.sendFrame(skeletonFrame)) return false;
+
+		this.config.logger?.debug("[snapshot] Sent oversized row skeleton", {
+			peerSiteId,
+			table,
+			pkValue,
+			oversizedColumns: oversizedColumns.map((c) => c.column),
+		});
+
+		// Send column chunks for each oversized column.
+		for (let colIdx = 0; colIdx < oversizedColumns.length; colIdx++) {
+			const { column, value } = oversizedColumns[colIdx];
+			const isLastColumn = colIdx === oversizedColumns.length - 1;
+
+			let charOffset = 0;
+			let chunkIndex = 0;
+			while (charOffset < value.length) {
+				// Binary-search for the largest substring that fits in a frame.
+				let lo = 1;
+				let hi = value.length - charOffset;
+				let bestLen = 1;
+
+				while (lo <= hi) {
+					const mid = Math.floor((lo + hi) / 2);
+					const candidate = value.slice(charOffset, charOffset + mid);
+					const isFinal = charOffset + mid >= value.length;
+					const isLast = isLastRowInTable && isLastColumn && isFinal;
+					const payload: SnapshotChunkPayload = {
+						table_name: table,
+						offset: state.offset,
+						rows: [],
+						last: isLast,
+						col_chunk_row_id: pkValue,
+						col_chunk_column: column,
+						col_chunk_index: chunkIndex,
+						col_chunk_final: isFinal,
+						col_chunk_data: candidate,
+					};
+					const frame = encodeFrame(WsMessageType.SNAPSHOT_CHUNK, payload, peer.symmetricKey);
+					if (frame.length <= MAX_SNAPSHOT_FRAME_BYTES) {
+						bestLen = mid;
+						lo = mid + 1;
+					} else {
+						hi = mid - 1;
+					}
+				}
+
+				const chunk = value.slice(charOffset, charOffset + bestLen);
+				const isFinal = charOffset + bestLen >= value.length;
+				const isLast = isLastRowInTable && isLastColumn && isFinal;
+				const payload: SnapshotChunkPayload = {
+					table_name: table,
+					offset: state.offset,
+					rows: [],
+					last: isLast,
+					col_chunk_row_id: pkValue,
+					col_chunk_column: column,
+					col_chunk_index: chunkIndex,
+					col_chunk_final: isFinal,
+					col_chunk_data: chunk,
+				};
+				const frame = encodeFrame(WsMessageType.SNAPSHOT_CHUNK, payload, peer.symmetricKey);
+				if (!peer.sendFrame(frame)) return false;
+
+				this.config.logger?.debug("[snapshot] Sent column chunk", {
+					peerSiteId,
+					table,
+					pkValue,
+					column,
+					chunkIndex,
+					charOffset,
+					chunkLen: bestLen,
+					isFinal,
+					frameBytes: frame.length,
+				});
+
+				charOffset += bestLen;
+				chunkIndex++;
+			}
+		}
+
+		return true;
 	}
 
 	/**

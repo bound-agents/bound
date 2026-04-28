@@ -11,7 +11,9 @@ import { applySchema } from "@bound/core";
 import { HLC_ZERO, type TypedEventEmitter } from "@bound/shared";
 
 import { updatePeerCursor } from "../peer-cursor.js";
-import { clearColumnCache } from "../reducers.js";
+import { applyColumnChunk, clearColumnCache, getPkColumn } from "../reducers.js";
+import type { SnapshotChunkPayload } from "../ws-frames.js";
+import { WsMessageType, decodeFrame } from "../ws-frames.js";
 import { WsTransport } from "../ws-transport.js";
 
 // Minimal event bus that satisfies TypedEventEmitter for the constructor.
@@ -403,6 +405,274 @@ describe("snapshot seeding (integration)", () => {
 
 		// Clean up test data
 		hubDb.run("DELETE FROM files WHERE id LIKE 'large-file-%'");
+	});
+
+	// ── Sub-row column chunking tests ──────────────────────────────────
+
+	it("applyColumnChunk: first chunk (index 0) overwrites column value", () => {
+		const now = new Date().toISOString();
+		hubDb.run(
+			"INSERT INTO files (id, path, content, is_binary, size_bytes, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, 0, ?, ?, ?, 'hub', 0)",
+			["cc-overwrite", "/test/cc.txt", "old-data", 8, now, now],
+		);
+		applyColumnChunk(hubDb, "files", "cc-overwrite", "content", 0, "new-chunk-0");
+		const row = hubDb.query("SELECT content FROM files WHERE id = ?").get("cc-overwrite") as {
+			content: string;
+		};
+		expect(row.content).toBe("new-chunk-0");
+		hubDb.run("DELETE FROM files WHERE id = 'cc-overwrite'");
+	});
+
+	it("applyColumnChunk: subsequent chunks concatenate", () => {
+		const now = new Date().toISOString();
+		hubDb.run(
+			"INSERT INTO files (id, path, content, is_binary, size_bytes, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, 0, ?, ?, ?, 'hub', 0)",
+			["cc-concat", "/test/cc2.txt", "", 0, now, now],
+		);
+		applyColumnChunk(hubDb, "files", "cc-concat", "content", 0, "AAA");
+		applyColumnChunk(hubDb, "files", "cc-concat", "content", 1, "BBB");
+		applyColumnChunk(hubDb, "files", "cc-concat", "content", 2, "CCC");
+		const row = hubDb.query("SELECT content FROM files WHERE id = ?").get("cc-concat") as {
+			content: string;
+		};
+		expect(row.content).toBe("AAABBBCCC");
+		hubDb.run("DELETE FROM files WHERE id = 'cc-concat'");
+	});
+
+	it("applyColumnChunk: rejects invalid table/column names", () => {
+		const now = new Date().toISOString();
+		hubDb.run(
+			"INSERT INTO files (id, path, content, is_binary, size_bytes, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, 0, ?, ?, ?, 'hub', 0)",
+			["cc-validate", "/test/v.txt", "safe", 4, now, now],
+		);
+		applyColumnChunk(hubDb, "evil; DROP TABLE files" as never, "cc-validate", "content", 0, "X");
+		applyColumnChunk(hubDb, "files", "cc-validate", "content; DROP" as never, 0, "X");
+		const row = hubDb.query("SELECT content FROM files WHERE id = ?").get("cc-validate") as {
+			content: string;
+		};
+		expect(row.content).toBe("safe");
+		hubDb.run("DELETE FROM files WHERE id = 'cc-validate'");
+	});
+
+	it("applyColumnChunk: non-existent row is a no-op", () => {
+		expect(() => {
+			applyColumnChunk(hubDb, "files", "does-not-exist", "content", 0, "data");
+		}).not.toThrow();
+	});
+
+	it("applyColumnChunk: idempotent resend (skeleton + chunks replayed)", () => {
+		const now = new Date().toISOString();
+		hubDb.run(
+			"INSERT OR REPLACE INTO files (id, path, content, is_binary, size_bytes, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, 0, ?, ?, ?, 'hub', 0)",
+			["cc-idempotent", "/test/idem.txt", "", 0, now, now],
+		);
+		// First pass
+		applyColumnChunk(hubDb, "files", "cc-idempotent", "content", 0, "FIRST");
+		applyColumnChunk(hubDb, "files", "cc-idempotent", "content", 1, "SECOND");
+		// Re-send skeleton (INSERT OR REPLACE resets content)
+		hubDb.run(
+			"INSERT OR REPLACE INTO files (id, path, content, is_binary, size_bytes, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, 0, ?, ?, ?, 'hub', 0)",
+			["cc-idempotent", "/test/idem.txt", "", 0, now, now],
+		);
+		// Re-send chunks
+		applyColumnChunk(hubDb, "files", "cc-idempotent", "content", 0, "FIRST");
+		applyColumnChunk(hubDb, "files", "cc-idempotent", "content", 1, "SECOND");
+		const row = hubDb.query("SELECT content FROM files WHERE id = ?").get("cc-idempotent") as {
+			content: string;
+		};
+		expect(row.content).toBe("FIRSTSECOND");
+		hubDb.run("DELETE FROM files WHERE id = 'cc-idempotent'");
+	});
+
+	it("getPkColumn returns correct PK for known tables", () => {
+		expect(getPkColumn("files")).toBe("id");
+		expect(getPkColumn("hosts")).toBe("site_id");
+		expect(getPkColumn("cluster_config")).toBe("key");
+		expect(getPkColumn("messages")).toBe("id");
+	});
+
+	it("oversized single row uses column chunking with col_chunk_* fields", async () => {
+		const now = new Date().toISOString();
+		const bigContent = "Z".repeat(6_000_000);
+		hubDb.run(
+			"INSERT INTO files (id, path, content, is_binary, size_bytes, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, 0, ?, ?, ?, 'hub', 0)",
+			["oversized-1", "/test/big.txt", bigContent, bigContent.length, now, now],
+		);
+
+		const sentFrames: Uint8Array[] = [];
+		const symKey = new Uint8Array(32);
+		hubTransport.addPeer(
+			spokeSiteId,
+			(frame: Uint8Array): boolean => {
+				sentFrames.push(frame);
+				return true;
+			},
+			symKey,
+		);
+
+		hubTransport.seedNewPeer(spokeSiteId);
+		await new Promise((resolve) => setTimeout(resolve, 3000));
+
+		const maxFrameBytes = 4 * 1024 * 1024;
+		// No frame should exceed the limit
+		for (const f of sentFrames) {
+			expect(f.length).toBeLessThanOrEqual(maxFrameBytes);
+		}
+
+		// Decode all SNAPSHOT_CHUNK frames
+		const chunkPayloads: SnapshotChunkPayload[] = [];
+		for (const f of sentFrames) {
+			if (f[0] === WsMessageType.SNAPSHOT_CHUNK) {
+				const result = decodeFrame(f, symKey);
+				if (result.ok && result.value.type === WsMessageType.SNAPSHOT_CHUNK) {
+					chunkPayloads.push(result.value.payload as SnapshotChunkPayload);
+				}
+			}
+		}
+
+		// Should have a skeleton frame (rows with content="") and column-chunk frames
+		const skeletonFrames = chunkPayloads.filter(
+			(p) =>
+				p.table_name === "files" &&
+				p.rows.length === 1 &&
+				(p.rows[0] as Record<string, unknown>).id === "oversized-1" &&
+				(p.rows[0] as Record<string, unknown>).content === "",
+		);
+		expect(skeletonFrames.length).toBe(1);
+
+		// Column-chunk frames should have col_chunk_* fields
+		const colChunkFrames = chunkPayloads.filter(
+			(p) => p.col_chunk_row_id === "oversized-1" && p.col_chunk_column === "content",
+		);
+		expect(colChunkFrames.length).toBeGreaterThanOrEqual(2);
+
+		// Concatenated col_chunk_data should equal original content
+		const sorted = colChunkFrames.sort(
+			(a, b) => (a.col_chunk_index ?? 0) - (b.col_chunk_index ?? 0),
+		);
+		const reassembled = sorted.map((p) => p.col_chunk_data ?? "").join("");
+		expect(reassembled).toBe(bigContent);
+
+		// First chunk should have index 0, last should have col_chunk_final=true
+		expect(sorted[0].col_chunk_index).toBe(0);
+		expect(sorted[sorted.length - 1].col_chunk_final).toBe(true);
+
+		hubDb.run("DELETE FROM files WHERE id = 'oversized-1'");
+	});
+
+	it("end-to-end: hub sends oversized row, spoke DB has correct content", async () => {
+		const now = new Date().toISOString();
+		const bigContent = "E".repeat(6_000_000);
+		hubDb.run(
+			"INSERT INTO files (id, path, content, is_binary, size_bytes, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, 0, ?, ?, ?, 'hub', 0)",
+			["e2e-big", "/test/e2e.txt", bigContent, bigContent.length, now, now],
+		);
+
+		// Create a spoke-side transport for applying chunks
+		const spokeTransport = new WsTransport({
+			db: spokeDb,
+			siteId: spokeSiteId,
+			eventBus: new NoopEventBus() as unknown as TypedEventEmitter,
+			isHub: false,
+		});
+
+		const sentFrames: Uint8Array[] = [];
+		const symKey = new Uint8Array(32);
+		hubTransport.addPeer(
+			spokeSiteId,
+			(frame: Uint8Array): boolean => {
+				sentFrames.push(frame);
+				return true;
+			},
+			symKey,
+		);
+
+		hubTransport.seedNewPeer(spokeSiteId);
+		await new Promise((resolve) => setTimeout(resolve, 3000));
+
+		// Apply all frames to the spoke DB
+		for (const f of sentFrames) {
+			const result = decodeFrame(f, symKey);
+			if (!result.ok) continue;
+			if (result.value.type === WsMessageType.SNAPSHOT_CHUNK) {
+				const payload = result.value.payload as SnapshotChunkPayload;
+				if (
+					payload.col_chunk_row_id &&
+					payload.col_chunk_column &&
+					payload.col_chunk_data !== undefined
+				) {
+					spokeTransport.applyColumnChunk(
+						payload.table_name,
+						payload.col_chunk_row_id,
+						payload.col_chunk_column,
+						payload.col_chunk_index ?? 0,
+						payload.col_chunk_data,
+					);
+				} else if (payload.rows.length > 0) {
+					spokeTransport.applySnapshotChunk(payload.table_name, payload.rows);
+				}
+			}
+		}
+
+		// Verify spoke DB has the full content
+		const spokeRow = spokeDb.query("SELECT content FROM files WHERE id = ?").get("e2e-big") as {
+			content: string;
+		} | null;
+		expect(spokeRow).not.toBeNull();
+		expect(spokeRow?.content).toBe(bigContent);
+
+		hubDb.run("DELETE FROM files WHERE id = 'e2e-big'");
+		spokeDb.run("DELETE FROM files WHERE id = 'e2e-big'");
+	});
+
+	it("last:true is on the final column chunk, not the skeleton row", async () => {
+		const now = new Date().toISOString();
+		// Delete all existing files so the oversized row is the only one in the table
+		hubDb.run("DELETE FROM files");
+		const bigContent = "L".repeat(6_000_000);
+		hubDb.run(
+			"INSERT INTO files (id, path, content, is_binary, size_bytes, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, 0, ?, ?, ?, 'hub', 0)",
+			["last-flag", "/test/last.txt", bigContent, bigContent.length, now, now],
+		);
+
+		const sentFrames: Uint8Array[] = [];
+		const symKey = new Uint8Array(32);
+		hubTransport.addPeer(
+			spokeSiteId,
+			(frame: Uint8Array): boolean => {
+				sentFrames.push(frame);
+				return true;
+			},
+			symKey,
+		);
+
+		hubTransport.seedNewPeer(spokeSiteId);
+		await new Promise((resolve) => setTimeout(resolve, 3000));
+
+		const chunkPayloads: SnapshotChunkPayload[] = [];
+		for (const f of sentFrames) {
+			if (f[0] === WsMessageType.SNAPSHOT_CHUNK) {
+				const result = decodeFrame(f, symKey);
+				if (result.ok && result.value.type === WsMessageType.SNAPSHOT_CHUNK) {
+					chunkPayloads.push(result.value.payload as SnapshotChunkPayload);
+				}
+			}
+		}
+
+		// Find files-table payloads
+		const filesPayloads = chunkPayloads.filter((p) => p.table_name === "files");
+		expect(filesPayloads.length).toBeGreaterThanOrEqual(2);
+
+		// The skeleton (rows.length > 0) should NOT have last:true
+		const skeleton = filesPayloads.find((p) => p.rows.length > 0);
+		expect(skeleton?.last).toBe(false);
+
+		// The final column chunk should have last:true
+		const lastChunk = filesPayloads.filter((p) => p.col_chunk_final === true);
+		expect(lastChunk.length).toBe(1);
+		expect(lastChunk[0].last).toBe(true);
+
+		hubDb.run("DELETE FROM files WHERE id = 'last-flag'");
 	});
 
 	it("ping() is called during snapshot seeding to keep the connection alive", async () => {

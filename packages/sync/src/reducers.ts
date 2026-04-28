@@ -46,6 +46,12 @@ interface TableInfo {
 	pk: number;
 }
 
+const PK_COLUMN_MAP: Record<string, string> = { hosts: "site_id", cluster_config: "key" };
+
+export function getPkColumn(tableName: string): string {
+	return PK_COLUMN_MAP[tableName] || "id";
+}
+
 // Validate table name - must be a known synced table
 function validateTableName(tableName: unknown): tableName is SyncedTableName {
 	const validTables = Object.keys(TABLE_REDUCER_MAP);
@@ -189,9 +195,7 @@ export function applyLWWReducer(
 
 	const schemaColumns = getTableColumns(db, event.table_name);
 
-	// Determine primary key column from schema (most tables use 'id', but some don't)
-	const pkMap: Record<string, string> = { hosts: "site_id", cluster_config: "key" };
-	const pkColumn = pkMap[event.table_name] || "id";
+	const pkColumn = getPkColumn(event.table_name);
 	const pkValue = rowData[pkColumn] ?? event.row_id;
 
 	// Check if row already exists
@@ -449,4 +453,32 @@ export function applySnapshotRows(
 
 	logger?.debug("[snapshot] Applied snapshot chunk", { tableName, applied });
 	return applied;
+}
+
+export function applyColumnChunk(
+	db: Database,
+	tableName: string,
+	pkValue: string,
+	columnName: string,
+	chunkIndex: number,
+	chunkData: string,
+	logger?: Logger,
+): void {
+	if (!validateTableName(tableName)) {
+		logger?.warn("[snapshot] Invalid table name in column chunk", { tableName });
+		return;
+	}
+	if (!validateColumnName(columnName)) {
+		logger?.warn("[snapshot] Invalid column name in column chunk", { tableName, columnName });
+		return;
+	}
+	const pkColumn = getPkColumn(tableName);
+	if (chunkIndex === 0) {
+		db.run(`UPDATE ${tableName} SET ${columnName} = ? WHERE ${pkColumn} = ?`, [chunkData, pkValue]);
+	} else {
+		db.run(`UPDATE ${tableName} SET ${columnName} = ${columnName} || ? WHERE ${pkColumn} = ?`, [
+			chunkData,
+			pkValue,
+		]);
+	}
 }

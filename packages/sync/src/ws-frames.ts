@@ -89,10 +89,20 @@ export type SnapshotChunkPayload = {
 	table_name: string;
 	/** Byte offset within the table (for resume). */
 	offset: number;
-	/** Rows in this chunk. Each row is { column: value }. */
+	/** Rows in this chunk. Each row is { column: value }. Empty for column-chunk frames. */
 	rows: Array<Record<string, unknown>>;
 	/** Whether this is the final chunk for this table. */
 	last: boolean;
+	/** PK value of the row being column-chunked (absent for normal row frames). */
+	col_chunk_row_id?: string;
+	/** Column name being sent in pieces. */
+	col_chunk_column?: string;
+	/** 0-based index of this chunk within the column value. */
+	col_chunk_index?: number;
+	/** True if this is the last chunk for this column of this row. */
+	col_chunk_final?: boolean;
+	/** The chunk content (substring of the column value). */
+	col_chunk_data?: string;
 };
 
 export type SnapshotEndPayload = {
