@@ -87,19 +87,20 @@ const SNAPSHOT_TABLE_ORDER: SyncedTableName[] = [
 
 /** Per-peer snapshot seeding progress (hub-side). */
 interface SnapshotState {
-	/** Index into SNAPSHOT_TABLE_ORDER for the current table. */
 	tableIndex: number;
-	/** Row count offset — purely for diagnostics in payload. */
 	offset: number;
-	/** Cursor for fast pagination: next query uses rowid > lastRowid.
-	 *  Replaces OFFSET which degrades linearly in SQLite. */
 	lastRowid: number;
-	/** HLC at the moment seeding started. */
 	snapshotHlc: string;
-	/** Whether we're waiting for backpressure to clear. */
 	draining: boolean;
-	/** Prepared statement for the current table (reused across chunks). */
 	stmt: Statement | null;
+	/** Rows from the current DB query, split across multiple send cycles. */
+	pendingRows?: Array<Record<string, unknown>>;
+	/** Current position within pendingRows. */
+	pendingCursor?: number;
+	/** Raw rows (with _bound_rowid) for cursor rewind on backpressure. */
+	pendingRowsRaw?: Array<Record<string, unknown>>;
+	/** Whether the current batch is the last for this table. */
+	pendingIsLastBatch?: boolean;
 }
 
 export class WsTransport {
@@ -1105,6 +1106,7 @@ export class WsTransport {
 			state.offset = 0;
 			state.lastRowid = 0;
 			state.stmt = null;
+			this.clearPendingRows(state);
 			this.config.logger?.debug("[snapshot] Advancing to next table", {
 				peerSiteId,
 				nextTable: SNAPSHOT_TABLE_ORDER[state.tableIndex],
@@ -1130,6 +1132,13 @@ export class WsTransport {
 
 		const state = this.snapshotStates.get(peerSiteId);
 		if (!state) return false;
+
+		// If we have pending rows from a previous invocation (batch was split
+		// across multiple event-loop yields), continue from where we left off
+		// instead of re-querying the DB.
+		if (state.pendingRows && state.pendingCursor !== undefined) {
+			return this.sendOneSubChunk(peerSiteId, table, peer, state);
+		}
 
 		const chunkSize = 100;
 
@@ -1173,110 +1182,135 @@ export class WsTransport {
 
 		const isLastBatch = rowsRaw.length < chunkSize;
 
-		let rowCursor = 0;
-		while (rowCursor < allRows.length) {
-			let sliceEnd = allRows.length;
-			let frame: Uint8Array | null = null;
+		// Store the batch for incremental sub-chunk sending. Each invocation
+		// sends exactly ONE sub-chunk then yields to the event loop. This
+		// prevents flooding the TCP send buffer with multiple multi-MB frames
+		// in a tight loop (which causes ws.send() to return 0 = dropped).
+		state.pendingRows = allRows;
+		state.pendingCursor = 0;
+		state.pendingRowsRaw = rowsRaw;
+		state.pendingIsLastBatch = isLastBatch;
 
-			while (sliceEnd > rowCursor) {
-				const slice = allRows.slice(rowCursor, sliceEnd);
-				const isLast = isLastBatch && sliceEnd === allRows.length;
-				const payload: SnapshotChunkPayload = {
-					table_name: table,
-					offset: state.offset + rowCursor,
-					rows: slice,
-					last: isLast,
-				};
+		return this.sendOneSubChunk(peerSiteId, table, peer, state);
+	}
 
-				const candidate = encodeFrame(WsMessageType.SNAPSHOT_CHUNK, payload, peer.symmetricKey);
+	private sendOneSubChunk(
+		peerSiteId: string,
+		table: string,
+		peer: PeerConnection,
+		state: SnapshotState,
+	): boolean {
+		if (!state.pendingRows || state.pendingCursor === undefined || !state.pendingRowsRaw) {
+			return true;
+		}
+		const rows = state.pendingRows;
+		const rowsRaw = state.pendingRowsRaw;
+		const isLastBatch = state.pendingIsLastBatch ?? false;
+		const rowCursor = state.pendingCursor;
 
-				if (candidate.length <= MAX_SNAPSHOT_FRAME_BYTES) {
-					frame = candidate;
-					break;
-				}
+		let sliceEnd = rows.length;
+		let frame: Uint8Array | null = null;
 
-				if (sliceEnd - rowCursor === 1) {
-					// Single row exceeds frame limit — use sub-row column chunking.
-					const isLastRow = isLastBatch && sliceEnd === allRows.length;
-					const result = this.sendOversizedRow(
-						peerSiteId,
-						table,
-						allRows[rowCursor],
-						state,
-						isLastRow,
-					);
-					if (!result) {
-						const firstUnsentRowid = rowsRaw[rowCursor]?._bound_rowid as number;
-						if (typeof firstUnsentRowid === "number") {
-							state.lastRowid = firstUnsentRowid - 1;
-						}
-						state.draining = true;
-						state.stmt.finalize();
-						state.stmt = null;
-						return false;
+		while (sliceEnd > rowCursor) {
+			const slice = rows.slice(rowCursor, sliceEnd);
+			const isLast = isLastBatch && sliceEnd === rows.length;
+			const payload: SnapshotChunkPayload = {
+				table_name: table,
+				offset: state.offset,
+				rows: slice,
+				last: isLast,
+			};
+
+			const candidate = encodeFrame(WsMessageType.SNAPSHOT_CHUNK, payload, peer.symmetricKey);
+
+			if (candidate.length <= MAX_SNAPSHOT_FRAME_BYTES) {
+				frame = candidate;
+				break;
+			}
+
+			if (sliceEnd - rowCursor === 1) {
+				const isLastRow = isLastBatch && sliceEnd === rows.length;
+				const result = this.sendOversizedRow(peerSiteId, table, rows[rowCursor], state, isLastRow);
+				if (!result) {
+					const firstUnsentRowid = rowsRaw[rowCursor]?._bound_rowid as number;
+					if (typeof firstUnsentRowid === "number") {
+						state.lastRowid = firstUnsentRowid - 1;
 					}
-					state.offset += 1;
-					rowCursor = sliceEnd;
-					frame = null; // already sent via sendOversizedRow
-					break;
+					state.draining = true;
+					state.stmt?.finalize();
+					state.stmt = null;
+					this.clearPendingRows(state);
+					return false;
 				}
-
-				sliceEnd = rowCursor + Math.max(1, Math.floor((sliceEnd - rowCursor) / 2));
+				state.offset += 1;
+				state.pendingCursor = sliceEnd;
+				return this.finishSubChunk(peerSiteId, state);
 			}
 
-			if (frame === null && rowCursor <= sliceEnd - 1) {
-				// sendOversizedRow handled this row; continue to next
-				continue;
-			}
-			if (!frame) break;
-
-			const sent = peer.sendFrame(frame);
-			if (!sent) {
-				const firstUnsentRowid = rowsRaw[rowCursor]?._bound_rowid as number;
-				if (typeof firstUnsentRowid === "number") {
-					state.lastRowid = firstUnsentRowid - 1;
-				}
-				state.draining = true;
-				state.stmt.finalize();
-				state.stmt = null;
-				this.config.logger?.debug("[snapshot] Backpressured, waiting for drain", {
-					peerSiteId,
-					table,
-					offset: state.offset,
-					lastRowid: state.lastRowid,
-				});
-				return false;
-			}
-
-			const sentCount = sliceEnd - rowCursor;
-			state.offset += sentCount;
-			rowCursor = sliceEnd;
-
-			this.config.logger?.debug("[snapshot] Sent chunk", {
-				peerSiteId,
-				table,
-				rows: sentCount,
-				totalOffset: state.offset,
-				lastRowid: state.lastRowid,
-				frameBytes: frame.length,
-			});
+			sliceEnd = rowCursor + Math.max(1, Math.floor((sliceEnd - rowCursor) / 2));
 		}
 
-		if (isLastBatch) {
-			this.config.logger?.debug("[snapshot] Table complete", {
-				peerSiteId,
-				table,
-				totalRows: state.offset,
-			});
-			state.stmt.finalize();
-			state.stmt = null;
+		if (!frame) {
+			this.clearPendingRows(state);
 			return true;
 		}
 
-		// Yield to event loop after every chunk so Bun can process WebSocket
-		// ping/pong frames and other I/O.
+		const sent = peer.sendFrame(frame);
+		if (!sent) {
+			const firstUnsentRowid = rowsRaw[rowCursor]?._bound_rowid as number;
+			if (typeof firstUnsentRowid === "number") {
+				state.lastRowid = firstUnsentRowid - 1;
+			}
+			state.draining = true;
+			state.stmt?.finalize();
+			state.stmt = null;
+			this.clearPendingRows(state);
+			this.config.logger?.debug("[snapshot] Backpressured, waiting for drain", {
+				peerSiteId,
+				table,
+				offset: state.offset,
+				lastRowid: state.lastRowid,
+			});
+			return false;
+		}
+
+		const sentCount = sliceEnd - rowCursor;
+		state.offset += sentCount;
+		state.pendingCursor = sliceEnd;
+
+		this.config.logger?.debug("[snapshot] Sent chunk", {
+			peerSiteId,
+			table,
+			rows: sentCount,
+			totalOffset: state.offset,
+			lastRowid: state.lastRowid,
+			frameBytes: frame.length,
+		});
+
+		return this.finishSubChunk(peerSiteId, state);
+	}
+
+	private finishSubChunk(peerSiteId: string, state: SnapshotState): boolean {
+		if ((state.pendingCursor ?? 0) >= (state.pendingRows?.length ?? 0)) {
+			const isLastBatch = state.pendingIsLastBatch;
+			this.clearPendingRows(state);
+			if (isLastBatch) {
+				state.stmt?.finalize();
+				state.stmt = null;
+				return true;
+			}
+		}
+		// Yield to event loop after each sub-chunk so Bun can flush the TCP
+		// send buffer and process ping/pong frames.
 		setTimeout(() => this.sendSnapshotChunks(peerSiteId), 100);
 		return false;
+	}
+
+	private clearPendingRows(state: SnapshotState): void {
+		state.pendingRows = undefined;
+		state.pendingCursor = undefined;
+		state.pendingRowsRaw = undefined;
+		state.pendingIsLastBatch = undefined;
 	}
 
 	/**
