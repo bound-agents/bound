@@ -59,6 +59,9 @@ export class WsSyncClient {
 	private snapshotHlc: string | null = null;
 	/** Count of rows applied during the current snapshot session. */
 	private snapshotRowCount = 0;
+	/** Guard: only send RESEED_REQUEST once per WsSyncClient lifetime.
+	 *  Prevents duplicate snapshots on every reconnection. */
+	private reseedSent = false;
 
 	onMessage: ((data: Uint8Array) => void) | null = null;
 	onConnected: (() => void) | null = null;
@@ -238,7 +241,9 @@ export class WsSyncClient {
 		}
 
 		// If --reseed was requested, tell the hub to send a full snapshot.
-		if (this.config.reseed && this.symmetricKey) {
+		// Guard against re-sending on every reconnection.
+		if (this.config.reseed && this.symmetricKey && !this.reseedSent) {
+			this.reseedSent = true;
 			this.sendReseedRequest();
 		}
 

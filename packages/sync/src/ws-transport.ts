@@ -1052,18 +1052,23 @@ export class WsTransport {
 		const chunkSize = 500; // rows per chunk
 		let chunksSent = 0;
 
+		// Prepare once per table — reusing the statement avoids re-parsing SQL
+		// on every chunk iteration (2,000+ times for a 1M-row table).
+		const stmt = this.config.db.prepare(
+			`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE deleted = 0 AND rowid > ? ORDER BY rowid LIMIT ?`,
+		);
+
 		while (true) {
 			// Cursor-based pagination via rowid — O(chunkSize) per query regardless
 			// of position in the table. OFFSET degrades linearly in SQLite because
 			// it must scan and discard all rows up to the offset.
 			// NOTE: ORDER BY rowid assumes no synced table is WITHOUT ROWID.
-			const rowsRaw = this.config.db
-				.query(
-					`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE deleted = 0 AND rowid > ? ORDER BY rowid LIMIT ?`,
-				)
-				.all(state.lastRowid, chunkSize) as Array<Record<string, unknown>>;
+			const rowsRaw = stmt.all(state.lastRowid, chunkSize) as Array<Record<string, unknown>>;
 
-			if (rowsRaw.length === 0) return true; // Table done.
+			if (rowsRaw.length === 0) {
+				stmt.finalize();
+				return true; // Table done.
+			}
 
 			// Advance the rowid cursor so the next query starts after this batch.
 			const lastRowid = rowsRaw[rowsRaw.length - 1]?._bound_rowid as number;
@@ -1090,6 +1095,7 @@ export class WsTransport {
 
 			if (!sent) {
 				state.draining = true;
+				stmt.finalize();
 				this.config.logger?.debug("[snapshot] Backpressured, waiting for drain", {
 					peerSiteId,
 					table,
@@ -1102,11 +1108,15 @@ export class WsTransport {
 			state.offset += rows.length;
 			chunksSent++;
 
-			if (isLast) return true; // Table done.
+			if (isLast) {
+				stmt.finalize();
+				return true; // Table done.
+			}
 
 			// Yield to event loop every 20 chunks (10,000 rows) to avoid
 			// blocking the hub for too long during large-table seeding.
 			if (chunksSent % 20 === 0) {
+				stmt.finalize();
 				setTimeout(() => this.sendSnapshotChunks(peerSiteId), 0);
 				return false;
 			}
