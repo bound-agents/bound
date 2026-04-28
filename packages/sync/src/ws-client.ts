@@ -457,8 +457,13 @@ export class WsSyncClient {
 	 */
 	private startSnapshotHeartbeat(): void {
 		this.stopSnapshotHeartbeat();
+		this.config.logger?.info("[snapshot] Starting heartbeat (every 10s)");
 		this.heartbeatTimer = setInterval(() => {
 			if (!this.symmetricKey) return;
+			if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+				this.config.logger?.warn("[snapshot] Heartbeat skipped — WebSocket not open");
+				return;
+			}
 			// Send a DRAIN_REQUEST frame — the hub validates it (lenient:
 			// any object is accepted) but does not handle it in the spoke→hub
 			// dispatch path, so it's a no-op. This purely resets the server's
@@ -469,9 +474,13 @@ export class WsSyncClient {
 				{ reason: "snapshot heartbeat" },
 				this.symmetricKey,
 			);
-			this.send(frame);
-			this.config.logger?.debug("[snapshot] Sent heartbeat to hub");
-		}, 30_000);
+			const sent = this.send(frame);
+			if (sent) {
+				this.config.logger?.info("[snapshot] Sent heartbeat to hub");
+			} else {
+				this.config.logger?.warn("[snapshot] Heartbeat send failed (backpressure or closed)");
+			}
+		}, 10_000);
 	}
 
 	private stopSnapshotHeartbeat(): void {
