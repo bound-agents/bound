@@ -1046,6 +1046,10 @@ export class WsTransport {
 			state.offset = 0;
 			state.lastRowid = 0;
 			state.stmt = null;
+			this.config.logger?.debug("[snapshot] Advancing to next table", {
+				peerSiteId,
+				nextTable: SNAPSHOT_TABLE_ORDER[state.tableIndex],
+			});
 		}
 
 		// All tables done.
@@ -1068,7 +1072,7 @@ export class WsTransport {
 		const state = this.snapshotStates.get(peerSiteId);
 		if (!state) return false;
 
-		const chunkSize = 500; // rows per chunk
+		const chunkSize = 100; // rows per chunk (small = less memory/IO per query)
 
 		// Prepare statement on first chunk for this table, then reuse.
 		// Gracefully skip tables that don't exist (e.g. in test DBs with partial
@@ -1133,7 +1137,20 @@ export class WsTransport {
 
 		state.offset += rows.length;
 
+		this.config.logger?.debug("[snapshot] Sent chunk", {
+			peerSiteId,
+			table,
+			rows: rows.length,
+			totalOffset: state.offset,
+			lastRowid: state.lastRowid,
+		});
+
 		if (isLast) {
+			this.config.logger?.debug("[snapshot] Table complete", {
+				peerSiteId,
+				table,
+				totalRows: state.offset,
+			});
 			state.stmt.finalize();
 			state.stmt = null;
 			return true; // Table done.
@@ -1142,9 +1159,10 @@ export class WsTransport {
 		// Yield to event loop after every chunk so Bun can process WebSocket
 		// ping/pong frames and other I/O. Without this, a large table can block
 		// the event loop for 30+ seconds and the connection times out.
-		// A small delay (5ms) paces the hub so the spoke has time to commit
-		// each 500-row transaction without falling behind and causing backpressure.
-		setTimeout(() => this.sendSnapshotChunks(peerSiteId), 5);
+		// A 100ms delay paces the hub at ~10 chunks/sec (1,000 rows/sec) so the
+		// spoke has time to commit each transaction and the hub CPU/disk can
+		// breathe between queries. Prevents 300+ MB/s disk spikes.
+		setTimeout(() => this.sendSnapshotChunks(peerSiteId), 100);
 		return false;
 	}
 
