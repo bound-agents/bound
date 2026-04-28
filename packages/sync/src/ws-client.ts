@@ -458,10 +458,16 @@ export class WsSyncClient {
 		this.stopSnapshotHeartbeat();
 		this.heartbeatTimer = setInterval(() => {
 			if (!this.symmetricKey) return;
-			// Send a no-op changelog ack — the hub validates it but does nothing
-			// with empty ids and no last_received. This is purely to reset the
-			// server's idle timer so it doesn't close the connection.
-			const frame = encodeFrame(WsMessageType.CHANGELOG_ACK, { ids: [] }, this.symmetricKey);
+			// Send a DRAIN_REQUEST frame — the hub validates it (lenient:
+			// any object is accepted) but does not handle it in the spoke→hub
+			// dispatch path, so it's a no-op. This purely resets the server's
+			// idle timer so it doesn't close the connection during long
+			// snapshots where the spoke only receives data.
+			const frame = encodeFrame(
+				WsMessageType.DRAIN_REQUEST,
+				{ reason: "snapshot heartbeat" },
+				this.symmetricKey,
+			);
 			this.send(frame);
 			this.config.logger?.debug("[snapshot] Sent heartbeat to hub");
 		}, 30_000);
