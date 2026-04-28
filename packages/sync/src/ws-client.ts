@@ -317,11 +317,29 @@ export class WsSyncClient {
 				// Handle snapshot seeding frames (hub → spoke initial state handoff).
 				// Applied immediately per-chunk; SNAPSHOT_ACK sent after SNAPSHOT_END.
 				if (decodedFrame.type === WsMessageType.SNAPSHOT_BEGIN) {
-					this.handleSnapshotBegin(decodedFrame.payload as SnapshotBeginPayload);
+					try {
+						this.handleSnapshotBegin(decodedFrame.payload as SnapshotBeginPayload);
+					} catch (err) {
+						this.config.logger?.error("[snapshot] Error handling SNAPSHOT_BEGIN", {
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
 				} else if (decodedFrame.type === WsMessageType.SNAPSHOT_CHUNK) {
-					this.handleSnapshotChunk(decodedFrame.payload as SnapshotChunkPayload);
+					try {
+						this.handleSnapshotChunk(decodedFrame.payload as SnapshotChunkPayload);
+					} catch (err) {
+						this.config.logger?.error("[snapshot] Error handling SNAPSHOT_CHUNK", {
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
 				} else if (decodedFrame.type === WsMessageType.SNAPSHOT_END) {
-					this.handleSnapshotEnd(decodedFrame.payload as SnapshotEndPayload);
+					try {
+						this.handleSnapshotEnd(decodedFrame.payload as SnapshotEndPayload);
+					} catch (err) {
+						this.config.logger?.error("[snapshot] Error handling SNAPSHOT_END", {
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
 				}
 			}
 
@@ -378,6 +396,10 @@ export class WsSyncClient {
 	 */
 	private handleSnapshotChunk(payload: SnapshotChunkPayload): void {
 		if (!this.config.wsTransport) return;
+
+		this.config.logger?.debug(
+			`[snapshot] Received chunk: ${payload.rows.length} rows for ${payload.table_name} (offset: ${payload.offset})`,
+		);
 
 		const applied = this.config.wsTransport.applySnapshotChunk(payload.table_name, payload.rows);
 

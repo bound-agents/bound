@@ -1142,7 +1142,9 @@ export class WsTransport {
 		// Yield to event loop after every chunk so Bun can process WebSocket
 		// ping/pong frames and other I/O. Without this, a large table can block
 		// the event loop for 30+ seconds and the connection times out.
-		setTimeout(() => this.sendSnapshotChunks(peerSiteId), 0);
+		// A small delay (5ms) paces the hub so the spoke has time to commit
+		// each 500-row transaction without falling behind and causing backpressure.
+		setTimeout(() => this.sendSnapshotChunks(peerSiteId), 5);
 		return false;
 	}
 
