@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import type { Database, Statement } from "bun:sqlite";
 import { insertInbox, markDelivered, readUndelivered, writeOutbox } from "@bound/core";
 import type {
 	ChangeLogEntry,
@@ -951,7 +951,9 @@ export class WsTransport {
 
 		// Start sending chunks (yield to event loop so the SNAPSHOT_BEGIN frame
 		// is flushed before we start pushing table data).
-		setTimeout(() => this.continueSnapshotSeed(peerSiteId), 0);
+		// Use sendSnapshotChunks directly — continueSnapshotSeed is only for
+		// resuming after backpressure (it requires state.draining === true).
+		setTimeout(() => this.sendSnapshotChunks(peerSiteId), 0);
 	}
 
 	/**
@@ -1054,9 +1056,20 @@ export class WsTransport {
 
 		// Prepare once per table — reusing the statement avoids re-parsing SQL
 		// on every chunk iteration (2,000+ times for a 1M-row table).
-		const stmt = this.config.db.prepare(
-			`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE deleted = 0 AND rowid > ? ORDER BY rowid LIMIT ?`,
-		);
+		// Gracefully skip tables that don't exist (e.g. in test DBs with partial
+		// schemas, or future tables not yet created by migrations).
+		let stmt: Statement | null = null;
+		try {
+			stmt = this.config.db.prepare(
+				`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE deleted = 0 AND rowid > ? ORDER BY rowid LIMIT ?`,
+			);
+		} catch {
+			this.config.logger?.warn("[snapshot] Skipping missing table during seed", {
+				table,
+				peerSiteId,
+			});
+			return true;
+		}
 
 		while (true) {
 			// Cursor-based pagination via rowid — O(chunkSize) per query regardless
@@ -1134,11 +1147,16 @@ export class WsTransport {
 		if (!state) return;
 
 		// Count total rows seeded across all tables for the payload.
+		// Missing tables (e.g. in test DBs) contribute 0.
 		const totalRows = SNAPSHOT_TABLE_ORDER.reduce((sum, table) => {
-			const row = this.config.db
-				.query(`SELECT COUNT(*) as cnt FROM ${table} WHERE deleted = 0`)
-				.get() as { cnt: number } | null;
-			return sum + (row?.cnt ?? 0);
+			try {
+				const row = this.config.db
+					.query(`SELECT COUNT(*) as cnt FROM ${table} WHERE deleted = 0`)
+					.get() as { cnt: number } | null;
+				return sum + (row?.cnt ?? 0);
+			} catch {
+				return sum;
+			}
 		}, 0);
 
 		const endPayload: SnapshotEndPayload = {
