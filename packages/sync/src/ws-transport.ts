@@ -1797,9 +1797,11 @@ export class WsTransport {
 			if (!remote) continue;
 
 			const pkCol = getPkColumnTyped(table);
-			const localPks = this.config.db
-				.query(`SELECT ${pkCol} AS pk FROM ${table} ORDER BY ${pkCol} ASC`)
-				.all() as Array<{ pk: string }>;
+			let localPkQuery = `SELECT ${pkCol} AS pk FROM ${table} ORDER BY ${pkCol} ASC`;
+			if (table === "messages") {
+				localPkQuery = `SELECT ${pkCol} AS pk FROM ${table} WHERE role != 'system' ORDER BY ${pkCol} ASC`;
+			}
+			const localPks = this.config.db.query(localPkQuery).all() as Array<{ pk: string }>;
 			const remoteSet = new Set(remote.pks);
 			const localOnly = localPks.map((r) => r.pk).filter((pk) => !remoteSet.has(pk));
 
