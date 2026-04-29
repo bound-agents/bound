@@ -1,6 +1,5 @@
 import type { Database, Statement } from "bun:sqlite";
 import {
-	compareAllTables,
 	createChangeLogEntry,
 	getPkColumn as getPkColumnTyped,
 	insertInbox,
@@ -1719,6 +1718,17 @@ export class WsTransport {
 		resolve?.(this.pendingConsistencyData);
 	}
 
+	private async requestConsistencyWithTimeout(): Promise<
+		Map<string, { count: number; pks: string[] }>
+	> {
+		return Promise.race([
+			this.requestConsistency([]),
+			new Promise<never>((_, reject) =>
+				setTimeout(() => reject(new Error("Consistency request timed out (30s)")), 30_000),
+			),
+		]);
+	}
+
 	// ── Auto-backfill: push local-only rows as changelog entries ─────────
 
 	private static readonly BACKFILL_BATCH_SIZE = 1000;
@@ -1748,25 +1758,52 @@ export class WsTransport {
 	}
 
 	private async executeBackfill(): Promise<{ backfilled: number; tables: number }> {
-		const remoteTables = await this.requestConsistency([]);
-		const tablesToCheck = [...remoteTables.keys()] as SyncedTableName[];
-		const diffs = compareAllTables(this.config.db, remoteTables, tablesToCheck);
+		const remoteTables = await this.requestConsistencyWithTimeout();
+
+		const allSyncedTables: SyncedTableName[] = [
+			"users",
+			"hosts",
+			"cluster_config",
+			"threads",
+			"messages",
+			"turns",
+			"semantic_memory",
+			"memory_edges",
+			"tasks",
+			"files",
+			"advisories",
+			"skills",
+			"overlay_index",
+		];
 
 		let backfilled = 0;
 		let tablesWithDrift = 0;
 
-		for (const diff of diffs) {
-			if (diff.localOnly.length === 0) continue;
+		for (const table of allSyncedTables) {
+			const remote = remoteTables.get(table);
+			if (!remote) continue;
 
-			const pkCol = getPkColumnTyped(diff.table);
-			const batchSize = WsTransport.BACKFILL_BATCH_SIZE;
+			const pkCol = getPkColumnTyped(table);
+			const localCountRow = this.config.db.query(`SELECT COUNT(*) AS c FROM ${table}`).get() as {
+				c: number;
+			};
 
-			const needsBackfill = diff.localOnly.filter((pk) => {
+			if (localCountRow.c <= remote.count) continue;
+
+			const localPks = this.config.db
+				.query(`SELECT ${pkCol} AS pk FROM ${table} ORDER BY ${pkCol} ASC`)
+				.all() as Array<{ pk: string }>;
+			const remoteSet = new Set(remote.pks);
+			const localOnly = localPks.map((r) => r.pk).filter((pk) => !remoteSet.has(pk));
+
+			if (localOnly.length === 0) continue;
+
+			const needsBackfill = localOnly.filter((pk) => {
 				const existing = this.config.db
 					.query(
 						"SELECT 1 FROM change_log WHERE table_name = ? AND row_id = ? AND site_id = ? LIMIT 1",
 					)
-					.get(diff.table, pk, this.config.siteId);
+					.get(table, pk, this.config.siteId);
 				return !existing;
 			});
 
@@ -1774,12 +1811,13 @@ export class WsTransport {
 			tablesWithDrift++;
 
 			this.config.logger?.info("[backfill] Table needs backfill", {
-				table: diff.table,
-				localOnly: diff.localOnly.length,
+				table,
+				localOnly: localOnly.length,
 				needsBackfill: needsBackfill.length,
-				alreadyHaveChangelog: diff.localOnly.length - needsBackfill.length,
+				alreadyHaveChangelog: localOnly.length - needsBackfill.length,
 			});
 
+			const batchSize = WsTransport.BACKFILL_BATCH_SIZE;
 			for (let i = 0; i < needsBackfill.length; i += batchSize) {
 				const batch = needsBackfill.slice(i, i + batchSize);
 				const hlcs: string[] = [];
@@ -1788,16 +1826,10 @@ export class WsTransport {
 				try {
 					for (const pk of batch) {
 						const row = this.config.db
-							.query(`SELECT * FROM ${diff.table} WHERE ${pkCol} = ?`)
+							.query(`SELECT * FROM ${table} WHERE ${pkCol} = ?`)
 							.get(pk) as Record<string, unknown> | null;
 						if (!row) continue;
-						const hlc = createChangeLogEntry(
-							this.config.db,
-							diff.table,
-							pk,
-							this.config.siteId,
-							row,
-						);
+						const hlc = createChangeLogEntry(this.config.db, table, pk, this.config.siteId, row);
 						hlcs.push(hlc);
 					}
 					this.config.db.exec("COMMIT");
@@ -1813,12 +1845,14 @@ export class WsTransport {
 				for (const hlc of hlcs) {
 					this.config.eventBus.emit("changelog:written", {
 						hlc,
-						tableName: diff.table,
+						tableName: table,
 						siteId: this.config.siteId,
 					});
 				}
 
 				backfilled += hlcs.length;
+
+				await new Promise((r) => setTimeout(r, 0));
 			}
 		}
 
