@@ -1590,12 +1590,13 @@ export class WsTransport {
 			return;
 		}
 
-		const nextTableIndex = hasMore ? tableIndex : tableIndex + 1;
-		const nextOffset = hasMore ? offset + pageSize : 0;
-
-		setTimeout(() => {
-			this.streamConsistencyPages(peerSiteId, tables, nextTableIndex, nextOffset);
-		}, 0);
+		if (hasMore) {
+			setTimeout(() => {
+				this.streamConsistencyPages(peerSiteId, tables, tableIndex, offset + pageSize);
+			}, 0);
+		} else {
+			this.streamConsistencyPages(peerSiteId, tables, tableIndex + 1, 0);
+		}
 	}
 
 	// ── Spoke-side: request + collect ────────────────────────────────────
