@@ -1014,10 +1014,22 @@ export class WsTransport {
 	 * on any entries that arrived during seeding.
 	 */
 	handleSnapshotAck(peerSiteId: string, _payload: SnapshotAckPayload): void {
+		const state = this.snapshotStates.get(peerSiteId);
+		const snapshotHlc = state?.snapshotHlc;
 		this.snapshotStates.delete(peerSiteId);
 		this.config.logger?.info("[snapshot] Spoke acknowledged snapshot", { peerSiteId });
 
-		// Now run the normal changelog drain (from the snapshot HLC forward).
+		// Advance cursors to the snapshot HLC so the changelog drain starts
+		// from the right point and the pruner knows the spoke has everything
+		// up to this HLC. Without this, last_sent stays at HLC_ZERO and the
+		// drain relies on un-pruned changelog entries that may already be gone.
+		if (snapshotHlc) {
+			updatePeerCursor(this.config.db, peerSiteId, {
+				last_received: snapshotHlc,
+				last_sent: snapshotHlc,
+			});
+		}
+
 		this.drainChangelog(peerSiteId);
 	}
 
