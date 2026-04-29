@@ -1631,20 +1631,18 @@ export class WsTransport {
 
 	// ── Spoke-side: request + collect ────────────────────────────────────
 
-	private pendingConsistencyRequestId: string | null = null;
-	private pendingConsistencyResolve:
-		| ((data: Map<string, { count: number; pks: string[] }>) => void)
-		| null = null;
-	private pendingConsistencyReject: ((err: Error) => void) | null = null;
-	private pendingConsistencyData = new Map<string, { count: number; pks: string[] }>();
-	private pendingConsistencyTimer: Timer | null = null;
-	private pendingConsistencyIdleTimer: Timer | null = null;
+	private pendingConsistencyRequests = new Map<
+		string,
+		{
+			resolve: (data: Map<string, { count: number; pks: string[] }>) => void;
+			reject: (err: Error) => void;
+			data: Map<string, { count: number; pks: string[] }>;
+			timer: Timer;
+			idleTimer: Timer | null;
+		}
+	>();
 
 	requestConsistency(tables: string[]): Promise<Map<string, { count: number; pks: string[] }>> {
-		if (this.pendingConsistencyResolve) {
-			return Promise.reject(new Error("Consistency check already in progress"));
-		}
-
 		const hubPeer = this.peerConnections.values().next().value as PeerConnection | undefined;
 		if (!hubPeer) {
 			return Promise.reject(new Error("Not connected to hub"));
@@ -1660,19 +1658,20 @@ export class WsTransport {
 			return Promise.reject(new Error("Failed to send consistency request"));
 		}
 
-		this.pendingConsistencyRequestId = requestId;
-		this.pendingConsistencyData = new Map();
 		this.config.logger?.debug("[consistency] Request sent", { requestId });
 
 		return new Promise((resolve, reject) => {
-			this.pendingConsistencyResolve = resolve;
-			this.pendingConsistencyReject = reject;
-			this.pendingConsistencyTimer = setTimeout(() => {
-				this.pendingConsistencyResolve = null;
-				this.pendingConsistencyReject = null;
-				this.pendingConsistencyTimer = null;
+			const timer = setTimeout(() => {
+				this.pendingConsistencyRequests.delete(requestId);
 				reject(new Error("Consistency check timed out (60s)"));
 			}, 60_000);
+			this.pendingConsistencyRequests.set(requestId, {
+				resolve,
+				reject,
+				data: new Map(),
+				timer,
+				idleTimer: null,
+			});
 		});
 	}
 
@@ -1686,68 +1685,53 @@ export class WsTransport {
 		all_done?: boolean;
 		request_id?: string;
 	}): void {
-		if (!this.pendingConsistencyResolve) return;
-		if (
-			payload.request_id &&
-			this.pendingConsistencyRequestId &&
-			payload.request_id !== this.pendingConsistencyRequestId
-		) {
-			return;
-		}
+		const rid = payload.request_id;
+		if (!rid) return;
+		const req = this.pendingConsistencyRequests.get(rid);
+		if (!req) return;
 
-		const existing = this.pendingConsistencyData.get(payload.table);
+		const existing = req.data.get(payload.table);
 		if (existing) {
 			existing.pks.push(...payload.pks);
 			existing.count = payload.count;
 		} else {
-			this.pendingConsistencyData.set(payload.table, {
+			req.data.set(payload.table, {
 				count: payload.count,
 				pks: [...payload.pks],
 			});
 		}
 
 		if (payload.all_done) {
-			this.resolveConsistency("all_done flag");
+			this.resolveConsistency(rid, "all_done flag");
 			return;
 		}
 
 		const tc = payload.table_count;
-		if (
-			!payload.has_more &&
-			typeof tc === "number" &&
-			tc > 0 &&
-			this.pendingConsistencyData.size >= tc
-		) {
-			this.resolveConsistency("table_count match");
+		if (!payload.has_more && typeof tc === "number" && tc > 0 && req.data.size >= tc) {
+			this.resolveConsistency(rid, "table_count match");
 			return;
 		}
 
-		if (this.pendingConsistencyIdleTimer) clearTimeout(this.pendingConsistencyIdleTimer);
-		this.pendingConsistencyIdleTimer = setTimeout(() => {
-			if (this.pendingConsistencyResolve && this.pendingConsistencyData.size > 0) {
-				this.resolveConsistency("idle timeout (10s)");
+		if (req.idleTimer) clearTimeout(req.idleTimer);
+		req.idleTimer = setTimeout(() => {
+			if (this.pendingConsistencyRequests.has(rid) && req.data.size > 0) {
+				this.resolveConsistency(rid, "idle timeout (10s)");
 			}
 		}, 10_000);
 	}
 
-	private resolveConsistency(reason: string): void {
+	private resolveConsistency(requestId: string, reason: string): void {
+		const req = this.pendingConsistencyRequests.get(requestId);
+		if (!req) return;
 		this.config.logger?.debug("[consistency] Resolving", {
 			reason,
-			tables: this.pendingConsistencyData.size,
+			requestId,
+			tables: req.data.size,
 		});
-		if (this.pendingConsistencyTimer) {
-			clearTimeout(this.pendingConsistencyTimer);
-			this.pendingConsistencyTimer = null;
-		}
-		if (this.pendingConsistencyIdleTimer) {
-			clearTimeout(this.pendingConsistencyIdleTimer);
-			this.pendingConsistencyIdleTimer = null;
-		}
-		const resolve = this.pendingConsistencyResolve;
-		this.pendingConsistencyResolve = null;
-		this.pendingConsistencyReject = null;
-		this.pendingConsistencyRequestId = null;
-		resolve?.(this.pendingConsistencyData);
+		clearTimeout(req.timer);
+		if (req.idleTimer) clearTimeout(req.idleTimer);
+		this.pendingConsistencyRequests.delete(requestId);
+		req.resolve(req.data);
 	}
 
 	private async requestConsistencyWithTimeout(): Promise<
