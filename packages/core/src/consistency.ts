@@ -13,10 +13,29 @@ export interface TableDiff {
 
 export function getLocalPksSorted(db: Database, table: SyncedTableName): string[] {
 	const pkCol = getPkColumn(table);
-	const rows = db
-		.query(`SELECT ${pkCol} AS pk FROM ${table} ORDER BY ${pkCol} ASC`)
-		.all() as Array<{ pk: string }>;
+	let query = `SELECT ${pkCol} AS pk FROM ${table} ORDER BY ${pkCol} ASC`;
+	if (table === "messages") {
+		query = `SELECT ${pkCol} AS pk FROM ${table} WHERE role != 'system' ORDER BY ${pkCol} ASC`;
+	}
+	const rows = db.query(query).all() as Array<{ pk: string }>;
 	return rows.map((r) => r.pk);
+}
+
+export function countUnsyncableRows(
+	db: Database,
+): { table: string; count: number; reason: string }[] {
+	const results: { table: string; count: number; reason: string }[] = [];
+	const systemMsgCount = (
+		db.query("SELECT COUNT(*) AS c FROM messages WHERE role = 'system'").get() as { c: number }
+	).c;
+	if (systemMsgCount > 0) {
+		results.push({
+			table: "messages",
+			count: systemMsgCount,
+			reason: "role='system' (invariant #19)",
+		});
+	}
+	return results;
 }
 
 export function mergeDiffPks(

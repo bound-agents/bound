@@ -22,6 +22,7 @@ export {
 	getLocalPksSorted,
 	mergeDiffPks,
 	compareAllTables,
+	countUnsyncableRows,
 	type TableDiff,
 } from "./consistency";
 export {

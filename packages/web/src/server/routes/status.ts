@@ -2,6 +2,7 @@ import { createRelayOutboxEntry } from "@bound/agent";
 import {
 	cancelClientToolCalls,
 	compareAllTables,
+	countUnsyncableRows,
 	getPendingClientToolCalls,
 	getSiteId,
 	insertRow,
@@ -303,10 +304,12 @@ export function createStatusRoutes(
 
 			const diffs = compareAllTables(db, remoteTables);
 			const localSiteId = getSiteId(db);
+			const unsyncable = countUnsyncableRows(db);
 
 			return c.json({
 				localSiteId,
 				tables: diffs,
+				unsyncable,
 			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";

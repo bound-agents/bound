@@ -40,6 +40,7 @@ export async function runConsistencyCheck(args: ConsistencyCheckArgs): Promise<v
 			remoteOnly: string[];
 			matching: number;
 		}>;
+		unsyncable?: Array<{ table: string; count: number; reason: string }>;
 	};
 
 	console.log(`Local site: ${result.localSiteId}\n`);
@@ -95,5 +96,13 @@ export async function runConsistencyCheck(args: ConsistencyCheckArgs): Promise<v
 		console.log(
 			`${driftCount} table(s) with discrepancies (${totalLocalOnly} local-only, ${totalRemoteOnly} remote-only)`,
 		);
+	}
+
+	if (result.unsyncable && result.unsyncable.length > 0) {
+		console.log();
+		console.log("Unsyncable rows (excluded from comparison):");
+		for (const u of result.unsyncable) {
+			console.log(`  ${u.table}: ${u.count} rows — ${u.reason}`);
+		}
 	}
 }
