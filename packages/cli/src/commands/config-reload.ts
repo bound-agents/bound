@@ -76,17 +76,13 @@ export async function runConfigReload(args: ConfigReloadArgs): Promise<void> {
 		// Use transaction to write + log
 		const txFn = db.transaction(() => {
 			if (existing) {
-				db.query("UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?").run(
-					now,
-					now,
-					key,
-				);
+				db.query(
+					"UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?", // outbox-exempt: createChangeLogEntry called below
+				).run(now, now, key);
 			} else {
-				db.query("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)").run(
-					key,
-					now,
-					now,
-				);
+				db.query(
+					"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)", // outbox-exempt: createChangeLogEntry called below
+				).run(key, now, now);
 			}
 			// Write change_log entry
 			const rowData = { key, value: now, modified_at: now };

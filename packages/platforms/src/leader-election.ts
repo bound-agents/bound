@@ -67,7 +67,7 @@ export class PlatformLeaderElection {
 		// Follow the pattern from packages/cli/src/commands/set-hub.ts.
 		this.db.transaction(() => {
 			this.db.run(
-				"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, modified_at = excluded.modified_at",
+				"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, modified_at = excluded.modified_at", // outbox-exempt: createChangeLogEntry called below
 				[leaderKey, this.siteId, now],
 			);
 			createChangeLogEntry(this.db, "cluster_config", leaderKey, this.siteId, {

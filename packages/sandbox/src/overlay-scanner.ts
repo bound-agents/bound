@@ -124,7 +124,7 @@ export function scanOverlayIndex(
 					);
 				} else {
 					db.prepare(
-						"INSERT OR IGNORE INTO overlay_index (id, site_id, path, size_bytes, content_hash, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
+						"INSERT OR IGNORE INTO overlay_index (id, site_id, path, size_bytes, content_hash, indexed_at) VALUES (?, ?, ?, ?, ?, ?)", // outbox-exempt: outbox not provided (backward compat)
 					).run(id, siteId, entry.path, stat.size, contentHash, now);
 				}
 				created++;
@@ -144,7 +144,7 @@ export function scanOverlayIndex(
 					);
 				} else {
 					db.prepare(
-						"UPDATE overlay_index SET size_bytes = ?, content_hash = ?, indexed_at = ? WHERE id = ?",
+						"UPDATE overlay_index SET size_bytes = ?, content_hash = ?, indexed_at = ? WHERE id = ?", // outbox-exempt: outbox not provided (backward compat)
 					).run(stat.size, contentHash, now, id);
 				}
 				updated++;
@@ -163,10 +163,9 @@ export function scanOverlayIndex(
 				outbox.softDelete(db, "overlay_index", entry.id, siteId);
 			} else {
 				const now = new Date().toISOString();
-				db.prepare("UPDATE overlay_index SET deleted = 1, indexed_at = ? WHERE id = ?").run(
-					now,
-					entry.id,
-				);
+				db.prepare(
+					"UPDATE overlay_index SET deleted = 1, indexed_at = ? WHERE id = ?", // outbox-exempt: outbox not provided (backward compat)
+				).run(now, entry.id);
 			}
 			tombstoned++;
 		}

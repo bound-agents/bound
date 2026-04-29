@@ -122,17 +122,13 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 		const existingHub = db.query("SELECT key FROM cluster_config WHERE key = ?").get(hubKey);
 		const setHubTx = db.transaction(() => {
 			if (existingHub) {
-				db.query("UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?").run(
-					args.hostName,
-					hubChangeTimestamp,
-					hubKey,
-				);
+				db.query(
+					"UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?", // outbox-exempt: createChangeLogEntry called below
+				).run(args.hostName, hubChangeTimestamp, hubKey);
 			} else {
-				db.query("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)").run(
-					hubKey,
-					args.hostName,
-					hubChangeTimestamp,
-				);
+				db.query(
+					"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)", // outbox-exempt: createChangeLogEntry called below
+				).run(hubKey, args.hostName, hubChangeTimestamp);
 			}
 			// Write change_log entry
 			const rowData = { key: hubKey, value: args.hostName, modified_at: hubChangeTimestamp };

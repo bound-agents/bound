@@ -25,17 +25,13 @@ export async function runStop(args: StopResumeArgs): Promise<void> {
 		// cluster_config uses 'key' as primary key, not 'id'. Use manual transaction + change_log.
 		const txFn = db.transaction(() => {
 			if (existing) {
-				db.query("UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?").run(
-					now,
-					now,
-					"emergency_stop",
-				);
+				db.query(
+					"UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?", // outbox-exempt: createChangeLogEntry called below
+				).run(now, now, "emergency_stop");
 			} else {
-				db.query("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)").run(
-					"emergency_stop",
-					now,
-					now,
-				);
+				db.query(
+					"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)", // outbox-exempt: createChangeLogEntry called below
+				).run("emergency_stop", now, now);
 			}
 			// Write change_log entry (row_id is the key field for cluster_config)
 			const rowData = { key: "emergency_stop", value: now, modified_at: now };
@@ -67,7 +63,9 @@ export async function runResume(args: StopResumeArgs): Promise<void> {
 		const rowData = { key: "emergency_stop", value: "", modified_at: now };
 		// Use a transaction to delete + log
 		const txFn = db.transaction(() => {
-			db.query("DELETE FROM cluster_config WHERE key = ?").run("emergency_stop");
+			db.query(
+				"DELETE FROM cluster_config WHERE key = ?", // outbox-exempt: createChangeLogEntry called below
+			).run("emergency_stop");
 			// Write change_log entry with empty value to signal deletion
 			createChangeLogEntry(db, "cluster_config", "emergency_stop", siteId, rowData);
 		});

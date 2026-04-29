@@ -39,17 +39,13 @@ export async function runDrain(args: DrainArgs): Promise<void> {
 			.get(emergencyStopKey);
 		const setDrainTx = db.transaction(() => {
 			if (existingStop) {
-				db.query("UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?").run(
-					"drain",
-					now,
-					emergencyStopKey,
-				);
+				db.query(
+					"UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?", // outbox-exempt: createChangeLogEntry called below
+				).run("drain", now, emergencyStopKey);
 			} else {
-				db.query("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)").run(
-					emergencyStopKey,
-					"drain",
-					now,
-				);
+				db.query(
+					"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)", // outbox-exempt: createChangeLogEntry called below
+				).run(emergencyStopKey, "drain", now);
 			}
 			// Write change_log entry
 			const rowData = { key: emergencyStopKey, value: "drain", modified_at: now };
@@ -84,17 +80,13 @@ export async function runDrain(args: DrainArgs): Promise<void> {
 		const existingHub = db.query("SELECT key FROM cluster_config WHERE key = ?").get(hubKey);
 		const setHubTx = db.transaction(() => {
 			if (existingHub) {
-				db.query("UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?").run(
-					args.newHub,
-					hubTimestamp,
-					hubKey,
-				);
+				db.query(
+					"UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?", // outbox-exempt: createChangeLogEntry called below
+				).run(args.newHub, hubTimestamp, hubKey);
 			} else {
-				db.query("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)").run(
-					hubKey,
-					args.newHub,
-					hubTimestamp,
-				);
+				db.query(
+					"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)", // outbox-exempt: createChangeLogEntry called below
+				).run(hubKey, args.newHub, hubTimestamp);
 			}
 			// Write change_log entry
 			const rowData = { key: hubKey, value: args.newHub, modified_at: hubTimestamp };
@@ -106,7 +98,9 @@ export async function runDrain(args: DrainArgs): Promise<void> {
 		console.log("Step 4: Clearing emergency_stop...");
 		const clearTimestamp = new Date().toISOString();
 		const clearTx = db.transaction(() => {
-			db.query("DELETE FROM cluster_config WHERE key = ?").run(emergencyStopKey);
+			db.query(
+				"DELETE FROM cluster_config WHERE key = ?", // outbox-exempt: createChangeLogEntry called below
+			).run(emergencyStopKey);
 			// Write change_log entry with empty value to signal deletion
 			const rowData = { key: emergencyStopKey, value: "", modified_at: clearTimestamp };
 			createChangeLogEntry(db, "cluster_config", emergencyStopKey, siteId, rowData);

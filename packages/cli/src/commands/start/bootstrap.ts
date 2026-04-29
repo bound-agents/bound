@@ -297,7 +297,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		if (existingHost) {
 			withChangeLog(appContext.db, appContext.siteId, () => {
 				appContext.db.run(
-					"UPDATE hosts SET host_name = ?, online_at = ?, modified_at = ? WHERE site_id = ?",
+					"UPDATE hosts SET host_name = ?, online_at = ?, modified_at = ? WHERE site_id = ?", // outbox-exempt: withChangeLog handles changelog entry
 					[appContext.hostName, now, now, appContext.siteId],
 				);
 				const updatedRow = appContext.db
@@ -320,7 +320,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 			};
 			withChangeLog(appContext.db, appContext.siteId, () => {
 				appContext.db.run(
-					"INSERT INTO hosts (site_id, host_name, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, 0)",
+					"INSERT INTO hosts (site_id, host_name, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, 0)", // outbox-exempt: withChangeLog handles changelog entry
 					[appContext.siteId, appContext.hostName, now, now],
 				);
 				return {
@@ -346,13 +346,10 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 			.all(staleThreshold) as Array<{ id: string }>;
 
 		if (staleRunning.length > 0) {
-			appContext.db
-				.query(
-					`UPDATE tasks SET status = 'pending', lease_id = NULL, claimed_by = NULL, claimed_at = NULL
-					 WHERE status = 'running'
-					   AND (heartbeat_at IS NULL OR heartbeat_at < ?)`,
-				)
-				.run(staleThreshold);
+			const updateStaleQuery = `UPDATE tasks SET status = 'pending', lease_id = NULL, claimed_by = NULL, claimed_at = NULL // outbox-exempt: crash recovery
+				 WHERE status = 'running'
+				   AND (heartbeat_at IS NULL OR heartbeat_at < ?)`;
+			appContext.db.query(updateStaleQuery).run(staleThreshold);
 			appContext.logger.info(
 				`[recovery] Reset ${staleRunning.length} stale running task(s) to pending`,
 			);

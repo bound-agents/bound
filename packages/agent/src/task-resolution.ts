@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { insertRow } from "@bound/core";
 import type { HeartbeatConfig, Task } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 
@@ -232,63 +233,64 @@ export function canRunHere(db: Database, task: Task, hostName: string, siteId: s
 export function seedCronTasks(
 	db: Database,
 	cronConfigs: Array<{ name: string; cron: string; payload?: string }>,
-	_siteId: string,
+	siteId: string,
 ): void {
-	const insert = db.prepare(`
-		INSERT OR IGNORE INTO tasks (
-			id, type, status, trigger_spec, payload, thread_id,
-			claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
-			run_count, max_runs, requires, model_hint, no_history,
-			inject_mode, depends_on, require_success, alert_threshold,
-			consecutive_failures, event_depth, no_quiescence,
-			heartbeat_at, result, error, created_at, created_by, modified_at, deleted
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`);
-
 	for (const config of cronConfigs) {
 		const taskId = deterministicUUID(BOUND_NAMESPACE, `cron-${config.name}`);
 		const now = new Date().toISOString();
 		const nextRunAt = computeNextRunAt(config.cron).toISOString();
 
-		insert.run(
-			taskId, // id
-			"cron", // type
-			"pending", // status
-			config.cron, // trigger_spec
-			config.payload || null, // payload
-			null, // thread_id
-			null, // claimed_by
-			null, // claimed_at
-			null, // lease_id
-			nextRunAt, // next_run_at
-			null, // last_run_at
-			0, // run_count
-			null, // max_runs
-			null, // requires
-			null, // model_hint
-			0, // no_history
-			"status", // inject_mode
-			null, // depends_on
-			0, // require_success
-			5, // alert_threshold (default)
-			0, // consecutive_failures
-			0, // event_depth
-			0, // no_quiescence
-			null, // heartbeat_at
-			null, // result
-			null, // error
-			now, // created_at
-			"system", // created_by
-			now, // modified_at
-			0, // deleted
-		);
+		// Check if task already exists (idempotent)
+		const existing = db.query("SELECT id FROM tasks WHERE id = ?").get(taskId) as {
+			id: string;
+		} | null;
+
+		if (!existing) {
+			insertRow(
+				db,
+				"tasks",
+				{
+					id: taskId,
+					type: "cron",
+					status: "pending",
+					trigger_spec: config.cron,
+					payload: config.payload || null,
+					thread_id: null,
+					claimed_by: null,
+					claimed_at: null,
+					lease_id: null,
+					next_run_at: nextRunAt,
+					last_run_at: null,
+					run_count: 0,
+					max_runs: null,
+					requires: null,
+					model_hint: null,
+					no_history: 0,
+					inject_mode: "status",
+					depends_on: null,
+					require_success: 0,
+					alert_threshold: 5,
+					consecutive_failures: 0,
+					event_depth: 0,
+					no_quiescence: 0,
+					heartbeat_at: null,
+					result: null,
+					error: null,
+					created_at: now,
+					created_by: "system",
+					modified_at: now,
+					deleted: 0,
+				},
+				siteId,
+			);
+		}
 	}
 }
 
 export function seedHeartbeat(
 	db: Database,
 	heartbeatConfig: HeartbeatConfig | undefined,
-	_siteId: string,
+	siteId: string,
 ): void {
 	// Default: enabled with 30min interval
 	const config = heartbeatConfig ?? { enabled: true, interval_ms: 1_800_000 };
@@ -303,25 +305,56 @@ export function seedHeartbeat(
 	const triggerSpec = JSON.stringify({ type: "heartbeat", interval_ms: intervalMs });
 	const modelHint = config.model_hint ?? null;
 
-	db.prepare(
-		`INSERT OR IGNORE INTO tasks (
-			id, type, status, trigger_spec, payload, created_at, created_by,
-			thread_id, claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
-			run_count, max_runs, requires, model_hint, no_history, inject_mode,
-			depends_on, require_success, alert_threshold, consecutive_failures,
-			event_depth, no_quiescence, heartbeat_at, result, error, modified_at, deleted
-		) VALUES (
-			?, 'heartbeat', 'pending', ?, NULL, ?, 'system',
-			NULL, NULL, NULL, NULL, ?, NULL,
-			0, NULL, NULL, ?, 1, 'status',
-			NULL, 0, 5, 0,
-			0, 0, NULL, NULL, NULL, ?, 0
-		)`,
-	).run(id, triggerSpec, now.toISOString(), nextRunAt, modelHint, now.toISOString());
+	// Check if heartbeat task already exists (idempotent)
+	const existing = db.query("SELECT id FROM tasks WHERE id = ?").get(id) as {
+		id: string;
+	} | null;
+
+	if (!existing) {
+		insertRow(
+			db,
+			"tasks",
+			{
+				id,
+				type: "heartbeat",
+				status: "pending",
+				trigger_spec: triggerSpec,
+				payload: null,
+				created_at: now.toISOString(),
+				created_by: "system",
+				thread_id: null,
+				claimed_by: null,
+				claimed_at: null,
+				lease_id: null,
+				next_run_at: nextRunAt,
+				last_run_at: null,
+				run_count: 0,
+				max_runs: null,
+				requires: null,
+				model_hint: modelHint,
+				no_history: 1,
+				inject_mode: "status",
+				depends_on: null,
+				require_success: 0,
+				alert_threshold: 5,
+				consecutive_failures: 0,
+				event_depth: 0,
+				no_quiescence: 0,
+				heartbeat_at: null,
+				result: null,
+				error: null,
+				modified_at: now.toISOString(),
+				deleted: 0,
+			},
+			siteId,
+		);
+	}
 
 	// Migrate existing heartbeat tasks: the heartbeat doesn't need conversation
 	// history — it receives volatile enrichment (standing instructions, task digest,
 	// thread activity) which provides all necessary context. Loading history on a
 	// long-running heartbeat thread wastes tokens on stale self-referential output.
-	db.prepare("UPDATE tasks SET no_history = 1 WHERE type = 'heartbeat' AND no_history = 0").run();
+	db.prepare(
+		"UPDATE tasks SET no_history = 1 WHERE type = 'heartbeat' AND no_history = 0", // outbox-exempt: legacy migration
+	).run();
 }

@@ -11,7 +11,7 @@ function updateClusterConfig(ctx: CommandContext, key: string, value: string): v
 	const now = new Date().toISOString();
 	const txFn = ctx.db.transaction(() => {
 		ctx.db.run(
-			"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, modified_at = excluded.modified_at",
+			"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, modified_at = excluded.modified_at", // outbox-exempt: createChangeLogEntry called below
 			[key, value, now],
 		);
 

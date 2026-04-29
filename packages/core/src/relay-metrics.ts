@@ -44,11 +44,10 @@ export function recordTurnRelayMetrics(
 			siteId,
 		);
 	} else {
-		db.run("UPDATE turns SET relay_target = ?, relay_latency_ms = ? WHERE id = ?", [
-			relayTarget,
-			relayLatencyMs,
-			turnId,
-		]);
+		db.run(
+			"UPDATE turns SET relay_target = ?, relay_latency_ms = ? WHERE id = ?", // outbox-exempt: siteId not provided (local-only)
+			[relayTarget, relayLatencyMs, turnId],
+		);
 	}
 }
 
