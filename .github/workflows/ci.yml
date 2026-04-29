@@ -28,6 +28,9 @@ jobs:
       - name: Biome check
         run: bunx @biomejs/biome check --reporter=github .
 
+      - name: Validate outbox invariants
+        run: bun run scripts/validate-outbox-invariant.ts
+
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest
