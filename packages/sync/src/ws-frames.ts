@@ -126,6 +126,7 @@ export type ReseedRequestPayload = {
 
 export type ConsistencyRequestPayload = {
 	tables: string[];
+	request_id?: string;
 };
 
 export type ConsistencyResponsePayload = {
@@ -136,6 +137,7 @@ export type ConsistencyResponsePayload = {
 	table_index: number;
 	table_count: number;
 	all_done: boolean;
+	request_id?: string;
 };
 
 export type ErrorPayload = {

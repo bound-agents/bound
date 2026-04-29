@@ -1503,7 +1503,10 @@ export class WsTransport {
 
 	private static readonly CONSISTENCY_PAGE_SIZE = 5000;
 
-	handleConsistencyRequest(peerSiteId: string, payload: { tables: string[] }): void {
+	handleConsistencyRequest(
+		peerSiteId: string,
+		payload: { tables: string[]; request_id?: string },
+	): void {
 		if (!this.config.isHub) return;
 
 		const allTables: SyncedTableName[] = [
@@ -1537,7 +1540,7 @@ export class WsTransport {
 			tableCount: tables.length,
 		});
 
-		this.streamConsistencyPages(peerSiteId, tables, 0, 0);
+		this.streamConsistencyPages(peerSiteId, tables, 0, 0, payload.request_id);
 	}
 
 	private streamConsistencyPages(
@@ -1545,6 +1548,7 @@ export class WsTransport {
 		tables: SyncedTableName[],
 		tableIndex: number,
 		offset: number,
+		requestId?: string,
 	): void {
 		const peer = this.peerConnections.get(peerSiteId);
 		if (!peer) return;
@@ -1576,6 +1580,7 @@ export class WsTransport {
 				table_index: tableIndex,
 				table_count: tables.length,
 				all_done: allDone,
+				request_id: requestId,
 			},
 			peer.symmetricKey,
 		);
@@ -1600,12 +1605,13 @@ export class WsTransport {
 		const nextOffset = hasMore ? offset + pageSize : 0;
 
 		setTimeout(() => {
-			this.streamConsistencyPages(peerSiteId, tables, nextTableIndex, nextOffset);
+			this.streamConsistencyPages(peerSiteId, tables, nextTableIndex, nextOffset, requestId);
 		}, 0);
 	}
 
 	// ── Spoke-side: request + collect ────────────────────────────────────
 
+	private pendingConsistencyRequestId: string | null = null;
 	private pendingConsistencyResolve:
 		| ((data: Map<string, { count: number; pks: string[] }>) => void)
 		| null = null;
@@ -1624,13 +1630,19 @@ export class WsTransport {
 			return Promise.reject(new Error("Not connected to hub"));
 		}
 
-		const frame = encodeFrame(WsMessageType.CONSISTENCY_REQUEST, { tables }, hubPeer.symmetricKey);
+		const requestId = `cr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+		const frame = encodeFrame(
+			WsMessageType.CONSISTENCY_REQUEST,
+			{ tables, request_id: requestId },
+			hubPeer.symmetricKey,
+		);
 		if (!hubPeer.sendFrame(frame)) {
 			return Promise.reject(new Error("Failed to send consistency request"));
 		}
 
+		this.pendingConsistencyRequestId = requestId;
 		this.pendingConsistencyData = new Map();
-		this.config.logger?.info("[consistency] Request sent, creating promise");
+		this.config.logger?.info("[consistency] Request sent", { requestId });
 
 		return new Promise((resolve, reject) => {
 			this.pendingConsistencyResolve = resolve;
@@ -1652,16 +1664,16 @@ export class WsTransport {
 		table_index?: number;
 		table_count?: number;
 		all_done?: boolean;
+		request_id?: string;
 	}): void {
-		this.config.logger?.info("[consistency] handleConsistencyResponse called", {
-			table: payload.table,
-			hasPending: !!this.pendingConsistencyResolve,
-			allDone: payload.all_done,
-			tableCount: payload.table_count,
-			hasMore: payload.has_more,
-			pkCount: payload.pks?.length,
-		});
 		if (!this.pendingConsistencyResolve) return;
+		if (
+			payload.request_id &&
+			this.pendingConsistencyRequestId &&
+			payload.request_id !== this.pendingConsistencyRequestId
+		) {
+			return;
+		}
 
 		const existing = this.pendingConsistencyData.get(payload.table);
 		if (existing) {
@@ -1715,6 +1727,7 @@ export class WsTransport {
 		const resolve = this.pendingConsistencyResolve;
 		this.pendingConsistencyResolve = null;
 		this.pendingConsistencyReject = null;
+		this.pendingConsistencyRequestId = null;
 		resolve?.(this.pendingConsistencyData);
 	}
 
