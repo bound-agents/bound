@@ -51,20 +51,27 @@ export async function runConsistencyCheck(args: ConsistencyCheckArgs): Promise<v
 	console.log(header);
 	console.log(separator);
 
+	const unsyncableByTable = new Map<string, number>();
+	for (const u of result.unsyncable ?? []) {
+		unsyncableByTable.set(u.table, (unsyncableByTable.get(u.table) ?? 0) + u.count);
+	}
+
 	let totalLocalOnly = 0;
 	let totalRemoteOnly = 0;
 	let driftCount = 0;
 
 	for (const t of result.tables) {
-		const status = t.localOnly.length === 0 && t.remoteOnly.length === 0 ? "OK" : "DRIFT";
+		const unsyncCount = unsyncableByTable.get(t.table) ?? 0;
+		const syncableLocalOnly = t.localOnly.length - unsyncCount;
+		const status = syncableLocalOnly === 0 && t.remoteOnly.length === 0 ? "OK" : "DRIFT";
 		if (status === "DRIFT") driftCount++;
-		totalLocalOnly += t.localOnly.length;
+		totalLocalOnly += syncableLocalOnly;
 		totalRemoteOnly += t.remoteOnly.length;
 
 		const tableName = t.table.padEnd(16);
-		const local = String(t.localCount).padStart(6);
+		const local = String(t.localCount - unsyncCount).padStart(6);
 		const remote = String(t.remoteCount).padStart(7);
-		const lo = String(t.localOnly.length).padStart(11);
+		const lo = String(syncableLocalOnly).padStart(11);
 		const ro = String(t.remoteOnly.length).padStart(12);
 
 		console.log(`${tableName} ${local} ${remote} ${lo} ${ro}  ${status}`);
