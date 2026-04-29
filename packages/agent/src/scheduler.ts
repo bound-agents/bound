@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
-import { insertRow } from "@bound/core";
+import { createChangeLogEntry, insertRow, updateRow } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID, formatError, parseJsonUntyped } from "@bound/shared";
 import type { Task } from "@bound/shared";
 import { createAdvisory } from "./advisories";
@@ -43,14 +43,18 @@ function rescheduleCronTask(
 	task: Task,
 	logger: AppContext["logger"],
 	context: string,
+	siteId: string,
 ): void {
 	if (task.type !== "cron" || !task.trigger_spec) return;
 	try {
 		const cronExpr = extractCronExpression(task.trigger_spec);
 		const nextRunAt = computeNextRunAt(cronExpr, new Date());
-		db.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?").run(
-			nextRunAt.toISOString(),
+		updateRow(
+			db,
+			"tasks",
 			task.id,
+			{ next_run_at: nextRunAt.toISOString(), status: "pending" },
+			siteId,
 		);
 	} catch (cronError) {
 		logger.error(`Failed to compute next cron time after ${context}`, {
@@ -69,6 +73,7 @@ function retryDeferredTask(
 	task: Task,
 	consecutiveFailures: number,
 	logger: AppContext["logger"],
+	siteId: string,
 	retryBackoffMs: number = DEFERRED_RETRY_BACKOFF_MS_DEFAULT,
 ): boolean {
 	if (task.type !== "deferred") return false;
@@ -76,9 +81,19 @@ function retryDeferredTask(
 	try {
 		const backoffMs = retryBackoffMs * consecutiveFailures;
 		const nextRunAt = new Date(Date.now() + backoffMs).toISOString();
-		db.query(
-			"UPDATE tasks SET status = 'pending', next_run_at = ?, claimed_by = NULL, claimed_at = NULL, lease_id = NULL WHERE id = ?",
-		).run(nextRunAt, task.id);
+		updateRow(
+			db,
+			"tasks",
+			task.id,
+			{
+				status: "pending",
+				next_run_at: nextRunAt,
+				claimed_by: null,
+				claimed_at: null,
+				lease_id: null,
+			},
+			siteId,
+		);
 		logger.info(
 			`Retrying deferred task ${task.id} (attempt ${consecutiveFailures + 1}/${DEFERRED_MAX_RETRIES})`,
 			{
@@ -100,6 +115,9 @@ function retryDeferredTask(
  * Reschedules a heartbeat task to the next clock-aligned boundary and resets status to 'pending'.
  * Clock alignment ensures heartbeats fire at predictable times (e.g., every 30 minutes at :00 and :30).
  * Respects quiescence multipliers to reduce frequency during idle periods.
+ *
+ * NOTE: Uses raw UPDATE (outbox-exempt) because only next_run_at and status change,
+ * and these are computed deterministically and don't require sync (heartbeats are local-only state).
  */
 export function rescheduleHeartbeat(
 	db: AppContext["db"],
@@ -133,10 +151,8 @@ export function rescheduleHeartbeat(
 	const nextBoundary = Math.ceil(now / effectiveInterval) * effectiveInterval;
 	const nextRunAt = new Date(nextBoundary).toISOString();
 
-	db.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?").run(
-		nextRunAt,
-		task.id,
-	);
+	db.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?") // outbox-exempt: heartbeat updates are local-only state, not synced
+		.run(nextRunAt, task.id);
 
 	logger.info(
 		`[@bound/agent/scheduler] Rescheduled heartbeat (${context}): next_run_at=${nextRunAt}, multiplier=${multiplier}x, effective_interval=${effectiveInterval}ms`,
@@ -321,7 +337,7 @@ export class Scheduler {
 		const now = new Date().toISOString();
 		for (const [taskId, info] of this.runningTasks.entries()) {
 			this.ctx.db
-				.query("UPDATE tasks SET heartbeat_at = ? WHERE id = ? AND lease_id = ?")
+				.query("UPDATE tasks SET heartbeat_at = ? WHERE id = ? AND lease_id = ?") // outbox-exempt: heartbeat_at is local-only state, not synced
 				.run(now, taskId, info.leaseId);
 		}
 	}
@@ -362,12 +378,24 @@ export class Scheduler {
 		const leaseExpiry = new Date(now.getTime() - LEASE_DURATION).toISOString();
 
 		// (a) Expire stale claimed tasks
-		this.ctx.db
-			.query(
-				`UPDATE tasks SET status = 'pending', claimed_by = NULL, claimed_at = NULL, lease_id = NULL
-			 WHERE status = 'claimed' AND claimed_at < ?`,
-			)
-			.run(leaseExpiry);
+		const staleClaimedTasks = this.ctx.db
+			.query("SELECT * FROM tasks WHERE status = 'claimed' AND claimed_at < ?")
+			.all(leaseExpiry) as Task[];
+
+		for (const task of staleClaimedTasks) {
+			updateRow(
+				this.ctx.db,
+				"tasks",
+				task.id,
+				{
+					status: "pending",
+					claimed_by: null,
+					claimed_at: null,
+					lease_id: null,
+				},
+				this.ctx.siteId,
+			);
+		}
 
 		// (b) Evict crashed running tasks
 		const evictionTime = new Date(now.getTime() - EVICTION_TIMEOUT).toISOString();
@@ -386,16 +414,26 @@ export class Scheduler {
 				})),
 			});
 
-			this.ctx.db
-				.query(
-					`UPDATE tasks SET status = 'failed', error = 'evicted due to heartbeat timeout',
-				 consecutive_failures = consecutive_failures + 1
-				 WHERE status = 'running' AND heartbeat_at < ?`,
-				)
-				.run(evictionTime);
-
 			for (const task of tasksToEvict) {
-				rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "heartbeat timeout eviction");
+				updateRow(
+					this.ctx.db,
+					"tasks",
+					task.id,
+					{
+						status: "failed",
+						error: "evicted due to heartbeat timeout",
+						consecutive_failures: (task.consecutive_failures ?? 0) + 1,
+					},
+					this.ctx.siteId,
+				);
+
+				rescheduleCronTask(
+					this.ctx.db,
+					task,
+					this.ctx.logger,
+					"heartbeat timeout eviction",
+					this.ctx.siteId,
+				);
 				rescheduleHeartbeat(
 					this.ctx.db,
 					task,
@@ -429,12 +467,27 @@ export class Scheduler {
 		for (const task of pendingTasks) {
 			if (canRunHere(this.ctx.db, task, this.ctx.hostName, this.ctx.siteId)) {
 				const claimedAt = new Date().toISOString();
-				const result = this.ctx.db
-					.query(
-						"UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ? AND status = 'pending'",
-					)
-					.run(this.ctx.siteId, claimedAt, task.id);
-				if (result.changes === 0) {
+				// CAS: only claim if still pending (prevents duplicate scheduling from other hosts)
+				const txFn = this.ctx.db.transaction(() => {
+					const result = this.ctx.db
+						.query(
+							"UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ? AND status = 'pending'", // outbox-exempt: CAS update in transaction, followed by createChangeLogEntry
+						)
+						.run(this.ctx.siteId, claimedAt, task.id);
+					if (result.changes > 0) {
+						// Generate changelog entry for the successful claim
+						return createChangeLogEntry(this.ctx.db, "tasks", task.id, this.ctx.siteId, {
+							status: "claimed",
+							claimed_by: this.ctx.siteId,
+							claimed_at: claimedAt,
+							modified_at: new Date().toISOString(),
+						});
+					}
+					return null;
+				});
+
+				const hlc = txFn();
+				if (!hlc) {
 					this.ctx.logger.info("[scheduler] Task already claimed by another host", {
 						taskId: task.id,
 					});
@@ -458,11 +511,13 @@ export class Scheduler {
 					taskId: task.id,
 				});
 				// Release the claim so it can be re-evaluated later
-				this.ctx.db
-					.query(
-						"UPDATE tasks SET status = 'pending', claimed_by = NULL, claimed_at = NULL WHERE id = ?",
-					)
-					.run(task.id);
+				updateRow(
+					this.ctx.db,
+					"tasks",
+					task.id,
+					{ status: "pending", claimed_by: null, claimed_at: null },
+					this.ctx.siteId,
+				);
 				continue;
 			}
 
@@ -503,15 +558,27 @@ export class Scheduler {
 		const now = new Date().toISOString();
 
 		// Mark as running (CAS: only if still claimed by this host)
-		this.ctx.db
-			.query(
-				"UPDATE tasks SET status = 'running', lease_id = ?, heartbeat_at = ? WHERE id = ? AND status = 'claimed' AND claimed_by = ?",
-			)
-			.run(leaseId, now, task.id, this.ctx.siteId);
-		const runChanges = this.ctx.db.query("SELECT changes() as count").get() as {
-			count: number;
-		};
-		if (runChanges.count === 0) {
+		const txFn = this.ctx.db.transaction(() => {
+			const result = this.ctx.db
+				.query(
+					"UPDATE tasks SET status = 'running', lease_id = ?, heartbeat_at = ? WHERE id = ? AND status = 'claimed' AND claimed_by = ?", // outbox-exempt: CAS update in transaction, followed by createChangeLogEntry
+				)
+				.run(leaseId, now, task.id, this.ctx.siteId);
+			if (result.changes === 0) {
+				return null;
+			}
+
+			// Generate changelog entry for the successful CAS
+			return createChangeLogEntry(this.ctx.db, "tasks", task.id, this.ctx.siteId, {
+				status: "running",
+				lease_id: leaseId,
+				heartbeat_at: now,
+				modified_at: now,
+			});
+		});
+
+		const hlc = txFn();
+		if (!hlc) {
 			this.ctx.logger.warn("[scheduler] CAS failed: task was reclaimed before runTask", {
 				taskId: task.id,
 			});
@@ -559,9 +626,7 @@ export class Scheduler {
 							`[scheduler] Rotating cron task thread: ${countRow.count} messages exceeds threshold of ${CRON_THREAD_ROTATION_THRESHOLD}`,
 							{ taskId: task.id, oldThreadId: task.thread_id, newThreadId },
 						);
-						this.ctx.db
-							.query("UPDATE tasks SET thread_id = ? WHERE id = ?")
-							.run(newThreadId, task.id);
+						updateRow(this.ctx.db, "tasks", task.id, { thread_id: newThreadId }, this.ctx.siteId);
 						threadId = newThreadId;
 					}
 				}
@@ -570,7 +635,7 @@ export class Scheduler {
 				// thread later. Without this, tasks created without a thread_id
 				// would run fine but the detail view couldn't show their messages.
 				if (!task.thread_id) {
-					this.ctx.db.query("UPDATE tasks SET thread_id = ? WHERE id = ?").run(threadId, task.id);
+					updateRow(this.ctx.db, "tasks", task.id, { thread_id: threadId }, this.ctx.siteId);
 				}
 
 				// Bug #4: Ensure a thread row exists for the threadId.
@@ -754,22 +819,49 @@ export class Scheduler {
 						});
 						const errorMsg = validation.error;
 						const currentTask = this.ctx.db
-							.query("SELECT lease_id FROM tasks WHERE id = ?")
-							.get(task.id) as { lease_id: string | null } | undefined;
+							.query("SELECT * FROM tasks WHERE id = ?")
+							.get(task.id) as (Task & { lease_id: string | null }) | undefined;
 						if (currentTask?.lease_id === leaseId) {
-							const updated = this.ctx.db
-								.query(
-									"UPDATE tasks SET status = 'failed', error = ?, consecutive_failures = consecutive_failures + 1 WHERE id = ? RETURNING consecutive_failures",
-								)
-								.get(errorMsg, task.id) as { consecutive_failures: number } | null;
+							// Use raw SQL to handle concurrent updates to consecutive_failures properly
+							const txFn = this.ctx.db.transaction(() => {
+								this.ctx.db
+									.query(
+										"UPDATE tasks SET status = 'failed', error = ?, consecutive_failures = consecutive_failures + 1, modified_at = ? WHERE id = ?", // outbox-exempt: UPDATE in transaction, followed by createChangeLogEntry
+									)
+									.run(errorMsg, new Date().toISOString(), task.id);
 
-							const newConsecutiveFailures =
-								updated?.consecutive_failures ?? (task.consecutive_failures ?? 0) + 1;
+								// Get the updated row to check new failure count
+								const updatedTask = this.ctx.db
+									.query("SELECT * FROM tasks WHERE id = ?")
+									.get(task.id) as Task | null;
+								if (!updatedTask) {
+									throw new Error(`Task ${task.id} disappeared after model validation failure`);
+								}
+
+								// Generate changelog entry with full row snapshot
+								createChangeLogEntry(
+									this.ctx.db,
+									"tasks",
+									task.id,
+									this.ctx.siteId,
+									updatedTask as unknown as Record<string, unknown>,
+								);
+
+								return updatedTask.consecutive_failures ?? 0;
+							});
+
+							const newConsecutiveFailures = txFn();
 							if (newConsecutiveFailures === task.alert_threshold) {
 								this.triggerFailureAdvisory(task, errorMsg, newConsecutiveFailures);
 							}
 							// Cron tasks must still reschedule even when the model is temporarily unavailable
-							rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "model validation failure");
+							rescheduleCronTask(
+								this.ctx.db,
+								task,
+								this.ctx.logger,
+								"model validation failure",
+								this.ctx.siteId,
+							);
 							rescheduleHeartbeat(
 								this.ctx.db,
 								task,
@@ -782,6 +874,7 @@ export class Scheduler {
 								task,
 								newConsecutiveFailures,
 								this.ctx.logger,
+								this.ctx.siteId,
 								this.config.retryBackoffMs,
 							);
 						}
@@ -826,25 +919,41 @@ export class Scheduler {
 						});
 
 						// Soft error: run() returned normally but with an error field
-						const softUpdated = this.ctx.db
-							.query(
-								"UPDATE tasks SET status = 'failed', error = ?, result = ?, run_count = run_count + 1, last_run_at = ?, consecutive_failures = consecutive_failures + 1 WHERE id = ? RETURNING consecutive_failures",
-							)
-							.get(result.error, resultStr, completedAt, task.id) as {
-							consecutive_failures: number;
-						} | null;
+						// Use raw SQL to handle concurrent updates to consecutive_failures properly
+						const txFn = this.ctx.db.transaction(() => {
+							this.ctx.db
+								.query(
+									"UPDATE tasks SET status = 'failed', error = ?, result = ?, run_count = run_count + 1, last_run_at = ?, consecutive_failures = consecutive_failures + 1, modified_at = ? WHERE id = ?", // outbox-exempt: UPDATE in transaction, followed by createChangeLogEntry
+								)
+								.run(result.error ?? "", resultStr, completedAt, new Date().toISOString(), task.id);
 
-						// Alert if consecutive failures just reached the threshold.
-						// Use the RETURNING value so concurrent modifications to
-						// consecutive_failures (e.g. from another process) are reflected.
-						const newConsecutiveFailures =
-							softUpdated?.consecutive_failures ?? (task.consecutive_failures ?? 0) + 1;
+							// Get the updated row to check new failure count
+							const updatedTask = this.ctx.db
+								.query("SELECT * FROM tasks WHERE id = ?")
+								.get(task.id) as Task | null;
+							if (!updatedTask) {
+								throw new Error(`Task ${task.id} disappeared after soft error update`);
+							}
+
+							// Generate changelog entry with full row snapshot
+							createChangeLogEntry(
+								this.ctx.db,
+								"tasks",
+								task.id,
+								this.ctx.siteId,
+								updatedTask as unknown as Record<string, unknown>,
+							);
+
+							return updatedTask.consecutive_failures ?? 0;
+						});
+
+						const newConsecutiveFailures = txFn();
 						if (newConsecutiveFailures === task.alert_threshold) {
 							this.triggerFailureAdvisory(task, result.error, newConsecutiveFailures);
 						}
 
 						// Cron tasks still reschedule even after soft errors so they keep retrying
-						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "soft error");
+						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "soft error", this.ctx.siteId);
 						rescheduleHeartbeat(
 							this.ctx.db,
 							task,
@@ -857,6 +966,7 @@ export class Scheduler {
 							task,
 							newConsecutiveFailures,
 							this.ctx.logger,
+							this.ctx.siteId,
 							this.config.retryBackoffMs,
 						);
 					} else {
@@ -870,14 +980,22 @@ export class Scheduler {
 						});
 
 						// Mark as completed and reset consecutive failure counter
-						this.ctx.db
-							.query(
-								"UPDATE tasks SET status = 'completed', result = ?, run_count = run_count + 1, last_run_at = ?, consecutive_failures = 0 WHERE id = ?",
-							)
-							.run(resultStr, completedAt, task.id);
+						updateRow(
+							this.ctx.db,
+							"tasks",
+							task.id,
+							{
+								status: "completed",
+								result: resultStr,
+								run_count: (task.run_count ?? 0) + 1,
+								last_run_at: completedAt,
+								consecutive_failures: 0,
+							},
+							this.ctx.siteId,
+						);
 
 						// If cron task, compute next run time
-						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "completion");
+						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "completion", this.ctx.siteId);
 						rescheduleHeartbeat(
 							this.ctx.db,
 							task,
@@ -912,16 +1030,35 @@ export class Scheduler {
 					.get(task.id) as { lease_id: string | null } | undefined;
 
 				if (currentTask?.lease_id === leaseId) {
-					const hardUpdated = this.ctx.db
-						.query(
-							"UPDATE tasks SET status = 'failed', error = ?, consecutive_failures = consecutive_failures + 1 WHERE id = ? RETURNING consecutive_failures",
-						)
-						.get(errorMsg, task.id) as { consecutive_failures: number } | null;
+					// Use raw SQL to handle concurrent updates to consecutive_failures properly
+					const txFn = this.ctx.db.transaction(() => {
+						this.ctx.db
+							.query(
+								"UPDATE tasks SET status = 'failed', error = ?, consecutive_failures = consecutive_failures + 1, modified_at = ? WHERE id = ?", // outbox-exempt: UPDATE in transaction, followed by createChangeLogEntry
+							)
+							.run(errorMsg, new Date().toISOString(), task.id);
 
-					// Alert if consecutive failures just reached the threshold.
-					// Use the RETURNING value so concurrent modifications are reflected.
-					const newConsecutiveFailures =
-						hardUpdated?.consecutive_failures ?? (task.consecutive_failures ?? 0) + 1;
+						// Get the updated row to check new failure count
+						const updatedTask = this.ctx.db
+							.query("SELECT * FROM tasks WHERE id = ?")
+							.get(task.id) as Task | null;
+						if (!updatedTask) {
+							throw new Error(`Task ${task.id} disappeared after hard error update`);
+						}
+
+						// Generate changelog entry with full row snapshot
+						createChangeLogEntry(
+							this.ctx.db,
+							"tasks",
+							task.id,
+							this.ctx.siteId,
+							updatedTask as unknown as Record<string, unknown>,
+						);
+
+						return updatedTask.consecutive_failures ?? 0;
+					});
+
+					const newConsecutiveFailures = txFn();
 					if (newConsecutiveFailures === task.alert_threshold) {
 						this.triggerFailureAdvisory(task, errorMsg, newConsecutiveFailures);
 					}
@@ -955,7 +1092,7 @@ export class Scheduler {
 					}
 
 					// Cron tasks must reschedule even after hard errors so they keep running on schedule
-					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "hard error");
+					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "hard error", this.ctx.siteId);
 					rescheduleHeartbeat(
 						this.ctx.db,
 						task,
@@ -968,6 +1105,7 @@ export class Scheduler {
 						task,
 						newConsecutiveFailures,
 						this.ctx.logger,
+						this.ctx.siteId,
 						this.config.retryBackoffMs,
 					);
 				}
@@ -997,11 +1135,25 @@ export class Scheduler {
 				if (canRunHere(this.ctx.db, task, this.ctx.hostName, this.ctx.siteId)) {
 					const claimedAt = new Date().toISOString();
 					// CAS: only claim if still pending (prevents duplicate event execution)
-					this.ctx.db
-						.query(
-							"UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ? AND status = 'pending'",
-						)
-						.run(this.ctx.siteId, claimedAt, task.id);
+					const txFn = this.ctx.db.transaction(() => {
+						const result = this.ctx.db
+							.query(
+								"UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ? AND status = 'pending'", // outbox-exempt: CAS update in transaction, followed by createChangeLogEntry
+							)
+							.run(this.ctx.siteId, claimedAt, task.id);
+						if (result.changes > 0) {
+							// Generate changelog entry for the successful claim
+							return createChangeLogEntry(this.ctx.db, "tasks", task.id, this.ctx.siteId, {
+								status: "claimed",
+								claimed_by: this.ctx.siteId,
+								claimed_at: claimedAt,
+								modified_at: new Date().toISOString(),
+							});
+						}
+						return null;
+					});
+
+					txFn(); // hlc return value not used here
 				}
 			}
 		} finally {
@@ -1106,14 +1258,21 @@ export class Scheduler {
 						outputs,
 					});
 
-					this.ctx.db
-						.query(
-							"UPDATE tasks SET status = 'completed', result = ?, run_count = run_count + 1, last_run_at = ? WHERE id = ?",
-						)
-						.run(result, new Date().toISOString(), task.id);
+					updateRow(
+						this.ctx.db,
+						"tasks",
+						task.id,
+						{
+							status: "completed",
+							result,
+							run_count: (task.run_count ?? 0) + 1,
+							last_run_at: new Date().toISOString(),
+						},
+						this.ctx.siteId,
+					);
 
 					// If cron task, compute next run time
-					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "completion");
+					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "completion", this.ctx.siteId);
 					rescheduleHeartbeat(
 						this.ctx.db,
 						task,
@@ -1129,12 +1288,22 @@ export class Scheduler {
 					.get(task.id) as { lease_id: string | null } | undefined;
 
 				if (currentTask?.lease_id === leaseId) {
-					this.ctx.db
-						.query("UPDATE tasks SET status = 'failed', error = ? WHERE id = ?")
-						.run(errorMsg, task.id);
+					updateRow(
+						this.ctx.db,
+						"tasks",
+						task.id,
+						{ status: "failed", error: errorMsg },
+						this.ctx.siteId,
+					);
 
 					// Cron template tasks must reschedule even after hard errors
-					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "template hard error");
+					rescheduleCronTask(
+						this.ctx.db,
+						task,
+						this.ctx.logger,
+						"template hard error",
+						this.ctx.siteId,
+					);
 					rescheduleHeartbeat(
 						this.ctx.db,
 						task,
