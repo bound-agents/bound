@@ -20,6 +20,8 @@ export enum WsMessageType {
 	SNAPSHOT_END = 0x12,
 	SNAPSHOT_ACK = 0x13,
 	RESEED_REQUEST = 0x14,
+	CONSISTENCY_REQUEST = 0x20,
+	CONSISTENCY_RESPONSE = 0x21,
 	ERROR = 0xff,
 }
 
@@ -122,6 +124,20 @@ export type ReseedRequestPayload = {
 	reason: string;
 };
 
+export type ConsistencyRequestPayload = {
+	tables: string[];
+};
+
+export type ConsistencyResponsePayload = {
+	table: string;
+	pks: string[];
+	count: number;
+	has_more: boolean;
+	table_index: number;
+	table_count: number;
+	all_done: boolean;
+};
+
 export type ErrorPayload = {
 	code: string;
 	message: string;
@@ -176,6 +192,14 @@ export type WsFrame =
 	| {
 			type: WsMessageType.RESEED_REQUEST;
 			payload: ReseedRequestPayload;
+	  }
+	| {
+			type: WsMessageType.CONSISTENCY_REQUEST;
+			payload: ConsistencyRequestPayload;
+	  }
+	| {
+			type: WsMessageType.CONSISTENCY_RESPONSE;
+			payload: ConsistencyResponsePayload;
 	  }
 	| {
 			type: WsMessageType.ERROR;
@@ -331,8 +355,16 @@ function isValidPayloadForType(type: WsMessageType, payload: unknown): boolean {
 			// Required: snapshot_hlc string
 			return typeof p.snapshot_hlc === "string";
 		case WsMessageType.RESEED_REQUEST:
-			// Required: reason string
 			return typeof p.reason === "string";
+		case WsMessageType.CONSISTENCY_REQUEST:
+			return Array.isArray(p.tables);
+		case WsMessageType.CONSISTENCY_RESPONSE:
+			return (
+				typeof p.table === "string" &&
+				Array.isArray(p.pks) &&
+				typeof p.count === "number" &&
+				typeof p.all_done === "boolean"
+			);
 		case WsMessageType.DRAIN_REQUEST:
 			// Lenient: allow any object (reason is optional or may be in different format)
 			return true;

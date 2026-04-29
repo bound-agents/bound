@@ -52,6 +52,8 @@ export {
 	type SnapshotEndPayload,
 	type SnapshotAckPayload,
 	type ReseedRequestPayload,
+	type ConsistencyRequestPayload,
+	type ConsistencyResponsePayload,
 	type ErrorPayload,
 } from "./ws-frames.js";
 
