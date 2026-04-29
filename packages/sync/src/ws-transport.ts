@@ -1693,9 +1693,9 @@ export class WsTransport {
 		if (this.pendingConsistencyIdleTimer) clearTimeout(this.pendingConsistencyIdleTimer);
 		this.pendingConsistencyIdleTimer = setTimeout(() => {
 			if (this.pendingConsistencyResolve && this.pendingConsistencyData.size > 0) {
-				this.resolveConsistency("idle timeout (2s)");
+				this.resolveConsistency("idle timeout (10s)");
 			}
-		}, 2000);
+		}, 10_000);
 	}
 
 	private resolveConsistency(reason: string): void {
