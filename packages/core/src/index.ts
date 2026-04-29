@@ -20,9 +20,10 @@ export {
 } from "./change-log";
 export {
 	getLocalPksSorted,
+	getBackfillablePksSorted,
 	mergeDiffPks,
 	compareAllTables,
-	countUnsyncableRows,
+	countUnsyncableLocalOnly,
 	type TableDiff,
 } from "./consistency";
 export {

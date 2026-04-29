@@ -1,7 +1,7 @@
 import type { Database, Statement } from "bun:sqlite";
 import {
 	createChangeLogEntry,
-	getLocalPksSorted,
+	getBackfillablePksSorted,
 	getPkColumn as getPkColumnTyped,
 	insertInbox,
 	markDelivered,
@@ -1817,7 +1817,7 @@ export class WsTransport {
 			if (!remote) continue;
 
 			const pkCol = getPkColumnTyped(table);
-			const localPks = getLocalPksSorted(this.config.db, table);
+			const localPks = getBackfillablePksSorted(this.config.db, table);
 			const remoteSet = new Set(remote.pks);
 			const localOnly = localPks.filter((pk) => !remoteSet.has(pk));
 

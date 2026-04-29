@@ -2,7 +2,7 @@ import { createRelayOutboxEntry } from "@bound/agent";
 import {
 	cancelClientToolCalls,
 	compareAllTables,
-	countUnsyncableRows,
+	countUnsyncableLocalOnly,
 	getPendingClientToolCalls,
 	getSiteId,
 	insertRow,
@@ -304,7 +304,8 @@ export function createStatusRoutes(
 
 			const diffs = compareAllTables(db, remoteTables);
 			const localSiteId = getSiteId(db);
-			const unsyncable = countUnsyncableRows(db);
+			const msgDiff = diffs.find((d) => d.table === "messages");
+			const unsyncable = msgDiff ? countUnsyncableLocalOnly(db, msgDiff.localOnly) : [];
 
 			return c.json({
 				localSiteId,

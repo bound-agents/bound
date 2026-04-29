@@ -13,6 +13,14 @@ export interface TableDiff {
 
 export function getLocalPksSorted(db: Database, table: SyncedTableName): string[] {
 	const pkCol = getPkColumn(table);
+	const rows = db
+		.query(`SELECT ${pkCol} AS pk FROM ${table} ORDER BY ${pkCol} ASC`)
+		.all() as Array<{ pk: string }>;
+	return rows.map((r) => r.pk);
+}
+
+export function getBackfillablePksSorted(db: Database, table: SyncedTableName): string[] {
+	const pkCol = getPkColumn(table);
 	let query = `SELECT ${pkCol} AS pk FROM ${table} ORDER BY ${pkCol} ASC`;
 	if (table === "messages") {
 		query = `SELECT ${pkCol} AS pk FROM ${table} WHERE role != 'system' ORDER BY ${pkCol} ASC`;
@@ -21,18 +29,24 @@ export function getLocalPksSorted(db: Database, table: SyncedTableName): string[
 	return rows.map((r) => r.pk);
 }
 
-export function countUnsyncableRows(
+export function countUnsyncableLocalOnly(
 	db: Database,
+	localOnlyPks: string[],
 ): { table: string; count: number; reason: string }[] {
+	if (localOnlyPks.length === 0) return [];
 	const results: { table: string; count: number; reason: string }[] = [];
-	const systemMsgCount = (
-		db.query("SELECT COUNT(*) AS c FROM messages WHERE role = 'system'").get() as { c: number }
-	).c;
-	if (systemMsgCount > 0) {
+	let systemCount = 0;
+	for (const pk of localOnlyPks) {
+		const row = db.query("SELECT role FROM messages WHERE id = ?").get(pk) as {
+			role: string;
+		} | null;
+		if (row?.role === "system") systemCount++;
+	}
+	if (systemCount > 0) {
 		results.push({
 			table: "messages",
-			count: systemMsgCount,
-			reason: "role='system' (invariant #19)",
+			count: systemCount,
+			reason: "role='system' (invariant #19, hub rejects these)",
 		});
 	}
 	return results;
