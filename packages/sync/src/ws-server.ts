@@ -256,8 +256,10 @@ export function createWsHandlers(config: WsServerConfig): {
 							return true;
 						}
 						if (result === -1) {
+							// Data was queued — report success so the caller advances
+							// its cursor. Mark pressured so the NEXT send waits for drain.
 							ws.data.sendState = "pressured";
-							return false;
+							return true;
 						}
 						// result === 0: socket closed
 						logger?.warn("WS send returned 0 (socket closed)", {
