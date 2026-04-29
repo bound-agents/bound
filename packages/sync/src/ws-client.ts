@@ -260,25 +260,14 @@ export class WsSyncClient {
 			this.sendReseedRequest();
 		}
 
-		// Auto-backfill: push local-only rows after normal drain completes.
-		// Skip when reseeding (snapshot already provides everything).
 		if (this.config.wsTransport && !this.config.reseed) {
 			const wt = this.config.wsTransport as unknown as {
 				runBackfill?: () => Promise<unknown>;
 			};
 			if (typeof wt.runBackfill === "function") {
-				this.config.logger?.info("[backfill] Starting auto-backfill");
-				wt.runBackfill()
-					.then((result) => {
-						this.config.logger?.info("[backfill] Auto-backfill finished", { result });
-					})
-					.catch((err: Error) => {
-						this.config.logger?.warn("[backfill] Failed", {
-							error: err.message,
-						});
-					});
-			} else {
-				this.config.logger?.warn("[backfill] runBackfill not available on wsTransport");
+				wt.runBackfill().catch((err: Error) => {
+					this.config.logger?.warn("[backfill] Failed", { error: err.message });
+				});
 			}
 		}
 
@@ -324,16 +313,6 @@ export class WsSyncClient {
 				}
 
 				const decodedFrame = decodeResult.value;
-
-				if (
-					decodedFrame.type !== WsMessageType.CHANGELOG_PUSH &&
-					decodedFrame.type !== WsMessageType.CHANGELOG_ACK
-				) {
-					this.config.logger?.info("WsSyncClient: decoded frame type", {
-						type: decodedFrame.type,
-						typeName: WsMessageType[decodedFrame.type] ?? "unknown",
-					});
-				}
 
 				// Dispatch to WsTransport handlers
 				if (this.config.wsTransport) {
@@ -387,21 +366,12 @@ export class WsSyncClient {
 					}
 				}
 
-				if (decodedFrame.type === WsMessageType.CONSISTENCY_RESPONSE) {
-					if (this.config.wsTransport) {
-						const wt = this.config.wsTransport as unknown as {
+				if (decodedFrame.type === WsMessageType.CONSISTENCY_RESPONSE && this.config.wsTransport) {
+					(
+						this.config.wsTransport as unknown as {
 							handleConsistencyResponse?: (payload: unknown) => void;
-						};
-						if (typeof wt.handleConsistencyResponse === "function") {
-							wt.handleConsistencyResponse(decodedFrame.payload);
-						} else {
-							this.config.logger?.warn(
-								"[consistency] wsTransport missing handleConsistencyResponse",
-							);
 						}
-					} else {
-						this.config.logger?.warn("[consistency] No wsTransport for CONSISTENCY_RESPONSE");
-					}
+					).handleConsistencyResponse?.(decodedFrame.payload);
 				}
 			}
 

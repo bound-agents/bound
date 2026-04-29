@@ -1555,7 +1555,7 @@ export class WsTransport {
 			return;
 		}
 
-		this.config.logger?.info("[consistency] Starting PK stream", {
+		this.config.logger?.debug("[consistency] Starting PK stream", {
 			peerSiteId,
 			tableCount: tables.length,
 		});
@@ -1614,7 +1614,7 @@ export class WsTransport {
 		}
 
 		if (allDone) {
-			this.config.logger?.info("[consistency] PK stream complete", {
+			this.config.logger?.debug("[consistency] PK stream complete", {
 				peerSiteId,
 				tableCount: tables.length,
 			});
@@ -1662,7 +1662,7 @@ export class WsTransport {
 
 		this.pendingConsistencyRequestId = requestId;
 		this.pendingConsistencyData = new Map();
-		this.config.logger?.info("[consistency] Request sent", { requestId });
+		this.config.logger?.debug("[consistency] Request sent", { requestId });
 
 		return new Promise((resolve, reject) => {
 			this.pendingConsistencyResolve = resolve;
@@ -1731,10 +1731,9 @@ export class WsTransport {
 	}
 
 	private resolveConsistency(reason: string): void {
-		this.config.logger?.info("[consistency] Resolving", {
+		this.config.logger?.debug("[consistency] Resolving", {
 			reason,
 			tables: this.pendingConsistencyData.size,
-			totalPks: [...this.pendingConsistencyData.values()].reduce((sum, t) => sum + t.pks.length, 0),
 		});
 		if (this.pendingConsistencyTimer) {
 			clearTimeout(this.pendingConsistencyTimer);
