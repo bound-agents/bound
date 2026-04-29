@@ -178,6 +178,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 			continueSnapshotSeed: wsTransport.continueSnapshotSeed.bind(wsTransport),
 			applySnapshotChunk: wsTransport.applySnapshotChunk.bind(wsTransport),
 			handleReseedRequest: wsTransport.handleReseedRequest.bind(wsTransport),
+			handleConsistencyRequest: wsTransport.handleConsistencyRequest.bind(wsTransport),
+			requestConsistency: wsTransport.requestConsistency.bind(wsTransport),
 		});
 	}
 
