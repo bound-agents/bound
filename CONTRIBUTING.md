@@ -116,6 +116,8 @@ The source-of-truth type is `SyncedTableName` in `packages/shared/src/types.ts`.
 
 **4. Column-name validation.** Any SQL that interpolates a column name MUST pass it through `validateColumnName()` (regex `/^[a-z_]+$/`). Values always use parameterized queries. This applies to change-log replay, restore, reducers — anywhere JSON row data could drive column selection.
 
+**20. No foreign key constraints on synced tables.** Synced tables must NOT declare `REFERENCES` / `FOREIGN KEY` constraints. `PRAGMA foreign_keys = ON` is set, but no synced table uses FK clauses. This is intentional: changelog replay, snapshot seeding, and backfill all insert rows in non-deterministic order — a message may arrive before its parent thread, a memory edge before its source node. FK constraints would cause intermittent hard failures during sync that depend on network timing. Referential integrity is enforced by the application write path (outbox helpers), not by the database engine during replay.
+
 ### Consistency and events
 
 **5. OCC filesystem.** Compare hash-to-hash (never hash vs raw content). Persist inside `BEGIN IMMEDIATE`. Emit `file:changed` events AFTER the commit, never during.
