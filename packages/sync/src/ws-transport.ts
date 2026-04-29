@@ -75,6 +75,32 @@ interface PeerConnection {
  * 16 MB when 100 rows are batched together.
  */
 const MAX_SNAPSHOT_FRAME_BYTES = 4 * 1024 * 1024;
+const MAX_CHANGELOG_FRAME_BYTES = MAX_SNAPSHOT_FRAME_BYTES;
+
+function encodeChangelogFrames(
+	entries: Array<{
+		hlc: string;
+		table_name: string;
+		row_id: string;
+		site_id: string;
+		timestamp: string;
+		row_data: Record<string, unknown>;
+	}>,
+	symmetricKey: Uint8Array,
+): Uint8Array[] {
+	if (entries.length === 0) return [];
+	const payload: ChangelogPushPayload = { entries };
+	const frame = encodeFrame(WsMessageType.CHANGELOG_PUSH, payload, symmetricKey);
+	if (frame.length <= MAX_CHANGELOG_FRAME_BYTES) return [frame];
+
+	if (entries.length === 1) return [frame];
+
+	const mid = Math.floor(entries.length / 2);
+	return [
+		...encodeChangelogFrames(entries.slice(0, mid), symmetricKey),
+		...encodeChangelogFrames(entries.slice(mid), symmetricKey),
+	];
+}
 
 const SNAPSHOT_TABLE_ORDER: SyncedTableName[] = [
 	"users",
@@ -282,31 +308,28 @@ export class WsTransport {
 				continue;
 			}
 
-			// Build payload with simplified entry structure for wire transmission
-			const payload: ChangelogPushPayload = {
-				entries: entriesToSend.map((entry) => ({
-					hlc: entry.hlc,
-					table_name: entry.table_name,
-					row_id: entry.row_id,
-					site_id: entry.site_id,
-					timestamp: entry.timestamp,
-					row_data: JSON.parse(entry.row_data) as Record<string, unknown>,
-				})),
-			};
+			const wireEntries = entriesToSend.map((entry) => ({
+				hlc: entry.hlc,
+				table_name: entry.table_name,
+				row_id: entry.row_id,
+				site_id: entry.site_id,
+				timestamp: entry.timestamp,
+				row_data: JSON.parse(entry.row_data) as Record<string, unknown>,
+			}));
 
-			// Encode frame
-			const frame = encodeFrame(WsMessageType.CHANGELOG_PUSH, payload, peer.symmetricKey);
-
-			// Send frame (may return false for backpressure)
-			const sent = peer.sendFrame(frame);
-			if (!sent) {
-				this.config.logger?.warn("WsTransport changelog_push backpressured", {
-					peerSiteId,
-					entryCount: entriesToSend.length,
-				});
-				// Could implement pending drain here, but for now we just skip
-			} else {
-				// Update last_sent cursor to the highest HLC sent
+			const frames = encodeChangelogFrames(wireEntries, peer.symmetricKey);
+			let allSent = true;
+			for (const frame of frames) {
+				if (!peer.sendFrame(frame)) {
+					this.config.logger?.warn("WsTransport changelog_push backpressured", {
+						peerSiteId,
+						entryCount: entriesToSend.length,
+					});
+					allSent = false;
+					break;
+				}
+			}
+			if (allSent) {
 				const highestHlc = entriesToSend[entriesToSend.length - 1].hlc;
 				updatePeerCursor(this.config.db, peerSiteId, {
 					last_sent: highestHlc,
@@ -474,38 +497,34 @@ export class WsTransport {
 			return;
 		}
 
-		// Batch entries in chunks of 100
 		const batchSize = 100;
 		let backpressured = false;
 
 		for (let i = 0; i < allEntries.length && !backpressured; i += batchSize) {
 			const batch = allEntries.slice(i, i + batchSize);
 
-			// Build payload
-			const payload: ChangelogPushPayload = {
-				entries: batch.map((entry) => ({
-					hlc: entry.hlc,
-					table_name: entry.table_name,
-					row_id: entry.row_id,
-					site_id: entry.site_id,
-					timestamp: entry.timestamp,
-					row_data: JSON.parse(entry.row_data) as Record<string, unknown>,
-				})),
-			};
+			const wireEntries = batch.map((entry) => ({
+				hlc: entry.hlc,
+				table_name: entry.table_name,
+				row_id: entry.row_id,
+				site_id: entry.site_id,
+				timestamp: entry.timestamp,
+				row_data: JSON.parse(entry.row_data) as Record<string, unknown>,
+			}));
 
-			// Encode and send frame
-			const frame = encodeFrame(WsMessageType.CHANGELOG_PUSH, payload, peer.symmetricKey);
-
-			const sent = peer.sendFrame(frame);
-			if (!sent) {
-				this.config.logger?.warn("WsTransport drain backpressured", {
-					peerSiteId,
-					batchIndex: i / batchSize,
-					totalBatches: Math.ceil(allEntries.length / batchSize),
-				});
-				backpressured = true;
-			} else {
-				// Update last_sent after each successful batch
+			const frames = encodeChangelogFrames(wireEntries, peer.symmetricKey);
+			for (const frame of frames) {
+				if (!peer.sendFrame(frame)) {
+					this.config.logger?.warn("WsTransport drain backpressured", {
+						peerSiteId,
+						batchIndex: i / batchSize,
+						totalBatches: Math.ceil(allEntries.length / batchSize),
+					});
+					backpressured = true;
+					break;
+				}
+			}
+			if (!backpressured) {
 				const highestHlc = batch[batch.length - 1].hlc;
 				updatePeerCursor(this.config.db, peerSiteId, {
 					last_sent: highestHlc,
