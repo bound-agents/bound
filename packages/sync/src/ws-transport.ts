@@ -1784,12 +1784,6 @@ export class WsTransport {
 			if (!remote) continue;
 
 			const pkCol = getPkColumnTyped(table);
-			const localCountRow = this.config.db.query(`SELECT COUNT(*) AS c FROM ${table}`).get() as {
-				c: number;
-			};
-
-			if (localCountRow.c <= remote.count) continue;
-
 			const localPks = this.config.db
 				.query(`SELECT ${pkCol} AS pk FROM ${table} ORDER BY ${pkCol} ASC`)
 				.all() as Array<{ pk: string }>;
@@ -1797,29 +1791,16 @@ export class WsTransport {
 			const localOnly = localPks.map((r) => r.pk).filter((pk) => !remoteSet.has(pk));
 
 			if (localOnly.length === 0) continue;
-
-			const needsBackfill = localOnly.filter((pk) => {
-				const existing = this.config.db
-					.query(
-						"SELECT 1 FROM change_log WHERE table_name = ? AND row_id = ? AND site_id = ? LIMIT 1",
-					)
-					.get(table, pk, this.config.siteId);
-				return !existing;
-			});
-
-			if (needsBackfill.length === 0) continue;
 			tablesWithDrift++;
 
 			this.config.logger?.info("[backfill] Table needs backfill", {
 				table,
 				localOnly: localOnly.length,
-				needsBackfill: needsBackfill.length,
-				alreadyHaveChangelog: localOnly.length - needsBackfill.length,
 			});
 
 			const batchSize = WsTransport.BACKFILL_BATCH_SIZE;
-			for (let i = 0; i < needsBackfill.length; i += batchSize) {
-				const batch = needsBackfill.slice(i, i + batchSize);
+			for (let i = 0; i < localOnly.length; i += batchSize) {
+				const batch = localOnly.slice(i, i + batchSize);
 				const hlcs: string[] = [];
 
 				this.config.db.exec("BEGIN IMMEDIATE");
