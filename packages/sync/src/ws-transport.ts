@@ -1642,6 +1642,13 @@ export class WsTransport {
 		count: number;
 		all_done: boolean;
 	}): void {
+		this.config.logger?.info("[consistency] Response page received", {
+			table: payload.table,
+			pkCount: payload.pks?.length ?? 0,
+			count: payload.count,
+			allDone: payload.all_done,
+			hasPendingResolve: !!this.pendingConsistencyResolve,
+		});
 		if (!this.pendingConsistencyResolve) return;
 
 		const existing = this.pendingConsistencyData.get(payload.table);
