@@ -1580,7 +1580,14 @@ export class WsTransport {
 			},
 			peer.symmetricKey,
 		);
-		peer.sendFrame(frame);
+		const sent = peer.sendFrame(frame);
+		if (!sent) {
+			this.config.logger?.warn("[consistency] sendFrame returned false (backpressure)", {
+				peerSiteId,
+				table,
+				tableIndex,
+			});
+		}
 
 		if (allDone) {
 			this.config.logger?.info("[consistency] PK stream complete", {
@@ -1590,13 +1597,12 @@ export class WsTransport {
 			return;
 		}
 
-		if (hasMore) {
-			setTimeout(() => {
-				this.streamConsistencyPages(peerSiteId, tables, tableIndex, offset + pageSize);
-			}, 0);
-		} else {
-			this.streamConsistencyPages(peerSiteId, tables, tableIndex + 1, 0);
-		}
+		const nextTableIndex = hasMore ? tableIndex : tableIndex + 1;
+		const nextOffset = hasMore ? offset + pageSize : 0;
+
+		setTimeout(() => {
+			this.streamConsistencyPages(peerSiteId, tables, nextTableIndex, nextOffset);
+		}, 0);
 	}
 
 	// ── Spoke-side: request + collect ────────────────────────────────────
