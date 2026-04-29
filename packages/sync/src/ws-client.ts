@@ -325,6 +325,16 @@ export class WsSyncClient {
 
 				const decodedFrame = decodeResult.value;
 
+				if (
+					decodedFrame.type !== WsMessageType.CHANGELOG_PUSH &&
+					decodedFrame.type !== WsMessageType.CHANGELOG_ACK
+				) {
+					this.config.logger?.info("WsSyncClient: decoded frame type", {
+						type: decodedFrame.type,
+						typeName: WsMessageType[decodedFrame.type] ?? "unknown",
+					});
+				}
+
 				// Dispatch to WsTransport handlers
 				if (this.config.wsTransport) {
 					if (decodedFrame.type === WsMessageType.CHANGELOG_PUSH) {
