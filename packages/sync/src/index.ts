@@ -54,6 +54,9 @@ export {
 	type ReseedRequestPayload,
 	type ConsistencyRequestPayload,
 	type ConsistencyResponsePayload,
+	type RowPullRequestPayload,
+	type RowPullResponsePayload,
+	type RowPullAckPayload,
 	type ErrorPayload,
 } from "./ws-frames.js";
 

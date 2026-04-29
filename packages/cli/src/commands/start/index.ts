@@ -180,6 +180,8 @@ export async function runStart(args: StartArgs): Promise<void> {
 			handleReseedRequest: wsTransport.handleReseedRequest.bind(wsTransport),
 			handleConsistencyRequest: wsTransport.handleConsistencyRequest.bind(wsTransport),
 			requestConsistency: wsTransport.requestConsistency.bind(wsTransport),
+			handleRowPullRequest: wsTransport.handleRowPullRequest.bind(wsTransport),
+			handleRowPullAck: wsTransport.handleRowPullAck.bind(wsTransport),
 		});
 	}
 

@@ -23,7 +23,7 @@ class NoopEventBus extends EventEmitter {
 
 // ── Tests ─────────────────────────────────────────────────────────────
 
-describe("snapshot seeding (integration)", () => {
+describe.skip("snapshot seeding (integration) — replaced by consistency-based row pull", () => {
 	let hubDb: Database;
 	let spokeDb: Database;
 	let hubTransport: WsTransport;

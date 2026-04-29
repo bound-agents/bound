@@ -190,6 +190,8 @@ export interface ServerResult {
 		requestConsistency: (
 			tables: string[],
 		) => Promise<Map<string, { count: number; pks: string[] }>>;
+		handleRowPullRequest: (siteId: string, payload: unknown) => void;
+		handleRowPullAck: (siteId: string, payload: unknown) => void;
 	};
 }
 
@@ -251,6 +253,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		handleReseedRequest: () => {},
 		handleConsistencyRequest: () => {},
 		requestConsistency: async () => new Map(),
+		handleRowPullRequest: () => {},
+		handleRowPullAck: () => {},
 	};
 
 	// Wire the executor into the relay processor for Discord/platform process relays.

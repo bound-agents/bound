@@ -8,6 +8,8 @@ import type {
 	ConsistencyRequestPayload,
 	RelayAckPayload,
 	RelaySendPayload,
+	RowPullAckPayload,
+	RowPullRequestPayload,
 	SnapshotAckPayload,
 } from "./ws-frames.js";
 import { WsMessageType, decodeFrame } from "./ws-frames.js";
@@ -193,6 +195,8 @@ export interface WsServerConfig {
 		/** Handle a spoke's request for a full DB reseed. */
 		handleReseedRequest: (peerSiteId: string, payload: unknown) => void;
 		handleConsistencyRequest: (peerSiteId: string, payload: ConsistencyRequestPayload) => void;
+		handleRowPullRequest: (peerSiteId: string, payload: RowPullRequestPayload) => void;
+		handleRowPullAck: (peerSiteId: string, payload: RowPullAckPayload) => void;
 	};
 	logger?: Logger;
 	idleTimeout?: number; // seconds, default 120
@@ -350,6 +354,10 @@ export function createWsHandlers(config: WsServerConfig): {
 					config.wsTransport.handleReseedRequest(ws.data.siteId, decodedFrame.payload);
 				} else if (decodedFrame.type === WsMessageType.CONSISTENCY_REQUEST) {
 					config.wsTransport.handleConsistencyRequest(ws.data.siteId, decodedFrame.payload);
+				} else if (decodedFrame.type === WsMessageType.ROW_PULL_REQUEST) {
+					config.wsTransport.handleRowPullRequest(ws.data.siteId, decodedFrame.payload);
+				} else if (decodedFrame.type === WsMessageType.ROW_PULL_ACK) {
+					config.wsTransport.handleRowPullAck(ws.data.siteId, decodedFrame.payload);
 				}
 			}
 		},

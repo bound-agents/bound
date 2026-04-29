@@ -1,0 +1,681 @@
+import { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { TypedEventEmitter } from "@bound/shared";
+import {
+	type RowPullAckPayload,
+	type RowPullRequestPayload,
+	type RowPullResponsePayload,
+	WsMessageType,
+	decodeFrame,
+	encodeFrame,
+} from "../ws-frames.js";
+import { WsTransport } from "../ws-transport.js";
+
+function createTestSchema(db: Database): void {
+	db.run("PRAGMA journal_mode = WAL");
+	db.run("PRAGMA foreign_keys = ON");
+
+	db.run(`
+		CREATE TABLE change_log (
+			hlc TEXT PRIMARY KEY,
+			table_name TEXT NOT NULL,
+			row_id TEXT NOT NULL,
+			site_id TEXT NOT NULL,
+			timestamp TEXT NOT NULL,
+			row_data TEXT NOT NULL
+		)
+	`);
+
+	db.run(`
+		CREATE TABLE sync_state (
+			peer_site_id TEXT PRIMARY KEY,
+			last_received TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
+			last_sent TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
+			sync_errors INTEGER DEFAULT 0,
+			last_sync_at TEXT
+		)
+	`);
+
+	db.run(`
+		CREATE TABLE semantic_memory (
+			id TEXT PRIMARY KEY,
+			key TEXT NOT NULL,
+			value TEXT NOT NULL,
+			source TEXT,
+			created_at TEXT NOT NULL,
+			modified_at TEXT NOT NULL,
+			last_accessed_at TEXT,
+			tier TEXT DEFAULT 'default',
+			deleted INTEGER DEFAULT 0
+		)
+	`);
+
+	db.run(`
+		CREATE TABLE tasks (
+			id TEXT PRIMARY KEY,
+			type TEXT NOT NULL,
+			status TEXT NOT NULL,
+			trigger_spec TEXT NOT NULL,
+			payload TEXT,
+			created_at TEXT NOT NULL,
+			created_by TEXT,
+			thread_id TEXT,
+			claimed_by TEXT,
+			claimed_at TEXT,
+			lease_id TEXT,
+			next_run_at TEXT,
+			last_run_at TEXT,
+			run_count INTEGER DEFAULT 0,
+			max_runs INTEGER,
+			requires TEXT,
+			model_hint TEXT,
+			no_history INTEGER DEFAULT 0,
+			inject_mode TEXT DEFAULT 'results',
+			depends_on TEXT,
+			require_success INTEGER DEFAULT 0,
+			alert_threshold INTEGER DEFAULT 3,
+			consecutive_failures INTEGER DEFAULT 0,
+			event_depth INTEGER DEFAULT 0,
+			no_quiescence INTEGER DEFAULT 0,
+			heartbeat_at TEXT,
+			result TEXT,
+			error TEXT,
+			modified_at TEXT NOT NULL,
+			deleted INTEGER DEFAULT 0
+		) STRICT
+	`);
+
+	db.run(`
+		CREATE TABLE messages (
+			id TEXT PRIMARY KEY,
+			thread_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			content TEXT NOT NULL,
+			model_id TEXT,
+			tool_name TEXT,
+			created_at TEXT NOT NULL,
+			modified_at TEXT,
+			host_origin TEXT NOT NULL,
+			deleted INTEGER DEFAULT 0
+		) STRICT
+	`);
+
+	db.run(`
+		CREATE TABLE files (
+			id TEXT PRIMARY KEY,
+			path TEXT NOT NULL,
+			content TEXT NOT NULL,
+			hash TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			modified_at TEXT NOT NULL,
+			deleted INTEGER DEFAULT 0
+		) STRICT
+	`);
+}
+
+function insertMemory(db: Database, id: string, key: string): void {
+	const now = new Date().toISOString();
+	db.run(
+		`INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at)
+		 VALUES (?, ?, 'test-value', 'test', ?, ?)`,
+		[id, key, now, now],
+	);
+}
+
+function insertTask(db: Database, id: string): void {
+	const now = new Date().toISOString();
+	db.run(
+		`INSERT INTO tasks (id, type, status, trigger_spec, created_at, modified_at)
+		 VALUES (?, 'deferred', 'pending', '{}', ?, ?)`,
+		[id, now, now],
+	);
+}
+
+function insertFile(db: Database, id: string, path: string, content: string): void {
+	const now = new Date().toISOString();
+	db.run(
+		`INSERT INTO files (id, path, content, hash, created_at, modified_at)
+		 VALUES (?, ?, ?, 'hash-placeholder', ?, ?)`,
+		[id, path, content, now, now],
+	);
+}
+
+describe("ROW_PULL frame codec", () => {
+	const key = new Uint8Array(32).fill(42);
+
+	it("round-trips ROW_PULL_REQUEST", () => {
+		const payload: RowPullRequestPayload = {
+			request_id: "rp_test_123",
+			tables: [
+				{ table: "semantic_memory", pks: ["mem-1", "mem-2"] },
+				{ table: "tasks", pks: ["task-1"] },
+			],
+		};
+		const frame = encodeFrame(WsMessageType.ROW_PULL_REQUEST, payload, key);
+		const decoded = decodeFrame(frame, key);
+		expect(decoded.ok).toBe(true);
+		if (!decoded.ok) return;
+		expect(decoded.value.type).toBe(WsMessageType.ROW_PULL_REQUEST);
+		const p = decoded.value.payload as RowPullRequestPayload;
+		expect(p.request_id).toBe("rp_test_123");
+		expect(p.tables).toHaveLength(2);
+		expect(p.tables[0].table).toBe("semantic_memory");
+		expect(p.tables[0].pks).toEqual(["mem-1", "mem-2"]);
+	});
+
+	it("round-trips ROW_PULL_RESPONSE", () => {
+		const payload: RowPullResponsePayload = {
+			request_id: "rp_test_123",
+			table_name: "semantic_memory",
+			rows: [{ id: "mem-1", key: "k1", value: "v1" }],
+			last: false,
+		};
+		const frame = encodeFrame(WsMessageType.ROW_PULL_RESPONSE, payload, key);
+		const decoded = decodeFrame(frame, key);
+		expect(decoded.ok).toBe(true);
+		if (!decoded.ok) return;
+		expect(decoded.value.type).toBe(WsMessageType.ROW_PULL_RESPONSE);
+		const p = decoded.value.payload as RowPullResponsePayload;
+		expect(p.request_id).toBe("rp_test_123");
+		expect(p.table_name).toBe("semantic_memory");
+		expect(p.rows).toHaveLength(1);
+		expect(p.last).toBe(false);
+	});
+
+	it("round-trips ROW_PULL_RESPONSE with column chunks", () => {
+		const payload: RowPullResponsePayload = {
+			request_id: "rp_test_123",
+			table_name: "files",
+			rows: [],
+			last: false,
+			col_chunk_row_id: "file-1",
+			col_chunk_column: "content",
+			col_chunk_index: 0,
+			col_chunk_final: false,
+			col_chunk_data: "chunk-data-here",
+		};
+		const frame = encodeFrame(WsMessageType.ROW_PULL_RESPONSE, payload, key);
+		const decoded = decodeFrame(frame, key);
+		expect(decoded.ok).toBe(true);
+		if (!decoded.ok) return;
+		const p = decoded.value.payload as RowPullResponsePayload;
+		expect(p.col_chunk_row_id).toBe("file-1");
+		expect(p.col_chunk_column).toBe("content");
+		expect(p.col_chunk_index).toBe(0);
+		expect(p.col_chunk_data).toBe("chunk-data-here");
+	});
+
+	it("round-trips ROW_PULL_ACK", () => {
+		const payload: RowPullAckPayload = { request_id: "rp_test_123" };
+		const frame = encodeFrame(WsMessageType.ROW_PULL_ACK, payload, key);
+		const decoded = decodeFrame(frame, key);
+		expect(decoded.ok).toBe(true);
+		if (!decoded.ok) return;
+		expect(decoded.value.type).toBe(WsMessageType.ROW_PULL_ACK);
+		const p = decoded.value.payload as RowPullAckPayload;
+		expect(p.request_id).toBe("rp_test_123");
+	});
+
+	it("rejects ROW_PULL_REQUEST missing request_id", () => {
+		const payload = { tables: [] };
+		const frame = encodeFrame(WsMessageType.ROW_PULL_REQUEST, payload, key);
+		const decoded = decodeFrame(frame, key);
+		expect(decoded.ok).toBe(false);
+	});
+
+	it("rejects ROW_PULL_RESPONSE missing last field", () => {
+		const payload = { request_id: "x", table_name: "t", rows: [] };
+		const frame = encodeFrame(WsMessageType.ROW_PULL_RESPONSE, payload, key);
+		const decoded = decodeFrame(frame, key);
+		expect(decoded.ok).toBe(false);
+	});
+});
+
+describe("Hub-side handleRowPullRequest", () => {
+	let hubDb: Database;
+	let hubTransport: WsTransport;
+	let sentFrames: Uint8Array[];
+	const symmetricKey = new Uint8Array(32).fill(1);
+
+	beforeEach(() => {
+		hubDb = new Database(":memory:");
+		createTestSchema(hubDb);
+		hubTransport = new WsTransport({
+			db: hubDb,
+			siteId: "hub-1",
+			eventBus: new TypedEventEmitter(),
+			isHub: true,
+		});
+		sentFrames = [];
+		hubTransport.addPeer(
+			"spoke-1",
+			(frame: Uint8Array) => {
+				sentFrames.push(frame);
+				return true;
+			},
+			symmetricKey,
+		);
+	});
+
+	afterEach(() => {
+		hubTransport.stop();
+		hubDb.close();
+	});
+
+	it("responds with requested rows", async () => {
+		insertMemory(hubDb, "mem-1", "key-1");
+		insertMemory(hubDb, "mem-2", "key-2");
+		insertMemory(hubDb, "mem-3", "key-3");
+
+		hubTransport.handleRowPullRequest("spoke-1", {
+			request_id: "rp_1",
+			tables: [{ table: "semantic_memory", pks: ["mem-1", "mem-3"] }],
+		});
+
+		await new Promise((r) => setTimeout(r, 200));
+
+		const responses = sentFrames
+			.map((f) => decodeFrame(f, symmetricKey))
+			.filter((r) => r.ok)
+			.map(
+				(r) => (r as { ok: true; value: { type: number; payload: RowPullResponsePayload } }).value,
+			)
+			.filter((f) => f.type === WsMessageType.ROW_PULL_RESPONSE);
+
+		expect(responses.length).toBeGreaterThanOrEqual(1);
+
+		const allRows = responses.flatMap((r) => r.payload.rows);
+		const ids = allRows.map((r) => r.id);
+		expect(ids).toContain("mem-1");
+		expect(ids).toContain("mem-3");
+		expect(ids).not.toContain("mem-2");
+
+		const lastFrame = responses[responses.length - 1];
+		expect(lastFrame.payload.last).toBe(true);
+		expect(lastFrame.payload.request_id).toBe("rp_1");
+	});
+
+	it("handles nonexistent PKs gracefully", async () => {
+		hubTransport.handleRowPullRequest("spoke-1", {
+			request_id: "rp_2",
+			tables: [{ table: "semantic_memory", pks: ["nonexistent-1", "nonexistent-2"] }],
+		});
+
+		await new Promise((r) => setTimeout(r, 200));
+
+		const responses = sentFrames
+			.map((f) => decodeFrame(f, symmetricKey))
+			.filter((r) => r.ok)
+			.map(
+				(r) => (r as { ok: true; value: { type: number; payload: RowPullResponsePayload } }).value,
+			)
+			.filter((f) => f.type === WsMessageType.ROW_PULL_RESPONSE);
+
+		expect(responses.length).toBeGreaterThanOrEqual(1);
+		const lastFrame = responses[responses.length - 1];
+		expect(lastFrame.payload.last).toBe(true);
+		expect(lastFrame.payload.rows).toHaveLength(0);
+	});
+
+	it("handles multiple tables in one request", async () => {
+		insertMemory(hubDb, "mem-1", "key-1");
+		insertTask(hubDb, "task-1");
+		insertTask(hubDb, "task-2");
+
+		hubTransport.handleRowPullRequest("spoke-1", {
+			request_id: "rp_3",
+			tables: [
+				{ table: "semantic_memory", pks: ["mem-1"] },
+				{ table: "tasks", pks: ["task-1", "task-2"] },
+			],
+		});
+
+		await new Promise((r) => setTimeout(r, 200));
+
+		const responses = sentFrames
+			.map((f) => decodeFrame(f, symmetricKey))
+			.filter((r) => r.ok)
+			.map(
+				(r) => (r as { ok: true; value: { type: number; payload: RowPullResponsePayload } }).value,
+			)
+			.filter((f) => f.type === WsMessageType.ROW_PULL_RESPONSE);
+
+		const allRows = responses.flatMap((r) => r.payload.rows);
+		expect(allRows.length).toBe(3);
+
+		const lastFrame = responses[responses.length - 1];
+		expect(lastFrame.payload.last).toBe(true);
+	});
+});
+
+describe("Spoke-side handleRowPullResponse", () => {
+	let spokeDb: Database;
+	let spokeTransport: WsTransport;
+
+	beforeEach(() => {
+		spokeDb = new Database(":memory:");
+		createTestSchema(spokeDb);
+		spokeTransport = new WsTransport({
+			db: spokeDb,
+			siteId: "spoke-1",
+			eventBus: new TypedEventEmitter(),
+			isHub: false,
+		});
+	});
+
+	afterEach(() => {
+		spokeTransport.stop();
+		spokeDb.close();
+	});
+
+	it("applies received rows to local DB", () => {
+		const now = new Date().toISOString();
+		spokeTransport.handleRowPullResponse({
+			request_id: "rp_test",
+			table_name: "semantic_memory",
+			rows: [
+				{
+					id: "mem-1",
+					key: "k1",
+					value: "v1",
+					source: "hub",
+					created_at: now,
+					modified_at: now,
+					tier: "default",
+					deleted: 0,
+				},
+				{
+					id: "mem-2",
+					key: "k2",
+					value: "v2",
+					source: "hub",
+					created_at: now,
+					modified_at: now,
+					tier: "default",
+					deleted: 0,
+				},
+			],
+			last: true,
+		});
+
+		const rows = spokeDb
+			.query("SELECT id, key, value FROM semantic_memory ORDER BY id")
+			.all() as Array<{ id: string; key: string; value: string }>;
+		expect(rows).toHaveLength(2);
+		expect(rows[0].id).toBe("mem-1");
+		expect(rows[1].id).toBe("mem-2");
+	});
+
+	it("applies column chunks for oversized rows", () => {
+		insertFile(spokeDb, "file-1", "/test.txt", "");
+
+		spokeTransport.handleRowPullResponse({
+			request_id: "rp_test",
+			table_name: "files",
+			rows: [],
+			last: false,
+			col_chunk_row_id: "file-1",
+			col_chunk_column: "content",
+			col_chunk_index: 0,
+			col_chunk_data: "AAAA",
+		});
+
+		spokeTransport.handleRowPullResponse({
+			request_id: "rp_test",
+			table_name: "files",
+			rows: [],
+			last: true,
+			col_chunk_row_id: "file-1",
+			col_chunk_column: "content",
+			col_chunk_index: 1,
+			col_chunk_final: true,
+			col_chunk_data: "BBBB",
+		});
+
+		const file = spokeDb.query("SELECT content FROM files WHERE id = 'file-1'").get() as {
+			content: string;
+		};
+		expect(file.content).toBe("AAAABBBB");
+	});
+
+	it("does not create changelog entries for pulled rows", () => {
+		const now = new Date().toISOString();
+		spokeTransport.handleRowPullResponse({
+			request_id: "rp_test",
+			table_name: "semantic_memory",
+			rows: [
+				{
+					id: "mem-1",
+					key: "k1",
+					value: "v1",
+					source: "hub",
+					created_at: now,
+					modified_at: now,
+					tier: "default",
+					deleted: 0,
+				},
+			],
+			last: true,
+		});
+
+		const clCount = spokeDb.query("SELECT COUNT(*) AS c FROM change_log").get() as { c: number };
+		expect(clCount.c).toBe(0);
+	});
+});
+
+describe("Bidirectional executeBackfill", () => {
+	let spokeDb: Database;
+	let eventBus: TypedEventEmitter;
+	let spokeTransport: WsTransport;
+	let hubDb: Database;
+	let hubTransport: WsTransport;
+	const symmetricKey = new Uint8Array(32).fill(1);
+
+	beforeEach(() => {
+		spokeDb = new Database(":memory:");
+		createTestSchema(spokeDb);
+		eventBus = new TypedEventEmitter();
+		spokeTransport = new WsTransport({
+			db: spokeDb,
+			siteId: "spoke-1",
+			eventBus,
+			isHub: false,
+		});
+
+		hubDb = new Database(":memory:");
+		createTestSchema(hubDb);
+		hubTransport = new WsTransport({
+			db: hubDb,
+			siteId: "hub-1",
+			eventBus: new TypedEventEmitter(),
+			isHub: true,
+		});
+	});
+
+	afterEach(() => {
+		spokeTransport.stop();
+		hubTransport.stop();
+		spokeDb.close();
+		hubDb.close();
+	});
+
+	function setupBidirectionalMock(): void {
+		const hubSentFrames: Uint8Array[] = [];
+
+		hubTransport.addPeer(
+			"spoke-1",
+			(frame: Uint8Array) => {
+				hubSentFrames.push(frame);
+				return true;
+			},
+			symmetricKey,
+		);
+
+		spokeTransport.addPeer("hub-1", () => true, symmetricKey);
+
+		spokeTransport.requestConsistency = async () => {
+			const tables = new Map<string, { count: number; pks: string[] }>();
+			for (const table of ["semantic_memory", "tasks", "messages"] as const) {
+				const pkCol = table === "messages" ? "id" : table === "tasks" ? "id" : "id";
+				const rows = hubDb
+					.query(`SELECT ${pkCol} AS pk FROM ${table} ORDER BY ${pkCol} ASC`)
+					.all() as Array<{ pk: string }>;
+				tables.set(table, { count: rows.length, pks: rows.map((r) => r.pk) });
+			}
+			return tables;
+		};
+
+		spokeTransport.requestRowPull = async (tables: Array<{ table: string; pks: string[] }>) => {
+			hubTransport.handleRowPullRequest("spoke-1", {
+				request_id: "rp_test",
+				tables,
+			});
+			await new Promise((r) => setTimeout(r, 200));
+
+			for (const frame of hubSentFrames) {
+				const decoded = decodeFrame(frame, symmetricKey);
+				if (!decoded.ok) continue;
+				if (decoded.value.type === WsMessageType.ROW_PULL_RESPONSE) {
+					spokeTransport.handleRowPullResponse(decoded.value.payload as RowPullResponsePayload);
+				}
+			}
+		};
+	}
+
+	it("pushes local-only AND pulls remote-only rows", async () => {
+		insertMemory(spokeDb, "mem-spoke-1", "spoke-key");
+		insertMemory(spokeDb, "mem-spoke-2", "spoke-key-2");
+		insertMemory(spokeDb, "mem-shared", "shared-key");
+
+		insertMemory(hubDb, "mem-shared", "shared-key");
+		insertMemory(hubDb, "mem-hub-1", "hub-key-1");
+		insertMemory(hubDb, "mem-hub-2", "hub-key-2");
+		insertMemory(hubDb, "mem-hub-3", "hub-key-3");
+
+		setupBidirectionalMock();
+
+		const result = await spokeTransport.runBackfill();
+
+		expect(result.backfilled).toBe(2);
+
+		const clEntries = spokeDb
+			.query("SELECT row_id FROM change_log WHERE table_name = 'semantic_memory' ORDER BY row_id")
+			.all() as Array<{ row_id: string }>;
+		expect(clEntries.map((e) => e.row_id)).toEqual(["mem-spoke-1", "mem-spoke-2"]);
+
+		expect(result.pulled).toBeGreaterThanOrEqual(3);
+
+		const allMemories = spokeDb.query("SELECT id FROM semantic_memory ORDER BY id").all() as Array<{
+			id: string;
+		}>;
+		const ids = allMemories.map((r) => r.id);
+		expect(ids).toContain("mem-hub-1");
+		expect(ids).toContain("mem-hub-2");
+		expect(ids).toContain("mem-hub-3");
+		expect(ids).toContain("mem-spoke-1");
+		expect(ids).toContain("mem-spoke-2");
+		expect(ids).toContain("mem-shared");
+	});
+
+	it("returns zero pulled when no remote-only rows", async () => {
+		insertMemory(spokeDb, "mem-1", "key-1");
+		insertMemory(hubDb, "mem-1", "key-1");
+
+		setupBidirectionalMock();
+
+		const result = await spokeTransport.runBackfill();
+		expect(result.backfilled).toBe(0);
+		expect(result.pulled).toBe(0);
+	});
+
+	it("first-connect pulls all hub data", async () => {
+		insertMemory(hubDb, "mem-1", "key-1");
+		insertMemory(hubDb, "mem-2", "key-2");
+		insertTask(hubDb, "task-1");
+
+		setupBidirectionalMock();
+
+		spokeTransport.sendRowPullAck = (_requestId: string) => {
+			// no-op mock — just verifying it's called
+		};
+
+		const result = await spokeTransport.runBackfill({ isFirstConnect: true });
+
+		expect(result.backfilled).toBe(0);
+		expect(result.pulled).toBeGreaterThanOrEqual(3);
+
+		const memories = spokeDb.query("SELECT id FROM semantic_memory ORDER BY id").all() as Array<{
+			id: string;
+		}>;
+		expect(memories.map((r) => r.id)).toEqual(["mem-1", "mem-2"]);
+
+		const tasks = spokeDb.query("SELECT id FROM tasks ORDER BY id").all() as Array<{ id: string }>;
+		expect(tasks.map((r) => r.id)).toEqual(["task-1"]);
+	});
+});
+
+describe("Row pull timeout", () => {
+	let db: Database;
+	let transport: WsTransport;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		createTestSchema(db);
+		transport = new WsTransport({
+			db,
+			siteId: "spoke-1",
+			eventBus: new TypedEventEmitter(),
+			isHub: false,
+		});
+	});
+
+	afterEach(() => {
+		transport.stop();
+		db.close();
+	});
+
+	it("rejects after timeout when hub never responds", async () => {
+		const key = new Uint8Array(32).fill(1);
+		transport.addPeer("hub", () => true, key);
+
+		const pullPromise = transport.requestRowPull([{ table: "semantic_memory", pks: ["mem-1"] }]);
+
+		await expect(pullPromise).rejects.toThrow("timed out");
+	}, 70_000);
+});
+
+describe("seedNewPeer no-op", () => {
+	it("does not send any frames after being made a no-op", () => {
+		const db = new Database(":memory:");
+		createTestSchema(db);
+		db.run(`INSERT INTO sync_state (peer_site_id) VALUES ('spoke-1')`);
+		db.run(
+			`UPDATE sync_state SET last_received = '0000-00-00T00:00:00.000Z_0000_0000' WHERE peer_site_id = 'spoke-1'`,
+		);
+
+		const sent: Uint8Array[] = [];
+		const transport = new WsTransport({
+			db,
+			siteId: "hub-1",
+			eventBus: new TypedEventEmitter(),
+			isHub: true,
+		});
+
+		const key = new Uint8Array(32).fill(1);
+		transport.addPeer(
+			"spoke-1",
+			(frame: Uint8Array) => {
+				sent.push(frame);
+				return true;
+			},
+			key,
+		);
+
+		transport.seedNewPeer("spoke-1");
+
+		expect(sent.length).toBe(0);
+
+		transport.stop();
+		db.close();
+	});
+});

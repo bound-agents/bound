@@ -71,6 +71,8 @@ export interface SyncAppConfig {
 		applySnapshotChunk: (tableName: string, rows: Array<Record<string, unknown>>) => number;
 		handleReseedRequest: (siteId: string, payload: unknown) => void;
 		handleConsistencyRequest: (siteId: string, payload: unknown) => void;
+		handleRowPullRequest: (siteId: string, payload: unknown) => void;
+		handleRowPullAck: (siteId: string, payload: unknown) => void;
 	} | null;
 }
 

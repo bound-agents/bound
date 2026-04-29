@@ -253,19 +253,23 @@ export class WsSyncClient {
 			this.config.wsTransport.drainRelayOutbox(this.config.hubSiteId);
 		}
 
-		// If --reseed was requested, tell the hub to send a full snapshot.
-		// Guard against re-sending on every reconnection.
-		if (this.config.reseed && this.symmetricKey && !this.reseedSent) {
-			this.reseedSent = true;
-			this.sendReseedRequest();
-		}
-
-		if (this.config.wsTransport && !this.config.reseed) {
+		if (this.config.wsTransport) {
 			const wt = this.config.wsTransport as unknown as {
-				runBackfill?: () => Promise<unknown>;
+				runBackfill?: (opts?: { isFirstConnect?: boolean }) => Promise<unknown>;
+				clearSyncedTables?: () => void;
 			};
+
+			if (this.config.reseed && !this.reseedSent) {
+				this.reseedSent = true;
+				if (typeof wt.clearSyncedTables === "function") {
+					wt.clearSyncedTables();
+					this.config.logger?.info("[reseed] Cleared local tables for consistency-based reseed");
+				}
+			}
+
 			if (typeof wt.runBackfill === "function") {
-				wt.runBackfill().catch((err: Error) => {
+				const isFirstConnect = this.config.reseed && this.reseedSent;
+				wt.runBackfill({ isFirstConnect: !!isFirstConnect }).catch((err: Error) => {
 					this.config.logger?.warn("[backfill] Failed", { error: err.message });
 				});
 			}
@@ -372,6 +376,14 @@ export class WsSyncClient {
 							handleConsistencyResponse?: (payload: unknown) => void;
 						}
 					).handleConsistencyResponse?.(decodedFrame.payload);
+				}
+
+				if (decodedFrame.type === WsMessageType.ROW_PULL_RESPONSE && this.config.wsTransport) {
+					(
+						this.config.wsTransport as unknown as {
+							handleRowPullResponse?: (payload: unknown) => void;
+						}
+					).handleRowPullResponse?.(decodedFrame.payload);
 				}
 			}
 

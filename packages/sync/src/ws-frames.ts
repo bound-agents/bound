@@ -22,6 +22,9 @@ export enum WsMessageType {
 	RESEED_REQUEST = 0x14,
 	CONSISTENCY_REQUEST = 0x20,
 	CONSISTENCY_RESPONSE = 0x21,
+	ROW_PULL_REQUEST = 0x30,
+	ROW_PULL_RESPONSE = 0x31,
+	ROW_PULL_ACK = 0x32,
 	ERROR = 0xff,
 }
 
@@ -140,6 +143,27 @@ export type ConsistencyResponsePayload = {
 	request_id?: string;
 };
 
+export type RowPullRequestPayload = {
+	request_id: string;
+	tables: Array<{ table: string; pks: string[] }>;
+};
+
+export type RowPullResponsePayload = {
+	request_id: string;
+	table_name: string;
+	rows: Array<Record<string, unknown>>;
+	last: boolean;
+	col_chunk_row_id?: string;
+	col_chunk_column?: string;
+	col_chunk_index?: number;
+	col_chunk_final?: boolean;
+	col_chunk_data?: string;
+};
+
+export type RowPullAckPayload = {
+	request_id: string;
+};
+
 export type ErrorPayload = {
 	code: string;
 	message: string;
@@ -202,6 +226,18 @@ export type WsFrame =
 	| {
 			type: WsMessageType.CONSISTENCY_RESPONSE;
 			payload: ConsistencyResponsePayload;
+	  }
+	| {
+			type: WsMessageType.ROW_PULL_REQUEST;
+			payload: RowPullRequestPayload;
+	  }
+	| {
+			type: WsMessageType.ROW_PULL_RESPONSE;
+			payload: RowPullResponsePayload;
+	  }
+	| {
+			type: WsMessageType.ROW_PULL_ACK;
+			payload: RowPullAckPayload;
 	  }
 	| {
 			type: WsMessageType.ERROR;
@@ -367,6 +403,17 @@ function isValidPayloadForType(type: WsMessageType, payload: unknown): boolean {
 				typeof p.count === "number" &&
 				typeof p.all_done === "boolean"
 			);
+		case WsMessageType.ROW_PULL_REQUEST:
+			return typeof p.request_id === "string" && Array.isArray(p.tables);
+		case WsMessageType.ROW_PULL_RESPONSE:
+			return (
+				typeof p.request_id === "string" &&
+				typeof p.table_name === "string" &&
+				Array.isArray(p.rows) &&
+				typeof p.last === "boolean"
+			);
+		case WsMessageType.ROW_PULL_ACK:
+			return typeof p.request_id === "string";
 		case WsMessageType.DRAIN_REQUEST:
 			// Lenient: allow any object (reason is optional or may be in different format)
 			return true;

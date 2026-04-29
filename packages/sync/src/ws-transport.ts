@@ -5,6 +5,7 @@ import {
 	getPkColumn as getPkColumnTyped,
 	insertInbox,
 	markDelivered,
+	mergeDiffPks,
 	readUndelivered,
 	writeOutbox,
 } from "@bound/core";
@@ -33,8 +34,9 @@ import type {
 	RelayAckPayload,
 	RelayDeliverPayload,
 	RelaySendPayload,
+	RowPullRequestPayload,
+	RowPullResponsePayload,
 	SnapshotAckPayload,
-	SnapshotBeginPayload,
 	SnapshotChunkPayload,
 	SnapshotEndPayload,
 } from "./ws-frames.js";
@@ -985,54 +987,16 @@ export class WsTransport {
 	 * On a spoke, this is a no-op (spokes don't seed other spokes).
 	 */
 	seedNewPeer(peerSiteId: string): void {
-		// Only the hub seeds new peers. A spoke receiving a connection from
-		// another spoke shouldn't dump its local state.
+		// No-op: spoke-initiated consistency pull replaces hub-initiated snapshot seeding.
+		// The spoke calls runBackfill() on connect, which handles first-connect via row pull.
 		if (!this.config.isHub) return;
 
-		const peer = this.peerConnections.get(peerSiteId);
-		if (!peer) return;
-
-		// Only seed if this peer has never received data from us.
-		const cursor = getPeerCursor(this.config.db, peerSiteId);
-		if (cursor && cursor.last_received !== HLC_ZERO) return;
-
-		// Snapshot HLC: everything in the DB up to this point is included.
-		// Post-snapshot changelog catchup starts from here.
-		const now = new Date().toISOString();
-		const snapshotHlc = generateHlc(now, null, this.config.siteId);
-
-		this.snapshotStates.set(peerSiteId, {
-			tableIndex: 0,
-			offset: 0,
-			lastRowid: 0,
-			snapshotHlc,
-			draining: false,
-			stmt: null,
-		});
-
-		// Create a sync_state row early so pruning is blocked while seeding
-		// (getMinConfirmedHlc sees HLC_ZERO → pruning paused).
+		// Ensure a sync_state row exists so the peer is tracked for changelog drain.
 		updatePeerCursor(this.config.db, peerSiteId, {});
 
-		// Send SNAPSHOT_BEGIN with the table list and snapshot HLC.
-		const beginPayload: SnapshotBeginPayload = {
-			snapshot_hlc: snapshotHlc,
-			tables: SNAPSHOT_TABLE_ORDER.slice(),
-		};
-		const beginFrame = encodeFrame(WsMessageType.SNAPSHOT_BEGIN, beginPayload, peer.symmetricKey);
-		peer.sendFrame(beginFrame);
-
-		this.config.logger?.info("[snapshot] Seeding new peer", {
+		this.config.logger?.debug("[snapshot] seedNewPeer is no-op — spoke will pull via consistency", {
 			peerSiteId,
-			snapshotHlc,
-			tableCount: SNAPSHOT_TABLE_ORDER.length,
 		});
-
-		// Start sending chunks (yield to event loop so the SNAPSHOT_BEGIN frame
-		// is flushed before we start pushing table data).
-		// Use sendSnapshotChunks directly — continueSnapshotSeed is only for
-		// resuming after backpressure (it requires state.draining === true).
-		setTimeout(() => this.sendSnapshotChunks(peerSiteId), 0);
 	}
 
 	/**
@@ -1748,11 +1712,47 @@ export class WsTransport {
 	// ── Auto-backfill: push local-only rows as changelog entries ─────────
 
 	private static readonly BACKFILL_BATCH_SIZE = 1000;
+
+	private static readonly SYNCED_TABLES: SyncedTableName[] = [
+		"users",
+		"hosts",
+		"cluster_config",
+		"threads",
+		"messages",
+		"turns",
+		"semantic_memory",
+		"memory_edges",
+		"tasks",
+		"files",
+		"advisories",
+		"skills",
+		"overlay_index",
+	];
+
+	clearSyncedTables(): void {
+		this.config.db.exec("BEGIN IMMEDIATE");
+		try {
+			for (const table of WsTransport.SYNCED_TABLES) {
+				this.config.db.exec(`DELETE FROM ${table}`);
+			}
+			this.config.db.exec("COMMIT");
+		} catch (err) {
+			try {
+				this.config.db.exec("ROLLBACK");
+			} catch {
+				// original error takes priority
+			}
+			throw err;
+		}
+		this.config.logger?.info("[reseed] All synced tables cleared");
+	}
 	private static readonly BACKFILL_COOLDOWN_MS = 5 * 60 * 1000;
 	private backfillRunning = false;
 	private lastBackfillAt = 0;
 
-	async runBackfill(): Promise<{ backfilled: number; tables: number }> {
+	async runBackfill(opts?: {
+		isFirstConnect?: boolean;
+	}): Promise<{ backfilled: number; tables: number; pulled: number }> {
 		if (this.backfillRunning) {
 			throw new Error("Backfill already in progress");
 		}
@@ -1761,11 +1761,11 @@ export class WsTransport {
 			this.config.logger?.debug("[backfill] Skipping — cooldown active", {
 				remainingMs: WsTransport.BACKFILL_COOLDOWN_MS - elapsed,
 			});
-			return { backfilled: 0, tables: 0 };
+			return { backfilled: 0, tables: 0, pulled: 0 };
 		}
 		this.backfillRunning = true;
 		try {
-			const result = await this.executeBackfill();
+			const result = await this.executeBackfill(opts?.isFirstConnect);
 			this.lastBackfillAt = Date.now();
 			return result;
 		} finally {
@@ -1773,27 +1773,16 @@ export class WsTransport {
 		}
 	}
 
-	private async executeBackfill(): Promise<{ backfilled: number; tables: number }> {
+	private async executeBackfill(
+		isFirstConnect?: boolean,
+	): Promise<{ backfilled: number; tables: number; pulled: number }> {
 		const remoteTables = await this.requestConsistencyWithTimeout();
 
-		const allSyncedTables: SyncedTableName[] = [
-			"users",
-			"hosts",
-			"cluster_config",
-			"threads",
-			"messages",
-			"turns",
-			"semantic_memory",
-			"memory_edges",
-			"tasks",
-			"files",
-			"advisories",
-			"skills",
-			"overlay_index",
-		];
+		const allSyncedTables = WsTransport.SYNCED_TABLES;
 
 		let backfilled = 0;
 		let tablesWithDrift = 0;
+		const remoteOnlyByTable: Array<{ table: string; pks: string[] }> = [];
 
 		for (const table of allSyncedTables) {
 			const remote = remoteTables.get(table);
@@ -1801,20 +1790,25 @@ export class WsTransport {
 
 			const pkCol = getPkColumnTyped(table);
 			const localPks = getBackfillablePksSorted(this.config.db, table);
-			const remoteSet = new Set(remote.pks);
-			const localOnly = localPks.filter((pk) => !remoteSet.has(pk));
+			const remotePksSorted = remote.pks.slice().sort();
+			const diff = mergeDiffPks(localPks, remotePksSorted);
 
-			if (localOnly.length === 0) continue;
+			if (diff.remoteOnly.length > 0) {
+				remoteOnlyByTable.push({ table, pks: diff.remoteOnly });
+			}
+
+			if (diff.localOnly.length === 0) continue;
 			tablesWithDrift++;
 
 			this.config.logger?.info("[backfill] Table needs backfill", {
 				table,
-				localOnly: localOnly.length,
+				localOnly: diff.localOnly.length,
+				remoteOnly: diff.remoteOnly.length,
 			});
 
 			const batchSize = WsTransport.BACKFILL_BATCH_SIZE;
-			for (let i = 0; i < localOnly.length; i += batchSize) {
-				const batch = localOnly.slice(i, i + batchSize);
+			for (let i = 0; i < diff.localOnly.length; i += batchSize) {
+				const batch = diff.localOnly.slice(i, i + batchSize);
 				const hlcs: string[] = [];
 
 				this.config.db.exec("BEGIN IMMEDIATE");
@@ -1851,13 +1845,249 @@ export class WsTransport {
 			}
 		}
 
-		if (backfilled > 0) {
+		let pulled = 0;
+		if (remoteOnlyByTable.length > 0) {
+			const totalRemoteOnly = remoteOnlyByTable.reduce((sum, t) => sum + t.pks.length, 0);
+			this.config.logger?.info("[backfill] Pulling remote-only rows", {
+				tables: remoteOnlyByTable.length,
+				rows: totalRemoteOnly,
+			});
+			await this.requestRowPull(remoteOnlyByTable);
+			pulled = totalRemoteOnly;
+		}
+
+		if (isFirstConnect) {
+			this.sendRowPullAck(`rp_ack_${Date.now()}`);
+		}
+
+		if (backfilled > 0 || pulled > 0) {
 			this.config.logger?.info("[backfill] Complete", {
 				backfilled,
+				pulled,
 				tables: tablesWithDrift,
 			});
 		}
 
-		return { backfilled, tables: tablesWithDrift };
+		return { backfilled, tables: tablesWithDrift, pulled };
+	}
+
+	// ── Hub-side: row pull ───────────────────────────────────────────────
+
+	private static readonly ROW_PULL_BATCH_SIZE = 100;
+
+	handleRowPullRequest(peerSiteId: string, payload: RowPullRequestPayload): void {
+		if (!this.config.isHub) return;
+
+		const peer = this.peerConnections.get(peerSiteId);
+		if (!peer) return;
+
+		this.config.logger?.debug("[row-pull] Request received", {
+			peerSiteId,
+			requestId: payload.request_id,
+			tables: payload.tables.length,
+		});
+
+		this.streamRowPullPages(peerSiteId, payload.request_id, payload.tables, 0, 0);
+	}
+
+	private streamRowPullPages(
+		peerSiteId: string,
+		requestId: string,
+		tables: Array<{ table: string; pks: string[] }>,
+		tableIndex: number,
+		pkOffset: number,
+	): void {
+		const peer = this.peerConnections.get(peerSiteId);
+		if (!peer) return;
+
+		if (tableIndex >= tables.length) {
+			const frame = encodeFrame(
+				WsMessageType.ROW_PULL_RESPONSE,
+				{ request_id: requestId, table_name: "", rows: [], last: true },
+				peer.symmetricKey,
+			);
+			peer.sendFrame(frame);
+			this.config.logger?.debug("[row-pull] Stream complete", { peerSiteId, requestId });
+			return;
+		}
+
+		const { table, pks } = tables[tableIndex];
+		const pkCol = getPkColumn(table);
+		const batchSize = WsTransport.ROW_PULL_BATCH_SIZE;
+		const batch = pks.slice(pkOffset, pkOffset + batchSize);
+
+		if (batch.length === 0) {
+			setTimeout(() => {
+				this.streamRowPullPages(peerSiteId, requestId, tables, tableIndex + 1, 0);
+			}, 0);
+			return;
+		}
+
+		const placeholders = batch.map(() => "?").join(", ");
+		const rows = this.config.db
+			.query(`SELECT * FROM ${table} WHERE ${pkCol} IN (${placeholders})`)
+			.all(...batch) as Array<Record<string, unknown>>;
+
+		const nextPkOffset = pkOffset + batchSize;
+		const hasMoreInTable = nextPkOffset < pks.length;
+		const isLastTable = tableIndex === tables.length - 1;
+		const isLast = !hasMoreInTable && isLastTable;
+
+		if (rows.length > 0) {
+			const frame = encodeFrame(
+				WsMessageType.ROW_PULL_RESPONSE,
+				{
+					request_id: requestId,
+					table_name: table,
+					rows,
+					last: isLast,
+				},
+				peer.symmetricKey,
+			);
+
+			if (frame.length > MAX_CHANGELOG_FRAME_BYTES) {
+				this.streamRowPullRowsSplit(peerSiteId, requestId, table, rows, isLast, peer);
+			} else {
+				peer.sendFrame(frame);
+			}
+		} else if (isLast) {
+			const frame = encodeFrame(
+				WsMessageType.ROW_PULL_RESPONSE,
+				{ request_id: requestId, table_name: table, rows: [], last: true },
+				peer.symmetricKey,
+			);
+			peer.sendFrame(frame);
+		}
+
+		if (!isLast) {
+			const nextTableIdx = hasMoreInTable ? tableIndex : tableIndex + 1;
+			const nextOffset = hasMoreInTable ? nextPkOffset : 0;
+			setTimeout(() => {
+				this.streamRowPullPages(peerSiteId, requestId, tables, nextTableIdx, nextOffset);
+			}, 0);
+		}
+	}
+
+	private streamRowPullRowsSplit(
+		_peerSiteId: string,
+		requestId: string,
+		table: string,
+		rows: Array<Record<string, unknown>>,
+		isLast: boolean,
+		peer: PeerConnection,
+	): void {
+		for (let i = 0; i < rows.length; i++) {
+			const rowIsLast = isLast && i === rows.length - 1;
+			const frame = encodeFrame(
+				WsMessageType.ROW_PULL_RESPONSE,
+				{
+					request_id: requestId,
+					table_name: table,
+					rows: [rows[i]],
+					last: rowIsLast,
+				},
+				peer.symmetricKey,
+			);
+			peer.sendFrame(frame);
+		}
+	}
+
+	handleRowPullAck(peerSiteId: string, _payload: { request_id: string }): void {
+		if (!this.config.isHub) return;
+
+		const now = new Date().toISOString();
+		const pullHlc = generateHlc(now, null, this.config.siteId);
+
+		updatePeerCursor(this.config.db, peerSiteId, {
+			last_received: pullHlc,
+			last_sent: pullHlc,
+		});
+
+		this.config.logger?.info("[row-pull] ACK received, cursor advanced", {
+			peerSiteId,
+			pullHlc,
+		});
+
+		this.drainChangelog(peerSiteId);
+	}
+
+	// ── Spoke-side: row pull request + response ──────────────────────────
+
+	private pendingRowPullRequests = new Map<
+		string,
+		{
+			resolve: () => void;
+			reject: (err: Error) => void;
+			timer: Timer;
+		}
+	>();
+
+	requestRowPull(tables: Array<{ table: string; pks: string[] }>): Promise<void> {
+		const hubPeer = this.peerConnections.values().next().value as PeerConnection | undefined;
+		if (!hubPeer) {
+			return Promise.reject(new Error("Not connected to hub"));
+		}
+
+		const requestId = `rp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+		const frame = encodeFrame(
+			WsMessageType.ROW_PULL_REQUEST,
+			{ request_id: requestId, tables },
+			hubPeer.symmetricKey,
+		);
+		if (!hubPeer.sendFrame(frame)) {
+			return Promise.reject(new Error("Failed to send row pull request"));
+		}
+
+		this.config.logger?.debug("[row-pull] Request sent", { requestId, tables: tables.length });
+
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.pendingRowPullRequests.delete(requestId);
+				reject(new Error("Row pull request timed out (60s)"));
+			}, 60_000);
+			this.pendingRowPullRequests.set(requestId, { resolve, reject, timer });
+		});
+	}
+
+	handleRowPullResponse(payload: RowPullResponsePayload): void {
+		if (payload.rows.length > 0) {
+			applySnapshotRows(this.config.db, payload.table_name, payload.rows, this.config.logger);
+		}
+
+		if (payload.col_chunk_row_id && payload.col_chunk_column && payload.col_chunk_data != null) {
+			applyColumnChunkFn(
+				this.config.db,
+				payload.table_name,
+				payload.col_chunk_row_id,
+				payload.col_chunk_column,
+				payload.col_chunk_index ?? 0,
+				payload.col_chunk_data,
+				this.config.logger,
+			);
+		}
+
+		if (payload.last) {
+			const req = payload.request_id
+				? this.pendingRowPullRequests.get(payload.request_id)
+				: undefined;
+			if (req) {
+				clearTimeout(req.timer);
+				this.pendingRowPullRequests.delete(payload.request_id);
+				req.resolve();
+			}
+		}
+	}
+
+	sendRowPullAck(requestId: string): void {
+		const hubPeer = this.peerConnections.values().next().value as PeerConnection | undefined;
+		if (!hubPeer) return;
+
+		const frame = encodeFrame(
+			WsMessageType.ROW_PULL_ACK,
+			{ request_id: requestId },
+			hubPeer.symmetricKey,
+		);
+		hubPeer.sendFrame(frame);
+		this.config.logger?.debug("[row-pull] ACK sent", { requestId });
 	}
 }
