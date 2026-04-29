@@ -1607,6 +1607,7 @@ export class WsTransport {
 	private pendingConsistencyReject: ((err: Error) => void) | null = null;
 	private pendingConsistencyData = new Map<string, { count: number; pks: string[] }>();
 	private pendingConsistencyTimer: Timer | null = null;
+	private pendingConsistencyIdleTimer: Timer | null = null;
 
 	requestConsistency(tables: string[]): Promise<Map<string, { count: number; pks: string[] }>> {
 		if (this.pendingConsistencyResolve) {
@@ -1641,10 +1642,10 @@ export class WsTransport {
 		table: string;
 		pks: string[];
 		count: number;
-		has_more: boolean;
-		table_index: number;
-		table_count: number;
-		all_done: boolean;
+		has_more?: boolean;
+		table_index?: number;
+		table_count?: number;
+		all_done?: boolean;
 	}): void {
 		if (!this.pendingConsistencyResolve) return;
 
@@ -1659,30 +1660,48 @@ export class WsTransport {
 			});
 		}
 
-		const done =
-			payload.all_done ||
-			(!payload.has_more &&
-				payload.table_count > 0 &&
-				this.pendingConsistencyData.size >= payload.table_count);
-
-		if (done) {
-			this.config.logger?.info("[consistency] All pages received", {
-				tables: this.pendingConsistencyData.size,
-				totalPks: [...this.pendingConsistencyData.values()].reduce(
-					(sum, t) => sum + t.pks.length,
-					0,
-				),
-				triggeredBy: payload.all_done ? "all_done flag" : "table_count match",
-			});
-			if (this.pendingConsistencyTimer) {
-				clearTimeout(this.pendingConsistencyTimer);
-				this.pendingConsistencyTimer = null;
-			}
-			const resolve = this.pendingConsistencyResolve;
-			this.pendingConsistencyResolve = null;
-			this.pendingConsistencyReject = null;
-			resolve(this.pendingConsistencyData);
+		if (payload.all_done) {
+			this.resolveConsistency("all_done flag");
+			return;
 		}
+
+		const tc = payload.table_count;
+		if (
+			!payload.has_more &&
+			typeof tc === "number" &&
+			tc > 0 &&
+			this.pendingConsistencyData.size >= tc
+		) {
+			this.resolveConsistency("table_count match");
+			return;
+		}
+
+		if (this.pendingConsistencyIdleTimer) clearTimeout(this.pendingConsistencyIdleTimer);
+		this.pendingConsistencyIdleTimer = setTimeout(() => {
+			if (this.pendingConsistencyResolve && this.pendingConsistencyData.size > 0) {
+				this.resolveConsistency("idle timeout (2s)");
+			}
+		}, 2000);
+	}
+
+	private resolveConsistency(reason: string): void {
+		this.config.logger?.info("[consistency] Resolving", {
+			reason,
+			tables: this.pendingConsistencyData.size,
+			totalPks: [...this.pendingConsistencyData.values()].reduce((sum, t) => sum + t.pks.length, 0),
+		});
+		if (this.pendingConsistencyTimer) {
+			clearTimeout(this.pendingConsistencyTimer);
+			this.pendingConsistencyTimer = null;
+		}
+		if (this.pendingConsistencyIdleTimer) {
+			clearTimeout(this.pendingConsistencyIdleTimer);
+			this.pendingConsistencyIdleTimer = null;
+		}
+		const resolve = this.pendingConsistencyResolve;
+		this.pendingConsistencyResolve = null;
+		this.pendingConsistencyReject = null;
+		resolve?.(this.pendingConsistencyData);
 	}
 
 	// ── Auto-backfill: push local-only rows as changelog entries ─────────
