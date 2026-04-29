@@ -23,7 +23,7 @@ const TABLE_PK_COLUMN: Partial<Record<SyncedTableName, string>> = {
 	cluster_config: "key",
 };
 
-function getTablePkColumn(table: SyncedTableName): string {
+export function getPkColumn(table: SyncedTableName): string {
 	return TABLE_PK_COLUMN[table] ?? "id";
 }
 
@@ -119,7 +119,7 @@ export function insertRow(
 		);
 	}
 
-	const pkColumn = getTablePkColumn(table);
+	const pkColumn = getPkColumn(table);
 	const rowId = row[pkColumn] as string;
 	const columns = Object.keys(row);
 	// Validate all column names to prevent SQL injection
@@ -164,7 +164,7 @@ export function updateRow(
 
 		const values = [...Object.values(updatesWithModified), id];
 
-		const pkColumn = getTablePkColumn(table);
+		const pkColumn = getPkColumn(table);
 		db.run(`UPDATE ${table} SET ${setClause} WHERE ${pkColumn} = ?`, values);
 
 		// Fetch the updated row to get the full snapshot
@@ -191,7 +191,7 @@ export function softDelete(db: Database, table: SyncedTableName, id: string, sit
 	const txFn = db.transaction(() => {
 		const now = new Date().toISOString();
 
-		const pkColumn = getTablePkColumn(table);
+		const pkColumn = getPkColumn(table);
 		db.run(`UPDATE ${table} SET deleted = 1, modified_at = ? WHERE ${pkColumn} = ?`, [now, id]);
 
 		// Fetch the deleted row to get the full snapshot

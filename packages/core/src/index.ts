@@ -16,7 +16,14 @@ export {
 	readMessageMetadata,
 	writeMessageMetadata,
 	validateColumnName,
+	getPkColumn,
 } from "./change-log";
+export {
+	getLocalPksSorted,
+	mergeDiffPks,
+	compareAllTables,
+	type TableDiff,
+} from "./consistency";
 export {
 	type DeliveryCheckConnector,
 	type RunPostLoopDeliveryCheckParams,
