@@ -5,6 +5,7 @@ import { verifyRequest } from "./signing.js";
 import type {
 	ChangelogAckPayload,
 	ChangelogPushPayload,
+	ConsistencyRequestPayload,
 	RelayAckPayload,
 	RelaySendPayload,
 	SnapshotAckPayload,
@@ -191,6 +192,7 @@ export interface WsServerConfig {
 		continueSnapshotSeed: (peerSiteId: string) => void;
 		/** Handle a spoke's request for a full DB reseed. */
 		handleReseedRequest: (peerSiteId: string, payload: unknown) => void;
+		handleConsistencyRequest: (peerSiteId: string, payload: ConsistencyRequestPayload) => void;
 	};
 	logger?: Logger;
 	idleTimeout?: number; // seconds, default 120
@@ -346,6 +348,8 @@ export function createWsHandlers(config: WsServerConfig): {
 					config.wsTransport.handleSnapshotAck(ws.data.siteId, decodedFrame.payload);
 				} else if (decodedFrame.type === WsMessageType.RESEED_REQUEST) {
 					config.wsTransport.handleReseedRequest(ws.data.siteId, decodedFrame.payload);
+				} else if (decodedFrame.type === WsMessageType.CONSISTENCY_REQUEST) {
+					config.wsTransport.handleConsistencyRequest(ws.data.siteId, decodedFrame.payload);
 				}
 			}
 		},

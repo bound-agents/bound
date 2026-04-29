@@ -354,6 +354,14 @@ export class WsSyncClient {
 						});
 					}
 				}
+
+				if (decodedFrame.type === WsMessageType.CONSISTENCY_RESPONSE && this.config.wsTransport) {
+					(
+						this.config.wsTransport as unknown as {
+							handleConsistencyResponse: (payload: unknown) => void;
+						}
+					).handleConsistencyResponse(decodedFrame.payload);
+				}
 			}
 
 			this.onMessage?.(data);

@@ -5,6 +5,7 @@ import "reflect-metadata";
 
 import { getSiteId } from "@bound/core";
 import { runConfigReload } from "./commands/config-reload.js";
+import { runConsistencyCheck } from "./commands/consistency-check.js";
 import { runDrain } from "./commands/drain.js";
 import { runRestore } from "./commands/restore.js";
 import { runSetHub } from "./commands/set-hub.js";
@@ -36,6 +37,7 @@ COMMANDS:
   restore                    Point-in-time recovery
   config reload <target>     Hot-reload configuration
   sync-status                Show sync status for all peers
+  consistency-check          Compare local DB against hub via sync protocol
   drain <new-hub>            Graceful hub decommissioning
   skill list                 List all skills with status and telemetry
   skill view <name>          View SKILL.md and file listing for a skill
@@ -62,6 +64,9 @@ OPTIONS:
 
   boundctl sync-status
     Display write propagation status for all peers
+
+  boundctl consistency-check [--spoke-url <url>] [--tables <t1,t2,...>] [--verbose]
+    Compare synced table row sets between local spoke and remote hub.
 
   boundctl drain <new-hub> [--timeout <seconds>]
     Gracefully drain current hub and switch to new hub (default timeout: 120s)
@@ -215,6 +220,22 @@ EXAMPLES:
 			await runSyncStatus(syncStatusArgs);
 		} catch (error) {
 			console.error("sync-status failed:", error);
+			process.exit(1);
+		}
+		process.exit(0);
+	}
+
+	if (command === "consistency-check") {
+		const consistencyArgs = {
+			spokeUrl: getArgValue(args, "--spoke-url"),
+			tables: getArgValue(args, "--tables"),
+			verbose: args.includes("--verbose"),
+		};
+
+		try {
+			await runConsistencyCheck(consistencyArgs);
+		} catch (error) {
+			console.error("consistency-check failed:", error);
 			process.exit(1);
 		}
 		process.exit(0);

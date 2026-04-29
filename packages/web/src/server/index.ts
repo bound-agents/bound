@@ -38,6 +38,7 @@ export interface WebAppConfig {
 		threadId: string,
 		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
 	) => void;
+	requestConsistency?: (tables: string[]) => Promise<Map<string, { count: number; pks: string[] }>>;
 }
 
 export interface SyncAppConfig {
@@ -69,6 +70,7 @@ export interface SyncAppConfig {
 		continueSnapshotSeed: (siteId: string) => void;
 		applySnapshotChunk: (tableName: string, rows: Array<Record<string, unknown>>) => number;
 		handleReseedRequest: (siteId: string, payload: unknown) => void;
+		handleConsistencyRequest: (siteId: string, payload: unknown) => void;
 	} | null;
 }
 
@@ -96,6 +98,7 @@ export async function createWebApp(
 		activeDelegations: config.activeDelegations,
 		activeLoops: config.activeLoops,
 		emitToolCancel: config.emitToolCancel,
+		requestConsistency: config.requestConsistency,
 	};
 
 	const app = new Hono();

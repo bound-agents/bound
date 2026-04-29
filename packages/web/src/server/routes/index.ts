@@ -24,6 +24,7 @@ export interface RoutesConfig {
 		threadId: string,
 		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
 	) => void;
+	requestConsistency?: (tables: string[]) => Promise<Map<string, { count: number; pks: string[] }>>;
 }
 
 export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config: RoutesConfig) {
@@ -36,6 +37,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		activeDelegations,
 		activeLoops,
 		emitToolCancel,
+		requestConsistency,
 	} = config;
 
 	return {
@@ -58,6 +60,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 			activeDelegations,
 			undefined,
 			emitToolCancel,
+			requestConsistency,
 		),
 		tasks: createTasksRoutes(db),
 		advisories: createAdvisoriesRoutes(db),

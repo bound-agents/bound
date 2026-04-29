@@ -186,6 +186,10 @@ export interface ServerResult {
 		continueSnapshotSeed: (siteId: string) => void;
 		applySnapshotChunk: (tableName: string, rows: Array<Record<string, unknown>>) => number;
 		handleReseedRequest: (siteId: string, payload: unknown) => void;
+		handleConsistencyRequest: (siteId: string, payload: unknown) => void;
+		requestConsistency: (
+			tables: string[],
+		) => Promise<Map<string, { count: number; pks: string[] }>>;
 	};
 }
 
@@ -245,6 +249,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		continueSnapshotSeed: () => {},
 		applySnapshotChunk: () => 0,
 		handleReseedRequest: () => {},
+		handleConsistencyRequest: () => {},
+		requestConsistency: async () => new Map(),
 	};
 
 	// Wire the executor into the relay processor for Discord/platform process relays.
@@ -294,6 +300,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			statusForwardCache,
 			activeDelegations,
 			activeLoops: threadExecutor.activeThreads as Set<string>,
+			requestConsistency: (tables: string[]) => wsTransportHolder.requestConsistency(tables),
 		});
 		await webServer.start();
 

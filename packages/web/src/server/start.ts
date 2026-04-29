@@ -21,6 +21,7 @@ export interface WebServerConfig {
 	statusForwardCache?: Map<string, StatusForwardPayload>;
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	activeLoops?: Set<string>;
+	requestConsistency?: (tables: string[]) => Promise<Map<string, { count: number; pks: string[] }>>;
 }
 
 export interface SyncServerConfig extends SyncAppConfig {
@@ -70,6 +71,7 @@ export async function createWebServer(
 		activeDelegations: config.activeDelegations,
 		activeLoops: config.activeLoops,
 		emitToolCancel: wsHandler.emitToolCancel,
+		requestConsistency: config.requestConsistency,
 	};
 
 	const app = await createWebApp(db, eventBus, webAppConfig);

@@ -1491,4 +1491,171 @@ export class WsTransport {
 
 		peer.sendFrame(frame);
 	}
+
+	// ── Consistency check ────────────────────────────────────────────────
+
+	private static readonly CONSISTENCY_PAGE_SIZE = 5000;
+
+	handleConsistencyRequest(peerSiteId: string, payload: { tables: string[] }): void {
+		if (!this.config.isHub) return;
+
+		const allTables: SyncedTableName[] = [
+			"users",
+			"hosts",
+			"cluster_config",
+			"threads",
+			"messages",
+			"turns",
+			"semantic_memory",
+			"memory_edges",
+			"tasks",
+			"files",
+			"advisories",
+			"skills",
+			"overlay_index",
+		];
+
+		const requestedNames = payload.tables.length > 0 ? payload.tables : allTables.map(String);
+		const tables = allTables.filter((t) => requestedNames.includes(t));
+
+		if (tables.length === 0) {
+			this.config.logger?.warn("[consistency] No valid tables in request", {
+				peerSiteId,
+			});
+			return;
+		}
+
+		this.config.logger?.info("[consistency] Starting PK stream", {
+			peerSiteId,
+			tableCount: tables.length,
+		});
+
+		this.streamConsistencyPages(peerSiteId, tables, 0, 0);
+	}
+
+	private streamConsistencyPages(
+		peerSiteId: string,
+		tables: SyncedTableName[],
+		tableIndex: number,
+		offset: number,
+	): void {
+		const peer = this.peerConnections.get(peerSiteId);
+		if (!peer) return;
+
+		const table = tables[tableIndex];
+		const pkCol = getPkColumn(table);
+		const pageSize = WsTransport.CONSISTENCY_PAGE_SIZE;
+
+		const countRow = this.config.db.query(`SELECT COUNT(*) AS c FROM ${table}`).get() as {
+			c: number;
+		};
+
+		const rows = this.config.db
+			.query(`SELECT ${pkCol} AS pk FROM ${table} ORDER BY ${pkCol} ASC LIMIT ? OFFSET ?`)
+			.all(pageSize + 1, offset) as Array<{ pk: string }>;
+
+		const hasMore = rows.length > pageSize;
+		const pks = rows.slice(0, pageSize).map((r) => r.pk);
+		const isLastTable = tableIndex === tables.length - 1;
+		const allDone = isLastTable && !hasMore;
+
+		const frame = encodeFrame(
+			WsMessageType.CONSISTENCY_RESPONSE,
+			{
+				table,
+				pks,
+				count: countRow.c,
+				has_more: hasMore,
+				table_index: tableIndex,
+				table_count: tables.length,
+				all_done: allDone,
+			},
+			peer.symmetricKey,
+		);
+		peer.sendFrame(frame);
+
+		if (allDone) {
+			this.config.logger?.info("[consistency] PK stream complete", {
+				peerSiteId,
+				tableCount: tables.length,
+			});
+			return;
+		}
+
+		const nextTableIndex = hasMore ? tableIndex : tableIndex + 1;
+		const nextOffset = hasMore ? offset + pageSize : 0;
+
+		setTimeout(() => {
+			this.streamConsistencyPages(peerSiteId, tables, nextTableIndex, nextOffset);
+		}, 0);
+	}
+
+	// ── Spoke-side: request + collect ────────────────────────────────────
+
+	private pendingConsistencyResolve:
+		| ((data: Map<string, { count: number; pks: string[] }>) => void)
+		| null = null;
+	private pendingConsistencyReject: ((err: Error) => void) | null = null;
+	private pendingConsistencyData = new Map<string, { count: number; pks: string[] }>();
+	private pendingConsistencyTimer: Timer | null = null;
+
+	requestConsistency(tables: string[]): Promise<Map<string, { count: number; pks: string[] }>> {
+		if (this.pendingConsistencyResolve) {
+			return Promise.reject(new Error("Consistency check already in progress"));
+		}
+
+		const hubPeer = this.peerConnections.values().next().value as PeerConnection | undefined;
+		if (!hubPeer) {
+			return Promise.reject(new Error("Not connected to hub"));
+		}
+
+		const frame = encodeFrame(WsMessageType.CONSISTENCY_REQUEST, { tables }, hubPeer.symmetricKey);
+		if (!hubPeer.sendFrame(frame)) {
+			return Promise.reject(new Error("Failed to send consistency request"));
+		}
+
+		this.pendingConsistencyData = new Map();
+
+		return new Promise((resolve, reject) => {
+			this.pendingConsistencyResolve = resolve;
+			this.pendingConsistencyReject = reject;
+			this.pendingConsistencyTimer = setTimeout(() => {
+				this.pendingConsistencyResolve = null;
+				this.pendingConsistencyReject = null;
+				this.pendingConsistencyTimer = null;
+				reject(new Error("Consistency check timed out (60s)"));
+			}, 60_000);
+		});
+	}
+
+	handleConsistencyResponse(payload: {
+		table: string;
+		pks: string[];
+		count: number;
+		all_done: boolean;
+	}): void {
+		if (!this.pendingConsistencyResolve) return;
+
+		const existing = this.pendingConsistencyData.get(payload.table);
+		if (existing) {
+			existing.pks.push(...payload.pks);
+			existing.count = payload.count;
+		} else {
+			this.pendingConsistencyData.set(payload.table, {
+				count: payload.count,
+				pks: [...payload.pks],
+			});
+		}
+
+		if (payload.all_done) {
+			if (this.pendingConsistencyTimer) {
+				clearTimeout(this.pendingConsistencyTimer);
+				this.pendingConsistencyTimer = null;
+			}
+			const resolve = this.pendingConsistencyResolve;
+			this.pendingConsistencyResolve = null;
+			this.pendingConsistencyReject = null;
+			resolve(this.pendingConsistencyData);
+		}
+	}
 }

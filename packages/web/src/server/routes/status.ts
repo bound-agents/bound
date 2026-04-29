@@ -1,6 +1,7 @@
 import { createRelayOutboxEntry } from "@bound/agent";
 import {
 	cancelClientToolCalls,
+	compareAllTables,
 	getPendingClientToolCalls,
 	getSiteId,
 	insertRow,
@@ -48,6 +49,7 @@ export function createStatusRoutes(
 		threadId: string,
 		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
 	) => void,
+	requestConsistency?: (tables: string[]) => Promise<Map<string, { count: number; pks: string[] }>>,
 ): Hono {
 	const log = logger ?? createLogger("@bound/web", "status");
 	const app = new Hono();
@@ -286,6 +288,29 @@ export function createStatusRoutes(
 				},
 				500,
 			);
+		}
+	});
+
+	app.post("/consistency", async (c) => {
+		if (!requestConsistency) {
+			return c.json({ error: "Consistency check not available (not connected to hub)" }, 503);
+		}
+
+		try {
+			const body = await c.req.json().catch(() => ({}));
+			const tables = (body as { tables?: string[] }).tables ?? [];
+			const remoteTables = await requestConsistency(tables);
+
+			const diffs = compareAllTables(db, remoteTables);
+			const localSiteId = getSiteId(db);
+
+			return c.json({
+				localSiteId,
+				tables: diffs,
+			});
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json({ error: "Consistency check failed", details: message }, 500);
 		}
 	});
 
