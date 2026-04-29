@@ -1140,13 +1140,6 @@ export class WsTransport {
 			return this.sendOneSubChunk(peerSiteId, table, peer, state);
 		}
 
-		this.config.logger?.info("[snapshot] Querying table", {
-			peerSiteId,
-			table,
-			lastRowid: state.lastRowid,
-			stateOffset: state.offset,
-		});
-
 		const chunkSize = 100;
 
 		if (!state.stmt) {
@@ -1207,11 +1200,10 @@ export class WsTransport {
 		peer: PeerConnection,
 		state: SnapshotState,
 	): boolean {
-		if (!state.pendingRows || state.pendingCursor === undefined || !state.pendingRowsRaw) {
+		if (!state.pendingRows || state.pendingCursor === undefined) {
 			return true;
 		}
 		const rows = state.pendingRows;
-		const rowsRaw = state.pendingRowsRaw;
 		const isLastBatch = state.pendingIsLastBatch ?? false;
 		const rowCursor = state.pendingCursor;
 
@@ -1239,14 +1231,7 @@ export class WsTransport {
 				const isLastRow = isLastBatch && sliceEnd === rows.length;
 				const result = this.sendOversizedRow(peerSiteId, table, rows[rowCursor], state, isLastRow);
 				if (!result) {
-					const firstUnsentRowid = rowsRaw[rowCursor]?._bound_rowid as number;
-					if (typeof firstUnsentRowid === "number") {
-						state.lastRowid = firstUnsentRowid - 1;
-					}
 					state.draining = true;
-					state.stmt?.finalize();
-					state.stmt = null;
-					this.clearPendingRows(state);
 					return false;
 				}
 				state.offset += 1;
@@ -1264,14 +1249,9 @@ export class WsTransport {
 
 		const sent = peer.sendFrame(frame);
 		if (!sent) {
-			const firstUnsentRowid = rowsRaw[rowCursor]?._bound_rowid as number;
-			if (typeof firstUnsentRowid === "number") {
-				state.lastRowid = firstUnsentRowid - 1;
-			}
+			// Keep pendingRows intact — continueSnapshotSeed will resume from
+			// the current pendingCursor after the drain event fires.
 			state.draining = true;
-			state.stmt?.finalize();
-			state.stmt = null;
-			this.clearPendingRows(state);
 			this.config.logger?.debug("[snapshot] Backpressured, waiting for drain", {
 				peerSiteId,
 				table,
@@ -1298,14 +1278,6 @@ export class WsTransport {
 	}
 
 	private finishSubChunk(peerSiteId: string, state: SnapshotState): boolean {
-		this.config.logger?.info("[snapshot] finishSubChunk", {
-			peerSiteId,
-			pendingCursor: state.pendingCursor,
-			pendingRowsLen: state.pendingRows?.length,
-			isLastBatch: state.pendingIsLastBatch,
-			stateOffset: state.offset,
-			tableIndex: state.tableIndex,
-		});
 		if ((state.pendingCursor ?? 0) >= (state.pendingRows?.length ?? 0)) {
 			const isLastBatch = state.pendingIsLastBatch;
 			this.clearPendingRows(state);
