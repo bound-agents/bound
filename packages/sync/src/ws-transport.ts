@@ -1,5 +1,13 @@
 import type { Database, Statement } from "bun:sqlite";
-import { insertInbox, markDelivered, readUndelivered, writeOutbox } from "@bound/core";
+import {
+	compareAllTables,
+	createChangeLogEntry,
+	getPkColumn as getPkColumnTyped,
+	insertInbox,
+	markDelivered,
+	readUndelivered,
+	writeOutbox,
+} from "@bound/core";
 import type {
 	ChangeLogEntry,
 	Logger,
@@ -1657,5 +1665,89 @@ export class WsTransport {
 			this.pendingConsistencyReject = null;
 			resolve(this.pendingConsistencyData);
 		}
+	}
+
+	// ── Auto-backfill: push local-only rows as changelog entries ─────────
+
+	private static readonly BACKFILL_BATCH_SIZE = 1000;
+	private backfillRunning = false;
+
+	async runBackfill(): Promise<{ backfilled: number; tables: number }> {
+		if (this.backfillRunning) {
+			throw new Error("Backfill already in progress");
+		}
+		this.backfillRunning = true;
+		try {
+			return await this.executeBackfill();
+		} finally {
+			this.backfillRunning = false;
+		}
+	}
+
+	private async executeBackfill(): Promise<{ backfilled: number; tables: number }> {
+		const remoteTables = await this.requestConsistency([]);
+		const tablesToCheck = [...remoteTables.keys()] as SyncedTableName[];
+		const diffs = compareAllTables(this.config.db, remoteTables, tablesToCheck);
+
+		let backfilled = 0;
+		let tablesWithDrift = 0;
+
+		for (const diff of diffs) {
+			if (diff.localOnly.length === 0) continue;
+			tablesWithDrift++;
+
+			const pkCol = getPkColumnTyped(diff.table);
+			const batchSize = WsTransport.BACKFILL_BATCH_SIZE;
+
+			for (let i = 0; i < diff.localOnly.length; i += batchSize) {
+				const batch = diff.localOnly.slice(i, i + batchSize);
+				const hlcs: string[] = [];
+
+				this.config.db.exec("BEGIN IMMEDIATE");
+				try {
+					for (const pk of batch) {
+						const row = this.config.db
+							.query(`SELECT * FROM ${diff.table} WHERE ${pkCol} = ?`)
+							.get(pk) as Record<string, unknown> | null;
+						if (!row) continue;
+						const hlc = createChangeLogEntry(
+							this.config.db,
+							diff.table,
+							pk,
+							this.config.siteId,
+							row,
+						);
+						hlcs.push(hlc);
+					}
+					this.config.db.exec("COMMIT");
+				} catch (err) {
+					try {
+						this.config.db.exec("ROLLBACK");
+					} catch {
+						// original error takes priority
+					}
+					throw err;
+				}
+
+				for (const hlc of hlcs) {
+					this.config.eventBus.emit("changelog:written", {
+						hlc,
+						tableName: diff.table,
+						siteId: this.config.siteId,
+					});
+				}
+
+				backfilled += hlcs.length;
+			}
+		}
+
+		if (backfilled > 0) {
+			this.config.logger?.info("[backfill] Complete", {
+				backfilled,
+				tables: tablesWithDrift,
+			});
+		}
+
+		return { backfilled, tables: tablesWithDrift };
 	}
 }

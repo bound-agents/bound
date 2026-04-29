@@ -260,6 +260,26 @@ export class WsSyncClient {
 			this.sendReseedRequest();
 		}
 
+		// Auto-backfill: push local-only rows after normal drain completes.
+		// Skip when reseeding (snapshot already provides everything).
+		if (
+			this.config.wsTransport &&
+			!this.config.reseed &&
+			"runBackfill" in this.config.wsTransport
+		) {
+			(
+				this.config.wsTransport as unknown as {
+					runBackfill: () => Promise<unknown>;
+				}
+			)
+				.runBackfill()
+				.catch((err: Error) => {
+					this.config.logger?.warn("[backfill] Failed", {
+						error: err.message,
+					});
+				});
+		}
+
 		this.onConnected?.();
 	}
 
