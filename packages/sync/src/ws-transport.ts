@@ -1625,6 +1625,7 @@ export class WsTransport {
 		}
 
 		this.pendingConsistencyData = new Map();
+		this.config.logger?.info("[consistency] Request sent, creating promise");
 
 		return new Promise((resolve, reject) => {
 			this.pendingConsistencyResolve = resolve;
@@ -1647,6 +1648,14 @@ export class WsTransport {
 		table_count?: number;
 		all_done?: boolean;
 	}): void {
+		this.config.logger?.info("[consistency] handleConsistencyResponse called", {
+			table: payload.table,
+			hasPending: !!this.pendingConsistencyResolve,
+			allDone: payload.all_done,
+			tableCount: payload.table_count,
+			hasMore: payload.has_more,
+			pkCount: payload.pks?.length,
+		});
 		if (!this.pendingConsistencyResolve) return;
 
 		const existing = this.pendingConsistencyData.get(payload.table);
