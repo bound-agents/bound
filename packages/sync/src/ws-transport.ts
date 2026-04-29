@@ -1670,15 +1670,26 @@ export class WsTransport {
 	// ── Auto-backfill: push local-only rows as changelog entries ─────────
 
 	private static readonly BACKFILL_BATCH_SIZE = 1000;
+	private static readonly BACKFILL_COOLDOWN_MS = 5 * 60 * 1000;
 	private backfillRunning = false;
+	private lastBackfillAt = 0;
 
 	async runBackfill(): Promise<{ backfilled: number; tables: number }> {
 		if (this.backfillRunning) {
 			throw new Error("Backfill already in progress");
 		}
+		const elapsed = Date.now() - this.lastBackfillAt;
+		if (this.lastBackfillAt > 0 && elapsed < WsTransport.BACKFILL_COOLDOWN_MS) {
+			this.config.logger?.debug("[backfill] Skipping — cooldown active", {
+				remainingMs: WsTransport.BACKFILL_COOLDOWN_MS - elapsed,
+			});
+			return { backfilled: 0, tables: 0 };
+		}
 		this.backfillRunning = true;
 		try {
-			return await this.executeBackfill();
+			const result = await this.executeBackfill();
+			this.lastBackfillAt = Date.now();
+			return result;
 		} finally {
 			this.backfillRunning = false;
 		}
@@ -1694,13 +1705,31 @@ export class WsTransport {
 
 		for (const diff of diffs) {
 			if (diff.localOnly.length === 0) continue;
-			tablesWithDrift++;
 
 			const pkCol = getPkColumnTyped(diff.table);
 			const batchSize = WsTransport.BACKFILL_BATCH_SIZE;
 
-			for (let i = 0; i < diff.localOnly.length; i += batchSize) {
-				const batch = diff.localOnly.slice(i, i + batchSize);
+			const needsBackfill = diff.localOnly.filter((pk) => {
+				const existing = this.config.db
+					.query(
+						"SELECT 1 FROM change_log WHERE table_name = ? AND row_id = ? AND site_id = ? LIMIT 1",
+					)
+					.get(diff.table, pk, this.config.siteId);
+				return !existing;
+			});
+
+			if (needsBackfill.length === 0) continue;
+			tablesWithDrift++;
+
+			this.config.logger?.info("[backfill] Table needs backfill", {
+				table: diff.table,
+				localOnly: diff.localOnly.length,
+				needsBackfill: needsBackfill.length,
+				alreadyHaveChangelog: diff.localOnly.length - needsBackfill.length,
+			});
+
+			for (let i = 0; i < needsBackfill.length; i += batchSize) {
+				const batch = needsBackfill.slice(i, i + batchSize);
 				const hlcs: string[] = [];
 
 				this.config.db.exec("BEGIN IMMEDIATE");
