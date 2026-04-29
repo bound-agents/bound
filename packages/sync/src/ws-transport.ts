@@ -1640,15 +1640,11 @@ export class WsTransport {
 		table: string;
 		pks: string[];
 		count: number;
+		has_more: boolean;
+		table_index: number;
+		table_count: number;
 		all_done: boolean;
 	}): void {
-		this.config.logger?.info("[consistency] Response page received", {
-			table: payload.table,
-			pkCount: payload.pks?.length ?? 0,
-			count: payload.count,
-			allDone: payload.all_done,
-			hasPendingResolve: !!this.pendingConsistencyResolve,
-		});
 		if (!this.pendingConsistencyResolve) return;
 
 		const existing = this.pendingConsistencyData.get(payload.table);
@@ -1662,7 +1658,21 @@ export class WsTransport {
 			});
 		}
 
-		if (payload.all_done) {
+		const done =
+			payload.all_done ||
+			(!payload.has_more &&
+				payload.table_count > 0 &&
+				this.pendingConsistencyData.size >= payload.table_count);
+
+		if (done) {
+			this.config.logger?.info("[consistency] All pages received", {
+				tables: this.pendingConsistencyData.size,
+				totalPks: [...this.pendingConsistencyData.values()].reduce(
+					(sum, t) => sum + t.pks.length,
+					0,
+				),
+				triggeredBy: payload.all_done ? "all_done flag" : "table_count match",
+			});
 			if (this.pendingConsistencyTimer) {
 				clearTimeout(this.pendingConsistencyTimer);
 				this.pendingConsistencyTimer = null;
