@@ -4,8 +4,9 @@
  */
 
 import { AgentLoop, createBuiltInTools } from "@bound/agent";
-import type { AgentLoopConfig } from "@bound/agent";
+import type { AgentLoopConfig, RegisteredTool } from "@bound/agent";
 import { isRelayRequest } from "@bound/agent";
+import type { BuiltInTool } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import type { ModelRouter, ToolDefinition } from "@bound/llm";
 import {
@@ -37,6 +38,73 @@ export const sandboxTool: ToolDefinition = {
 };
 
 export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
+
+/**
+ * Create a unified tool registry from all tool sources.
+ * Assembles platform tools, client tools, built-in file tools, and the sandbox bash tool
+ * into a single Map keyed by tool name.
+ *
+ * Duplicate names are detected and logged as warnings; the first registration wins.
+ */
+function createToolRegistry(
+	builtInTools: Map<string, BuiltInTool> | undefined,
+	platformTools: AgentLoopConfig["platformTools"],
+	clientTools: AgentLoopConfig["clientTools"],
+	logger: AppContext["logger"],
+): Map<string, RegisteredTool> {
+	const registry = new Map<string, RegisteredTool>();
+
+	// Helper to register a tool and detect duplicates
+	const registerTool = (name: string, tool: RegisteredTool): void => {
+		if (registry.has(name)) {
+			logger.warn(`[agent-factory] Duplicate tool registration: "${name}", keeping first`, {
+				kind: tool.kind,
+			});
+			return;
+		}
+		registry.set(name, tool);
+	};
+
+	// 1. Register the sandbox (bash) tool first
+	registerTool("bash", {
+		kind: "sandbox",
+		toolDefinition: sandboxTool,
+	});
+
+	// 2. Register platform tools
+	if (platformTools) {
+		for (const [name, tool] of platformTools.entries()) {
+			registerTool(name, {
+				kind: "platform",
+				toolDefinition: tool.toolDefinition,
+				execute: tool.execute,
+			});
+		}
+	}
+
+	// 3. Register client tools
+	if (clientTools) {
+		for (const [name, toolDef] of clientTools.entries()) {
+			registerTool(name, {
+				kind: "client",
+				toolDefinition: toolDef,
+			});
+		}
+	}
+
+	// 4. Register built-in file tools
+	if (builtInTools) {
+		for (const [name, tool] of builtInTools.entries()) {
+			registerTool(name, {
+				kind: "builtin",
+				toolDefinition: tool.toolDefinition,
+				execute: tool.execute,
+			});
+		}
+	}
+
+	return registry;
+}
 
 export function createAgentLoopFactory(
 	appContext: AppContext,
@@ -136,9 +204,19 @@ export function createAgentLoopFactory(
 		// then extra tools; then platform tools.
 		// If config.tools includes bash, dedupe it.
 		const extraTools = config.tools?.filter((t) => t.function.name !== "bash") ?? [];
+
+		// Create the unified tool registry for registry-based dispatch
+		const toolRegistry = createToolRegistry(
+			builtInTools,
+			config.platformTools,
+			config.clientTools,
+			appContext.logger,
+		);
+
 		return new AgentLoop(appContext, loopSandbox, modelRouter, {
 			...config,
 			tools: [sandboxTool, ...builtInToolDefs, ...extraTools, ...platformToolDefs],
+			toolRegistry,
 		});
 	};
 }

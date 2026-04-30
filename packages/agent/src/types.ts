@@ -111,6 +111,11 @@ export interface AgentLoopConfig {
 	 * Passed through to ContextParams and appended to the system suffix.
 	 */
 	systemPromptAddition?: string;
+	/**
+	 * Unified tool registry for dispatching all tool kinds (platform, client, builtin, sandbox).
+	 * When provided, enables registry-based dispatch with backward compatibility via legacy waterfall.
+	 */
+	toolRegistry?: Map<string, RegisteredTool>;
 }
 
 export interface AgentLoopResult {
