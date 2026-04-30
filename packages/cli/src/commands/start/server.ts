@@ -193,6 +193,7 @@ export interface ServerResult {
 		handleRowPullRequest: (siteId: string, payload: unknown) => void;
 		handleRowPullAck: (siteId: string, payload: unknown) => void;
 		continueRowPull: (siteId: string) => void;
+		continueConsistencyStream: (siteId: string) => void;
 	};
 }
 
@@ -257,6 +258,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		handleRowPullRequest: () => {},
 		handleRowPullAck: () => {},
 		continueRowPull: () => {},
+		continueConsistencyStream: () => {},
 	};
 
 	// Wire the executor into the relay processor for Discord/platform process relays.

@@ -74,6 +74,7 @@ export interface SyncAppConfig {
 		handleRowPullRequest: (siteId: string, payload: unknown) => void;
 		handleRowPullAck: (siteId: string, payload: unknown) => void;
 		continueRowPull: (siteId: string) => void;
+		continueConsistencyStream: (siteId: string) => void;
 	} | null;
 }
 

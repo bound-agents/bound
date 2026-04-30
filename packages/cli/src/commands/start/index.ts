@@ -183,6 +183,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 			handleRowPullRequest: wsTransport.handleRowPullRequest.bind(wsTransport),
 			handleRowPullAck: wsTransport.handleRowPullAck.bind(wsTransport),
 			continueRowPull: wsTransport.continueRowPull.bind(wsTransport),
+			continueConsistencyStream: wsTransport.continueConsistencyStream.bind(wsTransport),
 		});
 	}
 

@@ -1527,6 +1527,18 @@ export class WsTransport {
 		this.streamConsistencyPages(peerSiteId, tables, 0, 0, payload.request_id);
 	}
 
+	private pendingConsistencyStream = new Map<
+		string,
+		{
+			frame: Uint8Array;
+			allDone: boolean;
+			nextTableIndex: number;
+			nextOffset: number;
+			tables: SyncedTableName[];
+			requestId?: string;
+		}
+	>();
+
 	private streamConsistencyPages(
 		peerSiteId: string,
 		tables: SyncedTableName[],
@@ -1553,6 +1565,8 @@ export class WsTransport {
 		const pks = rows.slice(0, pageSize).map((r) => r.pk);
 		const isLastTable = tableIndex === tables.length - 1;
 		const allDone = isLastTable && !hasMore;
+		const nextTableIndex = hasMore ? tableIndex : tableIndex + 1;
+		const nextOffset = hasMore ? offset + pageSize : 0;
 
 		const frame = encodeFrame(
 			WsMessageType.CONSISTENCY_RESPONSE,
@@ -1570,26 +1584,52 @@ export class WsTransport {
 		);
 		const sent = peer.sendFrame(frame);
 		if (!sent) {
-			this.config.logger?.warn("[consistency] sendFrame returned false (backpressure)", {
-				peerSiteId,
-				table,
-				tableIndex,
-			});
-		}
-
-		if (allDone) {
-			this.config.logger?.debug("[consistency] PK stream complete", {
-				peerSiteId,
-				tableCount: tables.length,
+			this.pendingConsistencyStream.set(peerSiteId, {
+				frame,
+				allDone,
+				nextTableIndex,
+				nextOffset,
+				tables,
+				requestId,
 			});
 			return;
 		}
 
-		const nextTableIndex = hasMore ? tableIndex : tableIndex + 1;
-		const nextOffset = hasMore ? offset + pageSize : 0;
+		if (allDone) {
+			this.pendingConsistencyStream.delete(peerSiteId);
+			return;
+		}
 
 		setTimeout(() => {
 			this.streamConsistencyPages(peerSiteId, tables, nextTableIndex, nextOffset, requestId);
+		}, 0);
+	}
+
+	continueConsistencyStream(peerSiteId: string): void {
+		const state = this.pendingConsistencyStream.get(peerSiteId);
+		if (!state) return;
+
+		const peer = this.peerConnections.get(peerSiteId);
+		if (!peer) {
+			this.pendingConsistencyStream.delete(peerSiteId);
+			return;
+		}
+
+		const sent = peer.sendFrame(state.frame);
+		if (!sent) return;
+
+		this.pendingConsistencyStream.delete(peerSiteId);
+
+		if (state.allDone) return;
+
+		setTimeout(() => {
+			this.streamConsistencyPages(
+				peerSiteId,
+				state.tables,
+				state.nextTableIndex,
+				state.nextOffset,
+				state.requestId,
+			);
 		}, 0);
 	}
 

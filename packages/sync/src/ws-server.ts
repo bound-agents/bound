@@ -198,6 +198,7 @@ export interface WsServerConfig {
 		handleRowPullRequest: (peerSiteId: string, payload: RowPullRequestPayload) => void;
 		handleRowPullAck: (peerSiteId: string, payload: RowPullAckPayload) => void;
 		continueRowPull: (peerSiteId: string) => void;
+		continueConsistencyStream: (peerSiteId: string) => void;
 	};
 	logger?: Logger;
 	idleTimeout?: number; // seconds, default 120
@@ -380,10 +381,11 @@ export function createWsHandlers(config: WsServerConfig): {
 
 		drain(ws) {
 			ws.data.sendState = "ready";
-			// Resume snapshot seeding or row pull if paused on backpressure.
+			// Resume any paused stream on backpressure clear.
 			if (config.wsTransport) {
 				config.wsTransport.continueSnapshotSeed(ws.data.siteId);
 				config.wsTransport.continueRowPull(ws.data.siteId);
+				config.wsTransport.continueConsistencyStream(ws.data.siteId);
 			}
 			if (ws.data.pendingDrain) {
 				ws.data.pendingDrain();
