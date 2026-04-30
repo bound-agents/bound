@@ -3,8 +3,8 @@
  * isolated snapshot state and full sandbox/tool wiring.
  */
 
-import { AgentLoop, createBuiltInTools } from "@bound/agent";
-import type { AgentLoopConfig, RegisteredTool } from "@bound/agent";
+import { AgentLoop, createAgentTools, createBuiltInTools } from "@bound/agent";
+import type { AgentLoopConfig, RegisteredTool, ToolContext } from "@bound/agent";
 import { isRelayRequest } from "@bound/agent";
 import type { BuiltInTool } from "@bound/agent";
 import type { AppContext } from "@bound/core";
@@ -41,7 +41,7 @@ export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
 
 /**
  * Create a unified tool registry from all tool sources.
- * Assembles platform tools, client tools, built-in file tools, and the sandbox bash tool
+ * Assembles platform tools, client tools, agent tools, built-in file tools, and the sandbox bash tool
  * into a single Map keyed by tool name.
  *
  * Duplicate names are detected and logged as warnings; the first registration wins.
@@ -50,6 +50,7 @@ export function createToolRegistry(
 	builtInTools: Map<string, BuiltInTool> | undefined,
 	platformTools: AgentLoopConfig["platformTools"],
 	clientTools: AgentLoopConfig["clientTools"],
+	agentTools: RegisteredTool[],
 	logger: AppContext["logger"],
 ): Map<string, RegisteredTool> {
 	const registry = new Map<string, RegisteredTool>();
@@ -92,7 +93,13 @@ export function createToolRegistry(
 		}
 	}
 
-	// 4. Register built-in file tools
+	// 4. Register agent tools
+	for (const tool of agentTools) {
+		const name = tool.toolDefinition.function.name;
+		registerTool(name, tool);
+	}
+
+	// 5. Register built-in file tools
 	if (builtInTools) {
 		for (const [name, tool] of builtInTools.entries()) {
 			registerTool(name, {
@@ -205,11 +212,24 @@ export function createAgentLoopFactory(
 		// If config.tools includes bash, dedupe it.
 		const extraTools = config.tools?.filter((t) => t.function.name !== "bash") ?? [];
 
+		// Create ToolContext for native agent tools
+		const toolCtx: ToolContext = {
+			db: appContext.db,
+			siteId: appContext.siteId,
+			eventBus: appContext.eventBus,
+			logger: appContext.logger,
+			threadId: config.threadId,
+			taskId: config.taskId,
+			modelRouter,
+		};
+		const agentTools = createAgentTools(toolCtx);
+
 		// Create the unified tool registry for registry-based dispatch
 		const toolRegistry = createToolRegistry(
 			builtInTools,
 			config.platformTools,
 			config.clientTools,
+			agentTools,
 			appContext.logger,
 		);
 
