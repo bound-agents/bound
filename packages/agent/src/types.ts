@@ -141,3 +141,23 @@ export interface RegisteredTool {
 	toolDefinition: ToolDefinition;
 	execute?: (input: Record<string, unknown>) => Promise<BuiltInToolResult>;
 }
+
+/**
+ * Context passed to native agent tool factories.
+ * Extends the fields needed by all tool closures (db, siteId, eventBus, logger, threadId, taskId, modelRouter).
+ * Uses inline import() types to avoid circular dependencies.
+ */
+export interface ToolContext {
+	db: import("bun:sqlite").Database;
+	siteId: string;
+	eventBus: import("@bound/shared").TypedEventEmitter;
+	logger: {
+		debug: (...args: unknown[]) => void;
+		info: (...args: unknown[]) => void;
+		warn: (...args: unknown[]) => void;
+		error: (...args: unknown[]) => void;
+	};
+	threadId?: string;
+	taskId?: string;
+	modelRouter?: import("@bound/llm").ModelRouter;
+}

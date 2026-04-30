@@ -5,6 +5,7 @@ export type {
 	AgentLoopResult,
 	ClientToolCallRequest,
 	RegisteredTool,
+	ToolContext,
 } from "./types";
 export { isClientToolCallRequest } from "./types";
 export type { ContextParams } from "./context-assembly";
@@ -35,6 +36,9 @@ export { createRelayOutboxEntry } from "./relay-router";
 
 // Export commands
 export { getAllCommands, setCommandRegistry } from "./commands/index";
+
+// Export native tools
+export { createAgentTools } from "./tools/index";
 
 // Export MCP client and bridge
 export { MCPClient } from "./mcp-client";
