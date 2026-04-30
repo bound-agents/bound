@@ -35,7 +35,7 @@ export { RelayProcessor } from "./relay-processor";
 export { createRelayOutboxEntry } from "./relay-router";
 
 // Export commands
-export { getAllCommands, setCommandRegistry } from "./commands/index";
+export { setCommandRegistry, getCommandRegistry } from "./commands/index";
 
 // Export native tools
 export { createAgentTools } from "./tools/index";
@@ -96,6 +96,9 @@ export {
 
 // Export skill seeding
 export { seedSkillAuthoring } from "./seed-skills";
+
+// Export skill utilities
+export { parseFrontmatter } from "./tools/skill-utils";
 
 // Export built-in tools
 export { createBuiltInTools } from "./built-in-tools";

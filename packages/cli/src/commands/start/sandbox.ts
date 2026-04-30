@@ -4,7 +4,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { generateRemoteMCPProxyCommands, getAllCommands, setCommandRegistry } from "@bound/agent";
+import { generateRemoteMCPProxyCommands, setCommandRegistry } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import type { CommandDefinition } from "@bound/sandbox";
@@ -62,8 +62,6 @@ export async function initSandbox(
 			mcpClients: mcpClientsMap,
 			fs: clusterFs,
 		};
-		const builtinCommands = getAllCommands();
-
 		// Discover remote MCP servers from the hosts table and create proxy commands
 		// that relay tool calls to the remote host via the sync outbox.
 		const { commands: remoteMcpCommands, remoteServerNames } = generateRemoteMCPProxyCommands(
@@ -77,7 +75,8 @@ export async function initSandbox(
 			);
 		}
 
-		const allDefinitions = [...builtinCommands, ...mcpCommands, ...remoteMcpCommands];
+		// Only MCP commands (local + remote) go through the bash dispatch path now
+		const allDefinitions = [...mcpCommands, ...remoteMcpCommands];
 		setCommandRegistry(allDefinitions, mcpServerNames, remoteServerNames);
 		const registeredCommands = createDefineCommands(allDefinitions, commandContext);
 		// Restore previously persisted VFS state from the files table BEFORE
@@ -89,9 +88,7 @@ export async function initSandbox(
 			clusterFs,
 			commands: registeredCommands,
 		});
-		appContext.logger.info(
-			`[sandbox] ${builtinCommands.length} built-in + ${mcpCommands.length} MCP commands registered`,
-		);
+		appContext.logger.info(`[sandbox] ${mcpCommands.length} MCP commands registered`);
 		appContext.logger.info("[sandbox] Sandbox ready");
 	} catch (error) {
 		appContext.logger.warn("[sandbox] Failed to create sandbox", { error: formatError(error) });

@@ -23,7 +23,7 @@ export const sandboxTool: ToolDefinition = {
 	function: {
 		name: "bash",
 		description:
-			"Execute a command in the sandboxed shell. Built-in commands: query, memorize, forget, schedule, cancel, emit, purge, await, cache-warm, cache-pin, cache-unpin, cache-evict, model-hint, archive, hostinfo. MCP tools are also available as commands. Run standard shell commands too.",
+			"Execute a command in the sandboxed shell. MCP tools are available as commands. Run standard shell commands too.",
 		parameters: {
 			type: "object",
 			properties: {

@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { insertRow, updateRow } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
-import { parseFrontmatter } from "../commands/skill-activate";
 import type { RegisteredTool, ToolContext } from "../types";
+import { parseFrontmatter } from "./skill-utils";
 
 const MAX_ACTIVE_SKILLS = 20;
 const MAX_SKILL_BODY_LINES = 500;
