@@ -4,6 +4,8 @@ import { createArchiveTool } from "./archive.js";
 import { createAwaitEventTool } from "./await-event.js";
 import { createCancelTool } from "./cancel.js";
 import { createEmitTool } from "./emit.js";
+import { createHostinfoTool } from "./hostinfo.js";
+import { createModelHintTool } from "./model-hint.js";
 import { createNotifyTool } from "./notify.js";
 import { createPurgeTool } from "./purge.js";
 import { createQueryTool } from "./query.js";
@@ -20,6 +22,8 @@ export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 		createAdvisoryTool(ctx),
 		createNotifyTool(ctx),
 		createArchiveTool(ctx),
+		createModelHintTool(ctx),
+		createHostinfoTool(ctx),
 	];
 }
 
@@ -32,3 +36,5 @@ export { createPurgeTool } from "./purge.js";
 export { createAdvisoryTool } from "./advisory.js";
 export { createNotifyTool } from "./notify.js";
 export { createArchiveTool } from "./archive.js";
+export { createModelHintTool } from "./model-hint.js";
+export { createHostinfoTool } from "./hostinfo.js";
