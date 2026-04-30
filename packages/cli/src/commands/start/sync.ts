@@ -19,6 +19,7 @@ export interface SyncResult {
 		close: () => void;
 		updateReconnectConfig: (max?: number) => void;
 		updateBackpressureLimit: (limit?: number) => void;
+		updateBackfillInterval: (seconds?: number) => void;
 	} | null;
 }
 
@@ -82,6 +83,7 @@ export async function initSync(
 						const wsConfig = wsConfigRaw ? wsSchema.parse(wsConfigRaw) : wsSchema.parse({});
 						const reconnectMaxInterval = wsConfig.reconnect_max_interval;
 						const backpressureLimit = wsConfig.backpressure_limit;
+						const backfillIntervalSeconds = wsConfig.backfill_interval;
 
 						const wsClientInstance = new WsSyncClient({
 							hubUrl,
@@ -93,6 +95,7 @@ export async function initSync(
 							logger: appContext.logger,
 							reconnectMaxInterval,
 							backpressureLimit,
+							backfillIntervalSeconds,
 							reseed,
 						});
 

@@ -47,6 +47,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		close: () => void;
 		updateReconnectConfig: (max?: number) => void;
 		updateBackpressureLimit: (limit?: number) => void;
+		updateBackfillInterval: (seconds?: number) => void;
 	} | null = null;
 
 	// Phase 6: Agent loop factory
@@ -149,10 +150,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 				appContext.logger.info("[sighup] Applying WS config changes", {
 					reconnect_max_interval: newWsConfig.reconnect_max_interval,
 					backpressure_limit: newWsConfig.backpressure_limit,
+					backfill_interval: newWsConfig.backfill_interval,
 					idle_timeout: newWsConfig.idle_timeout,
 				});
 				wsClient.updateReconnectConfig(newWsConfig.reconnect_max_interval);
 				wsClient.updateBackpressureLimit(newWsConfig.backpressure_limit);
+				wsClient.updateBackfillInterval(newWsConfig.backfill_interval);
 			}
 		},
 	});

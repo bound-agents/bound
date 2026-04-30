@@ -222,6 +222,7 @@ export type RelayConfig = z.infer<typeof relaySchema>;
 
 export const wsSchema = z
 	.object({
+		backfill_interval: z.number().int().min(0).default(300),
 		backpressure_limit: z.number().int().positive().default(2097152),
 		idle_timeout: z.number().int().positive().default(120),
 		reconnect_max_interval: z.number().int().positive().default(60),

@@ -46,6 +46,7 @@ export interface WsClientConfig {
 	logger?: Logger;
 	reconnectMaxInterval?: number; // seconds, default 60
 	backpressureLimit?: number; // bytes, default 2097152
+	backfillIntervalSeconds?: number; // 0 = disabled, default 300
 	/** If true, sends RESEED_REQUEST to the hub after connecting. */
 	reseed?: boolean;
 }
@@ -61,6 +62,7 @@ export class WsSyncClient {
 	private sendState: "ready" | "pressured" = "ready";
 	private reconnectInterval = 1;
 	private reconnectTimer: Timer | null = null;
+	private backfillTimer: Timer | null = null;
 	private stopped = false;
 
 	/** Snapshot seeding state (spoke-side): tracks the current snapshot_hlc. */
@@ -171,6 +173,7 @@ export class WsSyncClient {
 	 */
 	close(): void {
 		this.stopped = true;
+		this.stopBackfillTimer();
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = null;
@@ -275,6 +278,7 @@ export class WsSyncClient {
 			}
 		}
 
+		this.startBackfillTimer();
 		this.onConnected?.();
 	}
 
@@ -394,6 +398,7 @@ export class WsSyncClient {
 	private handleClose(): void {
 		this.config.logger?.debug("WsSyncClient: connection closed");
 		this.ws = null;
+		this.stopBackfillTimer();
 
 		// Reset snapshot state — a reconnection starts a fresh seeding session.
 		this.snapshotHlc = null;
@@ -503,6 +508,40 @@ export class WsSyncClient {
 		if (this.heartbeatTimer) {
 			clearInterval(this.heartbeatTimer);
 			this.heartbeatTimer = null;
+		}
+	}
+
+	private startBackfillTimer(): void {
+		this.stopBackfillTimer();
+		const intervalSeconds = this.config.backfillIntervalSeconds ?? 300;
+		if (intervalSeconds <= 0) return;
+		this.backfillTimer = setInterval(() => {
+			const wt = this.config.wsTransport as unknown as {
+				runBackfill?: (opts?: { isFirstConnect?: boolean }) => Promise<unknown>;
+			};
+			if (typeof wt?.runBackfill === "function") {
+				wt.runBackfill().catch((err: Error) => {
+					this.config.logger?.warn("[backfill] Periodic backfill failed", {
+						error: err.message,
+					});
+				});
+			}
+		}, intervalSeconds * 1000);
+	}
+
+	private stopBackfillTimer(): void {
+		if (this.backfillTimer) {
+			clearInterval(this.backfillTimer);
+			this.backfillTimer = null;
+		}
+	}
+
+	updateBackfillInterval(seconds?: number): void {
+		if (seconds !== undefined) {
+			this.config.backfillIntervalSeconds = seconds;
+		}
+		if (this.connected) {
+			this.startBackfillTimer();
 		}
 	}
 
