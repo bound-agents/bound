@@ -61,7 +61,7 @@ export function createArchiveTool(ctx: ToolContext): RegisteredTool {
 				if (threadId) {
 					const existing = ctx.db
 						.prepare("SELECT id FROM threads WHERE id = ? AND deleted = 0")
-						.get(threadId) as { id: string } | undefined;
+						.get(threadId) as { id: string } | null;
 
 					if (!existing) {
 						return `Error: Thread not found: ${threadId}`;
@@ -95,7 +95,7 @@ export function createArchiveTool(ctx: ToolContext): RegisteredTool {
 					return `Archived ${threads.length} thread(s)`;
 				}
 
-				return "Error: must specify --thread-id or --older-than";
+				return "Error: must specify thread_id or older_than";
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return `Error: ${message}`;

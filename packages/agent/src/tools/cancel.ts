@@ -55,7 +55,7 @@ export function createCancelTool(ctx: ToolContext): RegisteredTool {
 				// Check if task exists
 				const existing = ctx.db
 					.prepare("SELECT id FROM tasks WHERE id = ? AND deleted = 0")
-					.get(taskId) as { id: string } | undefined;
+					.get(taskId) as { id: string } | null;
 
 				if (!existing) {
 					return `Error: Task not found: ${taskId}`;

@@ -51,6 +51,7 @@ export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
 				parameters: {
 					type: "object",
 					properties: {},
+					additionalProperties: false,
 				},
 			},
 		},

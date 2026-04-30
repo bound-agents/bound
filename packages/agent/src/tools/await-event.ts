@@ -51,7 +51,7 @@ export function createAwaitEventTool(ctx: ToolContext): RegisteredTool {
 					for (const taskId of taskIds) {
 						const task = ctx.db
 							.prepare("SELECT id, status, result, error FROM tasks WHERE id = ? AND deleted = 0")
-							.get(taskId) as Record<string, unknown> | undefined;
+							.get(taskId) as Record<string, unknown> | null;
 
 						if (!task) {
 							results[taskId] = { status: "not_found", result: null, error: "Task not found" };

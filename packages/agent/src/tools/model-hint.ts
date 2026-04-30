@@ -32,7 +32,7 @@ export function createModelHintTool(ctx: ToolContext): RegisteredTool {
 				},
 			},
 		},
-		execute: async (input: unknown): Promise<string> => {
+		execute: async (input: Record<string, unknown>): Promise<string> => {
 			try {
 				const params = input as ModelHintInput;
 
@@ -43,7 +43,7 @@ export function createModelHintTool(ctx: ToolContext): RegisteredTool {
 				// Check if a hint already exists for this task
 				const existing = ctx.db
 					.prepare("SELECT id FROM tasks WHERE id = ? AND deleted = 0")
-					.get(ctx.taskId) as { id: string } | undefined;
+					.get(ctx.taskId) as { id: string } | null;
 
 				if (params.reset === true) {
 					// Clear the hint by setting model_hint to null

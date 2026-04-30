@@ -89,7 +89,7 @@ export function createPurgeTool(ctx: ToolContext): RegisteredTool {
 									   AND created_at > (SELECT created_at FROM messages WHERE id = ?)
 									 ORDER BY created_at ASC LIMIT 1`,
 								)
-								.get(msg.id, msg.id) as { id: string } | undefined;
+								.get(msg.id, msg.id) as { id: string } | null;
 
 							if (paired && !targetSet.has(paired.id)) {
 								additionalIds.push(paired.id);
