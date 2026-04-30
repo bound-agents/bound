@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import type { ChangeLogEntry } from "@bound/shared";
+import { type ChangeLogEntry, TypedEventEmitter } from "@bound/shared";
 import { applyAppendOnlyReducer, applyEvent, applyLWWReducer, replayEvents } from "../reducers.js";
 
 describe("reducers", () => {
@@ -958,4 +958,114 @@ describe("reducers", () => {
 
 	// Note: invariant-#19 regression tests live in reducers-invariant-19.test.ts
 	// (standalone file with a minimal schema for fast focused verification).
+
+	describe("replayEvents changelog:written forwarding", () => {
+		it("emits changelog:written for each applied entry when eventBus is provided", () => {
+			const eventBus = new TypedEventEmitter();
+			const emitted: Array<{ hlc: string; tableName: string; siteId: string }> = [];
+			eventBus.on("changelog:written", (event) => {
+				emitted.push(event);
+			});
+
+			const events: ChangeLogEntry[] = [
+				{
+					hlc: "2026-04-30T00:00:01.000Z_0001_remote-site",
+					table_name: "hosts",
+					row_id: "remote-site",
+					site_id: "remote-site",
+					timestamp: "2026-04-30T00:00:01.000Z",
+					row_data: JSON.stringify({
+						site_id: "remote-site",
+						host_name: "remote-host",
+						online_at: "2026-04-30T00:00:01.000Z",
+						modified_at: "2026-04-30T00:00:01.000Z",
+						deleted: 0,
+					}),
+				},
+				{
+					hlc: "2026-04-30T00:00:02.000Z_0001_remote-site",
+					table_name: "semantic_memory",
+					row_id: "mem-1",
+					site_id: "remote-site",
+					timestamp: "2026-04-30T00:00:02.000Z",
+					row_data: JSON.stringify({
+						id: "mem-1",
+						key: "test-key",
+						value: "test-value",
+						source: "test",
+						created_at: "2026-04-30T00:00:02.000Z",
+						modified_at: "2026-04-30T00:00:02.000Z",
+						last_accessed_at: "2026-04-30T00:00:02.000Z",
+						deleted: 0,
+					}),
+				},
+			];
+
+			const result = replayEvents(db, events, { eventBus });
+
+			expect(result.applied).toBe(2);
+			expect(emitted).toHaveLength(2);
+			expect(emitted[0].tableName).toBe("hosts");
+			expect(emitted[0].siteId).toBe("remote-site");
+			expect(emitted[1].tableName).toBe("semantic_memory");
+			expect(emitted[1].siteId).toBe("remote-site");
+		});
+
+		it("does not emit changelog:written when eventBus is not provided", () => {
+			const events: ChangeLogEntry[] = [
+				{
+					hlc: "2026-04-30T00:00:01.000Z_0001_remote-site",
+					table_name: "hosts",
+					row_id: "remote-site",
+					site_id: "remote-site",
+					timestamp: "2026-04-30T00:00:01.000Z",
+					row_data: JSON.stringify({
+						site_id: "remote-site",
+						host_name: "remote-host",
+						online_at: "2026-04-30T00:00:01.000Z",
+						modified_at: "2026-04-30T00:00:01.000Z",
+						deleted: 0,
+					}),
+				},
+			];
+
+			const result = replayEvents(db, events);
+			expect(result.applied).toBe(1);
+		});
+
+		it("does not emit changelog:written for skipped entries", () => {
+			db.run(
+				`INSERT INTO hosts (site_id, host_name, modified_at, deleted)
+				 VALUES ('remote-site', 'old-host', '2026-04-30T00:00:05.000Z', 0)`,
+			);
+
+			const eventBus = new TypedEventEmitter();
+			const emitted: Array<{ hlc: string; tableName: string; siteId: string }> = [];
+			eventBus.on("changelog:written", (event) => {
+				emitted.push(event);
+			});
+
+			const events: ChangeLogEntry[] = [
+				{
+					hlc: "2026-04-30T00:00:01.000Z_0001_remote-site",
+					table_name: "hosts",
+					row_id: "remote-site",
+					site_id: "remote-site",
+					timestamp: "2026-04-30T00:00:01.000Z",
+					row_data: JSON.stringify({
+						site_id: "remote-site",
+						host_name: "stale-host",
+						online_at: "2026-04-30T00:00:01.000Z",
+						modified_at: "2026-04-30T00:00:01.000Z",
+						deleted: 0,
+					}),
+				},
+			];
+
+			const result = replayEvents(db, events, { eventBus });
+			expect(result.applied).toBe(0);
+			expect(result.skipped).toBe(1);
+			expect(emitted).toHaveLength(0);
+		});
+	});
 });

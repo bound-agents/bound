@@ -371,6 +371,7 @@ export class WsTransport {
 		// sessions running on another node until they manually refresh.
 		const { applied, skipped } = replayEvents(this.config.db, entries, {
 			logger: this.config.logger,
+			eventBus: this.config.eventBus,
 			onApplied: (info) => {
 				if (info.table_name !== "messages") return;
 				// Rehydrate the full row from the DB after commit rather than

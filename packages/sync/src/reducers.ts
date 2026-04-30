@@ -1,6 +1,6 @@
 import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { createChangeLogEntry } from "@bound/core";
-import type { ChangeLogEntry, Logger, SyncedTableName } from "@bound/shared";
+import type { ChangeLogEntry, Logger, SyncedTableName, TypedEventEmitter } from "@bound/shared";
 import { TABLE_REDUCER_MAP, parseJsonUntyped } from "@bound/shared";
 
 type RowData = Record<string, SQLQueryBindings>;
@@ -289,6 +289,7 @@ export function replayEvents(
 	events: ChangeLogEntry[],
 	options?: {
 		onApplied?: (info: AppliedEventInfo) => void;
+		eventBus?: TypedEventEmitter;
 		/** Optional logger, forwarded to reducers to surface invariant violations. */
 		logger?: Logger;
 	},
@@ -299,6 +300,7 @@ export function replayEvents(
 	// subscribers querying the DB in response see the committed state (and a
 	// reducer exception can't mislead listeners about rows that got rolled back).
 	const appliedInfos: AppliedEventInfo[] = [];
+	const changelogHlcs: Array<{ hlc: string; tableName: SyncedTableName; siteId: string }> = [];
 
 	// Wrap in transaction so partial failures don't leave the DB in an
 	// inconsistent state (all-or-nothing for each sync batch).
@@ -323,7 +325,19 @@ export function replayEvents(
 				applied++;
 				// Create a change_log entry preserving the original site_id
 				// Pass remoteHlc so the local HLC advances past the remote event
-				createChangeLogEntry(db, event.table_name, event.row_id, event.site_id, rowData, event.hlc);
+				const localHlc = createChangeLogEntry(
+					db,
+					event.table_name,
+					event.row_id,
+					event.site_id,
+					rowData,
+					event.hlc,
+				);
+				changelogHlcs.push({
+					hlc: localHlc,
+					tableName: event.table_name as SyncedTableName,
+					siteId: event.site_id,
+				});
 				if (options?.onApplied) {
 					appliedInfos.push({
 						table_name: event.table_name,
@@ -345,6 +359,20 @@ export function replayEvents(
 			// ROLLBACK failed, original error takes priority
 		}
 		throw error;
+	}
+
+	// Emit changelog:written events AFTER COMMIT so the WsTransport coalescer
+	// picks up replayed entries and forwards them to other connected peers.
+	// Without this, entries from spoke A replayed on the hub never reach spoke B
+	// until the next drainChangelog (reconnect), causing stale host heartbeats.
+	if (options?.eventBus && changelogHlcs.length > 0) {
+		for (const entry of changelogHlcs) {
+			try {
+				options.eventBus.emit("changelog:written", entry);
+			} catch {
+				// Swallow — same resilience pattern as onApplied
+			}
+		}
 	}
 
 	// Fire applied-event notifications AFTER successful commit. Individual
