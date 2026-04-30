@@ -83,7 +83,7 @@ export interface HostStatus {
 
 export interface NetworkStatus {
 	hosts: Record<string, unknown>[];
-	hub: string | null;
+	hub: { siteId: string; hostName: string } | null;
 	syncState: Record<string, unknown>[];
 	localSiteId: string;
 }

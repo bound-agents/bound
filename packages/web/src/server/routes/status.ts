@@ -88,16 +88,25 @@ export function createStatusRoutes(
 				.query("SELECT * FROM hosts WHERE deleted = 0 ORDER BY host_name ASC")
 				.all() as Array<Record<string, unknown>>;
 
-			const hubRow = db.query("SELECT value FROM cluster_config WHERE key = 'hub'").get() as {
-				value: string;
-			} | null;
-			const hub = hubRow?.value ?? null;
-
 			const syncState = db.query("SELECT * FROM sync_state").all() as Array<
 				Record<string, unknown>
 			>;
 
 			const localSiteId = getSiteId(db);
+
+			// Determine hub: if we have a sync_state peer, that's our hub (spoke mode).
+			// Otherwise we ARE the hub.
+			let hub: { siteId: string; hostName: string } | null = null;
+			const peerRow = db.query("SELECT peer_site_id FROM sync_state LIMIT 1").get() as {
+				peer_site_id: string;
+			} | null;
+			const hubSiteId = peerRow?.peer_site_id ?? localSiteId;
+			const hubHostRow = db
+				.query("SELECT site_id, host_name FROM hosts WHERE site_id = ? AND deleted = 0")
+				.get(hubSiteId) as { site_id: string; host_name: string } | null;
+			if (hubHostRow) {
+				hub = { siteId: hubHostRow.site_id, hostName: hubHostRow.host_name };
+			}
 
 			return c.json({
 				hosts,
