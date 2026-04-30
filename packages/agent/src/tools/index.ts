@@ -2,6 +2,7 @@ import type { RegisteredTool, ToolContext } from "../types.js";
 import { createAdvisoryTool } from "./advisory.js";
 import { createArchiveTool } from "./archive.js";
 import { createAwaitEventTool } from "./await-event.js";
+import { createCacheTool } from "./cache.js";
 import { createCancelTool } from "./cancel.js";
 import { createEmitTool } from "./emit.js";
 import { createHostinfoTool } from "./hostinfo.js";
@@ -26,6 +27,7 @@ export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 		createModelHintTool(ctx),
 		createHostinfoTool(ctx),
 		createMemoryTool(ctx),
+		createCacheTool(ctx),
 	];
 }
 
@@ -41,3 +43,4 @@ export { createArchiveTool } from "./archive.js";
 export { createModelHintTool } from "./model-hint.js";
 export { createHostinfoTool } from "./hostinfo.js";
 export { createMemoryTool } from "./memory.js";
+export { createCacheTool } from "./cache.js";
