@@ -12,12 +12,14 @@ import { createNotifyTool } from "./notify.js";
 import { createPurgeTool } from "./purge.js";
 import { createQueryTool } from "./query.js";
 import { createScheduleTool } from "./schedule.js";
+import { createSkillTool } from "./skill.js";
 
 export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 	return [
+		// Standalone (Phase 2)
 		createScheduleTool(ctx),
-		createQueryTool(ctx),
 		createCancelTool(ctx),
+		createQueryTool(ctx),
 		createEmitTool(ctx),
 		createAwaitEventTool(ctx),
 		createPurgeTool(ctx),
@@ -26,8 +28,10 @@ export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 		createArchiveTool(ctx),
 		createModelHintTool(ctx),
 		createHostinfoTool(ctx),
+		// Grouped (Phase 3)
 		createMemoryTool(ctx),
 		createCacheTool(ctx),
+		createSkillTool(ctx),
 	];
 }
 
@@ -44,3 +48,4 @@ export { createModelHintTool } from "./model-hint.js";
 export { createHostinfoTool } from "./hostinfo.js";
 export { createMemoryTool } from "./memory.js";
 export { createCacheTool } from "./cache.js";
+export { createSkillTool } from "./skill.js";
