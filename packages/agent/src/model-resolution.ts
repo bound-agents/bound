@@ -179,6 +179,7 @@ export function resolveSameTierFallback(
 				host_name: row.host_name,
 				sync_url: row.sync_url,
 				online_at: row.online_at,
+				modified_at: row.modified_at,
 				tier: hostEntry.tier,
 				modelId: hostEntry.id,
 			});
@@ -187,12 +188,14 @@ export function resolveSameTierFallback(
 
 	if (remoteHosts.length === 0) return null;
 
-	// Sort by online_at (most recent first)
+	// Sort by freshness (most recent first), modified_at preferred over online_at
 	remoteHosts.sort((a, b) => {
-		if (!a.online_at && !b.online_at) return 0;
-		if (!a.online_at) return 1;
-		if (!b.online_at) return -1;
-		return new Date(b.online_at).getTime() - new Date(a.online_at).getTime();
+		const aTs = a.modified_at ?? a.online_at;
+		const bTs = b.modified_at ?? b.online_at;
+		if (!aTs && !bTs) return 0;
+		if (!aTs) return 1;
+		if (!bTs) return -1;
+		return new Date(bTs).getTime() - new Date(aTs).getTime();
 	});
 
 	const best = remoteHosts[0];

@@ -8,6 +8,7 @@ export interface EligibleHost {
 	host_name: string;
 	sync_url: string | null;
 	online_at: string | null;
+	modified_at: string | null;
 	/** Capability metadata from the host's HostModelEntry. Present for verified hosts only. */
 	capabilities?: {
 		streaming?: boolean;
@@ -81,6 +82,7 @@ export function findEligibleHosts(
 			host_name: row.host_name,
 			sync_url: row.sync_url,
 			online_at: row.online_at,
+			modified_at: row.modified_at,
 		});
 	}
 
@@ -88,20 +90,23 @@ export function findEligibleHosts(
 		return { ok: false, error: `Tool "${toolCommandName}" not available on any remote host` };
 	}
 
-	// Sort by online_at descending (most recent first), nulls last
+	// Sort by modified_at descending (most recent first), falling back to online_at, nulls last
 	eligible.sort((a, b) => {
-		if (!a.online_at && !b.online_at) return 0;
-		if (!a.online_at) return 1;
-		if (!b.online_at) return -1;
-		return new Date(b.online_at).getTime() - new Date(a.online_at).getTime();
+		const aTs = a.modified_at ?? a.online_at;
+		const bTs = b.modified_at ?? b.online_at;
+		if (!aTs && !bTs) return 0;
+		if (!aTs) return 1;
+		if (!bTs) return -1;
+		return new Date(bTs).getTime() - new Date(aTs).getTime();
 	});
 
 	return { ok: true, hosts: eligible };
 }
 
 export function isHostStale(host: EligibleHost): boolean {
-	if (!host.online_at) return true;
-	return Date.now() - new Date(host.online_at).getTime() > STALE_THRESHOLD_MS;
+	const ts = host.modified_at ?? host.online_at;
+	if (!ts) return true;
+	return Date.now() - new Date(ts).getTime() > STALE_THRESHOLD_MS;
 }
 
 export function findEligibleHostsByModel(
@@ -154,6 +159,7 @@ export function findEligibleHostsByModel(
 						host_name: row.host_name,
 						sync_url: row.sync_url,
 						online_at: row.online_at,
+						modified_at: row.modified_at,
 						unverified: true,
 					});
 				}
@@ -171,6 +177,7 @@ export function findEligibleHostsByModel(
 					host_name: row.host_name,
 					sync_url: row.sync_url,
 					online_at: row.online_at,
+					modified_at: row.modified_at,
 					capabilities: hostEntry.capabilities,
 					tier: hostEntry.tier,
 					unverified: false,
@@ -213,7 +220,7 @@ export function findEligibleHostsByModel(
 		return { ok: false, error: `Model "${modelId}" not available on any remote host` };
 	}
 
-	// Sort: by tier (ascending, lower is better), then by online_at (descending)
+	// Sort: by tier (ascending, lower is better), then by freshness (descending)
 	eligible.sort((a, b) => {
 		// Verified before unverified
 		if (!a.unverified && b.unverified) return -1;
@@ -222,11 +229,13 @@ export function findEligibleHostsByModel(
 		const tierA = a.tier ?? 99;
 		const tierB = b.tier ?? 99;
 		if (tierA !== tierB) return tierA - tierB;
-		// By online_at (most recent first)
-		if (!a.online_at && !b.online_at) return 0;
-		if (!a.online_at) return 1;
-		if (!b.online_at) return -1;
-		return new Date(b.online_at).getTime() - new Date(a.online_at).getTime();
+		// By freshness (most recent first), modified_at preferred over online_at
+		const aTs = a.modified_at ?? a.online_at;
+		const bTs = b.modified_at ?? b.online_at;
+		if (!aTs && !bTs) return 0;
+		if (!aTs) return 1;
+		if (!bTs) return -1;
+		return new Date(bTs).getTime() - new Date(aTs).getTime();
 	});
 
 	return { ok: true, hosts: eligible };
@@ -289,6 +298,7 @@ export function findAnyRemoteModel(
 				host_name: row.host_name,
 				sync_url: row.sync_url,
 				online_at: row.online_at,
+				modified_at: row.modified_at,
 				tier,
 				modelId,
 			});
@@ -299,15 +309,17 @@ export function findAnyRemoteModel(
 		return { ok: false, error: "No remote inference backends available in cluster" };
 	}
 
-	// Sort: lower tier first, then most recently online
+	// Sort: lower tier first, then most recently active
 	candidates.sort((a, b) => {
 		const tierA = a.tier ?? 99;
 		const tierB = b.tier ?? 99;
 		if (tierA !== tierB) return tierA - tierB;
-		if (!a.online_at && !b.online_at) return 0;
-		if (!a.online_at) return 1;
-		if (!b.online_at) return -1;
-		return new Date(b.online_at).getTime() - new Date(a.online_at).getTime();
+		const aTs = a.modified_at ?? a.online_at;
+		const bTs = b.modified_at ?? b.online_at;
+		if (!aTs && !bTs) return 0;
+		if (!aTs) return 1;
+		if (!bTs) return -1;
+		return new Date(bTs).getTime() - new Date(aTs).getTime();
 	});
 
 	const best = candidates[0];
@@ -319,6 +331,7 @@ export function findAnyRemoteModel(
 				host_name: best.host_name,
 				sync_url: best.sync_url,
 				online_at: best.online_at,
+				modified_at: best.modified_at,
 				tier: best.tier,
 			},
 		],

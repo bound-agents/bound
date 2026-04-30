@@ -37,7 +37,7 @@ export function startHostHeartbeat(
 			} | null;
 			if (!existing) return;
 
-			updateRow(db, "hosts", siteId, { modified_at: ts, online_at: ts }, siteId);
+			updateRow(db, "hosts", siteId, { modified_at: ts }, siteId);
 		} catch (error) {
 			options?.logger?.warn("Host heartbeat DB write failed", {
 				error: error instanceof Error ? error.message : String(error),

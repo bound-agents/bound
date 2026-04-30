@@ -66,14 +66,7 @@ describe("Relay Router", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, mcp_tools, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"remote-1",
-					"Remote Host 1",
-					JSON.stringify(["remote-tool"]),
-					0,
-					staleTime,
-					new Date().toISOString(),
-				],
+				["remote-1", "Remote Host 1", JSON.stringify(["remote-tool"]), 0, staleTime, staleTime],
 			);
 
 			const result = findEligibleHosts(db, "remote-tool", "local-site");
@@ -123,37 +116,23 @@ describe("Relay Router", () => {
 			expect(result.ok).toBe(false);
 		});
 
-		it("sorts hosts by online_at descending (most recent first)", () => {
+		it("sorts hosts by freshness descending (most recent first)", () => {
 			const now = new Date();
 			const recentTime = new Date(now.getTime() - 1 * 60 * 1000).toISOString(); // 1 min ago
-			const olderTime = new Date(now.getTime() - 5 * 60 * 1000).toISOString(); // 5 min ago
+			const olderTime = new Date(now.getTime() - 3 * 60 * 1000).toISOString(); // 3 min ago
 
 			db.run(
 				`INSERT INTO hosts (
 					site_id, host_name, mcp_tools, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"older-1",
-					"Older Host",
-					JSON.stringify(["remote-tool"]),
-					0,
-					olderTime,
-					new Date().toISOString(),
-				],
+				["older-1", "Older Host", JSON.stringify(["remote-tool"]), 0, olderTime, olderTime],
 			);
 
 			db.run(
 				`INSERT INTO hosts (
 					site_id, host_name, mcp_tools, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"recent-1",
-					"Recent Host",
-					JSON.stringify(["remote-tool"]),
-					0,
-					recentTime,
-					new Date().toISOString(),
-				],
+				["recent-1", "Recent Host", JSON.stringify(["remote-tool"]), 0, recentTime, recentTime],
 			);
 
 			const result = findEligibleHosts(db, "remote-tool", "local-site");
@@ -164,39 +143,41 @@ describe("Relay Router", () => {
 			}
 		});
 
-		it("handles hosts with null online_at (sorted to end)", () => {
+		it("sorts stale hosts after fresh hosts", () => {
 			const now = new Date().toISOString();
+			const staleTime = new Date(Date.now() - 10 * 60 * 1000).toISOString();
 
 			db.run(
 				`INSERT INTO hosts (
 					site_id, host_name, mcp_tools, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				["no-sync-1", "Never Synced", JSON.stringify(["remote-tool"]), 0, null, now],
+				["stale-1", "Stale Host", JSON.stringify(["remote-tool"]), 0, staleTime, staleTime],
 			);
 
 			db.run(
 				`INSERT INTO hosts (
 					site_id, host_name, mcp_tools, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				["synced-1", "Synced Host", JSON.stringify(["remote-tool"]), 0, now, now],
+				["fresh-1", "Fresh Host", JSON.stringify(["remote-tool"]), 0, now, now],
 			);
 
 			const result = findEligibleHosts(db, "remote-tool", "local-site");
 			expect(result.ok).toBe(true);
 			if (result.ok) {
-				expect(result.hosts[0].site_id).toBe("synced-1");
-				expect(result.hosts[1].site_id).toBe("no-sync-1");
+				expect(result.hosts[0].site_id).toBe("fresh-1");
+				expect(result.hosts[1].site_id).toBe("stale-1");
 			}
 		});
 	});
 
 	describe("isHostStale", () => {
-		it("returns true for hosts with null online_at", () => {
+		it("returns true for hosts with null timestamps", () => {
 			const host = {
 				site_id: "test",
 				host_name: "Test",
 				sync_url: null,
 				online_at: null,
+				modified_at: null,
 			};
 			expect(isHostStale(host)).toBe(true);
 		});
@@ -208,17 +189,31 @@ describe("Relay Router", () => {
 				host_name: "Test",
 				sync_url: null,
 				online_at: staleTime,
+				modified_at: staleTime,
 			};
 			expect(isHostStale(host)).toBe(true);
 		});
 
-		it("returns false for recently synced hosts (< 5 min ago)", () => {
+		it("returns false for recently active hosts (< 5 min ago)", () => {
+			const recentTime = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+			const host = {
+				site_id: "test",
+				host_name: "Test",
+				sync_url: null,
+				online_at: null,
+				modified_at: recentTime,
+			};
+			expect(isHostStale(host)).toBe(false);
+		});
+
+		it("falls back to online_at when modified_at is null", () => {
 			const recentTime = new Date(Date.now() - 2 * 60 * 1000).toISOString();
 			const host = {
 				site_id: "test",
 				host_name: "Test",
 				sync_url: null,
 				online_at: recentTime,
+				modified_at: null,
 			};
 			expect(isHostStale(host)).toBe(false);
 		});
@@ -292,7 +287,7 @@ describe("Relay Router", () => {
 			}
 		});
 
-		it("sorts hosts by online_at descending (most recent first) (AC2.2)", () => {
+		it("sorts hosts by freshness descending (most recent first) (AC2.2)", () => {
 			const now = new Date();
 			const recentTime = new Date(now.getTime() - 1 * 60 * 1000).toISOString(); // 1 min ago
 			const olderTime = new Date(now.getTime() - 3 * 60 * 1000).toISOString(); // 3 min ago
@@ -301,28 +296,14 @@ describe("Relay Router", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"older-host",
-					"Older Host",
-					JSON.stringify(["claude-opus"]),
-					0,
-					olderTime,
-					new Date().toISOString(),
-				],
+				["older-host", "Older Host", JSON.stringify(["claude-opus"]), 0, olderTime, olderTime],
 			);
 
 			db.run(
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"recent-host",
-					"Recent Host",
-					JSON.stringify(["claude-opus"]),
-					0,
-					recentTime,
-					new Date().toISOString(),
-				],
+				["recent-host", "Recent Host", JSON.stringify(["claude-opus"]), 0, recentTime, recentTime],
 			);
 
 			const result = findEligibleHostsByModel(db, "claude-opus", "local-site");

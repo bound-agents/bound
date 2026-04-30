@@ -132,11 +132,16 @@ export function createStatusRoutes(
 		// Exclude local host by site_id (unique key) not host_name (not guaranteed unique)
 		const remoteHosts = db
 			.query(
-				`SELECT host_name, models, online_at
+				`SELECT host_name, models, online_at, modified_at
 				 FROM hosts
 				 WHERE deleted = 0 AND models IS NOT NULL AND site_id != ?`,
 			)
-			.all(siteId) as Array<{ host_name: string; models: string; online_at: string | null }>;
+			.all(siteId) as Array<{
+			host_name: string;
+			models: string;
+			online_at: string | null;
+			modified_at: string | null;
+		}>;
 
 		const remoteModels: ClusterModelInfo[] = [];
 		for (const host of remoteHosts) {
@@ -155,8 +160,8 @@ export function createStatusRoutes(
 			);
 
 			// AC5.3: Annotate stale models with "offline?"
-			const isStale =
-				!host.online_at || Date.now() - new Date(host.online_at).getTime() > STALE_THRESHOLD_MS;
+			const freshTs = host.modified_at ?? host.online_at;
+			const isStale = !freshTs || Date.now() - new Date(freshTs).getTime() > STALE_THRESHOLD_MS;
 
 			// AC5.5: Same model ID on multiple hosts → separate entries
 			for (const modelId of modelIds) {
