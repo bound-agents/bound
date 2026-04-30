@@ -132,7 +132,8 @@ describe("Context Assembly Pipeline", () => {
 			const result = assembleContext({ db, threadId, userId });
 
 			expect(result.systemPrompt).toContain("Orientation");
-			expect(result.systemPrompt).toContain("Available Commands");
+			// "Available Commands" replaced with conditional "Additional MCP Commands"
+			expect(result.systemPrompt).not.toContain("Available Commands");
 		});
 
 		it("systemPrompt includes persona when persona.md exists", () => {
@@ -7416,10 +7417,10 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			expect(systemPrompt).toContain("atproto");
 			expect(systemPrompt).toContain("query");
 
-			// atproto must come before query in the Available Commands list
+			// atproto must come before query in the Additional MCP Commands list
 			// (the static environment paragraph may mention `query` earlier, so
 			// we slice to the orientation section before comparing positions).
-			const orientationStart = systemPrompt.indexOf("### Available Commands");
+			const orientationStart = systemPrompt.indexOf("### Additional MCP Commands");
 			expect(orientationStart).toBeGreaterThanOrEqual(0);
 			const orientation = systemPrompt.slice(orientationStart);
 			const atprotoIndex = orientation.indexOf("atproto");
@@ -7427,7 +7428,7 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			expect(atprotoIndex < queryIndex).toBe(true);
 		});
 
-		it("command-discovery-redesign.AC3.3: footer references <cmd> --help instead of commands", () => {
+		it("command-discovery-redesign.AC3.3: footer references <server-name> --help for MCP commands", () => {
 			// Register a test command
 			const testCommand: CommandDefinition = {
 				name: "test",
@@ -7445,12 +7446,77 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 				userId,
 			});
 
-			// Must contain the new footer with <cmd> --help
-			expect(systemPrompt).toContain("Run `<cmd> --help` for details on any command.");
+			// Must contain the MCP-specific footer with <server-name> --help
+			expect(systemPrompt).toContain("Run `<server-name> --help` for details");
 
 			// Must NOT contain the old commands references
 			expect(systemPrompt).not.toContain("commands <name>");
 			expect(systemPrompt).not.toContain("Run `commands`");
+		});
+
+		it("native-tools.AC5.1: orientation contains 'Additional MCP Commands' when MCP commands exist", () => {
+			// Register a test MCP command
+			const mcpCommand: CommandDefinition = {
+				name: "github",
+				description: "GitHub MCP server",
+				args: [],
+				handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+			};
+
+			setCommandRegistry([mcpCommand]);
+
+			const { systemPrompt } = assembleContext({
+				db,
+				threadId,
+				userId,
+			});
+
+			// Should contain the MCP commands section
+			expect(systemPrompt).toContain("### Additional MCP Commands");
+			// Should list the command
+			expect(systemPrompt).toContain("github");
+			// Should contain the MCP-specific help guidance
+			expect(systemPrompt).toContain("MCP server commands");
+			expect(systemPrompt).toContain("Run `<server-name> --help` for details");
+		});
+
+		it("native-tools.AC5.2: 'Available Commands' does NOT appear in system prompt", () => {
+			// Register an MCP command
+			const mcpCommand: CommandDefinition = {
+				name: "github",
+				description: "GitHub MCP server",
+				args: [],
+				handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+			};
+
+			setCommandRegistry([mcpCommand]);
+
+			const { systemPrompt } = assembleContext({
+				db,
+				threadId,
+				userId,
+			});
+
+			// The old section name should never appear
+			expect(systemPrompt).not.toContain("### Available Commands");
+		});
+
+		it("native-tools.AC5.1: orientation omits MCP section when no MCP commands exist", () => {
+			// Empty registry
+			setCommandRegistry([]);
+
+			const { systemPrompt } = assembleContext({
+				db,
+				threadId,
+				userId,
+			});
+
+			// Should still have orientation
+			expect(systemPrompt).toContain("## Orientation");
+			// Should have host identity
+			expect(systemPrompt).toContain("### Host Identity");
+			// Should NOT have the MCP section
+			expect(systemPrompt).not.toContain("### Additional MCP Commands");
 		});
 	});
 
