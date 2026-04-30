@@ -1866,10 +1866,13 @@ export class WsTransport {
 		const peer = this.peerConnections.get(peerSiteId);
 		if (!peer) return;
 
-		this.config.logger?.debug("[row-pull] Request received", {
+		const totalPks = payload.tables.reduce((sum, t) => sum + t.pks.length, 0);
+		this.config.logger?.info("[row-pull] Request received", {
 			peerSiteId,
 			requestId: payload.request_id,
 			tables: payload.tables.length,
+			totalPks,
+			breakdown: payload.tables.map((t) => `${t.table}:${t.pks.length}`).join(", "),
 		});
 
 		this.streamRowPullPages(peerSiteId, payload.request_id, payload.tables, 0, 0);
@@ -1907,7 +1910,7 @@ export class WsTransport {
 			);
 			peer.sendFrame(frame);
 			this.pendingRowPullState.delete(peerSiteId);
-			this.config.logger?.debug("[row-pull] Stream complete", { peerSiteId, requestId });
+			this.config.logger?.info("[row-pull] Stream complete", { peerSiteId, requestId });
 			return;
 		}
 
@@ -2097,9 +2100,19 @@ export class WsTransport {
 		});
 	}
 
+	private rowPullReceivedCount = 0;
+	private rowPullFrameCount = 0;
+
 	handleRowPullResponse(payload: RowPullResponsePayload): void {
+		this.rowPullFrameCount++;
 		if (payload.rows.length > 0) {
-			applySnapshotRows(this.config.db, payload.table_name, payload.rows, this.config.logger);
+			const applied = applySnapshotRows(
+				this.config.db,
+				payload.table_name,
+				payload.rows,
+				this.config.logger,
+			);
+			this.rowPullReceivedCount += applied;
 		}
 
 		if (payload.col_chunk_row_id && payload.col_chunk_column && payload.col_chunk_data != null) {
@@ -2115,6 +2128,13 @@ export class WsTransport {
 		}
 
 		if (payload.last) {
+			this.config.logger?.info("[row-pull] All responses received", {
+				frames: this.rowPullFrameCount,
+				rowsApplied: this.rowPullReceivedCount,
+			});
+			this.rowPullReceivedCount = 0;
+			this.rowPullFrameCount = 0;
+
 			const req = payload.request_id
 				? this.pendingRowPullRequests.get(payload.request_id)
 				: undefined;
