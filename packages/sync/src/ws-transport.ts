@@ -1890,6 +1890,20 @@ export class WsTransport {
 		this.streamRowPullPages(peerSiteId, payload.request_id, payload.tables, 0, 0);
 	}
 
+	private pendingRowPullState = new Map<
+		string,
+		{
+			requestId: string;
+			tables: Array<{ table: string; pks: string[] }>;
+			tableIndex: number;
+			pkOffset: number;
+			pendingRows: Array<Record<string, unknown>>;
+			pendingRowCursor: number;
+			pendingIsLast: boolean;
+			pendingTable: string;
+		}
+	>();
+
 	private streamRowPullPages(
 		peerSiteId: string,
 		requestId: string,
@@ -1907,6 +1921,7 @@ export class WsTransport {
 				peer.symmetricKey,
 			);
 			peer.sendFrame(frame);
+			this.pendingRowPullState.delete(peerSiteId);
 			this.config.logger?.debug("[row-pull] Stream complete", { peerSiteId, requestId });
 			return;
 		}
@@ -1934,61 +1949,103 @@ export class WsTransport {
 		const isLast = !hasMoreInTable && isLastTable;
 
 		if (rows.length > 0) {
-			const frame = encodeFrame(
-				WsMessageType.ROW_PULL_RESPONSE,
-				{
-					request_id: requestId,
-					table_name: table,
-					rows,
-					last: isLast,
-				},
-				peer.symmetricKey,
-			);
+			this.pendingRowPullState.set(peerSiteId, {
+				requestId,
+				tables,
+				tableIndex,
+				pkOffset: nextPkOffset,
+				pendingRows: rows,
+				pendingRowCursor: 0,
+				pendingIsLast: isLast,
+				pendingTable: table,
+			});
+			this.sendRowPullSubChunk(peerSiteId);
+			return;
+		}
 
-			if (frame.length > MAX_CHANGELOG_FRAME_BYTES) {
-				this.streamRowPullRowsSplit(peerSiteId, requestId, table, rows, isLast, peer);
-			} else {
-				peer.sendFrame(frame);
-			}
-		} else if (isLast) {
+		if (isLast) {
 			const frame = encodeFrame(
 				WsMessageType.ROW_PULL_RESPONSE,
 				{ request_id: requestId, table_name: table, rows: [], last: true },
 				peer.symmetricKey,
 			);
 			peer.sendFrame(frame);
+			this.pendingRowPullState.delete(peerSiteId);
+			return;
 		}
 
-		if (!isLast) {
-			const nextTableIdx = hasMoreInTable ? tableIndex : tableIndex + 1;
-			const nextOffset = hasMoreInTable ? nextPkOffset : 0;
-			setTimeout(() => {
-				this.streamRowPullPages(peerSiteId, requestId, tables, nextTableIdx, nextOffset);
-			}, 0);
-		}
+		const nextTableIdx = hasMoreInTable ? tableIndex : tableIndex + 1;
+		const nextOffset = hasMoreInTable ? nextPkOffset : 0;
+		setTimeout(() => {
+			this.streamRowPullPages(peerSiteId, requestId, tables, nextTableIdx, nextOffset);
+		}, 0);
 	}
 
-	private streamRowPullRowsSplit(
-		_peerSiteId: string,
-		requestId: string,
-		table: string,
-		rows: Array<Record<string, unknown>>,
-		isLast: boolean,
-		peer: PeerConnection,
-	): void {
-		for (let i = 0; i < rows.length; i++) {
-			const rowIsLast = isLast && i === rows.length - 1;
-			const frame = encodeFrame(
+	private sendRowPullSubChunk(peerSiteId: string): void {
+		const peer = this.peerConnections.get(peerSiteId);
+		const state = this.pendingRowPullState.get(peerSiteId);
+		if (!peer || !state) return;
+
+		const { pendingRows, pendingRowCursor, pendingIsLast, pendingTable, requestId } = state;
+		const remaining = pendingRows.slice(pendingRowCursor);
+
+		if (remaining.length === 0) {
+			if (pendingIsLast) {
+				this.pendingRowPullState.delete(peerSiteId);
+				return;
+			}
+			const hasMoreInTable = state.pkOffset < state.tables[state.tableIndex].pks.length;
+			const nextTableIdx = hasMoreInTable ? state.tableIndex : state.tableIndex + 1;
+			const nextOffset = hasMoreInTable ? state.pkOffset : 0;
+			this.pendingRowPullState.delete(peerSiteId);
+			setTimeout(() => {
+				this.streamRowPullPages(peerSiteId, requestId, state.tables, nextTableIdx, nextOffset);
+			}, 0);
+			return;
+		}
+
+		let sliceEnd = remaining.length;
+		let frame: Uint8Array | null = null;
+		const isLastFrame = pendingIsLast && sliceEnd === remaining.length;
+
+		while (sliceEnd > 0) {
+			const slice = remaining.slice(0, sliceEnd);
+			const candidate = encodeFrame(
 				WsMessageType.ROW_PULL_RESPONSE,
 				{
 					request_id: requestId,
-					table_name: table,
-					rows: [rows[i]],
-					last: rowIsLast,
+					table_name: pendingTable,
+					rows: slice,
+					last: isLastFrame && sliceEnd === remaining.length,
 				},
 				peer.symmetricKey,
 			);
-			peer.sendFrame(frame);
+			if (candidate.length <= MAX_CHANGELOG_FRAME_BYTES) {
+				frame = candidate;
+				break;
+			}
+			if (sliceEnd === 1) {
+				frame = candidate;
+				break;
+			}
+			sliceEnd = Math.max(1, Math.floor(sliceEnd / 2));
+		}
+
+		if (!frame) return;
+
+		const sent = peer.sendFrame(frame);
+		state.pendingRowCursor += sliceEnd;
+
+		if (!sent) {
+			return;
+		}
+
+		setTimeout(() => this.sendRowPullSubChunk(peerSiteId), 0);
+	}
+
+	continueRowPull(peerSiteId: string): void {
+		if (this.pendingRowPullState.has(peerSiteId)) {
+			this.sendRowPullSubChunk(peerSiteId);
 		}
 	}
 

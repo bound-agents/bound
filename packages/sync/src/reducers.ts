@@ -443,15 +443,62 @@ export function applySnapshotRows(
 		} catch {
 			// ROLLBACK failure — original error takes priority.
 		}
-		logger?.error("[snapshot] Failed to apply snapshot chunk", {
+		logger?.warn("[snapshot] Batch apply failed, retrying per-row", {
 			tableName,
 			rowCount: rows.length,
 			error: err instanceof Error ? err.message : String(err),
 		});
-		return 0;
+		return applySnapshotRowsPerRow(db, tableName, columns, rows, logger);
 	}
 
 	logger?.debug("[snapshot] Applied snapshot chunk", { tableName, applied });
+	return applied;
+}
+
+function applySnapshotRowsPerRow(
+	db: Database,
+	tableName: string,
+	columns: string[],
+	rows: Array<Record<string, unknown>>,
+	logger?: Logger,
+): number {
+	let applied = 0;
+	const placeholders = columns.map(() => "?").join(", ");
+	const sql = `INSERT OR REPLACE INTO ${tableName} (${columns.join(", ")}) VALUES (${placeholders})`;
+
+	for (const row of rows) {
+		try {
+			const values: Array<string | number | bigint | boolean | Uint8Array | null> = columns.map(
+				(k) => {
+					const v = row[k];
+					if (v === null || v === undefined) return null;
+					if (
+						typeof v === "string" ||
+						typeof v === "number" ||
+						typeof v === "bigint" ||
+						typeof v === "boolean" ||
+						v instanceof Uint8Array
+					) {
+						return v;
+					}
+					return JSON.stringify(v);
+				},
+			);
+			db.run(sql, values);
+			applied++;
+		} catch {
+			// skip individual row — trigger rejection or constraint violation
+		}
+	}
+
+	if (applied < rows.length) {
+		logger?.warn("[snapshot] Per-row fallback: skipped rows", {
+			tableName,
+			applied,
+			skipped: rows.length - applied,
+		});
+	}
+
 	return applied;
 }
 
