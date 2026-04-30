@@ -46,7 +46,7 @@ export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
  *
  * Duplicate names are detected and logged as warnings; the first registration wins.
  */
-function createToolRegistry(
+export function createToolRegistry(
 	builtInTools: Map<string, BuiltInTool> | undefined,
 	platformTools: AgentLoopConfig["platformTools"],
 	clientTools: AgentLoopConfig["clientTools"],
