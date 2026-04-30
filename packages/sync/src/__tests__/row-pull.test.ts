@@ -614,7 +614,7 @@ describe("Bidirectional executeBackfill", () => {
 	});
 });
 
-describe("Row pull timeout", () => {
+describe("Row pull promise resolution", () => {
 	let db: Database;
 	let transport: WsTransport;
 
@@ -634,14 +634,54 @@ describe("Row pull timeout", () => {
 		db.close();
 	});
 
-	it("rejects after timeout when hub never responds", async () => {
+	it("stays pending until last:true response arrives", async () => {
 		const key = new Uint8Array(32).fill(1);
 		transport.addPeer("hub", () => true, key);
 
-		const pullPromise = transport.requestRowPull([{ table: "semantic_memory", pks: ["mem-1"] }]);
+		let resolved = false;
+		const pullPromise = transport
+			.requestRowPull([{ table: "semantic_memory", pks: ["mem-1"] }])
+			.then(() => {
+				resolved = true;
+			});
 
-		await expect(pullPromise).rejects.toThrow("timed out");
-	}, 70_000);
+		await new Promise((r) => setTimeout(r, 100));
+		expect(resolved).toBe(false);
+
+		// Simulate hub responding with last:true — must match the request_id
+		// that requestRowPull generated. We extract it from the pending map.
+		const pendingKeys = [
+			...(
+				transport as unknown as { pendingRowPullRequests: Map<string, unknown> }
+			).pendingRowPullRequests.keys(),
+		];
+		expect(pendingKeys.length).toBe(1);
+
+		const now = new Date().toISOString();
+		transport.handleRowPullResponse({
+			request_id: pendingKeys[0],
+			table_name: "semantic_memory",
+			rows: [
+				{
+					id: "mem-1",
+					key: "k",
+					value: "v",
+					source: "test",
+					created_at: now,
+					modified_at: now,
+					tier: "default",
+					deleted: 0,
+				},
+			],
+			last: true,
+		});
+
+		await pullPromise;
+		expect(resolved).toBe(true);
+
+		const row = db.query("SELECT id FROM semantic_memory WHERE id = 'mem-1'").get();
+		expect(row).not.toBeNull();
+	});
 });
 
 describe("seedNewPeer no-op", () => {

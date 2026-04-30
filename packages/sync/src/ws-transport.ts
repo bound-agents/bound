@@ -1602,7 +1602,6 @@ export class WsTransport {
 			reject: (err: Error) => void;
 			data: Map<string, { count: number; pks: string[] }>;
 			timer: Timer;
-			idleTimer: Timer | null;
 		}
 	>();
 
@@ -1627,14 +1626,13 @@ export class WsTransport {
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pendingConsistencyRequests.delete(requestId);
-				reject(new Error("Consistency check timed out (60s)"));
-			}, 60_000);
+				reject(new Error("Consistency check timed out (5m)"));
+			}, 300_000);
 			this.pendingConsistencyRequests.set(requestId, {
 				resolve,
 				reject,
 				data: new Map(),
 				timer,
-				idleTimer: null,
 			});
 		});
 	}
@@ -1675,13 +1673,6 @@ export class WsTransport {
 			this.resolveConsistency(rid, "table_count match");
 			return;
 		}
-
-		if (req.idleTimer) clearTimeout(req.idleTimer);
-		req.idleTimer = setTimeout(() => {
-			if (this.pendingConsistencyRequests.has(rid) && req.data.size > 0) {
-				this.resolveConsistency(rid, "idle timeout (10s)");
-			}
-		}, 10_000);
 	}
 
 	private resolveConsistency(requestId: string, reason: string): void {
@@ -1693,7 +1684,6 @@ export class WsTransport {
 			tables: req.data.size,
 		});
 		clearTimeout(req.timer);
-		if (req.idleTimer) clearTimeout(req.idleTimer);
 		this.pendingConsistencyRequests.delete(requestId);
 		req.resolve(req.data);
 	}
@@ -1701,12 +1691,7 @@ export class WsTransport {
 	private async requestConsistencyWithTimeout(): Promise<
 		Map<string, { count: number; pks: string[] }>
 	> {
-		return Promise.race([
-			this.requestConsistency([]),
-			new Promise<never>((_, reject) =>
-				setTimeout(() => reject(new Error("Consistency request timed out (30s)")), 30_000),
-			),
-		]);
+		return this.requestConsistency([]);
 	}
 
 	// ── Auto-backfill: push local-only rows as changelog entries ─────────
@@ -2094,13 +2079,20 @@ export class WsTransport {
 			return Promise.reject(new Error("Failed to send row pull request"));
 		}
 
-		this.config.logger?.debug("[row-pull] Request sent", { requestId, tables: tables.length });
+		const totalPks = tables.reduce((sum, t) => sum + t.pks.length, 0);
+		const timeoutMs = Math.max(300_000, Math.ceil(totalPks / 100) * 500);
+		this.config.logger?.debug("[row-pull] Request sent", {
+			requestId,
+			tables: tables.length,
+			totalPks,
+			timeoutMs,
+		});
 
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pendingRowPullRequests.delete(requestId);
-				reject(new Error("Row pull request timed out (60s)"));
-			}, 60_000);
+				reject(new Error(`Row pull request timed out (${Math.round(timeoutMs / 1000)}s)`));
+			}, timeoutMs);
 			this.pendingRowPullRequests.set(requestId, { resolve, reject, timer });
 		});
 	}
