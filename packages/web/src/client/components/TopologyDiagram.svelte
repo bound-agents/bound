@@ -4,6 +4,7 @@ interface Host {
 	host_name: string;
 	version?: string | null;
 	online_at?: string | null;
+	modified_at?: string | null;
 }
 
 type Health = "healthy" | "degraded" | "unreachable" | "unknown";
@@ -53,8 +54,9 @@ function linkColor(health: Health): string {
 
 function isOnline(host: Host): boolean {
 	if (host.site_id === localSiteId) return true;
-	if (!host.online_at) return false;
-	return Date.now() - new Date(host.online_at).getTime() < 5 * 60 * 1000;
+	const ts = host.modified_at ?? host.online_at;
+	if (!ts) return false;
+	return Date.now() - new Date(ts).getTime() < 5 * 60 * 1000;
 }
 </script>
 

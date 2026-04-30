@@ -211,7 +211,7 @@ const syncMeshRows = $derived.by<MeshRow[]>(() => {
 					{@const online = isOnline(host)}
 					{@const isHub = networkData.hub?.hostName === host.host_name}
 					{@const syncState = getSyncForPeer(host.site_id)}
-					{@const health = isLocal(host) ? "healthy" : computeSyncHealth(syncState)}
+					{@const health = isLocal(host) ? "healthy" : computeSyncHealth(syncState, host)}
 					{@const models = parseModels(host.models)}
 					{@const mcpTools = parseMcpTools(host.mcp_tools)}
 					{@const stateColor =
@@ -250,7 +250,7 @@ const syncMeshRows = $derived.by<MeshRow[]>(() => {
 								{/if}
 								<div class="row">
 									<span class="kicker">Last seen</span>
-									<span class="mono">{relativeTime(host.online_at)}</span>
+									<span class="mono">{relativeTime(host.modified_at)}</span>
 								</div>
 								<div class="row">
 									<span class="kicker">Sync</span>
