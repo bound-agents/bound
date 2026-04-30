@@ -1198,3 +1198,273 @@ describe("End-to-end row pull with actual hub→spoke wiring", () => {
 		hubDb.close();
 	});
 });
+
+// ── Consistency PK stream backpressure tests ──────────────────────────
+//
+// The consistency PK stream sends 5000-PK pages per frame. Under
+// backpressure, the hub must pause and retry on drain — dropping a
+// frame silently loses 5000 PKs, causing the spoke to never request
+// those rows. This was the root cause of the 25,000-missing-messages
+// production incident.
+
+describe("Consistency PK stream under backpressure", () => {
+	const symmetricKey = new Uint8Array(32).fill(1);
+
+	it("does not drop PK pages when sendFrame returns false", async () => {
+		const hubDb = new Database(":memory:");
+		createTestSchema(hubDb);
+		const hubTransport = new WsTransport({
+			db: hubDb,
+			siteId: "hub-1",
+			eventBus: new TypedEventEmitter(),
+			isHub: true,
+		});
+
+		for (let i = 0; i < 20000; i++) {
+			insertMemory(hubDb, `mem-${String(i).padStart(6, "0")}`, `key-${i}`);
+		}
+
+		const sentFrames: Uint8Array[] = [];
+		let callCount = 0;
+		hubTransport.addPeer(
+			"spoke-1",
+			(frame: Uint8Array) => {
+				callCount++;
+				if (callCount % 3 === 0) {
+					return false;
+				}
+				sentFrames.push(frame);
+				return true;
+			},
+			symmetricKey,
+		);
+
+		hubTransport.handleConsistencyRequest("spoke-1", {
+			tables: ["semantic_memory"],
+			request_id: "cr_bp_test",
+		});
+
+		for (let tick = 0; tick < 50; tick++) {
+			await new Promise((r) => setTimeout(r, 10));
+			hubTransport.continueConsistencyStream("spoke-1");
+		}
+
+		const responses = sentFrames
+			.map((f) => decodeFrame(f, symmetricKey))
+			.filter((r) => r.ok)
+			.map((r) => {
+				const v = (r as { ok: true; value: { type: number; payload: Record<string, unknown> } })
+					.value;
+				return v;
+			})
+			.filter((f) => f.type === WsMessageType.CONSISTENCY_RESPONSE);
+
+		const allPks = responses.flatMap((r) => (r.payload as { pks: string[] }).pks);
+		const uniquePks = new Set(allPks);
+
+		expect(uniquePks.size).toBe(20000);
+
+		const doneFrames = responses.filter((r) => (r.payload as { all_done: boolean }).all_done);
+		expect(doneFrames.length).toBe(1);
+
+		hubTransport.stop();
+		hubDb.close();
+	});
+
+	it("pauses consistency stream and resumes on drain with no data loss", async () => {
+		const hubDb = new Database(":memory:");
+		createTestSchema(hubDb);
+		const hubTransport = new WsTransport({
+			db: hubDb,
+			siteId: "hub-1",
+			eventBus: new TypedEventEmitter(),
+			isHub: true,
+		});
+
+		for (let i = 0; i < 12000; i++) {
+			insertMemory(hubDb, `mem-${String(i).padStart(6, "0")}`, `key-${i}`);
+		}
+		for (let i = 0; i < 500; i++) {
+			insertTask(hubDb, `task-${String(i).padStart(4, "0")}`);
+		}
+
+		const sentFrames: Uint8Array[] = [];
+		let blocked = false;
+		hubTransport.addPeer(
+			"spoke-1",
+			(frame: Uint8Array) => {
+				if (blocked) return false;
+				sentFrames.push(frame);
+				if (sentFrames.length === 2) blocked = true;
+				return true;
+			},
+			symmetricKey,
+		);
+
+		hubTransport.handleConsistencyRequest("spoke-1", {
+			tables: ["semantic_memory", "tasks"],
+			request_id: "cr_pause_test",
+		});
+
+		await new Promise((r) => setTimeout(r, 50));
+
+		expect(sentFrames.length).toBe(2);
+
+		blocked = false;
+		for (let tick = 0; tick < 20; tick++) {
+			await new Promise((r) => setTimeout(r, 10));
+			hubTransport.continueConsistencyStream("spoke-1");
+		}
+
+		const responses = sentFrames
+			.map((f) => decodeFrame(f, symmetricKey))
+			.filter((r) => r.ok)
+			.map((r) => {
+				const v = (r as { ok: true; value: { type: number; payload: Record<string, unknown> } })
+					.value;
+				return v;
+			})
+			.filter((f) => f.type === WsMessageType.CONSISTENCY_RESPONSE);
+
+		const memoryPks = responses
+			.filter((r) => (r.payload as { table: string }).table === "semantic_memory")
+			.flatMap((r) => (r.payload as { pks: string[] }).pks);
+		const taskPks = responses
+			.filter((r) => (r.payload as { table: string }).table === "tasks")
+			.flatMap((r) => (r.payload as { pks: string[] }).pks);
+
+		expect(new Set(memoryPks).size).toBe(12000);
+		expect(new Set(taskPks).size).toBe(500);
+
+		hubTransport.stop();
+		hubDb.close();
+	});
+});
+
+describe("End-to-end consistency + row pull under backpressure", () => {
+	const symmetricKey = new Uint8Array(32).fill(1);
+
+	it("spoke receives all hub data when both PK stream and row stream hit backpressure", async () => {
+		const hubDb = new Database(":memory:");
+		createTestSchema(hubDb);
+		const hubTransport = new WsTransport({
+			db: hubDb,
+			siteId: "hub-1",
+			eventBus: new TypedEventEmitter(),
+			isHub: true,
+		});
+
+		const spokeDb = new Database(":memory:");
+		createTestSchema(spokeDb);
+		const spokeTransport = new WsTransport({
+			db: spokeDb,
+			siteId: "spoke-1",
+			eventBus: new TypedEventEmitter(),
+			isHub: false,
+		});
+
+		for (let i = 0; i < 500; i++) {
+			insertMemory(hubDb, `mem-${String(i).padStart(4, "0")}`, `key-${i}`);
+		}
+		for (let i = 0; i < 200; i++) {
+			insertTask(hubDb, `task-${String(i).padStart(4, "0")}`);
+		}
+
+		let hubSendCount = 0;
+		let hubBlocked = false;
+		const pendingFrames: Uint8Array[] = [];
+
+		hubTransport.addPeer(
+			"spoke-1",
+			(frame: Uint8Array) => {
+				hubSendCount++;
+				if (hubBlocked) return false;
+				if (hubSendCount % 5 === 0) {
+					hubBlocked = true;
+					return false;
+				}
+				pendingFrames.push(frame);
+				return true;
+			},
+			symmetricKey,
+		);
+
+		spokeTransport.addPeer("hub-1", () => true, symmetricKey);
+
+		spokeTransport.requestConsistency = async () => {
+			hubTransport.handleConsistencyRequest("spoke-1", {
+				tables: ["semantic_memory", "tasks"],
+				request_id: "cr_e2e_bp",
+			});
+
+			for (let cycle = 0; cycle < 30; cycle++) {
+				await new Promise((r) => setTimeout(r, 10));
+				if (hubBlocked) {
+					hubBlocked = false;
+					hubTransport.continueConsistencyStream("spoke-1");
+				}
+			}
+
+			const tables = new Map<string, { count: number; pks: string[] }>();
+			for (const frame of pendingFrames) {
+				const decoded = decodeFrame(frame, symmetricKey);
+				if (!decoded.ok) continue;
+				if (decoded.value.type !== WsMessageType.CONSISTENCY_RESPONSE) continue;
+				const p = decoded.value.payload as {
+					table: string;
+					pks: string[];
+					count: number;
+				};
+				const existing = tables.get(p.table);
+				if (existing) {
+					existing.pks.push(...p.pks);
+					existing.count = p.count;
+				} else {
+					tables.set(p.table, { count: p.count, pks: [...p.pks] });
+				}
+			}
+			pendingFrames.length = 0;
+			return tables;
+		};
+
+		spokeTransport.requestRowPull = async (tables: Array<{ table: string; pks: string[] }>) => {
+			hubTransport.handleRowPullRequest("spoke-1", {
+				request_id: "rp_e2e_bp2",
+				tables,
+			});
+
+			for (let cycle = 0; cycle < 50; cycle++) {
+				await new Promise((r) => setTimeout(r, 10));
+				while (pendingFrames.length > 0) {
+					const frame = pendingFrames.shift();
+					if (!frame) break;
+					const decoded = decodeFrame(frame, symmetricKey);
+					if (decoded.ok && decoded.value.type === WsMessageType.ROW_PULL_RESPONSE) {
+						spokeTransport.handleRowPullResponse(decoded.value.payload as RowPullResponsePayload);
+					}
+				}
+				if (hubBlocked) {
+					hubBlocked = false;
+					hubTransport.continueRowPull("spoke-1");
+				}
+			}
+		};
+
+		const result = await spokeTransport.runBackfill();
+
+		expect(result.pulled).toBe(700);
+
+		const memCount = spokeDb.query("SELECT COUNT(*) AS c FROM semantic_memory").get() as {
+			c: number;
+		};
+		expect(memCount.c).toBe(500);
+
+		const taskCount = spokeDb.query("SELECT COUNT(*) AS c FROM tasks").get() as { c: number };
+		expect(taskCount.c).toBe(200);
+
+		spokeTransport.stop();
+		hubTransport.stop();
+		spokeDb.close();
+		hubDb.close();
+	});
+});
