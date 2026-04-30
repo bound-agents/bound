@@ -679,3 +679,482 @@ describe("seedNewPeer no-op", () => {
 		db.close();
 	});
 });
+
+// ── Critical regression tests ─────────────────────────────────────────
+//
+// These test the failure modes discovered in production:
+// 1. Backpressure during row pull causing rows to be permanently skipped
+// 2. Trigger-rejecting rows causing entire batches to be lost
+// 3. Large row counts requiring frame splitting
+// 4. Accurate row counting (pulled counter vs actual DB rows)
+
+describe("Hub-side row pull under backpressure", () => {
+	const symmetricKey = new Uint8Array(32).fill(1);
+
+	it("does not skip rows when sendFrame returns false (backpressure)", async () => {
+		const hubDb = new Database(":memory:");
+		createTestSchema(hubDb);
+		const hubTransport = new WsTransport({
+			db: hubDb,
+			siteId: "hub-1",
+			eventBus: new TypedEventEmitter(),
+			isHub: true,
+		});
+
+		for (let i = 0; i < 500; i++) {
+			insertMemory(hubDb, `mem-${String(i).padStart(4, "0")}`, `key-${i}`);
+		}
+
+		const sentFrames: Uint8Array[] = [];
+		let callCount = 0;
+		hubTransport.addPeer(
+			"spoke-1",
+			(frame: Uint8Array) => {
+				callCount++;
+				if (callCount % 3 === 0) {
+					return false;
+				}
+				sentFrames.push(frame);
+				return true;
+			},
+			symmetricKey,
+		);
+
+		const allPks = Array.from({ length: 500 }, (_, i) => `mem-${String(i).padStart(4, "0")}`);
+		hubTransport.handleRowPullRequest("spoke-1", {
+			request_id: "rp_bp_test",
+			tables: [{ table: "semantic_memory", pks: allPks }],
+		});
+
+		// Simulate drain events to resume after each backpressure pause.
+		// In production, ws-server drain handler calls continueRowPull.
+		for (let tick = 0; tick < 100; tick++) {
+			await new Promise((r) => setTimeout(r, 10));
+			hubTransport.continueRowPull("spoke-1");
+		}
+
+		const responses = sentFrames
+			.map((f) => decodeFrame(f, symmetricKey))
+			.filter((r) => r.ok)
+			.map(
+				(r) => (r as { ok: true; value: { type: number; payload: RowPullResponsePayload } }).value,
+			)
+			.filter((f) => f.type === WsMessageType.ROW_PULL_RESPONSE);
+
+		const allReceivedRows = responses.flatMap((r) => r.payload.rows);
+		const receivedIds = new Set(allReceivedRows.map((r) => r.id as string));
+
+		expect(receivedIds.size).toBe(500);
+		for (let i = 0; i < 500; i++) {
+			expect(receivedIds.has(`mem-${String(i).padStart(4, "0")}`)).toBe(true);
+		}
+
+		const lastResponses = responses.filter((r) => r.payload.last);
+		expect(lastResponses.length).toBe(1);
+
+		hubTransport.stop();
+		hubDb.close();
+	});
+
+	it("resumes correctly after multiple consecutive backpressure events", async () => {
+		const hubDb = new Database(":memory:");
+		createTestSchema(hubDb);
+		const hubTransport = new WsTransport({
+			db: hubDb,
+			siteId: "hub-1",
+			eventBus: new TypedEventEmitter(),
+			isHub: true,
+		});
+
+		for (let i = 0; i < 200; i++) {
+			insertMemory(hubDb, `mem-${String(i).padStart(4, "0")}`, `key-${i}`);
+		}
+
+		const sentFrames: Uint8Array[] = [];
+		let pressuredUntilDrain = false;
+		hubTransport.addPeer(
+			"spoke-1",
+			(frame: Uint8Array) => {
+				if (pressuredUntilDrain) return false;
+				sentFrames.push(frame);
+				// After sending the first frame, enter a 5-consecutive-reject streak
+				if (sentFrames.length === 1) {
+					pressuredUntilDrain = true;
+				}
+				return true;
+			},
+			symmetricKey,
+		);
+
+		const allPks = Array.from({ length: 200 }, (_, i) => `mem-${String(i).padStart(4, "0")}`);
+		hubTransport.handleRowPullRequest("spoke-1", {
+			request_id: "rp_consecutive_bp",
+			tables: [{ table: "semantic_memory", pks: allPks }],
+		});
+
+		await new Promise((r) => setTimeout(r, 50));
+
+		// Now "drain" — allow sends again
+		pressuredUntilDrain = false;
+		hubTransport.continueRowPull("spoke-1");
+
+		for (let tick = 0; tick < 50; tick++) {
+			await new Promise((r) => setTimeout(r, 10));
+			hubTransport.continueRowPull("spoke-1");
+		}
+
+		const responses = sentFrames
+			.map((f) => decodeFrame(f, symmetricKey))
+			.filter((r) => r.ok)
+			.map(
+				(r) => (r as { ok: true; value: { type: number; payload: RowPullResponsePayload } }).value,
+			)
+			.filter((f) => f.type === WsMessageType.ROW_PULL_RESPONSE);
+
+		const allReceivedRows = responses.flatMap((r) => r.payload.rows);
+		expect(allReceivedRows.length).toBe(200);
+
+		hubTransport.stop();
+		hubDb.close();
+	});
+});
+
+describe("applySnapshotRows per-row fallback", () => {
+	it("applies valid rows when trigger rejects some in a batch", () => {
+		const db = new Database(":memory:");
+		createTestSchema(db);
+
+		db.run(`
+			CREATE TABLE memory_edges (
+				id          TEXT PRIMARY KEY,
+				source_key  TEXT NOT NULL,
+				target_key  TEXT NOT NULL,
+				relation    TEXT NOT NULL,
+				weight      REAL DEFAULT 1.0,
+				context     TEXT,
+				created_at  TEXT NOT NULL,
+				modified_at TEXT NOT NULL,
+				deleted     INTEGER DEFAULT 0
+			) STRICT
+		`);
+		const canonicals = [
+			"related_to",
+			"informs",
+			"supports",
+			"extends",
+			"complements",
+			"contrasts-with",
+			"competes-with",
+			"cites",
+			"summarizes",
+			"synthesizes",
+		];
+		const canonicalList = canonicals.map((r) => `'${r}'`).join(", ");
+		db.run(`
+			CREATE TRIGGER memory_edges_canonical_relation_insert
+			BEFORE INSERT ON memory_edges
+			FOR EACH ROW WHEN NEW.relation NOT IN (${canonicalList})
+			BEGIN SELECT RAISE(ABORT, 'Invalid relation'); END
+		`);
+
+		const transport = new WsTransport({
+			db,
+			siteId: "spoke-1",
+			eventBus: new TypedEventEmitter(),
+			isHub: false,
+		});
+
+		const now = new Date().toISOString();
+		const rows = [
+			{
+				id: "edge-1",
+				source_key: "a",
+				target_key: "b",
+				relation: "related_to",
+				weight: 1.0,
+				context: null,
+				created_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			{
+				id: "edge-2",
+				source_key: "c",
+				target_key: "d",
+				relation: "INVALID_RELATION",
+				weight: 1.0,
+				context: null,
+				created_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			{
+				id: "edge-3",
+				source_key: "e",
+				target_key: "f",
+				relation: "supports",
+				weight: 1.0,
+				context: null,
+				created_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			{
+				id: "edge-4",
+				source_key: "g",
+				target_key: "h",
+				relation: "old_custom_relation",
+				weight: 1.0,
+				context: null,
+				created_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			{
+				id: "edge-5",
+				source_key: "i",
+				target_key: "j",
+				relation: "informs",
+				weight: 1.0,
+				context: null,
+				created_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+		];
+
+		transport.handleRowPullResponse({
+			request_id: "rp_trigger_test",
+			table_name: "memory_edges",
+			rows,
+			last: true,
+		});
+
+		const applied = db.query("SELECT id, relation FROM memory_edges ORDER BY id").all() as Array<{
+			id: string;
+			relation: string;
+		}>;
+		expect(applied.length).toBe(3);
+		expect(applied.map((r) => r.id)).toEqual(["edge-1", "edge-3", "edge-5"]);
+		expect(applied.map((r) => r.relation)).toEqual(["related_to", "supports", "informs"]);
+
+		transport.stop();
+		db.close();
+	});
+
+	it("applies all rows normally when no trigger failures", () => {
+		const db = new Database(":memory:");
+		createTestSchema(db);
+		const transport = new WsTransport({
+			db,
+			siteId: "spoke-1",
+			eventBus: new TypedEventEmitter(),
+			isHub: false,
+		});
+
+		const now = new Date().toISOString();
+		const rows = Array.from({ length: 50 }, (_, i) => ({
+			id: `mem-${i}`,
+			key: `key-${i}`,
+			value: `val-${i}`,
+			source: "test",
+			created_at: now,
+			modified_at: now,
+			tier: "default",
+			deleted: 0,
+		}));
+
+		transport.handleRowPullResponse({
+			request_id: "rp_normal",
+			table_name: "semantic_memory",
+			rows,
+			last: true,
+		});
+
+		const count = db.query("SELECT COUNT(*) AS c FROM semantic_memory").get() as { c: number };
+		expect(count.c).toBe(50);
+
+		transport.stop();
+		db.close();
+	});
+});
+
+describe("Hub-side frame splitting for large rows", () => {
+	const symmetricKey = new Uint8Array(32).fill(1);
+
+	it("splits large batches into multiple frames that fit within 4MB", async () => {
+		const hubDb = new Database(":memory:");
+		createTestSchema(hubDb);
+		const hubTransport = new WsTransport({
+			db: hubDb,
+			siteId: "hub-1",
+			eventBus: new TypedEventEmitter(),
+			isHub: true,
+		});
+
+		// Insert rows with large content (~50KB each). 100 rows = ~5MB > 4MB frame limit.
+		const bigContent = "x".repeat(50_000);
+		for (let i = 0; i < 100; i++) {
+			insertFile(hubDb, `file-${String(i).padStart(3, "0")}`, `/path/${i}.txt`, bigContent);
+		}
+
+		const sentFrames: Uint8Array[] = [];
+		hubTransport.addPeer(
+			"spoke-1",
+			(frame: Uint8Array) => {
+				sentFrames.push(frame);
+				return true;
+			},
+			symmetricKey,
+		);
+
+		const allPks = Array.from({ length: 100 }, (_, i) => `file-${String(i).padStart(3, "0")}`);
+		hubTransport.handleRowPullRequest("spoke-1", {
+			request_id: "rp_large",
+			tables: [{ table: "files", pks: allPks }],
+		});
+
+		for (let tick = 0; tick < 30; tick++) {
+			await new Promise((r) => setTimeout(r, 20));
+		}
+
+		const responses = sentFrames
+			.map((f) => decodeFrame(f, symmetricKey))
+			.filter((r) => r.ok)
+			.map(
+				(r) => (r as { ok: true; value: { type: number; payload: RowPullResponsePayload } }).value,
+			)
+			.filter((f) => f.type === WsMessageType.ROW_PULL_RESPONSE);
+
+		// Must have been split into multiple frames (100 × 50KB > 4MB)
+		expect(responses.length).toBeGreaterThan(1);
+
+		const allReceivedRows = responses.flatMap((r) => r.payload.rows);
+		const receivedIds = new Set(allReceivedRows.map((r) => r.id as string));
+		expect(receivedIds.size).toBe(100);
+
+		// Verify content integrity
+		for (const row of allReceivedRows) {
+			expect((row.content as string).length).toBe(50_000);
+		}
+
+		const lastResponses = responses.filter((r) => r.payload.last);
+		expect(lastResponses.length).toBe(1);
+
+		hubTransport.stop();
+		hubDb.close();
+	});
+});
+
+describe("End-to-end row pull with actual hub→spoke wiring", () => {
+	const symmetricKey = new Uint8Array(32).fill(1);
+
+	it("spoke receives all rows when hub streams under backpressure", async () => {
+		const hubDb = new Database(":memory:");
+		createTestSchema(hubDb);
+		const hubTransport = new WsTransport({
+			db: hubDb,
+			siteId: "hub-1",
+			eventBus: new TypedEventEmitter(),
+			isHub: true,
+		});
+
+		const spokeDb = new Database(":memory:");
+		createTestSchema(spokeDb);
+		const spokeTransport = new WsTransport({
+			db: spokeDb,
+			siteId: "spoke-1",
+			eventBus: new TypedEventEmitter(),
+			isHub: false,
+		});
+
+		for (let i = 0; i < 300; i++) {
+			insertMemory(hubDb, `mem-${String(i).padStart(4, "0")}`, `key-${i}`);
+		}
+
+		// Wire hub→spoke: hub sends frames through a channel that simulates
+		// backpressure by rejecting every 4th frame, with manual drain.
+		let hubSendCallCount = 0;
+		const pendingHubFrames: Uint8Array[] = [];
+		let hubBackpressured = false;
+
+		hubTransport.addPeer(
+			"spoke-1",
+			(frame: Uint8Array) => {
+				hubSendCallCount++;
+				if (hubBackpressured) {
+					return false;
+				}
+				if (hubSendCallCount % 4 === 0) {
+					hubBackpressured = true;
+					return false;
+				}
+				pendingHubFrames.push(frame);
+				return true;
+			},
+			symmetricKey,
+		);
+
+		spokeTransport.addPeer("hub-1", () => true, symmetricKey);
+
+		// Spoke sends consistency request → gets hub PKs
+		spokeTransport.requestConsistency = async () => {
+			const tables = new Map<string, { count: number; pks: string[] }>();
+			const rows = hubDb
+				.query("SELECT id AS pk FROM semantic_memory ORDER BY id ASC")
+				.all() as Array<{ pk: string }>;
+			tables.set("semantic_memory", { count: rows.length, pks: rows.map((r) => r.pk) });
+			return tables;
+		};
+
+		// Spoke sends row pull → hub streams → spoke applies
+		spokeTransport.requestRowPull = async (tables: Array<{ table: string; pks: string[] }>) => {
+			hubTransport.handleRowPullRequest("spoke-1", {
+				request_id: "rp_e2e_bp",
+				tables,
+			});
+
+			// Process with simulated backpressure drain cycles
+			for (let cycle = 0; cycle < 100; cycle++) {
+				await new Promise((r) => setTimeout(r, 5));
+
+				// Drain: deliver pending frames to spoke
+				while (pendingHubFrames.length > 0) {
+					const frame = pendingHubFrames.shift();
+					if (!frame) break;
+					const decoded = decodeFrame(frame, symmetricKey);
+					if (decoded.ok && decoded.value.type === WsMessageType.ROW_PULL_RESPONSE) {
+						spokeTransport.handleRowPullResponse(decoded.value.payload as RowPullResponsePayload);
+					}
+				}
+
+				// Release backpressure and let hub resume
+				if (hubBackpressured) {
+					hubBackpressured = false;
+					hubTransport.continueRowPull("spoke-1");
+				}
+			}
+		};
+
+		const result = await spokeTransport.runBackfill();
+
+		expect(result.pulled).toBe(300);
+
+		const spokeRows = spokeDb.query("SELECT COUNT(*) AS c FROM semantic_memory").get() as {
+			c: number;
+		};
+		expect(spokeRows.c).toBe(300);
+
+		// Verify every single row made it
+		for (let i = 0; i < 300; i++) {
+			const id = `mem-${String(i).padStart(4, "0")}`;
+			const row = spokeDb.query("SELECT id FROM semantic_memory WHERE id = ?").get(id);
+			expect(row).not.toBeNull();
+		}
+
+		spokeTransport.stop();
+		hubTransport.stop();
+		spokeDb.close();
+		hubDb.close();
+	});
+});
