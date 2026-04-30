@@ -1,4 +1,4 @@
-import type { ToolDefinition } from "@bound/llm";
+import type { ContentBlock, ToolDefinition } from "@bound/llm";
 
 /**
  * Signal from a client tool that indicates the tool execution should be deferred
@@ -120,4 +120,24 @@ export interface AgentLoopResult {
 	error?: string;
 	/** True when the loop exited early due to shouldYield (cooperative cancellation). */
 	yielded?: boolean;
+}
+
+/**
+ * Result type returned by built-in and platform tool execute handlers.
+ * Can be a simple string or an array of content blocks (text, images, etc.).
+ */
+export type BuiltInToolResult = string | ContentBlock[];
+
+/**
+ * A tool registered in the unified tool registry, tagged with its execution strategy.
+ * The kind discriminant controls how the tool is executed:
+ * - "platform": executes via platformTools map, execute returns Promise<string>
+ * - "client": defers execution to WebSocket client, no execute function
+ * - "builtin": executes via built-in tool handlers, execute returns Promise<BuiltInToolResult>
+ * - "sandbox": executes in sandbox (bash), delegates to sandbox.exec()
+ */
+export interface RegisteredTool {
+	kind: "platform" | "client" | "builtin" | "sandbox";
+	toolDefinition: ToolDefinition;
+	execute?: (input: Record<string, unknown>) => Promise<BuiltInToolResult>;
 }
