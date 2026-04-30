@@ -124,23 +124,29 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 				// List advisories
 				if (list) {
 					let query = "SELECT id, type, status, title, detail FROM advisories WHERE deleted = 0";
-					const params: (string | number | null)[] = [];
 
 					if (listStatus) {
 						query += " AND status = ?";
-						params.push(listStatus);
 					} else {
 						query += " AND status NOT IN ('applied', 'dismissed')";
 					}
 					query += " ORDER BY proposed_at DESC LIMIT 20";
 
-					const rows = ctx.db.prepare(query).all(...(params as any)) as Array<{
-						id: string;
-						type: string;
-						status: string;
-						title: string;
-						detail: string;
-					}>;
+					const rows = listStatus
+						? (ctx.db.prepare(query).all(listStatus) as Array<{
+								id: string;
+								type: string;
+								status: string;
+								title: string;
+								detail: string;
+							}>)
+						: (ctx.db.prepare(query).all() as Array<{
+								id: string;
+								type: string;
+								status: string;
+								title: string;
+								detail: string;
+							}>);
 
 					if (rows.length === 0) {
 						return "No advisories found.";

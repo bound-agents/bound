@@ -3,6 +3,7 @@ import { createAdvisoryTool } from "./advisory.js";
 import { createAwaitEventTool } from "./await-event.js";
 import { createCancelTool } from "./cancel.js";
 import { createEmitTool } from "./emit.js";
+import { createNotifyTool } from "./notify.js";
 import { createPurgeTool } from "./purge.js";
 import { createQueryTool } from "./query.js";
 import { createScheduleTool } from "./schedule.js";
@@ -16,6 +17,7 @@ export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 		createAwaitEventTool(ctx),
 		createPurgeTool(ctx),
 		createAdvisoryTool(ctx),
+		createNotifyTool(ctx),
 	];
 }
 
@@ -26,3 +28,4 @@ export { createEmitTool } from "./emit.js";
 export { createAwaitEventTool } from "./await-event.js";
 export { createPurgeTool } from "./purge.js";
 export { createAdvisoryTool } from "./advisory.js";
+export { createNotifyTool } from "./notify.js";
