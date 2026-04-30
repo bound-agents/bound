@@ -4,6 +4,7 @@ export type {
 	AgentLoopConfig,
 	AgentLoopResult,
 	ClientToolCallRequest,
+	RegisteredTool,
 } from "./types";
 export { isClientToolCallRequest } from "./types";
 export type { ContextParams } from "./context-assembly";
