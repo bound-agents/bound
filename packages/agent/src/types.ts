@@ -155,4 +155,5 @@ export interface ToolContext {
 	threadId?: string;
 	taskId?: string;
 	modelRouter?: import("@bound/llm").ModelRouter;
+	fs?: import("just-bash").IFileSystem;
 }

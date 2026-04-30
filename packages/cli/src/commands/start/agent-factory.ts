@@ -221,6 +221,7 @@ export function createAgentLoopFactory(
 			threadId: config.threadId,
 			taskId: config.taskId,
 			modelRouter,
+			fs: clusterFsObj?.fs,
 		};
 		const agentTools = createAgentTools(toolCtx);
 
