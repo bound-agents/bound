@@ -1,5 +1,6 @@
 import type { RegisteredTool, ToolContext } from "../types.js";
 import { createAdvisoryTool } from "./advisory.js";
+import { createArchiveTool } from "./archive.js";
 import { createAwaitEventTool } from "./await-event.js";
 import { createCancelTool } from "./cancel.js";
 import { createEmitTool } from "./emit.js";
@@ -18,6 +19,7 @@ export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 		createPurgeTool(ctx),
 		createAdvisoryTool(ctx),
 		createNotifyTool(ctx),
+		createArchiveTool(ctx),
 	];
 }
 
@@ -29,3 +31,4 @@ export { createAwaitEventTool } from "./await-event.js";
 export { createPurgeTool } from "./purge.js";
 export { createAdvisoryTool } from "./advisory.js";
 export { createNotifyTool } from "./notify.js";
+export { createArchiveTool } from "./archive.js";
