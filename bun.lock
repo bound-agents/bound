@@ -44,6 +44,9 @@
         "@bound/web": "workspace:*",
         "reflect-metadata": "^0.2.2",
       },
+      "devDependencies": {
+        "just-bash": "^2.14.0",
+      },
     },
     "packages/client": {
       "name": "@bound/client",

@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from "bun:test";
+import { createBuiltInTools } from "@bound/agent";
 import type { ToolDefinition } from "@bound/llm";
 import { InMemoryFs } from "just-bash";
-import { createToolRegistry } from "../../../cli/src/commands/start/agent-factory";
-import { createBuiltInTools } from "../built-in-tools";
+import { createToolRegistry } from "../commands/start/agent-factory";
 
 describe("tool registry", () => {
 	let logger: any;

@@ -1,4 +1,5 @@
-import type { ContentBlock, ToolDefinition } from "@bound/llm";
+import type { ToolDefinition } from "@bound/llm";
+import type { BuiltInToolResult } from "./built-in-tools";
 
 /**
  * Signal from a client tool that indicates the tool execution should be deferred
@@ -126,12 +127,6 @@ export interface AgentLoopResult {
 	/** True when the loop exited early due to shouldYield (cooperative cancellation). */
 	yielded?: boolean;
 }
-
-/**
- * Result type returned by built-in and platform tool execute handlers.
- * Can be a simple string or an array of content blocks (text, images, etc.).
- */
-export type BuiltInToolResult = string | ContentBlock[];
 
 /**
  * A tool registered in the unified tool registry, tagged with its execution strategy.
