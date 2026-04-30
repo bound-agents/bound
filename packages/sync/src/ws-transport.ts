@@ -2034,11 +2034,10 @@ export class WsTransport {
 		if (!frame) return;
 
 		const sent = peer.sendFrame(frame);
-		state.pendingRowCursor += sliceEnd;
-
 		if (!sent) {
 			return;
 		}
+		state.pendingRowCursor += sliceEnd;
 
 		setTimeout(() => this.sendRowPullSubChunk(peerSiteId), 0);
 	}
