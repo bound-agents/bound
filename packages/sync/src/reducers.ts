@@ -375,6 +375,25 @@ export function replayEvents(
  *
  * @returns Number of rows successfully applied.
  */
+type SqlValue = string | number | bigint | boolean | Uint8Array | null;
+
+function coerceRowValues(columns: string[], row: Record<string, unknown>): SqlValue[] {
+	return columns.map((k) => {
+		const v = row[k];
+		if (v === null || v === undefined) return null;
+		if (
+			typeof v === "string" ||
+			typeof v === "number" ||
+			typeof v === "bigint" ||
+			typeof v === "boolean" ||
+			v instanceof Uint8Array
+		) {
+			return v;
+		}
+		return JSON.stringify(v);
+	});
+}
+
 export function applySnapshotRows(
 	db: Database,
 	tableName: string,
@@ -401,40 +420,16 @@ export function applySnapshotRows(
 	}
 
 	let applied = 0;
+	const placeholders = columns.map(() => "?").join(", ");
+	const sql = `INSERT OR REPLACE INTO ${tableName} (${columns.join(", ")}) VALUES (${placeholders})`;
 
-	// Wrap everything in a single transaction for atomicity.
 	db.exec("BEGIN IMMEDIATE");
 	try {
-		const placeholders = columns.map(() => "?").join(", ");
-		const stmt = db.prepare(
-			`INSERT OR REPLACE INTO ${tableName} (${columns.join(", ")})
-			 VALUES (${placeholders})`,
-		);
-
+		const stmt = db.prepare(sql);
 		for (const row of rows) {
-			// Map row values to SQL-compatible bindings (string | number | bigint | boolean | Uint8Array | null).
-			// bun:sqlite rejects arbitrary objects, so we coerce unknown values.
-			const values: Array<string | number | bigint | boolean | Uint8Array | null> = columns.map(
-				(k) => {
-					const v = row[k];
-					if (v === null || v === undefined) return null;
-					if (
-						typeof v === "string" ||
-						typeof v === "number" ||
-						typeof v === "bigint" ||
-						typeof v === "boolean" ||
-						v instanceof Uint8Array
-					) {
-						return v;
-					}
-					// Coerce objects (e.g. JSON columns) to their string representation.
-					return JSON.stringify(v);
-				},
-			);
-			stmt.run(...values);
+			stmt.run(...coerceRowValues(columns, row));
 			applied++;
 		}
-
 		stmt.finalize();
 		db.exec("COMMIT");
 	} catch (err) {
@@ -448,57 +443,26 @@ export function applySnapshotRows(
 			rowCount: rows.length,
 			error: err instanceof Error ? err.message : String(err),
 		});
-		return applySnapshotRowsPerRow(db, tableName, columns, rows, logger);
+		applied = 0;
+		for (const row of rows) {
+			try {
+				db.run(sql, coerceRowValues(columns, row));
+				applied++;
+			} catch {
+				// skip — trigger rejection or constraint violation
+			}
+		}
+		if (applied < rows.length) {
+			logger?.warn("[snapshot] Per-row fallback: skipped rows", {
+				tableName,
+				applied,
+				skipped: rows.length - applied,
+			});
+		}
+		return applied;
 	}
 
 	logger?.debug("[snapshot] Applied snapshot chunk", { tableName, applied });
-	return applied;
-}
-
-function applySnapshotRowsPerRow(
-	db: Database,
-	tableName: string,
-	columns: string[],
-	rows: Array<Record<string, unknown>>,
-	logger?: Logger,
-): number {
-	let applied = 0;
-	const placeholders = columns.map(() => "?").join(", ");
-	const sql = `INSERT OR REPLACE INTO ${tableName} (${columns.join(", ")}) VALUES (${placeholders})`;
-
-	for (const row of rows) {
-		try {
-			const values: Array<string | number | bigint | boolean | Uint8Array | null> = columns.map(
-				(k) => {
-					const v = row[k];
-					if (v === null || v === undefined) return null;
-					if (
-						typeof v === "string" ||
-						typeof v === "number" ||
-						typeof v === "bigint" ||
-						typeof v === "boolean" ||
-						v instanceof Uint8Array
-					) {
-						return v;
-					}
-					return JSON.stringify(v);
-				},
-			);
-			db.run(sql, values);
-			applied++;
-		} catch {
-			// skip individual row — trigger rejection or constraint violation
-		}
-	}
-
-	if (applied < rows.length) {
-		logger?.warn("[snapshot] Per-row fallback: skipped rows", {
-			tableName,
-			applied,
-			skipped: rows.length - applied,
-		});
-	}
-
 	return applied;
 }
 
