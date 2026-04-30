@@ -68,8 +68,9 @@ function isLocal(host: HostInfo): boolean {
 
 function isOnline(host: HostInfo): boolean {
 	if (isLocal(host)) return true;
-	if (!host.online_at) return false;
-	return Date.now() - new Date(host.online_at).getTime() < ONLINE_THRESHOLD_MS;
+	const ts = host.modified_at ?? host.online_at;
+	if (!ts) return false;
+	return Date.now() - new Date(ts).getTime() < ONLINE_THRESHOLD_MS;
 }
 
 function relativeTime(iso: string | null): string {
@@ -90,15 +91,27 @@ function getSyncForPeer(peerSiteId: string): SyncStateInfo | null {
 
 function computeSyncHealth(
 	s: SyncStateInfo | null,
+	host?: HostInfo,
 ): "healthy" | "degraded" | "unreachable" | "unknown" {
-	if (!s || !s.last_sync_at) return "unknown";
-	const lastSyncMs = Date.now() - new Date(s.last_sync_at).getTime();
-	const fiveMinutesMs = 5 * 60 * 1000;
-	const tenMinutesMs = 10 * 60 * 1000;
-	if (lastSyncMs > tenMinutesMs) return "unreachable";
-	if (s.sync_errors > 0) return "degraded";
-	if (lastSyncMs < fiveMinutesMs) return "healthy";
-	return "degraded";
+	if (s?.last_sync_at) {
+		const lastSyncMs = Date.now() - new Date(s.last_sync_at).getTime();
+		const fiveMinutesMs = 5 * 60 * 1000;
+		const tenMinutesMs = 10 * 60 * 1000;
+		if (lastSyncMs > tenMinutesMs) return "unreachable";
+		if (s.sync_errors > 0) return "degraded";
+		if (lastSyncMs < fiveMinutesMs) return "healthy";
+		return "degraded";
+	}
+	if (host) {
+		const ts = host.modified_at ?? host.online_at;
+		if (ts) {
+			const age = Date.now() - new Date(ts).getTime();
+			if (age < ONLINE_THRESHOLD_MS) return "healthy";
+			if (age < 10 * 60 * 1000) return "degraded";
+			return "unreachable";
+		}
+	}
+	return "unknown";
 }
 
 function parseModels(modelsStr: string | null): string[] {
@@ -134,7 +147,7 @@ const syncHealthMap = $derived.by(() => {
 			continue;
 		}
 		const s = getSyncForPeer(host.site_id);
-		map.set(host.site_id, computeSyncHealth(s));
+		map.set(host.site_id, computeSyncHealth(s, host));
 	}
 	return map;
 });
