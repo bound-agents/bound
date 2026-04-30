@@ -2096,6 +2096,21 @@ export class AgentLoop {
 
 	/** Merge server tools and client tool definitions into a single LLM tool list. */
 	private getMergedTools(): Array<ToolDefinition> | undefined {
+		if (this.config.toolRegistry) {
+			const registryTools: ToolDefinition[] = [];
+			for (const registered of this.config.toolRegistry.values()) {
+				registryTools.push(registered.toolDefinition);
+			}
+			// config.tools may contain MCP bridge tool definitions that
+			// appear in the LLM tool list but dispatch through the bash tool.
+			// Include any config.tools entries not already in the registry.
+			const registryNames = new Set(this.config.toolRegistry.keys());
+			const extras = (this.config.tools ?? []).filter((t) => !registryNames.has(t.function.name));
+			const merged = [...registryTools, ...extras];
+			return merged.length > 0 ? merged : undefined;
+		}
+
+		// Legacy path (when no registry provided)
 		const serverTools = this.config.tools ?? [];
 		const clientTools = this.config.clientTools ? Array.from(this.config.clientTools.values()) : [];
 		const merged: Array<ToolDefinition> = [...serverTools, ...clientTools];
