@@ -14,6 +14,12 @@ function createTestDb(): Database {
 	return db;
 }
 
+function getExecute(tool: ReturnType<typeof createMemoryTool>) {
+	const execute = tool.execute;
+	if (!execute) throw new Error("Tool execute is required");
+	return execute;
+}
+
 describe("memory tool", () => {
 	let db: Database;
 	let ctx: ToolContext;
@@ -49,7 +55,7 @@ describe("memory tool", () => {
 	describe("store action", () => {
 		it("should persist a memory entry with key and value", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "store",
 				key: "test_key",
 				value: "test_value",
@@ -71,7 +77,7 @@ describe("memory tool", () => {
 
 		it("should auto-resolve tier from pinned prefix", async () => {
 			const tool = createMemoryTool(ctx);
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "_standing:important",
 				value: "critical info",
@@ -86,7 +92,7 @@ describe("memory tool", () => {
 
 		it("should allow explicit tier override", async () => {
 			const tool = createMemoryTool(ctx);
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "detail_mem",
 				value: "detailed info",
@@ -102,7 +108,7 @@ describe("memory tool", () => {
 
 		it("should error when key is missing", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "store",
 				value: "test_value",
 			});
@@ -113,7 +119,7 @@ describe("memory tool", () => {
 
 		it("should error when value is missing", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "store",
 				key: "test_key",
 			});
@@ -125,12 +131,12 @@ describe("memory tool", () => {
 	describe("search action", () => {
 		beforeEach(async () => {
 			const tool = createMemoryTool(ctx);
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "search_test",
 				value: "this is searchable content",
 			});
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "another_key",
 				value: "different content here",
@@ -139,7 +145,7 @@ describe("memory tool", () => {
 
 		it("should find memory by keyword search", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "search",
 				key: "searchable",
 			});
@@ -150,7 +156,7 @@ describe("memory tool", () => {
 
 		it("should return no results for missing keywords", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "search",
 				key: "nonexistent_keyword",
 			});
@@ -160,7 +166,7 @@ describe("memory tool", () => {
 
 		it("should error when query is missing", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "search",
 			});
 
@@ -171,12 +177,12 @@ describe("memory tool", () => {
 	describe("connect action", () => {
 		beforeEach(async () => {
 			const tool = createMemoryTool(ctx);
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "source_mem",
 				value: "source content",
 			});
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "target_mem",
 				value: "target content",
@@ -185,7 +191,7 @@ describe("memory tool", () => {
 
 		it("should create an edge between two memories", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "connect",
 				source_key: "source_mem",
 				target_key: "target_mem",
@@ -211,7 +217,7 @@ describe("memory tool", () => {
 
 		it("should error when source or target missing", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "connect",
 				source_key: "source_mem",
 				relation: "related_to",
@@ -222,7 +228,7 @@ describe("memory tool", () => {
 
 		it("should error when source memory does not exist", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "connect",
 				source_key: "nonexistent_source",
 				target_key: "target_mem",
@@ -235,7 +241,7 @@ describe("memory tool", () => {
 
 		it("should error when target memory does not exist", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "connect",
 				source_key: "source_mem",
 				target_key: "nonexistent_target",
@@ -250,17 +256,17 @@ describe("memory tool", () => {
 	describe("disconnect action", () => {
 		beforeEach(async () => {
 			const tool = createMemoryTool(ctx);
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "mem1",
 				value: "content1",
 			});
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "mem2",
 				value: "content2",
 			});
-			await tool.execute({
+			await getExecute(tool)({
 				action: "connect",
 				source_key: "mem1",
 				target_key: "mem2",
@@ -270,7 +276,7 @@ describe("memory tool", () => {
 
 		it("should remove edge between two memories", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "disconnect",
 				source_key: "mem1",
 				target_key: "mem2",
@@ -287,7 +293,7 @@ describe("memory tool", () => {
 
 		it("should error when no edge exists", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "disconnect",
 				source_key: "mem1",
 				target_key: "nonexistent",
@@ -301,12 +307,12 @@ describe("memory tool", () => {
 	describe("forget action", () => {
 		beforeEach(async () => {
 			const tool = createMemoryTool(ctx);
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "forget_test",
 				value: "content to forget",
 			});
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "keep_this",
 				value: "keep it",
@@ -315,7 +321,7 @@ describe("memory tool", () => {
 
 		it("should soft-delete a memory by exact key", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "forget",
 				key: "forget_test",
 			});
@@ -331,7 +337,7 @@ describe("memory tool", () => {
 
 		it("should error when key does not exist", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "forget",
 				key: "nonexistent",
 			});
@@ -342,19 +348,19 @@ describe("memory tool", () => {
 
 		it("should cascade delete edges when forgetting a memory", async () => {
 			const tool = createMemoryTool(ctx);
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "mem_with_edges",
 				value: "has edges",
 			});
-			await tool.execute({
+			await getExecute(tool)({
 				action: "connect",
 				source_key: "mem_with_edges",
 				target_key: "keep_this",
 				relation: "related_to",
 			});
 
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "forget",
 				key: "mem_with_edges",
 			});
@@ -372,28 +378,28 @@ describe("memory tool", () => {
 	describe("traverse action", () => {
 		beforeEach(async () => {
 			const tool = createMemoryTool(ctx);
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "start",
 				value: "starting point",
 			});
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "level1",
 				value: "level 1 content",
 			});
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "level2",
 				value: "level 2 content",
 			});
-			await tool.execute({
+			await getExecute(tool)({
 				action: "connect",
 				source_key: "start",
 				target_key: "level1",
 				relation: "related_to",
 			});
-			await tool.execute({
+			await getExecute(tool)({
 				action: "connect",
 				source_key: "level1",
 				target_key: "level2",
@@ -403,7 +409,7 @@ describe("memory tool", () => {
 
 		it("should traverse graph from starting memory", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "traverse",
 				key: "start",
 				depth: 2,
@@ -415,7 +421,7 @@ describe("memory tool", () => {
 
 		it("should error when key is missing", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "traverse",
 			});
 
@@ -426,28 +432,28 @@ describe("memory tool", () => {
 	describe("neighbors action", () => {
 		beforeEach(async () => {
 			const tool = createMemoryTool(ctx);
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "center",
 				value: "central node",
 			});
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "neighbor1",
 				value: "neighbor 1",
 			});
-			await tool.execute({
+			await getExecute(tool)({
 				action: "store",
 				key: "neighbor2",
 				value: "neighbor 2",
 			});
-			await tool.execute({
+			await getExecute(tool)({
 				action: "connect",
 				source_key: "center",
 				target_key: "neighbor1",
 				relation: "related_to",
 			});
-			await tool.execute({
+			await getExecute(tool)({
 				action: "connect",
 				source_key: "neighbor2",
 				target_key: "center",
@@ -457,7 +463,7 @@ describe("memory tool", () => {
 
 		it("should list neighbors of a memory", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "neighbors",
 				key: "center",
 			});
@@ -468,7 +474,7 @@ describe("memory tool", () => {
 
 		it("should error when key is missing", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "neighbors",
 			});
 
@@ -479,7 +485,7 @@ describe("memory tool", () => {
 	describe("invalid action", () => {
 		it("should error on invalid action", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({
+			const result = await getExecute(tool)({
 				action: "invalid_action",
 			});
 
@@ -496,7 +502,7 @@ describe("memory tool", () => {
 
 		it("should error when action is missing", async () => {
 			const tool = createMemoryTool(ctx);
-			const result = await tool.execute({});
+			const result = await getExecute(tool)({});
 
 			expect(result).toContain("Error");
 		});

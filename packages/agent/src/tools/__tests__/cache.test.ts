@@ -1,9 +1,15 @@
 import Database from "bun:sqlite";
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema } from "@bound/core";
 import type { ToolContext } from "../../types";
 import { createCacheTool } from "../cache";
+
+function getExecute(tool: ReturnType<typeof createCacheTool>) {
+	const execute = tool.execute;
+	if (!execute) throw new Error("Tool execute is required");
+	return execute;
+}
 
 describe("cache tool", () => {
 	let db: Database;
@@ -34,10 +40,18 @@ describe("cache tool", () => {
 		};
 	});
 
+	afterEach(() => {
+		try {
+			db.close();
+		} catch {
+			// ignore
+		}
+	});
+
 	describe("invalid action", () => {
 		it("returns error with valid actions list", async () => {
 			const tool = createCacheTool(ctx);
-			const result = await tool.execute({ action: "invalid" });
+			const result = await getExecute(tool)({ action: "invalid" });
 			expect(result).toContain("Error");
 			expect(result).toContain("warm");
 			expect(result).toContain("pin");
@@ -49,7 +63,7 @@ describe("cache tool", () => {
 	describe("warm action", () => {
 		it("returns informational message", async () => {
 			const tool = createCacheTool(ctx);
-			const result = await tool.execute({ action: "warm" });
+			const result = await getExecute(tool)({ action: "warm" });
 			expect(result).toBeTruthy();
 			expect(result).not.toContain("Error");
 		});
@@ -58,14 +72,14 @@ describe("cache tool", () => {
 	describe("pin action", () => {
 		it("requires path parameter", async () => {
 			const tool = createCacheTool(ctx);
-			const result = await tool.execute({ action: "pin" });
+			const result = await getExecute(tool)({ action: "pin" });
 			expect(result).toContain("Error");
 			expect(result).toContain("path");
 		});
 
 		it("returns error if file not found", async () => {
 			const tool = createCacheTool(ctx);
-			const result = await tool.execute({ action: "pin", path: "/nonexistent/file" });
+			const result = await getExecute(tool)({ action: "pin", path: "/nonexistent/file" });
 			expect(result).toContain("Error");
 			expect(result).toContain("not found");
 		});
@@ -79,7 +93,7 @@ describe("cache tool", () => {
 			).run(fileId, "/test/file.txt", "test content", 1024, now, now, 0);
 
 			const tool = createCacheTool(ctx);
-			const result = await tool.execute({ action: "pin", path: "/test/file.txt" });
+			const result = await getExecute(tool)({ action: "pin", path: "/test/file.txt" });
 			expect(result).not.toContain("Error");
 			expect(result).toContain("pinned");
 
@@ -103,8 +117,8 @@ describe("cache tool", () => {
 			).run(fileId, path, "test content", 1024, now, now, 0);
 
 			const tool = createCacheTool(ctx);
-			await tool.execute({ action: "pin", path });
-			await tool.execute({ action: "pin", path });
+			await getExecute(tool)({ action: "pin", path });
+			await getExecute(tool)({ action: "pin", path });
 
 			const configRow = db
 				.prepare("SELECT value FROM cluster_config WHERE key = ?")
@@ -120,14 +134,14 @@ describe("cache tool", () => {
 	describe("unpin action", () => {
 		it("requires path parameter", async () => {
 			const tool = createCacheTool(ctx);
-			const result = await tool.execute({ action: "unpin" });
+			const result = await getExecute(tool)({ action: "unpin" });
 			expect(result).toContain("Error");
 			expect(result).toContain("path");
 		});
 
 		it("returns error if file not found", async () => {
 			const tool = createCacheTool(ctx);
-			const result = await tool.execute({ action: "unpin", path: "/nonexistent" });
+			const result = await getExecute(tool)({ action: "unpin", path: "/nonexistent" });
 			expect(result).toContain("Error");
 			expect(result).toContain("not found");
 		});
@@ -141,7 +155,7 @@ describe("cache tool", () => {
 			).run(fileId, path, "test content", 1024, now, now, 0);
 
 			const tool = createCacheTool(ctx);
-			const result = await tool.execute({ action: "unpin", path });
+			const result = await getExecute(tool)({ action: "unpin", path });
 			expect(result).toContain("Error");
 			expect(result).toContain("not pinned");
 		});
@@ -155,8 +169,8 @@ describe("cache tool", () => {
 			).run(fileId, path, "test content", 1024, now, now, 0);
 
 			const tool = createCacheTool(ctx);
-			await tool.execute({ action: "pin", path });
-			const result = await tool.execute({ action: "unpin", path });
+			await getExecute(tool)({ action: "pin", path });
+			const result = await getExecute(tool)({ action: "unpin", path });
 
 			expect(result).not.toContain("Error");
 			expect(result).toContain("unpinned");
@@ -174,14 +188,14 @@ describe("cache tool", () => {
 	describe("evict action", () => {
 		it("requires pattern parameter", async () => {
 			const tool = createCacheTool(ctx);
-			const result = await tool.execute({ action: "evict" });
+			const result = await getExecute(tool)({ action: "evict" });
 			expect(result).toContain("Error");
 			expect(result).toContain("pattern");
 		});
 
 		it("returns 0 matches when no files match pattern", async () => {
 			const tool = createCacheTool(ctx);
-			const result = await tool.execute({ action: "evict", pattern: "/nonexistent/*" });
+			const result = await getExecute(tool)({ action: "evict", pattern: "/nonexistent/*" });
 			expect(result).toContain("0");
 		});
 
@@ -202,7 +216,7 @@ describe("cache tool", () => {
 			).run(file3Id, "/other/file.txt", "content3", 300, now, now, 0);
 
 			const tool = createCacheTool(ctx);
-			const result = await tool.execute({ action: "evict", pattern: "/cache/*" });
+			const result = await getExecute(tool)({ action: "evict", pattern: "/cache/*" });
 
 			expect(result).not.toContain("Error");
 			expect(result).toContain("2");
@@ -231,7 +245,7 @@ describe("cache tool", () => {
 			).run(fileId, "/cache/test-f.txt", "content", 100, now, now, 0);
 
 			const tool = createCacheTool(ctx);
-			const result = await tool.execute({ action: "evict", pattern: "/cache/test-?.txt" });
+			const result = await getExecute(tool)({ action: "evict", pattern: "/cache/test-?.txt" });
 
 			expect(result).not.toContain("Error");
 			expect(result).toContain("1");
