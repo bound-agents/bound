@@ -4,6 +4,8 @@ export type {
 	AgentLoopConfig,
 	AgentLoopResult,
 	ClientToolCallRequest,
+	RegisteredTool,
+	ToolContext,
 } from "./types";
 export { isClientToolCallRequest } from "./types";
 export type { ContextParams } from "./context-assembly";
@@ -33,7 +35,10 @@ export { RelayProcessor } from "./relay-processor";
 export { createRelayOutboxEntry } from "./relay-router";
 
 // Export commands
-export { getAllCommands, setCommandRegistry } from "./commands/index";
+export { setCommandRegistry, getCommandRegistry } from "./commands/index";
+
+// Export native tools
+export { createAgentTools } from "./tools/index";
 
 // Export MCP client and bridge
 export { MCPClient } from "./mcp-client";
@@ -91,6 +96,9 @@ export {
 
 // Export skill seeding
 export { seedSkillAuthoring } from "./seed-skills";
+
+// Export skill utilities
+export { parseFrontmatter } from "./tools/skill-utils";
 
 // Export built-in tools
 export { createBuiltInTools } from "./built-in-tools";

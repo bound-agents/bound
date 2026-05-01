@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "@bound/llm";
+import type { BuiltInToolResult } from "./built-in-tools";
 
 /**
  * Signal from a client tool that indicates the tool execution should be deferred
@@ -111,6 +112,11 @@ export interface AgentLoopConfig {
 	 * Passed through to ContextParams and appended to the system suffix.
 	 */
 	systemPromptAddition?: string;
+	/**
+	 * Unified tool registry for dispatching all tool kinds (platform, client, builtin, sandbox).
+	 * When provided, enables registry-based dispatch with backward compatibility via legacy waterfall.
+	 */
+	toolRegistry?: Map<string, RegisteredTool>;
 }
 
 export interface AgentLoopResult {
@@ -120,4 +126,34 @@ export interface AgentLoopResult {
 	error?: string;
 	/** True when the loop exited early due to shouldYield (cooperative cancellation). */
 	yielded?: boolean;
+}
+
+/**
+ * A tool registered in the unified tool registry, tagged with its execution strategy.
+ * The kind discriminant controls how the tool is executed:
+ * - "platform": executes via platformTools map, execute returns Promise<string>
+ * - "client": defers execution to WebSocket client, no execute function
+ * - "builtin": executes via built-in tool handlers, execute returns Promise<BuiltInToolResult>
+ * - "sandbox": executes in sandbox (bash), delegates to sandbox.exec()
+ */
+export interface RegisteredTool {
+	kind: "platform" | "client" | "builtin" | "sandbox";
+	toolDefinition: ToolDefinition;
+	execute?: (input: Record<string, unknown>) => Promise<BuiltInToolResult>;
+}
+
+/**
+ * Context passed to native agent tool factories.
+ * Extends the fields needed by all tool closures (db, siteId, eventBus, logger, threadId, taskId, modelRouter).
+ * Uses inline import() types to avoid circular dependencies.
+ */
+export interface ToolContext {
+	db: import("bun:sqlite").Database;
+	siteId: string;
+	eventBus: import("@bound/shared").TypedEventEmitter;
+	logger: import("@bound/shared").Logger;
+	threadId?: string;
+	taskId?: string;
+	modelRouter?: import("@bound/llm").ModelRouter;
+	fs?: import("just-bash").IFileSystem;
 }

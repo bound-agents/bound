@@ -2096,6 +2096,21 @@ export class AgentLoop {
 
 	/** Merge server tools and client tool definitions into a single LLM tool list. */
 	private getMergedTools(): Array<ToolDefinition> | undefined {
+		if (this.config.toolRegistry) {
+			const registryTools: ToolDefinition[] = [];
+			for (const registered of this.config.toolRegistry.values()) {
+				registryTools.push(registered.toolDefinition);
+			}
+			// config.tools may contain MCP bridge tool definitions that
+			// appear in the LLM tool list but dispatch through the bash tool.
+			// Include any config.tools entries not already in the registry.
+			const registryNames = new Set(this.config.toolRegistry.keys());
+			const extras = (this.config.tools ?? []).filter((t) => !registryNames.has(t.function.name));
+			const merged = [...registryTools, ...extras];
+			return merged.length > 0 ? merged : undefined;
+		}
+
+		// Legacy path (when no registry provided)
 		const serverTools = this.config.tools ?? [];
 		const clientTools = this.config.clientTools ? Array.from(this.config.clientTools.values()) : [];
 		const merged: Array<ToolDefinition> = [...serverTools, ...clientTools];
@@ -2106,6 +2121,68 @@ export class AgentLoop {
 	private async executeToolCall(
 		toolCall: ParsedToolCall,
 	): Promise<{ content: string; exitCode: number } | RelayToolCallRequest | ClientToolCallRequest> {
+		// Registry-based dispatch (new path)
+		if (this.config.toolRegistry) {
+			const tool = this.config.toolRegistry.get(toolCall.name);
+			if (!tool) {
+				return {
+					content: `Error: unknown tool "${toolCall.name}"`,
+					exitCode: 1,
+				};
+			}
+
+			switch (tool.kind) {
+				case "client":
+					return {
+						clientToolCall: true,
+						toolName: toolCall.name,
+						callId: toolCall.id,
+						arguments: toolCall.input,
+					} satisfies ClientToolCallRequest;
+
+				case "sandbox": {
+					if (!this.sandbox.exec) {
+						return { content: "Error: sandbox execution not available", exitCode: 1 };
+					}
+					const command = toolCall.input.command;
+					if (typeof command !== "string") {
+						return {
+							content: `Error: bash tool requires a "command" string parameter`,
+							exitCode: 1,
+						};
+					}
+					const result = await this.sandbox.exec(command);
+					if (isRelayRequest(result)) {
+						return result;
+					}
+					return {
+						content: buildCommandOutput(result.stdout, result.stderr, result.exitCode),
+						exitCode: result.exitCode,
+					};
+				}
+
+				default: {
+					// "platform" and "builtin" both have execute handlers
+					if (!tool.execute) {
+						return {
+							content: `Error: tool "${toolCall.name}" has no execute handler`,
+							exitCode: 1,
+						};
+					}
+					const result = await tool.execute(toolCall.input);
+					if (Array.isArray(result)) {
+						const hasError = result.some(
+							(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
+						);
+						return { content: JSON.stringify(result), exitCode: hasError ? 1 : 0 };
+					}
+					const exitCode = result.startsWith("Error:") ? 1 : 0;
+					return { content: result, exitCode };
+				}
+			}
+		}
+
+		// Legacy waterfall dispatch (fallback when no registry)
 		const platformTool = this.config.platformTools?.get(toolCall.name);
 		if (platformTool) {
 			const content = await platformTool.execute(toolCall.input);

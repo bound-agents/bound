@@ -2,13 +2,9 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { parseFrontmatter } from "@bound/agent/src/commands/skill-activate.js";
+import { parseFrontmatter } from "@bound/agent";
 import { insertRow, updateRow } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
-
-// parseFrontmatter is imported from @bound/agent (packages/agent/src/commands/skill-activate.ts)
-// which is already a dependency of @bound/cli. This avoids duplication of the frontmatter
-// parser logic between agent and CLI packages.
 
 // ---------------------------------------------------------------------------
 // skillList

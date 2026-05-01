@@ -264,30 +264,30 @@ config/
 
 ---
 
-## Built-in Commands
+## Native Agent Tools
 
-Commands are defined as `CommandDefinition` objects from `@bound/sandbox` and dispatched by the sandbox during tool execution. All built-in commands are registered via `getAllCommands()` in `packages/agent/src/commands/index.ts`. The current set includes: `help`, `query`, `advisory`, `memory`, `schedule`, `cancel`, `emit`, `purge`, `await`, `cache-warm`, `cache-pin`, `cache-unpin`, `cache-evict`, `model-hint`, `archive`, `hostinfo`, `notify`, `skill-activate`, `skill-list`, `skill-read`, `skill-retire`.
+Agent tools are implemented as `RegisteredTool` factories in `packages/agent/src/tools/`. Each factory closes over a `ToolContext` (db, siteId, eventBus, logger, threadId, taskId, modelRouter, fs) and returns a `RegisteredTool` with a JSON schema `ToolDefinition` and an `execute` handler.
 
-Each command receives a `CommandContext` at runtime. Relevant fields for built-in commands:
+The 14 native tools replace the previous 20 bash-dispatched commands:
 
-| Field | Type | Description |
-|---|---|---|
-| `db` | `Database` | SQLite database handle |
-| `siteId` | `string` | Local site identity |
-| `threadId` | `string \| undefined` | Active thread (if any) |
-| `taskId` | `string \| undefined` | Active task (if any) |
-| `eventBus` | `TypedEventEmitter` | Application event bus |
-| `fs` | `IFileSystem \| undefined` | ClusterFs instance passed for commands that need VFS access (e.g., `skill-activate`) |
+| Tool | Actions / Params | Kind |
+|------|-----------------|------|
+| `memory` | action: store, forget, search, connect, disconnect, traverse, neighbors | Grouped |
+| `cache` | action: warm, pin, unpin, evict | Grouped |
+| `skill` | action: activate, list, read, retire | Grouped |
+| `schedule` | task_description, cron, delay, on_event, model_hint, ... | Standalone |
+| `cancel` | task_id, payload_match | Standalone |
+| `query` | sql | Standalone |
+| `emit` | event, payload | Standalone |
+| `await_event` | task_ids, timeout | Standalone |
+| `purge` | message_ids, last_n, thread_id | Standalone |
+| `advisory` | title, detail, action, impact, list, approve, apply, dismiss, defer | Standalone |
+| `notify` | user, all, platform, message | Standalone |
+| `archive` | thread_id, older_than | Standalone |
+| `model_hint` | model, reset | Standalone |
+| `hostinfo` | (no params) | Standalone |
 
-Each command returns a `CommandResult`:
-
-```typescript
-interface CommandResult {
-  stdout:   string;
-  stderr:   string;
-  exitCode: number; // 0 = success, non-zero = error
-}
-```
+Tools dispatch through the unified tool registry (`Map<string, RegisteredTool>`) in the agent loop's `executeToolCall()` method. The registry replaces the previous waterfall dispatch pattern.
 
 ---
 
@@ -295,69 +295,80 @@ interface CommandResult {
 
 Execute a read-only SQL query against the agent database.
 
-| Argument | Required | Description |
-|---|---|---|
-| `query` | yes | A SQL `SELECT` statement |
+| Parameter | Required | Type | Description |
+|---|---|---|---|
+| `sql` | yes | string | A SQL `SELECT` statement or read-only `PRAGMA` |
 
-Only `SELECT` statements are permitted; the handler rejects any query that does not begin with `SELECT` after trimming and upper-casing. Results are printed as tab-separated values with a header row.
+Only `SELECT` statements and read-only `PRAGMA` introspection queries are permitted. Results are printed as tab-separated values with a header row.
 
-```
-query --query "SELECT id, status FROM tasks WHERE status = 'pending'"
+Example invocation:
+```json
+{
+  "sql": "SELECT id, status FROM tasks WHERE status = 'pending'"
+}
 ```
 
 ---
 
 ### `memory`
 
-Unified memory command dispatched by subcommand: `store`, `forget`, `search`, `connect`, `disconnect`, `traverse`, `neighbors`.
+Native memory tool dispatched by action parameter: `store`, `forget`, `search`, `connect`, `disconnect`, `traverse`, `neighbors`.
 
-| Subcommand | Description |
-|---|---|
-| `store` | Upsert a key/value pair in `semantic_memory`. Keys with prefixes `_standing`, `_feedback`, `_policy`, or `_pinned` are auto-pinned; otherwise `--tier` (`pinned`, `summary`, `default`, `detail`) is honored. Row ID is a deterministic UUID derived from the key using `BOUND_NAMESPACE`. |
-| `forget` | Soft-delete an entry by `--key` or batch-delete by `--prefix`. Cascades to memory edges; retiring a `summary` promotes its `detail` children back to `default`. |
-| `search` | Keyword search over memory keys and values (stop-word filtered, limit 20, ordered by `modified_at DESC`). |
-| `connect` / `disconnect` | Upsert or remove `memory_edges` rows with optional `--relation` and `--weight`. `summarizes` edges drive tier transitions. |
-| `traverse` / `neighbors` | Graph queries over the memory edge graph. |
-
-```
-memory store project.language TypeScript
-memory forget --prefix "config."
-memory search "language"
-memory connect project.language project.runtime related --weight 2
-```
+| Action | Parameters | Description |
+|---|---|---|
+| `store` | key, value, tier | Upsert a key/value pair in `semantic_memory`. Keys with prefixes `_standing`, `_feedback`, `_policy`, or `_pinned` are auto-pinned; otherwise `tier` (`pinned`, `summary`, `default`, `detail`) is honored. Row ID is a deterministic UUID derived from the key using `BOUND_NAMESPACE`. |
+| `forget` | key_match, prefix | Soft-delete an entry by `key_match` or batch-delete by `prefix`. Cascades to memory edges; retiring a `summary` promotes its `detail` children back to `default`. |
+| `search` | query | Keyword search over memory keys and values (stop-word filtered, limit 20, ordered by `modified_at DESC`). |
+| `connect` / `disconnect` | source, target, relation, weight | Upsert or remove `memory_edges` rows. `summarizes` edges drive tier transitions. |
+| `traverse` / `neighbors` | node_id, direction | Graph queries over the memory edge graph. |
 
 ---
 
 ### `schedule`
 
-Create a new task in the `tasks` table. Exactly one of `--in`, `--every`, or `--on` must be provided.
+Create a new task in the `tasks` table. Exactly one of `delay`, `cron`, or `on_event` must be provided.
 
-| Argument | Required | Description |
-|---|---|---|
-| `in` | one-of | Deferred run offset: `5m`, `2h`, `1d` |
-| `every` | one-of | Cron expression (5-field) |
-| `on` | one-of | Event name for event-driven trigger |
-| `payload` | no | JSON string attached to the task |
-| `requires` | no | Host affinity constraints (JSON) |
-| `model-hint` | no | Preferred model ID for the run |
-| `no-history` | no | Flag to suppress message history during run |
-| `after` | no | Task ID this task depends on |
-| `require-success` | no | Block if the dependency failed |
-| `inject` | no | `results`, `status`, or `file` (default: `results`) |
-| `alert-after` | no | Number of consecutive failures before an alert message is created |
-| `quiet` | no | Suppress default output |
+| Parameter | Required | Type | Description |
+|---|---|---|---|
+| `task_description` | yes | string | What the task should do |
+| `delay` | one-of | string | Deferred time offset: `5m`, `2h`, `1d` |
+| `cron` | one-of | string | Cron expression (5-field) for recurring tasks |
+| `on_event` | one-of | string | Event name for event-driven trigger |
+| `payload` | no | string | Task payload as JSON string |
+| `model_hint` | no | string | Model ID or tier to suggest to scheduler |
+| `thread_id` | no | string | Thread ID for task context |
+| `no_history` | no | boolean | Skip loading conversation history |
+| `after` | no | string | Task ID this task depends on |
+| `require_success` | no | boolean | Require dependency to succeed |
+| `inject_mode` | no | string | How to inject dependency results: `results`, `all`, or `file` |
+| `alert_threshold` | no | integer | Consecutive failures before advisory (default 3) |
 
-Returns the new task UUID on stdout.
+Returns the new task UUID.
 
+Example invocations:
+```json
+{
+  "task_description": "Run nightly cleanup",
+  "delay": "30m",
+  "payload": "{\"action\":\"sweep\"}"
+}
 ```
-# Run once in 30 minutes
-schedule --in 30m --payload '{"action":"sweep"}'
 
-# Run every night at midnight
-schedule --every "0 0 * * *" --model-hint "claude-3-opus"
+```json
+{
+  "task_description": "Hourly digest",
+  "cron": "0 * * * *",
+  "model_hint": "opus"
+}
+```
 
-# Run whenever "deploy:finished" fires
-schedule --on "deploy:finished" --after "task-uuid-abc" --require-success
+```json
+{
+  "task_description": "Process on deploy",
+  "on_event": "deploy:finished",
+  "after": "task-uuid-abc",
+  "require_success": true
+}
 ```
 
 ---
@@ -366,16 +377,20 @@ schedule --on "deploy:finished" --after "task-uuid-abc" --require-success
 
 Cancel a pending or running task.
 
-| Argument | Required | Description |
-|---|---|---|
-| `task-id` | no | UUID of the task to cancel |
-| `payload-match` | no | Cancel all pending/claimed tasks whose payload contains this string |
+| Parameter | Required | Type | Description |
+|---|---|---|---|
+| `task_id` | no | string | UUID of the task to cancel |
+| `payload_match` | no | string | Cancel all pending/claimed tasks whose payload contains this string |
 
-One of `task-id` or `payload-match` must be provided. When `task-id` is supplied, that specific task is cancelled. When `payload-match` is supplied, all tasks in `pending` or `claimed` status whose `payload` field contains the match string are cancelled. Returns an error if neither is provided or if no matching task is found.
+One of `task_id` or `payload_match` must be provided. When `task_id` is supplied, that specific task is cancelled. When `payload_match` is supplied, all tasks in `pending` or `claimed` status whose `payload` field contains the match string are cancelled.
 
+Example invocations:
+```json
+{"task_id": "550e8400-e29b-41d4-a716-446655440000"}
 ```
-cancel --task-id "550e8400-e29b-41d4-a716-446655440000"
-cancel --payload-match "cleanup:urgent"
+
+```json
+{"payload_match": "cleanup:urgent"}
 ```
 
 ---
@@ -384,29 +399,33 @@ cancel --payload-match "cleanup:urgent"
 
 Publish an event on the application event bus.
 
-| Argument | Required | Description |
-|---|---|---|
-| `event` | yes | Event name |
-| `payload` | no | JSON object to attach (default: `{}`) |
+| Parameter | Required | Type | Description |
+|---|---|---|---|
+| `event` | yes | string | Event name to emit |
+| `payload` | no | string | Event payload as JSON string (default: `{}`) |
 
-The payload is parsed and passed to `ctx.eventBus.emit`. Event-driven tasks whose `trigger_spec` matches the event name will be claimed by the scheduler on the next tick (see [Scheduler — Event-Driven Tasks](#event-driven-tasks)).
+The payload is parsed and passed to `ctx.eventBus.emit`. Event-driven tasks whose `trigger_spec` matches the event name will be claimed by the scheduler on the next tick. If a hub is configured, the event is broadcast to all spokes via relay.
 
-```
-emit --event "data:ready" --payload '{"sourceId":"ds-42"}'
+Example invocation:
+```json
+{
+  "event": "data:ready",
+  "payload": "{\"sourceId\":\"ds-42\"}"
+}
 ```
 
 ---
 
 ### `purge`
 
-Insert a `purge`-role message that causes the context assembly pipeline to drop the targeted messages from subsequent LLM calls. One of `--ids` or (`--last` + `--thread-id`) must be provided.
+Insert a `purge`-role message that causes the context assembly pipeline to drop the targeted messages from subsequent LLM calls. One of `message_ids` or (`last_n` with optional `thread_id`) must be provided.
 
-| Argument | Required | Description |
-|---|---|---|
-| `ids` | one-of | Comma-separated message IDs |
-| `last` | one-of | Number of most-recent messages to target |
-| `thread-id` | with `last` | Thread to query for the last N messages (falls back to `ctx.threadId`) |
-| `summary` | no | Include a summary note in the purge record |
+| Parameter | Required | Type | Description |
+|---|---|---|---|
+| `message_ids` | one-of | string | Comma-separated message IDs to purge |
+| `last_n` | one-of | integer | Purge the last N messages from the thread |
+| `thread_id` | with `last_n` | string | Thread ID (defaults to current thread) |
+| `summary` | no | string | Optional summary text for the purge record |
 
 The purge message content is stored as:
 
@@ -416,186 +435,281 @@ The purge message content is stored as:
 
 Stage 2 of context assembly reads this structure and excludes the listed IDs from the LLM context. The original message rows are not modified or deleted.
 
+Example invocations:
+```json
+{
+  "last_n": 10,
+  "thread_id": "t-abc123",
+  "summary": "Purged outdated context"
+}
 ```
-purge --last 10 --thread-id "t-abc123" --summary
+
+```json
+{
+  "message_ids": "msg-1,msg-2,msg-3",
+  "summary": "Removed duplicate messages"
+}
 ```
 
 ---
 
-### `await`
+### `await_event`
 
 Poll until a set of tasks reach a terminal state (`completed`, `failed`, or `cancelled`).
 
-| Argument | Required | Description |
-|---|---|---|
-| `task-ids` | yes | Comma-separated task UUIDs |
+| Parameter | Required | Type | Description |
+|---|---|---|---|
+| `task_ids` | yes | string | Comma-separated task UUIDs |
+| `timeout` | no | integer | Timeout in milliseconds (default: 300000) |
 
-Polls every 2s up to a 300s hard timeout. Returns a JSON object keyed by task ID, each containing `status`, `result`, and `error`. If the aggregated JSON exceeds 50 KB, the output is truncated to 50 KB and the total byte count is appended.
+Polls every 2 seconds until all tasks reach a terminal state. Returns a JSON object keyed by task ID, each containing `status`, `result`, and `error`. If the aggregated JSON exceeds 50 KB, the output is truncated to 50 KB.
 
-```
-await --task-ids "task-1,task-2,task-3"
-```
-
----
-
-### `cache-warm`
-
-Pre-populate the file cache for a remote host by pulling files matching given glob patterns. Requires MCP proxy connectivity.
-
-| Argument | Required | Description |
-|---|---|---|
-| `patterns` | no | Glob patterns of paths to warm |
-
-```
-cache-warm --patterns "src/**/*.ts"
+Example invocation:
+```json
+{
+  "task_ids": "task-1,task-2,task-3",
+  "timeout": 600000
+}
 ```
 
 ---
 
-### `cache-pin`
+### `cache`
 
-Mark a file as pinned so it is not evicted by cache pressure.
+Consolidated cache operations: warm, pin, unpin, or evict.
 
-| Argument | Required | Description |
-|---|---|---|
-| `path` | yes | File path to pin |
+| Parameter | Required | Type | Description |
+|---|---|---|---|
+| `action` | yes | string | Cache operation: `warm`, `pin`, `unpin`, or `evict` |
+| `path` | with `pin`/`unpin` | string | File path to pin or unpin |
+| `pattern` | with `warm`/`evict` | string | Glob pattern for paths to warm or evict |
 
-Looks up the file by path in the `files` table. Returns an error if not found.
+**Actions:**
 
+- `warm`: Pre-populate the file cache for paths matching the glob pattern (requires MCP proxy connectivity).
+- `pin`: Mark a file as pinned so it is not evicted by cache pressure. Looks up the file by path in the `files` table.
+- `unpin`: Remove the pinned mark from a file, making it eligible for eviction.
+- `evict`: Immediately soft-delete files from the cache that match a glob pattern. Glob patterns use `*` → `%` and `?` → `_` for SQL `LIKE` translation.
+
+Example invocations:
+```json
+{
+  "action": "warm",
+  "pattern": "src/**/*.ts"
+}
 ```
-cache-pin --path "src/critical-module.ts"
+
+```json
+{
+  "action": "pin",
+  "path": "src/critical-module.ts"
+}
+```
+
+```json
+{
+  "action": "unpin",
+  "path": "src/critical-module.ts"
+}
+```
+
+```json
+{
+  "action": "evict",
+  "pattern": "dist/**"
+}
 ```
 
 ---
 
-### `cache-unpin`
-
-Remove the pinned mark from a file, making it eligible for eviction.
-
-| Argument | Required | Description |
-|---|---|---|
-| `path` | yes | File path to unpin |
-
-```
-cache-unpin --path "src/critical-module.ts"
-```
-
----
-
-### `cache-evict`
-
-Immediately remove files from the cache that match a glob pattern.
-
-| Argument | Required | Description |
-|---|---|---|
-| `pattern` | yes | Glob pattern (translated to SQL `LIKE`) |
-
-`*` is converted to `%` and `?` to `_` for the underlying SQL `LIKE` clause. Matching non-deleted rows in `files` are soft-deleted.
-
-```
-cache-evict --pattern "dist/**"
-```
-
----
-
-### `model-hint`
+### `model_hint`
 
 Set or clear the preferred model for the current task. Requires `taskId` to be present in the command context.
 
-| Argument | Required | Description |
-|---|---|---|
-| `model` | one-of | Model ID or tier string |
-| `reset` | one-of | Pass `true` to clear the hint |
-| `for-turns` | no | Turn count limit for the hint |
+| Parameter | Required | Type | Description |
+|---|---|---|---|
+| `model` | one-of | string | Model ID or tier to switch to |
+| `reset` | one-of | boolean | Pass `true` to clear the hint |
 
-Updates `model_hint` on the task row (the task row must already exist — the command fails if it does not). When a `modelRouter` is available, the requested model is validated against the cluster-wide pool (derived capability requirements include `vision` when the recent thread contains image blocks); capability mismatches log a warning but the hint is still accepted.
+Updates `model_hint` on the task row (the task row must already exist — the command fails if it does not). When a `modelRouter` is available, the requested model is validated against the cluster-wide pool. Capability requirements are derived from recent thread history (e.g., `vision` when the recent thread contains image blocks); capability mismatches log a warning but the hint is still accepted.
 
+Example invocations:
+```json
+{"model": "opus"}
 ```
-model-hint --model "claude-3-5-sonnet"
-model-hint --reset true
+
+```json
+{"reset": true}
 ```
 
 ---
 
 ### `archive`
 
-Soft-delete one or more threads. One of `--thread-id` or `--older-than` must be provided.
+Soft-delete one or more threads. One of `thread_id` or `older_than` must be provided.
 
-| Argument | Required | Description |
-|---|---|---|
-| `thread-id` | one-of | Specific thread UUID to archive |
-| `older-than` | one-of | Archive threads inactive for this long (e.g. `7d`, `2w`, `1m`) |
+| Parameter | Required | Type | Description |
+|---|---|---|---|
+| `thread_id` | one-of | string | Specific thread UUID to archive |
+| `older_than` | one-of | string | Archive threads inactive for this long (e.g., `7d`, `2w`, `3m`) |
 
-For `--older-than`, threads whose `last_message_at` is before the computed cutoff date are soft-deleted. Supports units: `d` (days), `w` (weeks), `m` (months).
+For `older_than`, threads whose `last_message_at` is before the computed cutoff date are soft-deleted. Supports units: `d` (days), `w` (weeks), `m` (months).
 
+Example invocations:
+```json
+{"thread_id": "t-abc123"}
 ```
-archive --thread-id "t-abc123"
-archive --older-than 30d
-```
 
----
-
-### `skill-activate`
-
-Activate a skill from the virtual filesystem. Reads `/home/user/skills/{name}/SKILL.md`, parses its YAML frontmatter, validates limits (64 KB max file size, 500 body lines max, 20 active skills cap), persists all files under the skill root to the `files` table, and upserts the skill record into the `skills` table. Requires `ctx.fs` to be set.
-
-| Argument | Required | Description |
-|---|---|---|
-| `name` | yes | Skill directory name under `/home/user/skills/` (must match `^[a-z0-9]+(-[a-z0-9]+)*$`) |
-
-The skill ID is a deterministic UUID derived from the name using `BOUND_NAMESPACE`. If a skill with this ID already exists, its record is updated (re-activation increments `activation_count`). The `name` field in the SKILL.md frontmatter must match the directory name if present.
-
-```
-skill-activate --name "code-reviewer"
+```json
+{"older_than": "30d"}
 ```
 
 ---
 
-### `skill-list`
+### `skill`
 
-List skills with their status, activation count, last-used timestamp, and description.
+Consolidated skill management: activate, list, read, or retire.
 
-| Argument | Required | Description |
-|---|---|---|
-| `status` | no | Filter by status: `active` or `retired` (default: show all non-deleted) |
-| `verbose` | no | Show additional columns: `allowed_tools`, `compatibility`, `content_hash`, `retired_reason` |
+| Parameter | Required | Type | Description |
+|---|---|---|---|
+| `action` | yes | string | Skill operation: `activate`, `list`, `read`, or `retire` |
+| `name` | with `activate`/`read`/`retire` | string | Skill name (must match `^[a-z0-9]+(-[a-z0-9]+)*$`) |
+| `status` | with `list` | string | Filter by status: `active` or `retired` |
+| `verbose` | with `list` | boolean | Show additional columns: `allowed_tools`, `compatibility`, `content_hash`, `retired_reason` |
+| `reason` | with `retire` | string | Reason for retiring the skill |
 
+**Actions:**
+
+- `activate`: Activate a skill from the virtual filesystem. Reads `/home/user/skills/{name}/SKILL.md`, parses its YAML frontmatter, validates limits (64 KB max, 500 body lines max, 20 active skills cap), persists all files to `files` table, and upserts the skill record into `skills` table. Skill ID is a deterministic UUID derived from the name. Requires `ctx.fs` to be set.
+
+- `list`: List skills with status, activation count, last-used timestamp, and description. Optional `status` filter shows `active` or `retired` only. Optional `verbose` flag adds more columns.
+
+- `read`: Read the full SKILL.md content of a skill, along with a status header showing activation count, last-used timestamp, and content hash. Content is read from `files` table (path `/home/user/skills/{name}/SKILL.md`).
+
+- `retire`: Retire a skill by name (soft-update status to `"retired"`). After retiring, scans all tasks whose `payload` JSON contains `"skill": "{name}"` and creates an advisory for each, prompting the operator to update or remove the reference.
+
+Example invocations:
+```json
+{
+  "action": "activate",
+  "name": "code-reviewer"
+}
 ```
-skill-list
-skill-list --status active
-skill-list --status retired --verbose
+
+```json
+{
+  "action": "list",
+  "status": "active"
+}
+```
+
+```json
+{
+  "action": "read",
+  "name": "code-reviewer"
+}
+```
+
+```json
+{
+  "action": "retire",
+  "name": "old-formatter",
+  "reason": "replaced by format-v2"
+}
 ```
 
 ---
 
-### `skill-read`
+### `advisory`
 
-Read the full SKILL.md content of a skill, along with a status header showing activation count, last-used timestamp, and content hash.
+Manage advisories (structured recommendations for operator review). Supports creating, listing, and transitioning the lifecycle of advisories.
 
-| Argument | Required | Description |
-|---|---|---|
-| `name` | yes | Skill name |
+| Parameter | Required | Type | Description |
+|---|---|---|---|
+| `title` | with create | string | Advisory title |
+| `detail` | with create | string | Advisory detail/description |
+| `action` | no | string | Recommended corrective action |
+| `impact` | no | string | Impact description |
+| `list` | no | boolean | List advisories |
+| `list_status` | no | string | Filter by status: `proposed`, `approved`, `deferred`, `applied`, `dismissed` |
+| `approve` | no | string | Advisory ID prefix to approve |
+| `apply` | no | string | Advisory ID prefix to apply |
+| `dismiss` | no | string | Advisory ID prefix to dismiss |
+| `defer` | no | string | Advisory ID prefix to defer |
+| `defer_until` | no | string | ISO 8601 date to defer until (default: 24h from now) |
 
-The content is read from the `files` table (path `/home/user/skills/{name}/SKILL.md`). Returns an error if the skill is not found in the `skills` table.
+**Lifecycle:** `proposed` → (`approved` | `dismissed` | `deferred`) → `applied`. All transitions set `resolved_at` timestamps or `defer_until` for deferred advisories.
 
+Example invocations:
+```json
+{
+  "title": "Enable rate limiting",
+  "detail": "Current config has no rate limits on the public API",
+  "action": "Set RATE_LIMIT_RPM=100",
+  "impact": "Prevents abuse and reduces LLM costs"
+}
 ```
-skill-read --name "code-reviewer"
+
+```json
+{
+  "list": true,
+  "list_status": "proposed"
+}
+```
+
+```json
+{
+  "approve": "550e8400"
+}
 ```
 
 ---
 
-### `skill-retire`
+### `notify`
 
-Retire (soft-update status to `"retired"`) a skill by name. After retiring, scans all tasks whose `payload` JSON contains `"skill": "{name}"` and creates an advisory for each, prompting the operator to update or remove the reference.
+Send a notification to users on configured platforms.
 
-| Argument | Required | Description |
-|---|---|---|
-| `name` | yes | Skill name to retire |
-| `reason` | no | Reason for retiring the skill |
+| Parameter | Required | Type | Description |
+|---|---|---|---|
+| `user` | one-of | string | Target bound username |
+| `all` | one-of | boolean | Broadcast to all users |
+| `platform` | yes | string | Platform name (e.g., `discord`) |
+| `message` | yes | string | Notification message content |
 
+Routes the message to a platform-specific DM thread (or creates one if needed) and enqueues a proactive notification. The agent will run inference to deliver the message via the platform connector.
+
+Example invocations:
+```json
+{
+  "user": "alice",
+  "platform": "discord",
+  "message": "Your deployment completed successfully"
+}
 ```
-skill-retire --name "code-reviewer"
-skill-retire --name "old-formatter" --reason "replaced by format-v2"
+
+```json
+{
+  "all": true,
+  "platform": "discord",
+  "message": "System maintenance in 5 minutes"
+}
+```
+
+---
+
+### `hostinfo`
+
+Read operational information about the current host.
+
+| Parameter | Required | Type | Description |
+|---|---|---|---|
+| (no params) | - | - | Read-only operation |
+
+Returns host identity, model availability, MCP server status, and cluster configuration. No parameters required.
+
+Example invocation:
+```json
+{}
 ```
 
 ---
@@ -811,6 +925,8 @@ await client.disconnect();
 
 ### Auto-Generated Commands from MCP Tools
 
+MCP bridge commands are the only commands still dispatched through the bash sandbox via `CommandDefinition` handlers. All other agent tools use the native `RegisteredTool` architecture described above.
+
 `generateMCPCommands(clients, confirmGates)` iterates all connected clients and creates **one `CommandDefinition` per MCP server** (not one per tool). The command name is the server name (e.g., `"github"`). It returns an `MCPCommandsResult`:
 
 ```typescript
@@ -828,8 +944,7 @@ When no `subcommand` is provided (or `subcommand="help"`), the command prints a 
 
 ```typescript
 const { commands: mcpCommands, serverNames } = await generateMCPCommands(clients, confirmGates);
-const allCommands = addMCPCommands(getAllCommands(), mcpCommands);
-setCommandRegistry(allCommands, serverNames);
+setCommandRegistry(mcpCommands, serverNames);
 ```
 
 ### Host MCP Info
@@ -929,7 +1044,7 @@ const id = createAdvisory(db, {
 }, siteId);
 ```
 
-The `advisory` command exposes the same lifecycle via subcommands (`create`, `dismiss`, `approve`, `apply`, `defer`, `list`) from inside the agent.
+The `advisory` native tool exposes the same lifecycle via parameters (see [Native Agent Tools — advisory](#advisory) for details).
 
 **Lifecycle transitions:**
 

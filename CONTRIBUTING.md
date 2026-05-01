@@ -169,12 +169,12 @@ Accumulated the hard way — check here before writing a bug report.
 - **Zod v4 `z.record`**: requires two arguments — `z.record(keySchema, valueSchema)`. Single-arg calls don't type-check.
 - **Typecheck is per-package**: there is no composite mode at the root. Run `tsc -p packages/<name> --noEmit` or `bun run typecheck` (sequential).
 - **`bun test packages/cli`** prints init-test stdout — use the exit code to check success, not `grep`.
-- **Mixed positional + flag arg parsing** (in `commands.ts`): the `hasFlags` heuristic detects `key=value` tokens; if your SQL or payload happens to include `=`, it may be misparsed. Use `--query` / `--payload` flags explicitly when values contain `=`.
+- **Mixed positional + flag arg parsing** (in `commands.ts`): Only affects MCP bridge commands (the only commands still dispatched through bash). Native agent tools use structured JSON parameters, eliminating this class of bugs.
 - **`loopContextStorage` (AsyncLocalStorage)**: exported from `@bound/sandbox`. Commands running inside the agent loop see `threadId` / `taskId` in context automatically. Commands invoked outside (e.g., boundctl) don't.
 - **`bound-mcp` polling**: `polaris.bound_chat()` may return a prior turn's content if the new turn hasn't completed by poll time. The DB is ground truth — check the `messages` table directly when debugging.
 - **bound CLI config dir**: defaults to `./config` (relative to cwd) and data to `./data`. Use `--config-dir` / `--data-dir` to override, or run from the directory where your config lives.
 - **Stale binaries**: `bun run build && cp dist/bound* ~/.local/bin/` is the install step. Running a stale compiled binary in one shell while iterating on source in another has burned us repeatedly. Check `bound --version` if behavior doesn't match source.
-- **`query` accepts PRAGMAs**: the agent `query` command allows `SELECT` plus a small read-only PRAGMA allowlist (`table_info`, `index_list`, `foreign_key_list`, `integrity_check`, etc.; see `SAFE_PRAGMA_ALLOWLIST` in `packages/agent/src/commands/query.ts`). The `PRAGMA x = y` assignment form is rejected regardless of name. Anything else (INSERT/UPDATE/DELETE/ATTACH/unknown PRAGMA) errors out. `LIMIT 1000` is still auto-appended to SELECTs but skipped for PRAGMAs.
+- **`query` accepts PRAGMAs**: the agent `query` tool allows `SELECT` plus a small read-only PRAGMA allowlist (`table_info`, `index_list`, `foreign_key_list`, `integrity_check`, etc.; see `SAFE_PRAGMA_ALLOWLIST` in `packages/agent/src/tools/query.ts`). The `PRAGMA x = y` assignment form is rejected regardless of name. Anything else (INSERT/UPDATE/DELETE/ATTACH/unknown PRAGMA) errors out. `LIMIT 1000` is still auto-appended to SELECTs but skipped for PRAGMAs.
 - **Thread `interface` tag**: POST `/api/threads` accepts an optional body `{ interface?: string }` (default `"web"`, regex `/^[a-z0-9-]+$/i`, ≤32 chars; 400 otherwise). The value lives in `threads.interface` and flows into the agent's volatile context as a platform tag. `isUserFacingInterface()` in `packages/cli/src/commands/start/server.ts` is the single gate for "should the agent see `platform: <name>`?" — currently allows everything except `scheduler` and `mcp`. Adding a new user-facing surface usually needs no code change beyond setting the tag on thread creation; adding a new system-driven surface means extending the filter. `BoundClient.createThread(options?: { interface?: string })` is the client-side counterpart — `boundless` sets `interface: "boundless"`.
 
 ## Recurring Checklists
@@ -199,14 +199,14 @@ Accumulated the hard way — check here before writing a bug report.
 4. If it's per-backend, consider whether `BackendConfig`, `ModelResolution`, agent-loop, and relay-processor all need to know.
 5. Update the config example in `README.md` if the field is user-facing.
 
-### Adding an agent command
+### Adding an agent tool
 
-1. Create `packages/agent/src/commands/<name>.ts` implementing `CommandDefinition` with a required `description` (used for auto-generated orientation + `--help` text).
-2. Register it in `packages/agent/src/commands/registry.ts` / the command registry wiring.
-3. If it needs filesystem access, type-annotate `ctx.fs?: IFileSystem`.
-4. If it's platform-scoped, gate it in the relevant `PlatformConnector`.
-5. Add unit tests under `packages/agent/src/commands/__tests__/` — mock `CommandContext` minimally.
-6. `--help` / `-h` is handled by `formatHelp()` automatically unless `customHelp: true`.
+1. Create `packages/agent/src/tools/<name>.ts` exporting a `create<Name>Tool(ctx: ToolContext): RegisteredTool` factory function.
+2. Define a `ToolDefinition` with JSON schema parameters (flat params, proper types). The LLM receives structured JSON — no string parsing needed.
+3. Implement the `execute` handler: `(input: Record<string, unknown>) => Promise<BuiltInToolResult>`. Access `ctx.db`, `ctx.siteId`, `ctx.eventBus`, etc. via the closure.
+4. Register the factory in `packages/agent/src/tools/index.ts` by adding it to the `createAgentTools()` array.
+5. Add unit tests under `packages/agent/src/tools/__tests__/` — use real temp SQLite DBs, minimal `ToolContext` stubs.
+6. For grouped tools (multiple operations), use an `action` enum parameter to dispatch (see memory, cache, skill tools).
 
 ## PR Expectations
 
@@ -224,7 +224,7 @@ See the git log for commit message style — concise, conventional-commits-ish (
 - [docs/design/architecture.md](docs/design/architecture.md) — package dep graph and data flow
 - [docs/design/core-infrastructure.md](docs/design/core-infrastructure.md) — schema, DI, config, outbox internals
 - [docs/design/sync-protocol.md](docs/design/sync-protocol.md) — Ed25519, HLC, reducers, relay
-- [docs/design/agent-system.md](docs/design/agent-system.md) — agent loop, context pipeline, commands
+- [docs/design/agent-system.md](docs/design/agent-system.md) — agent loop, context pipeline, native tools
 - [docs/design/sandbox-and-llm.md](docs/design/sandbox-and-llm.md) — VFS, driver shims, model routing
 - [docs/design/web-and-discord.md](docs/design/web-and-discord.md) — HTTP API, WS protocol, platform connectors
 - [docs/cli-operations.md](docs/cli-operations.md) — operator-facing CLI reference

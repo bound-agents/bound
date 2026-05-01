@@ -1457,20 +1457,28 @@ Original output was too large for the context window. If you need the full conte
 
 	// Stable orientation section: available commands, current model, host identity
 	const registry = getCommandRegistry();
-	const commandList = [...registry]
-		.sort((a, b) => a.name.localeCompare(b.name))
-		.map((c) => `  ${c.name} — ${c.description}`)
-		.join("\n");
-	const orientationLines: string[] = [
-		"## Orientation",
-		"",
-		"### Available Commands",
-		commandList,
-		"",
-		"Run `<cmd> --help` for details on any command.",
-		"",
+	const orientationLines: string[] = ["## Orientation", ""];
+
+	// MCP bridge commands are the only commands still in the registry.
+	// Native agent tools are self-describing through their ToolDefinition schemas.
+	if (registry.length > 0) {
+		const commandList = [...registry]
+			.sort((a, b) => a.name.localeCompare(b.name))
+			.map((c) => `  ${c.name} — ${c.description}`)
+			.join("\n");
+		orientationLines.push(
+			"### Additional MCP Commands",
+			commandList,
+			"",
+			"These are MCP server commands dispatched through the bash tool. Run `<server-name> --help` for details.",
+			"",
+		);
+	}
+
+	orientationLines.push(
 		`### Host Identity\nHost: ${hostName || "unknown"}\nSite ID: ${siteId || "unknown"}`,
-	];
+	);
+
 	systemParts.push(orientationLines.join("\n"));
 
 	// Live schema block: lists every synced table and its columns by
