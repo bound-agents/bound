@@ -823,8 +823,7 @@ When no `subcommand` is provided (or `subcommand="help"`), the command prints a 
 
 ```typescript
 const { commands: mcpCommands, serverNames } = await generateMCPCommands(clients, confirmGates);
-const allCommands = addMCPCommands(getAllCommands(), mcpCommands);
-setCommandRegistry(allCommands, serverNames);
+setCommandRegistry(mcpCommands, serverNames);
 ```
 
 ### Host MCP Info
