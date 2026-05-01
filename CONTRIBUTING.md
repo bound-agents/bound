@@ -224,7 +224,7 @@ See the git log for commit message style — concise, conventional-commits-ish (
 - [docs/design/architecture.md](docs/design/architecture.md) — package dep graph and data flow
 - [docs/design/core-infrastructure.md](docs/design/core-infrastructure.md) — schema, DI, config, outbox internals
 - [docs/design/sync-protocol.md](docs/design/sync-protocol.md) — Ed25519, HLC, reducers, relay
-- [docs/design/agent-system.md](docs/design/agent-system.md) — agent loop, context pipeline, commands
+- [docs/design/agent-system.md](docs/design/agent-system.md) — agent loop, context pipeline, native tools
 - [docs/design/sandbox-and-llm.md](docs/design/sandbox-and-llm.md) — VFS, driver shims, model routing
 - [docs/design/web-and-discord.md](docs/design/web-and-discord.md) — HTTP API, WS protocol, platform connectors
 - [docs/cli-operations.md](docs/cli-operations.md) — operator-facing CLI reference
