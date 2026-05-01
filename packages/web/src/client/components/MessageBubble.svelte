@@ -1,7 +1,6 @@
 <script lang="ts">
-import { renderMarkdown, splitOnThinkingBlocks } from "../lib/markdown";
+import { renderMarkdown } from "../lib/markdown";
 import { getLineColor } from "../lib/metro-lines";
-import ReasoningBlock from "./ReasoningBlock.svelte";
 
 interface Props {
 	role: "user" | "assistant" | "tool_call" | "tool_result" | "alert" | "system";
@@ -93,35 +92,6 @@ const displayBlocks = $derived.by((): DisplayBlock[] => {
 	return [{ kind: "text", text: content }];
 });
 
-const textBlocks = $derived(displayBlocks.filter((b): b is TextBlock => b.kind === "text"));
-
-// For assistant messages we split <thinking>...</thinking> sections out of
-// the content and render them as a ReasoningBlock disclosure above the
-// prose. Legacy compatibility — modern agent runs store reasoning as a
-// structured ContentBlock on the tool_call message (ToolCallCard).
-const segments = $derived.by(() => {
-	if (role !== "assistant") return null;
-	return splitOnThinkingBlocks(textBlocks[0]?.text ?? "");
-});
-
-const thinkingText = $derived.by(() => {
-	if (!segments) return "";
-	return segments
-		.filter((s) => s.kind === "thinking")
-		.map((s) => s.text)
-		.join("\n\n")
-		.trim();
-});
-
-const proseText = $derived.by(() => {
-	if (!segments) return textBlocks[0]?.text ?? "";
-	return segments
-		.filter((s) => s.kind === "text")
-		.map((s) => s.text)
-		.join("")
-		.trim();
-});
-
 // Rendered HTML keyed by displayBlocks index (text blocks only).
 let renderedMap = $state<Record<number, string>>({});
 
@@ -133,11 +103,7 @@ $effect(() => {
 	const entries: Array<{ idx: number; src: string }> = [];
 	for (let i = 0; i < displayBlocks.length; i++) {
 		const b = displayBlocks[i];
-		if (b.kind !== "text") continue;
-		// For assistant role, first text block goes through thinking extraction
-		const src =
-			role === "assistant" && i === displayBlocks.indexOf(textBlocks[0]) ? proseText : b.text;
-		entries.push({ idx: i, src });
+		if (b.kind === "text") entries.push({ idx: i, src: b.text });
 	}
 	Promise.all(
 		entries.map(({ src }) => (src ? renderMarkdown(src).catch(() => "") : Promise.resolve(""))),
@@ -179,9 +145,6 @@ $effect(() => {
 				<span class="model mono">{modelId}</span>
 			{/if}
 		</div>
-		{#if role === "assistant" && thinkingText}
-			<ReasoningBlock text={thinkingText} {lineColor} />
-		{/if}
 		{#each displayBlocks as block, i}
 			{#if block.kind === "image"}
 				<div class="content-image">
