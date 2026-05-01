@@ -25,7 +25,7 @@ describe("tool registry", () => {
 
 	describe("createToolRegistry", () => {
 		it("registers the sandbox (bash) tool first", () => {
-			const registry = createToolRegistry(undefined, undefined, undefined, logger);
+			const registry = createToolRegistry(undefined, undefined, undefined, [], logger);
 			const bashTool = getTool(registry, "bash");
 			expect(bashTool.kind).toBe("sandbox");
 		});
@@ -54,7 +54,7 @@ describe("tool registry", () => {
 				],
 			]);
 
-			const registry = createToolRegistry(undefined, platformTools, undefined, logger);
+			const registry = createToolRegistry(undefined, platformTools, undefined, [], logger);
 			const tool = getTool(registry, "platform_tool");
 			expect(tool.kind).toBe("platform");
 			expect(tool.execute).toBeDefined();
@@ -85,7 +85,7 @@ describe("tool registry", () => {
 				],
 			]);
 
-			const registry = createToolRegistry(undefined, undefined, clientTools, logger);
+			const registry = createToolRegistry(undefined, undefined, clientTools, [], logger);
 			const tool = getTool(registry, "client_tool");
 			expect(tool.kind).toBe("client");
 			expect(tool.execute).toBeUndefined();
@@ -95,7 +95,7 @@ describe("tool registry", () => {
 			const fs = new InMemoryFs();
 			const builtInTools = createBuiltInTools(fs);
 
-			const registry = createToolRegistry(builtInTools, undefined, undefined, logger);
+			const registry = createToolRegistry(builtInTools, undefined, undefined, [], logger);
 			expect(registry.has("read")).toBe(true);
 			expect(registry.has("write")).toBe(true);
 			const readTool = getTool(registry, "read");
@@ -165,6 +165,7 @@ describe("tool registry", () => {
 				undefined,
 				platformTools,
 				clientTools,
+				[],
 				loggerWithWarnings as any,
 			);
 
@@ -229,7 +230,7 @@ describe("tool registry", () => {
 				],
 			]);
 
-			const registry = createToolRegistry(builtInTools, platformTools, clientTools, logger);
+			const registry = createToolRegistry(builtInTools, platformTools, clientTools, [], logger);
 
 			// All tools should be present
 			expect(registry.has("bash")).toBe(true);
@@ -271,7 +272,7 @@ describe("tool registry", () => {
 				],
 			]);
 
-			const registry = createToolRegistry(undefined, platformTools, undefined, logger);
+			const registry = createToolRegistry(undefined, platformTools, undefined, [], logger);
 			const tool = getTool(registry, "test_platform_tool");
 			expect(tool.kind).toBe("platform");
 			expect(tool.execute).toBeDefined();
@@ -285,7 +286,7 @@ describe("tool registry", () => {
 			fs.writeFileSync("/home/user/test.txt", "test content\n");
 
 			const builtInTools = createBuiltInTools(fs);
-			const registry = createToolRegistry(builtInTools, undefined, undefined, logger);
+			const registry = createToolRegistry(builtInTools, undefined, undefined, [], logger);
 
 			const readTool = getTool(registry, "read");
 			expect(readTool.kind).toBe("builtin");
@@ -321,7 +322,7 @@ describe("tool registry", () => {
 				],
 			]);
 
-			const registry = createToolRegistry(undefined, undefined, clientTools, logger);
+			const registry = createToolRegistry(undefined, undefined, clientTools, [], logger);
 			const tool = getTool(registry, "test_client_tool");
 			expect(tool.kind).toBe("client");
 			expect(tool.execute).toBeUndefined();
