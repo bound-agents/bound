@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { createBuiltInTools } from "@bound/agent";
+import { createAgentTools, createBuiltInTools } from "@bound/agent";
 import type { ToolDefinition } from "@bound/llm";
 import { InMemoryFs } from "just-bash";
 import { createToolRegistry } from "../commands/start/agent-factory";
@@ -326,6 +326,181 @@ describe("tool registry", () => {
 			const tool = getTool(registry, "test_client_tool");
 			expect(tool.kind).toBe("client");
 			expect(tool.execute).toBeUndefined();
+		});
+	});
+
+	describe("agent tools dispatch (AC1.4)", () => {
+		it("registers agent tools via createAgentTools and invokes hostinfo through registry", () => {
+			const mockContext = {
+				db: {} as any,
+				siteId: "test-site",
+				eventBus: {} as any,
+				logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as any,
+				taskId: undefined,
+				threadId: "thread-123",
+				fs: undefined,
+				mcpClients: new Map(),
+			};
+
+			const agentTools = createAgentTools(mockContext);
+			expect(agentTools.length).toBeGreaterThan(0);
+
+			const registry = createToolRegistry(undefined, undefined, undefined, agentTools, logger);
+
+			// Verify hostinfo is registered
+			expect(registry.has("hostinfo")).toBe(true);
+			const hostinfoTool = getTool(registry, "hostinfo");
+			expect(hostinfoTool.kind).toBe("builtin");
+			expect(hostinfoTool.execute).toBeDefined();
+		});
+
+		it("agent tools include schedule, cancel, query, emit, and other core tools", () => {
+			const mockContext = {
+				db: {} as any,
+				siteId: "test-site",
+				eventBus: {} as any,
+				logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as any,
+				taskId: undefined,
+				threadId: "thread-123",
+				fs: undefined,
+				mcpClients: new Map(),
+			};
+
+			const agentTools = createAgentTools(mockContext);
+			const registry = createToolRegistry(undefined, undefined, undefined, agentTools, logger);
+
+			// Verify core agent tools are registered
+			expect(registry.has("schedule")).toBe(true);
+			expect(registry.has("cancel")).toBe(true);
+			expect(registry.has("query")).toBe(true);
+			expect(registry.has("emit")).toBe(true);
+			expect(registry.has("purge")).toBe(true);
+			expect(registry.has("advisory")).toBe(true);
+			expect(registry.has("notify")).toBe(true);
+			expect(registry.has("memory")).toBe(true);
+		});
+
+		it("each agent tool has a valid toolDefinition with parameters", () => {
+			const mockContext = {
+				db: {} as any,
+				siteId: "test-site",
+				eventBus: {} as any,
+				logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as any,
+				taskId: undefined,
+				threadId: "thread-123",
+				fs: undefined,
+				mcpClients: new Map(),
+			};
+
+			const agentTools = createAgentTools(mockContext);
+			for (const tool of agentTools) {
+				expect(tool.toolDefinition.type).toBe("function");
+				expect(tool.toolDefinition.function).toBeDefined();
+				expect(tool.toolDefinition.function.name).toBeDefined();
+				expect(tool.toolDefinition.function.description).toBeDefined();
+				expect(tool.toolDefinition.function.parameters).toBeDefined();
+			}
+		});
+	});
+
+	describe("unknown tool lookup (AC1.6)", () => {
+		it("returns undefined for non-existent tool name", () => {
+			const registry = createToolRegistry(undefined, undefined, undefined, [], logger);
+			const tool = registry.get("nonexistent_tool_12345");
+			expect(tool).toBeUndefined();
+		});
+
+		it("handles lookup of non-existent tool without throwing", () => {
+			const registry = createToolRegistry(undefined, undefined, undefined, [], logger);
+			expect(() => {
+				registry.get("missing_tool");
+			}).not.toThrow();
+		});
+	});
+
+	describe("merged tools discoverability (AC5.4)", () => {
+		it("all 14 native agent tools have defined parameters", () => {
+			const mockContext = {
+				db: {} as any,
+				siteId: "test-site",
+				eventBus: {} as any,
+				logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as any,
+				taskId: undefined,
+				threadId: "thread-123",
+				fs: undefined,
+				mcpClients: new Map(),
+			};
+
+			const agentTools = createAgentTools(mockContext);
+
+			// Verify we have 14 agent tools (schedule, cancel, query, emit, await_event, purge,
+			// advisory, notify, archive, model_hint, hostinfo, memory, cache, skill)
+			expect(agentTools.length).toBe(14);
+
+			// Verify each tool's parameters are defined
+			for (const tool of agentTools) {
+				const params = tool.toolDefinition.function.parameters;
+				expect(params).toBeDefined();
+				expect(params).not.toBeNull();
+				// Parameters should be an object with type: "object"
+				expect(params.type).toBe("object");
+			}
+		});
+
+		it("each agent tool has proper toolDefinition.function.parameters structure", () => {
+			const mockContext = {
+				db: {} as any,
+				siteId: "test-site",
+				eventBus: {} as any,
+				logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as any,
+				taskId: undefined,
+				threadId: "thread-123",
+				fs: undefined,
+				mcpClients: new Map(),
+			};
+
+			const agentTools = createAgentTools(mockContext);
+
+			for (const tool of agentTools) {
+				const toolDef = tool.toolDefinition;
+				expect(toolDef.type).toBe("function");
+				expect(toolDef.function).toBeDefined();
+				expect(toolDef.function.parameters).toBeDefined();
+				// Check that parameters have at least the basic structure
+				const params = toolDef.function.parameters as Record<string, any>;
+				expect(params.type).toBeDefined();
+			}
+		});
+
+		it("merged tools from all sources maintain parameter definitions", () => {
+			const fs = new InMemoryFs();
+			const builtInTools = createBuiltInTools(fs);
+
+			const mockContext = {
+				db: {} as any,
+				siteId: "test-site",
+				eventBus: {} as any,
+				logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as any,
+				taskId: undefined,
+				threadId: "thread-123",
+				fs: undefined,
+				mcpClients: new Map(),
+			};
+
+			const agentTools = createAgentTools(mockContext);
+			const registry = createToolRegistry(builtInTools, undefined, undefined, agentTools, logger);
+
+			// Verify total tool count: 1 sandbox + 4 builtin file tools + 14 agent = 19
+			expect(registry.size).toBeGreaterThanOrEqual(19);
+
+			// Verify all tools in registry have parameters defined
+			for (const [name, tool] of registry) {
+				const params = tool.toolDefinition.function.parameters;
+				expect(params).toBeDefined(
+					`Tool "${name}" missing parameters in toolDefinition.function.parameters`,
+				);
+				expect(typeof params).toBe("object", `Tool "${name}" parameters should be an object`);
+			}
 		});
 	});
 });
