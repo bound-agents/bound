@@ -44,22 +44,56 @@ const roleLabel = $derived.by(() => {
 	}
 });
 
-// Parse content: if the DB row is a JSON-serialized ContentBlock[]
-// containing only text blocks, split into separate display blocks.
-const textBlocks = $derived.by((): string[] => {
-	if (role !== "user" && role !== "assistant") return [content];
-	if (!content.startsWith("[")) return [content];
+// Parse content: if the DB row is a JSON-serialized ContentBlock[],
+// split into typed display blocks (text, image, or fallback text).
+interface TextBlock {
+	kind: "text";
+	text: string;
+}
+interface ImageBlock {
+	kind: "image";
+	src: string;
+	alt: string;
+}
+type DisplayBlock = TextBlock | ImageBlock;
+
+const displayBlocks = $derived.by((): DisplayBlock[] => {
+	if (role !== "user" && role !== "assistant") return [{ kind: "text", text: content }];
+	if (!content.startsWith("[")) return [{ kind: "text", text: content }];
 	try {
 		const parsed = JSON.parse(content);
-		if (!Array.isArray(parsed) || parsed.length === 0) return [content];
-		if (parsed.every((b: { type?: string }) => b?.type === "text")) {
-			return parsed.map((b: { text?: string }) => b.text ?? "").filter(Boolean);
-		}
+		if (!Array.isArray(parsed) || parsed.length === 0) return [{ kind: "text", text: content }];
+		return parsed
+			.map((b: Record<string, unknown>): DisplayBlock | null => {
+				if (b.type === "text" && typeof b.text === "string" && b.text) {
+					return { kind: "text", text: b.text };
+				}
+				if (b.type === "image") {
+					const source = b.source as Record<string, unknown> | undefined;
+					if (!source) return null;
+					const alt = typeof b.description === "string" ? b.description : "image";
+					if (source.type === "base64" && typeof source.data === "string") {
+						const media = (source.media_type as string) || "image/png";
+						return { kind: "image", src: `data:${media};base64,${source.data}`, alt };
+					}
+					if (source.type === "file_ref" && typeof source.file_id === "string") {
+						return {
+							kind: "image",
+							src: `/api/files/download?id=${encodeURIComponent(source.file_id)}`,
+							alt,
+						};
+					}
+				}
+				return null;
+			})
+			.filter((b): b is DisplayBlock => b !== null);
 	} catch {
 		// Not JSON — plain text
 	}
-	return [content];
+	return [{ kind: "text", text: content }];
 });
+
+const textBlocks = $derived(displayBlocks.filter((b): b is TextBlock => b.kind === "text"));
 
 // For assistant messages we split <thinking>...</thinking> sections out of
 // the content and render them as a ReasoningBlock disclosure above the
@@ -67,7 +101,7 @@ const textBlocks = $derived.by((): string[] => {
 // structured ContentBlock on the tool_call message (ToolCallCard).
 const segments = $derived.by(() => {
 	if (role !== "assistant") return null;
-	return splitOnThinkingBlocks(textBlocks[0] ?? "");
+	return splitOnThinkingBlocks(textBlocks[0]?.text ?? "");
 });
 
 const thinkingText = $derived.by(() => {
@@ -80,7 +114,7 @@ const thinkingText = $derived.by(() => {
 });
 
 const proseText = $derived.by(() => {
-	if (!segments) return textBlocks[0] ?? "";
+	if (!segments) return textBlocks[0]?.text ?? "";
 	return segments
 		.filter((s) => s.kind === "text")
 		.map((s) => s.text)
@@ -88,18 +122,31 @@ const proseText = $derived.by(() => {
 		.trim();
 });
 
-let renderedBlocks = $state<string[]>([]);
+// Rendered HTML keyed by displayBlocks index (text blocks only).
+let renderedMap = $state<Record<number, string>>({});
 
 $effect(() => {
 	if (role !== "assistant" && role !== "user") {
-		renderedBlocks = [];
+		renderedMap = {};
 		return;
 	}
-	const sources = role === "assistant" ? [proseText, ...textBlocks.slice(1)] : textBlocks;
+	const entries: Array<{ idx: number; src: string }> = [];
+	for (let i = 0; i < displayBlocks.length; i++) {
+		const b = displayBlocks[i];
+		if (b.kind !== "text") continue;
+		// For assistant role, first text block goes through thinking extraction
+		const src =
+			role === "assistant" && i === displayBlocks.indexOf(textBlocks[0]) ? proseText : b.text;
+		entries.push({ idx: i, src });
+	}
 	Promise.all(
-		sources.map((src) => (src ? renderMarkdown(src).catch(() => "") : Promise.resolve(""))),
+		entries.map(({ src }) => (src ? renderMarkdown(src).catch(() => "") : Promise.resolve(""))),
 	).then((results) => {
-		renderedBlocks = results;
+		const map: Record<number, string> = {};
+		for (let j = 0; j < entries.length; j++) {
+			map[entries[j].idx] = results[j];
+		}
+		renderedMap = map;
 	});
 });
 </script>
@@ -135,11 +182,18 @@ $effect(() => {
 		{#if role === "assistant" && thinkingText}
 			<ReasoningBlock text={thinkingText} {lineColor} />
 		{/if}
-		{#each textBlocks as block, i}
-			{#if renderedBlocks[i]}
-				<div class="content md-content">{@html renderedBlocks[i]}</div>
+		{#each displayBlocks as block, i}
+			{#if block.kind === "image"}
+				<div class="content-image">
+					<img src={block.src} alt={block.alt} loading="lazy" />
+					{#if block.alt && block.alt !== "image"}
+						<span class="image-caption">{block.alt}</span>
+					{/if}
+				</div>
+			{:else if renderedMap[i]}
+				<div class="content md-content">{@html renderedMap[i]}</div>
 			{:else}
-				<div class="content">{block}</div>
+				<div class="content">{block.text}</div>
 			{/if}
 		{/each}
 	</div>
@@ -198,6 +252,27 @@ $effect(() => {
 		font-family: var(--font-display);
 		font-weight: 400;
 		word-wrap: break-word;
+	}
+
+	.content-image {
+		margin: 6px 0;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.content-image img {
+		max-width: 100%;
+		max-height: 480px;
+		object-fit: contain;
+		border: 1px solid var(--rule-faint);
+		border-radius: 4px;
+	}
+
+	.image-caption {
+		font-size: 12px;
+		color: var(--ink-3);
+		font-family: var(--font-mono);
 	}
 
 	.system {

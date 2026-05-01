@@ -402,7 +402,7 @@ describe("API Routes", () => {
 
 			expect(response.status).toBe(400);
 			const error = await response.json();
-			expect(error.error).toBe("Missing required query parameter: path");
+			expect(error.error).toBe("Missing required query parameter: path or id");
 		});
 
 		it("returns 404 for unknown file path", async () => {
