@@ -44,16 +44,30 @@ const roleLabel = $derived.by(() => {
 	}
 });
 
+// Parse content: if the DB row is a JSON-serialized ContentBlock[]
+// containing only text blocks, split into separate display blocks.
+const textBlocks = $derived.by((): string[] => {
+	if (role !== "user" && role !== "assistant") return [content];
+	if (!content.startsWith("[")) return [content];
+	try {
+		const parsed = JSON.parse(content);
+		if (!Array.isArray(parsed) || parsed.length === 0) return [content];
+		if (parsed.every((b: { type?: string }) => b?.type === "text")) {
+			return parsed.map((b: { text?: string }) => b.text ?? "").filter(Boolean);
+		}
+	} catch {
+		// Not JSON — plain text
+	}
+	return [content];
+});
+
 // For assistant messages we split <thinking>...</thinking> sections out of
 // the content and render them as a ReasoningBlock disclosure above the
-// prose. This is a legacy compatibility path — modern agent runs store
-// reasoning as a structured ContentBlock on the tool_call message, which
-// ToolCallCard surfaces directly. But older assistant messages (and some
-// providers' plain-text output) still embed <thinking> inline, so we keep
-// the fallback here so those turns still display correctly.
+// prose. Legacy compatibility — modern agent runs store reasoning as a
+// structured ContentBlock on the tool_call message (ToolCallCard).
 const segments = $derived.by(() => {
 	if (role !== "assistant") return null;
-	return splitOnThinkingBlocks(content);
+	return splitOnThinkingBlocks(textBlocks[0] ?? "");
 });
 
 const thinkingText = $derived.by(() => {
@@ -66,7 +80,7 @@ const thinkingText = $derived.by(() => {
 });
 
 const proseText = $derived.by(() => {
-	if (!segments) return content;
+	if (!segments) return textBlocks[0] ?? "";
 	return segments
 		.filter((s) => s.kind === "text")
 		.map((s) => s.text)
@@ -74,25 +88,19 @@ const proseText = $derived.by(() => {
 		.trim();
 });
 
-let rendered = $state("");
+let renderedBlocks = $state<string[]>([]);
 
 $effect(() => {
-	const source = role === "assistant" ? proseText : content;
-	if (role === "assistant" || role === "user") {
-		if (!source) {
-			rendered = "";
-			return;
-		}
-		renderMarkdown(source)
-			.then((html) => {
-				rendered = html;
-			})
-			.catch((err: unknown) => {
-				console.error("[markdown] renderMarkdown failed:", err);
-			});
-	} else {
-		rendered = "";
+	if (role !== "assistant" && role !== "user") {
+		renderedBlocks = [];
+		return;
 	}
+	const sources = role === "assistant" ? [proseText, ...textBlocks.slice(1)] : textBlocks;
+	Promise.all(
+		sources.map((src) => (src ? renderMarkdown(src).catch(() => "") : Promise.resolve(""))),
+	).then((results) => {
+		renderedBlocks = results;
+	});
 });
 </script>
 
@@ -127,11 +135,13 @@ $effect(() => {
 		{#if role === "assistant" && thinkingText}
 			<ReasoningBlock text={thinkingText} {lineColor} />
 		{/if}
-		{#if rendered}
-			<div class="content md-content">{@html rendered}</div>
-		{:else}
-			<div class="content">{content}</div>
-		{/if}
+		{#each textBlocks as block, i}
+			{#if renderedBlocks[i]}
+				<div class="content md-content">{@html renderedBlocks[i]}</div>
+			{:else}
+				<div class="content">{block}</div>
+			{/if}
+		{/each}
 	</div>
 {/if}
 
