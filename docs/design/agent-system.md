@@ -264,30 +264,30 @@ config/
 
 ---
 
-## Built-in Commands
+## Native Agent Tools
 
-Commands are defined as `CommandDefinition` objects from `@bound/sandbox` and dispatched by the sandbox during tool execution. All built-in commands are registered via `getAllCommands()` in `packages/agent/src/commands/index.ts`. The current set includes: `help`, `query`, `advisory`, `memory`, `schedule`, `cancel`, `emit`, `purge`, `await`, `cache-warm`, `cache-pin`, `cache-unpin`, `cache-evict`, `model-hint`, `archive`, `hostinfo`, `notify`, `skill-activate`, `skill-list`, `skill-read`, `skill-retire`.
+Agent tools are implemented as `RegisteredTool` factories in `packages/agent/src/tools/`. Each factory closes over a `ToolContext` (db, siteId, eventBus, logger, threadId, taskId, modelRouter, fs) and returns a `RegisteredTool` with a JSON schema `ToolDefinition` and an `execute` handler.
 
-Each command receives a `CommandContext` at runtime. Relevant fields for built-in commands:
+The 14 native tools replace the previous 20 bash-dispatched commands:
 
-| Field | Type | Description |
-|---|---|---|
-| `db` | `Database` | SQLite database handle |
-| `siteId` | `string` | Local site identity |
-| `threadId` | `string \| undefined` | Active thread (if any) |
-| `taskId` | `string \| undefined` | Active task (if any) |
-| `eventBus` | `TypedEventEmitter` | Application event bus |
-| `fs` | `IFileSystem \| undefined` | ClusterFs instance passed for commands that need VFS access (e.g., `skill-activate`) |
+| Tool | Actions / Params | Kind |
+|------|-----------------|------|
+| `memory` | action: store, forget, search, connect, disconnect, traverse, neighbors | Grouped |
+| `cache` | action: warm, pin, unpin, evict | Grouped |
+| `skill` | action: activate, list, read, retire | Grouped |
+| `schedule` | task_description, cron, delay, on_event, model_hint, ... | Standalone |
+| `cancel` | task_id, payload_match | Standalone |
+| `query` | sql | Standalone |
+| `emit` | event, payload | Standalone |
+| `await_event` | task_ids, timeout | Standalone |
+| `purge` | message_ids, last_n, thread_id | Standalone |
+| `advisory` | title, detail, action, impact, list, approve, apply, dismiss, defer | Standalone |
+| `notify` | user, all, platform, message | Standalone |
+| `archive` | thread_id, older_than | Standalone |
+| `model_hint` | model, reset | Standalone |
+| `hostinfo` | (no params) | Standalone |
 
-Each command returns a `CommandResult`:
-
-```typescript
-interface CommandResult {
-  stdout:   string;
-  stderr:   string;
-  exitCode: number; // 0 = success, non-zero = error
-}
-```
+Tools dispatch through the unified tool registry (`Map<string, RegisteredTool>`) in the agent loop's `executeToolCall()` method. The registry replaces the previous waterfall dispatch pattern.
 
 ---
 
@@ -309,22 +309,15 @@ query --query "SELECT id, status FROM tasks WHERE status = 'pending'"
 
 ### `memory`
 
-Unified memory command dispatched by subcommand: `store`, `forget`, `search`, `connect`, `disconnect`, `traverse`, `neighbors`.
+Native memory tool dispatched by action parameter: `store`, `forget`, `search`, `connect`, `disconnect`, `traverse`, `neighbors`.
 
-| Subcommand | Description |
-|---|---|
-| `store` | Upsert a key/value pair in `semantic_memory`. Keys with prefixes `_standing`, `_feedback`, `_policy`, or `_pinned` are auto-pinned; otherwise `--tier` (`pinned`, `summary`, `default`, `detail`) is honored. Row ID is a deterministic UUID derived from the key using `BOUND_NAMESPACE`. |
-| `forget` | Soft-delete an entry by `--key` or batch-delete by `--prefix`. Cascades to memory edges; retiring a `summary` promotes its `detail` children back to `default`. |
-| `search` | Keyword search over memory keys and values (stop-word filtered, limit 20, ordered by `modified_at DESC`). |
-| `connect` / `disconnect` | Upsert or remove `memory_edges` rows with optional `--relation` and `--weight`. `summarizes` edges drive tier transitions. |
-| `traverse` / `neighbors` | Graph queries over the memory edge graph. |
-
-```
-memory store project.language TypeScript
-memory forget --prefix "config."
-memory search "language"
-memory connect project.language project.runtime related --weight 2
-```
+| Action | Parameters | Description |
+|---|---|---|
+| `store` | key, value, tier | Upsert a key/value pair in `semantic_memory`. Keys with prefixes `_standing`, `_feedback`, `_policy`, or `_pinned` are auto-pinned; otherwise `tier` (`pinned`, `summary`, `default`, `detail`) is honored. Row ID is a deterministic UUID derived from the key using `BOUND_NAMESPACE`. |
+| `forget` | key_match, prefix | Soft-delete an entry by `key_match` or batch-delete by `prefix`. Cascades to memory edges; retiring a `summary` promotes its `detail` children back to `default`. |
+| `search` | query | Keyword search over memory keys and values (stop-word filtered, limit 20, ordered by `modified_at DESC`). |
+| `connect` / `disconnect` | source, target, relation, weight | Upsert or remove `memory_edges` rows. `summarizes` edges drive tier transitions. |
+| `traverse` / `neighbors` | node_id, direction | Graph queries over the memory edge graph. |
 
 ---
 
@@ -810,6 +803,8 @@ await client.disconnect();
 
 
 ### Auto-Generated Commands from MCP Tools
+
+MCP bridge commands are the only commands still dispatched through the bash sandbox via `CommandDefinition` handlers. All other agent tools use the native `RegisteredTool` architecture described above.
 
 `generateMCPCommands(clients, confirmGates)` iterates all connected clients and creates **one `CommandDefinition` per MCP server** (not one per tool). The command name is the server name (e.g., `"github"`). It returns an `MCPCommandsResult`:
 

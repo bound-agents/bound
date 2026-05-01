@@ -137,6 +137,8 @@ interface PersistOptions {
 
 ### Command Framework
 
+> **Note:** The `CommandDefinition` framework is now used only for MCP bridge commands. Agent tools use the `RegisteredTool` pattern (see `docs/design/agent-system.md`). The following documentation applies to MCP bridge command dispatch only.
+
 **Source:** `packages/sandbox/src/commands.ts`
 
 Custom commands give agents access to system capabilities (database queries, event publishing, etc.) that are not available through standard shell utilities. The framework wraps the `just-bash` `defineCommand` primitive with typed argument parsing and a shared context object.
@@ -172,6 +174,8 @@ interface CommandResult {
 `CommandContext` is injected at registration time and shared across all commands in the set. It provides access to the database, the CRDT site identifier, the event bus, and optional thread/task scoping.
 
 #### createDefineCommands
+
+> **Note:** `createDefineCommands()` now only processes MCP bridge commands. Native agent tools bypass this entirely and dispatch through the unified tool registry.
 
 `createDefineCommands(definitions, context)` takes an array of `CommandDefinition` objects and a single `CommandContext` and returns a list of `just-bash` `CustomCommand` objects ready to be passed to `createSandbox`.
 

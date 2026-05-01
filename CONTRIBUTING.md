@@ -169,7 +169,7 @@ Accumulated the hard way — check here before writing a bug report.
 - **Zod v4 `z.record`**: requires two arguments — `z.record(keySchema, valueSchema)`. Single-arg calls don't type-check.
 - **Typecheck is per-package**: there is no composite mode at the root. Run `tsc -p packages/<name> --noEmit` or `bun run typecheck` (sequential).
 - **`bun test packages/cli`** prints init-test stdout — use the exit code to check success, not `grep`.
-- **Mixed positional + flag arg parsing** (in `commands.ts`): the `hasFlags` heuristic detects `key=value` tokens; if your SQL or payload happens to include `=`, it may be misparsed. Use `--query` / `--payload` flags explicitly when values contain `=`.
+- **Mixed positional + flag arg parsing** (in `commands.ts`): Only affects MCP bridge commands (the only commands still dispatched through bash). Native agent tools use structured JSON parameters, eliminating this class of bugs.
 - **`loopContextStorage` (AsyncLocalStorage)**: exported from `@bound/sandbox`. Commands running inside the agent loop see `threadId` / `taskId` in context automatically. Commands invoked outside (e.g., boundctl) don't.
 - **`bound-mcp` polling**: `polaris.bound_chat()` may return a prior turn's content if the new turn hasn't completed by poll time. The DB is ground truth — check the `messages` table directly when debugging.
 - **bound CLI config dir**: defaults to `./config` (relative to cwd) and data to `./data`. Use `--config-dir` / `--data-dir` to override, or run from the directory where your config lives.
@@ -199,14 +199,14 @@ Accumulated the hard way — check here before writing a bug report.
 4. If it's per-backend, consider whether `BackendConfig`, `ModelResolution`, agent-loop, and relay-processor all need to know.
 5. Update the config example in `README.md` if the field is user-facing.
 
-### Adding an agent command
+### Adding an agent tool
 
-1. Create `packages/agent/src/commands/<name>.ts` implementing `CommandDefinition` with a required `description` (used for auto-generated orientation + `--help` text).
-2. Register it in `packages/agent/src/commands/registry.ts` / the command registry wiring.
-3. If it needs filesystem access, type-annotate `ctx.fs?: IFileSystem`.
-4. If it's platform-scoped, gate it in the relevant `PlatformConnector`.
-5. Add unit tests under `packages/agent/src/commands/__tests__/` — mock `CommandContext` minimally.
-6. `--help` / `-h` is handled by `formatHelp()` automatically unless `customHelp: true`.
+1. Create `packages/agent/src/tools/<name>.ts` exporting a `create<Name>Tool(ctx: ToolContext): RegisteredTool` factory function.
+2. Define a `ToolDefinition` with JSON schema parameters (flat params, proper types). The LLM receives structured JSON — no string parsing needed.
+3. Implement the `execute` handler: `(input: Record<string, unknown>) => Promise<BuiltInToolResult>`. Access `ctx.db`, `ctx.siteId`, `ctx.eventBus`, etc. via the closure.
+4. Register the factory in `packages/agent/src/tools/index.ts` by adding it to the `createAgentTools()` array.
+5. Add unit tests under `packages/agent/src/tools/__tests__/` — use real temp SQLite DBs, minimal `ToolContext` stubs.
+6. For grouped tools (multiple operations), use an `action` enum parameter to dispatch (see memory, cache, skill tools).
 
 ## PR Expectations
 
