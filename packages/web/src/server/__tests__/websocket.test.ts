@@ -1,5 +1,7 @@
+import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { TypedEventEmitter } from "@bound/shared";
+import type { Message } from "@bound/shared";
 import type { ServerWebSocket } from "bun";
 import { createWebSocketHandler } from "../websocket";
 
@@ -11,6 +13,22 @@ class MockWebSocket {
 	send(message: string | Buffer) {
 		this.messages.push(typeof message === "string" ? JSON.parse(message) : message);
 	}
+}
+
+function createMockDb(overrides?: {
+	queryGet?: (sql: string) => unknown;
+	prepareRun?: (sql: string) => void;
+	prepareAll?: (sql: string) => unknown[];
+}): Database {
+	return {
+		query: (_sql: string) => ({
+			get: overrides?.queryGet ? () => overrides.queryGet?.(_sql) : () => ({ id: "thread-123" }),
+		}),
+		prepare: (_sql: string) => ({
+			run: overrides?.prepareRun ? () => overrides.prepareRun?.(_sql) : () => {},
+			all: overrides?.prepareAll ? () => overrides.prepareAll?.(_sql) : () => [],
+		}),
+	} as unknown as Database;
 }
 
 describe("ClientConnection type and WS message schemas", () => {
@@ -526,7 +544,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 			// Track emitted events
 			let createdEventEmitted = false;
-			let receivedMessage: any = null;
+			let receivedMessage: Message | null = null;
 
 			testEventBus.on("message:created", (data) => {
 				createdEventEmitted = true;
@@ -549,7 +567,7 @@ describe("ClientConnection type and WS message schemas", () => {
 			// Verify message was persisted to DB
 			const persistedMessage = db
 				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'user'")
-				.get(threadId) as any;
+				.get(threadId) as Message | null;
 
 			expect(persistedMessage).toBeDefined();
 			expect(persistedMessage.content).toBe("hello world");
@@ -588,15 +606,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should send error for empty content", () => {
 			const eventBus = new TypedEventEmitter();
-			// Mock a database that returns the thread exists
-			const mockDb = {
-				query: (_sql: string) => ({
-					get: () => ({ id: "thread-123" }), // thread exists
-				}),
-				prepare: (_sql: string) => ({
-					run: () => {},
-				}),
-			} as any;
+			const mockDb = createMockDb();
 
 			const testHandler = createWebSocketHandler({
 				eventBus,
@@ -629,14 +639,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should send error for whitespace-only content", () => {
 			const eventBus = new TypedEventEmitter();
-			const mockDb = {
-				query: (_sql: string) => ({
-					get: () => ({ id: "thread-123" }),
-				}),
-				prepare: (_sql: string) => ({
-					run: () => {},
-				}),
-			} as any;
+			const mockDb = createMockDb();
 
 			const testHandler = createWebSocketHandler({
 				eventBus,
@@ -667,14 +670,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should send error for content exceeding 512KB limit", () => {
 			const eventBus = new TypedEventEmitter();
-			const mockDb = {
-				query: (_sql: string) => ({
-					get: () => ({ id: "thread-123" }),
-				}),
-				prepare: (_sql: string) => ({
-					run: () => {},
-				}),
-			} as any;
+			const mockDb = createMockDb();
 
 			const testHandler = createWebSocketHandler({
 				eventBus,
@@ -708,15 +704,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should send error for non-existent thread", () => {
 			const eventBus = new TypedEventEmitter();
-			// Mock a database that doesn't have the thread
-			const mockDb = {
-				query: (_sql: string) => ({
-					get: () => null, // thread not found
-				}),
-				prepare: (_sql: string) => ({
-					run: () => {},
-				}),
-			} as any;
+			const mockDb = createMockDb({ queryGet: () => null });
 
 			const testHandler = createWebSocketHandler({
 				eventBus,
@@ -772,15 +760,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should send error for unknown call_id", () => {
 			const eventBus = new TypedEventEmitter();
-			// Mock a database that returns no pending calls
-			const mockDb = {
-				prepare: (_sql: string) => ({
-					all: () => [], // getPendingClientToolCalls returns empty
-				}),
-				query: (_sql: string) => ({
-					get: () => null,
-				}),
-			} as any;
+			const mockDb = createMockDb({ queryGet: () => null });
 
 			const testHandler = createWebSocketHandler({
 				eventBus,
@@ -836,7 +816,7 @@ describe("ClientConnection type and WS message schemas", () => {
 					get: () => null,
 				}),
 				exec: () => {},
-			} as any;
+			} as unknown as Database;
 
 			const testHandler = createWebSocketHandler({
 				eventBus,
@@ -870,11 +850,7 @@ describe("ClientConnection type and WS message schemas", () => {
 	describe("Task 5: tool:call delivery to WS clients", () => {
 		it("should deliver tool:call message to subscribed client with matching tool", () => {
 			const eventBus = new TypedEventEmitter();
-			const mockDb = {
-				prepare: (_sql: string) => ({
-					run: () => {},
-				}),
-			} as any;
+			const mockDb = createMockDb();
 
 			const testHandler = createWebSocketHandler({
 				eventBus,
@@ -940,11 +916,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should not deliver tool:call to client without matching tool", () => {
 			const eventBus = new TypedEventEmitter();
-			const mockDb = {
-				prepare: (_sql: string) => ({
-					run: () => {},
-				}),
-			} as any;
+			const mockDb = createMockDb();
 
 			const testHandler = createWebSocketHandler({
 				eventBus,
@@ -1004,11 +976,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should not deliver tool:call to unsubscribed client", () => {
 			const eventBus = new TypedEventEmitter();
-			const mockDb = {
-				prepare: (_sql: string) => ({
-					run: () => {},
-				}),
-			} as any;
+			const mockDb = createMockDb();
 
 			const testHandler = createWebSocketHandler({
 				eventBus,
@@ -1059,11 +1027,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should deliver to only the first matching connection", () => {
 			const eventBus = new TypedEventEmitter();
-			const mockDb = {
-				prepare: (_sql: string) => ({
-					run: () => {},
-				}),
-			} as any;
+			const mockDb = createMockDb();
 
 			const testHandler = createWebSocketHandler({
 				eventBus,
@@ -1205,7 +1169,7 @@ describe("ClientConnection type and WS message schemas", () => {
 				status: "running",
 				detail: "claude-opus",
 				tokens: 1234,
-			} as any);
+			});
 
 			const messages = (mockWs as unknown as MockWebSocket).messages;
 			expect(messages).toHaveLength(1);
@@ -1245,7 +1209,7 @@ describe("ClientConnection type and WS message schemas", () => {
 				status: "running",
 				detail: "claude-opus",
 				tokens: 1234,
-			} as any);
+			});
 
 			const messages = (mockWs as unknown as MockWebSocket).messages;
 			expect(messages).toHaveLength(0);
@@ -1272,29 +1236,18 @@ describe("ClientConnection type and WS message schemas", () => {
 			// Clear messages
 			(mockWs as unknown as MockWebSocket).messages = [];
 
-			// Emit all event types and verify names
-			const eventTypes = [
-				{
-					name: "task:completed",
-					data: { task_id: "t1", result: null },
-					expectedType: "task:updated",
-				},
-				{
-					name: "file:changed",
-					data: { path: "/test", operation: "created" as const },
-					expectedType: "file:updated",
-				},
-			];
+			// Emit task:completed and verify
+			eventBus.emit("task:completed", { task_id: "t1", result: null });
+			let messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages.length).toBeGreaterThan(0);
+			expect((messages[0] as Record<string, unknown>).type).toBe("task:updated");
 
-			for (const eventType of eventTypes) {
-				(mockWs as unknown as MockWebSocket).messages = [];
-				eventBus.emit(eventType.name as any, eventType.data);
-
-				const messages = (mockWs as unknown as MockWebSocket).messages;
-				expect(messages.length).toBeGreaterThan(0);
-				const msg = messages[0] as Record<string, unknown>;
-				expect(msg.type).toBe(eventType.expectedType);
-			}
+			// Emit file:changed and verify
+			(mockWs as unknown as MockWebSocket).messages = [];
+			eventBus.emit("file:changed", { path: "/test", operation: "created" });
+			messages = (mockWs as unknown as MockWebSocket).messages;
+			expect(messages.length).toBeGreaterThan(0);
+			expect((messages[0] as Record<string, unknown>).type).toBe("file:updated");
 
 			testHandler.cleanup();
 		});
@@ -2008,39 +1961,39 @@ describe("ClientConnection type and WS message schemas", () => {
 				let receivedThreadId = "";
 
 				// Set up listener for agent:cancel events
-				eventBus.on("agent:cancel", (data: any) => {
+				eventBus.on("agent:cancel", (data) => {
 					cancelEventReceived = true;
-					receivedThreadId = data.threadId;
+					receivedThreadId = data.thread_id;
 				});
 
 				// Emit the cancel event
-				eventBus.emit("agent:cancel", { threadId: "thread-123", reason: "user" } as any);
+				eventBus.emit("agent:cancel", { thread_id: "thread-123" });
 
 				// Verify the event was received
 				expect(cancelEventReceived).toBe(true);
 				expect(receivedThreadId).toBe("thread-123");
 			});
 
-			it("AC3.2: event bus can emit client_tool_call:expired events", () => {
+			it("AC3.2: event bus can emit client_tool_call:created events", () => {
 				const eventBus = new TypedEventEmitter();
 
-				let expiredEventReceived = false;
+				let eventReceived = false;
 				let receivedCallId = "";
 
-				// Set up listener for expiry events
-				eventBus.on("client_tool_call:expired", (data: any) => {
-					expiredEventReceived = true;
+				eventBus.on("client_tool_call:created", (data) => {
+					eventReceived = true;
 					receivedCallId = data.callId;
 				});
 
-				// Emit the expiry event
-				eventBus.emit("client_tool_call:expired", {
-					callId: "call-2",
+				eventBus.emit("client_tool_call:created", {
 					threadId: "thread-456",
-				} as any);
+					callId: "call-2",
+					entryId: "entry-1",
+					toolName: "test_tool",
+					arguments: {},
+				});
 
-				// Verify the event was received
-				expect(expiredEventReceived).toBe(true);
+				expect(eventReceived).toBe(true);
 				expect(receivedCallId).toBe("call-2");
 			});
 
@@ -2069,18 +2022,15 @@ describe("ClientConnection type and WS message schemas", () => {
 				handler.cleanup();
 			});
 
-			it("AC3.5: unknown tool:cancel message is handled without error", () => {
+			it("AC3.5: emitToolCancel with empty entries does not throw", () => {
 				const eventBus = new TypedEventEmitter();
 				const handler = createWebSocketHandler(eventBus);
 
 				const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 				handler.open(mockWs);
 
-				// Should not throw when receiving unknown tool:cancel
 				expect(() => {
-					// Simulate receiving tool:cancel for unknown callId
-					// (In real scenario this would come from event system)
-					eventBus.emit("client_tool_call:expired", { callId: "unknown-call" } as any);
+					handler.emitToolCancel([], "thread-123", "thread_canceled");
 				}).not.toThrow();
 
 				handler.cleanup();

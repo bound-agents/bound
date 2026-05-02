@@ -52,7 +52,7 @@ import type {
 	AgentLoopState,
 	ClientToolCallRequest,
 } from "./types";
-import { isClientToolCallRequest } from "./types";
+import { VALID_TRANSITIONS, isClientToolCallRequest } from "./types";
 
 export const SILENCE_TIMEOUT_MS = 600_000;
 export const MAX_SILENCE_RETRIES = 3;
@@ -159,6 +159,29 @@ export class AgentLoop {
 	private _visionAdvisoryEmitted?: Set<string>;
 	private lastContextDebug?: ContextDebugInfo;
 
+	private transition(next: AgentLoopState): void {
+		const allowed = VALID_TRANSITIONS[this.state];
+		if (!allowed.includes(next)) {
+			this.ctx.logger.warn("[agent-loop] Invalid state transition", {
+				from: this.state,
+				to: next,
+				allowed,
+				threadId: this.config.threadId,
+			});
+		}
+		this.state = next;
+	}
+
+	private enterOverlay(overlay: "RELAY_STREAM" | "RELAY_WAIT"): AgentLoopState {
+		const saved = this.state;
+		this.state = overlay;
+		return saved;
+	}
+
+	private restoreState(saved: AgentLoopState): void {
+		this.state = saved;
+	}
+
 	/** Resolved inference relay timeout from sync.relay config, cached on first access. */
 	private _inferenceTimeoutMs: number | null = null;
 
@@ -250,12 +273,12 @@ export class AgentLoop {
 		});
 
 		try {
-			this.state = "HYDRATE_FS";
+			this.transition("HYDRATE_FS");
 			if (this.sandbox.capturePreSnapshot) {
 				await this.sandbox.capturePreSnapshot();
 			}
 
-			this.state = "ASSEMBLE_CONTEXT";
+			this.transition("ASSEMBLE_CONTEXT");
 
 			const hasTools = !!(this.config.tools && this.config.tools.length > 0);
 			const requirements = deriveCapabilityRequirements(
@@ -749,7 +772,7 @@ export class AgentLoop {
 
 				turnCount++;
 				const turnStartTime = Date.now();
-				this.state = "LLM_CALL";
+				this.transition("LLM_CALL");
 				const chunks: StreamChunk[] = [];
 				let currentTurnId: string | null = null;
 				let resolvedModelId: string | null = null;
@@ -818,8 +841,7 @@ export class AgentLoop {
 							}
 
 							// Replace the for-await with Observable consumption
-							const previousState = this.state;
-							this.state = "RELAY_STREAM";
+							const previousState = this.enterOverlay("RELAY_STREAM");
 							try {
 								// Create aborted$ from the AbortSignal and this.aborted flag
 								const aborted$ = new Observable<void>((subscriber) => {
@@ -870,7 +892,7 @@ export class AgentLoop {
 									{ defaultValue: undefined },
 								);
 							} finally {
-								this.state = previousState;
+								this.restoreState(previousState);
 							}
 							break;
 						}
@@ -1019,7 +1041,7 @@ export class AgentLoop {
 						}
 					}
 
-					this.state = "ERROR_PERSIST";
+					this.transition("ERROR_PERSIST");
 					const errorMsg = formatError(error);
 					this.ctx.logger.error("[agent-loop] LLM call failed (non-retryable)", {
 						turn: turnCount,
@@ -1072,7 +1094,7 @@ export class AgentLoop {
 					};
 				}
 
-				this.state = "PARSE_RESPONSE";
+				this.transition("PARSE_RESPONSE");
 				const parsed = this.parseResponseChunks(chunks);
 				const llmDurationMs = Date.now() - turnStartTime;
 
@@ -1290,7 +1312,7 @@ export class AgentLoop {
 						break;
 					}
 
-					this.state = "TOOL_EXECUTE";
+					this.transition("TOOL_EXECUTE");
 					const toolResults: Array<{
 						toolCall: ParsedToolCall;
 						content: string;
@@ -1348,8 +1370,7 @@ export class AgentLoop {
 								const result = await this.executeToolCall(toolCall);
 
 								if ("outboxEntryId" in result) {
-									const previousRelayState: AgentLoopState = this.state;
-									this.state = "RELAY_WAIT";
+									const previousRelayState = this.enterOverlay("RELAY_WAIT");
 									const aborted$ = new Subject<void>();
 									const abortCheck = setInterval(() => {
 										if (this.aborted) {
@@ -1381,7 +1402,7 @@ export class AgentLoop {
 										);
 									} finally {
 										clearInterval(abortCheck);
-										this.state = previousRelayState;
+										this.restoreState(previousRelayState);
 									}
 								} else if (isClientToolCallRequest(result)) {
 									// Client tool calls are deferred to the client — track but don't get result yet
@@ -1449,7 +1470,7 @@ export class AgentLoop {
 					}
 
 					// Persist tool messages before next LLM call (pairing invariant)
-					this.state = "TOOL_PERSIST";
+					this.transition("TOOL_PERSIST");
 
 					const toolCallBlocks: ContentBlock[] = [];
 
@@ -1625,7 +1646,7 @@ export class AgentLoop {
 				}
 
 				// No tool calls — persist final response and exit
-				this.state = "RESPONSE_PERSIST";
+				this.transition("RESPONSE_PERSIST");
 				const assistantContent = parsed.textContent || "";
 
 				if (assistantContent) {
@@ -1647,7 +1668,7 @@ export class AgentLoop {
 				continueLoop = false;
 			}
 
-			this.state = "FS_PERSIST";
+			this.transition("FS_PERSIST");
 			if (this.sandbox.persistFs) {
 				const persistResult = await this.sandbox.persistFs();
 				if (persistResult && typeof persistResult.changes === "number") {
@@ -1676,7 +1697,7 @@ export class AgentLoop {
 				}
 			}
 
-			this.state = "QUEUE_CHECK";
+			this.transition("QUEUE_CHECK");
 			try {
 				updateRow(
 					this.ctx.db,
@@ -1692,7 +1713,7 @@ export class AgentLoop {
 				});
 			}
 
-			this.state = "IDLE";
+			this.transition("IDLE");
 
 			const totalDurationMs = Date.now() - loopStartTime;
 			this.ctx.logger.info("[agent-loop] Completed", {
@@ -1735,7 +1756,7 @@ export class AgentLoop {
 				yielded: this.yielded || undefined,
 			};
 		} catch (error) {
-			this.state = "ERROR_PERSIST";
+			this.state = "ERROR_PERSIST"; // Direct assignment — reachable from any state
 			const errorMsg = formatError(error);
 			const totalDurationMs = Date.now() - loopStartTime;
 
@@ -1955,49 +1976,69 @@ export class AgentLoop {
 		let usageEstimated = false;
 
 		for (const chunk of remappedChunks) {
-			if (chunk.type === "text") {
-				textContent += chunk.content;
-			} else if (chunk.type === "thinking") {
-				thinkingContent += chunk.content;
-				if (chunk.signature) thinkingSignature = chunk.signature;
-				if (chunk.redacted_data) thinkingRedactedData = chunk.redacted_data;
-			} else if (chunk.type === "tool_use_start") {
-				argsAccumulator.set(chunk.id, "");
-				nameMap.set(chunk.id, chunk.name);
-			} else if (chunk.type === "tool_use_args") {
-				const existing = argsAccumulator.get(chunk.id) ?? "";
-				argsAccumulator.set(chunk.id, existing + chunk.partial_json);
-			} else if (chunk.type === "tool_use_end") {
-				// Empty accumulator = zero-argument tool call (no tool_use_args chunks streamed).
-				// `??` only catches undefined, so empty-string would fall through to JSON.parse("")
-				// and spuriously flag the call as truncated. Treat "" and undefined alike as "{}".
-				const rawArgs = argsAccumulator.get(chunk.id);
-				const fullArgsJson = rawArgs && rawArgs.length > 0 ? rawArgs : "{}";
-				const name = nameMap.get(chunk.id) ?? chunk.id;
-				let input: Record<string, unknown> = {};
-				let truncated = false;
-				try {
-					input = JSON.parse(fullArgsJson);
-				} catch {
-					truncated = true;
-					this.ctx.logger.warn(
-						`[agent-loop] Failed to parse tool_use args for "${name}" (id=${chunk.id}), ` +
-							`args length=${fullArgsJson.length}. Output likely truncated by max_tokens limit.`,
-					);
+			switch (chunk.type) {
+				case "text":
+					textContent += chunk.content;
+					break;
+				case "thinking":
+					thinkingContent += chunk.content;
+					if (chunk.signature) thinkingSignature = chunk.signature;
+					if (chunk.redacted_data) thinkingRedactedData = chunk.redacted_data;
+					break;
+				case "tool_use_start":
+					argsAccumulator.set(chunk.id, "");
+					nameMap.set(chunk.id, chunk.name);
+					break;
+				case "tool_use_args": {
+					const existing = argsAccumulator.get(chunk.id) ?? "";
+					argsAccumulator.set(chunk.id, existing + chunk.partial_json);
+					break;
 				}
-				toolCalls.push({
-					id: chunk.id,
-					name,
-					input,
-					argsJson: fullArgsJson,
-					truncated,
-				});
-			} else if (chunk.type === "done") {
-				inputTokens = chunk.usage.input_tokens;
-				outputTokens = chunk.usage.output_tokens;
-				cacheWriteTokens = chunk.usage.cache_write_tokens;
-				cacheReadTokens = chunk.usage.cache_read_tokens;
-				usageEstimated = chunk.usage.estimated;
+				case "tool_use_end": {
+					// Empty accumulator = zero-argument tool call (no tool_use_args chunks streamed).
+					// `??` only catches undefined, so empty-string would fall through to JSON.parse("")
+					// and spuriously flag the call as truncated. Treat "" and undefined alike as "{}".
+					const rawArgs = argsAccumulator.get(chunk.id);
+					const fullArgsJson = rawArgs && rawArgs.length > 0 ? rawArgs : "{}";
+					const name = nameMap.get(chunk.id) ?? chunk.id;
+					let input: Record<string, unknown> = {};
+					let truncated = false;
+					try {
+						input = JSON.parse(fullArgsJson);
+					} catch {
+						truncated = true;
+						this.ctx.logger.warn(
+							`[agent-loop] Failed to parse tool_use args for "${name}" (id=${chunk.id}), ` +
+								`args length=${fullArgsJson.length}. Output likely truncated by max_tokens limit.`,
+						);
+					}
+					toolCalls.push({
+						id: chunk.id,
+						name,
+						input,
+						argsJson: fullArgsJson,
+						truncated,
+					});
+					break;
+				}
+				case "done":
+					inputTokens = chunk.usage.input_tokens;
+					outputTokens = chunk.usage.output_tokens;
+					cacheWriteTokens = chunk.usage.cache_write_tokens;
+					cacheReadTokens = chunk.usage.cache_read_tokens;
+					usageEstimated = chunk.usage.estimated;
+					break;
+				case "error":
+					this.ctx.logger.warn("[agent-loop] Stream error chunk in response", {
+						error: chunk.error,
+					});
+					break;
+				case "heartbeat":
+					break;
+				default: {
+					const _exhaustive: never = chunk;
+					void _exhaustive;
+				}
 			}
 		}
 

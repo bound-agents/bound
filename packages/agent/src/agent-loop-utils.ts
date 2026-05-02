@@ -304,50 +304,68 @@ export function parseStreamChunks(chunks: StreamChunk[]): ParsedResponse {
 	let usageEstimated = false;
 
 	for (const chunk of chunks) {
-		if (chunk.type === "text") {
-			textContent += chunk.content;
-		} else if (chunk.type === "thinking") {
-			thinkingContent += chunk.content;
-			if (chunk.signature) thinkingSignature = chunk.signature;
-		} else if (chunk.type === "tool_use_start") {
-			argsAccumulator.set(chunk.id, "");
-			nameMap.set(chunk.id, chunk.name);
-		} else if (chunk.type === "tool_use_args") {
-			const existing = argsAccumulator.get(chunk.id) ?? "";
-			argsAccumulator.set(chunk.id, existing + chunk.partial_json);
-		} else if (chunk.type === "tool_use_end") {
-			// Empty accumulator = zero-argument tool call (no tool_use_args chunks streamed).
-			// `??` only catches undefined, so empty-string would fall through to JSON.parse("")
-			// and spuriously flag the call as truncated. Treat "" and undefined alike as "{}".
-			const rawArgs = argsAccumulator.get(chunk.id);
-			const fullArgsJson = rawArgs && rawArgs.length > 0 ? rawArgs : "{}";
-			const name = nameMap.get(chunk.id) ?? chunk.id;
-			let input: Record<string, unknown> = {};
-			let truncated = false;
-			try {
-				input = JSON.parse(fullArgsJson);
-			} catch {
-				truncated = true;
-				logger.warn("Failed to parse tool_use args; output likely truncated by max_tokens", {
-					toolName: name,
-					id: chunk.id,
-					argsLength: fullArgsJson.length,
-					rawArgsPrefix: fullArgsJson.slice(0, 200),
-				});
+		switch (chunk.type) {
+			case "text":
+				textContent += chunk.content;
+				break;
+			case "thinking":
+				thinkingContent += chunk.content;
+				if (chunk.signature) thinkingSignature = chunk.signature;
+				break;
+			case "tool_use_start":
+				argsAccumulator.set(chunk.id, "");
+				nameMap.set(chunk.id, chunk.name);
+				break;
+			case "tool_use_args": {
+				const existing = argsAccumulator.get(chunk.id) ?? "";
+				argsAccumulator.set(chunk.id, existing + chunk.partial_json);
+				break;
 			}
-			toolCalls.push({
-				id: chunk.id,
-				name,
-				input,
-				argsJson: fullArgsJson,
-				truncated,
-			});
-		} else if (chunk.type === "done") {
-			inputTokens = chunk.usage.input_tokens;
-			outputTokens = chunk.usage.output_tokens;
-			cacheWriteTokens = chunk.usage.cache_write_tokens;
-			cacheReadTokens = chunk.usage.cache_read_tokens;
-			usageEstimated = chunk.usage.estimated;
+			case "tool_use_end": {
+				// Empty accumulator = zero-argument tool call (no tool_use_args chunks streamed).
+				// `??` only catches undefined, so empty-string would fall through to JSON.parse("")
+				// and spuriously flag the call as truncated. Treat "" and undefined alike as "{}".
+				const rawArgs = argsAccumulator.get(chunk.id);
+				const fullArgsJson = rawArgs && rawArgs.length > 0 ? rawArgs : "{}";
+				const name = nameMap.get(chunk.id) ?? chunk.id;
+				let input: Record<string, unknown> = {};
+				let truncated = false;
+				try {
+					input = JSON.parse(fullArgsJson);
+				} catch {
+					truncated = true;
+					logger.warn("Failed to parse tool_use args; output likely truncated by max_tokens", {
+						toolName: name,
+						id: chunk.id,
+						argsLength: fullArgsJson.length,
+						rawArgsPrefix: fullArgsJson.slice(0, 200),
+					});
+				}
+				toolCalls.push({
+					id: chunk.id,
+					name,
+					input,
+					argsJson: fullArgsJson,
+					truncated,
+				});
+				break;
+			}
+			case "done":
+				inputTokens = chunk.usage.input_tokens;
+				outputTokens = chunk.usage.output_tokens;
+				cacheWriteTokens = chunk.usage.cache_write_tokens;
+				cacheReadTokens = chunk.usage.cache_read_tokens;
+				usageEstimated = chunk.usage.estimated;
+				break;
+			case "error":
+				logger.warn("Stream error chunk received during aggregation", { error: chunk.error });
+				break;
+			case "heartbeat":
+				break;
+			default: {
+				const _exhaustive: never = chunk;
+				void _exhaustive;
+			}
 		}
 	}
 
