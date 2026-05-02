@@ -5,6 +5,8 @@ import { MAX_FILE_STORAGE_BYTES } from "@bound/shared";
 import type { IntakePayload, Thread, User } from "@bound/shared";
 import type { Logger, PlatformConnectorConfig, TypedEventEmitter } from "@bound/shared";
 import type { ChatInputCommandInteraction } from "discord.js";
+import { Subject, TimeoutError, firstValueFrom, interval } from "rxjs";
+import { filter, finalize, map, startWith, take, takeUntil, timeout } from "rxjs/operators";
 import type { PlatformConnector } from "../connector.js";
 import type { DiscordClientManager } from "./discord-client-manager.js";
 
@@ -89,7 +91,7 @@ export class DiscordInteractionConnector implements PlatformConnector {
 	private onInteractionCreate: ((interaction: DiscordInteraction) => void) | null = null;
 
 	/** Set by disconnect() to abort any active polling loops. */
-	private disconnecting = false;
+	private disconnecting$ = new Subject<void>();
 
 	constructor(
 		private readonly config: PlatformConnectorConfig,
@@ -102,7 +104,7 @@ export class DiscordInteractionConnector implements PlatformConnector {
 	) {}
 
 	async connect(_hostBaseUrl?: string): Promise<void> {
-		this.disconnecting = false;
+		this.disconnecting$ = new Subject<void>();
 
 		const client = this.clientManager.getClient();
 
@@ -148,7 +150,8 @@ export class DiscordInteractionConnector implements PlatformConnector {
 	}
 
 	async disconnect(): Promise<void> {
-		this.disconnecting = true;
+		this.disconnecting$.next();
+		this.disconnecting$.complete();
 
 		try {
 			const client = this.clientManager.getClient();
@@ -339,55 +342,69 @@ export class DiscordInteractionConnector implements PlatformConnector {
 	 * Unlike bound-mcp which polls via HTTP, this queries the DB directly
 	 * since the interaction connector runs on the platform leader host.
 	 *
-	 * Checks this.disconnecting to abort early on shutdown.
+	 * Uses RxJS observable pipeline with takeUntil(disconnecting$) to abort on shutdown.
 	 */
 	private async pollForResponse(threadId: string, afterTimestamp: string): Promise<void> {
-		const startTime = Date.now();
-
-		while (true) {
-			// Abort if connector is shutting down
-			if (this.disconnecting) {
-				this.logger.info("Polling aborted — connector disconnecting", { threadId });
-				this.interactions.delete(threadId);
-				return;
-			}
-			// Query for assistant response created after the user's filing message
-			const response = this.db
-				.query<{ id: string; content: string }, [string, string]>(
-					"SELECT id, content FROM messages WHERE thread_id = ? AND role = 'assistant' AND created_at > ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
-				)
-				.get(threadId, afterTimestamp);
+		try {
+			const response = await firstValueFrom(
+				interval(POLL_INTERVAL_MS).pipe(
+					startWith(0),
+					map(() =>
+						this.db
+							.query<{ id: string; content: string }, [string, string]>(
+								"SELECT id, content FROM messages WHERE thread_id = ? AND role = 'assistant' AND created_at > ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+							)
+							.get(threadId, afterTimestamp),
+					),
+					filter(
+						(row): row is { id: string; content: string } => row !== null && row !== undefined,
+					),
+					take(1),
+					timeout(this.pollTimeoutMs),
+					takeUntil(this.disconnecting$),
+					finalize(() => {
+						// No cleanup needed here — deliver() and handlePollTimeout()
+						// handle interactions Map cleanup in their respective paths
+					}),
+				),
+				{ defaultValue: null },
+			);
 
 			if (response) {
-				// AC8.1: Found response — deliver via editReply
 				await this.deliver(threadId, response.id, response.content);
-				return;
 			}
-
-			// AC8.2: Check timeout
-			if (Date.now() - startTime >= this.pollTimeoutMs) {
-				this.logger.warn("Polling timed out waiting for agent response", { threadId });
-				// Deliver timeout error via editReply
-				const stored = this.interactions.get(threadId);
-				if (stored && new Date(stored.expiresAt) > new Date()) {
-					try {
-						await stored.interaction.editReply({
-							content: "Error: Timed out waiting for agent response after 5 minutes.",
-						});
-					} catch (err) {
-						this.logger.warn("editReply failed for timeout message", {
-							threadId,
-							error: String(err),
-						});
-					}
-				}
+			// If response is null, disconnecting$ fired → clean exit (AC4.4)
+			// The interactions map entry is cleaned up by disconnect() which calls
+			// this.interactions.clear()
+		} catch (err) {
+			if (err instanceof TimeoutError) {
+				await this.handlePollTimeout(threadId);
+			} else {
+				this.logger.error("Unexpected error in pollForResponse", {
+					threadId,
+					error: String(err),
+				});
 				this.interactions.delete(threadId);
-				return;
 			}
-
-			// Wait before next poll (same pattern as bound-mcp handler.ts:42)
-			await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
 		}
+	}
+
+	private async handlePollTimeout(threadId: string): Promise<void> {
+		this.logger.warn("Polling timed out waiting for agent response", { threadId });
+		const stored = this.interactions.get(threadId);
+		if (stored && new Date(stored.expiresAt) > new Date()) {
+			try {
+				await stored.interaction.editReply({
+					content: "Error: Timed out waiting for agent response after 5 minutes.",
+				});
+			} catch (err) {
+				this.logger.warn("editReply failed for timeout message", {
+					threadId,
+					error: String(err),
+				});
+			}
+		}
+		this.interactions.delete(threadId);
 	}
 
 	private async handleInteraction(interaction: DiscordInteraction): Promise<void> {
