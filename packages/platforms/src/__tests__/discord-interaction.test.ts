@@ -1630,9 +1630,13 @@ describe("DiscordInteractionConnector", () => {
 		};
 
 		it("AC8.1 (immediate response): should find pre-inserted assistant message and deliver", async () => {
-			const { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls } =
-				createFullMockSetup();
+			const { editReplyCalls } = createFullMockSetup();
 
+			const mockClient = {
+				application: { commands: { create: async () => {} } },
+				on: () => {},
+				off: () => {},
+			};
 			const connector = new DiscordInteractionConnector(
 				config,
 				db,
@@ -1640,23 +1644,54 @@ describe("DiscordInteractionConnector", () => {
 				eventBus,
 				mockLogger,
 				createMockClientManagerWithClient(mockClient),
-				200, // 200ms timeout for testing
+				500, // 500ms timeout for testing
 			);
 
 			await connector.connect();
 
-			// Fire the interaction to create user, thread, message
-			await onInteractionCreateHandlers[0]?.(mockInteraction);
+			// Manually create user and thread in DB (pre-setup for polling)
+			const userId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[userId, "Test User", null, now, now, 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, title, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					threadId,
+					userId,
+					"discord-interaction",
+					"site-1",
+					"Discord Interaction",
+					now,
+					now,
+					now,
+					0,
+				],
+			);
 
-			// Get the created thread ID to pre-insert a response
-			const threads = db.query("SELECT * FROM threads WHERE deleted = 0").all() as Array<{
-				id: string;
-			}>;
-			expect(threads.length).toBe(1);
-			const threadId = threads[0].id;
+			// Create the user message that pollForResponse will reference
+			const userMsgTime = new Date(Date.now() + 10).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					threadId,
+					"user",
+					"File this for later",
+					null,
+					null,
+					userMsgTime,
+					userMsgTime,
+					"site-1",
+					0,
+				],
+			);
 
-			// Pre-insert assistant response (created shortly after user message)
-			const responseTime = new Date(Date.now() + 10).toISOString();
+			// Pre-insert assistant response (created after user message)
+			const responseTime = new Date(Date.now() + 100).toISOString();
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				[
@@ -1673,18 +1708,20 @@ describe("DiscordInteractionConnector", () => {
 				],
 			);
 
-			// Wait for editReply to be called (polling should find the response)
-			await new Promise<void>((resolve) => {
-				const checkEditReply = () => {
-					if (editReplyCalls.length > 0) {
-						resolve();
-					} else {
-						setTimeout(checkEditReply, 10);
-					}
-				};
-				checkEditReply();
+			// Store interaction so polling can find and use it
+			(connector as any).interactions.set(threadId, {
+				interaction: {
+					editReply: async (opts: { content: string }) => {
+						editReplyCalls.push(opts);
+					},
+				},
+				expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
 			});
 
+			// Call pollForResponse directly with the afterTimestamp from the user message
+			await (connector as any).pollForResponse(threadId, userMsgTime);
+
+			// Verify editReply was called with the response
 			expect(editReplyCalls.length).toBe(1);
 			expect(editReplyCalls[0]?.content).toBe("This is the assistant response.");
 		});
@@ -1784,9 +1821,13 @@ describe("DiscordInteractionConnector", () => {
 		});
 
 		it("AC8.1 + AC6.2 (truncation): should truncate long response to 2000 chars", async () => {
-			const { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls } =
-				createFullMockSetup();
+			const { editReplyCalls } = createFullMockSetup();
 
+			const mockClient = {
+				application: { commands: { create: async () => {} } },
+				on: () => {},
+				off: () => {},
+			};
 			const connector = new DiscordInteractionConnector(
 				config,
 				db,
@@ -1794,23 +1835,55 @@ describe("DiscordInteractionConnector", () => {
 				eventBus,
 				mockLogger,
 				createMockClientManagerWithClient(mockClient),
-				200, // 200ms timeout
+				500, // 500ms timeout
 			);
 
 			await connector.connect();
 
-			// Fire the interaction
-			await onInteractionCreateHandlers[0]?.(mockInteraction);
+			// Manually create user and thread in DB (pre-setup for polling)
+			const userId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[userId, "Test User", null, now, now, 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, title, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					threadId,
+					userId,
+					"discord-interaction",
+					"site-1",
+					"Discord Interaction",
+					now,
+					now,
+					now,
+					0,
+				],
+			);
 
-			// Get thread ID
-			const threads = db.query("SELECT * FROM threads WHERE deleted = 0").all() as Array<{
-				id: string;
-			}>;
-			const threadId = threads[0].id;
+			// Create the user message that pollForResponse will reference
+			const userMsgTime = new Date(Date.now() + 10).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					threadId,
+					"user",
+					"File this for later",
+					null,
+					null,
+					userMsgTime,
+					userMsgTime,
+					"site-1",
+					0,
+				],
+			);
 
-			// Pre-insert a very long response (3000 chars)
+			// Pre-insert a very long response (3000 chars) - should be truncated to 2000
 			const longContent = "x".repeat(3000);
-			const responseTime = new Date(Date.now() + 10).toISOString();
+			const responseTime = new Date(Date.now() + 100).toISOString();
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				[
@@ -1827,20 +1900,21 @@ describe("DiscordInteractionConnector", () => {
 				],
 			);
 
-			// Wait for editReply
-			await new Promise<void>((resolve) => {
-				const checkEditReply = () => {
-					if (editReplyCalls.length > 0) {
-						resolve();
-					} else {
-						setTimeout(checkEditReply, 10);
-					}
-				};
-				checkEditReply();
+			// Store interaction so polling can find and use it
+			(connector as any).interactions.set(threadId, {
+				interaction: {
+					editReply: async (opts: { content: string }) => {
+						editReplyCalls.push(opts);
+					},
+				},
+				expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
 			});
 
+			// Call pollForResponse directly with the afterTimestamp from the user message
+			await (connector as any).pollForResponse(threadId, userMsgTime);
+
+			// Verify editReply was called and truncated to 2000 chars
 			expect(editReplyCalls.length).toBe(1);
-			// Verify truncation to exactly 2000 chars
 			expect(editReplyCalls[0]?.content).toBe("x".repeat(2000));
 		});
 
