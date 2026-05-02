@@ -8,6 +8,7 @@ import type { AppContext } from "@bound/core";
 import { setChangelogEventBus, setRelayOutboxEventBus } from "@bound/core";
 import type { KeyringConfig, SyncConfig } from "@bound/shared";
 import { formatError, wsSchema } from "@bound/shared";
+import type { OverlayIndexEntry } from "@bound/shared";
 import type { KeyManager } from "@bound/sync";
 import type { WsTransport as WsTransportType } from "@bound/sync";
 
@@ -142,7 +143,8 @@ export async function initSync(
 					table: string,
 					row: Record<string, unknown>,
 					siteId: string,
-				): void => insertRow(db, table as "overlay_index", row, siteId),
+				): void =>
+					insertRow(db, table as "overlay_index", row as unknown as OverlayIndexEntry, siteId),
 				updateRow: (
 					db: Database,
 					table: string,

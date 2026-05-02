@@ -437,6 +437,8 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 							modified_at: now,
 							host_origin: appContext.hostName,
 							deleted: 0,
+							exit_code: null,
+							metadata: null,
 						},
 						appContext.siteId,
 					);

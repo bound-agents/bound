@@ -58,6 +58,7 @@ export function trackFilePath(
 				created_at: now,
 				modified_at: now,
 				last_accessed_at: now,
+				tier: "default",
 				deleted: 0,
 			},
 			siteId,

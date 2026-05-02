@@ -705,6 +705,8 @@ export class Scheduler {
 						modified_at: taskNow,
 						host_origin: this.ctx.siteId,
 						deleted: 0,
+						exit_code: null,
+						metadata: null,
 					},
 					this.ctx.siteId,
 				);
@@ -731,6 +733,8 @@ export class Scheduler {
 						modified_at: taskNow,
 						host_origin: this.ctx.siteId,
 						deleted: 0,
+						exit_code: null,
+						metadata: null,
 					},
 					this.ctx.siteId,
 				);
@@ -750,6 +754,8 @@ export class Scheduler {
 						modified_at: taskNow,
 						host_origin: this.ctx.siteId,
 						deleted: 0,
+						exit_code: null,
+						metadata: null,
 					},
 					this.ctx.siteId,
 				);
@@ -800,6 +806,8 @@ export class Scheduler {
 								modified_at: taskNow,
 								host_origin: this.ctx.siteId,
 								deleted: 0,
+								exit_code: null,
+								metadata: null,
 							},
 							this.ctx.siteId,
 						);
@@ -1081,6 +1089,8 @@ export class Scheduler {
 									modified_at: now,
 									host_origin: this.ctx.siteId,
 									deleted: 0,
+									exit_code: null,
+									metadata: null,
 								},
 								this.ctx.siteId,
 							);

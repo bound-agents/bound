@@ -46,6 +46,8 @@ function seedFile(db: Database, siteId: string, path: string, content: string): 
 				created_at: now,
 				modified_at: now,
 				deleted: 0,
+				created_by: null,
+				host_origin: null,
 			},
 			siteId,
 		);

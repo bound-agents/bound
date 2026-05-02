@@ -1,6 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { type SyncedTableName, type TypedEventEmitter, generateHlc, mergeHlc } from "@bound/shared";
+import {
+	type SyncedTableName,
+	type SyncedTableRowMap,
+	type TypedEventEmitter,
+	generateHlc,
+	mergeHlc,
+} from "@bound/shared";
 
 // Validate column names to prevent SQL injection
 // Only allow lowercase letters, numbers, and underscores
@@ -102,17 +108,19 @@ export function withChangeLog<T>(
 	return result;
 }
 
-export function insertRow(
+export function insertRow<T extends SyncedTableName>(
 	db: Database,
-	table: SyncedTableName,
-	row: Record<string, unknown>,
+	table: T,
+	row: SyncedTableRowMap[T],
 	siteId: string,
 ): void {
+	const rowData = row as unknown as Record<string, unknown>;
+
 	// Invariant #19: role='system' is reserved for the LLM driver layer
 	// (stable-prefix system prompt). Persisting it into `messages` is silently
 	// invisible to the agent — Stage 2.5 of context assembly drops such rows.
 	// Reject loudly at the write boundary so the failure surfaces in tests/CI.
-	if (table === "messages" && row.role === "system") {
+	if (table === "messages" && rowData.role === "system") {
 		throw new Error(
 			"Invariant: role='system' is not permitted in the messages table. " +
 				"Use role='developer' for injected system-generated context intended for the agent.",
@@ -120,12 +128,12 @@ export function insertRow(
 	}
 
 	const pkColumn = getPkColumn(table);
-	const rowId = row[pkColumn] as string;
-	const columns = Object.keys(row);
+	const rowId = rowData[pkColumn] as string;
+	const columns = Object.keys(rowData);
 	// Validate all column names to prevent SQL injection
 	columns.forEach(validateColumnName);
 	const placeholders = columns.map(() => "?").join(", ");
-	const values = columns.map((c) => row[c] ?? null) as Array<string | number | null | boolean>;
+	const values = columns.map((c) => rowData[c] ?? null) as Array<string | number | null | boolean>;
 
 	const txFn = db.transaction(() => {
 		db.run(
@@ -134,7 +142,7 @@ export function insertRow(
 			values,
 		);
 
-		return createChangeLogEntry(db, table, rowId, siteId, row);
+		return createChangeLogEntry(db, table, rowId, siteId, rowData);
 	});
 
 	const hlc = txFn();
@@ -145,11 +153,11 @@ export function insertRow(
 	}
 }
 
-export function updateRow(
+export function updateRow<T extends SyncedTableName>(
 	db: Database,
-	table: SyncedTableName,
+	table: T,
 	id: string,
-	updates: Record<string, unknown>,
+	updates: Partial<SyncedTableRowMap[T]>,
 	siteId: string,
 ): void {
 	const txFn = db.transaction(() => {
@@ -218,7 +226,7 @@ export function insertMessage(
 	db: Database,
 	params: {
 		threadId: string;
-		role: string;
+		role: import("@bound/shared").MessageRole;
 		content: string;
 		modelId?: string | null;
 		toolName?: string | null;
@@ -242,6 +250,8 @@ export function insertMessage(
 			modified_at: now,
 			host_origin: params.hostOrigin,
 			deleted: 0,
+			exit_code: null,
+			metadata: null,
 		},
 		siteId,
 	);

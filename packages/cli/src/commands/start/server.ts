@@ -117,6 +117,8 @@ export function resolveDelegationMessageId(
 						modified_at: now,
 						host_origin: hostName,
 						deleted: 0,
+						exit_code: null,
+						metadata: null,
 					},
 					siteId,
 				);
@@ -789,6 +791,9 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 									created_at: now,
 									modified_at: now,
 									host_origin: appContext.hostName,
+									deleted: 0,
+									exit_code: null,
+									metadata: null,
 								},
 								appContext.siteId,
 							);

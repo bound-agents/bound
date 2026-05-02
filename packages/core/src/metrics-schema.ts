@@ -173,7 +173,7 @@ export function recordTurn(db: Database, turn: TurnRecord, siteId?: string): str
 	const id = randomUUID();
 	const status = turn.status ?? "ok";
 
-	const row: Record<string, unknown> = {
+	const row: import("@bound/shared").Turn = {
 		id,
 		thread_id: turn.thread_id ?? null,
 		task_id: turn.task_id ?? null,
@@ -188,14 +188,18 @@ export function recordTurn(db: Database, turn: TurnRecord, siteId?: string): str
 		modified_at: turn.created_at,
 		status,
 		host_origin: siteId ?? null,
+		relay_target: null,
+		relay_latency_ms: null,
+		context_debug: null,
 	};
 
 	if (siteId) {
 		insertRow(db, "turns", row, siteId);
 	} else {
-		const colsInOrder = Object.keys(row);
+		const rowData = row as unknown as Record<string, unknown>;
+		const colsInOrder = Object.keys(rowData);
 		const placeholders = colsInOrder.map(() => "?").join(", ");
-		const values = colsInOrder.map((k) => row[k]) as Array<string | number | null>;
+		const values = colsInOrder.map((k) => rowData[k]) as Array<string | number | null>;
 		db.prepare(`INSERT INTO turns (${colsInOrder.join(", ")}) VALUES (${placeholders})`).run(
 			...values,
 		);

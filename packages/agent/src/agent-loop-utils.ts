@@ -92,7 +92,7 @@ export function findPendingUserMessage(
 
 interface ThreadMessageOpts {
 	threadId: string;
-	role: string;
+	role: import("@bound/shared").MessageRole;
 	content: string;
 	hostOrigin: string;
 	modelId?: string | null;
@@ -104,21 +104,25 @@ interface ThreadMessageOpts {
 export function insertThreadMessage(db: Database, opts: ThreadMessageOpts, siteId: string): string {
 	const id = randomUUID();
 	const now = new Date().toISOString();
-	const row: Record<string, unknown> = {
-		id,
-		thread_id: opts.threadId,
-		role: opts.role,
-		content: opts.content,
-		model_id: opts.modelId ?? null,
-		tool_name: opts.toolName ?? null,
-		created_at: now,
-		modified_at: now,
-		host_origin: opts.hostOrigin,
-	};
-	if (opts.exitCode !== undefined) {
-		row.exit_code = opts.exitCode;
-	}
-	insertRow(db, "messages", row, siteId);
+	insertRow(
+		db,
+		"messages",
+		{
+			id,
+			thread_id: opts.threadId,
+			role: opts.role,
+			content: opts.content,
+			model_id: opts.modelId ?? null,
+			tool_name: opts.toolName ?? null,
+			created_at: now,
+			modified_at: now,
+			host_origin: opts.hostOrigin,
+			deleted: 0,
+			exit_code: opts.exitCode ?? null,
+			metadata: null,
+		},
+		siteId,
+	);
 	return id;
 }
 

@@ -284,6 +284,7 @@ export class DiscordInteractionConnector implements PlatformConnector {
 				last_message_at: now,
 				modified_at: now,
 				deleted: 0,
+				model_hint: null,
 			},
 			this.siteId,
 		);
@@ -623,6 +624,8 @@ export class DiscordInteractionConnector implements PlatformConnector {
 				modified_at: now,
 				host_origin: this.siteId,
 				deleted: 0,
+				exit_code: null,
+				metadata: null,
 			},
 			this.siteId,
 		);

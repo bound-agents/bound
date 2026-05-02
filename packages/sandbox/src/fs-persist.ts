@@ -135,10 +135,13 @@ export async function persistWorkspaceChanges(
 								id: change.path,
 								path: change.path,
 								content: change.content,
+								is_binary: 0,
 								deleted: 0,
 								size_bytes: change.sizeBytes ?? 0,
 								created_at: now,
 								modified_at: now,
+								created_by: null,
+								host_origin: null,
 							},
 							siteId,
 						);

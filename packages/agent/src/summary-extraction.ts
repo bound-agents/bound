@@ -339,6 +339,7 @@ Keep the summary under 500 tokens. Focus on information that helps continue the 
 						created_at: now,
 						modified_at: now,
 						last_accessed_at: now,
+						tier: "default",
 						deleted: 0,
 					},
 					siteId,

@@ -181,10 +181,13 @@ function autoCacheFile(db: Database, siteId: string, path: string, content: stri
 				id: path,
 				path,
 				content,
+				is_binary: 0,
 				deleted: 0,
 				size_bytes: sizeBytes,
 				created_at: now,
 				modified_at: now,
+				created_by: null,
+				host_origin: null,
 			},
 			siteId,
 		);

@@ -244,6 +244,9 @@ export function createStatusRoutes(
 						created_at: new Date().toISOString(),
 						modified_at: new Date().toISOString(),
 						host_origin: hostNameValue,
+						deleted: 0,
+						exit_code: null,
+						metadata: null,
 					},
 					localSiteId,
 				);
@@ -265,6 +268,9 @@ export function createStatusRoutes(
 					created_at: now,
 					modified_at: now,
 					host_origin: hostNameValue,
+					deleted: 0,
+					exit_code: null,
+					metadata: null,
 				},
 				siteId,
 			);

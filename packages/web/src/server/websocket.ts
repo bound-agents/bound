@@ -452,6 +452,9 @@ export function createWebSocketHandler(
 					created_at: now,
 					modified_at: now,
 					host_origin: hostOrigin,
+					deleted: 0,
+					exit_code: null,
+					metadata: null,
 				},
 				siteId,
 			);
@@ -597,6 +600,9 @@ export function createWebSocketHandler(
 					created_at: now,
 					modified_at: now,
 					host_origin: hostOrigin,
+					deleted: 0,
+					exit_code: null,
+					metadata: null,
 				},
 				siteId,
 			);
@@ -772,6 +778,9 @@ export function createWebSocketHandler(
 							created_at: now,
 							modified_at: now,
 							host_origin: hostOrigin,
+							deleted: 0,
+							exit_code: null,
+							metadata: null,
 						},
 						siteId,
 					);

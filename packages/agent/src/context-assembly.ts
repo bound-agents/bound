@@ -936,6 +936,9 @@ Original output was too large for the context window. If you need the full conte
 					created_at: msg.created_at,
 					modified_at: msg.modified_at,
 					host_origin: "local",
+					deleted: 0,
+					exit_code: null,
+					metadata: null,
 				});
 			}
 			// Skip this message (and all subsequent messages in the same purge group)
@@ -1139,6 +1142,9 @@ Original output was too large for the context window. If you need the full conte
 					created_at: new Date().toISOString(),
 					modified_at: new Date().toISOString(),
 					host_origin: "local",
+					deleted: 0,
+					exit_code: null,
+					metadata: null,
 				},
 			];
 		}
@@ -1152,6 +1158,9 @@ Original output was too large for the context window. If you need the full conte
 			created_at: new Date().toISOString(),
 			modified_at: new Date().toISOString(),
 			host_origin: "local",
+			deleted: 0,
+			exit_code: null,
+			metadata: null,
 		}));
 	};
 
@@ -1225,6 +1234,9 @@ Original output was too large for the context window. If you need the full conte
 					created_at: msg.created_at,
 					modified_at: msg.modified_at,
 					host_origin: msg.host_origin,
+					deleted: 0,
+					exit_code: null,
+					metadata: null,
 				};
 				lastSyntheticToolCall = syntheticMsg;
 				sanitized.push(syntheticMsg);

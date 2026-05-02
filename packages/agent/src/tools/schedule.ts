@@ -88,7 +88,7 @@ export function createScheduleTool(ctx: ToolContext): RegisteredTool {
 
 				const taskId = randomUUID();
 				const now = new Date().toISOString();
-				let type: string;
+				let type: import("@bound/shared").TaskType;
 				let triggerSpec: string;
 				let nextRunAt: string | null = null;
 

@@ -61,7 +61,9 @@ export interface Thread {
 	extracted_through: string | null;
 	created_at: string;
 	last_message_at: string;
+	modified_at: string;
 	deleted: number;
+	model_hint: string | null;
 }
 
 export interface Message {
@@ -74,8 +76,9 @@ export interface Message {
 	created_at: string;
 	modified_at: string | null;
 	host_origin: string;
-	/** Exit code from tool execution. Only set for tool_result messages. */
-	exit_code?: number | null;
+	deleted: number;
+	exit_code: number | null;
+	metadata: string | null;
 }
 
 export interface SemanticMemory {
@@ -227,6 +230,7 @@ export interface Advisory {
 	resolved_at: string | null;
 	created_by: string | null;
 	modified_at: string;
+	deleted: number;
 }
 
 export interface Skill {
@@ -246,6 +250,7 @@ export interface Skill {
 	retired_by: string | null;
 	retired_reason: string | null;
 	modified_at: string;
+	deleted: number;
 }
 
 export interface MemoryEdge {
@@ -257,6 +262,42 @@ export interface MemoryEdge {
 	created_at: string;
 	modified_at: string;
 	deleted: number;
+}
+
+export interface Turn {
+	id: string;
+	thread_id: string | null;
+	task_id: string | null;
+	dag_root_id: string | null;
+	model_id: string;
+	tokens_in: number;
+	tokens_out: number;
+	tokens_cache_write: number | null;
+	tokens_cache_read: number | null;
+	cost_usd: number | null;
+	created_at: string;
+	status: string | null;
+	relay_target: string | null;
+	relay_latency_ms: number | null;
+	context_debug: string | null;
+	host_origin: string | null;
+	modified_at: string | null;
+}
+
+export interface SyncedTableRowMap {
+	users: User;
+	threads: Thread;
+	messages: Message;
+	semantic_memory: SemanticMemory;
+	tasks: Task;
+	files: AgentFile;
+	hosts: Host;
+	overlay_index: OverlayIndexEntry;
+	cluster_config: ClusterConfigEntry;
+	advisories: Advisory;
+	skills: Skill;
+	memory_edges: MemoryEdge;
+	turns: Turn;
 }
 
 /** Maximum file size (in bytes) for storage in the synced files table. */

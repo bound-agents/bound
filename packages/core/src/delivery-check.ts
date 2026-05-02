@@ -110,6 +110,7 @@ export async function runPostLoopDeliveryCheck(
 			modified_at: now,
 			host_origin: hostName,
 			deleted: 0,
+			exit_code: null,
 			metadata: JSON.stringify({ [metadataKey]: tombstoneUuid }),
 		},
 		siteId,

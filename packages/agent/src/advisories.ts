@@ -7,7 +7,7 @@ export function createAdvisory(
 	db: Database,
 	advisory: Omit<
 		Advisory,
-		"id" | "proposed_at" | "modified_at" | "created_by" | "defer_until" | "resolved_at"
+		"id" | "proposed_at" | "modified_at" | "created_by" | "defer_until" | "resolved_at" | "deleted"
 	>,
 	siteId: string,
 ): string {
@@ -27,6 +27,8 @@ export function createAdvisory(
 			impact: advisory.impact,
 			evidence: advisory.evidence,
 			proposed_at: now,
+			defer_until: null,
+			resolved_at: null,
 			modified_at: now,
 			created_by: siteId,
 			deleted: 0,
