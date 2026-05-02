@@ -1,8 +1,19 @@
 import { insertRow } from "@bound/core";
 import { randomUUID } from "@bound/shared";
+import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
+import { parseToolInput, zodToToolParams } from "./tool-schema";
+
+const purgeSchema = z.object({
+	message_ids: z.string().optional().describe("Comma-separated message IDs to purge"),
+	last_n: z.number().int().optional().describe("Purge the last N messages from the thread"),
+	thread_id: z.string().optional().describe("Thread ID (defaults to current thread)"),
+	summary: z.string().optional().describe("Optional summary text for the purge"),
+});
 
 export function createPurgeTool(ctx: ToolContext): RegisteredTool {
+	const jsonSchema = zodToToolParams(purgeSchema);
+
 	return {
 		kind: "builtin",
 		toolDefinition: {
@@ -10,38 +21,22 @@ export function createPurgeTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "purge",
 				description: "Create a purge record targeting message IDs",
-				parameters: {
-					type: "object",
-					properties: {
-						message_ids: {
-							type: "string",
-							description: "Comma-separated message IDs to purge",
-						},
-						last_n: {
-							type: "integer",
-							description: "Purge the last N messages from the thread",
-						},
-						thread_id: {
-							type: "string",
-							description: "Thread ID (defaults to current thread)",
-						},
-						summary: {
-							type: "string",
-							description: "Optional summary text for the purge",
-						},
-					},
-				},
+				parameters: jsonSchema,
 			},
 		},
-		execute: async (input: Record<string, unknown>) => {
+		execute: async (raw: Record<string, unknown>) => {
+			const parsed = parseToolInput(purgeSchema, raw, "purge");
+			if (!parsed.ok) return parsed.error;
+			const input = parsed.value;
+
 			try {
 				const now = new Date().toISOString();
 				let targetIds: string[] = [];
 
-				const messageIds = input.message_ids as string | undefined;
-				const lastN = input.last_n as number | undefined;
-				const threadIdParam = input.thread_id as string | undefined;
-				const summaryText = input.summary as string | undefined;
+				const messageIds = input.message_ids;
+				const lastN = input.last_n;
+				const threadIdParam = input.thread_id;
+				const summaryText = input.summary;
 
 				if (messageIds) {
 					// Parse comma-separated IDs
@@ -84,10 +79,10 @@ export function createPurgeTool(ctx: ToolContext): RegisteredTool {
 							const paired = ctx.db
 								.prepare(
 									`SELECT id FROM messages
-									 WHERE thread_id = (SELECT thread_id FROM messages WHERE id = ?)
-									   AND role = 'tool_result'
-									   AND created_at > (SELECT created_at FROM messages WHERE id = ?)
-									 ORDER BY created_at ASC LIMIT 1`,
+										 WHERE thread_id = (SELECT thread_id FROM messages WHERE id = ?)
+										   AND role = 'tool_result'
+										   AND created_at > (SELECT created_at FROM messages WHERE id = ?)
+										 ORDER BY created_at ASC LIMIT 1`,
 								)
 								.get(msg.id, msg.id) as { id: string } | null;
 
@@ -127,6 +122,9 @@ export function createPurgeTool(ctx: ToolContext): RegisteredTool {
 						created_at: now,
 						modified_at: now,
 						host_origin: ctx.siteId,
+						deleted: 0,
+						exit_code: null,
+						metadata: null,
 					},
 					ctx.siteId,
 				);

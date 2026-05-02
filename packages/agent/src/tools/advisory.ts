@@ -1,3 +1,4 @@
+import { z } from "zod";
 import {
 	applyAdvisory,
 	approveAdvisory,
@@ -6,6 +7,7 @@ import {
 	dismissAdvisory,
 } from "../advisories";
 import type { RegisteredTool, ToolContext } from "../types";
+import { parseToolInput, zodToToolParams } from "./tool-schema";
 
 /**
  * Resolve a (possibly prefix-truncated) advisory ID to the full UUID.
@@ -30,7 +32,23 @@ function resolveAdvisoryId(
 	return { ok: true, id: rows[0].id };
 }
 
+const advisorySchema = z.object({
+	title: z.string().optional().describe("Advisory title (for creating)"),
+	detail: z.string().optional().describe("Advisory detail/description (for creating)"),
+	action: z.string().optional().describe("Recommended corrective action (for creating)"),
+	impact: z.string().optional().describe("Impact description (for creating)"),
+	list: z.boolean().optional().describe("List advisories"),
+	list_status: z.string().optional().describe("Filter listed advisories by status"),
+	approve: z.string().optional().describe("Advisory ID prefix to approve"),
+	apply: z.string().optional().describe("Advisory ID prefix to apply"),
+	dismiss: z.string().optional().describe("Advisory ID prefix to dismiss"),
+	defer: z.string().optional().describe("Advisory ID prefix to defer"),
+	defer_until: z.string().optional().describe("ISO date to defer until (default: 24h from now)"),
+});
+
 export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
+	const jsonSchema = zodToToolParams(advisorySchema);
+
 	return {
 		kind: "builtin",
 		toolDefinition: {
@@ -38,82 +56,26 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "advisory",
 				description: "Post a proactive advisory for operator review",
-				parameters: {
-					type: "object",
-					properties: {
-						title: {
-							type: "string",
-							description: "Advisory title (for creating)",
-						},
-						detail: {
-							type: "string",
-							description: "Advisory detail/description (for creating)",
-						},
-						action: {
-							type: "string",
-							description: "Recommended corrective action (for creating)",
-						},
-						impact: {
-							type: "string",
-							description: "Impact description (for creating)",
-						},
-						list: {
-							type: "boolean",
-							description: "List advisories",
-						},
-						list_status: {
-							type: "string",
-							description: "Filter listed advisories by status",
-						},
-						approve: {
-							type: "string",
-							description: "Advisory ID prefix to approve",
-						},
-						apply: {
-							type: "string",
-							description: "Advisory ID prefix to apply",
-						},
-						dismiss: {
-							type: "string",
-							description: "Advisory ID prefix to dismiss",
-						},
-						defer: {
-							type: "string",
-							description: "Advisory ID prefix to defer",
-						},
-						defer_until: {
-							type: "string",
-							description: "ISO date to defer until (default: 24h from now)",
-						},
-					},
-				},
+				parameters: jsonSchema,
 			},
 		},
-		execute: async (input: Record<string, unknown>) => {
-			try {
-				const title = input.title as string | undefined;
-				const detail = input.detail as string | undefined;
-				const action = input.action as string | undefined;
-				const impact = input.impact as string | undefined;
-				const list = input.list as boolean | undefined;
-				const listStatus = input.list_status as string | undefined;
-				const approve = input.approve as string | undefined;
-				const apply = input.apply as string | undefined;
-				const dismiss = input.dismiss as string | undefined;
-				const defer = input.defer as string | undefined;
-				const deferUntil = input.defer_until as string | undefined;
+		execute: async (raw: Record<string, unknown>) => {
+			const parsed = parseToolInput(advisorySchema, raw, "advisory");
+			if (!parsed.ok) return parsed.error;
+			const input = parsed.value;
 
+			try {
 				// Create advisory
-				if (title && detail) {
+				if (input.title && input.detail) {
 					const id = createAdvisory(
 						ctx.db,
 						{
 							type: "general",
 							status: "proposed",
-							title: title.trim(),
-							detail: detail.trim(),
-							action: action?.trim() ?? null,
-							impact: impact?.trim() ?? null,
+							title: input.title.trim(),
+							detail: input.detail.trim(),
+							action: input.action?.trim() ?? null,
+							impact: input.impact?.trim() ?? null,
 							evidence: null,
 						},
 						ctx.siteId,
@@ -122,18 +84,18 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 				}
 
 				// List advisories
-				if (list) {
+				if (input.list) {
 					let query = "SELECT id, type, status, title, detail FROM advisories WHERE deleted = 0";
 
-					if (listStatus) {
+					if (input.list_status) {
 						query += " AND status = ?";
 					} else {
 						query += " AND status NOT IN ('applied', 'dismissed')";
 					}
 					query += " ORDER BY proposed_at DESC LIMIT 20";
 
-					const rows = listStatus
-						? (ctx.db.prepare(query).all(listStatus) as Array<{
+					const rows = input.list_status
+						? (ctx.db.prepare(query).all(input.list_status) as Array<{
 								id: string;
 								type: string;
 								status: string;
@@ -159,8 +121,8 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 				}
 
 				// Approve advisory
-				if (approve) {
-					const resolved = resolveAdvisoryId(ctx.db, approve);
+				if (input.approve) {
+					const resolved = resolveAdvisoryId(ctx.db, input.approve);
 					if (!resolved.ok) {
 						return `Error: ${resolved.error}`;
 					}
@@ -172,8 +134,8 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 				}
 
 				// Apply advisory
-				if (apply) {
-					const resolved = resolveAdvisoryId(ctx.db, apply);
+				if (input.apply) {
+					const resolved = resolveAdvisoryId(ctx.db, input.apply);
 					if (!resolved.ok) {
 						return `Error: ${resolved.error}`;
 					}
@@ -185,8 +147,8 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 				}
 
 				// Dismiss advisory
-				if (dismiss) {
-					const resolved = resolveAdvisoryId(ctx.db, dismiss);
+				if (input.dismiss) {
+					const resolved = resolveAdvisoryId(ctx.db, input.dismiss);
 					if (!resolved.ok) {
 						return `Error: ${resolved.error}`;
 					}
@@ -198,12 +160,12 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 				}
 
 				// Defer advisory
-				if (defer) {
-					const resolved = resolveAdvisoryId(ctx.db, defer);
+				if (input.defer) {
+					const resolved = resolveAdvisoryId(ctx.db, input.defer);
 					if (!resolved.ok) {
 						return `Error: ${resolved.error}`;
 					}
-					const deferDate = deferUntil || new Date(Date.now() + 24 * 3600_000).toISOString();
+					const deferDate = input.defer_until || new Date(Date.now() + 24 * 3600_000).toISOString();
 					const result = deferAdvisory(ctx.db, resolved.id, deferDate, ctx.siteId);
 					if (!result.ok) {
 						return `Error: Failed to defer advisory: ${result.error.message}`;

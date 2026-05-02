@@ -1,5 +1,6 @@
 import { insertRow, softDelete, updateRow } from "@bound/core";
 import { BOUND_NAMESPACE, type MemoryTier, deterministicUUID } from "@bound/shared";
+import { z } from "zod";
 import {
 	cascadeDeleteEdges,
 	getNeighbors,
@@ -8,8 +9,42 @@ import {
 	upsertEdge,
 } from "../graph-queries";
 import type { RegisteredTool, ToolContext } from "../types";
+import { parseToolInput, zodToToolParams } from "./tool-schema";
 
-const VALID_TIERS: MemoryTier[] = ["pinned", "summary", "default", "detail"];
+const memorySchema = z.object({
+	action: z
+		.enum(["store", "forget", "search", "connect", "disconnect", "traverse", "neighbors"])
+		.describe("Memory operation to perform"),
+	key: z
+		.string()
+		.optional()
+		.describe("Memory key (for store, forget, search, traverse, neighbors)"),
+	value: z.string().optional().describe("Memory value (for store)"),
+	source_tag: z
+		.string()
+		.optional()
+		.describe("Provenance tag (for store; defaults to task/thread/agent)"),
+	tier: z
+		.enum(["pinned", "summary", "default", "detail"])
+		.optional()
+		.describe("Memory tier (for store)"),
+	prefix: z.string().optional().describe("Key prefix for batch forget"),
+	source_key: z.string().optional().describe("Source memory key (for connect, disconnect)"),
+	target_key: z.string().optional().describe("Target memory key (for connect, disconnect)"),
+	relation: z
+		.string()
+		.optional()
+		.describe("Edge relation type from CANONICAL_RELATIONS (for connect, disconnect)"),
+	weight: z.number().optional().describe("Edge weight 0-10 (for connect; default 1.0)"),
+	context: z.string().optional().describe("Free-text context phrase (for connect)"),
+	depth: z.number().int().optional().describe("Traversal depth 1-3 (for traverse; default 2)"),
+	direction: z
+		.enum(["out", "in", "both"])
+		.optional()
+		.describe("Neighbor direction (for neighbors; default 'both')"),
+});
+
+type MemoryInput = z.infer<typeof memorySchema>;
 
 const PINNED_PREFIXES = ["_standing", "_feedback", "_policy", "_pinned"];
 
@@ -82,13 +117,13 @@ const STOP_WORDS = new Set([
 	"if",
 ]);
 
-function handleStore(args: Record<string, unknown>, ctx: ToolContext): string {
-	const key = args.key as string | undefined;
-	const value = args.value as string | undefined;
+function handleStore(args: MemoryInput, ctx: ToolContext): string {
+	const key = args.key;
+	const value = args.value;
 	if (!key || !value) {
 		return "Error: store requires 'key' and 'value' parameters";
 	}
-	const source = (args.source_tag as string | undefined) || ctx.taskId || ctx.threadId || "agent";
+	const source = args.source_tag || ctx.taskId || ctx.threadId || "agent";
 	const memoryId = deterministicUUID(BOUND_NAMESPACE, key);
 	const now = new Date().toISOString();
 
@@ -99,12 +134,7 @@ function handleStore(args: Record<string, unknown>, ctx: ToolContext): string {
 	if (hasPinnedPrefix) {
 		resolvedTier = "pinned";
 	} else if (args.tier) {
-		// 2. Explicit --tier argument
-		const tierStr = args.tier as string;
-		if (!VALID_TIERS.includes(tierStr as MemoryTier)) {
-			return `Error: invalid tier: ${tierStr}. Must be one of: ${VALID_TIERS.join(", ")}`;
-		}
-		resolvedTier = tierStr as MemoryTier;
+		resolvedTier = args.tier;
 	}
 
 	// bun:sqlite .get() returns null (not undefined) when no row found
@@ -144,8 +174,8 @@ function handleStore(args: Record<string, unknown>, ctx: ToolContext): string {
 	return `Memory saved: ${key}`;
 }
 
-function handleForget(args: Record<string, unknown>, ctx: ToolContext): string {
-	const prefix = args.prefix as string | undefined;
+function handleForget(args: MemoryInput, ctx: ToolContext): string {
+	const prefix = args.prefix;
 	if (prefix) {
 		const entries = ctx.db
 			.prepare("SELECT id, key FROM semantic_memory WHERE key LIKE ? AND deleted = 0")
@@ -165,7 +195,7 @@ function handleForget(args: Record<string, unknown>, ctx: ToolContext): string {
 		return `Deleted ${entries.length} memories with prefix: ${prefix}${edgeSuffix}`;
 	}
 
-	const key = args.key as string | undefined;
+	const key = args.key;
 	if (!key) {
 		return "Error: forget requires 'key' parameter (or use 'prefix' for batch deletion)";
 	}
@@ -209,8 +239,8 @@ function handleForget(args: Record<string, unknown>, ctx: ToolContext): string {
 	return `Memory deleted: ${key}${edgeSuffix}`;
 }
 
-function handleSearch(args: Record<string, unknown>, ctx: ToolContext): string {
-	const queryText = args.key as string | undefined;
+function handleSearch(args: MemoryInput, ctx: ToolContext): string {
+	const queryText = args.key;
 	if (!queryText) {
 		return "Error: search requires 'key' parameter";
 	}
@@ -256,12 +286,12 @@ function handleSearch(args: Record<string, unknown>, ctx: ToolContext): string {
 	return `Found ${results.length} memories:\n${lines.join("\n")}`;
 }
 
-function handleConnect(args: Record<string, unknown>, ctx: ToolContext): string {
-	const src = args.source_key as string | undefined;
-	const tgt = args.target_key as string | undefined;
-	const rel = args.relation as string | undefined;
-	const weight = args.weight ? Number.parseFloat(String(args.weight)) : 1.0;
-	const context = args.context as string | undefined;
+function handleConnect(args: MemoryInput, ctx: ToolContext): string {
+	const src = args.source_key;
+	const tgt = args.target_key;
+	const rel = args.relation;
+	const weight = args.weight ?? 1.0;
+	const context = args.context;
 
 	if (!src || !tgt || !rel) {
 		return "Error: connect requires 'source_key', 'target_key', and 'relation' parameters";
@@ -303,10 +333,10 @@ function handleConnect(args: Record<string, unknown>, ctx: ToolContext): string 
 	return `Edge created: ${src} --[${rel}]--> ${tgt} (weight=${weight}${contextSuffix}, id=${id})`;
 }
 
-function handleDisconnect(args: Record<string, unknown>, ctx: ToolContext): string {
-	const src = args.source_key as string | undefined;
-	const tgt = args.target_key as string | undefined;
-	const rel = args.relation as string | undefined;
+function handleDisconnect(args: MemoryInput, ctx: ToolContext): string {
+	const src = args.source_key;
+	const tgt = args.target_key;
+	const rel = args.relation;
 
 	if (!src || !tgt) {
 		return "Error: disconnect requires 'source_key' and 'target_key' parameters";
@@ -340,14 +370,14 @@ function handleDisconnect(args: Record<string, unknown>, ctx: ToolContext): stri
 	return `Removed ${count} edge(s) between ${src} and ${tgt}`;
 }
 
-function handleTraverse(args: Record<string, unknown>, ctx: ToolContext): string {
-	const key = args.key as string | undefined;
+function handleTraverse(args: MemoryInput, ctx: ToolContext): string {
+	const key = args.key;
 	if (!key) {
 		return "Error: traverse requires 'key' parameter";
 	}
 
-	const depth = args.depth ? Number.parseInt(String(args.depth), 10) : 2;
-	const relation = args.relation as string | undefined;
+	const depth = args.depth ?? 2;
+	const relation = args.relation;
 
 	if (Number.isNaN(depth) || depth < 1) {
 		return "Error: depth must be a positive integer (1-3)";
@@ -366,16 +396,13 @@ function handleTraverse(args: Record<string, unknown>, ctx: ToolContext): string
 	return `Graph traversal from ${key} (depth=${Math.min(depth, 3)}, ${results.length} entries):\n${lines.join("\n")}`;
 }
 
-function handleNeighbors(args: Record<string, unknown>, ctx: ToolContext): string {
-	const key = args.key as string | undefined;
+function handleNeighbors(args: MemoryInput, ctx: ToolContext): string {
+	const key = args.key;
 	if (!key) {
 		return "Error: neighbors requires 'key' parameter";
 	}
 
-	const dir = (args.direction as "out" | "in" | "both") || "both";
-	if (!["out", "in", "both"].includes(dir)) {
-		return "Error: direction must be one of: out, in, both";
-	}
+	const dir = args.direction ?? "both";
 
 	const results = getNeighbors(ctx.db, key, dir);
 
@@ -391,6 +418,8 @@ function handleNeighbors(args: Record<string, unknown>, ctx: ToolContext): strin
 }
 
 export function createMemoryTool(ctx: ToolContext): RegisteredTool {
+	const jsonSchema = zodToToolParams(memorySchema);
+
 	return {
 		kind: "builtin",
 		toolDefinition: {
@@ -399,67 +428,16 @@ export function createMemoryTool(ctx: ToolContext): RegisteredTool {
 				name: "memory",
 				description:
 					"Semantic memory operations: store, forget, search, connect, disconnect, traverse, neighbors",
-				parameters: {
-					type: "object",
-					properties: {
-						action: {
-							type: "string",
-							enum: ["store", "forget", "search", "connect", "disconnect", "traverse", "neighbors"],
-							description: "Memory operation to perform",
-						},
-						key: {
-							type: "string",
-							description: "Memory key (for store, forget, search, traverse, neighbors)",
-						},
-						value: { type: "string", description: "Memory value (for store)" },
-						source_tag: {
-							type: "string",
-							description: "Provenance tag (for store; defaults to task/thread/agent)",
-						},
-						tier: {
-							type: "string",
-							enum: ["pinned", "summary", "default", "detail"],
-							description: "Memory tier (for store)",
-						},
-						prefix: { type: "string", description: "Key prefix for batch forget" },
-						source_key: {
-							type: "string",
-							description: "Source memory key (for connect, disconnect)",
-						},
-						target_key: {
-							type: "string",
-							description: "Target memory key (for connect, disconnect)",
-						},
-						relation: {
-							type: "string",
-							description: "Edge relation type from CANONICAL_RELATIONS (for connect, disconnect)",
-						},
-						weight: { type: "number", description: "Edge weight 0-10 (for connect; default 1.0)" },
-						context: { type: "string", description: "Free-text context phrase (for connect)" },
-						depth: {
-							type: "integer",
-							description: "Traversal depth 1-3 (for traverse; default 2)",
-						},
-						direction: {
-							type: "string",
-							enum: ["out", "in", "both"],
-							description: "Neighbor direction (for neighbors; default 'both')",
-						},
-					},
-					required: ["action"],
-					additionalProperties: false,
-				},
+				parameters: jsonSchema,
 			},
 		},
-		execute: async (input: Record<string, unknown>) => {
+		execute: async (raw: Record<string, unknown>) => {
+			const parsed = parseToolInput(memorySchema, raw, "memory");
+			if (!parsed.ok) return parsed.error;
+			const input = parsed.value;
+
 			try {
-				const action = input.action as string | undefined;
-
-				if (!action) {
-					return "Error: 'action' parameter is required";
-				}
-
-				switch (action) {
+				switch (input.action) {
 					case "store":
 						return handleStore(input, ctx);
 					case "forget":
@@ -474,8 +452,10 @@ export function createMemoryTool(ctx: ToolContext): RegisteredTool {
 						return handleTraverse(input, ctx);
 					case "neighbors":
 						return handleNeighbors(input, ctx);
-					default:
-						return `Error: Unknown action "${action}". Valid actions: store, forget, search, connect, disconnect, traverse, neighbors`;
+					default: {
+						const _exhaustive: never = input.action;
+						return `Error: Unknown action "${_exhaustive}"`;
+					}
 				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);

@@ -1,5 +1,7 @@
 import { formatError } from "@bound/shared";
+import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types.js";
+import { parseToolInput, zodToToolParams } from "./tool-schema";
 
 const MAX_ROWS = 1000;
 const MAX_OUTPUT_BYTES = 1_048_576; // 1MB
@@ -108,7 +110,13 @@ function isSafePragma(sql: string): ValidationResult {
 	};
 }
 
+const querySchema = z.object({
+	sql: z.string().describe("SQL SELECT query or read-only PRAGMA to execute"),
+});
+
 export function createQueryTool(ctx: ToolContext): RegisteredTool {
+	const jsonSchema = zodToToolParams(querySchema);
+
 	return {
 		kind: "builtin",
 		toolDefinition: {
@@ -116,27 +124,16 @@ export function createQueryTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "query",
 				description: "Execute a read-only SELECT query or read-only PRAGMA against the database",
-				parameters: {
-					type: "object",
-					properties: {
-						sql: {
-							type: "string",
-							description: "SQL SELECT query or read-only PRAGMA to execute",
-						},
-					},
-					required: ["sql"],
-				},
+				parameters: jsonSchema,
 			},
 		},
-		execute: async (input: Record<string, unknown>) => {
+		execute: async (raw: Record<string, unknown>) => {
+			const parsed = parseToolInput(querySchema, raw, "query");
+			if (!parsed.ok) return parsed.error;
+			const input = parsed.value;
+
 			try {
-				const sql = input.sql as string | undefined;
-
-				if (!sql) {
-					return "Error: sql parameter is required";
-				}
-
-				const validation = isSafePragma(sql);
+				const validation = isSafePragma(input.sql);
 				if (!validation.ok) {
 					return `Error: ${validation.message}`;
 				}

@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { insertRow, updateRow } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
 import { parseFrontmatter } from "./skill-utils";
+import { parseToolInput, zodToToolParams } from "./tool-schema";
 
 const MAX_ACTIVE_SKILLS = 20;
 const MAX_SKILL_BODY_LINES = 500;
@@ -11,7 +13,17 @@ const MAX_DESCRIPTION_LENGTH = 1024;
 const SKILL_NAME_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const MAX_SKILL_NAME_LENGTH = 64;
 
+const skillSchema = z.object({
+	action: z.enum(["activate", "list", "read", "retire"]).describe("Skill operation to perform"),
+	name: z.string().optional().describe("Skill name (for activate, read, retire)"),
+	status: z.enum(["active", "retired"]).optional().describe("Filter by status (for list)"),
+	verbose: z.boolean().optional().describe("Show extra columns (for list)"),
+	reason: z.string().optional().describe("Reason for retiring (for retire)"),
+});
+
 export function createSkillTool(ctx: ToolContext): RegisteredTool {
+	const jsonSchema = zodToToolParams(skillSchema);
+
 	return {
 		kind: "builtin",
 		toolDefinition: {
@@ -19,46 +31,16 @@ export function createSkillTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "skill",
 				description: "Manage skills: activate, list, read, or retire",
-				parameters: {
-					type: "object",
-					properties: {
-						action: {
-							type: "string",
-							enum: ["activate", "list", "read", "retire"],
-							description: "Skill operation to perform",
-						},
-						name: {
-							type: "string",
-							description: "Skill name (for activate, read, retire)",
-						},
-						status: {
-							type: "string",
-							enum: ["active", "retired"],
-							description: "Filter by status (for list)",
-						},
-						verbose: {
-							type: "boolean",
-							description: "Show extra columns (for list)",
-						},
-						reason: {
-							type: "string",
-							description: "Reason for retiring (for retire)",
-						},
-					},
-					required: ["action"],
-					additionalProperties: false,
-				},
+				parameters: jsonSchema,
 			},
 		},
-		execute: async (input: Record<string, unknown>): Promise<string> => {
+		execute: async (raw: Record<string, unknown>): Promise<string> => {
+			const parsed = parseToolInput(skillSchema, raw, "skill");
+			if (!parsed.ok) return parsed.error;
+			const input = parsed.value;
+
 			try {
-				const action = input.action as string;
-
-				if (!action) {
-					return `Error: 'action' is required. Valid actions: activate, list, read, retire`;
-				}
-
-				switch (action) {
+				switch (input.action) {
 					case "activate":
 						return await handleActivate(ctx, input);
 					case "list":
@@ -68,7 +50,7 @@ export function createSkillTool(ctx: ToolContext): RegisteredTool {
 					case "retire":
 						return await handleRetire(ctx, input);
 					default:
-						return `Error: Invalid action '${action}'. Valid actions: activate, list, read, retire`;
+						return `Error: Invalid action '${input.action}'. Valid actions: activate, list, read, retire`;
 				}
 			} catch (error) {
 				return `Error: ${error instanceof Error ? error.message : String(error)}`;
@@ -77,25 +59,27 @@ export function createSkillTool(ctx: ToolContext): RegisteredTool {
 	};
 }
 
-async function handleActivate(ctx: ToolContext, input: Record<string, unknown>): Promise<string> {
+async function handleActivate(
+	ctx: ToolContext,
+	input: z.infer<typeof skillSchema>,
+): Promise<string> {
 	if (!ctx.fs) {
 		return "Error: Filesystem unavailable: ctx.fs is not set";
 	}
 
-	const name = input.name as string | undefined;
-	if (!name) {
+	if (!input.name) {
 		return "Error: 'name' is required for activate action";
 	}
 
-	const skillRoot = `/home/user/skills/${name}`;
+	const skillRoot = `/home/user/skills/${input.name}`;
 	const skillMdPath = `${skillRoot}/SKILL.md`;
 
 	// Validate skill name format
-	if (!SKILL_NAME_REGEX.test(name)) {
-		return `Error: Invalid skill name '${name}': must match ^[a-z0-9]+(-[a-z0-9]+)*$ (lowercase alphanumeric, hyphens allowed between segments)`;
+	if (!SKILL_NAME_REGEX.test(input.name)) {
+		return `Error: Invalid skill name '${input.name}': must match ^[a-z0-9]+(-[a-z0-9]+)*$ (lowercase alphanumeric, hyphens allowed between segments)`;
 	}
-	if (name.length > MAX_SKILL_NAME_LENGTH) {
-		return `Error: Skill name '${name}' exceeds maximum length of ${MAX_SKILL_NAME_LENGTH} characters`;
+	if (input.name.length > MAX_SKILL_NAME_LENGTH) {
+		return `Error: Skill name '${input.name}' exceeds maximum length of ${MAX_SKILL_NAME_LENGTH} characters`;
 	}
 
 	// Read SKILL.md
@@ -103,7 +87,7 @@ async function handleActivate(ctx: ToolContext, input: Record<string, unknown>):
 	try {
 		content = await ctx.fs.readFile(skillMdPath);
 	} catch {
-		return `Error: Skill '${name}' not found: missing ${skillMdPath}`;
+		return `Error: Skill '${input.name}' not found: missing ${skillMdPath}`;
 	}
 
 	// Validate file size
@@ -121,8 +105,8 @@ async function handleActivate(ctx: ToolContext, input: Record<string, unknown>):
 	const { data, body } = parsed;
 
 	// Validate name matches directory
-	if (data.name && data.name !== name) {
-		return `Error: Frontmatter 'name' field ('${data.name}') does not match directory name ('${name}')`;
+	if (data.name && data.name !== input.name) {
+		return `Error: Frontmatter 'name' field ('${data.name}') does not match directory name ('${input.name}')`;
 	}
 
 	// Validate description is present and within length limit
@@ -140,7 +124,7 @@ async function handleActivate(ctx: ToolContext, input: Record<string, unknown>):
 	}
 
 	// Check active skill cap — do not count the skill being (re-)activated itself
-	const skillId = deterministicUUID(BOUND_NAMESPACE, name);
+	const skillId = deterministicUUID(BOUND_NAMESPACE, input.name);
 	const capRow = ctx.db
 		.prepare(
 			"SELECT COUNT(*) as count FROM skills WHERE status = 'active' AND deleted = 0 AND id != ?",
@@ -235,7 +219,7 @@ async function handleActivate(ctx: ToolContext, input: Record<string, unknown>):
 			"skills",
 			{
 				id: skillId,
-				name,
+				name: input.name,
 				description: data.description,
 				status: "active",
 				skill_root: skillRoot,
@@ -256,15 +240,12 @@ async function handleActivate(ctx: ToolContext, input: Record<string, unknown>):
 		);
 	}
 
-	return `Skill '${name}' activated successfully.`;
+	return `Skill '${input.name}' activated successfully.`;
 }
 
-async function handleList(ctx: ToolContext, input: Record<string, unknown>): Promise<string> {
-	const statusFilter = input.status as string | undefined;
-	const verbose = input.verbose === true;
-
-	const whereClause = statusFilter ? "WHERE status = ? AND deleted = 0" : "WHERE deleted = 0";
-	const queryArgs = statusFilter ? [statusFilter] : [];
+async function handleList(ctx: ToolContext, input: z.infer<typeof skillSchema>): Promise<string> {
+	const whereClause = input.status ? "WHERE status = ? AND deleted = 0" : "WHERE deleted = 0";
+	const queryArgs = input.status ? [input.status] : [];
 
 	const rows = ctx.db
 		.prepare(
@@ -287,14 +268,14 @@ async function handleList(ctx: ToolContext, input: Record<string, unknown>): Pro
 	}>;
 
 	if (rows.length === 0) {
-		const filter = statusFilter ? ` (status: ${statusFilter})` : "";
+		const filter = input.status ? ` (status: ${input.status})` : "";
 		return `No skills found${filter}.`;
 	}
 
 	const lines: string[] = [];
 
 	// Header
-	if (verbose) {
+	if (input.verbose) {
 		lines.push(
 			"NAME             STATUS   ACTIVATIONS LAST USED            DESCRIPTION                     ALLOWED_TOOLS        COMPATIBILITY   CONTENT_HASH     RETIRED_REASON",
 		);
@@ -311,7 +292,7 @@ async function handleList(ctx: ToolContext, input: Record<string, unknown>): Pro
 		const lastUsed = (row.last_activated_at?.slice(0, 19) ?? "never").padEnd(20);
 		const desc = row.description.slice(0, 33).padEnd(33);
 
-		if (verbose) {
+		if (input.verbose) {
 			const tools = (row.allowed_tools ?? "").slice(0, 20).padEnd(20);
 			const compatibility = (row.compatibility ?? "").slice(0, 15).padEnd(15);
 			const hash = (row.content_hash ?? "").slice(0, 16).padEnd(16);
@@ -327,20 +308,19 @@ async function handleList(ctx: ToolContext, input: Record<string, unknown>): Pro
 	return lines.join("\n");
 }
 
-async function handleRead(ctx: ToolContext, input: Record<string, unknown>): Promise<string> {
-	const name = input.name as string | undefined;
-	if (!name) {
+async function handleRead(ctx: ToolContext, input: z.infer<typeof skillSchema>): Promise<string> {
+	if (!input.name) {
 		return "Error: 'name' is required for read action";
 	}
 
-	const skillMdPath = `/home/user/skills/${name}/SKILL.md`;
+	const skillMdPath = `/home/user/skills/${input.name}/SKILL.md`;
 
 	// Get skill metadata
 	const skill = ctx.db
 		.prepare(
 			"SELECT id, name, status, activation_count, last_activated_at, description, content_hash FROM skills WHERE name = ? AND deleted = 0",
 		)
-		.get(name) as {
+		.get(input.name) as {
 		id: string;
 		name: string;
 		status: string;
@@ -351,7 +331,7 @@ async function handleRead(ctx: ToolContext, input: Record<string, unknown>): Pro
 	} | null;
 
 	if (!skill) {
-		return `Error: Skill '${name}' not found.`;
+		return `Error: Skill '${input.name}' not found.`;
 	}
 
 	// Read SKILL.md content from files table
@@ -373,21 +353,20 @@ async function handleRead(ctx: ToolContext, input: Record<string, unknown>): Pro
 	return `${header}${skillMdContent}`;
 }
 
-async function handleRetire(ctx: ToolContext, input: Record<string, unknown>): Promise<string> {
-	const name = input.name as string | undefined;
-	if (!name) {
+async function handleRetire(ctx: ToolContext, input: z.infer<typeof skillSchema>): Promise<string> {
+	if (!input.name) {
 		return "Error: 'name' is required for retire action";
 	}
 
-	const reason = (input.reason as string | undefined) ?? null;
+	const reason = input.reason ?? null;
 
 	// Find the skill
 	const skill = ctx.db
 		.prepare("SELECT id, status FROM skills WHERE name = ? AND deleted = 0")
-		.get(name) as { id: string; status: string } | null;
+		.get(input.name) as { id: string; status: string } | null;
 
 	if (!skill) {
-		return `Error: Skill '${name}' not found.`;
+		return `Error: Skill '${input.name}' not found.`;
 	}
 
 	const now = new Date().toISOString();
@@ -423,7 +402,7 @@ async function handleRetire(ctx: ToolContext, input: Record<string, unknown>): P
 			typeof payload === "object" &&
 			payload !== null &&
 			"skill" in payload &&
-			(payload as Record<string, unknown>).skill === name
+			(payload as Record<string, unknown>).skill === input.name
 		) {
 			const advisoryId = randomUUID();
 			insertRow(
@@ -433,11 +412,11 @@ async function handleRetire(ctx: ToolContext, input: Record<string, unknown>): P
 					id: advisoryId,
 					type: "general",
 					status: "proposed",
-					title: `Skill '${name}' was retired`,
-					detail: `Task ${task.id} references skill '${name}' which was retired by agent${reason ? `: ${reason}` : ""}.`,
+					title: `Skill '${input.name}' was retired`,
+					detail: `Task ${task.id} references skill '${input.name}' which was retired by agent${reason ? `: ${reason}` : ""}.`,
 					action: `Update task ${task.id} to use a different skill or remove the skill reference.`,
 					impact: null,
-					evidence: JSON.stringify({ task_id: task.id, skill: name }),
+					evidence: JSON.stringify({ task_id: task.id, skill: input.name }),
 					proposed_at: now,
 					defer_until: null,
 					resolved_at: null,
@@ -451,7 +430,9 @@ async function handleRetire(ctx: ToolContext, input: Record<string, unknown>): P
 		}
 	}
 
-	const msg = reason ? `Skill '${name}' retired. Reason: ${reason}.` : `Skill '${name}' retired.`;
+	const msg = reason
+		? `Skill '${input.name}' retired. Reason: ${reason}.`
+		: `Skill '${input.name}' retired.`;
 	const advisoryMsg =
 		advisoryCount > 0
 			? ` ${advisoryCount} advisory${advisoryCount === 1 ? "" : "s"} created for referencing tasks.`

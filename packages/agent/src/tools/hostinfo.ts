@@ -1,5 +1,7 @@
 import { formatError } from "@bound/shared";
+import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types.js";
+import { parseToolInput, zodToToolParams } from "./tool-schema.js";
 
 interface HostRow {
 	site_id: string;
@@ -40,7 +42,11 @@ interface ModelInfo {
 	capabilities?: { max_context?: number };
 }
 
+const hostinfoSchema = z.object({});
+
 export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
+	const jsonSchema = zodToToolParams(hostinfoSchema);
+
 	return {
 		kind: "builtin",
 		toolDefinition: {
@@ -48,14 +54,13 @@ export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "hostinfo",
 				description: "Display registered host information and cluster topology",
-				parameters: {
-					type: "object",
-					properties: {},
-					additionalProperties: false,
-				},
+				parameters: jsonSchema,
 			},
 		},
-		execute: async (): Promise<string> => {
+		execute: async (raw: Record<string, unknown>): Promise<string> => {
+			const parsed = parseToolInput(hostinfoSchema, raw, "hostinfo");
+			if (!parsed.ok) return parsed.error;
+
 			try {
 				const hosts = ctx.db
 					.prepare("SELECT * FROM hosts WHERE deleted = 0 ORDER BY host_name ASC")
@@ -81,11 +86,11 @@ export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
 				const taskStats = ctx.db
 					.prepare(
 						`SELECT claimed_by,
-							COUNT(*) as total,
-							SUM(CASE WHEN consecutive_failures > 0 THEN 1 ELSE 0 END) as failing
-						 FROM tasks
-						 WHERE status = 'pending' AND deleted = 0
-						 GROUP BY claimed_by`,
+								COUNT(*) as total,
+								SUM(CASE WHEN consecutive_failures > 0 THEN 1 ELSE 0 END) as failing
+							 FROM tasks
+							 WHERE status = 'pending' AND deleted = 0
+							 GROUP BY claimed_by`,
 					)
 					.all() as { claimed_by: string; total: number; failing: number }[];
 				const tasksByHost = new Map(taskStats.map((t) => [t.claimed_by, t]));
@@ -95,13 +100,13 @@ export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
 				const msgStats = ctx.db
 					.prepare(
 						`SELECT host_origin,
-							COUNT(*) as count,
-							MAX(created_at) as latest
-						 FROM messages
-						 WHERE created_at > ?
-							AND host_origin IS NOT NULL
-							AND host_origin != ''
-						 GROUP BY host_origin`,
+								COUNT(*) as count,
+								MAX(created_at) as latest
+							 FROM messages
+							 WHERE created_at > ?
+								AND host_origin IS NOT NULL
+								AND host_origin != ''
+							 GROUP BY host_origin`,
 					)
 					.all(cutoff) as { host_origin: string; count: number; latest: string }[];
 
@@ -109,9 +114,9 @@ export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
 				const advisoryStats = ctx.db
 					.prepare(
 						`SELECT created_by, COUNT(*) as count
-						 FROM advisories
-						 WHERE deleted = 0 AND status = 'proposed'
-						 GROUP BY created_by`,
+							 FROM advisories
+							 WHERE deleted = 0 AND status = 'proposed'
+							 GROUP BY created_by`,
 					)
 					.all() as { created_by: string; count: number }[];
 				const advisoriesByNode = new Map(advisoryStats.map((a) => [a.created_by, a]));

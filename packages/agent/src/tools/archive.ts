@@ -1,5 +1,7 @@
 import { softDelete } from "@bound/core";
+import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
+import { parseToolInput, zodToToolParams } from "./tool-schema";
 
 function parseTimeOffset(offset: string): Date {
 	const now = new Date();
@@ -29,7 +31,17 @@ function parseTimeOffset(offset: string): Date {
 	return now;
 }
 
+const archiveSchema = z.object({
+	thread_id: z.string().optional().describe("Single thread ID to archive"),
+	older_than: z
+		.string()
+		.optional()
+		.describe("Archive threads older than this (e.g., '30d', '2w', '3m')"),
+});
+
 export function createArchiveTool(ctx: ToolContext): RegisteredTool {
+	const jsonSchema = zodToToolParams(archiveSchema);
+
 	return {
 		kind: "builtin",
 		toolDefinition: {
@@ -37,25 +49,17 @@ export function createArchiveTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "archive",
 				description: "Archive a thread to long-term storage",
-				parameters: {
-					type: "object",
-					properties: {
-						thread_id: {
-							type: "string",
-							description: "Single thread ID to archive",
-						},
-						older_than: {
-							type: "string",
-							description: "Archive threads older than this (e.g., '30d', '2w', '3m')",
-						},
-					},
-				},
+				parameters: jsonSchema,
 			},
 		},
-		execute: async (input: Record<string, unknown>) => {
+		execute: async (raw: Record<string, unknown>) => {
+			const parsed = parseToolInput(archiveSchema, raw, "archive");
+			if (!parsed.ok) return parsed.error;
+			const input = parsed.value;
+
 			try {
-				const threadId = input.thread_id as string | undefined;
-				const olderThan = input.older_than as string | undefined;
+				const threadId = input.thread_id;
+				const olderThan = input.older_than;
 
 				// Archive a specific thread
 				if (threadId) {

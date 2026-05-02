@@ -1,6 +1,8 @@
 import { enqueueNotification } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
+import { parseToolInput, zodToToolParams } from "./tool-schema";
 
 interface UserRow {
 	id: string;
@@ -64,7 +66,16 @@ function enqueueAndSignal(
 	ctx.eventBus.emit("notify:enqueued", { thread_id: threadId });
 }
 
+const notifySchema = z.object({
+	user: z.string().optional().describe("Target bound username"),
+	all: z.boolean().optional().describe("Broadcast to all users"),
+	platform: z.string().describe("Platform name (e.g., 'discord')"),
+	message: z.string().describe("Notification message content"),
+});
+
 export function createNotifyTool(ctx: ToolContext): RegisteredTool {
+	const jsonSchema = zodToToolParams(notifySchema);
+
 	return {
 		kind: "builtin",
 		toolDefinition: {
@@ -72,41 +83,19 @@ export function createNotifyTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "notify",
 				description: "Send a notification to users on configured platforms",
-				parameters: {
-					type: "object",
-					properties: {
-						user: {
-							type: "string",
-							description: "Target bound username",
-						},
-						all: {
-							type: "boolean",
-							description: "Broadcast to all users",
-						},
-						platform: {
-							type: "string",
-							description: "Platform name (e.g., 'discord')",
-						},
-						message: {
-							type: "string",
-							description: "Notification message content",
-						},
-					},
-					required: ["platform", "message"],
-				},
+				parameters: jsonSchema,
 			},
 		},
-		execute: async (input: Record<string, unknown>) => {
-			try {
-				const platform = input.platform as string | undefined;
-				const user = input.user as string | undefined;
-				const all = input.all as boolean | undefined;
-				const message = input.message as string | undefined;
+		execute: async (raw: Record<string, unknown>) => {
+			const parsed = parseToolInput(notifySchema, raw, "notify");
+			if (!parsed.ok) return parsed.error;
+			const input = parsed.value;
 
-				// Validate --platform
-				if (!platform?.trim()) {
-					return "Error: Missing required parameter: platform";
-				}
+			try {
+				const platform = input.platform;
+				const user = input.user;
+				const all = input.all;
+				const message = input.message;
 
 				// Validate --user / --all mutual exclusivity
 				if (user && all) {
@@ -117,7 +106,7 @@ export function createNotifyTool(ctx: ToolContext): RegisteredTool {
 				}
 
 				// Validate message
-				if (!message?.trim()) {
+				if (!message.trim()) {
 					return "Error: Missing notification message";
 				}
 
@@ -157,7 +146,10 @@ export function createNotifyTool(ctx: ToolContext): RegisteredTool {
 				}
 
 				// Single user
-				const userRow = resolveUser(ctx.db, user as string);
+				if (!user) {
+					return "Error: User is required when all is not specified";
+				}
+				const userRow = resolveUser(ctx.db, user);
 				if (!userRow) {
 					return `Error: User not found: ${user}`;
 				}

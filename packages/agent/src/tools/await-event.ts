@@ -1,8 +1,17 @@
+import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
+import { parseToolInput, zodToToolParams } from "./tool-schema";
 
 const TERMINAL_STATES = ["completed", "failed", "cancelled"];
 
+const awaitEventSchema = z.object({
+	task_ids: z.string().describe("Comma-separated task IDs to wait for"),
+	timeout: z.number().optional().describe("Timeout in milliseconds (default 300000)"),
+});
+
 export function createAwaitEventTool(ctx: ToolContext): RegisteredTool {
+	const jsonSchema = zodToToolParams(awaitEventSchema);
+
 	return {
 		kind: "builtin",
 		toolDefinition: {
@@ -10,32 +19,21 @@ export function createAwaitEventTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "await_event",
 				description: "Poll until tasks reach a terminal state",
-				parameters: {
-					type: "object",
-					properties: {
-						task_ids: {
-							type: "string",
-							description: "Comma-separated task IDs to wait for",
-						},
-						timeout: {
-							type: "integer",
-							description: "Timeout in milliseconds (default 300000)",
-						},
-					},
-					required: ["task_ids"],
-				},
+				parameters: jsonSchema,
 			},
 		},
-		execute: async (input: Record<string, unknown>) => {
-			try {
-				const taskIdsStr = input.task_ids as string | undefined;
+		execute: async (raw: Record<string, unknown>) => {
+			const parsed = parseToolInput(awaitEventSchema, raw, "await_event");
+			if (!parsed.ok) return parsed.error;
+			const input = parsed.value;
 
-				if (!taskIdsStr || taskIdsStr.trim() === "") {
-					return "Error: task_ids is required";
+			try {
+				if (input.task_ids.trim() === "") {
+					return "Error: task_ids cannot be empty";
 				}
 
-				const taskIds = taskIdsStr.split(",").map((id) => id.trim());
-				const timeout = (input.timeout as number | undefined) ?? 300000;
+				const taskIds = input.task_ids.split(",").map((id) => id.trim());
+				const timeout = input.timeout ?? 300000;
 
 				const results: Record<string, Record<string, unknown>> = {};
 

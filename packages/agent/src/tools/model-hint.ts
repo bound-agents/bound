@@ -1,15 +1,19 @@
 import { updateRow } from "@bound/core";
 import type { CapabilityRequirements, ModelRouter } from "@bound/llm";
 import { formatError } from "@bound/shared";
+import { z } from "zod";
 import { resolveModel } from "../model-resolution.js";
 import type { RegisteredTool, ToolContext } from "../types.js";
+import { parseToolInput, zodToToolParams } from "./tool-schema.js";
 
-export interface ModelHintInput {
-	model?: string;
-	reset?: boolean;
-}
+const modelHintSchema = z.object({
+	model: z.string().optional().describe("Model ID or tier to switch to"),
+	reset: z.boolean().optional().describe("Clear the hint"),
+});
 
 export function createModelHintTool(ctx: ToolContext): RegisteredTool {
+	const jsonSchema = zodToToolParams(modelHintSchema);
+
 	return {
 		kind: "builtin",
 		toolDefinition: {
@@ -17,25 +21,15 @@ export function createModelHintTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "model_hint",
 				description: "Set or clear the model hint for the current task",
-				parameters: {
-					type: "object",
-					properties: {
-						model: {
-							type: "string",
-							description: "Model ID or tier to switch to",
-						},
-						reset: {
-							type: "boolean",
-							description: "Clear the hint",
-						},
-					},
-				},
+				parameters: jsonSchema,
 			},
 		},
-		execute: async (input: Record<string, unknown>): Promise<string> => {
-			try {
-				const params = input as ModelHintInput;
+		execute: async (raw: Record<string, unknown>): Promise<string> => {
+			const parsed = parseToolInput(modelHintSchema, raw, "model_hint");
+			if (!parsed.ok) return parsed.error;
+			const params = parsed.value;
 
+			try {
 				if (!ctx.taskId) {
 					return "Error: taskId not available in context";
 				}
@@ -72,8 +66,8 @@ export function createModelHintTool(ctx: ToolContext): RegisteredTool {
 						const recentMessages = ctx.db
 							.query(
 								`SELECT content FROM messages
-								 WHERE thread_id = ? AND deleted = 0
-								 ORDER BY created_at DESC LIMIT 5`,
+									 WHERE thread_id = ? AND deleted = 0
+									 ORDER BY created_at DESC LIMIT 5`,
 							)
 							.all(ctx.threadId) as Array<{ content: string }>;
 

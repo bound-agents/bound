@@ -2,9 +2,18 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { writeOutbox } from "@bound/core";
 import type { EventBroadcastPayload } from "@bound/shared";
+import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
+import { parseToolInput, zodToToolParams } from "./tool-schema";
+
+const emitSchema = z.object({
+	event: z.string().describe("Event name to emit"),
+	payload: z.string().optional().describe("Event payload as JSON string (default '{}')"),
+});
 
 export function createEmitTool(ctx: ToolContext): RegisteredTool {
+	const jsonSchema = zodToToolParams(emitSchema);
+
 	return {
 		kind: "builtin",
 		toolDefinition: {
@@ -12,31 +21,16 @@ export function createEmitTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "emit",
 				description: "Emit a custom event on the event bus",
-				parameters: {
-					type: "object",
-					properties: {
-						event: {
-							type: "string",
-							description: "Event name to emit",
-						},
-						payload: {
-							type: "string",
-							description: "Event payload as JSON string (default '{}')",
-						},
-					},
-					required: ["event"],
-				},
+				parameters: jsonSchema,
 			},
 		},
-		execute: async (input: Record<string, unknown>) => {
+		execute: async (raw: Record<string, unknown>) => {
+			const parsed = parseToolInput(emitSchema, raw, "emit");
+			if (!parsed.ok) return parsed.error;
+			const input = parsed.value;
+
 			try {
-				const event = input.event as string | undefined;
-
-				if (!event) {
-					return "Error: event is required";
-				}
-
-				const payloadStr = (input.payload as string | undefined) ?? "{}";
+				const payloadStr = input.payload ?? "{}";
 
 				let payload: Record<string, unknown>;
 				try {
@@ -45,11 +39,9 @@ export function createEmitTool(ctx: ToolContext): RegisteredTool {
 					return "Error: Invalid JSON payload";
 				}
 
-				// Emit event via EventBus locally
 				// @ts-expect-error - custom events require runtime type casting for dynamic event types
-				ctx.eventBus.emit(event, payload);
+				ctx.eventBus.emit(input.event, payload);
 
-				// Cross-host broadcast: write event_broadcast relay if hub is configured
 				const hubRow = ctx.db
 					.query<{ value: string }, []>(
 						"SELECT value FROM cluster_config WHERE key = 'cluster_hub' LIMIT 1",
@@ -57,7 +49,6 @@ export function createEmitTool(ctx: ToolContext): RegisteredTool {
 					.get();
 
 				if (hubRow?.value) {
-					// Hub is configured — broadcast to all spokes via relay
 					const eventDepth = (payload.__relay_event_depth as number | undefined) ?? 0;
 					const hostName = hostname() || "localhost";
 					writeOutbox(ctx.db, {
@@ -66,10 +57,10 @@ export function createEmitTool(ctx: ToolContext): RegisteredTool {
 						target_site_id: "*",
 						kind: "event_broadcast",
 						ref_id: null,
-						idempotency_key: `event_broadcast:${event}:${randomUUID()}`,
+						idempotency_key: `event_broadcast:${input.event}:${randomUUID()}`,
 						stream_id: null,
 						payload: JSON.stringify({
-							event_name: event,
+							event_name: input.event,
 							event_payload: payload,
 							source_host: hostName,
 							event_depth: eventDepth + 1,
@@ -79,7 +70,7 @@ export function createEmitTool(ctx: ToolContext): RegisteredTool {
 					});
 				}
 
-				return `Event emitted: ${event}`;
+				return `Event emitted: ${input.event}`;
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return `Error: ${message}`;

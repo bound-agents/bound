@@ -1,7 +1,16 @@
 import { updateRow } from "@bound/core";
+import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
+import { parseToolInput, zodToToolParams } from "./tool-schema";
+
+const cancelSchema = z.object({
+	task_id: z.string().optional().describe("Task ID to cancel"),
+	payload_match: z.string().optional().describe("Cancel all tasks matching this payload substring"),
+});
 
 export function createCancelTool(ctx: ToolContext): RegisteredTool {
+	const jsonSchema = zodToToolParams(cancelSchema);
+
 	return {
 		kind: "builtin",
 		toolDefinition: {
@@ -9,25 +18,17 @@ export function createCancelTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "cancel",
 				description: "Cancel a scheduled task (supports task-id or payload-match)",
-				parameters: {
-					type: "object",
-					properties: {
-						task_id: {
-							type: "string",
-							description: "Task ID to cancel",
-						},
-						payload_match: {
-							type: "string",
-							description: "Cancel all tasks matching this payload substring",
-						},
-					},
-				},
+				parameters: jsonSchema,
 			},
 		},
-		execute: async (input: Record<string, unknown>) => {
+		execute: async (raw: Record<string, unknown>) => {
+			const parsed = parseToolInput(cancelSchema, raw, "cancel");
+			if (!parsed.ok) return parsed.error;
+			const input = parsed.value;
+
 			try {
-				const payloadMatch = input.payload_match as string | undefined;
-				const taskId = input.task_id as string | undefined;
+				const payloadMatch = input.payload_match;
+				const taskId = input.task_id;
 
 				if (payloadMatch) {
 					// Find all pending/claimed tasks whose payload contains the match string

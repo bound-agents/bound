@@ -1,5 +1,7 @@
 import type { ContentBlock, ToolDefinition } from "@bound/llm";
 import type { IFileSystem } from "just-bash";
+import { z } from "zod";
+import { parseToolInput, zodToToolParams } from "./tools/tool-schema";
 
 export type BuiltInToolResult = string | ContentBlock[];
 
@@ -12,23 +14,38 @@ const MAX_LINES = 2000;
 const MAX_BYTES = 50_000;
 const BINARY_CHECK_BYTES = 8192;
 
-// ─── Input validation ───────────────────────────────────────────────
+// ─── Zod schemas ────────────────────────────────────────────────────
 
-/**
- * Validate that required parameters are present and non-undefined.
- * Returns an error string if validation fails, or null if all required params exist.
- */
-function validateRequired(
-	input: Record<string, unknown>,
-	required: string[],
-	toolName: string,
-): string | null {
-	const missing = required.filter((key) => input[key] === undefined || input[key] === null);
-	if (missing.length > 0) {
-		return `Error: missing required parameter${missing.length > 1 ? "s" : ""} for "${toolName}": ${missing.join(", ")}. This may indicate the tool call was truncated by the output token limit.`;
-	}
-	return null;
-}
+const readSchema = z.object({
+	path: z.string().describe("Absolute VFS path to read."),
+	offset: z
+		.number()
+		.int()
+		.optional()
+		.describe("1-based line number to start reading from. Defaults to 1."),
+	limit: z
+		.number()
+		.int()
+		.optional()
+		.describe("Maximum number of lines to return. Defaults to 2000."),
+});
+
+const writeSchema = z.object({
+	path: z.string().describe("Absolute VFS path to write."),
+	content: z.string().describe("File content, UTF-8 text."),
+});
+
+const editSchema = z.object({
+	path: z.string().describe("Absolute VFS path to edit."),
+	edits: z
+		.array(
+			z.object({
+				old_text: z.string(),
+				new_text: z.string(),
+			}),
+		)
+		.describe("Ordered list of edits to apply."),
+});
 
 // ─── Error classification ───────────────────────────────────────────
 
@@ -186,6 +203,8 @@ function detectImageMagicBytes(raw: string): string | undefined {
 // ─── Tool implementations ───────────────────────────────────────────
 
 function createReadTool(fs: IFileSystem): BuiltInTool {
+	const jsonSchema = zodToToolParams(readSchema);
+
 	const toolDefinition: ToolDefinition = {
 		type: "function",
 		function: {
@@ -194,33 +213,20 @@ function createReadTool(fs: IFileSystem): BuiltInTool {
 				"Read a file from the sandbox filesystem. Returns the file's text content. " +
 				"Output is head-truncated to 2000 lines or 50,000 bytes (whichever is smaller); " +
 				"use offset and limit to page through larger files.",
-			parameters: {
-				type: "object",
-				properties: {
-					path: { type: "string", description: "Absolute VFS path to read." },
-					offset: {
-						type: "integer",
-						description: "1-based line number to start reading from. Defaults to 1.",
-					},
-					limit: {
-						type: "integer",
-						description: "Maximum number of lines to return. Defaults to 2000.",
-					},
-				},
-				required: ["path"],
-			},
+			parameters: jsonSchema,
 		},
 	};
 
 	return {
 		toolDefinition,
-		async execute(input) {
-			const validationError = validateRequired(input, ["path"], "read");
-			if (validationError) return validationError;
+		async execute(inputRaw) {
+			const parsed = parseToolInput(readSchema, inputRaw, "read");
+			if (!parsed.ok) return parsed.error;
+			const input = parsed.value;
 
-			const path = input.path as string;
-			const offset = (input.offset as number | undefined) ?? 1;
-			const limit = (input.limit as number | undefined) ?? MAX_LINES;
+			const path = input.path;
+			const offset = input.offset ?? 1;
+			const limit = input.limit ?? MAX_LINES;
 
 			if (offset < 1 || limit < 1 || limit > MAX_LINES) {
 				return "Error: invalid offset/limit";
@@ -298,6 +304,8 @@ function createReadTool(fs: IFileSystem): BuiltInTool {
 }
 
 function createWriteTool(fs: IFileSystem): BuiltInTool {
+	const jsonSchema = zodToToolParams(writeSchema);
+
 	const toolDefinition: ToolDefinition = {
 		type: "function",
 		function: {
@@ -305,25 +313,19 @@ function createWriteTool(fs: IFileSystem): BuiltInTool {
 			description:
 				"Write (or overwrite) a file in the sandbox filesystem. Parent directories are created " +
 				"automatically. Content is stored as UTF-8 text.",
-			parameters: {
-				type: "object",
-				properties: {
-					path: { type: "string", description: "Absolute VFS path to write." },
-					content: { type: "string", description: "File content, UTF-8 text." },
-				},
-				required: ["path", "content"],
-			},
+			parameters: jsonSchema,
 		},
 	};
 
 	return {
 		toolDefinition,
-		async execute(input) {
-			const validationError = validateRequired(input, ["path", "content"], "write");
-			if (validationError) return validationError;
+		async execute(inputRaw) {
+			const parsed = parseToolInput(writeSchema, inputRaw, "write");
+			if (!parsed.ok) return parsed.error;
+			const input = parsed.value;
 
-			const path = input.path as string;
-			const content = input.content as string;
+			const path = input.path;
+			const content = input.content;
 
 			try {
 				await fs.writeFile(path, content);
@@ -341,6 +343,8 @@ function createWriteTool(fs: IFileSystem): BuiltInTool {
 }
 
 function createEditTool(fs: IFileSystem): BuiltInTool {
+	const jsonSchema = zodToToolParams(editSchema);
+
 	const toolDefinition: ToolDefinition = {
 		type: "function",
 		function: {
@@ -350,36 +354,19 @@ function createEditTool(fs: IFileSystem): BuiltInTool {
 				"must match the ORIGINAL file content exactly once. All edits are validated against the " +
 				"pre-edit content; if any edit's match is missing or ambiguous, no changes are written. " +
 				"Returns a unified diff on success.",
-			parameters: {
-				type: "object",
-				properties: {
-					path: { type: "string", description: "Absolute VFS path to edit." },
-					edits: {
-						type: "array",
-						description: "Ordered list of edits to apply.",
-						items: {
-							type: "object",
-							properties: {
-								old_text: { type: "string" },
-								new_text: { type: "string" },
-							},
-							required: ["old_text", "new_text"],
-						},
-					},
-				},
-				required: ["path", "edits"],
-			},
+			parameters: jsonSchema,
 		},
 	};
 
 	return {
 		toolDefinition,
-		async execute(input) {
-			const validationError = validateRequired(input, ["path", "edits"], "edit");
-			if (validationError) return validationError;
+		async execute(inputRaw) {
+			const parsed = parseToolInput(editSchema, inputRaw, "edit");
+			if (!parsed.ok) return parsed.error;
+			const input = parsed.value;
 
-			const path = input.path as string;
-			const edits = input.edits as Array<{ old_text: string; new_text: string }>;
+			const path = input.path;
+			const edits = input.edits;
 
 			// Read file
 			let raw: string;
@@ -506,6 +493,9 @@ function createEditTool(fs: IFileSystem): BuiltInTool {
 // plumbing thread/task context into the built-in interface, and the
 // payload is already above in history in every realistic case.
 function createRetrieveTaskTool(): BuiltInTool {
+	const retrieveTaskSchema = z.object({});
+	const jsonSchema = zodToToolParams(retrieveTaskSchema);
+
 	const toolDefinition: ToolDefinition = {
 		type: "function",
 		function: {
@@ -516,16 +506,16 @@ function createRetrieveTaskTool(): BuiltInTool {
 				"earlier in this conversation, so you normally do not need to call " +
 				"this tool. If you do call it, it returns a reminder to proceed with " +
 				"the instructions you have already received. Takes no arguments.",
-			parameters: {
-				type: "object",
-				properties: {},
-			},
+			parameters: jsonSchema,
 		},
 	};
 
 	return {
 		toolDefinition,
-		async execute(_input) {
+		async execute(inputRaw) {
+			const parsed = parseToolInput(retrieveTaskSchema, inputRaw, "retrieve_task");
+			if (!parsed.ok) return parsed.error;
+
 			return (
 				"The current task's payload was delivered at wake-up and appears " +
 				"earlier in this conversation (the tool_result immediately after the " +

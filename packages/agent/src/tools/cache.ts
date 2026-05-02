@@ -1,5 +1,13 @@
 import { createChangeLogEntry, softDelete } from "@bound/core";
+import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
+import { parseToolInput, zodToToolParams } from "./tool-schema";
+
+const cacheSchema = z.object({
+	action: z.enum(["warm", "pin", "unpin", "evict"]).describe("Cache operation to perform"),
+	path: z.string().optional().describe("File path (for pin, unpin)"),
+	pattern: z.string().optional().describe("Glob pattern (for warm, evict)"),
+});
 
 /**
  * Helper to update cluster_config with proper change-log entry.
@@ -26,23 +34,24 @@ function updateClusterConfig(ctx: ToolContext, key: string, value: string): void
 	txFn();
 }
 
-function handleWarm(_args: Record<string, unknown>, _ctx: ToolContext): string {
+function handleWarm(_args: z.infer<typeof cacheSchema>, _ctx: ToolContext): string {
 	return "cache-warm: requires remote host connectivity configured via mcp.json (MCP proxy not yet implemented)\nTo enable MCP proxy, add remote host configuration to your mcp.json file.";
 }
 
-function handlePin(args: Record<string, unknown>, ctx: ToolContext): string {
-	const path = args.path as string | undefined;
-	if (!path) {
+function handlePin(args: z.infer<typeof cacheSchema>, ctx: ToolContext): string {
+	if (!args.path) {
 		return "Error: pin requires 'path' parameter";
 	}
 
 	// Find the file by path
-	const file = ctx.db.prepare("SELECT id FROM files WHERE path = ? AND deleted = 0").get(path) as {
+	const file = ctx.db
+		.prepare("SELECT id FROM files WHERE path = ? AND deleted = 0")
+		.get(args.path) as {
 		id: string;
 	} | null;
 
 	if (!file) {
-		return `Error: File not found: ${path}`;
+		return `Error: File not found: ${args.path}`;
 	}
 
 	// Read current pinned_files from cluster_config
@@ -63,27 +72,28 @@ function handlePin(args: Record<string, unknown>, ctx: ToolContext): string {
 	}
 
 	// Add the path if not already pinned
-	if (!pinnedFiles.includes(path)) {
-		pinnedFiles.push(path);
+	if (!pinnedFiles.includes(args.path)) {
+		pinnedFiles.push(args.path);
 		updateClusterConfig(ctx, "pinned_files", JSON.stringify(pinnedFiles));
 	}
 
-	return `File pinned: ${path}`;
+	return `File pinned: ${args.path}`;
 }
 
-function handleUnpin(args: Record<string, unknown>, ctx: ToolContext): string {
-	const path = args.path as string | undefined;
-	if (!path) {
+function handleUnpin(args: z.infer<typeof cacheSchema>, ctx: ToolContext): string {
+	if (!args.path) {
 		return "Error: unpin requires 'path' parameter";
 	}
 
 	// Find the file by path
-	const file = ctx.db.prepare("SELECT id FROM files WHERE path = ? AND deleted = 0").get(path) as {
+	const file = ctx.db
+		.prepare("SELECT id FROM files WHERE path = ? AND deleted = 0")
+		.get(args.path) as {
 		id: string;
 	} | null;
 
 	if (!file) {
-		return `Error: File not found: ${path}`;
+		return `Error: File not found: ${args.path}`;
 	}
 
 	// Read current pinned_files from cluster_config
@@ -92,7 +102,7 @@ function handleUnpin(args: Record<string, unknown>, ctx: ToolContext): string {
 		.get("pinned_files") as { value: string } | null;
 
 	if (!configRow) {
-		return `Error: File not pinned: ${path}`;
+		return `Error: File not pinned: ${args.path}`;
 	}
 
 	let pinnedFiles: string[] = [];
@@ -106,24 +116,23 @@ function handleUnpin(args: Record<string, unknown>, ctx: ToolContext): string {
 	}
 
 	// Remove the path if it exists
-	const filteredFiles = pinnedFiles.filter((p) => p !== path);
+	const filteredFiles = pinnedFiles.filter((p) => p !== args.path);
 	if (filteredFiles.length === pinnedFiles.length) {
-		return `Error: File not pinned: ${path}`;
+		return `Error: File not pinned: ${args.path}`;
 	}
 
 	updateClusterConfig(ctx, "pinned_files", JSON.stringify(filteredFiles));
 
-	return `File unpinned: ${path}`;
+	return `File unpinned: ${args.path}`;
 }
 
-function handleEvict(args: Record<string, unknown>, ctx: ToolContext): string {
-	const pattern = args.pattern as string | undefined;
-	if (!pattern) {
+function handleEvict(args: z.infer<typeof cacheSchema>, ctx: ToolContext): string {
+	if (!args.pattern) {
 		return "Error: evict requires 'pattern' parameter";
 	}
 
 	// Simple pattern matching (% for SQL LIKE)
-	const sqlPattern = pattern.replace(/\*/g, "%").replace(/\?/g, "_");
+	const sqlPattern = args.pattern.replace(/\*/g, "%").replace(/\?/g, "_");
 
 	// Find files matching the pattern
 	const files = ctx.db
@@ -143,6 +152,8 @@ function handleEvict(args: Record<string, unknown>, ctx: ToolContext): string {
 }
 
 export function createCacheTool(ctx: ToolContext): RegisteredTool {
+	const jsonSchema = zodToToolParams(cacheSchema);
+
 	return {
 		kind: "builtin",
 		toolDefinition: {
@@ -150,31 +161,16 @@ export function createCacheTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "cache",
 				description: "Cache operations: warm, pin, unpin, evict",
-				parameters: {
-					type: "object",
-					properties: {
-						action: {
-							type: "string",
-							enum: ["warm", "pin", "unpin", "evict"],
-							description: "Cache operation to perform",
-						},
-						path: { type: "string", description: "File path (for pin, unpin)" },
-						pattern: { type: "string", description: "Glob pattern (for warm, evict)" },
-					},
-					required: ["action"],
-					additionalProperties: false,
-				},
+				parameters: jsonSchema,
 			},
 		},
-		execute: async (input: Record<string, unknown>) => {
+		execute: async (raw: Record<string, unknown>) => {
+			const parsed = parseToolInput(cacheSchema, raw, "cache");
+			if (!parsed.ok) return parsed.error;
+			const input = parsed.value;
+
 			try {
-				const action = input.action as string | undefined;
-
-				if (!action) {
-					return "Error: 'action' parameter is required";
-				}
-
-				switch (action) {
+				switch (input.action) {
 					case "warm":
 						return handleWarm(input, ctx);
 					case "pin":
@@ -184,7 +180,7 @@ export function createCacheTool(ctx: ToolContext): RegisteredTool {
 					case "evict":
 						return handleEvict(input, ctx);
 					default:
-						return `Error: Unknown action "${action}". Valid actions: warm, pin, unpin, evict`;
+						return `Error: Unknown action "${input.action}". Valid actions: warm, pin, unpin, evict`;
 				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
