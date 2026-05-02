@@ -4,21 +4,14 @@ interface DepartureTask {
 	next_run_at: string | null;
 }
 
-const DEPARTURE_STATUS_WEIGHT: Record<string, number> = {
-	running: 0,
-	claimed: 1,
-	failed: 2,
-	pending: 3,
-};
-
 export function rankDepartures(tasks: DepartureTask[], limit = 6): DepartureTask[] {
 	return [...tasks]
 		.filter((t) => t.status !== "completed" && t.status !== "cancelled")
 		.sort((a, b) => {
-			const wa = DEPARTURE_STATUS_WEIGHT[a.status] ?? 9;
-			const wb = DEPARTURE_STATUS_WEIGHT[b.status] ?? 9;
+			const aActive = a.status === "running" || a.status === "claimed" ? 0 : 1;
+			const bActive = b.status === "running" || b.status === "claimed" ? 0 : 1;
 
-			if (wa !== wb) return wa - wb;
+			if (aActive !== bActive) return aActive - bActive;
 
 			const aNext = a.next_run_at ? new Date(a.next_run_at).getTime() : Number.POSITIVE_INFINITY;
 			const bNext = b.next_run_at ? new Date(b.next_run_at).getTime() : Number.POSITIVE_INFINITY;

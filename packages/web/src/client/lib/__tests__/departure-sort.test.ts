@@ -21,19 +21,28 @@ describe("rankDepartures", () => {
 		expect(ranked[0].id).toBe("3");
 	});
 
-	it("should sort running before failed before pending", () => {
+	it("should sort active tasks (running/claimed) above non-active", () => {
 		const sameTime = "2026-04-14T10:00:00Z";
 		const tasks: Task[] = [
 			{ id: "pending", status: "pending", next_run_at: sameTime },
 			{ id: "running", status: "running", next_run_at: sameTime },
+			{ id: "claimed", status: "claimed", next_run_at: sameTime },
 			{ id: "failed", status: "failed", next_run_at: sameTime },
 		];
 
 		const ranked = rankDepartures(tasks);
 
-		expect(ranked[0].id).toBe("running");
-		expect(ranked[1].id).toBe("failed");
-		expect(ranked[2].id).toBe("pending");
+		const activeIds = ranked
+			.slice(0, 2)
+			.map((t) => t.id)
+			.sort();
+		expect(activeIds).toEqual(["claimed", "running"]);
+
+		const nonActiveIds = ranked
+			.slice(2)
+			.map((t) => t.id)
+			.sort();
+		expect(nonActiveIds).toEqual(["failed", "pending"]);
 	});
 
 	it("should sort by next_run_at ascending within same status", () => {
@@ -94,8 +103,20 @@ describe("rankDepartures", () => {
 
 		const ranked = rankDepartures(tasks);
 
-		expect(ranked[0].id).toBe("failed-old");
-		expect(ranked[1].id).toBe("heartbeat");
+		expect(ranked[0].id).toBe("heartbeat");
+		expect(ranked[1].id).toBe("failed-old");
+	});
+
+	it("should keep running tasks above pending even when pending has earlier next_run_at", () => {
+		const tasks: Task[] = [
+			{ id: "pending-soon", status: "pending", next_run_at: "2026-04-14T09:00:00Z" },
+			{ id: "running-later", status: "running", next_run_at: "2026-04-14T15:00:00Z" },
+		];
+
+		const ranked = rankDepartures(tasks);
+
+		expect(ranked[0].id).toBe("running-later");
+		expect(ranked[1].id).toBe("pending-soon");
 	});
 
 	it("should not mutate input array", () => {
