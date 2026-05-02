@@ -3979,9 +3979,10 @@ describe("RelayProcessor", () => {
 				db,
 				siteId,
 				mcpClients,
+				null,
 				keyringSiteIds,
-				eventBus,
 				logger,
+				eventBus,
 			);
 
 			// Insert an 'error' response kind into relay_inbox
@@ -4041,9 +4042,10 @@ describe("RelayProcessor", () => {
 				db,
 				siteId,
 				mcpClients,
+				null,
 				keyringSiteIds,
-				eventBus,
 				logger,
+				eventBus,
 			);
 
 			const { insertInbox } = require("@bound/core");
