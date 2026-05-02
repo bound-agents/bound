@@ -16,7 +16,15 @@ interface Task {
 
 export function sortTasks(tasks: Task[]): Task[] {
 	return [...tasks].sort((a, b) => {
-		// Primary sort: by status weight
+		// Primary sort: by next_run_at ascending (nulls to end)
+		const aNext = a.next_run_at ? new Date(a.next_run_at).getTime() : Number.POSITIVE_INFINITY;
+		const bNext = b.next_run_at ? new Date(b.next_run_at).getTime() : Number.POSITIVE_INFINITY;
+
+		if (aNext !== bNext) {
+			return aNext - bNext;
+		}
+
+		// Secondary sort: by status weight
 		const aWeight = STATUS_WEIGHT[a.status];
 		const bWeight = STATUS_WEIGHT[b.status];
 
@@ -24,18 +32,10 @@ export function sortTasks(tasks: Task[]): Task[] {
 			return aWeight - bWeight;
 		}
 
-		// Secondary sort: by last_run_at descending — most recently active first (nulls to end)
+		// Tertiary sort: by last_run_at descending — most recently active first (nulls to end)
 		const aLast = a.last_run_at ? new Date(a.last_run_at).getTime() : Number.NEGATIVE_INFINITY;
 		const bLast = b.last_run_at ? new Date(b.last_run_at).getTime() : Number.NEGATIVE_INFINITY;
 
-		if (aLast !== bLast) {
-			return bLast - aLast;
-		}
-
-		// Tertiary sort: by next_run_at ascending (nulls to end)
-		const aNext = a.next_run_at ? new Date(a.next_run_at).getTime() : Number.POSITIVE_INFINITY;
-		const bNext = b.next_run_at ? new Date(b.next_run_at).getTime() : Number.POSITIVE_INFINITY;
-
-		return aNext - bNext;
+		return bLast - aLast;
 	});
 }

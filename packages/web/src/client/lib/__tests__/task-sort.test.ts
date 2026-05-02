@@ -19,18 +19,123 @@ describe("sortTasks", () => {
 		expect(STATUS_WEIGHT.completed).toBe(4);
 	});
 
-	it("should sort running tasks before failed tasks", () => {
+	it("should sort by next_run_at ascending as primary sort", () => {
+		const tasks: Task[] = [
+			{
+				id: "later",
+				status: "pending",
+				next_run_at: "2026-04-14T15:00:00Z",
+				last_run_at: null,
+			},
+			{
+				id: "sooner",
+				status: "failed",
+				next_run_at: "2026-04-14T10:00:00Z",
+				last_run_at: null,
+			},
+			{
+				id: "middle",
+				status: "running",
+				next_run_at: "2026-04-14T12:00:00Z",
+				last_run_at: null,
+			},
+		];
+
+		const sorted = sortTasks(tasks);
+
+		expect(sorted[0].id).toBe("sooner");
+		expect(sorted[1].id).toBe("middle");
+		expect(sorted[2].id).toBe("later");
+	});
+
+	it("should sort null next_run_at to end", () => {
+		const tasks: Task[] = [
+			{
+				id: "no-next",
+				status: "completed",
+				next_run_at: null,
+				last_run_at: "2026-04-13T10:00:00Z",
+			},
+			{
+				id: "has-next",
+				status: "pending",
+				next_run_at: "2026-04-14T10:00:00Z",
+				last_run_at: null,
+			},
+		];
+
+		const sorted = sortTasks(tasks);
+
+		expect(sorted[0].id).toBe("has-next");
+		expect(sorted[1].id).toBe("no-next");
+	});
+
+	it("should sort by status weight as secondary when next_run_at matches", () => {
+		const sameTime = "2026-04-14T10:00:00Z";
+		const tasks: Task[] = [
+			{
+				id: "pending-task",
+				status: "pending",
+				next_run_at: sameTime,
+				last_run_at: null,
+			},
+			{
+				id: "running-task",
+				status: "running",
+				next_run_at: sameTime,
+				last_run_at: null,
+			},
+			{
+				id: "failed-task",
+				status: "failed",
+				next_run_at: sameTime,
+				last_run_at: null,
+			},
+		];
+
+		const sorted = sortTasks(tasks);
+
+		expect(sorted[0].id).toBe("running-task");
+		expect(sorted[1].id).toBe("failed-task");
+		expect(sorted[2].id).toBe("pending-task");
+	});
+
+	it("should sort by last_run_at descending as tertiary", () => {
+		const sameTime = "2026-04-14T10:00:00Z";
+		const tasks: Task[] = [
+			{
+				id: "older",
+				status: "pending",
+				next_run_at: sameTime,
+				last_run_at: "2026-04-13T08:00:00Z",
+			},
+			{
+				id: "newer",
+				status: "pending",
+				next_run_at: sameTime,
+				last_run_at: "2026-04-13T10:00:00Z",
+			},
+		];
+
+		const sorted = sortTasks(tasks);
+
+		expect(sorted[0].id).toBe("newer");
+		expect(sorted[1].id).toBe("older");
+	});
+
+	it("should sort running tasks before failed tasks at same next_run_at", () => {
+		const sameTime = "2026-04-14T10:00:00Z";
 		const tasks: Task[] = [
 			{
 				id: "1",
 				status: "failed",
-				next_run_at: "2026-04-14T10:00:00Z",
+				next_run_at: sameTime,
 				last_run_at: "2026-04-13T10:00:00Z",
 			},
 			{
 				id: "2",
 				status: "running",
-				next_run_at: "2026-04-14T10:00:00Z",
+				next_run_at: sameTime,
 				last_run_at: "2026-04-13T10:00:00Z",
 			},
 		];
@@ -41,51 +146,7 @@ describe("sortTasks", () => {
 		expect(sorted[1].status).toBe("failed");
 	});
 
-	it("should sort failed tasks before pending tasks", () => {
-		const tasks: Task[] = [
-			{
-				id: "1",
-				status: "pending",
-				next_run_at: "2026-04-14T10:00:00Z",
-				last_run_at: "2026-04-13T10:00:00Z",
-			},
-			{
-				id: "2",
-				status: "failed",
-				next_run_at: "2026-04-14T10:00:00Z",
-				last_run_at: "2026-04-13T10:00:00Z",
-			},
-		];
-
-		const sorted = sortTasks(tasks);
-
-		expect(sorted[0].status).toBe("failed");
-		expect(sorted[1].status).toBe("pending");
-	});
-
-	it("should sort pending tasks before cancelled tasks", () => {
-		const tasks: Task[] = [
-			{
-				id: "1",
-				status: "cancelled",
-				next_run_at: "2026-04-14T10:00:00Z",
-				last_run_at: "2026-04-13T10:00:00Z",
-			},
-			{
-				id: "2",
-				status: "pending",
-				next_run_at: "2026-04-14T10:00:00Z",
-				last_run_at: "2026-04-13T10:00:00Z",
-			},
-		];
-
-		const sorted = sortTasks(tasks);
-
-		expect(sorted[0].status).toBe("pending");
-		expect(sorted[1].status).toBe("cancelled");
-	});
-
-	it("should sort cancelled tasks before completed tasks", () => {
+	it("should sort cancelled and completed (null next_run_at) by status weight", () => {
 		const tasks: Task[] = [
 			{
 				id: "1",
@@ -105,87 +166,6 @@ describe("sortTasks", () => {
 
 		expect(sorted[0].status).toBe("cancelled");
 		expect(sorted[1].status).toBe("completed");
-	});
-
-	it("should sort by next_run_at ascending within same status group", () => {
-		const tasks: Task[] = [
-			{
-				id: "1",
-				status: "pending",
-				next_run_at: "2026-04-14T15:00:00Z",
-				last_run_at: "2026-04-13T10:00:00Z",
-			},
-			{
-				id: "2",
-				status: "pending",
-				next_run_at: "2026-04-14T10:00:00Z",
-				last_run_at: "2026-04-13T10:00:00Z",
-			},
-			{
-				id: "3",
-				status: "pending",
-				next_run_at: "2026-04-14T12:00:00Z",
-				last_run_at: "2026-04-13T10:00:00Z",
-			},
-		];
-
-		const sorted = sortTasks(tasks);
-
-		expect(sorted[0].id).toBe("2"); // 10:00
-		expect(sorted[1].id).toBe("3"); // 12:00
-		expect(sorted[2].id).toBe("1"); // 15:00
-	});
-
-	it("should sort null next_run_at to end within same status group", () => {
-		const tasks: Task[] = [
-			{
-				id: "1",
-				status: "pending",
-				next_run_at: "2026-04-14T10:00:00Z",
-				last_run_at: "2026-04-13T10:00:00Z",
-			},
-			{
-				id: "2",
-				status: "pending",
-				next_run_at: null,
-				last_run_at: "2026-04-13T10:00:00Z",
-			},
-			{
-				id: "3",
-				status: "pending",
-				next_run_at: "2026-04-14T12:00:00Z",
-				last_run_at: "2026-04-13T10:00:00Z",
-			},
-		];
-
-		const sorted = sortTasks(tasks);
-
-		expect(sorted[0].id).toBe("1"); // 10:00
-		expect(sorted[1].id).toBe("3"); // 12:00
-		expect(sorted[2].id).toBe("2"); // null
-	});
-
-	it("should use last_run_at as tertiary sort (descending)", () => {
-		const tasks: Task[] = [
-			{
-				id: "1",
-				status: "pending",
-				next_run_at: "2026-04-14T10:00:00Z",
-				last_run_at: "2026-04-13T08:00:00Z",
-			},
-			{
-				id: "2",
-				status: "pending",
-				next_run_at: "2026-04-14T10:00:00Z",
-				last_run_at: "2026-04-13T10:00:00Z",
-			},
-		];
-
-		const sorted = sortTasks(tasks);
-
-		// Same next_run_at, so sorted by last_run_at descending
-		expect(sorted[0].id).toBe("2"); // 10:00
-		expect(sorted[1].id).toBe("1"); // 08:00
 	});
 
 	it("should handle claimed status like pending", () => {
@@ -221,7 +201,7 @@ describe("sortTasks", () => {
 			{
 				id: "1",
 				status: "running",
-				next_run_at: "2026-04-14T10:00:00Z",
+				next_run_at: "2026-04-14T09:00:00Z",
 				last_run_at: "2026-04-13T10:00:00Z",
 			},
 		];
@@ -232,5 +212,27 @@ describe("sortTasks", () => {
 		expect(sorted).not.toBe(tasks);
 		expect(tasks).toEqual(original);
 		expect(sorted[0].id).toBe("1");
+	});
+
+	it("should sort pending tasks with near next_run_at above failed tasks with distant next_run_at", () => {
+		const tasks: Task[] = [
+			{
+				id: "failed-distant",
+				status: "failed",
+				next_run_at: "2026-04-14T20:00:00Z",
+				last_run_at: null,
+			},
+			{
+				id: "pending-soon",
+				status: "pending",
+				next_run_at: "2026-04-14T10:00:00Z",
+				last_run_at: null,
+			},
+		];
+
+		const sorted = sortTasks(tasks);
+
+		expect(sorted[0].id).toBe("pending-soon");
+		expect(sorted[1].id).toBe("failed-distant");
 	});
 });
