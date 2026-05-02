@@ -11,6 +11,9 @@ export { isClientToolCallRequest } from "./types";
 export type { ContextParams } from "./context-assembly";
 export type { ModelResolution } from "./model-resolution";
 
+// Export RxJS utilities
+export { fromEventBus, pollDb } from "./rx-utils.js";
+
 // Export model resolution
 export { resolveModel, resolveModelTier, resolveSameTierFallback } from "./model-resolution";
 
