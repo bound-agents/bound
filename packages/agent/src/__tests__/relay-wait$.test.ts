@@ -1,9 +1,9 @@
 import type { Database } from "bun:sqlite";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
+import { applyMetricsSchema, applySchema, createDatabase, writeOutbox } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import { Subject, firstValueFrom } from "rxjs";
 import { type EligibleHost, createRelayOutboxEntry } from "../relay-router";
@@ -26,6 +26,11 @@ describe("createRelayWait$", () => {
 
 	afterAll(() => {
 		db.close();
+	});
+
+	beforeEach(() => {
+		db.exec("DELETE FROM relay_outbox");
+		db.exec("DELETE FROM relay_inbox");
 	});
 
 	const createHostsAndParams = (hostCount = 1) => {

@@ -1350,15 +1350,14 @@ export class AgentLoop {
 								if ("outboxEntryId" in result) {
 									const previousRelayState: AgentLoopState = this.state;
 									this.state = "RELAY_WAIT";
+									const aborted$ = new Subject<void>();
+									const abortCheck = setInterval(() => {
+										if (this.aborted) {
+											aborted$.next();
+											aborted$.complete();
+										}
+									}, 100);
 									try {
-										const aborted$ = new Subject<void>();
-										const abortCheck = setInterval(() => {
-											if (this.aborted) {
-												aborted$.next();
-												aborted$.complete();
-											}
-										}, 100);
-
 										resultContent = await firstValueFrom(
 											createRelayWait$(
 												{
@@ -1380,8 +1379,8 @@ export class AgentLoop {
 											),
 											{ defaultValue: "Cancelled: relay request was cancelled by user" },
 										);
-										clearInterval(abortCheck);
 									} finally {
+										clearInterval(abortCheck);
 										this.state = previousRelayState;
 									}
 								} else if (isClientToolCallRequest(result)) {
@@ -1767,7 +1766,6 @@ export class AgentLoop {
 		}
 	}
 
-	/** Poll relay inbox for remote tool call response. Handles timeout, failover, and cancellation. */
 	/** Merge server tools and client tool definitions into a single LLM tool list. */
 	private getMergedTools(): Array<ToolDefinition> | undefined {
 		if (this.config.toolRegistry) {
