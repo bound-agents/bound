@@ -10,6 +10,7 @@ import {
 	Observable,
 	type SchedulerLike,
 	Subject,
+	catchError,
 	concatMap,
 	filter,
 	from,
@@ -62,12 +63,12 @@ export function createRelayStream$(
 	const pollIntervalMs = options?.pollIntervalMs ?? POLL_INTERVAL_MS;
 	const perHostTimeoutMs = options?.perHostTimeoutMs ?? 300_000;
 
-	// CRITICAL Issue 2: Track if any host was attempted for proper error reporting
-	let hostAttempted = false;
+	// Track if any host timed out (vs. observable completed due to abort before timeout)
+	// Mutable object so it can be updated during subscription
+	const timeoutOccurred = { value: false };
 
 	return from(eligibleHosts).pipe(
 		concatMap((host, hostIndex) => {
-			hostAttempted = true;
 			const streamId = randomUUID();
 
 			// Write inference request to outbox
@@ -141,6 +142,9 @@ export function createRelayStream$(
 								});
 								state.timedOut = true;
 								completed = true;
+								// Track timeout at the closure level for error reporting
+								// Use a mutable object so it can be updated during subscription
+								timeoutOccurred.value = true;
 								stop$.next(); // Signal processing to stop
 								return state;
 							}
@@ -306,14 +310,31 @@ export function createRelayStream$(
 				};
 			});
 		}),
-		// CRITICAL Issue 2: Throw error only if we actually tried hosts and all exhausted without success
-		hostAttempted
-			? throwIfEmpty(
-					() =>
-						new Error(
-							`inference-relay.AC1.5: all ${eligibleHosts.length} eligible host(s) timed out`,
-						),
-				)
-			: filter((_) => true), // No-op filter if no hosts attempted (let empty observable complete)
+		// Throw error only if a host timed out or if no eligible hosts provided
+		// If abort$ completed before any timeout, the observable completed with no emissions
+		// but timeoutOccurred.value will be false, so we suppress the error
+		throwIfEmpty(
+			() =>
+				new Error(`inference-relay.AC1.5: all ${eligibleHosts.length} eligible host(s) timed out`),
+		),
+		// Suppress throwIfEmpty errors in abort scenarios
+		catchError((err) => {
+			// Only suppress if: (1) this is throwIfEmpty error, (2) no timeout occurred,
+			// (3) we had eligible hosts. This indicates abort$ completed before timeout.
+			if (
+				err instanceof Error &&
+				err.message?.includes("all ") &&
+				err.message?.includes("eligible host(s) timed out") &&
+				!timeoutOccurred.value &&
+				eligibleHosts.length > 0
+			) {
+				// abort$ completed before any timeout — complete silently
+				return new Observable<StreamChunk>((subscriber) => {
+					subscriber.complete();
+				});
+			}
+			// Other errors (from hosts, parse errors, etc.) propagate
+			throw err;
+		}),
 	);
 }

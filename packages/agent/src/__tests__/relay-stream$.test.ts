@@ -309,4 +309,165 @@ describe("createRelayStream$", () => {
 		expect(typeof metadataRef.firstChunkLatencyMs).toBe("number");
 		expect(metadataRef.firstChunkLatencyMs).toBeGreaterThanOrEqual(0);
 	});
+
+	it("AC1.10: Two-host failover when first host times out, second succeeds", async () => {
+		({ db, tmpDir } = createTestDb());
+		const eventBus = new TypedEventEmitter();
+		const aborted$ = new Subject<void>();
+		const chunks: StreamChunk[] = [];
+		const remoteHosts = ["spoke-1", "spoke-2"];
+
+		const stream$ = createRelayStream$(
+			{ db, eventBus, siteId: "hub", logger: mockLogger },
+			payloadFixture as any,
+			[
+				eligibleHostFixture(remoteHosts[0], "spoke-1.local"),
+				eligibleHostFixture(remoteHosts[1], "spoke-2.local"),
+			] as any,
+			aborted$,
+			undefined,
+			{ perHostTimeoutMs: 200, pollIntervalMs: 50 },
+		);
+
+		const subscribed = new Promise<void>((resolve) => {
+			setTimeout(resolve, 20);
+		});
+
+		const done = lastValueFrom(stream$.pipe(tap((chunk) => chunks.push(chunk))), {
+			defaultValue: undefined,
+		});
+
+		await subscribed;
+
+		// Get first outbox entry (spoke-1)
+		const firstStreamId = getStreamIdFromOutbox(db);
+
+		// First host timeout occurs after 200ms. Meanwhile, second host outbox entry gets created.
+		// Wait for timeout to occur and second host to be attempted
+		await new Promise<void>((resolve) => setTimeout(resolve, 300));
+
+		// Get second outbox entry (spoke-2) - query from after first entry
+		const secondEntry = db
+			.prepare("SELECT stream_id FROM relay_outbox ORDER BY created_at DESC LIMIT 1")
+			.get() as { stream_id: string } | null;
+		if (!secondEntry || secondEntry.stream_id === firstStreamId) {
+			throw new Error("Second outbox entry not found");
+		}
+		const secondStreamId = secondEntry.stream_id;
+
+		// Verify we have at least 2 inference outbox entries (plus a cancel for first host timeout)
+		const inferenceOutbox = db
+			.prepare("SELECT COUNT(*) as cnt FROM relay_outbox WHERE kind = 'inference'")
+			.get() as { cnt: number };
+		expect(inferenceOutbox.cnt).toBe(2);
+
+		// Now insert response for second host (first host has timed out and won't be responded to)
+		insertRelayInboxEntry(db, {
+			id: "entry-0",
+			sourceSiteId: remoteHosts[1],
+			kind: "stream_chunk",
+			streamId: secondStreamId,
+			payload: JSON.stringify({ seq: 0, chunks: [{ type: "text_delta", text: "success" }] }),
+		});
+
+		insertRelayInboxEntry(db, {
+			id: "stream-end",
+			sourceSiteId: remoteHosts[1],
+			kind: "stream_end",
+			streamId: secondStreamId,
+			payload: JSON.stringify({ seq: 0, chunks: [] }),
+		});
+
+		eventBus.emit("relay:inbox", { stream_id: secondStreamId, kind: "stream_chunk" as const });
+
+		await done;
+
+		expect(chunks.length).toBe(1);
+		expect(chunks[0]).toEqual({ type: "text_delta", text: "success" });
+	});
+
+	it("AC1.11: Single host timeout errors with correct message", async () => {
+		({ db, tmpDir } = createTestDb());
+		const eventBus = new TypedEventEmitter();
+		const aborted$ = new Subject<void>();
+		const remoteHost = "spoke-1";
+
+		const stream$ = createRelayStream$(
+			{ db, eventBus, siteId: "hub", logger: mockLogger },
+			payloadFixture as any,
+			[eligibleHostFixture(remoteHost, "spoke-1.local")] as any,
+			aborted$,
+			undefined,
+			{ perHostTimeoutMs: 150, pollIntervalMs: 50 },
+		);
+
+		const subscribed = new Promise<void>((resolve) => {
+			setTimeout(resolve, 20);
+		});
+
+		let error: Error | null = null;
+		const done = lastValueFrom(stream$, { defaultValue: undefined })
+			.then(() => undefined)
+			.catch((err) => {
+				error = err;
+			});
+
+		await subscribed;
+		const _streamId = getStreamIdFromOutbox(db);
+
+		// Wait for timeout
+		await new Promise<void>((resolve) => setTimeout(resolve, 250));
+
+		// Don't insert any responses - just let it timeout
+		await done;
+
+		expect(error).toBeDefined();
+		expect(error?.message).toContain("all 1 eligible host(s) timed out");
+	});
+
+	it("AC1.12: Host returning error propagates error message", async () => {
+		({ db, tmpDir } = createTestDb());
+		const eventBus = new TypedEventEmitter();
+		const aborted$ = new Subject<void>();
+		const remoteHost = "spoke-1";
+
+		const stream$ = createRelayStream$(
+			{ db, eventBus, siteId: "hub", logger: mockLogger },
+			payloadFixture as any,
+			[eligibleHostFixture(remoteHost, "spoke-1.local")] as any,
+			aborted$,
+			undefined,
+			{ perHostTimeoutMs: 5000, pollIntervalMs: 50 },
+		);
+
+		const subscribed = new Promise<void>((resolve) => {
+			setTimeout(resolve, 20);
+		});
+
+		let error: Error | null = null;
+		const done = lastValueFrom(stream$, { defaultValue: undefined })
+			.then(() => undefined)
+			.catch((err) => {
+				error = err;
+			});
+
+		await subscribed;
+		const streamId = getStreamIdFromOutbox(db);
+
+		// Insert error entry
+		insertRelayInboxEntry(db, {
+			id: "error-entry",
+			sourceSiteId: remoteHost,
+			kind: "error",
+			streamId,
+			payload: JSON.stringify({ error: "Model not found" }),
+		});
+
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "error" as const });
+
+		await done;
+
+		expect(error).toBeDefined();
+		expect(error?.message).toContain("Model not found");
+	});
 });
