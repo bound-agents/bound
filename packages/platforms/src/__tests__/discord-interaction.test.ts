@@ -1843,6 +1843,85 @@ describe("DiscordInteractionConnector", () => {
 			// Verify truncation to exactly 2000 chars
 			expect(editReplyCalls[0]?.content).toBe("x".repeat(2000));
 		});
+
+		describe("rxjs-async-refactor AC4: RxJS polling observable behavior", () => {
+			it("AC4.4: Disconnect mid-poll completes cleanly (takeUntil prevents timeout error)", async () => {
+				const { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls } =
+					createFullMockSetup();
+
+				const connector = new DiscordInteractionConnector(
+					config,
+					db,
+					"site-1",
+					eventBus,
+					mockLogger,
+					createMockClientManagerWithClient(mockClient),
+					10000, // Very long timeout (10s) to ensure disconnect fires first
+				);
+
+				await connector.connect();
+
+				// Fire interaction handler
+				const handlerPromise = onInteractionCreateHandlers[0]?.(mockInteraction);
+
+				// Let handler store the interaction
+				await new Promise<void>((resolve) => setTimeout(() => resolve(), 10));
+				const stored = (connector as { interactions: Map<string, unknown> }).interactions;
+
+				// Verify interaction was stored
+				expect(stored.size).toBe(1);
+
+				// Disconnect while polling is waiting for response
+				// This fires disconnecting$.next(), which triggers takeUntil()
+				await connector.disconnect();
+
+				// Wait for handler to complete its polling attempt
+				await new Promise<void>((resolve) => setTimeout(() => resolve(), 50));
+				await handlerPromise;
+
+				// AC4.4: No timeout error message should have been sent
+				// The takeUntil(disconnecting$) completes the observable cleanly
+				// without error or timeout, so handlePollTimeout() is never called
+				expect(editReplyCalls.length).toBe(0);
+
+				// Interactions map should be cleared by disconnect()
+				expect(stored.size).toBe(0);
+			});
+
+			it("AC4.4 variant: Disconnect during active polling interval", async () => {
+				const { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls } =
+					createFullMockSetup();
+
+				const connector = new DiscordInteractionConnector(
+					config,
+					db,
+					"site-1",
+					eventBus,
+					mockLogger,
+					createMockClientManagerWithClient(mockClient),
+					5000, // 5s timeout (will not fire if disconnect works)
+				);
+
+				await connector.connect();
+
+				// Fire interaction
+				const handlerPromise = onInteractionCreateHandlers[0]?.(mockInteraction);
+
+				// Wait for polling to enter its interval loop
+				await new Promise<void>((resolve) => setTimeout(() => resolve(), 100));
+
+				// Disconnect while polling is between interval ticks
+				await connector.disconnect();
+
+				// Wait for handler to finish
+				await new Promise<void>((resolve) => setTimeout(() => resolve(), 100));
+				await handlerPromise;
+
+				// AC4.4: takeUntil(disconnecting$) fires when disconnect() is called,
+				// completing the observable without timeout error
+				expect(editReplyCalls.length).toBe(0);
+			});
+		});
 	});
 
 	describe("/model slash command", () => {
