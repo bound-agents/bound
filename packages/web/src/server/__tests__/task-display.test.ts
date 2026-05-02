@@ -336,6 +336,59 @@ describe("Task Display Utilities", () => {
 			}
 		});
 
+		it("converts heartbeat interval_ms to human-readable interval", () => {
+			const testCases = [
+				{ interval_ms: 60_000, expected: "every 1m" },
+				{ interval_ms: 300_000, expected: "every 5m" },
+				{ interval_ms: 900_000, expected: "every 15m" },
+				{ interval_ms: 1_800_000, expected: "every 30m" },
+				{ interval_ms: 3_600_000, expected: "every 1h" },
+				{ interval_ms: 10_800_000, expected: "every 3h" },
+				{ interval_ms: 86_400_000, expected: "every 24h" },
+				{ interval_ms: 5_400_000, expected: "every 1h 30m" },
+				{ interval_ms: 7_200_000, expected: "every 2h" },
+			];
+
+			for (const { interval_ms, expected } of testCases) {
+				const task: Task = {
+					id: "task-1",
+					type: "heartbeat",
+					status: "pending",
+					trigger_spec: JSON.stringify({ interval_ms }),
+					payload: null,
+					thread_id: null,
+					origin_thread_id: null,
+					claimed_by: null,
+					claimed_at: null,
+					lease_id: null,
+					next_run_at: null,
+					last_run_at: null,
+					run_count: 0,
+					max_runs: null,
+					requires: null,
+					model_hint: null,
+					no_history: 0,
+					inject_mode: "append",
+					depends_on: null,
+					require_success: 0,
+					alert_threshold: 3,
+					consecutive_failures: 0,
+					event_depth: 0,
+					no_quiescence: 0,
+					heartbeat_at: null,
+					result: null,
+					error: null,
+					created_at: new Date().toISOString(),
+					created_by: null,
+					modified_at: new Date().toISOString(),
+					deleted: 0,
+				};
+
+				const schedule = extractSchedule(task);
+				expect(schedule).toBe(expected);
+			}
+		});
+
 		it("returns unknown cron expression as-is", () => {
 			const task: Task = {
 				id: "task-1",

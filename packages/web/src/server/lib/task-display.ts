@@ -49,10 +49,13 @@ export function extractSchedule(task: Task): string | null {
 			return null;
 		}
 
-		// trigger_spec may be a JSON string wrapping the cron expression
+		// trigger_spec may be a JSON string wrapping the cron expression or an interval
 		if (spec.startsWith("{")) {
 			try {
 				const parsed = JSON.parse(spec) as Record<string, unknown>;
+				if (typeof parsed.interval_ms === "number") {
+					return humanReadableInterval(parsed.interval_ms);
+				}
 				if (typeof parsed.expression === "string") {
 					spec = parsed.expression;
 				} else if (typeof parsed.cron === "string") {
@@ -69,6 +72,16 @@ export function extractSchedule(task: Task): string | null {
 	}
 
 	return null;
+}
+
+function humanReadableInterval(ms: number): string {
+	const totalMinutes = Math.round(ms / 60_000);
+	if (totalMinutes < 1) return "every <1m";
+	const hours = Math.floor(totalMinutes / 60);
+	const minutes = totalMinutes % 60;
+	if (hours === 0) return `every ${minutes}m`;
+	if (minutes === 0) return `every ${hours}h`;
+	return `every ${hours}h ${minutes}m`;
 }
 
 function humanReadableCron(spec: string): string {
