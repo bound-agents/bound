@@ -50,10 +50,22 @@ import {
 	platformDeliverPayloadSchema,
 	processPayloadSchema,
 } from "@bound/shared";
+import {
+	EMPTY,
+	type SchedulerLike,
+	Subscription,
+	catchError,
+	exhaustMap,
+	from,
+	interval,
+	merge,
+	tap,
+} from "rxjs";
 import { clampMaxOutputTokens } from "./agent-loop-utils.js";
 import { AgentLoop, DEFAULT_MAX_OUTPUT_TOKENS } from "./agent-loop.js";
 import { stripCacheMarkersIfUnsupported } from "./cache-marker.js";
 import type { MCPClient } from "./mcp-client.js";
+import { fromEventBus } from "./rx-utils.js";
 import type { AgentLoopConfig } from "./types.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 500;
@@ -120,7 +132,6 @@ interface ConnectorRegistry {
 }
 
 export class RelayProcessor {
-	private stopped = false;
 	private idempotencyCache = new Map<string, IdempotencyCacheEntry>();
 	private pendingCancels = new Set<string>();
 	private activeInferenceStreams = new Map<string, AbortController>();
@@ -194,31 +205,51 @@ export class RelayProcessor {
 		this.fileReader = fn;
 	}
 
-	start(pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS): { stop: () => void } {
-		this.stopped = false;
-		let tickCount = 0;
-		const PRUNE_EVERY_N_TICKS = Math.max(1, Math.round(60_000 / pollIntervalMs));
-		const tick = async () => {
-			if (this.stopped) return;
-			try {
-				await this.processPendingEntries();
-				this.pruneIdempotencyCache();
-				// Periodically prune old processed relay entries (~every 60s)
-				if (++tickCount % PRUNE_EVERY_N_TICKS === 0) {
+	start(
+		pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS,
+		scheduler?: SchedulerLike,
+	): { stop: () => void } {
+		const sub = new Subscription();
+
+		// Main processing tick: interval + event-driven wakeup
+		const tick$ = scheduler ? interval(pollIntervalMs, scheduler) : interval(pollIntervalMs);
+
+		const wakeup$ = fromEventBus(this.eventBus, "relay:outbox-written");
+
+		const process$ = merge(tick$, wakeup$).pipe(
+			exhaustMap(() =>
+				from(
+					(async () => {
+						await this.processPendingEntries();
+						this.pruneIdempotencyCache();
+					})(),
+				).pipe(
+					catchError((error) => {
+						this.logger.error("Relay processor tick failed", { error });
+						return EMPTY;
+					}),
+				),
+			),
+		);
+
+		// Separate prune interval (~every 60s)
+		const pruneInterval$ = scheduler ? interval(60_000, scheduler) : interval(60_000);
+
+		const prune$ = pruneInterval$.pipe(
+			tap(() => {
+				try {
 					pruneRelayTables(this.db);
+				} catch (error) {
+					this.logger.error("Relay table prune failed", { error });
 				}
-			} catch (error) {
-				this.logger.error("Relay processor tick failed", { error });
-			}
-			if (!this.stopped) {
-				setTimeout(tick, pollIntervalMs);
-			}
-		};
-		setTimeout(tick, pollIntervalMs);
+			}),
+		);
+
+		sub.add(process$.subscribe());
+		sub.add(prune$.subscribe());
+
 		return {
-			stop: () => {
-				this.stopped = true;
-			},
+			stop: () => sub.unsubscribe(),
 		};
 	}
 
