@@ -9,12 +9,15 @@ import type { Logger } from "@bound/shared";
 import {
 	Observable,
 	type SchedulerLike,
+	Subject,
 	concatMap,
+	filter,
 	from,
 	interval,
 	merge,
 	scan,
 	takeUntil,
+	throwIfEmpty,
 } from "rxjs";
 import { type EligibleHost, createRelayOutboxEntry } from "./relay-router";
 import { fromEventBus } from "./rx-utils";
@@ -59,8 +62,12 @@ export function createRelayStream$(
 	const pollIntervalMs = options?.pollIntervalMs ?? POLL_INTERVAL_MS;
 	const perHostTimeoutMs = options?.perHostTimeoutMs ?? 300_000;
 
+	// CRITICAL Issue 2: Track if any host was attempted for proper error reporting
+	let hostAttempted = false;
+
 	return from(eligibleHosts).pipe(
 		concatMap((host, hostIndex) => {
+			hostAttempted = true;
 			const streamId = randomUUID();
 
 			// Write inference request to outbox
@@ -88,6 +95,8 @@ export function createRelayStream$(
 				const hostStartTime = Date.now();
 				let hostSucceeded = false;
 				let completed = false;
+				let errorMsg: string | null = null;
+				const stop$ = new Subject<void>();
 
 				const initialState: PerHostState = {
 					buffer: new Map(),
@@ -104,20 +113,16 @@ export function createRelayStream$(
 
 				// Merge polling interval with relay inbox events for this stream
 				const pollInterval = interval(pollIntervalMs, options?.scheduler);
-				const inboxEvents$ = fromEventBus(deps.eventBus, "relay:inbox");
+				const inboxEvents$ = fromEventBus(deps.eventBus, "relay:inbox").pipe(
+					filter((event) => (event as Record<string, unknown>).stream_id === streamId),
+				);
 
-				// Filter to events for this specific stream
-				const thisStreamEvents$ =
-					inboxEvents$.pipe(
-						// in RxJS, just filter in the map - but we need to ensure events pass through
-						// The event-driven wakeup is not strictly necessary, just nice-to-have
-					);
-
-				const source$ = merge(pollInterval, thisStreamEvents$);
+				const source$ = merge(pollInterval, inboxEvents$);
 
 				const subscription = source$
 					.pipe(
 						takeUntil(aborted$),
+						takeUntil(stop$),
 						scan<unknown, PerHostState>((state, _tick) => {
 							if (completed) return state;
 
@@ -136,6 +141,7 @@ export function createRelayStream$(
 								});
 								state.timedOut = true;
 								completed = true;
+								stop$.next(); // Signal processing to stop
 								return state;
 							}
 
@@ -152,11 +158,12 @@ export function createRelayStream$(
 								);
 								markProcessed(deps.db, [errorEntry.id]);
 								if (!errResult.ok) {
-									subscriber.error(new Error(`Remote inference error: ${errorEntry.payload}`));
+									errorMsg = `Remote inference error: ${errorEntry.payload}`;
 								} else {
-									subscriber.error(new Error(errResult.value.error ?? "Remote inference error"));
+									errorMsg = errResult.value.error ?? "Remote inference error";
 								}
 								completed = true;
+								stop$.next(); // Signal processing to stop
 								return state;
 							}
 
@@ -172,6 +179,12 @@ export function createRelayStream$(
 									continue;
 								}
 								const chunkPayload = chunkResult.value as StreamChunkPayload;
+
+								// MINOR Issue 3: Validate payload structure before use
+								if (typeof chunkPayload.seq !== "number" || !Array.isArray(chunkPayload.chunks)) {
+									continue;
+								}
+
 								if (!state.buffer.has(chunkPayload.seq)) {
 									state.buffer.set(chunkPayload.seq, chunkPayload);
 								}
@@ -219,6 +232,7 @@ export function createRelayStream$(
 								state.hostSucceeded = true;
 								hostSucceeded = true;
 								completed = true;
+								stop$.next(); // Signal processing to stop
 								subscriber.complete();
 								return state;
 							}
@@ -251,18 +265,24 @@ export function createRelayStream$(
 					)
 					.subscribe({
 						complete: () => {
-							if (!completed) {
-								if (hostSucceeded) {
-									subscriber.complete();
+							// CRITICAL Issue 1: Timeout must complete the subscriber so concatMap
+							// can advance to the next host
+							if (!hostSucceeded) {
+								if (errorMsg) {
+									// Remote inference error occurred
+									subscriber.error(new Error(errorMsg));
 								} else {
-									// Timeout occurred, try next host by completing without error
+									// Timeout or other completion without success - complete normally
+									// so concatMap can try the next host
 									subscriber.complete();
 								}
 							}
+							// If hostSucceeded, subscriber.complete() was already called in the scan callback
 						},
 					});
 
 				return () => {
+					stop$.complete();
 					subscription.unsubscribe();
 					// Write cancel on cleanup if stream didn't complete successfully
 					if (!hostSucceeded) {
@@ -286,5 +306,14 @@ export function createRelayStream$(
 				};
 			});
 		}),
+		// CRITICAL Issue 2: Throw error only if we actually tried hosts and all exhausted without success
+		hostAttempted
+			? throwIfEmpty(
+					() =>
+						new Error(
+							`inference-relay.AC1.5: all ${eligibleHosts.length} eligible host(s) timed out`,
+						),
+				)
+			: filter((_) => true), // No-op filter if no hosts attempted (let empty observable complete)
 	);
 }

@@ -837,7 +837,7 @@ export class AgentLoop {
 							const previousState = this.state;
 							this.state = "RELAY_STREAM";
 							try {
-								// Create aborted$ from the AbortSignal
+								// Create aborted$ from the AbortSignal and this.aborted flag
 								const aborted$ = new Observable<void>((subscriber) => {
 									if (this.aborted) {
 										subscriber.next();
@@ -848,8 +848,17 @@ export class AgentLoop {
 										subscriber.next();
 										subscriber.complete();
 									};
+									// MINOR Issue 2: Also check this.aborted periodically via interval
+									const checkAbortInterval = setInterval(() => {
+										if (this.aborted) {
+											clearInterval(checkAbortInterval);
+											subscriber.next();
+											subscriber.complete();
+										}
+									}, 100);
 									this.config.abortSignal?.addEventListener("abort", onAbort);
 									return () => {
+										clearInterval(checkAbortInterval);
 										this.config.abortSignal?.removeEventListener("abort", onAbort);
 									};
 								});
