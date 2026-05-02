@@ -13,6 +13,11 @@ export type { ModelResolution } from "./model-resolution";
 
 // Export RxJS utilities
 export { fromEventBus, pollDb } from "./rx-utils.js";
+export {
+	createRelayStream$,
+	type RelayStreamDeps,
+	type RelayStreamOptions,
+} from "./relay-stream$.js";
 
 // Export model resolution
 export { resolveModel, resolveModelTier, resolveSameTierFallback } from "./model-resolution";

@@ -6,7 +6,6 @@ import {
 	insertRow,
 	markProcessed,
 	readInboxByRefId,
-	readInboxByStreamId,
 	recordContextDebug,
 	recordTurn,
 	recordTurnRelayMetrics,
@@ -15,7 +14,7 @@ import {
 	writeOutbox,
 } from "@bound/core";
 import type { ContentBlock, ModelRouter, StreamChunk, ToolDefinition } from "@bound/llm";
-import type { InferenceRequestPayload, StreamChunkPayload } from "@bound/llm";
+import type { InferenceRequestPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
 import type {
 	ContextDebugInfo,
@@ -30,9 +29,11 @@ import {
 	errorPayloadSchema,
 	formatError,
 	parseJsonSafe,
-	parseJsonUntyped,
 	resultPayloadSchema,
 } from "@bound/shared";
+
+import { Observable, lastValueFrom } from "rxjs";
+import { tap } from "rxjs/operators";
 
 import {
 	buildCommandOutput,
@@ -53,7 +54,8 @@ import { assembleContext, buildVolatileContext, computeSafetyMargin } from "./co
 import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
 import { type ModelResolution, resolveModel, resolveSameTierFallback } from "./model-resolution";
-import { type EligibleHost, createRelayOutboxEntry } from "./relay-router";
+import { createRelayOutboxEntry } from "./relay-router";
+import { createRelayStream$ } from "./relay-stream$";
 import { extractSummaryAndMemories } from "./summary-extraction";
 import {
 	TOOL_RESULT_OFFLOAD_THRESHOLD,
@@ -831,14 +833,51 @@ export class AgentLoop {
 								};
 							}
 
-							for await (const chunk of this.relayStream(
-								inferencePayload,
-								resolution.hosts,
-								relayMetadataRef,
-							)) {
-								if (this.aborted) break;
-								if (chunk.type === "heartbeat") continue;
-								chunks.push(chunk);
+							// Replace the for-await with Observable consumption
+							const previousState = this.state;
+							this.state = "RELAY_STREAM";
+							try {
+								// Create aborted$ from the AbortSignal
+								const aborted$ = new Observable<void>((subscriber) => {
+									if (this.aborted) {
+										subscriber.next();
+										subscriber.complete();
+										return;
+									}
+									const onAbort = () => {
+										subscriber.next();
+										subscriber.complete();
+									};
+									this.config.abortSignal?.addEventListener("abort", onAbort);
+									return () => {
+										this.config.abortSignal?.removeEventListener("abort", onAbort);
+									};
+								});
+
+								await lastValueFrom(
+									createRelayStream$(
+										{
+											db: this.ctx.db,
+											eventBus: this.ctx.eventBus,
+											siteId: this.ctx.siteId,
+											logger: this.ctx.logger,
+										},
+										inferencePayload,
+										resolution.hosts,
+										aborted$,
+										relayMetadataRef,
+										{ perHostTimeoutMs: this.inferenceTimeoutMs },
+									).pipe(
+										tap((chunk) => {
+											if (chunk.type !== "heartbeat") {
+												chunks.push(chunk);
+											}
+										}),
+									),
+									{ defaultValue: undefined },
+								);
+							} finally {
+								this.state = previousState;
 							}
 							break;
 						}
@@ -1867,230 +1906,6 @@ export class AgentLoop {
 					return `Failover failed: could not write outbox entry for host ${nextHost.host_name}`;
 				}
 			}
-		}
-	}
-
-	/**
-	 * Stream LLM inference from a remote host via relay. Listens for relay:inbox events,
-	 * reorders by seq, fails over on timeout, and propagates cancellation.
-	 */
-	private async *relayStream(
-		payload: InferenceRequestPayload,
-		eligibleHosts: EligibleHost[],
-		relayMetadataRef?: { hostName?: string; firstChunkLatencyMs?: number },
-		options?: { pollIntervalMs?: number; perHostTimeoutMs?: number },
-	): AsyncGenerator<StreamChunk> {
-		const POLL_INTERVAL_MS = options?.pollIntervalMs ?? 500;
-		const PER_HOST_TIMEOUT_MS = options?.perHostTimeoutMs ?? this.inferenceTimeoutMs;
-		const MAX_GAP_CYCLES = 6; // ~3s at 500ms poll — allow time for sync-based delivery
-		const previousState = this.state;
-		this.state = "RELAY_STREAM";
-
-		try {
-			for (let hostIndex = 0; hostIndex < eligibleHosts.length; hostIndex++) {
-				const host = eligibleHosts[hostIndex];
-				const streamId = randomUUID();
-
-				// Write inference request to outbox
-				const serializedPayload = JSON.stringify(payload);
-				const outboxEntry = createRelayOutboxEntry(
-					host.site_id,
-					this.ctx.siteId,
-					"inference",
-					serializedPayload,
-					PER_HOST_TIMEOUT_MS,
-					undefined, // refId — not used for inference (no idempotency key)
-					undefined, // idempotencyKey — omitted per spec §3.6
-					streamId,
-				);
-				writeOutbox(this.ctx.db, outboxEntry);
-
-				this.ctx.logger.info("RELAY_STREAM: connecting", {
-					host: host.host_name,
-					model: payload.model,
-					streamId,
-				});
-
-				let firstChunkReceived = false;
-				const hostStartTime = Date.now(); // when we started waiting on this host
-				let lastActivityTime = Date.now(); // updated on each new chunk (for mid-stream silence)
-				let firstChunkLatencyMs: number | null = null;
-				let nextExpectedSeq = 0;
-				// Buffer for out-of-order chunks: seq -> StreamChunkPayload
-				const buffer = new Map<number, StreamChunkPayload>();
-				let gapCyclesWaited = 0;
-				let hostSucceeded = false;
-				let streamEndConsumed = false; // persistent flag: true once stream_end chunks are yielded
-
-				// Polling loop for this host attempt with event-driven waiting
-				while (true) {
-					// Check abort/cancel before every poll
-					if (this.aborted) {
-						const cancelEntry = createRelayOutboxEntry(
-							host.site_id,
-							this.ctx.siteId,
-							"cancel",
-							JSON.stringify({}),
-							30_000,
-							outboxEntry.id, // ref_id points to original inference request
-						);
-						try {
-							writeOutbox(this.ctx.db, cancelEntry);
-						} catch (error) {
-							this.ctx.logger.warn("Failed to write relay cancel outbox entry in RELAY_STREAM", {
-								streamId,
-								error: error instanceof Error ? error.message : String(error),
-							});
-						}
-						return;
-					}
-
-					// Check per-host timeout: before first chunk use hostStartTime; after first chunk
-					// use lastActivityTime (mid-stream silence). Both use PER_HOST_TIMEOUT_MS.
-					const now = Date.now();
-					const timeoutSource = firstChunkReceived ? lastActivityTime : hostStartTime;
-					const elapsedMs = now - timeoutSource;
-					if (elapsedMs > PER_HOST_TIMEOUT_MS) {
-						this.ctx.logger.warn("RELAY_STREAM: timeout, failing over", {
-							host: host.host_name,
-							elapsedMs,
-							nextHostAvailable: hostIndex + 1 < eligibleHosts.length,
-						});
-						break; // Exit inner while(true) — outer for-loop will try next host
-					}
-
-					// Wait for relay:inbox event with short timeout to allow periodic checks
-					await new Promise<void>((resolve) => {
-						const timeoutId = setTimeout(() => {
-							cleanup();
-							resolve();
-						}, POLL_INTERVAL_MS);
-
-						const onInbox = (event: { ref_id?: string; stream_id?: string; kind: RelayKind }) => {
-							if (event.stream_id !== streamId) return;
-							cleanup();
-							resolve();
-						};
-
-						const cleanup = () => {
-							clearTimeout(timeoutId);
-							this.ctx.eventBus.off("relay:inbox", onInbox);
-						};
-
-						this.ctx.eventBus.on("relay:inbox", onInbox);
-					});
-
-					// Fetch all unprocessed stream_chunk / stream_end for this stream_id
-					const inboxEntries = readInboxByStreamId(this.ctx.db, streamId);
-
-					const errorEntry = inboxEntries.find((e) => e.kind === "error");
-					if (errorEntry) {
-						const errResult = parseJsonSafe(
-							errorPayloadSchema,
-							errorEntry.payload,
-							errorEntry.kind,
-						);
-						markProcessed(this.ctx.db, [errorEntry.id]);
-						if (!errResult.ok) {
-							throw new Error(`Remote inference error: ${errorEntry.payload}`);
-						}
-						throw new Error(errResult.value.error ?? "Remote inference error");
-					}
-
-					// Buffer all received stream_chunk and stream_end entries by seq
-					const streamEndEntry = inboxEntries.find((e) => e.kind === "stream_end");
-					const chunkEntries = inboxEntries.filter((e) => e.kind === "stream_chunk");
-					let streamEndSeq: number | null = null;
-
-					for (const entry of [...chunkEntries, ...(streamEndEntry ? [streamEndEntry] : [])]) {
-						const chunkResult = parseJsonUntyped(entry.payload, entry.kind);
-						markProcessed(this.ctx.db, [entry.id]);
-						if (!chunkResult.ok) {
-							continue;
-						}
-						const chunkPayload = chunkResult.value as StreamChunkPayload;
-						if (!buffer.has(chunkPayload.seq)) {
-							buffer.set(chunkPayload.seq, chunkPayload);
-						}
-						if (entry.kind === "stream_end") {
-							streamEndSeq = chunkPayload.seq;
-						}
-					}
-
-					while (buffer.has(nextExpectedSeq)) {
-						// biome-ignore lint/style/noNonNullAssertion: checked with buffer.has() above
-						const chunkPayload = buffer.get(nextExpectedSeq)!;
-						buffer.delete(nextExpectedSeq);
-						nextExpectedSeq++;
-
-						for (const chunk of chunkPayload.chunks) {
-							if (!firstChunkReceived) {
-								firstChunkReceived = true;
-								firstChunkLatencyMs = Date.now() - hostStartTime; // first-chunk latency
-								// Populate the metadata ref so it can be recorded after currentTurnId is set
-								if (relayMetadataRef) {
-									relayMetadataRef.hostName = host.host_name;
-									relayMetadataRef.firstChunkLatencyMs = firstChunkLatencyMs;
-								}
-								this.ctx.logger.info("RELAY_STREAM: first chunk", {
-									host: host.host_name,
-									latencyMs: firstChunkLatencyMs,
-								});
-							}
-							lastActivityTime = Date.now(); // reset mid-stream silence timer
-							yield chunk;
-						}
-						// Track when stream_end's seq has been consumed
-						if (streamEndSeq !== null && nextExpectedSeq > streamEndSeq) {
-							streamEndConsumed = true;
-						}
-						gapCyclesWaited = 0; // Gap resolved
-					}
-
-					// Stream complete when stream_end has been consumed and buffer has no
-					// forward entries. Use persistent flag so completion survives stale-entry
-					// cleanup that may empty the buffer on a later poll cycle.
-					if (streamEndConsumed && buffer.size === 0) {
-						hostSucceeded = true;
-						break;
-					}
-
-					// Detect gap — buffer has entries but next seq is missing
-					if (buffer.size > 0) {
-						gapCyclesWaited++;
-						if (gapCyclesWaited >= MAX_GAP_CYCLES) {
-							const sortedSeqs = Array.from(buffer.keys()).sort((a, b) => a - b);
-							const lowestBuffered = sortedSeqs[0];
-							this.ctx.logger.warn("RELAY_STREAM: seq gap detected, skipping", {
-								expectedSeq: nextExpectedSeq,
-								bufferedSeqs: sortedSeqs,
-							});
-							if (lowestBuffered < nextExpectedSeq) {
-								// Stale duplicate chunks — discard them instead of jumping backwards
-								for (const seq of sortedSeqs) {
-									if (seq < nextExpectedSeq) buffer.delete(seq);
-								}
-							} else {
-								// Forward gap — skip missing seqs and advance
-								nextExpectedSeq = lowestBuffered;
-							}
-							gapCyclesWaited = 0;
-						}
-					}
-				}
-
-				if (hostSucceeded) {
-					return; // Done
-				}
-				// Continue outer for-loop to try next host
-			}
-
-			// All hosts exhausted
-			throw new Error(
-				`inference-relay.AC1.5: all ${eligibleHosts.length} eligible host(s) timed out`,
-			);
-		} finally {
-			this.state = previousState;
 		}
 	}
 
