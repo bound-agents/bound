@@ -16,12 +16,12 @@ interface Task {
 
 export function sortTasks(tasks: Task[]): Task[] {
 	return [...tasks].sort((a, b) => {
-		// Primary sort: by next_run_at ascending (nulls to end)
-		const aNext = a.next_run_at ? new Date(a.next_run_at).getTime() : Number.POSITIVE_INFINITY;
-		const bNext = b.next_run_at ? new Date(b.next_run_at).getTime() : Number.POSITIVE_INFINITY;
+		// Primary sort: by next_run_at descending (nulls to end)
+		const aNext = a.next_run_at ? new Date(a.next_run_at).getTime() : Number.NEGATIVE_INFINITY;
+		const bNext = b.next_run_at ? new Date(b.next_run_at).getTime() : Number.NEGATIVE_INFINITY;
 
 		if (aNext !== bNext) {
-			return aNext - bNext;
+			return bNext - aNext;
 		}
 
 		// Secondary sort: by status weight

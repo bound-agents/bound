@@ -19,18 +19,18 @@ describe("sortTasks", () => {
 		expect(STATUS_WEIGHT.completed).toBe(4);
 	});
 
-	it("should sort by next_run_at ascending as primary sort", () => {
+	it("should sort by next_run_at descending as primary sort", () => {
 		const tasks: Task[] = [
 			{
-				id: "later",
+				id: "sooner",
 				status: "pending",
-				next_run_at: "2026-04-14T15:00:00Z",
+				next_run_at: "2026-04-14T10:00:00Z",
 				last_run_at: null,
 			},
 			{
-				id: "sooner",
+				id: "later",
 				status: "failed",
-				next_run_at: "2026-04-14T10:00:00Z",
+				next_run_at: "2026-04-14T15:00:00Z",
 				last_run_at: null,
 			},
 			{
@@ -43,9 +43,9 @@ describe("sortTasks", () => {
 
 		const sorted = sortTasks(tasks);
 
-		expect(sorted[0].id).toBe("sooner");
+		expect(sorted[0].id).toBe("later");
 		expect(sorted[1].id).toBe("middle");
-		expect(sorted[2].id).toBe("later");
+		expect(sorted[2].id).toBe("sooner");
 	});
 
 	it("should sort null next_run_at to end", () => {
@@ -195,13 +195,13 @@ describe("sortTasks", () => {
 			{
 				id: "2",
 				status: "pending",
-				next_run_at: "2026-04-14T10:00:00Z",
+				next_run_at: "2026-04-14T12:00:00Z",
 				last_run_at: "2026-04-13T10:00:00Z",
 			},
 			{
 				id: "1",
 				status: "running",
-				next_run_at: "2026-04-14T09:00:00Z",
+				next_run_at: "2026-04-14T15:00:00Z",
 				last_run_at: "2026-04-13T10:00:00Z",
 			},
 		];
@@ -214,25 +214,25 @@ describe("sortTasks", () => {
 		expect(sorted[0].id).toBe("1");
 	});
 
-	it("should sort pending tasks with near next_run_at above failed tasks with distant next_run_at", () => {
+	it("should sort tasks with next_run_at above completed tasks without", () => {
 		const tasks: Task[] = [
 			{
-				id: "failed-distant",
-				status: "failed",
-				next_run_at: "2026-04-14T20:00:00Z",
-				last_run_at: null,
+				id: "completed-old",
+				status: "completed",
+				next_run_at: null,
+				last_run_at: "2026-04-13T10:00:00Z",
 			},
 			{
-				id: "pending-soon",
+				id: "heartbeat-upcoming",
 				status: "pending",
 				next_run_at: "2026-04-14T10:00:00Z",
-				last_run_at: null,
+				last_run_at: "2026-04-14T07:00:00Z",
 			},
 		];
 
 		const sorted = sortTasks(tasks);
 
-		expect(sorted[0].id).toBe("pending-soon");
-		expect(sorted[1].id).toBe("failed-distant");
+		expect(sorted[0].id).toBe("heartbeat-upcoming");
+		expect(sorted[1].id).toBe("completed-old");
 	});
 });
