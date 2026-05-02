@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { TypedEventEmitter } from "@bound/shared";
+import { Subject } from "rxjs";
 import { take } from "rxjs/operators";
+import { TestScheduler } from "rxjs/testing";
 import { fromEventBus, pollDb } from "../rx-utils.js";
 
 describe("rx-utils", () => {
@@ -14,17 +16,17 @@ describe("rx-utils", () => {
 		it("emits event data when eventBus fires the subscribed event", (done) => {
 			const results: string[] = [];
 
-			const subscription = fromEventBus(emitter, "advisory:created").subscribe({
+			const subscription = fromEventBus(emitter, "task:triggered").subscribe({
 				next: (data) => {
-					results.push(data.advisory_id);
+					results.push(data.task_id);
 				},
 			});
 
-			emitter.emit("advisory:created", { advisory_id: "adv-1" });
-			emitter.emit("advisory:created", { advisory_id: "adv-2" });
+			emitter.emit("task:triggered", { task_id: "task-1", trigger: "manual" });
+			emitter.emit("task:triggered", { task_id: "task-2", trigger: "manual" });
 
 			setTimeout(() => {
-				expect(results).toEqual(["adv-1", "adv-2"]);
+				expect(results).toEqual(["task-1", "task-2"]);
 				subscription.unsubscribe();
 				done();
 			}, 10);
@@ -32,22 +34,22 @@ describe("rx-utils", () => {
 
 		it("does not emit for unrelated events", (done) => {
 			const results: unknown[] = [];
-			const subscription = fromEventBus(emitter, "advisory:created").subscribe({
+			const subscription = fromEventBus(emitter, "task:triggered").subscribe({
 				next: (data) => {
 					results.push(data);
 				},
 			});
 
-			emitter.emit("task:triggered", {
-				task_id: "task-1",
-				trigger: "cron",
+			emitter.emit("file:changed", {
+				path: "/test",
+				operation: "created",
 			});
 
-			emitter.emit("advisory:created", { advisory_id: "adv-1" });
+			emitter.emit("task:triggered", { task_id: "task-1", trigger: "manual" });
 
 			setTimeout(() => {
 				expect(results.length).toBe(1);
-				expect(results[0]).toEqual({ advisory_id: "adv-1" });
+				expect(results[0]).toEqual({ task_id: "task-1", trigger: "manual" });
 				subscription.unsubscribe();
 				done();
 			}, 10);
@@ -56,20 +58,20 @@ describe("rx-utils", () => {
 		it("stops receiving after unsubscribe (verifies .off() teardown)", (done) => {
 			const results: string[] = [];
 
-			const subscription = fromEventBus(emitter, "advisory:created").subscribe({
+			const subscription = fromEventBus(emitter, "task:triggered").subscribe({
 				next: (data) => {
-					results.push(data.advisory_id);
+					results.push(data.task_id);
 				},
 			});
 
-			emitter.emit("advisory:created", { advisory_id: "adv-1" });
+			emitter.emit("task:triggered", { task_id: "task-1", trigger: "manual" });
 
 			subscription.unsubscribe();
 
-			emitter.emit("advisory:created", { advisory_id: "adv-2" });
+			emitter.emit("task:triggered", { task_id: "task-2", trigger: "manual" });
 
 			setTimeout(() => {
-				expect(results).toEqual(["adv-1"]);
+				expect(results).toEqual(["task-1"]);
 				done();
 			}, 10);
 		});
@@ -78,24 +80,24 @@ describe("rx-utils", () => {
 			const results1: string[] = [];
 			const results2: string[] = [];
 
-			const sub1 = fromEventBus(emitter, "advisory:created").subscribe({
+			const sub1 = fromEventBus(emitter, "task:triggered").subscribe({
 				next: (data) => {
-					results1.push(data.advisory_id);
+					results1.push(data.task_id);
 				},
 			});
 
-			const sub2 = fromEventBus(emitter, "advisory:created").subscribe({
+			const sub2 = fromEventBus(emitter, "task:triggered").subscribe({
 				next: (data) => {
-					results2.push(data.advisory_id);
+					results2.push(data.task_id);
 				},
 			});
 
-			emitter.emit("advisory:created", { advisory_id: "adv-1" });
-			emitter.emit("advisory:created", { advisory_id: "adv-2" });
+			emitter.emit("task:triggered", { task_id: "task-1", trigger: "manual" });
+			emitter.emit("task:triggered", { task_id: "task-2", trigger: "manual" });
 
 			setTimeout(() => {
-				expect(results1).toEqual(["adv-1", "adv-2"]);
-				expect(results2).toEqual(["adv-1", "adv-2"]);
+				expect(results1).toEqual(["task-1", "task-2"]);
+				expect(results2).toEqual(["task-1", "task-2"]);
 				sub1.unsubscribe();
 				sub2.unsubscribe();
 				done();
@@ -157,7 +159,7 @@ describe("rx-utils", () => {
 				return callCount <= 3 ? `result-${callCount}` : null;
 			};
 
-			const wakeup$ = new (require("rxjs").Subject)();
+			const wakeup$ = new Subject();
 
 			pollDb(query, { intervalMs: 50, wakeup$ })
 				.pipe(take(3))
@@ -184,7 +186,6 @@ describe("rx-utils", () => {
 				return callCount <= 2 ? `result-${callCount}` : null;
 			};
 
-			const { Subject } = require("rxjs");
 			const wakeup$ = new Subject();
 
 			pollDb(query, { intervalMs: 50, wakeup$ })
@@ -206,8 +207,7 @@ describe("rx-utils", () => {
 		});
 
 		it("scheduler injection works — interval respects the provided scheduler", (done) => {
-			const { TestScheduler } = require("rxjs/testing");
-			const scheduler = new TestScheduler((actual: any, expected: any) => {
+			const scheduler = new TestScheduler((actual, expected) => {
 				expect(actual).toEqual(expected);
 			});
 
@@ -220,17 +220,17 @@ describe("rx-utils", () => {
 
 				const result$ = pollDb(query, { intervalMs: 10, scheduler }).pipe(take(2));
 
-				// Just verify values are emitted correctly
+				// Verify scheduler is used by collecting emissions in virtual time
 				const values: string[] = [];
-				result$.subscribe((v) => values.push(v));
-
-				// Let scheduler run
-				scheduler.flush();
-
-				expect(values).toEqual(["result-1", "result-2"]);
+				const subscription = result$.subscribe({
+					next: (v) => values.push(v),
+					complete: () => {
+						expect(values).toEqual(["result-1", "result-2"]);
+						subscription.unsubscribe();
+						done();
+					},
+				});
 			});
-
-			done();
 		});
 	});
 });
