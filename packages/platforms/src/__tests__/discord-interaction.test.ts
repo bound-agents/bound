@@ -1919,6 +1919,120 @@ describe("DiscordInteractionConnector", () => {
 		});
 
 		describe("rxjs-async-refactor AC4: RxJS polling observable behavior", () => {
+			it("AC4.2: startWith(0) fires immediately with long poll interval", async () => {
+				const editReplyCalls: Array<{ content: string }> = [];
+				const mockClient = {
+					application: { commands: { create: async () => {} } },
+					on: () => {},
+					off: () => {},
+				};
+				const connector = new DiscordInteractionConnector(
+					config,
+					db,
+					"site-1",
+					eventBus,
+					mockLogger,
+					createMockClientManagerWithClient(mockClient),
+					5000, // 5s timeout for testing
+				);
+
+				await connector.connect();
+
+				// Manually create user and thread in DB (pre-setup for polling)
+				const userId = randomUUID();
+				const threadId = randomUUID();
+				const now = new Date().toISOString();
+				db.run(
+					"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+					[userId, "Test User", null, now, now, 0],
+				);
+				db.run(
+					"INSERT INTO threads (id, user_id, interface, host_origin, title, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						threadId,
+						userId,
+						"discord-interaction",
+						"site-1",
+						"Discord Interaction",
+						now,
+						now,
+						now,
+						0,
+					],
+				);
+
+				// Create the user message that pollForResponse will reference
+				const userMsgTime = new Date(Date.now() + 10).toISOString();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						threadId,
+						"user",
+						"File this for later",
+						null,
+						null,
+						userMsgTime,
+						userMsgTime,
+						"site-1",
+						0,
+					],
+				);
+
+				// Pre-insert assistant response
+				const responseTime = new Date(Date.now() + 100).toISOString();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						threadId,
+						"assistant",
+						"This is the response.",
+						null,
+						null,
+						responseTime,
+						responseTime,
+						"site-1",
+						0,
+					],
+				);
+
+				// Store interaction so polling can find and use it
+				(connector as any).interactions.set(threadId, {
+					interaction: {
+						editReply: async (opts: { content: string }) => {
+							editReplyCalls.push(opts);
+						},
+					},
+					expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+				});
+
+				// Call pollForResponse with very long interval (5000ms);
+				// startWith(0) should fire the first immediate check
+				const pollPromise = (connector as any).pollForResponse(threadId, userMsgTime);
+
+				// Even with 5s interval, startWith(0) should cause editReply to fire within < 100ms
+				await new Promise<void>((resolve) => {
+					const checkInterval = setInterval(() => {
+						if (editReplyCalls.length > 0) {
+							clearInterval(checkInterval);
+							resolve();
+						}
+					}, 10);
+					// Timeout after 100ms to verify it fires immediately
+					setTimeout(() => {
+						clearInterval(checkInterval);
+						resolve();
+					}, 100);
+				});
+
+				// Verify editReply was called before the 5s interval would fire
+				expect(editReplyCalls.length).toBe(1);
+				expect(editReplyCalls[0]?.content).toBe("This is the response.");
+
+				await pollPromise;
+			});
+
 			it("AC4.4: Disconnect mid-poll completes cleanly (takeUntil prevents timeout error)", async () => {
 				const { mockInteraction, onInteractionCreateHandlers, mockClient, editReplyCalls } =
 					createFullMockSetup();

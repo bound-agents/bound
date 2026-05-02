@@ -470,4 +470,63 @@ describe("createRelayStream$", () => {
 		expect(error).toBeDefined();
 		expect(error?.message).toContain("Model not found");
 	});
+
+	it("AC1.4: Only first host is tried when it succeeds immediately", async () => {
+		({ db, tmpDir } = createTestDb());
+		const eventBus = new TypedEventEmitter();
+		const aborted$ = new Subject<void>();
+		const chunks: StreamChunk[] = [];
+		const remoteHost = "spoke-1";
+
+		const stream$ = createRelayStream$(
+			{ db, eventBus, siteId: "hub", logger: mockLogger },
+			payloadFixture as any,
+			[eligibleHostFixture(remoteHost, "spoke-1.local")] as any,
+			aborted$,
+			undefined,
+			{ perHostTimeoutMs: 5000, pollIntervalMs: 50 },
+		);
+
+		const subscribed = new Promise<void>((resolve) => {
+			setTimeout(resolve, 20);
+		});
+
+		const done = lastValueFrom(stream$.pipe(tap((chunk) => chunks.push(chunk))), {
+			defaultValue: undefined,
+		});
+
+		await subscribed;
+		const streamId = getStreamIdFromOutbox(db);
+
+		// Insert successful response from the host
+		insertRelayInboxEntry(db, {
+			id: "entry-0",
+			sourceSiteId: remoteHost,
+			kind: "stream_chunk",
+			streamId,
+			payload: JSON.stringify({ seq: 0, chunks: [{ type: "text_delta", text: "success" }] }),
+		});
+
+		insertRelayInboxEntry(db, {
+			id: "stream-end",
+			sourceSiteId: remoteHost,
+			kind: "stream_end",
+			streamId,
+			payload: JSON.stringify({ seq: 0, chunks: [] }),
+		});
+
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "stream_chunk" as const });
+
+		await done;
+
+		// Verify response was delivered
+		expect(chunks.length).toBe(1);
+		expect(chunks[0]).toEqual({ type: "text_delta", text: "success" });
+
+		// Verify exactly one inference outbox entry was created when host succeeds
+		const outbox = db
+			.prepare("SELECT COUNT(*) as cnt FROM relay_outbox WHERE kind = 'inference'")
+			.get() as { cnt: number };
+		expect(outbox.cnt).toBe(1);
+	});
 });
