@@ -225,9 +225,15 @@ describe("relay-stream integration tests", () => {
 	});
 
 	afterEach(async () => {
+		// Stop relay processor subscriptions FIRST (calls sub.unsubscribe())
 		if (relayProcessor) {
 			relayProcessor.stop();
 		}
+		// Give RxJS subscriptions time to complete and any pending interval tasks to finish.
+		// RxJS interval() tasks may still be pending and will try to access eventBus/db.
+		// Without this delay, cleanup races with interval-scheduled tasks.
+		await new Promise((r) => setTimeout(r, 100));
+		// Now close the cluster (closes databases and clears event buses)
 		await cluster.cleanup();
 		// Give ports time to be released
 		await new Promise((r) => setTimeout(r, 50));
@@ -277,6 +283,9 @@ describe("relay-stream integration tests", () => {
 				error: () => {},
 				debug: () => {},
 			},
+			cluster.spokes[1].eventBus,
+			undefined, // appCtx
+			undefined, // relayConfig
 		).start(50);
 
 		// Create user in requester's DB
@@ -394,6 +403,9 @@ describe("relay-stream integration tests", () => {
 				error: () => {},
 				debug: () => {},
 			},
+			cluster.spokes[1].eventBus,
+			undefined, // appCtx
+			undefined, // relayConfig
 		).start(50);
 
 		// Create user and thread
@@ -738,6 +750,9 @@ describe("relay-stream integration tests", () => {
 				error: () => {},
 				debug: () => {},
 			},
+			cluster.spokes[1].eventBus,
+			undefined, // appCtx
+			undefined, // relayConfig
 		).start(50);
 
 		// Create 3 agent loops
@@ -873,6 +888,9 @@ describe("relay-stream integration tests", () => {
 				error: () => {},
 				debug: () => {},
 			},
+			cluster.spokes[1].eventBus,
+			undefined, // appCtx
+			undefined, // relayConfig
 		).start(50);
 
 		// Create agent loop
@@ -993,6 +1011,9 @@ describe("relay-stream integration tests", () => {
 			modelRouter,
 			new Set([hubSiteId, requesterSiteId]),
 			{ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+			cluster.spokes[1].eventBus,
+			undefined, // appCtx
+			undefined, // relayConfig
 		).start(50);
 
 		const userId = randomUUID();
@@ -1095,6 +1116,9 @@ describe("relay-stream integration tests", () => {
 			modelRouter,
 			new Set([hubSiteId, requesterSiteId]),
 			{ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+			cluster.spokes[1].eventBus,
+			undefined, // appCtx
+			undefined, // relayConfig
 		).start(50);
 
 		const userId = randomUUID();
