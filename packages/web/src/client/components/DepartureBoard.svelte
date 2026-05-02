@@ -1,4 +1,5 @@
 <script lang="ts">
+import { rankDepartures } from "../lib/departure-sort";
 import LineBadge from "./LineBadge.svelte";
 
 interface EnhancedTask {
@@ -35,16 +36,7 @@ const STATUS_SYMBOL: Record<string, string> = {
 	cancelled: "CANCELLED",
 };
 
-// Prioritise active tasks (running/claimed > failed > pending) and take the top 6.
-const ranked = $derived(
-	[...tasks]
-		.filter((t) => t.status !== "completed" && t.status !== "cancelled")
-		.sort((a, b) => {
-			const w: Record<string, number> = { running: 0, claimed: 1, failed: 2, pending: 3 };
-			return (w[a.status] ?? 9) - (w[b.status] ?? 9);
-		})
-		.slice(0, 6),
-);
+const ranked = $derived(rankDepartures(tasks));
 
 function statusColor(s: string): string {
 	if (s === "failed") return "#FF6B5B";
