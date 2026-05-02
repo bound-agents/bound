@@ -4,35 +4,19 @@ import type { AppContext } from "@bound/core";
 import {
 	enqueueClientToolCall,
 	insertRow,
-	markProcessed,
-	readInboxByRefId,
 	recordContextDebug,
 	recordTurn,
 	recordTurnRelayMetrics,
 	resolveRelayConfig,
 	updateRow,
-	writeOutbox,
 } from "@bound/core";
 import type { ContentBlock, ModelRouter, StreamChunk, ToolDefinition } from "@bound/llm";
 import type { InferenceRequestPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
-import type {
-	ContextDebugInfo,
-	EventMap,
-	RelayInboxEntry,
-	RelayKind,
-	SyncConfig,
-} from "@bound/shared";
-import {
-	countContentTokens,
-	countTokens,
-	errorPayloadSchema,
-	formatError,
-	parseJsonSafe,
-	resultPayloadSchema,
-} from "@bound/shared";
+import type { ContextDebugInfo, EventMap, SyncConfig } from "@bound/shared";
+import { countContentTokens, countTokens, formatError } from "@bound/shared";
 
-import { Observable, lastValueFrom } from "rxjs";
+import { Observable, Subject, firstValueFrom, lastValueFrom } from "rxjs";
 import { tap } from "rxjs/operators";
 
 import {
@@ -54,8 +38,8 @@ import { assembleContext, buildVolatileContext, computeSafetyMargin } from "./co
 import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
 import { type ModelResolution, resolveModel, resolveSameTierFallback } from "./model-resolution";
-import { createRelayOutboxEntry } from "./relay-router";
 import { createRelayStream$ } from "./relay-stream$";
+import { createRelayWait$ } from "./relay-wait$";
 import { extractSummaryAndMemories } from "./summary-extraction";
 import {
 	TOOL_RESULT_OFFLOAD_THRESHOLD,
@@ -1364,7 +1348,42 @@ export class AgentLoop {
 								const result = await this.executeToolCall(toolCall);
 
 								if ("outboxEntryId" in result) {
-									resultContent = await this.relayWait(result, toolCall, currentTurnId);
+									const previousRelayState: AgentLoopState = this.state;
+									this.state = "RELAY_WAIT";
+									try {
+										const aborted$ = new Subject<void>();
+										const abortCheck = setInterval(() => {
+											if (this.aborted) {
+												aborted$.next();
+												aborted$.complete();
+											}
+										}, 100);
+
+										resultContent = await firstValueFrom(
+											createRelayWait$(
+												{
+													db: this.ctx.db,
+													eventBus: this.ctx.eventBus,
+													siteId: this.ctx.siteId,
+													logger: this.ctx.logger,
+												},
+												{
+													outboxEntryId: result.outboxEntryId,
+													toolName: result.toolName,
+													toolInput: toolCall.input,
+													eligibleHosts: result.eligibleHosts,
+													currentHostIndex: result.currentHostIndex,
+													currentTurnId,
+													threadId: this.config.threadId,
+												},
+												aborted$,
+											),
+											{ defaultValue: "Cancelled: relay request was cancelled by user" },
+										);
+										clearInterval(abortCheck);
+									} finally {
+										this.state = previousRelayState;
+									}
 								} else if (isClientToolCallRequest(result)) {
 									// Client tool calls are deferred to the client — track but don't get result yet
 									pendingClientCalls.push({ toolCall, request: result });
@@ -1749,175 +1768,6 @@ export class AgentLoop {
 	}
 
 	/** Poll relay inbox for remote tool call response. Handles timeout, failover, and cancellation. */
-	private async relayWait(
-		relayRequest: RelayToolCallRequest,
-		toolCall: ParsedToolCall,
-		currentTurnId: string | null,
-	): Promise<string> {
-		const previousState = this.state;
-		this.state = "RELAY_WAIT";
-
-		try {
-			return await this._relayWaitImpl(relayRequest, toolCall, currentTurnId);
-		} finally {
-			this.state = previousState;
-		}
-	}
-
-	private async _relayWaitImpl(
-		relayRequest: RelayToolCallRequest,
-		toolCall: ParsedToolCall,
-		currentTurnId: string | null,
-	): Promise<string> {
-		let { outboxEntryId } = relayRequest;
-		const { toolName, eligibleHosts } = relayRequest;
-		const timeoutMs = 30_000; // 30 second timeout per host
-		let currentHostIndex = relayRequest.currentHostIndex;
-		let hostStartTime = Date.now();
-		const relayStartTime = Date.now();
-
-		while (true) {
-			if (this.aborted) {
-				const currentHost = eligibleHosts[currentHostIndex];
-				const cancelEntry = createRelayOutboxEntry(
-					currentHost.site_id,
-					this.ctx.siteId,
-					"cancel",
-					JSON.stringify({}),
-					30_000,
-					outboxEntryId,
-				);
-				try {
-					writeOutbox(this.ctx.db, cancelEntry);
-				} catch (error) {
-					this.ctx.logger.warn("Failed to write relay cancel outbox entry in RELAY_WAIT", {
-						refId: outboxEntryId,
-						error: error instanceof Error ? error.message : String(error),
-					});
-				}
-				return "Cancelled: relay request was cancelled by user";
-			}
-
-			const currentHost = eligibleHosts[currentHostIndex];
-			this.ctx.logger.info("Relay wait", {
-				tool: toolName,
-				host: currentHost.host_name,
-			});
-
-			// Wait for response via event listener (event-driven approach)
-			const response = await new Promise<RelayInboxEntry | null>((resolve) => {
-				const timeoutId = setTimeout(() => {
-					cleanup();
-					resolve(null); // timeout
-				}, timeoutMs);
-
-				const onInbox = (event: { ref_id?: string; stream_id?: string; kind: RelayKind }) => {
-					if (this.aborted) {
-						cleanup();
-						resolve(null);
-						return;
-					}
-					if (event.ref_id !== outboxEntryId) return;
-					const entry = readInboxByRefId(this.ctx.db, outboxEntryId);
-					if (!entry) return; // spurious event
-					cleanup();
-					resolve(entry);
-				};
-
-				const cleanup = () => {
-					clearTimeout(timeoutId);
-					this.ctx.eventBus.off("relay:inbox", onInbox);
-				};
-
-				// Check immediately in case entry arrived before listener
-				const existing = readInboxByRefId(this.ctx.db, outboxEntryId);
-				if (existing) {
-					cleanup();
-					resolve(existing);
-					return;
-				}
-
-				this.ctx.eventBus.on("relay:inbox", onInbox);
-			});
-
-			if (response) {
-				const latencyMs = Date.now() - relayStartTime;
-				const currentHost = eligibleHosts[currentHostIndex];
-				if (currentTurnId !== null) {
-					try {
-						recordTurnRelayMetrics(
-							this.ctx.db,
-							currentTurnId,
-							currentHost.host_name,
-							latencyMs,
-							this.ctx.siteId,
-						);
-					} catch (error) {
-						this.ctx.logger.warn("Failed to record turn relay metrics", {
-							threadId: this.config.threadId,
-							turnId: currentTurnId,
-							error: error instanceof Error ? error.message : String(error),
-						});
-					}
-				}
-
-				if (response.kind === "error") {
-					const payloadResult = parseJsonSafe(errorPayloadSchema, response.payload, response.kind);
-					markProcessed(this.ctx.db, [response.id]);
-					if (!payloadResult.ok) {
-						return `Remote error: ${response.payload}`;
-					}
-					return `Remote error: ${payloadResult.value.error || response.payload}`;
-				}
-
-				if (response.kind === "result") {
-					const payloadResult = parseJsonSafe(resultPayloadSchema, response.payload, response.kind);
-					markProcessed(this.ctx.db, [response.id]);
-					if (!payloadResult.ok) {
-						return `Remote result: ${response.payload}`;
-					}
-					return buildCommandOutput(
-						payloadResult.value.stdout,
-						payloadResult.value.stderr,
-						payloadResult.value.exit_code,
-					);
-				}
-
-				markProcessed(this.ctx.db, [response.id]);
-				return `Unknown response kind: ${response.kind}`;
-			}
-
-			const elapsedMs = Date.now() - hostStartTime;
-			if (elapsedMs > timeoutMs) {
-				currentHostIndex++;
-				if (currentHostIndex >= eligibleHosts.length) {
-					return `Timeout: all ${eligibleHosts.length} eligible host(s) did not respond within ${timeoutMs}ms`;
-				}
-
-				const nextHost = eligibleHosts[currentHostIndex];
-				const nextPayload = JSON.stringify({
-					kind: "tool_call",
-					toolName,
-					args: toolCall.input,
-				});
-				const nextEntry = createRelayOutboxEntry(
-					nextHost.site_id,
-					this.ctx.siteId,
-					"tool_call",
-					nextPayload,
-					timeoutMs,
-				);
-				try {
-					writeOutbox(this.ctx.db, nextEntry);
-					outboxEntryId = nextEntry.id; // Update polled ref_id for failover host
-					hostStartTime = Date.now(); // Reset timeout for next host
-				} catch {
-					return `Failover failed: could not write outbox entry for host ${nextHost.host_name}`;
-				}
-			}
-		}
-	}
-
 	/** Merge server tools and client tool definitions into a single LLM tool list. */
 	private getMergedTools(): Array<ToolDefinition> | undefined {
 		if (this.config.toolRegistry) {

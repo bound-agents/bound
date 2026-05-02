@@ -18,6 +18,12 @@ export {
 	type RelayStreamDeps,
 	type RelayStreamOptions,
 } from "./relay-stream$.js";
+export {
+	createRelayWait$,
+	type RelayWaitDeps,
+	type RelayWaitParams,
+	type RelayWaitOptions,
+} from "./relay-wait$.js";
 
 // Export model resolution
 export { resolveModel, resolveModelTier, resolveSameTierFallback } from "./model-resolution";
