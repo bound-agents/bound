@@ -23,29 +23,34 @@ let rootLogger: pino.Logger | undefined;
 function getRootLogger(): pino.Logger {
 	if (rootLogger) return rootLogger;
 
-	const level = (process.env.LOG_LEVEL || "info") as LogLevel;
+	const level = (process.env.LOG_LEVEL || "info") as pino.LevelWithSilent;
+
+	if (level === "silent") {
+		rootLogger = pino({ level });
+		return rootLogger;
+	}
 
 	const logDir = join(process.cwd(), "logs");
 	mkdirSync(logDir, { recursive: true });
 	const logFile = join(logDir, "bound.log");
 
-	const prettyStream = pinoPretty({
-		destination: 2,
-		colorize: true,
-		translateTime: "HH:MM:ss.l",
-		ignore: "pid,hostname",
-		messageFormat: "[{package}/{component}] {msg}",
-	});
-
 	const fileStream = pino.destination({ dest: logFile, sync: false });
+	const streams: pino.StreamEntry[] = [{ stream: fileStream, level }];
 
-	rootLogger = pino(
-		{ level },
-		pino.multistream([
-			{ stream: prettyStream, level },
-			{ stream: fileStream, level },
-		]),
-	);
+	if (process.env.BOUND_LOG_STDERR !== "0") {
+		streams.push({
+			stream: pinoPretty({
+				destination: 2,
+				colorize: true,
+				translateTime: "HH:MM:ss.l",
+				ignore: "pid,hostname",
+				messageFormat: "[{package}/{component}] {msg}",
+			}),
+			level,
+		});
+	}
+
+	rootLogger = pino({ level }, pino.multistream(streams));
 
 	return rootLogger;
 }
