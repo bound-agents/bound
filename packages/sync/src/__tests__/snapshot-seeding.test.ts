@@ -66,6 +66,8 @@ function createSyncedTables(db: Database): void {
 				content TEXT NOT NULL,
 				model_id TEXT,
 				tool_name TEXT,
+				exit_code INTEGER,
+				metadata TEXT,
 				host_origin TEXT NOT NULL DEFAULT '',
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
