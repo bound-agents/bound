@@ -70,29 +70,14 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - name: Debug test discovery
-        run: |
-          echo "=== Test files on disk ==="
-          find packages -name '*.test.ts' -o -name '*.test.tsx' | grep -v node_modules | wc -l
-          echo "=== Per-package counts ==="
-          for pkg in shared core agent llm sandbox sync platforms web client mcp-server cli less; do
-            count=$(find "packages/$pkg" -name '*.test.ts' -o -name '*.test.tsx' | grep -v node_modules | wc -l)
-            echo "  $pkg: $count files"
-          done
-          echo "=== node_modules check ==="
-          for pkg in agent sync platforms web less; do
-            if [ -d "packages/$pkg/node_modules" ]; then
-              echo "  $pkg: node_modules exists ($(ls packages/$pkg/node_modules/ | wc -l) entries)"
-            else
-              echo "  $pkg: NO node_modules"
-            fi
-          done
-          echo "=== Single file import test ==="
-          for pkg in agent sync platforms web less; do
-            first=$(find "packages/$pkg" -name '*.test.ts' | grep -v node_modules | head -1)
-            echo -n "  $pkg ($first): "
-            bun test "$first" 2>&1 | tail -1
-          done
-
       - name: Unit tests
-        run: bun test --recursive
+        run: |
+          # bun test --recursive silently skips 5 packages on Linux due to a
+          # workspace test-discovery bug. Run each package explicitly instead.
+          exit_code=0
+          for pkg in shared core sync sandbox llm agent platforms web client mcp-server cli less; do
+            echo "::group::packages/$pkg"
+            bun test "packages/$pkg" || exit_code=$?
+            echo "::endgroup::"
+          done
+          exit $exit_code
