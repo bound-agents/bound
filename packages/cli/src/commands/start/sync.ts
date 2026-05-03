@@ -119,7 +119,8 @@ export async function initSync(
 	// 14b. Change-log pruning (runs in both single-host and multi-host modes)
 	let pruningHandle: { stop: () => void } | null = null;
 	try {
-		const { startPruningLoop } = await import("@bound/sync");
+		const { startPruningLoop, drainFreelistOnStartup } = await import("@bound/sync");
+		drainFreelistOnStartup(appContext.db, appContext.logger);
 		pruningHandle = startPruningLoop(appContext.db, 300_000, appContext.logger);
 		appContext.logger.info("[sync] Change-log pruning started (5m interval)");
 	} catch (error) {

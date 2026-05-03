@@ -1,7 +1,12 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { HLC_ZERO } from "@bound/shared";
-import { determinePruningMode, pruneChangeLog, runIncrementalVacuum } from "../pruning.js";
+import {
+	determinePruningMode,
+	drainFreelistOnStartup,
+	pruneChangeLog,
+	runIncrementalVacuum,
+} from "../pruning.js";
 
 describe("pruning", () => {
 	let db: Database;
@@ -205,6 +210,49 @@ describe("pruning", () => {
 			expect(() => {
 				runIncrementalVacuum(db);
 			}).not.toThrow();
+		});
+
+		it("accepts a custom page count", () => {
+			expect(() => {
+				runIncrementalVacuum(db, 16384);
+			}).not.toThrow();
+		});
+	});
+
+	describe("drainFreelistOnStartup", () => {
+		it("does nothing when freelist is below threshold", () => {
+			const logs: string[] = [];
+			const logger = { info: (msg: string) => logs.push(msg) } as any;
+			drainFreelistOnStartup(db, logger);
+			expect(logs.length).toBe(0);
+		});
+
+		it("executes without error on a file-backed database", () => {
+			const tmpPath = `/tmp/drain-test-${crypto.randomUUID()}.db`;
+			const fileDb = new Database(tmpPath);
+			fileDb.run("PRAGMA journal_mode = WAL");
+			fileDb.run("PRAGMA auto_vacuum = INCREMENTAL");
+			fileDb.run("VACUUM");
+
+			fileDb.run("CREATE TABLE test_data (id INTEGER PRIMARY KEY, payload TEXT)");
+			for (let i = 0; i < 5000; i++) {
+				fileDb.run("INSERT INTO test_data (payload) VALUES (?)", ["x".repeat(1000)]);
+			}
+			fileDb.run("DELETE FROM test_data");
+
+			const logs: string[] = [];
+			const logger = { info: (msg: string) => logs.push(msg) } as any;
+
+			expect(() => {
+				drainFreelistOnStartup(fileDb, logger);
+			}).not.toThrow();
+
+			fileDb.close();
+			try {
+				require("node:fs").unlinkSync(tmpPath);
+				require("node:fs").unlinkSync(`${tmpPath}-wal`);
+				require("node:fs").unlinkSync(`${tmpPath}-shm`);
+			} catch {}
 		});
 	});
 });

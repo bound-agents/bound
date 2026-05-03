@@ -72,9 +72,20 @@ export function pruneChangeLog(
 	return { deleted };
 }
 
-/** Reclaim freed pages incrementally (64 pages = 256KB per cycle at 4KB page size). */
-export function runIncrementalVacuum(db: Database): void {
-	db.run("PRAGMA incremental_vacuum(64)");
+/** Reclaim freed pages incrementally (default 8192 pages = 32MB per cycle at 4KB page size). */
+export function runIncrementalVacuum(db: Database, pages = 8192): void {
+	db.run(`PRAGMA incremental_vacuum(${pages})`);
+}
+
+/** Drain the entire freelist on startup so accumulated bloat is reclaimed immediately. */
+export function drainFreelistOnStartup(db: Database, logger?: Logger): void {
+	const row = db.query("PRAGMA freelist_count").get() as { freelist_count: number } | null;
+	const freePages = row?.freelist_count ?? 0;
+	if (freePages < 1000) return;
+
+	const reclaimMb = ((freePages * 4096) / 1_048_576).toFixed(1);
+	logger?.info(`[vacuum] Draining ${freePages} free pages (${reclaimMb} MB) on startup`);
+	db.run(`PRAGMA incremental_vacuum(${freePages})`);
 }
 
 export function startPruningLoop(

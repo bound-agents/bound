@@ -19,7 +19,7 @@ export type { RelayExecutor } from "./relay-executor.js";
 export { noopRelayExecutor } from "./relay-executor.js";
 
 // Pruning
-export { startPruningLoop } from "./pruning.js";
+export { startPruningLoop, drainFreelistOnStartup } from "./pruning.js";
 
 // Encryption and key management
 export {
