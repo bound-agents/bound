@@ -3,6 +3,7 @@ coverage = true
 coverageThreshold = { line = 0.6, function = 0.6 }
 # Exclude e2e tests from bun test runner (use Playwright instead)
 root = "packages"
+preload = ["./scripts/test-preload.ts"]
 
 # Note: Per AC4.6, differentiated thresholds are needed:
 # core/agent/sync: 80% (line and function)
