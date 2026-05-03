@@ -23,6 +23,8 @@ describe("reducers", () => {
 				content TEXT NOT NULL,
 				model_id TEXT,
 				tool_name TEXT,
+				exit_code INTEGER,
+				metadata TEXT,
 				created_at TEXT NOT NULL,
 				modified_at TEXT,
 				host_origin TEXT NOT NULL

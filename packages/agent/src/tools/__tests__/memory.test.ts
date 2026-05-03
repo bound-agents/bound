@@ -490,7 +490,7 @@ describe("memory tool", () => {
 			});
 
 			expect(result).toContain("Error");
-			expect(result).toContain("Unknown action");
+			expect(result).toContain("Invalid option");
 			expect(result).toContain("store");
 			expect(result).toContain("forget");
 			expect(result).toContain("search");
