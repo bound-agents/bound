@@ -12,7 +12,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import path, { resolve } from "node:path";
 import { Glob } from "bun";
 
 const SYNCED_TABLES = [
@@ -46,7 +46,7 @@ const EXCLUDED_PATHS = [
 const SQL_MUTATION_PATTERN = /["'`]\s*(INSERT\s+(?:OR\s+\w+\s+)?INTO|UPDATE|DELETE\s+FROM)\s+/i;
 
 function shouldExclude(filePath: string): boolean {
-	return EXCLUDED_PATHS.some((exc) => filePath.includes(exc));
+	return EXCLUDED_PATHS.some((exc) => path.normalize(filePath).includes(path.normalize(exc)));
 }
 
 function findTableInLine(line: string): string | null {
