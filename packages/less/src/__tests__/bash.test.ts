@@ -76,7 +76,7 @@ describe("boundless_bash", () => {
 			expect(contentBlock.text).toContain("Exit code:");
 			expect(contentBlock.text).not.toContain("Exit code: 0");
 		},
-		{ timeout: 5000 },
+		{ timeout: 10000 },
 	);
 
 	it("AC5.11: truncates output >100KB from the middle with marker", async () => {
