@@ -196,7 +196,10 @@ const statuses = ["pending", "running", "failed", "cancelled", "completed"];
 						class="task-row"
 						class:expanded
 						class:dim={task.status === "completed" || task.status === "cancelled"}
+						role="button"
+						tabindex="0"
 						onclick={() => toggleTaskExpansion(task.id)}
+						onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleTaskExpansion(task.id); } }}
 					>
 						<div class="line-accent" style="background: {getLineColor(lineIdx)}"></div>
 						<span class="chevron" class:open={expanded}>›</span>
