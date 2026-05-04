@@ -1,7 +1,12 @@
 interface DepartureTask {
 	id: string;
+	type: string;
+	displayName: string;
 	status: string;
+	schedule: string | null;
+	hostName: string | null;
 	next_run_at: string | null;
+	last_run_at: string | null;
 }
 
 function isActiveOrUpcoming(t: DepartureTask): boolean {

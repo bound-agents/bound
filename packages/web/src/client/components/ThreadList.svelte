@@ -297,6 +297,7 @@ function handleThreadKeydown(e: KeyboardEvent, id: string): void {
 		letter-spacing: -0.005em;
 		display: -webkit-box;
 		-webkit-line-clamp: 2;
+		line-clamp: 2;
 		-webkit-box-orient: vertical;
 		overflow: hidden;
 		word-break: break-word;
@@ -309,6 +310,7 @@ function handleThreadKeydown(e: KeyboardEvent, id: string): void {
 		line-height: 1.45;
 		display: -webkit-box;
 		-webkit-line-clamp: 2;
+		line-clamp: 2;
 		-webkit-box-orient: vertical;
 		overflow: hidden;
 	}

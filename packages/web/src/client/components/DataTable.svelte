@@ -59,11 +59,15 @@ const gridTemplate = $derived(columns.map((col) => col.width || "1fr").join(" ")
 	<div class="data-table">
 		<div class="header-row" style="grid-template-columns: {gridTemplate}">
 			{#each columns as col (col.key)}
+				<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 				<div
 					class="header-cell"
 					class:sortable
 					class:active={sortable && sortKey === col.key}
+					role={sortable ? "button" : undefined}
+					tabindex={sortable ? 0 : undefined}
 					onclick={() => handleColumnClick(col.key)}
+					onkeydown={(e) => { if (sortable && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); handleColumnClick(col.key); } }}
 				>
 					<span class="header-label">{col.label}</span>
 					{#if sortable && sortKey === col.key}
@@ -78,15 +82,25 @@ const gridTemplate = $derived(columns.map((col) => col.width || "1fr").join(" ")
 		<div class="body">
 			{#each sortedRows as row, i (row.id ?? i)}
 				{@const accentColor = rowAccent?.(row)}
+				<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 				<div
 					class="data-row"
 					class:expandable
 					style="grid-template-columns: {gridTemplate};
 					{accentColor ? `--row-accent: ${accentColor}` : ''}"
 					class:accented={!!accentColor}
+					role={(onRowClick || expandable) ? "button" : undefined}
+					tabindex={(onRowClick || expandable) ? 0 : undefined}
 					onclick={() => {
 						onRowClick?.(row);
 						if (expandable) toggleRowExpansion(row);
+					}}
+					onkeydown={(e) => {
+						if (e.key === "Enter" || e.key === " ") {
+							e.preventDefault();
+							onRowClick?.(row);
+							if (expandable) toggleRowExpansion(row);
+						}
 					}}
 				>
 					{#each columns as col (col.key)}

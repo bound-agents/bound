@@ -375,10 +375,12 @@ const hoveredCount = $derived(
 					<p>No memories yet — they will appear here as the agent learns.</p>
 				</div>
 			{:else}
+				<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 				<svg
 					bind:this={svgEl}
 					viewBox="{view.x} {view.y} {view.w} {view.h}"
 					preserveAspectRatio="xMidYMid meet"
+					role="application"
 					onmousedown={handleMouseDown}
 					onmousemove={handleMouseMove}
 					onmouseup={handleMouseUp}
@@ -458,6 +460,7 @@ const hoveredCount = $derived(
 						<g
 							style="opacity: {nodeOpacity(n)}; transition: opacity 0.18s ease; cursor: pointer;"
 							onclick={(e) => onNodeClick(n, e)}
+							onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectedNodeId = selectedNodeId === n.id ? null : n.id; if (selectedNodeId === n.id) focusOn(n); } }}
 							role="button"
 							tabindex="-1"
 						>

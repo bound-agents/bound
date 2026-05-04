@@ -65,7 +65,8 @@ function handleTurnChange(range: TurnRange | null): void {
 	}
 
 	.debug-wrapper.panel-open .main-content {
-		/* Let content fill available space when panel is open */
+		flex: 1;
+		min-width: 0;
 	}
 
 	.debug-panel-container {

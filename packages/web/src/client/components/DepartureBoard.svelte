@@ -7,8 +7,8 @@ interface EnhancedTask {
 	type: string;
 	displayName: string;
 	status: string;
-	schedule?: string | null;
-	hostName?: string | null;
+	schedule: string | null;
+	hostName: string | null;
 	next_run_at: string | null;
 	last_run_at: string | null;
 }
