@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { BoundClient } from "@bound/client";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
@@ -11,6 +11,10 @@ describe("transitionThread", () => {
 	let mockClient: BoundClient;
 	let mockMcpManager: McpServerManager;
 	let mockLogger: AppLogger;
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
 
 	beforeEach(() => {
 		// Mock BoundClient

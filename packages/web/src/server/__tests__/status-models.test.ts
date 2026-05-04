@@ -120,10 +120,9 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 	describe("AC5.3: Stale models annotated offline", () => {
 		it("marks models offline when host online_at > 5 minutes ago", async () => {
 			const staleTime = new Date(Date.now() - 6 * 60 * 1000).toISOString();
-			const now = new Date().toISOString();
 			db.prepare(
 				"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
-			).run("stale-site", "stale-host", JSON.stringify(["stale-model"]), staleTime, now);
+			).run("stale-site", "stale-host", JSON.stringify(["stale-model"]), staleTime, staleTime);
 
 			const res = await app.fetch(new Request("http://localhost/models"));
 
@@ -136,10 +135,16 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 		});
 
 		it("marks models offline when host online_at is null", async () => {
-			const now = new Date().toISOString();
+			const staleTime = new Date(Date.now() - 6 * 60 * 1000).toISOString();
 			db.prepare(
 				"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
-			).run("no-online-site", "no-online-host", JSON.stringify(["no-online-model"]), null, now);
+			).run(
+				"no-online-site",
+				"no-online-host",
+				JSON.stringify(["no-online-model"]),
+				null,
+				staleTime,
+			);
 
 			const res = await app.fetch(new Request("http://localhost/models"));
 
