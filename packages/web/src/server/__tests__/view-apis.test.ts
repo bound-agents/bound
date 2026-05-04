@@ -248,19 +248,24 @@ describe("R-U23/25/26: View APIs", () => {
 		it("returns hub configuration if set", async () => {
 			const now = new Date().toISOString();
 
-			// Set a hub in cluster_config
-			db.run("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)", [
-				"hub",
-				"hub-site-id",
-				now,
-			]);
+			// Insert a hub host so the route can resolve it
+			db.run(
+				"INSERT INTO hosts (site_id, host_name, version, sync_url, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				["hub-site-id", "hub-host", "0.0.1", "http://hub:3000/sync", now, now, 0],
+			);
+
+			// Insert sync_state so the route identifies this peer as the hub
+			db.run(
+				"INSERT INTO sync_state (peer_site_id, last_received, last_sent, last_sync_at, sync_errors) VALUES (?, ?, ?, ?, ?)",
+				["hub-site-id", 0, 0, now, 0],
+			);
 
 			const request = new Request("http://localhost:3000/api/status/network");
 			const response = await app.fetch(request);
 
 			expect(response.status).toBe(200);
 			const data = await response.json();
-			expect(data.hub).toBe("hub-site-id");
+			expect(data.hub).toEqual({ siteId: "hub-site-id", hostName: "hub-host" });
 		});
 
 		it("returns sync state for known peers", async () => {
