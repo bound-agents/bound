@@ -681,6 +681,7 @@ export class AgentLoop {
 					compactToolResults: true,
 					noHistory: this.config.noHistory,
 					systemPromptAddition: this.config.systemPromptAddition,
+					commandRegistry: this.ctx.commandRegistry,
 				});
 
 				// assembleContext now returns systemPrompt separately — no system-role

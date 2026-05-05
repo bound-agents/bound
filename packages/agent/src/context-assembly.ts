@@ -3,9 +3,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getSyncedTableSchemas } from "@bound/core";
 import type { BackendCapabilities, ContentBlock, LLMMessage } from "@bound/llm";
-import type { ContextDebugInfo, ContextSection, CrossThreadSource, Message } from "@bound/shared";
+import type {
+	CommandRegistryEntry,
+	ContextDebugInfo,
+	ContextSection,
+	CrossThreadSource,
+	Message,
+} from "@bound/shared";
 import { countContentTokens, countTokens, safeSlice } from "@bound/shared";
-import { getCommandRegistry } from "./commands/registry";
 import { getFileThreadNotificationMessage, getLastThreadForFile } from "./file-thread-tracker";
 import { shedMemoryTiers } from "./memory-shedding.js";
 import {
@@ -91,6 +96,8 @@ export interface ContextParams {
 	compactRecentWindow?: number;
 	/** Optional system prompt addition from client connection. Appended to system suffix. */
 	systemPromptAddition?: string;
+	/** MCP commands to display in orientation block. Passed explicitly from AppContext. */
+	commandRegistry?: readonly CommandRegistryEntry[];
 }
 
 export interface ContextAssemblyResult {
@@ -1468,7 +1475,7 @@ Original output was too large for the context window. If you need the full conte
 	}
 
 	// Stable orientation section: available commands, current model, host identity
-	const registry = getCommandRegistry();
+	const registry = params.commandRegistry ?? [];
 	const orientationLines: string[] = ["## Orientation", ""];
 
 	// MCP bridge commands are the only commands still in the registry.

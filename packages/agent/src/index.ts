@@ -48,9 +48,6 @@ export { Scheduler } from "./scheduler";
 export { RelayProcessor } from "./relay-processor";
 export { createRelayOutboxEntry } from "./relay-router";
 
-// Export commands
-export { setCommandRegistry, getCommandRegistry } from "./commands/index";
-
 // Export native tools
 export { createAgentTools } from "./tools/index";
 

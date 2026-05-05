@@ -4,7 +4,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { generateRemoteMCPProxyCommands, setCommandRegistry } from "@bound/agent";
+import { generateRemoteMCPProxyCommands } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import type { CommandDefinition } from "@bound/sandbox";
@@ -77,7 +77,10 @@ export async function initSandbox(
 
 		// Only MCP commands (local + remote) go through the bash dispatch path now
 		const allDefinitions = [...mcpCommands, ...remoteMcpCommands];
-		setCommandRegistry(allDefinitions, mcpServerNames, remoteServerNames);
+		appContext.commandRegistry = allDefinitions.map((d) => ({
+			name: d.name,
+			description: d.description,
+		}));
 		const registeredCommands = createDefineCommands(allDefinitions, commandContext);
 		// Restore previously persisted VFS state from the files table BEFORE
 		// creating the sandbox, so that hydrated files are not counted against

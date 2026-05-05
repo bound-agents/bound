@@ -562,3 +562,9 @@ export interface ContextDebugInfo {
 	truncated: number;
 	crossThreadSources?: CrossThreadSource[];
 }
+
+/** Minimal shape for commands displayed in the agent's orientation block. */
+export interface CommandRegistryEntry {
+	readonly name: string;
+	readonly description: string;
+}

@@ -5,10 +5,9 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
-import type { CommandDefinition } from "@bound/sandbox";
+import type { CommandRegistryEntry } from "@bound/shared";
 import { countContentTokens } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { getCommandRegistry, setCommandRegistry } from "../commands/registry";
 import {
 	CONTEXT_SAFETY_MARGIN_FLOOR,
 	CONTEXT_SAFETY_MARGIN_RATIO,
@@ -7348,35 +7347,17 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 	});
 
 	describe("orientation block command registry", () => {
-		let savedRegistry: readonly CommandDefinition[];
-
-		beforeAll(() => {
-			// Save the current registry state to restore after tests
-			savedRegistry = getCommandRegistry();
-		});
-
-		afterAll(() => {
-			// Restore the registry to its previous state to avoid polluting other tests
-			setCommandRegistry([...savedRegistry]);
-		});
-
 		it("command-discovery-redesign.AC3.1: new command appears in orientation block without editing context-assembly.ts", () => {
-			// Create a test command
-			const testCommand: CommandDefinition = {
-				name: "test-cmd",
-				description: "A test command",
-				args: [],
-				handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
-			};
+			const registry: CommandRegistryEntry[] = [
+				{ name: "test-cmd", description: "A test command" },
+			];
 
-			// Register it via setCommandRegistry
-			setCommandRegistry([testCommand]);
-
-			// Call assembleContext and get orientation from systemPrompt
+			// Call assembleContext with the registry passed directly
 			const { systemPrompt } = assembleContext({
 				db,
 				threadId,
 				userId,
+				commandRegistry: registry,
 			});
 
 			expect(systemPrompt).toContain("## Orientation");
@@ -7386,31 +7367,17 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		});
 
 		it("command-discovery-redesign.AC3.2: MCP commands appear alphabetically sorted with built-ins", () => {
-			// Create a mix of built-in and MCP-style commands
-			const commands: CommandDefinition[] = [
-				{
-					name: "atproto",
-					description: "MCP server exposing 5 tools",
-					customHelp: true,
-					args: [],
-					handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
-				},
-				{
-					name: "query",
-					description: "Execute a SELECT query",
-					args: [],
-					handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
-				},
+			const registry: CommandRegistryEntry[] = [
+				{ name: "atproto", description: "MCP server exposing 5 tools" },
+				{ name: "query", description: "Execute a SELECT query" },
 			];
-
-			// Register them
-			setCommandRegistry(commands);
 
 			// Call assembleContext
 			const { systemPrompt } = assembleContext({
 				db,
 				threadId,
 				userId,
+				commandRegistry: registry,
 			});
 
 			// Both commands must appear
@@ -7429,21 +7396,14 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		});
 
 		it("command-discovery-redesign.AC3.3: footer references <server-name> --help for MCP commands", () => {
-			// Register a test command
-			const testCommand: CommandDefinition = {
-				name: "test",
-				description: "A test",
-				args: [],
-				handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
-			};
-
-			setCommandRegistry([testCommand]);
+			const registry: CommandRegistryEntry[] = [{ name: "test", description: "A test" }];
 
 			// Call assembleContext
 			const { systemPrompt } = assembleContext({
 				db,
 				threadId,
 				userId,
+				commandRegistry: registry,
 			});
 
 			// Must contain the MCP-specific footer with <server-name> --help
@@ -7455,20 +7415,15 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		});
 
 		it("native-tools.AC5.1: orientation contains 'Additional MCP Commands' when MCP commands exist", () => {
-			// Register a test MCP command
-			const mcpCommand: CommandDefinition = {
-				name: "github",
-				description: "GitHub MCP server",
-				args: [],
-				handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
-			};
-
-			setCommandRegistry([mcpCommand]);
+			const registry: CommandRegistryEntry[] = [
+				{ name: "github", description: "GitHub MCP server" },
+			];
 
 			const { systemPrompt } = assembleContext({
 				db,
 				threadId,
 				userId,
+				commandRegistry: registry,
 			});
 
 			// Should contain the MCP commands section
@@ -7481,20 +7436,15 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		});
 
 		it("native-tools.AC5.2: 'Available Commands' does NOT appear in system prompt", () => {
-			// Register an MCP command
-			const mcpCommand: CommandDefinition = {
-				name: "github",
-				description: "GitHub MCP server",
-				args: [],
-				handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
-			};
-
-			setCommandRegistry([mcpCommand]);
+			const registry: CommandRegistryEntry[] = [
+				{ name: "github", description: "GitHub MCP server" },
+			];
 
 			const { systemPrompt } = assembleContext({
 				db,
 				threadId,
 				userId,
+				commandRegistry: registry,
 			});
 
 			// The old section name should never appear
@@ -7502,13 +7452,12 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		});
 
 		it("native-tools.AC5.1: orientation omits MCP section when no MCP commands exist", () => {
-			// Empty registry
-			setCommandRegistry([]);
-
+			// No commandRegistry param (defaults to [])
 			const { systemPrompt } = assembleContext({
 				db,
 				threadId,
 				userId,
+				commandRegistry: [],
 			});
 
 			// Should still have orientation

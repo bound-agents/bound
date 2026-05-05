@@ -6,7 +6,6 @@ import {
 	MCPClient,
 	generateMCPCommands,
 	generateRemoteMCPProxyCommands,
-	setCommandRegistry,
 	updateHostMCPInfo,
 } from "@bound/agent";
 import type { AppContext } from "@bound/core";
@@ -310,14 +309,17 @@ export async function reloadMcpServers(config: McpReloadConfig): Promise<McpRelo
 			}
 		}
 
-		// Rebuild command registry for help system — MCP commands only (no built-in commands)
-		const { commands: remoteMcpCommands, remoteServerNames } = generateRemoteMCPProxyCommands(
+		// Rebuild command registry — MCP commands only (no built-in commands)
+		const { commands: remoteMcpCommands } = generateRemoteMCPProxyCommands(
 			appContext.db,
 			appContext.siteId,
 			mcpServerNames,
 		);
 		const allDefinitions = [...mcpCommands, ...remoteMcpCommands];
-		setCommandRegistry(allDefinitions, mcpServerNames, remoteServerNames);
+		appContext.commandRegistry = allDefinitions.map((d) => ({
+			name: d.name,
+			description: d.description,
+		}));
 	}
 
 	// Phase 4: Update hosts table
