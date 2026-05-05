@@ -5,7 +5,12 @@
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { createRelayOutboxEntry, generateThreadTitle, getDelegationTarget } from "@bound/agent";
+import {
+	createRelayOutboxEntry,
+	generateThreadTitle,
+	getDelegationTarget,
+	runIntrospectResponseStamp,
+} from "@bound/agent";
 import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
@@ -609,6 +614,14 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 									logger: appContext.logger,
 								});
 							}
+
+							// Stamp introspect responses after turn completes
+							await runIntrospectResponseStamp({
+								db: appContext.db,
+								siteId: appContext.siteId,
+								threadId: thread_id,
+								turnStartAt,
+							});
 
 							// NOTE: No post-loop message:broadcast needed here. The agent loop's
 							// broadcastMessage() already emits message:broadcast for every message
