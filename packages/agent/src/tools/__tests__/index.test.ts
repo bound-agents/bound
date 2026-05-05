@@ -17,7 +17,7 @@ describe("createAgentTools", () => {
 		db.exec(`INSERT INTO host_meta (key, value) VALUES ('site_id', '${siteId}')`);
 	});
 
-	it("returns all 14 native tools (11 standalone + 3 grouped)", () => {
+	it("returns all 15 native tools (12 standalone + 3 grouped)", () => {
 		const toolCtx: ToolContext = {
 			db,
 			siteId,
@@ -27,7 +27,7 @@ describe("createAgentTools", () => {
 
 		const tools = createAgentTools(toolCtx);
 
-		expect(tools.length).toBe(14);
+		expect(tools.length).toBe(15);
 	});
 
 	it("all tools have kind='builtin'", () => {
@@ -94,7 +94,7 @@ describe("createAgentTools", () => {
 		expect(uniqueNames.size).toBe(names.length);
 	});
 
-	it("includes all 14 expected tools", () => {
+	it("includes all 15 expected tools", () => {
 		const toolCtx: ToolContext = {
 			db,
 			siteId,
@@ -114,6 +114,7 @@ describe("createAgentTools", () => {
 			"purge",
 			"advisory",
 			"notify",
+			"introspect",
 			"archive",
 			"model_hint",
 			"hostinfo",
