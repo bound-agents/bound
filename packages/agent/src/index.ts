@@ -117,3 +117,6 @@ export { parseFrontmatter } from "./tools/skill-utils";
 // Export built-in tools
 export { createBuiltInTools } from "./built-in-tools";
 export type { BuiltInTool, BuiltInToolResult } from "./built-in-tools";
+
+// Export introspect post-loop hook
+export { runIntrospectResponseStamp } from "./tools/introspect";

@@ -4,7 +4,7 @@ import { applySchema, insertRow, softDelete } from "@bound/core";
 import { applyMetricsSchema } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import type { ToolContext } from "../../types";
-import { createIntrospectTool } from "../introspect";
+import { createIntrospectTool, runIntrospectResponseStamp } from "../introspect";
 
 describe("introspect tool", () => {
 	let db: Database.Database;
@@ -512,6 +512,356 @@ describe("introspect tool", () => {
 				// Should find valid response, skipping malformed
 				const result = await executePromise;
 				expect(result).toBe("Correct response");
+			});
+		});
+
+		describe("runIntrospectResponseStamp", () => {
+			let threadId: string;
+			let now: string;
+
+			const setupTestThread = () => {
+				threadId = "test-thread";
+				now = new Date().toISOString();
+				insertRow(
+					db,
+					"threads",
+					{
+						id: threadId,
+						user_id: deterministicUUID(BOUND_NAMESPACE, "test-user"),
+						interface: "web",
+						host_origin: "test-host",
+						title: "Test Thread",
+						created_at: now,
+						last_message_at: now,
+						modified_at: now,
+						deleted: 0,
+					},
+					ctx.siteId,
+				);
+			};
+
+			describe("introspect-tool.AC4.1: No-op on non-introspect turn", () => {
+				it("returns without writing metadata when no introspect_id in turn", async () => {
+					setupTestThread();
+
+					// Insert developer message without introspect_id
+					const msgTime = new Date().toISOString();
+					insertRow(
+						db,
+						"messages",
+						{
+							id: "dev-msg-1",
+							thread_id: threadId,
+							role: "developer",
+							content: "Regular developer message",
+							metadata: JSON.stringify({ other_field: "value" }),
+							host_origin: "test-host",
+							created_at: msgTime,
+							modified_at: msgTime,
+							deleted: 0,
+						},
+						ctx.siteId,
+					);
+
+					// Insert assistant message
+					insertRow(
+						db,
+						"messages",
+						{
+							id: "asst-msg-1",
+							thread_id: threadId,
+							role: "assistant",
+							content: "Assistant response",
+							metadata: null,
+							host_origin: "test-host",
+							created_at: new Date().toISOString(),
+							modified_at: new Date().toISOString(),
+							deleted: 0,
+						},
+						ctx.siteId,
+					);
+
+					// Run hook
+					await runIntrospectResponseStamp({
+						db,
+						siteId: ctx.siteId,
+						threadId,
+						turnStartAt: msgTime,
+					});
+
+					// Verify assistant message still has no introspect metadata
+					const msg = db.query("SELECT metadata FROM messages WHERE id = ?").get("asst-msg-1") as {
+						metadata: string | null;
+					} | null;
+					expect(msg?.metadata).toBeNull();
+				});
+			});
+
+			describe("introspect-tool.AC4.2: Multiple introspect requests in one turn", () => {
+				it("stamps assistant message with array of correlation IDs", async () => {
+					setupTestThread();
+
+					const turnStartTime = new Date().toISOString();
+
+					// Insert two developer messages with different introspect_ids
+					const cid1 = "corr-123";
+					const cid2 = "corr-456";
+
+					insertRow(
+						db,
+						"messages",
+						{
+							id: "dev-msg-1",
+							thread_id: threadId,
+							role: "developer",
+							content: "First introspect",
+							metadata: JSON.stringify({ introspect_id: cid1 }),
+							host_origin: "test-host",
+							created_at: turnStartTime,
+							modified_at: turnStartTime,
+							deleted: 0,
+						},
+						ctx.siteId,
+					);
+
+					insertRow(
+						db,
+						"messages",
+						{
+							id: "dev-msg-2",
+							thread_id: threadId,
+							role: "developer",
+							content: "Second introspect",
+							metadata: JSON.stringify({ introspect_id: cid2 }),
+							host_origin: "test-host",
+							created_at: new Date(Date.now() + 10).toISOString(),
+							modified_at: new Date(Date.now() + 10).toISOString(),
+							deleted: 0,
+						},
+						ctx.siteId,
+					);
+
+					// Insert assistant message
+					const asstTime = new Date(Date.now() + 20).toISOString();
+					insertRow(
+						db,
+						"messages",
+						{
+							id: "asst-msg-1",
+							thread_id: threadId,
+							role: "assistant",
+							content: "Answer to both requests",
+							metadata: null,
+							host_origin: "test-host",
+							created_at: asstTime,
+							modified_at: asstTime,
+							deleted: 0,
+						},
+						ctx.siteId,
+					);
+
+					// Run hook
+					await runIntrospectResponseStamp({
+						db,
+						siteId: ctx.siteId,
+						threadId,
+						turnStartAt: turnStartTime,
+					});
+
+					// Verify assistant message has array of correlation IDs
+					const msg = db.query("SELECT metadata FROM messages WHERE id = ?").get("asst-msg-1") as {
+						metadata: string | null;
+					};
+					expect(msg.metadata).not.toBeNull();
+					const meta = JSON.parse(msg.metadata || "{}");
+					expect(Array.isArray(meta.introspect_response_id)).toBe(true);
+					expect(meta.introspect_response_id).toContain(cid1);
+					expect(meta.introspect_response_id).toContain(cid2);
+					expect(meta.introspect_response_id.length).toBe(2);
+				});
+			});
+
+			describe("introspect-tool.AC2.2: Single introspect stamps correctly", () => {
+				it("stamps assistant message with single correlation ID as string", async () => {
+					setupTestThread();
+
+					const turnStartTime = new Date().toISOString();
+					const cid = "corr-789";
+
+					// Insert developer message with introspect_id
+					insertRow(
+						db,
+						"messages",
+						{
+							id: "dev-msg-1",
+							thread_id: threadId,
+							role: "developer",
+							content: "Introspect request",
+							metadata: JSON.stringify({ introspect_id: cid }),
+							host_origin: "test-host",
+							created_at: turnStartTime,
+							modified_at: turnStartTime,
+							deleted: 0,
+						},
+						ctx.siteId,
+					);
+
+					// Insert assistant message
+					const asstTime = new Date(Date.now() + 10).toISOString();
+					insertRow(
+						db,
+						"messages",
+						{
+							id: "asst-msg-1",
+							thread_id: threadId,
+							role: "assistant",
+							content: "Single response",
+							metadata: null,
+							host_origin: "test-host",
+							created_at: asstTime,
+							modified_at: asstTime,
+							deleted: 0,
+						},
+						ctx.siteId,
+					);
+
+					// Run hook
+					await runIntrospectResponseStamp({
+						db,
+						siteId: ctx.siteId,
+						threadId,
+						turnStartAt: turnStartTime,
+					});
+
+					// Verify assistant message has single correlation ID as string
+					const msg = db.query("SELECT metadata FROM messages WHERE id = ?").get("asst-msg-1") as {
+						metadata: string | null;
+					};
+					expect(msg.metadata).not.toBeNull();
+					const meta = JSON.parse(msg.metadata || "{}");
+					expect(meta.introspect_response_id).toBe(cid);
+					expect(typeof meta.introspect_response_id).toBe("string");
+				});
+			});
+
+			describe("Edge case (AC4.3 preparation): No assistant message produced", () => {
+				it("returns without error when no assistant message exists", async () => {
+					setupTestThread();
+
+					const turnStartTime = new Date().toISOString();
+					const cid = "corr-999";
+
+					// Insert developer message with introspect_id
+					insertRow(
+						db,
+						"messages",
+						{
+							id: "dev-msg-1",
+							thread_id: threadId,
+							role: "developer",
+							content: "Introspect request",
+							metadata: JSON.stringify({ introspect_id: cid }),
+							host_origin: "test-host",
+							created_at: turnStartTime,
+							modified_at: turnStartTime,
+							deleted: 0,
+						},
+						ctx.siteId,
+					);
+
+					// Don't insert assistant message
+
+					// Run hook - should not throw
+					await runIntrospectResponseStamp({
+						db,
+						siteId: ctx.siteId,
+						threadId,
+						turnStartAt: turnStartTime,
+					});
+
+					// No assertions - just verify it completes without error
+					expect(true).toBe(true);
+				});
+			});
+
+			describe("Malformed metadata handling in hook", () => {
+				it("skips developer messages with malformed metadata", async () => {
+					setupTestThread();
+
+					const turnStartTime = new Date().toISOString();
+					const validCid = "corr-valid";
+
+					// Insert developer message with malformed metadata
+					insertRow(
+						db,
+						"messages",
+						{
+							id: "dev-msg-1",
+							thread_id: threadId,
+							role: "developer",
+							content: "Bad metadata",
+							metadata: "not-valid-json{",
+							host_origin: "test-host",
+							created_at: turnStartTime,
+							modified_at: turnStartTime,
+							deleted: 0,
+						},
+						ctx.siteId,
+					);
+
+					// Insert developer message with valid metadata
+					insertRow(
+						db,
+						"messages",
+						{
+							id: "dev-msg-2",
+							thread_id: threadId,
+							role: "developer",
+							content: "Valid introspect",
+							metadata: JSON.stringify({ introspect_id: validCid }),
+							host_origin: "test-host",
+							created_at: new Date(Date.now() + 10).toISOString(),
+							modified_at: new Date(Date.now() + 10).toISOString(),
+							deleted: 0,
+						},
+						ctx.siteId,
+					);
+
+					// Insert assistant message
+					const asstTime = new Date(Date.now() + 20).toISOString();
+					insertRow(
+						db,
+						"messages",
+						{
+							id: "asst-msg-1",
+							thread_id: threadId,
+							role: "assistant",
+							content: "Response",
+							metadata: null,
+							host_origin: "test-host",
+							created_at: asstTime,
+							modified_at: asstTime,
+							deleted: 0,
+						},
+						ctx.siteId,
+					);
+
+					// Run hook
+					await runIntrospectResponseStamp({
+						db,
+						siteId: ctx.siteId,
+						threadId,
+						turnStartAt: turnStartTime,
+					});
+
+					// Verify only valid correlation ID was stamped
+					const msg = db.query("SELECT metadata FROM messages WHERE id = ?").get("asst-msg-1") as {
+						metadata: string | null;
+					};
+					expect(msg.metadata).not.toBeNull();
+					const meta = JSON.parse(msg.metadata || "{}");
+					expect(meta.introspect_response_id).toBe(validCid);
+				});
 			});
 		});
 	});
