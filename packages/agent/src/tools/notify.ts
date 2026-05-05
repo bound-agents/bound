@@ -40,15 +40,6 @@ function findDmThread(
 }
 
 /**
- * Get all non-deleted users from the database.
- */
-function getAllUsers(db: import("bun:sqlite").Database): UserRow[] {
-	return db
-		.query("SELECT id, display_name, platform_ids FROM users WHERE deleted = 0")
-		.all() as UserRow[];
-}
-
-/**
  * Enqueue a proactive notification and signal the server to run inference.
  */
 function enqueueAndSignal(
@@ -67,11 +58,78 @@ function enqueueAndSignal(
 }
 
 const notifySchema = z.object({
-	user: z.string().optional().describe("Target bound username"),
-	all: z.boolean().optional().describe("Broadcast to all users"),
-	platform: z.string().describe("Platform name (e.g., 'discord')"),
+	action: z.enum(["thread", "user"]).describe("Notification target mode"),
+	thread_id: z.string().optional().describe("Target thread ID (for thread action)"),
+	user: z.string().optional().describe("Target bound username (for user action)"),
+	platform: z.string().optional().describe("Platform name, e.g. 'discord' (for user action)"),
 	message: z.string().describe("Notification message content"),
 });
+
+type NotifyInput = z.infer<typeof notifySchema>;
+
+function handleThread(input: NotifyInput, ctx: ToolContext): string {
+	// Validate thread_id is present
+	if (!input.thread_id) {
+		return "Error: thread_id is required for thread action";
+	}
+
+	// Validate message non-empty
+	if (!input.message.trim()) {
+		return "Error: Missing notification message";
+	}
+
+	// Self-notify guard
+	if (input.thread_id === ctx.threadId) {
+		return "Error: Cannot notify the current thread. Run notify from a background task to deliver to this thread.";
+	}
+
+	// Thread existence query
+	const thread = ctx.db
+		.query("SELECT id FROM threads WHERE id = ? AND deleted = 0")
+		.get(input.thread_id) as ThreadRow | null;
+
+	if (!thread) {
+		return `Error: Thread not found or is deleted: ${input.thread_id}`;
+	}
+
+	enqueueAndSignal(ctx, thread.id, ctx.threadId, input.message.trim());
+	return `Notification enqueued for thread ${input.thread_id}.`;
+}
+
+function handleUser(input: NotifyInput, ctx: ToolContext): string {
+	// Validate user and platform are present
+	if (!input.user) {
+		return "Error: user is required for user action";
+	}
+	if (!input.platform) {
+		return "Error: platform is required for user action";
+	}
+
+	// Validate message non-empty
+	if (!input.message.trim()) {
+		return "Error: Missing notification message";
+	}
+
+	// Resolve user
+	const userRow = resolveUser(ctx.db, input.user);
+	if (!userRow) {
+		return `Error: User not found: ${input.user}`;
+	}
+
+	// Find DM thread
+	const thread = findDmThread(ctx.db, userRow.id, input.platform);
+	if (!thread) {
+		return `Error: No ${input.platform} thread found for user ${input.user}`;
+	}
+
+	// Self-notify guard on resolved thread
+	if (thread.id === ctx.threadId) {
+		return "Error: Cannot notify the current thread. Run notify from a background task to deliver to this thread.";
+	}
+
+	enqueueAndSignal(ctx, thread.id, ctx.threadId, input.message.trim());
+	return `Notification enqueued for ${input.user} on ${input.platform}.`;
+}
 
 export function createNotifyTool(ctx: ToolContext): RegisteredTool {
 	const jsonSchema = zodToToolParams(notifySchema);
@@ -82,7 +140,7 @@ export function createNotifyTool(ctx: ToolContext): RegisteredTool {
 			type: "function",
 			function: {
 				name: "notify",
-				description: "Send a notification to users on configured platforms",
+				description: "Send a proactive notification to a thread or user on a configured platform",
 				parameters: jsonSchema,
 			},
 		},
@@ -92,79 +150,16 @@ export function createNotifyTool(ctx: ToolContext): RegisteredTool {
 			const input = parsed.value;
 
 			try {
-				const platform = input.platform;
-				const user = input.user;
-				const all = input.all;
-				const message = input.message;
-
-				// Validate --user / --all mutual exclusivity
-				if (user && all) {
-					return "Error: user and all are mutually exclusive";
-				}
-				if (!user && !all) {
-					return "Error: One of user or all is required";
-				}
-
-				// Validate message
-				if (!message.trim()) {
-					return "Error: Missing notification message";
-				}
-
-				const sourceThreadId = ctx.threadId;
-
-				if (all) {
-					const users = getAllUsers(ctx.db);
-					let delivered = 0;
-					let skipped = 0;
-
-					for (const userRow of users) {
-						// Check if user has the target platform
-						const platformIds = userRow.platform_ids
-							? (JSON.parse(userRow.platform_ids) as Record<string, unknown>)
-							: {};
-						if (!platformIds[platform]) {
-							skipped++;
-							continue;
-						}
-
-						const thread = findDmThread(ctx.db, userRow.id, platform);
-						if (!thread) {
-							skipped++;
-							continue;
-						}
-
-						enqueueAndSignal(ctx, thread.id, sourceThreadId, message.trim());
-						delivered++;
+				switch (input.action) {
+					case "thread":
+						return handleThread(input, ctx);
+					case "user":
+						return handleUser(input, ctx);
+					default: {
+						const _exhaustive: never = input.action;
+						return `Error: Unknown action "${_exhaustive}"`;
 					}
-
-					if (delivered === 0) {
-						return `Error: No ${platform} threads found for any users`;
-					}
-
-					const skipNote = skipped > 0 ? ` (${skipped} skipped — no thread)` : "";
-					return `Notification enqueued for ${delivered} user(s) on ${platform}${skipNote}.`;
 				}
-
-				// Single user
-				if (!user) {
-					return "Error: User is required when all is not specified";
-				}
-				const userRow = resolveUser(ctx.db, user);
-				if (!userRow) {
-					return `Error: User not found: ${user}`;
-				}
-
-				const thread = findDmThread(ctx.db, userRow.id, platform);
-				if (!thread) {
-					return `Error: No ${platform} thread found for user ${user}`;
-				}
-
-				if (sourceThreadId && thread.id === sourceThreadId) {
-					return "Error: Cannot notify the current thread. Run notify from a background task to deliver to this thread.";
-				}
-
-				enqueueAndSignal(ctx, thread.id, sourceThreadId, message.trim());
-				return `Notification enqueued for ${user} on ${platform}.`;
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return `Error: ${message}`;
