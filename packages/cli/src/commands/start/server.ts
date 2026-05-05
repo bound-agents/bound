@@ -41,6 +41,8 @@ export function formatNotification(payload: Record<string, unknown>): string {
 			return `[notification] New advisory: ${payload.title ?? "Untitled"}. ${payload.detail ?? ""}`.trim();
 		case "proactive":
 			return `[notification from background task] ${payload.content ?? ""}`.trim();
+		case "introspect":
+			return `[introspect request from thread ${payload.source_thread ?? "unknown"}] ${payload.content ?? ""}`.trim();
 		default:
 			return `[notification] ${JSON.stringify(payload)}`;
 	}
