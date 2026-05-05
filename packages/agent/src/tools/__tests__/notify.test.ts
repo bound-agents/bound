@@ -388,4 +388,51 @@ describe("notify tool", () => {
 			expect(emittedEvents.length).toBe(0);
 		});
 	});
+
+	describe("tool schema (AC3)", () => {
+		it("AC3.1: tool schema exposes action as required enum with values [thread, user]", () => {
+			const tool = createNotifyTool(ctx);
+
+			// Access the tool definition
+			const parameters = tool.toolDefinition.function.parameters as Record<string, unknown>;
+
+			// Verify action parameter exists and is an enum
+			expect(parameters.properties).toBeDefined();
+			const actionParam = (parameters.properties as Record<string, unknown>).action as Record<
+				string,
+				unknown
+			>;
+			expect(actionParam).toBeDefined();
+			expect(actionParam.enum).toEqual(["thread", "user"]);
+
+			// Verify action is required
+			expect(parameters.required).toBeDefined();
+			const required = parameters.required as string[];
+			expect(required).toContain("action");
+		});
+
+		it("AC3.3: tool schema does not contain an 'all' parameter", () => {
+			const tool = createNotifyTool(ctx);
+
+			const parameters = tool.toolDefinition.function.parameters as Record<string, unknown>;
+			expect(parameters.properties).toBeDefined();
+
+			const properties = parameters.properties as Record<string, unknown>;
+			expect(properties.all).toBeUndefined();
+		});
+
+		it("AC3.3: calling execute with all=true does not trigger broadcast or error", async () => {
+			const tool = createNotifyTool(ctx);
+
+			// Call with all=true and no action — should either error or silently ignore
+			const result = await tool.execute({
+				all: true,
+				message: "Test broadcast",
+			} as any);
+
+			// Should error because action is required, not because all is invalid
+			expect(result).toContain("Error");
+			expect(emittedEvents.length).toBe(0);
+		});
+	});
 });
