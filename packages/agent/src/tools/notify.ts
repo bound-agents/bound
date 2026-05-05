@@ -6,8 +6,6 @@ import { parseToolInput, zodToToolParams } from "./tool-schema";
 
 interface UserRow {
 	id: string;
-	display_name: string;
-	platform_ids: string | null;
 }
 
 interface ThreadRow {
@@ -20,7 +18,7 @@ interface ThreadRow {
 function resolveUser(db: import("bun:sqlite").Database, username: string): UserRow | null {
 	const userId = deterministicUUID(BOUND_NAMESPACE, username);
 	return db
-		.query("SELECT id, display_name, platform_ids FROM users WHERE id = ? AND deleted = 0")
+		.query("SELECT id FROM users WHERE id = ? AND deleted = 0")
 		.get(userId) as UserRow | null;
 }
 
