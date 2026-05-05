@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import type { Logger, TypedEventEmitter } from "@bound/shared";
+import type { CommandRegistryEntry, Logger, TypedEventEmitter } from "@bound/shared";
 import type { OptionalConfigs, RequiredConfig } from "./config-loader";
 import { loadOptionalConfigs } from "./config-loader";
 import { bootstrapContainer } from "./container";
@@ -23,6 +23,11 @@ export interface AppContext {
 	 * internal TTL shorter than upstream prompt-cache TTL.
 	 */
 	turnStateStore: TurnStateStore;
+	/**
+	 * MCP commands registered at startup and updated on hot-reload.
+	 * Read by context assembly to render the orientation block's command list.
+	 */
+	commandRegistry: CommandRegistryEntry[];
 }
 
 export function createAppContext(configDir: string, dbPath: string): AppContext {
@@ -70,5 +75,6 @@ export function createAppContext(configDir: string, dbPath: string): AppContext 
 		siteId,
 		hostName,
 		turnStateStore: new InMemoryTurnStateStore(),
+		commandRegistry: [],
 	};
 }
