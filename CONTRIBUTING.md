@@ -206,7 +206,7 @@ Accumulated the hard way — check here before writing a bug report.
 3. Implement the `execute` handler: `(input: Record<string, unknown>) => Promise<BuiltInToolResult>`. Access `ctx.db`, `ctx.siteId`, `ctx.eventBus`, etc. via the closure.
 4. Register the factory in `packages/agent/src/tools/index.ts` by adding it to the `createAgentTools()` array.
 5. Add unit tests under `packages/agent/src/tools/__tests__/` — use real temp SQLite DBs, minimal `ToolContext` stubs.
-6. For grouped tools (multiple operations), use an `action` enum parameter to dispatch (see memory, cache, skill tools).
+6. For grouped tools (multiple operations), use an `action` enum parameter to dispatch (see memory, skill tools).
 
 ## PR Expectations
 

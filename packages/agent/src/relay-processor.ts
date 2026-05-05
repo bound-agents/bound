@@ -22,7 +22,6 @@ import { LLMError, type ModelRouter } from "@bound/llm";
 import type {
 	CacheWarmPayload,
 	ErrorPayload,
-	EventMap,
 	Logger,
 	PlatformDeliverPayload,
 	ProcessPayload,
@@ -40,7 +39,6 @@ import {
 	RELAY_REQUEST_KINDS,
 	RELAY_RESPONSE_KINDS,
 	type RelayRequestKind,
-	eventBroadcastPayloadSchema,
 	hostMcpToolsSchema,
 	hostModelsSchema,
 	inferenceRequestPayloadSchema,
@@ -166,7 +164,6 @@ export class RelayProcessor {
 		process: (entry) => this.handleProcess(entry),
 		intake: (entry) => this.handleIntake(entry),
 		platform_deliver: (entry) => this.handlePlatformDeliver(entry),
-		event_broadcast: (entry) => this.handleEventBroadcast(entry),
 	};
 
 	constructor(
@@ -618,25 +615,6 @@ export class RelayProcessor {
 			throw new PayloadParseError();
 		}
 		this.eventBus.emit("platform:deliver", payloadResult.value as PlatformDeliverPayload);
-		return null;
-	}
-
-	private async handleEventBroadcast(entry: RelayInboxEntry): Promise<null> {
-		const payloadResult = parseJsonSafe(eventBroadcastPayloadSchema, entry.payload, entry.kind);
-		if (!payloadResult.ok) {
-			this.logger.error("Invalid relay payload", {
-				kind: entry.kind,
-				error: payloadResult.error,
-				entryId: entry.id,
-			});
-			markProcessed(this.db, [entry.id]);
-			throw new PayloadParseError();
-		}
-		const payload = payloadResult.value;
-		this.eventBus.emit(
-			payload.event_name as keyof EventMap,
-			{ ...payload.event_payload, __relay_event_depth: payload.event_depth } as never,
-		);
 		return null;
 	}
 

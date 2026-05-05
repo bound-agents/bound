@@ -97,13 +97,6 @@ export const platformDeliverPayloadSchema = z.object({
 	attachments: z.array(z.unknown()).optional(),
 });
 
-export const eventBroadcastPayloadSchema = z.object({
-	event_name: z.string().min(1),
-	event_payload: z.record(z.string(), z.unknown()),
-	source_host: z.string(),
-	event_depth: z.number().int().nonnegative(),
-});
-
 // ---------------------------------------------------------------------------
 // Response payload schemas
 // ---------------------------------------------------------------------------
@@ -191,7 +184,6 @@ export const RELAY_PAYLOAD_SCHEMAS = {
 	process: processPayloadSchema,
 	intake: intakePayloadSchema,
 	platform_deliver: platformDeliverPayloadSchema,
-	event_broadcast: eventBroadcastPayloadSchema,
 	result: resultPayloadSchema,
 	error: errorPayloadSchema,
 	stream_chunk: streamChunkPayloadSchema,

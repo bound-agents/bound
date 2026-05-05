@@ -15,8 +15,8 @@ const introspectSchema = z.object({
 	timeout: z.number().optional().describe("Timeout in milliseconds (default 300000)"),
 });
 
-const POLL_INTERVAL_MS = 2000; // 2 seconds, matches await_event
-const DEFAULT_TIMEOUT_MS = 300000; // 5 minutes, matches await_event
+const POLL_INTERVAL_MS = 2000;
+const DEFAULT_TIMEOUT_MS = 300000; // 5 minutes
 
 export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
 	const jsonSchema = zodToToolParams(introspectSchema);

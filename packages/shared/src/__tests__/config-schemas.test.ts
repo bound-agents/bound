@@ -1040,10 +1040,6 @@ describe("platform-connectors.AC3.1 — new relay kinds exist", () => {
 	it("AC3.1: RELAY_REQUEST_KINDS contains platform_deliver", () => {
 		expect(RELAY_REQUEST_KINDS).toContain("platform_deliver");
 	});
-
-	it("AC3.1: RELAY_REQUEST_KINDS contains event_broadcast", () => {
-		expect(RELAY_REQUEST_KINDS).toContain("event_broadcast");
-	});
 });
 
 // RELAY_KIND_REGISTRY completeness tests — ensures the registry is the

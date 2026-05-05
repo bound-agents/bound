@@ -7,7 +7,6 @@ import type { ChatParams, InferenceRequestPayload, LLMBackend } from "@bound/llm
 import { ModelRouter } from "@bound/llm";
 import type {
 	CacheWarmPayload,
-	EventBroadcastPayload,
 	IntakePayload,
 	Logger,
 	PlatformDeliverPayload,
@@ -1156,7 +1155,7 @@ describe("RelayProcessor", () => {
 		});
 	});
 
-	describe("platform-connectors Phase 2 — intake/platform_deliver/event_broadcast", () => {
+	describe("platform-connectors Phase 2 — intake/platform_deliver", () => {
 		// AC3.2-AC3.6: Tier routing tests are tested implicitly through selectIntakeHost method
 		// and are covered by integration tests in multi-instance.integration.test.ts
 
@@ -1921,150 +1920,6 @@ describe("RelayProcessor", () => {
 			expect(emittedPayload?.thread_id).toBe("thread-1");
 			expect(emittedPayload?.message_id).toBe("msg-1");
 			expect(emittedPayload?.content).toBe("Delivery confirmation");
-		});
-
-		// AC3.8: event_broadcast fires event locally with correct event_depth
-		it("AC3.8: event_broadcast fires named event on eventBus with correct event_depth", async () => {
-			const mcpClients = new Map<string, MCPClient>();
-			const keyringSiteIds = new Set(["requester-site"]);
-			const eventBus = createMockEventBus();
-			let emittedPayload: Record<string, unknown> | null = null;
-
-			// Listen for "task:triggered" event
-			eventBus.on("task:triggered", (payload: Record<string, unknown>) => {
-				emittedPayload = payload;
-			});
-
-			const processor = new RelayProcessor(
-				db,
-				"target-site",
-				mcpClients,
-				createMockModelRouter(),
-				keyringSiteIds,
-				createMockLogger(),
-				eventBus,
-			);
-
-			const now = new Date();
-			const broadcastPayload: EventBroadcastPayload = {
-				event_name: "task:triggered",
-				event_payload: { task_id: "t1", trigger: "test" },
-				source_host: "hub",
-				event_depth: 2,
-			};
-
-			const inboxEntry: RelayInboxEntry = {
-				id: "broadcast-1",
-				source_site_id: "requester-site",
-				kind: "event_broadcast",
-				ref_id: null,
-				idempotency_key: null,
-				payload: JSON.stringify(broadcastPayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-				stream_id: null,
-			};
-
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					inboxEntry.id,
-					inboxEntry.source_site_id,
-					inboxEntry.kind,
-					inboxEntry.ref_id,
-					inboxEntry.idempotency_key,
-					inboxEntry.payload,
-					inboxEntry.expires_at,
-					inboxEntry.received_at,
-					inboxEntry.processed,
-					inboxEntry.stream_id,
-				],
-			);
-
-			const handle = processor.start(10);
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-			handle.stop();
-
-			// Assert: eventBus emitted "task:triggered" with correct payload
-			expect(emittedPayload).toBeDefined();
-			expect(emittedPayload?.task_id).toBe("t1");
-			expect(emittedPayload?.trigger).toBe("test");
-			// Assert: __relay_event_depth = 2
-			expect(emittedPayload?.__relay_event_depth).toBe(2);
-			// AC3.8: Verify that event_depth is NOT in emitted payload (should be transformed to __relay_event_depth)
-			expect(emittedPayload?.event_depth).toBeUndefined();
-		});
-
-		// AC4.4: event_depth propagation
-		it("AC4.4: event_broadcast with event_depth=1 fires with __relay_event_depth=1", async () => {
-			const mcpClients = new Map<string, MCPClient>();
-			const keyringSiteIds = new Set(["requester-site"]);
-			const eventBus = createMockEventBus();
-			let emittedPayload: Record<string, unknown> | null = null;
-
-			// Listen for "task:completed" event
-			eventBus.on("task:completed", (payload: Record<string, unknown>) => {
-				emittedPayload = payload;
-			});
-
-			const processor = new RelayProcessor(
-				db,
-				"target-site",
-				mcpClients,
-				createMockModelRouter(),
-				keyringSiteIds,
-				createMockLogger(),
-				eventBus,
-			);
-
-			const now = new Date();
-			const broadcastPayload: EventBroadcastPayload = {
-				event_name: "task:completed",
-				event_payload: { task_id: "t2", status: "done" },
-				source_host: "remote",
-				event_depth: 1,
-			};
-
-			const inboxEntry: RelayInboxEntry = {
-				id: "broadcast-depth-1",
-				source_site_id: "requester-site",
-				kind: "event_broadcast",
-				ref_id: null,
-				idempotency_key: null,
-				payload: JSON.stringify(broadcastPayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-				stream_id: null,
-			};
-
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed, stream_id)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					inboxEntry.id,
-					inboxEntry.source_site_id,
-					inboxEntry.kind,
-					inboxEntry.ref_id,
-					inboxEntry.idempotency_key,
-					inboxEntry.payload,
-					inboxEntry.expires_at,
-					inboxEntry.received_at,
-					inboxEntry.processed,
-					inboxEntry.stream_id,
-				],
-			);
-
-			const handle = processor.start(10);
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-			handle.stop();
-
-			// Assert: emitted payload has __relay_event_depth = 1
-			expect(emittedPayload).toBeDefined();
-			expect(emittedPayload?.__relay_event_depth).toBe(1);
-			expect(emittedPayload?.task_id).toBe("t2");
 		});
 
 		describe("execution - inference (AC8.5)", () => {
