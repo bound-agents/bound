@@ -6,6 +6,7 @@ import { createCacheTool } from "./cache.js";
 import { createCancelTool } from "./cancel.js";
 import { createEmitTool } from "./emit.js";
 import { createHostinfoTool } from "./hostinfo.js";
+import { createIntrospectTool } from "./introspect.js";
 import { createMemoryTool } from "./memory.js";
 import { createModelHintTool } from "./model-hint.js";
 import { createNotifyTool } from "./notify.js";
@@ -25,6 +26,7 @@ export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 		createPurgeTool(ctx),
 		createAdvisoryTool(ctx),
 		createNotifyTool(ctx),
+		createIntrospectTool(ctx),
 		createArchiveTool(ctx),
 		createModelHintTool(ctx),
 		createHostinfoTool(ctx),
@@ -43,6 +45,7 @@ export { createAwaitEventTool } from "./await-event.js";
 export { createPurgeTool } from "./purge.js";
 export { createAdvisoryTool } from "./advisory.js";
 export { createNotifyTool } from "./notify.js";
+export { createIntrospectTool } from "./introspect.js";
 export { createArchiveTool } from "./archive.js";
 export { createModelHintTool } from "./model-hint.js";
 export { createHostinfoTool } from "./hostinfo.js";
