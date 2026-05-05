@@ -21,6 +21,7 @@ import {
 	insertRow,
 	runPostLoopDeliveryCheck,
 	updateRow,
+	writeMessageMetadata,
 	writeOutbox,
 } from "@bound/core";
 import type { ModelBackendsConfig, ModelRouter } from "@bound/llm";
@@ -124,6 +125,10 @@ export function resolveDelegationMessageId(
 					},
 					siteId,
 				);
+				// For introspect notifications, write correlation ID to metadata
+				if (payload.type === "introspect" && typeof payload.correlation_id === "string") {
+					writeMessageMetadata(db, messageId, { introspect_id: payload.correlation_id }, siteId);
+				}
 				insertedMessageIds.push(messageId);
 			} catch (err) {
 				logger?.error("[notify] Failed to inject notification message", {
