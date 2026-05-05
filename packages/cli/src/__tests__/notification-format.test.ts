@@ -29,6 +29,15 @@ describe("formatNotification", () => {
 		expect(result).toContain("3 items processed");
 	});
 
+	it("formats introspect notifications with source thread", () => {
+		const result = formatNotification({
+			type: "introspect",
+			source_thread: "thread-abc",
+			content: "What do you think?",
+		});
+		expect(result).toBe("[introspect request from thread thread-abc] What do you think?");
+	});
+
 	it("formats unknown notification types as JSON", () => {
 		const result = formatNotification({
 			type: "custom_thing",
