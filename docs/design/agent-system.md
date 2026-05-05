@@ -268,7 +268,7 @@ config/
 
 Agent tools are implemented as `RegisteredTool` factories in `packages/agent/src/tools/`. Each factory closes over a `ToolContext` (db, siteId, eventBus, logger, threadId, taskId, modelRouter, fs) and returns a `RegisteredTool` with a JSON schema `ToolDefinition` and an `execute` handler.
 
-The 14 native tools replace the previous 20 bash-dispatched commands:
+The 15 native tools replace the previous 20 bash-dispatched commands:
 
 | Tool | Actions / Params | Kind |
 |------|-----------------|------|
@@ -283,6 +283,7 @@ The 14 native tools replace the previous 20 bash-dispatched commands:
 | `purge` | message_ids, last_n, thread_id | Standalone |
 | `advisory` | title, detail, action, impact, list, approve, apply, dismiss, defer | Standalone |
 | `notify` | action, thread_id, user, platform, message | Standalone |
+| `introspect` | thread_id, message, timeout | Standalone |
 | `archive` | thread_id, older_than | Standalone |
 | `model_hint` | model, reset | Standalone |
 | `hostinfo` | (no params) | Standalone |
@@ -697,6 +698,30 @@ Example invocations:
   "user": "alice",
   "platform": "discord",
   "message": "Your deployment completed successfully"
+}
+```
+
+---
+
+### `introspect`
+
+Introspect on a question by consulting another thread. Dispatches a notification to the target thread and polls for the stamped response.
+
+| Parameter | Required | Type | Description |
+|---|---|---|---|
+| thread_id | Yes | string | Target thread to introspect |
+| message | Yes | string | Question or request to send |
+| timeout | No | number | Timeout in ms (default 300000) |
+
+Mechanism: enqueues an `introspect`-type notification to the target thread, emits `notify:enqueued`, then polls every 2s for an assistant message whose `metadata.introspect_response_id` matches the correlation ID. Aborts early on target turn error/abort. A post-loop hook (`runIntrospectResponseStamp`) stamps the correlation ID onto the target thread's response after its turn completes.
+
+Guards: self-introspect (same thread) is rejected; target must exist and not be deleted.
+
+Example invocation:
+```json
+{
+  "thread_id": "abc-123",
+  "message": "What do you know about the sync protocol?"
 }
 ```
 
