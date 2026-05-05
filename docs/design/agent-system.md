@@ -282,7 +282,7 @@ The 14 native tools replace the previous 20 bash-dispatched commands:
 | `await_event` | task_ids, timeout | Standalone |
 | `purge` | message_ids, last_n, thread_id | Standalone |
 | `advisory` | title, detail, action, impact, list, approve, apply, dismiss, defer | Standalone |
-| `notify` | user, all, platform, message | Standalone |
+| `notify` | action, thread_id, user, platform, message | Standalone |
 | `archive` | thread_id, older_than | Standalone |
 | `model_hint` | model, reset | Standalone |
 | `hostinfo` | (no params) | Standalone |
@@ -667,31 +667,36 @@ Example invocations:
 
 ### `notify`
 
-Send a notification to users on configured platforms.
+Send a proactive notification to a thread or user on a configured platform.
 
 | Parameter | Required | Type | Description |
 |---|---|---|---|
-| `user` | one-of | string | Target bound username |
-| `all` | one-of | boolean | Broadcast to all users |
-| `platform` | yes | string | Platform name (e.g., `discord`) |
+| `action` | yes | enum | `"thread"` or `"user"` |
+| `thread_id` | conditional | string | Target thread ID (required for `action: "thread"`) |
+| `user` | conditional | string | Target bound username (required for `action: "user"`) |
+| `platform` | conditional | string | Platform name, e.g. `"discord"` (required for `action: "user"`) |
 | `message` | yes | string | Notification message content |
 
-Routes the message to a platform-specific DM thread (or creates one if needed) and enqueues a proactive notification. The agent will run inference to deliver the message via the platform connector.
+Enqueues a proactive notification. The `thread` action sends directly to a specific thread; the `user` action resolves a username to their DM thread on the specified platform. The agent will run inference to deliver the message via the platform connector.
 
 Example invocations:
+
+**Thread action:**
 ```json
 {
-  "user": "alice",
-  "platform": "discord",
+  "action": "thread",
+  "thread_id": "thread-abc123",
   "message": "Your deployment completed successfully"
 }
 ```
 
+**User action:**
 ```json
 {
-  "all": true,
+  "action": "user",
+  "user": "alice",
   "platform": "discord",
-  "message": "System maintenance in 5 minutes"
+  "message": "Your deployment completed successfully"
 }
 ```
 
