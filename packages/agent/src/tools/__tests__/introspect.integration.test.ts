@@ -267,6 +267,11 @@ describe("introspect tool integration", () => {
 				ctx.siteId,
 			);
 
+			// Count changelog entries before calling the hook
+			const changelogBefore = db
+				.prepare("SELECT * FROM change_log WHERE table_name = 'messages'")
+				.all() as Array<{ seq: number }>;
+
 			// Do NOT insert any assistant message
 
 			// Call hook
@@ -277,14 +282,14 @@ describe("introspect tool integration", () => {
 				turnStartAt,
 			});
 
-			// Verify no metadata updates were written
-			const changelogUpdates = db
+			// Count changelog entries after calling the hook
+			const changelogAfter = db
 				.prepare("SELECT * FROM change_log WHERE table_name = 'messages'")
 				.all() as Array<{ seq: number }>;
 
-			// There should only be the changelog from the dev message insertion, not metadata updates
-			// (This is a simple check — the hook returned early without stamping)
-			expect(changelogUpdates.length).toBeGreaterThanOrEqual(1); // At least the dev msg insert
+			// Verify no new changelog entries were created by the hook
+			// The hook should return early without stamping metadata
+			expect(changelogAfter.length).toBe(changelogBefore.length);
 		});
 	});
 
