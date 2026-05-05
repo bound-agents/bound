@@ -1,5 +1,6 @@
+import type { Database as BunDatabase } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { enqueueNotification } from "@bound/core";
+import { enqueueNotification, writeMessageMetadata } from "@bound/core";
 import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
 import { parseToolInput, zodToToolParams } from "./tool-schema";
@@ -133,4 +134,63 @@ export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
 			}
 		},
 	};
+}
+
+/**
+ * Post-loop hook: Stamp the last assistant message with introspect_response_id.
+ * Called after the agent loop drains to mark response messages with correlation IDs
+ * from introspect requests that arrived during the turn.
+ *
+ * Implements introspect-tool.AC2.2 (response stamping), AC4.1 (no-op for non-introspect),
+ * and AC4.2 (multiple introspect requests per turn).
+ */
+export async function runIntrospectResponseStamp(params: {
+	db: BunDatabase;
+	siteId: string;
+	threadId: string;
+	turnStartAt: string;
+}): Promise<void> {
+	// Find developer-role messages with introspect_id in this turn window
+	const devMessages = params.db
+		.query(
+			"SELECT id, metadata FROM messages WHERE thread_id = ? AND role = 'developer' AND created_at >= ? AND metadata IS NOT NULL AND deleted = 0",
+		)
+		.all(params.threadId, params.turnStartAt) as Array<{
+		id: string;
+		metadata: string;
+	}>;
+
+	// Extract correlation IDs from metadata
+	const correlationIds: string[] = [];
+	for (const msg of devMessages) {
+		try {
+			const meta = JSON.parse(msg.metadata) as Record<string, unknown>;
+			if (typeof meta.introspect_id === "string") {
+				correlationIds.push(meta.introspect_id);
+			}
+		} catch {
+			// malformed metadata, skip
+		}
+	}
+
+	// No-op if no introspect messages found (AC4.1)
+	if (correlationIds.length === 0) return;
+
+	// Find the last assistant message in the turn window
+	const lastAssistant = params.db
+		.query(
+			"SELECT id FROM messages WHERE thread_id = ? AND role = 'assistant' AND created_at >= ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+		)
+		.get(params.threadId, params.turnStartAt) as { id: string } | null;
+
+	if (!lastAssistant) return; // No assistant message produced (AC4.3 edge case)
+
+	// Stamp each correlation ID independently (AC4.2)
+	// When multiple introspect requests arrive in one turn, the single assistant response answers all of them.
+	// Store as a single string when one ID, or as an array when multiple.
+	const metadataEntries: Record<string, unknown> = {
+		introspect_response_id: correlationIds.length === 1 ? correlationIds[0] : correlationIds,
+	};
+
+	writeMessageMetadata(params.db, lastAssistant.id, metadataEntries, params.siteId);
 }
