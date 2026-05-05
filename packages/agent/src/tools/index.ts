@@ -1,10 +1,7 @@
 import type { RegisteredTool, ToolContext } from "../types.js";
 import { createAdvisoryTool } from "./advisory.js";
 import { createArchiveTool } from "./archive.js";
-import { createAwaitEventTool } from "./await-event.js";
-import { createCacheTool } from "./cache.js";
 import { createCancelTool } from "./cancel.js";
-import { createEmitTool } from "./emit.js";
 import { createHostinfoTool } from "./hostinfo.js";
 import { createIntrospectTool } from "./introspect.js";
 import { createMemoryTool } from "./memory.js";
@@ -21,8 +18,6 @@ export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 		createScheduleTool(ctx),
 		createCancelTool(ctx),
 		createQueryTool(ctx),
-		createEmitTool(ctx),
-		createAwaitEventTool(ctx),
 		createPurgeTool(ctx),
 		createAdvisoryTool(ctx),
 		createNotifyTool(ctx),
@@ -32,7 +27,6 @@ export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 		createHostinfoTool(ctx),
 		// Grouped (Phase 3)
 		createMemoryTool(ctx),
-		createCacheTool(ctx),
 		createSkillTool(ctx),
 	];
 }
@@ -40,8 +34,6 @@ export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 export { createScheduleTool } from "./schedule.js";
 export { createQueryTool } from "./query.js";
 export { createCancelTool } from "./cancel.js";
-export { createEmitTool } from "./emit.js";
-export { createAwaitEventTool } from "./await-event.js";
 export { createPurgeTool } from "./purge.js";
 export { createAdvisoryTool } from "./advisory.js";
 export { createNotifyTool } from "./notify.js";
@@ -50,5 +42,4 @@ export { createArchiveTool } from "./archive.js";
 export { createModelHintTool } from "./model-hint.js";
 export { createHostinfoTool } from "./hostinfo.js";
 export { createMemoryTool } from "./memory.js";
-export { createCacheTool } from "./cache.js";
 export { createSkillTool } from "./skill.js";

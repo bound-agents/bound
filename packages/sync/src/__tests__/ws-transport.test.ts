@@ -784,12 +784,12 @@ describe("WsTransport", () => {
 					{
 						id: "broadcast-1",
 						target_site_id: "*",
-						kind: "event_broadcast",
+						kind: "platform_deliver",
 						ref_id: null,
 						idempotency_key: null,
 						stream_id: null,
 						expires_at: new Date(Date.now() + 60000).toISOString(),
-						payload: { event: "test-event" },
+						payload: { platform: "test", thread_id: "t1", message_id: "m1", content: "hello" },
 					},
 				],
 			};
