@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +19,9 @@ import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { AgentLoop } from "../agent-loop";
 import { type CachedTurnState, computeToolFingerprint } from "../cached-turn-state";
 import { TRUNCATION_TARGET_RATIO } from "../context-assembly";
+
+// FTS5 schema setup adds overhead on CI runners; bump default timeout
+setDefaultTimeout(10000);
 
 let globalTmpDir: string;
 let globalDb: Database;
