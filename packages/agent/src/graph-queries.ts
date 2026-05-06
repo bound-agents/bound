@@ -339,6 +339,16 @@ export interface GraphRetrievalResult {
  */
 export const MAX_GRAPH_KEYWORDS = 30;
 
+/**
+ * Convert an array of keywords into an FTS5 OR-joined query string.
+ * Caps at MAX_GRAPH_KEYWORDS to prevent overly broad queries.
+ */
+function buildFts5SeedQuery(keywords: string[]): string {
+	const effective = keywords.slice(0, MAX_GRAPH_KEYWORDS);
+	// Join with OR for permissive matching (any keyword can match)
+	return effective.join(" OR ");
+}
+
 export function graphSeededRetrieval(
 	db: Database,
 	keywords: string[],
@@ -348,17 +358,12 @@ export function graphSeededRetrieval(
 ): GraphRetrievalResult[] {
 	if (keywords.length === 0) return [];
 
-	// Cap keywords to prevent SQLite expression tree depth overflow.
-	// Keep the first N — callers order by priority (user message first, then summary).
-	const effectiveKeywords = keywords.slice(0, MAX_GRAPH_KEYWORDS);
+	const ftsQuery = buildFts5SeedQuery(keywords);
+	if (!ftsQuery) return [];
 
-	// Step 1: Find seed memories via keyword matching
-	// When excludeKeys is provided (L2 stage), filter to default tier and orphaned details
-	const likeConditions = effectiveKeywords.map(
-		() => "(LOWER(key) LIKE '%' || ? || '%' OR LOWER(value) LIKE '%' || ? || '%')",
-	);
-	const params = effectiveKeywords.flatMap((kw) => [kw.toLowerCase(), kw.toLowerCase()]);
-
+	// Step 1: Find seed memories via FTS5 full-text search.
+	// FTS5 handles tokenization, stemming (porter), and relevance ranking internally.
+	// When excludeKeys is provided (L2 stage), filter to default tier and orphaned details.
 	const tierFilter = excludeKeys
 		? `AND (
 		  m.tier NOT IN ('detail', 'pinned', 'summary')
@@ -369,25 +374,39 @@ export function graphSeededRetrieval(
 		)`
 		: "";
 
-	const seeds = db
-		.prepare(
-			`SELECT key, value, source, modified_at, tier
-			 FROM semantic_memory m
-			 WHERE deleted = 0
-			   AND key NOT LIKE '_policy%' AND key NOT LIKE '_pinned%' AND key NOT LIKE '_standing%' AND key NOT LIKE '_feedback%'
-			   AND key NOT LIKE '_internal.%'
-			   ${tierFilter}
-			   AND (${likeConditions.join(" OR ")})
-			 ORDER BY modified_at DESC
-			 LIMIT 10`,
-		)
-		.all(...params) as Array<{
+	let seeds: Array<{
 		key: string;
 		value: string;
 		source: string | null;
 		modified_at: string;
 		tier: string;
 	}>;
+
+	try {
+		seeds = db
+			.prepare(
+				`SELECT m.key, m.value, m.source, m.modified_at, m.tier
+				 FROM semantic_memory_fts fts
+				 JOIN semantic_memory m ON m.key = fts.key
+				 WHERE m.deleted = 0
+				   AND m.key NOT LIKE '_policy%' AND m.key NOT LIKE '_pinned%' AND m.key NOT LIKE '_standing%' AND m.key NOT LIKE '_feedback%'
+				   AND m.key NOT LIKE '_internal.%'
+				   ${tierFilter}
+				   AND semantic_memory_fts MATCH ?
+				 ORDER BY fts.rank
+				 LIMIT 10`,
+			)
+			.all(ftsQuery) as Array<{
+			key: string;
+			value: string;
+			source: string | null;
+			modified_at: string;
+			tier: string;
+		}>;
+	} catch {
+		// FTS5 query syntax error — fall back to empty seeds
+		seeds = [];
+	}
 
 	if (seeds.length === 0) return [];
 

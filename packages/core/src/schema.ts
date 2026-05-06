@@ -746,4 +746,56 @@ export function applySchema(db: Database): void {
 		FOR EACH ROW WHEN NEW.relation NOT IN (${canonicalList})
 		BEGIN SELECT RAISE(ABORT, '${triggerMsg}'); END
 	`);
+
+	// ── FTS5 full-text search index for semantic_memory ─────────────────────────
+	// Local-only index (NOT synced). Each node rebuilds from semantic_memory data.
+	// Uses porter stemmer for morphological matching and unicode61 for non-ASCII.
+
+	db.run(`
+		CREATE VIRTUAL TABLE IF NOT EXISTS semantic_memory_fts
+		USING fts5(key, value, tokenize='porter unicode61')
+	`);
+
+	// Triggers to keep FTS5 in sync with semantic_memory writes.
+	// All writes go through insertRow/updateRow/softDelete, which hit the base
+	// table — triggers fire automatically, including on sync replay.
+
+	db.run(`
+		CREATE TRIGGER IF NOT EXISTS memory_fts_insert
+		AFTER INSERT ON semantic_memory
+		WHEN NEW.deleted = 0 AND NEW.key NOT LIKE '_internal.%'
+		BEGIN
+			INSERT INTO semantic_memory_fts(key, value) VALUES (NEW.key, NEW.value);
+		END
+	`);
+
+	db.run(`
+		CREATE TRIGGER IF NOT EXISTS memory_fts_update
+		AFTER UPDATE ON semantic_memory
+		BEGIN
+			DELETE FROM semantic_memory_fts WHERE key = OLD.key;
+			INSERT INTO semantic_memory_fts(key, value)
+				SELECT NEW.key, NEW.value
+				WHERE NEW.deleted = 0 AND NEW.key NOT LIKE '_internal.%';
+		END
+	`);
+
+	db.run(`
+		CREATE TRIGGER IF NOT EXISTS memory_fts_delete
+		AFTER UPDATE OF deleted ON semantic_memory
+		WHEN NEW.deleted = 1
+		BEGIN
+			DELETE FROM semantic_memory_fts WHERE key = OLD.key;
+		END
+	`);
+
+	// Rebuild FTS5 from existing semantic_memory data (idempotent).
+	// Handles: fresh installs (no-op, table is empty), restarts (re-populates
+	// from source of truth), and upgrades (backfills pre-FTS memories).
+	db.run("DELETE FROM semantic_memory_fts");
+	db.run(`
+		INSERT INTO semantic_memory_fts(key, value)
+		SELECT key, value FROM semantic_memory
+		WHERE deleted = 0 AND key NOT LIKE '_internal.%'
+	`);
 }

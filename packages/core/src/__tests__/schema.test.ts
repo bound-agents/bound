@@ -33,7 +33,7 @@ describe("Database Schema", () => {
 		db.close();
 	});
 
-	it("applies schema successfully creating all 19 tables", () => {
+	it("applies schema successfully creating all 19 tables + FTS5", () => {
 		const db = createDatabase(dbPath);
 		applySchema(db);
 
@@ -45,7 +45,7 @@ describe("Database Schema", () => {
 
 		const tableNames = tables.map((t) => t.name);
 
-		// Verify all 18 tables exist
+		// Verify all 19 base tables exist
 		expect(tableNames).toContain("users");
 		expect(tableNames).toContain("threads");
 		expect(tableNames).toContain("messages");
@@ -66,7 +66,12 @@ describe("Database Schema", () => {
 		expect(tableNames).toContain("relay_cycles");
 		expect(tableNames).toContain("dispatch_queue");
 
-		expect(tableNames.length).toBe(19);
+		// FTS5 virtual table + its shadow tables
+		expect(tableNames).toContain("semantic_memory_fts");
+
+		// 19 base tables + FTS5 virtual table + 5 FTS5 shadow tables = 25
+		const baseTables = tableNames.filter((n) => !n.startsWith("semantic_memory_fts_"));
+		expect(baseTables.length).toBe(20); // 19 base + 1 FTS5 virtual table
 
 		db.close();
 	});
@@ -131,8 +136,8 @@ describe("Database Schema", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		// Still exactly 19 tables
-		expect(tables.length).toBe(19);
+		// Still exactly 25 tables (19 base + 1 FTS5 virtual + 5 FTS5 shadow)
+		expect(tables.length).toBe(25);
 
 		db.close();
 	});

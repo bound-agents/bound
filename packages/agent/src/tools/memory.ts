@@ -48,75 +48,6 @@ type MemoryInput = z.infer<typeof memorySchema>;
 
 const PINNED_PREFIXES = ["_standing", "_feedback", "_policy", "_pinned"];
 
-const STOP_WORDS = new Set([
-	"the",
-	"a",
-	"an",
-	"is",
-	"are",
-	"was",
-	"were",
-	"be",
-	"been",
-	"being",
-	"have",
-	"has",
-	"had",
-	"do",
-	"does",
-	"did",
-	"will",
-	"would",
-	"could",
-	"should",
-	"may",
-	"might",
-	"shall",
-	"can",
-	"to",
-	"of",
-	"in",
-	"for",
-	"on",
-	"with",
-	"at",
-	"by",
-	"from",
-	"as",
-	"into",
-	"through",
-	"about",
-	"it",
-	"its",
-	"this",
-	"that",
-	"these",
-	"those",
-	"i",
-	"me",
-	"my",
-	"we",
-	"our",
-	"you",
-	"your",
-	"he",
-	"she",
-	"they",
-	"what",
-	"how",
-	"when",
-	"where",
-	"why",
-	"which",
-	"who",
-	"not",
-	"no",
-	"and",
-	"or",
-	"but",
-	"if",
-]);
-
 function handleStore(args: MemoryInput, ctx: ToolContext): string {
 	const key = args.key;
 	const value = args.value;
@@ -239,51 +170,70 @@ function handleForget(args: MemoryInput, ctx: ToolContext): string {
 	return `Memory deleted: ${key}${edgeSuffix}`;
 }
 
+/**
+ * Convert a user search query into FTS5 OR-joined terms.
+ * Preserves quoted phrases and explicit operators (OR, AND, NOT).
+ * Unquoted bare words are joined with OR for permissive matching.
+ */
+function toFts5OrQuery(query: string): string {
+	const trimmed = query.trim();
+	if (!trimmed) return "";
+
+	// If the query already contains explicit FTS5 operators, pass through as-is
+	if (/\b(OR|AND|NOT)\b/.test(trimmed) || trimmed.includes('"')) {
+		return trimmed;
+	}
+
+	// Split into tokens and join with OR for permissive matching
+	const tokens = trimmed.split(/\s+/).filter((t) => t.length > 0);
+	if (tokens.length === 0) return "";
+	if (tokens.length === 1) return tokens[0];
+	return tokens.join(" OR ");
+}
+
 function handleSearch(args: MemoryInput, ctx: ToolContext): string {
 	const queryText = args.key;
 	if (!queryText) {
 		return "Error: search requires 'key' parameter";
 	}
 
-	const keywords = queryText
-		.toLowerCase()
-		.replace(/[^a-z0-9_\s-]/g, " ")
-		.split(/\s+/)
-		.filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
-
-	if (keywords.length === 0) {
-		return "No searchable keywords found in query.";
-	}
-
-	const likeConditions = keywords.map(
-		() => "(LOWER(key) LIKE '%' || ? || '%' OR LOWER(value) LIKE '%' || ? || '%')",
-	);
-	const params = keywords.flatMap((kw) => [kw, kw]);
-
-	const results = ctx.db
-		.prepare(
-			`SELECT key, value, source, modified_at FROM semantic_memory
-             WHERE deleted = 0
-               AND key NOT LIKE '_internal.%'
-               AND (${likeConditions.join(" OR ")})
-             ORDER BY modified_at DESC LIMIT 20`,
-		)
-		.all(...params) as Array<{
-		key: string;
-		value: string;
-		source: string | null;
-		modified_at: string;
-	}>;
-
-	if (results.length === 0) {
+	const ftsQuery = toFts5OrQuery(queryText);
+	if (!ftsQuery) {
 		return `No memories matched: ${queryText}`;
 	}
 
-	const lines = results.map(
-		(r) =>
-			`- ${r.key}: ${r.value.substring(0, 100)}${r.value.length > 100 ? "..." : ""} [${r.source || "unknown"}]`,
-	);
-	return `Found ${results.length} memories:\n${lines.join("\n")}`;
+	// Use FTS5 full-text search with BM25 ranking.
+	// FTS5 handles tokenization, stemming, and relevance scoring internally.
+	try {
+		const results = ctx.db
+			.prepare(
+				`SELECT m.key, m.value, m.source, m.modified_at
+				 FROM semantic_memory_fts fts
+				 JOIN semantic_memory m ON m.key = fts.key AND m.deleted = 0
+				 WHERE semantic_memory_fts MATCH ?
+				 ORDER BY fts.rank
+				 LIMIT 20`,
+			)
+			.all(ftsQuery) as Array<{
+			key: string;
+			value: string;
+			source: string | null;
+			modified_at: string;
+		}>;
+
+		if (results.length === 0) {
+			return `No memories matched: ${queryText}`;
+		}
+
+		const lines = results.map(
+			(r) =>
+				`- ${r.key}: ${r.value.substring(0, 100)}${r.value.length > 100 ? "..." : ""} [${r.source || "unknown"}]`,
+		);
+		return `Found ${results.length} memories:\n${lines.join("\n")}`;
+	} catch {
+		// FTS5 query syntax error (unbalanced quotes, etc.) — return no-match
+		return `No memories matched: ${queryText}`;
+	}
 }
 
 function handleConnect(args: MemoryInput, ctx: ToolContext): string {

@@ -806,10 +806,9 @@ describe("memory tool", () => {
 		});
 	});
 
-	describe("search with multiple keyword matching", () => {
+	describe("FTS5-based search", () => {
 		beforeEach(async () => {
 			const tool = createMemoryTool(ctx);
-			// Store entries with various keyword combinations
 			await getExecute(tool)({
 				action: "store",
 				key: "both_keywords",
@@ -832,43 +831,35 @@ describe("memory tool", () => {
 			});
 		});
 
-		it("should match entries containing all query keywords", async () => {
+		it("should match entries containing query keywords", async () => {
 			const tool = createMemoryTool(ctx);
 			const result = await getExecute(tool)({
 				action: "search",
 				key: "python javascript",
 			});
 
-			expect(result).toContain("Found");
-			expect(result).toContain("both_keywords");
-		});
-
-		it("should match entries containing any of the query keywords", async () => {
-			const tool = createMemoryTool(ctx);
-			const result = await getExecute(tool)({
-				action: "search",
-				key: "python javascript",
-			});
-
-			// Should find both_keywords, one_keyword, and javascript_focus
 			expect(result).toContain("Found");
 			expect(result).toContain("both_keywords");
 			expect(result).toContain("one_keyword");
 			expect(result).toContain("javascript_focus");
 		});
 
-		it("should filter out stop words when matching", async () => {
+		it("should handle stop-word-only queries gracefully (no crash)", async () => {
 			const tool = createMemoryTool(ctx);
 			const result = await getExecute(tool)({
 				action: "search",
 				key: "is the a",
 			});
 
-			// All stop words, should find nothing searchable
-			expect(result).toContain("No searchable keywords found");
+			// FTS5 does NOT have a built-in stop word list — it indexes all tokens.
+			// Unlike the old LIKE approach which refused to search ("No searchable keywords found"),
+			// FTS5 actually processes the query and returns matches (or no-match).
+			// Either outcome is valid; the important thing is no crash/error.
+			expect(typeof result).toBe("string");
+			expect(result).not.toContain("Error");
 		});
 
-		it("should apply case-insensitive matching for keywords", async () => {
+		it("should apply case-insensitive matching", async () => {
 			const tool = createMemoryTool(ctx);
 			const result = await getExecute(tool)({
 				action: "search",
@@ -883,14 +874,12 @@ describe("memory tool", () => {
 
 		it("should match keywords in both key and value", async () => {
 			const tool = createMemoryTool(ctx);
-
 			const result = await getExecute(tool)({
 				action: "search",
 				key: "python",
 			});
 
 			expect(result).toContain("Found");
-			// Should match entries with python in key or value
 			expect(result).toContain("both_keywords");
 			expect(result).toContain("one_keyword");
 		});
@@ -898,7 +887,6 @@ describe("memory tool", () => {
 		it("should filter results excluding _internal prefix", async () => {
 			const tool = createMemoryTool(ctx);
 
-			// Store internal entry
 			await getExecute(tool)({
 				action: "store",
 				key: "_internal.python_cache",
@@ -910,9 +898,7 @@ describe("memory tool", () => {
 				key: "python",
 			});
 
-			// Should NOT include _internal prefixed entries
 			expect(result).not.toContain("_internal.python_cache");
-			// But should include regular python entries
 			expect(result).toContain("both_keywords");
 			expect(result).toContain("one_keyword");
 		});
@@ -920,7 +906,6 @@ describe("memory tool", () => {
 		it("should respect soft-delete when searching", async () => {
 			const tool = createMemoryTool(ctx);
 
-			// Forget one entry
 			await getExecute(tool)({
 				action: "forget",
 				key: "both_keywords",
@@ -931,11 +916,80 @@ describe("memory tool", () => {
 				key: "python javascript",
 			});
 
-			// Should NOT include forgotten entry
 			expect(result).not.toContain("both_keywords");
-			// But should find others
 			expect(result).toContain("one_keyword");
 			expect(result).toContain("javascript_focus");
+		});
+
+		it("should support porter stemming (scheduling matches scheduler)", async () => {
+			const tool = createMemoryTool(ctx);
+
+			await getExecute(tool)({
+				action: "store",
+				key: "task_scheduler",
+				value: "the scheduler processes cron jobs for scheduling",
+			});
+
+			const result = await getExecute(tool)({
+				action: "search",
+				key: "scheduled",
+			});
+
+			expect(result).toContain("Found");
+			expect(result).toContain("task_scheduler");
+		});
+
+		it("should support short keywords like AI", async () => {
+			const tool = createMemoryTool(ctx);
+
+			await getExecute(tool)({
+				action: "store",
+				key: "ai_routing",
+				value: "AI model routing supports multiple backends",
+			});
+
+			const result = await getExecute(tool)({
+				action: "search",
+				key: "AI",
+			});
+
+			expect(result).toContain("Found");
+			expect(result).toContain("ai_routing");
+		});
+
+		it("should rank results by BM25 relevance", async () => {
+			const tool = createMemoryTool(ctx);
+
+			// Store an entry with many mentions of "python"
+			await getExecute(tool)({
+				action: "store",
+				key: "python_deep_dive",
+				value: "python python python — comprehensive guide to python programming in python",
+			});
+
+			const result = await getExecute(tool)({
+				action: "search",
+				key: "python",
+			});
+
+			expect(result).toContain("Found");
+			// The highly-relevant entry should appear first in the output
+			const lines = (result as string).split("\n");
+			const firstResultLine = lines.find((l: string) => l.startsWith("- "));
+			expect(firstResultLine).toContain("python_deep_dive");
+		});
+
+		it("should handle FTS5 syntax errors gracefully", async () => {
+			const tool = createMemoryTool(ctx);
+			// Unbalanced quotes are invalid FTS5 syntax
+			const result = await getExecute(tool)({
+				action: "search",
+				key: '"unclosed quote',
+			});
+
+			// Should not crash — return error or no-match message
+			expect(typeof result).toBe("string");
+			expect(result).not.toContain("undefined");
 		});
 	});
 });
