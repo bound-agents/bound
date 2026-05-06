@@ -35,6 +35,8 @@ interface MaterializedPaths {
 	readonly pythonWorker: string;
 	/** Absolute path to the js-exec worker entry (pass to `new Worker(...)`). */
 	readonly jsExecWorker: string;
+	/** Absolute path to the sqlite3 worker entry (pass to `new Worker(...)`). */
+	readonly sqliteWorker: string;
 	/** Root directory containing the materialized layout (for debugging). */
 	readonly root: string;
 }
@@ -100,6 +102,8 @@ export function materializeSandboxRuntime(): MaterializedPaths {
 		pythonWorker: join(root, "dist/bundle/chunks/worker.js"),
 		jsExecWorker: join(root, "dist/bundle/chunks/js-exec-worker.js"),
 		qjsWasm: join(root, "dist/bundle/chunks/emscripten-module.wasm"),
+		sqliteWorker: join(root, "dist/bundle/chunks/sqlite3-worker.js"),
+		sqlWasm: join(root, "dist/bundle/chunks/sql-wasm.wasm"),
 		pythonCjs: join(root, "vendor/cpython-emscripten/python.cjs"),
 		pythonWasm: join(root, "vendor/cpython-emscripten/python.wasm"),
 		pythonStdlib: join(root, "vendor/cpython-emscripten/python313.zip"),
@@ -113,6 +117,8 @@ export function materializeSandboxRuntime(): MaterializedPaths {
 		ensureFile(embeddedAssets.paths.pythonWorker, paths.pythonWorker);
 		ensureFile(embeddedAssets.paths.jsExecWorker, paths.jsExecWorker);
 		ensureFile(embeddedAssets.paths.qjsWasm, paths.qjsWasm);
+		ensureFile(embeddedAssets.paths.sqliteWorker, paths.sqliteWorker);
+		ensureFile(embeddedAssets.paths.sqlWasm, paths.sqlWasm);
 		ensureFile(embeddedAssets.paths.pythonCjs, paths.pythonCjs);
 		ensureFile(embeddedAssets.paths.pythonWasm, paths.pythonWasm);
 		ensureFile(embeddedAssets.paths.pythonStdlib, paths.pythonStdlib);
@@ -122,7 +128,12 @@ export function materializeSandboxRuntime(): MaterializedPaths {
 		writeFileSync(readyMarker, `${new Date().toISOString()}\n${embeddedAssets.hash}\n`);
 	}
 
-	cached = { pythonWorker: paths.pythonWorker, jsExecWorker: paths.jsExecWorker, root };
+	cached = {
+		pythonWorker: paths.pythonWorker,
+		jsExecWorker: paths.jsExecWorker,
+		sqliteWorker: paths.sqliteWorker,
+		root,
+	};
 
 	// Install the global bridge that scripts/build.ts's plugin-rewritten
 	// just-bash chunks call when they need a worker entry path. Doing it
@@ -134,7 +145,7 @@ export function materializeSandboxRuntime(): MaterializedPaths {
 	// rewriter when we add more worker-based commands in future.
 	(
 		globalThis as unknown as {
-			__boundSandboxWorkerPath__?: (kind: "python" | "jsExec") => string;
+			__boundSandboxWorkerPath__?: (kind: "python" | "jsExec" | "sqlite3") => string;
 		}
 	).__boundSandboxWorkerPath__ = (kind) => {
 		switch (kind) {
@@ -142,6 +153,8 @@ export function materializeSandboxRuntime(): MaterializedPaths {
 				return paths.pythonWorker;
 			case "jsExec":
 				return paths.jsExecWorker;
+			case "sqlite3":
+				return paths.sqliteWorker;
 		}
 	};
 

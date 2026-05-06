@@ -165,6 +165,54 @@ async function bundleJsExecWorker(sourcePath: string, outPath: string): Promise<
 	writeFileSync(outPath, bundled);
 }
 
+/**
+ * Bundle the sqlite3 worker with sql.js inlined.
+ *
+ * Like the js-exec worker, the sqlite3 worker imports an external package
+ * (sql.js) that won't be resolvable at runtime when the worker is materialized
+ * to ~/.bound/sandbox-runtime/. We bundle it so sql.js (minus its WASM binary)
+ * is fully self-contained. The WASM binary (`sql-wasm.wasm`) is materialized
+ * as a sibling file — sql.js's emscripten code resolves it via `__dirname`.
+ */
+async function bundleSqlite3Worker(sourcePath: string, outPath: string): Promise<void> {
+	const result = await Bun.build({
+		entrypoints: [sourcePath],
+		target: "node",
+		format: "esm",
+		external: ["node:*"],
+	});
+	if (!result.success) {
+		const msg = result.logs.map((l) => String(l)).join("\n");
+		throw new Error(`Failed to bundle sqlite3-worker: ${msg}`);
+	}
+	if (result.outputs.length !== 1) {
+		throw new Error(`Expected exactly 1 bundler output, got ${result.outputs.length}`);
+	}
+	const bundled = await result.outputs[0].text();
+	mkdirSync(dirname(outPath), { recursive: true });
+	writeFileSync(outPath, bundled);
+}
+
+/**
+ * Find the sqlite3 implementation chunk — the file that contains the
+ * `findWorkerPath` function and spawns the sqlite3 worker. This is NOT
+ * the entry chunk (`sqlite3-TE5AIOTF.js`) but a dependency chunk that
+ * contains the string "sqlite3-worker.js".
+ */
+function findSqlite3ImplChunk(justBashDir: string): string {
+	const chunksDir = join(justBashDir, "dist/bundle/chunks");
+	const pattern = /^chunk-[A-Z0-9]+\.js$/;
+	const candidates = readdirSync(chunksDir).filter((n) => pattern.test(n));
+	for (const name of candidates) {
+		const path = join(chunksDir, name);
+		const content = readFileSync(path, "utf8");
+		if (content.includes('"sqlite3-worker.js"') && content.includes("sqlite3 worker not found")) {
+			return path;
+		}
+	}
+	throw new Error(`No chunk containing sqlite3 worker spawning logic found in ${chunksDir}`);
+}
+
 async function main() {
 	console.log("Preparing sandbox worker runtime...");
 	const justBashDir = findJustBashDir();
@@ -194,8 +242,21 @@ async function main() {
 	await bundleJsExecWorker(jsExecWorkerSrc, jsExecWorkerDst);
 	console.log(`  js-exec worker: ${jsExecWorkerDst} (bundled + stripTS shim)`);
 
-	// ── quickjs wasm (sibling of the bundled js-exec worker) ──
+	// ── sqlite3 worker (bundle + inline sql.js) ──
+	const sqlite3WorkerSrc = join(justBashDir, "dist/bundle/chunks/sqlite3-worker.js");
+	const sqlite3WorkerDst = join(OUT_DIR, "worker-sqlite3.js");
+	await bundleSqlite3Worker(sqlite3WorkerSrc, sqlite3WorkerDst);
+	console.log(`  sqlite3 worker: ${sqlite3WorkerDst} (bundled + sql.js inlined)`);
+
+	// ── sql-wasm.wasm (sibling of the bundled sqlite3 worker) ──
 	const bunCache = join(ROOT, "node_modules/.bun");
+	const sqlJsPkg = readdirSync(bunCache).find((n) => n.startsWith("sql.js@"));
+	if (!sqlJsPkg) throw new Error("Could not locate sql.js in node_modules/.bun");
+	const sqlWasmSrc = join(bunCache, sqlJsPkg, "node_modules/sql.js/dist/sql-wasm.wasm");
+	copyFileSync(sqlWasmSrc, join(OUT_DIR, "sql-wasm.wasm"));
+	console.log("  sql-wasm.wasm: sql-wasm.wasm");
+
+	// ── quickjs wasm (sibling of the bundled js-exec worker) ──
 	const qjsPkg = readdirSync(bunCache).find((n) =>
 		n.startsWith("@jitl+quickjs-wasmfile-release-sync@"),
 	);
@@ -213,6 +274,7 @@ async function main() {
 	// the resolved paths to a manifest the plugin reads at build time.
 	const pythonChunk = findChunk(justBashDir, "python3");
 	const jsExecChunk = findChunk(justBashDir, "js-exec");
+	const sqlite3ImplChunk = findSqlite3ImplChunk(justBashDir);
 
 	// ── Write a manifest with file hashes for runtime cache-keying ──
 	// The runtime materializer uses this hash to pick a stable on-disk
@@ -225,6 +287,8 @@ async function main() {
 		"python313.zip",
 		"worker-js-exec.js",
 		"emscripten-module.wasm",
+		"worker-sqlite3.js",
+		"sql-wasm.wasm",
 	];
 	const hasher = createHash("sha256");
 	for (const f of files) {
@@ -244,6 +308,7 @@ async function main() {
 		chunks: {
 			python3: pythonChunk,
 			jsExec: jsExecChunk,
+			sqlite3: sqlite3ImplChunk,
 		},
 	};
 	writeFileSync(join(OUT_DIR, "manifest.json"), JSON.stringify(manifest, null, 2));
