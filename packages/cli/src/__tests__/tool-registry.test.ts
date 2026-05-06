@@ -373,7 +373,6 @@ describe("tool registry", () => {
 			expect(registry.has("schedule")).toBe(true);
 			expect(registry.has("cancel")).toBe(true);
 			expect(registry.has("query")).toBe(true);
-			expect(registry.has("emit")).toBe(true);
 			expect(registry.has("purge")).toBe(true);
 			expect(registry.has("advisory")).toBe(true);
 			expect(registry.has("notify")).toBe(true);
@@ -419,7 +418,7 @@ describe("tool registry", () => {
 	});
 
 	describe("merged tools discoverability (AC5.4)", () => {
-		it("all 14 native agent tools have defined parameters", () => {
+		it("all 12 native agent tools have defined parameters", () => {
 			const mockContext = {
 				db: {} as any,
 				siteId: "test-site",
@@ -433,9 +432,9 @@ describe("tool registry", () => {
 
 			const agentTools = createAgentTools(mockContext);
 
-			// Verify we have 14 agent tools (schedule, cancel, query, emit, await_event, purge,
-			// advisory, notify, archive, model_hint, hostinfo, memory, cache, skill)
-			expect(agentTools.length).toBe(14);
+			// Verify we have 12 agent tools (schedule, cancel, query, purge,
+			// advisory, notify, introspect, archive, model_hint, hostinfo, memory, skill)
+			expect(agentTools.length).toBe(12);
 
 			// Verify each tool's parameters are defined
 			for (const tool of agentTools) {
@@ -490,8 +489,8 @@ describe("tool registry", () => {
 			const agentTools = createAgentTools(mockContext);
 			const registry = createToolRegistry(builtInTools, undefined, undefined, agentTools, logger);
 
-			// Verify total tool count: 1 sandbox + 4 builtin file tools + 14 agent = 19
-			expect(registry.size).toBeGreaterThanOrEqual(19);
+			// Verify total tool count: 1 sandbox + 4 builtin file tools + 12 agent = 17
+			expect(registry.size).toBeGreaterThanOrEqual(17);
 
 			// Verify all tools in registry have parameters defined
 			for (const [name, tool] of registry) {
