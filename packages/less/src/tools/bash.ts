@@ -141,6 +141,25 @@ export async function bashToolWithStreaming(
 
 			internalController.signal.addEventListener("abort", abortHandler);
 
+			// Helper: race a promise against the internal abort signal
+			function raceAbort<T>(promise: Promise<T>): Promise<T | "aborted"> {
+				if (internalController.signal.aborted) return Promise.resolve("aborted" as const);
+				return new Promise<T | "aborted">((resolve) => {
+					const onAbort = () => resolve("aborted" as const);
+					internalController.signal.addEventListener("abort", onAbort, { once: true });
+					promise.then(
+						(v) => {
+							internalController.signal.removeEventListener("abort", onAbort);
+							resolve(v);
+						},
+						() => {
+							internalController.signal.removeEventListener("abort", onAbort);
+							resolve("aborted" as const);
+						},
+					);
+				});
+			}
+
 			// Collect stdout with a single TextDecoder
 			let stdout = "";
 			const decoder = new TextDecoder();
@@ -148,7 +167,13 @@ export async function bashToolWithStreaming(
 				const reader = proc.stdout.getReader();
 				try {
 					while (true) {
-						const { done, value } = await reader.read();
+						const readResult = await raceAbort(reader.read());
+						if (readResult === "aborted") {
+							// Abort fired while waiting on read — cancel the reader to unblock
+							await reader.cancel().catch(() => {});
+							break;
+						}
+						const { done, value } = readResult;
 						if (done) break;
 
 						const chunk = decoder.decode(value, { stream: true });
@@ -166,14 +191,24 @@ export async function bashToolWithStreaming(
 				}
 			}
 
-			// Collect stderr
+			// Collect stderr — also race against abort to prevent hanging
 			let stderr = "";
 			if (proc.stderr) {
-				stderr = await Bun.readableStreamToText(proc.stderr);
+				const stderrResult = await raceAbort(Bun.readableStreamToText(proc.stderr));
+				if (stderrResult !== "aborted") {
+					stderr = stderrResult;
+				}
 			}
 
-			// Wait for process to exit
-			const exitCode = await proc.exited;
+			// Wait for process to exit (race against abort for orphan child scenarios)
+			let exitCode: number;
+			const exitResult = await raceAbort(proc.exited);
+			if (exitResult === "aborted") {
+				// Process didn't exit cleanly — use a sentinel exit code
+				exitCode = 137; // SIGKILL convention
+			} else {
+				exitCode = exitResult;
+			}
 
 			// Cleanup
 			clearTimeout(timeoutHandle);
