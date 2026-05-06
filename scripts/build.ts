@@ -50,25 +50,29 @@ async function compileBound(outfile: string): Promise<void> {
 					const filterFor = (prefix: string) =>
 						new RegExp(`dist/bundle/chunks/${prefix}-[A-Z0-9]+\\.js$`);
 
-					const rewriteChunk = (kind: "python" | "jsExec", chunkPrefix: string) => {
+					const rewriteChunk = (
+						kind: "python" | "jsExec",
+						chunkPrefix: string,
+						workerFilenames: string[],
+					) => {
 						build.onLoad({ filter: filterFor(chunkPrefix) }, (args) => {
 							const src = readFileSync(args.path, "utf8");
-							// Both chunks construct the worker URL via
-							//   new URL("./worker.js", import.meta.url)
+							// Each chunk constructs the worker URL via
+							//   new URL("./<workerFile>", import.meta.url)
 							// (possibly wrapped in a minified fileURLToPath
 							// binding that we can't match by name). We target
 							// just the URL construction and swap it for a
 							// file:// URL pointing at our materialized worker.
 							// The downstream fileURLToPath wrapper then
 							// correctly converts it back to an OS path.
-							const candidates = [
-								'new URL("./worker.js",import.meta.url)',
-								'new URL("./worker.js", import.meta.url)',
-							];
+							const candidates = workerFilenames.flatMap((f) => [
+								`new URL("./${f}",import.meta.url)`,
+								`new URL("./${f}", import.meta.url)`,
+							]);
 							const needle = candidates.find((c) => src.includes(c));
 							if (!needle) {
 								throw new Error(
-									`just-bash ${kind} chunk at ${args.path} no longer contains the expected new URL("./worker.js", import.meta.url) pattern; upstream layout changed`,
+									`just-bash ${kind} chunk at ${args.path} no longer contains a recognized new URL("./...", import.meta.url) pattern; upstream layout changed. Searched for: ${workerFilenames.join(", ")}`,
 								);
 							}
 							// Build a file:// URL from the materialized path at
@@ -84,8 +88,45 @@ async function compileBound(outfile: string): Promise<void> {
 							};
 						});
 					};
-					rewriteChunk("python", "python3");
-					rewriteChunk("jsExec", "js-exec");
+					rewriteChunk("python", "python3", ["worker.js"]);
+					rewriteChunk("jsExec", "js-exec", ["worker.js", "js-exec-worker.js"]);
+
+					// sqlite3's impl chunk uses a different pattern: a
+					// `findWorkerPath` function that searches candidate paths
+					// via existsSync. We inject a global bridge check at the
+					// top of that function so it returns the materialized path
+					// immediately.
+					//
+					// The regex matches the structural shape of findWorkerPath:
+					//   function <id>(<param> = <fn>(<fn>(import.meta.url))) {
+					// This is resilient to identifier renaming by minifiers
+					// while anchoring on `import.meta.url` (syntax, not an
+					// identifier) and the function-with-default-param shape.
+					build.onLoad({ filter: /dist\/bundle\/chunks\/chunk-[A-Z0-9]+\.js$/ }, (args) => {
+						const src = readFileSync(args.path, "utf8");
+						// Only target the chunk that contains the sqlite3 worker spawner.
+						if (!src.includes('"sqlite3-worker.js"')) return undefined;
+
+						// Match: function <id>(<param>=<fn>(<fn>(import.meta.url))){
+						// The double-wrap (dirname(fileURLToPath(import.meta.url)))
+						// is the structural signature of findWorkerPath.
+						const pattern =
+							/(function\s+\w+\s*\(\s*\w+\s*=\s*\w+\s*\(\s*\w+\s*\(\s*import\.meta\.url\s*\)\s*\)\s*\)\s*\{)/;
+						const match = pattern.exec(src);
+						if (!match) {
+							throw new Error(
+								`sqlite3 impl chunk at ${args.path} no longer contains the expected findWorkerPath pattern (function with import.meta.url default param); upstream layout changed`,
+							);
+						}
+						// Inject early-return from the global bridge immediately
+						// after the function's opening brace.
+						const injection =
+							'const __bp=globalThis.__boundSandboxWorkerPath__?.("sqlite3");if(__bp)return __bp;';
+						return {
+							contents: src.replace(match[1], match[1] + injection),
+							loader: "js",
+						};
+					});
 				},
 			},
 		],

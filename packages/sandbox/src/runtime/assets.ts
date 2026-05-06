@@ -20,8 +20,10 @@ import manifest from "../_runtime/manifest.json" with { type: "json" };
 import pythonCjs from "../_runtime/python.cjs" with { type: "file" };
 import pythonWasm from "../_runtime/python.wasm" with { type: "file" };
 import pythonStdlib from "../_runtime/python313.zip" with { type: "file" };
+import sqlWasm from "../_runtime/sql-wasm.wasm" with { type: "file" };
 import jsExecWorker from "../_runtime/worker-js-exec.js" with { type: "file" };
 import pythonWorker from "../_runtime/worker-python.js" with { type: "file" };
+import sqliteWorker from "../_runtime/worker-sqlite3.js" with { type: "file" };
 
 export interface EmbeddedAssets {
 	/** Absolute paths into Bun's virtual FS; readable via node:fs. */
@@ -32,6 +34,8 @@ export interface EmbeddedAssets {
 		readonly pythonStdlib: string;
 		readonly jsExecWorker: string;
 		readonly qjsWasm: string;
+		readonly sqliteWorker: string;
+		readonly sqlWasm: string;
 	};
 	/**
 	 * Short content hash over all embedded assets, used to key the
@@ -49,6 +53,8 @@ export const embeddedAssets: EmbeddedAssets = {
 		pythonStdlib,
 		jsExecWorker,
 		qjsWasm,
+		sqliteWorker,
+		sqlWasm,
 	},
 	hash: manifest.hash,
 };
