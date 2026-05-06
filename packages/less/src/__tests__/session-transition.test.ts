@@ -1,47 +1,30 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { BoundClient } from "@bound/client";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
+import type { TransitionDeps } from "../session/transition";
+import { transitionThread } from "../session/transition";
 
-mock.module("../lockfile", () => ({
-	acquireLock: vi.fn(),
-	releaseLock: vi.fn(),
-}));
-
-mock.module("../tools/registry", () => ({
-	buildToolSet: vi.fn(() => ({
-		tools: [],
-		handlers: new Map(),
-		toolNameMapping: new Map(),
-	})),
-	buildSystemPromptAddition: vi.fn(() => ""),
-}));
-
-const { transitionThread } = await import("../session/transition");
 type TransitionParams = Parameters<typeof transitionThread>[0];
 
 /**
  * Test AC7.3 (/attach), AC7.4 (/clear), AC7.5 (rollback), AC7.6 (degraded mode).
+ *
+ * Uses dependency injection (TransitionParams.deps) instead of mock.module()
+ * to avoid process-wide module cache pollution that leaks into registry.test.ts
+ * and lockfile.test.ts on Linux CI.
  */
 describe("transitionThread", () => {
 	let mockClient: BoundClient;
 	let mockMcpManager: McpServerManager;
 	let mockLogger: AppLogger;
-
-	afterAll(() => {
-		mock.restore();
-	});
+	let mockDeps: TransitionDeps;
 
 	afterEach(() => {
 		vi.restoreAllMocks();
 	});
 
-	beforeEach(async () => {
-		// Reset module mocks to default behavior each test
-		const lockfile = await import("../lockfile");
-		(lockfile.acquireLock as ReturnType<typeof vi.fn>).mockImplementation(() => {});
-		(lockfile.releaseLock as ReturnType<typeof vi.fn>).mockImplementation(() => {});
-
+	beforeEach(() => {
 		// Mock BoundClient
 		mockClient = {
 			unsubscribe: vi.fn(),
@@ -64,6 +47,17 @@ describe("transitionThread", () => {
 			info: vi.fn(),
 			error: vi.fn(),
 		} as unknown as AppLogger;
+
+		// Injectable deps — no mock.module needed
+		mockDeps = {
+			acquireLock: vi.fn(),
+			releaseLock: vi.fn(),
+			performAttach: vi.fn(async () => ({
+				messages: [],
+				pendingToolCallIds: [],
+				mcpFailures: [],
+			})),
+		};
 	});
 
 	it("AC7.3: executes transition sequence for /attach", async () => {
@@ -78,6 +72,7 @@ describe("transitionThread", () => {
 			mcpConfigs: [],
 			logger: mockLogger,
 			inFlightTools: new Map(),
+			deps: mockDeps,
 		};
 
 		const result = await transitionThread(params);
@@ -87,9 +82,10 @@ describe("transitionThread", () => {
 		}
 
 		// Verify sequence: unsubscribe -> release old -> acquire new -> getThread -> attach
-		// (In actual implementation, these happen in order)
 		expect(mockClient.unsubscribe).toHaveBeenCalledWith("old-thread");
 		expect(mockClient.getThread).toHaveBeenCalledWith("new-thread");
+		expect(mockDeps.releaseLock).toHaveBeenCalledWith("/config", "old-thread");
+		expect(mockDeps.acquireLock).toHaveBeenCalledWith("/config", "new-thread", "/home/user");
 	});
 
 	it("AC7.4: creates new thread for /clear", async () => {
@@ -105,13 +101,13 @@ describe("transitionThread", () => {
 			logger: mockLogger,
 			inFlightTools: new Map(),
 			model: "claude-opus", // preserved
+			deps: mockDeps,
 		};
 
 		const result = await transitionThread(params);
 
 		if (result.ok) {
 			expect(result.threadId).toBe("new-thread-id");
-			// Model is preserved but not explicitly returned in TransitionResult
 		}
 
 		expect(mockClient.createThread).toHaveBeenCalled();
@@ -138,6 +134,7 @@ describe("transitionThread", () => {
 				["tool1", controller1],
 				["tool2", controller2],
 			]),
+			deps: mockDeps,
 		};
 
 		await transitionThread(params);
@@ -147,9 +144,8 @@ describe("transitionThread", () => {
 	});
 
 	it("AC7.6: returns degraded=true when rollback fails", async () => {
-		// Override acquireLock: succeeds for new thread, fails for old (degraded)
-		const lockfile = await import("../lockfile");
-		(lockfile.acquireLock as ReturnType<typeof vi.fn>).mockImplementation(
+		// acquireLock: succeeds for new thread, fails for old (degraded)
+		(mockDeps.acquireLock as ReturnType<typeof vi.fn>).mockImplementation(
 			(_configDir: string, threadId: string) => {
 				if (threadId === "new-thread") {
 					return;
@@ -174,6 +170,7 @@ describe("transitionThread", () => {
 			mcpConfigs: [],
 			logger: mockLogger,
 			inFlightTools: new Map(),
+			deps: mockDeps,
 		};
 
 		const result = await transitionThread(params);
@@ -202,6 +199,7 @@ describe("transitionThread", () => {
 			mcpConfigs: [],
 			logger: mockLogger,
 			inFlightTools: new Map(),
+			deps: mockDeps,
 		};
 
 		const result = await transitionThread(params);

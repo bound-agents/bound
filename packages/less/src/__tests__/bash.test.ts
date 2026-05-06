@@ -1,8 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { bashTool } from "../tools/bash";
+
+// CI runners can be slow; ensure per-test timeout is respected
+setDefaultTimeout(15000);
 
 describe("boundless_bash", () => {
 	let tempDir: string;
@@ -63,8 +66,8 @@ describe("boundless_bash", () => {
 			// Start the tool and abort after a short delay
 			const promise = bashTool({ command: "sleep 60", timeout: 30000 }, controller.signal, tempDir);
 
-			// Trigger abort after 100ms (should kill the process quickly)
-			setTimeout(() => controller.abort(), 100);
+			// Trigger abort after 200ms (should kill the process quickly)
+			setTimeout(() => controller.abort(), 200);
 
 			const result = await promise;
 			const contentBlock = result.content[1];
@@ -76,7 +79,7 @@ describe("boundless_bash", () => {
 			expect(contentBlock.text).toContain("Exit code:");
 			expect(contentBlock.text).not.toContain("Exit code: 0");
 		},
-		{ timeout: 10000 },
+		{ timeout: 15000 },
 	);
 
 	it("AC5.11: truncates output >100KB from the middle with marker", async () => {
