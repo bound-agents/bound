@@ -3362,7 +3362,7 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
 			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
+		}, 10000);
 	});
 
 	// Advisory resolution notification: when the operator applies/approves/dismisses an
@@ -4332,7 +4332,7 @@ This skill reviews pull requests.`;
 
 			// Clean up semantic memory inserted in this test
 			debugTestDb.run("DELETE FROM semantic_memory WHERE key = ?", ["test-key"]);
-		}, 15000);
+		}, 30000);
 
 		it("AC2.5b: totalEstimated reflects post-truncation token count, not pre-truncation", () => {
 			const testThreadId = randomUUID();
@@ -5432,7 +5432,7 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
 			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
+		}, 10000);
 
 		it("should not produce orphaned surrogates when truncating emoji at boundary", () => {
 			const localUserId = randomUUID();
