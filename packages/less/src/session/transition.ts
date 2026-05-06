@@ -5,10 +5,24 @@
 
 import type { BoundClient } from "@bound/client";
 import type { McpServerConfig } from "../config";
-import { acquireLock, releaseLock } from "../lockfile";
+import { acquireLock as defaultAcquireLock, releaseLock as defaultReleaseLock } from "../lockfile";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
-import { type AttachResult, performAttach } from "./attach";
+import { type AttachResult, performAttach as defaultPerformAttach } from "./attach";
+import type { AttachParams } from "./attach";
+
+/** Injectable dependencies for testing without module mocks. */
+export interface TransitionDeps {
+	acquireLock: (configDir: string, threadId: string, cwd: string) => void;
+	releaseLock: (configDir: string, threadId: string) => void;
+	performAttach: (params: AttachParams) => Promise<AttachResult>;
+}
+
+const defaultDeps: TransitionDeps = {
+	acquireLock: defaultAcquireLock,
+	releaseLock: defaultReleaseLock,
+	performAttach: defaultPerformAttach,
+};
 
 export interface TransitionParams {
 	client: BoundClient;
@@ -23,6 +37,8 @@ export interface TransitionParams {
 	inFlightTools: Map<string, AbortController>;
 	confirmFn?: (toolName: string) => Promise<boolean>;
 	model?: string | null;
+	/** Override deps for testing (avoids mock.module leaks in bun). */
+	deps?: Partial<TransitionDeps>;
 }
 
 export type TransitionResult =
@@ -58,7 +74,10 @@ export async function transitionThread(params: TransitionParams): Promise<Transi
 		inFlightTools,
 		confirmFn,
 		model,
+		deps: _deps,
 	} = params;
+
+	const { acquireLock, releaseLock, performAttach } = { ...defaultDeps, ..._deps };
 
 	let newThreadId = _newThreadId;
 
@@ -90,7 +109,7 @@ export async function transitionThread(params: TransitionParams): Promise<Transi
 	logger.info("transition_unsubscribe_old", { oldThreadId });
 	client.unsubscribe(oldThreadId);
 
-	// Step 3: Release old lock
+	// Step 3: Release old lock (using injected dep)
 	logger.info("transition_release_old_lock", { oldThreadId });
 	releaseLock(configDir, oldThreadId);
 
@@ -105,7 +124,7 @@ export async function transitionThread(params: TransitionParams): Promise<Transi
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			logger.error("transition_create_thread_failed", { error: errorMsg });
 			// Rollback: re-subscribe and re-acquire old lock
-			return await rollback(client, oldThreadId, configDir, cwd, logger, errorMsg);
+			return await rollback(client, oldThreadId, configDir, cwd, logger, errorMsg, acquireLock);
 		}
 	}
 
@@ -117,7 +136,7 @@ export async function transitionThread(params: TransitionParams): Promise<Transi
 		const errorMsg = error instanceof Error ? error.message : String(error);
 		logger.error("transition_acquire_new_lock_failed", { error: errorMsg });
 		// Rollback: re-subscribe and re-acquire old lock
-		return await rollback(client, oldThreadId, configDir, cwd, logger, errorMsg);
+		return await rollback(client, oldThreadId, configDir, cwd, logger, errorMsg, acquireLock);
 	}
 
 	// Step 6: Verify thread exists
@@ -129,7 +148,7 @@ export async function transitionThread(params: TransitionParams): Promise<Transi
 		logger.error("transition_verify_thread_failed", { error: errorMsg });
 		releaseLock(configDir, newThreadId);
 		// Rollback: re-subscribe and re-acquire old lock
-		return await rollback(client, oldThreadId, configDir, cwd, logger, errorMsg);
+		return await rollback(client, oldThreadId, configDir, cwd, logger, errorMsg, acquireLock);
 	}
 
 	// Step 7: Perform attach
@@ -161,7 +180,7 @@ export async function transitionThread(params: TransitionParams): Promise<Transi
 		logger.error("transition_attach_failed", { error: errorMsg });
 		releaseLock(configDir, newThreadId);
 		// Rollback: re-subscribe and re-acquire old lock
-		return await rollback(client, oldThreadId, configDir, cwd, logger, errorMsg);
+		return await rollback(client, oldThreadId, configDir, cwd, logger, errorMsg, acquireLock);
 	}
 }
 
@@ -176,6 +195,7 @@ async function rollback(
 	cwd: string,
 	logger: AppLogger,
 	originalError: string,
+	acquireLock: (configDir: string, threadId: string, cwd: string) => void,
 ): Promise<TransitionResult> {
 	logger.info("transition_rollback_start", { oldThreadId });
 
