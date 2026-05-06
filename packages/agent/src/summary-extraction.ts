@@ -7,10 +7,12 @@ import { safeSlice } from "@bound/shared";
 import { graphSeededRetrieval } from "./graph-queries";
 
 /**
- * Common English stop words for keyword filtering.
- * Used in both graph-seeded and recency-based keyword extraction.
+ * High-frequency English function words filtered BEFORE passing to FTS5.
+ * This prevents noisy OR queries where common words match nearly everything.
+ * FTS5 handles stemming/tokenization; this set only filters query noise.
+ * Deliberately excludes short content words (AI, Go, JS) — no length gate.
  */
-const STOP_WORDS = new Set([
+const FTS5_STOP_WORDS = new Set([
 	"the",
 	"a",
 	"an",
@@ -590,13 +592,18 @@ export function buildVolatileEnrichment(
 	userMessage?: string,
 	threadSummary?: string,
 ): VolatileEnrichment {
-	// Helper: extract keywords from text, filtering stop words and short tokens
+	// Extract meaningful tokens from text for FTS5 seed matching.
+	// We still filter high-frequency English function words to prevent noisy OR
+	// queries (e.g., "is" matching every entry containing "is"). FTS5 handles
+	// stemming and tokenization, but feeding it pure stop words produces false
+	// positives. No minimum length filter — short content words like "AI", "Go"
+	// are valid query terms.
 	const extractKeywords = (text: string): string[] =>
 		text
 			.toLowerCase()
 			.replace(/[^a-z0-9_\s-]/g, " ")
 			.split(/\s+/)
-			.filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
+			.filter((w) => w.length > 0 && !FTS5_STOP_WORDS.has(w));
 
 	// Merge keywords from user message (high priority) and thread summary (broader context).
 	// Message keywords come first; summary keywords are deduplicated against them.
@@ -605,12 +612,9 @@ export function buildVolatileEnrichment(
 	const summaryKeywords = extractKeywords(threadSummary ?? "").filter(
 		(w) => !messageKeywordSet.has(w),
 	);
-	// Cap keywords to prevent pathologically large SQL queries. User messages with
-	// file attachments (e.g., log dumps) can produce 500+ keywords, which cascades
-	// into graphSeededRetrieval's OR-chained LIKE conditions and exceeds SQLite's
-	// expression tree depth limit of 1000. 30 keywords is more than sufficient for
-	// semantic memory matching. The cap in graphSeededRetrieval is a safety net;
-	// this is the primary cap at the source.
+	// Cap keywords to prevent overly broad FTS5 OR queries. 30 terms is more than
+	// sufficient for semantic memory matching. The cap in graphSeededRetrieval is
+	// a safety net; this is the primary cap at the source.
 	const mergedKeywords = [...messageKeywords, ...summaryKeywords].slice(0, 30);
 
 	// Run the L0→L1→L2→L3 pipeline

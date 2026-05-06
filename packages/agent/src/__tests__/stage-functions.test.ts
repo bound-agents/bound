@@ -56,6 +56,25 @@ describe("Stage Functions - L0 Pinned Entries", () => {
 				title TEXT,
 				deleted INTEGER DEFAULT 0
 			);
+
+			CREATE VIRTUAL TABLE semantic_memory_fts
+			USING fts5(key, value, tokenize='porter unicode61');
+
+			CREATE TRIGGER memory_fts_insert
+			AFTER INSERT ON semantic_memory
+			WHEN NEW.deleted = 0 AND NEW.key NOT LIKE '_internal.%'
+			BEGIN
+				INSERT INTO semantic_memory_fts(key, value) VALUES (NEW.key, NEW.value);
+			END;
+
+			CREATE TRIGGER memory_fts_update
+			AFTER UPDATE ON semantic_memory
+			BEGIN
+				DELETE FROM semantic_memory_fts WHERE key = OLD.key;
+				INSERT INTO semantic_memory_fts(key, value)
+					SELECT NEW.key, NEW.value
+					WHERE NEW.deleted = 0 AND NEW.key NOT LIKE '_internal.%';
+			END;
 		`);
 	});
 
@@ -784,6 +803,25 @@ describe("Stage Functions - L2 Graph Entries", () => {
 				title TEXT,
 				deleted INTEGER DEFAULT 0
 			);
+
+			CREATE VIRTUAL TABLE semantic_memory_fts
+			USING fts5(key, value, tokenize='porter unicode61');
+
+			CREATE TRIGGER memory_fts_insert
+			AFTER INSERT ON semantic_memory
+			WHEN NEW.deleted = 0 AND NEW.key NOT LIKE '_internal.%'
+			BEGIN
+				INSERT INTO semantic_memory_fts(key, value) VALUES (NEW.key, NEW.value);
+			END;
+
+			CREATE TRIGGER memory_fts_update
+			AFTER UPDATE ON semantic_memory
+			BEGIN
+				DELETE FROM semantic_memory_fts WHERE key = OLD.key;
+				INSERT INTO semantic_memory_fts(key, value)
+					SELECT NEW.key, NEW.value
+					WHERE NEW.deleted = 0 AND NEW.key NOT LIKE '_internal.%';
+			END;
 		`);
 	});
 
