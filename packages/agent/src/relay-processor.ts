@@ -19,6 +19,7 @@ import {
 } from "@bound/core";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
 import { LLMError, type ModelRouter } from "@bound/llm";
+import type { PlatformMcpRegistry, PlatformRegisteredTool } from "@bound/platforms";
 import type {
 	CacheWarmPayload,
 	ErrorPayload,
@@ -135,6 +136,7 @@ export class RelayProcessor {
 	private activeInferenceStreams = new Map<string, AbortController>();
 	private readonly threadAffinityMap: Map<string, string>;
 	private platformConnectorRegistry: ConnectorRegistry | null = null;
+	private platformMcpRegistry: PlatformMcpRegistry | null = null;
 	private fileReader?: (path: string) => Promise<Uint8Array>;
 	private threadExecutor: ThreadExecutor | null = null;
 
@@ -190,6 +192,11 @@ export class RelayProcessor {
 	/** Inject the platform connector registry after startup completes (avoids circular init order). */
 	setPlatformConnectorRegistry(registry: ConnectorRegistry): void {
 		this.platformConnectorRegistry = registry;
+	}
+
+	/** Inject the platform MCP registry after startup completes (avoids circular init order). */
+	setPlatformMcpRegistry(registry: PlatformMcpRegistry): void {
+		this.platformMcpRegistry = registry;
 	}
 
 	/** Inject the thread executor for dispatch queue integration (avoids circular init order). */
@@ -1568,7 +1575,41 @@ export class RelayProcessor {
 		let connectorForDelivery:
 			| ReturnType<NonNullable<ConnectorRegistry["getConnector"]>>
 			| undefined;
-		if (payload.platform && this.platformConnectorRegistry) {
+
+		// NEW: MCP-based platform tools registry
+		if (payload.platform && this.platformMcpRegistry && !loopConfig.platformTools) {
+			let tools: Map<string, PlatformRegisteredTool>;
+			if (this.platformMcpRegistry.isDispatcherThread(payload.thread_id)) {
+				tools = this.platformMcpRegistry.getAllPlatformTools();
+			} else {
+				tools = this.platformMcpRegistry.getToolsForThread(payload.thread_id);
+			}
+
+			if (tools.size > 0) {
+				// Convert to legacy platformTools format for AgentLoopConfig
+				const legacyMap = new Map();
+				for (const [name, tool] of tools) {
+					legacyMap.set(name, {
+						toolDefinition: tool.toolDefinition,
+						execute: async (input: Record<string, unknown>) => {
+							const result = tool.execute ? await tool.execute(input) : "done";
+							return typeof result === "string" ? result : JSON.stringify(result);
+						},
+					});
+				}
+				loopConfig.platformTools = legacyMap as AgentLoopConfig["platformTools"];
+				loopConfig.platform = payload.platform;
+				this.logger.info("[relay] MCP platform tools injected", {
+					platform: payload.platform,
+					threadId: payload.thread_id,
+					toolCount: legacyMap.size,
+					tools: Array.from(legacyMap.keys()),
+				});
+			}
+		}
+
+		// LEGACY: Old platform connector registry path
+		if (payload.platform && this.platformConnectorRegistry && !loopConfig.platformTools) {
 			const connector = this.platformConnectorRegistry.getConnector(payload.platform);
 			if (connector?.getPlatformTools) {
 				const platformTools = connector.getPlatformTools(payload.thread_id, this.fileReader);

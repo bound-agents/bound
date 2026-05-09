@@ -8,6 +8,7 @@
 	"dependencies": {
 		"@bound/core": "workspace:*",
 		"@bound/llm": "workspace:*",
+		"@bound/platforms": "workspace:*",
 		"@bound/sandbox": "workspace:*",
 		"@bound/shared": "workspace:*",
 		"@bound/sync": "workspace:*",
