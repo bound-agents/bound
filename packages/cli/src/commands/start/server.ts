@@ -32,9 +32,12 @@ import {
 import type { ModelBackendsConfig, ModelRouter } from "@bound/llm";
 import type { PlatformMcpRegistry } from "@bound/platforms";
 import {
+	PlatformLeaderElection,
+	PlatformMcpRegistry as PlatformMcpRegistryClass,
 	createConnectorAttachTool,
 	createConnectorChannelsTool,
 	createConnectorListTool,
+	seedDispatcher,
 } from "@bound/platforms";
 import type { KeyringConfig, Logger, ProcessPayload, StatusForwardPayload } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
@@ -289,7 +292,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	// Platform registry — declared here so message:created handler can reference it,
 	// populated in the platform connectors section below.
 	let platformRegistry: ServerResult["platformRegistry"] = null;
-	const platformMcpRegistry: PlatformMcpRegistry | null = null;
+	let platformMcpRegistry: PlatformMcpRegistry | null = null;
 
 	try {
 		const modelBackends = appContext.config.modelBackends;
@@ -930,6 +933,78 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	if (platformsResult?.ok) {
 		const { PlatformConnectorRegistry } = await import("@bound/platforms");
 		const platformsConfig = platformsResult.value as import("@bound/shared").PlatformsConfig;
+
+		// TASK 1: Bootstrap PlatformMcpRegistry
+		platformMcpRegistry = new PlatformMcpRegistryClass({
+			db: appContext.db,
+			siteId: appContext.siteId,
+			eventBus: appContext.eventBus,
+			logger: appContext.logger,
+		});
+		appContext.logger.info("[platforms-mcp] MCP registry initialized");
+
+		// Seed the dispatcher task for multi-platform event aggregation
+		seedDispatcher(appContext.db, appContext.siteId);
+		appContext.logger.info("[platforms-mcp] Dispatcher task seeded");
+
+		// TASK 2: Integrate leader election with MCP server instantiation
+		// Create adapter that wraps registry operations for the connector interface
+		// The adapter gates subscription reconnection behind leader election (AC6.1, AC6.2)
+		const mcpLeaderAdapter = {
+			platform: "mcp-platforms",
+			delivery: "broadcast" as const,
+			async connect() {
+				appContext.logger.info(
+					"[platforms-mcp] Leader election: connect() — reconstituting subscriptions",
+				);
+				// On leadership gain: reconnect all subscriptions from DB (AC6.3 — failover recovery)
+				// Servers are already registered by now; we just need to resume subscriptions
+				await platformMcpRegistry?.reconnectAll();
+				appContext.logger.info("[platforms-mcp] All subscriptions reconnected");
+			},
+			async disconnect() {
+				appContext.logger.info(
+					"[platforms-mcp] Leader election: disconnect() — stopping subscriptions",
+				);
+				// On leadership loss: tear down all subscriptions (non-leader has empty registry)
+				await platformMcpRegistry?.shutdown();
+				appContext.logger.info("[platforms-mcp] All subscriptions stopped");
+			},
+			// Other PlatformConnector methods are no-ops for the adapter
+			async deliver() {},
+		};
+
+		// Use PlatformLeaderElection to gate subscription management
+		// Non-leader hosts have the registry but with no subscriptions (AC6.2)
+		const leaderElection = new PlatformLeaderElection(
+			mcpLeaderAdapter,
+			platformsConfig.connectors[0],
+			appContext.db,
+			appContext.siteId,
+		);
+		await leaderElection.start();
+		appContext.logger.info("[platforms-mcp] Leader election started");
+
+		// Advertise platforms from MCP registry to hosts table for relay platform affinity routing (AC6.5)
+		const platformNames = platformMcpRegistry.getServerNames();
+		if (platformNames.length > 0) {
+			updateRow(
+				appContext.db,
+				"hosts",
+				appContext.siteId,
+				{ platforms: JSON.stringify(platformNames) },
+				appContext.siteId,
+			);
+			appContext.logger.info(
+				`[platforms-mcp] Advertised MCP platforms: ${platformNames.join(", ")}`,
+			);
+		}
+
+		// TASK 3: Wire relay processor to use new registry (AC7.3)
+		relayProcessor.setPlatformMcpRegistry(platformMcpRegistry);
+		appContext.logger.info("[platforms-mcp] Relay processor wired");
+
+		// Keep old platform registry for backward compatibility (Phase 7 will remove)
 		platformRegistry = new PlatformConnectorRegistry(appContext, platformsConfig);
 		platformRegistry.start();
 		// Wire into relay processor for platform-context process relays.
@@ -946,16 +1021,16 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		// those created implicitly by compound connectors (e.g. "discord-interaction"
 		// alongside "discord"). Without this, relay intake routing via
 		// findPlatformHost() cannot match compound connector platforms.
-		const platformNames = platformRegistry.getRegisteredPlatforms();
-		if (platformNames.length > 0) {
+		const oldPlatformNames = platformRegistry.getRegisteredPlatforms();
+		if (oldPlatformNames.length > 0) {
 			updateRow(
 				appContext.db,
 				"hosts",
 				appContext.siteId,
-				{ platforms: JSON.stringify(platformNames) },
+				{ platforms: JSON.stringify(oldPlatformNames) },
 				appContext.siteId,
 			);
-			appContext.logger.info(`[platforms] Advertised platforms: ${platformNames.join(", ")}`);
+			appContext.logger.info(`[platforms] Advertised platforms: ${oldPlatformNames.join(", ")}`);
 		}
 	} else {
 		appContext.logger.info("[platforms] Not configured (no platforms.json)");
