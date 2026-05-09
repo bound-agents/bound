@@ -3,6 +3,7 @@ import { sniffImageMediaType } from "@bound/llm";
 import type { ContentBlock } from "@bound/llm";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { z } from "zod";
 
 // Discord.js types imported dynamically to avoid hard dep at module load
 type DiscordClient = import("discord.js").Client;
@@ -54,6 +55,15 @@ export function createDiscordServer(
 		version: "1.0.0",
 	});
 
+	// Try to register capabilities after instantiation
+	if (server.registerCapabilities) {
+		server.registerCapabilities({
+			tools: {
+				listChanged: false,
+			},
+		});
+	}
+
 	// Internal state
 	let nextCursor = 1;
 	const eventBuffer: BufferedEvent[] = [];
@@ -61,15 +71,32 @@ export function createDiscordServer(
 	const interactionStore = new Map<string, StoredInteraction>();
 	const recentMessageIds = new Set<string>();
 
-	// Type-safe wrapper for server methods
-	type ServerRequest = Record<string, unknown>;
-	const typedServer = server as Server & {
-		setRequestHandler(
-			matcher: (request: ServerRequest) => boolean | Promise<boolean>,
-			handler: (request: ServerRequest) => unknown,
-		): void;
-		notification(notification: { method: string; params: unknown }): void;
-	};
+	// Define Zod schemas for requests
+	const eventsListSchema = z.object({ method: z.literal("events/list") });
+	const eventsStreamSchema = z.object({
+		method: z.literal("events/stream"),
+		params: z.object({
+			event: z.string(),
+			params: z.record(z.string(), z.unknown()).optional(),
+			cursor: z.string().optional(),
+		}),
+	});
+	const eventsPollSchema = z.object({
+		method: z.literal("events/poll"),
+		params: z.object({
+			event: z.string(),
+			params: z.record(z.string(), z.unknown()).optional(),
+			cursor: z.string().optional(),
+		}),
+	});
+	const toolsListSchema = z.object({ method: z.literal("tools/list") });
+	const toolsCallSchema = z.object({
+		method: z.literal("tools/call"),
+		params: z.object({
+			name: z.string(),
+			arguments: z.record(z.string(), z.unknown()).optional(),
+		}),
+	});
 
 	// Cleanup expired interactions every 60 seconds
 	const interactionCleanupInterval = setInterval(() => {
@@ -81,6 +108,14 @@ export function createDiscordServer(
 			}
 		}
 	}, 60_000);
+
+	// Helper to send notifications
+	function sendNotification(method: string, params: Record<string, unknown>): void {
+		server.notification({
+			method,
+			params,
+		} as Record<string, unknown> & { method: string; params: Record<string, unknown> });
+	}
 
 	// Helper to add event to buffer and emit to subscriptions
 	function emitEvent(eventId: string, eventName: string, eventData: Record<string, unknown>): void {
@@ -112,16 +147,13 @@ export function createDiscordServer(
 					}
 				}
 				if (matches) {
-					typedServer.notification({
-						method: "notifications/events/event",
-						params: {
-							subscriptionId: subscription.subscriptionId,
-							eventId: bufferedEvent.eventId,
-							name: bufferedEvent.name,
-							timestamp: bufferedEvent.timestamp,
-							data: bufferedEvent.data,
-							cursor: bufferedEvent.cursor,
-						},
+					sendNotification("notifications/events/event", {
+						subscriptionId: subscription.subscriptionId,
+						eventId: bufferedEvent.eventId,
+						name: bufferedEvent.name,
+						timestamp: bufferedEvent.timestamp,
+						data: bufferedEvent.data,
+						cursor: bufferedEvent.cursor,
 					});
 				}
 			}
@@ -129,297 +161,276 @@ export function createDiscordServer(
 	}
 
 	// Handle events/list request
-	typedServer.setRequestHandler(
-		(request: ServerRequest) => request.method === "events/list",
-		async () => {
-			return {
-				events: [
-					{
-						name: "message.received",
-						description: "Discord message received from a user",
-						inputSchema: {
-							type: "object",
-							properties: {
-								channel_id: {
-									type: "string",
-									description: "Discord channel ID to subscribe to",
-								},
+	server.setRequestHandler(eventsListSchema, async () => {
+		return {
+			events: [
+				{
+					name: "message.received",
+					description: "Discord message received from a user",
+					inputSchema: {
+						type: "object",
+						properties: {
+							channel_id: {
+								type: "string",
+								description: "Discord channel ID to subscribe to",
 							},
-							required: ["channel_id"],
 						},
+						required: ["channel_id"],
 					},
-					{
-						name: "interaction.received",
-						description: "Discord interaction (slash command or context menu) received",
-						inputSchema: {
-							type: "object",
-							properties: {
-								channel_id: {
-									type: "string",
-									description: "Discord channel ID to subscribe to",
-								},
+				},
+				{
+					name: "interaction.received",
+					description: "Discord interaction (slash command or context menu) received",
+					inputSchema: {
+						type: "object",
+						properties: {
+							channel_id: {
+								type: "string",
+								description: "Discord channel ID to subscribe to",
 							},
-							required: ["channel_id"],
 						},
+						required: ["channel_id"],
 					},
-				],
-			};
-		},
-	);
+				},
+			],
+		};
+	});
 
 	// Handle events/stream request
-	typedServer.setRequestHandler(
-		(request: ServerRequest) => request.method === "events/stream",
-		async (request: ServerRequest) => {
-			const params = (request.params as Record<string, unknown>) || {};
-			const eventName = params.event as string;
-			const eventParams = (params.params as Record<string, unknown>) || {};
+	server.setRequestHandler(eventsStreamSchema, async (request) => {
+		const params = request.params || {};
+		const eventName = params.event as string;
+		const eventParams = (params.params as Record<string, unknown>) || {};
 
-			// Validate event name
-			if (eventName !== "message.received" && eventName !== "interaction.received") {
-				throw new Error(`Unknown event type: ${eventName}`);
-			}
+		// Validate event name
+		if (eventName !== "message.received" && eventName !== "interaction.received") {
+			throw new Error(`Unknown event type: ${eventName}`);
+		}
 
-			const subscriptionId = randomUUID();
-			subscriptions.set(subscriptionId, {
-				subscriptionId,
-				eventName,
-				params: eventParams,
-			});
+		const subscriptionId = randomUUID();
+		subscriptions.set(subscriptionId, {
+			subscriptionId,
+			eventName,
+			params: eventParams,
+		});
 
-			// If cursor provided, replay buffered events
-			const cursor = (eventParams.cursor as string) || undefined;
-			if (cursor) {
-				const cursorNum = Number.parseInt(cursor, 10);
-				const matchingEvents = eventBuffer.filter(
-					(e) =>
-						e.cursor > cursorNum &&
-						e.name === eventName &&
-						Object.entries(eventParams).every(([key, value]) => e.data[key] === value),
-				);
-
-				for (const bufferedEvent of matchingEvents) {
-					typedServer.notification({
-						method: "notifications/events/event",
-						params: {
-							subscriptionId,
-							eventId: bufferedEvent.eventId,
-							name: bufferedEvent.name,
-							timestamp: bufferedEvent.timestamp,
-							data: bufferedEvent.data,
-							cursor: bufferedEvent.cursor,
-						},
-					});
-				}
-			}
-
-			return { subscriptionId };
-		},
-	);
-
-	// Handle events/poll request
-	typedServer.setRequestHandler(
-		(request: ServerRequest) => request.method === "events/poll",
-		async (request: ServerRequest) => {
-			const params = (request.params as Record<string, unknown>) || {};
-			const eventName = params.event as string;
-			const eventParams = (params.params as Record<string, unknown>) || {};
-			const cursorStr = (params.cursor as string) || undefined;
-
-			// Validate event name
-			if (eventName !== "message.received" && eventName !== "interaction.received") {
-				throw new Error(`Unknown event type: ${eventName}`);
-			}
-
-			const cursor = cursorStr ? Number.parseInt(cursorStr, 10) : 0;
+		// If cursor provided, replay buffered events
+		const cursor = params.cursor as string | undefined;
+		if (cursor) {
+			const cursorNum = Number.parseInt(cursor, 10);
 			const matchingEvents = eventBuffer.filter(
 				(e) =>
-					e.cursor > cursor &&
+					e.cursor > cursorNum &&
 					e.name === eventName &&
 					Object.entries(eventParams).every(([key, value]) => e.data[key] === value),
 			);
 
-			return {
-				events: matchingEvents.map((e) => ({
-					eventId: e.eventId,
-					name: e.name,
-					timestamp: e.timestamp,
-					data: e.data,
-					cursor: e.cursor,
-				})),
-				nextPollSeconds: 2,
-			};
-		},
-	);
+			for (const bufferedEvent of matchingEvents) {
+				sendNotification("notifications/events/event", {
+					subscriptionId,
+					eventId: bufferedEvent.eventId,
+					name: bufferedEvent.name,
+					timestamp: bufferedEvent.timestamp,
+					data: bufferedEvent.data,
+					cursor: bufferedEvent.cursor,
+				});
+			}
+		}
+
+		return { subscriptionId };
+	});
+
+	// Handle events/poll request
+	server.setRequestHandler(eventsPollSchema, async (request) => {
+		const params = request.params || {};
+		const eventName = params.event as string;
+		const eventParams = (params.params as Record<string, unknown>) || {};
+		const cursorStr = params.cursor as string | undefined;
+
+		// Validate event name
+		if (eventName !== "message.received" && eventName !== "interaction.received") {
+			throw new Error(`Unknown event type: ${eventName}`);
+		}
+
+		const cursor = cursorStr ? Number.parseInt(cursorStr, 10) : 0;
+		const matchingEvents = eventBuffer.filter(
+			(e) =>
+				e.cursor > cursor &&
+				e.name === eventName &&
+				Object.entries(eventParams).every(([key, value]) => e.data[key] === value),
+		);
+
+		return {
+			events: matchingEvents.map((e) => ({
+				eventId: e.eventId,
+				name: e.name,
+				timestamp: e.timestamp,
+				data: e.data,
+				cursor: e.cursor,
+			})),
+			nextPollSeconds: 2,
+		};
+	});
 
 	// Handle tools/list request
-	typedServer.setRequestHandler(
-		(request: ServerRequest) => request.method === "tools/list",
-		async () => {
-			return {
-				tools: [
-					{
-						name: "discord_send_message",
-						description:
-							"Send a message to a Discord DM channel. Messages > 2000 chars are chunked.",
-						inputSchema: {
-							type: "object",
-							properties: {
-								channel_id: {
-									type: "string",
-									description: "The Discord channel ID to send to",
-								},
-								content: {
-									type: "string",
-									description: "Message content (will be chunked if > 2000 chars)",
-								},
+	server.setRequestHandler(toolsListSchema, async () => {
+		return {
+			tools: [
+				{
+					name: "discord_send_message",
+					description: "Send a message to a Discord DM channel. Messages > 2000 chars are chunked.",
+					inputSchema: {
+						type: "object",
+						properties: {
+							channel_id: {
+								type: "string",
+								description: "The Discord channel ID to send to",
 							},
-							required: ["channel_id", "content"],
-						},
-					},
-					{
-						name: "discord_respond_interaction",
-						description: "Respond to a Discord interaction by editing the ephemeral reply",
-						inputSchema: {
-							type: "object",
-							properties: {
-								callback_id: {
-									type: "string",
-									description: "The interaction callback ID from the event data",
-								},
-								content: {
-									type: "string",
-									description: "Response content (max 2000 chars, will be truncated)",
-								},
+							content: {
+								type: "string",
+								description: "Message content (will be chunked if > 2000 chars)",
 							},
-							required: ["callback_id", "content"],
 						},
+						required: ["channel_id", "content"],
 					},
-				],
-			};
-		},
-	);
+				},
+				{
+					name: "discord_respond_interaction",
+					description: "Respond to a Discord interaction by editing the ephemeral reply",
+					inputSchema: {
+						type: "object",
+						properties: {
+							callback_id: {
+								type: "string",
+								description: "The interaction callback ID from the event data",
+							},
+							content: {
+								type: "string",
+								description: "Response content (max 2000 chars, will be truncated)",
+							},
+						},
+						required: ["callback_id", "content"],
+					},
+				},
+			],
+		};
+	});
 
 	// Handle tools/call request
-	typedServer.setRequestHandler(
-		(request: ServerRequest) => request.method === "tools/call",
-		async (request: ServerRequest) => {
-			const params = (request.params as Record<string, unknown>) || {};
-			const name = params.name as string;
-			const args = (params.arguments as Record<string, unknown>) || {};
+	server.setRequestHandler(toolsCallSchema, async (request) => {
+		const params = request.params || {};
+		const name = params.name as string;
+		const args = (params.arguments as Record<string, unknown>) || {};
 
-			if (name === "discord_send_message") {
-				const channelId = args.channel_id as string | undefined;
-				const content = args.content as string | undefined;
+		if (name === "discord_send_message") {
+			const channelId = args.channel_id as string | undefined;
+			const content = args.content as string | undefined;
 
-				if (!channelId || typeof channelId !== "string") {
-					return {
-						content: [{ type: "text", text: "Error: channel_id is required and must be a string" }],
-						isError: true,
-					};
-				}
-				if (!content || typeof content !== "string") {
-					return {
-						content: [{ type: "text", text: "Error: content is required and must be a string" }],
-						isError: true,
-					};
-				}
-
-				try {
-					const channel = await client.channels.fetch(channelId);
-					if (!channel || !channel.isDMBased()) {
-						return {
-							content: [{ type: "text", text: "Error: channel not found or not a DM" }],
-							isError: true,
-						};
-					}
-
-					// Start typing indicator
-					const dmChannel = channel as DiscordMessage["channel"];
-					await (dmChannel as { sendTyping(): Promise<void> }).sendTyping();
-
-					// Chunk message at 2000 character boundaries
-					const chunks = chunkMessage(content);
-					const sendableChannel = channel as { send(content: string): Promise<unknown> };
-					for (const chunk of chunks) {
-						await sendableChannel.send(chunk);
-					}
-
-					return {
-						content: [{ type: "text", text: "sent" }],
-					};
-				} catch (err) {
-					const errorMsg = err instanceof Error ? err.message : String(err);
-					return {
-						content: [{ type: "text", text: `Error: ${errorMsg}` }],
-						isError: true,
-					};
-				}
+			if (!channelId || typeof channelId !== "string") {
+				return {
+					content: [{ type: "text", text: "Error: channel_id is required and must be a string" }],
+					isError: true,
+				};
+			}
+			if (!content || typeof content !== "string") {
+				return {
+					content: [{ type: "text", text: "Error: content is required and must be a string" }],
+					isError: true,
+				};
 			}
 
-			if (name === "discord_respond_interaction") {
-				const callbackId = args.callback_id as string | undefined;
-				let responseContent = args.content as string | undefined;
-
-				if (!callbackId || typeof callbackId !== "string") {
+			try {
+				const channel = await client.channels.fetch(channelId);
+				if (!channel || !channel.isDMBased()) {
 					return {
-						content: [
-							{ type: "text", text: "Error: callback_id is required and must be a string" },
-						],
+						content: [{ type: "text", text: "Error: channel not found or not a DM" }],
 						isError: true,
 					};
 				}
 
-				const storedData = interactionStore.get(callbackId);
-				if (!storedData) {
-					return {
-						content: [{ type: "text", text: "Error: interaction not found or expired" }],
-						isError: true,
-					};
+				// Start typing indicator
+				const dmChannel = channel as DiscordMessage["channel"];
+				await (dmChannel as { sendTyping(): Promise<void> }).sendTyping();
+
+				// Chunk message at 2000 character boundaries
+				const chunks = chunkMessage(content);
+				const sendableChannel = channel as { send(content: string): Promise<unknown> };
+				for (const chunk of chunks) {
+					await sendableChannel.send(chunk);
 				}
 
-				// Check TTL
-				const ttl = 14 * 60 * 1000; // 14 minutes
-				if (Date.now() - storedData.createdAt > ttl) {
-					interactionStore.delete(callbackId);
-					return {
-						content: [{ type: "text", text: "Error: interaction not found or expired" }],
-						isError: true,
-					};
-				}
+				return {
+					content: [{ type: "text", text: "sent" }],
+				};
+			} catch (err) {
+				const errorMsg = err instanceof Error ? err.message : String(err);
+				return {
+					content: [{ type: "text", text: `Error: ${errorMsg}` }],
+					isError: true,
+				};
+			}
+		}
 
-				// Truncate to 2000 chars
-				if (!responseContent) {
-					responseContent = "";
-				}
-				if (responseContent.length > 2000) {
-					responseContent = responseContent.slice(0, 2000);
-				}
+		if (name === "discord_respond_interaction") {
+			const callbackId = args.callback_id as string | undefined;
+			let responseContent = args.content as string | undefined;
 
-				try {
-					const editableInteraction = storedData.interaction as DiscordInteraction & {
-						editReply(options: { content: string }): Promise<unknown>;
-					};
-					await editableInteraction.editReply({ content: responseContent });
-					interactionStore.delete(callbackId);
-					return {
-						content: [{ type: "text", text: "sent" }],
-					};
-				} catch (err) {
-					const errorMsg = err instanceof Error ? err.message : String(err);
-					return {
-						content: [{ type: "text", text: `Error: ${errorMsg}` }],
-						isError: true,
-					};
-				}
+			if (!callbackId || typeof callbackId !== "string") {
+				return {
+					content: [{ type: "text", text: "Error: callback_id is required and must be a string" }],
+					isError: true,
+				};
 			}
 
-			return {
-				content: [{ type: "text", text: `Unknown tool: ${name}` }],
-				isError: true,
-			};
-		},
-	);
+			const storedData = interactionStore.get(callbackId);
+			if (!storedData) {
+				return {
+					content: [{ type: "text", text: "Error: interaction not found or expired" }],
+					isError: true,
+				};
+			}
+
+			// Check TTL
+			const ttl = 14 * 60 * 1000; // 14 minutes
+			if (Date.now() - storedData.createdAt > ttl) {
+				interactionStore.delete(callbackId);
+				return {
+					content: [{ type: "text", text: "Error: interaction not found or expired" }],
+					isError: true,
+				};
+			}
+
+			// Truncate to 2000 chars
+			if (!responseContent) {
+				responseContent = "";
+			}
+			if (responseContent.length > 2000) {
+				responseContent = responseContent.slice(0, 2000);
+			}
+
+			try {
+				const editableInteraction = storedData.interaction as DiscordInteraction & {
+					editReply(options: { content: string }): Promise<unknown>;
+				};
+				await editableInteraction.editReply({ content: responseContent });
+				interactionStore.delete(callbackId);
+				return {
+					content: [{ type: "text", text: "sent" }],
+				};
+			} catch (err) {
+				const errorMsg = err instanceof Error ? err.message : String(err);
+				return {
+					content: [{ type: "text", text: `Error: ${errorMsg}` }],
+					isError: true,
+				};
+			}
+		}
+
+		return {
+			content: [{ type: "text", text: `Unknown tool: ${name}` }],
+			isError: true,
+		};
+	});
 
 	// Setup Discord client listeners
 	setupDiscordListeners(client, config, logger, emitEvent, interactionStore, recentMessageIds);
