@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
 import { createChangeLogEntry, insertRow, updateRow } from "@bound/core";
+import type { PlatformRegisteredTool } from "@bound/platforms";
 import { BOUND_NAMESPACE, deterministicUUID, formatError, parseJsonUntyped } from "@bound/shared";
 import type { Task } from "@bound/shared";
 import { createAdvisory } from "./advisories";
@@ -222,6 +223,8 @@ interface SchedulerConfig {
 	 * Called with the thread ID; fire-and-forget (errors are logged, not propagated).
 	 */
 	generateTitle?: (threadId: string) => Promise<void>;
+	/** Optional resolver for platform tools available for a thread. */
+	platformToolResolver?: (threadId: string) => PlatformRegisteredTool[];
 	/** Override deferred retry backoff (default 5000ms). Useful for tests. */
 	retryBackoffMs?: number;
 	/** Override base poll interval for getEffectivePollInterval (default 5000ms). Useful for tests. */
@@ -896,14 +899,24 @@ export class Scheduler {
 						? (this.config.modelTierResolver(modelId) ?? undefined)
 						: undefined;
 
-				const agentLoop = this.agentLoopFactory({
+				const loopConfig: AgentLoopConfig = {
 					threadId,
 					taskId: task.id,
 					userId: "system",
 					modelId,
 					modelTier,
 					noHistory: task.no_history === 1,
-				});
+				};
+
+				// Inject platform tools if resolver is available
+				if (this.config.platformToolResolver) {
+					const platformTools = this.config.platformToolResolver(threadId);
+					if (platformTools.length > 0) {
+						loopConfig.platformTools = platformTools;
+					}
+				}
+
+				const agentLoop = this.agentLoopFactory(loopConfig);
 
 				const result = await agentLoop.run();
 

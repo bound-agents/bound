@@ -1519,16 +1519,9 @@ export class RelayProcessor {
 
 		// Inject platform tools if registry is available
 		if (this.platformMcpRegistry) {
-			const platformTools = this.platformMcpRegistry.getToolsForThread(payload.thread_id);
-			if (platformTools.size > 0) {
-				loopConfig.tools = Array.from(platformTools.values()).map((tool) => ({
-					type: "function" as const,
-					function: {
-						name: tool.toolDefinition.function.name,
-						description: tool.toolDefinition.function.description,
-						parameters: tool.toolDefinition.function.parameters,
-					},
-				}));
+			const platformToolsMap = this.platformMcpRegistry.getToolsForThread(payload.thread_id);
+			if (platformToolsMap.size > 0) {
+				loopConfig.platformTools = Array.from(platformToolsMap.values());
 			}
 		}
 

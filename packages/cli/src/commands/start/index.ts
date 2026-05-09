@@ -78,7 +78,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 					statusForwardCache: new Map(),
 					activeDelegations: new Map(),
 					threadExecutor: new ThreadExecutor(appContext.db, appContext.logger),
-					platformRegistry: null,
+					platformMcpRegistry: null,
 					wsTransportHolder: {
 						addPeer: () => {},
 						removePeer: () => {},
@@ -195,7 +195,13 @@ export async function runStart(args: StartArgs): Promise<void> {
 		logger: appContext.logger,
 	});
 	const { schedulerHandle } = agentLoopFactory
-		? initScheduler(appContext, agentLoopFactory, modelRouter, sandbox)
+		? initScheduler(
+				appContext,
+				agentLoopFactory,
+				modelRouter,
+				sandbox,
+				serverResult.platformMcpRegistry,
+			)
 		: { schedulerHandle: null };
 
 	const webPort = process.env.WEB_PORT || "3001";
