@@ -823,6 +823,40 @@ describe("Discord MCP Server", () => {
 		expect(mockDiscordClient._getEditReplyCalls().length).toBeGreaterThan(0);
 	});
 
+	it("discord_send_message returns an error for content > 2000 chars (no chunking)", async () => {
+		const config: PlatformConnectorConfig = { allowed_users: [] };
+		const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+		server = discordServer;
+		client = mcpClient;
+
+		const toolCallSchema = z.object({
+			content: z.array(z.unknown()),
+			isError: z.boolean().optional(),
+		});
+
+		const callResult = await mcpClient.request(
+			{
+				method: "tools/call",
+				params: {
+					name: "discord_send_message",
+					arguments: {
+						channel_id: "ch-1",
+						content: "a".repeat(2001),
+					},
+				},
+			},
+			toolCallSchema,
+		);
+
+		expect(callResult.isError).toBe(true);
+		const contentBlock = callResult.content[0] as Record<string, unknown>;
+		expect(String(contentBlock.text)).toContain("2000");
+
+		// Verify nothing was sent to Discord
+		const sendCalls = mockDiscordClient._getSendCalls();
+		expect(sendCalls.length).toBe(0);
+	});
+
 	it("AC2.5: Expired callback_id returns error", async () => {
 		const config: PlatformConnectorConfig = { allowed_users: [] };
 		const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);

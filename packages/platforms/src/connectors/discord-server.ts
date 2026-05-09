@@ -271,13 +271,26 @@ export function createDiscordServer(
 	mcpServer.registerTool(
 		"discord_send_message",
 		{
-			description: "Send a message to a Discord DM channel. Messages > 2000 chars are chunked.",
+			description:
+				"Send a message to a Discord DM channel. Returns an error if content exceeds 2000 characters.",
 			inputSchema: {
 				channel_id: z.string().describe("The Discord channel ID to send to"),
-				content: z.string().describe("Message content (will be chunked if > 2000 chars)"),
+				content: z.string().describe("Message content (must be <= 2000 chars)"),
 			},
 		},
 		async ({ channel_id, content }) => {
+			if (content.length > 2000) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Error: content exceeds Discord's 2000-character limit (got ${content.length})`,
+						},
+					],
+					isError: true,
+				};
+			}
+
 			try {
 				const channel = await client.channels.fetch(channel_id);
 				if (!channel || !channel.isDMBased()) {
@@ -290,11 +303,8 @@ export function createDiscordServer(
 				const dmChannel = channel as DiscordMessage["channel"];
 				await (dmChannel as { sendTyping(): Promise<void> }).sendTyping();
 
-				const chunks = chunkMessage(content);
 				const sendableChannel = channel as { send(content: string): Promise<unknown> };
-				for (const chunk of chunks) {
-					await sendableChannel.send(chunk);
-				}
+				await sendableChannel.send(content);
 
 				return {
 					content: [{ type: "text", text: "sent" }],
