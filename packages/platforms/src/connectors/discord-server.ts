@@ -1,14 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { sniffImageMediaType } from "@bound/llm";
-import type { ContentBlock } from "@bound/llm";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { ChannelType } from "discord.js";
 import { z } from "zod";
 
 // Discord.js types imported dynamically to avoid hard dep at module load
 type DiscordClient = import("discord.js").Client;
 type DiscordMessage = import("discord.js").Message;
 type DiscordInteraction = import("discord.js").Interaction;
+
+/** Local type for event data attachments (supports file_ref not in @bound/llm ContentBlock) */
+type EventAttachment =
+	| { type: "image"; source: { type: "base64"; media_type: string; data: string } }
+	| { type: "file_ref"; file_id: string; filename: string; size: number };
 
 /** Attachment threshold: >= 1 MB is file_ref, < 1 MB is base64 */
 const ATTACHMENT_FILE_REF_THRESHOLD = 1024 * 1024;
@@ -70,6 +75,7 @@ export function createDiscordServer(
 	const subscriptions = new Map<string, Subscription>();
 	const interactionStore = new Map<string, StoredInteraction>();
 	const recentMessageIds = new Set<string>();
+	const seenChannelIds = new Set<string>(); // Track new DM channels for list_changed events
 
 	// Define Zod schemas for requests
 	const eventsListSchema = z.object({ method: z.literal("events/list") });
@@ -153,7 +159,7 @@ export function createDiscordServer(
 						name: bufferedEvent.name,
 						timestamp: bufferedEvent.timestamp,
 						data: bufferedEvent.data,
-						cursor: bufferedEvent.cursor,
+						cursor: String(bufferedEvent.cursor),
 					});
 				}
 			}
@@ -232,7 +238,7 @@ export function createDiscordServer(
 					name: bufferedEvent.name,
 					timestamp: bufferedEvent.timestamp,
 					data: bufferedEvent.data,
-					cursor: bufferedEvent.cursor,
+					cursor: String(bufferedEvent.cursor),
 				});
 			}
 		}
@@ -266,8 +272,12 @@ export function createDiscordServer(
 				name: e.name,
 				timestamp: e.timestamp,
 				data: e.data,
-				cursor: e.cursor,
+				cursor: String(e.cursor),
 			})),
+			cursor:
+				matchingEvents.length > 0
+					? String(matchingEvents[matchingEvents.length - 1].cursor)
+					: cursorStr || "0",
 			nextPollSeconds: 2,
 		};
 	});
@@ -433,7 +443,16 @@ export function createDiscordServer(
 	});
 
 	// Setup Discord client listeners
-	setupDiscordListeners(client, config, logger, emitEvent, interactionStore, recentMessageIds);
+	setupDiscordListeners(
+		client,
+		config,
+		logger,
+		emitEvent,
+		interactionStore,
+		recentMessageIds,
+		seenChannelIds,
+		sendNotification,
+	);
 
 	// Cleanup on server close
 	const originalClose = server.close.bind(server);
@@ -455,9 +474,9 @@ function setupDiscordListeners(
 	emitEvent: (eventId: string, eventName: string, data: Record<string, unknown>) => void,
 	interactionStore: Map<string, StoredInteraction>,
 	recentMessageIds: Set<string>,
+	seenChannelIds: Set<string>,
+	sendNotification: (method: string, params: Record<string, unknown>) => void,
 ): void {
-	const { ChannelType } = require("discord.js");
-
 	client.on("messageCreate", async (msg: DiscordMessage) => {
 		try {
 			// Skip bot messages
@@ -479,8 +498,14 @@ function setupDiscordListeners(
 				if (first) recentMessageIds.delete(first);
 			}
 
+			// Track new channels for list_changed emission
+			if (!seenChannelIds.has(msg.channelId)) {
+				seenChannelIds.add(msg.channelId);
+				sendNotification("notifications/events/list_changed", {});
+			}
+
 			// Build attachment content blocks
-			const attachments: ContentBlock[] = [];
+			const attachments: EventAttachment[] = [];
 			const attachmentCount = msg.attachments?.size ?? 0;
 			if (attachmentCount > 0) {
 				for (const attachment of msg.attachments.values()) {
@@ -504,7 +529,7 @@ function setupDiscordListeners(
 								file_id: attachment.id,
 								filename: attachment.name,
 								size: attachment.size,
-							} as ContentBlock & { type: "file_ref" });
+							});
 						} else {
 							// Base64 for small files (images)
 							const mediaType = sniffImageMediaType(bytes);
@@ -586,7 +611,7 @@ function setupDiscordListeners(
 				const contextInteraction = interaction as DiscordInteraction;
 				const targetMsg = (contextInteraction as unknown as { targetMessage?: DiscordMessage })
 					.targetMessage;
-				const targetAttachments: ContentBlock[] = [];
+				const targetAttachments: EventAttachment[] = [];
 
 				const targetAttachmentCount = targetMsg?.attachments?.size ?? 0;
 				if (targetMsg && targetAttachmentCount > 0) {
@@ -606,7 +631,7 @@ function setupDiscordListeners(
 										file_id: attachment.id,
 										filename: attachment.name,
 										size: attachment.size,
-									} as ContentBlock & { type: "file_ref" });
+									});
 								} else {
 									const mediaType = sniffImageMediaType(bytes);
 									if (mediaType) {
