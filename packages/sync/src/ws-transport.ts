@@ -115,6 +115,7 @@ const SNAPSHOT_TABLE_ORDER: SyncedTableName[] = [
 	"semantic_memory",
 	"memory_edges",
 	"tasks",
+	"connector_handles",
 	"files",
 	"advisories",
 	"skills",

@@ -397,7 +397,23 @@ export function applySchema(db: Database): void {
 		CREATE INDEX IF NOT EXISTS idx_edges_target ON memory_edges(target_key) WHERE deleted = 0
 	`);
 
-	// 13. change_log (non-replicated, local-only)
+	// 13. connector_handles (synced)
+	db.run(`
+		CREATE TABLE IF NOT EXISTS connector_handles (
+			id            TEXT PRIMARY KEY,
+			server_name   TEXT NOT NULL,
+			event_name    TEXT NOT NULL,
+			event_args    TEXT NOT NULL,
+			delivery_mode TEXT NOT NULL,
+			cursor        TEXT,
+			task_id       TEXT,
+			created_at    TEXT NOT NULL,
+			deleted       INTEGER NOT NULL DEFAULT 0,
+			modified_at   TEXT NOT NULL
+		) STRICT
+	`);
+
+	// 15. change_log (non-replicated, local-only)
 	// Migration: if old seq-based table exists, migrate to HLC-based table
 	migrateChangeLogToHlc(db);
 
@@ -412,7 +428,7 @@ export function applySchema(db: Database): void {
 		) STRICT
 	`);
 
-	// 14. sync_state (non-replicated, local-only)
+	// 16. sync_state (non-replicated, local-only)
 	// Migration: if old INTEGER cursors exist, migrate to TEXT HLC cursors
 	migrateSyncStateToHlc(db);
 
@@ -426,7 +442,7 @@ export function applySchema(db: Database): void {
 		) STRICT
 	`);
 
-	// 14. host_meta (non-replicated, local-only)
+	// 17. host_meta (non-replicated, local-only)
 	db.run(`
 		CREATE TABLE IF NOT EXISTS host_meta (
 			key   TEXT PRIMARY KEY,
@@ -434,7 +450,7 @@ export function applySchema(db: Database): void {
 		) STRICT
 	`);
 
-	// 15. relay_outbox (non-replicated, local-only)
+	// 18. relay_outbox (non-replicated, local-only)
 	db.run(`
 		CREATE TABLE IF NOT EXISTS relay_outbox (
 			id              TEXT PRIMARY KEY,
@@ -456,7 +472,7 @@ export function applySchema(db: Database): void {
 		WHERE delivered = 0
 	`);
 
-	// 16. relay_inbox (non-replicated, local-only)
+	// 19. relay_inbox (non-replicated, local-only)
 	db.run(`
 		CREATE TABLE IF NOT EXISTS relay_inbox (
 			id              TEXT PRIMARY KEY,
@@ -477,7 +493,7 @@ export function applySchema(db: Database): void {
 		WHERE processed = 0
 	`);
 
-	// 17. relay_cycles (non-replicated, local-only)
+	// 20. relay_cycles (non-replicated, local-only)
 	db.run(`
 		CREATE TABLE IF NOT EXISTS relay_cycles (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -647,7 +663,7 @@ export function applySchema(db: Database): void {
 		WHERE status = 'pending' AND deleted = 0 AND next_run_at IS NOT NULL
 	`);
 
-	// 19. dispatch_queue (non-replicated, local-only)
+	// 21. dispatch_queue (non-replicated, local-only)
 	// Tracks message dispatch status for event-driven conversation model.
 	// NOT a synced table — dispatch state is local coordination only.
 	db.run(`
