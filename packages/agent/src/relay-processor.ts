@@ -76,10 +76,10 @@ type RelayEntryHandler = (entry: RelayInboxEntry) => Promise<string | null>;
 
 /**
  * All request kinds that processEntry dispatches to handlers.
- * cancel and platform_deliver are excluded — cancel is handled in the first pass of processPendingEntries
- * (needs to run before other entries to abort in-flight work), and platform_deliver is no longer supported.
+ * cancel is excluded because it is handled in the first pass of processPendingEntries
+ * (needs to run before other entries to abort in-flight work).
  */
-type HandledRequestKind = Exclude<RelayRequestKind, "cancel" | "platform_deliver">;
+type HandledRequestKind = Exclude<RelayRequestKind, "cancel">;
 
 /**
  * Thrown by handlers when payload parsing fails and the handler has already
