@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertRow } from "@bound/core";
+import { insertRow, writeOutbox } from "@bound/core";
 import type { ToolDefinition } from "@bound/llm";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -27,6 +27,7 @@ export interface PlatformMcpRegistryDeps {
 	siteId: string;
 	eventBus: TypedEventEmitter;
 	logger: Logger;
+	hubSiteId?: string;
 }
 
 /**
@@ -261,11 +262,12 @@ export class PlatformMcpRegistry {
 
 		// 4. Persist as developer-role message in the event task's thread (AC1.2)
 		const now = new Date().toISOString();
+		const messageId = randomUUID();
 		insertRow(
 			this.deps.db,
 			"messages",
 			{
-				id: randomUUID(),
+				id: messageId,
 				thread_id: subscription.threadId,
 				role: "developer",
 				content: batchContent,
@@ -284,6 +286,30 @@ export class PlatformMcpRegistry {
 		// 5. Update cursor on connector handle (AC5.5)
 		const lastCursor = newEvents[newEvents.length - 1]?.cursor;
 		updateConnectorHandleCursor(this.deps.db, this.deps.siteId, subscription.handleId, lastCursor);
+
+		// 5.5. Write relay intake entry for multi-host routing (AC7.1, AC7.2)
+		if (this.deps.hubSiteId && this.deps.hubSiteId !== this.deps.siteId) {
+			// Multi-host mode: write intake for hub routing
+			writeOutbox(this.deps.db, {
+				id: randomUUID(),
+				source_site_id: this.deps.siteId,
+				target_site_id: this.deps.hubSiteId,
+				kind: "intake",
+				ref_id: null,
+				idempotency_key: `intake:${subscription.serverName}:${newEvents[0].eventId}`,
+				stream_id: null,
+				payload: JSON.stringify({
+					platform: subscription.serverName,
+					platform_event_id: newEvents[0].eventId,
+					thread_id: subscription.threadId,
+					message_id: messageId,
+					content: batchContent,
+					attachments: [],
+				}),
+				created_at: now,
+				expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+			});
+		}
 
 		// 6. Fire event trigger to wake the SPECIFIC task (AFTER commit per invariant #6)
 		// Use per-handle trigger key so only the target task wakes (not all event tasks)
