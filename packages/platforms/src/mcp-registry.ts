@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertRow } from "@bound/core";
+import type { ToolDefinition } from "@bound/llm";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -11,6 +12,7 @@ import {
 	getConnectorHandle,
 	updateConnectorHandleCursor,
 } from "./connector-handle.js";
+import { DISPATCHER_TASK_ID } from "./dispatcher.js";
 
 export interface PlatformServerEntry {
 	name: string;
@@ -25,6 +27,16 @@ export interface PlatformMcpRegistryDeps {
 	siteId: string;
 	eventBus: TypedEventEmitter;
 	logger: Logger;
+}
+
+/**
+ * Platform tool registration entry (minimal subset of RegisteredTool to avoid circular dependency).
+ * Execute returns a string result (tool output) or an error message.
+ */
+export interface PlatformRegisteredTool {
+	kind: "platform";
+	toolDefinition: ToolDefinition;
+	execute?: (input: Record<string, unknown>) => Promise<string>;
 }
 
 /** MCP Event as sent by server in notifications/events/event */
@@ -52,11 +64,13 @@ interface ActiveSubscription {
  * Creates InMemoryTransport pairs, connects clients to servers,
  * and manages the lifecycle of platform MCP connections.
  * Also manages connector handle subscriptions (push and poll modes).
+ * Also discovers and manages platform tools from MCP servers.
  */
 export class PlatformMcpRegistry {
 	private servers = new Map<string, PlatformServerEntry>();
 	private activeSubscriptions = new Map<string, ActiveSubscription>();
 	private pollTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	private platformTools = new Map<string, Map<string, PlatformRegisteredTool>>(); // serverName → toolName → PlatformRegisteredTool
 	private deps: PlatformMcpRegistryDeps;
 
 	constructor(deps: PlatformMcpRegistryDeps) {
@@ -64,8 +78,56 @@ export class PlatformMcpRegistry {
 	}
 
 	/**
+	 * Discovers tools from a connected MCP server and stores them.
+	 * Called after registerServer() connects the client.
+	 */
+	private async discoverTools(entry: PlatformServerEntry): Promise<void> {
+		try {
+			const result = await entry.client.listTools();
+			const serverTools = new Map<string, PlatformRegisteredTool>();
+
+			for (const tool of result.tools) {
+				const registeredTool: PlatformRegisteredTool = {
+					kind: "platform",
+					toolDefinition: {
+						type: "function",
+						function: {
+							name: tool.name,
+							description: tool.description ?? "",
+							parameters: tool.inputSchema as Record<string, unknown>,
+						},
+					},
+					execute: async (input: Record<string, unknown>) => {
+						const callResult = await entry.client.callTool({
+							name: tool.name,
+							arguments: input,
+						});
+						// Convert MCP tool result to string
+						// biome-ignore lint/suspicious/noExplicitAny: MCP SDK return type is any
+						const content = (callResult as any).content as Array<{ type: string; text?: string }>;
+						const textContent = content
+							.filter((c) => c.type === "text")
+							.map((c) => c.text ?? "")
+							.join("\n");
+						// biome-ignore lint/suspicious/noExplicitAny: MCP SDK return type is any
+						const isError = (callResult as any).isError ?? false;
+						return isError ? `Error: ${textContent}` : textContent || "done";
+					},
+				};
+				serverTools.set(tool.name, registeredTool);
+			}
+
+			this.platformTools.set(entry.name, serverTools);
+			this.deps.logger.info(`Discovered ${serverTools.size} tools from server '${entry.name}'`);
+		} catch (err) {
+			this.deps.logger.error(`Failed to discover tools from server '${entry.name}': ${err}`);
+		}
+	}
+
+	/**
 	 * Registers a platform MCP server and establishes an in-process connection.
 	 * Creates an InMemoryTransport pair, connects client and server.
+	 * Also discovers available tools from the server.
 	 */
 	async registerServer(name: string, server: Server): Promise<PlatformServerEntry> {
 		if (this.servers.has(name)) {
@@ -83,8 +145,9 @@ export class PlatformMcpRegistry {
 		await server.connect(serverTransport);
 		await client.connect(clientTransport);
 
-		// Register notification handler for list_changed events
-		// When MCP server emits notifications/events/list_changed, translate to internal event bus
+		// Register notification handlers for list_changed events
+		// When MCP server emits notifications/tools/list_changed or notifications/events/list_changed,
+		// translate to internal event bus and rediscover tools
 		// biome-ignore lint/suspicious/noExplicitAny: MCP SDK internals for notification handling
 		const protocol = (client as any)._protocol;
 		if (protocol) {
@@ -93,7 +156,10 @@ export class PlatformMcpRegistry {
 				method: string;
 				params: Record<string, unknown>;
 			}): Promise<void> => {
-				if (notification.method === "notifications/events/list_changed") {
+				if (notification.method === "notifications/tools/list_changed") {
+					// Rediscover tools when the list changes
+					await this.discoverTools(entry);
+				} else if (notification.method === "notifications/events/list_changed") {
 					this.deps.eventBus.emit("connector:list_changed", { server_name: name });
 				}
 				// Call original handler if it exists
@@ -113,6 +179,9 @@ export class PlatformMcpRegistry {
 
 		this.servers.set(name, entry);
 		this.deps.logger.info(`Platform MCP server '${name}' registered and connected`);
+
+		// Discover tools from the server
+		await this.discoverTools(entry);
 
 		return entry;
 	}
@@ -445,6 +514,65 @@ export class PlatformMcpRegistry {
 
 		// Store timer reference for cleanup
 		this.pollTimers.set(subscription.handleId, timer);
+	}
+
+	/**
+	 * Returns platform tools for a specific server (used for per-thread scoping).
+	 * Returns empty map if server not found.
+	 */
+	getToolsForServer(serverName: string): Map<string, PlatformRegisteredTool> {
+		return this.platformTools.get(serverName) ?? new Map();
+	}
+
+	/**
+	 * Returns ALL platform tools from ALL servers (used for dispatcher task).
+	 */
+	getAllPlatformTools(): Map<string, PlatformRegisteredTool> {
+		const all = new Map<string, PlatformRegisteredTool>();
+		for (const [_serverName, tools] of this.platformTools) {
+			for (const [toolName, tool] of tools) {
+				all.set(toolName, tool);
+			}
+		}
+		return all;
+	}
+
+	/**
+	 * Resolves which platform tools a thread should receive.
+	 * Traces: thread → task → connector_handle → server_name → tools
+	 * Returns empty map for threads not bound to any connector handle.
+	 * Implements AC3.4: scoping resolution through the handle chain.
+	 */
+	getToolsForThread(threadId: string): Map<string, PlatformRegisteredTool> {
+		// Find task that owns this thread
+		const task = this.deps.db
+			.query(
+				"SELECT id, payload FROM tasks WHERE thread_id = ? AND type = 'event' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+			)
+			.get(threadId) as { id: string; payload: string | null } | null;
+
+		if (!task) return new Map(); // AC3.3: no event task → no platform tools
+
+		// Find connector handle for this task
+		const handle = this.deps.db
+			.query("SELECT server_name FROM connector_handles WHERE task_id = ? AND deleted = 0")
+			.get(task.id) as { server_name: string } | null;
+
+		if (!handle) return new Map(); // AC3.3: no handle → no platform tools
+
+		// AC3.1: return only this server's tools
+		return this.getToolsForServer(handle.server_name);
+	}
+
+	/**
+	 * Checks if a thread belongs to the dispatcher task.
+	 * Dispatcher task receives ALL platform tools.
+	 */
+	isDispatcherThread(threadId: string): boolean {
+		const task = this.deps.db
+			.query("SELECT id FROM tasks WHERE thread_id = ? AND id = ?")
+			.get(threadId, DISPATCHER_TASK_ID) as { id: string } | null;
+		return task !== null;
 	}
 
 	/**
