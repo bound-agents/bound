@@ -1828,20 +1828,30 @@ export class AgentLoop {
 					} satisfies ClientToolCallRequest;
 
 				case "platform": {
-					// Platform tools are MCP connector tools. Convert to bash command and dispatch through sandbox.
-					// Example: discord_send_message -> `discord_send_message <json_args>`
-					if (!this.sandbox.exec) {
-						return { content: "Error: sandbox execution not available", exitCode: 1 };
+					// Platform tools call MCP client.callTool directly via execute closure.
+					// This preserves full MCP result structures and bypasses bash command parsing.
+					if (!tool.execute) {
+						return {
+							content: `Error: platform tool "${toolCall.name}" has no execute handler`,
+							exitCode: 1,
+						};
 					}
-					const command = `${toolCall.name} ${JSON.stringify(toolCall.input)}`;
-					const result = await this.sandbox.exec(command);
-					if (isRelayRequest(result)) {
-						return result;
+					try {
+						// biome-ignore lint/suspicious/noExplicitAny: tool.execute result type is either string or BuiltInToolResult
+						const result = await (tool.execute as any)(toolCall.input);
+						// Platform tools return strings, but handle both just like builtin does
+						if (Array.isArray(result)) {
+							const hasError = result.some(
+								(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
+							);
+							return { content: JSON.stringify(result), exitCode: hasError ? 1 : 0 };
+						}
+						const exitCode = result.startsWith("Error:") ? 1 : 0;
+						return { content: result, exitCode };
+					} catch (err) {
+						const errorMsg = err instanceof Error ? err.message : String(err);
+						return { content: `Error: ${errorMsg}`, exitCode: 1 };
 					}
-					return {
-						content: buildCommandOutput(result.stdout, result.stderr, result.exitCode),
-						exitCode: result.exitCode,
-					};
 				}
 
 				case "sandbox": {
