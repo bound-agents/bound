@@ -39,4 +39,11 @@ export interface EventMap {
 		toolName: string;
 		arguments: Record<string, unknown>;
 	};
+	"connector:event": {
+		trigger_key: string;
+		task_id: string;
+		handle_id: string;
+		batch_size: number;
+	};
+	"connector:list_changed": { server_name: string };
 }
