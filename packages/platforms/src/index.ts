@@ -21,3 +21,9 @@ export {
 	deleteConnectorHandle,
 } from "./connector-handle.js";
 export type { ConnectorHandleCreateParams, ConnectorHandleRecord } from "./connector-handle.js";
+export {
+	createConnectorListTool,
+	createConnectorChannelsTool,
+	createConnectorAttachTool,
+} from "./dispatcher-tools.js";
+export type { DispatcherTool, DispatcherToolContext } from "./dispatcher-tools.js";
