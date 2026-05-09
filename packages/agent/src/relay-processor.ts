@@ -14,7 +14,6 @@ import {
 	readUndelivered,
 	readUnprocessed,
 	recordRelayCycle,
-	runPostLoopDeliveryCheck,
 	writeOutbox,
 } from "@bound/core";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
@@ -24,7 +23,6 @@ import type {
 	CacheWarmPayload,
 	ErrorPayload,
 	Logger,
-	PlatformDeliverPayload,
 	ProcessPayload,
 	PromptInvokePayload,
 	RelayConfig,
@@ -46,7 +44,6 @@ import {
 	intakePayloadSchema,
 	parseJsonSafe,
 	parseJsonUntyped,
-	platformDeliverPayloadSchema,
 	processPayloadSchema,
 } from "@bound/shared";
 import {
@@ -79,10 +76,10 @@ type RelayEntryHandler = (entry: RelayInboxEntry) => Promise<string | null>;
 
 /**
  * All request kinds that processEntry dispatches to handlers.
- * cancel is excluded — it's handled in the first pass of processPendingEntries
- * (needs to run before other entries to abort in-flight work).
+ * cancel and platform_deliver are excluded — cancel is handled in the first pass of processPendingEntries
+ * (needs to run before other entries to abort in-flight work), and platform_deliver is no longer supported.
  */
-type HandledRequestKind = Exclude<RelayRequestKind, "cancel">;
+type HandledRequestKind = Exclude<RelayRequestKind, "cancel" | "platform_deliver">;
 
 /**
  * Thrown by handlers when payload parsing fails and the handler has already
@@ -165,7 +162,6 @@ export class RelayProcessor {
 		inference: (entry) => this.handleInference(entry),
 		process: (entry) => this.handleProcess(entry),
 		intake: (entry) => this.handleIntake(entry),
-		platform_deliver: (entry) => this.handlePlatformDeliver(entry),
 	};
 
 	constructor(
@@ -607,21 +603,6 @@ export class RelayProcessor {
 			expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
 		});
 
-		return null;
-	}
-
-	private async handlePlatformDeliver(entry: RelayInboxEntry): Promise<null> {
-		const payloadResult = parseJsonSafe(platformDeliverPayloadSchema, entry.payload, entry.kind);
-		if (!payloadResult.ok) {
-			this.logger.error("Invalid relay payload", {
-				kind: entry.kind,
-				error: payloadResult.error,
-				entryId: entry.id,
-			});
-			markProcessed(this.db, [entry.id]);
-			throw new PayloadParseError();
-		}
-		this.eventBus.emit("platform:deliver", payloadResult.value as PlatformDeliverPayload);
 		return null;
 	}
 
@@ -1537,7 +1518,6 @@ export class RelayProcessor {
 		} catch (err) {
 			emitStatusForward("idle", null, 0);
 			this.writeResponse(entry, "error", JSON.stringify({ error: String(err), retriable: false }));
-			this.stopTypingOnError(entry, payload);
 		}
 	}
 
@@ -1567,14 +1547,6 @@ export class RelayProcessor {
 			modelId: threadModelId,
 			shouldYield,
 		};
-
-		// Stash the connector for the post-loop delivery check so we don't
-		// look it up twice. The connector type returned by
-		// ConnectorRegistry already exposes the (optional) verifyDelivery hook
-		// used below.
-		let connectorForDelivery:
-			| ReturnType<NonNullable<ConnectorRegistry["getConnector"]>>
-			| undefined;
 
 		// NEW: MCP-based platform tools registry
 		if (payload.platform && this.platformMcpRegistry && !loopConfig.platformTools) {
@@ -1622,7 +1594,6 @@ export class RelayProcessor {
 					tools: Array.from(platformTools.keys()),
 				});
 			}
-			connectorForDelivery = connector;
 		}
 
 		const agentLoop = this.agentLoopFactory
@@ -1637,42 +1608,7 @@ export class RelayProcessor {
 					loopConfig,
 				);
 
-		// Capture turn boundary BEFORE the loop runs so verifyDelivery can
-		// scope its query to messages THIS turn produced.
-		const turnStartAt = new Date().toISOString();
 		const result = await agentLoop.run();
-
-		// Post-loop platform delivery check: when the connector implements
-		// verifyDelivery (e.g. Discord — ensures the agent actually called
-		// discord_send_message), ask whether the reply reached the user. A
-		// "missing" verdict inserts a developer-role nudge + enqueues a
-		// dispatch entry so the next turn has a chance to send. A prior
-		// nudge with a platform tombstone flips the verdict to
-		// "intentional-silence" so the agent is never nudged more than once
-		// per conversation window.
-		//
-		// This is the HUB-side counterpart to the same call in server.ts —
-		// delegated turns execute here, not in runLocalAgentLoop, so the
-		// spoke-side wiring alone does not cover them.
-		if (
-			!result.error &&
-			!result.yielded &&
-			payload.platform &&
-			connectorForDelivery?.verifyDelivery
-		) {
-			await runPostLoopDeliveryCheck({
-				db: this.db,
-				siteId: this.siteId,
-				hostName: delegatedCtx.hostName,
-				threadId: payload.thread_id,
-				turnStartAt,
-				platform: payload.platform,
-				connector: {
-					verifyDelivery: connectorForDelivery.verifyDelivery.bind(connectorForDelivery),
-				},
-				logger: this.logger,
-			});
-		}
 
 		return {
 			yielded: result.yielded,
@@ -1682,11 +1618,11 @@ export class RelayProcessor {
 	}
 
 	/**
-	 * Finalize a process relay: write the response and deliver to platform.
+	 * Finalize a process relay: write the response.
 	 */
 	private finalizeProcess(
 		entry: RelayInboxEntry,
-		payload: ProcessPayload,
+		_payload: ProcessPayload,
 		result: Record<string, unknown>,
 	): void {
 		if (result.error) {
@@ -1695,135 +1631,6 @@ export class RelayProcessor {
 		}
 
 		this.writeResponse(entry, "result", JSON.stringify({ success: true }));
-
-		const thread = this.db
-			.query<{ interface: string }, [string]>(
-				"SELECT interface FROM threads WHERE id = ? AND deleted = 0 LIMIT 1",
-			)
-			.get(payload.thread_id);
-
-		if (payload.platform) {
-			if (thread && thread.interface !== "web") {
-				this.deliverPlatformPayload(entry, {
-					platform: thread.interface,
-					thread_id: payload.thread_id,
-					message_id: payload.message_id,
-					content: "",
-				});
-			}
-		} else {
-			if (thread && thread.interface !== "web") {
-				const lastAssistant = this.db
-					.query<{ id: string; content: string }, [string]>(
-						"SELECT id, content FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC, rowid DESC LIMIT 1",
-					)
-					.get(payload.thread_id);
-
-				let textContent = "";
-				const messageId = lastAssistant?.id ?? payload.message_id;
-				if (lastAssistant) {
-					textContent = lastAssistant.content;
-					try {
-						const parsed = JSON.parse(lastAssistant.content);
-						if (Array.isArray(parsed)) {
-							textContent = parsed
-								.filter((b: { type: string; text?: string }) => b.type === "text")
-								.map((b: { text?: string }) => b.text ?? "")
-								.join("");
-						}
-					} catch {
-						// already a plain string
-					}
-				}
-
-				this.deliverPlatformPayload(entry, {
-					platform: thread.interface,
-					thread_id: payload.thread_id,
-					message_id: messageId,
-					content: textContent,
-				});
-			}
-		}
-	}
-
-	/**
-	 * Stop the typing indicator on error — emits platform:deliver with empty content.
-	 */
-	private stopTypingOnError(entry: RelayInboxEntry, payload: ProcessPayload): void {
-		if (!payload.platform) return;
-		try {
-			const errThread = this.db
-				.query<{ interface: string }, [string]>(
-					"SELECT interface FROM threads WHERE id = ? AND deleted = 0 LIMIT 1",
-				)
-				.get(payload.thread_id);
-			if (errThread && errThread.interface !== "web") {
-				this.deliverPlatformPayload(entry, {
-					platform: errThread.interface,
-					thread_id: payload.thread_id,
-					message_id: payload.message_id,
-					content: "",
-				});
-			}
-		} catch (error) {
-			this.logger.warn("Failed to stop typing indicator on error", {
-				platform: payload.platform,
-				threadId: payload.thread_id,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
-	}
-
-	/**
-	 * Delivers a platform:deliver payload either locally (if this host has the
-	 * platform connector) or via relay outbox to entry.source_site_id (the spoke
-	 * that delegated the process relay to this host).
-	 *
-	 * This handles the cross-node scenario: hub executes the agent loop but the
-	 * platform connector (e.g. Discord) lives only on the spoke. Without this
-	 * routing the platform:deliver event fires on the hub's event bus where no
-	 * connector is listening and the delivery is silently dropped.
-	 */
-	private deliverPlatformPayload(
-		entry: RelayInboxEntry,
-		deliverPayload: PlatformDeliverPayload,
-	): void {
-		// Fast path: this node has the connector locally — emit on event bus.
-		if (this.platformConnectorRegistry?.getConnector(deliverPayload.platform)) {
-			this.eventBus.emit("platform:deliver", deliverPayload);
-			return;
-		}
-
-		// No connector registry at all → single-host mode / backward compat.
-		// Emit locally so the event bus can still route to any listeners.
-		if (!this.platformConnectorRegistry) {
-			this.eventBus.emit("platform:deliver", deliverPayload);
-			return;
-		}
-
-		// Registry exists but doesn't have this platform — look up which remote
-		// host advertises it via the synced hosts.platforms column.
-		const platformHost = this.findPlatformHost(deliverPayload.platform);
-		const targetSiteId = platformHost ?? entry.source_site_id;
-		if (!targetSiteId || targetSiteId === this.siteId) {
-			// No remote host found — emit locally as last resort.
-			this.eventBus.emit("platform:deliver", deliverPayload);
-			return;
-		}
-
-		const now = new Date();
-		writeOutbox(this.db, {
-			id: randomUUID(),
-			source_site_id: this.siteId,
-			target_site_id: targetSiteId,
-			kind: "platform_deliver",
-			ref_id: entry.id,
-			idempotency_key: null,
-			stream_id: null,
-			payload: JSON.stringify(deliverPayload),
-			created_at: now.toISOString(),
-			expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
-		});
 	}
 
 	private createResultEntry(

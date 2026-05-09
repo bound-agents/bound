@@ -215,7 +215,6 @@ Press Ctrl+C to stop.
 		pruningHandle,
 		overlayHandle,
 		relayProcessorHandle,
-		platformRegistry: serverResult.platformRegistry,
 		mcpClientsMap,
 		webServer: serverResult.webServer,
 		syncServer: serverResult.syncServer,

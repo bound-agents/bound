@@ -10,7 +10,6 @@ import type {
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { type ModelsConfig, type RoutesConfig, registerRoutes } from "./routes/index";
-import { createWebhookRoutes } from "./routes/webhooks";
 
 type AssetMap = Map<string, { content: string; contentType: string }>;
 
@@ -130,9 +129,6 @@ export async function createWebApp(
 	app.route("/api/tasks", routes.tasks);
 	app.route("/api/advisories", routes.advisories);
 	app.route("/api/mcp", routes.mcp);
-
-	// Webhook routes
-	app.route("/hooks", createWebhookRoutes(eventBus));
 
 	// Serve static Svelte SPA assets
 	const assets = await loadEmbeddedAssets();

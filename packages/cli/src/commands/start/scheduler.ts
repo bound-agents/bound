@@ -31,7 +31,6 @@ export interface ShutdownHandles {
 	pruningHandle: { stop: () => void } | null;
 	overlayHandle: { stop: () => void } | null;
 	relayProcessorHandle: { stop: () => void } | null;
-	platformRegistry: { start(): void; stop(): void } | null;
 	mcpClientsMap: Map<string, MCPClient>;
 	webServer: { stop(): Promise<void> } | null;
 	syncServer: { stop(): Promise<void> } | null;
@@ -172,15 +171,6 @@ export function setupGracefulShutdown(
 				setChangelogEventBus(null);
 			}
 			if (handles.wsClient) handles.wsClient.close();
-			if (handles.platformRegistry) {
-				try {
-					handles.platformRegistry.stop();
-				} catch (err) {
-					appContext.logger.error("[platforms] Error stopping platform registry", {
-						error: err,
-					});
-				}
-			}
 			// Disconnect MCP clients
 			for (const [, client] of handles.mcpClientsMap) {
 				try {

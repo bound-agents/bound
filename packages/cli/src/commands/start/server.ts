@@ -185,12 +185,6 @@ export interface ServerResult {
 	statusForwardCache: Map<string, StatusForwardPayload>;
 	activeDelegations: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	threadExecutor: ThreadExecutor;
-	platformRegistry: {
-		start(): void;
-		stop(): void;
-		notifyLoopComplete?(threadId: string): void;
-		getRegisteredPlatforms(): string[];
-	} | null;
 	platformMcpRegistry: PlatformMcpRegistry | null;
 	wsTransportHolder: {
 		addPeer: (
@@ -289,9 +283,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	// Wire the executor into the relay processor for Discord/platform process relays.
 	relayProcessor.setThreadExecutor(threadExecutor);
 
-	// Platform registry — declared here so message:created handler can reference it,
+	// MCP platform registry — declared here so message:created handler can reference it,
 	// populated in the platform connectors section below.
-	let platformRegistry: ServerResult["platformRegistry"] = null;
 	let platformMcpRegistry: PlatformMcpRegistry | null = null;
 
 	try {
@@ -579,30 +572,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 									}
 								}
 
-								// LEGACY: Old platform connector registry path
-								if (!platformTools && platformRegistry) {
-									const connector = (
-										platformRegistry as {
-											getConnector?(p: string): {
-												getPlatformTools?(
-													threadId: string,
-													readFileFn?: (path: string) => Promise<Uint8Array>,
-												): AgentLoopConfig["platformTools"];
-												verifyDelivery?: DeliveryCheckConnector["verifyDelivery"];
-											} | null;
-										}
-									).getConnector?.(threadInterface);
-									if (connector?.getPlatformTools) {
-										platformTools = connector.getPlatformTools(thread_id);
-									}
-									// Stash the connector for the post-loop delivery check so
-									// we don't look it up twice per turn.
-									if (connector?.verifyDelivery) {
-										deliveryCheckConnector = {
-											verifyDelivery: connector.verifyDelivery.bind(connector),
-										};
-									}
-								}
 								platformConfig = {
 									platform: threadInterface,
 									platformTools,
@@ -749,11 +718,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 									error: formatError(err),
 								}),
 							);
-					}
-
-					// Notify platform connectors that the loop iteration is done
-					if (platformRegistry?.notifyLoopComplete) {
-						platformRegistry.notifyLoopComplete(thread_id);
 					}
 				},
 			);
@@ -931,7 +895,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	// 13. Platform connectors (if configured)
 	const platformsResult = appContext.optionalConfig.platforms;
 	if (platformsResult?.ok) {
-		const { PlatformConnectorRegistry } = await import("@bound/platforms");
 		const platformsConfig = platformsResult.value as import("@bound/shared").PlatformsConfig;
 
 		// TASK 1: Bootstrap PlatformMcpRegistry
@@ -997,36 +960,16 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		relayProcessor.setPlatformMcpRegistry(platformMcpRegistry);
 		appContext.logger.info("[platforms-mcp] Relay processor wired");
 
-		// Keep old platform registry for backward compatibility (Phase 7 will remove)
-		platformRegistry = new PlatformConnectorRegistry(appContext, platformsConfig);
-		platformRegistry.start();
-		// Wire into relay processor for platform-context process relays.
-		// PlatformConnectorRegistry structurally satisfies the minimal ConnectorRegistry interface
-		// (has getConnector method with compatible signature).
-		relayProcessor.setPlatformConnectorRegistry(
-			platformRegistry as unknown as Parameters<
-				typeof relayProcessor.setPlatformConnectorRegistry
-			>[0],
-		);
-		appContext.logger.info("[platforms] Platform connector registry started");
-
-		// Collect platform names from old registry, including those created implicitly by compound connectors
-		// (e.g. "discord-interaction" alongside "discord")
-		const oldPlatformNames = platformRegistry.getRegisteredPlatforms();
-
-		// Merge both platform sets and advertise in hosts.platforms for relay platform affinity routing
-		const allPlatforms = [...new Set([...platformNames, ...oldPlatformNames])];
-		if (allPlatforms.length > 0) {
+		// Advertise platform names in hosts.platforms for relay platform affinity routing
+		if (platformNames.length > 0) {
 			updateRow(
 				appContext.db,
 				"hosts",
 				appContext.siteId,
-				{ platforms: JSON.stringify(allPlatforms) },
+				{ platforms: JSON.stringify(platformNames) },
 				appContext.siteId,
 			);
-			appContext.logger.info(
-				`[platforms] Advertised platforms: ${allPlatforms.join(", ")} (${platformNames.length} from MCP, ${oldPlatformNames.length} from legacy)`,
-			);
+			appContext.logger.info(`[platforms] Advertised platforms: ${platformNames.join(", ")}`);
 		}
 	} else {
 		appContext.logger.info("[platforms] Not configured (no platforms.json)");
@@ -1038,7 +981,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		statusForwardCache,
 		activeDelegations,
 		threadExecutor,
-		platformRegistry,
 		platformMcpRegistry,
 		wsTransportHolder,
 	};
