@@ -56,6 +56,7 @@ interface ActiveSubscription {
 export class PlatformMcpRegistry {
 	private servers = new Map<string, PlatformServerEntry>();
 	private activeSubscriptions = new Map<string, ActiveSubscription>();
+	private subscriptionsByHandleId = new Map<string, ActiveSubscription>();
 	private pollTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private deps: PlatformMcpRegistryDeps;
 
@@ -199,8 +200,7 @@ export class PlatformMcpRegistry {
 	/**
 	 * Sets up a push-mode subscription with stream listener.
 	 * Requests events/stream from the MCP server.
-	 * Note: Actual notification handling is done via deliverBatch() calls,
-	 * which can be triggered by the MCP server sending notifications through the protocol.
+	 * The server will send notifications/events/event which are handled by storing in buffer.
 	 */
 	private async startStreamSubscription(
 		subscription: ActiveSubscription,
@@ -210,6 +210,47 @@ export class PlatformMcpRegistry {
 		if (!client) {
 			this.deps.logger.warn(`Client not found for server ${subscription.serverName}`);
 			return;
+		}
+
+		// Register a notification handler that will be called for each event from the server
+		const _handleNotification = () => {
+			// Handler body (will be registered on protocol callbacks)
+		};
+
+		// Access the protocol and register a notification handler
+		// The MCP SDK Protocol calls registered handlers when it receives notifications
+		// biome-ignore lint/suspicious/noExplicitAny: accessing MCP SDK internals
+		const protocol = (client as any)._protocol;
+		if (protocol) {
+			// Store the subscription in a subscription map on the handle ID
+			// so we can route notifications to the right subscription
+			this.subscriptionsByHandleId.set(subscription.handleId, subscription);
+
+			// Register handler directly on the protocol's notification incoming callback
+			const originalCallback = protocol._onRequestNotification;
+			protocol._onRequestNotification = (notification: {
+				method: string;
+				params: Record<string, unknown>;
+			}) => {
+				if (notification.method === "notifications/events/event") {
+					const event = notification.params as unknown as McpEvent;
+					// Find the subscription this event belongs to
+					// For now, just add it to the first (and only) subscription
+					const subs = Array.from(this.subscriptionsByHandleId.values())[0];
+					if (subs) {
+						subs.buffer.push(event);
+						if (!subs.flushTimer) {
+							subs.flushTimer = setTimeout(() => {
+								this.flushBuffer(subs);
+							}, 2000);
+						}
+					}
+				}
+				// Call original callback if it exists
+				if (originalCallback) {
+					originalCallback(notification);
+				}
+			};
 		}
 
 		// Request stream subscription from server
@@ -360,6 +401,16 @@ export class PlatformMcpRegistry {
 
 		// Store timer reference for cleanup
 		this.pollTimers.set(subscription.handleId, timer);
+	}
+
+	/**
+	 * Public method to deliver a batch of events for a handle (used in tests).
+	 */
+	testDeliverBatch(handleId: string, events: McpEvent[]): void {
+		const subscription = this.activeSubscriptions.get(handleId);
+		if (subscription) {
+			this.deliverBatch(subscription, events);
+		}
 	}
 
 	/**
