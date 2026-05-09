@@ -940,6 +940,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			siteId: appContext.siteId,
 			eventBus: appContext.eventBus,
 			logger: appContext.logger,
+			hubSiteId,
 		});
 		appContext.logger.info("[platforms-mcp] MCP registry initialized");
 
@@ -976,29 +977,21 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 		// Use PlatformLeaderElection to gate subscription management
 		// Non-leader hosts have the registry but with no subscriptions (AC6.2)
-		const leaderElection = new PlatformLeaderElection(
-			mcpLeaderAdapter,
-			platformsConfig.connectors[0],
-			appContext.db,
-			appContext.siteId,
-		);
-		await leaderElection.start();
-		appContext.logger.info("[platforms-mcp] Leader election started");
-
-		// Advertise platforms from MCP registry to hosts table for relay platform affinity routing (AC6.5)
-		const platformNames = platformMcpRegistry.getServerNames();
-		if (platformNames.length > 0) {
-			updateRow(
+		if (platformsConfig.connectors.length > 0) {
+			const leaderElection = new PlatformLeaderElection(
+				mcpLeaderAdapter,
+				platformsConfig.connectors[0],
 				appContext.db,
-				"hosts",
-				appContext.siteId,
-				{ platforms: JSON.stringify(platformNames) },
 				appContext.siteId,
 			);
-			appContext.logger.info(
-				`[platforms-mcp] Advertised MCP platforms: ${platformNames.join(", ")}`,
-			);
+			await leaderElection.start();
+			appContext.logger.info("[platforms-mcp] Leader election started");
+		} else {
+			appContext.logger.info("[platforms-mcp] No connectors configured, skipping leader election");
 		}
+
+		// Collect platform names from MCP registry (AC6.5)
+		const platformNames = platformMcpRegistry.getServerNames();
 
 		// TASK 3: Wire relay processor to use new registry (AC7.3)
 		relayProcessor.setPlatformMcpRegistry(platformMcpRegistry);
@@ -1017,20 +1010,23 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		);
 		appContext.logger.info("[platforms] Platform connector registry started");
 
-		// Advertise all registered platform names in hosts.platforms, including
-		// those created implicitly by compound connectors (e.g. "discord-interaction"
-		// alongside "discord"). Without this, relay intake routing via
-		// findPlatformHost() cannot match compound connector platforms.
+		// Collect platform names from old registry, including those created implicitly by compound connectors
+		// (e.g. "discord-interaction" alongside "discord")
 		const oldPlatformNames = platformRegistry.getRegisteredPlatforms();
-		if (oldPlatformNames.length > 0) {
+
+		// Merge both platform sets and advertise in hosts.platforms for relay platform affinity routing
+		const allPlatforms = [...new Set([...platformNames, ...oldPlatformNames])];
+		if (allPlatforms.length > 0) {
 			updateRow(
 				appContext.db,
 				"hosts",
 				appContext.siteId,
-				{ platforms: JSON.stringify(oldPlatformNames) },
+				{ platforms: JSON.stringify(allPlatforms) },
 				appContext.siteId,
 			);
-			appContext.logger.info(`[platforms] Advertised platforms: ${oldPlatformNames.join(", ")}`);
+			appContext.logger.info(
+				`[platforms] Advertised platforms: ${allPlatforms.join(", ")} (${platformNames.length} from MCP, ${oldPlatformNames.length} from legacy)`,
+			);
 		}
 	} else {
 		appContext.logger.info("[platforms] Not configured (no platforms.json)");
