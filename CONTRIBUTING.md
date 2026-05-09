@@ -63,7 +63,7 @@ packages/
   sandbox/      Virtual filesystem (InMemoryFs/ClusterFs), command framework
   llm/          Driver shims (Bedrock, OpenAI-compatible) over Vercel AI SDK
   agent/        Agent loop, 8-stage context pipeline, commands, scheduler, MCP bridge
-  platforms/    PlatformConnector framework (Discord, webhook)
+  platforms/    MCP-based platform connectors (Discord), connector handles, dispatcher
   web/          Hono API + Svelte 5 SPA
   client/       BoundClient (HTTP + WS) for external consumers
   mcp-server/   Standalone stdio MCP server (bound-mcp)
@@ -105,7 +105,8 @@ These rules exist because violating them has historically caused real production
 
 ```
 users, threads, messages, semantic_memory, tasks, files, hosts,
-overlay_index, cluster_config, advisories, skills, memory_edges, turns
+overlay_index, cluster_config, advisories, skills, memory_edges,
+connector_handles, turns
 ```
 
 The source-of-truth type is `SyncedTableName` in `packages/shared/src/types.ts`. Writes bypassing the outbox never generate a `change_log` entry, so other hosts never learn about them.
