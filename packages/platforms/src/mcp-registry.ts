@@ -83,6 +83,26 @@ export class PlatformMcpRegistry {
 		await server.connect(serverTransport);
 		await client.connect(clientTransport);
 
+		// Register notification handler for list_changed events
+		// When MCP server emits notifications/events/list_changed, translate to internal event bus
+		// biome-ignore lint/suspicious/noExplicitAny: MCP SDK internals for notification handling
+		const protocol = (client as any)._protocol;
+		if (protocol) {
+			const originalHandler = protocol._onNotification;
+			protocol._onNotification = async (notification: {
+				method: string;
+				params: Record<string, unknown>;
+			}): Promise<void> => {
+				if (notification.method === "notifications/events/list_changed") {
+					this.deps.eventBus.emit("connector:list_changed", { server_name: name });
+				}
+				// Call original handler if it exists
+				if (originalHandler) {
+					await originalHandler(notification);
+				}
+			};
+		}
+
 		const entry: PlatformServerEntry = {
 			name,
 			server,
@@ -441,4 +461,28 @@ export class PlatformMcpRegistry {
 			await this.unregisterServer(name);
 		}
 	}
+}
+
+/**
+ * Helper function to register scheduler event listeners for connector notifications.
+ * Call this during startup to wire the event bus to the scheduler.
+ * The scheduler.onEvent() method will match event tasks by their trigger_spec.
+ *
+ * @param eventBus - The TypedEventEmitter from AppContext
+ * @param scheduler - The task scheduler instance
+ */
+export function registerConnectorEventListeners(
+	eventBus: TypedEventEmitter,
+	scheduler: { onEvent: (eventType: string, payload: Record<string, unknown>) => void },
+): void {
+	// Dispatcher wakes on connector:list_changed from any server
+	eventBus.on("connector:list_changed", (payload) => {
+		scheduler.onEvent("connector:list_changed", payload);
+	});
+
+	// Per-handle event tasks wake with per-handle trigger keys (e.g., "connector:event:handle_id")
+	eventBus.on("connector:event", (payload) => {
+		// Route to the specific task using the per-handle trigger key
+		scheduler.onEvent(payload.trigger_key, payload);
+	});
 }
