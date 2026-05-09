@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { sniffImageMediaType } from "@bound/llm";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ChannelType } from "discord.js";
 import { z } from "zod";
 
@@ -54,20 +54,12 @@ export function createDiscordServer(
 	config: PlatformConnectorConfig,
 	client: DiscordClient,
 	logger: Logger,
-): Server {
-	const server = new Server({
+): McpServer {
+	const mcpServer = new McpServer({
 		name: "discord-mcp",
 		version: "1.0.0",
 	});
-
-	// Try to register capabilities after instantiation
-	if (server.registerCapabilities) {
-		server.registerCapabilities({
-			tools: {
-				listChanged: false,
-			},
-		});
-	}
+	const server = mcpServer.server;
 
 	// Internal state
 	let nextCursor = 1;
@@ -77,7 +69,8 @@ export function createDiscordServer(
 	const recentMessageIds = new Set<string>();
 	const seenChannelIds = new Set<string>(); // Track new DM channels for list_changed events
 
-	// Define Zod schemas for requests
+	// events/* are bound-specific; not in the MCP SDK schema set, so we declare them here.
+	// All other request/notification types use SDK-provided schemas via registerTool.
 	const eventsListSchema = z.object({ method: z.literal("events/list") });
 	const eventsStreamSchema = z.object({
 		method: z.literal("events/stream"),
@@ -93,14 +86,6 @@ export function createDiscordServer(
 			event: z.string(),
 			params: z.record(z.string(), z.unknown()).optional(),
 			cursor: z.string().optional(),
-		}),
-	});
-	const toolsListSchema = z.object({ method: z.literal("tools/list") });
-	const toolsCallSchema = z.object({
-		method: z.literal("tools/call"),
-		params: z.object({
-			name: z.string(),
-			arguments: z.record(z.string(), z.unknown()).optional(),
 		}),
 	});
 
@@ -283,75 +268,18 @@ export function createDiscordServer(
 		};
 	});
 
-	// Handle tools/list request
-	server.setRequestHandler(toolsListSchema, async () => {
-		return {
-			tools: [
-				{
-					name: "discord_send_message",
-					description: "Send a message to a Discord DM channel. Messages > 2000 chars are chunked.",
-					inputSchema: {
-						type: "object",
-						properties: {
-							channel_id: {
-								type: "string",
-								description: "The Discord channel ID to send to",
-							},
-							content: {
-								type: "string",
-								description: "Message content (will be chunked if > 2000 chars)",
-							},
-						},
-						required: ["channel_id", "content"],
-					},
-				},
-				{
-					name: "discord_respond_interaction",
-					description: "Respond to a Discord interaction by editing the ephemeral reply",
-					inputSchema: {
-						type: "object",
-						properties: {
-							callback_id: {
-								type: "string",
-								description: "The interaction callback ID from the event data",
-							},
-							content: {
-								type: "string",
-								description: "Response content (max 2000 chars, will be truncated)",
-							},
-						},
-						required: ["callback_id", "content"],
-					},
-				},
-			],
-		};
-	});
-
-	// Handle tools/call request
-	server.setRequestHandler(toolsCallSchema, async (request) => {
-		const params = request.params || {};
-		const name = params.name as string;
-		const args = (params.arguments as Record<string, unknown>) || {};
-
-		if (name === "discord_send_message") {
-			const channelId = args.channel_id as string | undefined;
-			const content = args.content as string | undefined;
-
-			if (!channelId || typeof channelId !== "string") {
-				return {
-					content: [{ type: "text", text: "Error: channel_id is required and must be a string" }],
-					isError: true,
-				};
-			}
-			if (!content || typeof content !== "string") {
-				return {
-					content: [{ type: "text", text: "Error: content is required and must be a string" }],
-					isError: true,
-				};
-			}
-
+	mcpServer.registerTool(
+		"discord_send_message",
+		{
+			description: "Send a message to a Discord DM channel. Messages > 2000 chars are chunked.",
+			inputSchema: {
+				channel_id: z.string().describe("The Discord channel ID to send to"),
+				content: z.string().describe("Message content (will be chunked if > 2000 chars)"),
+			},
+		},
+		async ({ channel_id, content }) => {
 			try {
-				const channel = await client.channels.fetch(channelId);
+				const channel = await client.channels.fetch(channel_id);
 				if (!channel || !channel.isDMBased()) {
 					return {
 						content: [{ type: "text", text: "Error: channel not found or not a DM" }],
@@ -359,11 +287,9 @@ export function createDiscordServer(
 					};
 				}
 
-				// Start typing indicator
 				const dmChannel = channel as DiscordMessage["channel"];
 				await (dmChannel as { sendTyping(): Promise<void> }).sendTyping();
 
-				// Chunk message at 2000 character boundaries
 				const chunks = chunkMessage(content);
 				const sendableChannel = channel as { send(content: string): Promise<unknown> };
 				for (const chunk of chunks) {
@@ -380,20 +306,20 @@ export function createDiscordServer(
 					isError: true,
 				};
 			}
-		}
+		},
+	);
 
-		if (name === "discord_respond_interaction") {
-			const callbackId = args.callback_id as string | undefined;
-			let responseContent = args.content as string | undefined;
-
-			if (!callbackId || typeof callbackId !== "string") {
-				return {
-					content: [{ type: "text", text: "Error: callback_id is required and must be a string" }],
-					isError: true,
-				};
-			}
-
-			const storedData = interactionStore.get(callbackId);
+	mcpServer.registerTool(
+		"discord_respond_interaction",
+		{
+			description: "Respond to a Discord interaction by editing the ephemeral reply",
+			inputSchema: {
+				callback_id: z.string().describe("The interaction callback ID from the event data"),
+				content: z.string().describe("Response content (max 2000 chars, will be truncated)"),
+			},
+		},
+		async ({ callback_id, content }) => {
+			const storedData = interactionStore.get(callback_id);
 			if (!storedData) {
 				return {
 					content: [{ type: "text", text: "Error: interaction not found or expired" }],
@@ -401,30 +327,23 @@ export function createDiscordServer(
 				};
 			}
 
-			// Check TTL
 			const ttl = 14 * 60 * 1000; // 14 minutes
 			if (Date.now() - storedData.createdAt > ttl) {
-				interactionStore.delete(callbackId);
+				interactionStore.delete(callback_id);
 				return {
 					content: [{ type: "text", text: "Error: interaction not found or expired" }],
 					isError: true,
 				};
 			}
 
-			// Truncate to 2000 chars
-			if (!responseContent) {
-				responseContent = "";
-			}
-			if (responseContent.length > 2000) {
-				responseContent = responseContent.slice(0, 2000);
-			}
+			const responseContent = content.length > 2000 ? content.slice(0, 2000) : content;
 
 			try {
 				const editableInteraction = storedData.interaction as DiscordInteraction & {
 					editReply(options: { content: string }): Promise<unknown>;
 				};
 				await editableInteraction.editReply({ content: responseContent });
-				interactionStore.delete(callbackId);
+				interactionStore.delete(callback_id);
 				return {
 					content: [{ type: "text", text: "sent" }],
 				};
@@ -435,13 +354,8 @@ export function createDiscordServer(
 					isError: true,
 				};
 			}
-		}
-
-		return {
-			content: [{ type: "text", text: `Unknown tool: ${name}` }],
-			isError: true,
-		};
-	});
+		},
+	);
 
 	// Setup Discord client listeners
 	setupDiscordListeners(
@@ -456,13 +370,13 @@ export function createDiscordServer(
 	);
 
 	// Cleanup on server close
-	const originalClose = server.close.bind(server);
-	server.close = async (...args) => {
+	const originalClose = mcpServer.close.bind(mcpServer);
+	mcpServer.close = async (...args) => {
 		clearInterval(interactionCleanupInterval);
 		return originalClose(...args);
 	};
 
-	return server;
+	return mcpServer;
 }
 
 /**
