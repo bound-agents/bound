@@ -30,6 +30,12 @@ import {
 	writeOutbox,
 } from "@bound/core";
 import type { ModelBackendsConfig, ModelRouter } from "@bound/llm";
+import type { PlatformMcpRegistry } from "@bound/platforms";
+import {
+	createConnectorAttachTool,
+	createConnectorChannelsTool,
+	createConnectorListTool,
+} from "@bound/platforms";
 import type { KeyringConfig, Logger, ProcessPayload, StatusForwardPayload } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 import type { KeyManager, RelayExecutor } from "@bound/sync";
@@ -182,6 +188,7 @@ export interface ServerResult {
 		notifyLoopComplete?(threadId: string): void;
 		getRegisteredPlatforms(): string[];
 	} | null;
+	platformMcpRegistry: PlatformMcpRegistry | null;
 	wsTransportHolder: {
 		addPeer: (
 			siteId: string,
@@ -223,6 +230,7 @@ export interface ServerDeps {
 	/** RelayProcessor to wire platform connector registry into. */
 	relayProcessor: {
 		setPlatformConnectorRegistry(registry: unknown): void;
+		setPlatformMcpRegistry(registry: PlatformMcpRegistry): void;
 		setAgentLoopFactory(factory: AgentLoopFactory): void;
 		setThreadExecutor(executor: ThreadExecutor): void;
 	};
@@ -281,6 +289,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	// Platform registry — declared here so message:created handler can reference it,
 	// populated in the platform connectors section below.
 	let platformRegistry: ServerResult["platformRegistry"] = null;
+	const platformMcpRegistry: PlatformMcpRegistry | null = null;
 
 	try {
 		const modelBackends = appContext.config.modelBackends;
@@ -504,7 +513,71 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							let deliveryCheckConnector: DeliveryCheckConnector | undefined;
 							if (threadInterface && isUserFacingInterface(threadInterface)) {
 								let platformTools: AgentLoopConfig["platformTools"] | undefined;
-								if (platformRegistry) {
+
+								// NEW: MCP-based platform tools registry
+								// Note: platformMcpRegistry is wired in from outside during Phase 6,
+								// so this block is guarded and intentionally inert during Phase 5.
+								if (platformMcpRegistry) {
+									const registry: PlatformMcpRegistry = platformMcpRegistry;
+									if (registry.isDispatcherThread(thread_id)) {
+										// AC3.2: Dispatcher gets ALL platform tools
+										const mcpTools = registry.getAllPlatformTools();
+
+										// Dispatcher also gets dispatcher-specific tools
+										const dispatcherCtx = {
+											registry,
+											db: appContext.db,
+											siteId: appContext.siteId,
+										};
+										const dispatcherTools = [
+											createConnectorListTool(dispatcherCtx),
+											createConnectorChannelsTool(dispatcherCtx),
+											createConnectorAttachTool(dispatcherCtx),
+										];
+
+										// Convert PlatformRegisteredTool to platformTools format
+										if (mcpTools.size > 0 || dispatcherTools.length > 0) {
+											platformTools = new Map();
+											for (const [name, tool] of mcpTools) {
+												platformTools.set(name, {
+													toolDefinition: tool.toolDefinition,
+													execute: async (input: Record<string, unknown>) => {
+														const result = tool.execute ? await tool.execute(input) : "done";
+														return typeof result === "string" ? result : JSON.stringify(result);
+													},
+												});
+											}
+											for (const tool of dispatcherTools) {
+												platformTools.set(tool.toolDefinition.function.name, {
+													toolDefinition: tool.toolDefinition,
+													execute:
+														tool.execute ||
+														(async () => {
+															return "done";
+														}),
+												});
+											}
+										}
+									} else {
+										// AC3.4: Trace thread → task → handle → server → tools
+										const mcpTools = registry.getToolsForThread(thread_id);
+										if (mcpTools.size > 0) {
+											platformTools = new Map();
+											for (const [name, tool] of mcpTools) {
+												platformTools.set(name, {
+													toolDefinition: tool.toolDefinition,
+													execute: async (input: Record<string, unknown>) => {
+														const result = tool.execute ? await tool.execute(input) : "done";
+														return typeof result === "string" ? result : JSON.stringify(result);
+													},
+												});
+											}
+										}
+									}
+								}
+
+								// LEGACY: Old platform connector registry path
+								if (!platformTools && platformRegistry) {
 									const connector = (
 										platformRegistry as {
 											getConnector?(p: string): {
@@ -895,6 +968,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		activeDelegations,
 		threadExecutor,
 		platformRegistry,
+		platformMcpRegistry,
 		wsTransportHolder,
 	};
 }
