@@ -13,7 +13,7 @@ import { resolve } from "node:path";
 function runGrep(pattern: string): string {
 	try {
 		const result = execSync(
-			`grep -r "${pattern}" packages/ --include="*.ts" --exclude-dir=node_modules --exclude-dir=__tests__ 2>/dev/null || true`,
+			`grep -r "${pattern}" packages/ --include="*.ts" --exclude-dir=node_modules --exclude-dir=__tests__ --exclude-dir=dist 2>/dev/null || true`,
 			{
 				encoding: "utf-8",
 				cwd: resolve(__dirname, "../../../.."),
