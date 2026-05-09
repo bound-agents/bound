@@ -522,8 +522,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								detail: null,
 							});
 
-							// Capture turn boundary BEFORE the loop runs so verifyDelivery
-							// can scope its tool_call query to messages this turn produced.
+							// Capture turn boundary for metrics recording and context tracking.
 							const turnStartAt = new Date().toISOString();
 
 							const { agentResult: result } = await runLocalAgentLoop({
@@ -817,10 +816,25 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			delivery: "broadcast" as const,
 			async connect() {
 				appContext.logger.info(
-					"[platforms-mcp] Leader election: connect() — reconstituting subscriptions",
+					"[platforms-mcp] Leader election: connect() — creating Discord servers",
 				);
+
+				// Create Discord.js clients and register MCP servers for each connector
+				if (platformMcpRegistry) {
+					const { setupDiscordServers } = await import("@bound/platforms");
+					for (const connectorConfig of platformsConfig.connectors) {
+						try {
+							await setupDiscordServers(connectorConfig, platformMcpRegistry, appContext.logger);
+						} catch (err) {
+							appContext.logger.warn(
+								`[platforms-mcp] Could not setup server for '${connectorConfig.platform}': ${err}`,
+							);
+							// Continue with next connector on error
+						}
+					}
+				}
+
 				// On leadership gain: reconnect all subscriptions from DB (AC6.3 — failover recovery)
-				// Servers are already registered by now; we just need to resume subscriptions
 				await platformMcpRegistry?.reconnectAll();
 				appContext.logger.info("[platforms-mcp] All subscriptions reconnected");
 			},
