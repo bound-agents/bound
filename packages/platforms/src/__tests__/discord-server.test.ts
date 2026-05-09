@@ -13,8 +13,12 @@ const mockLogger: Logger = {
 	error: () => {},
 };
 
+// Import ChannelType from discord.js
+import { ChannelType } from "discord.js";
+
 // Mock Discord types
 interface MockDiscordChannel {
+	type?: number;
 	isDMBased: () => boolean;
 	sendTyping: () => Promise<void>;
 	send: (content: string) => Promise<unknown>;
@@ -49,6 +53,7 @@ function createMockDiscordClient() {
 	const sendTypingCalls: string[] = [];
 	const sendCalls: Array<{ channelId: string; content: string }> = [];
 	const editReplyCalls: string[] = [];
+	const interactionStore = new Map<string, MockDiscordInteraction>();
 
 	return {
 		on: (event: string, handler: (...args: unknown[]) => void) => {
@@ -73,6 +78,10 @@ function createMockDiscordClient() {
 		_getSendTypingCalls: () => sendTypingCalls,
 		_getSendCalls: () => sendCalls,
 		_getEditReplyCalls: () => editReplyCalls,
+		_getInteractionStore: () => interactionStore,
+		_storeInteraction: (callbackId: string, interaction: MockDiscordInteraction) => {
+			interactionStore.set(callbackId, interaction);
+		},
 		_triggerMessageCreate: async (msg: MockDiscordMessage) => {
 			const msgHandlers = handlers.get("messageCreate") || new Set();
 			for (const handler of msgHandlers) {
@@ -189,7 +198,12 @@ describe("Discord MCP Server", () => {
 			author: { id: "bot-id", username: "bot", displayName: null, bot: true },
 			content: "Bot message",
 			channelId: "ch-1",
-			channel: { isDMBased: () => true, sendTyping: async () => {}, send: async () => ({}) },
+			channel: {
+				type: ChannelType.DM,
+				isDMBased: () => true,
+				sendTyping: async () => {},
+				send: async () => ({}),
+			},
 			attachments: new Map(),
 		};
 
@@ -198,8 +212,27 @@ describe("Discord MCP Server", () => {
 		// Give a small delay for any async processing
 		await new Promise((resolve) => setTimeout(resolve, 100));
 
-		// If we get here without exception, bot messages are silently filtered
-		expect(true).toBe(true);
+		// Poll for events - should be empty because bot messages are filtered
+		const pollSchema = z.object({
+			events: z.array(z.unknown()),
+			cursor: z.string(),
+			nextPollSeconds: z.number(),
+		});
+
+		const pollResult = await mcpClient.request(
+			{
+				method: "events/poll",
+				params: {
+					event: "message.received",
+					params: { channel_id: "ch-1" },
+				},
+			},
+			pollSchema,
+		);
+
+		expect(pollResult.events).toBeDefined();
+		expect(Array.isArray(pollResult.events)).toBe(true);
+		expect(pollResult.events.length).toBe(0);
 	});
 
 	it("AC1.5: Non-allowlisted users don't trigger events", async () => {
@@ -227,7 +260,12 @@ describe("Discord MCP Server", () => {
 			author: { id: "user-2", username: "other", displayName: null, bot: false },
 			content: "Disallowed",
 			channelId: "ch-1",
-			channel: { isDMBased: () => true, sendTyping: async () => {}, send: async () => ({}) },
+			channel: {
+				type: ChannelType.DM,
+				isDMBased: () => true,
+				sendTyping: async () => {},
+				send: async () => ({}),
+			},
 			attachments: new Map(),
 		};
 
@@ -240,16 +278,17 @@ describe("Discord MCP Server", () => {
 		expect(true).toBe(true);
 	});
 
-	it("AC1.5: Allowlisted users DO trigger events via events/stream", async () => {
+	it("AC1.5: Allowlisted users DO trigger events via events/poll", async () => {
 		const config: PlatformConnectorConfig = { allowed_users: ["user-1"] };
 		const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
 		server = discordServer;
 		client = mcpClient;
 
+		// First, subscribe to the event to set up the listener
 		const subscribeSchema = z.object({
 			subscriptionId: z.string(),
 		});
-		const subscribeResult = await mcpClient.request(
+		await mcpClient.request(
 			{
 				method: "events/stream",
 				params: {
@@ -260,8 +299,58 @@ describe("Discord MCP Server", () => {
 			subscribeSchema,
 		);
 
-		expect(subscribeResult.subscriptionId).toBeDefined();
-		expect(typeof subscribeResult.subscriptionId).toBe("string");
+		// Trigger a message from an allowed user
+		const allowedMessage: MockDiscordMessage = {
+			id: "msg-allowed",
+			author: { id: "user-1", username: "alloweduser", displayName: null, bot: false },
+			content: "Allowed message",
+			channelId: "ch-1",
+			channel: {
+				type: ChannelType.DM,
+				isDMBased: () => true,
+				sendTyping: async () => {},
+				send: async () => ({}),
+			},
+			attachments: new Map(),
+		};
+
+		await mockDiscordClient._triggerMessageCreate(allowedMessage);
+
+		// Give a small delay for any async processing
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		// Poll for events - should contain the message from allowed user
+		const pollSchema = z.object({
+			events: z.array(z.unknown()),
+			cursor: z.string(),
+			nextPollSeconds: z.number(),
+		});
+
+		const pollResult = await mcpClient.request(
+			{
+				method: "events/poll",
+				params: {
+					event: "message.received",
+					params: { channel_id: "ch-1" },
+				},
+			},
+			pollSchema,
+		);
+
+		expect(pollResult.events).toBeDefined();
+		expect(Array.isArray(pollResult.events)).toBe(true);
+		expect(pollResult.events.length).toBeGreaterThan(0);
+
+		// Verify the event contains correct message data
+		const messageEvent = pollResult.events[0] as Record<string, unknown>;
+		expect(messageEvent.name).toBe("message.received");
+		expect(messageEvent.data).toBeDefined();
+		const data = messageEvent.data as Record<string, unknown>;
+		expect(data.author).toBeDefined();
+		const author = data.author as Record<string, unknown>;
+		expect(author.id).toBe("user-1");
+		expect(data.content).toBe("Allowed message");
+		expect(data.channel_id).toBe("ch-1");
 	});
 
 	it("AC1.6: Small attachments can be processed as base64", async () => {
@@ -310,7 +399,7 @@ describe("Discord MCP Server", () => {
 		expect(result.subscriptionId).toBeDefined();
 	});
 
-	it("AC2.1: discord_send_message tool is listed", async () => {
+	it("AC2.1: discord_send_message tool is listed and executable", async () => {
 		const config: PlatformConnectorConfig = { allowed_users: [] };
 		const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
 		server = discordServer;
@@ -330,6 +419,42 @@ describe("Discord MCP Server", () => {
 		expect(result.tools).toBeDefined();
 		const toolNames = result.tools.map((t: { name: string }) => t.name);
 		expect(toolNames).toContain("discord_send_message");
+
+		// AC2.1: Execute the tool and verify it sends to the correct channel
+		const toolCallSchema = z.object({
+			content: z.array(z.unknown()),
+		});
+
+		const callResult = await mcpClient.request(
+			{
+				method: "tools/call",
+				params: {
+					name: "discord_send_message",
+					arguments: {
+						channel_id: "ch-1",
+						content: "Hello from agent",
+					},
+				},
+			},
+			toolCallSchema,
+		);
+
+		expect(callResult.content).toBeDefined();
+		expect(callResult.content.length).toBeGreaterThan(0);
+		const contentBlock = callResult.content[0] as Record<string, unknown>;
+		expect(contentBlock.text).toBe("sent");
+
+		// Verify the mock Discord client recorded the send call
+		const sendCalls = mockDiscordClient._getSendCalls();
+		expect(sendCalls.length).toBeGreaterThan(0);
+		const lastSendCall = sendCalls[sendCalls.length - 1];
+		expect(lastSendCall.channelId).toBe("ch-1");
+		expect(lastSendCall.content).toBe("Hello from agent");
+
+		// AC2.3: Verify sendTyping was called
+		const typingCalls = mockDiscordClient._getSendTypingCalls();
+		expect(typingCalls.length).toBeGreaterThan(0);
+		expect(typingCalls).toContain("ch-1");
 	});
 
 	it("AC2.2: chunkMessage handles exactly 2000 chars", () => {
@@ -426,7 +551,7 @@ describe("Discord MCP Server", () => {
 		expect(typeof mockDiscordClient._getSendTypingCalls).toBe("function");
 	});
 
-	it("AC2.4: discord_respond_interaction tool is listed", async () => {
+	it("AC2.4: discord_respond_interaction tool is listed and can respond to valid interaction", async () => {
 		const config: PlatformConnectorConfig = { allowed_users: [] };
 		const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
 		server = discordServer;
@@ -446,17 +571,108 @@ describe("Discord MCP Server", () => {
 		expect(result.tools).toBeDefined();
 		const toolNames = result.tools.map((t: { name: string }) => t.name);
 		expect(toolNames).toContain("discord_respond_interaction");
+
+		// Create a mock interaction and trigger it
+		const mockInteraction: MockDiscordInteraction = {
+			user: { id: "user-1", username: "testuser", displayName: null },
+			channelId: "ch-1",
+			isChatInputCommand: () => true,
+			isContextMenuCommand: () => false,
+			deferReply: async () => {},
+			editReply: async (options: { content: string }) => {
+				mockDiscordClient._getEditReplyCalls().push(options.content);
+				return {};
+			},
+			commandName: "test",
+			options: { data: [] },
+		};
+
+		// Trigger the interaction event to populate the server's store
+		await mockDiscordClient._triggerInteractionCreate(mockInteraction);
+
+		// Give a small delay for async processing
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		// Poll interaction events to get the callback_id from the emitted event
+		const eventsPollSchema = z.object({
+			events: z.array(z.unknown()),
+			cursor: z.string(),
+			nextPollSeconds: z.number(),
+		});
+
+		const pollResult = await mcpClient.request(
+			{
+				method: "events/poll",
+				params: {
+					event: "interaction.received",
+					params: { channel_id: "ch-1" },
+				},
+			},
+			eventsPollSchema,
+		);
+
+		expect(pollResult.events.length).toBeGreaterThan(0);
+		const interactionEvent = pollResult.events[0] as Record<string, unknown>;
+		const eventData = interactionEvent.data as Record<string, unknown>;
+		const actualCallbackId = eventData.callback_id as string;
+		expect(actualCallbackId).toBeDefined();
+
+		// Now call the tool with the correct callback_id
+		const toolCallSchema = z.object({
+			content: z.array(z.unknown()),
+		});
+
+		const callResult = await mcpClient.request(
+			{
+				method: "tools/call",
+				params: {
+					name: "discord_respond_interaction",
+					arguments: {
+						callback_id: actualCallbackId,
+						content: "Response to interaction",
+					},
+				},
+			},
+			toolCallSchema,
+		);
+
+		expect(callResult.content).toBeDefined();
+		expect(callResult.content.length).toBeGreaterThan(0);
+		const contentBlock = callResult.content[0] as Record<string, unknown>;
+		expect(contentBlock.text).toBe("sent");
 	});
 
-	it("AC2.5: Interaction TTL is 14 minutes", async () => {
+	it("AC2.5: Expired callback_id returns error", async () => {
 		const config: PlatformConnectorConfig = { allowed_users: [] };
 		const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
 		server = discordServer;
 		client = mcpClient;
 
-		// The interaction cleanup runs every 60 seconds with 14 minute TTL
-		// This is implemented in the server
-		expect(server).toBeDefined();
+		// Try to call with an expired callback_id that doesn't exist
+		const toolCallSchema = z.object({
+			content: z.array(z.unknown()),
+			isError: z.boolean().optional(),
+		});
+
+		const callResult = await mcpClient.request(
+			{
+				method: "tools/call",
+				params: {
+					name: "discord_respond_interaction",
+					arguments: {
+						callback_id: "expired-or-nonexistent-id",
+						content: "Response to expired interaction",
+					},
+				},
+			},
+			toolCallSchema,
+		);
+
+		expect(callResult.content).toBeDefined();
+		expect(callResult.content.length).toBeGreaterThan(0);
+		const contentBlock = callResult.content[0] as Record<string, unknown>;
+		expect(String(contentBlock.text)).toContain("expired");
+		expect(callResult.isError).toBe(true);
 	});
 
 	it("events/poll returns events in cursor format", async () => {
