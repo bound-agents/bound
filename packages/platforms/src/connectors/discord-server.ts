@@ -114,6 +114,7 @@ export function createDiscordServer(
 			}
 		}
 	}, 60_000);
+	interactionCleanupInterval.unref();
 
 	// Helper to send notifications
 	function sendNotification(method: string, params: Record<string, unknown>): void {
@@ -703,8 +704,8 @@ function setupDiscordListeners(
  * Chunk a message at Discord's 2000 character limit
  * Priority: paragraph breaks -> line breaks -> word boundaries -> hard split
  */
-function chunkMessage(content: string): string[] {
-	if (content.length <= 2000) {
+export function chunkMessage(content: string, maxLength = 2000): string[] {
+	if (content.length <= maxLength) {
 		return [content];
 	}
 
@@ -712,13 +713,13 @@ function chunkMessage(content: string): string[] {
 	let remaining = content;
 
 	while (remaining.length > 0) {
-		if (remaining.length <= 2000) {
+		if (remaining.length <= maxLength) {
 			chunks.push(remaining);
 			break;
 		}
 
 		// Try paragraph breaks first
-		const paragraphSplit = remaining.substring(0, 2000).lastIndexOf("\n\n");
+		const paragraphSplit = remaining.substring(0, maxLength).lastIndexOf("\n\n");
 		if (paragraphSplit > 0) {
 			chunks.push(remaining.substring(0, paragraphSplit));
 			remaining = remaining.substring(paragraphSplit + 2);
@@ -726,7 +727,7 @@ function chunkMessage(content: string): string[] {
 		}
 
 		// Try line breaks
-		const lineSplit = remaining.substring(0, 2000).lastIndexOf("\n");
+		const lineSplit = remaining.substring(0, maxLength).lastIndexOf("\n");
 		if (lineSplit > 0) {
 			chunks.push(remaining.substring(0, lineSplit));
 			remaining = remaining.substring(lineSplit + 1);
@@ -734,7 +735,7 @@ function chunkMessage(content: string): string[] {
 		}
 
 		// Try word boundaries
-		const wordSplit = remaining.substring(0, 2000).lastIndexOf(" ");
+		const wordSplit = remaining.substring(0, maxLength).lastIndexOf(" ");
 		if (wordSplit > 0) {
 			chunks.push(remaining.substring(0, wordSplit));
 			remaining = remaining.substring(wordSplit + 1);
@@ -742,8 +743,8 @@ function chunkMessage(content: string): string[] {
 		}
 
 		// Hard split
-		chunks.push(remaining.substring(0, 2000));
-		remaining = remaining.substring(2000);
+		chunks.push(remaining.substring(0, maxLength));
+		remaining = remaining.substring(maxLength);
 	}
 
 	return chunks;
