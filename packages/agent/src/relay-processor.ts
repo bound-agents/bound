@@ -18,7 +18,7 @@ import {
 } from "@bound/core";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
 import { LLMError, type ModelRouter } from "@bound/llm";
-import type { PlatformMcpRegistry, PlatformRegisteredTool } from "@bound/platforms";
+import type { PlatformMcpRegistry } from "@bound/platforms";
 import type {
 	CacheWarmPayload,
 	ErrorPayload,
@@ -596,7 +596,7 @@ export class RelayProcessor {
 			payload: JSON.stringify({
 				thread_id: payload.thread_id,
 				message_id: payload.message_id,
-				user_id: payload.user_id,
+				user_id: `platform:${payload.platform}`,
 				platform: payload.platform,
 			} satisfies ProcessPayload),
 			created_at: new Date().toISOString(),
@@ -1548,52 +1548,8 @@ export class RelayProcessor {
 			shouldYield,
 		};
 
-		// NEW: MCP-based platform tools registry
-		if (payload.platform && this.platformMcpRegistry && !loopConfig.platformTools) {
-			let tools: Map<string, PlatformRegisteredTool>;
-			if (this.platformMcpRegistry.isDispatcherThread(payload.thread_id)) {
-				tools = this.platformMcpRegistry.getAllPlatformTools();
-			} else {
-				tools = this.platformMcpRegistry.getToolsForThread(payload.thread_id);
-			}
-
-			if (tools.size > 0) {
-				// Convert to legacy platformTools format for AgentLoopConfig
-				const legacyMap: NonNullable<AgentLoopConfig["platformTools"]> = new Map();
-				for (const [name, tool] of tools) {
-					legacyMap.set(name, {
-						toolDefinition: tool.toolDefinition,
-						execute: async (input: Record<string, unknown>) => {
-							const result = tool.execute ? await tool.execute(input) : "done";
-							return typeof result === "string" ? result : JSON.stringify(result);
-						},
-					});
-				}
-				loopConfig.platformTools = legacyMap;
-				loopConfig.platform = payload.platform;
-				this.logger.info("[relay] MCP platform tools injected", {
-					platform: payload.platform,
-					threadId: payload.thread_id,
-					toolCount: legacyMap.size,
-					tools: Array.from(legacyMap.keys()),
-				});
-			}
-		}
-
-		// LEGACY: Old platform connector registry path
-		if (payload.platform && this.platformConnectorRegistry && !loopConfig.platformTools) {
-			const connector = this.platformConnectorRegistry.getConnector(payload.platform);
-			if (connector?.getPlatformTools) {
-				const platformTools = connector.getPlatformTools(payload.thread_id, this.fileReader);
-				loopConfig.platform = payload.platform;
-				loopConfig.platformTools = platformTools;
-				this.logger.info("[relay] Platform tools injected", {
-					platform: payload.platform,
-					threadId: payload.thread_id,
-					toolCount: platformTools.size,
-					tools: Array.from(platformTools.keys()),
-				});
-			}
+		if (payload.platform) {
+			loopConfig.platform = payload.platform;
 		}
 
 		const agentLoop = this.agentLoopFactory

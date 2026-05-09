@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { createAgentTools, createBuiltInTools } from "@bound/agent";
-import type { ToolDefinition } from "@bound/llm";
 import { InMemoryFs } from "just-bash";
 import { createToolRegistry } from "../commands/start/agent-factory";
 
@@ -25,39 +24,43 @@ describe("tool registry", () => {
 
 	describe("createToolRegistry", () => {
 		it("registers the sandbox (bash) tool first", () => {
-			const registry = createToolRegistry(undefined, undefined, undefined, [], logger);
+			const registry = createToolRegistry(undefined, undefined, [], logger);
 			const bashTool = getTool(registry, "bash");
 			expect(bashTool.kind).toBe("sandbox");
 		});
 
-		it("registers platform tools with execute handlers", () => {
-			const platformTools = new Map<
+		it("registers client tools (platform tools now come through registry)", () => {
+			// Platform tools are no longer passed to createToolRegistry; they come
+			// through the unified toolRegistry at the agent-factory level.
+			// This test verifies that client tools still work correctly.
+			const clientTools = new Map<
 				string,
 				{
-					toolDefinition: ToolDefinition;
-					execute: (input: Record<string, unknown>) => Promise<string>;
+					type: "function";
+					function: {
+						name: string;
+						description: string;
+						parameters: Record<string, unknown>;
+					};
 				}
 			>([
 				[
-					"platform_tool",
+					"client_tool",
 					{
-						toolDefinition: {
-							type: "function",
-							function: {
-								name: "platform_tool",
-								description: "A platform tool",
-								parameters: { type: "object", properties: {} },
-							},
+						type: "function",
+						function: {
+							name: "client_tool",
+							description: "A client tool",
+							parameters: { type: "object", properties: {} },
 						},
-						execute: async () => "platform result",
 					},
 				],
 			]);
 
-			const registry = createToolRegistry(undefined, platformTools, undefined, [], logger);
-			const tool = getTool(registry, "platform_tool");
-			expect(tool.kind).toBe("platform");
-			expect(tool.execute).toBeDefined();
+			const registry = createToolRegistry(undefined, clientTools, [], logger);
+			const tool = getTool(registry, "client_tool");
+			expect(tool.kind).toBe("client");
+			expect(tool.execute).toBeUndefined();
 		});
 
 		it("registers client tools without execute handlers", () => {
@@ -85,7 +88,7 @@ describe("tool registry", () => {
 				],
 			]);
 
-			const registry = createToolRegistry(undefined, undefined, clientTools, [], logger);
+			const registry = createToolRegistry(undefined, clientTools, [], logger);
 			const tool = getTool(registry, "client_tool");
 			expect(tool.kind).toBe("client");
 			expect(tool.execute).toBeUndefined();
@@ -95,7 +98,7 @@ describe("tool registry", () => {
 			const fs = new InMemoryFs();
 			const builtInTools = createBuiltInTools(fs);
 
-			const registry = createToolRegistry(builtInTools, undefined, undefined, [], logger);
+			const registry = createToolRegistry(builtInTools, undefined, [], logger);
 			expect(registry.has("read")).toBe(true);
 			expect(registry.has("write")).toBe(true);
 			const readTool = getTool(registry, "read");
@@ -114,28 +117,8 @@ describe("tool registry", () => {
 				error: () => {},
 			};
 
-			const platformTools = new Map<
-				string,
-				{
-					toolDefinition: ToolDefinition;
-					execute: (input: Record<string, unknown>) => Promise<string>;
-				}
-			>([
-				[
-					"duplicate",
-					{
-						toolDefinition: {
-							type: "function",
-							function: {
-								name: "duplicate",
-								description: "First registration",
-								parameters: { type: "object", properties: {} },
-							},
-						},
-						execute: async () => "first",
-					},
-				],
-			]);
+			const fs = new InMemoryFs();
+			const builtInTools = createBuiltInTools(fs);
 
 			const clientTools = new Map<
 				string,
@@ -149,29 +132,23 @@ describe("tool registry", () => {
 				}
 			>([
 				[
-					"duplicate",
+					"read", // duplicate with a built-in tool
 					{
 						type: "function",
 						function: {
-							name: "duplicate",
-							description: "Second registration",
+							name: "read",
+							description: "Duplicate registration",
 							parameters: { type: "object", properties: {} },
 						},
 					},
 				],
 			]);
 
-			const registry = createToolRegistry(
-				undefined,
-				platformTools,
-				clientTools,
-				[],
-				loggerWithWarnings as any,
-			);
+			const registry = createToolRegistry(builtInTools, clientTools, [], loggerWithWarnings as any);
 
-			// First registration (platform) should be kept
-			const tool = getTool(registry, "duplicate");
-			expect(tool.kind).toBe("platform");
+			// First registration (builtin) should be kept
+			const tool = getTool(registry, "read");
+			expect(tool.kind).toBe("builtin");
 
 			// Warning should have been logged
 			expect(warnMessages.length).toBeGreaterThan(0);
@@ -182,29 +159,6 @@ describe("tool registry", () => {
 		it("combines all tool sources in the correct priority order", () => {
 			const fs = new InMemoryFs();
 			const builtInTools = createBuiltInTools(fs);
-
-			const platformTools = new Map<
-				string,
-				{
-					toolDefinition: ToolDefinition;
-					execute: (input: Record<string, unknown>) => Promise<string>;
-				}
-			>([
-				[
-					"platform_tool",
-					{
-						toolDefinition: {
-							type: "function",
-							function: {
-								name: "platform_tool",
-								description: "A platform tool",
-								parameters: { type: "object", properties: {} },
-							},
-						},
-						execute: async () => "platform result",
-					},
-				],
-			]);
 
 			const clientTools = new Map<
 				string,
@@ -230,63 +184,63 @@ describe("tool registry", () => {
 				],
 			]);
 
-			const registry = createToolRegistry(builtInTools, platformTools, clientTools, [], logger);
+			const registry = createToolRegistry(builtInTools, clientTools, [], logger);
 
-			// All tools should be present
+			// Tools should be present
 			expect(registry.has("bash")).toBe(true);
-			expect(registry.has("platform_tool")).toBe(true);
 			expect(registry.has("client_tool")).toBe(true);
 			expect(registry.has("read")).toBe(true);
 			expect(registry.has("write")).toBe(true);
 
 			// Verify kinds
 			expect(getTool(registry, "bash").kind).toBe("sandbox");
-			expect(getTool(registry, "platform_tool").kind).toBe("platform");
 			expect(getTool(registry, "client_tool").kind).toBe("client");
 			expect(getTool(registry, "read").kind).toBe("builtin");
 		});
 	});
 
 	describe("registry dispatch behavior", () => {
-		it("platform tool execute handler returns expected output", async () => {
-			const platformTools = new Map<
+		it("built-in tool (file tool) execute handler returns expected output", async () => {
+			const fs = new InMemoryFs();
+			fs.writeFileSync("/home/user/test.txt", "test content\n");
+			const builtInTools = createBuiltInTools(fs);
+
+			const registry = createToolRegistry(builtInTools, undefined, [], logger);
+			const tool = getTool(registry, "read");
+			expect(tool.kind).toBe("builtin");
+			expect(tool.execute).toBeDefined();
+
+			const result = await tool.execute({ path: "/home/user/test.txt" });
+			expect(typeof result).toBe("string");
+			expect(result).toContain("test content");
+		});
+
+		it("client tool is registered without execute handler", async () => {
+			const clientTools = new Map<
 				string,
 				{
-					toolDefinition: ToolDefinition;
-					execute: (input: Record<string, unknown>) => Promise<string>;
+					type: "function";
+					function: {
+						name: string;
+						description: string;
+						parameters: Record<string, unknown>;
+					};
 				}
 			>([
 				[
-					"test_platform_tool",
+					"test_client_tool",
 					{
-						toolDefinition: {
-							type: "function",
-							function: {
-								name: "test_platform_tool",
-								description: "A test platform tool",
-								parameters: { type: "object", properties: { text: { type: "string" } } },
-							},
+						type: "function",
+						function: {
+							name: "test_client_tool",
+							description: "A test client tool",
+							parameters: { type: "object", properties: {} },
 						},
-						execute: async (input) => `Platform: ${input.text}`,
 					},
 				],
 			]);
 
-			const registry = createToolRegistry(undefined, platformTools, undefined, [], logger);
-			const tool = getTool(registry, "test_platform_tool");
-			expect(tool.kind).toBe("platform");
-			expect(tool.execute).toBeDefined();
-
-			const result = await tool.execute({ text: "hello" });
-			expect(result).toBe("Platform: hello");
-		});
-
-		it("built-in tool execute handler works through registry", async () => {
-			const fs = new InMemoryFs();
-			fs.writeFileSync("/home/user/test.txt", "test content\n");
-
-			const builtInTools = createBuiltInTools(fs);
-			const registry = createToolRegistry(builtInTools, undefined, undefined, [], logger);
+			const registry = createToolRegistry(undefined, clientTools, [], logger);
 
 			const readTool = getTool(registry, "read");
 			expect(readTool.kind).toBe("builtin");
@@ -322,7 +276,7 @@ describe("tool registry", () => {
 				],
 			]);
 
-			const registry = createToolRegistry(undefined, undefined, clientTools, [], logger);
+			const registry = createToolRegistry(undefined, clientTools, [], logger);
 			const tool = getTool(registry, "test_client_tool");
 			expect(tool.kind).toBe("client");
 			expect(tool.execute).toBeUndefined();
@@ -345,7 +299,7 @@ describe("tool registry", () => {
 			const agentTools = createAgentTools(mockContext);
 			expect(agentTools.length).toBeGreaterThan(0);
 
-			const registry = createToolRegistry(undefined, undefined, undefined, agentTools, logger);
+			const registry = createToolRegistry(undefined, undefined, agentTools, logger);
 
 			// Verify hostinfo is registered
 			expect(registry.has("hostinfo")).toBe(true);
@@ -367,7 +321,7 @@ describe("tool registry", () => {
 			};
 
 			const agentTools = createAgentTools(mockContext);
-			const registry = createToolRegistry(undefined, undefined, undefined, agentTools, logger);
+			const registry = createToolRegistry(undefined, undefined, agentTools, logger);
 
 			// Verify core agent tools are registered
 			expect(registry.has("schedule")).toBe(true);
@@ -404,13 +358,13 @@ describe("tool registry", () => {
 
 	describe("unknown tool lookup (AC1.6)", () => {
 		it("returns undefined for non-existent tool name", () => {
-			const registry = createToolRegistry(undefined, undefined, undefined, [], logger);
+			const registry = createToolRegistry(undefined, undefined, [], logger);
 			const tool = registry.get("nonexistent_tool_12345");
 			expect(tool).toBeUndefined();
 		});
 
 		it("handles lookup of non-existent tool without throwing", () => {
-			const registry = createToolRegistry(undefined, undefined, undefined, [], logger);
+			const registry = createToolRegistry(undefined, undefined, [], logger);
 			expect(() => {
 				registry.get("missing_tool");
 			}).not.toThrow();
@@ -487,7 +441,7 @@ describe("tool registry", () => {
 			};
 
 			const agentTools = createAgentTools(mockContext);
-			const registry = createToolRegistry(builtInTools, undefined, undefined, agentTools, logger);
+			const registry = createToolRegistry(builtInTools, undefined, agentTools, logger);
 
 			// Verify total tool count: 1 sandbox + 4 builtin file tools + 12 agent = 17
 			expect(registry.size).toBeGreaterThanOrEqual(17);

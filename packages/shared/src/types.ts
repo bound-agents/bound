@@ -519,7 +519,6 @@ export interface IntakePayload {
 	platform: string;
 	platform_event_id: string;
 	thread_id: string;
-	user_id: string;
 	message_id: string;
 	content: string;
 	attachments?: AttachmentPayload[];

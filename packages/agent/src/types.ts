@@ -80,17 +80,6 @@ export interface AgentLoopConfig {
 	/** Platform identifier when the loop runs in a platform context (e.g. "discord"). */
 	platform?: string;
 	/**
-	 * Platform-contributed tool closures, keyed by tool name.
-	 * The agent loop checks this map before falling through to sandbox dispatch.
-	 */
-	platformTools?: Map<
-		string,
-		{
-			toolDefinition: ToolDefinition;
-			execute: (input: Record<string, unknown>) => Promise<string>;
-		}
-	>;
-	/**
 	 * Client-side tool definitions, keyed by tool name.
 	 * The agent loop includes these in the LLM tool list but defers execution
 	 * to the client. Tool calls matching these names return a ClientToolCallRequest

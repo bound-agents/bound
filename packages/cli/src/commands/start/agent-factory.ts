@@ -48,7 +48,6 @@ export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
  */
 export function createToolRegistry(
 	builtInTools: Map<string, BuiltInTool> | undefined,
-	platformTools: AgentLoopConfig["platformTools"],
 	clientTools: AgentLoopConfig["clientTools"],
 	agentTools: RegisteredTool[],
 	logger: AppContext["logger"],
@@ -72,18 +71,7 @@ export function createToolRegistry(
 		toolDefinition: sandboxTool,
 	});
 
-	// 2. Register platform tools
-	if (platformTools) {
-		for (const [name, tool] of platformTools.entries()) {
-			registerTool(name, {
-				kind: "platform",
-				toolDefinition: tool.toolDefinition,
-				execute: tool.execute,
-			});
-		}
-	}
-
-	// 3. Register client tools
+	// 2. Register client tools
 	if (clientTools) {
 		for (const [name, toolDef] of clientTools.entries()) {
 			registerTool(name, {
@@ -204,11 +192,8 @@ export function createAgentLoopFactory(
 		const builtInToolDefs = builtInTools
 			? Array.from(builtInTools.values(), (t) => t.toolDefinition)
 			: [];
-		const platformToolDefs = config.platformTools
-			? Array.from(config.platformTools.values()).map((t) => t.toolDefinition)
-			: [];
 		// sandboxTool (bash) is always included first; built-in file tools next;
-		// then extra tools; then platform tools.
+		// then extra tools.
 		// If config.tools includes bash, dedupe it.
 		const extraTools = config.tools?.filter((t) => t.function.name !== "bash") ?? [];
 
@@ -228,7 +213,6 @@ export function createAgentLoopFactory(
 		// Create the unified tool registry for registry-based dispatch
 		const toolRegistry = createToolRegistry(
 			builtInTools,
-			config.platformTools,
 			config.clientTools,
 			agentTools,
 			appContext.logger,
@@ -236,7 +220,7 @@ export function createAgentLoopFactory(
 
 		return new AgentLoop(appContext, loopSandbox, modelRouter, {
 			...config,
-			tools: [sandboxTool, ...builtInToolDefs, ...extraTools, ...platformToolDefs],
+			tools: [sandboxTool, ...builtInToolDefs, ...extraTools],
 			toolRegistry,
 		});
 	};
