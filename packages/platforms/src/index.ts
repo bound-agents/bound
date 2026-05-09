@@ -27,3 +27,5 @@ export {
 	createConnectorAttachTool,
 } from "./dispatcher-tools.js";
 export type { DispatcherTool, DispatcherToolContext } from "./dispatcher-tools.js";
+export { seedDispatcher, DISPATCHER_TASK_ID } from "./dispatcher.js";
+export { registerConnectorEventListeners } from "./mcp-registry.js";

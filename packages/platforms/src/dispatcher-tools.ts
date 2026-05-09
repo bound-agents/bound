@@ -86,13 +86,13 @@ export function createConnectorChannelsTool(ctx: DispatcherToolContext): Dispatc
 				}>;
 			};
 
-			// Annotate with existing bindings
+			// Annotate with existing bindings using event_name-based matching
 			const existingHandles = getConnectorHandlesByServer(ctx.db, serverName);
-			const boundKeys = new Set(existingHandles.map((h) => `${h.event_name}:${h.event_args}`));
+			const boundEventNames = new Set(existingHandles.map((h) => h.event_name));
 
 			const annotated = result.events.map((evt) => ({
 				...evt,
-				bound: boundKeys.has(`${evt.name}:${JSON.stringify(evt.inputSchema?.properties ?? {})}`),
+				bound: boundEventNames.has(evt.name),
 			}));
 
 			return JSON.stringify(annotated, null, 2);
