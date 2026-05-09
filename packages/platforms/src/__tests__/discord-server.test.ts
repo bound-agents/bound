@@ -274,8 +274,25 @@ describe("Discord MCP Server", () => {
 		// Give a small delay for any async processing
 		await new Promise((resolve) => setTimeout(resolve, 100));
 
-		// If we get here without exception, disallowed messages are silently filtered
-		expect(true).toBe(true);
+		// Poll and verify no events were emitted for the non-allowlisted user
+		const pollSchema = z.object({
+			events: z.array(z.unknown()),
+			cursor: z.string(),
+			nextPollSeconds: z.number(),
+		});
+
+		const pollResult = await mcpClient.request(
+			{
+				method: "events/poll",
+				params: {
+					event: "message.received",
+					params: { channel_id: "ch-1" },
+				},
+			},
+			pollSchema,
+		);
+
+		expect(pollResult.events.length).toBe(0);
 	});
 
 	it("AC1.5: Allowlisted users DO trigger events via events/poll", async () => {
@@ -359,21 +376,107 @@ describe("Discord MCP Server", () => {
 		server = discordServer;
 		client = mcpClient;
 
-		const subscribeSchema = z.object({
-			subscriptionId: z.string(),
-		});
-		const result = await mcpClient.request(
-			{
-				method: "events/stream",
-				params: {
-					event: "message.received",
-					params: { channel_id: "ch-1" },
-				},
-			},
-			subscribeSchema,
-		);
+		// Save original fetch
+		const originalFetch = global.fetch;
 
-		expect(result.subscriptionId).toBeDefined();
+		try {
+			// Mock fetch to return a small PNG image (< 1MB)
+			// PNG magic bytes: 89 50 4E 47 0D 0A 1A 0A
+			const pngBuffer = Buffer.from([
+				0x89,
+				0x50,
+				0x4e,
+				0x47,
+				0x0d,
+				0x0a,
+				0x1a,
+				0x0a, // PNG signature
+				...new Array(100).fill(0), // Small image data
+			]);
+
+			global.fetch = async () =>
+				({
+					ok: true,
+					bytes: async () => pngBuffer,
+				}) as any;
+
+			const subscribeSchema = z.object({
+				subscriptionId: z.string(),
+			});
+			await mcpClient.request(
+				{
+					method: "events/stream",
+					params: {
+						event: "message.received",
+						params: { channel_id: "ch-1" },
+					},
+				},
+				subscribeSchema,
+			);
+
+			// Create a message with a small attachment
+			const messageWithAttachment: MockDiscordMessage = {
+				id: "msg-with-small-attachment",
+				author: { id: "user-1", username: "testuser", displayName: null, bot: false },
+				content: "Message with image",
+				channelId: "ch-1",
+				channel: {
+					type: ChannelType.DM,
+					isDMBased: () => true,
+					sendTyping: async () => {},
+					send: async () => ({}),
+				},
+				attachments: new Map([
+					[
+						"att-1",
+						{
+							id: "att-1",
+							name: "image.png",
+							size: 108, // < 1MB
+							url: "https://example.com/image.png",
+						},
+					],
+				]),
+			};
+
+			await mockDiscordClient._triggerMessageCreate(messageWithAttachment);
+
+			// Give a small delay for async processing
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			// Poll for the event and verify attachment is base64
+			const pollSchema = z.object({
+				events: z.array(z.unknown()),
+				cursor: z.string(),
+				nextPollSeconds: z.number(),
+			});
+
+			const pollResult = await mcpClient.request(
+				{
+					method: "events/poll",
+					params: {
+						event: "message.received",
+						params: { channel_id: "ch-1" },
+					},
+				},
+				pollSchema,
+			);
+
+			expect(pollResult.events.length).toBeGreaterThan(0);
+			const messageEvent = pollResult.events[0] as Record<string, unknown>;
+			const eventData = messageEvent.data as Record<string, unknown>;
+			const attachments = eventData.attachments as Array<Record<string, unknown>>;
+
+			expect(attachments.length).toBeGreaterThan(0);
+			const attachment = attachments[0];
+			expect(attachment.type).toBe("image");
+			expect((attachment.source as Record<string, unknown>).type).toBe("base64");
+			expect((attachment.source as Record<string, unknown>).data).toBeDefined();
+			expect(typeof (attachment.source as Record<string, unknown>).data).toBe("string");
+		} finally {
+			// Restore original fetch
+			global.fetch = originalFetch;
+		}
 	});
 
 	it("AC1.7: Large attachments can be stored as file_ref", async () => {
@@ -382,21 +485,96 @@ describe("Discord MCP Server", () => {
 		server = discordServer;
 		client = mcpClient;
 
-		const subscribeSchema = z.object({
-			subscriptionId: z.string(),
-		});
-		const result = await mcpClient.request(
-			{
-				method: "events/stream",
-				params: {
-					event: "message.received",
-					params: { channel_id: "ch-1" },
-				},
-			},
-			subscribeSchema,
-		);
+		// Save original fetch
+		const originalFetch = global.fetch;
 
-		expect(result.subscriptionId).toBeDefined();
+		try {
+			// Mock fetch to return a large file buffer
+			const largeBuffer = Buffer.alloc(2 * 1024 * 1024); // 2MB
+
+			global.fetch = async () =>
+				({
+					ok: true,
+					bytes: async () => largeBuffer,
+				}) as any;
+
+			const subscribeSchema = z.object({
+				subscriptionId: z.string(),
+			});
+			await mcpClient.request(
+				{
+					method: "events/stream",
+					params: {
+						event: "message.received",
+						params: { channel_id: "ch-1" },
+					},
+				},
+				subscribeSchema,
+			);
+
+			// Create a message with a large attachment (>= 1MB)
+			const messageWithAttachment: MockDiscordMessage = {
+				id: "msg-with-large-attachment",
+				author: { id: "user-1", username: "testuser", displayName: null, bot: false },
+				content: "Message with large file",
+				channelId: "ch-1",
+				channel: {
+					type: ChannelType.DM,
+					isDMBased: () => true,
+					sendTyping: async () => {},
+					send: async () => ({}),
+				},
+				attachments: new Map([
+					[
+						"att-2",
+						{
+							id: "att-2",
+							name: "largefile.bin",
+							size: 2 * 1024 * 1024, // >= 1MB
+							url: "https://example.com/largefile.bin",
+						},
+					],
+				]),
+			};
+
+			await mockDiscordClient._triggerMessageCreate(messageWithAttachment);
+
+			// Give a small delay for async processing
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			// Poll for the event and verify attachment is file_ref
+			const pollSchema = z.object({
+				events: z.array(z.unknown()),
+				cursor: z.string(),
+				nextPollSeconds: z.number(),
+			});
+
+			const pollResult = await mcpClient.request(
+				{
+					method: "events/poll",
+					params: {
+						event: "message.received",
+						params: { channel_id: "ch-1" },
+					},
+				},
+				pollSchema,
+			);
+
+			expect(pollResult.events.length).toBeGreaterThan(0);
+			const messageEvent = pollResult.events[0] as Record<string, unknown>;
+			const eventData = messageEvent.data as Record<string, unknown>;
+			const attachments = eventData.attachments as Array<Record<string, unknown>>;
+
+			expect(attachments.length).toBeGreaterThan(0);
+			const attachment = attachments[0];
+			expect(attachment.type).toBe("file_ref");
+			expect(attachment.file_id).toBeDefined();
+			expect(attachment.filename).toBe("largefile.bin");
+			expect(attachment.size).toBe(2 * 1024 * 1024);
+		} finally {
+			// Restore original fetch
+			global.fetch = originalFetch;
+		}
 	});
 
 	it("AC2.1: discord_send_message tool is listed and executable", async () => {
@@ -640,6 +818,9 @@ describe("Discord MCP Server", () => {
 		expect(callResult.content.length).toBeGreaterThan(0);
 		const contentBlock = callResult.content[0] as Record<string, unknown>;
 		expect(contentBlock.text).toBe("sent");
+
+		// Verify that editReply was called by the tool handler
+		expect(mockDiscordClient._getEditReplyCalls().length).toBeGreaterThan(0);
 	});
 
 	it("AC2.5: Expired callback_id returns error", async () => {
