@@ -35,6 +35,7 @@ export type SyncedTableName =
 	| "advisories"
 	| "skills"
 	| "memory_edges"
+	| "connector_handles"
 	| "turns";
 
 export type ReducerType = "lww" | "append-only";
@@ -264,6 +265,19 @@ export interface MemoryEdge {
 	deleted: number;
 }
 
+export interface ConnectorHandleRow {
+	id: string;
+	server_name: string;
+	event_name: string;
+	event_args: string; // JSON string of event subscription arguments
+	delivery_mode: string; // "push" | "poll"
+	cursor: string | null;
+	task_id: string | null;
+	created_at: string; // ISO 8601
+	deleted: number; // 0 | 1
+	modified_at: string; // ISO 8601
+}
+
 export interface Turn {
 	id: string;
 	thread_id: string | null;
@@ -297,6 +311,7 @@ export interface SyncedTableRowMap {
 	advisories: Advisory;
 	skills: Skill;
 	memory_edges: MemoryEdge;
+	connector_handles: ConnectorHandleRow;
 	turns: Turn;
 }
 
@@ -316,6 +331,7 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	advisories: "lww",
 	skills: "lww",
 	memory_edges: "lww",
+	connector_handles: "lww",
 	// turns are append-only facts about what the model did on a given host.
 	// Recorded once when the turn completes; never mutated after insert except
 	// for local-only columns (context_debug, relay_target, relay_latency_ms)
