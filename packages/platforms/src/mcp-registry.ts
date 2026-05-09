@@ -149,6 +149,7 @@ export class PlatformMcpRegistry {
 		// Register notification handlers for list_changed events
 		// When MCP server emits notifications/tools/list_changed or notifications/events/list_changed,
 		// translate to internal event bus and rediscover tools
+		// TODO: Replace internal SDK access when SDK exposes a public API for notification interception
 		// biome-ignore lint/suspicious/noExplicitAny: MCP SDK internals for notification handling
 		const protocol = (client as any)._protocol;
 		if (protocol) {

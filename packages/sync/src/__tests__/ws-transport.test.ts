@@ -784,7 +784,7 @@ describe("WsTransport", () => {
 					{
 						id: "broadcast-1",
 						target_site_id: "*",
-						kind: "platform_deliver",
+						kind: "intake",
 						ref_id: null,
 						idempotency_key: null,
 						stream_id: null,

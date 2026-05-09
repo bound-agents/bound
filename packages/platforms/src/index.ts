@@ -26,3 +26,4 @@ export type { DispatcherToolContext } from "./dispatcher-tools.js";
 export { seedDispatcher, DISPATCHER_TASK_ID } from "./dispatcher.js";
 export { registerConnectorEventListeners } from "./mcp-registry.js";
 export { PlatformLeaderElection } from "./leader-election.js";
+export { setupDiscordServers } from "./setup-platform-servers.js";
