@@ -9,6 +9,7 @@ export { WebhookStubConnector } from "./connectors/webhook-stub.js";
 // New MCP-based platform connector exports
 export { PlatformMcpRegistry } from "./mcp-registry.js";
 export type { PlatformServerEntry, PlatformMcpRegistryDeps } from "./mcp-registry.js";
+export { createDiscordServer } from "./connectors/discord-server.js";
 export { connectorHandleId } from "./connector-handle-id.js";
 export {
 	createConnectorHandle,
