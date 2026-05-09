@@ -56,7 +56,6 @@ interface ActiveSubscription {
 export class PlatformMcpRegistry {
 	private servers = new Map<string, PlatformServerEntry>();
 	private activeSubscriptions = new Map<string, ActiveSubscription>();
-	private subscriptionsByHandleId = new Map<string, ActiveSubscription>();
 	private pollTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private deps: PlatformMcpRegistryDeps;
 
@@ -137,11 +136,23 @@ export class PlatformMcpRegistry {
 	/**
 	 * Delivers a batch of events to the event task thread.
 	 * Both push and poll modes call this method for consistent delivery.
-	 * Implements AC1.2, AC1.3, AC5.4, AC5.5.
+	 * Implements AC1.2, AC1.3, AC5.4, AC5.5, and AC6.4 (cursor-based filtering).
+	 * @internal Used by tests; not part of public API.
 	 */
-	private deliverBatch(subscription: ActiveSubscription, events: McpEvent[]): void {
+	deliverBatch(subscription: ActiveSubscription, events: McpEvent[]): void {
+		// Get the stored cursor to filter events (AC6.4 - replay cursor filtering)
+		const handle = getConnectorHandle(this.deps.db, subscription.handleId);
+		const storedCursor = handle?.cursor;
+
+		// Filter events: only include events with cursor > stored cursor (if cursor exists)
+		// This ensures replay only sends new events after the stored position
+		let filteredEvents = events;
+		if (storedCursor) {
+			filteredEvents = events.filter((e) => this.compareCursors(e.cursor, storedCursor) > 0);
+		}
+
 		// 1. Deduplicate: skip events whose eventId is in deduplicationSet (AC1.3)
-		const newEvents = events.filter((e) => !subscription.deduplicationSet.has(e.eventId));
+		const newEvents = filteredEvents.filter((e) => !subscription.deduplicationSet.has(e.eventId));
 		if (newEvents.length === 0) return; // No-op if all duplicates
 
 		// 2. Track eventIds for future dedup (prune set at 500 entries)
@@ -198,6 +209,21 @@ export class PlatformMcpRegistry {
 	}
 
 	/**
+	 * Compares two cursor values.
+	 * Returns: negative if a < b, 0 if a == b, positive if a > b
+	 * Attempts numeric comparison first, falls back to lexicographic.
+	 */
+	private compareCursors(a: string, b: string): number {
+		const aNum = Number(a);
+		const bNum = Number(b);
+		if (!Number.isNaN(aNum) && !Number.isNaN(bNum)) {
+			return aNum - bNum;
+		}
+		// Lexicographic fallback for non-numeric cursors
+		return a.localeCompare(b);
+	}
+
+	/**
 	 * Sets up a push-mode subscription with stream listener.
 	 * Requests events/stream from the MCP server.
 	 * The server will send notifications/events/event which are handled by storing in buffer.
@@ -212,43 +238,40 @@ export class PlatformMcpRegistry {
 			return;
 		}
 
-		// Register a notification handler that will be called for each event from the server
-		const _handleNotification = () => {
-			// Handler body (will be registered on protocol callbacks)
-		};
-
-		// Access the protocol and register a notification handler
-		// The MCP SDK Protocol calls registered handlers when it receives notifications
-		// biome-ignore lint/suspicious/noExplicitAny: accessing MCP SDK internals
+		// Store subscription in a way we can access it from the protocol notification handler
+		// We use a per-server handler that routes to all matching subscriptions
+		// biome-ignore lint/suspicious/noExplicitAny: MCP SDK internals for notification handling
 		const protocol = (client as any)._protocol;
 		if (protocol) {
-			// Store the subscription in a subscription map on the handle ID
-			// so we can route notifications to the right subscription
-			this.subscriptionsByHandleId.set(subscription.handleId, subscription);
+			// Set up notification handler directly on protocol
+			// This bypasses the schema validation in setNotificationHandler
+			const originalHandler = protocol._onNotification;
 
-			// Register handler directly on the protocol's notification incoming callback
-			const originalCallback = protocol._onRequestNotification;
-			protocol._onRequestNotification = (notification: {
+			protocol._onNotification = async (notification: {
 				method: string;
 				params: Record<string, unknown>;
-			}) => {
+			}): Promise<void> => {
 				if (notification.method === "notifications/events/event") {
 					const event = notification.params as unknown as McpEvent;
-					// Find the subscription this event belongs to
-					// For now, just add it to the first (and only) subscription
-					const subs = Array.from(this.subscriptionsByHandleId.values())[0];
-					if (subs) {
-						subs.buffer.push(event);
-						if (!subs.flushTimer) {
-							subs.flushTimer = setTimeout(() => {
-								this.flushBuffer(subs);
-							}, 2000);
+
+					// Find subscriptions this event belongs to (match by server name and event name)
+					for (const sub of this.activeSubscriptions.values()) {
+						if (sub.serverName === subscription.serverName && event.name === handle.event_name) {
+							// Add event to this subscription's buffer
+							sub.buffer.push(event);
+							// Schedule flush if not already scheduled
+							if (!sub.flushTimer) {
+								sub.flushTimer = setTimeout(() => {
+									this.flushBuffer(sub);
+								}, 2000);
+							}
 						}
 					}
 				}
-				// Call original callback if it exists
-				if (originalCallback) {
-					originalCallback(notification);
+
+				// Call original handler if it exists
+				if (originalHandler) {
+					await originalHandler(notification);
 				}
 			};
 		}
@@ -303,6 +326,7 @@ export class PlatformMcpRegistry {
 		}
 
 		this.activeSubscriptions.delete(handleId);
+		// No need to clean subscriptionsByHandleId since it was removed (M1)
 	}
 
 	/**
@@ -401,16 +425,6 @@ export class PlatformMcpRegistry {
 
 		// Store timer reference for cleanup
 		this.pollTimers.set(subscription.handleId, timer);
-	}
-
-	/**
-	 * Public method to deliver a batch of events for a handle (used in tests).
-	 */
-	testDeliverBatch(handleId: string, events: McpEvent[]): void {
-		const subscription = this.activeSubscriptions.get(handleId);
-		if (subscription) {
-			this.deliverBatch(subscription, events);
-		}
 	}
 
 	/**
