@@ -8,6 +8,7 @@
 import type { AgentLoopResult } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import type { AgentLoop } from "@bound/agent";
+import type { PlatformRegisteredTool } from "@bound/platforms";
 import type { TypedEventEmitter } from "@bound/shared";
 
 export interface RunLocalLoopParams {
@@ -29,8 +30,8 @@ export interface RunLocalLoopParams {
 	connectionId?: string;
 	/** Optional system prompt addition from the WebSocket connection. */
 	systemPromptAddition?: string;
-	/** Platform MCP tools (e.g., discord_send_message). */
-	tools?: AgentLoopConfig["tools"];
+	/** Platform MCP tools with execute closures (e.g., discord_send_message). */
+	platformTools?: PlatformRegisteredTool[];
 }
 
 export interface RunLocalLoopResult {
@@ -82,7 +83,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 		clientTools,
 		connectionId,
 		systemPromptAddition,
-		tools,
+		platformTools,
 	} = params;
 
 	const abortController = new AbortController();
@@ -119,7 +120,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 			clientTools,
 			connectionId,
 			systemPromptAddition,
-			tools,
+			platformTools,
 		});
 		const agentResult = await agentLoop.run();
 		return { agentResult, signal: abortController.signal };

@@ -27,8 +27,8 @@ import {
 	writeMessageMetadata,
 	writeOutbox,
 } from "@bound/core";
-import type { ModelBackendsConfig, ModelRouter, ToolDefinition } from "@bound/llm";
-import type { PlatformMcpRegistry } from "@bound/platforms";
+import type { ModelBackendsConfig, ModelRouter } from "@bound/llm";
+import type { PlatformMcpRegistry, PlatformRegisteredTool } from "@bound/platforms";
 import {
 	PlatformLeaderElection,
 	PlatformMcpRegistry as PlatformMcpRegistryClass,
@@ -497,20 +497,14 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 									: undefined;
 
 							// Resolve platform MCP tools for this thread (e.g., discord_send_message).
-							// These are converted to ToolDefinition objects for LLM visibility
-							// and RegisteredTool objects in the agent factory for dispatch.
-							let platformTools: ToolDefinition[] | undefined;
+							// Pass full PlatformRegisteredTool array with execute closures intact.
+							// The agent-factory will register them directly in the tool registry,
+							// preserving their execute closures for MCP client.callTool() dispatch.
+							let platformTools: PlatformRegisteredTool[] | undefined;
 							if (platformMcpRegistry) {
 								const platformToolsMap = platformMcpRegistry.getToolsForThread(thread_id);
 								if (platformToolsMap.size > 0) {
-									platformTools = Array.from(platformToolsMap.values()).map((tool) => ({
-										type: "function" as const,
-										function: {
-											name: tool.toolDefinition.function.name,
-											description: tool.toolDefinition.function.description,
-											parameters: tool.toolDefinition.function.parameters,
-										},
-									}));
+									platformTools = Array.from(platformToolsMap.values());
 								}
 							}
 
@@ -551,7 +545,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								clientTools: resolvedClientTools,
 								connectionId: resolvedConnectionId,
 								systemPromptAddition,
-								tools: platformTools,
+								platformTools,
 							});
 
 							if (result.yielded) {

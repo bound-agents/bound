@@ -119,6 +119,22 @@ export interface AgentLoopConfig {
 	 */
 	systemPromptAddition?: string;
 	/**
+	 * Platform MCP tools with execute closures that call MCP client.callTool.
+	 * These are passed through to the tool registry with their execute functions intact.
+	 */
+	platformTools?: Array<{
+		kind: "platform";
+		toolDefinition: {
+			type: "function";
+			function: {
+				name: string;
+				description: string;
+				parameters: Record<string, unknown>;
+			};
+		};
+		execute?: (input: Record<string, unknown>) => Promise<string>;
+	}>;
+	/**
 	 * Unified tool registry for dispatching all tool kinds (platform, client, builtin, sandbox).
 	 * When provided, enables registry-based dispatch with backward compatibility via legacy waterfall.
 	 */
@@ -137,15 +153,15 @@ export interface AgentLoopResult {
 /**
  * A tool registered in the unified tool registry, tagged with its execution strategy.
  * The kind discriminant controls how the tool is executed:
- * - "platform": executes via platformTools map, execute returns Promise<string>
- * - "client": defers execution to WebSocket client, no execute function
- * - "builtin": executes via built-in tool handlers, execute returns Promise<BuiltInToolResult>
- * - "sandbox": executes in sandbox (bash), delegates to sandbox.exec()
+ * - "platform": Executes via execute closure (calls MCP client.callTool), returns Promise<string>
+ * - "client": Defers execution to WebSocket client, no execute function
+ * - "builtin": Executes via built-in tool handlers (read/write/edit/etc), returns Promise<BuiltInToolResult>
+ * - "sandbox": Executes via bash in sandbox, no execute function (dispatches through sandbox.exec)
  */
 export interface RegisteredTool {
 	kind: "platform" | "client" | "builtin" | "sandbox";
 	toolDefinition: ToolDefinition;
-	execute?: (input: Record<string, unknown>) => Promise<BuiltInToolResult>;
+	execute?: (input: Record<string, unknown>) => Promise<BuiltInToolResult | string>;
 }
 
 /**
