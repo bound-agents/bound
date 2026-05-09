@@ -23,8 +23,6 @@ export interface RunLocalLoopParams {
 	shouldYield?: () => boolean;
 	/** Platform identifier for platform-scoped threads (e.g. "discord"). */
 	platform?: string;
-	/** Platform-specific tools (e.g. discord_send_message). */
-	platformTools?: AgentLoopConfig["platformTools"];
 	/** Client tools from WS connections subscribed to this thread. */
 	clientTools?: AgentLoopConfig["clientTools"];
 	/** Connection ID for the WS connection that provided client tools. */
@@ -79,7 +77,6 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 		timeoutMs = 35 * 60 * 1000,
 		shouldYield,
 		platform,
-		platformTools,
 		clientTools,
 		connectionId,
 		systemPromptAddition,
@@ -116,7 +113,6 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 			onActivity: resetTimeout,
 			shouldYield,
 			platform,
-			platformTools,
 			clientTools,
 			connectionId,
 			systemPromptAddition,

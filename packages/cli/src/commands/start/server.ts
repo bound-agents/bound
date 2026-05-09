@@ -14,7 +14,6 @@ import {
 import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
-	type DeliveryCheckConnector,
 	type DispatchEntry,
 	ThreadExecutor,
 	acknowledgeBatch,
@@ -24,7 +23,6 @@ import {
 	expireClientToolCalls,
 	hasPendingClientToolCalls,
 	insertRow,
-	runPostLoopDeliveryCheck,
 	updateRow,
 	writeMessageMetadata,
 	writeOutbox,
@@ -34,9 +32,6 @@ import type { PlatformMcpRegistry } from "@bound/platforms";
 import {
 	PlatformLeaderElection,
 	PlatformMcpRegistry as PlatformMcpRegistryClass,
-	createConnectorAttachTool,
-	createConnectorChannelsTool,
-	createConnectorListTool,
 	seedDispatcher,
 } from "@bound/platforms";
 import type { KeyringConfig, Logger, ProcessPayload, StatusForwardPayload } from "@bound/shared";
@@ -497,86 +492,14 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							// "## Platform Context: <name>". Scheduler- and MCP-driven
 							// threads have no user-facing surface and stay filtered out.
 							//
-							// Platform tools (e.g., discord_send_message) are only
-							// injected when a matching platform connector exists. Web
-							// and boundless are user-facing surfaces but have no
-							// server-side connector — the agent still learns their
-							// identity via the platform tag.
+							// Platform identifier (if thread is linked to a user-facing interface).
+							// Platform tools now come exclusively through the toolRegistry,
+							// which is built by the agent-factory during loop creation.
 							const threadInterface = threadRow?.interface;
-							let platformConfig:
-								| { platform: string; platformTools: AgentLoopConfig["platformTools"] }
-								| undefined;
-							let deliveryCheckConnector: DeliveryCheckConnector | undefined;
-							if (threadInterface && isUserFacingInterface(threadInterface)) {
-								let platformTools: AgentLoopConfig["platformTools"] | undefined;
-
-								// NEW: MCP-based platform tools registry
-								// Note: platformMcpRegistry is wired in from outside during Phase 6,
-								// so this block is guarded and intentionally inert during Phase 5.
-								if (platformMcpRegistry) {
-									const registry: PlatformMcpRegistry = platformMcpRegistry;
-									if (registry.isDispatcherThread(thread_id)) {
-										// AC3.2: Dispatcher gets ALL platform tools
-										const mcpTools = registry.getAllPlatformTools();
-
-										// Dispatcher also gets dispatcher-specific tools
-										const dispatcherCtx = {
-											registry,
-											db: appContext.db,
-											siteId: appContext.siteId,
-										};
-										const dispatcherTools = [
-											createConnectorListTool(dispatcherCtx),
-											createConnectorChannelsTool(dispatcherCtx),
-											createConnectorAttachTool(dispatcherCtx),
-										];
-
-										// Convert PlatformRegisteredTool to platformTools format
-										if (mcpTools.size > 0 || dispatcherTools.length > 0) {
-											platformTools = new Map();
-											for (const [name, tool] of mcpTools) {
-												platformTools.set(name, {
-													toolDefinition: tool.toolDefinition,
-													execute: async (input: Record<string, unknown>) => {
-														const result = tool.execute ? await tool.execute(input) : "done";
-														return typeof result === "string" ? result : JSON.stringify(result);
-													},
-												});
-											}
-											for (const tool of dispatcherTools) {
-												platformTools.set(tool.toolDefinition.function.name, {
-													toolDefinition: tool.toolDefinition,
-													execute:
-														tool.execute ||
-														(async () => {
-															return "done";
-														}),
-												});
-											}
-										}
-									} else {
-										// AC3.4: Trace thread → task → handle → server → tools
-										const mcpTools = registry.getToolsForThread(thread_id);
-										if (mcpTools.size > 0) {
-											platformTools = new Map();
-											for (const [name, tool] of mcpTools) {
-												platformTools.set(name, {
-													toolDefinition: tool.toolDefinition,
-													execute: async (input: Record<string, unknown>) => {
-														const result = tool.execute ? await tool.execute(input) : "done";
-														return typeof result === "string" ? result : JSON.stringify(result);
-													},
-												});
-											}
-										}
-									}
-								}
-
-								platformConfig = {
-									platform: threadInterface,
-									platformTools,
-								};
-							}
+							const platform =
+								threadInterface && isUserFacingInterface(threadInterface)
+									? threadInterface
+									: undefined;
 
 							// Resolve client tools from WS connections subscribed to this thread
 							const clientToolsFromRegistry = wsRegistry?.getClientToolsForThread(thread_id);
@@ -612,8 +535,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								activeLoopAbortControllers,
 								agentLoopFactory,
 								shouldYield,
-								platform: platformConfig?.platform,
-								platformTools: platformConfig?.platformTools,
+								platform,
 								clientTools: resolvedClientTools,
 								connectionId: resolvedConnectionId,
 								systemPromptAddition,
@@ -634,31 +556,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								);
 							}
 
-							// Post-loop platform delivery check: for connectors that
-							// define verifyDelivery (e.g. Discord — ensures the agent
-							// actually called discord_send_message), ask the connector
-							// whether the reply reached the user. A "missing" verdict
-							// inserts a developer-role nudge + enqueues a dispatch
-							// entry so the next turn has a chance to send. A prior
-							// nudge with a platform tombstone flips the verdict to
-							// "intentional-silence" so the agent is never nudged more
-							// than once per conversation window.
-							if (
-								!result.error &&
-								platformConfig?.platform &&
-								deliveryCheckConnector?.verifyDelivery
-							) {
-								await runPostLoopDeliveryCheck({
-									db: appContext.db,
-									siteId: appContext.siteId,
-									hostName: appContext.hostName,
-									threadId: thread_id,
-									turnStartAt,
-									platform: platformConfig.platform,
-									connector: deliveryCheckConnector,
-									logger: appContext.logger,
-								});
-							}
+							// Platform delivery is now handled through MCP connectors in the
+							// dispatcher task, not through legacy platform connector registry.
 
 							// Stamp introspect responses after turn completes
 							await runIntrospectResponseStamp({

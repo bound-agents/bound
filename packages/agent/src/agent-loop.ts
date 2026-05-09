@@ -269,7 +269,6 @@ export class AgentLoop {
 			modelHint: this.config.modelId ?? "default",
 			platform: this.config.platform ?? null,
 			toolCount: this.config.tools?.length ?? 0,
-			hasPlatformTools: this.config.platformTools ? this.config.platformTools.size : 0,
 		});
 
 		try {
@@ -531,9 +530,6 @@ export class AgentLoop {
 						platformContext: this.config.platform
 							? {
 									platform: this.config.platform,
-									toolNames: this.config.platformTools
-										? Array.from(this.config.platformTools.keys())
-										: undefined,
 								}
 							: undefined,
 						systemPromptAddition: this.config.systemPromptAddition,
@@ -671,9 +667,6 @@ export class AgentLoop {
 					platformContext: this.config.platform
 						? {
 								platform: this.config.platform,
-								toolNames: this.config.platformTools
-									? Array.from(this.config.platformTools.keys())
-									: undefined,
 							}
 						: undefined,
 					targetCapabilities: resolvedCaps ?? undefined,
@@ -1874,13 +1867,6 @@ export class AgentLoop {
 					return { content: result, exitCode };
 				}
 			}
-		}
-
-		// Legacy waterfall dispatch (fallback when no registry)
-		const platformTool = this.config.platformTools?.get(toolCall.name);
-		if (platformTool) {
-			const content = await platformTool.execute(toolCall.input);
-			return { content, exitCode: 0 };
 		}
 
 		// Priority 2: Client tools (schema only, execution deferred to client)

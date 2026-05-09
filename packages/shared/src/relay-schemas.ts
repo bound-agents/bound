@@ -72,7 +72,6 @@ export const intakePayloadSchema = z.object({
 	platform: z.string().min(1),
 	platform_event_id: z.string(),
 	thread_id: z.string().min(1),
-	user_id: z.string().min(1),
 	message_id: z.string().min(1),
 	content: z.string(),
 	attachments: z
