@@ -1,8 +1,16 @@
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
+import { insertRow } from "@bound/core";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import {
+	type ConnectorHandleRecord,
+	getAllActiveConnectorHandles,
+	getConnectorHandle,
+	updateConnectorHandleCursor,
+} from "./connector-handle.js";
 
 export interface PlatformServerEntry {
 	name: string;
@@ -19,13 +27,36 @@ export interface PlatformMcpRegistryDeps {
 	logger: Logger;
 }
 
+/** MCP Event as sent by server in notifications/events/event */
+export interface McpEvent {
+	eventId: string;
+	name: string;
+	timestamp: string;
+	data: Record<string, unknown>;
+	cursor: string;
+}
+
+/** Active subscription state for push mode */
+interface ActiveSubscription {
+	handleId: string;
+	serverName: string;
+	taskId: string;
+	threadId: string;
+	buffer: McpEvent[];
+	flushTimer: ReturnType<typeof setTimeout> | null;
+	deduplicationSet: Set<string>;
+}
+
 /**
  * Manages MCP server instances for platform connectors.
  * Creates InMemoryTransport pairs, connects clients to servers,
  * and manages the lifecycle of platform MCP connections.
+ * Also manages connector handle subscriptions (push and poll modes).
  */
 export class PlatformMcpRegistry {
 	private servers = new Map<string, PlatformServerEntry>();
+	private activeSubscriptions = new Map<string, ActiveSubscription>();
+	private pollTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private deps: PlatformMcpRegistryDeps;
 
 	constructor(deps: PlatformMcpRegistryDeps) {
@@ -103,9 +134,243 @@ export class PlatformMcpRegistry {
 	}
 
 	/**
+	 * Delivers a batch of events to the event task thread.
+	 * Both push and poll modes call this method for consistent delivery.
+	 * Implements AC1.2, AC1.3, AC5.4, AC5.5.
+	 */
+	private deliverBatch(subscription: ActiveSubscription, events: McpEvent[]): void {
+		// 1. Deduplicate: skip events whose eventId is in deduplicationSet (AC1.3)
+		const newEvents = events.filter((e) => !subscription.deduplicationSet.has(e.eventId));
+		if (newEvents.length === 0) return; // No-op if all duplicates
+
+		// 2. Track eventIds for future dedup (prune set at 500 entries)
+		for (const e of newEvents) {
+			subscription.deduplicationSet.add(e.eventId);
+		}
+		if (subscription.deduplicationSet.size > 500) {
+			const idsToKeep = Array.from(subscription.deduplicationSet).slice(-500);
+			subscription.deduplicationSet.clear();
+			for (const id of idsToKeep) {
+				subscription.deduplicationSet.add(id);
+			}
+		}
+
+		// 3. Format batch content (opaque to bound — format determined by MCP server)
+		const batchContent = JSON.stringify(newEvents.map((e) => e.data));
+
+		// 4. Persist as developer-role message in the event task's thread (AC1.2)
+		const now = new Date().toISOString();
+		insertRow(
+			this.deps.db,
+			"messages",
+			{
+				id: randomUUID(),
+				thread_id: subscription.threadId,
+				role: "developer",
+				content: batchContent,
+				model_id: null,
+				tool_name: null,
+				created_at: now,
+				modified_at: now,
+				host_origin: this.deps.siteId,
+				deleted: 0,
+				exit_code: null,
+				metadata: null,
+			},
+			this.deps.siteId,
+		);
+
+		// 5. Update cursor on connector handle (AC5.5)
+		const lastCursor = newEvents[newEvents.length - 1]?.cursor;
+		updateConnectorHandleCursor(this.deps.db, this.deps.siteId, subscription.handleId, lastCursor);
+
+		// 6. Fire event trigger to wake the SPECIFIC task (AFTER commit per invariant #6)
+		// Use per-handle trigger key so only the target task wakes (not all event tasks)
+		const triggerKey = `connector:event:${subscription.handleId}`;
+		this.deps.eventBus.emit("connector:event", {
+			trigger_key: triggerKey,
+			task_id: subscription.taskId,
+			handle_id: subscription.handleId,
+			batch_size: newEvents.length,
+		});
+		// The scheduler.onEvent(triggerKey, payload) matches against task.trigger_spec exactly
+	}
+
+	/**
+	 * Sets up a push-mode subscription with stream listener.
+	 * Requests events/stream from the MCP server.
+	 * Note: Actual notification handling is done via deliverBatch() calls,
+	 * which can be triggered by the MCP server sending notifications through the protocol.
+	 */
+	private async startStreamSubscription(
+		subscription: ActiveSubscription,
+		handle: ConnectorHandleRecord,
+	): Promise<void> {
+		const client = this.getClient(subscription.serverName);
+		if (!client) {
+			this.deps.logger.warn(`Client not found for server ${subscription.serverName}`);
+			return;
+		}
+
+		// Request stream subscription from server
+		// This tells the server to start sending notifications/events/event
+		try {
+			await client.request(
+				{
+					method: "events/stream",
+					params: {
+						event: handle.event_name,
+						params: JSON.parse(handle.event_args),
+						cursor: handle.cursor ?? undefined,
+					},
+				},
+				{} as never,
+			);
+		} catch (err) {
+			this.deps.logger.error(
+				`Failed to subscribe to stream for handle ${subscription.handleId}: ${err}`,
+			);
+		}
+	}
+
+	/**
+	 * Flushes the buffer for a subscription by calling deliverBatch.
+	 */
+	private flushBuffer(subscription: ActiveSubscription): void {
+		if (subscription.buffer.length > 0) {
+			const events = subscription.buffer.splice(0);
+			this.deliverBatch(subscription, events);
+		}
+		subscription.flushTimer = null;
+	}
+
+	/**
+	 * Stops a subscription and cleans up timers.
+	 */
+	private stopSubscription(handleId: string): void {
+		const subscription = this.activeSubscriptions.get(handleId);
+		if (!subscription) return;
+
+		if (subscription.flushTimer) {
+			clearTimeout(subscription.flushTimer);
+		}
+
+		const pollTimer = this.pollTimers.get(handleId);
+		if (pollTimer) {
+			clearTimeout(pollTimer);
+			this.pollTimers.delete(handleId);
+		}
+
+		this.activeSubscriptions.delete(handleId);
+	}
+
+	/**
+	 * Activates a subscription for an existing connector handle.
+	 * Used both for new handles and for reconnection after failover (AC6.3).
+	 */
+	async activateSubscription(handle: ConnectorHandleRecord): Promise<void> {
+		if (!handle.task_id) {
+			this.deps.logger.warn(`Cannot activate handle ${handle.id}: task_id is null`);
+			return;
+		}
+
+		const task = this.deps.db
+			.query("SELECT thread_id FROM tasks WHERE id = ? AND deleted = 0")
+			.get(handle.task_id) as { thread_id: string } | null;
+
+		if (!task) {
+			this.deps.logger.warn(
+				`Cannot activate handle ${handle.id}: task ${handle.task_id} not found`,
+			);
+			return;
+		}
+
+		const subscription: ActiveSubscription = {
+			handleId: handle.id,
+			serverName: handle.server_name,
+			taskId: handle.task_id,
+			threadId: task.thread_id,
+			buffer: [],
+			flushTimer: null,
+			deduplicationSet: new Set(),
+		};
+
+		this.activeSubscriptions.set(handle.id, subscription);
+
+		if (handle.delivery_mode === "push") {
+			await this.startStreamSubscription(subscription, handle);
+		} else {
+			// Poll mode: start with 2s interval
+			this.startPollTimer(subscription, 2);
+		}
+	}
+
+	/**
+	 * Reconstitutes all active subscriptions from the database.
+	 * Called on leader election / failover (AC6.3).
+	 * Resumes from stored cursors (AC6.4).
+	 */
+	async reconnectAll(): Promise<void> {
+		const handles = getAllActiveConnectorHandles(this.deps.db);
+		this.deps.logger.info(`Reconnecting ${handles.length} connector handles`);
+		for (const handle of handles) {
+			if (!handle.task_id) continue; // orphan handle, skip
+			await this.activateSubscription(handle);
+		}
+	}
+
+	/**
+	 * Starts a poll timer for a subscription (poll mode).
+	 * Calls events/poll at the specified interval.
+	 */
+	private startPollTimer(subscription: ActiveSubscription, pollSeconds: number): void {
+		const timer = setTimeout(async () => {
+			try {
+				const handle = getConnectorHandle(this.deps.db, subscription.handleId);
+				if (!handle || handle.deleted) return; // handle was deleted
+
+				const client = this.getClient(subscription.serverName);
+				if (!client) return; // server disconnected
+
+				const result = (await client.request(
+					{
+						method: "events/poll",
+						params: {
+							event: handle.event_name,
+							params: JSON.parse(handle.event_args),
+							cursor: handle.cursor ?? undefined,
+						},
+					},
+					{} as never,
+				)) as { events: McpEvent[]; nextPollSeconds?: number };
+
+				if (result.events.length > 0) {
+					this.deliverBatch(subscription, result.events);
+				}
+				// AC5.3: empty response = no-op (no deliverBatch, no task wake)
+
+				// Reschedule with server-specified interval
+				this.startPollTimer(subscription, result.nextPollSeconds ?? pollSeconds);
+			} catch (err) {
+				this.deps.logger.error(`Poll failed for handle ${subscription.handleId}: ${err}`);
+				// Retry after double the interval (exponential backoff capped at 60s)
+				this.startPollTimer(subscription, Math.min(pollSeconds * 2, 60));
+			}
+		}, pollSeconds * 1000);
+
+		// Store timer reference for cleanup
+		this.pollTimers.set(subscription.handleId, timer);
+	}
+
+	/**
 	 * Tears down all registered servers. Called on shutdown or leader loss.
 	 */
 	async shutdown(): Promise<void> {
+		// Stop all subscriptions
+		for (const handleId of Array.from(this.activeSubscriptions.keys())) {
+			this.stopSubscription(handleId);
+		}
+
 		const names = Array.from(this.servers.keys());
 		for (const name of names) {
 			await this.unregisterServer(name);
