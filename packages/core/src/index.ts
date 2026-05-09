@@ -27,11 +27,6 @@ export {
 	type TableDiff,
 } from "./consistency";
 export {
-	type DeliveryCheckConnector,
-	type RunPostLoopDeliveryCheckParams,
-	runPostLoopDeliveryCheck,
-} from "./delivery-check";
-export {
 	loadConfigFile,
 	loadRequiredConfigs,
 	loadOptionalConfigs,

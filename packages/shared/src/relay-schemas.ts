@@ -87,15 +87,6 @@ export const intakePayloadSchema = z.object({
 		.optional(),
 });
 
-export const platformDeliverPayloadSchema = z.object({
-	platform: z.string().min(1),
-	thread_id: z.string().min(1),
-	message_id: z.string().min(1),
-	content: z.string(),
-	// attachments contain Buffers and can't be fully validated via Zod
-	attachments: z.array(z.unknown()).optional(),
-});
-
 // ---------------------------------------------------------------------------
 // Response payload schemas
 // ---------------------------------------------------------------------------
@@ -182,7 +173,6 @@ export const RELAY_PAYLOAD_SCHEMAS = {
 	inference: inferenceRequestPayloadSchema,
 	process: processPayloadSchema,
 	intake: intakePayloadSchema,
-	platform_deliver: platformDeliverPayloadSchema,
 	result: resultPayloadSchema,
 	error: errorPayloadSchema,
 	stream_chunk: streamChunkPayloadSchema,

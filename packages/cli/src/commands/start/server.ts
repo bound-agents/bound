@@ -219,9 +219,8 @@ export interface ServerDeps {
 	keyManager: KeyManager | undefined;
 	keyring: KeyringConfig | undefined;
 	hubSiteId: string | undefined;
-	/** RelayProcessor to wire platform connector registry into. */
+	/** RelayProcessor to wire platform MCP registry and factories into. */
 	relayProcessor: {
-		setPlatformConnectorRegistry(registry: unknown): void;
 		setPlatformMcpRegistry(registry: PlatformMcpRegistry): void;
 		setAgentLoopFactory(factory: AgentLoopFactory): void;
 		setThreadExecutor(executor: ThreadExecutor): void;
@@ -833,8 +832,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				await platformMcpRegistry?.shutdown();
 				appContext.logger.info("[platforms-mcp] All subscriptions stopped");
 			},
-			// Other PlatformConnector methods are no-ops for the adapter
-			async deliver() {},
 		};
 
 		// Use PlatformLeaderElection to gate subscription management
