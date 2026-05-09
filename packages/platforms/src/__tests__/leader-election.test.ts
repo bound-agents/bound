@@ -3,11 +3,10 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema } from "@bound/core";
 import type { PlatformConnectorConfig } from "@bound/shared";
-import type { PlatformConnector } from "../connector.js";
 import { PlatformLeaderElection } from "../leader-election.js";
 
 // Mock connector for testing
-class MockConnector implements PlatformConnector {
+class MockConnector {
 	readonly platform = "discord";
 	readonly delivery = "broadcast" as const;
 	connectCallCount = 0;

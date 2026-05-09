@@ -1827,6 +1827,23 @@ export class AgentLoop {
 						arguments: toolCall.input,
 					} satisfies ClientToolCallRequest;
 
+				case "platform": {
+					// Platform tools are MCP connector tools. Convert to bash command and dispatch through sandbox.
+					// Example: discord_send_message -> `discord_send_message <json_args>`
+					if (!this.sandbox.exec) {
+						return { content: "Error: sandbox execution not available", exitCode: 1 };
+					}
+					const command = `${toolCall.name} ${JSON.stringify(toolCall.input)}`;
+					const result = await this.sandbox.exec(command);
+					if (isRelayRequest(result)) {
+						return result;
+					}
+					return {
+						content: buildCommandOutput(result.stdout, result.stderr, result.exitCode),
+						exitCode: result.exitCode,
+					};
+				}
+
 				case "sandbox": {
 					if (!this.sandbox.exec) {
 						return { content: "Error: sandbox execution not available", exitCode: 1 };
@@ -1849,7 +1866,7 @@ export class AgentLoop {
 				}
 
 				default: {
-					// "platform" and "builtin" both have execute handlers
+					// "builtin" has execute handler
 					if (!tool.execute) {
 						return {
 							content: `Error: tool "${toolCall.name}" has no execute handler`,

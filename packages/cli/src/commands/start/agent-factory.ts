@@ -51,6 +51,7 @@ export function createToolRegistry(
 	clientTools: AgentLoopConfig["clientTools"],
 	agentTools: RegisteredTool[],
 	logger: AppContext["logger"],
+	platformTools?: RegisteredTool[],
 ): Map<string, RegisteredTool> {
 	const registry = new Map<string, RegisteredTool>();
 
@@ -78,6 +79,14 @@ export function createToolRegistry(
 				kind: "client",
 				toolDefinition: toolDef,
 			});
+		}
+	}
+
+	// 3. Register platform tools
+	if (platformTools) {
+		for (const tool of platformTools) {
+			const name = tool.toolDefinition.function.name;
+			registerTool(name, tool);
 		}
 	}
 
@@ -210,12 +219,21 @@ export function createAgentLoopFactory(
 		};
 		const agentTools = createAgentTools(toolCtx);
 
+		// Convert platform/extra tools from ToolDefinition to RegisteredTool for dispatch.
+		// These come from config.tools and are platform connector tools that need
+		// to execute through the sandbox/MCP proxy, not locally.
+		const platformTools: RegisteredTool[] = extraTools.map((toolDef) => ({
+			kind: "platform" as const,
+			toolDefinition: toolDef,
+		}));
+
 		// Create the unified tool registry for registry-based dispatch
 		const toolRegistry = createToolRegistry(
 			builtInTools,
 			config.clientTools,
 			agentTools,
 			appContext.logger,
+			platformTools,
 		);
 
 		return new AgentLoop(appContext, loopSandbox, modelRouter, {
