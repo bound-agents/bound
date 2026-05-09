@@ -382,7 +382,6 @@ export const RELAY_KIND_REGISTRY = {
 	inference: { dispatch: "async" },
 	process: { dispatch: "async" },
 	intake: { dispatch: "async" },
-	platform_deliver: { dispatch: "async" },
 
 	// Response kinds — stored in relay_inbox for polling loops
 	result: { dispatch: "response" },
@@ -522,14 +521,6 @@ export interface IntakePayload {
 	message_id: string;
 	content: string;
 	attachments?: AttachmentPayload[];
-}
-
-export interface PlatformDeliverPayload {
-	platform: string;
-	thread_id: string;
-	message_id: string;
-	content: string;
-	attachments?: Array<{ filename: string; data: Buffer }>;
 }
 
 // --- Context Debug Types (Phase 2: Context Debugger) ---
