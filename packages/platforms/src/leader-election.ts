@@ -1,7 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createChangeLogEntry } from "@bound/core";
 import type { PlatformConnectorConfig } from "@bound/shared";
-import type { PlatformConnector } from "./connector.js";
 
 // NOTE: Host heartbeat (hosts.modified_at) is handled by startHostHeartbeat() in @bound/core.
 // This class only manages platform leader election via cluster_config.
@@ -22,7 +21,11 @@ export class PlatformLeaderElection {
 	private stalenessTimer: ReturnType<typeof setInterval> | null = null;
 
 	constructor(
-		public readonly connector: PlatformConnector,
+		public readonly connector: {
+			platform: string;
+			connect?: (url?: string) => Promise<void>;
+			disconnect?: () => Promise<void>;
+		},
 		private readonly config: PlatformConnectorConfig,
 		private readonly db: Database,
 		private readonly siteId: string,
@@ -48,7 +51,7 @@ export class PlatformLeaderElection {
 			this.stalenessTimer = null;
 		}
 		if (this.isLeaderFlag) {
-			this.connector.disconnect().catch(() => {
+			this.connector.disconnect?.().catch(() => {
 				// Disconnect errors are non-fatal during shutdown
 			});
 		}
@@ -78,7 +81,7 @@ export class PlatformLeaderElection {
 		})();
 
 		this.isLeaderFlag = true;
-		await this.connector.connect(this.hostBaseUrl);
+		await this.connector.connect?.(this.hostBaseUrl);
 	}
 
 	private startStalenessCheck(leaderKey: string): void {

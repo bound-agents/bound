@@ -1,12 +1,4 @@
-export type { DeliveryVerdict, PlatformConnector } from "./connector.js";
-export { PlatformLeaderElection } from "./leader-election.js";
-export { PlatformConnectorRegistry } from "./registry.js";
-export { DiscordClientManager } from "./connectors/discord-client-manager.js";
-export { DiscordConnector } from "./connectors/discord.js";
-export { DiscordInteractionConnector } from "./connectors/discord-interaction.js";
-export { WebhookStubConnector } from "./connectors/webhook-stub.js";
-
-// New MCP-based platform connector exports
+// MCP-based platform connector exports
 export { PlatformMcpRegistry } from "./mcp-registry.js";
 export type {
 	PlatformServerEntry,
@@ -30,6 +22,7 @@ export {
 	createConnectorChannelsTool,
 	createConnectorAttachTool,
 } from "./dispatcher-tools.js";
-export type { DispatcherTool, DispatcherToolContext } from "./dispatcher-tools.js";
+export type { DispatcherToolContext } from "./dispatcher-tools.js";
 export { seedDispatcher, DISPATCHER_TASK_ID } from "./dispatcher.js";
 export { registerConnectorEventListeners } from "./mcp-registry.js";
+export { PlatformLeaderElection } from "./leader-election.js";
