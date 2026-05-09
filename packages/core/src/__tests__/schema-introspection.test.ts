@@ -21,6 +21,7 @@ const EXPECTED_SYNCED_TABLES: readonly SyncedTableName[] = [
 	"advisories",
 	"skills",
 	"memory_edges",
+	"connector_handles",
 	"turns",
 ];
 

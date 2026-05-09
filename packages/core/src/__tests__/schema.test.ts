@@ -45,7 +45,7 @@ describe("Database Schema", () => {
 
 		const tableNames = tables.map((t) => t.name);
 
-		// Verify all 19 base tables exist
+		// Verify all 20 base tables exist
 		expect(tableNames).toContain("users");
 		expect(tableNames).toContain("threads");
 		expect(tableNames).toContain("messages");
@@ -58,6 +58,7 @@ describe("Database Schema", () => {
 		expect(tableNames).toContain("advisories");
 		expect(tableNames).toContain("skills");
 		expect(tableNames).toContain("memory_edges");
+		expect(tableNames).toContain("connector_handles");
 		expect(tableNames).toContain("change_log");
 		expect(tableNames).toContain("sync_state");
 		expect(tableNames).toContain("host_meta");
@@ -69,9 +70,9 @@ describe("Database Schema", () => {
 		// FTS5 virtual table + its shadow tables
 		expect(tableNames).toContain("semantic_memory_fts");
 
-		// 19 base tables + FTS5 virtual table + 5 FTS5 shadow tables = 25
+		// 20 base tables + FTS5 virtual table + 5 FTS5 shadow tables = 26
 		const baseTables = tableNames.filter((n) => !n.startsWith("semantic_memory_fts_"));
-		expect(baseTables.length).toBe(20); // 19 base + 1 FTS5 virtual table
+		expect(baseTables.length).toBe(21); // 20 base + 1 FTS5 virtual table
 
 		db.close();
 	});
@@ -136,8 +137,8 @@ describe("Database Schema", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		// Still exactly 25 tables (19 base + 1 FTS5 virtual + 5 FTS5 shadow)
-		expect(tables.length).toBe(25);
+		// Still exactly 26 tables (20 base + 1 FTS5 virtual + 5 FTS5 shadow)
+		expect(tables.length).toBe(26);
 
 		db.close();
 	});
