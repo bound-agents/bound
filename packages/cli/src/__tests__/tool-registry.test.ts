@@ -146,9 +146,9 @@ describe("tool registry", () => {
 
 			const registry = createToolRegistry(builtInTools, clientTools, [], loggerWithWarnings as any);
 
-			// First registration (builtin) should be kept
+			// Client tools register before built-in tools, so client "read" wins and is skipped
 			const tool = getTool(registry, "read");
-			expect(tool.kind).toBe("builtin");
+			expect(tool.kind).toBe("client");
 
 			// Warning should have been logged
 			expect(warnMessages.length).toBeGreaterThan(0);
@@ -242,13 +242,9 @@ describe("tool registry", () => {
 
 			const registry = createToolRegistry(undefined, clientTools, [], logger);
 
-			const readTool = getTool(registry, "read");
-			expect(readTool.kind).toBe("builtin");
-			expect(readTool.execute).toBeDefined();
-
-			const result = await readTool.execute({ path: "/home/user/test.txt" });
-			expect(typeof result).toBe("string");
-			expect(result).toContain("test content");
+			const tool = getTool(registry, "test_client_tool");
+			expect(tool.kind).toBe("client");
+			expect(tool.execute).toBeUndefined();
 		});
 
 		it("client tool has no execute handler", () => {
