@@ -15,7 +15,7 @@ import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import type { ModelRouter } from "@bound/llm";
-import { registerConnectorEventListeners } from "@bound/platforms";
+import { type PlatformMcpRegistry, registerConnectorEventListeners } from "@bound/platforms";
 import type { CronSchedulesConfig } from "@bound/shared";
 import { formatError } from "@bound/shared";
 
@@ -44,6 +44,7 @@ export function initScheduler(
 	modelRouter: ModelRouter | null,
 	// biome-ignore lint/suspicious/noExplicitAny: sandbox type is opaque from @bound/sandbox createSandbox
 	sandbox: any,
+	platformMcpRegistry?: PlatformMcpRegistry | null,
 ): SchedulerResult {
 	// 16. Seed cron tasks from config
 	appContext.logger.info("Seeding cron tasks...");
@@ -129,6 +130,12 @@ export function initScheduler(
 								}
 							}
 						: undefined,
+				platformToolResolver: platformMcpRegistry
+					? (threadId: string) => {
+							const tools = platformMcpRegistry.getToolsForThread(threadId);
+							return Array.from(tools.values());
+						}
+					: undefined,
 			},
 			sandbox?.bash,
 		);
