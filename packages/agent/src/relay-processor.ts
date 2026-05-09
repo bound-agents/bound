@@ -1587,7 +1587,7 @@ export class RelayProcessor {
 
 			if (tools.size > 0) {
 				// Convert to legacy platformTools format for AgentLoopConfig
-				const legacyMap = new Map();
+				const legacyMap: NonNullable<AgentLoopConfig["platformTools"]> = new Map();
 				for (const [name, tool] of tools) {
 					legacyMap.set(name, {
 						toolDefinition: tool.toolDefinition,
@@ -1597,7 +1597,7 @@ export class RelayProcessor {
 						},
 					});
 				}
-				loopConfig.platformTools = legacyMap as AgentLoopConfig["platformTools"];
+				loopConfig.platformTools = legacyMap;
 				loopConfig.platform = payload.platform;
 				this.logger.info("[relay] MCP platform tools injected", {
 					platform: payload.platform,

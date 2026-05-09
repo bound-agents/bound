@@ -570,7 +570,7 @@ export class PlatformMcpRegistry {
 	 */
 	isDispatcherThread(threadId: string): boolean {
 		const task = this.deps.db
-			.query("SELECT id FROM tasks WHERE thread_id = ? AND id = ?")
+			.query("SELECT id FROM tasks WHERE thread_id = ? AND id = ? AND deleted = 0")
 			.get(threadId, DISPATCHER_TASK_ID) as { id: string } | null;
 		return task !== null;
 	}

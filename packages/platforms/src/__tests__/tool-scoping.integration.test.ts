@@ -62,12 +62,12 @@ async function createMockMcpServer(
 		method: z.literal("tools/list"),
 	});
 
-	// Define request schema for tools/call
+	// Define request schema for tools/call - using proper MCP schema structure
 	const callToolSchema = z.object({
 		method: z.literal("tools/call"),
 		params: z.object({
 			name: z.string(),
-			arguments: z.record(z.unknown()).optional(),
+			arguments: z.record(z.string(), z.unknown()).optional(),
 		}),
 	});
 
@@ -149,7 +149,8 @@ describe("Tool Scoping Integration", () => {
 		expect(typeof sendTool?.execute).toBe("function");
 
 		// Verify the tool is callable (testing proxy exists without full MCP exchange)
-		// The actual MCP tool calling is tested in the dispatcher-tools integration test
+		const result = await sendTool?.execute?.({ channel_id: "123", content: "hello" });
+		expect(result).toBe("Called tool");
 	});
 
 	it("AC3.1: event task thread receives tools only from its bound connector", async () => {
