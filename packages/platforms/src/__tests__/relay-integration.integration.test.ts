@@ -29,7 +29,6 @@ const createMockMcpServer = async (name: string): Promise<Server> => {
 	});
 
 	// Manually set capabilities after creation
-	// biome-ignore lint/suspicious/noExplicitAny: MCP SDK internals
 	(server as any)._capabilities = { tools: {} };
 
 	// Add a mock tool
@@ -239,6 +238,10 @@ describe("Platform MCP Registry — Relay Integration (AC6 + AC7)", () => {
 			if (handle) {
 				await registryStandby.activateSubscription(handle);
 			}
+
+			// Verify standby registry has no active subscriptions
+			expect(registryStandby.getServerNames().length).toBe(0);
+			expect(registryStandby.getToolsForThread(threadId).size).toBe(0);
 
 			// After shutdown, should have no subscriptions
 			await registryStandby.shutdown();

@@ -15,6 +15,7 @@ import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import type { ModelRouter } from "@bound/llm";
+import { registerConnectorEventListeners } from "@bound/platforms";
 import type { CronSchedulesConfig } from "@bound/shared";
 import { formatError } from "@bound/shared";
 
@@ -134,6 +135,10 @@ export function initScheduler(
 		);
 		schedulerHandle = scheduler.start(30_000);
 		appContext.logger.info("[scheduler] Scheduler started (30s poll interval)");
+
+		// Wire connector event listeners to scheduler for task wakeups (AC7.1)
+		registerConnectorEventListeners(appContext.eventBus, scheduler);
+		appContext.logger.info("[scheduler] Connector event listeners registered");
 	} catch (error) {
 		appContext.logger.warn("[scheduler] Failed to start scheduler", {
 			error: formatError(error),
