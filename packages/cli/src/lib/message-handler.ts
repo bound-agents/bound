@@ -29,6 +29,8 @@ export interface RunLocalLoopParams {
 	connectionId?: string;
 	/** Optional system prompt addition from the WebSocket connection. */
 	systemPromptAddition?: string;
+	/** Platform MCP tools (e.g., discord_send_message). */
+	tools?: AgentLoopConfig["tools"];
 }
 
 export interface RunLocalLoopResult {
@@ -80,6 +82,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 		clientTools,
 		connectionId,
 		systemPromptAddition,
+		tools,
 	} = params;
 
 	const abortController = new AbortController();
@@ -116,6 +119,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 			clientTools,
 			connectionId,
 			systemPromptAddition,
+			tools,
 		});
 		const agentResult = await agentLoop.run();
 		return { agentResult, signal: abortController.signal };

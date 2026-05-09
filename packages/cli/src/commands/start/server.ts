@@ -27,7 +27,7 @@ import {
 	writeMessageMetadata,
 	writeOutbox,
 } from "@bound/core";
-import type { ModelBackendsConfig, ModelRouter } from "@bound/llm";
+import type { ModelBackendsConfig, ModelRouter, ToolDefinition } from "@bound/llm";
 import type { PlatformMcpRegistry } from "@bound/platforms";
 import {
 	PlatformLeaderElection,
@@ -484,21 +484,35 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							);
 							await dispatchDelegation(delegationTarget, thread_id, delegationMessageId, userId);
 						} else {
-							// Derive the platform tag and (optionally) platform tools for
+							// Derive the platform tag and platform tools for
 							// this thread. The tag tells the agent which surface the
 							// current turn originated from — web, boundless, discord, etc.
 							// — which is injected into the volatile context as
 							// "## Platform Context: <name>". Scheduler- and MCP-driven
 							// threads have no user-facing surface and stay filtered out.
-							//
-							// Platform identifier (if thread is linked to a user-facing interface).
-							// Platform tools now come exclusively through the toolRegistry,
-							// which is built by the agent-factory during loop creation.
 							const threadInterface = threadRow?.interface;
 							const platform =
 								threadInterface && isUserFacingInterface(threadInterface)
 									? threadInterface
 									: undefined;
+
+							// Resolve platform MCP tools for this thread (e.g., discord_send_message).
+							// These are converted to ToolDefinition objects for LLM visibility
+							// and RegisteredTool objects in the agent factory for dispatch.
+							let platformTools: ToolDefinition[] | undefined;
+							if (platformMcpRegistry) {
+								const platformToolsMap = platformMcpRegistry.getToolsForThread(thread_id);
+								if (platformToolsMap.size > 0) {
+									platformTools = Array.from(platformToolsMap.values()).map((tool) => ({
+										type: "function" as const,
+										function: {
+											name: tool.toolDefinition.function.name,
+											description: tool.toolDefinition.function.description,
+											parameters: tool.toolDefinition.function.parameters,
+										},
+									}));
+								}
+							}
 
 							// Resolve client tools from WS connections subscribed to this thread
 							const clientToolsFromRegistry = wsRegistry?.getClientToolsForThread(thread_id);
@@ -537,6 +551,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								clientTools: resolvedClientTools,
 								connectionId: resolvedConnectionId,
 								systemPromptAddition,
+								tools: platformTools,
 							});
 
 							if (result.yielded) {
