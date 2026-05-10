@@ -26,6 +26,8 @@ import {
 } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
+import * as bootstrap from "../commands/start/bootstrap";
+import { STALE_TASK_RESET_SQL } from "../commands/start/bootstrap";
 
 describe("Startup Wiring", () => {
 	let tmpDir: string;
@@ -418,13 +420,11 @@ describe("Startup Wiring", () => {
 				[taskId, nowStr, randomUUID(), staleHeartbeat, nowStr, nowStr],
 			);
 
-			// Run the same stale-task recovery from start.ts
+			// Use the exact constant bootstrap.ts uses, so this test would catch any
+			// syntax error introduced into the production SQL (previously they had
+			// diverged hand-copies of the SQL, hiding bugs in the production string).
 			const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-			db.query(
-				`UPDATE tasks SET status = 'pending', lease_id = NULL, claimed_by = NULL, claimed_at = NULL
-				 WHERE status = 'running'
-				   AND (heartbeat_at IS NULL OR heartbeat_at < ?)`,
-			).run(staleThreshold);
+			db.query(STALE_TASK_RESET_SQL).run(staleThreshold);
 
 			const task = db
 				.query("SELECT status, lease_id, claimed_by FROM tasks WHERE id = ?")
@@ -438,6 +438,39 @@ describe("Startup Wiring", () => {
 			expect(task?.status).toBe("pending");
 			expect(task?.lease_id).toBeNull();
 			expect(task?.claimed_by).toBeNull();
+		});
+	});
+
+	// -----------------------------------------------------------------------
+	// Test 3.5: Bootstrap SQL constants are valid SQLite
+	//
+	// These tests guard against the failure mode where a SQL string in
+	// bootstrap.ts contains an invalid token (for example, a JS-style "//"
+	// comment accidentally embedded inside a template literal) — SQLite will
+	// reject the statement at prepare() time, but only on the code path that
+	// actually runs the query (e.g. when stale running tasks exist), which
+	// makes the failure look intermittent in production.
+	// -----------------------------------------------------------------------
+	describe("bootstrap SQL constants", () => {
+		it("STALE_TASK_RESET_SQL is valid SQLite syntax", () => {
+			expect(() => db.prepare(STALE_TASK_RESET_SQL).finalize()).not.toThrow();
+		});
+
+		it("every exported _SQL constant in bootstrap.ts prepares cleanly", () => {
+			const sqlConstants = Object.entries(bootstrap).filter(
+				(entry): entry is [string, string] =>
+					entry[0].endsWith("_SQL") && typeof entry[1] === "string",
+			);
+			expect(sqlConstants.length).toBeGreaterThan(0);
+			for (const [name, sql] of sqlConstants) {
+				try {
+					db.prepare(sql).finalize();
+				} catch (err) {
+					throw new Error(
+						`bootstrap.${name} failed to prepare: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			}
 		});
 	});
 
