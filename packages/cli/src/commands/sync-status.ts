@@ -1,3 +1,4 @@
+import { dirname, join, resolve } from "node:path";
 import { getSiteId } from "@bound/core";
 import { openBoundDB } from "../lib/db";
 
@@ -53,18 +54,19 @@ interface RelayCountRow {
 	count: number;
 }
 
-export async function runSyncStatus(_args: SyncStatusArgs): Promise<void> {
+export async function runSyncStatus(args: SyncStatusArgs): Promise<void> {
+	const configDir = args.configDir || "config";
+	// Data directory is assumed to be a sibling of the config directory, matching the
+	// layout produced by `bound init` and the convention used by runConfigReload.
+	const dataDir = join(dirname(resolve(configDir)), "data");
 	console.log("Checking sync status...\n");
 
+	const db = openBoundDB(dataDir);
 	try {
-		const db = openBoundDB();
-
 		// Get local site_id
 		const localSiteId = getSiteId(db);
 		if (localSiteId === "unknown") {
-			console.error("Failed to read site_id from database. Database may not be initialized.");
-			db.close();
-			process.exit(1);
+			throw new Error("Failed to read site_id from database. Database may not be initialized.");
 		}
 		console.log(`Local site_id: ${localSiteId}\n`);
 
@@ -195,10 +197,7 @@ export async function runSyncStatus(_args: SyncStatusArgs): Promise<void> {
 				console.log(`    ${entry.kind} → ${targetShort}.. (${ageStr})${flagStr}`);
 			}
 		}
-
+	} finally {
 		db.close();
-	} catch (error) {
-		console.error("Failed to get sync status:", error);
-		process.exit(1);
 	}
 }

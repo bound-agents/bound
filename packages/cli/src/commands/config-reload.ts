@@ -11,21 +11,16 @@ export async function runConfigReload(args: ConfigReloadArgs): Promise<void> {
 	const configDir = args.configDir || "config";
 	// Assume data directory is sibling to config directory
 	const dataDir = join(dirname(resolve(configDir)), "data");
-	const _dbPath = join(dataDir, "bound.db");
 	if (args.target !== "mcp") {
-		console.error(`Error: unsupported config target: ${args.target}`);
-		console.error("Supported targets: mcp");
-		process.exit(1);
+		throw new Error(`unsupported config target: ${args.target} (supported targets: mcp)`);
 	}
 	console.log(`Reloading ${args.target} configuration...`);
+	const db = openBoundDB(dataDir);
 	try {
-		const db = openBoundDB(dataDir);
 		// Get site_id from host_meta for change-log
 		const siteId = getSiteId(db);
 		if (siteId === "unknown") {
-			console.error("Failed to read site_id from database. Database may not be initialized.");
-			db.close();
-			process.exit(1);
+			throw new Error("Failed to read site_id from database. Database may not be initialized.");
 		}
 		// Read mcp.json
 		const mcpPath = resolve(configDir, "mcp.json");
@@ -33,39 +28,33 @@ export async function runConfigReload(args: ConfigReloadArgs): Promise<void> {
 		try {
 			mcpContent = readFileSync(mcpPath, "utf-8");
 		} catch (error) {
-			console.error(`Failed to read ${mcpPath}:`, error);
-			db.close();
-			process.exit(1);
-			return; // unreachable but satisfies TS
+			throw new Error(
+				`Failed to read ${mcpPath}: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 		// Parse JSON
 		let mcpData: unknown;
 		try {
 			mcpData = JSON.parse(mcpContent);
 		} catch (error) {
-			console.error("Failed to parse mcp.json:", error);
-			db.close();
-			process.exit(1);
-			return; // unreachable but satisfies TS
+			throw new Error(
+				`Failed to parse mcp.json: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 		// Validate schema
 		const validationResult = mcpSchema.safeParse(mcpData);
 		if (!validationResult.success) {
-			console.error("MCP configuration validation failed:");
-			for (const issue of validationResult.error.issues) {
-				console.error(`  - ${issue.path.join(".")}: ${issue.message}`);
-			}
-			db.close();
-			process.exit(1);
+			const issues = validationResult.error.issues
+				.map((issue) => `  - ${issue.path.join(".")}: ${issue.message}`)
+				.join("\n");
+			throw new Error(`MCP configuration validation failed:\n${issues}`);
 		}
 		const mcpConfig = validationResult.data;
 		// Check for name collisions (duplicate server names)
 		const serverNames = new Set<string>();
 		for (const server of mcpConfig.servers) {
 			if (serverNames.has(server.name)) {
-				console.error(`Error: duplicate server name: ${server.name}`);
-				db.close();
-				process.exit(1);
+				throw new Error(`duplicate server name: ${server.name}`);
 			}
 			serverNames.add(server.name);
 		}
@@ -91,9 +80,7 @@ export async function runConfigReload(args: ConfigReloadArgs): Promise<void> {
 		txFn();
 		console.log("Configuration reload requested successfully.");
 		console.log("The orchestrator will pick up the change on next poll.");
+	} finally {
 		db.close();
-	} catch (error) {
-		console.error("Failed to reload configuration:", error);
-		process.exit(1);
 	}
 }

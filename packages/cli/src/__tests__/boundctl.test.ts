@@ -1,7 +1,10 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import { generateHlc } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { runConfigReload } from "../commands/config-reload.js";
@@ -14,59 +17,20 @@ describe("boundctl commands", () => {
 	let dbPath: string;
 
 	beforeEach(() => {
-		tempDir = mkdtempSync("boundctl-test-");
+		// Use the OS temp dir so test directories don't litter the repo root.
+		tempDir = mkdtempSync(join(tmpdir(), `boundctl-test-${randomBytes(4).toString("hex")}-`));
 		const dataDir = join(tempDir, "data");
 		mkdirSync(dataDir);
 		dbPath = join(dataDir, "bound.db");
 
-		// Initialize a test database
-		const db = new Database(dbPath);
+		// Apply the full production schema so commands like sync-status, which query
+		// relay_outbox / relay_inbox, find every table they expect rather than failing
+		// with "no such table".
+		const db = createDatabase(dbPath);
+		applySchema(db);
+		applyMetricsSchema(db);
 
-		// Create required tables
-		db.exec(`
-			CREATE TABLE IF NOT EXISTS host_meta (
-				key TEXT PRIMARY KEY,
-				value TEXT NOT NULL
-			);
-
-			CREATE TABLE IF NOT EXISTS cluster_config (
-				key TEXT PRIMARY KEY,
-				value TEXT NOT NULL,
-				modified_at TEXT NOT NULL
-			);
-
-			CREATE TABLE IF NOT EXISTS change_log (
-				hlc TEXT PRIMARY KEY,
-				table_name TEXT NOT NULL,
-				row_id TEXT NOT NULL,
-				site_id TEXT NOT NULL,
-				timestamp TEXT NOT NULL,
-				row_data TEXT NOT NULL
-			) STRICT;
-
-			CREATE TABLE IF NOT EXISTS sync_state (
-				peer_site_id TEXT PRIMARY KEY,
-				last_sync_at TEXT,
-				last_sent INTEGER,
-				last_received INTEGER,
-				sync_errors INTEGER DEFAULT 0
-			);
-
-			CREATE TABLE IF NOT EXISTS hosts (
-				site_id TEXT PRIMARY KEY,
-				host_name TEXT NOT NULL,
-				online_at TEXT,
-				deleted INTEGER DEFAULT 0
-			);
-
-			CREATE TABLE IF NOT EXISTS tasks (
-				id TEXT PRIMARY KEY,
-				status TEXT NOT NULL,
-				deleted INTEGER DEFAULT 0
-			);
-		`);
-
-		// Insert site_id
+		// Insert site_id so getSiteId() returns a real value during command execution.
 		db.query("INSERT INTO host_meta (key, value) VALUES (?, ?)").run(
 			"site_id",
 			"test-site-id-12345678",
@@ -167,9 +131,10 @@ describe("boundctl commands", () => {
 				"INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?, ?)",
 			).run(hlc, "test_table", "row1", "test-site-id", new Date().toISOString(), "{}");
 
+			const nowIso = new Date().toISOString();
 			db.query(
-				"INSERT INTO hosts (site_id, host_name, online_at, deleted) VALUES (?, ?, ?, ?)",
-			).run("peer-site-1", "peer-host-1", new Date().toISOString(), 0);
+				"INSERT INTO hosts (site_id, host_name, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+			).run("peer-site-1", "peer-host-1", nowIso, nowIso, 0);
 
 			db.query(
 				"INSERT INTO sync_state (peer_site_id, last_sync_at, last_sent, last_received, sync_errors) VALUES (?, ?, ?, ?, ?)",
@@ -197,13 +162,12 @@ describe("boundctl commands", () => {
 		it("drains and switches hub successfully", async () => {
 			const dataDir = join(tempDir, "data");
 
-			// Add a running task
+			// Add a completed task so the drain loop sees zero running tasks immediately.
 			const db = new Database(dbPath);
-			db.query("INSERT INTO tasks (id, status, deleted) VALUES (?, ?, ?)").run(
-				"task-1",
-				"completed",
-				0,
-			);
+			const nowIso = new Date().toISOString();
+			db.query(
+				"INSERT INTO tasks (id, type, status, trigger_spec, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			).run("task-1", "deferred", "completed", "manual", nowIso, nowIso, 0);
 			db.close();
 
 			await runDrain({
@@ -234,13 +198,12 @@ describe("boundctl commands", () => {
 		it("handles timeout when tasks are running", async () => {
 			const dataDir = join(tempDir, "data");
 
-			// Add a running task that won't complete
+			// Add a running task that won't complete during the drain window.
 			const db = new Database(dbPath);
-			db.query("INSERT INTO tasks (id, status, deleted) VALUES (?, ?, ?)").run(
-				"task-1",
-				"running",
-				0,
-			);
+			const nowIso = new Date().toISOString();
+			db.query(
+				"INSERT INTO tasks (id, type, status, trigger_spec, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			).run("task-1", "deferred", "running", "manual", nowIso, nowIso, 0);
 			db.close();
 
 			// Use very short timeout
@@ -269,26 +232,7 @@ describe("boundctl commands", () => {
 			const configDir = join(tempDir, "config");
 			mkdirSync(configDir);
 
-			// Add relay_outbox to this test's database
-			const db = new Database(dbPath);
-			db.exec(`
-				CREATE TABLE IF NOT EXISTS relay_outbox (
-					id TEXT PRIMARY KEY,
-					source_site_id TEXT,
-					target_site_id TEXT NOT NULL,
-					kind TEXT NOT NULL,
-					ref_id TEXT,
-					idempotency_key TEXT,
-					payload TEXT NOT NULL,
-					created_at TEXT NOT NULL,
-					expires_at TEXT NOT NULL,
-					delivered INTEGER DEFAULT 0
-				)
-			`);
-
-			db.close();
-
-			// Set hub
+			// Set hub (applySchema in beforeEach already provisioned relay_outbox)
 			await runSetHub({
 				hostName: "new-hub-host",
 				configDir: dataDir,
@@ -324,24 +268,9 @@ describe("boundctl commands", () => {
 			};
 			writeFileSync(join(dataDir, "sync.json"), JSON.stringify(syncConfig));
 
-			// Add relay_outbox to this test's database
+			// Insert an undelivered outbox entry (will not be delivered, causing timeout).
+			// applySchema in beforeEach already provisioned relay_outbox.
 			const db = new Database(dbPath);
-			db.exec(`
-				CREATE TABLE IF NOT EXISTS relay_outbox (
-					id TEXT PRIMARY KEY,
-					source_site_id TEXT,
-					target_site_id TEXT NOT NULL,
-					kind TEXT NOT NULL,
-					ref_id TEXT,
-					idempotency_key TEXT,
-					payload TEXT NOT NULL,
-					created_at TEXT NOT NULL,
-					expires_at TEXT NOT NULL,
-					delivered INTEGER DEFAULT 0
-				)
-			`);
-
-			// Insert an undelivered outbox entry (will not be delivered, causing timeout)
 			db.query(`
 				INSERT INTO relay_outbox (
 					id, source_site_id, target_site_id, kind, ref_id,
