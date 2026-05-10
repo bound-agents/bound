@@ -6,6 +6,7 @@ import type { Logger, TypedEventEmitter } from "@bound/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
 	type ConnectorHandleRecord,
 	getAllActiveConnectorHandles,
@@ -16,7 +17,7 @@ import { DISPATCHER_TASK_ID } from "./dispatcher.js";
 
 export interface PlatformServerEntry {
 	name: string;
-	server: Server;
+	server: Server | McpServer;
 	client: Client;
 	clientTransport: InMemoryTransport;
 	serverTransport: InMemoryTransport;
@@ -130,7 +131,7 @@ export class PlatformMcpRegistry {
 	 * Creates an InMemoryTransport pair, connects client and server.
 	 * Also discovers available tools from the server.
 	 */
-	async registerServer(name: string, server: Server): Promise<PlatformServerEntry> {
+	async registerServer(name: string, server: Server | McpServer): Promise<PlatformServerEntry> {
 		if (this.servers.has(name)) {
 			throw new Error(`Platform server '${name}' already registered`);
 		}

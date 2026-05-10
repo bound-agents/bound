@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { CallToolResultSchema, ListToolsResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { chunkMessage, createDiscordServer } from "../connectors/discord-server";
+import { createDiscordServer } from "../connectors/discord-server";
 
 // Mock Logger
 const mockLogger: Logger = {
@@ -583,25 +584,16 @@ describe("Discord MCP Server", () => {
 		server = discordServer;
 		client = mcpClient;
 
-		const toolsListSchema = z.object({
-			tools: z.array(
-				z.object({
-					name: z.string(),
-					description: z.string().optional(),
-				}),
-			),
-		});
-
-		const result = await mcpClient.request({ method: "tools/list", params: {} }, toolsListSchema);
+		const result = await mcpClient.request(
+			{ method: "tools/list", params: {} },
+			ListToolsResultSchema,
+		);
 
 		expect(result.tools).toBeDefined();
 		const toolNames = result.tools.map((t: { name: string }) => t.name);
 		expect(toolNames).toContain("discord_send_message");
 
 		// AC2.1: Execute the tool and verify it sends to the correct channel
-		const toolCallSchema = z.object({
-			content: z.array(z.unknown()),
-		});
 
 		const callResult = await mcpClient.request(
 			{
@@ -614,7 +606,7 @@ describe("Discord MCP Server", () => {
 					},
 				},
 			},
-			toolCallSchema,
+			CallToolResultSchema,
 		);
 
 		expect(callResult.content).toBeDefined();
@@ -635,89 +627,6 @@ describe("Discord MCP Server", () => {
 		expect(typingCalls).toContain("ch-1");
 	});
 
-	it("AC2.2: chunkMessage handles exactly 2000 chars", () => {
-		const msg2000 = "a".repeat(2000);
-		const chunks = chunkMessage(msg2000);
-
-		expect(chunks.length).toBe(1);
-		expect(chunks[0].length).toBe(2000);
-	});
-
-	it("AC2.2: chunkMessage splits long messages", () => {
-		const msg5000 = "a".repeat(5000);
-		const chunks = chunkMessage(msg5000);
-
-		expect(chunks.length).toBeGreaterThan(1);
-		for (const chunk of chunks) {
-			expect(chunk.length).toBeLessThanOrEqual(2000);
-		}
-	});
-
-	it("AC2.2: chunkMessage handles paragraph breaks", () => {
-		const msg = "para1\n\npara2".repeat(200); // Will exceed 2000 chars with paragraph breaks
-		const chunks = chunkMessage(msg);
-
-		expect(chunks.length).toBeGreaterThan(1);
-		for (const chunk of chunks) {
-			expect(chunk.length).toBeLessThanOrEqual(2000);
-		}
-	});
-
-	it("AC2.2: chunkMessage handles line breaks", () => {
-		const msg = "line\n".repeat(500) + "a".repeat(500); // Mix of line breaks and content
-		const chunks = chunkMessage(msg);
-
-		expect(chunks.length).toBeGreaterThan(1);
-		for (const chunk of chunks) {
-			expect(chunk.length).toBeLessThanOrEqual(2000);
-		}
-	});
-
-	it("AC2.2: chunkMessage handles word boundaries", () => {
-		const msg = "word ".repeat(500) + "a".repeat(500); // Word separated content
-		const chunks = chunkMessage(msg);
-
-		expect(chunks.length).toBeGreaterThan(1);
-		for (const chunk of chunks) {
-			expect(chunk.length).toBeLessThanOrEqual(2000);
-		}
-	});
-
-	it("AC2.2: chunkMessage handles hard split for long words", () => {
-		const longWord = "a".repeat(2500);
-		const chunks = chunkMessage(longWord);
-
-		expect(chunks.length).toBeGreaterThan(1);
-		for (const chunk of chunks) {
-			expect(chunk.length).toBeLessThanOrEqual(2000);
-		}
-	});
-
-	it("AC2.2: chunkMessage returns single chunk for short messages", () => {
-		const msg = "Hello world";
-		const chunks = chunkMessage(msg);
-
-		expect(chunks.length).toBe(1);
-		expect(chunks[0]).toBe(msg);
-	});
-
-	it("AC2.2: chunkMessage returns empty array for empty string", () => {
-		const chunks = chunkMessage("");
-
-		expect(chunks.length).toBe(1);
-		expect(chunks[0]).toBe("");
-	});
-
-	it("AC2.2: chunkMessage with custom maxLength", () => {
-		const msg = "a".repeat(500);
-		const chunks = chunkMessage(msg, 100);
-
-		expect(chunks.length).toBeGreaterThan(1);
-		for (const chunk of chunks) {
-			expect(chunk.length).toBeLessThanOrEqual(100);
-		}
-	});
-
 	it("AC2.3: Typing indicator is available in mock", async () => {
 		const config: PlatformConnectorConfig = { allowed_users: [] };
 		const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
@@ -735,16 +644,10 @@ describe("Discord MCP Server", () => {
 		server = discordServer;
 		client = mcpClient;
 
-		const toolsListSchema = z.object({
-			tools: z.array(
-				z.object({
-					name: z.string(),
-					description: z.string().optional(),
-				}),
-			),
-		});
-
-		const result = await mcpClient.request({ method: "tools/list", params: {} }, toolsListSchema);
+		const result = await mcpClient.request(
+			{ method: "tools/list", params: {} },
+			ListToolsResultSchema,
+		);
 
 		expect(result.tools).toBeDefined();
 		const toolNames = result.tools.map((t: { name: string }) => t.name);
@@ -796,10 +699,6 @@ describe("Discord MCP Server", () => {
 		expect(actualCallbackId).toBeDefined();
 
 		// Now call the tool with the correct callback_id
-		const toolCallSchema = z.object({
-			content: z.array(z.unknown()),
-		});
-
 		const callResult = await mcpClient.request(
 			{
 				method: "tools/call",
@@ -811,7 +710,7 @@ describe("Discord MCP Server", () => {
 					},
 				},
 			},
-			toolCallSchema,
+			CallToolResultSchema,
 		);
 
 		expect(callResult.content).toBeDefined();
@@ -823,6 +722,35 @@ describe("Discord MCP Server", () => {
 		expect(mockDiscordClient._getEditReplyCalls().length).toBeGreaterThan(0);
 	});
 
+	it("discord_send_message returns an error for content > 2000 chars (no chunking)", async () => {
+		const config: PlatformConnectorConfig = { allowed_users: [] };
+		const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+		server = discordServer;
+		client = mcpClient;
+
+		const callResult = await mcpClient.request(
+			{
+				method: "tools/call",
+				params: {
+					name: "discord_send_message",
+					arguments: {
+						channel_id: "ch-1",
+						content: "a".repeat(2001),
+					},
+				},
+			},
+			CallToolResultSchema,
+		);
+
+		expect(callResult.isError).toBe(true);
+		const contentBlock = callResult.content[0] as Record<string, unknown>;
+		expect(String(contentBlock.text)).toContain("2000");
+
+		// Verify nothing was sent to Discord
+		const sendCalls = mockDiscordClient._getSendCalls();
+		expect(sendCalls.length).toBe(0);
+	});
+
 	it("AC2.5: Expired callback_id returns error", async () => {
 		const config: PlatformConnectorConfig = { allowed_users: [] };
 		const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
@@ -830,11 +758,6 @@ describe("Discord MCP Server", () => {
 		client = mcpClient;
 
 		// Try to call with an expired callback_id that doesn't exist
-		const toolCallSchema = z.object({
-			content: z.array(z.unknown()),
-			isError: z.boolean().optional(),
-		});
-
 		const callResult = await mcpClient.request(
 			{
 				method: "tools/call",
@@ -846,7 +769,7 @@ describe("Discord MCP Server", () => {
 					},
 				},
 			},
-			toolCallSchema,
+			CallToolResultSchema,
 		);
 
 		expect(callResult.content).toBeDefined();
@@ -889,12 +812,6 @@ describe("Discord MCP Server", () => {
 
 	it("createDiscordServer exported from @bound/platforms", async () => {
 		const { createDiscordServer: exported } = await import("../index.js");
-		expect(exported).toBeDefined();
-		expect(typeof exported).toBe("function");
-	});
-
-	it("chunkMessage exported from @bound/platforms", async () => {
-		const { chunkMessage: exported } = await import("../index.js");
 		expect(exported).toBeDefined();
 		expect(typeof exported).toBe("function");
 	});
