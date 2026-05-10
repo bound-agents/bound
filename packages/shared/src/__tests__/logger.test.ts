@@ -76,7 +76,12 @@ describe("createLogger", () => {
 	});
 
 	it("defaults to info level when LOG_LEVEL not set", async () => {
-		process.env.LOG_LEVEL = undefined;
+		// `process.env.X = undefined` coerces to the literal string "undefined" (process.env
+		// stringifies all values), which then bypasses `process.env.LOG_LEVEL || "info"` in
+		// logger.ts. `delete` is the only correct way to make the env var actually absent;
+		// biome's auto-fix for noDelete would silently reintroduce the bug.
+		// biome-ignore lint/performance/noDelete: see note above
+		delete process.env.LOG_LEVEL;
 		const logger = createLogger("@bound/test", "TestComponent");
 
 		logger.debug("Debug message");
