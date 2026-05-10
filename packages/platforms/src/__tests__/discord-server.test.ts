@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { CallToolResultSchema, ListToolsResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { createDiscordServer } from "../connectors/discord-server";
 
@@ -583,25 +584,16 @@ describe("Discord MCP Server", () => {
 		server = discordServer;
 		client = mcpClient;
 
-		const toolsListSchema = z.object({
-			tools: z.array(
-				z.object({
-					name: z.string(),
-					description: z.string().optional(),
-				}),
-			),
-		});
-
-		const result = await mcpClient.request({ method: "tools/list", params: {} }, toolsListSchema);
+		const result = await mcpClient.request(
+			{ method: "tools/list", params: {} },
+			ListToolsResultSchema,
+		);
 
 		expect(result.tools).toBeDefined();
 		const toolNames = result.tools.map((t: { name: string }) => t.name);
 		expect(toolNames).toContain("discord_send_message");
 
 		// AC2.1: Execute the tool and verify it sends to the correct channel
-		const toolCallSchema = z.object({
-			content: z.array(z.unknown()),
-		});
 
 		const callResult = await mcpClient.request(
 			{
@@ -614,7 +606,7 @@ describe("Discord MCP Server", () => {
 					},
 				},
 			},
-			toolCallSchema,
+			CallToolResultSchema,
 		);
 
 		expect(callResult.content).toBeDefined();
@@ -652,16 +644,10 @@ describe("Discord MCP Server", () => {
 		server = discordServer;
 		client = mcpClient;
 
-		const toolsListSchema = z.object({
-			tools: z.array(
-				z.object({
-					name: z.string(),
-					description: z.string().optional(),
-				}),
-			),
-		});
-
-		const result = await mcpClient.request({ method: "tools/list", params: {} }, toolsListSchema);
+		const result = await mcpClient.request(
+			{ method: "tools/list", params: {} },
+			ListToolsResultSchema,
+		);
 
 		expect(result.tools).toBeDefined();
 		const toolNames = result.tools.map((t: { name: string }) => t.name);
@@ -713,10 +699,6 @@ describe("Discord MCP Server", () => {
 		expect(actualCallbackId).toBeDefined();
 
 		// Now call the tool with the correct callback_id
-		const toolCallSchema = z.object({
-			content: z.array(z.unknown()),
-		});
-
 		const callResult = await mcpClient.request(
 			{
 				method: "tools/call",
@@ -728,7 +710,7 @@ describe("Discord MCP Server", () => {
 					},
 				},
 			},
-			toolCallSchema,
+			CallToolResultSchema,
 		);
 
 		expect(callResult.content).toBeDefined();
@@ -746,11 +728,6 @@ describe("Discord MCP Server", () => {
 		server = discordServer;
 		client = mcpClient;
 
-		const toolCallSchema = z.object({
-			content: z.array(z.unknown()),
-			isError: z.boolean().optional(),
-		});
-
 		const callResult = await mcpClient.request(
 			{
 				method: "tools/call",
@@ -762,7 +739,7 @@ describe("Discord MCP Server", () => {
 					},
 				},
 			},
-			toolCallSchema,
+			CallToolResultSchema,
 		);
 
 		expect(callResult.isError).toBe(true);
@@ -781,11 +758,6 @@ describe("Discord MCP Server", () => {
 		client = mcpClient;
 
 		// Try to call with an expired callback_id that doesn't exist
-		const toolCallSchema = z.object({
-			content: z.array(z.unknown()),
-			isError: z.boolean().optional(),
-		});
-
 		const callResult = await mcpClient.request(
 			{
 				method: "tools/call",
@@ -797,7 +769,7 @@ describe("Discord MCP Server", () => {
 					},
 				},
 			},
-			toolCallSchema,
+			CallToolResultSchema,
 		);
 
 		expect(callResult.content).toBeDefined();
