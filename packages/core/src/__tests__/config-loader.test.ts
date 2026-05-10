@@ -31,13 +31,20 @@ describe("Config Loader", () => {
 		});
 
 		it("uses default values when env var not set", () => {
-			process.env.MISSING_VAR = undefined;
+			// `process.env.X = undefined` coerces to the literal string "undefined" (process.env
+			// stringifies all values), which satisfies the `envValue !== undefined` check in
+			// expandEnvVars and skips the default branch. `delete` is the only correct way to
+			// make the env var actually absent; biome's auto-fix for noDelete would silently
+			// reintroduce the bug.
+			// biome-ignore lint/performance/noDelete: see note above
+			delete process.env.MISSING_VAR;
 			const result = expandEnvVars("prefix-${MISSING_VAR:-default}-suffix");
 			expect(result).toBe("prefix-default-suffix");
 		});
 
 		it("throws when env var missing and no default", () => {
-			process.env.MISSING_VAR = undefined;
+			// biome-ignore lint/performance/noDelete: clearing process.env requires delete; see previous test
+			delete process.env.MISSING_VAR;
 			expect(() => expandEnvVars("${MISSING_VAR}")).toThrow();
 		});
 
