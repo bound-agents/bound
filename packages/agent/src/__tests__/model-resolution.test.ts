@@ -228,7 +228,7 @@ describe("Model Resolution", () => {
 			}
 		});
 
-		it("sorts remote hosts by online_at when returning remote resolution (AC2.2)", () => {
+		it("sorts remote hosts by freshness when returning remote resolution (AC2.2)", () => {
 			const now = new Date();
 			const recentTime = new Date(now.getTime() - 1 * 60 * 1000).toISOString();
 			const olderTime = new Date(now.getTime() - 3 * 60 * 1000).toISOString();
@@ -237,28 +237,14 @@ describe("Model Resolution", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"older-host",
-					"Older Host",
-					JSON.stringify(["claude-haiku"]),
-					0,
-					olderTime,
-					new Date().toISOString(),
-				],
+				["older-host", "Older Host", JSON.stringify(["claude-haiku"]), 0, olderTime, olderTime],
 			);
 
 			db.run(
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				[
-					"recent-host",
-					"Recent Host",
-					JSON.stringify(["claude-haiku"]),
-					0,
-					recentTime,
-					new Date().toISOString(),
-				],
+				["recent-host", "Recent Host", JSON.stringify(["claude-haiku"]), 0, recentTime, recentTime],
 			);
 
 			const mockBackend = {
