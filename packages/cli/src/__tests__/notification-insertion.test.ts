@@ -8,7 +8,7 @@
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -18,6 +18,7 @@ import {
 	enqueueNotification,
 	insertRow,
 } from "@bound/core";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { formatNotification } from "../commands/start/server";
 
 describe("Notification message insertion", () => {
@@ -42,9 +43,11 @@ describe("Notification message insertion", () => {
 		db.run("DELETE FROM change_log");
 	});
 
-	afterAll(() => {
+	afterAll(async () => {
 		db.close();
-		rmSync(tmpDir, { recursive: true, force: true });
+		// cleanupTmpDir retries on Windows EBUSY where SQLite WAL/SHM handles
+		// occasionally outlive db.close(); bare rmSync fails immediately.
+		await cleanupTmpDir(tmpDir);
 	});
 
 	function createThread(): string {
