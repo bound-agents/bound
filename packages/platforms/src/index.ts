@@ -5,7 +5,7 @@ export type {
 	PlatformMcpRegistryDeps,
 	PlatformRegisteredTool,
 } from "./mcp-registry.js";
-export { createDiscordServer, chunkMessage } from "./connectors/discord-server.js";
+export { createDiscordServer } from "./connectors/discord-server.js";
 export { connectorHandleId } from "./connector-handle-id.js";
 export {
 	createConnectorHandle,

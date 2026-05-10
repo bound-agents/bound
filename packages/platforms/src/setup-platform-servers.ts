@@ -1,5 +1,4 @@
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
-import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { createDiscordServer } from "./connectors/discord-server.js";
 import type { PlatformMcpRegistry } from "./mcp-registry.js";
 
@@ -39,7 +38,7 @@ export async function setupDiscordServers(
 			],
 		});
 
-		const server: Server = createDiscordServer(config, discordClient, logger);
+		const server = createDiscordServer(config, discordClient, logger);
 		await registry.registerServer(config.platform, server);
 		await discordClient.login(config.token);
 
