@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createChangeLogEntry, getSiteId } from "@bound/core";
 import { openBoundDB } from "../lib/db";
 export interface SetHubArgs {
@@ -32,16 +32,17 @@ function loadRelayConfig(configDir: string): { drain_timeout_seconds: number } {
 	}
 }
 export async function runSetHub(args: SetHubArgs): Promise<void> {
-	const configDir = args.configDir || "data";
+	const configDir = args.configDir || "config";
+	// Data directory is assumed to be a sibling of the config directory, matching the
+	// layout produced by `bound init` and the convention used by runConfigReload.
+	const dataDir = join(dirname(resolve(configDir)), "data");
 	console.log(`Setting cluster hub to: ${args.hostName}`);
+	const db = openBoundDB(dataDir);
 	try {
-		const db = openBoundDB();
 		// Get site_id for change_log
 		const siteId = getSiteId(db);
 		if (siteId === "unknown") {
-			console.error("Failed to read site_id from database. Database may not be initialized.");
-			db.close();
-			process.exit(1);
+			throw new Error("Failed to read site_id from database. Database may not be initialized.");
 		}
 
 		// Ensure tables exist — boundctl may run before the main process
@@ -175,9 +176,7 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 				);
 			}
 		}
+	} finally {
 		db.close();
-	} catch (error) {
-		console.error("Failed to set hub:", error);
-		process.exit(1);
 	}
 }

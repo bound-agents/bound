@@ -1,7 +1,6 @@
-import { openBoundDB } from "../lib/db";
-
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createChangeLogEntry, getSiteId } from "@bound/core";
+import { openBoundDB } from "../lib/db";
 export interface DrainArgs {
 	newHub: string;
 	timeout?: number;
@@ -15,20 +14,20 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 export async function runDrain(args: DrainArgs): Promise<void> {
-	const dataDir = args.configDir || "data";
-	const _dbPath = resolve(dataDir, "bound.db");
+	const configDir = args.configDir || "config";
+	// Data directory is assumed to be a sibling of the config directory, matching the
+	// layout produced by `bound init` and the convention used by runConfigReload.
+	const dataDir = join(dirname(resolve(configDir)), "data");
 	const timeoutSeconds = args.timeout ?? 120;
 	const timeoutMs = timeoutSeconds * 1000;
 	console.log(`Draining current hub and switching to: ${args.newHub}`);
 	console.log(`Timeout: ${timeoutSeconds}s\n`);
+	const db = openBoundDB(dataDir);
 	try {
-		const db = openBoundDB();
 		// Get site_id from host_meta for change-log
 		const siteId = getSiteId(db);
 		if (siteId === "unknown") {
-			console.error("Failed to read site_id from database. Database may not be initialized.");
-			db.close();
-			process.exit(1);
+			throw new Error("Failed to read site_id from database. Database may not be initialized.");
 		}
 		const now = new Date().toISOString();
 		// Step 1: Set emergency_stop = "drain" to prevent new task scheduling
@@ -108,9 +107,7 @@ export async function runDrain(args: DrainArgs): Promise<void> {
 		clearTx();
 		console.log("Emergency stop cleared.\n");
 		console.log(`Drain complete. Cluster hub is now: ${args.newHub}`);
+	} finally {
 		db.close();
-	} catch (error) {
-		console.error("Failed to drain:", error);
-		process.exit(1);
 	}
 }
