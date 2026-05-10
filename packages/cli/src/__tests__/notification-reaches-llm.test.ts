@@ -20,11 +20,12 @@
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assembleContext } from "@bound/agent";
 import { applySchema, claimPending, createDatabase, enqueueNotification } from "@bound/core";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { resolveDelegationMessageId } from "../commands/start/server";
 
 describe("Notification → LLM round-trip (Invariant #19)", () => {
@@ -49,9 +50,11 @@ describe("Notification → LLM round-trip (Invariant #19)", () => {
 		db.run("DELETE FROM change_log");
 	});
 
-	afterAll(() => {
+	afterAll(async () => {
 		db.close();
-		rmSync(tmpDir, { recursive: true, force: true });
+		// cleanupTmpDir retries on Windows EBUSY where SQLite WAL/SHM handles
+		// occasionally outlive db.close(); bare rmSync fails immediately.
+		await cleanupTmpDir(tmpDir);
 	});
 
 	function createThread(): { userId: string; threadId: string } {

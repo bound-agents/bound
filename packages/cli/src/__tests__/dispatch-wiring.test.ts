@@ -14,7 +14,7 @@
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -32,6 +32,7 @@ import {
 	resetProcessing,
 } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 
 describe("Dispatch Queue Wiring", () => {
 	let tmpDir: string;
@@ -55,9 +56,11 @@ describe("Dispatch Queue Wiring", () => {
 		db.run("DELETE FROM users");
 	});
 
-	afterAll(() => {
+	afterAll(async () => {
 		db.close();
-		rmSync(tmpDir, { recursive: true, force: true });
+		// Use cleanupTmpDir which retries on Windows EBUSY: SQLite WAL/SHM file handles
+		// occasionally outlive db.close() briefly, and bare rmSync fails immediately.
+		await cleanupTmpDir(tmpDir);
 	});
 
 	function createThread(): { userId: string; threadId: string } {

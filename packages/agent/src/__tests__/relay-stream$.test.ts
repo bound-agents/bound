@@ -1,6 +1,7 @@
 import Database from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Subject, lastValueFrom } from "rxjs";
 import { tap } from "rxjs/operators";
@@ -8,6 +9,7 @@ import { tap } from "rxjs/operators";
 import { applySchema } from "@bound/core";
 import type { StreamChunk } from "@bound/llm";
 import { TypedEventEmitter } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { createRelayStream$ } from "../relay-stream$";
 
 const mockLogger = {
@@ -18,24 +20,23 @@ const mockLogger = {
 };
 
 function createTestDb(): { db: Database; tmpDir: string } {
-	const tmpDir = mkdtempSync(join("/tmp", "bound-test-"));
+	// tmpdir() works on Windows where the previous "/tmp" path did not exist.
+	const tmpDir = mkdtempSync(join(tmpdir(), "bound-test-"));
 	const dbPath = join(tmpDir, "test.db");
 	const db = new Database(dbPath);
 	applySchema(db);
 	return { db, tmpDir };
 }
 
-function cleanup(db: Database, tmpDir: string) {
+async function cleanup(db: Database, tmpDir: string) {
 	try {
 		db.close();
 	} catch (_e) {
 		/* already closed */
 	}
-	try {
-		rmSync(tmpDir, { recursive: true, force: true });
-	} catch (_e) {
-		/* already removed */
-	}
+	// cleanupTmpDir retries on Windows EBUSY where SQLite WAL/SHM handles
+	// occasionally outlive db.close(); bare rmSync fails immediately.
+	await cleanupTmpDir(tmpDir);
 }
 
 function getStreamIdFromOutbox(db: Database): string {
@@ -90,8 +91,8 @@ describe("createRelayStream$", () => {
 	let db: Database;
 	let tmpDir: string;
 
-	afterEach(() => {
-		cleanup(db, tmpDir);
+	afterEach(async () => {
+		await cleanup(db, tmpDir);
 	});
 
 	it("AC1.1: Sequential chunks emitted immediately", async () => {
