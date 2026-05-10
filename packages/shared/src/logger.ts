@@ -34,7 +34,10 @@ function getRootLogger(): pino.Logger {
 	mkdirSync(logDir, { recursive: true });
 	const logFile = join(logDir, "bound.log");
 
-	const fileStream = pino.destination({ dest: logFile, sync: false });
+	// sync: true — opens the file synchronously so that it is ready before the
+	// first log write. This prevents "sonic boom is not ready yet" crashes when
+	// the process exits quickly after startup.
+	const fileStream = pino.destination({ dest: logFile, sync: true });
 	const streams: pino.StreamEntry[] = [{ stream: fileStream, level }];
 
 	if (process.env.BOUND_LOG_STDERR !== "0") {

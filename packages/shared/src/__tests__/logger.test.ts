@@ -31,9 +31,7 @@ describe("createLogger", () => {
 
 		logger.info("Test message");
 
-		// pino file destination is async — give it a moment to flush
-		await Bun.sleep(100);
-
+		// pino file destination is synchronous (sync: true) — file is ready immediately
 		expect(existsSync(logFile)).toBe(true);
 		const content = readFileSync(logFile, "utf-8").trim();
 		const lines = content.split("\n").filter(Boolean);
@@ -53,8 +51,6 @@ describe("createLogger", () => {
 
 		logger.warn("Test warning", { userId: "user-123", action: "delete" });
 
-		await Bun.sleep(100);
-
 		const content = readFileSync(logFile, "utf-8").trim();
 		const lines = content.split("\n").filter(Boolean);
 		const logEntry = JSON.parse(lines[lines.length - 1]);
@@ -71,8 +67,6 @@ describe("createLogger", () => {
 		logger.warn("Warn message");
 		logger.error("Error message");
 
-		await Bun.sleep(100);
-
 		const content = readFileSync(logFile, "utf-8").trim();
 		const lines = content.split("\n").filter(Boolean);
 		expect(lines.length).toBe(1);
@@ -87,8 +81,6 @@ describe("createLogger", () => {
 
 		logger.debug("Debug message");
 		logger.info("Info message");
-
-		await Bun.sleep(100);
 
 		const content = readFileSync(logFile, "utf-8").trim();
 		const lines = content.split("\n").filter(Boolean);
