@@ -43,6 +43,23 @@ try {
 
 const bootstrapLogger = createLogger("@bound/cli", "start-bootstrap");
 
+/**
+ * SQL run during crash recovery to release tasks the previous process left in
+ * `status = 'running'` with a stale or missing heartbeat. Exported so tests can
+ * prepare the exact same statement the bootstrap path uses — keeping production
+ * and test in lockstep prevents the divergence that previously hid a syntax
+ * error in this string.
+ *
+ * Kept on a single source line on purpose: the outbox-invariant validator
+ * (`scripts/validate-outbox-invariant.ts`) only exempts the line containing the
+ * `// outbox-exempt` marker, so the marker must sit on the same line as the
+ * `UPDATE tasks` keyword. Splitting across lines via a template literal would
+ * either leak `//` into the SQL string (the bug this constant was extracted to
+ * prevent) or move the keyword onto an unmarked line that re-trips the validator.
+ */
+export const STALE_TASK_RESET_SQL =
+	"UPDATE tasks SET status = 'pending', lease_id = NULL, claimed_by = NULL, claimed_at = NULL WHERE status = 'running' AND (heartbeat_at IS NULL OR heartbeat_at < ?)"; // outbox-exempt: crash recovery
+
 export interface StartArgs {
 	configDir?: string;
 	/** If true, wipes the local DB and requests a full reseed from the hub. */
@@ -346,10 +363,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 			.all(staleThreshold) as Array<{ id: string }>;
 
 		if (staleRunning.length > 0) {
-			const updateStaleQuery = `UPDATE tasks SET status = 'pending', lease_id = NULL, claimed_by = NULL, claimed_at = NULL // outbox-exempt: crash recovery
-				 WHERE status = 'running'
-				   AND (heartbeat_at IS NULL OR heartbeat_at < ?)`;
-			appContext.db.query(updateStaleQuery).run(staleThreshold);
+			appContext.db.query(STALE_TASK_RESET_SQL).run(staleThreshold);
 			appContext.logger.info(
 				`[recovery] Reset ${staleRunning.length} stale running task(s) to pending`,
 			);
