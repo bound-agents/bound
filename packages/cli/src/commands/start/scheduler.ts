@@ -15,7 +15,14 @@ import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import type { ModelRouter } from "@bound/llm";
-import { type PlatformMcpRegistry, registerConnectorEventListeners } from "@bound/platforms";
+import {
+	type PlatformMcpRegistry,
+	type PlatformRegisteredTool,
+	createConnectorAttachTool,
+	createConnectorChannelsTool,
+	createConnectorListTool,
+	registerConnectorEventListeners,
+} from "@bound/platforms";
 import type { CronSchedulesConfig } from "@bound/shared";
 import { formatError } from "@bound/shared";
 
@@ -94,6 +101,28 @@ export function initScheduler(
 	appContext.logger.info("Starting scheduler...");
 	let schedulerHandle: { stop: () => void } | null = null;
 	try {
+		// Create dispatcher-specific tools (connector_list, connector_channels, connector_attach).
+		// These are only given to the dispatcher task, which manages connector handle setup.
+		let dispatcherTools: PlatformRegisteredTool[] = [];
+		if (platformMcpRegistry) {
+			const dispatcherCtx = {
+				registry: platformMcpRegistry,
+				db: appContext.db,
+				siteId: appContext.siteId,
+			};
+			const rawTools = [
+				createConnectorListTool(dispatcherCtx),
+				createConnectorChannelsTool(dispatcherCtx),
+				createConnectorAttachTool(dispatcherCtx),
+			];
+			// Adapt DispatcherTool (kind: "builtin") to PlatformRegisteredTool (kind: "platform")
+			dispatcherTools = rawTools.map((t) => ({
+				kind: "platform" as const,
+				toolDefinition: t.toolDefinition,
+				execute: t.execute,
+			}));
+		}
+
 		const scheduler = new Scheduler(
 			appContext,
 			agentLoopFactory,
@@ -132,6 +161,13 @@ export function initScheduler(
 						: undefined,
 				platformToolResolver: platformMcpRegistry
 					? (threadId: string) => {
+							// Dispatcher task receives ALL platform tools + dispatcher-specific tools
+							if (platformMcpRegistry.isDispatcherThread(threadId)) {
+								const allPlatformTools = Array.from(
+									platformMcpRegistry.getAllPlatformTools().values(),
+								);
+								return [...allPlatformTools, ...dispatcherTools];
+							}
 							const tools = platformMcpRegistry.getToolsForThread(threadId);
 							return Array.from(tools.values());
 						}
