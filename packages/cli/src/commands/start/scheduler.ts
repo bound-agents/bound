@@ -145,6 +145,14 @@ export function initScheduler(
 		// Wire connector event listeners to scheduler for task wakeups (AC7.1)
 		registerConnectorEventListeners(appContext.eventBus, scheduler);
 		appContext.logger.info("[scheduler] Connector event listeners registered");
+
+		// Emit synthetic list_changed to wake the dispatcher task. Platform servers
+		// register during Phase 7 (before the scheduler exists), so the real
+		// connector:list_changed event is lost. This kick ensures the dispatcher
+		// runs at least once after startup.
+		if (platformMcpRegistry) {
+			appContext.eventBus.emit("connector:list_changed", { server_name: "__startup" });
+		}
 	} catch (error) {
 		appContext.logger.warn("[scheduler] Failed to start scheduler", {
 			error: formatError(error),
