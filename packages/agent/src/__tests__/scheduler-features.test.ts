@@ -1846,4 +1846,276 @@ describe("Scheduler features", () => {
 			db.run("DELETE FROM messages WHERE thread_id = ?", [threadId]);
 		});
 	});
+
+	// -----------------------------------------------------------------------
+	// Event task recovery (resetEventTask)
+	// -----------------------------------------------------------------------
+	describe("event task recovery", () => {
+		function insertEventTask(
+			id: string,
+			opts: {
+				status?: string;
+				consecutiveFailures?: number;
+				triggerSpec?: string;
+			} = {},
+		): void {
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'event', ?, ?, NULL, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'results', NULL, 0, 5,
+					?, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[
+					id,
+					opts.status ?? "pending",
+					opts.triggerSpec ?? "connector:list_changed",
+					pastTime,
+					opts.consecutiveFailures ?? 0,
+					now,
+					now,
+				],
+			);
+		}
+
+		it("resets event task to pending after soft failure", async () => {
+			const taskId = randomUUID();
+			insertEventTask(taskId);
+
+			const softErrorFactory = () => ({
+				run: async (): Promise<AgentLoopResult> => ({
+					messagesCreated: 0,
+					toolCallsMade: 0,
+					filesChanged: 0,
+					error: "Transient model failure",
+				}),
+			});
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, softErrorFactory as any);
+			const { stop } = scheduler.start(10);
+
+			// Event task should return to pending after soft failure
+			await waitFor(
+				() => {
+					const task = db
+						.query("SELECT status, consecutive_failures FROM tasks WHERE id = ?")
+						.get(taskId) as {
+						status: string;
+						consecutive_failures: number;
+					} | null;
+					// It should cycle: pending -> claimed -> running -> failed -> pending (via resetEventTask)
+					return task?.status === "pending" && task.consecutive_failures > 0;
+				},
+				{ timeoutMs: 5000, message: "event task did not reset to pending after soft failure" },
+			);
+			stop();
+
+			const task = db
+				.query("SELECT status, consecutive_failures FROM tasks WHERE id = ?")
+				.get(taskId) as {
+				status: string;
+				consecutive_failures: number;
+			};
+			expect(task.status).toBe("pending");
+			expect(task.consecutive_failures).toBe(1);
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("resets event task to pending after hard failure", async () => {
+			const taskId = randomUUID();
+			insertEventTask(taskId);
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, makeFailingAgentLoopFactory() as any);
+			const { stop } = scheduler.start(10);
+
+			await waitFor(
+				() => {
+					const task = db
+						.query("SELECT status, consecutive_failures FROM tasks WHERE id = ?")
+						.get(taskId) as {
+						status: string;
+						consecutive_failures: number;
+					} | null;
+					return task?.status === "pending" && task.consecutive_failures > 0;
+				},
+				{ timeoutMs: 5000, message: "event task did not reset to pending after hard failure" },
+			);
+			stop();
+
+			const task = db
+				.query("SELECT status, consecutive_failures FROM tasks WHERE id = ?")
+				.get(taskId) as {
+				status: string;
+				consecutive_failures: number;
+			};
+			expect(task.status).toBe("pending");
+			expect(task.consecutive_failures).toBe(1);
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("resets event task to pending after successful completion", async () => {
+			const taskId = randomUUID();
+			insertEventTask(taskId, { consecutiveFailures: 3 });
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
+			const { stop } = scheduler.start(10);
+
+			await waitFor(
+				() => {
+					const task = db
+						.query("SELECT status, consecutive_failures, run_count FROM tasks WHERE id = ?")
+						.get(taskId) as {
+						status: string;
+						consecutive_failures: number;
+						run_count: number;
+					} | null;
+					// After completion: status back to pending, failures reset, run_count incremented
+					return (
+						task?.status === "pending" && task.consecutive_failures === 0 && task.run_count > 0
+					);
+				},
+				{ timeoutMs: 5000, message: "event task did not reset to pending after completion" },
+			);
+			stop();
+
+			const task = db
+				.query("SELECT status, consecutive_failures, run_count FROM tasks WHERE id = ?")
+				.get(taskId) as {
+				status: string;
+				consecutive_failures: number;
+				run_count: number;
+			};
+			expect(task.status).toBe("pending");
+			expect(task.consecutive_failures).toBe(0);
+			expect(task.run_count).toBe(1);
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("resets event task to pending after heartbeat eviction", async () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			// Insert as "running" with a stale heartbeat to trigger eviction
+			const staleHeartbeat = new Date(Date.now() - 600_000).toISOString(); // 10 min ago
+
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'event', 'running', 'connector:list_changed', NULL, NULL,
+					?, ?, ?, NULL, NULL,
+					0, NULL, NULL, NULL, 0,
+					'results', NULL, 0, 5,
+					0, 0, 0,
+					?, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, siteId, now, randomUUID(), staleHeartbeat, now, now],
+			);
+
+			const ctx = makeCtx();
+			// Use a factory that never gets called (eviction happens before run)
+			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
+			const { stop } = scheduler.start(10);
+
+			await waitFor(
+				() => {
+					const task = db
+						.query("SELECT status, consecutive_failures FROM tasks WHERE id = ?")
+						.get(taskId) as {
+						status: string;
+						consecutive_failures: number;
+					} | null;
+					return task?.status === "pending" && task.consecutive_failures === 1;
+				},
+				{ timeoutMs: 5000, message: "event task did not reset after heartbeat eviction" },
+			);
+			stop();
+
+			const task = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as {
+				status: string;
+			};
+			expect(task.status).toBe("pending");
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("does not reset non-event tasks via resetEventTask path", async () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+
+			// Insert a deferred task with cf=2 (DEFERRED_MAX_RETRIES) so it won't auto-retry
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'deferred', 'pending', 'manual', NULL, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					2, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, pastTime, now, now],
+			);
+
+			const softErrorFactory = () => ({
+				run: async (): Promise<AgentLoopResult> => ({
+					messagesCreated: 0,
+					toolCallsMade: 0,
+					filesChanged: 0,
+					error: "Deferred task error",
+				}),
+			});
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, softErrorFactory as any);
+			const { stop } = scheduler.start(10);
+
+			await waitFor(
+				() => {
+					const task = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as {
+						status: string;
+					} | null;
+					return task?.status === "failed";
+				},
+				{ timeoutMs: 5000, message: "deferred task did not reach failed state" },
+			);
+			stop();
+
+			// Deferred task with exhausted retries should stay failed (not reset by resetEventTask)
+			const task = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as {
+				status: string;
+			};
+			expect(task.status).toBe("failed");
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+	});
 });

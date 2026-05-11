@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { insertRow } from "@bound/core";
+import { insertRow, updateRow } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 
 export const DISPATCHER_TASK_ID = deterministicUUID(BOUND_NAMESPACE, "platform-dispatcher");
@@ -9,10 +9,31 @@ export const DISPATCHER_TASK_ID = deterministicUUID(BOUND_NAMESPACE, "platform-d
  * The dispatcher wakes on "connector:list_changed" events and periodic cron fallback.
  */
 export function seedDispatcher(db: Database, siteId: string): void {
-	const existing = db.query("SELECT id FROM tasks WHERE id = ?").get(DISPATCHER_TASK_ID) as {
+	const existing = db
+		.query("SELECT id, status FROM tasks WHERE id = ?")
+		.get(DISPATCHER_TASK_ID) as {
 		id: string;
+		status: string;
 	} | null;
-	if (existing) return;
+	if (existing) {
+		if (existing.status === "failed" || existing.status === "cancelled") {
+			updateRow(
+				db,
+				"tasks",
+				DISPATCHER_TASK_ID,
+				{
+					status: "pending",
+					claimed_by: null,
+					claimed_at: null,
+					lease_id: null,
+					error: null,
+					next_run_at: null,
+				},
+				siteId,
+			);
+		}
+		return;
+	}
 
 	const now = new Date().toISOString();
 	insertRow(

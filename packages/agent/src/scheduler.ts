@@ -113,6 +113,38 @@ function retryDeferredTask(
 }
 
 /**
+ * Resets a failed/completed event task back to 'pending' so it can be triggered
+ * again on the next event emission. Event tasks are persistent listeners that
+ * should always return to pending after execution.
+ */
+function resetEventTask(
+	db: AppContext["db"],
+	task: Task,
+	logger: AppContext["logger"],
+	context: string,
+	siteId: string,
+): void {
+	if (task.type !== "event") return;
+	updateRow(
+		db,
+		"tasks",
+		task.id,
+		{
+			status: "pending",
+			claimed_by: null,
+			claimed_at: null,
+			lease_id: null,
+			next_run_at: null,
+		},
+		siteId,
+	);
+	logger.info(`[@bound/agent/scheduler] Reset event task to pending (${context})`, {
+		taskId: task.id,
+		triggerSpec: task.trigger_spec,
+	});
+}
+
+/**
  * Reschedules a heartbeat task to the next clock-aligned boundary and resets status to 'pending'.
  * Clock alignment ensures heartbeats fire at predictable times (e.g., every 30 minutes at :00 and :30).
  * Respects quiescence multipliers to reduce frequency during idle periods.
@@ -443,6 +475,13 @@ export class Scheduler {
 					this.ctx.logger,
 					"heartbeat timeout eviction",
 					this.lastUserInteractionAt,
+				);
+				resetEventTask(
+					this.ctx.db,
+					task,
+					this.ctx.logger,
+					"heartbeat timeout eviction",
+					this.ctx.siteId,
 				);
 
 				const newConsecutiveFailures = (task.consecutive_failures ?? 0) + 1;
@@ -888,6 +927,13 @@ export class Scheduler {
 								this.ctx.siteId,
 								this.config.retryBackoffMs,
 							);
+							resetEventTask(
+								this.ctx.db,
+								task,
+								this.ctx.logger,
+								"model validation failure",
+								this.ctx.siteId,
+							);
 						}
 						return; // exit runTask — agent loop is not created
 					}
@@ -990,6 +1036,7 @@ export class Scheduler {
 							this.ctx.siteId,
 							this.config.retryBackoffMs,
 						);
+						resetEventTask(this.ctx.db, task, this.ctx.logger, "soft error", this.ctx.siteId);
 					} else {
 						this.ctx.logger.info("[scheduler] Task completed", {
 							taskId: task.id,
@@ -1024,6 +1071,7 @@ export class Scheduler {
 							"completion",
 							this.lastUserInteractionAt,
 						);
+						resetEventTask(this.ctx.db, task, this.ctx.logger, "completion", this.ctx.siteId);
 					}
 				}
 
@@ -1131,6 +1179,7 @@ export class Scheduler {
 						this.ctx.siteId,
 						this.config.retryBackoffMs,
 					);
+					resetEventTask(this.ctx.db, task, this.ctx.logger, "hard error", this.ctx.siteId);
 				}
 			} finally {
 				this.runningTasks.delete(task.id);
@@ -1303,6 +1352,13 @@ export class Scheduler {
 						"template completion",
 						this.lastUserInteractionAt,
 					);
+					resetEventTask(
+						this.ctx.db,
+						task,
+						this.ctx.logger,
+						"template completion",
+						this.ctx.siteId,
+					);
 				}
 			} catch (error) {
 				const errorMsg = formatError(error);
@@ -1333,6 +1389,13 @@ export class Scheduler {
 						this.ctx.logger,
 						"template hard error",
 						this.lastUserInteractionAt,
+					);
+					resetEventTask(
+						this.ctx.db,
+						task,
+						this.ctx.logger,
+						"template hard error",
+						this.ctx.siteId,
 					);
 				}
 			} finally {
