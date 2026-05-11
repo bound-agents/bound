@@ -1,398 +1,52 @@
 #!/usr/bin/env bun
-// Main entry for `boundctl` command
-// Handles: boundctl set-hub, boundctl stop, boundctl resume, boundctl restore, boundctl config, boundctl sync-status, boundctl drain
+// Bootstrap shim for the `boundctl` binary. The real entry point lives in
+// boundctl-main.ts.
 //
-// `reflect-metadata` is a CommonJS side-effect-only polyfill that patches
-// globalThis.Reflect. When imported with `import "reflect-metadata"` and
-// compiled by Bun's `bun build --compile`, the bundler can drop or defer
-// the CJS require because no exports are consumed. tsyringe then throws
-// "tsyringe requires a reflect polyfill" at top-level init. Importing as
-// a namespace and referencing it with `void` anchors the import so the
-// bundler cannot elide it.
-import * as _reflectMetadata from "reflect-metadata";
-void _reflectMetadata;
+// Why a shim:
+//   reflect-metadata is a CommonJS package whose only purpose is to mutate
+//   globalThis.Reflect at module-evaluation time. Its TypeScript declaration
+//   is literally `export {}` (zero ESM exports), and its JS file does not
+//   set `module.exports` to anything either. When the entry point uses a
+//   bare side-effect import — `import "reflect-metadata"` — and the bundle
+//   is produced by `bun build --compile`, the bundler statically concludes
+//   the import is dead (no exports referenced) and elides the CJS
+//   evaluation entirely. tsyringe then throws "tsyringe requires a reflect
+//   polyfill" at top-level init.
+//
+//   A namespace import + `void` reference does not help either: the
+//   namespace is statically empty (because `export {}`), so the bundler
+//   sees `void {}` and tree-shakes both halves.
+//
+//   Dynamic import is a runtime operation the bundler cannot eliminate.
+//   But ESM hoists every static import in a module above any top-level
+//   code in that same module, including top-level `await import(...)`.
+//   That means we cannot mix a dynamic import of reflect-metadata with
+//   static imports of code that transitively pulls in tsyringe — the
+//   static imports would still run first.
+//
+//   The shim therefore has *zero* static imports. It dynamically imports
+//   reflect-metadata, then dynamically imports boundctl-main.ts. The
+//   dynamic imports are evaluated in source order at runtime, so the
+//   polyfill is guaranteed to be in place before any tsyringe-touching
+//   module loads.
+//
+// Verification:
+//   After the polyfill import, we assert globalThis.Reflect.getMetadata is
+//   a function. If the bundler ever finds a way to elide the dynamic
+//   import too, this assertion produces a clear, actionable error instead
+//   of the same opaque tsyringe message.
 
-import { getSiteId } from "@bound/core";
-import { runConfigReload } from "./commands/config-reload.js";
-import { runConsistencyCheck } from "./commands/consistency-check.js";
-import { runDrain } from "./commands/drain.js";
-import { runRestore } from "./commands/restore.js";
-import { runSetHub } from "./commands/set-hub.js";
-import { skillImport, skillList, skillRetire, skillView } from "./commands/skill.js";
-import { runResume, runStop } from "./commands/stop-resume.js";
-import { runSyncStatus } from "./commands/sync-status.js";
-import { openBoundDB } from "./lib/db.js";
+// Make this file a module (top-level await requires module context).
+export {};
 
-function getArgValue(args: string[], flag: string): string | undefined {
-	const idx = args.indexOf(flag);
-	return idx !== -1 ? args[idx + 1] : undefined;
+await import("reflect-metadata");
+
+if (
+	typeof (globalThis as { Reflect?: { getMetadata?: unknown } }).Reflect?.getMetadata !== "function"
+) {
+	throw new Error(
+		"reflect-metadata polyfill did not load. The bundler may have elided the dynamic import in packages/cli/src/boundctl.ts.",
+	);
 }
 
-async function main() {
-	const args = process.argv.slice(2);
-	const command = args[0];
-
-	if (!command || command === "--help" || command === "-h") {
-		console.log(`
-boundctl - Bound orchestrator management CLI
-
-USAGE:
-  boundctl <command> [options]
-
-COMMANDS:
-  set-hub <host-name>       Set the cluster hub host
-  stop                       Emergency stop all hosts
-  resume                     Resume operations after emergency stop
-  restore                    Point-in-time recovery
-  config reload <target>     Hot-reload configuration
-  sync-status                Show sync status for all peers
-  consistency-check          Compare local DB against hub via sync protocol
-  drain <new-hub>            Graceful hub decommissioning
-  skill list                 List all skills with status and telemetry
-  skill view <name>          View SKILL.md and file listing for a skill
-  skill retire <name>        Retire a skill (operator); use --reason "..." to explain
-  skill import <path>        Import a skill from a local directory
-  db vacuum                  Run VACUUM to reclaim disk space
-  --help                     Show this help message
-
-OPTIONS:
-  boundctl set-hub <host-name> [--wait] [--timeout <seconds>]
-    Set the cluster hub and optionally wait for all peers to confirm
-
-  boundctl stop
-    Set emergency stop flag. All hosts halt autonomous operations on next sync.
-
-  boundctl resume
-    Clear emergency stop flag. Normal operations resume.
-
-  boundctl restore --before <timestamp> [--preview] [--tables ...]
-    Restore to point-in-time state. Use --preview to see changes without executing.
-
-  boundctl config reload <target>
-    Hot-reload configuration. Supported targets: mcp
-
-  boundctl sync-status
-    Display write propagation status for all peers
-
-  boundctl consistency-check [--spoke-url <url>] [--tables <t1,t2,...>] [--verbose]
-    Compare synced table row sets between local spoke and remote hub.
-
-  boundctl drain <new-hub> [--timeout <seconds>]
-    Gracefully drain current hub and switch to new hub (default timeout: 120s)
-
-  boundctl db vacuum
-    Run a full VACUUM to reclaim disk space immediately
-
-EXAMPLES:
-  boundctl set-hub primary-host
-  boundctl set-hub primary-host --wait
-  boundctl stop
-  boundctl resume
-  boundctl restore --before "2024-01-01T12:00:00Z" --preview
-  boundctl config reload mcp
-  boundctl sync-status
-  boundctl drain new-hub --timeout 180
-  boundctl db vacuum
-`);
-		process.exit(0);
-	}
-
-	if (command === "set-hub") {
-		const hostName = args[1];
-		if (!hostName) {
-			console.error("Error: host-name is required");
-			process.exit(1);
-		}
-
-		const timeoutStr = getArgValue(args, "--timeout");
-		let timeout: number | undefined;
-		if (timeoutStr) {
-			const parsed = Number.parseInt(timeoutStr, 10);
-			if (Number.isNaN(parsed) || parsed <= 0) {
-				console.error("Error: --timeout must be a positive integer");
-				process.exit(1);
-			}
-			timeout = parsed;
-		}
-
-		const setHubArgs = {
-			hostName,
-			wait: args.includes("--wait"),
-			timeout,
-			configDir: getArgValue(args, "--config-dir") || "config",
-		};
-
-		try {
-			await runSetHub(setHubArgs);
-		} catch (error) {
-			console.error("set-hub failed:", error);
-			process.exit(1);
-		}
-		process.exit(0);
-	}
-
-	if (command === "stop") {
-		const stopArgs = {
-			configDir: getArgValue(args, "--config-dir") || "config",
-		};
-
-		try {
-			await runStop(stopArgs);
-		} catch (error) {
-			console.error("stop failed:", error);
-			process.exit(1);
-		}
-		process.exit(0);
-	}
-
-	if (command === "resume") {
-		const resumeArgs = {
-			configDir: getArgValue(args, "--config-dir") || "config",
-		};
-
-		try {
-			await runResume(resumeArgs);
-		} catch (error) {
-			console.error("resume failed:", error);
-			process.exit(1);
-		}
-		process.exit(0);
-	}
-
-	if (command === "restore") {
-		const beforeIndex = args.indexOf("--before");
-		if (beforeIndex === -1) {
-			console.error("Error: --before <timestamp> is required");
-			process.exit(1);
-		}
-
-		const restoreArgs: {
-			before: string;
-			preview: boolean;
-			tables: string[];
-			configDir: string;
-		} = {
-			before: args[beforeIndex + 1],
-			preview: args.includes("--preview"),
-			tables: [],
-			configDir: getArgValue(args, "--config-dir") || "config",
-		};
-
-		// Parse --tables if provided
-		const tablesIndex = args.indexOf("--tables");
-		if (tablesIndex !== -1) {
-			restoreArgs.tables = args.slice(tablesIndex + 1).filter((a) => !a.startsWith("--"));
-		}
-
-		try {
-			await runRestore(restoreArgs);
-		} catch (error) {
-			console.error("restore failed:", error);
-			process.exit(1);
-		}
-		process.exit(0);
-	}
-
-	if (command === "config") {
-		const subCommand = args[1];
-		if (subCommand !== "reload") {
-			console.error("Error: unknown config subcommand. Use 'config reload <target>'");
-			process.exit(1);
-		}
-
-		const target = args[2];
-		if (!target) {
-			console.error("Error: target is required. Example: boundctl config reload mcp");
-			process.exit(1);
-		}
-
-		const configReloadArgs = {
-			target,
-			configDir: getArgValue(args, "--config-dir") || "config",
-		};
-
-		try {
-			await runConfigReload(configReloadArgs);
-		} catch (error) {
-			console.error("config reload failed:", error);
-			process.exit(1);
-		}
-		process.exit(0);
-	}
-
-	if (command === "sync-status") {
-		const syncStatusArgs = {
-			configDir: getArgValue(args, "--config-dir") || "config",
-		};
-
-		try {
-			await runSyncStatus(syncStatusArgs);
-		} catch (error) {
-			console.error("sync-status failed:", error);
-			process.exit(1);
-		}
-		process.exit(0);
-	}
-
-	if (command === "consistency-check") {
-		const consistencyArgs = {
-			spokeUrl: getArgValue(args, "--spoke-url"),
-			tables: getArgValue(args, "--tables"),
-			verbose: args.includes("--verbose"),
-		};
-
-		try {
-			await runConsistencyCheck(consistencyArgs);
-		} catch (error) {
-			console.error("consistency-check failed:", error);
-			process.exit(1);
-		}
-		process.exit(0);
-	}
-
-	if (command === "drain") {
-		const newHub = args[1];
-		if (!newHub) {
-			console.error("Error: new-hub is required");
-			process.exit(1);
-		}
-
-		const timeoutStr = getArgValue(args, "--timeout");
-		let timeout: number | undefined;
-		if (timeoutStr) {
-			const parsed = Number.parseInt(timeoutStr, 10);
-			if (Number.isNaN(parsed) || parsed <= 0) {
-				console.error("Error: --timeout must be a positive integer");
-				process.exit(1);
-			}
-			timeout = parsed;
-		}
-
-		const drainArgs = {
-			newHub,
-			timeout,
-			configDir: getArgValue(args, "--config-dir") || "config",
-		};
-
-		try {
-			await runDrain(drainArgs);
-		} catch (error) {
-			console.error("drain failed:", error);
-			process.exit(1);
-		}
-		process.exit(0);
-	}
-
-	if (command === "skill") {
-		const subcommand = args[1];
-		const dataDir = getArgValue(args, "--data-dir") || "data";
-		const db = openBoundDB(dataDir);
-
-		try {
-			if (subcommand === "list") {
-				const statusFilter = getArgValue(args, "--status");
-				const verbose = args.includes("--verbose");
-				skillList(db, { status: statusFilter, verbose });
-				db.close();
-				process.exit(0);
-			}
-
-			if (subcommand === "view") {
-				const name = args[2];
-				if (!name) {
-					console.error("Error: skill name is required. Usage: boundctl skill view <name>");
-					db.close();
-					process.exit(1);
-				}
-				skillView(db, name);
-				db.close();
-				process.exit(0);
-			}
-
-			if (subcommand === "retire") {
-				const name = args[2];
-				if (!name) {
-					console.error(
-						'Error: skill name is required. Usage: boundctl skill retire <name> [--reason "..."]',
-					);
-					db.close();
-					process.exit(1);
-				}
-				const reason = getArgValue(args, "--reason");
-				const siteId = getSiteId(db);
-				skillRetire(db, siteId, name, reason);
-				db.close();
-				process.exit(0);
-			}
-
-			if (subcommand === "import") {
-				const localPath = args[2];
-				if (!localPath) {
-					console.error("Error: path is required. Usage: boundctl skill import <path>");
-					db.close();
-					process.exit(1);
-				}
-				const siteId = getSiteId(db);
-				skillImport(db, siteId, localPath);
-				db.close();
-				process.exit(0);
-			}
-
-			// Unknown subcommand
-			console.error(`Error: unknown skill subcommand '${subcommand}'.`);
-			console.error("Available: list, view, retire, import");
-			db.close();
-			process.exit(1);
-		} catch (error) {
-			console.error("skill command failed:", error);
-			db.close();
-			process.exit(1);
-		}
-	}
-
-	if (command === "db") {
-		const subCommand = args[1];
-		const dataDir = getArgValue(args, "--data-dir") || "data";
-
-		if (subCommand === "vacuum") {
-			const db = openBoundDB(dataDir);
-			try {
-				console.log("Running VACUUM...");
-				const before = db.query("PRAGMA page_count").get() as { page_count: number };
-				const freeListBefore = db.query("PRAGMA freelist_count").get() as {
-					freelist_count: number;
-				};
-				db.run("VACUUM");
-				const after = db.query("PRAGMA page_count").get() as { page_count: number };
-				const pageSize = (db.query("PRAGMA page_size").get() as { page_size: number }).page_size;
-				const reclaimedPages = before.page_count - after.page_count;
-				const reclaimedBytes = reclaimedPages * pageSize;
-				console.log("VACUUM complete.");
-				console.log(`  Pages before: ${before.page_count} (${freeListBefore.freelist_count} free)`);
-				console.log(`  Pages after:  ${after.page_count}`);
-				console.log(
-					`  Reclaimed:    ${reclaimedPages} pages (${(reclaimedBytes / 1024 / 1024).toFixed(1)}MB)`,
-				);
-			} catch (error) {
-				console.error("VACUUM failed:", error);
-				db.close();
-				process.exit(1);
-			}
-			db.close();
-			process.exit(0);
-		}
-
-		console.error(`Unknown db subcommand: ${subCommand}`);
-		console.error("Available: vacuum");
-		process.exit(1);
-	}
-
-	console.error(`Unknown command: ${command}`);
-	console.error('Run "boundctl --help" for usage information');
-	process.exit(1);
-}
-
-main().catch((error) => {
-	console.error("Fatal error:", error);
-	process.exit(1);
-});
+await import("./boundctl-main.js");
