@@ -1,6 +1,7 @@
 import Database from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, insertRow } from "@bound/core";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
@@ -157,7 +158,9 @@ describe("getInMemoryPaths", () => {
 	});
 
 	test("AC1.4 + AC1.5: excludes /mnt/ paths and OverlayFs files", async () => {
-		const tmpDir = mkdtempSync("/tmp/test-overlay-");
+		// `/tmp` is not a real path on Windows except via Git Bash mapping;
+		// use `tmpdir()` for portability.
+		const tmpDir = mkdtempSync(join(tmpdir(), "test-overlay-"));
 		const testFile = join(tmpDir, "real-file.txt");
 		writeFileSync(testFile, "real content");
 

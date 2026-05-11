@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { runInit } from "../commands/init.js";
@@ -13,7 +14,8 @@ describe("bound init", () => {
 	let logSpy: ReturnType<typeof spyOn<Console, "log">>;
 
 	beforeEach(() => {
-		tempDir = mkdtempSync("bound-test-");
+		// Use the OS temp dir so test directories don't litter the repo root.
+		tempDir = mkdtempSync(join(tmpdir(), "bound-test-"));
 		logSpy = spyOn(console, "log").mockImplementation(() => {});
 	});
 
