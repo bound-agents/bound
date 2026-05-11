@@ -8,7 +8,14 @@
 // for logs/bound.log). When `bound init` then calls `process.exit(0)`, the
 // stream has not yet been "ready" and pino throws "sonic boom is not ready
 // yet" on shutdown. Dynamic import keeps init entirely logger-free.
-import "reflect-metadata";
+//
+// `reflect-metadata` is a CommonJS side-effect-only polyfill. Importing it
+// as `import "reflect-metadata"` lets `bun build --compile` drop or defer
+// the CJS require because no exports are referenced, leading to tsyringe
+// throwing "tsyringe requires a reflect polyfill" at top-level init.
+// Importing as a namespace and `void`-referencing it anchors the import.
+import * as _reflectMetadata from "reflect-metadata";
+void _reflectMetadata;
 
 import { runInit } from "./commands/init.js";
 
