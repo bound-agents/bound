@@ -14,11 +14,14 @@ describe("sandbox.ts imports (AC4.2)", () => {
 		expect(content.length).toBeGreaterThan(0);
 	});
 
-	it("sandbox.ts imports setCommandRegistry instead", () => {
+	it("sandbox.ts registers commands via appContext.commandRegistry", () => {
 		const sandboxPath = resolve(__dirname, "..", "commands", "start", "sandbox.ts");
 		const content = readFileSync(sandboxPath, "utf-8");
 
-		// Should import setCommandRegistry which replaces getAllCommands
-		expect(content).toContain("setCommandRegistry");
+		// Commands are registered through the AppContext.commandRegistry field, which
+		// replaced the older `setCommandRegistry` helper. This guards against any
+		// regression that bypasses controlled registration (e.g. by reintroducing the
+		// global `getAllCommands` pull path).
+		expect(content).toContain("appContext.commandRegistry");
 	});
 });
