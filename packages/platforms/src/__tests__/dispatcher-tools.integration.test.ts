@@ -525,4 +525,71 @@ describe("Dispatcher Tools Integration Tests", () => {
 			expect(result).toContain("No platform servers connected");
 		});
 	});
+
+	// -------------------------------------------------------------------
+	// seedDispatcher startup recovery
+	// -------------------------------------------------------------------
+	describe("seedDispatcher startup recovery", () => {
+		it("resets a failed dispatcher task to pending on startup", () => {
+			// Seed the dispatcher first
+			seedDispatcher(db, siteId);
+
+			// Simulate failure: set status to 'failed'
+			db.run("UPDATE tasks SET status = 'failed', error = 'test error' WHERE id = ?", [
+				DISPATCHER_TASK_ID,
+			]);
+
+			const before = db.query("SELECT status FROM tasks WHERE id = ?").get(DISPATCHER_TASK_ID) as {
+				status: string;
+			};
+			expect(before.status).toBe("failed");
+
+			// Re-call seedDispatcher (as startup would)
+			seedDispatcher(db, siteId);
+
+			const after = db
+				.query("SELECT status, error FROM tasks WHERE id = ?")
+				.get(DISPATCHER_TASK_ID) as {
+				status: string;
+				error: string | null;
+			};
+			expect(after.status).toBe("pending");
+			expect(after.error).toBeNull();
+		});
+
+		it("resets a cancelled dispatcher task to pending on startup", () => {
+			seedDispatcher(db, siteId);
+
+			db.run("UPDATE tasks SET status = 'cancelled' WHERE id = ?", [DISPATCHER_TASK_ID]);
+
+			seedDispatcher(db, siteId);
+
+			const after = db.query("SELECT status FROM tasks WHERE id = ?").get(DISPATCHER_TASK_ID) as {
+				status: string;
+			};
+			expect(after.status).toBe("pending");
+		});
+
+		it("does not modify a pending dispatcher task", () => {
+			seedDispatcher(db, siteId);
+
+			const before = db
+				.query("SELECT modified_at FROM tasks WHERE id = ?")
+				.get(DISPATCHER_TASK_ID) as {
+				modified_at: string;
+			};
+
+			// Re-call: should be a no-op
+			seedDispatcher(db, siteId);
+
+			const after = db
+				.query("SELECT status, modified_at FROM tasks WHERE id = ?")
+				.get(DISPATCHER_TASK_ID) as {
+				status: string;
+				modified_at: string;
+			};
+			expect(after.status).toBe("pending");
+			expect(after.modified_at).toBe(before.modified_at);
+		});
+	});
 });
