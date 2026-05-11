@@ -313,7 +313,7 @@ This skill was imported.`;
 	});
 
 	describe("AC4.6: skillImport rejects invalid SKILL.md", () => {
-		it("exits with code 1 when SKILL.md has no frontmatter", () => {
+		it("throws a descriptive error when SKILL.md has no frontmatter", () => {
 			// Create a directory with invalid SKILL.md
 			const skillDir = mkdtempSync(join(tempDir, "invalid-skill-"));
 			const skillMdPath = join(skillDir, "SKILL.md");
@@ -321,22 +321,13 @@ This skill was imported.`;
 			const invalidContent = "# No Frontmatter\n\nJust plain text.";
 			writeFileSync(skillMdPath, invalidContent);
 
-			// Mock process.exit to prevent actual exit
-			const exitMock = spyOn(process, "exit").mockImplementation(() => {
-				throw new Error("process.exit called");
-			});
-
-			// Mock console to suppress error messages
-			spyOn(console, "error").mockImplementation(() => {});
-
-			// Call skillImport and expect it to throw
+			// skillImport throws on invalid input; the CLI entrypoint
+			// (`packages/cli/src/bound.ts`) catches the throw and exits with code 1,
+			// keeping the same user-visible behavior as the old inline `process.exit(1)`
+			// path while remaining testable (process.exit would kill the test worker).
 			expect(() => {
 				skillImport(db, siteId, skillDir);
-			}).toThrow("process.exit called");
-
-			// Verify process.exit was called with code 1
-			expect(exitMock).toHaveBeenCalledWith(1);
-			exitMock.mockRestore();
+			}).toThrow(/frontmatter/i);
 		});
 	});
 });
