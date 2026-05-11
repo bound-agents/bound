@@ -14,7 +14,7 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { seedSkillAuthoring } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
@@ -100,6 +100,13 @@ export function ensureMcpUser(db: Database, siteId: string): void {
 
 export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 	const configDir = args.configDir || "config";
+	// Data directory is assumed to be a sibling of the config directory, matching
+	// the layout produced by `bound init` and the convention used by other
+	// `boundctl` commands (drain, set-hub, sync-status, ...). When configDir is
+	// the default "config", this resolves to `<cwd>/data` — identical to the
+	// previous hard-coded behavior. When tests pass a temp-dir configDir, this
+	// keeps the data/PID lockfile/keypair next to it instead of polluting cwd.
+	const dataDir = join(dirname(resolve(configDir)), "data");
 
 	bootstrapLogger.info("Starting Bound orchestrator", {
 		commit: COMMIT_HASH,
@@ -109,7 +116,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 	// 0. If --reseed is set, back up the local database before wiping it.
 	// The keypair (host.key / host.pub) is preserved — only bound.db goes.
 	if (args.reseed) {
-		const dbPath = resolve("data", "bound.db");
+		const dbPath = join(dataDir, "bound.db");
 		const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 		const backupPath = `${dbPath}.backup.${timestamp}`;
 
@@ -148,11 +155,11 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 
 	// 1. Load and validate all config files
 	bootstrapLogger.info("Loading configuration");
-	mkdirSync("data", { recursive: true });
+	mkdirSync(dataDir, { recursive: true });
 
 	// PID lockfile: prevent multiple bound processes from sharing the same data dir.
 	// Two processes on the same DB + Discord bot token causes duplicate messages.
-	const pidFile = resolve("data", "bound.pid");
+	const pidFile = join(dataDir, "bound.pid");
 	if (existsSync(pidFile)) {
 		const existingPid = Number.parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
 		if (!Number.isNaN(existingPid) && existingPid !== process.pid) {
@@ -198,7 +205,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		process.exit(0);
 	});
 
-	const dbPath = resolve("data", "bound.db");
+	const dbPath = join(dataDir, "bound.db");
 
 	let appContext: AppContext;
 	try {
@@ -221,7 +228,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 
 	// 2. Ensure Ed25519 keypair via @bound/sync
 	appContext.logger.info("Initializing cryptography...");
-	const keypair = await ensureKeypair(resolve("data"));
+	const keypair = await ensureKeypair(dataDir);
 	// Update site_id in host_meta to the value derived from the Ed25519 public key.
 	// On first startup, createAppContext generated a randomUUID placeholder because
 	// the keypair did not yet exist. Now that the keypair is available, replace it.

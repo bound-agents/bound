@@ -43,15 +43,12 @@ describe("Bound CLI E2E Integration Test", () => {
 	});
 
 	it("graceful handling of missing config during start", async () => {
-		// Try to start with no config
-		try {
-			await runStart({ configDir: tempDir });
-			// Should fail gracefully
-			expect(false).toBe(true);
-		} catch (error) {
-			// Expected behavior - missing config should cause error
-			expect(error).toBeTruthy();
-		}
+		// initBootstrap derives `dataDir = dirname(resolve(configDir))/data`. Pass a
+		// `<tempDir>/config` path so that the resulting dataDir lands at
+		// `<tempDir>/data` (inside the tempDir cleaned up by afterEach), rather than
+		// at the parent of tempDir which is the OS tmpdir root.
+		const configDir = join(tempDir, "config");
+		await expect(runStart({ configDir })).rejects.toThrow();
 	});
 
 	it("multiple init operations are idempotent", async () => {
