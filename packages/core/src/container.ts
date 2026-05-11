@@ -1,10 +1,11 @@
-// `reflect-metadata` is a CommonJS side-effect-only polyfill. When bundled
-// via `bun build --compile`, a bare `import "reflect-metadata"` can be
-// elided because no exports are consumed, causing tsyringe to throw at
-// top-level init. Importing as a namespace and `void`-referencing it
-// anchors the import so the bundler keeps the CJS evaluation in place.
-import * as _reflectMetadata from "reflect-metadata";
-void _reflectMetadata;
+// `reflect-metadata` polyfills globalThis.Reflect. In bundled
+// `bun build --compile` builds it must be evaluated before tsyringe loads;
+// that is the entrypoint shim's job (see packages/cli/src/bound.ts and
+// boundctl.ts). This bare import remains for the non-bundled paths — the
+// bun test runner, and direct `bun run` invocations from other entry
+// points — where ESM module-graph evaluation is faithful and the
+// side-effect import runs as written.
+import "reflect-metadata";
 import type { Database } from "bun:sqlite";
 import { TypedEventEmitter, createLogger } from "@bound/shared";
 import { allowlistSchema, modelBackendsSchema } from "@bound/shared";
