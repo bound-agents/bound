@@ -100,8 +100,7 @@ export function skillView(db: Database, name: string): void {
 	} | null;
 
 	if (!skill) {
-		console.error(`Error: Skill '${name}' not found.`);
-		process.exit(1);
+		throw new Error(`Skill '${name}' not found.`);
 	}
 
 	// Print metadata header
@@ -165,8 +164,7 @@ export function skillRetire(db: Database, siteId: string, name: string, reason?:
 		.get(name) as { id: string; status: string } | null;
 
 	if (!skill) {
-		console.error(`Error: Skill '${name}' not found.`);
-		process.exit(1);
+		throw new Error(`Skill '${name}' not found.`);
 	}
 
 	const now = new Date().toISOString();
@@ -258,13 +256,11 @@ export function skillImport(
 	let stat: ReturnType<typeof statSync>;
 	try {
 		stat = statSync(localPath);
-	} catch {
-		console.error(`Error: Path '${localPath}' does not exist.`);
-		process.exit(1);
+	} catch (cause) {
+		throw new Error(`Path '${localPath}' does not exist.`, { cause });
 	}
 	if (!stat.isDirectory()) {
-		console.error(`Error: '${localPath}' is not a directory.`);
-		process.exit(1);
+		throw new Error(`'${localPath}' is not a directory.`);
 	}
 
 	// Read and validate SKILL.md
@@ -272,27 +268,23 @@ export function skillImport(
 	let skillMdContent: string;
 	try {
 		skillMdContent = readFileSync(skillMdPath, "utf-8");
-	} catch {
-		console.error(`Error: SKILL.md not found at ${skillMdPath}.`);
-		process.exit(1);
+	} catch (cause) {
+		throw new Error(`SKILL.md not found at ${skillMdPath}.`, { cause });
 	}
 
 	const parsed = parseFrontmatter(skillMdContent);
 	if (!parsed) {
-		console.error("Error: SKILL.md is missing required YAML frontmatter (---...---).");
-		process.exit(1);
+		throw new Error("SKILL.md is missing required YAML frontmatter (---...---).");
 	}
 
 	const { data } = parsed;
 
 	if (!data.name) {
-		console.error("Error: SKILL.md frontmatter is missing required 'name' field.");
-		process.exit(1);
+		throw new Error("SKILL.md frontmatter is missing required 'name' field.");
 	}
 
 	if (!data.description) {
-		console.error("Error: SKILL.md frontmatter is missing required 'description' field.");
-		process.exit(1);
+		throw new Error("SKILL.md frontmatter is missing required 'description' field.");
 	}
 
 	const skillName = data.name;

@@ -17,17 +17,17 @@ export async function runConsistencyCheck(args: ConsistencyCheckArgs): Promise<v
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ tables: tableFilter }),
 		});
-	} catch {
-		console.error(`Cannot reach spoke at ${spokeUrl}. Is it running?`);
-		process.exit(1);
+	} catch (cause) {
+		throw new Error(`Cannot reach spoke at ${spokeUrl}. Is it running?`, { cause });
 	}
 
 	if (!response.ok) {
 		const error = await response.json().catch(() => ({ error: "Unknown error" }));
-		console.error(
-			`Consistency check failed: ${(error as { error?: string; details?: string }).details || (error as { error?: string }).error}`,
-		);
-		process.exit(1);
+		const detail =
+			(error as { error?: string; details?: string }).details ||
+			(error as { error?: string }).error ||
+			"Unknown error";
+		throw new Error(`Consistency check failed: ${detail}`);
 	}
 
 	const result = (await response.json()) as {
