@@ -1,5 +1,8 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { HLC_ZERO } from "@bound/shared";
 import {
 	determinePruningMode,
@@ -228,7 +231,9 @@ describe("pruning", () => {
 		});
 
 		it("executes without error on a file-backed database", () => {
-			const tmpPath = `/tmp/drain-test-${crypto.randomUUID()}.db`;
+			// `/tmp` is not a real path on Windows except via Git Bash mapping;
+			// use `tmpdir()` for portability.
+			const tmpPath = join(tmpdir(), `drain-test-${randomUUID()}.db`);
 			const fileDb = new Database(tmpPath);
 			fileDb.run("PRAGMA journal_mode = WAL");
 			fileDb.run("PRAGMA auto_vacuum = INCREMENTAL");
@@ -253,6 +258,8 @@ describe("pruning", () => {
 				require("node:fs").unlinkSync(`${tmpPath}-wal`);
 				require("node:fs").unlinkSync(`${tmpPath}-shm`);
 			} catch {}
-		});
+			// 5MB of data churn + VACUUM on Windows filesystems can exceed the
+			// default 5s per-test timeout; allow up to 30s.
+		}, 30000);
 	});
 });

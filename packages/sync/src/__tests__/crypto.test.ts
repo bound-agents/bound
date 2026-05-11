@@ -114,13 +114,21 @@ describe("crypto module", () => {
 			expect(existsSync(pubPath)).toBe(true);
 		});
 
-		it("creates host.key with restrictive permissions (0600)", async () => {
-			await ensureKeypair(testDataDir);
-			const keyPath = join(testDataDir, "host.key");
-			const stat = require("node:fs").statSync(keyPath);
-			const mode = stat.mode & 0o777;
-			expect(mode).toBe(0o600);
-		});
+		// Windows uses NTFS ACLs rather than unix mode bits; `statSync.mode` does not
+		// reflect actual access control on Windows and the chmod(0o600) in
+		// ensureKeypair has no real effect there. Skip on win32; the file's
+		// protection on Windows is the operator's responsibility to enforce via NTFS
+		// ACLs at the data directory level.
+		it.skipIf(process.platform === "win32")(
+			"creates host.key with restrictive permissions (0600)",
+			async () => {
+				await ensureKeypair(testDataDir);
+				const keyPath = join(testDataDir, "host.key");
+				const stat = require("node:fs").statSync(keyPath);
+				const mode = stat.mode & 0o777;
+				expect(mode).toBe(0o600);
+			},
+		);
 
 		it("reuses existing keypair on second call", async () => {
 			const result1 = await ensureKeypair(testDataDir);
