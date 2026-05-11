@@ -116,6 +116,11 @@ function retryDeferredTask(
  * Resets a failed/completed event task back to 'pending' so it can be triggered
  * again on the next event emission. Event tasks are persistent listeners that
  * should always return to pending after execution.
+ *
+ * Always sets next_run_at as a periodic fallback so phase1Schedule can pick the
+ * task up even without a new event emission (AC4.6). Failure paths use a shorter
+ * interval (60s) to recover quickly from transient issues; success paths use 5
+ * minutes as a low-frequency consistency check.
  */
 function resetEventTask(
 	db: AppContext["db"],
@@ -125,6 +130,9 @@ function resetEventTask(
 	siteId: string,
 ): void {
 	if (task.type !== "event") return;
+	const isCompletion = context === "completion" || context === "template completion";
+	const fallbackMs = isCompletion ? 300_000 : 60_000;
+	const nextRunAt = new Date(Date.now() + fallbackMs).toISOString();
 	updateRow(
 		db,
 		"tasks",
@@ -134,13 +142,14 @@ function resetEventTask(
 			claimed_by: null,
 			claimed_at: null,
 			lease_id: null,
-			next_run_at: null,
+			next_run_at: nextRunAt,
 		},
 		siteId,
 	);
 	logger.info(`[@bound/agent/scheduler] Reset event task to pending (${context})`, {
 		taskId: task.id,
 		triggerSpec: task.trigger_spec,
+		nextRunAt,
 	});
 }
 
