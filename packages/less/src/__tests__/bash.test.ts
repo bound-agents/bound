@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { bashTool } from "../tools/bash";
 
 // CI runners can be slow; ensure per-test timeout is respected
@@ -118,8 +118,12 @@ describe("boundless_bash", () => {
 
 		const result = await bashTool({ command: "pwd" }, new AbortController().signal, subdir);
 
+		// `sh -c "pwd"` always emits forward-slash paths even on Windows (e.g.
+		// `/d/tmp/boundless-test-abcd/subdir`), so comparing against the OS-form path
+		// in `subdir` would fail there. Assert on the unique trailing portion of the
+		// path, which is identical across platforms.
 		const contentBlock = result.content[1];
-		expect(contentBlock.text).toContain(subdir);
+		expect(contentBlock.text).toContain(`${basename(tempDir)}/subdir`);
 	});
 
 	it("handles timeout parameter when provided", async () => {

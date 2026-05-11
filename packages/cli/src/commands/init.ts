@@ -31,7 +31,10 @@ export async function runInit(args: InitArgs): Promise<void> {
 
 	if (!args.force && (existsSync(allowlistPath) || existsSync(modelBackendsPath))) {
 		console.log("Config already exists. Use --force to overwrite.");
-		process.exit(0);
+		// Return rather than process.exit so that callers (CLI entrypoint and tests)
+		// continue normally. The CLI's bound.ts already exits 0 after this function
+		// returns; tests need the worker to stay alive for subsequent test cases.
+		return;
 	}
 
 	// Create config directory
