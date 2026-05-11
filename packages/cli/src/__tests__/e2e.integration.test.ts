@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { runInit } from "../commands/init.js";
@@ -9,7 +10,8 @@ describe("Bound CLI E2E Integration Test", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
-		tempDir = mkdtempSync("bound-e2e-");
+		// Use the OS temp dir so test directories don't litter the repo root.
+		tempDir = mkdtempSync(join(tmpdir(), "bound-e2e-"));
 	});
 
 	afterEach(async () => {

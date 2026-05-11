@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { KeyringConfig, Logger, ModelBackendsConfig } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
@@ -45,7 +46,8 @@ describe("SIGHUP handler", () => {
 	let testLogger: TestLogger;
 
 	beforeEach(() => {
-		tempDir = mkdtempSync("bound-sighup-test-");
+		// Use the OS temp dir so test directories don't litter the repo root.
+		tempDir = mkdtempSync(join(tmpdir(), "bound-sighup-test-"));
 		testLogger = new TestLogger();
 	});
 

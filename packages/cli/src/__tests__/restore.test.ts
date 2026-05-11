@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
@@ -9,7 +10,8 @@ describe("restore command", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
-		tempDir = mkdtempSync("bound-restore-test-");
+		// Use the OS temp dir so test directories don't litter the repo root.
+		tempDir = mkdtempSync(join(tmpdir(), "bound-restore-test-"));
 	});
 
 	afterEach(async () => {
