@@ -1,7 +1,16 @@
 #!/usr/bin/env bun
 // Main entry for `boundctl` command
 // Handles: boundctl set-hub, boundctl stop, boundctl resume, boundctl restore, boundctl config, boundctl sync-status, boundctl drain
-import "reflect-metadata";
+//
+// `reflect-metadata` is a CommonJS side-effect-only polyfill that patches
+// globalThis.Reflect. When imported with `import "reflect-metadata"` and
+// compiled by Bun's `bun build --compile`, the bundler can drop or defer
+// the CJS require because no exports are consumed. tsyringe then throws
+// "tsyringe requires a reflect polyfill" at top-level init. Importing as
+// a namespace and referencing it with `void` anchors the import so the
+// bundler cannot elide it.
+import * as _reflectMetadata from "reflect-metadata";
+void _reflectMetadata;
 
 import { getSiteId } from "@bound/core";
 import { runConfigReload } from "./commands/config-reload.js";

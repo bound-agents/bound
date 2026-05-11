@@ -1,4 +1,10 @@
-import "reflect-metadata";
+// `reflect-metadata` is a CommonJS side-effect-only polyfill. When bundled
+// via `bun build --compile`, a bare `import "reflect-metadata"` can be
+// elided because no exports are consumed, causing tsyringe to throw at
+// top-level init. Importing as a namespace and `void`-referencing it
+// anchors the import so the bundler keeps the CJS evaluation in place.
+import * as _reflectMetadata from "reflect-metadata";
+void _reflectMetadata;
 import type { Database } from "bun:sqlite";
 import { TypedEventEmitter, createLogger } from "@bound/shared";
 import { allowlistSchema, modelBackendsSchema } from "@bound/shared";
