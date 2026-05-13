@@ -409,8 +409,12 @@ export class AgentLoop {
 			);
 			const currentFingerprint = computeToolFingerprint(this.config.tools);
 
-			// Check if warm path is eligible
+			// Check if warm path is eligible.
+			// noHistory tasks are stateless across runs — each run should cold-assemble
+			// from only the current claim's messages. Warm cache from a prior run would
+			// serve stale history that noHistory is designed to exclude.
 			const isWarmPathEligible =
+				!this.config.noHistory &&
 				cacheState === "warm" &&
 				this.getCachedTurnState() !== undefined &&
 				this.getCachedTurnState()?.toolFingerprint === currentFingerprint;
