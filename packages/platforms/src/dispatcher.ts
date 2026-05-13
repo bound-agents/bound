@@ -38,6 +38,12 @@ export function seedDispatcher(db: Database, siteId: string): void {
 		db.prepare(
 			"UPDATE tasks SET no_history = 1 WHERE id = ? AND no_history = 0", // outbox-exempt: legacy migration
 		).run(DISPATCHER_TASK_ID);
+		// Bind dispatcher to this host (platform leader). Prevents dual-execution
+		// when multiple hosts have the task synced but only one has platform tools.
+		const requires = JSON.stringify({ site_id: siteId });
+		db.prepare(
+			"UPDATE tasks SET requires = ? WHERE id = ? AND (requires IS NULL OR requires != ?)", // outbox-exempt: leader affinity migration
+		).run(requires, DISPATCHER_TASK_ID, requires);
 		return;
 	}
 
@@ -62,7 +68,7 @@ export function seedDispatcher(db: Database, siteId: string): void {
 			last_run_at: null,
 			run_count: 0,
 			max_runs: null,
-			requires: null,
+			requires: JSON.stringify({ site_id: siteId }),
 			model_hint: null,
 			no_history: 1, // stateless: tools + orientation are sufficient context each wake
 			inject_mode: "results",
