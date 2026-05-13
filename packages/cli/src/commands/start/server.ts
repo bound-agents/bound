@@ -813,10 +813,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		});
 		appContext.logger.info("[platforms-mcp] MCP registry initialized");
 
-		// Seed the dispatcher task for multi-platform event aggregation
-		seedDispatcher(appContext.db, appContext.siteId);
-		appContext.logger.info("[platforms-mcp] Dispatcher task seeded");
-
 		// TASK 2: Integrate leader election with MCP server instantiation
 		// Create adapter that wraps registry operations for the connector interface
 		// The adapter gates subscription reconnection behind leader election (AC6.1, AC6.2)
@@ -827,6 +823,11 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				appContext.logger.info(
 					"[platforms-mcp] Leader election: connect() — creating Discord servers",
 				);
+
+				// Seed the dispatcher task only on the leader. Non-leader hosts
+				// must not claim or run the dispatcher (they lack platform tools).
+				seedDispatcher(appContext.db, appContext.siteId);
+				appContext.logger.info("[platforms-mcp] Dispatcher task seeded (leader)");
 
 				// Create Discord.js clients and register MCP servers for each connector
 				if (platformMcpRegistry) {
