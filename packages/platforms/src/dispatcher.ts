@@ -32,11 +32,9 @@ export function seedDispatcher(db: Database, siteId: string): void {
 				siteId,
 			);
 		}
-		// Migrate existing dispatcher tasks: the dispatcher is stateless — tools and
-		// orientation provide all needed context each wake. History accumulates stale
-		// self-referential output that poisons future wakes.
+		// Migrate existing dispatcher tasks: stateless + clear stale requires affinity.
 		db.prepare(
-			"UPDATE tasks SET no_history = 1 WHERE id = ? AND no_history = 0", // outbox-exempt: legacy migration
+			"UPDATE tasks SET no_history = 1, requires = NULL WHERE id = ? AND (no_history = 0 OR requires IS NOT NULL)", // outbox-exempt: legacy migration
 		).run(DISPATCHER_TASK_ID);
 		return;
 	}

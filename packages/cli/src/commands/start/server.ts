@@ -813,7 +813,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		});
 		appContext.logger.info("[platforms-mcp] MCP registry initialized");
 
-		// Seed the dispatcher task for multi-platform event aggregation
+		// Seed the dispatcher task unconditionally (same pattern as heartbeat).
+		// Both hosts may run it; noHistory + warm cache fix ensures correct behavior.
 		seedDispatcher(appContext.db, appContext.siteId);
 		appContext.logger.info("[platforms-mcp] Dispatcher task seeded");
 
