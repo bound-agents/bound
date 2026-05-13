@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
 import { createChangeLogEntry, insertRow, updateRow } from "@bound/core";
-import type { PlatformRegisteredTool } from "@bound/platforms";
+import { DISPATCHER_TASK_ID, type PlatformRegisteredTool } from "@bound/platforms";
 import { BOUND_NAMESPACE, deterministicUUID, formatError, parseJsonUntyped } from "@bound/shared";
 import type { Task } from "@bound/shared";
 import { createAdvisory } from "./advisories";
@@ -121,6 +121,9 @@ function retryDeferredTask(
  * task up even without a new event emission (AC4.6). Failure paths use a shorter
  * interval (60s) to recover quickly from transient issues; success paths use 5
  * minutes as a low-frequency consistency check.
+ *
+ * The dispatcher task uses a longer fallback (30m) since connector list changes
+ * are rare outside of startup and the event-driven path handles real changes.
  */
 function resetEventTask(
 	db: AppContext["db"],
@@ -131,7 +134,7 @@ function resetEventTask(
 ): void {
 	if (task.type !== "event") return;
 	const isCompletion = context === "completion" || context === "template completion";
-	const fallbackMs = isCompletion ? 300_000 : 60_000;
+	const fallbackMs = isCompletion ? (task.id === DISPATCHER_TASK_ID ? 1_800_000 : 300_000) : 60_000;
 	const nextRunAt = new Date(Date.now() + fallbackMs).toISOString();
 	updateRow(
 		db,
