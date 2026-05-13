@@ -1505,11 +1505,19 @@ export class RelayProcessor {
 			threadModelId = threadRow.model_hint;
 		}
 
+		// Resolve task-level settings (no_history) from the owning task, if any.
+		const owningTask = this.db
+			.query(
+				"SELECT id, no_history FROM tasks WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+			)
+			.get(payload.thread_id) as { id: string; no_history: number } | null;
+
 		const loopConfig: AgentLoopConfig = {
 			threadId: payload.thread_id,
 			userId: payload.user_id,
-			taskId: `delegated-${entry.id}`,
+			taskId: owningTask?.id ?? `delegated-${entry.id}`,
 			modelId: threadModelId,
+			noHistory: owningTask?.no_history === 1,
 			shouldYield,
 		};
 
