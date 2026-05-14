@@ -32,6 +32,7 @@ import type { PlatformMcpRegistry, PlatformRegisteredTool } from "@bound/platfor
 import {
 	PlatformLeaderElection,
 	PlatformMcpRegistry as PlatformMcpRegistryClass,
+	getConnectorHandle,
 	seedDispatcher,
 } from "@bound/platforms";
 import type { KeyringConfig, Logger, ProcessPayload, StatusForwardPayload } from "@bound/shared";
@@ -847,6 +848,19 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				// On leadership gain: reconnect all subscriptions from DB (AC6.3 — failover recovery)
 				await platformMcpRegistry?.reconnectAll();
 				appContext.logger.info("[platforms-mcp] All subscriptions reconnected");
+
+				// Listen for new connector handles arriving via sync — activate immediately
+				appContext.eventBus.on("connector:handle_synced", async ({ handle_id }) => {
+					if (!platformMcpRegistry) return;
+					const handle = getConnectorHandle(appContext.db, handle_id);
+					if (handle?.task_id) {
+						appContext.logger.info("[platforms-mcp] Activating synced handle", {
+							handle_id,
+							server_name: handle.server_name,
+						});
+						await platformMcpRegistry.activateSubscription(handle);
+					}
+				});
 			},
 			async disconnect() {
 				appContext.logger.info(
@@ -880,7 +894,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		relayProcessor.setPlatformMcpRegistry(platformMcpRegistry);
 		appContext.logger.info("[platforms-mcp] Relay processor wired");
 
-		// Advertise platform names in hosts.platforms for relay platform affinity routing
+		// Advertise platform names in hosts.platforms for relay platform affinity routing.
+		// Clear to null when empty so stale synced values don't persist.
 		if (platformNames.length > 0) {
 			updateRow(
 				appContext.db,
@@ -890,6 +905,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				appContext.siteId,
 			);
 			appContext.logger.info(`[platforms] Advertised platforms: ${platformNames.join(", ")}`);
+		} else {
+			updateRow(appContext.db, "hosts", appContext.siteId, { platforms: null }, appContext.siteId);
 		}
 	} else {
 		appContext.logger.info("[platforms] Not configured (no platforms.json)");

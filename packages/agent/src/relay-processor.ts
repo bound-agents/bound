@@ -23,6 +23,7 @@ import type {
 	CacheWarmPayload,
 	ErrorPayload,
 	Logger,
+	PlatformRequestPayload,
 	ProcessPayload,
 	PromptInvokePayload,
 	RelayConfig,
@@ -128,6 +129,10 @@ export class RelayProcessor {
 		cache_warm: (entry) =>
 			this.handleParsedPayload(entry, parseJsonUntyped, (p) =>
 				this.executeCacheWarm(entry, p as CacheWarmPayload),
+			),
+		platform_request: (entry) =>
+			this.handleParsedPayload(entry, parseJsonUntyped, (p) =>
+				this.executePlatformRequest(p as PlatformRequestPayload),
 			),
 		inference: (entry) => this.handleInference(entry),
 		process: (entry) => this.handleProcess(entry),
@@ -601,6 +606,29 @@ export class RelayProcessor {
 			stdout: result.content,
 			stderr: result.isError ? result.content : "",
 			exit_code: result.isError ? 1 : 0,
+			execution_ms: 0,
+		};
+		return JSON.stringify(resultPayload);
+	}
+
+	private async executePlatformRequest(payload: PlatformRequestPayload): Promise<string> {
+		if (!this.platformMcpRegistry) {
+			throw new Error("Platform MCP registry not available on this host");
+		}
+		const client = this.platformMcpRegistry.getClient(payload.server_name);
+		if (!client) {
+			throw new Error(`Platform server '${payload.server_name}' not found on this host`);
+		}
+
+		const result = await client.request(
+			{ method: payload.method, params: payload.params },
+			// biome-ignore lint/suspicious/noExplicitAny: MCP SDK request typing requires explicit schema param
+			{} as any,
+		);
+		const resultPayload: ResultPayload = {
+			stdout: JSON.stringify(result),
+			stderr: "",
+			exit_code: 0,
 			execution_ms: 0,
 		};
 		return JSON.stringify(resultPayload);

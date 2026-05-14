@@ -374,25 +374,44 @@ export class WsTransport {
 			logger: this.config.logger,
 			eventBus: this.config.eventBus,
 			onApplied: (info) => {
-				if (info.table_name !== "messages") return;
-				// Rehydrate the full row from the DB after commit rather than
-				// trusting the wire payload — listeners expect the same shape
-				// the rest of the system emits (post-trigger defaults, coerced
-				// types, etc.).
-				try {
-					const message = this.config.db
-						.prepare("SELECT * FROM messages WHERE id = ?")
-						.get(info.row_id) as Message | undefined;
-					if (!message) return;
-					this.config.eventBus.emit("message:broadcast", {
-						message,
-						thread_id: message.thread_id,
-					});
-				} catch (err) {
-					this.config.logger?.warn("WsTransport onApplied broadcast failed", {
-						row_id: info.row_id,
-						err: err instanceof Error ? err.message : String(err),
-					});
+				if (info.table_name === "messages") {
+					// Rehydrate the full row from the DB after commit rather than
+					// trusting the wire payload — listeners expect the same shape
+					// the rest of the system emits (post-trigger defaults, coerced
+					// types, etc.).
+					try {
+						const message = this.config.db
+							.prepare("SELECT * FROM messages WHERE id = ?")
+							.get(info.row_id) as Message | undefined;
+						if (!message) return;
+						this.config.eventBus.emit("message:broadcast", {
+							message,
+							thread_id: message.thread_id,
+						});
+					} catch (err) {
+						this.config.logger?.warn("WsTransport onApplied broadcast failed", {
+							row_id: info.row_id,
+							err: err instanceof Error ? err.message : String(err),
+						});
+					}
+				} else if (info.table_name === "connector_handles") {
+					// Notify the platform leader to activate newly synced handles
+					try {
+						const handle = this.config.db
+							.prepare("SELECT id, server_name, deleted FROM connector_handles WHERE id = ?")
+							.get(info.row_id) as { id: string; server_name: string; deleted: number } | undefined;
+						if (handle && !handle.deleted) {
+							this.config.eventBus.emit("connector:handle_synced", {
+								handle_id: handle.id,
+								server_name: handle.server_name,
+							});
+						}
+					} catch (err) {
+						this.config.logger?.warn("WsTransport onApplied connector_handles failed", {
+							row_id: info.row_id,
+							err: err instanceof Error ? err.message : String(err),
+						});
+					}
 				}
 			},
 		});

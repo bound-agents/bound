@@ -13,7 +13,8 @@ import {
 } from "@bound/agent";
 import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
-import type { AppContext } from "@bound/core";
+import { createRelayOutboxEntry } from "@bound/agent";
+import { type AppContext, markProcessed, readInboxByRefId, writeOutbox } from "@bound/core";
 import type { ModelRouter } from "@bound/llm";
 import {
 	type PlatformMcpRegistry,
@@ -24,7 +25,7 @@ import {
 	registerConnectorEventListeners,
 } from "@bound/platforms";
 import type { CronSchedulesConfig } from "@bound/shared";
-import { formatError } from "@bound/shared";
+import { formatError, parseJsonSafe, resultPayloadSchema } from "@bound/shared";
 
 export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
 
@@ -109,6 +110,72 @@ export function initScheduler(
 				registry: platformMcpRegistry,
 				db: appContext.db,
 				siteId: appContext.siteId,
+				remotePlatformRequest: async (
+					serverName: string,
+					method: string,
+					params: Record<string, unknown>,
+				): Promise<unknown> => {
+					// Find which remote host owns this platform server
+					const rows = appContext.db
+						.query(
+							"SELECT site_id, platforms FROM hosts WHERE deleted = 0 AND platforms IS NOT NULL AND site_id != ?",
+						)
+						.all(appContext.siteId) as Array<{ site_id: string; platforms: string }>;
+					let targetSiteId: string | null = null;
+					for (const row of rows) {
+						try {
+							const platforms = JSON.parse(row.platforms) as string[];
+							if (Array.isArray(platforms) && platforms.includes(serverName)) {
+								targetSiteId = row.site_id;
+								break;
+							}
+						} catch {
+							// Skip hosts with corrupted platforms JSON
+						}
+					}
+					if (!targetSiteId) {
+						throw new Error(`No remote host found for platform server '${serverName}'`);
+					}
+
+					// Write platform_request relay outbox entry
+					const entry = createRelayOutboxEntry(
+						targetSiteId,
+						appContext.siteId,
+						"platform_request",
+						JSON.stringify({
+							server_name: serverName,
+							method,
+							params,
+							timeout_ms: 15_000,
+						}),
+						15_000,
+					);
+					writeOutbox(appContext.db, entry, undefined, appContext.eventBus);
+
+					// Poll for response (synchronous context — tool execute awaits result)
+					const deadline = Date.now() + 15_000;
+					while (Date.now() < deadline) {
+						const response = readInboxByRefId(appContext.db, entry.id);
+						if (response) {
+							markProcessed(appContext.db, [response.id]);
+							if (response.kind === "error") {
+								const errPayload = JSON.parse(response.payload) as { error?: string };
+								throw new Error(errPayload.error ?? response.payload);
+							}
+							const parsed = parseJsonSafe(
+								resultPayloadSchema,
+								response.payload,
+								"platform_request result",
+							);
+							if (!parsed.ok) {
+								throw new Error(`Invalid platform_request response: ${parsed.error}`);
+							}
+							return JSON.parse(parsed.value.stdout);
+						}
+						await new Promise((r) => setTimeout(r, 200));
+					}
+					throw new Error(`Timeout waiting for platform_request response from ${targetSiteId}`);
+				},
 			};
 			const rawTools = [
 				createConnectorListTool(dispatcherCtx),
