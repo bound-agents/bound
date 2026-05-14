@@ -377,6 +377,9 @@ export const RELAY_KIND_REGISTRY = {
 	prompt_invoke: { dispatch: "sync" },
 	cache_warm: { dispatch: "sync" },
 
+	// Platform MCP request — proxies arbitrary MCP protocol requests to a platform server on the target host
+	platform_request: { dispatch: "sync" },
+
 	// Async request kinds — fire-and-forget, processed via relay_inbox
 	cancel: { dispatch: "async" },
 	inference: { dispatch: "async" },
@@ -475,6 +478,13 @@ export interface PromptInvokePayload {
 
 export interface CacheWarmPayload {
 	paths: string[];
+	timeout_ms: number;
+}
+
+export interface PlatformRequestPayload {
+	server_name: string;
+	method: string;
+	params: Record<string, unknown>;
 	timeout_ms: number;
 }
 

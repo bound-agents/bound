@@ -158,6 +158,13 @@ export const hostModelsSchema = z.union([
 
 export const hostMcpToolsSchema = z.array(z.string());
 
+export const platformRequestPayloadSchema = z.object({
+	server_name: z.string().min(1),
+	method: z.string().min(1),
+	params: z.record(z.string(), z.unknown()),
+	timeout_ms: z.number().int().positive(),
+});
+
 export const hostPlatformsSchema = z.array(z.string());
 
 // ---------------------------------------------------------------------------
@@ -169,6 +176,7 @@ export const RELAY_PAYLOAD_SCHEMAS = {
 	resource_read: resourceReadPayloadSchema,
 	prompt_invoke: promptInvokePayloadSchema,
 	cache_warm: cacheWarmPayloadSchema,
+	platform_request: platformRequestPayloadSchema,
 	cancel: cancelPayloadSchema,
 	inference: inferenceRequestPayloadSchema,
 	process: processPayloadSchema,

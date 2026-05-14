@@ -23,6 +23,12 @@ export interface DispatcherToolContext {
 	registry: PlatformMcpRegistry;
 	db: Database;
 	siteId: string;
+	/** Proxies an MCP protocol request to a remote platform host via relay. */
+	remotePlatformRequest?: (
+		serverName: string,
+		method: string,
+		params: Record<string, unknown>,
+	) => Promise<unknown>;
 }
 
 /**
@@ -40,7 +46,22 @@ export function createConnectorListTool(ctx: DispatcherToolContext): DispatcherT
 			},
 		},
 		execute: async () => {
-			const servers = ctx.registry.getServerNames();
+			// Cluster-wide discovery: local registry + synced hosts.platforms column
+			const clusterServers = new Set<string>(ctx.registry.getServerNames());
+			const rows = ctx.db
+				.query("SELECT platforms FROM hosts WHERE deleted = 0 AND platforms IS NOT NULL")
+				.all() as Array<{ platforms: string }>;
+			for (const row of rows) {
+				try {
+					const platforms = JSON.parse(row.platforms) as string[];
+					if (Array.isArray(platforms)) {
+						for (const p of platforms) clusterServers.add(p);
+					}
+				} catch {
+					// Skip corrupted platforms JSON
+				}
+			}
+			const servers = Array.from(clusterServers);
 			return servers.length > 0
 				? `Connected platform servers: ${servers.join(", ")}`
 				: "No platform servers connected.";
@@ -74,11 +95,9 @@ export function createConnectorChannelsTool(ctx: DispatcherToolContext): Dispatc
 		},
 		execute: async (input: Record<string, unknown>) => {
 			const serverName = input.server_name as string;
-			const client = ctx.registry.getClient(serverName);
-			if (!client) return `Error: server '${serverName}' not found`;
 
-			// Call events/list on the MCP server
-			const result = (await client.request({ method: "events/list", params: {} }, {} as never)) as {
+			// Try local registry first, then relay to remote platform host
+			let eventsResult: {
 				events: Array<{
 					name: string;
 					description?: string;
@@ -86,11 +105,28 @@ export function createConnectorChannelsTool(ctx: DispatcherToolContext): Dispatc
 				}>;
 			};
 
+			const client = ctx.registry.getClient(serverName);
+			if (client) {
+				eventsResult = (await client.request(
+					{ method: "events/list", params: {} },
+					{} as never,
+				)) as typeof eventsResult;
+			} else if (ctx.remotePlatformRequest) {
+				eventsResult = (await ctx.remotePlatformRequest(
+					serverName,
+					"events/list",
+					{},
+				)) as typeof eventsResult;
+			} else {
+				return `Error: server '${serverName}' not found locally and no remote relay configured`;
+			}
+
 			// Annotate with existing bindings using event_name-based matching
+			// (connector_handles is synced, so this works on any host)
 			const existingHandles = getConnectorHandlesByServer(ctx.db, serverName);
 			const boundEventNames = new Set(existingHandles.map((h) => h.event_name));
 
-			const annotated = result.events.map((evt) => ({
+			const annotated = eventsResult.events.map((evt) => ({
 				...evt,
 				bound: boundEventNames.has(evt.name),
 			}));
@@ -221,10 +257,15 @@ export function createConnectorAttachTool(ctx: DispatcherToolContext): Dispatche
 				taskId,
 			});
 
-			// 4. Activate the subscription (starts stream, replays from cursor) (AC4.5)
-			const handle = getConnectorHandle(ctx.db, handleId);
-			if (handle) {
-				await ctx.registry.activateSubscription(handle);
+			// 4. Activate the subscription on the platform leader.
+			// If we ARE the leader (local client exists for this server), activate immediately.
+			// Otherwise, the handle syncs to the leader via changelog and the
+			// connector:handle_synced event triggers activation there.
+			if (ctx.registry.getClient(serverName)) {
+				const handle = getConnectorHandle(ctx.db, handleId);
+				if (handle) {
+					await ctx.registry.activateSubscription(handle);
+				}
 			}
 
 			return `Attached: created handle ${handleId}, task ${taskId}, thread ${threadId} for ${serverName}:${eventName}`;
