@@ -175,13 +175,8 @@ export function createDiscordServer(
 					description: "Discord interaction (slash command or context menu) received",
 					inputSchema: {
 						type: "object",
-						properties: {
-							channel_id: {
-								type: "string",
-								description: "Discord channel ID to subscribe to",
-							},
-						},
-						required: ["channel_id"],
+						properties: {},
+						required: [],
 					},
 				},
 			],
@@ -364,6 +359,20 @@ export function createDiscordServer(
 					isError: true,
 				};
 			}
+		},
+	);
+
+	mcpServer.registerTool(
+		"discord_list_channels",
+		{
+			description: "List known DM channel IDs that have sent messages to this bot.",
+			inputSchema: {},
+		},
+		async () => {
+			const channels = Array.from(seenChannelIds);
+			return {
+				content: [{ type: "text", text: JSON.stringify(channels) }],
+			};
 		},
 	);
 
