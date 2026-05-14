@@ -29,7 +29,7 @@ function extractCronExpression(triggerSpec: string): string {
 	// Not JSON or no expression field — treat as raw cron expression
 	return triggerSpec;
 }
-const EVICTION_TIMEOUT = 300_000; // 5 minutes
+const EVICTION_TIMEOUT = 600_000; // 10 minutes
 const CRON_THREAD_ROTATION_THRESHOLD = 200;
 const DEFERRED_MAX_RETRIES = 2;
 const DEFERRED_RETRY_BACKOFF_MS_DEFAULT = 5_000; // 5 seconds per consecutive failure

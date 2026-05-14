@@ -1707,7 +1707,7 @@ Original output was too large for the context window. If you need the full conte
 			memoryDeltaLines: noHistDelta,
 			taskDigestLines: noHistTasks,
 			tiers: enrichmentTiersL2,
-		} = buildVolatileEnrichment(db, enrichmentBaseline);
+		} = buildVolatileEnrichment(db, enrichmentBaseline, 10, 5, undefined, undefined, 10);
 		enrichmentTiers = enrichmentTiersL2;
 		taskDigestLinesSnapshot = noHistTasks;
 
