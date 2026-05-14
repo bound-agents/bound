@@ -9,6 +9,11 @@ export const DISPATCHER_TASK_ID = deterministicUUID(BOUND_NAMESPACE, "platform-d
  * The dispatcher wakes on "connector:list_changed" events and periodic cron fallback.
  */
 export function seedDispatcher(db: Database, siteId: string): void {
+	const dispatcherPayload =
+		"Platform dispatcher wake. Use connector_list to discover available platform servers, " +
+		"connector_channels to inspect their event streams, and connector_attach to bind new subscriptions. " +
+		"If no servers are connected or all channels are already bound, respond Done.";
+
 	const existing = db
 		.query("SELECT id, status FROM tasks WHERE id = ?")
 		.get(DISPATCHER_TASK_ID) as {
@@ -32,14 +37,15 @@ export function seedDispatcher(db: Database, siteId: string): void {
 				siteId,
 			);
 		}
-		// Migrate existing dispatcher tasks: stateless + clear stale requires affinity.
+		// Migrate existing dispatcher tasks: stateless + clear stale requires affinity + set payload.
 		db.prepare(
-			"UPDATE tasks SET no_history = 1, requires = NULL WHERE id = ? AND (no_history = 0 OR requires IS NOT NULL)", // outbox-exempt: legacy migration
-		).run(DISPATCHER_TASK_ID);
+			"UPDATE tasks SET no_history = 1, requires = NULL, payload = ? WHERE id = ? AND (no_history = 0 OR requires IS NOT NULL OR payload IS NULL)", // outbox-exempt: legacy migration
+		).run(dispatcherPayload, DISPATCHER_TASK_ID);
 		return;
 	}
 
 	const now = new Date().toISOString();
+
 	insertRow(
 		db,
 		"tasks",
@@ -48,7 +54,7 @@ export function seedDispatcher(db: Database, siteId: string): void {
 			type: "event",
 			status: "pending",
 			trigger_spec: "connector:list_changed",
-			payload: null,
+			payload: dispatcherPayload,
 			created_at: now,
 			created_by: "system",
 			thread_id: null, // thread created on first execution
