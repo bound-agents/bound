@@ -10,9 +10,10 @@ export const DISPATCHER_TASK_ID = deterministicUUID(BOUND_NAMESPACE, "platform-d
  */
 export function seedDispatcher(db: Database, siteId: string): void {
 	const dispatcherPayload =
-		"Platform dispatcher wake. Use connector_list to discover available platform servers, " +
-		"connector_channels to inspect their event streams, and connector_attach to bind new subscriptions. " +
-		"If no servers are connected or all channels are already bound, respond Done.";
+		"Platform dispatcher wake. You MUST call connector_list first to check for available platform servers. " +
+		"If servers exist, call connector_channels for each to see unbound event streams, " +
+		"then connector_attach to bind any unbound streams. " +
+		"Only respond Done after confirming via connector_list that no servers exist or all channels are bound.";
 
 	const existing = db
 		.query("SELECT id, status FROM tasks WHERE id = ?")
