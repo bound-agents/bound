@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertRow } from "@bound/core";
+import { insertRow, softDelete } from "@bound/core";
 import type { ToolDefinition } from "@bound/llm";
 import { connectorHandleId } from "./connector-handle-id.js";
 import {
@@ -269,6 +269,63 @@ export function createConnectorAttachTool(ctx: DispatcherToolContext): Dispatche
 			}
 
 			return `Attached: created handle ${handleId}, task ${taskId}, thread ${threadId} for ${serverName}:${eventName}`;
+		},
+	};
+}
+
+/**
+ * Creates the connector_detach tool — unbinds from a platform event stream by soft-deleting
+ * the connector handle and its associated task.
+ */
+export function createConnectorDetachTool(ctx: DispatcherToolContext): DispatcherTool {
+	return {
+		kind: "builtin",
+		toolDefinition: {
+			type: "function",
+			function: {
+				name: "connector_detach",
+				description:
+					"Unbind from a platform event stream. Soft-deletes the connector handle and its event task.",
+				parameters: {
+					type: "object",
+					properties: {
+						handle_id: {
+							type: "string",
+							description:
+								"The connector handle ID to detach (from connector_channels bound status)",
+						},
+					},
+					required: ["handle_id"],
+				},
+			},
+		},
+		execute: async (input: Record<string, unknown>) => {
+			const handleId = input.handle_id as string;
+
+			const handle = getConnectorHandle(ctx.db, handleId);
+			if (!handle) {
+				return `Error: handle '${handleId}' not found`;
+			}
+
+			// 1. Soft-delete the connector handle
+			softDelete(ctx.db, "connector_handles", handleId, ctx.siteId);
+
+			// 2. Soft-delete the associated event task (if any)
+			if (handle.task_id) {
+				softDelete(ctx.db, "tasks", handle.task_id, ctx.siteId);
+			}
+
+			// 3. Stop the local subscription if we're the platform leader
+			if (ctx.registry.getClient(handle.server_name)) {
+				// stopSubscription is private, but deactivating via shutdown+reconnect
+				// would be heavy. Instead, the leader's next reconnectAll() will skip
+				// this handle since it's now deleted. For immediate effect, we can
+				// trigger a reconnect cycle.
+				// For now, the subscription will naturally stop on next leader restart
+				// or when the registry notices the handle is deleted during delivery.
+			}
+
+			return `Detached: handle ${handleId} (${handle.server_name}:${handle.event_name}) and task ${handle.task_id ?? "none"} soft-deleted`;
 		},
 	};
 }
