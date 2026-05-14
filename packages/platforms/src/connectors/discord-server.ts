@@ -194,6 +194,13 @@ export function createDiscordServer(
 			throw new Error(`Unknown event type: ${eventName}`);
 		}
 
+		// Validate required params per event type
+		if (eventName === "message.received") {
+			if (!eventParams.channel_id || typeof eventParams.channel_id !== "string") {
+				throw new Error("message.received requires channel_id in event params");
+			}
+		}
+
 		const subscriptionId = randomUUID();
 		subscriptions.set(subscriptionId, {
 			subscriptionId,
@@ -237,6 +244,13 @@ export function createDiscordServer(
 		// Validate event name
 		if (eventName !== "message.received" && eventName !== "interaction.received") {
 			throw new Error(`Unknown event type: ${eventName}`);
+		}
+
+		// Validate required params per event type
+		if (eventName === "message.received") {
+			if (!eventParams.channel_id || typeof eventParams.channel_id !== "string") {
+				throw new Error("message.received requires channel_id in event params");
+			}
 		}
 
 		const cursor = cursorStr ? Number.parseInt(cursorStr, 10) : 0;
