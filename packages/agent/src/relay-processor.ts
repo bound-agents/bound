@@ -620,10 +620,13 @@ export class RelayProcessor {
 			throw new Error(`Platform server '${payload.server_name}' not found on this host`);
 		}
 
+		// MCP SDK client.request() requires a Zod schema as second arg for response
+		// validation. Use a permissive passthrough schema to accept any response shape.
+		// Must be a real Zod v4 schema (has ._zod) so the SDK's isZ4Schema check passes.
+		const { z } = await import("zod");
 		const result = await client.request(
 			{ method: payload.method, params: payload.params },
-			// biome-ignore lint/suspicious/noExplicitAny: MCP SDK request typing requires explicit schema param
-			{} as any,
+			z.object({}).passthrough(),
 		);
 		const resultPayload: ResultPayload = {
 			stdout: JSON.stringify(result),
