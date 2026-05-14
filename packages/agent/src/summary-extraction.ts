@@ -591,6 +591,7 @@ export function buildVolatileEnrichment(
 	maxTasks = 5,
 	userMessage?: string,
 	threadSummary?: string,
+	maxPinned?: number,
 ): VolatileEnrichment {
 	// Extract meaningful tokens from text for FTS5 seed matching.
 	// We still filter high-frequency English function words to prevent noisy OR
@@ -618,7 +619,13 @@ export function buildVolatileEnrichment(
 	const mergedKeywords = [...messageKeywords, ...summaryKeywords].slice(0, 30);
 
 	// Run the L0→L1→L2→L3 pipeline
-	const l0 = loadPinnedEntries(db);
+	const l0Raw = loadPinnedEntries(db);
+	// Cap pinned entries when maxPinned is specified (e.g., noHistory tasks where
+	// 172 pinned entries would overwhelm a 3-message context)
+	const l0 =
+		maxPinned !== undefined && l0Raw.entries.length > maxPinned
+			? { entries: l0Raw.entries.slice(0, maxPinned), exclusionSet: l0Raw.exclusionSet }
+			: l0Raw;
 	const l1 = loadSummaryEntries(db, l0.exclusionSet);
 	const l2 = loadGraphEntries(db, l1.exclusionSet, mergedKeywords, maxMemory);
 	const remainingSlots = Math.max(0, maxMemory - l2.entries.length);
