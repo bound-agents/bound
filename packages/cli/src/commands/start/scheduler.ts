@@ -21,6 +21,7 @@ import {
 	type PlatformRegisteredTool,
 	createConnectorAttachTool,
 	createConnectorChannelsTool,
+	createConnectorDetachTool,
 	createConnectorListTool,
 	registerConnectorEventListeners,
 } from "@bound/platforms";
@@ -181,6 +182,7 @@ export function initScheduler(
 				createConnectorListTool(dispatcherCtx),
 				createConnectorChannelsTool(dispatcherCtx),
 				createConnectorAttachTool(dispatcherCtx),
+				createConnectorDetachTool(dispatcherCtx),
 			];
 			// Adapt DispatcherTool (kind: "builtin") to PlatformRegisteredTool (kind: "platform")
 			dispatcherTools = rawTools.map((t) => ({

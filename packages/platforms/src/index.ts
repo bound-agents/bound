@@ -21,6 +21,7 @@ export {
 	createConnectorListTool,
 	createConnectorChannelsTool,
 	createConnectorAttachTool,
+	createConnectorDetachTool,
 } from "./dispatcher-tools.js";
 export type { DispatcherToolContext } from "./dispatcher-tools.js";
 export { seedDispatcher, DISPATCHER_TASK_ID } from "./dispatcher.js";
