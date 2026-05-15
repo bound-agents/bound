@@ -21,7 +21,7 @@ import {
 	type PlatformMcpRegistry,
 	type PlatformRegisteredTool,
 	createConnectorTool,
-	registerConnectorEventListeners,
+	registerConnectorEventDelivery,
 } from "@bound/platforms";
 import type { CronSchedulesConfig } from "@bound/shared";
 import { formatError, parseJsonSafe, resultPayloadSchema } from "@bound/shared";
@@ -244,16 +244,8 @@ export function initScheduler(
 		appContext.logger.info("[scheduler] Scheduler started (30s poll interval)");
 
 		// Wire connector event listeners to scheduler for task wakeups (AC7.1)
-		registerConnectorEventListeners(appContext.eventBus, scheduler);
+		registerConnectorEventDelivery(appContext.eventBus, scheduler);
 		appContext.logger.info("[scheduler] Connector event listeners registered");
-
-		// Emit synthetic list_changed event for connector change notifications. Platform servers
-		// register during Phase 7 (before the scheduler exists), so the real
-		// connector:list_changed event is lost. This kick ensures listeners are notified
-		// of the startup server list at least once.
-		if (platformMcpRegistry) {
-			appContext.eventBus.emit("connector:list_changed", { server_name: "__startup" });
-		}
 	} catch (error) {
 		appContext.logger.warn("[scheduler] Failed to start scheduler", {
 			error: formatError(error),

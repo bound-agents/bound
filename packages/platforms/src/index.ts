@@ -19,14 +19,6 @@ export {
 export type { ConnectorHandleCreateParams, ConnectorHandleRecord } from "./connector-handle.js";
 export { createConnectorTool } from "./connector-tool.js";
 export type { ConnectorToolContext, ConnectorToolDef } from "./connector-tool.js";
-export {
-	createConnectorListTool,
-	createConnectorChannelsTool,
-	createConnectorAttachTool,
-	createConnectorDetachTool,
-} from "./dispatcher-tools.js";
-export type { DispatcherToolContext } from "./dispatcher-tools.js";
-export { seedDispatcher, DISPATCHER_TASK_ID } from "./dispatcher.js";
-export { registerConnectorEventListeners } from "./mcp-registry.js";
+export { registerConnectorEventDelivery } from "./mcp-registry.js";
 export { PlatformLeaderElection } from "./leader-election.js";
 export { setupDiscordServers } from "./setup-platform-servers.js";

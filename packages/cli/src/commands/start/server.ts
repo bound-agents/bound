@@ -33,7 +33,6 @@ import {
 	PlatformLeaderElection,
 	PlatformMcpRegistry as PlatformMcpRegistryClass,
 	getConnectorHandle,
-	seedDispatcher,
 } from "@bound/platforms";
 import type { KeyringConfig, Logger, ProcessPayload, StatusForwardPayload } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
@@ -813,11 +812,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			hubSiteId,
 		});
 		appContext.logger.info("[platforms-mcp] MCP registry initialized");
-
-		// Seed the dispatcher task unconditionally (same pattern as heartbeat).
-		// Both hosts may run it; noHistory + warm cache fix ensures correct behavior.
-		seedDispatcher(appContext.db, appContext.siteId);
-		appContext.logger.info("[platforms-mcp] Dispatcher task seeded");
 
 		// TASK 2: Integrate leader election with MCP server instantiation
 		// Create adapter that wraps registry operations for the connector interface
