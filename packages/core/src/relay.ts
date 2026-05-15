@@ -145,9 +145,7 @@ export function pruneRelayTables(
 
 export function readInboxByRefId(db: Database, refId: string): RelayInboxEntry | null {
 	return db
-		.query(
-			"SELECT * FROM relay_inbox WHERE ref_id = ? AND processed = 0 ORDER BY received_at ASC LIMIT 1",
-		)
+		.query("SELECT * FROM relay_inbox WHERE ref_id = ? ORDER BY received_at ASC LIMIT 1")
 		.get(refId) as RelayInboxEntry | null;
 }
 
