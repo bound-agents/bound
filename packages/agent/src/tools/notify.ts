@@ -142,6 +142,8 @@ export function createNotifyTool(ctx: ToolContext): RegisteredTool {
 				parameters: jsonSchema,
 			},
 		},
+		// Non-idempotent: each call sends another message to the target.
+		idempotent: false,
 		execute: async (raw: Record<string, unknown>) => {
 			const parsed = parseToolInput(notifySchema, raw, "notify");
 			if (!parsed.ok) return parsed.error;

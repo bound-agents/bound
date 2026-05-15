@@ -661,4 +661,53 @@ describe("Connector Tool", () => {
 			expect(result).toContain("not found");
 		});
 	});
+
+	describe("idempotency annotations", () => {
+		it("classifies list/channels as read-only", () => {
+			const ctx = {
+				registry: new PlatformMcpRegistry({
+					db,
+					siteId,
+					hubSiteId: undefined,
+					eventBus,
+					logger: mockLogger,
+				}),
+				db,
+				siteId,
+			};
+			const tool = createConnectorTool(ctx);
+			expect(tool.resolveAnnotations).toBeDefined();
+			expect(tool.resolveAnnotations?.({ action: "list" })).toEqual({
+				idempotent: true,
+				readOnly: true,
+			});
+			expect(tool.resolveAnnotations?.({ action: "channels" })).toEqual({
+				idempotent: true,
+				readOnly: true,
+			});
+		});
+
+		it("classifies attach/detach as idempotent mutations", () => {
+			const ctx = {
+				registry: new PlatformMcpRegistry({
+					db,
+					siteId,
+					hubSiteId: undefined,
+					eventBus,
+					logger: mockLogger,
+				}),
+				db,
+				siteId,
+			};
+			const tool = createConnectorTool(ctx);
+			expect(tool.resolveAnnotations?.({ action: "attach" })).toEqual({
+				idempotent: true,
+				readOnly: false,
+			});
+			expect(tool.resolveAnnotations?.({ action: "detach" })).toEqual({
+				idempotent: true,
+				readOnly: false,
+			});
+		});
+	});
 });

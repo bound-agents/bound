@@ -57,6 +57,9 @@ export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
 				parameters: jsonSchema,
 			},
 		},
+		// Read-only: queries the hosts table and formats topology. No mutations.
+		idempotent: true,
+		readOnly: true,
 		execute: async (raw: Record<string, unknown>): Promise<string> => {
 			const parsed = parseToolInput(hostinfoSchema, raw, "hostinfo");
 			if (!parsed.ok) return parsed.error;

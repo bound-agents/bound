@@ -52,6 +52,8 @@ export function createArchiveTool(ctx: ToolContext): RegisteredTool {
 				parameters: jsonSchema,
 			},
 		},
+		// Idempotent: archiving an already-archived thread is a no-op.
+		idempotent: true,
 		execute: async (raw: Record<string, unknown>) => {
 			const parsed = parseToolInput(archiveSchema, raw, "archive");
 			if (!parsed.ok) return parsed.error;

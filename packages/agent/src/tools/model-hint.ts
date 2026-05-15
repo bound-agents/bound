@@ -24,6 +24,10 @@ export function createModelHintTool(ctx: ToolContext): RegisteredTool {
 				parameters: jsonSchema,
 			},
 		},
+		// Idempotent: setting the same hint repeatedly leaves the same final state.
+		// Re-setting to a different value is still idempotent on (taskId, model)
+		// since the agent loop never mutates args between retry attempts.
+		idempotent: true,
 		execute: async (raw: Record<string, unknown>): Promise<string> => {
 			const parsed = parseToolInput(modelHintSchema, raw, "model_hint");
 			if (!parsed.ok) return parsed.error;

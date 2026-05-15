@@ -39,11 +39,25 @@ export interface PlatformRegisteredTool {
 	kind: "platform";
 	toolDefinition: ToolDefinition;
 	execute?: (input: Record<string, unknown>) => Promise<string>;
+	/**
+	 * MCP-spec annotations as captured from `listTools()`. The hint suffix
+	 * matches the wire schema. The agent loop maps these onto its own
+	 * `idempotent`/`readOnly` retry-policy flags during tool registration.
+	 */
 	annotations?: {
 		readOnlyHint?: boolean;
 		destructiveHint?: boolean;
 		idempotentHint?: boolean;
 		openWorldHint?: boolean;
+	};
+	/** Static idempotency hint (mirror of MCP `idempotentHint`). */
+	idempotent?: boolean;
+	/** Static read-only hint (mirror of MCP `readOnlyHint`). */
+	readOnly?: boolean;
+	/** Per-action idempotency resolver — overrides static fields when set. */
+	resolveAnnotations?: (args: Record<string, unknown>) => {
+		idempotent?: boolean;
+		readOnly?: boolean;
 	};
 }
 

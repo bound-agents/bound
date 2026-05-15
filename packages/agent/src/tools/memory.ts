@@ -381,6 +381,26 @@ export function createMemoryTool(ctx: ToolContext): RegisteredTool {
 				parameters: jsonSchema,
 			},
 		},
+		// Per-action idempotency. search/traverse/neighbors are pure reads.
+		// store/forget/connect/disconnect are state-mutating but idempotent
+		// on (key, value) — overwriting with the same value or deleting an
+		// already-deleted key is a no-op. The agent loop never mutates args
+		// between retry attempts, so the (key, value) pair stays stable.
+		resolveAnnotations: (args: Record<string, unknown>) => {
+			switch (args.action) {
+				case "search":
+				case "traverse":
+				case "neighbors":
+					return { idempotent: true, readOnly: true };
+				case "store":
+				case "forget":
+				case "connect":
+				case "disconnect":
+					return { idempotent: true, readOnly: false };
+				default:
+					return {};
+			}
+		},
 		execute: async (raw: Record<string, unknown>) => {
 			const parsed = parseToolInput(memorySchema, raw, "memory");
 			if (!parsed.ok) return parsed.error;

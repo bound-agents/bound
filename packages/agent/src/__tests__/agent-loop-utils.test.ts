@@ -15,6 +15,7 @@ import {
 	hasOrphanedToolCall,
 	insertThreadMessage,
 	isTransientLLMError,
+	resolveToolAnnotations,
 	shouldRetryRelayCall,
 } from "../agent-loop-utils";
 import type { ModelResolution } from "../model-resolution";
@@ -858,5 +859,155 @@ describe("shouldRetryRelayCall", () => {
 				},
 			}),
 		).toBe(false);
+	});
+});
+
+describe("resolveToolAnnotations", () => {
+	const stubExecute = async () => "" as const;
+	const stubDef = { type: "function" as const, function: { name: "x", description: "x" } };
+
+	it("returns empty object for missing tool", () => {
+		const registry = new Map();
+		expect(resolveToolAnnotations(registry, "nope", {})).toEqual({});
+	});
+
+	it("returns static flags from RegisteredTool", () => {
+		const registry = new Map();
+		registry.set("hostinfo", {
+			kind: "builtin" as const,
+			toolDefinition: stubDef,
+			execute: stubExecute,
+			idempotent: true,
+			readOnly: true,
+		});
+		expect(resolveToolAnnotations(registry, "hostinfo", {})).toEqual({
+			idempotent: true,
+			readOnly: true,
+		});
+	});
+
+	it("static fields can express partial info (idempotent only)", () => {
+		const registry = new Map();
+		registry.set("archive", {
+			kind: "builtin" as const,
+			toolDefinition: stubDef,
+			execute: stubExecute,
+			idempotent: true,
+		});
+		expect(resolveToolAnnotations(registry, "archive", {})).toEqual({ idempotent: true });
+	});
+
+	it("calls resolveAnnotations(args) when defined and prefers it over static fields", () => {
+		const registry = new Map();
+		registry.set("memory", {
+			kind: "builtin" as const,
+			toolDefinition: stubDef,
+			execute: stubExecute,
+			idempotent: false,
+			readOnly: false,
+			resolveAnnotations: (args: Record<string, unknown>) => {
+				if (args.action === "search") return { idempotent: true, readOnly: true };
+				if (args.action === "store") return { idempotent: true, readOnly: false };
+				return { idempotent: false, readOnly: false };
+			},
+		});
+		expect(resolveToolAnnotations(registry, "memory", { action: "search" })).toEqual({
+			idempotent: true,
+			readOnly: true,
+		});
+		expect(resolveToolAnnotations(registry, "memory", { action: "store" })).toEqual({
+			idempotent: true,
+			readOnly: false,
+		});
+		expect(resolveToolAnnotations(registry, "memory", { action: "connect" })).toEqual({
+			idempotent: false,
+			readOnly: false,
+		});
+	});
+
+	it("returns empty object when neither static nor resolveAnnotations is set", () => {
+		const registry = new Map();
+		registry.set("bash", {
+			kind: "sandbox" as const,
+			toolDefinition: stubDef,
+		});
+		expect(resolveToolAnnotations(registry, "bash", { command: "ls" })).toEqual({});
+	});
+});
+
+describe("shouldRetryRelayCall (annotation-aware)", () => {
+	const baseInput = {
+		attempt: 0,
+		maxAttempts: 1,
+		aborted: false,
+	};
+
+	it("retries on retriable+readOnly even without definitely_not_executed", () => {
+		// Read-only tools have no side effects, so a duplicate execution is
+		// indistinguishable from a single execution. Always safe to retry.
+		expect(
+			shouldRetryRelayCall({
+				...baseInput,
+				waitResult: { content: "Timeout", retriable: true },
+				annotations: { readOnly: true },
+			}),
+		).toBe(true);
+	});
+
+	it("retries on retriable+idempotent even without definitely_not_executed", () => {
+		// Idempotent tools may have side effects, but N executions == 1 execution.
+		expect(
+			shouldRetryRelayCall({
+				...baseInput,
+				waitResult: { content: "Timeout", retriable: true },
+				annotations: { idempotent: true },
+			}),
+		).toBe(true);
+	});
+
+	it("does not retry when annotations explicitly say neither", () => {
+		expect(
+			shouldRetryRelayCall({
+				...baseInput,
+				waitResult: { content: "Timeout", retriable: true },
+				annotations: { idempotent: false, readOnly: false },
+			}),
+		).toBe(false);
+	});
+
+	it("annotations do not override abort or budget", () => {
+		expect(
+			shouldRetryRelayCall({
+				...baseInput,
+				aborted: true,
+				waitResult: { content: "Timeout", retriable: true },
+				annotations: { idempotent: true },
+			}),
+		).toBe(false);
+		expect(
+			shouldRetryRelayCall({
+				...baseInput,
+				attempt: 1,
+				maxAttempts: 1,
+				waitResult: { content: "Timeout", retriable: true },
+				annotations: { idempotent: true },
+			}),
+		).toBe(false);
+	});
+
+	it("definitely_not_executed beats annotations: retries even when annotations say not idempotent", () => {
+		// Hub fast-fail attestation is the strongest signal — it doesn't matter
+		// whether the tool is idempotent because it provably never ran.
+		expect(
+			shouldRetryRelayCall({
+				...baseInput,
+				waitResult: {
+					content: "Remote error: target offline",
+					retriable: true,
+					definitely_not_executed: true,
+				},
+				annotations: { idempotent: false, readOnly: false },
+			}),
+		).toBe(true);
 	});
 });

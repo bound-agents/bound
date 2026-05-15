@@ -127,6 +127,9 @@ export function createQueryTool(ctx: ToolContext): RegisteredTool {
 				parameters: jsonSchema,
 			},
 		},
+		// Read-only: SELECT/PRAGMA enforced — no mutations possible.
+		idempotent: true,
+		readOnly: true,
 		execute: async (raw: Record<string, unknown>) => {
 			const parsed = parseToolInput(querySchema, raw, "query");
 			if (!parsed.ok) return parsed.error;

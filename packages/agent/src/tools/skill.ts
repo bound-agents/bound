@@ -34,6 +34,21 @@ export function createSkillTool(ctx: ToolContext): RegisteredTool {
 				parameters: jsonSchema,
 			},
 		},
+		// Per-action idempotency. list/read are pure queries. activate/retire
+		// flip a status flag — running them twice with the same skill name
+		// leaves the same final state.
+		resolveAnnotations: (args: Record<string, unknown>) => {
+			switch (args.action) {
+				case "list":
+				case "read":
+					return { idempotent: true, readOnly: true };
+				case "activate":
+				case "retire":
+					return { idempotent: true, readOnly: false };
+				default:
+					return {};
+			}
+		},
 		execute: async (raw: Record<string, unknown>): Promise<string> => {
 			const parsed = parseToolInput(skillSchema, raw, "skill");
 			if (!parsed.ok) return parsed.error;

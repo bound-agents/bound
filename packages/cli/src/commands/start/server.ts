@@ -982,6 +982,9 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			kind: "platform" as const,
 			toolDefinition: rawConnectorTool.toolDefinition,
 			execute: rawConnectorTool.execute,
+			idempotent: rawConnectorTool.idempotent,
+			readOnly: rawConnectorTool.readOnly,
+			resolveAnnotations: rawConnectorTool.resolveAnnotations,
 		};
 		appContext.logger.info("[platforms-mcp] Connector tool created");
 

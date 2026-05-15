@@ -162,6 +162,36 @@ export interface RegisteredTool {
 	kind: "platform" | "client" | "builtin" | "sandbox";
 	toolDefinition: ToolDefinition;
 	execute?: (input: Record<string, unknown>) => Promise<BuiltInToolResult | string>;
+
+	/**
+	 * Idempotency hint — N invocations with identical args leave the system in
+	 * the same final state as 1 invocation. Used by the relay retry path to
+	 * decide whether to re-dispatch on ambiguous transient errors. Mirrors the
+	 * MCP spec's `tool.annotations.idempotentHint`.
+	 *
+	 * Treat as a non-binding hint. The agent loop never relies on this for
+	 * security or correctness — only for retry policy.
+	 */
+	idempotent?: boolean;
+
+	/**
+	 * Read-only hint — the tool never mutates state. Strict subset of
+	 * idempotent (every read-only tool is idempotent; the converse is false).
+	 * Mirrors the MCP spec's `tool.annotations.readOnlyHint`.
+	 */
+	readOnly?: boolean;
+
+	/**
+	 * Per-action resolver for tools whose idempotency depends on the input
+	 * (e.g. `memory search` is read-only but `memory store` mutates). When
+	 * defined, takes precedence over the static `idempotent`/`readOnly`
+	 * fields. Returning `{}` means "unknown" — the retry path treats this
+	 * the same as no annotations.
+	 */
+	resolveAnnotations?: (args: Record<string, unknown>) => {
+		idempotent?: boolean;
+		readOnly?: boolean;
+	};
 }
 
 /**

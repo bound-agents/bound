@@ -992,4 +992,32 @@ describe("memory tool", () => {
 			expect(result).not.toContain("undefined");
 		});
 	});
+
+	describe("idempotency annotations", () => {
+		it("classifies search/traverse/neighbors as read-only", () => {
+			const tool = createMemoryTool(ctx);
+			expect(tool.resolveAnnotations).toBeDefined();
+			for (const action of ["search", "traverse", "neighbors"]) {
+				expect(tool.resolveAnnotations?.({ action })).toEqual({
+					idempotent: true,
+					readOnly: true,
+				});
+			}
+		});
+
+		it("classifies store/forget/connect/disconnect as idempotent (mutating)", () => {
+			const tool = createMemoryTool(ctx);
+			for (const action of ["store", "forget", "connect", "disconnect"]) {
+				expect(tool.resolveAnnotations?.({ action })).toEqual({
+					idempotent: true,
+					readOnly: false,
+				});
+			}
+		});
+
+		it("returns empty annotations for unknown actions", () => {
+			const tool = createMemoryTool(ctx);
+			expect(tool.resolveAnnotations?.({ action: "what_is_this" })).toEqual({});
+		});
+	});
 });

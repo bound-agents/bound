@@ -59,6 +59,25 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 				parameters: jsonSchema,
 			},
 		},
+		// Flag-shaped dispatch — multiple optional fields select the action.
+		// list → read-only; approve/apply/defer/dismiss → idempotent (terminal
+		// status transitions); create (title+detail) → non-idempotent (each
+		// call inserts a new advisory row with a fresh id).
+		resolveAnnotations: (args: Record<string, unknown>) => {
+			if (args.list === true) return { idempotent: true, readOnly: true };
+			if (
+				typeof args.approve === "string" ||
+				typeof args.apply === "string" ||
+				typeof args.defer === "string" ||
+				typeof args.dismiss === "string"
+			) {
+				return { idempotent: true, readOnly: false };
+			}
+			if (typeof args.title === "string" && typeof args.detail === "string") {
+				return { idempotent: false, readOnly: false };
+			}
+			return {};
+		},
 		execute: async (raw: Record<string, unknown>) => {
 			const parsed = parseToolInput(advisorySchema, raw, "advisory");
 			if (!parsed.ok) return parsed.error;
