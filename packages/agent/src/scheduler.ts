@@ -121,9 +121,6 @@ function retryDeferredTask(
  * task up even without a new event emission (AC4.6). Failure paths use a shorter
  * interval (60s) to recover quickly from transient issues; success paths use 5
  * minutes as a low-frequency consistency check.
- *
- * The dispatcher task uses a longer fallback (30m) since connector list changes
- * are rare outside of startup and the event-driven path handles real changes.
  */
 function resetEventTask(
 	db: AppContext["db"],

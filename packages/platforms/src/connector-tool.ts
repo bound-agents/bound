@@ -22,7 +22,7 @@ export interface ConnectorToolDef {
 }
 
 /**
- * Context for the connector tool — same shape as existing DispatcherToolContext.
+ * Context for the connector tool.
  */
 export interface ConnectorToolContext {
 	registry: PlatformMcpRegistry;

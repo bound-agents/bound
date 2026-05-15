@@ -557,7 +557,7 @@ export class PlatformMcpRegistry {
 	}
 
 	/**
-	 * Returns ALL platform tools from ALL servers (used for dispatcher task).
+	 * Returns ALL platform tools from ALL servers (used by tool resolver for connector-tool scoping).
 	 */
 	getAllPlatformTools(): Map<string, PlatformRegisteredTool> {
 		const all = new Map<string, PlatformRegisteredTool>();
