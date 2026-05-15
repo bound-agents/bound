@@ -114,6 +114,47 @@ describe("Remote MCP proxy commands via relay", () => {
 		expect(outbox[0].kind).toBe("tool_call");
 	});
 
+	it("proxy command handler attaches target host annotations to the relay request", async () => {
+		// Update the seeded remote host with mcp_tool_annotations so the proxy
+		// can look them up at dispatch time and attach to the relay request.
+		db.run("UPDATE hosts SET mcp_tool_annotations = ? WHERE site_id = ?", [
+			JSON.stringify({
+				github: {
+					list_commits: { idempotentHint: true, readOnlyHint: true },
+					create_issue: { idempotentHint: false, readOnlyHint: false },
+				},
+			}),
+			"remote-spoke-1",
+		]);
+
+		const { commands } = generateRemoteMCPProxyCommands(db, "local-hub-site", new Set());
+		const githubCmd = commands.find((c) => c.name === "github");
+		if (!githubCmd) throw new Error("expected github command");
+
+		const ctx = createTestContext();
+
+		// Read-only subcommand: annotations should propagate as readOnly=true.
+		const readResult = (await githubCmd.handler(
+			{ subcommand: "list_commits", owner: "k", repo: "b" },
+			ctx,
+		)) as RelayToolCallRequest;
+		expect(readResult.annotations).toEqual({ idempotent: true, readOnly: true });
+
+		// Mutating subcommand: annotations should propagate as both false.
+		const writeResult = (await githubCmd.handler(
+			{ subcommand: "create_issue", title: "x" },
+			ctx,
+		)) as RelayToolCallRequest;
+		expect(writeResult.annotations).toEqual({ idempotent: false, readOnly: false });
+
+		// Unknown subcommand: empty object (no info).
+		const unknownResult = (await githubCmd.handler(
+			{ subcommand: "mystery_op" },
+			ctx,
+		)) as RelayToolCallRequest;
+		expect(unknownResult.annotations).toEqual({});
+	});
+
 	it("exec wrapper propagates relay request via store object reference", async () => {
 		// This tests the ACTUAL production flow. The exec wrapper in agent-factory.ts
 		// creates its own loopContextStorage.run() scope. The command handler stores the

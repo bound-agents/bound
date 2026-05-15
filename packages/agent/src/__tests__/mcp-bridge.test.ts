@@ -738,6 +738,73 @@ describe("MCP Bridge", () => {
 		db.close();
 	});
 
+	it("updateHostMCPInfo captures per-tool MCP annotations into mcp_tool_annotations", async () => {
+		const { applySchema, createDatabase } = await import("@bound/core");
+
+		const db = createDatabase(":memory:");
+		applySchema(db);
+
+		const siteId = "test-site-annotations";
+
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, modified_at, deleted)
+			VALUES (?, ?, ?, ?)`,
+			[siteId, "test-host", new Date().toISOString(), 0],
+		);
+
+		const githubClient = makeMockClient(
+			{ name: "github", transport: "stdio", command: "test" },
+			[
+				{
+					name: "search_repositories",
+					description: "Search repos",
+					inputSchema: {},
+					annotations: { idempotentHint: true, readOnlyHint: true },
+				},
+				{
+					name: "create_issue",
+					description: "Create issue",
+					inputSchema: {},
+					annotations: { idempotentHint: false, readOnlyHint: false },
+				},
+				{
+					name: "no_annotations",
+					description: "No annotations",
+					inputSchema: {},
+				},
+			],
+			[],
+			[],
+		);
+
+		const clients = new Map([["github", githubClient]]);
+		await updateHostMCPInfo(db, siteId, clients);
+
+		const host = db
+			.query("SELECT mcp_tool_annotations FROM hosts WHERE site_id = ?")
+			.get(siteId) as { mcp_tool_annotations: string } | null;
+
+		expect(host).not.toBeNull();
+		expect(host?.mcp_tool_annotations).toBeTruthy();
+		const parsed = JSON.parse(host?.mcp_tool_annotations ?? "{}");
+		expect(parsed.github).toBeDefined();
+		expect(parsed.github.search_repositories).toEqual({
+			idempotentHint: true,
+			readOnlyHint: true,
+		});
+		expect(parsed.github.create_issue).toEqual({
+			idempotentHint: false,
+			readOnlyHint: false,
+		});
+		// Tools without annotations are omitted (or stored as empty).
+		// Either way, the lookup helper must treat absence as "no info".
+		if (parsed.github.no_annotations !== undefined) {
+			expect(parsed.github.no_annotations).toEqual({});
+		}
+
+		db.close();
+	});
+
 	// Dynamic client lookup: handlers use clients.get(serverName) at dispatch time,
 	// so replacing a client in the map is reflected in subsequent calls.
 	it("handler uses updated client after map replacement (dynamic lookup)", async () => {

@@ -148,6 +148,7 @@ export interface Host {
 	sync_url: string | null;
 	mcp_servers: string | null;
 	mcp_tools: string | null;
+	mcp_tool_annotations: string | null;
 	models: string | null;
 	overlay_root: string | null;
 	online_at: string | null;
