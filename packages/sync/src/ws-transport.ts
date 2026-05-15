@@ -11,6 +11,7 @@ import {
 } from "@bound/core";
 import type {
 	ChangeLogEntry,
+	ErrorPayload,
 	Logger,
 	Message,
 	RelayInboxEntry,
@@ -19,7 +20,7 @@ import type {
 	SyncedTableName,
 	TypedEventEmitter,
 } from "@bound/shared";
-import { HLC_ZERO, generateHlc } from "@bound/shared";
+import { HLC_ZERO, RELAY_KIND_REGISTRY, generateHlc, randomUUID } from "@bound/shared";
 import { getPeerCursor, updatePeerCursor } from "./peer-cursor.js";
 import {
 	applyColumnChunk as applyColumnChunkFn,
@@ -774,19 +775,57 @@ export class WsTransport {
 
 				this.sendRelayDeliver(entry.target_site_id, [inboxEntry]);
 			} else {
-				// Spoke is NOT connected: write to hub's own outbox for delivery on reconnect
-				writeOutbox(this.config.db, {
-					id: entry.id,
-					source_site_id: sourceSiteId,
-					target_site_id: entry.target_site_id,
-					kind: entry.kind as RelayKind,
-					ref_id: entry.ref_id ?? entry.id,
-					idempotency_key: entry.idempotency_key,
-					stream_id: entry.stream_id,
-					payload: JSON.stringify(entry.payload),
-					created_at: new Date().toISOString(),
-					expires_at: entry.expires_at,
-				});
+				// Spoke is NOT connected. Behavior depends on dispatch mode:
+				// - sync-dispatch kinds (tool_call, platform_request, etc): the source is
+				//   actively polling for a response. Buffering would silently absorb the
+				//   request and let the source time out (~15s). Instead, fast-fail with a
+				//   structured retriable=true error so the caller sees a clear signal and
+				//   higher layers can decide whether to retry. See bound_issue:relay-hub-
+				//   silent-buffer-on-offline-target.
+				// - async/response kinds: buffer for delivery on reconnect (existing
+				//   fire-and-forget semantics).
+				const kindMeta = RELAY_KIND_REGISTRY[entry.kind as RelayKind];
+				if (kindMeta?.dispatch === "sync") {
+					const errorPayload: ErrorPayload = {
+						error: `Target host ${entry.target_site_id} is not currently connected`,
+						retriable: true,
+					};
+					const errorInboxEntry: RelayInboxEntry = {
+						id: randomUUID(),
+						// Synthetic source: the hub speaks on behalf of the target so the
+						// response shape matches "remote error from target". The source
+						// matches by ref_id, not source_site_id.
+						source_site_id: entry.target_site_id,
+						kind: "error",
+						ref_id: entry.id,
+						idempotency_key: null,
+						stream_id: entry.stream_id,
+						payload: JSON.stringify(errorPayload),
+						expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+						received_at: new Date().toISOString(),
+						processed: 0,
+					};
+					this.sendRelayDeliver(sourceSiteId, [errorInboxEntry]);
+					this.config.logger?.debug("WsTransport sync-dispatch fast-fail: target offline", {
+						kind: entry.kind,
+						target: entry.target_site_id,
+						source: sourceSiteId,
+					});
+				} else {
+					// Async/response kinds: write to hub's own outbox for delivery on reconnect
+					writeOutbox(this.config.db, {
+						id: entry.id,
+						source_site_id: sourceSiteId,
+						target_site_id: entry.target_site_id,
+						kind: entry.kind as RelayKind,
+						ref_id: entry.ref_id ?? entry.id,
+						idempotency_key: entry.idempotency_key,
+						stream_id: entry.stream_id,
+						payload: JSON.stringify(entry.payload),
+						created_at: new Date().toISOString(),
+						expires_at: entry.expires_at,
+					});
+				}
 			}
 
 			deliveredIds.push(entry.id);
