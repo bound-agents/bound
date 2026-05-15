@@ -63,7 +63,7 @@ packages/
   sandbox/      Virtual filesystem (InMemoryFs/ClusterFs), command framework
   llm/          Driver shims (Bedrock, OpenAI-compatible) over Vercel AI SDK
   agent/        Agent loop, 8-stage context pipeline, commands, scheduler, MCP bridge
-  platforms/    MCP-based platform connectors (Discord), connector handles, dispatcher
+  platforms/    MCP-based platform connectors (Discord), connector handles, connector tool
   web/          Hono API + Svelte 5 SPA
   client/       BoundClient (HTTP + WS) for external consumers
   mcp-server/   Standalone stdio MCP server (bound-mcp)
