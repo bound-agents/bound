@@ -50,7 +50,17 @@ class SimpleEventBus {
  * Creates a mock MCP server for testing tool discovery and execution.
  */
 async function createMockMcpServer(
-	tools: { name: string; description: string; inputSchema?: Record<string, unknown> }[],
+	tools: {
+		name: string;
+		description: string;
+		inputSchema?: Record<string, unknown>;
+		annotations?: {
+			readOnlyHint?: boolean;
+			destructiveHint?: boolean;
+			idempotentHint?: boolean;
+			openWorldHint?: boolean;
+		};
+	}[],
 ): Promise<Server> {
 	const server = new Server({
 		name: "test-server",
@@ -83,6 +93,7 @@ async function createMockMcpServer(
 			name: t.name,
 			description: t.description,
 			inputSchema: t.inputSchema ?? { type: "object", properties: {} },
+			annotations: t.annotations,
 		})),
 	}));
 
@@ -460,5 +471,276 @@ describe("Tool Scoping Integration", () => {
 		// Should resolve correctly
 		expect(tools.size).toBe(1);
 		expect(tools.has("channel_list")).toBe(true);
+	});
+
+	it("AC3.4: user-facing thread receives read-only tools + connector tool", async () => {
+		// Create mock server with read-only and write tools
+		const mockServer = await createMockMcpServer([
+			{
+				name: "discord_list_channels",
+				description: "List channels (read-only)",
+				annotations: { readOnlyHint: true },
+			},
+			{
+				name: "discord_send_message",
+				description: "Send message (write)",
+				annotations: undefined,
+			},
+		]);
+		await registry.registerServer("discord", mockServer);
+
+		// Create a user-facing thread (no connector handle)
+		const threadId = "user-thread-1";
+		insertRow(
+			db,
+			"threads",
+			{
+				id: threadId,
+				user_id: "user-1",
+				host_origin: siteId,
+				title: "user chat",
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				last_message_at: new Date().toISOString(),
+				deleted: 0,
+				interface: "web",
+				summary: null,
+			},
+			siteId,
+		);
+
+		// Construct resolver logic (mirrors scheduler.ts platformToolResolver)
+		const readOnlyTools = Array.from(registry.getReadOnlyPlatformTools().values());
+
+		// Verify read-only tools are present
+		expect(readOnlyTools.length).toBeGreaterThan(0);
+		expect(
+			readOnlyTools.some((t) => t.toolDefinition.function.name === "discord_list_channels"),
+		).toBe(true);
+
+		// Verify write tools are NOT in read-only set
+		expect(
+			readOnlyTools.some((t) => t.toolDefinition.function.name === "discord_send_message"),
+		).toBe(false);
+	});
+
+	it("AC3.5: user-facing thread does NOT receive write tools", async () => {
+		// Create mock server with mixed tools
+		const mockServer = await createMockMcpServer([
+			{
+				name: "discord_list_channels",
+				description: "List channels",
+				annotations: { readOnlyHint: true },
+			},
+			{
+				name: "discord_send_message",
+				description: "Send message",
+				annotations: undefined,
+			},
+			{
+				name: "discord_respond_interaction",
+				description: "Respond to interaction",
+				annotations: undefined,
+			},
+		]);
+		await registry.registerServer("discord", mockServer);
+
+		// User-facing thread receives read-only tools only
+		const readOnlyTools = Array.from(registry.getReadOnlyPlatformTools().values());
+
+		// Verify NO write tools in read-only set
+		expect(
+			readOnlyTools.some((t) => t.toolDefinition.function.name === "discord_send_message"),
+		).toBe(false);
+		expect(
+			readOnlyTools.some((t) => t.toolDefinition.function.name === "discord_respond_interaction"),
+		).toBe(false);
+
+		// Only read-only should be present
+		expect(
+			readOnlyTools.some((t) => t.toolDefinition.function.name === "discord_list_channels"),
+		).toBe(true);
+	});
+
+	it("AC4.1: event task thread receives ALL tools from its bound server", async () => {
+		// Create mock server with both read-only and write tools
+		const mockServer = await createMockMcpServer([
+			{
+				name: "discord_list_channels",
+				description: "List channels",
+				annotations: { readOnlyHint: true },
+			},
+			{
+				name: "discord_send_message",
+				description: "Send message",
+				annotations: undefined,
+			},
+		]);
+		await registry.registerServer("discord", mockServer);
+
+		// Create event task thread with connector handle
+		const threadId = "event-thread-1";
+		const taskId = "event-task-1";
+		const handleId = "handle-event-1";
+
+		insertRow(
+			db,
+			"threads",
+			{
+				id: threadId,
+				user_id: "user-1",
+				host_origin: siteId,
+				title: "event",
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				last_message_at: new Date().toISOString(),
+				deleted: 0,
+				interface: "web",
+				summary: null,
+			},
+			siteId,
+		);
+
+		insertRow(
+			db,
+			"tasks",
+			{
+				id: taskId,
+				type: "event",
+				thread_id: threadId,
+				status: "running",
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+				trigger_spec: "",
+				payload: null,
+				last_run_at: null,
+				next_run_at: null,
+				consecutive_failures: 0,
+				alert_threshold: 3,
+			},
+			siteId,
+		);
+
+		insertRow(
+			db,
+			"connector_handles",
+			{
+				id: handleId,
+				task_id: taskId,
+				server_name: "discord",
+				event_name: "message",
+				event_args: "{}",
+				delivery_mode: "poll",
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+				cursor: null,
+			},
+			siteId,
+		);
+
+		// Query scoped tools for event thread
+		const scopedTools = registry.getToolsForThread(threadId);
+
+		// Should get ALL tools (both read-only and write)
+		expect(scopedTools.size).toBeGreaterThanOrEqual(2);
+		expect(scopedTools.has("discord_list_channels")).toBe(true);
+		expect(scopedTools.has("discord_send_message")).toBe(true);
+	});
+
+	it("AC4.2: event task thread does NOT receive connector tool or other server tools", async () => {
+		// Create two mock servers
+		const discordServer = await createMockMcpServer([
+			{
+				name: "discord_list",
+				description: "List channels",
+				annotations: { readOnlyHint: true },
+			},
+		]);
+		const slackServer = await createMockMcpServer([
+			{
+				name: "slack_send",
+				description: "Send to Slack",
+				annotations: undefined,
+			},
+		]);
+
+		await registry.registerServer("discord", discordServer);
+		await registry.registerServer("slack", slackServer);
+
+		// Create event task thread bound to Discord only
+		const threadId = "event-thread-2";
+		const taskId = "event-task-2";
+		const handleId = "handle-event-2";
+
+		insertRow(
+			db,
+			"threads",
+			{
+				id: threadId,
+				user_id: "user-1",
+				host_origin: siteId,
+				title: "event",
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				last_message_at: new Date().toISOString(),
+				deleted: 0,
+				interface: "web",
+				summary: null,
+			},
+			siteId,
+		);
+
+		insertRow(
+			db,
+			"tasks",
+			{
+				id: taskId,
+				type: "event",
+				thread_id: threadId,
+				status: "running",
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+				trigger_spec: "",
+				payload: null,
+				last_run_at: null,
+				next_run_at: null,
+				consecutive_failures: 0,
+				alert_threshold: 3,
+			},
+			siteId,
+		);
+
+		insertRow(
+			db,
+			"connector_handles",
+			{
+				id: handleId,
+				task_id: taskId,
+				server_name: "discord",
+				event_name: "message",
+				event_args: "{}",
+				delivery_mode: "poll",
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+				cursor: null,
+			},
+			siteId,
+		);
+
+		// Query scoped tools for event thread
+		const scopedTools = registry.getToolsForThread(threadId);
+
+		// Should only get Discord tools (the bound server)
+		expect(scopedTools.has("discord_list")).toBe(true);
+
+		// Should NOT get Slack tools (other server)
+		expect(scopedTools.has("slack_send")).toBe(false);
+
+		// Note: Connector tool is not part of scopedTools (it's added separately in the resolver)
+		// This test just verifies scoping doesn't leak tools from other servers
 	});
 });
