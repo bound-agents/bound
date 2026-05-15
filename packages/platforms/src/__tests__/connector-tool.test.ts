@@ -256,6 +256,37 @@ describe("Connector Tool", () => {
 			expect(result).toContain("Error:");
 			expect(result).toContain("server_name");
 		});
+
+		// Regression guard for the v3Schema fix. The MCP SDK's safeParse
+		// dispatches on `_zod`; passing `{}` as the result schema lands on
+		// the v3 fallback path which calls `({}).safeParse(...)` and crashes.
+		// Commit e028985 patched the relay-processor call site only — this
+		// test exercises events/list through the real SDK transport so we
+		// don't have a routing-divergence regression again.
+		it("events/list goes through the real SDK without rejecting on the result schema", async () => {
+			await registry.registerServer("test-platform", server);
+
+			const toolContext = {
+				registry,
+				db,
+				siteId,
+			};
+
+			const tool = createConnectorTool(toolContext);
+			const result = (await tool.execute?.({
+				action: "channels",
+				server_name: "test-platform",
+			})) as string;
+
+			// If the schema is invalid, the SDK rejects the request and
+			// connector-tool surfaces it as `Error: ...`. With the fix, we
+			// get a JSON array of events (annotated with bound flags) back.
+			expect(result.startsWith("Error:")).toBe(false);
+			const parsed = JSON.parse(result);
+			expect(Array.isArray(parsed)).toBe(true);
+			expect(parsed.length).toBeGreaterThan(0);
+			expect(parsed[0]).toHaveProperty("name");
+		});
 	});
 
 	describe("AC2.3: channels fallback to remotePlatformRequest", () => {
