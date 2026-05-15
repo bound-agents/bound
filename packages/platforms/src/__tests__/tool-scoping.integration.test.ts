@@ -7,7 +7,6 @@ import type { TypedEventEmitter } from "@bound/shared";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { z } from "zod";
 
-import { DISPATCHER_TASK_ID } from "../dispatcher";
 import type { PlatformRegisteredTool } from "../mcp-registry";
 import { PlatformMcpRegistry } from "../mcp-registry";
 
@@ -247,72 +246,6 @@ describe("Tool Scoping Integration", () => {
 		expect(tools.size).toBe(1);
 		expect(tools.has("discord_send")).toBe(true);
 		expect(tools.has("slack_send")).toBe(false);
-	});
-
-	it("AC3.2: dispatcher task receives tools from ALL servers", async () => {
-		// Create two mock servers
-		const discordServer = await createMockMcpServer([
-			{ name: "discord_send", description: "Send to Discord" },
-		]);
-		const slackServer = await createMockMcpServer([
-			{ name: "slack_send", description: "Send to Slack" },
-		]);
-
-		await registry.registerServer("discord", discordServer);
-		await registry.registerServer("slack", slackServer);
-
-		// Create dispatcher task thread
-		const threadId = "dispatcher-thread";
-		insertRow(
-			db,
-			"tasks",
-			{
-				id: DISPATCHER_TASK_ID,
-				type: "system",
-				thread_id: threadId,
-				status: "running",
-				created_at: new Date().toISOString(),
-				modified_at: new Date().toISOString(),
-				deleted: 0,
-				trigger_spec: "",
-				payload: null,
-				last_run_at: null,
-				next_run_at: null,
-				consecutive_failures: 0,
-				alert_threshold: 3,
-			},
-			siteId,
-		);
-
-		// Create thread
-		insertRow(
-			db,
-			"threads",
-			{
-				id: threadId,
-				user_id: "user-1",
-				host_origin: siteId,
-				title: "dispatcher",
-				created_at: new Date().toISOString(),
-				modified_at: new Date().toISOString(),
-				last_message_at: new Date().toISOString(),
-				deleted: 0,
-				interface: "web",
-				summary: null,
-			},
-			siteId,
-		);
-
-		// Check if dispatcher thread
-		expect(registry.isDispatcherThread(threadId)).toBe(true);
-
-		// Get all platform tools
-		const tools = registry.getAllPlatformTools();
-
-		// Should get ALL tools from all servers
-		expect(tools.size).toBe(2);
-		expect(tools.has("discord_send")).toBe(true);
-		expect(tools.has("slack_send")).toBe(true);
 	});
 
 	it("AC3.3: thread with no event task receives no tools", async () => {

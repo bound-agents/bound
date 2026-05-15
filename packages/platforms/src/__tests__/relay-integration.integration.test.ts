@@ -8,7 +8,6 @@ import { TypedEventEmitter as RealTypedEventEmitter } from "@bound/shared";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { z } from "zod";
 import { type ConnectorHandleRecord, createConnectorHandle } from "../connector-handle.js";
-import { DISPATCHER_TASK_ID } from "../dispatcher.js";
 import { PlatformMcpRegistry } from "../mcp-registry.js";
 
 // Simple mock logger
@@ -633,57 +632,6 @@ describe("Platform MCP Registry — Relay Integration (AC6 + AC7)", () => {
 
 			// Should be empty
 			expect(toolsForThread.size).toBe(0);
-
-			await registryLeader.shutdown();
-		});
-
-		it("should return all tools for dispatcher thread", async () => {
-			const registryLeader = new PlatformMcpRegistry({
-				db: dbLead,
-				siteId: siteIdLeader,
-				eventBus: eventBusLeader,
-				logger: createMockLogger(),
-			});
-
-			// Register multiple platform servers
-			const mockDiscord = await createMockMcpServer("discord");
-			const mockSlack = await createMockMcpServer("slack");
-			await registryLeader.registerServer("discord", mockDiscord);
-			await registryLeader.registerServer("slack", mockSlack);
-
-			// Create the dispatcher task with its specific thread
-			// (Note: In real code, this is done by seedDispatcher)
-			const dispatcherThreadId = randomUUID();
-			insertRow(
-				dbLead,
-				"tasks",
-				{
-					id: DISPATCHER_TASK_ID,
-					thread_id: dispatcherThreadId,
-					type: "dispatcher",
-					status: "idle",
-					trigger_spec: "dispatcher:list_changed",
-					created_at: new Date().toISOString(),
-					modified_at: new Date().toISOString(),
-					deleted: 0,
-					last_run_at: null,
-					next_run_at: null,
-					consecutive_failures: 0,
-					alert_threshold: 3,
-					payload: null,
-				},
-				siteIdLeader,
-			);
-
-			// Query tools for dispatcher thread
-			const allTools = registryLeader.getAllPlatformTools();
-
-			// Should have tools from both servers
-			expect(allTools.size).toBeGreaterThan(0);
-
-			// Verify it's a dispatcher thread
-			const isDispatcher = registryLeader.isDispatcherThread(dispatcherThreadId);
-			expect(isDispatcher).toBe(true);
 
 			await registryLeader.shutdown();
 		});

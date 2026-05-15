@@ -1880,7 +1880,7 @@ describe("Scheduler features", () => {
 				[
 					id,
 					opts.status ?? "pending",
-					opts.triggerSpec ?? "connector:list_changed",
+					opts.triggerSpec ?? "test:event",
 					pastTime,
 					opts.consecutiveFailures ?? 0,
 					now,
@@ -2023,7 +2023,7 @@ describe("Scheduler features", () => {
 					consecutive_failures, event_depth, no_quiescence,
 					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
 				) VALUES (
-					?, 'event', 'running', 'connector:list_changed', NULL, NULL,
+					?, 'event', 'running', 'test:event', NULL, NULL,
 					?, ?, ?, NULL, NULL,
 					0, NULL, NULL, NULL, 0,
 					'results', NULL, 0, 5,
