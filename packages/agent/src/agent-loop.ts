@@ -30,6 +30,7 @@ import {
 	insertThreadMessage,
 	isTransientLLMError,
 	parseToolResultContent,
+	shouldRetryRelayCall,
 } from "./agent-loop-utils";
 import { maybePlaceCacheMarker } from "./cache-marker";
 import { CACHE_TTL_MS, predictCacheState, selectCacheTtl } from "./cache-prediction";
@@ -1421,7 +1422,14 @@ export class AgentLoop {
 											this.restoreState(previousRelayState);
 										}
 
-										if (waitResult.retriable && retryAttempt < MAX_RELAY_RETRIES && !this.aborted) {
+										if (
+											shouldRetryRelayCall({
+												waitResult,
+												attempt: retryAttempt,
+												maxAttempts: MAX_RELAY_RETRIES,
+												aborted: this.aborted,
+											})
+										) {
 											retryAttempt++;
 											const backoffMs = 2000 * retryAttempt;
 											this.ctx.logger.info(
@@ -1431,6 +1439,7 @@ export class AgentLoop {
 													attempt: retryAttempt,
 													backoffMs,
 													lastError: waitResult.content,
+													definitelyNotExecuted: waitResult.definitely_not_executed === true,
 												},
 											);
 											await new Promise((resolve) => setTimeout(resolve, backoffMs));

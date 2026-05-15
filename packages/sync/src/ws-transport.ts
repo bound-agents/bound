@@ -789,6 +789,10 @@ export class WsTransport {
 					const errorPayload: ErrorPayload = {
 						error: `Target host ${entry.target_site_id} is not currently connected`,
 						retriable: true,
+						// Hub fast-fail: the request never left the hub, so the target
+						// tool DEFINITELY did not execute. Lets the agent loop retry
+						// safely even for non-idempotent tools.
+						definitely_not_executed: true,
 					};
 					const errorInboxEntry: RelayInboxEntry = {
 						id: randomUUID(),

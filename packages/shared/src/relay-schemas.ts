@@ -101,6 +101,12 @@ export const resultPayloadSchema = z.object({
 export const errorPayloadSchema = z.object({
 	error: z.string(),
 	retriable: z.boolean(),
+	// True when the hub or originator can attest that the target tool DEFINITELY
+	// did not execute (e.g. hub fast-fail because target spoke was offline). The
+	// agent loop uses this to retry safely regardless of tool idempotency.
+	// Defaults to undefined/false — full timeouts and target-side errors leave
+	// it unset because the target may have started executing before the failure.
+	definitely_not_executed: z.boolean().optional(),
 });
 
 export const streamChunkPayloadSchema = z.object({

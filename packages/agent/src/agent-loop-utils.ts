@@ -10,6 +10,7 @@ import {
 } from "@bound/llm";
 import { createLogger } from "@bound/shared";
 import type { ModelResolution } from "./model-resolution";
+import type { RelayWaitResult } from "./relay-wait$";
 
 const logger = createLogger("@bound/agent", "agent-loop-utils");
 
@@ -635,4 +636,38 @@ export function hasOrphanedToolCall(messages: LLMMessage[]): boolean {
 
 	// End of messages — surviving pending ids are orphans.
 	return closeWindow();
+}
+
+/**
+ * Decide whether a relay tool call should be re-dispatched after a failure.
+ *
+ * Retry policy (commit 1 — conservative baseline):
+ *   - Aborted runs never retry.
+ *   - The retry budget (`attempt < maxAttempts`) is hard-capped.
+ *   - `retriable=false` is final; never retry.
+ *   - `definitely_not_executed=true` is the only "yes" — hub fast-fail
+ *     attests the target tool never ran, so retry is safe regardless of
+ *     idempotency.
+ *   - All other retriable errors (full timeouts, target-side failures) are
+ *     ambiguous about whether the target started executing. A later commit
+ *     adds annotation-aware retry that consults tool-level
+ *     idempotent/readOnly flags; until then we err on the side of not
+ *     double-executing non-idempotent tools.
+ */
+export interface ShouldRetryRelayCallInput {
+	waitResult: RelayWaitResult;
+	attempt: number;
+	maxAttempts: number;
+	aborted: boolean;
+}
+
+export function shouldRetryRelayCall(input: ShouldRetryRelayCallInput): boolean {
+	if (input.aborted) return false;
+	if (input.attempt >= input.maxAttempts) return false;
+	if (!input.waitResult.retriable) return false;
+	if (input.waitResult.definitely_not_executed === true) return true;
+	// Ambiguous-execution case (commit 1): refuse to retry without idempotency
+	// information. Commit 2 will widen this to allow retry when the tool is
+	// known to be idempotent or read-only.
+	return false;
 }

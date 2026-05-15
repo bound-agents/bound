@@ -53,10 +53,16 @@ export interface RelayWaitOptions {
  * structured retry hint from `ErrorPayload.retriable` so higher layers can
  * decide whether to re-dispatch. Result responses set `retriable=false`;
  * timeouts set `retriable=true` (transient by definition).
+ *
+ * `definitely_not_executed` is set when the failure source can attest that
+ * the target tool DEFINITELY did not run (e.g. hub fast-fail because the
+ * target spoke was offline). Lets the agent loop retry safely even for
+ * non-idempotent tools. Undefined for ambiguous errors and full timeouts.
  */
 export interface RelayWaitResult {
 	content: string;
 	retriable: boolean;
+	definitely_not_executed?: boolean;
 }
 
 function formatResponseText(response: { kind: string; payload: string }): RelayWaitResult {
@@ -68,6 +74,7 @@ function formatResponseText(response: { kind: string; payload: string }): RelayW
 		return {
 			content: `Remote error: ${result.value.error || response.payload}`,
 			retriable: result.value.retriable,
+			definitely_not_executed: result.value.definitely_not_executed,
 		};
 	}
 	if (response.kind === "result") {

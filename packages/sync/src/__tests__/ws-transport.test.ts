@@ -1009,8 +1009,17 @@ describe("WsTransport", () => {
 			const errorEntry = deliverPayload.entries[0];
 			expect(errorEntry.kind).toBe("error");
 			expect(errorEntry.ref_id).toBe("relay-1");
-			const errorBody = errorEntry.payload as { error: string; retriable: boolean };
+			const errorBody = errorEntry.payload as {
+				error: string;
+				retriable: boolean;
+				definitely_not_executed?: boolean;
+			};
 			expect(errorBody.retriable).toBe(true);
+			// Hub fast-fail: target was never reached, so the target tool DEFINITELY
+			// did not execute. This lets the agent loop retry safely even for
+			// non-idempotent tools (vs. full-timeout retriable=true cases where
+			// the target may have already started executing).
+			expect(errorBody.definitely_not_executed).toBe(true);
 			expect(errorBody.error).toContain("spoke-b");
 			expect(errorBody.error.toLowerCase()).toContain("not currently connected");
 

@@ -499,6 +499,15 @@ export interface ResultPayload {
 export interface ErrorPayload {
 	error: string;
 	retriable: boolean;
+	/**
+	 * True when the hub or originator can attest that the target tool DEFINITELY
+	 * did not execute (e.g. hub fast-fail because target spoke was offline). The
+	 * agent loop uses this to retry safely regardless of tool idempotency.
+	 *
+	 * Leave undefined/false for full timeouts and target-side errors — the
+	 * target may have started executing before the failure surfaced.
+	 */
+	definitely_not_executed?: boolean;
 }
 
 // Loop delegation payloads (Phase 7)
