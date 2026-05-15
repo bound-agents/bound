@@ -563,8 +563,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								);
 							}
 
-							// Platform delivery is now handled through MCP connectors in the
-							// dispatcher task, not through legacy platform connector registry.
+							// Platform delivery is now handled through MCP connectors and event tasks.
 
 							// Stamp introspect responses after turn completes
 							await runIntrospectResponseStamp({
