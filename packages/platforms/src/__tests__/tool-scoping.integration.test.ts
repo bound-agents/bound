@@ -8,6 +8,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { z } from "zod";
 
 import { DISPATCHER_TASK_ID } from "../dispatcher";
+import type { PlatformRegisteredTool } from "../mcp-registry";
 import { PlatformMcpRegistry } from "../mcp-registry";
 
 // Simple mock logger
@@ -509,19 +510,52 @@ describe("Tool Scoping Integration", () => {
 			siteId,
 		);
 
-		// Construct resolver logic (mirrors scheduler.ts platformToolResolver)
-		const readOnlyTools = Array.from(registry.getReadOnlyPlatformTools().values());
+		// Create a mock connector tool (adapted to PlatformRegisteredTool)
+		const mockConnectorTool: PlatformRegisteredTool = {
+			kind: "platform" as const,
+			toolDefinition: {
+				type: "function" as const,
+				function: {
+					name: "connector",
+					description: "Unified connector tool",
+					parameters: {
+						type: "object" as const,
+						properties: {},
+					},
+				},
+			},
+			execute: async () => "mock connector response",
+		};
+
+		// Construct the resolver logic (mirrors scheduler.ts platformToolResolver)
+		function resolverUnderTest(testThreadId: string): PlatformRegisteredTool[] {
+			const scopedTools = registry.getToolsForThread(testThreadId);
+			if (scopedTools.size > 0) {
+				return Array.from(scopedTools.values());
+			}
+			const readOnlyTools = Array.from(registry.getReadOnlyPlatformTools().values());
+			if (mockConnectorTool) {
+				return [...readOnlyTools, mockConnectorTool];
+			}
+			return readOnlyTools;
+		}
+
+		// Call resolver with user-facing thread ID
+		const resolvedTools = resolverUnderTest(threadId);
 
 		// Verify read-only tools are present
-		expect(readOnlyTools.length).toBeGreaterThan(0);
+		expect(resolvedTools.length).toBeGreaterThan(0);
 		expect(
-			readOnlyTools.some((t) => t.toolDefinition.function.name === "discord_list_channels"),
+			resolvedTools.some((t) => t.toolDefinition.function.name === "discord_list_channels"),
 		).toBe(true);
 
-		// Verify write tools are NOT in read-only set
+		// Verify write tools are NOT in resolved set
 		expect(
-			readOnlyTools.some((t) => t.toolDefinition.function.name === "discord_send_message"),
+			resolvedTools.some((t) => t.toolDefinition.function.name === "discord_send_message"),
 		).toBe(false);
+
+		// Verify connector tool IS present
+		expect(resolvedTools.some((t) => t.toolDefinition.function.name === "connector")).toBe(true);
 	});
 
 	it("AC3.5: user-facing thread does NOT receive write tools", async () => {

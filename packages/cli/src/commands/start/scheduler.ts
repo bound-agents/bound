@@ -247,10 +247,10 @@ export function initScheduler(
 		registerConnectorEventListeners(appContext.eventBus, scheduler);
 		appContext.logger.info("[scheduler] Connector event listeners registered");
 
-		// Emit synthetic list_changed to wake the dispatcher task. Platform servers
+		// Emit synthetic list_changed event for connector change notifications. Platform servers
 		// register during Phase 7 (before the scheduler exists), so the real
-		// connector:list_changed event is lost. This kick ensures the dispatcher
-		// runs at least once after startup.
+		// connector:list_changed event is lost. This kick ensures listeners are notified
+		// of the startup server list at least once.
 		if (platformMcpRegistry) {
 			appContext.eventBus.emit("connector:list_changed", { server_name: "__startup" });
 		}
