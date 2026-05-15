@@ -573,6 +573,22 @@ export class PlatformMcpRegistry {
 	}
 
 	/**
+	 * Returns platform tools annotated as read-only across all servers.
+	 * Tools without annotations or with readOnlyHint !== true are excluded.
+	 */
+	getReadOnlyPlatformTools(): Map<string, PlatformRegisteredTool> {
+		const readOnly = new Map<string, PlatformRegisteredTool>();
+		for (const [_serverName, tools] of this.platformTools) {
+			for (const [toolName, tool] of tools) {
+				if (tool.annotations?.readOnlyHint === true) {
+					readOnly.set(toolName, tool);
+				}
+			}
+		}
+		return readOnly;
+	}
+
+	/**
 	 * Resolves which platform tools a thread should receive.
 	 * Traces: thread → task → connector_handle → server_name → tools
 	 * Returns empty map for threads not bound to any connector handle.
