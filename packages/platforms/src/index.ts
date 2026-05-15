@@ -17,6 +17,8 @@ export {
 	deleteConnectorHandle,
 } from "./connector-handle.js";
 export type { ConnectorHandleCreateParams, ConnectorHandleRecord } from "./connector-handle.js";
+export { createConnectorTool } from "./connector-tool.js";
+export type { ConnectorToolContext, ConnectorToolDef } from "./connector-tool.js";
 export {
 	createConnectorListTool,
 	createConnectorChannelsTool,
