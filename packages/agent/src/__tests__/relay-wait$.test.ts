@@ -281,6 +281,101 @@ describe("createRelayWait$", () => {
 		expect(result.retriable).toBe(false);
 	});
 
+	it("propagates definitely_not_executed=true from hub fast-fail errors", async () => {
+		// Hub fast-fail synthesizes a kind=error response when the target spoke
+		// is offline. The hub sets definitely_not_executed=true so the agent
+		// loop knows the target tool never ran and can retry safely regardless
+		// of the tool's idempotency.
+		const { hosts, params, outboxEntryId } = createHostsAndParams();
+		const aborted$ = new Subject<void>();
+
+		const promise = firstValueFrom(
+			createRelayWait$(
+				{
+					db,
+					eventBus,
+					siteId,
+					logger: { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} },
+				},
+				params,
+				aborted$,
+			),
+			{ defaultValue: { content: "cancelled", retriable: false } },
+		);
+
+		const now = new Date().toISOString();
+		db.prepare(`
+			INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, payload, expires_at, received_at, processed)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`).run(
+			"error-fast-fail",
+			hosts[0].site_id,
+			"error",
+			outboxEntryId,
+			JSON.stringify({
+				error: "Target host site-target is not currently connected",
+				retriable: true,
+				definitely_not_executed: true,
+			}),
+			new Date(Date.now() + 60000).toISOString(),
+			now,
+			0,
+		);
+
+		eventBus.emit("relay:inbox", { ref_id: outboxEntryId });
+
+		const result = await promise;
+		expect(result.content).toContain("not currently connected");
+		expect(result.retriable).toBe(true);
+		expect(result.definitely_not_executed).toBe(true);
+	});
+
+	it("leaves definitely_not_executed undefined for ambiguous errors and timeouts", async () => {
+		// Target-side errors and full-timeout errors don't carry the attestation
+		// — the target may have started executing before the failure surfaced.
+		const { hosts, params, outboxEntryId } = createHostsAndParams();
+		const aborted$ = new Subject<void>();
+
+		const promise = firstValueFrom(
+			createRelayWait$(
+				{
+					db,
+					eventBus,
+					siteId,
+					logger: { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} },
+				},
+				params,
+				aborted$,
+			),
+			{ defaultValue: { content: "cancelled", retriable: false } },
+		);
+
+		const now = new Date().toISOString();
+		db.prepare(`
+			INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, payload, expires_at, received_at, processed)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`).run(
+			"error-ambiguous",
+			hosts[0].site_id,
+			"error",
+			outboxEntryId,
+			JSON.stringify({
+				error: "model overloaded mid-execution",
+				retriable: true,
+				// definitely_not_executed intentionally omitted
+			}),
+			new Date(Date.now() + 60000).toISOString(),
+			now,
+			0,
+		);
+
+		eventBus.emit("relay:inbox", { ref_id: outboxEntryId });
+
+		const result = await promise;
+		expect(result.retriable).toBe(true);
+		expect(result.definitely_not_executed).toBeUndefined();
+	});
+
 	it("AC2.4: Handles timeout and failover to next host", async () => {
 		const { params: baseParams } = createHostsAndParams(2);
 		const aborted$ = new Subject<void>();

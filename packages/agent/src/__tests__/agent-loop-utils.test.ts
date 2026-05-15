@@ -15,6 +15,7 @@ import {
 	hasOrphanedToolCall,
 	insertThreadMessage,
 	isTransientLLMError,
+	shouldRetryRelayCall,
 } from "../agent-loop-utils";
 import type { ModelResolution } from "../model-resolution";
 
@@ -780,6 +781,82 @@ describe("hasOrphanedToolCall", () => {
 				{ role: "tool_result", content: "ok", tool_use_id: "tu_1" },
 				{ role: "user", content: "hi" },
 			]),
+		).toBe(false);
+	});
+});
+
+describe("shouldRetryRelayCall", () => {
+	const baseInput = {
+		attempt: 0,
+		maxAttempts: 1,
+		aborted: false,
+	};
+
+	it("returns false when not retriable", () => {
+		expect(
+			shouldRetryRelayCall({
+				...baseInput,
+				waitResult: { content: "result", retriable: false },
+			}),
+		).toBe(false);
+	});
+
+	it("returns false when aborted, even if retriable+definitely_not_executed", () => {
+		expect(
+			shouldRetryRelayCall({
+				...baseInput,
+				aborted: true,
+				waitResult: {
+					content: "Remote error: target offline",
+					retriable: true,
+					definitely_not_executed: true,
+				},
+			}),
+		).toBe(false);
+	});
+
+	it("returns false when retry budget exhausted", () => {
+		expect(
+			shouldRetryRelayCall({
+				...baseInput,
+				attempt: 1,
+				maxAttempts: 1,
+				waitResult: {
+					content: "Remote error: target offline",
+					retriable: true,
+					definitely_not_executed: true,
+				},
+			}),
+		).toBe(false);
+	});
+
+	it("returns true on hub fast-fail (definitely_not_executed=true)", () => {
+		// Hub fast-fail attests that the target tool never ran. Always safe to
+		// retry, regardless of tool idempotency.
+		expect(
+			shouldRetryRelayCall({
+				...baseInput,
+				waitResult: {
+					content: "Remote error: target offline",
+					retriable: true,
+					definitely_not_executed: true,
+				},
+			}),
+		).toBe(true);
+	});
+
+	it("returns false on retriable=true alone (commit-1 conservative posture)", () => {
+		// Without definitely_not_executed (e.g. full timeout), the target may
+		// have started executing. Without idempotency knowledge — added in a
+		// later commit — refuse to retry rather than risk a double execution.
+		expect(
+			shouldRetryRelayCall({
+				...baseInput,
+				waitResult: {
+					content: "Timeout: all eligible hosts did not respond",
+					retriable: true,
+				},
+			}),
 		).toBe(false);
 	});
 });
