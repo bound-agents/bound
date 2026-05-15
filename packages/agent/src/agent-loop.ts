@@ -24,6 +24,7 @@ import {
 	calculateTurnCost,
 	clampMaxOutputTokens,
 	convertDeltaMessages,
+	createFileRefResolver,
 	deriveCapabilityRequirements,
 	getResolvedModelId,
 	hasOrphanedToolCall,
@@ -921,6 +922,7 @@ export class AgentLoop {
 										),
 										thinking: resolution.thinkingConfig,
 										effort: resolution.effort,
+										resolveFileRef: createFileRefResolver(this.ctx.db),
 										signal: this.config.abortSignal,
 									});
 									for await (const chunk of this.withSilenceTimeout(

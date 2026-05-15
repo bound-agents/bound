@@ -10,6 +10,7 @@ import {
 	calculateTurnCost,
 	clampMaxOutputTokens,
 	convertDeltaMessages,
+	createFileRefResolver,
 	deriveCapabilityRequirements,
 	getResolvedModelId,
 	hasOrphanedToolCall,
@@ -1009,5 +1010,85 @@ describe("shouldRetryRelayCall (annotation-aware)", () => {
 				annotations: { idempotent: false, readOnly: false },
 			}),
 		).toBe(true);
+	});
+});
+
+describe("createFileRefResolver", () => {
+	let db: Database;
+	const siteId = "test-site";
+
+	beforeEach(() => {
+		const dir = mkdtempSync(join(tmpdir(), "fileref-"));
+		db = createDatabase(join(dir, "test.db"));
+		applySchema(db);
+	});
+
+	it("returns base64 content for an existing file row", () => {
+		const fileId = randomUUID();
+		insertRow(
+			db,
+			"files",
+			{
+				id: fileId,
+				path: "test.png",
+				content: "ZmFrZS1iYXNlNjQ=", // "fake-base64"
+				is_binary: 1,
+				size_bytes: 11,
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				host_origin: "test",
+			},
+			siteId,
+		);
+		const resolve = createFileRefResolver(db);
+		expect(resolve(fileId)).toBe("ZmFrZS1iYXNlNjQ=");
+	});
+
+	it("returns null for a missing file id", () => {
+		const resolve = createFileRefResolver(db);
+		expect(resolve("does-not-exist")).toBeNull();
+	});
+
+	it("returns null for a soft-deleted file", () => {
+		const fileId = randomUUID();
+		insertRow(
+			db,
+			"files",
+			{
+				id: fileId,
+				path: "deleted.png",
+				content: "ZmFrZQ==",
+				is_binary: 1,
+				size_bytes: 4,
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				host_origin: "test",
+				deleted: 1,
+			},
+			siteId,
+		);
+		const resolve = createFileRefResolver(db);
+		expect(resolve(fileId)).toBeNull();
+	});
+
+	it("returns null when content is null on the row", () => {
+		const fileId = randomUUID();
+		insertRow(
+			db,
+			"files",
+			{
+				id: fileId,
+				path: "empty.png",
+				content: null,
+				is_binary: 1,
+				size_bytes: 0,
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				host_origin: "test",
+			},
+			siteId,
+		);
+		const resolve = createFileRefResolver(db);
+		expect(resolve(fileId)).toBeNull();
 	});
 });

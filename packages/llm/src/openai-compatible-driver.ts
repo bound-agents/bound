@@ -61,7 +61,10 @@ export class OpenAICompatibleDriver implements LLMBackend {
 		const modelId = params.model || this.model;
 		// OpenAI-compatible endpoints don't have a cache-breakpoint marker —
 		// drop cache-role messages silently via null cacheProvider.
-		const messages = toModelMessages(params.messages, { cacheProvider: null });
+		const messages = toModelMessages(params.messages, {
+			cacheProvider: null,
+			resolveFileRef: params.resolveFileRef,
+		});
 		const tools = toToolSet(params.tools);
 
 		yield { type: "heartbeat" };

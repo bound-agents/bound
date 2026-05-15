@@ -49,6 +49,24 @@ export interface ChatParams {
 	 */
 	effort?: "low" | "medium" | "high" | "xhigh" | "max";
 	signal?: AbortSignal;
+	/**
+	 * Resolves a `file_ref` source (image or document) to inline base64
+	 * data. Acts as a defense-in-depth fallback so file_ref-backed media
+	 * always reaches the model: when context-assembly hasn't pre-resolved
+	 * (test paths, callers that bypass assembly, future code paths), the
+	 * bridge calls this to fetch bytes from the underlying store.
+	 *
+	 * Return value:
+	 *   - base64 string → bytes are inlined as a `media`/`file` part with
+	 *     the source's media_type hint (or a sensible default).
+	 *   - null → file is genuinely missing or deleted; the bridge emits a
+	 *     clear `[Image unavailable: file_id=…]` text placeholder so the
+	 *     model is informed an image was attempted. Never silently drops.
+	 *
+	 * The LLM package stays storage-agnostic — callers (agent-loop) bind
+	 * this to their database; tests can pass a synchronous map lookup.
+	 */
+	resolveFileRef?: (fileId: string) => string | null;
 }
 
 export type LLMMessage = {
