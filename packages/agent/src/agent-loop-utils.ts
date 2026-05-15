@@ -712,3 +712,20 @@ export function resolveToolAnnotations(
 	if (tool.readOnly !== undefined) result.readOnly = tool.readOnly;
 	return result;
 }
+
+/**
+ * Build a `resolveFileRef` callback for ChatParams that fetches base64 file
+ * bytes from the local `files` table. Used as defense-in-depth so file_ref
+ * images and documents survive even when context-assembly's pre-resolution
+ * was bypassed (test paths, future code paths). When the file row is missing
+ * or has empty content, returns null and the LLM bridge emits a clear
+ * `[Image unavailable: …]` placeholder rather than silently dropping.
+ */
+export function createFileRefResolver(db: Database): (fileId: string) => string | null {
+	return (fileId: string) => {
+		const row = db.query("SELECT content FROM files WHERE id = ? AND deleted = 0").get(fileId) as {
+			content: string | null;
+		} | null;
+		return row?.content ?? null;
+	};
+}

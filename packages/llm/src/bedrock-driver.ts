@@ -80,7 +80,10 @@ export class BedrockDriver implements LLMBackend {
 		// Use `||` not `??` — callers sometimes pass `model: ""` as a "use default"
 		// sentinel (see openai-compatible-driver.ts for the same note).
 		const modelId = params.model || this.model;
-		const messages = toModelMessages(params.messages, { cacheProvider: "bedrock" });
+		const messages = toModelMessages(params.messages, {
+			cacheProvider: "bedrock",
+			resolveFileRef: params.resolveFileRef,
+		});
 		const tools = toToolSet(params.tools);
 		const reasoningConfig = buildReasoningConfig(params, modelId);
 

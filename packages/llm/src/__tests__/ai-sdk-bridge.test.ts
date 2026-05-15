@@ -295,7 +295,7 @@ describe("toModelMessages — content blocks", () => {
 		expect(Array.from(part.image)).toEqual([...Buffer.from("hello")]);
 	});
 
-	it("skips file_ref images (no AI SDK shape yet)", () => {
+	it("emits a placeholder when a file_ref image has no resolver (no silent drop)", () => {
 		const out = toModelMessages([
 			{
 				role: "user",
@@ -307,8 +307,37 @@ describe("toModelMessages — content blocks", () => {
 				],
 			},
 		]);
-		// No image part — falls through to empty-parts synthesis.
-		expect(out[0].content).toEqual([{ type: "text", text: "" }]);
+		// Caller didn't pass resolveFileRef → bridge surfaces the missing
+		// image as a clear placeholder so the model is informed.
+		expect(out[0].content).toEqual([{ type: "text", text: "[Image unavailable: file_id=f1]" }]);
+	});
+
+	it("resolves file_ref images via resolveFileRef callback", () => {
+		const data = Buffer.from("png-bytes").toString("base64");
+		const out = toModelMessages(
+			[
+				{
+					role: "user",
+					content: [
+						{
+							type: "image",
+							source: { type: "file_ref", file_id: "f1", media_type: "image/png" },
+						},
+					],
+				},
+			],
+			{
+				resolveFileRef: (id) => (id === "f1" ? data : null),
+			},
+		);
+		const part = (out[0].content as Array<Record<string, unknown>>)[0] as {
+			type: string;
+			mediaType: string;
+			image: Uint8Array;
+		};
+		expect(part.type).toBe("image");
+		expect(part.mediaType).toBe("image/png");
+		expect(Array.from(part.image)).toEqual([...Buffer.from("png-bytes")]);
 	});
 
 	it("routes image blocks on assistant messages through FilePart (AssistantContent forbids ImagePart but allows FilePart)", () => {
@@ -337,7 +366,7 @@ describe("toModelMessages — content blocks", () => {
 		expect(parts[1]).toEqual({ type: "text", text: "here it is" });
 	});
 
-	it("skips image blocks with file_ref source at driver layer (contract: resolved upstream)", () => {
+	it("emits placeholder for unresolved file_ref images alongside other content (no silent drop)", () => {
 		const out = toModelMessages([
 			{
 				role: "user",
@@ -350,7 +379,10 @@ describe("toModelMessages — content blocks", () => {
 				],
 			},
 		]);
-		expect(out[0].content).toEqual([{ type: "text", text: "describe this" }]);
+		expect(out[0].content).toEqual([
+			{ type: "text", text: "[Image unavailable: file_id=f1]" },
+			{ type: "text", text: "describe this" },
+		]);
 	});
 
 	it("routes document base64 blocks as FilePart with IANA mediaType", () => {
@@ -686,6 +718,168 @@ describe("toModelMessages — tool call / result wrapping", () => {
 		expect(value.length).toBeGreaterThan(0);
 		expect(value).toContain("message.received");
 		expect(value).toContain("user.joined");
+	});
+});
+
+describe("toModelMessages — tool_result with non-text content", () => {
+	// MCP tools (vision-enabled servers, image-fetching tools, etc.) routinely
+	// emit text + image content blocks in their tool_result. Pre-fix, the
+	// tool_result handler stripped non-text blocks, dropping every image on
+	// the floor before the model could see it. The fix routes these through
+	// `output: {type:"content", value:[...]}` per LanguageModelV2ToolResultOutput.
+
+	it("preserves text-only tool_result with the simple {type:'text'} shape (back-compat)", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "go" },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "c1", name: "t", input: {} }],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: "c1",
+				content: [
+					{ type: "text", text: "part one " },
+					{ type: "text", text: "part two" },
+				],
+			},
+		]);
+		const tool = out[out.length - 1] as { content: Array<Record<string, unknown>> };
+		expect(tool.content[0]).toMatchObject({
+			type: "tool-result",
+			toolCallId: "c1",
+			output: { type: "text", value: "part one part two" },
+		});
+	});
+
+	it("preserves base64 image blocks in tool_result via the {type:'content'} shape", () => {
+		const data = Buffer.from("png-bytes").toString("base64");
+		const out = toModelMessages([
+			{ role: "user", content: "go" },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "c1", name: "screenshot", input: {} }],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: "c1",
+				content: [
+					{ type: "text", text: "screenshot:" },
+					{
+						type: "image",
+						source: { type: "base64", media_type: "image/png", data },
+					},
+				],
+			},
+		]);
+		const tool = out[out.length - 1] as { content: Array<Record<string, unknown>> };
+		const output = (tool.content[0] as { output: Record<string, unknown> }).output as {
+			type: string;
+			value: Array<Record<string, unknown>>;
+		};
+		expect(output.type).toBe("content");
+		expect(output.value).toEqual([
+			{ type: "text", text: "screenshot:" },
+			{ type: "media", data, mediaType: "image/png" },
+		]);
+	});
+
+	it("resolves file_ref images in tool_result via resolveFileRef", () => {
+		const data = Buffer.from("jpg-bytes").toString("base64");
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "go" },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "c1", name: "fetch_image", input: {} }],
+				},
+				{
+					role: "tool_result",
+					tool_use_id: "c1",
+					content: [
+						{ type: "text", text: "got it" },
+						{
+							type: "image",
+							source: { type: "file_ref", file_id: "f1", media_type: "image/jpeg" },
+						},
+					],
+				},
+			],
+			{
+				resolveFileRef: (id) => (id === "f1" ? data : null),
+			},
+		);
+		const tool = out[out.length - 1] as { content: Array<Record<string, unknown>> };
+		const output = (tool.content[0] as { output: Record<string, unknown> }).output as {
+			type: string;
+			value: Array<Record<string, unknown>>;
+		};
+		expect(output.type).toBe("content");
+		expect(output.value).toEqual([
+			{ type: "text", text: "got it" },
+			{ type: "media", data, mediaType: "image/jpeg" },
+		]);
+	});
+
+	it("emits placeholder text for unresolvable file_ref images in tool_result (no silent drop)", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "go" },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "c1", name: "fetch_image", input: {} }],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: "c1",
+				content: [
+					{ type: "text", text: "got it" },
+					{
+						type: "image",
+						source: { type: "file_ref", file_id: "missing" },
+					},
+				],
+			},
+		]);
+		const tool = out[out.length - 1] as { content: Array<Record<string, unknown>> };
+		const output = (tool.content[0] as { output: Record<string, unknown> }).output as {
+			type: string;
+			value: Array<Record<string, unknown>>;
+		};
+		expect(output.type).toBe("content");
+		expect(output.value).toEqual([
+			{ type: "text", text: "got it" },
+			{ type: "text", text: "[Image unavailable: file_id=missing]" },
+		]);
+	});
+
+	it("preserves DB-serialized tool_result content with mixed blocks (string → JSON parse path)", () => {
+		const data = Buffer.from("png-bytes").toString("base64");
+		const blocks = [
+			{ type: "text", text: "screenshot:" },
+			{ type: "image", source: { type: "base64", media_type: "image/png", data } },
+		];
+		const out = toModelMessages([
+			{ role: "user", content: "go" },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "c1", name: "screenshot", input: {} }],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: "c1",
+				content: JSON.stringify(blocks),
+			},
+		]);
+		const tool = out[out.length - 1] as { content: Array<Record<string, unknown>> };
+		const output = (tool.content[0] as { output: Record<string, unknown> }).output as {
+			type: string;
+			value: Array<Record<string, unknown>>;
+		};
+		expect(output.type).toBe("content");
+		expect(output.value).toEqual([
+			{ type: "text", text: "screenshot:" },
+			{ type: "media", data, mediaType: "image/png" },
+		]);
 	});
 });
 

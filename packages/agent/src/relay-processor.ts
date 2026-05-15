@@ -58,7 +58,7 @@ import {
 	merge,
 	tap,
 } from "rxjs";
-import { clampMaxOutputTokens } from "./agent-loop-utils.js";
+import { clampMaxOutputTokens, createFileRefResolver } from "./agent-loop-utils.js";
 import { AgentLoop, DEFAULT_MAX_OUTPUT_TOKENS } from "./agent-loop.js";
 import { stripCacheMarkersIfUnsupported } from "./cache-marker.js";
 import type { MCPClient } from "./mcp-client.js";
@@ -1292,6 +1292,7 @@ export class RelayProcessor {
 				temperature: payload.temperature,
 				thinking: effectiveThinking,
 				effort: effectiveEffort,
+				resolveFileRef: createFileRefResolver(this.db),
 				signal: abortController.signal,
 			});
 

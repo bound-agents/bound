@@ -36,6 +36,12 @@ export interface ToModelMessagesOptions {
 	 * marker role is still dropped harmlessly here.
 	 */
 	cacheProvider?: "bedrock" | "anthropic" | null;
+	/**
+	 * Resolves a `file_ref` source to inline base64 data. See
+	 * ChatParams.resolveFileRef for the full contract — this is the same
+	 * callback, threaded through driver → bridge.
+	 */
+	resolveFileRef?: (fileId: string) => string | null;
 }
 
 /**
@@ -131,10 +137,6 @@ export function toModelMessages(
 
 		if (msg.role === "tool_result") {
 			const blocks = normalizeBlocks(msg.content);
-			const text = blocks
-				.filter((b): b is { type: "text"; text: string } => b.type === "text")
-				.map((b) => b.text)
-				.join("");
 			const toolCallId = msg.tool_use_id ?? "";
 			result.push({
 				role: "tool",
@@ -146,7 +148,7 @@ export function toModelMessages(
 						// if the tool_result arrives without a matching call (which
 						// would be a caller bug but we don't want to throw here).
 						toolName: toolNameById.get(toolCallId) ?? "",
-						output: { type: "text", value: text },
+						output: buildToolResultOutput(blocks, opts.resolveFileRef),
 					},
 				] as never,
 			});
@@ -194,8 +196,18 @@ export function toModelMessages(
 				// On assistant messages, route through FilePart (which IS allowed)
 				// so we faithfully preserve assistant-generated images rather than
 				// reducing them to a text description.
-				const imgPart = buildImageOrFilePart(b, { asFile: isAssistant });
-				if (imgPart) parts.push(imgPart);
+				const imgPart = buildImageOrFilePart(b, {
+					asFile: isAssistant,
+					resolveFileRef: opts.resolveFileRef,
+				});
+				if (imgPart) {
+					parts.push(imgPart);
+				} else {
+					// file_ref couldn't be resolved (no resolver, or file
+					// missing). Emit a clear placeholder so the model is
+					// informed an image was attempted — never silently drop.
+					parts.push({ type: "text", text: imageUnavailablePlaceholder(b) });
+				}
 			} else if (b.type === "document") {
 				const docPart = buildDocumentPart(b);
 				if (docPart) parts.push(docPart);
@@ -332,41 +344,156 @@ function buildReasoningPart(b: Extract<ContentBlock, { type: "thinking" }>) {
 }
 
 /**
+ * Resolve an image block's source to {data, mediaType} when possible.
+ *
+ * Returns:
+ *   - {data, mediaType} when the source is base64, OR when it's a file_ref
+ *     and the resolver returns bytes.
+ *   - null when the source is a file_ref the resolver couldn't fetch (or no
+ *     resolver was provided) — caller emits a placeholder so the model is
+ *     informed an image was attempted but unavailable.
+ *
+ * media_type fallback for file_refs: image blocks may carry a media_type
+ * hint on the source itself (stamped at upload time, e.g. Discord
+ * contentType). When absent we default to image/jpeg, mirroring
+ * context-assembly.substituteUnsupportedBlocks's legacy fallback.
+ */
+function resolveImageSource(
+	source: Extract<ContentBlock, { type: "image" }>["source"],
+	resolveFileRef: ((fileId: string) => string | null) | undefined,
+): { data: string; mediaType: string } | null {
+	if (source.type === "base64") {
+		return { data: source.data, mediaType: source.media_type };
+	}
+	if (source.type === "file_ref" && resolveFileRef) {
+		const data = resolveFileRef(source.file_id);
+		if (data) {
+			return { data, mediaType: source.media_type ?? "image/jpeg" };
+		}
+	}
+	return null;
+}
+
+function imageUnavailablePlaceholder(b: Extract<ContentBlock, { type: "image" }>): string {
+	const fileId = b.source.type === "file_ref" ? b.source.file_id : "(inline)";
+	const desc = b.description ? ` description=${JSON.stringify(b.description)}` : "";
+	return `[Image unavailable: file_id=${fileId}${desc}]`;
+}
+
+/**
+ * Build the AI SDK V2 ToolResultOutput for a tool_result message.
+ *
+ * The `LanguageModelV2ToolResultOutput` discriminated union supports two
+ * shapes we care about here:
+ *   - `{ type: "text", value: string }` — single text payload, the common
+ *     case for shell/connector/database tools that return strings.
+ *   - `{ type: "content", value: Array<{type:"text"} | {type:"media"}> }`
+ *     — required to preserve images, which MCP tools (vision-enabled
+ *     servers, Discord image fetches, etc.) routinely return alongside
+ *     text. Without this shape, the model never sees the image.
+ *
+ * Strategy:
+ *   - If every block is text → keep the simple `{type:"text"}` shape for
+ *     back-compat with providers that may treat the two shapes differently.
+ *   - If any block is non-text → emit `{type:"content"}` so images and
+ *     other media survive the trip to the model.
+ *
+ * file_ref images route through `resolveFileRef` (defense-in-depth — by
+ * the time we reach here, context-assembly's substituteUnsupportedBlocks
+ * has typically already resolved them, but we re-resolve so test paths
+ * and any future bypass don't cause silent drops). Unresolvable
+ * file_refs degrade to a clear `[Image unavailable: …]` text item rather
+ * than vanishing.
+ *
+ * Non-text non-image blocks (thinking, tool_use, tool_result nested,
+ * document) shouldn't appear inside a tool_result by construction, so
+ * we serialize them as JSON text to preserve the data without inventing
+ * a wire shape.
+ */
+function buildToolResultOutput(
+	blocks: ContentBlock[],
+	resolveFileRef?: (fileId: string) => string | null,
+):
+	| { type: "text"; value: string }
+	| {
+			type: "content";
+			value: Array<
+				{ type: "text"; text: string } | { type: "media"; data: string; mediaType: string }
+			>;
+	  } {
+	const hasNonText = blocks.some((b) => b.type !== "text");
+	if (!hasNonText) {
+		return {
+			type: "text",
+			value: blocks
+				.filter((b): b is { type: "text"; text: string } => b.type === "text")
+				.map((b) => b.text)
+				.join(""),
+		};
+	}
+
+	const items: Array<
+		{ type: "text"; text: string } | { type: "media"; data: string; mediaType: string }
+	> = [];
+	for (const b of blocks) {
+		if (b.type === "text") {
+			items.push({ type: "text", text: b.text });
+		} else if (b.type === "image") {
+			const resolved = resolveImageSource(b.source, resolveFileRef);
+			if (resolved) {
+				items.push({
+					type: "media",
+					data: resolved.data,
+					mediaType: resolved.mediaType,
+				});
+			} else {
+				items.push({ type: "text", text: imageUnavailablePlaceholder(b) });
+			}
+		} else {
+			// Defensive: anything else (thinking, tool_use, document, …) gets
+			// JSON-serialized so the data isn't lost. These shouldn't appear
+			// inside tool_result content by construction.
+			items.push({ type: "text", text: JSON.stringify(b) });
+		}
+	}
+	return { type: "content", value: items };
+}
+
+/**
  * Build either an ImagePart (UserContent) or a FilePart (AssistantContent)
  * from an image ContentBlock. AssistantContent in @ai-sdk/provider-utils
  * does not include ImagePart — if an assistant turn carries a generated
  * image, we must route it as FilePart with the image media type, which the
  * SDK accepts.
  *
- * file_ref variants should have been resolved to base64 by context-assembly
- * before reaching the driver. If one slips through, we skip it rather than
- * silently fabricating wrong data — the caller has a bug and a log elsewhere
- * will surface it. Returning `null` lets the caller decide whether to drop
- * the block or emit a placeholder.
+ * file_ref sources resolve through `resolveFileRef`. When the resolver
+ * isn't supplied (e.g., direct unit tests of the bridge) or returns null
+ * (file deleted), the function returns null and the caller substitutes a
+ * `[Image unavailable: …]` text part so the model is informed — never a
+ * silent drop.
  */
 function buildImageOrFilePart(
 	b: Extract<ContentBlock, { type: "image" }>,
-	opts: { asFile: boolean },
+	opts: {
+		asFile: boolean;
+		resolveFileRef?: (fileId: string) => string | null;
+	},
 ): Record<string, unknown> | null {
-	if (b.source.type !== "base64") {
-		// Contract: context-assembly.resolveFileRefs() runs before the driver.
-		// An unresolved file_ref here is a caller bug; log via the returned
-		// null and let the caller decide (we log at the driver-shim layer).
-		return null;
-	}
-	const buf = Uint8Array.from(Buffer.from(b.source.data, "base64"));
+	const resolved = resolveImageSource(b.source, opts.resolveFileRef);
+	if (!resolved) return null;
+	const buf = Uint8Array.from(Buffer.from(resolved.data, "base64"));
 	if (opts.asFile) {
 		return {
 			type: "file",
 			data: buf,
-			mediaType: b.source.media_type,
+			mediaType: resolved.mediaType,
 			...(b.description && { filename: b.description }),
 		};
 	}
 	return {
 		type: "image",
 		image: buf,
-		mediaType: b.source.media_type,
+		mediaType: resolved.mediaType,
 	};
 }
 
