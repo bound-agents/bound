@@ -7,6 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
 import {
 	type ConnectorHandleRecord,
 	getAllActiveConnectorHandles,
@@ -409,7 +410,12 @@ export class PlatformMcpRegistry {
 						cursor: handle.cursor ?? undefined,
 					},
 				},
-				{} as never,
+				// MCP SDK requires a real Zod v4 schema (with `_zod`) here;
+				// `{}` lands on the v3 fallback path and crashes safeParse.
+				// See e028985 for the relay-processor sibling fix.
+				z
+					.object({})
+					.passthrough(),
 			);
 		} catch (err) {
 			this.deps.logger.error(
@@ -527,7 +533,12 @@ export class PlatformMcpRegistry {
 							cursor: handle.cursor ?? undefined,
 						},
 					},
-					{} as never,
+					// MCP SDK requires a real Zod v4 schema (with `_zod`) here;
+					// `{}` lands on the v3 fallback path and crashes safeParse.
+					// See e028985 for the relay-processor sibling fix.
+					z
+						.object({})
+						.passthrough(),
 				)) as { events: McpEvent[]; nextPollSeconds?: number };
 
 				if (result.events.length > 0) {

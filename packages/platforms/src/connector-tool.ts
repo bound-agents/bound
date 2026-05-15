@@ -106,9 +106,14 @@ async function handleChannels(
 
 	const client = ctx.registry.getClient(serverName);
 	if (client) {
+		// MCP SDK client.request() requires a real Zod v4 schema (with `_zod`)
+		// as the second arg; the SDK's safeParse falls back to v3 when `_zod`
+		// is missing and crashes if the value isn't a Zod schema at all.
+		// Use a permissive passthrough schema to accept any response shape.
+		// See e028985 for the relay-processor sibling fix.
 		eventsResult = (await client.request(
 			{ method: "events/list", params: {} },
-			{} as never,
+			z.object({}).passthrough(),
 		)) as typeof eventsResult;
 	} else if (ctx.remotePlatformRequest) {
 		eventsResult = (await ctx.remotePlatformRequest(
