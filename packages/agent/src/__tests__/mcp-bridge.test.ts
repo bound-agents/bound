@@ -981,3 +981,250 @@ describe("MCP Bridge", () => {
 		});
 	});
 });
+
+describe("MCP Bridge — binary resources and resource_link passthrough", () => {
+	const { mkdtempSync } = require("node:fs");
+	const { tmpdir } = require("node:os");
+	const { join } = require("node:path");
+	const { createDatabase, applySchema } = require("@bound/core");
+
+	function makeRealDbCtx(): { ctx: CommandContext; db: any } {
+		const dir = mkdtempSync(join(tmpdir(), "mcp-bridge-binary-"));
+		const db = createDatabase(join(dir, "test.db"));
+		applySchema(db);
+		const eventBus = new TypedEventEmitter();
+		const logger: Logger = {
+			debug: () => {},
+			info: () => {},
+			warn: () => {},
+			error: () => {},
+		};
+		return {
+			ctx: {
+				db,
+				siteId: "test-site",
+				eventBus,
+				logger,
+			} as CommandContext,
+			db,
+		};
+	}
+
+	function buildClient(serverName: string, overrides: Partial<MCPClient>): MCPClient {
+		return {
+			isConnected: () => true,
+			listTools: async () => [],
+			listResources: async () => [],
+			listPrompts: async () => [],
+			callTool: async () => ({ content: "", isError: false }),
+			readResource: async (uri: string) => ({ uri, content: "", isBinary: false }),
+			invokePrompt: async () => ({ messages: [] }),
+			connect: async () => {},
+			disconnect: async () => {},
+			getServerDescription: () => undefined,
+			getServerInstructions: () => undefined,
+			getConfig: () => ({
+				name: serverName,
+				transport: "stdio",
+				command: "test",
+			}),
+			...overrides,
+		} as unknown as MCPClient;
+	}
+
+	it("MCP tool returning a binary resource persists it to files and emits a file_ref document block", async () => {
+		// PDF bytes (5-byte fake header) base64-encoded so the round-trip is
+		// inspectable in the assertions.
+		const pdfBase64 = Buffer.from("%PDF-").toString("base64");
+		const fakeClient = buildClient("doc-server", {
+			listTools: async () => [
+				{
+					name: "fetch_pdf",
+					description: "Fetch a PDF",
+					inputSchema: { properties: {} },
+				},
+			],
+			callTool: async () => ({
+				content: "Here is your PDF",
+				documents: [
+					{
+						media_type: "application/pdf",
+						data: pdfBase64,
+						uri: "https://example.test/report.pdf",
+					},
+				],
+				isError: false,
+			}),
+		});
+
+		const clients = new Map([["doc-server", fakeClient]]);
+		const { commands } = await generateMCPCommands(clients);
+		const serverCmd = commands.find((c) => c.name === "doc-server");
+		expect(serverCmd).toBeDefined();
+
+		const { ctx, db } = makeRealDbCtx();
+		// biome-ignore lint/style/noNonNullAssertion: test assertion after expect(defined)
+		const result = await serverCmd!.handler({ subcommand: "fetch_pdf" }, ctx);
+		expect(result.exitCode).toBe(0);
+
+		const blocks = JSON.parse(result.stdout);
+		expect(Array.isArray(blocks)).toBe(true);
+		expect(blocks).toHaveLength(2);
+		expect(blocks[0]).toEqual({ type: "text", text: "Here is your PDF" });
+		expect(blocks[1]).toMatchObject({
+			type: "document",
+			source: {
+				type: "file_ref",
+				media_type: "application/pdf",
+			},
+			title: "https://example.test/report.pdf",
+		});
+
+		// File row should be present with the original base64 content.
+		const fileId = blocks[1].source.file_id;
+		const row = db
+			.query("SELECT content, is_binary, host_origin FROM files WHERE id = ?")
+			.get(fileId) as { content: string; is_binary: number; host_origin: string };
+		expect(row.content).toBe(pdfBase64);
+		expect(row.is_binary).toBe(1);
+		expect(row.host_origin).toBe("test-site");
+	});
+
+	it("MCP tool returning a resource_link emits a text annotation referencing the bash resource command", async () => {
+		const fakeClient = buildClient("link-server", {
+			listTools: async () => [
+				{
+					name: "list",
+					description: "List resources",
+					inputSchema: { properties: {} },
+				},
+			],
+			callTool: async () => ({
+				content: "available downloads:",
+				resourceLinks: [
+					{
+						uri: "https://example.test/data.csv",
+						name: "Sales data",
+						mimeType: "text/csv",
+					},
+				],
+				isError: false,
+			}),
+		});
+
+		const clients = new Map([["link-server", fakeClient]]);
+		const { commands } = await generateMCPCommands(clients);
+		const serverCmd = commands.find((c) => c.name === "link-server");
+		expect(serverCmd).toBeDefined();
+
+		const { ctx } = makeRealDbCtx();
+		// biome-ignore lint/style/noNonNullAssertion: test assertion after expect(defined)
+		const result = await serverCmd!.handler({ subcommand: "list" }, ctx);
+		expect(result.exitCode).toBe(0);
+
+		const blocks = JSON.parse(result.stdout);
+		expect(blocks).toHaveLength(1);
+		expect(blocks[0].type).toBe("text");
+		// Should mention the URI, the friendly name, the mime type, and the
+		// bash command the agent should run to dereference.
+		expect(blocks[0].text).toContain("https://example.test/data.csv");
+		expect(blocks[0].text).toContain('name="Sales data"');
+		expect(blocks[0].text).toContain("mimeType=text/csv");
+		expect(blocks[0].text).toContain('Load with: resource "https://example.test/data.csv"');
+	});
+
+	it("bash `resource` command on a text resource keeps the legacy plain-string contract", async () => {
+		const fakeClient = buildClient("text-res", {
+			readResource: async (uri: string) => ({
+				uri,
+				mimeType: "text/plain",
+				content: "hello world",
+				isBinary: false,
+			}),
+		});
+
+		const clients = new Map([["text-res", fakeClient]]);
+		const { commands } = await generateMCPCommands(clients);
+		const resourceCmd = commands.find((c) => c.name === "resource");
+		expect(resourceCmd).toBeDefined();
+
+		const { ctx } = makeRealDbCtx();
+		// biome-ignore lint/style/noNonNullAssertion: test assertion after expect(defined)
+		const result = await resourceCmd!.handler(
+			{ uri: "file:///hello.txt", server: "text-res" },
+			ctx,
+		);
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toBe("hello world\n");
+	});
+
+	it("bash `resource` command on a binary doc-mime resource persists to files and emits a file_ref document block", async () => {
+		const pdfBase64 = Buffer.from("%PDF-").toString("base64");
+		const fakeClient = buildClient("pdf-res", {
+			readResource: async (uri: string) => ({
+				uri,
+				mimeType: "application/pdf",
+				content: pdfBase64,
+				isBinary: true,
+			}),
+		});
+
+		const clients = new Map([["pdf-res", fakeClient]]);
+		const { commands } = await generateMCPCommands(clients);
+		const resourceCmd = commands.find((c) => c.name === "resource");
+		expect(resourceCmd).toBeDefined();
+
+		const { ctx, db } = makeRealDbCtx();
+		// biome-ignore lint/style/noNonNullAssertion: test assertion after expect(defined)
+		const result = await resourceCmd!.handler(
+			{ uri: "https://example.test/report.pdf", server: "pdf-res" },
+			ctx,
+		);
+		expect(result.exitCode).toBe(0);
+
+		const blocks = JSON.parse(result.stdout);
+		expect(blocks).toHaveLength(1);
+		expect(blocks[0]).toMatchObject({
+			type: "document",
+			source: { type: "file_ref", media_type: "application/pdf" },
+			title: "https://example.test/report.pdf",
+		});
+		const fileId = blocks[0].source.file_id;
+		const row = db.query("SELECT content FROM files WHERE id = ?").get(fileId) as {
+			content: string;
+		};
+		expect(row.content).toBe(pdfBase64);
+	});
+
+	it("bash `resource` command on a binary image-mime resource emits an image block (not document)", async () => {
+		const pngBase64 = "iVBORw0KGgo=";
+		const fakeClient = buildClient("img-res", {
+			readResource: async (uri: string) => ({
+				uri,
+				mimeType: "image/png",
+				content: pngBase64,
+				isBinary: true,
+			}),
+		});
+
+		const clients = new Map([["img-res", fakeClient]]);
+		const { commands } = await generateMCPCommands(clients);
+		const resourceCmd = commands.find((c) => c.name === "resource");
+		expect(resourceCmd).toBeDefined();
+
+		const { ctx } = makeRealDbCtx();
+		// biome-ignore lint/style/noNonNullAssertion: test assertion after expect(defined)
+		const result = await resourceCmd!.handler(
+			{ uri: "https://example.test/shot.png", server: "img-res" },
+			ctx,
+		);
+		expect(result.exitCode).toBe(0);
+
+		const blocks = JSON.parse(result.stdout);
+		expect(blocks).toHaveLength(1);
+		expect(blocks[0]).toEqual({
+			type: "image",
+			source: { type: "base64", media_type: "image/png", data: pngBase64 },
+		});
+	});
+});

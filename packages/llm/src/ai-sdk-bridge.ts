@@ -209,8 +209,15 @@ export function toModelMessages(
 					parts.push({ type: "text", text: imageUnavailablePlaceholder(b) });
 				}
 			} else if (b.type === "document") {
-				const docPart = buildDocumentPart(b);
-				if (docPart) parts.push(docPart);
+				const docPart = buildDocumentPart(b, opts.resolveFileRef);
+				if (docPart) {
+					parts.push(docPart);
+				} else {
+					// file_ref couldn't be resolved AND no text_representation
+					// — emit a clear placeholder so the model is informed a
+					// document was attempted, rather than silently dropping.
+					parts.push({ type: "text", text: documentUnavailablePlaceholder(b) });
+				}
 			}
 		}
 
@@ -380,6 +387,13 @@ function imageUnavailablePlaceholder(b: Extract<ContentBlock, { type: "image" }>
 	return `[Image unavailable: file_id=${fileId}${desc}]`;
 }
 
+function documentUnavailablePlaceholder(b: Extract<ContentBlock, { type: "document" }>): string {
+	const fileId = b.source.type === "file_ref" ? b.source.file_id : "(inline)";
+	const title = b.title ? ` title=${JSON.stringify(b.title)}` : "";
+	const filename = b.filename ? ` filename=${JSON.stringify(b.filename)}` : "";
+	return `[Document unavailable: file_id=${fileId}${title}${filename}]`;
+}
+
 /**
  * Build the AI SDK V2 ToolResultOutput for a tool_result message.
  *
@@ -398,17 +412,17 @@ function imageUnavailablePlaceholder(b: Extract<ContentBlock, { type: "image" }>
  *   - If any block is non-text → emit `{type:"content"}` so images and
  *     other media survive the trip to the model.
  *
- * file_ref images route through `resolveFileRef` (defense-in-depth — by
- * the time we reach here, context-assembly's substituteUnsupportedBlocks
- * has typically already resolved them, but we re-resolve so test paths
- * and any future bypass don't cause silent drops). Unresolvable
- * file_refs degrade to a clear `[Image unavailable: …]` text item rather
- * than vanishing.
+ * file_ref images and documents route through `resolveFileRef`
+ * (defense-in-depth — by the time we reach here, context-assembly's
+ * substituteUnsupportedBlocks has typically already resolved them, but we
+ * re-resolve so test paths and any future bypass don't cause silent
+ * drops). Unresolvable file_refs degrade to `text_representation` when
+ * available (documents) or a clear `[… unavailable: …]` placeholder
+ * rather than vanishing.
  *
- * Non-text non-image blocks (thinking, tool_use, tool_result nested,
- * document) shouldn't appear inside a tool_result by construction, so
- * we serialize them as JSON text to preserve the data without inventing
- * a wire shape.
+ * Other non-text blocks (thinking, tool_use, nested tool_result) shouldn't
+ * appear inside a tool_result by construction, so we serialize them as
+ * JSON text to preserve the data without inventing a wire shape.
  */
 function buildToolResultOutput(
 	blocks: ContentBlock[],
@@ -449,8 +463,38 @@ function buildToolResultOutput(
 			} else {
 				items.push({ type: "text", text: imageUnavailablePlaceholder(b) });
 			}
+		} else if (b.type === "document") {
+			// Documents in tool_result content (e.g. the MCP `resource` path
+			// when the tool returns a binary blob persisted as a file_ref)
+			// degrade through the same three-tier ladder as user-content
+			// documents: base64 → media item, file_ref → resolve+media,
+			// otherwise text_representation, otherwise placeholder.
+			if (b.source.type === "base64") {
+				items.push({
+					type: "media",
+					data: b.source.data,
+					mediaType: b.source.media_type,
+				});
+			} else if (b.source.type === "file_ref" && resolveFileRef) {
+				const data = resolveFileRef(b.source.file_id);
+				if (data) {
+					items.push({
+						type: "media",
+						data,
+						mediaType: b.source.media_type ?? "application/octet-stream",
+					});
+				} else if (b.text_representation) {
+					items.push({ type: "text", text: b.text_representation });
+				} else {
+					items.push({ type: "text", text: documentUnavailablePlaceholder(b) });
+				}
+			} else if (b.text_representation) {
+				items.push({ type: "text", text: b.text_representation });
+			} else {
+				items.push({ type: "text", text: documentUnavailablePlaceholder(b) });
+			}
 		} else {
-			// Defensive: anything else (thinking, tool_use, document, …) gets
+			// Defensive: anything else (thinking, tool_use, …) gets
 			// JSON-serialized so the data isn't lost. These shouldn't appear
 			// inside tool_result content by construction.
 			items.push({ type: "text", text: JSON.stringify(b) });
@@ -508,8 +552,27 @@ function buildImageOrFilePart(
  * OpenAI-compatible providers vary; when in doubt, text_representation is
  * the safest wire format and the bridge caller (driver) can override.
  */
+/**
+ * Resolve a document block to a renderable part.
+ *
+ * Returns:
+ *   - {kind: "file"} when the bytes are available (base64 inline OR file_ref
+ *     successfully resolved). Bridges to AI SDK FilePart.
+ *   - {kind: "text"} when no bytes are available but a `text_representation`
+ *     was provided up-front (text-degraded path).
+ *   - null when bytes are unavailable AND no text fallback exists; the
+ *     caller emits a `[Document unavailable: …]` placeholder so the model
+ *     is informed instead of silently dropping the block.
+ *
+ * media_type fallback for file_refs: documents may carry a `media_type`
+ * hint on the source itself (set when the row was inserted by the MCP
+ * resource path or by user upload). When absent we default to
+ * application/octet-stream — providers may reject it but that's better
+ * than guessing the wrong concrete type.
+ */
 function buildDocumentPart(
 	b: Extract<ContentBlock, { type: "document" }>,
+	resolveFileRef: ((fileId: string) => string | null) | undefined,
 ): Record<string, unknown> | null {
 	if (b.source.type === "base64") {
 		const buf = Uint8Array.from(Buffer.from(b.source.data, "base64"));
@@ -520,9 +583,22 @@ function buildDocumentPart(
 			...(b.filename && { filename: b.filename }),
 		};
 	}
-	// file_ref without resolution: fall back to text_representation if
-	// available (that's the entire point of the field). Otherwise the
-	// block is unsendable.
+	if (b.source.type === "file_ref" && resolveFileRef) {
+		const data = resolveFileRef(b.source.file_id);
+		if (data) {
+			const buf = Uint8Array.from(Buffer.from(data, "base64"));
+			return {
+				type: "file",
+				data: buf,
+				mediaType: b.source.media_type ?? "application/octet-stream",
+				...(b.filename && { filename: b.filename }),
+			};
+		}
+	}
+	// file_ref couldn't be resolved (no resolver, or file missing). Prefer
+	// the pre-extracted text representation when available — that's the
+	// entire point of the field and keeps the path useful for backends
+	// without native document support.
 	if (b.text_representation) {
 		return { type: "text", text: b.text_representation };
 	}

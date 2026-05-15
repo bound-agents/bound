@@ -26,21 +26,69 @@ export interface ToolResultImage {
 	data: string;
 }
 
-export interface ToolResult {
-	content: string;
-	images?: ToolResultImage[];
-	isError?: boolean;
+/**
+ * Inline binary resource extracted from an MCP tool result. The MCP `resource`
+ * content type carries either text (handled inline) or a base64 blob (handled
+ * here). Image-mime blobs are routed into `images` for visual rendering;
+ * everything else lands here so the call site can persist the bytes (e.g.
+ * write to the files table) and emit a file_ref document block.
+ */
+export interface ToolResultDocument {
+	media_type: string;
+	data: string;
+	uri?: string;
 }
 
 /**
- * Extract text and image content from MCP SDK content blocks.
- * Images are preserved as base64 data for passthrough to the LLM.
+ * MCP `resource_link` content type — a pointer to a resource without
+ * inlining its bytes. Per Kara's design directive these are passed through
+ * as a structured text annotation; the agent loads them on demand via the
+ * bash `resource` command.
+ */
+export interface ToolResultResourceLink {
+	uri: string;
+	name?: string;
+	mimeType?: string;
+	description?: string;
+}
+
+export interface ToolResult {
+	content: string;
+	images?: ToolResultImage[];
+	documents?: ToolResultDocument[];
+	resourceLinks?: ToolResultResourceLink[];
+	isError?: boolean;
+}
+
+const IMAGE_MIME_PREFIX = "image/";
+
+function isImageMime(mime: string | undefined): boolean {
+	return typeof mime === "string" && mime.startsWith(IMAGE_MIME_PREFIX);
+}
+
+/**
+ * Extract text, image, document, and resource-link content from MCP SDK
+ * content blocks.
+ *
+ * Output channels:
+ *   - text: joined into `content` (preserves the legacy text-only contract)
+ *   - image content: base64 + mime → `images`
+ *   - resource (text): inlined into `content`
+ *   - resource (blob, image mime): treated as image → `images`
+ *   - resource (blob, other mime): bytes → `documents` for file-table persist
+ *   - resource_link: structured pointer → `resourceLinks` for passthrough
+ *   - audio: stringified placeholder (out of scope; tracked separately)
+ *
+ * No silent drops — every recognized MCP content variant lands in some
+ * output channel so the call site can decide how to surface it to the model.
  */
 export function extractMCPToolResult(
 	contentBlocks: Array<Record<string, unknown>>,
-): Pick<ToolResult, "content" | "images"> {
+): Pick<ToolResult, "content" | "images" | "documents" | "resourceLinks"> {
 	const parts: string[] = [];
 	const images: ToolResultImage[] = [];
+	const documents: ToolResultDocument[] = [];
+	const resourceLinks: ToolResultResourceLink[] = [];
 
 	for (const item of contentBlocks) {
 		if (item.type === "text") {
@@ -51,23 +99,62 @@ export function extractMCPToolResult(
 				data: item.data as string,
 			});
 		} else if (item.type === "audio") {
+			// TODO: route to documents/files once we support audio-capable
+			// backends. For now, keep the legacy text placeholder so behavior
+			// doesn't change for audio-only MCP servers.
 			parts.push(`[audio: ${item.mimeType}]`);
 		} else if (item.type === "resource") {
 			const r = item.resource as Record<string, unknown>;
-			parts.push("text" in r ? (r.text as string) : `[blob: ${r.mimeType ?? "unknown"}]`);
+			if ("text" in r && typeof r.text === "string") {
+				parts.push(r.text);
+			} else if ("blob" in r && typeof r.blob === "string") {
+				const mime = (r.mimeType as string | undefined) ?? "application/octet-stream";
+				const uri = typeof r.uri === "string" ? r.uri : undefined;
+				if (isImageMime(mime)) {
+					images.push({ media_type: mime, data: r.blob });
+				} else {
+					documents.push({ media_type: mime, data: r.blob, uri });
+				}
+			}
+		} else if (item.type === "resource_link") {
+			// MCP `resource_link` carries a URI pointing at a resource, plus
+			// optional name/mimeType/description metadata. We don't fetch it
+			// here — the agent uses the bash `resource <uri>` command on
+			// demand. This keeps tool_result payloads small and lets the
+			// model decide whether the link is worth dereferencing.
+			const uri = typeof item.uri === "string" ? item.uri : undefined;
+			if (uri) {
+				resourceLinks.push({
+					uri,
+					name: typeof item.name === "string" ? item.name : undefined,
+					mimeType: typeof item.mimeType === "string" ? item.mimeType : undefined,
+					description: typeof item.description === "string" ? item.description : undefined,
+				});
+			}
 		}
 	}
 
 	return {
 		content: parts.join("\n"),
 		images: images.length > 0 ? images : undefined,
+		documents: documents.length > 0 ? documents : undefined,
+		resourceLinks: resourceLinks.length > 0 ? resourceLinks : undefined,
 	};
 }
 
 export interface ResourceContent {
 	uri: string;
 	mimeType?: string;
+	/**
+	 * The resource payload. For text resources this is the literal UTF-8
+	 * text; for binary resources this is base64-encoded bytes (so callers
+	 * can persist it directly into the `files` table without a re-encode).
+	 * Use `isBinary` to distinguish — the field is collapsed because the
+	 * MCP wire shape carries either `text` xor `blob` per content item, and
+	 * callers usually only care about one branch at a time.
+	 */
 	content: string;
+	isBinary: boolean;
 }
 
 export interface PromptResult {
@@ -166,7 +253,7 @@ export class MCPClient {
 
 		const extracted = Array.isArray(result.content)
 			? extractMCPToolResult(result.content as Array<Record<string, unknown>>)
-			: { content: "", images: undefined };
+			: { content: "", images: undefined, documents: undefined, resourceLinks: undefined };
 
 		return {
 			...extracted,
@@ -194,6 +281,7 @@ export class MCPClient {
 			uri: first.uri,
 			mimeType: first.mimeType,
 			content: "text" in first ? first.text : first.blob,
+			isBinary: !("text" in first),
 		};
 	}
 
