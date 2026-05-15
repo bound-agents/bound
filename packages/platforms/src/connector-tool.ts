@@ -134,14 +134,47 @@ async function handleChannels(
 		return `Error: server '${serverName}' not found locally and no remote relay configured`;
 	}
 
-	// Annotate with existing bindings using event_name-based matching
-	// (connector_handles is synced, so this works on any host)
+	// Annotate with existing bindings, grouped by event_name. Each event
+	// gets the full list of bound handles (id + event_args + delivery_mode
+	// + task_id + created_at) so the caller can see which specific argument
+	// sets are bound — important for events like Discord message.received
+	// where the event itself is meaningless without channel_id, and where
+	// multiple bindings can coexist on the same event with different args.
+	// (connector_handles is synced, so this works on any host.)
 	const existingHandles = getConnectorHandlesByServer(ctx.db, serverName);
-	const boundEventNames = new Set(existingHandles.map((h) => h.event_name));
+	const handlesByEvent = new Map<
+		string,
+		Array<{
+			id: string;
+			event_args: unknown;
+			delivery_mode: string;
+			task_id: string | null;
+			created_at: string;
+		}>
+	>();
+	for (const h of existingHandles) {
+		let parsedArgs: unknown;
+		try {
+			parsedArgs = JSON.parse(h.event_args);
+		} catch {
+			// Preserve the raw string so the binding is still surfaced even
+			// if event_args is corrupt — the caller can still detach it.
+			parsedArgs = h.event_args;
+		}
+		const list = handlesByEvent.get(h.event_name) ?? [];
+		list.push({
+			id: h.id,
+			event_args: parsedArgs,
+			delivery_mode: h.delivery_mode,
+			task_id: h.task_id,
+			created_at: h.created_at,
+		});
+		handlesByEvent.set(h.event_name, list);
+	}
 
 	const annotated = eventsResult.events.map((evt) => ({
 		...evt,
-		bound: boundEventNames.has(evt.name),
+		bindings: handlesByEvent.get(evt.name) ?? [],
 	}));
 
 	return JSON.stringify(annotated, null, 2);
@@ -311,7 +344,9 @@ async function handleDetach(
  *
  * Actions:
  * - list: Show all connected platform servers (local + cluster-wide)
- * - channels: Show available events from a server, annotated with bound status
+ * - channels: Show available events from a server, annotated with the list
+ *   of bound handles per event (handle id, event_args, delivery_mode,
+ *   task_id, created_at)
  * - attach: Create connector handle, event task, and thread; activate subscription
  * - detach: Soft-delete handle and associated task
  */

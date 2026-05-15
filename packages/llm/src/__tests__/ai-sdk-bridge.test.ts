@@ -735,8 +735,8 @@ describe("toModelMessages — tool call / result wrapping", () => {
 		// `.filter(b.type === "text")` swallowed everything, leaving the model
 		// with an empty tool result ("Tool ran without output or errors").
 		const payload = JSON.stringify([
-			{ name: "message.received", description: "Message received" },
-			{ name: "user.joined", description: "User joined", bound: false },
+			{ name: "message.received", description: "Message received", bindings: [] },
+			{ name: "user.joined", description: "User joined", bindings: [] },
 		]);
 		const out = toModelMessages([
 			{ role: "user", content: "list channels" },

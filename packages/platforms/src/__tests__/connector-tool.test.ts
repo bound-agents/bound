@@ -168,20 +168,29 @@ describe("Connector Tool", () => {
 		});
 	});
 
-	describe("AC2.2: channels action returns events with bound annotations", () => {
-		it("lists events and annotates bound channels", async () => {
+	describe("AC2.2: channels action returns events with bindings list", () => {
+		it("lists events and surfaces specific bound handles per event", async () => {
 			// Setup: Register server
 			const entry = await registry.registerServer("test-platform", server);
 			const client = entry.client;
 
-			// Pre-bind one event
-			const eventArgsObj = { channel_id: "pre-bound-123" };
-			createConnectorHandle(db, siteId, {
+			// Pre-bind two handles on message.received with different args,
+			// to verify per-arg-set bindings are surfaced (not just a boolean).
+			const argsA = { channel_id: "pre-bound-123" };
+			const argsB = { channel_id: "pre-bound-456" };
+			const handleIdA = createConnectorHandle(db, siteId, {
 				serverName: "test-platform",
 				eventName: "message.received",
-				eventArgs: eventArgsObj,
+				eventArgs: argsA,
 				deliveryMode: "push",
-				taskId: null,
+				taskId: "task-A",
+			});
+			const handleIdB = createConnectorHandle(db, siteId, {
+				serverName: "test-platform",
+				eventName: "message.received",
+				eventArgs: argsB,
+				deliveryMode: "poll",
+				taskId: "task-B",
 			});
 
 			// Mock client.request
@@ -234,11 +243,29 @@ describe("Connector Tool", () => {
 
 			const msgReceived = parsed.find((e: any) => e.name === "message.received");
 			expect(msgReceived).toBeDefined();
-			expect(msgReceived.bound).toBe(true);
+			expect(Array.isArray(msgReceived.bindings)).toBe(true);
+			expect(msgReceived.bindings.length).toBe(2);
+
+			// The boolean is gone — callers MUST inspect bindings now.
+			expect(msgReceived.bound).toBeUndefined();
+
+			const bindingA = msgReceived.bindings.find((b: any) => b.id === handleIdA);
+			expect(bindingA).toBeDefined();
+			expect(bindingA.event_args).toEqual(argsA);
+			expect(bindingA.delivery_mode).toBe("push");
+			expect(bindingA.task_id).toBe("task-A");
+			expect(typeof bindingA.created_at).toBe("string");
+
+			const bindingB = msgReceived.bindings.find((b: any) => b.id === handleIdB);
+			expect(bindingB).toBeDefined();
+			expect(bindingB.event_args).toEqual(argsB);
+			expect(bindingB.delivery_mode).toBe("poll");
+			expect(bindingB.task_id).toBe("task-B");
 
 			const userJoined = parsed.find((e: any) => e.name === "user.joined");
 			expect(userJoined).toBeDefined();
-			expect(userJoined.bound).toBe(false);
+			expect(Array.isArray(userJoined.bindings)).toBe(true);
+			expect(userJoined.bindings.length).toBe(0);
 		});
 
 		it("returns error when server_name not provided", async () => {
@@ -327,7 +354,9 @@ describe("Connector Tool", () => {
 			const parsed = JSON.parse(result);
 			expect(parsed.length).toBe(1);
 			expect(parsed[0].name).toBe("event.one");
-			expect(parsed[0].bound).toBe(false);
+			expect(Array.isArray(parsed[0].bindings)).toBe(true);
+			expect(parsed[0].bindings.length).toBe(0);
+			expect(parsed[0].bound).toBeUndefined();
 		});
 
 		it("returns error when server not local and no remotePlatformRequest", async () => {
