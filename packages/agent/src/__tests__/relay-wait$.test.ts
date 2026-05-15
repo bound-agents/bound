@@ -79,7 +79,7 @@ describe("createRelayWait$", () => {
 				params,
 				aborted$,
 			),
-			{ defaultValue: "cancelled" },
+			{ defaultValue: { content: "cancelled", retriable: false } },
 		);
 
 		// Wait a tick for subscription
@@ -113,7 +113,7 @@ describe("createRelayWait$", () => {
 		const result = await promise;
 
 		// Verify result content
-		expect(result).toContain("Success output");
+		expect(result.content).toContain("Success output");
 
 		// Verify marked processed
 		const marked = db.prepare("SELECT processed FROM relay_inbox WHERE id = ?").get("result-1") as {
@@ -147,7 +147,7 @@ describe("createRelayWait$", () => {
 				modifiedParams,
 				aborted$,
 			),
-			{ defaultValue: "cancelled" },
+			{ defaultValue: { content: "cancelled", retriable: false } },
 		);
 
 		await new Promise((resolve) => setTimeout(resolve, 10));
@@ -203,7 +203,7 @@ describe("createRelayWait$", () => {
 				params,
 				aborted$,
 			),
-			{ defaultValue: "cancelled" },
+			{ defaultValue: { content: "cancelled", retriable: false } },
 		);
 
 		await new Promise((resolve) => setTimeout(resolve, 10));
@@ -232,8 +232,53 @@ describe("createRelayWait$", () => {
 		const result = await promise;
 
 		// Should contain error message
-		expect(result).toContain("Remote error");
-		expect(result).toContain("model overloaded");
+		expect(result.content).toContain("Remote error");
+		expect(result.content).toContain("model overloaded");
+		// retriable signal should propagate from ErrorPayload through to the consumer
+		expect(result.retriable).toBe(true);
+	});
+
+	it("propagates retriable=false for non-retriable error responses", async () => {
+		const { hosts, params, outboxEntryId } = createHostsAndParams();
+		const aborted$ = new Subject<void>();
+
+		const promise = firstValueFrom(
+			createRelayWait$(
+				{
+					db,
+					eventBus,
+					siteId,
+					logger: { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} },
+				},
+				params,
+				aborted$,
+			),
+			{ defaultValue: { content: "cancelled", retriable: false } },
+		);
+
+		const now = new Date().toISOString();
+		db.prepare(`
+			INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, payload, expires_at, received_at, processed)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`).run(
+			"error-2",
+			hosts[0].site_id,
+			"error",
+			outboxEntryId,
+			JSON.stringify({
+				error: "tool not found",
+				retriable: false,
+			}),
+			new Date(Date.now() + 60000).toISOString(),
+			now,
+			0,
+		);
+
+		eventBus.emit("relay:inbox", { ref_id: outboxEntryId });
+
+		const result = await promise;
+		expect(result.content).toContain("tool not found");
+		expect(result.retriable).toBe(false);
 	});
 
 	it("AC2.4: Handles timeout and failover to next host", async () => {
@@ -253,7 +298,7 @@ describe("createRelayWait$", () => {
 				aborted$,
 				{ timeoutMs: 50 },
 			),
-			{ defaultValue: "cancelled" },
+			{ defaultValue: { content: "cancelled", retriable: false } },
 		);
 
 		// Let first host timeout
@@ -295,7 +340,7 @@ describe("createRelayWait$", () => {
 		}
 
 		const result = await promise;
-		expect(result).toContain("failover success");
+		expect(result.content).toContain("failover success");
 	});
 
 	it("AC2.5: Cancellation via aborted$ writes cancel entry", async () => {
@@ -313,7 +358,7 @@ describe("createRelayWait$", () => {
 				params,
 				aborted$,
 			),
-			{ defaultValue: "default-cancel" },
+			{ defaultValue: { content: "default-cancel", retriable: false } },
 		);
 
 		await new Promise((resolve) => setTimeout(resolve, 10));
@@ -325,7 +370,7 @@ describe("createRelayWait$", () => {
 		const result = await promise;
 
 		// Should get the cancelled message
-		expect(result).toContain("Cancelled");
+		expect(result.content).toContain("Cancelled");
 
 		// Verify cancel outbox entry was written
 		const cancelEntry = db
@@ -372,12 +417,12 @@ describe("createRelayWait$", () => {
 				params,
 				aborted$,
 			),
-			{ defaultValue: "cancelled" },
+			{ defaultValue: { content: "cancelled", retriable: false } },
 		);
 
 		// Should get result immediately
 		const result = await promise;
-		expect(result).toContain("pre-response");
+		expect(result.content).toContain("pre-response");
 	});
 
 	it("All hosts exhausted returns timeout message", async () => {
@@ -396,7 +441,7 @@ describe("createRelayWait$", () => {
 				aborted$,
 				{ timeoutMs: 50 },
 			),
-			{ defaultValue: "not-timed-out" },
+			{ defaultValue: { content: "not-timed-out", retriable: false } },
 		);
 
 		// Wait for all hosts to timeout
@@ -405,7 +450,7 @@ describe("createRelayWait$", () => {
 		const result = await promise;
 
 		// Should get timeout message, not "not-timed-out" default
-		expect(result).toContain("Timeout");
-		expect(result).toContain("2 eligible host(s)");
+		expect(result.content).toContain("Timeout");
+		expect(result.content).toContain("2 eligible host(s)");
 	});
 });

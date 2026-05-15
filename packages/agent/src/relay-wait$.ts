@@ -47,18 +47,40 @@ export interface RelayWaitOptions {
 	timeoutMs?: number;
 }
 
-function formatResponseText(response: { kind: string; payload: string }): string {
+/**
+ * Result of a relay wait. `content` is the formatted response text the agent
+ * loop will render into the tool_result message; `retriable` propagates the
+ * structured retry hint from `ErrorPayload.retriable` so higher layers can
+ * decide whether to re-dispatch. Result responses set `retriable=false`;
+ * timeouts set `retriable=true` (transient by definition).
+ */
+export interface RelayWaitResult {
+	content: string;
+	retriable: boolean;
+}
+
+function formatResponseText(response: { kind: string; payload: string }): RelayWaitResult {
 	if (response.kind === "error") {
 		const result = parseJsonSafe(errorPayloadSchema, response.payload, response.kind);
-		if (!result.ok) return `Remote error: ${response.payload}`;
-		return `Remote error: ${result.value.error || response.payload}`;
+		if (!result.ok) {
+			return { content: `Remote error: ${response.payload}`, retriable: false };
+		}
+		return {
+			content: `Remote error: ${result.value.error || response.payload}`,
+			retriable: result.value.retriable,
+		};
 	}
 	if (response.kind === "result") {
 		const result = parseJsonSafe(resultPayloadSchema, response.payload, response.kind);
-		if (!result.ok) return `Remote result: ${response.payload}`;
-		return buildCommandOutput(result.value.stdout, result.value.stderr, result.value.exit_code);
+		if (!result.ok) {
+			return { content: `Remote result: ${response.payload}`, retriable: false };
+		}
+		return {
+			content: buildCommandOutput(result.value.stdout, result.value.stderr, result.value.exit_code),
+			retriable: false,
+		};
 	}
-	return `Unknown response kind: ${response.kind}`;
+	return { content: `Unknown response kind: ${response.kind}`, retriable: false };
 }
 
 export function createRelayWait$(
@@ -66,7 +88,7 @@ export function createRelayWait$(
 	params: RelayWaitParams,
 	aborted$: Observable<unknown>,
 	options?: RelayWaitOptions,
-): Observable<string> {
+): Observable<RelayWaitResult> {
 	const timeoutMs = options?.timeoutMs ?? 30_000;
 	const relayStartTime = Date.now();
 	const totalHosts = params.eligibleHosts.length;
@@ -165,7 +187,10 @@ export function createRelayWait$(
 						});
 					}
 				}),
-				map(() => "Cancelled: relay request was cancelled by user"),
+				map(() => ({
+					content: "Cancelled: relay request was cancelled by user",
+					retriable: false,
+				})),
 			);
 
 			return race(response$, abort$);
@@ -174,6 +199,9 @@ export function createRelayWait$(
 
 	return concat(
 		hostObservables,
-		of(`Timeout: all ${totalHosts} eligible host(s) did not respond within ${timeoutMs}ms`),
+		of({
+			content: `Timeout: all ${totalHosts} eligible host(s) did not respond within ${timeoutMs}ms`,
+			retriable: true,
+		}),
 	);
 }
