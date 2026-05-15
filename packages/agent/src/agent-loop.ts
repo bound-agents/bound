@@ -39,7 +39,7 @@ import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
 import { type ModelResolution, resolveModel, resolveSameTierFallback } from "./model-resolution";
 import { createRelayStream$ } from "./relay-stream$";
-import { createRelayWait$ } from "./relay-wait$";
+import { type RelayWaitResult, createRelayWait$ } from "./relay-wait$";
 import { extractSummaryAndMemories } from "./summary-extraction";
 import {
 	TOOL_RESULT_OFFLOAD_THRESHOLD,
@@ -1323,8 +1323,9 @@ export class AgentLoop {
 
 					for (const toolCall of parsed.toolCalls) {
 						this.toolCallsMade++;
-						let resultContent: string;
+						let resultContent = "";
 						let exitCode = 0;
+						let deferredToClient = false;
 						const toolStartTime = Date.now();
 
 						this.ctx.logger.debug("[agent-loop] Tool executing", {
@@ -1365,60 +1366,106 @@ export class AgentLoop {
 								: null;
 
 							try {
-								const result = await this.executeToolCall(toolCall);
-
-								if ("outboxEntryId" in result) {
-									const previousRelayState = this.enterOverlay("RELAY_WAIT");
-									const aborted$ = new Subject<void>();
-									const abortCheck = setInterval(() => {
-										if (this.aborted) {
-											aborted$.next();
-											aborted$.complete();
+								// Bounded retry loop for relay-routed tool calls. When a relay
+								// response is marked retriable=true (e.g. hub fast-failed because
+								// the target host was offline, or all eligible hosts timed out),
+								// we re-dispatch up to MAX_RELAY_RETRIES times with a short
+								// backoff. Re-dispatching from executeToolCall picks up a fresh
+								// eligibleHosts list, which gives an offline target a chance to
+								// reconnect between attempts. Non-relay tool errors are NOT
+								// retried here — they fall through unchanged.
+								const MAX_RELAY_RETRIES = 1;
+								let retryAttempt = 0;
+								let dispatchResult = await this.executeToolCall(toolCall);
+								let dispatchHandled = false;
+								while (!dispatchHandled) {
+									if ("outboxEntryId" in dispatchResult) {
+										const previousRelayState = this.enterOverlay("RELAY_WAIT");
+										const aborted$ = new Subject<void>();
+										const abortCheck = setInterval(() => {
+											if (this.aborted) {
+												aborted$.next();
+												aborted$.complete();
+											}
+										}, 100);
+										let waitResult: RelayWaitResult;
+										try {
+											waitResult = await firstValueFrom(
+												createRelayWait$(
+													{
+														db: this.ctx.db,
+														eventBus: this.ctx.eventBus,
+														siteId: this.ctx.siteId,
+														logger: this.ctx.logger,
+													},
+													{
+														outboxEntryId: dispatchResult.outboxEntryId,
+														toolName: dispatchResult.toolName,
+														toolInput: toolCall.input,
+														eligibleHosts: dispatchResult.eligibleHosts,
+														currentHostIndex: dispatchResult.currentHostIndex,
+														currentTurnId,
+														threadId: this.config.threadId,
+													},
+													aborted$,
+												),
+												{
+													defaultValue: {
+														content: "Cancelled: relay request was cancelled by user",
+														retriable: false,
+													},
+												},
+											);
+										} finally {
+											clearInterval(abortCheck);
+											this.restoreState(previousRelayState);
 										}
-									}, 100);
-									try {
-										resultContent = await firstValueFrom(
-											createRelayWait$(
+
+										if (waitResult.retriable && retryAttempt < MAX_RELAY_RETRIES && !this.aborted) {
+											retryAttempt++;
+											const backoffMs = 2000 * retryAttempt;
+											this.ctx.logger.info(
+												"[agent-loop] Retrying relay tool call after retriable error",
 												{
-													db: this.ctx.db,
-													eventBus: this.ctx.eventBus,
-													siteId: this.ctx.siteId,
-													logger: this.ctx.logger,
+													tool: toolCall.name,
+													attempt: retryAttempt,
+													backoffMs,
+													lastError: waitResult.content,
 												},
-												{
-													outboxEntryId: result.outboxEntryId,
-													toolName: result.toolName,
-													toolInput: toolCall.input,
-													eligibleHosts: result.eligibleHosts,
-													currentHostIndex: result.currentHostIndex,
-													currentTurnId,
-													threadId: this.config.threadId,
-												},
-												aborted$,
-											),
-											{ defaultValue: "Cancelled: relay request was cancelled by user" },
-										);
-									} finally {
-										clearInterval(abortCheck);
-										this.restoreState(previousRelayState);
+											);
+											await new Promise((resolve) => setTimeout(resolve, backoffMs));
+											this.config.onActivity?.();
+											dispatchResult = await this.executeToolCall(toolCall);
+											continue;
+										}
+
+										resultContent = waitResult.content;
+										dispatchHandled = true;
+									} else if (isClientToolCallRequest(dispatchResult)) {
+										// Client tool calls are deferred to the client — track but don't get result yet
+										pendingClientCalls.push({ toolCall, request: dispatchResult });
+										resultContent = "";
+										exitCode = 0;
+										// Don't add to toolResults yet — no tool_result message to persist
+										const toolDurationMs = Date.now() - toolStartTime;
+										this.ctx.logger.info("[agent-loop] Client tool call deferred", {
+											turn: turnCount,
+											tool: toolCall.name,
+											durationMs: toolDurationMs,
+										});
+										this.config.onActivity?.();
+										dispatchHandled = true;
+										// Mirror previous behavior: skip result-pushing logic for this call.
+										// The outer continue is preserved by the sentinel below.
+										deferredToClient = true;
+									} else {
+										resultContent = dispatchResult.content;
+										exitCode = dispatchResult.exitCode;
+										dispatchHandled = true;
 									}
-								} else if (isClientToolCallRequest(result)) {
-									// Client tool calls are deferred to the client — track but don't get result yet
-									pendingClientCalls.push({ toolCall, request: result });
-									resultContent = "";
-									exitCode = 0;
-									// Don't add to toolResults yet — no tool_result message to persist
-									const toolDurationMs = Date.now() - toolStartTime;
-									this.ctx.logger.info("[agent-loop] Client tool call deferred", {
-										turn: turnCount,
-										tool: toolCall.name,
-										durationMs: toolDurationMs,
-									});
-									this.config.onActivity?.();
+								}
+								if (deferredToClient) {
 									continue;
-								} else {
-									resultContent = result.content;
-									exitCode = result.exitCode;
 								}
 							} finally {
 								if (toolHeartbeat) clearInterval(toolHeartbeat);
