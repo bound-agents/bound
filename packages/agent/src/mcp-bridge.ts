@@ -84,6 +84,14 @@ export interface RelayToolCallRequest {
 	toolName: string;
 	eligibleHosts: EligibleHost[];
 	currentHostIndex: number;
+	/**
+	 * Idempotency annotations resolved from the target host's
+	 * mcp_tool_annotations at dispatch time. Used by the agent retry policy
+	 * — present only for relay-routed tools where the target attests the
+	 * tool is read-only or idempotent. `{}` means "no info" (target hasn't
+	 * synced annotations, or the tool isn't annotated).
+	 */
+	annotations?: { idempotent?: boolean; readOnly?: boolean };
 	// CommandResult fields (required for handler return type compatibility)
 	stdout: string;
 	stderr: string;
@@ -95,6 +103,43 @@ export interface RelayToolCallRequest {
  */
 export function isRelayRequest(result: unknown): result is RelayToolCallRequest {
 	return result != null && typeof result === "object" && "outboxEntryId" in result;
+}
+
+/**
+ * MCP-spec tool annotations as captured from `listTools()` and synced via
+ * the hosts table. Hint fields use the wire-protocol names. The agent's
+ * retry policy maps these onto its bare `idempotent`/`readOnly` flags.
+ *
+ * Returns `{}` for missing host, missing column, parse errors, missing
+ * server, or missing tool — the retry path treats any of those the same
+ * as "no info".
+ */
+export function getRemoteMcpToolAnnotations(
+	db: Database,
+	siteId: string,
+	serverName: string,
+	toolName: string,
+): { idempotentHint?: boolean; readOnlyHint?: boolean; destructiveHint?: boolean } {
+	let row: { mcp_tool_annotations: string | null } | null;
+	try {
+		row = db
+			.query("SELECT mcp_tool_annotations FROM hosts WHERE site_id = ? AND deleted = 0")
+			.get(siteId) as { mcp_tool_annotations: string | null } | null;
+	} catch {
+		return {};
+	}
+	if (!row?.mcp_tool_annotations) return {};
+	let parsed: Record<string, Record<string, Record<string, boolean>>>;
+	try {
+		parsed = JSON.parse(row.mcp_tool_annotations);
+	} catch {
+		return {};
+	}
+	const serverMap = parsed?.[serverName];
+	if (!serverMap || typeof serverMap !== "object") return {};
+	const toolMap = serverMap[toolName];
+	if (!toolMap || typeof toolMap !== "object") return {};
+	return toolMap as { idempotentHint?: boolean; readOnlyHint?: boolean; destructiveHint?: boolean };
 }
 
 /**
@@ -666,6 +711,23 @@ export function generateRemoteMCPProxyCommands(
 				);
 				writeOutbox(ctx.db, outboxEntry);
 
+				// Resolve target host's annotations for the dispatched subcommand
+				// so the agent retry policy can consult them. Maps MCP-spec wire
+				// names (idempotentHint/readOnlyHint) onto the agent's bare
+				// fields. Returns `{}` for missing column, missing server, or
+				// missing tool — retry treats that as "no info".
+				const annotations: { idempotent?: boolean; readOnly?: boolean } = {};
+				if (typeof subcommand === "string") {
+					const hints = getRemoteMcpToolAnnotations(
+						ctx.db,
+						targetHost.site_id,
+						serverName,
+						subcommand,
+					);
+					if (hints.idempotentHint !== undefined) annotations.idempotent = hints.idempotentHint;
+					if (hints.readOnlyHint !== undefined) annotations.readOnly = hints.readOnlyHint;
+				}
+
 				// Build RelayToolCallRequest. just-bash normalizes custom command
 				// return values to { stdout, stderr, exitCode, env }, stripping
 				// extra fields like outboxEntryId. Store the full request in
@@ -678,6 +740,7 @@ export function generateRemoteMCPProxyCommands(
 					toolName: serverName,
 					eligibleHosts,
 					currentHostIndex: 0,
+					annotations,
 					stdout: "",
 					stderr: "",
 					exitCode: 0,
@@ -698,8 +761,15 @@ export function generateRemoteMCPProxyCommands(
 
 /**
  * Update host's MCP info in database.
- * Records the connected servers and their server names in the hosts table.
- * Under the new dispatch model, mcp_tools stores server names only (not individual tool names).
+ * Records the connected servers and their server names in the hosts table,
+ * along with per-tool MCP-spec annotations captured from listTools().
+ *
+ * `mcp_tools`: server names only (the relay router matches on server name
+ * under the new dispatch model).
+ * `mcp_tool_annotations`: nested {serverName: {toolName: ToolAnnotations}}
+ * — used by the agent retry policy to look up target idempotency for
+ * relay-routed tool calls. Empty annotation objects are dropped to keep
+ * the JSON compact.
  */
 export async function updateHostMCPInfo(
 	db: Database,
@@ -709,13 +779,48 @@ export async function updateHostMCPInfo(
 	try {
 		const mcp_servers = Array.from(clients.keys());
 
-		// Store server names only — no listTools() call needed.
-		// The relay router matches on server name (e.g. "github") rather than
-		// individual tool names (e.g. "github-create_issue") under the new dispatch model.
 		const mcp_tools: string[] = [];
+		const mcp_tool_annotations: Record<
+			string,
+			Record<
+				string,
+				{ idempotentHint?: boolean; readOnlyHint?: boolean; destructiveHint?: boolean }
+			>
+		> = {};
+
 		for (const [serverName, client] of clients) {
-			if (client.isConnected()) {
-				mcp_tools.push(serverName);
+			if (!client.isConnected()) continue;
+			mcp_tools.push(serverName);
+
+			// Best-effort listTools — never fail the metadata update on a
+			// transient MCP error. A server with no captured annotations just
+			// looks "unknown" to the retry policy, which falls back to the
+			// strict no-info posture.
+			try {
+				const tools = await client.listTools();
+				const serverAnnotations: Record<string, Record<string, boolean | undefined>> = {};
+				for (const tool of tools) {
+					const ann = tool.annotations as
+						| {
+								idempotentHint?: boolean;
+								readOnlyHint?: boolean;
+								destructiveHint?: boolean;
+						  }
+						| undefined;
+					if (!ann) continue;
+					const compact: Record<string, boolean | undefined> = {};
+					if (ann.idempotentHint !== undefined) compact.idempotentHint = ann.idempotentHint;
+					if (ann.readOnlyHint !== undefined) compact.readOnlyHint = ann.readOnlyHint;
+					if (ann.destructiveHint !== undefined) compact.destructiveHint = ann.destructiveHint;
+					if (Object.keys(compact).length > 0) {
+						serverAnnotations[tool.name] = compact;
+					}
+				}
+				if (Object.keys(serverAnnotations).length > 0) {
+					mcp_tool_annotations[serverName] = serverAnnotations;
+				}
+			} catch {
+				// listTools failed for this server — leave annotations empty.
 			}
 		}
 
@@ -726,6 +831,10 @@ export async function updateHostMCPInfo(
 			{
 				mcp_servers: JSON.stringify(mcp_servers),
 				mcp_tools: JSON.stringify(mcp_tools),
+				mcp_tool_annotations:
+					Object.keys(mcp_tool_annotations).length > 0
+						? JSON.stringify(mcp_tool_annotations)
+						: null,
 			},
 			siteId,
 		);

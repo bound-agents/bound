@@ -288,6 +288,7 @@ export function applySchema(db: Database): void {
 			sync_url     TEXT,
 			mcp_servers  TEXT,
 			mcp_tools    TEXT,
+			mcp_tool_annotations TEXT,
 			models       TEXT,
 			overlay_root TEXT,
 			online_at    TEXT,
@@ -580,6 +581,16 @@ export function applySchema(db: Database): void {
 	// Add platforms column to hosts
 	try {
 		db.run("ALTER TABLE hosts ADD COLUMN platforms TEXT");
+	} catch {
+		/* already exists */
+	}
+
+	// Add mcp_tool_annotations column to hosts (per-server, per-tool MCP-spec
+	// annotations captured from listTools() — used by the agent retry policy
+	// to look up target idempotency for relay-routed tool calls).
+	// Shape: {[serverName]: {[toolName]: {idempotentHint?, readOnlyHint?}}}
+	try {
+		db.run("ALTER TABLE hosts ADD COLUMN mcp_tool_annotations TEXT");
 	} catch {
 		/* already exists */
 	}

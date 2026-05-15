@@ -30,7 +30,6 @@ import {
 	insertThreadMessage,
 	isTransientLLMError,
 	parseToolResultContent,
-	resolveToolAnnotations,
 	shouldRetryRelayCall,
 } from "./agent-loop-utils";
 import { maybePlaceCacheMarker } from "./cache-marker";
@@ -1429,13 +1428,15 @@ export class AgentLoop {
 												attempt: retryAttempt,
 												maxAttempts: MAX_RELAY_RETRIES,
 												aborted: this.aborted,
-												annotations: this.config.toolRegistry
-													? resolveToolAnnotations(
-															this.config.toolRegistry,
-															toolCall.name,
-															toolCall.input,
-														)
-													: undefined,
+												// For relay-routed tools, the target's idempotency hints
+												// are resolved at dispatch time and carried on the
+												// RelayToolCallRequest itself — the local registry
+												// only knows about the dispatcher command (e.g. `bash`),
+												// not the remote MCP tool (e.g. `github list_commits`).
+												// Falling back to registry lookup would always say
+												// "not idempotent" for the dispatcher and refuse all
+												// retries.
+												annotations: dispatchResult.annotations,
 											})
 										) {
 											retryAttempt++;
