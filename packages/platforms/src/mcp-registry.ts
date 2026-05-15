@@ -39,6 +39,12 @@ export interface PlatformRegisteredTool {
 	kind: "platform";
 	toolDefinition: ToolDefinition;
 	execute?: (input: Record<string, unknown>) => Promise<string>;
+	annotations?: {
+		readOnlyHint?: boolean;
+		destructiveHint?: boolean;
+		idempotentHint?: boolean;
+		openWorldHint?: boolean;
+	};
 }
 
 /** MCP Event as sent by server in notifications/events/event */
