@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
 import { createChangeLogEntry, insertRow, updateRow } from "@bound/core";
-import { DISPATCHER_TASK_ID, type PlatformRegisteredTool } from "@bound/platforms";
+import type { PlatformRegisteredTool } from "@bound/platforms";
 import { BOUND_NAMESPACE, deterministicUUID, formatError, parseJsonUntyped } from "@bound/shared";
 import type { Task } from "@bound/shared";
 import { createAdvisory } from "./advisories";
@@ -134,7 +134,7 @@ function resetEventTask(
 ): void {
 	if (task.type !== "event") return;
 	const isCompletion = context === "completion" || context === "template completion";
-	const fallbackMs = isCompletion ? (task.id === DISPATCHER_TASK_ID ? 1_800_000 : 300_000) : 60_000;
+	const fallbackMs = isCompletion ? 300_000 : 60_000;
 	const nextRunAt = new Date(Date.now() + fallbackMs).toISOString();
 	updateRow(
 		db,

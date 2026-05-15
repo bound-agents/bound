@@ -37,6 +37,5 @@ export interface EventMap {
 		handle_id: string;
 		batch_size: number;
 	};
-	"connector:list_changed": { server_name: string };
 	"connector:handle_synced": { handle_id: string; server_name: string };
 }

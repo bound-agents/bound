@@ -13,7 +13,6 @@ import {
 	getConnectorHandle,
 	updateConnectorHandleCursor,
 } from "./connector-handle.js";
-import { DISPATCHER_TASK_ID } from "./dispatcher.js";
 
 export interface PlatformServerEntry {
 	name: string;
@@ -169,8 +168,6 @@ export class PlatformMcpRegistry {
 				if (notification.method === "notifications/tools/list_changed") {
 					// Rediscover tools when the list changes
 					await this.discoverTools(entry);
-				} else if (notification.method === "notifications/events/list_changed") {
-					this.deps.eventBus.emit("connector:list_changed", { server_name: name });
 				}
 				// Call original handler if it exists
 				if (originalHandler) {
@@ -616,17 +613,6 @@ export class PlatformMcpRegistry {
 	}
 
 	/**
-	 * Checks if a thread belongs to the dispatcher task.
-	 * Dispatcher task receives ALL platform tools.
-	 */
-	isDispatcherThread(threadId: string): boolean {
-		const task = this.deps.db
-			.query("SELECT id FROM tasks WHERE thread_id = ? AND id = ? AND deleted = 0")
-			.get(threadId, DISPATCHER_TASK_ID) as { id: string } | null;
-		return task !== null;
-	}
-
-	/**
 	 * Tears down all registered servers. Called on shutdown or leader loss.
 	 */
 	async shutdown(): Promise<void> {
@@ -643,25 +629,13 @@ export class PlatformMcpRegistry {
 }
 
 /**
- * Helper function to register scheduler event listeners for connector notifications.
- * Call this during startup to wire the event bus to the scheduler.
- * The scheduler.onEvent() method will match event tasks by their trigger_spec.
- *
- * @param eventBus - The TypedEventEmitter from AppContext
- * @param scheduler - The task scheduler instance
+ * Registers the connector:event listener that routes per-handle events to the scheduler.
  */
-export function registerConnectorEventListeners(
+export function registerConnectorEventDelivery(
 	eventBus: TypedEventEmitter,
 	scheduler: { onEvent: (eventType: string, payload: Record<string, unknown>) => void },
 ): void {
-	// Dispatcher wakes on connector:list_changed from any server
-	eventBus.on("connector:list_changed", (payload) => {
-		scheduler.onEvent("connector:list_changed", payload);
-	});
-
-	// Per-handle event tasks wake with per-handle trigger keys (e.g., "connector:event:handle_id")
 	eventBus.on("connector:event", (payload) => {
-		// Route to the specific task using the per-handle trigger key
 		scheduler.onEvent(payload.trigger_key, payload);
 	});
 }
