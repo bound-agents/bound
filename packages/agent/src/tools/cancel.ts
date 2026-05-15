@@ -21,6 +21,10 @@ export function createCancelTool(ctx: ToolContext): RegisteredTool {
 				parameters: jsonSchema,
 			},
 		},
+		// Idempotent: cancelling an already-cancelled task is a no-op (terminal
+		// state). payload_match resolves to a set; re-running matches the same
+		// set or a subset.
+		idempotent: true,
 		execute: async (raw: Record<string, unknown>) => {
 			const parsed = parseToolInput(cancelSchema, raw, "cancel");
 			if (!parsed.ok) return parsed.error;

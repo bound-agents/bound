@@ -24,6 +24,9 @@ export function createPurgeTool(ctx: ToolContext): RegisteredTool {
 				parameters: jsonSchema,
 			},
 		},
+		// Non-idempotent: each call inserts a new purge record (with a fresh
+		// generated id). Two calls with identical args produce two records.
+		idempotent: false,
 		execute: async (raw: Record<string, unknown>) => {
 			const parsed = parseToolInput(purgeSchema, raw, "purge");
 			if (!parsed.ok) return parsed.error;

@@ -71,6 +71,9 @@ export function createScheduleTool(ctx: ToolContext): RegisteredTool {
 				parameters: jsonSchema,
 			},
 		},
+		// Non-idempotent: each call creates a new task with a fresh id. Two
+		// calls with identical args produce two scheduled tasks.
+		idempotent: false,
 		execute: async (raw: Record<string, unknown>) => {
 			const parsed = parseToolInput(scheduleSchema, raw, "schedule");
 			if (!parsed.ok) return parsed.error;

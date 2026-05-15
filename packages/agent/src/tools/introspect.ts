@@ -32,6 +32,8 @@ export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
 				parameters: jsonSchema,
 			},
 		},
+		// Non-idempotent: each call queues another message in the target thread.
+		idempotent: false,
 		execute: async (raw: Record<string, unknown>) => {
 			const parsed = parseToolInput(introspectSchema, raw, "introspect");
 			if (!parsed.ok) return parsed.error;

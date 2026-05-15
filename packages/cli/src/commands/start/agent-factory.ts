@@ -87,10 +87,18 @@ export function createToolRegistry(
 	if (platformTools) {
 		for (const tool of platformTools) {
 			const name = tool.toolDefinition.function.name;
+			// Map MCP-spec hints (per the wire schema) onto the agent's local
+			// retry-policy fields. Explicit static idempotent/readOnly take
+			// precedence over the MCP-style hints when both are present.
+			const idempotent = tool.idempotent ?? tool.annotations?.idempotentHint;
+			const readOnly = tool.readOnly ?? tool.annotations?.readOnlyHint;
 			registerTool(name, {
 				kind: "platform",
 				toolDefinition: tool.toolDefinition,
 				execute: tool.execute,
+				idempotent,
+				readOnly,
+				resolveAnnotations: tool.resolveAnnotations,
 			});
 		}
 	}

@@ -11,6 +11,7 @@ import {
 import { createLogger } from "@bound/shared";
 import type { ModelResolution } from "./model-resolution";
 import type { RelayWaitResult } from "./relay-wait$";
+import type { RegisteredTool } from "./types";
 
 const logger = createLogger("@bound/agent", "agent-loop-utils");
 
@@ -641,24 +642,36 @@ export function hasOrphanedToolCall(messages: LLMMessage[]): boolean {
 /**
  * Decide whether a relay tool call should be re-dispatched after a failure.
  *
- * Retry policy (commit 1 — conservative baseline):
+ * Retry policy:
  *   - Aborted runs never retry.
  *   - The retry budget (`attempt < maxAttempts`) is hard-capped.
  *   - `retriable=false` is final; never retry.
- *   - `definitely_not_executed=true` is the only "yes" — hub fast-fail
- *     attests the target tool never ran, so retry is safe regardless of
- *     idempotency.
- *   - All other retriable errors (full timeouts, target-side failures) are
- *     ambiguous about whether the target started executing. A later commit
- *     adds annotation-aware retry that consults tool-level
- *     idempotent/readOnly flags; until then we err on the side of not
- *     double-executing non-idempotent tools.
+ *   - `definitely_not_executed=true` (hub fast-fail) — always retry. Strongest
+ *     signal; the target tool provably never ran, so retry is safe even for
+ *     non-idempotent tools.
+ *   - `annotations.readOnly === true` or `annotations.idempotent === true` —
+ *     retry safe. A duplicate execution leaves the system in the same final
+ *     state as a single execution. Used for ambiguous failures (full timeouts,
+ *     target-side errors) where the target may have started executing.
+ *   - Otherwise — refuse. The agent surfaces the error to the model rather
+ *     than risking a silent double-execution.
+ *
+ * Annotation trust model: per the MCP spec, `idempotentHint`/`readOnlyHint`
+ * are HINTS, not guarantees. A target's tool can lie about being idempotent.
+ * Worst case: their bug → double execution. We use these for retry policy
+ * only, never for security gating.
  */
+export interface ToolAnnotations {
+	idempotent?: boolean;
+	readOnly?: boolean;
+}
+
 export interface ShouldRetryRelayCallInput {
 	waitResult: RelayWaitResult;
 	attempt: number;
 	maxAttempts: number;
 	aborted: boolean;
+	annotations?: ToolAnnotations;
 }
 
 export function shouldRetryRelayCall(input: ShouldRetryRelayCallInput): boolean {
@@ -666,8 +679,36 @@ export function shouldRetryRelayCall(input: ShouldRetryRelayCallInput): boolean 
 	if (input.attempt >= input.maxAttempts) return false;
 	if (!input.waitResult.retriable) return false;
 	if (input.waitResult.definitely_not_executed === true) return true;
-	// Ambiguous-execution case (commit 1): refuse to retry without idempotency
-	// information. Commit 2 will widen this to allow retry when the tool is
-	// known to be idempotent or read-only.
+	if (input.annotations?.readOnly === true) return true;
+	if (input.annotations?.idempotent === true) return true;
+	// Ambiguous-execution case: target may have started executing and we don't
+	// have idempotency information. Refuse to retry rather than risk a double
+	// side effect. The model sees the error and can decide what to do.
 	return false;
+}
+
+/**
+ * Look up a tool's idempotency annotations from the local registry. Prefers
+ * `resolveAnnotations(args)` (per-action) when defined; falls back to the
+ * static `idempotent`/`readOnly` fields. Returns an empty object for unknown
+ * tools — the agent loop treats that as "no annotation info".
+ *
+ * Currently scoped to the local tool registry. Relay-routed tools (where the
+ * target's annotations live on a different host) are resolved separately at
+ * dispatch time and the result is carried on the relay request itself.
+ */
+export function resolveToolAnnotations(
+	registry: Map<string, RegisteredTool>,
+	toolName: string,
+	args: Record<string, unknown>,
+): ToolAnnotations {
+	const tool = registry.get(toolName);
+	if (!tool) return {};
+	if (tool.resolveAnnotations) {
+		return tool.resolveAnnotations(args);
+	}
+	const result: ToolAnnotations = {};
+	if (tool.idempotent !== undefined) result.idempotent = tool.idempotent;
+	if (tool.readOnly !== undefined) result.readOnly = tool.readOnly;
+	return result;
 }

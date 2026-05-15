@@ -30,6 +30,7 @@ import {
 	insertThreadMessage,
 	isTransientLLMError,
 	parseToolResultContent,
+	resolveToolAnnotations,
 	shouldRetryRelayCall,
 } from "./agent-loop-utils";
 import { maybePlaceCacheMarker } from "./cache-marker";
@@ -1428,6 +1429,13 @@ export class AgentLoop {
 												attempt: retryAttempt,
 												maxAttempts: MAX_RELAY_RETRIES,
 												aborted: this.aborted,
+												annotations: this.config.toolRegistry
+													? resolveToolAnnotations(
+															this.config.toolRegistry,
+															toolCall.name,
+															toolCall.input,
+														)
+													: undefined,
 											})
 										) {
 											retryAttempt++;

@@ -19,6 +19,15 @@ export interface ConnectorToolDef {
 	kind: "builtin";
 	toolDefinition: ToolDefinition;
 	execute?: (input: Record<string, unknown>) => Promise<string>;
+	/** Static idempotency hint (per agent retry policy). */
+	idempotent?: boolean;
+	/** Static read-only hint (per agent retry policy). */
+	readOnly?: boolean;
+	/** Per-action idempotency resolver — overrides static fields when set. */
+	resolveAnnotations?: (args: Record<string, unknown>) => {
+		idempotent?: boolean;
+		readOnly?: boolean;
+	};
 }
 
 /**
@@ -319,6 +328,25 @@ export function createConnectorTool(ctx: ConnectorToolContext): ConnectorToolDef
 					"Manage platform event subscriptions. Actions: list (show servers), channels (show events), attach (subscribe), detach (unsubscribe).",
 				parameters,
 			},
+		},
+		// Per-action idempotency:
+		// - list/channels: pure read of the platform registry / events list.
+		// - attach: creates a connector handle keyed on (server, event, args).
+		//   Re-running with the same args produces "subscription already
+		//   exists"; final state is the same. Idempotent.
+		// - detach: soft-deletes a handle by id. Already-deleted is reported
+		//   as "handle not found"; final state is the same. Idempotent.
+		resolveAnnotations: (args: Record<string, unknown>) => {
+			switch (args.action) {
+				case "list":
+				case "channels":
+					return { idempotent: true, readOnly: true };
+				case "attach":
+				case "detach":
+					return { idempotent: true, readOnly: false };
+				default:
+					return {};
+			}
 		},
 		execute: async (raw: Record<string, unknown>) => {
 			const result = connectorSchema.safeParse(raw);

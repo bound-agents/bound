@@ -181,6 +181,9 @@ export function initScheduler(
 				kind: "platform" as const,
 				toolDefinition: rawConnectorTool.toolDefinition,
 				execute: rawConnectorTool.execute,
+				idempotent: rawConnectorTool.idempotent,
+				readOnly: rawConnectorTool.readOnly,
+				resolveAnnotations: rawConnectorTool.resolveAnnotations,
 			};
 		}
 
