@@ -23,6 +23,8 @@ import {
 	expireClientToolCalls,
 	hasPendingClientToolCalls,
 	insertRow,
+	markProcessed,
+	readInboxByRefId,
 	updateRow,
 	writeMessageMetadata,
 	writeOutbox,
@@ -30,12 +32,20 @@ import {
 import type { ModelBackendsConfig, ModelRouter } from "@bound/llm";
 import type { PlatformMcpRegistry, PlatformRegisteredTool } from "@bound/platforms";
 import {
+	type ConnectorToolContext,
 	PlatformLeaderElection,
 	PlatformMcpRegistry as PlatformMcpRegistryClass,
+	createConnectorTool,
 	getConnectorHandle,
 } from "@bound/platforms";
 import type { KeyringConfig, Logger, ProcessPayload, StatusForwardPayload } from "@bound/shared";
-import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
+import {
+	BOUND_NAMESPACE,
+	deterministicUUID,
+	formatError,
+	parseJsonSafe,
+	resultPayloadSchema,
+} from "@bound/shared";
 import type { KeyManager, RelayExecutor } from "@bound/sync";
 import { createSyncServer, createWebServer } from "@bound/web";
 import { resolveThreadModel, runLocalAgentLoop } from "../../lib/message-handler";
@@ -280,6 +290,9 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	// MCP platform registry — declared here so message:created handler can reference it,
 	// populated in the platform connectors section below.
 	let platformMcpRegistry: PlatformMcpRegistry | null = null;
+	// Connector tool — created after platform registry setup, used by message handler
+	// for user-facing threads that need connector access.
+	let connectorTool: PlatformRegisteredTool | null = null;
 
 	try {
 		const modelBackends = appContext.config.modelBackends;
@@ -496,15 +509,23 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 									? threadInterface
 									: undefined;
 
-							// Resolve platform MCP tools for this thread (e.g., discord_send_message).
-							// Pass full PlatformRegisteredTool array with execute closures intact.
-							// The agent-factory will register them directly in the tool registry,
-							// preserving their execute closures for MCP client.callTool() dispatch.
+							// Resolve platform tools using two-branch model:
+							// - Event task threads: scoped to their bound server's full tool set
+							// - All other threads: read-only platform tools + connector tool
 							let platformTools: PlatformRegisteredTool[] | undefined;
 							if (platformMcpRegistry) {
-								const platformToolsMap = platformMcpRegistry.getToolsForThread(thread_id);
-								if (platformToolsMap.size > 0) {
-									platformTools = Array.from(platformToolsMap.values());
+								const scopedTools = platformMcpRegistry.getToolsForThread(thread_id);
+								if (scopedTools.size > 0) {
+									platformTools = Array.from(scopedTools.values());
+								} else {
+									const readOnlyTools = Array.from(
+										platformMcpRegistry.getReadOnlyPlatformTools().values(),
+									);
+									if (connectorTool) {
+										platformTools = [...readOnlyTools, connectorTool];
+									} else if (readOnlyTools.length > 0) {
+										platformTools = readOnlyTools;
+									}
 								}
 							}
 
@@ -886,6 +907,83 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		// TASK 3: Wire relay processor to use new registry (AC7.3)
 		relayProcessor.setPlatformMcpRegistry(platformMcpRegistry);
 		appContext.logger.info("[platforms-mcp] Relay processor wired");
+
+		// Create connector tool for user-facing threads (message handler path)
+		const connectorCtx: ConnectorToolContext = {
+			registry: platformMcpRegistry,
+			db: appContext.db,
+			siteId: appContext.siteId,
+			remotePlatformRequest: async (
+				serverName: string,
+				method: string,
+				params: Record<string, unknown>,
+			): Promise<unknown> => {
+				const rows = appContext.db
+					.query(
+						"SELECT site_id, platforms FROM hosts WHERE deleted = 0 AND platforms IS NOT NULL AND site_id != ?",
+					)
+					.all(appContext.siteId) as Array<{ site_id: string; platforms: string }>;
+				let targetSiteId: string | null = null;
+				for (const row of rows) {
+					try {
+						const platforms = JSON.parse(row.platforms) as string[];
+						if (Array.isArray(platforms) && platforms.includes(serverName)) {
+							targetSiteId = row.site_id;
+							break;
+						}
+					} catch {
+						// Skip hosts with corrupted platforms JSON
+					}
+				}
+				if (!targetSiteId) {
+					throw new Error(`No remote host found for platform server '${serverName}'`);
+				}
+
+				const entry = createRelayOutboxEntry(
+					targetSiteId,
+					appContext.siteId,
+					"platform_request",
+					JSON.stringify({
+						server_name: serverName,
+						method,
+						params,
+						timeout_ms: 15_000,
+					}),
+					15_000,
+				);
+				writeOutbox(appContext.db, entry, undefined, appContext.eventBus);
+
+				const deadline = Date.now() + 15_000;
+				while (Date.now() < deadline) {
+					const response = readInboxByRefId(appContext.db, entry.id);
+					if (response) {
+						markProcessed(appContext.db, [response.id]);
+						if (response.kind === "error") {
+							const errPayload = JSON.parse(response.payload) as { error?: string };
+							throw new Error(errPayload.error ?? response.payload);
+						}
+						const parsed = parseJsonSafe(
+							resultPayloadSchema,
+							response.payload,
+							"platform_request result",
+						);
+						if (!parsed.ok) {
+							throw new Error(`Invalid platform_request response: ${parsed.error}`);
+						}
+						return JSON.parse(parsed.value.stdout);
+					}
+					await new Promise((r) => setTimeout(r, 200));
+				}
+				throw new Error(`Timeout waiting for platform_request response from ${targetSiteId}`);
+			},
+		};
+		const rawConnectorTool = createConnectorTool(connectorCtx);
+		connectorTool = {
+			kind: "platform" as const,
+			toolDefinition: rawConnectorTool.toolDefinition,
+			execute: rawConnectorTool.execute,
+		};
+		appContext.logger.info("[platforms-mcp] Connector tool created");
 
 		// Advertise platform names in hosts.platforms for relay platform affinity routing.
 		// Clear to null when empty so stale synced values don't persist.
