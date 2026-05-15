@@ -305,7 +305,7 @@ describe("Relay CRUD Helpers", () => {
 			expect(found).toBeNull();
 		});
 
-		it("readInboxByRefId ignores processed entries", () => {
+		it("readInboxByRefId returns entries regardless of processed state", () => {
 			const now = new Date().toISOString();
 			const entry: RelayInboxEntry = {
 				id: "msg-1",
@@ -323,7 +323,8 @@ describe("Relay CRUD Helpers", () => {
 			markProcessed(db, ["msg-1"]);
 
 			const found = readInboxByRefId(db, "ref-123");
-			expect(found).toBeNull();
+			expect(found).not.toBeNull();
+			expect(found?.id).toBe("msg-1");
 		});
 
 		it("readInboxByStreamId returns empty array when no matching stream_id", () => {
