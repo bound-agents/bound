@@ -83,7 +83,7 @@ packages/
   sandbox/      Virtual filesystem (InMemoryFs/ClusterFs), OCC persistence, command framework
   llm/          LLM drivers (Bedrock, OpenAI-compatible) over the Vercel AI SDK, model router
   agent/        Agent loop state machine, 8-stage context pipeline, 12 native tools, scheduler, MCP bridge
-  platforms/    MCP-based platform connectors (Discord), connector handles, dispatcher
+  platforms/    MCP-based platform connectors (Discord), connector handles, connector tool
   web/          Hono API server, WebSocket, Svelte 5 UI
   client/       BoundClient: unified HTTP + WebSocket client for external consumers
   mcp-server/   Standalone MCP stdio server (bound-mcp)
@@ -159,7 +159,7 @@ The system uses an event-sourced architecture with SQLite as the storage layer:
 - **Sync protocol** replicates state between hosts over encrypted WebSocket frames (Ed25519 identity, XChaCha20-Poly1305 at frame level, HLC-ordered change log). Keypair is auto-generated at `data/host.key` / `data/host.pub`.
 - **12 native agent tools** with structured JSON schemas (`schedule`, `query`, `memory`, `skill`, `advisory`, `cancel`, `purge`, `notify`, `introspect`, `archive`, `model_hint`, `hostinfo`). Tools receive typed parameters directly from the LLM, eliminating argument-parsing bugs.
 - **MCP integration** auto-generates one command per connected MCP server (stdio or http transport), dispatched via a `subcommand` parameter. Tools are available during chat and via a cross-host MCP proxy.
-- **Platform connectors** (Discord, etc.) are implemented as in-process MCP servers. A dispatcher task manages connector handles (event subscriptions), and platform tools are scoped per-thread through the handle chain. Leader election ensures only one host runs active subscriptions.
+- **Platform connectors** (Discord, etc.) are implemented as in-process MCP servers. A unified connector tool manages event subscriptions (connector handles), and platform tools are scoped per-thread through annotation-based filtering. Leader election ensures only one host runs active subscriptions.
 - **Web UI** is built as a Svelte 5 SPA and embedded into the compiled binary for zero external dependencies.
 
 ## License
