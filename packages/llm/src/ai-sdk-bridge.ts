@@ -278,10 +278,26 @@ function appendDevToUser(userMsg: ModelMessage, devLines: string[]): void {
 function normalizeBlocks(content: string | ContentBlock[]): ContentBlock[] {
 	if (Array.isArray(content)) return content;
 	// DB serializes tool_call/tool_result content as JSON strings of blocks;
-	// fall back to treating the string as a single text block if parse fails.
+	// fall back to treating the string as a single text block if parse fails
+	// or if the parsed array isn't actually content-block-shaped.
+	//
+	// The shape gate matters because tools (especially the connector tool) are
+	// free to return arbitrary JSON arrays as their result string. Without the
+	// gate, normalizeBlocks would happily return those arrays, the downstream
+	// `b.type === "text"` filter in the tool_result handler would drop every
+	// item, and the model would see an empty tool result. Treating opaque
+	// JSON-array payloads as a single text block keeps the data intact.
 	try {
 		const parsed = JSON.parse(content);
-		if (Array.isArray(parsed)) return parsed as ContentBlock[];
+		if (
+			Array.isArray(parsed) &&
+			parsed.length > 0 &&
+			parsed.every(
+				(b) => b && typeof b === "object" && typeof (b as { type?: unknown }).type === "string",
+			)
+		) {
+			return parsed as ContentBlock[];
+		}
 	} catch {
 		// fallthrough
 	}
