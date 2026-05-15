@@ -267,7 +267,7 @@ function turnPreview(content: string): string {
 			<MessageList
 				{messages}
 				{waiting}
-				{turnRange}
+				turnRange={panelMode === "debugger" ? turnRange : null}
 				threadColor={thread?.color ?? 0}
 				{lineColor}
 				isAgentActive={agentActive}
