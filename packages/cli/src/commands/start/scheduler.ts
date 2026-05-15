@@ -17,12 +17,10 @@ import { createRelayOutboxEntry } from "@bound/agent";
 import { type AppContext, markProcessed, readInboxByRefId, writeOutbox } from "@bound/core";
 import type { ModelRouter } from "@bound/llm";
 import {
+	type ConnectorToolContext,
 	type PlatformMcpRegistry,
 	type PlatformRegisteredTool,
-	createConnectorAttachTool,
-	createConnectorChannelsTool,
-	createConnectorDetachTool,
-	createConnectorListTool,
+	createConnectorTool,
 	registerConnectorEventListeners,
 } from "@bound/platforms";
 import type { CronSchedulesConfig } from "@bound/shared";
@@ -103,11 +101,10 @@ export function initScheduler(
 	appContext.logger.info("Starting scheduler...");
 	let schedulerHandle: { stop: () => void } | null = null;
 	try {
-		// Create dispatcher-specific tools (connector_list, connector_channels, connector_attach).
-		// These are only given to the dispatcher task, which manages connector handle setup.
-		let dispatcherTools: PlatformRegisteredTool[] = [];
+		// Create unified connector tool (replaces 4 dispatcher-specific tools)
+		let connectorTool: PlatformRegisteredTool | null = null;
 		if (platformMcpRegistry) {
-			const dispatcherCtx = {
+			const connectorCtx: ConnectorToolContext = {
 				registry: platformMcpRegistry,
 				db: appContext.db,
 				siteId: appContext.siteId,
@@ -178,18 +175,13 @@ export function initScheduler(
 					throw new Error(`Timeout waiting for platform_request response from ${targetSiteId}`);
 				},
 			};
-			const rawTools = [
-				createConnectorListTool(dispatcherCtx),
-				createConnectorChannelsTool(dispatcherCtx),
-				createConnectorAttachTool(dispatcherCtx),
-				createConnectorDetachTool(dispatcherCtx),
-			];
-			// Adapt DispatcherTool (kind: "builtin") to PlatformRegisteredTool (kind: "platform")
-			dispatcherTools = rawTools.map((t) => ({
+			const rawConnectorTool = createConnectorTool(connectorCtx);
+			// Adapt ConnectorToolDef (kind: "builtin") to PlatformRegisteredTool (kind: "platform") for the platform tools array
+			connectorTool = {
 				kind: "platform" as const,
-				toolDefinition: t.toolDefinition,
-				execute: t.execute,
-			}));
+				toolDefinition: rawConnectorTool.toolDefinition,
+				execute: rawConnectorTool.execute,
+			};
 		}
 
 		const scheduler = new Scheduler(
@@ -230,15 +222,19 @@ export function initScheduler(
 						: undefined,
 				platformToolResolver: platformMcpRegistry
 					? (threadId: string) => {
-							// Dispatcher task receives ALL platform tools + dispatcher-specific tools
-							if (platformMcpRegistry.isDispatcherThread(threadId)) {
-								const allPlatformTools = Array.from(
-									platformMcpRegistry.getAllPlatformTools().values(),
-								);
-								return [...allPlatformTools, ...dispatcherTools];
+							// Event task threads: scoped to their bound server's full tool set
+							const scopedTools = platformMcpRegistry.getToolsForThread(threadId);
+							if (scopedTools.size > 0) {
+								return Array.from(scopedTools.values());
 							}
-							const tools = platformMcpRegistry.getToolsForThread(threadId);
-							return Array.from(tools.values());
+							// All other threads: read-only platform tools + connector tool
+							const readOnlyTools = Array.from(
+								platformMcpRegistry.getReadOnlyPlatformTools().values(),
+							);
+							if (connectorTool) {
+								return [...readOnlyTools, connectorTool];
+							}
+							return readOnlyTools;
 						}
 					: undefined,
 			},
