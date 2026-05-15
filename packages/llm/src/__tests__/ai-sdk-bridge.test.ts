@@ -642,6 +642,51 @@ describe("toModelMessages — tool call / result wrapping", () => {
 			],
 		});
 	});
+
+	it("preserves tool_result payloads whose JSON-array items are not content blocks", () => {
+		// Real-world case from the connector tool: a JSON array of plain data
+		// objects (no `type` field on items). Previously normalizeBlocks would
+		// happily parse the string into the array and the downstream
+		// `.filter(b.type === "text")` swallowed everything, leaving the model
+		// with an empty tool result ("Tool ran without output or errors").
+		const payload = JSON.stringify([
+			{ name: "message.received", description: "Message received" },
+			{ name: "user.joined", description: "User joined", bound: false },
+		]);
+		const out = toModelMessages([
+			{ role: "user", content: "list channels" },
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "tool_use",
+						id: "call_channels",
+						name: "connector",
+						input: { action: "channels", server_name: "discord" },
+					},
+				],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: "call_channels",
+				content: payload,
+			},
+		]);
+		const toolMsg = out[out.length - 1] as {
+			role: string;
+			content: Array<{
+				type: string;
+				toolCallId: string;
+				toolName: string;
+				output: { type: string; value: string };
+			}>;
+		};
+		expect(toolMsg.role).toBe("tool");
+		const value = toolMsg.content[0].output.value;
+		expect(value.length).toBeGreaterThan(0);
+		expect(value).toContain("message.received");
+		expect(value).toContain("user.joined");
+	});
 });
 
 describe("toModelMessages — cache marker", () => {
