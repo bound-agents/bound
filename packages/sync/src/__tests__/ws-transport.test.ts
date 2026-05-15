@@ -905,7 +905,7 @@ describe("WsTransport", () => {
 		// in relay_outbox, but entries targeting different destinations are not in relay_outbox.
 		// Full idempotency testing requires multi-step test setup that will be added in Phase 6.
 
-		it("offline spoke: entries accumulate in hub outbox", () => {
+		it("offline spoke: async-dispatch entries accumulate in hub outbox", () => {
 			// Hub connected to Spoke A only
 			const spokeASendFrames: Uint8Array[] = [];
 			const spokeAKey = new Uint8Array(32).fill(1);
@@ -919,13 +919,14 @@ describe("WsTransport", () => {
 				spokeAKey,
 			);
 
-			// Spoke A sends relay targeting offline Spoke B
+			// Spoke A sends async relay targeting offline Spoke B
+			// (async-dispatch kinds are fire-and-forget — buffering is correct)
 			const relaySendPayload: RelaySendPayload = {
 				entries: [
 					{
 						id: "relay-1",
 						target_site_id: "spoke-b",
-						kind: "tool_call",
+						kind: "inference",
 						ref_id: null,
 						idempotency_key: null,
 						stream_id: null,
@@ -947,6 +948,76 @@ describe("WsTransport", () => {
 
 			// Spoke A should still get ack
 			expect(spokeASendFrames.length).toBeGreaterThan(0);
+		});
+
+		it("offline spoke: sync-dispatch entries fast-fail with retriable error", () => {
+			// Hub connected to Spoke A only; Spoke B (target) is offline.
+			// For sync-dispatch kinds the source is actively polling for a response,
+			// so buffering would silently absorb the request and force a 15s timeout.
+			// Hub should instead fast-fail with a structured retriable=true error.
+			const spokeASendFrames: Uint8Array[] = [];
+			const spokeAKey = new Uint8Array(32).fill(1);
+
+			transport.addPeer(
+				"spoke-a",
+				(frame) => {
+					spokeASendFrames.push(frame);
+					return true;
+				},
+				spokeAKey,
+			);
+
+			const relaySendPayload: RelaySendPayload = {
+				entries: [
+					{
+						id: "relay-1",
+						target_site_id: "spoke-b",
+						kind: "platform_request",
+						ref_id: null,
+						idempotency_key: null,
+						stream_id: null,
+						expires_at: new Date(Date.now() + 60000).toISOString(),
+						payload: {
+							server_name: "discord",
+							method: "events/list",
+							params: {},
+							timeout_ms: 5000,
+						},
+					},
+				],
+			};
+
+			transport.handleRelaySend("spoke-a", relaySendPayload);
+
+			// No outbox entry should accumulate for sync-dispatch — it would silently
+			// be delivered later, but the source has already moved on by then.
+			const outboxEntry = db
+				.query("SELECT * FROM relay_outbox WHERE id = ?")
+				.get("relay-1") as Record<string, unknown> | null;
+			expect(outboxEntry).toBeNull();
+
+			// Spoke A should receive (a) a relay_deliver carrying a synthetic error
+			// response and (b) a relay_ack clearing its outbox view.
+			expect(spokeASendFrames.length).toBe(2);
+
+			const decoded0 = decodeFrame(spokeASendFrames[0], spokeAKey);
+			expect(decoded0.ok).toBe(true);
+			if (!decoded0.ok) return;
+			expect(decoded0.value.type).toBe(WsMessageType.RELAY_DELIVER);
+			const deliverPayload = decoded0.value.payload as RelayDeliverPayload;
+			expect(deliverPayload.entries.length).toBe(1);
+			const errorEntry = deliverPayload.entries[0];
+			expect(errorEntry.kind).toBe("error");
+			expect(errorEntry.ref_id).toBe("relay-1");
+			const errorBody = errorEntry.payload as { error: string; retriable: boolean };
+			expect(errorBody.retriable).toBe(true);
+			expect(errorBody.error).toContain("spoke-b");
+			expect(errorBody.error.toLowerCase()).toContain("not currently connected");
+
+			const decoded1 = decodeFrame(spokeASendFrames[1], spokeAKey);
+			expect(decoded1.ok).toBe(true);
+			if (!decoded1.ok) return;
+			expect(decoded1.value.type).toBe(WsMessageType.RELAY_ACK);
 		});
 
 		it("spoke-side relay deliver: entries inserted to inbox with event fired", () => {
