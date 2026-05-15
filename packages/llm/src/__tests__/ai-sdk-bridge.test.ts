@@ -445,7 +445,7 @@ describe("toModelMessages — content blocks", () => {
 		expect(out[0].content).toEqual([{ type: "text", text: "extracted pdf text" }]);
 	});
 
-	it("drops document blocks with neither base64 source nor text_representation", () => {
+	it("emits a placeholder when a file_ref document has no resolver and no text_representation", () => {
 		const out = toModelMessages([
 			{
 				role: "user",
@@ -457,8 +457,61 @@ describe("toModelMessages — content blocks", () => {
 				],
 			},
 		]);
-		// Empty-parts synthesis kicks in to keep message ordering stable.
-		expect(out[0].content).toEqual([{ type: "text", text: "" }]);
+		// Per the no-silent-drop policy, the model is informed a document
+		// was attempted instead of receiving an empty turn.
+		expect(out[0].content).toEqual([
+			{ type: "text", text: "[Document unavailable: file_id=orphan]" },
+		]);
+	});
+
+	it("resolves file_ref documents via resolveFileRef callback (assistant FilePart route)", () => {
+		// "JVBERi0=" is "%PDF-" — a 5-byte PDF header round-trip.
+		const out = toModelMessages(
+			[
+				{
+					role: "user",
+					content: [
+						{
+							type: "document",
+							source: {
+								type: "file_ref",
+								file_id: "doc-1",
+								media_type: "application/pdf",
+							},
+							filename: "report.pdf",
+						},
+					],
+				},
+			],
+			{ resolveFileRef: (id) => (id === "doc-1" ? "JVBERi0=" : null) },
+		);
+		expect(out[0].content).toMatchObject([
+			{ type: "file", mediaType: "application/pdf", filename: "report.pdf" },
+		]);
+	});
+
+	it("emits a placeholder when resolveFileRef returns null for a document", () => {
+		const out = toModelMessages(
+			[
+				{
+					role: "user",
+					content: [
+						{
+							type: "document",
+							source: { type: "file_ref", file_id: "missing-doc" },
+							title: "the report",
+						},
+					],
+				},
+			],
+			{ resolveFileRef: () => null },
+		);
+		expect(out[0].content).toEqual([
+			{
+				type: "text",
+				text: '[Document unavailable: file_id=missing-doc title="the report"]',
+			},
+		]);
 	});
 
 	it("propagates thinking.redacted_data to providerOptions.bedrock.redactedData", () => {
@@ -879,6 +932,140 @@ describe("toModelMessages — tool_result with non-text content", () => {
 		expect(output.value).toEqual([
 			{ type: "text", text: "screenshot:" },
 			{ type: "media", data, mediaType: "image/png" },
+		]);
+	});
+
+	it("preserves base64 document blocks in tool_result via {type:'content'} shape", () => {
+		// Mirror the MCP-resource path: a tool returns a binary PDF that has
+		// already been resolved to a base64 inline document by the time the
+		// bridge sees it.
+		const data = Buffer.from("%PDF-fake").toString("base64");
+		const out = toModelMessages([
+			{ role: "user", content: "fetch the report" },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "c1", name: "fetch", input: {} }],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: "c1",
+				content: [
+					{ type: "text", text: "here is the report:" },
+					{
+						type: "document",
+						source: { type: "base64", media_type: "application/pdf", data },
+					},
+				],
+			},
+		]);
+		const tool = out[out.length - 1] as { content: Array<Record<string, unknown>> };
+		const output = (tool.content[0] as { output: Record<string, unknown> }).output as {
+			type: string;
+			value: Array<Record<string, unknown>>;
+		};
+		expect(output.type).toBe("content");
+		expect(output.value).toEqual([
+			{ type: "text", text: "here is the report:" },
+			{ type: "media", data, mediaType: "application/pdf" },
+		]);
+	});
+
+	it("resolves file_ref documents in tool_result via resolveFileRef callback", () => {
+		const data = Buffer.from("csv,bytes").toString("base64");
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "go" },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "c1", name: "fetch", input: {} }],
+				},
+				{
+					role: "tool_result",
+					tool_use_id: "c1",
+					content: [
+						{ type: "text", text: "data:" },
+						{
+							type: "document",
+							source: { type: "file_ref", file_id: "doc-77", media_type: "text/csv" },
+						},
+					],
+				},
+			],
+			{ resolveFileRef: (id) => (id === "doc-77" ? data : null) },
+		);
+		const tool = out[out.length - 1] as { content: Array<Record<string, unknown>> };
+		const output = (tool.content[0] as { output: Record<string, unknown> }).output as {
+			type: string;
+			value: Array<Record<string, unknown>>;
+		};
+		expect(output.type).toBe("content");
+		expect(output.value).toEqual([
+			{ type: "text", text: "data:" },
+			{ type: "media", data, mediaType: "text/csv" },
+		]);
+	});
+
+	it("falls back to text_representation when a tool_result document file_ref can't be resolved", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "go" },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "c1", name: "fetch", input: {} }],
+				},
+				{
+					role: "tool_result",
+					tool_use_id: "c1",
+					content: [
+						{
+							type: "document",
+							source: { type: "file_ref", file_id: "vanished" },
+							text_representation: "extracted summary",
+						},
+					],
+				},
+			],
+			{ resolveFileRef: () => null },
+		);
+		const tool = out[out.length - 1] as { content: Array<Record<string, unknown>> };
+		const output = (tool.content[0] as { output: Record<string, unknown> }).output as {
+			type: string;
+			value: Array<Record<string, unknown>>;
+		};
+		expect(output.type).toBe("content");
+		expect(output.value).toEqual([{ type: "text", text: "extracted summary" }]);
+	});
+
+	it("emits a placeholder when a tool_result document file_ref has neither resolver bytes nor text_representation", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "go" },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "c1", name: "fetch", input: {} }],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: "c1",
+				content: [
+					{
+						type: "document",
+						source: { type: "file_ref", file_id: "ghost" },
+						filename: "missing.pdf",
+					},
+				],
+			},
+		]);
+		const tool = out[out.length - 1] as { content: Array<Record<string, unknown>> };
+		const output = (tool.content[0] as { output: Record<string, unknown> }).output as {
+			type: string;
+			value: Array<Record<string, unknown>>;
+		};
+		expect(output.type).toBe("content");
+		expect(output.value).toEqual([
+			{
+				type: "text",
+				text: '[Document unavailable: file_id=ghost filename="missing.pdf"]',
+			},
 		]);
 	});
 });

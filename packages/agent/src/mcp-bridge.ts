@@ -9,8 +9,9 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 
-import { updateRow, writeOutbox } from "@bound/core";
+import { insertRow, updateRow, writeOutbox } from "@bound/core";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 import { loopContextStorage } from "@bound/sandbox";
 import { formatError } from "@bound/shared";
@@ -24,6 +25,140 @@ import { type EligibleHost, createRelayOutboxEntry, findEligibleHosts } from "./
  */
 function capDescription(s: string, maxLen = 80): string {
 	return s.length <= maxLen ? s : `${s.slice(0, maxLen - 1)}…`;
+}
+
+const IMAGE_MIME_PREFIX = "image/";
+
+/**
+ * Format a single resource_link as a structured text annotation.
+ *
+ * MCP `resource_link` items point at a resource without inlining bytes, so
+ * the model needs enough metadata to decide whether to dereference. The
+ * `bash` shape `resource <uri> [--server <name>]` is intentionally
+ * baked into the message — agents reading this should be able to copy
+ * the command verbatim and run it.
+ */
+function formatResourceLink(link: {
+	uri: string;
+	name?: string;
+	mimeType?: string;
+	description?: string;
+}): string {
+	const parts = [`[Resource link: uri=${link.uri}`];
+	if (link.name) parts.push(` name=${JSON.stringify(link.name)}`);
+	if (link.mimeType) parts.push(` mimeType=${link.mimeType}`);
+	if (link.description) parts.push(` description=${JSON.stringify(link.description)}`);
+	parts.push("]");
+	parts.push(`\nLoad with: resource ${JSON.stringify(link.uri)}`);
+	return parts.join("");
+}
+
+/**
+ * Persist a binary resource to the `files` table and return the inserted row's id.
+ *
+ * Used for MCP `resource` content with non-text payloads (PDFs, structured
+ * binary blobs, etc.). The id flows back into a `file_ref` ContentBlock so
+ * downstream context-assembly + the AI SDK bridge can resolve the bytes
+ * lazily, mirroring the path used for user-uploaded files.
+ *
+ * Storage shape mirrors the existing inference-payload offload site
+ * (agent-loop.ts): base64 in `content`, `is_binary=1`, host_origin = current
+ * site, no `created_by` because MCP tool output isn't user-authored.
+ */
+function persistBinaryResource(
+	db: Database,
+	siteId: string,
+	base64Data: string,
+	uri?: string,
+): string {
+	const id = randomUUID();
+	const now = new Date().toISOString();
+	// Path is informational — we use a stable mcp-resource/ prefix plus the
+	// id so the row is easy to identify in the files table without colliding
+	// with user paths. URI hint goes in a comment-style suffix when present.
+	const path = uri ? `mcp-resource/${id}#${uri.slice(0, 200)}` : `mcp-resource/${id}`;
+	insertRow(
+		db,
+		"files",
+		{
+			id,
+			path,
+			content: base64Data,
+			is_binary: 1,
+			size_bytes: base64Data.length,
+			created_at: now,
+			modified_at: now,
+			deleted: 0,
+			// MCP tool output isn't user-authored, leave creator unset.
+			created_by: null,
+			host_origin: siteId,
+		},
+		siteId,
+	);
+	return id;
+}
+
+/**
+ * Build the JSON ContentBlock[] payload for a tool that returned a mix of
+ * text, images, binary documents, and resource links.
+ *
+ * The layout intentionally mirrors anthropic/openai mixed-content tool
+ * results: text first, then media. Images use inline base64 image blocks
+ * (small, hot path). Binary documents get persisted to the `files` table
+ * and surface as `file_ref` document blocks so context-assembly can resolve
+ * them on the next turn. Resource links are rendered as text annotations
+ * naming the bash `resource` command — they are not pre-fetched.
+ */
+function buildToolResultContentBlocks(
+	parts: {
+		text?: string;
+		images?: Array<{ media_type: string; data: string }>;
+		documents?: Array<{ media_type: string; data: string; uri?: string }>;
+		resourceLinks?: Array<{
+			uri: string;
+			name?: string;
+			mimeType?: string;
+			description?: string;
+		}>;
+	},
+	db: Database,
+	siteId: string,
+): Array<Record<string, unknown>> {
+	const blocks: Array<Record<string, unknown>> = [];
+	const textChunks: string[] = [];
+
+	if (parts.text) textChunks.push(parts.text);
+	if (parts.resourceLinks) {
+		for (const link of parts.resourceLinks) {
+			textChunks.push(formatResourceLink(link));
+		}
+	}
+
+	if (textChunks.length > 0) {
+		blocks.push({ type: "text", text: textChunks.join("\n\n") });
+	}
+
+	if (parts.images) {
+		for (const img of parts.images) {
+			blocks.push({
+				type: "image",
+				source: { type: "base64", media_type: img.media_type, data: img.data },
+			});
+		}
+	}
+
+	if (parts.documents) {
+		for (const doc of parts.documents) {
+			const fileId = persistBinaryResource(db, siteId, doc.data, doc.uri);
+			blocks.push({
+				type: "document",
+				source: { type: "file_ref", file_id: fileId, media_type: doc.media_type },
+				...(doc.uri && { title: doc.uri }),
+			});
+		}
+	}
+
+	return blocks;
 }
 
 /**
@@ -330,24 +465,26 @@ export async function generateMCPCommands(
 					const toolArgs = coerceArgsFromSchema(rawArgs, entry.tool.inputSchema);
 					const result = await currentClient.callTool(subcommand, toolArgs);
 
-					// When images are present, serialize as JSON ContentBlock[] so
-					// the agent loop and context assembly can pass them through to the LLM.
+					// Convert mixed media to JSON ContentBlock[] so the agent loop
+					// and context assembly can pass it through to the LLM. When the
+					// result is text-only, keep the legacy plain-string contract so
+					// nothing else has to parse unnecessarily.
 					let stdout = result.content;
-					if (result.images && result.images.length > 0) {
-						const blocks: Array<Record<string, unknown>> = [];
-						if (result.content) {
-							blocks.push({ type: "text", text: result.content });
-						}
-						for (const img of result.images) {
-							blocks.push({
-								type: "image",
-								source: {
-									type: "base64",
-									media_type: img.media_type,
-									data: img.data,
-								},
-							});
-						}
+					const hasMedia =
+						(result.images && result.images.length > 0) ||
+						(result.documents && result.documents.length > 0) ||
+						(result.resourceLinks && result.resourceLinks.length > 0);
+					if (hasMedia) {
+						const blocks = buildToolResultContentBlocks(
+							{
+								text: result.content,
+								images: result.images,
+								documents: result.documents,
+								resourceLinks: result.resourceLinks,
+							},
+							ctx.db,
+							ctx.siteId,
+						);
 						stdout = JSON.stringify(blocks);
 					}
 
@@ -440,7 +577,7 @@ function createResourceCommand(clients: Map<string, MCPClient>): CommandDefiniti
 			{ name: "uri", required: true, description: "Resource URI to read" },
 			{ name: "server", required: false, description: "Server name (optional)" },
 		],
-		handler: async (args: Record<string, string>, _ctx: CommandContext): Promise<CommandResult> => {
+		handler: async (args: Record<string, string>, ctx: CommandContext): Promise<CommandResult> => {
 			try {
 				const uri = args.uri;
 				const targetServer = args.server;
@@ -456,8 +593,38 @@ function createResourceCommand(clients: Map<string, MCPClient>): CommandDefiniti
 
 					try {
 						const content = await client.readResource(uri);
+						// Text resource: legacy plain-string contract. Trailing
+						// newline preserved for shell-pipe friendliness.
+						if (!content.isBinary) {
+							return {
+								stdout: `${content.content}\n`,
+								stderr: "",
+								exitCode: 0,
+							};
+						}
+						// Binary resource: persist to the files table and emit a
+						// JSON ContentBlock[] so the agent loop can route it
+						// through context-assembly + the AI SDK bridge as a
+						// proper file_ref (image when image-mime, document
+						// otherwise). This matches the MCP-tool-result path so
+						// the model sees the same shape regardless of how the
+						// bytes were fetched.
+						const mime = content.mimeType ?? "application/octet-stream";
+						const blocks = mime.startsWith(IMAGE_MIME_PREFIX)
+							? buildToolResultContentBlocks(
+									{ images: [{ media_type: mime, data: content.content }] },
+									ctx.db,
+									ctx.siteId,
+								)
+							: buildToolResultContentBlocks(
+									{
+										documents: [{ media_type: mime, data: content.content, uri: content.uri }],
+									},
+									ctx.db,
+									ctx.siteId,
+								);
 						return {
-							stdout: `${content.content}\n`,
+							stdout: JSON.stringify(blocks),
 							stderr: "",
 							exitCode: 0,
 						};
