@@ -381,6 +381,9 @@ export function createDiscordServer(
 		{
 			description: "List known DM channel IDs that have sent messages to this bot.",
 			inputSchema: {},
+			annotations: {
+				readOnlyHint: true,
+			},
 		},
 		async () => {
 			const channels = Array.from(seenChannelIds);

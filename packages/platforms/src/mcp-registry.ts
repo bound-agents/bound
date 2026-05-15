@@ -121,6 +121,7 @@ export class PlatformMcpRegistry {
 						const isError = (callResult as any).isError ?? false;
 						return isError ? `Error: ${textContent}` : textContent || "done";
 					},
+					annotations: tool.annotations as PlatformRegisteredTool["annotations"],
 				};
 				serverTools.set(tool.name, registeredTool);
 			}
