@@ -27,7 +27,7 @@ import {
 import { TypedEventEmitter } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import * as bootstrap from "../commands/start/bootstrap";
-import { STALE_TASK_RESET_SQL } from "../commands/start/bootstrap";
+import { INTERRUPTED_TOOL_USE_SCAN_SQL, STALE_TASK_RESET_SQL } from "../commands/start/bootstrap";
 
 describe("Startup Wiring", () => {
 	let tmpDir: string;
@@ -251,18 +251,9 @@ describe("Startup Wiring", () => {
 			);
 
 			// Run the same crash recovery scan from start.ts step 7
-			const interruptedThreads = db
-				.query(
-					`SELECT DISTINCT m.thread_id FROM messages m
-					 WHERE m.role IN ('tool_call', 'tool_result')
-					 AND NOT EXISTS (
-						SELECT 1 FROM messages m2
-						WHERE m2.thread_id = m.thread_id
-						AND m2.created_at > m.created_at
-						AND m2.role = 'assistant'
-					 )`,
-				)
-				.all() as Array<{ thread_id: string }>;
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+				thread_id: string;
+			}>;
 
 			// Our interrupted thread should be detected
 			const found = interruptedThreads.find((t) => t.thread_id === threadId);
@@ -372,21 +363,185 @@ describe("Startup Wiring", () => {
 				siteId,
 			);
 
-			const interruptedThreads = db
-				.query(
-					`SELECT DISTINCT m.thread_id FROM messages m
-					 WHERE m.role IN ('tool_call', 'tool_result')
-					 AND NOT EXISTS (
-						SELECT 1 FROM messages m2
-						WHERE m2.thread_id = m.thread_id
-						AND m2.created_at > m.created_at
-						AND m2.role = 'assistant'
-					 )`,
-				)
-				.all() as Array<{ thread_id: string }>;
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+				thread_id: string;
+			}>;
 
 			const found = interruptedThreads.find((t) => t.thread_id === threadId);
 			expect(found).toBeUndefined();
+		});
+
+		it("does not flag threads where the last system message is an interrupt notice", () => {
+			// Regression for the rewrite from per-tool-message correlated subquery
+			// to thread-centric GROUP BY. The original SQL excluded threads whose
+			// tool message had a later system/developer 'interrupted' or 'cancelled'
+			// notice; the rewrite must preserve that exclusion.
+			const userId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
+				[userId, "InterruptNoticeUser", now, now],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, 'web', 'localhost', 0, 'interrupt-test', NULL, ?, ?, ?, 0)",
+				[threadId, userId, now, now, now],
+			);
+
+			const t1 = new Date(Date.now() - 2000).toISOString();
+			const t2 = new Date(Date.now() - 1000).toISOString();
+
+			insertRow(
+				db,
+				"messages",
+				{
+					id: randomUUID(),
+					thread_id: threadId,
+					role: "tool_call",
+					content: "[]",
+					model_id: null,
+					tool_name: null,
+					created_at: t1,
+					modified_at: t1,
+					host_origin: "test-host",
+				},
+				siteId,
+			);
+			insertRow(
+				db,
+				"messages",
+				{
+					id: randomUUID(),
+					thread_id: threadId,
+					role: "developer",
+					content:
+						"Agent response was interrupted on host other-host. The previous tool interaction may be incomplete.",
+					model_id: null,
+					tool_name: null,
+					created_at: t2,
+					modified_at: t2,
+					host_origin: "test-host",
+				},
+				siteId,
+			);
+
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+				thread_id: string;
+			}>;
+
+			const found = interruptedThreads.find((t) => t.thread_id === threadId);
+			expect(found).toBeUndefined();
+		});
+
+		it("does not flag threads with a pending client_tool_call in dispatch_queue", () => {
+			// Threads waiting for the boundless client to execute a tool call must
+			// not be flagged as crashed — the tool will complete when the client
+			// reconnects.
+			const userId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
+				[userId, "ClientToolUser", now, now],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, 'web', 'localhost', 0, 'client-tool-test', NULL, ?, ?, ?, 0)",
+				[threadId, userId, now, now, now],
+			);
+
+			insertRow(
+				db,
+				"messages",
+				{
+					id: randomUUID(),
+					thread_id: threadId,
+					role: "tool_call",
+					content: "[]",
+					model_id: null,
+					tool_name: null,
+					created_at: now,
+					modified_at: now,
+					host_origin: "test-host",
+				},
+				siteId,
+			);
+
+			db.run(
+				`INSERT INTO dispatch_queue (message_id, thread_id, event_type, status, event_payload, created_at, modified_at)
+				 VALUES (?, ?, 'client_tool_call', 'pending', '{}', ?, ?)`,
+				[randomUUID(), threadId, now, now],
+			);
+
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+				thread_id: string;
+			}>;
+
+			const found = interruptedThreads.find((t) => t.thread_id === threadId);
+			expect(found).toBeUndefined();
+		});
+
+		it("flags threads where a non-interrupt system message follows the tool message", () => {
+			// Symmetric to the interrupt-notice test: a system/developer message
+			// that does NOT contain 'interrupted' or 'cancelled' must not block
+			// detection. This guards against the rewrite over-broadening the
+			// exclusion to all system/developer messages.
+			const userId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
+				[userId, "RoutineNoticeUser", now, now],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, 'web', 'localhost', 0, 'routine-notice', NULL, ?, ?, ?, 0)",
+				[threadId, userId, now, now, now],
+			);
+
+			const t1 = new Date(Date.now() - 2000).toISOString();
+			const t2 = new Date(Date.now() - 1000).toISOString();
+
+			insertRow(
+				db,
+				"messages",
+				{
+					id: randomUUID(),
+					thread_id: threadId,
+					role: "tool_call",
+					content: "[]",
+					model_id: null,
+					tool_name: null,
+					created_at: t1,
+					modified_at: t1,
+					host_origin: "test-host",
+				},
+				siteId,
+			);
+			insertRow(
+				db,
+				"messages",
+				{
+					id: randomUUID(),
+					thread_id: threadId,
+					role: "developer",
+					content: "routine developer notice that does not indicate failure",
+					model_id: null,
+					tool_name: null,
+					created_at: t2,
+					modified_at: t2,
+					host_origin: "test-host",
+				},
+				siteId,
+			);
+
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+				thread_id: string;
+			}>;
+
+			const found = interruptedThreads.find((t) => t.thread_id === threadId);
+			expect(found).toBeDefined();
 		});
 	});
 

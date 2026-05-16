@@ -427,5 +427,106 @@ describe("FTS5 semantic_memory_fts", () => {
 
 			rawDb.close();
 		});
+
+		it("should backfill FTS5 on the upgrade path when semantic_memory has rows but FTS is empty", () => {
+			// Simulates the upgrade scenario: a database that was initialized
+			// before the FTS triggers existed has populated semantic_memory rows
+			// but an empty semantic_memory_fts. applySchema must backfill on
+			// first run after the upgrade.
+			const rawDb = new Database(":memory:");
+			applySchema(rawDb);
+
+			// Drop FTS triggers and clear the FTS table so we can stage a
+			// pre-trigger row in semantic_memory directly.
+			rawDb.run("DROP TRIGGER IF EXISTS memory_fts_insert");
+			rawDb.run("DROP TRIGGER IF EXISTS memory_fts_update");
+			rawDb.run("DROP TRIGGER IF EXISTS memory_fts_delete");
+			rawDb.run("DELETE FROM semantic_memory_fts");
+
+			insertRow(
+				rawDb,
+				"semantic_memory",
+				{
+					id: "preupgrade-1",
+					key: "legacy_memory",
+					value: "this row predates the FTS triggers",
+					source: "test",
+					created_at: "2026-01-01T00:00:00.000Z",
+					modified_at: "2026-01-01T00:00:00.000Z",
+					last_accessed_at: "2026-01-01T00:00:00.000Z",
+					deleted: 0,
+					tier: "default",
+				},
+				siteId,
+			);
+
+			// FTS still empty at this point
+			const beforeCount = (
+				rawDb.prepare("SELECT COUNT(*) AS n FROM semantic_memory_fts").get() as { n: number }
+			).n;
+			expect(beforeCount).toBe(0);
+
+			// Re-apply schema: this is the path where the count-gate must trigger
+			// the backfill (FTS empty, semantic_memory non-empty).
+			applySchema(rawDb);
+
+			const result = rawDb
+				.prepare("SELECT key FROM semantic_memory_fts WHERE semantic_memory_fts MATCH 'predates'")
+				.all() as Array<{ key: string }>;
+
+			expect(result.length).toBe(1);
+			expect(result[0].key).toBe("legacy_memory");
+
+			rawDb.close();
+		});
+
+		it("should NOT rebuild FTS5 on routine restart when FTS already has rows", () => {
+			// Routine restart path: FTS has rows from a previous boot. The
+			// triggers keep it in sync at steady state, so applySchema must NOT
+			// blow away and re-tokenize on every boot. This test stages a
+			// sentinel FTS row that does not exist in semantic_memory; if
+			// applySchema rebuilds, the sentinel is lost.
+			const rawDb = new Database(":memory:");
+			applySchema(rawDb);
+
+			insertRow(
+				rawDb,
+				"semantic_memory",
+				{
+					id: "routine-1",
+					key: "real_memory",
+					value: "this row sits in both semantic_memory and FTS",
+					source: "test",
+					created_at: "2026-01-01T00:00:00.000Z",
+					modified_at: "2026-01-01T00:00:00.000Z",
+					last_accessed_at: "2026-01-01T00:00:00.000Z",
+					deleted: 0,
+					tier: "default",
+				},
+				siteId,
+			);
+
+			// Sentinel: an FTS row with no matching semantic_memory entry. A
+			// rebuild from semantic_memory would delete it.
+			rawDb.run("INSERT INTO semantic_memory_fts(key, value) VALUES (?, ?)", [
+				"__sentinel_only_in_fts",
+				"sentinel_marker_value",
+			]);
+
+			// Re-apply schema: FTS already has rows, so the count-gate must
+			// skip the backfill and leave the sentinel intact.
+			applySchema(rawDb);
+
+			const sentinel = rawDb
+				.prepare(
+					"SELECT key FROM semantic_memory_fts WHERE semantic_memory_fts MATCH 'sentinel_marker_value'",
+				)
+				.all() as Array<{ key: string }>;
+
+			expect(sentinel.length).toBe(1);
+			expect(sentinel[0].key).toBe("__sentinel_only_in_fts");
+
+			rawDb.close();
+		});
 	});
 });

@@ -816,13 +816,29 @@ export function applySchema(db: Database): void {
 		END
 	`);
 
-	// Rebuild FTS5 from existing semantic_memory data (idempotent).
-	// Handles: fresh installs (no-op, table is empty), restarts (re-populates
-	// from source of truth), and upgrades (backfills pre-FTS memories).
-	db.run("DELETE FROM semantic_memory_fts");
-	db.run(`
-		INSERT INTO semantic_memory_fts(key, value)
-		SELECT key, value FROM semantic_memory
-		WHERE deleted = 0 AND key NOT LIKE '_internal.%'
-	`);
+	// Backfill FTS5 from existing semantic_memory data, but only if FTS is empty.
+	//
+	// The memory_fts_insert/update/delete triggers above are the source of truth
+	// during steady-state, so a routine restart never needs to rebuild. The
+	// rebuild only matters on the upgrade path (FTS table existed but was empty
+	// before triggers were added) and on fresh installs (no-op anyway).
+	//
+	// Previously this ran unconditionally as DELETE+INSERT every boot, which
+	// re-tokenized every memory through the porter stemmer on every daemon
+	// start. Measured ~330ms warm against ~1k memories; longer on cold disk.
+	//
+	// Edge case: if the exclusion list (`key NOT LIKE '_internal.%'`) ever
+	// changes, FTS rows for newly-excluded keys will linger until an explicit
+	// rebuild. That should be handled as a deliberate migration step, not
+	// implicitly on every boot.
+	const ftsCount = (
+		db.query("SELECT COUNT(*) AS n FROM semantic_memory_fts").get() as { n: number }
+	).n;
+	if (ftsCount === 0) {
+		db.run(`
+			INSERT INTO semantic_memory_fts(key, value)
+			SELECT key, value FROM semantic_memory
+			WHERE deleted = 0 AND key NOT LIKE '_internal.%'
+		`);
+	}
 }
