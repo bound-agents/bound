@@ -4,6 +4,7 @@ export type {
 	PlatformServerEntry,
 	PlatformMcpRegistryDeps,
 	PlatformRegisteredTool,
+	RemotePlatformRequest,
 } from "./mcp-registry.js";
 export { createDiscordServer } from "./connectors/discord-server.js";
 export { connectorHandleId } from "./connector-handle-id.js";

@@ -988,6 +988,40 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		};
 		appContext.logger.info("[platforms-mcp] Connector tool created");
 
+		// Surface remote platform connectors' read-only tools to local agents.
+		// The relay proxy used by the registry IS the same one wired into the
+		// connector tool above — single relay path for events/list, tools/list,
+		// and tools/call. Without this, hosts with no local platforms get only
+		// the bare `connector` tool and can't reach things like
+		// discord_list_channels on the host that owns the Discord connector.
+		if (connectorCtx.remotePlatformRequest) {
+			platformMcpRegistry.setRemotePlatformRequest(connectorCtx.remotePlatformRequest);
+			// Eager initial discovery — fire-and-forget so startup isn't blocked
+			// on a remote relay round-trip (which has a 15s timeout per call).
+			// Errors are logged inside discoverRemoteTools().
+			platformMcpRegistry.discoverRemoteTools().catch((error) => {
+				appContext.logger.warn("[platforms-mcp] Initial remote tool discovery failed", {
+					error: formatError(error),
+				});
+			});
+			// Periodic refresh: picks up new remote platforms that came online
+			// after our daemon started, and drops tools whose host went away.
+			// 60s is a tradeoff between pickup latency and relay traffic — a
+			// remote daemon advertising a new tool will be visible within one
+			// cycle. Cleared on shutdown via the existing process listeners.
+			const remoteRefreshInterval = setInterval(() => {
+				platformMcpRegistry?.discoverRemoteTools().catch((error) => {
+					appContext.logger.warn("[platforms-mcp] Remote tool refresh failed", {
+						error: formatError(error),
+					});
+				});
+			}, 60_000);
+			const clearRemoteRefresh = () => clearInterval(remoteRefreshInterval);
+			process.on("exit", clearRemoteRefresh);
+			process.on("SIGINT", clearRemoteRefresh);
+			process.on("SIGTERM", clearRemoteRefresh);
+		}
+
 		// Advertise platform names in hosts.platforms for relay platform affinity routing.
 		// Clear to null when empty so stale synced values don't persist.
 		if (platformNames.length > 0) {
