@@ -652,8 +652,14 @@ function setupDiscordListeners(
 				};
 			}
 
-			// Emit event
-			emitEvent(randomUUID(), "interaction.received", eventData);
+			// Emit event. Use the Discord-issued interaction.id (snowflake) as
+			// the eventId so deliverBatch's deduplicationSet can suppress
+			// re-deliveries if Discord ever re-sends. Mirrors the message.received
+			// path above (which uses msg.id). Generating a fresh randomUUID()
+			// here would defeat dedup. Note: interaction.id is also unique per
+			// interaction-instance (Discord doesn't reuse it), so this is safe
+			// against legitimate-but-distinct interactions colliding.
+			emitEvent(interaction.id, "interaction.received", eventData);
 		} catch (err) {
 			logger.error("[discord-server] interactionCreate handler error", {
 				error: String(err),

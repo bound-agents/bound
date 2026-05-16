@@ -35,6 +35,7 @@ interface MockDiscordMessage {
 }
 
 interface MockDiscordInteraction {
+	id: string;
 	user: { id: string; username: string; displayName: string | null };
 	channelId: string;
 	isChatInputCommand: () => boolean;
@@ -671,6 +672,7 @@ describe("Discord MCP Server", () => {
 
 		// Create a mock interaction and trigger it
 		const mockInteraction: MockDiscordInteraction = {
+			id: "interaction-1",
 			user: { id: "user-1", username: "testuser", displayName: null },
 			channelId: "ch-1",
 			isChatInputCommand: () => true,
@@ -736,6 +738,60 @@ describe("Discord MCP Server", () => {
 
 		// Verify that editReply was called by the tool handler
 		expect(mockDiscordClient._getEditReplyCalls().length).toBeGreaterThan(0);
+	});
+
+	// Regression: interaction.received eventId must be the Discord-issued
+	// interaction.id (snowflake), not a randomUUID generated at emit time.
+	// Using randomUUID() defeats deliverBatch's deduplicationSet — if Discord
+	// ever redelivers an interaction (Gateway reconnect, dispatcher retry),
+	// the duplicate would slip through and re-fan to handlers. Fixed alongside
+	// advisory 0b9441e5-c47a (event-task self-wake spin); separate from but
+	// noticed during that investigation. Mirrors message.received which has
+	// always used msg.id correctly (see emitEvent(msg.id, "message.received").
+	it("interaction.received eventId equals the Discord interaction.id (dedup-stable)", async () => {
+		const config: PlatformConnectorConfig = { allowed_users: [] };
+		const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+		server = discordServer;
+		client = mcpClient;
+
+		const stableInteractionId = "discord-snowflake-1234567890";
+		const mockInteraction: MockDiscordInteraction = {
+			id: stableInteractionId,
+			user: { id: "user-1", username: "testuser", displayName: null },
+			channelId: "ch-1",
+			isChatInputCommand: () => true,
+			isContextMenuCommand: () => false,
+			deferReply: async () => {},
+			editReply: async () => ({}),
+			commandName: "test",
+			options: { data: [] },
+		};
+
+		await mockDiscordClient._triggerInteractionCreate(mockInteraction);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		const eventsPollSchema = z.object({
+			events: z.array(z.unknown()),
+			cursor: z.string(),
+			nextPollSeconds: z.number(),
+		});
+
+		const pollResult = await mcpClient.request(
+			{
+				method: "events/poll",
+				params: {
+					event: "interaction.received",
+					params: { channel_id: "ch-1" },
+				},
+			},
+			eventsPollSchema,
+		);
+
+		expect(pollResult.events.length).toBeGreaterThan(0);
+		// The critical assertion: eventId must equal the Discord interaction.id,
+		// NOT a randomUUID. Falsifies the prior `emitEvent(randomUUID(), ...)` call.
+		const firstEvent = pollResult.events[0] as { eventId: string };
+		expect(firstEvent.eventId).toBe(stableInteractionId);
 	});
 
 	it("discord_send_message returns an error for content > 2000 chars (no chunking)", async () => {
