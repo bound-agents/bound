@@ -99,12 +99,24 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 	}
 
 	if (message.role === "tool_call") {
-		// Parse tool_use blocks from the content JSON to display them nicely
+		// Parse tool_use blocks and inline assistant text from the content JSON.
+		// The agent loop folds inline text ("I'll check that file") into the
+		// tool_call row's content blocks alongside tool_use entries, so we need
+		// to extract and render both.
 		let toolUseBlocks: Array<{ name: string; input: Record<string, unknown> }> = [];
+		let inlineText = "";
 		try {
 			const blocks = JSON.parse(message.content);
 			if (Array.isArray(blocks)) {
 				toolUseBlocks = blocks.filter((b: { type?: string }) => b.type === "tool_use");
+				const textBlocks = blocks.filter((b: { type?: string }) => b.type === "text") as Array<{
+					type: "text";
+					text: string;
+				}>;
+				inlineText = textBlocks
+					.map((b) => b.text)
+					.filter(Boolean)
+					.join("\n\n");
 			}
 		} catch {
 			// Non-parseable content — fall back to raw display
@@ -113,6 +125,12 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 		if (toolUseBlocks.length > 0) {
 			return (
 				<Box flexDirection="column">
+					{inlineText && (
+						<Box flexDirection="column" marginBottom={1}>
+							<Text color="blue">Agent:</Text>
+							<Markdown text={inlineText} />
+						</Box>
+					)}
 					{toolUseBlocks.map((block, idx) => {
 						const argSummary = summarizeToolArgs(block.name, block.input);
 						// Tools not prefixed with "boundless_" are server-side (remote)
