@@ -121,6 +121,9 @@ function retryDeferredTask(
  * task up even without a new event emission (AC4.6). Failure paths use a shorter
  * interval (60s) to recover quickly from transient issues; success paths use 5
  * minutes as a low-frequency consistency check.
+ *
+ * Re-reads current DB state before resetting to avoid resurrecting tasks that
+ * were cancelled or soft-deleted externally during execution.
  */
 function resetEventTask(
 	db: AppContext["db"],
@@ -130,6 +133,20 @@ function resetEventTask(
 	siteId: string,
 ): void {
 	if (task.type !== "event") return;
+
+	// Re-read current state — task may have been cancelled/deleted during execution
+	const current = db.query("SELECT status, deleted FROM tasks WHERE id = ?").get(task.id) as {
+		status: string;
+		deleted: number;
+	} | null;
+	if (!current || current.deleted === 1 || current.status === "cancelled") {
+		logger.info(
+			`[@bound/agent/scheduler] Skipping event task reset — task externally ${current?.status ?? "removed"} (${context})`,
+			{ taskId: task.id },
+		);
+		return;
+	}
+
 	const isCompletion = context === "completion" || context === "template completion";
 	const fallbackMs = isCompletion ? 300_000 : 60_000;
 	const nextRunAt = new Date(Date.now() + fallbackMs).toISOString();
@@ -423,7 +440,7 @@ export class Scheduler {
 
 		// (a) Expire stale claimed tasks
 		const staleClaimedTasks = this.ctx.db
-			.query("SELECT * FROM tasks WHERE status = 'claimed' AND claimed_at < ?")
+			.query("SELECT * FROM tasks WHERE status = 'claimed' AND deleted = 0 AND claimed_at < ?")
 			.all(leaseExpiry) as Task[];
 
 		for (const task of staleClaimedTasks) {
@@ -444,7 +461,7 @@ export class Scheduler {
 		// (b) Evict crashed running tasks
 		const evictionTime = new Date(now.getTime() - EVICTION_TIMEOUT).toISOString();
 		const tasksToEvict = this.ctx.db
-			.query("SELECT * FROM tasks WHERE status = 'running' AND heartbeat_at < ?")
+			.query("SELECT * FROM tasks WHERE status = 'running' AND deleted = 0 AND heartbeat_at < ?")
 			.all(evictionTime) as Task[];
 
 		if (tasksToEvict.length > 0) {
@@ -510,7 +527,7 @@ export class Scheduler {
 
 		const pendingTasks = this.ctx.db
 			.query(
-				`SELECT * FROM tasks WHERE status = 'pending' AND next_run_at IS NOT NULL AND next_run_at <= ?
+				`SELECT * FROM tasks WHERE status = 'pending' AND deleted = 0 AND next_run_at IS NOT NULL AND next_run_at <= ?
 			 ORDER BY next_run_at ASC LIMIT 100`,
 			)
 			.all(now) as Task[];
@@ -1208,7 +1225,7 @@ export class Scheduler {
 		try {
 			const eventTasks = this.ctx.db
 				.query(
-					"SELECT * FROM tasks WHERE type = 'event' AND status = 'pending' AND trigger_spec = ?",
+					"SELECT * FROM tasks WHERE type = 'event' AND status = 'pending' AND deleted = 0 AND trigger_spec = ?",
 				)
 				.all(eventType) as Task[];
 
