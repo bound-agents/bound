@@ -49,6 +49,35 @@ describe("createDatabase", () => {
 		db.close();
 	});
 
+	it("applies performance-tuning PRAGMAs (cache_size, mmap_size, synchronous, temp_store)", () => {
+		// Regression guard: these PRAGMAs are load-bearing for daemon CPU.
+		// Profiling shows ~91% of awake main-thread time hits sqlite3 pread
+		// without them. If a future refactor drops one, latency comes back.
+		tempDir = mkdtempSync(join(tmpdir(), "bound-test-"));
+		const dbPath = join(tempDir, "test.db");
+		const db = createDatabase(dbPath);
+
+		// synchronous: 1 = NORMAL
+		const sync = db.query("PRAGMA synchronous").get() as { synchronous: number };
+		expect(sync.synchronous).toBe(1);
+
+		// cache_size: negative means KiB; we asked for 64 MiB
+		const cache = db.query("PRAGMA cache_size").get() as { cache_size: number };
+		expect(cache.cache_size).toBe(-65536);
+
+		// mmap_size: 256 MiB. SQLite may report 0 if mmap unavailable on the
+		// platform/build, but on Bun's bundled SQLite we expect the request
+		// to be honored.
+		const mmap = db.query("PRAGMA mmap_size").get() as { mmap_size: number };
+		expect(mmap.mmap_size).toBe(268435456);
+
+		// temp_store: 2 = MEMORY
+		const temp = db.query("PRAGMA temp_store").get() as { temp_store: number };
+		expect(temp.temp_store).toBe(2);
+
+		db.close();
+	});
+
 	it("migrates existing database from auto_vacuum=NONE to INCREMENTAL", () => {
 		tempDir = mkdtempSync(join(tmpdir(), "bound-test-"));
 		const dbPath = join(tempDir, "test.db");
