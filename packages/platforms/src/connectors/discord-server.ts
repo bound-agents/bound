@@ -67,7 +67,6 @@ export function createDiscordServer(
 	const subscriptions = new Map<string, Subscription>();
 	const interactionStore = new Map<string, StoredInteraction>();
 	const recentMessageIds = new Set<string>();
-	const seenChannelIds = new Set<string>(); // Track new DM channels for list_changed events
 
 	// events/* are bound-specific; not in the MCP SDK schema set, so we declare them here.
 	// All other request/notification types use SDK-provided schemas via registerTool.
@@ -379,14 +378,44 @@ export function createDiscordServer(
 	mcpServer.registerTool(
 		"discord_list_channels",
 		{
-			description: "List known DM channel IDs that have sent messages to this bot.",
+			description:
+				"List DM channels available for binding, derived from the bot's `allowed_users` allowlist. " +
+				"Each entry maps an allowed user ID to its DM channel ID, opening the DM if not already open " +
+				"(idempotent on Discord's side; does not notify the user). " +
+				"Returns an empty array when `allowed_users` is empty — the tool has no enumeration source in that case " +
+				"because Discord does not expose a 'list my DM channels' API to bots.",
 			inputSchema: {},
 			annotations: {
 				readOnlyHint: true,
 			},
 		},
 		async () => {
-			const channels = Array.from(seenChannelIds);
+			if (config.allowed_users.length === 0) {
+				return {
+					content: [{ type: "text", text: JSON.stringify([]) }],
+				};
+			}
+
+			const results = await Promise.allSettled(
+				config.allowed_users.map(async (userId) => {
+					const dm = await client.users.createDM(userId);
+					return { user_id: userId, channel_id: dm.id };
+				}),
+			);
+
+			const channels: Array<{ user_id: string; channel_id: string }> = [];
+			for (let i = 0; i < results.length; i++) {
+				const result = results[i];
+				if (result.status === "fulfilled") {
+					channels.push(result.value);
+				} else {
+					logger.warn("[discord-server] Failed to resolve DM for allowed user", {
+						userId: config.allowed_users[i],
+						error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+					});
+				}
+			}
+
 			return {
 				content: [{ type: "text", text: JSON.stringify(channels) }],
 			};
@@ -394,16 +423,7 @@ export function createDiscordServer(
 	);
 
 	// Setup Discord client listeners
-	setupDiscordListeners(
-		client,
-		config,
-		logger,
-		emitEvent,
-		interactionStore,
-		recentMessageIds,
-		seenChannelIds,
-		sendNotification,
-	);
+	setupDiscordListeners(client, config, logger, emitEvent, interactionStore, recentMessageIds);
 
 	// Cleanup on server close
 	const originalClose = mcpServer.close.bind(mcpServer);
@@ -425,8 +445,6 @@ function setupDiscordListeners(
 	emitEvent: (eventId: string, eventName: string, data: Record<string, unknown>) => void,
 	interactionStore: Map<string, StoredInteraction>,
 	recentMessageIds: Set<string>,
-	seenChannelIds: Set<string>,
-	sendNotification: (method: string, params: Record<string, unknown>) => void,
 ): void {
 	client.on("messageCreate", async (msg: DiscordMessage) => {
 		try {
@@ -447,12 +465,6 @@ function setupDiscordListeners(
 			if (recentMessageIds.size > 100) {
 				const first = recentMessageIds.values().next().value;
 				if (first) recentMessageIds.delete(first);
-			}
-
-			// Track new channels for list_changed emission
-			if (!seenChannelIds.has(msg.channelId)) {
-				seenChannelIds.add(msg.channelId);
-				sendNotification("notifications/events/list_changed", {});
 			}
 
 			// Build attachment content blocks

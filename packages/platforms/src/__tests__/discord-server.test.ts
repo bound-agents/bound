@@ -55,6 +55,8 @@ function createMockDiscordClient() {
 	const sendCalls: Array<{ channelId: string; content: string }> = [];
 	const editReplyCalls: string[] = [];
 	const interactionStore = new Map<string, MockDiscordInteraction>();
+	const createDMCalls: string[] = [];
+	const dmOverrides = new Map<string, { id?: string; error?: Error }>();
 
 	return {
 		on: (event: string, handler: (...args: unknown[]) => void) => {
@@ -75,11 +77,25 @@ function createMockDiscordClient() {
 				},
 			}),
 		},
+		users: {
+			createDM: async (userId: string) => {
+				createDMCalls.push(userId);
+				const override = dmOverrides.get(userId);
+				if (override?.error) {
+					throw override.error;
+				}
+				return { id: override?.id ?? `dm-${userId}` };
+			},
+		},
 		_getHandlers: (event: string) => handlers.get(event) || new Set(),
 		_getSendTypingCalls: () => sendTypingCalls,
 		_getSendCalls: () => sendCalls,
 		_getEditReplyCalls: () => editReplyCalls,
 		_getInteractionStore: () => interactionStore,
+		_getCreateDMCalls: () => createDMCalls,
+		_setDMOverride: (userId: string, override: { id?: string; error?: Error }) => {
+			dmOverrides.set(userId, override);
+		},
 		_storeInteraction: (callbackId: string, interaction: MockDiscordInteraction) => {
 			interactionStore.set(callbackId, interaction);
 		},
@@ -814,5 +830,127 @@ describe("Discord MCP Server", () => {
 		const { createDiscordServer: exported } = await import("../index.js");
 		expect(exported).toBeDefined();
 		expect(typeof exported).toBe("function");
+	});
+
+	describe("discord_list_channels", () => {
+		it("returns [] when allowed_users is empty (no enumeration source)", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			const callResult = await mcpClient.request(
+				{
+					method: "tools/call",
+					params: { name: "discord_list_channels", arguments: {} },
+				},
+				CallToolResultSchema,
+			);
+
+			expect(callResult.isError).toBeFalsy();
+			const text = (callResult.content[0] as { text: string }).text;
+			expect(JSON.parse(text)).toEqual([]);
+			// No createDM calls when allowlist empty
+			expect(mockDiscordClient._getCreateDMCalls()).toEqual([]);
+		});
+
+		it("maps allowed_users → {user_id, channel_id} via client.users.createDM", async () => {
+			const config: PlatformConnectorConfig = {
+				allowed_users: ["user-a", "user-b"],
+			};
+			mockDiscordClient._setDMOverride("user-a", { id: "dm-a-real" });
+			mockDiscordClient._setDMOverride("user-b", { id: "dm-b-real" });
+
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			const callResult = await mcpClient.request(
+				{
+					method: "tools/call",
+					params: { name: "discord_list_channels", arguments: {} },
+				},
+				CallToolResultSchema,
+			);
+
+			expect(callResult.isError).toBeFalsy();
+			const text = (callResult.content[0] as { text: string }).text;
+			expect(JSON.parse(text)).toEqual([
+				{ user_id: "user-a", channel_id: "dm-a-real" },
+				{ user_id: "user-b", channel_id: "dm-b-real" },
+			]);
+			expect(mockDiscordClient._getCreateDMCalls()).toEqual(["user-a", "user-b"]);
+		});
+
+		it("returns successful entries when one user's createDM rejects (per-user isolation)", async () => {
+			const config: PlatformConnectorConfig = {
+				allowed_users: ["user-ok", "user-bad", "user-also-ok"],
+			};
+			mockDiscordClient._setDMOverride("user-ok", { id: "dm-ok" });
+			mockDiscordClient._setDMOverride("user-bad", {
+				error: new Error("Discord API: cannot send messages to this user"),
+			});
+			mockDiscordClient._setDMOverride("user-also-ok", { id: "dm-also-ok" });
+
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			const callResult = await mcpClient.request(
+				{
+					method: "tools/call",
+					params: { name: "discord_list_channels", arguments: {} },
+				},
+				CallToolResultSchema,
+			);
+
+			expect(callResult.isError).toBeFalsy();
+			const text = (callResult.content[0] as { text: string }).text;
+			expect(JSON.parse(text)).toEqual([
+				{ user_id: "user-ok", channel_id: "dm-ok" },
+				{ user_id: "user-also-ok", channel_id: "dm-also-ok" },
+			]);
+		});
+
+		it("survives a process restart — derives channels from config, not in-memory state", async () => {
+			// First "process": one createDM call, server then closed.
+			const config: PlatformConnectorConfig = { allowed_users: ["user-x"] };
+			mockDiscordClient._setDMOverride("user-x", { id: "dm-x" });
+
+			const setup1 = await setupMCPConnection(config);
+			const res1 = await setup1.client.request(
+				{
+					method: "tools/call",
+					params: { name: "discord_list_channels", arguments: {} },
+				},
+				CallToolResultSchema,
+			);
+			expect(JSON.parse((res1.content[0] as { text: string }).text)).toEqual([
+				{ user_id: "user-x", channel_id: "dm-x" },
+			]);
+			await setup1.client.close();
+			await setup1.server.close();
+
+			// Simulate restart: brand-new server instance, brand-new mock client (empty seen state).
+			mockDiscordClient = createMockDiscordClient() as unknown as ReturnType<
+				typeof createMockDiscordClient
+			>;
+			mockDiscordClient._setDMOverride("user-x", { id: "dm-x" });
+
+			const setup2 = await setupMCPConnection(config);
+			server = setup2.server;
+			client = setup2.client;
+
+			const res2 = await setup2.client.request(
+				{
+					method: "tools/call",
+					params: { name: "discord_list_channels", arguments: {} },
+				},
+				CallToolResultSchema,
+			);
+			expect(JSON.parse((res2.content[0] as { text: string }).text)).toEqual([
+				{ user_id: "user-x", channel_id: "dm-x" },
+			]);
+		});
 	});
 });
