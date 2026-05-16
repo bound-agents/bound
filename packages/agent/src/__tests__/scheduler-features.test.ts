@@ -1011,12 +1011,15 @@ describe("Scheduler features", () => {
 			expect(toolCallBlocks[0].type).toBe("tool_use");
 			expect(toolCallBlocks[0].name).toBe("retrieve_task");
 
-			// Third message: tool_result with the actual payload
+			// Third message: tool_result with the actual payload, prefixed by a
+			// system-injected banner (so models recognize the tool_call above as
+			// machinery rather than self-issued).
 			// tool_name must be the toolCallId (not "retrieve_task") so Bedrock
 			// can match the tool_result to the tool_call by ID
 			expect(allMsgs[2].role).toBe("tool_result");
 			expect(allMsgs[2].tool_name).toBe(toolCallBlocks[0].id);
-			expect(allMsgs[2].content).toBe(payload);
+			expect(allMsgs[2].content).toContain("[System-injected on task wakeup");
+			expect(allMsgs[2].content).toContain(payload);
 
 			if (capturedThreadId) {
 				db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
@@ -2004,6 +2007,88 @@ describe("Scheduler features", () => {
 			expect(task.status).toBe("pending");
 			expect(task.consecutive_failures).toBe(0);
 			expect(task.run_count).toBe(1);
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		// Regression for advisory 0b9441e5-c47a (2026-05-16): event tasks must
+		// not self-wake periodically after success. Setting next_run_at on
+		// completion caused phase1Schedule to re-claim the task every 5 minutes
+		// with no new event payload (observed: thread 6a9d56aa, 1 real Discord
+		// interaction → 29 wake-ups over 70min).
+		it("event task next_run_at is NULL after successful completion (no periodic self-wake)", async () => {
+			const taskId = randomUUID();
+			insertEventTask(taskId);
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
+			const { stop } = scheduler.start(10);
+
+			await waitFor(
+				() => {
+					const task = db.query("SELECT status, run_count FROM tasks WHERE id = ?").get(taskId) as {
+						status: string;
+						run_count: number;
+					} | null;
+					return task?.status === "pending" && task.run_count > 0;
+				},
+				{ timeoutMs: 5000, message: "event task did not complete" },
+			);
+			stop();
+
+			const task = db
+				.query("SELECT status, next_run_at, run_count FROM tasks WHERE id = ?")
+				.get(taskId) as { status: string; next_run_at: string | null; run_count: number };
+			expect(task.status).toBe("pending");
+			expect(task.next_run_at).toBeNull();
+			expect(task.run_count).toBe(1);
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		// Regression for advisory 0b9441e5-c47a: failure-path retries must cap.
+		// A permanently-broken event handler should not self-wake every 60s
+		// indefinitely; after MAX_EVENT_TASK_FAILURE_BACKOFFS (5) consecutive
+		// failures, next_run_at must be NULL so the task waits for a real event.
+		it("event task next_run_at is NULL after consecutive_failures hits backoff cap", async () => {
+			const taskId = randomUUID();
+			// Seed at cf=4 so the next failure increments to 5 (the cap)
+			insertEventTask(taskId, { consecutiveFailures: 4 });
+
+			const softErrorFactory = () => ({
+				run: async (): Promise<AgentLoopResult> => ({
+					messagesCreated: 0,
+					toolCallsMade: 0,
+					filesChanged: 0,
+					error: "Permanent handler failure",
+				}),
+			});
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, softErrorFactory as any);
+			const { stop } = scheduler.start(10);
+
+			await waitFor(
+				() => {
+					const task = db
+						.query("SELECT status, consecutive_failures FROM tasks WHERE id = ?")
+						.get(taskId) as { status: string; consecutive_failures: number } | null;
+					return task?.status === "pending" && task.consecutive_failures >= 5;
+				},
+				{ timeoutMs: 5000, message: "event task did not reach failure cap" },
+			);
+			stop();
+
+			const task = db
+				.query("SELECT status, next_run_at, consecutive_failures FROM tasks WHERE id = ?")
+				.get(taskId) as {
+				status: string;
+				next_run_at: string | null;
+				consecutive_failures: number;
+			};
+			expect(task.status).toBe("pending");
+			expect(task.consecutive_failures).toBeGreaterThanOrEqual(5);
+			expect(task.next_run_at).toBeNull();
 
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});

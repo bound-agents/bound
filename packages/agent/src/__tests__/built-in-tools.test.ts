@@ -382,11 +382,14 @@ describe("built-in-tools", () => {
 			expect(params.required).toBeUndefined();
 		});
 
-		it("returns a stable proceed-with-payload message for empty input", async () => {
+		it("returns a system-forced-call notice that flags the call as redundant", async () => {
 			const result = await tool("retrieve_task").execute({});
 			expect(typeof result).toBe("string");
 			const msg = result as string;
-			expect(msg).toContain("delivered at wake-up");
+			// New banner makes it explicit the model called this voluntarily and
+			// the earlier (synthetic) call was scheduler-forged.
+			expect(msg).toContain("[System notice");
+			expect(msg).toContain("forged by the");
 			expect(msg).toContain("[Task wakeup]");
 			expect(msg).toContain("Proceed");
 		});
