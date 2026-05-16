@@ -60,6 +60,49 @@ const bootstrapLogger = createLogger("@bound/cli", "start-bootstrap");
 export const STALE_TASK_RESET_SQL =
 	"UPDATE tasks SET status = 'pending', lease_id = NULL, claimed_by = NULL, claimed_at = NULL WHERE status = 'running' AND (heartbeat_at IS NULL OR heartbeat_at < ?)"; // outbox-exempt: crash recovery
 
+/**
+ * Crash-recovery scan for threads whose last meaningful message is a tool_call
+ * or tool_result with no following assistant turn or interrupt notice. Runs on
+ * every daemon boot.
+ *
+ * Thread-centric form: one GROUP BY scan over `idx_messages_thread`, ~1k thread
+ * groups on a typical deployment. The semantically-equivalent per-tool-message
+ * form (DISTINCT m.thread_id with correlated NOT EXISTS) plans to ~150k indexed
+ * lookups on a 185k-row messages table and runs in ~4s warm — historically a
+ * meaningful chunk of bootstrap latency on slow disks. Profiled rewrite runs in
+ * ~100ms.
+ *
+ * Equivalence: a tool message with no later assistant/interrupt notice is
+ * exactly equivalent to "the last assistant/interrupt timestamp in the thread
+ * is earlier than the last tool timestamp" (or absent). Verified against the
+ * live DB and synthetic fixtures in startup-wiring.test.ts.
+ *
+ * Excludes threads with a pending `client_tool_call` in `dispatch_queue` —
+ * those are waiting for client execution, not crashed server tools.
+ */
+export const INTERRUPTED_TOOL_USE_SCAN_SQL = `WITH thread_summary AS (
+	SELECT thread_id,
+		MAX(CASE WHEN role IN ('tool_call', 'tool_result') THEN created_at END) AS last_tool_at,
+		MAX(CASE WHEN role = 'assistant' THEN created_at END) AS last_assistant_at,
+		MAX(CASE
+			WHEN role IN ('system', 'developer')
+			 AND (content LIKE '%interrupted%' OR content LIKE '%cancelled%')
+			THEN created_at
+		END) AS last_interrupt_at
+	FROM messages
+	GROUP BY thread_id
+)
+SELECT ts.thread_id FROM thread_summary ts
+WHERE ts.last_tool_at IS NOT NULL
+  AND (ts.last_assistant_at IS NULL OR ts.last_assistant_at < ts.last_tool_at)
+  AND (ts.last_interrupt_at IS NULL OR ts.last_interrupt_at < ts.last_tool_at)
+  AND NOT EXISTS (
+	SELECT 1 FROM dispatch_queue dq
+	WHERE dq.thread_id = ts.thread_id
+	  AND dq.event_type = 'client_tool_call'
+	  AND dq.status IN ('pending', 'processing')
+  )`;
+
 export interface StartArgs {
 	configDir?: string;
 	/** If true, wipes the local DB and requests a full reseed from the hub. */
@@ -417,28 +460,12 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 			);
 		}
 
-		// Scan for interrupted tool-use per R-E13
-		// Exclude tool_call messages that have corresponding client_tool_call entries in dispatch_queue
-		// (those are waiting for client execution, not crashed server tools)
-		const interruptedThreads = appContext.db
-			.query(
-				`SELECT DISTINCT m.thread_id FROM messages m
-				 WHERE m.role IN ('tool_call', 'tool_result')
-				 AND NOT EXISTS (
-					SELECT 1 FROM messages m2
-					WHERE m2.thread_id = m.thread_id
-					AND m2.created_at > m.created_at
-					AND (m2.role = 'assistant'
-					  OR (m2.role IN ('system', 'developer') AND (m2.content LIKE '%interrupted%' OR m2.content LIKE '%cancelled%')))
-				 )
-				 AND NOT EXISTS (
-					SELECT 1 FROM dispatch_queue dq
-					WHERE dq.thread_id = m.thread_id
-					AND dq.event_type = 'client_tool_call'
-					AND dq.status IN ('pending', 'processing')
-				 )`,
-			)
-			.all() as Array<{ thread_id: string }>;
+		// Scan for interrupted tool-use per R-E13. SQL is exported as
+		// INTERRUPTED_TOOL_USE_SCAN_SQL so the regression tests can pin the same
+		// query the daemon actually runs.
+		const interruptedThreads = appContext.db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+			thread_id: string;
+		}>;
 
 		if (interruptedThreads.length > 0) {
 			const now = new Date().toISOString();
