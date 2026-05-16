@@ -90,12 +90,47 @@ export interface McpEvent {
 interface ActiveSubscription {
 	handleId: string;
 	serverName: string;
+	/**
+	 * The MCP event name this subscription is bound to (e.g. "interaction.received").
+	 * Carried explicitly on the subscription so the per-server notification handler
+	 * can route events without relying on a closure over a single handle.
+	 */
+	eventName: string;
 	taskId: string;
 	threadId: string;
 	buffer: McpEvent[];
 	flushTimer: ReturnType<typeof setTimeout> | null;
 	deduplicationSet: Set<string>;
 }
+
+/**
+ * Schema for `notifications/events/event` — the push-mode payload an MCP
+ * platform server sends to wake up a streaming subscription.
+ *
+ * Module-scoped so the same instance is reused across `setNotificationHandler`
+ * calls; the SDK keys its handler map on the literal `method`, so passing a
+ * fresh schema per call would overwrite the previous handler unnecessarily.
+ *
+ * Why we don't validate the inner shape: the SDK already validates `method`
+ * against the literal during `getMethodLiteral`, and the event payload's
+ * shape is owned by the MCP server we're talking to (the `McpEvent`
+ * interface). Keeping `params` as a passthrough avoids tying notification
+ * dispatch to bound-side struct-evolution churn.
+ */
+const eventsEventNotificationSchema = z.object({
+	method: z.literal("notifications/events/event"),
+	params: z.object({}).passthrough(),
+});
+
+/**
+ * Schema for `notifications/tools/list_changed` — a server tells us its tool
+ * list has shifted and we should re-discover. Module-scoped for the same
+ * reasons as `eventsEventNotificationSchema`.
+ */
+const toolsListChangedNotificationSchema = z.object({
+	method: z.literal("notifications/tools/list_changed"),
+	params: z.object({}).passthrough().optional(),
+});
 
 /**
  * Manages MCP server instances for platform connectors.
@@ -190,29 +225,6 @@ export class PlatformMcpRegistry {
 		await server.connect(serverTransport);
 		await client.connect(clientTransport);
 
-		// Register notification handlers for list_changed events
-		// When MCP server emits notifications/tools/list_changed or notifications/events/list_changed,
-		// translate to internal event bus and rediscover tools
-		// TODO: Replace internal SDK access when SDK exposes a public API for notification interception
-		// biome-ignore lint/suspicious/noExplicitAny: MCP SDK internals for notification handling
-		const protocol = (client as any)._protocol;
-		if (protocol) {
-			const originalHandler = protocol._onNotification;
-			protocol._onNotification = async (notification: {
-				method: string;
-				params: Record<string, unknown>;
-			}): Promise<void> => {
-				if (notification.method === "notifications/tools/list_changed") {
-					// Rediscover tools when the list changes
-					await this.discoverTools(entry);
-				}
-				// Call original handler if it exists
-				if (originalHandler) {
-					await originalHandler(notification);
-				}
-			};
-		}
-
 		const entry: PlatformServerEntry = {
 			name,
 			server,
@@ -220,6 +232,47 @@ export class PlatformMcpRegistry {
 			clientTransport,
 			serverTransport,
 		};
+
+		// Install notification handlers via the SDK's public API.
+		//
+		// Earlier code monkey-patched `protocol._onNotification` (camelCase)
+		// directly. The SDK's actual internal name is `_onnotification`
+		// (lowercase) — see @modelcontextprotocol/sdk shared/protocol.js —
+		// so the override silently created a phantom property and the
+		// real `_onnotification` continued to dispatch through
+		// `_notificationHandlers`. Without an entry there for our custom
+		// methods, every push-mode notification was dropped on the floor:
+		//   - `notifications/events/event` never reached the buffer, so
+		//     `interaction.received` (and `message.received`) never woke
+		//     their bound tasks.
+		//   - `notifications/tools/list_changed` never triggered tool
+		//     re-discovery.
+		// Using `setNotificationHandler` is the supported entry point and
+		// survives SDK internal renames.
+		client.setNotificationHandler(eventsEventNotificationSchema, (notification) => {
+			const event = notification.params as unknown as McpEvent;
+			// Route to every active subscription on this server whose
+			// event_name matches. We look up by `sub.eventName` (set in
+			// activateSubscription) rather than closing over a single
+			// handle, so a server with multiple concurrent push
+			// subscriptions (e.g. message.received + interaction.received)
+			// dispatches each event to exactly the right buffer.
+			for (const sub of this.activeSubscriptions.values()) {
+				if (sub.serverName === name && sub.eventName === event.name) {
+					sub.buffer.push(event);
+					if (!sub.flushTimer) {
+						sub.flushTimer = setTimeout(() => {
+							this.flushBuffer(sub);
+						}, 2000);
+					}
+				}
+			}
+		});
+
+		client.setNotificationHandler(toolsListChangedNotificationSchema, async () => {
+			// Re-discover tools when the server signals its list changed.
+			await this.discoverTools(entry);
+		});
 
 		this.servers.set(name, entry);
 		this.deps.logger.info(`Platform MCP server '${name}' registered and connected`);
@@ -525,7 +578,12 @@ export class PlatformMcpRegistry {
 	/**
 	 * Sets up a push-mode subscription with stream listener.
 	 * Requests events/stream from the MCP server.
-	 * The server will send notifications/events/event which are handled by storing in buffer.
+	 *
+	 * The notification handler that receives `notifications/events/event`
+	 * is installed once per client in `registerServer`. This method only
+	 * tells the server to start streaming for this particular subscription;
+	 * the per-server handler dispatches incoming events to the right
+	 * subscription buffer using `sub.eventName`.
 	 */
 	private async startStreamSubscription(
 		subscription: ActiveSubscription,
@@ -535,44 +593,6 @@ export class PlatformMcpRegistry {
 		if (!client) {
 			this.deps.logger.warn(`Client not found for server ${subscription.serverName}`);
 			return;
-		}
-
-		// Store subscription in a way we can access it from the protocol notification handler
-		// We use a per-server handler that routes to all matching subscriptions
-		// biome-ignore lint/suspicious/noExplicitAny: MCP SDK internals for notification handling
-		const protocol = (client as any)._protocol;
-		if (protocol) {
-			// Set up notification handler directly on protocol
-			// This bypasses the schema validation in setNotificationHandler
-			const originalHandler = protocol._onNotification;
-
-			protocol._onNotification = async (notification: {
-				method: string;
-				params: Record<string, unknown>;
-			}): Promise<void> => {
-				if (notification.method === "notifications/events/event") {
-					const event = notification.params as unknown as McpEvent;
-
-					// Find subscriptions this event belongs to (match by server name and event name)
-					for (const sub of this.activeSubscriptions.values()) {
-						if (sub.serverName === subscription.serverName && event.name === handle.event_name) {
-							// Add event to this subscription's buffer
-							sub.buffer.push(event);
-							// Schedule flush if not already scheduled
-							if (!sub.flushTimer) {
-								sub.flushTimer = setTimeout(() => {
-									this.flushBuffer(sub);
-								}, 2000);
-							}
-						}
-					}
-				}
-
-				// Call original handler if it exists
-				if (originalHandler) {
-					await originalHandler(notification);
-				}
-			};
 		}
 
 		// Request stream subscription from server
@@ -657,6 +677,7 @@ export class PlatformMcpRegistry {
 		const subscription: ActiveSubscription = {
 			handleId: handle.id,
 			serverName: handle.server_name,
+			eventName: handle.event_name,
 			taskId: handle.task_id,
 			threadId: task.thread_id,
 			buffer: [],

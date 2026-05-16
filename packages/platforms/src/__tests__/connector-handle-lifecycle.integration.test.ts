@@ -370,6 +370,105 @@ describe("Connector Handle Lifecycle", () => {
 			expect(messages.length).toBe(1);
 			expect(messages[0].content).toContain("push test");
 		});
+
+		// Regression: an earlier version of registerServer/startStreamSubscription
+		// monkey-patched `protocol._onNotification` (camelCase). The real SDK
+		// internal is `_onnotification` (lowercase), so the override created
+		// a phantom property and notifications kept routing through the real
+		// dispatcher into `_notificationHandlers` — which had no entry for
+		// `notifications/events/event`, so every push event was silently
+		// dropped. Symptom in the wild: discord interaction.received
+		// bindings registered cleanly but their bound tasks never fired.
+		//
+		// This test pushes a real notification from the Server side of the
+		// in-memory transport pair and asserts the buffer received it.
+		// `setNotificationHandler` is the supported entry point and is
+		// rename-safe.
+		it("buffers events that arrive via notifications/events/event", async () => {
+			const threadId = `thread-${randomBytes(4).toString("hex")}`;
+			const taskId = `task-${randomBytes(4).toString("hex")}`;
+			const now = new Date().toISOString();
+
+			insertRow(
+				db,
+				"threads",
+				{
+					id: threadId,
+					user_id: "test-user",
+					interface: "test",
+					host_origin: siteId,
+					summary: null,
+					last_message_at: now,
+					created_at: now,
+					deleted: 0,
+					modified_at: now,
+				},
+				siteId,
+			);
+			insertRow(
+				db,
+				"tasks",
+				{
+					id: taskId,
+					type: "event",
+					status: "pending",
+					trigger_spec: `connector:event:${taskId}`,
+					thread_id: threadId,
+					created_at: now,
+					deleted: 0,
+					modified_at: now,
+				},
+				siteId,
+			);
+
+			const handleId = createConnectorHandle(db, siteId, {
+				serverName: "test-server",
+				eventName: "test.event",
+				eventArgs: {},
+				deliveryMode: "push",
+				taskId,
+			});
+
+			await registry.registerServer("test-server", server);
+			const handle = db.query("SELECT * FROM connector_handles WHERE id = ?").get(handleId);
+			await registry.activateSubscription(handle as never);
+
+			// Push a notification from the server side of the in-memory
+			// transport. This is exactly what an MCP platform server does
+			// when it has an event for a streaming subscription.
+			await server.notification({
+				method: "notifications/events/event",
+				params: {
+					eventId: "event-real-notification",
+					name: "test.event",
+					timestamp: now,
+					data: { message: "delivered via notification path" },
+					cursor: "42",
+				},
+			});
+
+			// Yield once for the transport message pump.
+			await new Promise((resolve) => setTimeout(resolve, 10));
+
+			// biome-ignore lint/suspicious/noExplicitAny: peeking at internal subscription state is the point of this test
+			const subscription = (registry as any).activeSubscriptions.get(handleId);
+			expect(subscription).toBeDefined();
+			expect(subscription.buffer.length).toBe(1);
+			expect(subscription.buffer[0].name).toBe("test.event");
+			expect(subscription.buffer[0].data.message).toBe("delivered via notification path");
+
+			// Buffer flushes after 2s; force-flush so we also exercise the
+			// developer-role message path end-to-end.
+			registry.deliverBatch(subscription, subscription.buffer.splice(0));
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			const messages = db
+				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				// biome-ignore lint/suspicious/noExplicitAny: bun:sqlite row type
+				.all(threadId) as any[];
+			expect(messages.length).toBe(1);
+			expect(messages[0].content).toContain("delivered via notification path");
+		});
 	});
 
 	describe("AC5.3: Poll with no events", () => {
