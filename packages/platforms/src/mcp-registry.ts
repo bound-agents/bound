@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertRow, writeOutbox } from "@bound/core";
+import { insertRow, listFreshRemotePlatforms, writeOutbox } from "@bound/core";
 import type { ToolDefinition } from "@bound/llm";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -356,26 +356,16 @@ export class PlatformMcpRegistry {
 		const remotePlatformRequest = this.remotePlatformRequest;
 		if (!remotePlatformRequest) return;
 
-		// Aggregate remote platform server names across all non-local hosts.
-		// Multiple hosts advertising the same server are collapsed: the relay
-		// proxy itself decides which one to route to (typically the first).
-		const remoteServerNames = new Set<string>();
-		const rows = this.deps.db
-			.query(
-				"SELECT site_id, platforms FROM hosts WHERE deleted = 0 AND platforms IS NOT NULL AND site_id != ?",
-			)
-			.all(this.deps.siteId) as Array<{ site_id: string; platforms: string }>;
-		for (const row of rows) {
-			try {
-				const platforms = JSON.parse(row.platforms) as string[];
-				if (Array.isArray(platforms)) {
-					for (const p of platforms) remoteServerNames.add(p);
-				}
-			} catch {
-				// Skip hosts with corrupted platforms JSON; an offline/upgrading
-				// peer should never mask a healthy peer's tools.
-			}
-		}
+		// Aggregate remote platform server names across all FRESH non-local
+		// hosts. A host whose `modified_at` is older than the cluster stale
+		// threshold (5 minutes; see `@bound/core/platform-routing`) is excluded:
+		// before this filter, a remote daemon that crashed shortly after boot
+		// would leave its `hosts.platforms` advertisement live in synced state,
+		// and this loop would fire a `platform_request` outbox entry every 60s
+		// (with a 15s timeout each) and log an ERROR for each cycle, indefinitely.
+		// Multiple fresh hosts advertising the same server are still collapsed:
+		// the relay proxy itself decides which one to route to.
+		const remoteServerNames = listFreshRemotePlatforms(this.deps.db, this.deps.siteId);
 
 		// Build a fresh cache off to the side, then swap. This keeps the
 		// existing cache observable to readers until discovery completes —

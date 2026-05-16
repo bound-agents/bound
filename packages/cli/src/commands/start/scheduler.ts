@@ -14,7 +14,13 @@ import {
 import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
 import { createRelayOutboxEntry } from "@bound/agent";
-import { type AppContext, markProcessed, readInboxByRefId, writeOutbox } from "@bound/core";
+import {
+	type AppContext,
+	findFreshPlatformHost,
+	markProcessed,
+	readInboxByRefId,
+	writeOutbox,
+} from "@bound/core";
 import type { ModelRouter } from "@bound/llm";
 import {
 	type ConnectorToolContext,
@@ -113,26 +119,15 @@ export function initScheduler(
 					method: string,
 					params: Record<string, unknown>,
 				): Promise<unknown> => {
-					// Find which remote host owns this platform server
-					const rows = appContext.db
-						.query(
-							"SELECT site_id, platforms FROM hosts WHERE deleted = 0 AND platforms IS NOT NULL AND site_id != ?",
-						)
-						.all(appContext.siteId) as Array<{ site_id: string; platforms: string }>;
-					let targetSiteId: string | null = null;
-					for (const row of rows) {
-						try {
-							const platforms = JSON.parse(row.platforms) as string[];
-							if (Array.isArray(platforms) && platforms.includes(serverName)) {
-								targetSiteId = row.site_id;
-								break;
-							}
-						} catch {
-							// Skip hosts with corrupted platforms JSON
-						}
-					}
+					// Pick a fresh remote host advertising this platform. See
+					// `findFreshPlatformHost` for why we filter on heartbeat freshness
+					// rather than just "platforms IS NOT NULL". Mirrors the identical
+					// callback factory in `server.ts`.
+					const targetSiteId = findFreshPlatformHost(appContext.db, serverName, appContext.siteId);
 					if (!targetSiteId) {
-						throw new Error(`No remote host found for platform server '${serverName}'`);
+						throw new Error(
+							`No fresh remote host found for platform server '${serverName}' (no advertising peer has heart-beated within the stale threshold)`,
+						);
 					}
 
 					// Write platform_request relay outbox entry

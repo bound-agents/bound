@@ -99,6 +99,12 @@ export {
 export { ThreadExecutor, type ExecutorRunResult, type ExecutorOptions } from "./thread-executor";
 export { startHostHeartbeat, type HeartbeatOptions } from "./host-heartbeat";
 export {
+	PLATFORM_HOST_STALE_THRESHOLD_MS,
+	isHostFresh,
+	findFreshPlatformHost,
+	listFreshRemotePlatforms,
+} from "./platform-routing";
+export {
 	CANONICAL_RELATIONS,
 	type CanonicalRelation,
 	isCanonicalRelation,
