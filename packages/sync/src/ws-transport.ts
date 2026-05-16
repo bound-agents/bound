@@ -264,9 +264,14 @@ export class WsTransport {
 		};
 
 		this.relayOutboxWrittenListener = (event) => {
-			// Query the relay outbox entry and send to appropriate peer
+			// Query the relay outbox entry and send to appropriate peer.
+			// Defense-in-depth filter on `delivered = 0`: the primary cycle-breaker
+			// lives in writeOutbox (only emits when INSERT actually inserted), but
+			// if some future caller emits this event for an already-delivered row,
+			// we don't want to re-route it and risk re-triggering the hub-mode
+			// re-entry path in handleRelaySend that originally produced the spin.
 			const entry = this.config.db
-				.query("SELECT * FROM relay_outbox WHERE id = ?")
+				.query("SELECT * FROM relay_outbox WHERE id = ? AND delivered = 0")
 				.get(event.id) as RelayOutboxEntry | null;
 
 			if (entry) {

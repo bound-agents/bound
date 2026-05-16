@@ -1099,3 +1099,230 @@ describe("WsTransport", () => {
 		});
 	});
 });
+
+/**
+ * Regression suite for the hub-mode relay-routing spin loop.
+ *
+ * Production failure observed: a hub-originated `error` outbox entry (e.g. a
+ * RelayProcessor.writeResponse error response) targeting an offline spoke
+ * caused WsTransport.handleRelaySend's offline-async-buffer branch to call
+ * writeOutbox again with the same id. INSERT-OR-IGNORE was a no-op but
+ * `relay:outbox-written` fired anyway — the listener was synchronous, so it
+ * re-entered sendRelayOutboxEntry → handleRelaySend → writeOutbox, recursing
+ * ~5000 frames per burst until V8 RangeError, then the supervisor restarted
+ * the process and the still-undelivered row re-triggered the loop. Observed
+ * as 286k log lines / 99% of total log volume in 26 minutes with 35 restarts.
+ *
+ * The fix is in @bound/core/relay.ts: writeOutbox only emits the event when
+ * the INSERT actually inserted a row (result.changes > 0). This block
+ * exercises the integrated path through WsTransport in hub mode.
+ */
+describe("WsTransport hub-mode relay-routing spin-loop regression", () => {
+	let db: Database;
+	let eventBus: TypedEventEmitter;
+	let transport: WsTransport;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		// Mirror the schema needed by handleRelaySend / sendRelayOutboxEntry.
+		db.run(`
+			CREATE TABLE relay_outbox (
+				id TEXT PRIMARY KEY,
+				source_site_id TEXT NOT NULL,
+				target_site_id TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				ref_id TEXT,
+				idempotency_key TEXT,
+				stream_id TEXT,
+				payload TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				delivered INTEGER DEFAULT 0
+			)
+		`);
+		db.run(`
+			CREATE UNIQUE INDEX idx_relay_outbox_idempotency
+			ON relay_outbox(idempotency_key, target_site_id)
+			WHERE idempotency_key IS NOT NULL
+		`);
+		db.run(`
+			CREATE TABLE relay_inbox (
+				id TEXT PRIMARY KEY,
+				source_site_id TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				ref_id TEXT,
+				idempotency_key TEXT,
+				stream_id TEXT,
+				payload TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				received_at TEXT NOT NULL,
+				processed INTEGER DEFAULT 0
+			)
+		`);
+		// Minimal change_log table to keep the WsTransport changelog listener
+		// happy (it queries on changelog:written events; we don't fire any
+		// here, but the listener path expects the table to exist).
+		db.run(`
+			CREATE TABLE change_log (
+				hlc TEXT PRIMARY KEY,
+				site_id TEXT NOT NULL,
+				table_name TEXT NOT NULL,
+				row_pk TEXT NOT NULL,
+				op TEXT NOT NULL,
+				row_data TEXT,
+				created_at TEXT NOT NULL
+			)
+		`);
+
+		eventBus = new TypedEventEmitter();
+		transport = new WsTransport({
+			db,
+			siteId: "hub",
+			eventBus,
+			isHub: true,
+		});
+		transport.start();
+	});
+
+	afterEach(() => {
+		transport.stop();
+		db.close();
+	});
+
+	it("does NOT recurse when writeOutbox fires for a hub-self entry to an offline async target (kind=error)", async () => {
+		// Setup: no peer connection for the offline target spoke. This drives
+		// handleRelaySend into the offline-async-buffer branch where the spin
+		// originated.
+		const offlineTarget = "f9c2e53b5d2017d0b2adb195432bfa0c";
+
+		// Count routing log invocations by intercepting through the eventBus.
+		// We can't easily intercept the logger, so we use the event count
+		// instead: each spin iteration emits relay:outbox-written.
+		let emitCount = 0;
+		eventBus.on("relay:outbox-written", () => {
+			emitCount++;
+		});
+
+		// Simulate RelayProcessor.writeResponse: hub writes a kind=error
+		// outbox entry targeting the offline spoke. Use writeOutbox via the
+		// module-level bus (matches production wiring).
+		const { setRelayOutboxEventBus, writeOutbox } = await import("@bound/core");
+		setRelayOutboxEventBus(eventBus);
+		try {
+			writeOutbox(db, {
+				id: "9e920bc8-4ebf-4e59-a851-9b58ba9b29cb", // production entry id
+				source_site_id: "hub",
+				target_site_id: offlineTarget,
+				kind: "error",
+				ref_id: "req-original",
+				idempotency_key: null,
+				stream_id: null,
+				payload: JSON.stringify({ error: "upstream timed out", retriable: true }),
+				created_at: new Date().toISOString(),
+				expires_at: new Date(Date.now() + 60_000).toISOString(),
+			});
+		} finally {
+			setRelayOutboxEventBus(null as unknown as TypedEventEmitter);
+		}
+
+		// Pre-fix behavior: emitCount would race past 4000+ in microseconds
+		// before V8 RangeError. Post-fix: exactly one emit (the original
+		// insert), the offline-async-buffer's no-op INSERT-OR-IGNORE doesn't
+		// re-emit.
+		expect(emitCount).toBe(1);
+
+		// Sanity: the entry stayed in relay_outbox (the listener also ran
+		// markDelivered after handleRelaySend, which is the secondary
+		// lost-message bug — out of scope for this regression test, but we
+		// assert the SHAPE so a regression here doesn't quietly resurrect
+		// the spin).
+		const row = db
+			.query("SELECT id, delivered FROM relay_outbox WHERE id = ?")
+			.get("9e920bc8-4ebf-4e59-a851-9b58ba9b29cb") as { id: string; delivered: number } | null;
+		expect(row).not.toBeNull();
+	});
+
+	it("does NOT recurse for spoke-A→offline-spoke-B async-error routing (the second spin shape)", async () => {
+		// Same loop structure but originated from a spoke. handleRelaySend
+		// buffers via writeOutbox; that emits → listener → sendRelayOutboxEntry
+		// → handleRelaySend with sourceSiteId=self → offline-async-buffer →
+		// writeOutbox(same id) → no-op INSERT → no event with the fix.
+		let emitCount = 0;
+		eventBus.on("relay:outbox-written", () => {
+			emitCount++;
+		});
+
+		const { setRelayOutboxEventBus } = await import("@bound/core");
+		setRelayOutboxEventBus(eventBus);
+		try {
+			transport.handleRelaySend("spoke-a", {
+				entries: [
+					{
+						id: "spoke-originated-1",
+						target_site_id: "offline-spoke-b",
+						kind: "inference", // async-dispatch
+						ref_id: null,
+						idempotency_key: null,
+						stream_id: null,
+						expires_at: new Date(Date.now() + 60_000).toISOString(),
+						payload: { tool: "test" },
+					},
+				],
+			});
+		} finally {
+			setRelayOutboxEventBus(null as unknown as TypedEventEmitter);
+		}
+
+		// Exactly one emit — handleRelaySend's first writeOutbox (the
+		// materialization in hub's outbox). The re-entrant emit from the
+		// listener's offline-async-buffer call is gated.
+		expect(emitCount).toBe(1);
+	});
+
+	it("listener skips entries that are already delivered (defense-in-depth)", async () => {
+		// Pre-seed an already-delivered entry, then fire the event manually.
+		// Even if some future caller emits relay:outbox-written for an
+		// already-delivered row, the listener must not re-route it (otherwise
+		// the hub-mode handleRelaySend re-entry path would have a way to
+		// resurrect the spin).
+		db.run(
+			`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, created_at, expires_at, delivered)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+			[
+				"already-delivered",
+				"hub",
+				"some-spoke",
+				"error",
+				null,
+				null,
+				null,
+				"{}",
+				new Date().toISOString(),
+				new Date(Date.now() + 60_000).toISOString(),
+			],
+		);
+
+		// Count downstream effects of routing: if the listener routed this
+		// entry, handleRelaySend's offline-async-buffer would call writeOutbox
+		// again, which re-emits relay:outbox-written. Our spy counts ALL
+		// emits; we manually emit once, then assert no FURTHER emits occurred
+		// (downstream routing is skipped).
+		const emits: Array<{ id: string; target_site_id: string }> = [];
+		eventBus.on("relay:outbox-written", (e) => {
+			emits.push(e);
+		});
+
+		eventBus.emit("relay:outbox-written", {
+			id: "already-delivered",
+			target_site_id: "some-spoke",
+		});
+
+		// The manual emit goes to all listeners (count = 1). With the fix, the
+		// production listener queries `WHERE id = ? AND delivered = 0` and
+		// gets null, so no routing → no downstream re-emit. Without the fix,
+		// the listener would proceed to handleRelaySend and the offline-async
+		// buffer would (pre-fix) re-emit, giving emits.length = 2.
+		expect(emits).toHaveLength(1);
+		expect(emits[0].id).toBe("already-delivered");
+	});
+});
