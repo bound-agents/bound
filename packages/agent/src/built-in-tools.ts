@@ -517,12 +517,18 @@ function createRetrieveTaskTool(): BuiltInTool {
 			if (!parsed.ok) return parsed.error;
 
 			return (
-				"The current task's payload was delivered at wake-up and appears " +
-				"earlier in this conversation (the tool_result immediately after the " +
-				"`[Task wakeup]` developer notice). Proceed with those instructions; " +
-				"no separate retrieval step is required. If you cannot locate the " +
-				"payload (e.g. it was summarized out of the current window), query " +
-				"the tasks table directly: " +
+				"[System notice — voluntary `retrieve_task` call detected]\n\n" +
+				"You just called `retrieve_task` yourself. This tool is a no-op " +
+				"stub. The earlier `retrieve_task` tool_call you see in this " +
+				"conversation was NOT issued by you — it was forged by the " +
+				"scheduler to deliver the task payload as a tool_result " +
+				"(immediately after the `[Task wakeup]` developer notice). " +
+				"Pattern-matching off that injected call and re-issuing it " +
+				"yourself produces nothing useful and burns a turn.\n\n" +
+				"The task payload was already delivered. Proceed with those " +
+				"instructions. If you genuinely cannot locate the payload " +
+				"(e.g. it was summarized out of the current window), query the " +
+				"tasks table directly: " +
 				"`query \"SELECT payload FROM tasks WHERE id = '<task_id>'\"`."
 			);
 		},

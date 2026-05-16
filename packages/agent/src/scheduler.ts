@@ -117,14 +117,28 @@ function retryDeferredTask(
  * again on the next event emission. Event tasks are persistent listeners that
  * should always return to pending after execution.
  *
- * Always sets next_run_at as a periodic fallback so phase1Schedule can pick the
- * task up even without a new event emission (AC4.6). Failure paths use a shorter
- * interval (60s) to recover quickly from transient issues; success paths use 5
- * minutes as a low-frequency consistency check.
+ * Success path: leaves `next_run_at = NULL`. Event tasks must only be woken by
+ * real `connector:event` emissions (the `onEvent` path in this scheduler), not
+ * by `phase1Schedule`. Setting a periodic fallback caused phase1 to re-claim
+ * completed event tasks every N minutes with no new event payload, which
+ * produced the spin observed in advisory 0b9441e5-c47a (2026-05-16: thread
+ * 6a9d56aa, 1 real interaction → 29 wake-ups over 70min). The original
+ * comment cited "AC4.6 periodic fallback" — that AC applies to the connector
+ * **dispatcher** ("Periodic cron fallback wakes dispatcher even without
+ * list_changed", per docs/test-plans/2026-05-08-mcp-platform-connectors-
+ * test-requirements.md), not to per-event handler tasks. The two were conflated.
+ *
+ * Failure path: keep a 60s retry to recover from transient issues, but cap at
+ * MAX_FAILURE_BACKOFFS to avoid permanent self-spin on a permanently-broken
+ * handler. After the cap, the task waits in pending for a real event.
  *
  * Re-reads current DB state before resetting to avoid resurrecting tasks that
- * were cancelled or soft-deleted externally during execution.
+ * were cancelled or soft-deleted externally during execution, and to read the
+ * post-failure consecutive_failures count (incremented by the soft/hard-error
+ * UPDATE that runs before this function).
  */
+const MAX_EVENT_TASK_FAILURE_BACKOFFS = 5;
+
 function resetEventTask(
 	db: AppContext["db"],
 	task: Task,
@@ -134,10 +148,14 @@ function resetEventTask(
 ): void {
 	if (task.type !== "event") return;
 
-	// Re-read current state — task may have been cancelled/deleted during execution
-	const current = db.query("SELECT status, deleted FROM tasks WHERE id = ?").get(task.id) as {
+	// Re-read current state — task may have been cancelled/deleted during
+	// execution; consecutive_failures may have been bumped by the failure path.
+	const current = db
+		.query("SELECT status, deleted, consecutive_failures FROM tasks WHERE id = ?")
+		.get(task.id) as {
 		status: string;
 		deleted: number;
+		consecutive_failures: number | null;
 	} | null;
 	if (!current || current.deleted === 1 || current.status === "cancelled") {
 		logger.info(
@@ -148,8 +166,14 @@ function resetEventTask(
 	}
 
 	const isCompletion = context === "completion" || context === "template completion";
-	const fallbackMs = isCompletion ? 300_000 : 60_000;
-	const nextRunAt = new Date(Date.now() + fallbackMs).toISOString();
+	let nextRunAt: string | null = null;
+	if (!isCompletion) {
+		const failures = current.consecutive_failures ?? 0;
+		if (failures < MAX_EVENT_TASK_FAILURE_BACKOFFS) {
+			nextRunAt = new Date(Date.now() + 60_000).toISOString();
+		}
+	}
+
 	updateRow(
 		db,
 		"tasks",
@@ -807,7 +831,19 @@ export class Scheduler {
 					this.ctx.siteId,
 				);
 
-				// 3. Synthetic tool_result with task payload
+				// 3. Synthetic tool_result with task payload.
+				// Prefixed with a system-injected banner so the model recognizes the
+				// preceding tool_call as machinery, not as something it itself chose
+				// to do. Without this banner, models pattern-match off the injected
+				// retrieve_task call and emit their own redundant retrieve_task({})
+				// calls mid-session — see _feedback:correction:retrieve_task_spin_*
+				// and the 2026-05-16 incident in advisory 0b9441e5-c47a.
+				const systemInjectedBanner =
+					"[System-injected on task wakeup — the preceding `retrieve_task` " +
+					"tool_call was forged by the scheduler, not issued by you. The " +
+					"task payload follows below; treat it as your instructions for " +
+					"this run. Do not call `retrieve_task` yourself; it is a no-op " +
+					"stub that exists only to absorb pattern-matched reflex calls.]\n\n";
 				insertRow(
 					this.ctx.db,
 					"messages",
@@ -815,7 +851,7 @@ export class Scheduler {
 						id: randomUUID(),
 						thread_id: threadId,
 						role: "tool_result",
-						content: taskContent,
+						content: systemInjectedBanner + taskContent,
 						model_id: null,
 						tool_name: toolCallId,
 						created_at: taskNow,
