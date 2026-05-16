@@ -37,11 +37,12 @@ export function writeOutbox(
 		throw new Error("writeOutbox: source_site_id is required for relay routing");
 	}
 	enforcePayloadLimit(entry.payload, maxPayloadBytes);
-	// INSERT OR IGNORE: when idempotency_key + target_site_id matches an
-	// existing row (via idx_relay_outbox_idempotency), the duplicate is
-	// silently discarded. Entries with NULL idempotency_key are never
-	// deduplicated (partial index excludes NULLs).
-	db.run(
+	// INSERT OR IGNORE: when the primary key `id` matches an existing row, OR
+	// when idempotency_key + target_site_id matches an existing row (via
+	// idx_relay_outbox_idempotency), the duplicate is silently discarded.
+	// Entries with NULL idempotency_key are never deduplicated by idempotency
+	// (partial index excludes NULLs), but PK conflicts on `id` still ignore.
+	const result = db.run(
 		`INSERT OR IGNORE INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, created_at, expires_at, delivered)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
 		[
@@ -58,7 +59,20 @@ export function writeOutbox(
 		],
 	);
 
-	// Emit event after insert completes (for WS push-on-write)
+	// Emit event ONLY when a new row was actually inserted. Emitting on a
+	// no-op INSERT-OR-IGNORE creates an infinite synchronous recursion when
+	// the listener calls back into writeOutbox with the same id (e.g. the
+	// hub-side offline-async-buffer path in WsTransport.handleRelaySend, which
+	// re-buffers an entry that's already in relay_outbox). The Node
+	// EventEmitter is synchronous, so duplicate emits stack-recurse until V8
+	// throws RangeError around depth ~5000 — observed in production as
+	// 286k log lines / 99.3% of total log volume in a 26-minute window, with
+	// the hub crash-restarting 35 times.
+	//
+	// Correct semantic: "a new outbox row was added, please route it." A
+	// no-op INSERT means no work to do — silently no-op the emit too.
+	if (result.changes === 0) return;
+
 	// Use module-level eventBus if set, otherwise use passed-in eventBus (for backward compat)
 	const bus = eventBus ?? relayOutboxEventBus;
 	if (bus) {

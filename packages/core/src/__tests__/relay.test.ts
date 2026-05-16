@@ -4,6 +4,7 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RelayInboxEntry, RelayOutboxEntry } from "@bound/shared";
+import { TypedEventEmitter } from "@bound/shared";
 import { createDatabase } from "../database";
 import {
 	PayloadTooLargeError,
@@ -15,6 +16,7 @@ import {
 	readInboxByStreamId,
 	readUndelivered,
 	readUnprocessed,
+	setRelayOutboxEventBus,
 	writeOutbox,
 } from "../relay";
 import { applySchema } from "../schema";
@@ -564,6 +566,153 @@ describe("Relay CRUD Helpers", () => {
 
 			const all = readUndelivered(db);
 			expect(all).toHaveLength(2);
+		});
+	});
+
+	describe("Outbox event emission (relay:outbox-written)", () => {
+		// Regression suite for the spin-loop bug where writeOutbox emitted
+		// `relay:outbox-written` even on no-op INSERT-OR-IGNORE, causing
+		// synchronous infinite recursion through WsTransport.handleRelaySend
+		// (~5000 frames per burst until V8 RangeError, observed in production
+		// as 286k log lines / 99% of total log volume in 26 minutes with the
+		// hub crash-restarting 35 times).
+		let db: ReturnType<typeof createDatabase>;
+		let bus: TypedEventEmitter;
+		let emitted: Array<{ id: string; target_site_id: string }>;
+		let listener: (event: { id: string; target_site_id: string }) => void;
+
+		beforeEach(() => {
+			dbPath = join(tmpdir(), `bound-relay-test-${randomBytes(4).toString("hex")}.db`);
+			db = createDatabase(dbPath);
+			applySchema(db);
+			bus = new TypedEventEmitter();
+			emitted = [];
+			listener = (event) => emitted.push(event);
+			bus.on("relay:outbox-written", listener);
+		});
+
+		afterEach(() => {
+			bus.off("relay:outbox-written", listener);
+			db.close();
+		});
+
+		const baseEntry = (
+			overrides: Partial<RelayOutboxEntry> = {},
+		): Omit<RelayOutboxEntry, "delivered"> => ({
+			id: "msg-1",
+			source_site_id: "hub-site",
+			target_site_id: "spoke-site",
+			kind: "error",
+			ref_id: "req-1",
+			idempotency_key: null,
+			stream_id: null,
+			payload: "{}",
+			created_at: new Date().toISOString(),
+			expires_at: new Date(Date.now() + 60_000).toISOString(),
+			...overrides,
+		});
+
+		it("emits relay:outbox-written when a new row is inserted", () => {
+			writeOutbox(db, baseEntry(), undefined, bus);
+			expect(emitted).toHaveLength(1);
+			expect(emitted[0]).toEqual({ id: "msg-1", target_site_id: "spoke-site" });
+		});
+
+		it("does NOT emit relay:outbox-written on duplicate primary-key INSERT-OR-IGNORE", () => {
+			// First write: row inserted, event fires.
+			writeOutbox(db, baseEntry(), undefined, bus);
+			// Second write with same id: PK conflict, INSERT OR IGNORE is a no-op.
+			// This is exactly the scenario that occurs in
+			// WsTransport.handleRelaySend's offline-async-buffer branch when
+			// re-buffering a hub-self-originated entry that's already in
+			// relay_outbox. Emitting on this no-op INSERT is what produced the
+			// recursion: emit → listener → handleRelaySend → writeOutbox(same id) → emit ...
+			writeOutbox(db, baseEntry(), undefined, bus);
+			expect(emitted).toHaveLength(1);
+		});
+
+		it("does NOT emit relay:outbox-written on duplicate idempotency_key + target_site_id", () => {
+			writeOutbox(
+				db,
+				baseEntry({ id: "msg-A", idempotency_key: "intake:discord:12345" }),
+				undefined,
+				bus,
+			);
+			writeOutbox(
+				db,
+				baseEntry({ id: "msg-B", idempotency_key: "intake:discord:12345" }),
+				undefined,
+				bus,
+			);
+			expect(emitted).toHaveLength(1);
+			expect(emitted[0].id).toBe("msg-A");
+		});
+
+		it("emits separately for the same idempotency_key targeting different sites", () => {
+			writeOutbox(
+				db,
+				baseEntry({
+					id: "msg-A",
+					target_site_id: "spoke-1",
+					idempotency_key: "intake:discord:12345",
+				}),
+				undefined,
+				bus,
+			);
+			writeOutbox(
+				db,
+				baseEntry({
+					id: "msg-B",
+					target_site_id: "spoke-2",
+					idempotency_key: "intake:discord:12345",
+				}),
+				undefined,
+				bus,
+			);
+			expect(emitted).toHaveLength(2);
+		});
+
+		it("breaks a re-entrant listener that calls writeOutbox with the same id (the hub spin-loop reproducer)", () => {
+			// Reproduces the production loop: a listener that re-buffers the
+			// entry through writeOutbox with the same id. With the fix, the
+			// second writeOutbox is a no-op INSERT and emits nothing, so the
+			// listener fires exactly once. Without the fix this would recurse
+			// until V8 throws RangeError around depth ~5000.
+			let depth = 0;
+			const reEntrantListener = (event: { id: string; target_site_id: string }) => {
+				depth++;
+				// Re-buffer with the same id (mirrors handleRelaySend's
+				// offline-async path). Use a defensive cap so a regression
+				// doesn't blow this test's stack: if the fix regresses, the
+				// throw aborts the run with a clear message instead.
+				if (depth > 100) throw new Error("re-entrant emit was not gated");
+				writeOutbox(db, baseEntry({ id: event.id }), undefined, bus);
+			};
+			bus.off("relay:outbox-written", listener);
+			bus.on("relay:outbox-written", reEntrantListener);
+
+			writeOutbox(db, baseEntry(), undefined, bus);
+			expect(depth).toBe(1);
+
+			bus.off("relay:outbox-written", reEntrantListener);
+		});
+
+		it("uses the module-level event bus when no explicit eventBus is passed", () => {
+			const moduleEmitted: Array<{ id: string; target_site_id: string }> = [];
+			const moduleListener = (e: { id: string; target_site_id: string }) => moduleEmitted.push(e);
+			bus.on("relay:outbox-written", moduleListener);
+			setRelayOutboxEventBus(bus);
+			try {
+				writeOutbox(db, baseEntry({ id: "msg-module" }));
+				expect(moduleEmitted).toHaveLength(1);
+				expect(moduleEmitted[0].id).toBe("msg-module");
+				// Duplicate insert via module-level bus also no-ops.
+				writeOutbox(db, baseEntry({ id: "msg-module" }));
+				expect(moduleEmitted).toHaveLength(1);
+			} finally {
+				bus.off("relay:outbox-written", moduleListener);
+				setRelayOutboxEventBus(null as unknown as TypedEventEmitter);
+			}
 		});
 	});
 
