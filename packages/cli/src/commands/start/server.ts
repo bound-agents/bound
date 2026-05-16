@@ -21,6 +21,7 @@ import {
 	enqueueMessage,
 	enqueueNotification,
 	expireClientToolCalls,
+	findFreshPlatformHost,
 	hasPendingClientToolCalls,
 	insertRow,
 	markProcessed,
@@ -918,25 +919,15 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				method: string,
 				params: Record<string, unknown>,
 			): Promise<unknown> => {
-				const rows = appContext.db
-					.query(
-						"SELECT site_id, platforms FROM hosts WHERE deleted = 0 AND platforms IS NOT NULL AND site_id != ?",
-					)
-					.all(appContext.siteId) as Array<{ site_id: string; platforms: string }>;
-				let targetSiteId: string | null = null;
-				for (const row of rows) {
-					try {
-						const platforms = JSON.parse(row.platforms) as string[];
-						if (Array.isArray(platforms) && platforms.includes(serverName)) {
-							targetSiteId = row.site_id;
-							break;
-						}
-					} catch {
-						// Skip hosts with corrupted platforms JSON
-					}
-				}
+				// Pick a *fresh* remote host (heartbeat within stale threshold) that
+				// advertises this platform. Filtering on freshness here is what
+				// turns the failure mode of "remote daemon crashed silently" from
+				// a 15s relay timeout into an immediate descriptive error.
+				const targetSiteId = findFreshPlatformHost(appContext.db, serverName, appContext.siteId);
 				if (!targetSiteId) {
-					throw new Error(`No remote host found for platform server '${serverName}'`);
+					throw new Error(
+						`No fresh remote host found for platform server '${serverName}' (no advertising peer has heart-beated within the stale threshold)`,
+					);
 				}
 
 				const entry = createRelayOutboxEntry(
