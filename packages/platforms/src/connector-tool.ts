@@ -9,7 +9,7 @@ import {
 	getConnectorHandle,
 	getConnectorHandlesByServer,
 } from "./connector-handle.js";
-import type { PlatformMcpRegistry } from "./mcp-registry.js";
+import type { PlatformMcpRegistry, RemotePlatformRequest } from "./mcp-registry.js";
 
 /**
  * Return type for the connector tool factory.
@@ -38,11 +38,7 @@ export interface ConnectorToolContext {
 	db: Database;
 	siteId: string;
 	/** Proxies an MCP protocol request to a remote platform host via relay. */
-	remotePlatformRequest?: (
-		serverName: string,
-		method: string,
-		params: Record<string, unknown>,
-	) => Promise<unknown>;
+	remotePlatformRequest?: RemotePlatformRequest;
 }
 
 /**

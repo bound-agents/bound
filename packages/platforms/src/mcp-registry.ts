@@ -32,6 +32,22 @@ export interface PlatformMcpRegistryDeps {
 }
 
 /**
+ * Proxies an MCP protocol request to a remote platform host via the relay.
+ * Implementations are responsible for selecting the target host (typically
+ * the first non-local entry in `hosts.platforms` advertising `serverName`)
+ * and translating the response back into a plain JSON value.
+ *
+ * Used both by the connector tool (for `events/list` against a remote
+ * platform) and by `PlatformMcpRegistry.discoverRemoteTools()` (for
+ * `tools/list` and `tools/call` against a remote platform).
+ */
+export type RemotePlatformRequest = (
+	serverName: string,
+	method: string,
+	params: Record<string, unknown>,
+) => Promise<unknown>;
+
+/**
  * Platform tool registration entry (minimal subset of RegisteredTool to avoid circular dependency).
  * Execute returns a string result (tool output) or an error message.
  */
@@ -93,6 +109,12 @@ export class PlatformMcpRegistry {
 	private activeSubscriptions = new Map<string, ActiveSubscription>();
 	private pollTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private platformTools = new Map<string, Map<string, PlatformRegisteredTool>>(); // serverName → toolName → PlatformRegisteredTool
+	// Tools advertised by remote hosts (cluster discovery via relay).
+	// Populated by discoverRemoteTools(); mirrors the platformTools shape.
+	// Local entries always take precedence on name collisions — see
+	// getReadOnlyPlatformTools() / getAllPlatformTools().
+	private remoteTools = new Map<string, Map<string, PlatformRegisteredTool>>(); // serverName → toolName → PlatformRegisteredTool
+	private remotePlatformRequest: RemotePlatformRequest | null = null;
 	private deps: PlatformMcpRegistryDeps;
 
 	constructor(deps: PlatformMcpRegistryDeps) {
@@ -242,6 +264,147 @@ export class PlatformMcpRegistry {
 	 */
 	getServerEntry(name: string): PlatformServerEntry | undefined {
 		return this.servers.get(name);
+	}
+
+	/**
+	 * Wires the relay proxy used for cross-host platform tool calls.
+	 * Must be set before discoverRemoteTools(); a no-op until then.
+	 *
+	 * The proxy is supplied by the caller (typically constructed in the CLI's
+	 * server.ts / scheduler.ts startup code) because it depends on AppContext
+	 * + the relay outbox/inbox plumbing that the registry deliberately doesn't
+	 * import.
+	 */
+	setRemotePlatformRequest(fn: RemotePlatformRequest): void {
+		this.remotePlatformRequest = fn;
+	}
+
+	/**
+	 * Discovers tools advertised by remote platform connectors via the relay.
+	 *
+	 * For each remote host in `hosts.platforms` (excluding this site), calls
+	 * `tools/list` per advertised platform server and synthesizes
+	 * PlatformRegisteredTool entries whose `execute` proxies `tools/call`
+	 * back through the same relay. Annotations (`readOnlyHint`,
+	 * `destructiveHint`, `idempotentHint`) are preserved end-to-end so the
+	 * agent's retry policy and read-only filtering apply identically to
+	 * remote and local platform tools.
+	 *
+	 * Replaces the entire remote cache atomically: tools that disappeared on
+	 * the remote since the last call are removed from the local view.
+	 *
+	 * Errors per server are caught and logged; a broken host does not block
+	 * discovery of healthy ones.
+	 *
+	 * No-op when `setRemotePlatformRequest()` has not been called yet, so
+	 * tests/single-host setups without a relay proxy stay quiet.
+	 */
+	async discoverRemoteTools(): Promise<void> {
+		const remotePlatformRequest = this.remotePlatformRequest;
+		if (!remotePlatformRequest) return;
+
+		// Aggregate remote platform server names across all non-local hosts.
+		// Multiple hosts advertising the same server are collapsed: the relay
+		// proxy itself decides which one to route to (typically the first).
+		const remoteServerNames = new Set<string>();
+		const rows = this.deps.db
+			.query(
+				"SELECT site_id, platforms FROM hosts WHERE deleted = 0 AND platforms IS NOT NULL AND site_id != ?",
+			)
+			.all(this.deps.siteId) as Array<{ site_id: string; platforms: string }>;
+		for (const row of rows) {
+			try {
+				const platforms = JSON.parse(row.platforms) as string[];
+				if (Array.isArray(platforms)) {
+					for (const p of platforms) remoteServerNames.add(p);
+				}
+			} catch {
+				// Skip hosts with corrupted platforms JSON; an offline/upgrading
+				// peer should never mask a healthy peer's tools.
+			}
+		}
+
+		// Build a fresh cache off to the side, then swap. This keeps the
+		// existing cache observable to readers until discovery completes —
+		// no half-applied state during a slow round-trip.
+		const nextCache = new Map<string, Map<string, PlatformRegisteredTool>>();
+
+		for (const serverName of remoteServerNames) {
+			try {
+				const result = (await remotePlatformRequest(serverName, "tools/list", {})) as {
+					tools?: Array<{
+						name: string;
+						description?: string;
+						inputSchema?: Record<string, unknown>;
+						annotations?: PlatformRegisteredTool["annotations"];
+					}>;
+				};
+				const tools = result?.tools ?? [];
+				const serverTools = new Map<string, PlatformRegisteredTool>();
+				for (const tool of tools) {
+					serverTools.set(tool.name, this.makeRemoteTool(serverName, tool, remotePlatformRequest));
+				}
+				nextCache.set(serverName, serverTools);
+				this.deps.logger.info(
+					`Discovered ${serverTools.size} remote tools from platform '${serverName}'`,
+				);
+			} catch (err) {
+				this.deps.logger.error(
+					`Failed to discover remote tools from platform '${serverName}': ${err}`,
+				);
+				// Drop this server from the cache on failure rather than holding
+				// onto stale entries — a healthy local fallback is preferable to
+				// pointing the agent at a relay endpoint that won't answer.
+			}
+		}
+
+		this.remoteTools = nextCache;
+	}
+
+	/**
+	 * Constructs a PlatformRegisteredTool whose `execute` relays a tools/call
+	 * request to the remote host owning `serverName`. Mirrors the shape of
+	 * the local-tool entry produced by discoverTools() so the rest of the
+	 * agent pipeline can treat them interchangeably.
+	 */
+	private makeRemoteTool(
+		serverName: string,
+		tool: {
+			name: string;
+			description?: string;
+			inputSchema?: Record<string, unknown>;
+			annotations?: PlatformRegisteredTool["annotations"];
+		},
+		remotePlatformRequest: RemotePlatformRequest,
+	): PlatformRegisteredTool {
+		return {
+			kind: "platform",
+			toolDefinition: {
+				type: "function",
+				function: {
+					name: tool.name,
+					description: tool.description ?? "",
+					parameters: tool.inputSchema as Record<string, unknown>,
+				},
+			},
+			execute: async (input: Record<string, unknown>): Promise<string> => {
+				const callResult = (await remotePlatformRequest(serverName, "tools/call", {
+					name: tool.name,
+					arguments: input,
+				})) as {
+					content?: Array<{ type: string; text?: string }>;
+					isError?: boolean;
+				};
+				const content = callResult?.content ?? [];
+				const textContent = content
+					.filter((c) => c.type === "text")
+					.map((c) => c.text ?? "")
+					.join("\n");
+				const isError = callResult?.isError ?? false;
+				return isError ? `Error: ${textContent}` : textContent || "done";
+			},
+			annotations: tool.annotations,
+		};
 	}
 
 	/**
@@ -582,10 +745,17 @@ export class PlatformMcpRegistry {
 	}
 
 	/**
-	 * Returns ALL platform tools from ALL servers (used by tool resolver for connector-tool scoping).
+	 * Returns ALL platform tools across local + remote servers.
+	 * Local tools win on name collision (see remote-tool-relay tests).
 	 */
 	getAllPlatformTools(): Map<string, PlatformRegisteredTool> {
 		const all = new Map<string, PlatformRegisteredTool>();
+		// Remote first so local entries can overwrite on collision.
+		for (const [_serverName, tools] of this.remoteTools) {
+			for (const [toolName, tool] of tools) {
+				all.set(toolName, tool);
+			}
+		}
 		for (const [_serverName, tools] of this.platformTools) {
 			for (const [toolName, tool] of tools) {
 				all.set(toolName, tool);
@@ -595,11 +765,20 @@ export class PlatformMcpRegistry {
 	}
 
 	/**
-	 * Returns platform tools annotated as read-only across all servers.
+	 * Returns platform tools annotated as read-only across local + remote servers.
 	 * Tools without annotations or with readOnlyHint !== true are excluded.
+	 * Local tools win on name collision.
 	 */
 	getReadOnlyPlatformTools(): Map<string, PlatformRegisteredTool> {
 		const readOnly = new Map<string, PlatformRegisteredTool>();
+		// Remote first so local entries can overwrite on collision.
+		for (const [_serverName, tools] of this.remoteTools) {
+			for (const [toolName, tool] of tools) {
+				if (tool.annotations?.readOnlyHint === true) {
+					readOnly.set(toolName, tool);
+				}
+			}
+		}
 		for (const [_serverName, tools] of this.platformTools) {
 			for (const [toolName, tool] of tools) {
 				if (tool.annotations?.readOnlyHint === true) {
