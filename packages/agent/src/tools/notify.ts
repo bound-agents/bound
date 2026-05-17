@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { enqueueNotification } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import { z } from "zod";
@@ -38,21 +39,53 @@ function findDmThread(
 }
 
 /**
+ * Compute a stable dedup_key for a notify call. Slots one in-flight notify per
+ * (source_thread, target_thread, content_hash) — byte-identical retries while
+ * the target is busy collapse onto the same dispatch_queue entry instead of
+ * piling redundant notifications.
+ *
+ * Different content from the same source produces a different key and queues
+ * normally; introspect uses a separate type prefix so introspect+notify with
+ * matching content do NOT dedup against each other (intentional — falling
+ * back from introspect to notify is a legitimate dual-channel pattern).
+ */
+function computeNotifyDedupKey(
+	sourceThread: string | undefined,
+	targetThread: string,
+	content: string,
+): string {
+	const hash = createHash("sha256")
+		.update(`${sourceThread ?? "anon"}:${targetThread}:${content}`)
+		.digest("hex")
+		.slice(0, 32);
+	return `notify:${hash}`;
+}
+
+/**
  * Enqueue a proactive notification and signal the server to run inference.
+ * Returns true when a fresh row was inserted, false when the call collided
+ * with an in-flight equivalent (caller should report dedup status).
  */
 function enqueueAndSignal(
 	ctx: ToolContext,
 	threadId: string,
 	sourceThreadId: string | undefined,
 	message: string,
-): void {
-	enqueueNotification(ctx.db, threadId, {
-		type: "proactive",
-		source_thread: sourceThreadId ?? null,
-		content: message,
-	});
+): { deduped: boolean } {
+	const dedupKey = computeNotifyDedupKey(sourceThreadId, threadId, message);
+	const result = enqueueNotification(
+		ctx.db,
+		threadId,
+		{
+			type: "proactive",
+			source_thread: sourceThreadId ?? null,
+			content: message,
+		},
+		{ dedupKey },
+	);
 
 	ctx.eventBus.emit("notify:enqueued", { thread_id: threadId });
+	return { deduped: result.deduped };
 }
 
 const notifySchema = z.object({
@@ -90,7 +123,10 @@ function handleThread(input: NotifyInput, ctx: ToolContext): string {
 		return `Error: Thread not found or is deleted: ${input.thread_id}`;
 	}
 
-	enqueueAndSignal(ctx, thread.id, ctx.threadId, input.message.trim());
+	const { deduped } = enqueueAndSignal(ctx, thread.id, ctx.threadId, input.message.trim());
+	if (deduped) {
+		return `Notification deduped against in-flight equivalent for thread ${input.thread_id} (same source, target, and content already pending). Wait for it to be processed before retrying.`;
+	}
 	return `Notification enqueued for thread ${input.thread_id}.`;
 }
 
@@ -125,7 +161,10 @@ function handleUser(input: NotifyInput, ctx: ToolContext): string {
 		return "Error: Cannot notify the current thread. Run notify from a background task to deliver to this thread.";
 	}
 
-	enqueueAndSignal(ctx, thread.id, ctx.threadId, input.message.trim());
+	const { deduped } = enqueueAndSignal(ctx, thread.id, ctx.threadId, input.message.trim());
+	if (deduped) {
+		return `Notification deduped against in-flight equivalent for ${input.user} on ${input.platform} (same source, target, and content already pending). Wait for it to be processed before retrying.`;
+	}
 	return `Notification enqueued for ${input.user} on ${input.platform}.`;
 }
 

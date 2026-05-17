@@ -435,4 +435,150 @@ describe("notify tool", () => {
 			expect(emittedEvents.length).toBe(0);
 		});
 	});
+
+	describe("dedup behavior", () => {
+		// Background: production incident showed source threads retrying notify
+		// while the target was busy, stacking redundant entries onto the
+		// dispatch_queue. Per-(source, target, content_hash) dedup_key collapses
+		// byte-identical retries onto one slot.
+
+		function seedTargetThread(threadId: string): void {
+			const now = new Date().toISOString();
+			insertRow(
+				db,
+				"threads",
+				{
+					id: threadId,
+					user_id: deterministicUUID(BOUND_NAMESPACE, "test-user"),
+					interface: "web",
+					host_origin: "test-host",
+					title: "Test Thread",
+					created_at: now,
+					last_message_at: now,
+					modified_at: now,
+					deleted: 0,
+				},
+				ctx.siteId,
+			);
+		}
+
+		it("byte-identical notify retry collapses onto one queue entry", async () => {
+			const targetId = "target-dedup-1";
+			seedTargetThread(targetId);
+			const tool = createNotifyTool(ctx);
+
+			const r1 = await tool.execute({
+				action: "thread",
+				thread_id: targetId,
+				message: "fix-up X please",
+			});
+			const r2 = await tool.execute({
+				action: "thread",
+				thread_id: targetId,
+				message: "fix-up X please",
+			});
+
+			expect(r1).toContain("enqueued");
+			expect(r1).not.toContain("deduped");
+			expect(r2).toContain("deduped");
+
+			const rows = db
+				.query("SELECT message_id FROM dispatch_queue WHERE thread_id = ?")
+				.all(targetId);
+			expect(rows).toHaveLength(1);
+
+			// Both calls emit the wakeup event — the second is a no-op for the
+			// agent loop (queue is unchanged) but doesn't hurt.
+			expect(emittedEvents.length).toBe(2);
+		});
+
+		it("notify with different content from same source does NOT dedup", async () => {
+			const targetId = "target-dedup-2";
+			seedTargetThread(targetId);
+			const tool = createNotifyTool(ctx);
+
+			const r1 = await tool.execute({
+				action: "thread",
+				thread_id: targetId,
+				message: "first message",
+			});
+			const r2 = await tool.execute({
+				action: "thread",
+				thread_id: targetId,
+				message: "different second message",
+			});
+
+			expect(r1).toContain("enqueued");
+			expect(r2).toContain("enqueued");
+			expect(r2).not.toContain("deduped");
+
+			const rows = db
+				.query("SELECT message_id FROM dispatch_queue WHERE thread_id = ?")
+				.all(targetId);
+			expect(rows).toHaveLength(2);
+		});
+
+		it("notify allows re-enqueue once prior entry is acknowledged", async () => {
+			const targetId = "target-dedup-3";
+			seedTargetThread(targetId);
+			const tool = createNotifyTool(ctx);
+
+			const r1 = await tool.execute({
+				action: "thread",
+				thread_id: targetId,
+				message: "ping",
+			});
+			expect(r1).toContain("enqueued");
+
+			// Mark the queued entry as acknowledged (simulates target processing it)
+			db.run(
+				"UPDATE dispatch_queue SET status = 'acknowledged' WHERE thread_id = ? AND status = 'pending'",
+				[targetId],
+			);
+
+			const r2 = await tool.execute({
+				action: "thread",
+				thread_id: targetId,
+				message: "ping",
+			});
+			expect(r2).toContain("enqueued");
+			expect(r2).not.toContain("deduped");
+
+			const rows = db
+				.query("SELECT message_id FROM dispatch_queue WHERE thread_id = ?")
+				.all(targetId);
+			expect(rows).toHaveLength(2);
+		});
+
+		it("regression: 3 byte-identical notify retries while target is busy collapse to 1 entry", async () => {
+			// Production incident shape: source thread sends 3 redundant notify
+			// calls (e.g. an introspect-then-notify-fallback pattern) with same
+			// content. Pre-fix: target sees 3 messages. Post-fix: 1 + 2 dedup'd.
+			const targetId = "target-regression";
+			seedTargetThread(targetId);
+			const tool = createNotifyTool(ctx);
+
+			const message = "Fix-up follow-up to commit 1039fbb...";
+			const results = await Promise.all([
+				tool.execute({ action: "thread", thread_id: targetId, message }),
+				tool.execute({ action: "thread", thread_id: targetId, message }),
+				tool.execute({ action: "thread", thread_id: targetId, message }),
+			]);
+
+			// At least one inserted; the others dedup'd (parallel races allowed
+			// for one or more to win, but only one row should land in the queue).
+			const enqueuedCount = results.filter((r) => !r.includes("deduped")).length;
+			const dedupedCount = results.filter((r) => r.includes("deduped")).length;
+			expect(enqueuedCount).toBeGreaterThanOrEqual(1);
+			expect(dedupedCount).toBeGreaterThanOrEqual(1);
+			expect(enqueuedCount + dedupedCount).toBe(3);
+
+			const rows = db
+				.query(
+					"SELECT message_id FROM dispatch_queue WHERE thread_id = ? AND status IN ('pending', 'processing')",
+				)
+				.all(targetId);
+			expect(rows).toHaveLength(1);
+		});
+	});
 });

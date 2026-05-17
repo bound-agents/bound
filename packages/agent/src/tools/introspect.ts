@@ -59,25 +59,53 @@ export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
 					return `Error: Thread not found or is deleted: ${input.thread_id}`;
 				}
 
-				// Generate correlation ID
-				const correlationId = randomUUID();
+				// Generate correlation ID and compute dedup slot.
+				// dedup_key scopes one in-flight introspect per (source, target).
+				// If a prior introspect from this thread to that thread is still
+				// pending or processing, we share that entry's correlation_id and
+				// poll for the same response — this is how byte-similar retries
+				// (LLM regenerates the same intent twice while target is busy)
+				// avoid piling redundant notifications onto the target's queue.
+				const sourceThread = ctx.threadId ?? "anon";
+				const dedupKey = `introspect:${sourceThread}`;
+				const generatedCorrelationId = randomUUID();
 
-				// Enqueue notification with introspect payload
-				enqueueNotification(ctx.db, input.thread_id, {
-					type: "introspect",
-					correlation_id: correlationId,
-					source_thread: ctx.threadId ?? null,
-					content: input.message,
-				});
+				// Enqueue notification with introspect payload (deduped per source/target slot)
+				const enqueueResult = enqueueNotification(
+					ctx.db,
+					input.thread_id,
+					{
+						type: "introspect",
+						correlation_id: generatedCorrelationId,
+						source_thread: ctx.threadId ?? null,
+						content: input.message,
+					},
+					{ dedupKey },
+				);
 
-				// Emit event for wakeup
+				// On dedup, switch to the existing entry's correlation_id so our
+				// polling discovers the response stamped against the prior request.
+				const existingCorrelationId =
+					enqueueResult.deduped && typeof enqueueResult.existingPayload?.correlation_id === "string"
+						? (enqueueResult.existingPayload.correlation_id as string)
+						: null;
+				const correlationId = existingCorrelationId ?? generatedCorrelationId;
+
+				// Emit event for wakeup (no-op if dedup'd, but the prior request
+				// may already be processing — the second emit doesn't hurt).
 				ctx.eventBus.emit("notify:enqueued", { thread_id: input.thread_id });
 
 				// Setup polling
 				const timeout = input.timeout ?? DEFAULT_TIMEOUT_MS;
 				const startTime = Date.now();
-				// 5-second clock-skew buffer for cross-host scenarios
-				const dispatchTime = new Date(Date.now() - 5000).toISOString();
+				// 5-second clock-skew buffer for cross-host scenarios. When dedup'd,
+				// anchor dispatchTime to the EXISTING entry's created_at so we can
+				// find the response if it was stamped before our retry started.
+				const baseTime =
+					enqueueResult.deduped && enqueueResult.existingCreatedAt
+						? new Date(enqueueResult.existingCreatedAt).getTime()
+						: Date.now();
+				const dispatchTime = new Date(baseTime - 5000).toISOString();
 
 				// Polling loop
 				while (true) {

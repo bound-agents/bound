@@ -865,4 +865,178 @@ describe("introspect tool", () => {
 			});
 		});
 	});
+
+	describe("dedup behavior (per source/target slot)", () => {
+		// Background: production incident showed source threads retrying introspect
+		// with byte-similar content while the target was busy, stacking 2-3
+		// redundant entries onto the target's dispatch_queue. Per-(source, target)
+		// dedup_key collapses retries onto one slot — the second call shares the
+		// first call's correlation_id and polls for the same response.
+
+		function seedTargetThread(threadId: string): void {
+			const now = new Date().toISOString();
+			insertRow(
+				db,
+				"threads",
+				{
+					id: threadId,
+					user_id: deterministicUUID(BOUND_NAMESPACE, "test-user"),
+					interface: "web",
+					host_origin: "test-host",
+					title: "Target",
+					created_at: now,
+					last_message_at: now,
+					modified_at: now,
+					deleted: 0,
+				},
+				ctx.siteId,
+			);
+		}
+
+		it("retry from same source to same target collapses to one queue entry", async () => {
+			const targetId = "introspect-dedup-target";
+			seedTargetThread(targetId);
+			const tool = createIntrospectTool(ctx);
+
+			// Two parallel introspect calls — both with short timeout so they
+			// exit quickly. The second should dedup against the first.
+			const [r1, r2] = await Promise.all([
+				tool.execute({ thread_id: targetId, message: "Q1", timeout: 50 }),
+				tool.execute({ thread_id: targetId, message: "Q1 (slight rephrase)", timeout: 50 }),
+			]);
+
+			// Both return timeout errors (target never responded), but only ONE
+			// queue entry should exist — the second call's enqueue dedup'd.
+			expect(r1).toContain("Error");
+			expect(r2).toContain("Error");
+
+			const rows = db
+				.query(
+					"SELECT message_id, dedup_key FROM dispatch_queue WHERE thread_id = ? AND status IN ('pending', 'processing')",
+				)
+				.all(targetId) as Array<{ message_id: string; dedup_key: string | null }>;
+
+			expect(rows).toHaveLength(1);
+			expect(rows[0].dedup_key).toBe("introspect:current-thread");
+		});
+
+		it("dedup'd retry shares the first call's correlation_id and finds its response stamp", async () => {
+			const targetId = "introspect-shared-corr";
+			seedTargetThread(targetId);
+			const tool = createIntrospectTool(ctx);
+
+			// First call — fire and capture its correlation_id from the queue.
+			const firstPromise = tool.execute({
+				thread_id: targetId,
+				message: "shared question",
+				timeout: 5000,
+			});
+			await new Promise((r) => setTimeout(r, 10));
+
+			const queueRow = db
+				.query("SELECT event_payload FROM dispatch_queue WHERE thread_id = ?")
+				.get(targetId) as { event_payload: string };
+			const firstCorrId = JSON.parse(queueRow.event_payload).correlation_id as string;
+
+			// Second call — should dedup. While it polls, we'll stamp a response
+			// using the FIRST call's correlation_id to simulate the target
+			// answering the (one) shared request.
+			const secondPromise = tool.execute({
+				thread_id: targetId,
+				message: "shared question (rephrased)",
+				timeout: 5000,
+			});
+
+			// Give second call time to enqueue + start polling.
+			await new Promise((r) => setTimeout(r, 50));
+
+			// Stamp response — both polling loops (first and second) should find it.
+			const responseTs = new Date().toISOString();
+			insertRow(
+				db,
+				"messages",
+				{
+					id: "shared-response-msg",
+					thread_id: targetId,
+					role: "assistant",
+					content: "the shared answer",
+					created_at: responseTs,
+					modified_at: responseTs,
+					host_origin: "test-host",
+					deleted: 0,
+					metadata: JSON.stringify({ introspect_response_id: firstCorrId }),
+				},
+				ctx.siteId,
+			);
+
+			const [firstResult, secondResult] = await Promise.all([firstPromise, secondPromise]);
+			expect(firstResult).toBe("the shared answer");
+			expect(secondResult).toBe("the shared answer");
+		});
+
+		it("dedup releases once prior entry is acknowledged", async () => {
+			const targetId = "introspect-release";
+			seedTargetThread(targetId);
+			const tool = createIntrospectTool(ctx);
+
+			// First call → enqueue + (we then ack manually to simulate processed)
+			const firstPromise = tool.execute({
+				thread_id: targetId,
+				message: "first",
+				timeout: 50,
+			});
+			await firstPromise;
+
+			db.run(
+				"UPDATE dispatch_queue SET status = 'acknowledged' WHERE thread_id = ? AND status = 'pending'",
+				[targetId],
+			);
+
+			// Second call — same source + target but prior is acknowledged, so
+			// dedup index doesn't constrain. New entry should be inserted.
+			const secondPromise = tool.execute({
+				thread_id: targetId,
+				message: "second",
+				timeout: 50,
+			});
+			await secondPromise;
+
+			const rows = db
+				.query("SELECT message_id FROM dispatch_queue WHERE thread_id = ?")
+				.all(targetId);
+			// 2 rows total: 1 acknowledged + 1 fresh pending.
+			expect(rows).toHaveLength(2);
+		});
+
+		it("regression: 3 retries with content drift collapse to 1 queue entry (the production incident shape)", async () => {
+			// Reproduces the May 17 incident: source thread sent 2 introspect
+			// retries with byte-different content (LLM regenerated similar text)
+			// while target was committing tests. Pre-fix: target saw both copies.
+			// Post-fix: per-(source, target) dedup collapses regardless of
+			// content drift.
+			const targetId = "introspect-incident";
+			seedTargetThread(targetId);
+			const tool = createIntrospectTool(ctx);
+
+			const messages = [
+				"Fix-up follow-up to commit 1039fbb. Problem: when every createDM rejects, the tool returns [], which is indistinguishable from an empty allowed_users.",
+				"Fix-up follow-up to commit 1039fbb. Problem: when every createDM rejects, the tool returns [], indistinguishable from an empty allowed_users.",
+				"Fix-up follow-up to commit 1039fbb. Diagnosed in another thread: when every createDM rejects, the tool returns [], indistinguishable from an empty allowed_users.",
+			];
+
+			await Promise.all(
+				messages.map((m) => tool.execute({ thread_id: targetId, message: m, timeout: 50 })),
+			);
+
+			const rows = db
+				.query(
+					"SELECT message_id, dedup_key FROM dispatch_queue WHERE thread_id = ? AND status IN ('pending', 'processing')",
+				)
+				.all(targetId) as Array<{ message_id: string; dedup_key: string | null }>;
+
+			// Despite 3 distinct content strings, all 3 dedup onto one slot.
+			expect(rows).toHaveLength(1);
+			expect(rows[0].dedup_key).toBe("introspect:current-thread");
+		});
+	});
 });

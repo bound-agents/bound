@@ -708,6 +708,28 @@ export function applySchema(db: Database): void {
 		WHERE status = 'pending'
 	`);
 
+	// dedup_key column + partial unique index for introspect/notify dedup.
+	// The partial unique index constrains only entries with non-null dedup_key
+	// AND active status. Once a row transitions to 'acknowledged' or 'expired'
+	// it leaves the index, so the same dedup_key can be reused for a fresh
+	// request later.
+	//
+	// Background: introspect/notify failures used to surface as the source
+	// thread retrying with byte-similar payloads while the target was busy,
+	// piling 2-3 redundant notifications onto the target's dispatch queue.
+	// See packages/agent/src/tools/{introspect,notify}.ts for the dedup-key
+	// derivation strategy (per source/target/type slot).
+	try {
+		db.run("ALTER TABLE dispatch_queue ADD COLUMN dedup_key TEXT");
+	} catch {
+		// Column already exists
+	}
+	db.run(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatch_queue_dedup
+		ON dispatch_queue(thread_id, dedup_key)
+		WHERE dedup_key IS NOT NULL AND status IN ('pending', 'processing')
+	`);
+
 	// Hierarchical memory: add tier column for retrieval priority classification
 	try {
 		db.run("ALTER TABLE semantic_memory ADD COLUMN tier TEXT DEFAULT 'default'");

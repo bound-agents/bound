@@ -356,7 +356,8 @@ describe("enqueueNotification", () => {
 		const threadId = randomUUID();
 		const payload = { type: "task_complete", task_id: "abc", task_name: "Daily summary" };
 
-		const entryId = enqueueNotification(db, threadId, payload);
+		const { entryId, deduped } = enqueueNotification(db, threadId, payload);
+		expect(deduped).toBe(false);
 
 		const row = db.query("SELECT * FROM dispatch_queue WHERE message_id = ?").get(entryId) as {
 			message_id: string;
@@ -405,6 +406,165 @@ describe("enqueueNotification", () => {
 		} | null;
 
 		expect(row?.event_type).toBe("user_message");
+	});
+
+	describe("dedup_key behavior", () => {
+		// Background: introspect/notify retries from busy source threads used to
+		// stack 2-3 redundant entries onto the target's dispatch_queue, all of
+		// which the target then had to consume. The dedup_key partial unique
+		// index gates duplicates while the prior entry is still pending or
+		// processing. See packages/agent/src/tools/{introspect,notify}.ts for
+		// the per-source/target/type slot-keying strategy.
+
+		it("inserts when dedupKey is omitted (back-compat path)", () => {
+			const threadId = randomUUID();
+			const r1 = enqueueNotification(db, threadId, { type: "test", n: 1 });
+			const r2 = enqueueNotification(db, threadId, { type: "test", n: 2 });
+			expect(r1.deduped).toBe(false);
+			expect(r2.deduped).toBe(false);
+			expect(r1.entryId).not.toBe(r2.entryId);
+
+			const rows = db
+				.query("SELECT message_id FROM dispatch_queue WHERE thread_id = ?")
+				.all(threadId);
+			expect(rows).toHaveLength(2);
+		});
+
+		it("dedupes when dedupKey collides on pending entry — returns existing entry id and payload", () => {
+			const threadId = randomUUID();
+			const dedupKey = "introspect:source-A";
+
+			const first = enqueueNotification(
+				db,
+				threadId,
+				{ type: "introspect", correlation_id: "corr-1", content: "first call" },
+				{ dedupKey },
+			);
+			expect(first.deduped).toBe(false);
+
+			const second = enqueueNotification(
+				db,
+				threadId,
+				{ type: "introspect", correlation_id: "corr-2", content: "second call" },
+				{ dedupKey },
+			);
+			expect(second.deduped).toBe(true);
+			// The collision returns the FIRST entry's id and payload — winner stays.
+			expect(second.entryId).toBe(first.entryId);
+			expect(second.existingPayload?.correlation_id).toBe("corr-1");
+			expect(second.existingPayload?.content).toBe("first call");
+			expect(typeof second.existingCreatedAt).toBe("string");
+
+			// Only ONE row in the queue.
+			const rows = db
+				.query("SELECT message_id FROM dispatch_queue WHERE thread_id = ?")
+				.all(threadId);
+			expect(rows).toHaveLength(1);
+		});
+
+		it("does NOT dedup when prior entry is acknowledged (partial index drops it)", () => {
+			const threadId = randomUUID();
+			const dedupKey = "notify:source-B";
+
+			const first = enqueueNotification(
+				db,
+				threadId,
+				{ type: "proactive", content: "ping" },
+				{ dedupKey },
+			);
+			expect(first.deduped).toBe(false);
+
+			// Simulate target processing + ack
+			db.run("UPDATE dispatch_queue SET status = 'acknowledged' WHERE message_id = ?", [
+				first.entryId,
+			]);
+
+			// Same dedupKey, fresh enqueue — should succeed because partial unique
+			// index only constrains pending/processing rows.
+			const second = enqueueNotification(
+				db,
+				threadId,
+				{ type: "proactive", content: "ping again" },
+				{ dedupKey },
+			);
+			expect(second.deduped).toBe(false);
+			expect(second.entryId).not.toBe(first.entryId);
+
+			const rows = db
+				.query("SELECT message_id FROM dispatch_queue WHERE thread_id = ?")
+				.all(threadId);
+			expect(rows).toHaveLength(2);
+		});
+
+		it("scopes dedup per thread_id — same dedupKey on different threads does not collide", () => {
+			const threadA = randomUUID();
+			const threadB = randomUUID();
+			const dedupKey = "introspect:source-C";
+
+			const a = enqueueNotification(db, threadA, { type: "introspect" }, { dedupKey });
+			const b = enqueueNotification(db, threadB, { type: "introspect" }, { dedupKey });
+			expect(a.deduped).toBe(false);
+			expect(b.deduped).toBe(false);
+			expect(a.entryId).not.toBe(b.entryId);
+		});
+
+		it("dedupes against 'processing' status as well (not just 'pending')", () => {
+			const threadId = randomUUID();
+			const dedupKey = "introspect:source-D";
+
+			const first = enqueueNotification(db, threadId, { type: "introspect" }, { dedupKey });
+			db.run("UPDATE dispatch_queue SET status = 'processing' WHERE message_id = ?", [
+				first.entryId,
+			]);
+
+			const second = enqueueNotification(db, threadId, { type: "introspect" }, { dedupKey });
+			expect(second.deduped).toBe(true);
+			expect(second.entryId).toBe(first.entryId);
+		});
+
+		it("the regression-shape case: 3 retries with same dedupKey collapse to 1 queue entry", () => {
+			// Reproduces the production incident shape: source thread retries the
+			// same logical request 3 times (introspect, introspect, notify) while
+			// target is busy. With per-source/target/type dedup_key, all three
+			// collapse onto one queue slot.
+			const targetThread = randomUUID();
+			const dedupKey = "introspect:busy-source";
+
+			const r1 = enqueueNotification(
+				db,
+				targetThread,
+				{ type: "introspect", correlation_id: "c-1", content: "fix-up X" },
+				{ dedupKey },
+			);
+			const r2 = enqueueNotification(
+				db,
+				targetThread,
+				{ type: "introspect", correlation_id: "c-2", content: "fix-up X (rephrased)" },
+				{ dedupKey },
+			);
+			const r3 = enqueueNotification(
+				db,
+				targetThread,
+				{ type: "introspect", correlation_id: "c-3", content: "fix-up X (third try)" },
+				{ dedupKey },
+			);
+
+			expect(r1.deduped).toBe(false);
+			expect(r2.deduped).toBe(true);
+			expect(r3.deduped).toBe(true);
+			expect(r2.entryId).toBe(r1.entryId);
+			expect(r3.entryId).toBe(r1.entryId);
+			// All three retries share the FIRST entry's correlation_id, so the
+			// source's polling — using c-1 from the dedup result — finds the
+			// response stamp regardless of which retry was the polling caller.
+			expect(r2.existingPayload?.correlation_id).toBe("c-1");
+			expect(r3.existingPayload?.correlation_id).toBe("c-1");
+
+			const rows = db
+				.query("SELECT message_id FROM dispatch_queue WHERE thread_id = ?")
+				.all(targetThread);
+			expect(rows).toHaveLength(1);
+		});
 	});
 });
 

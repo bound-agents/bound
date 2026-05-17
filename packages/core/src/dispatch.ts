@@ -28,22 +28,99 @@ export function enqueueMessage(db: Database, messageId: string, threadId: string
 }
 
 /**
+ * Result of an enqueueNotification call. When `deduped` is false, a new row was
+ * inserted with `entryId`. When `deduped` is true, the call collided with an
+ * already-pending entry sharing the same dedup_key — `entryId` is the existing
+ * row's message_id and `existingPayload` / `existingCreatedAt` reflect the
+ * winner (the row already in the queue). Callers that care about correlation
+ * (e.g. introspect's polling) should switch to the existing entry's payload
+ * and timestamp when `deduped` is true.
+ */
+export interface EnqueueNotificationResult {
+	entryId: string;
+	deduped: boolean;
+	existingPayload?: Record<string, unknown>;
+	existingCreatedAt?: string;
+}
+
+/**
  * Enqueue a notification for dispatch. Notifications are non-user events
  * (task completions, advisories, etc.) that trigger agent inference.
- * Returns the generated entry ID.
+ *
+ * If `options.dedupKey` is provided, the insert is gated by a unique partial
+ * index on (thread_id, dedup_key) for entries in pending/processing status.
+ * On collision, the existing entry's id and payload are returned with
+ * `deduped: true` and no new row is created. This is how introspect and
+ * notify avoid stacking redundant entries onto a busy target's queue when
+ * the source thread retries.
+ *
+ * Without dedupKey, behavior is unchanged: a fresh row is always inserted.
  */
 export function enqueueNotification(
 	db: Database,
 	threadId: string,
 	payload: Record<string, unknown>,
-): string {
-	const entryId = randomUUID();
+	options?: { dedupKey?: string },
+): EnqueueNotificationResult {
 	const now = new Date().toISOString();
-	db.prepare(
-		`INSERT INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, created_at, modified_at)
-		 VALUES (?, ?, 'pending', 'notification', ?, ?, ?)`,
-	).run(entryId, threadId, JSON.stringify(payload), now, now);
-	return entryId;
+	const dedupKey = options?.dedupKey ?? null;
+
+	if (dedupKey === null) {
+		const entryId = randomUUID();
+		db.prepare(
+			`INSERT INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, created_at, modified_at)
+			 VALUES (?, ?, 'pending', 'notification', ?, ?, ?)`,
+		).run(entryId, threadId, JSON.stringify(payload), now, now);
+		return { entryId, deduped: false };
+	}
+
+	const stmt = db.prepare(
+		`INSERT OR IGNORE INTO dispatch_queue
+		 (message_id, thread_id, status, event_type, event_payload, dedup_key, created_at, modified_at)
+		 VALUES (?, ?, 'pending', 'notification', ?, ?, ?, ?)`,
+	);
+
+	const entryId = randomUUID();
+	const result = stmt.run(entryId, threadId, JSON.stringify(payload), dedupKey, now, now);
+	if (result.changes > 0) {
+		return { entryId, deduped: false };
+	}
+
+	// Collision: dedup_key already present in pending/processing for this thread.
+	// Look up the existing winner.
+	const existing = db
+		.query(
+			`SELECT message_id, event_payload, created_at FROM dispatch_queue
+			 WHERE thread_id = ? AND dedup_key = ?
+			   AND status IN ('pending', 'processing')`,
+		)
+		.get(threadId, dedupKey) as {
+		message_id: string;
+		event_payload: string;
+		created_at: string;
+	} | null;
+
+	if (existing) {
+		let existingPayload: Record<string, unknown>;
+		try {
+			existingPayload = JSON.parse(existing.event_payload) as Record<string, unknown>;
+		} catch {
+			existingPayload = {};
+		}
+		return {
+			entryId: existing.message_id,
+			deduped: true,
+			existingPayload,
+			existingCreatedAt: existing.created_at,
+		};
+	}
+
+	// Race window: existing entry transitioned past 'processing' between our
+	// INSERT-OR-IGNORE and our SELECT. Retry the insert — it must succeed now
+	// because the partial index dropped the prior row.
+	const retryEntryId = randomUUID();
+	stmt.run(retryEntryId, threadId, JSON.stringify(payload), dedupKey, now, now);
+	return { entryId: retryEntryId, deduped: false };
 }
 
 /**
