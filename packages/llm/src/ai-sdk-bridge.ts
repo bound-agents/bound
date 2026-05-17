@@ -238,31 +238,60 @@ export function toModelMessages(
 		});
 	}
 
-	// Any developer content still pending here appeared after the last user
-	// message (e.g., the rolling volatile-context tail the agent loop appends
-	// every turn). Append to the most recent user message so it still reaches
-	// the model in the right position relative to history.
+	// Any developer content still pending here was not consumed by a
+	// following user message. Two possible shapes:
+	//
+	//   (1) HEAD content — pendingDev appeared before any user message in
+	//       history. The canonical case is the scheduler wakeup shape:
+	//       [developer(wakeup), tool_call(retrieve_task), tool_result(payload)].
+	//       Result has [assistant, tool] but no user. The dev IS the
+	//       conversation kickoff; it should become a head user message.
+	//
+	//   (2) TAIL content — at least one user message has already been
+	//       emitted, and pendingDev arrived after a complete turn. The
+	//       canonical case is notification injection (introspect, notify,
+	//       advisory) into a thread with prior history:
+	//       [..., user, assistant, developer]. The dev IS the latest event
+	//       the model needs to respond to; it should become a tail user
+	//       message.
+	//
+	// Bug fixed (2026-05-17, thread f096a101 / 98926e2d, introspect-into-
+	// claude-opus): the old logic walked `result` from end to front looking
+	// for ANY user message and merged pendingDev into it. That handled (1)
+	// correctly but mishandled (2): tail dev content got buried into an
+	// earlier user message, AND the conversation kept ending in the
+	// assistant message — which Anthropic strict mode rejects with "This
+	// model does not support assistant message prefill. The conversation
+	// must end with a user message." Introspect injection was unusable on
+	// those adapters until this fix.
+	//
+	// New rule: discriminate by whether ANY user-role message was already
+	// emitted into `result`.
 	if (pendingDev.length > 0) {
-		let attached = false;
-		for (let i = result.length - 1; i >= 0; i--) {
-			if (result[i].role === "user") {
-				appendDevToUser(result[i], pendingDev);
-				pendingDev.length = 0;
-				attached = true;
-				break;
+		const hasUser = result.some((m) => m.role === "user");
+		if (!hasUser) {
+			// Head content: prepend as synthetic head user. Conversation-start
+			// invariant (below) would otherwise prepend a "<system-notification />"
+			// placeholder and lose the wakeup payload; doing it here preserves
+			// the dev content as the actual kickoff message.
+			result.unshift({ role: "user", content: wrapDev(pendingDev) });
+		} else {
+			const last = result[result.length - 1];
+			if (last && last.role === "user") {
+				// Trailing user already exists — append onto it (preserves
+				// single-user-turn semantics; avoids emitting consecutive
+				// same-role messages, which some adapters disallow).
+				appendDevToUser(last, pendingDev);
+			} else {
+				// Tail content after assistant/tool: push as new trailing user.
+				// This places the dev positionally correct (after the turn it
+				// followed in history) AND ends the conversation with a user
+				// role, satisfying the prefill constraint enforced by
+				// Anthropic strict and several GLM endpoints.
+				result.push({ role: "user", content: wrapDev(pendingDev) });
 			}
 		}
-		// No user message exists anywhere — scheduler wakeup threads look
-		// like [developer, tool_call, tool_result] by design (the task
-		// payload rides on the synthetic tool_result; see scheduler.ts).
-		// Promote the pending dev content into a synthetic user-role message
-		// at the head so the conversation is sendable. Previously this was
-		// silently dropped, which surfaced downstream as a Bedrock 400
-		// "A conversation must start with a user message".
-		if (!attached) {
-			result.unshift({ role: "user", content: wrapDev(pendingDev) });
-			pendingDev.length = 0;
-		}
+		pendingDev.length = 0;
 	}
 
 	// Conversation-start invariant: most providers (Bedrock, Anthropic
