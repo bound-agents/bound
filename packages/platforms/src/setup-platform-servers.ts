@@ -6,6 +6,30 @@ import type { PlatformMcpRegistry } from "./mcp-registry.js";
 type DiscordClient = any;
 
 /**
+ * Factory that constructs a fully-configured Discord.js Client instance.
+ * Default implementation dynamically imports discord.js and builds the
+ * Client with the intents/partials this codebase expects. Tests inject a
+ * fake to bypass the discord.js dependency and assert call ordering.
+ */
+export type DiscordClientFactory = () => Promise<DiscordClient>;
+
+const defaultDiscordClientFactory: DiscordClientFactory = async () => {
+	// Dynamically import discord.js so it isn't a hard dependency for paths
+	// that never wire Discord (CLI without a discord connector configured).
+	// biome-ignore lint/suspicious/noExplicitAny: dynamic module import
+	const discordJs = (await import("discord.js")) as any;
+
+	return new discordJs.Client({
+		intents: [
+			discordJs.GatewayIntentBits.DirectMessages,
+			discordJs.GatewayIntentBits.MessageContent,
+			discordJs.GatewayIntentBits.Guilds,
+		],
+		partials: [discordJs.Partials.Channel, discordJs.Partials.Message, discordJs.Partials.Reaction],
+	});
+};
+
+/**
  * Wire discord.js gateway lifecycle events to the structured logger.
  * Registered before login() so the initial `ready` event is captured.
  */
@@ -50,39 +74,44 @@ function wireGatewayLifecycleLogging(client: DiscordClient, logger: Logger): voi
  * @param config Platform connector configuration
  * @param registry MCP registry to register servers with
  * @param logger Logger instance
+ * @param clientFactory Optional Client factory for testing. Production code
+ *   should not pass this — the default constructs a real discord.js Client.
  */
 export async function setupDiscordServers(
 	config: PlatformConnectorConfig,
 	registry: PlatformMcpRegistry,
 	logger: Logger,
+	clientFactory: DiscordClientFactory = defaultDiscordClientFactory,
 ): Promise<void> {
 	if (config.platform !== "discord" && config.platform !== "discord-interaction") {
 		return; // Not a Discord connector
 	}
 
 	try {
-		// Dynamically import discord.js to avoid hard dependency in CLI
-		// biome-ignore lint/suspicious/noExplicitAny: dynamic module import
-		const discordJs = (await import("discord.js")) as any;
-
-		const discordClient = new discordJs.Client({
-			intents: [
-				discordJs.GatewayIntentBits.DirectMessages,
-				discordJs.GatewayIntentBits.MessageContent,
-				discordJs.GatewayIntentBits.Guilds,
-			],
-			partials: [
-				discordJs.Partials.Channel,
-				discordJs.Partials.Message,
-				discordJs.Partials.Reaction,
-			],
-		});
+		const discordClient = await clientFactory();
 
 		wireGatewayLifecycleLogging(discordClient, logger);
 
+		// Login MUST happen before tool registration. Previously the order
+		// was registerServer → login, which left a half-initialized failure
+		// mode: if login() rejected (invalid token, network blip during a
+		// leader-election window, etc.), the outer for-loop in
+		// packages/cli/src/commands/start/server.ts:848-862 caught with a
+		// `warn` and continued — but the prior registerServer() call had
+		// already exposed the tool to the cluster relay, pointing at a
+		// Client whose rest._token was never set. Every subsequent
+		// `discord_list_channels` call surfaced "Expected token to be set
+		// for this request, but none was present" via the now-correct
+		// error-propagation path (commit 8f55bd7).
+		//
+		// New order: login fails fast before registration. If it rejects,
+		// the outer catch swallows + skips, leaving callers with "tool not
+		// found" (correct: discord isn't wired here on this leader) instead
+		// of the misleading half-init "token not set" symptom.
+		await discordClient.login(config.token);
+
 		const server = createDiscordServer(config, discordClient, logger);
 		await registry.registerServer(config.platform, server);
-		await discordClient.login(config.token);
 
 		logger.info(`[platforms-mcp] Discord server registered for '${config.platform}'`);
 	} catch (err) {
