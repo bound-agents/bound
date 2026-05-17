@@ -14,6 +14,7 @@ import {
 	CONTEXT_SAFETY_MARGIN_RATIO,
 	TRUNCATION_TARGET_RATIO,
 	type VolatileContext,
+	applyActualUsageToContextDebug,
 	assembleContext,
 	computeSafetyMargin,
 	estimateContentLength,
@@ -8270,5 +8271,165 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 		const history = result.find((s) => s.name === "history");
 		// Should equal exactly the user message tokens — cache markers ignored.
 		expect(history?.tokens).toBe(countContentTokens(userText));
+	});
+});
+
+describe("applyActualUsageToContextDebug — defensive deep-clone semantics", () => {
+	function buildDebug(overrides?: { historyTokens?: number; estimated?: number }): {
+		contextWindow: number;
+		totalEstimated: number;
+		model: string;
+		sections: ContextSection[];
+		budgetPressure: boolean;
+		truncated: number;
+	} {
+		return {
+			contextWindow: 200000,
+			totalEstimated: overrides?.estimated ?? 100000,
+			model: "test-model",
+			sections: [
+				{ name: "system", tokens: 1000 },
+				{
+					name: "history",
+					tokens: overrides?.historyTokens ?? 80000,
+					children: [
+						{ name: "user", tokens: 5000 },
+						{ name: "assistant", tokens: 60000 },
+						{ name: "tool_result", tokens: 15000 },
+					],
+				},
+				{ name: "memory", tokens: 12000 },
+				{ name: "tools", tokens: 7000 },
+			],
+			budgetPressure: false,
+			truncated: 0,
+		};
+	}
+
+	it("returns a fully independent snapshot — mutating the result does not mutate the input", () => {
+		const original = buildDebug();
+		const result = applyActualUsageToContextDebug(original, 105000);
+
+		// Mutate result aggressively
+		const resultHistory = result.sections.find((s) => s.name === "history");
+		if (resultHistory) {
+			resultHistory.tokens = 999999;
+			if (resultHistory.children?.[0]) {
+				resultHistory.children[0].tokens = 999999;
+			}
+		}
+		result.sections.push({ name: "injected", tokens: 1234 });
+
+		// Original must be untouched
+		const origHistory = original.sections.find((s) => s.name === "history");
+		expect(origHistory?.tokens).toBe(80000);
+		expect(origHistory?.children?.[0]?.tokens).toBe(5000);
+		expect(original.sections.length).toBe(4);
+		expect(original.totalEstimated).toBe(100000);
+	});
+
+	it("does not mutate the input even on the cold path (no delta)", () => {
+		const original = buildDebug();
+		applyActualUsageToContextDebug(original, 100000); // delta = 0
+
+		const origHistory = original.sections.find((s) => s.name === "history");
+		expect(origHistory?.tokens).toBe(80000);
+		expect(original.totalEstimated).toBe(100000);
+	});
+
+	it("returns sections array that is a different reference from input", () => {
+		const original = buildDebug();
+		const result = applyActualUsageToContextDebug(original, 105000);
+
+		expect(result.sections).not.toBe(original.sections);
+		const origHistory = original.sections.find((s) => s.name === "history");
+		const resultHistory = result.sections.find((s) => s.name === "history");
+		expect(resultHistory).not.toBe(origHistory);
+		expect(resultHistory?.children).not.toBe(origHistory?.children);
+	});
+
+	it("updates totalEstimated to actualTokens regardless of delta sign", () => {
+		const original = buildDebug({ estimated: 100000 });
+
+		expect(applyActualUsageToContextDebug(original, 105000).totalEstimated).toBe(105000);
+		expect(applyActualUsageToContextDebug(original, 100000).totalEstimated).toBe(100000);
+		expect(applyActualUsageToContextDebug(original, 95000).totalEstimated).toBe(95000);
+	});
+
+	it("bumps history.tokens by positive delta (actual exceeded estimate)", () => {
+		const original = buildDebug({ estimated: 100000, historyTokens: 80000 });
+		const result = applyActualUsageToContextDebug(original, 107500);
+
+		const historySec = result.sections.find((s) => s.name === "history");
+		expect(historySec?.tokens).toBe(80000 + 7500);
+	});
+
+	it("does NOT bump history.tokens when delta is zero or negative (estimate ran high)", () => {
+		const original = buildDebug({ estimated: 100000, historyTokens: 80000 });
+
+		const exactResult = applyActualUsageToContextDebug(original, 100000);
+		expect(exactResult.sections.find((s) => s.name === "history")?.tokens).toBe(80000);
+
+		const overestimateResult = applyActualUsageToContextDebug(original, 90000);
+		expect(overestimateResult.sections.find((s) => s.name === "history")?.tokens).toBe(80000);
+	});
+
+	it("returns gracefully when sections has no history entry", () => {
+		const debugWithoutHistory = {
+			contextWindow: 200000,
+			totalEstimated: 100000,
+			model: "test-model",
+			sections: [
+				{ name: "system", tokens: 1000 },
+				{ name: "tools", tokens: 7000 },
+			] as ContextSection[],
+			budgetPressure: false,
+			truncated: 0,
+		};
+
+		const result = applyActualUsageToContextDebug(debugWithoutHistory, 110000);
+		expect(result.totalEstimated).toBe(110000);
+		expect(result.sections.find((s) => s.name === "history")).toBeUndefined();
+		// Other sections unchanged in token counts
+		expect(result.sections.find((s) => s.name === "system")?.tokens).toBe(1000);
+		expect(result.sections.find((s) => s.name === "tools")?.tokens).toBe(7000);
+	});
+
+	it("preserves non-section fields (model, contextWindow, budgetPressure, truncated)", () => {
+		const original = buildDebug();
+		const result = applyActualUsageToContextDebug(original, 105000);
+
+		expect(result.contextWindow).toBe(200000);
+		expect(result.model).toBe("test-model");
+		expect(result.budgetPressure).toBe(false);
+		expect(result.truncated).toBe(0);
+	});
+
+	it("preserves history.children structure on the cloned snapshot", () => {
+		const original = buildDebug();
+		const result = applyActualUsageToContextDebug(original, 105000);
+
+		const historySec = result.sections.find((s) => s.name === "history");
+		expect(historySec?.children).toBeDefined();
+		expect(historySec?.children?.length).toBe(3);
+		expect(historySec?.children?.find((c) => c.name === "user")?.tokens).toBe(5000);
+		expect(historySec?.children?.find((c) => c.name === "assistant")?.tokens).toBe(60000);
+	});
+
+	it("simulates the agent-loop call pattern: two consecutive snapshots from the same source remain independent", () => {
+		// Mimics what happens within an extended-tool-use loop: lastContextDebug
+		// is updated twice in a row, and we need to verify that recordContextDebug
+		// observing the second snapshot didn't retroactively alter the first.
+		const initial = buildDebug({ estimated: 100000, historyTokens: 80000 });
+		const turn1 = applyActualUsageToContextDebug(initial, 105000);
+		const turn2 = applyActualUsageToContextDebug(turn1, 110000);
+
+		// turn1 must reflect its own delta (+5000), not turn2's
+		expect(turn1.totalEstimated).toBe(105000);
+		expect(turn1.sections.find((s) => s.name === "history")?.tokens).toBe(85000);
+
+		// turn2 must reflect its own delta from turn1 (+5000 more)
+		expect(turn2.totalEstimated).toBe(110000);
+		expect(turn2.sections.find((s) => s.name === "history")?.tokens).toBe(90000);
 	});
 });
