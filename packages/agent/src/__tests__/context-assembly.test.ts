@@ -5,17 +5,20 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
-import type { CommandRegistryEntry } from "@bound/shared";
-import { countContentTokens } from "@bound/shared";
+import type { LLMMessage } from "@bound/llm";
+import type { CommandRegistryEntry, ContextSection } from "@bound/shared";
+import { countContentTokens, countTokens } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import {
 	CONTEXT_SAFETY_MARGIN_FLOOR,
 	CONTEXT_SAFETY_MARGIN_RATIO,
 	TRUNCATION_TARGET_RATIO,
+	type VolatileContext,
 	assembleContext,
 	computeSafetyMargin,
 	estimateContentLength,
 	formatTimestamp,
+	rebuildWarmSections,
 } from "../context-assembly";
 
 describe("Context Assembly Pipeline", () => {
@@ -8023,5 +8026,249 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 				.join("\n");
 			expect(serialized).toContain("INJECTED_DEVELOPER_CONTENT");
 		});
+	});
+});
+
+describe("rebuildWarmSections — warm-path debug.sections preservation", () => {
+	const stableSystem: ContextSection = { name: "system", tokens: 1000 };
+	const stableSkillContext: ContextSection = { name: "skill-context", tokens: 250 };
+	const stableHistory: ContextSection = {
+		name: "history",
+		tokens: 500,
+		children: [
+			{ name: "user", tokens: 100 },
+			{ name: "assistant", tokens: 300 },
+			{ name: "tool_result", tokens: 100 },
+		],
+	};
+	const stableMemoryCached: ContextSection = { name: "memory", tokens: 50 };
+	const stableTaskDigestCached: ContextSection = { name: "task-digest", tokens: 30 };
+	const stableVolatileOtherCached: ContextSection = { name: "volatile-other", tokens: 10 };
+	const stableTools: ContextSection = { name: "tools", tokens: 5000 };
+
+	const fullCachedSections: ContextSection[] = [
+		stableSystem,
+		stableSkillContext,
+		stableHistory,
+		stableMemoryCached,
+		stableTaskDigestCached,
+		stableVolatileOtherCached,
+		stableTools,
+	];
+
+	function buildVolatileCtx(opts: {
+		memoryText?: string;
+		taskDigestText?: string;
+		otherText?: string;
+	}): VolatileContext {
+		const otherLines = opts.otherText ? [opts.otherText] : [];
+		const taskDigestLines = opts.taskDigestText ? [opts.taskDigestText] : [];
+		const memoryLines = opts.memoryText ? [opts.memoryText] : [];
+		const allVolatileLines = [...otherLines, ...taskDigestLines, ...memoryLines];
+		const enrichmentStartIdx = otherLines.length + taskDigestLines.length;
+		const enrichmentEndIdx = allVolatileLines.length;
+		const content = allVolatileLines.join("\n");
+		return {
+			content,
+			tokenEstimate: countTokens(content),
+			enrichmentStartIdx,
+			enrichmentEndIdx,
+			allVolatileLines,
+			memoryDeltaLines: memoryLines,
+			taskDigestLines,
+		};
+	}
+
+	it("preserves stable-prefix sections (system, skill-context, tools) verbatim from cached snapshot", () => {
+		const volatileCtx = buildVolatileCtx({ memoryText: "mem", taskDigestText: "td" });
+		const storedMessages: LLMMessage[] = [
+			{ role: "user", content: "hi" },
+			{ role: "assistant", content: "ok" },
+			{ role: "developer", content: volatileCtx.content }, // trailing volatile dev
+		];
+
+		const result = rebuildWarmSections({
+			cachedSections: fullCachedSections,
+			storedMessages,
+			volatileCtx,
+		});
+
+		// Stable-prefix sections must be the SAME object content as cached.
+		expect(result.find((s) => s.name === "system")).toEqual(stableSystem);
+		expect(result.find((s) => s.name === "skill-context")).toEqual(stableSkillContext);
+		expect(result.find((s) => s.name === "tools")).toEqual(stableTools);
+	});
+
+	it("recomputes history from storedMessages, skipping cache markers and the trailing volatile dev", () => {
+		const volatileCtx = buildVolatileCtx({});
+		const storedMessages: LLMMessage[] = [
+			{ role: "user", content: "hello world from kara" },
+			{ role: "assistant", content: "let me think about that" },
+			{ role: "tool_call", content: "call_search" },
+			{ role: "tool_result", content: "search returned three rows", tool_use_id: "t1" },
+			{ role: "cache", content: "" }, // cache marker — must be skipped
+			{ role: "user", content: "follow-up question" },
+			{ role: "developer", content: "<volatile content tail>" }, // trailing dev — excluded
+		];
+
+		const result = rebuildWarmSections({
+			cachedSections: fullCachedSections,
+			storedMessages,
+			volatileCtx,
+		});
+
+		const history = result.find((s) => s.name === "history");
+		expect(history).toBeDefined();
+		expect(history?.children).toBeDefined();
+
+		const expectedUser =
+			countContentTokens("hello world from kara") + countContentTokens("follow-up question");
+		const expectedAssistant =
+			countContentTokens("let me think about that") + countContentTokens("call_search");
+		const expectedToolResult = countContentTokens("search returned three rows");
+
+		const userChild = history?.children?.find((c) => c.name === "user");
+		const assistantChild = history?.children?.find((c) => c.name === "assistant");
+		const trChild = history?.children?.find((c) => c.name === "tool_result");
+
+		expect(userChild?.tokens).toBe(expectedUser);
+		expect(assistantChild?.tokens).toBe(expectedAssistant);
+		expect(trChild?.tokens).toBe(expectedToolResult);
+		expect(history?.tokens).toBe(expectedUser + expectedAssistant + expectedToolResult);
+	});
+
+	it("recomputes memory/task-digest/volatile-other from current volatileCtx, NOT from cached snapshot", () => {
+		// Build a volatile context whose token counts are clearly different from
+		// the cached values (50/30/10) so the test can prove recomputation happened.
+		const memoryText =
+			"PINNED MEMORY ENTRY: this string is intentionally long enough to exceed fifty tokens when tokenized — adding more filler text so the byte count is unambiguous and the cl100k_base tokenizer produces a count nowhere near 50.".repeat(
+				2,
+			);
+		const taskDigestText =
+			"TASK DIGEST: pending tasks queue includes heartbeat-5234, synthesis-1099, repo-watch-9911, plus three deferred user follow-ups requiring attention this cycle.";
+		const otherText =
+			"VOLATILE OTHER: relay info, model switch notice, file-modification digest entries from sibling threads.";
+
+		const volatileCtx = buildVolatileCtx({ memoryText, taskDigestText, otherText });
+
+		const storedMessages: LLMMessage[] = [
+			{ role: "user", content: "hi" },
+			{ role: "developer", content: volatileCtx.content },
+		];
+
+		const result = rebuildWarmSections({
+			cachedSections: fullCachedSections,
+			storedMessages,
+			volatileCtx,
+		});
+
+		const memory = result.find((s) => s.name === "memory");
+		const taskDigest = result.find((s) => s.name === "task-digest");
+		const other = result.find((s) => s.name === "volatile-other");
+
+		// Recomputed sections must match what countTokens would produce for the
+		// fresh volatileCtx — NOT the cached snapshot's 50/30/10.
+		expect(memory?.tokens).toBe(countTokens(memoryText));
+		expect(taskDigest?.tokens).toBe(countTokens(taskDigestText));
+		expect(memory?.tokens).not.toBe(stableMemoryCached.tokens);
+		expect(taskDigest?.tokens).not.toBe(stableTaskDigestCached.tokens);
+		expect(other?.tokens).toBeGreaterThan(0);
+	});
+
+	it("omits memory/task-digest/volatile-other when their tokens are zero", () => {
+		const volatileCtx: VolatileContext = {
+			content: "",
+			tokenEstimate: 0,
+			enrichmentStartIdx: 0,
+			enrichmentEndIdx: 0,
+			allVolatileLines: [],
+			memoryDeltaLines: [],
+			taskDigestLines: [],
+		};
+		const storedMessages: LLMMessage[] = [
+			{ role: "user", content: "hi" },
+			{ role: "developer", content: "" },
+		];
+
+		const result = rebuildWarmSections({
+			cachedSections: fullCachedSections,
+			storedMessages,
+			volatileCtx,
+		});
+
+		expect(result.find((s) => s.name === "memory")).toBeUndefined();
+		expect(result.find((s) => s.name === "task-digest")).toBeUndefined();
+		expect(result.find((s) => s.name === "volatile-other")).toBeUndefined();
+	});
+
+	it("emits sections in canonical order: system → skill-context → history → memory → task-digest → volatile-other → tools", () => {
+		const volatileCtx = buildVolatileCtx({
+			memoryText: "memory content here",
+			taskDigestText: "task digest content here",
+			otherText: "volatile other content here",
+		});
+		const storedMessages: LLMMessage[] = [
+			{ role: "user", content: "hello" },
+			{ role: "developer", content: volatileCtx.content },
+		];
+
+		const result = rebuildWarmSections({
+			cachedSections: fullCachedSections,
+			storedMessages,
+			volatileCtx,
+		});
+
+		expect(result.map((s) => s.name)).toEqual([
+			"system",
+			"skill-context",
+			"history",
+			"memory",
+			"task-digest",
+			"volatile-other",
+			"tools",
+		]);
+	});
+
+	it("gracefully handles a sparse cached snapshot (e.g. no skill-context)", () => {
+		const minimalCached: ContextSection[] = [
+			{ name: "system", tokens: 500 },
+			{ name: "tools", tokens: 1000 },
+		];
+		const volatileCtx = buildVolatileCtx({});
+		const storedMessages: LLMMessage[] = [
+			{ role: "user", content: "hi" },
+			{ role: "developer", content: "" },
+		];
+
+		const result = rebuildWarmSections({
+			cachedSections: minimalCached,
+			storedMessages,
+			volatileCtx,
+		});
+
+		expect(result.find((s) => s.name === "skill-context")).toBeUndefined();
+		expect(result.find((s) => s.name === "system")).toBeDefined();
+		expect(result.find((s) => s.name === "tools")).toBeDefined();
+	});
+
+	it("excludes cache-role markers (zero-token splice markers) from history", () => {
+		const volatileCtx = buildVolatileCtx({});
+		const userText = "test message";
+		const storedMessages: LLMMessage[] = [
+			{ role: "user", content: userText },
+			{ role: "cache", content: "MARKER_THAT_SHOULD_NOT_COUNT" },
+			{ role: "cache", content: "ANOTHER_MARKER" },
+			{ role: "developer", content: "" }, // trailing volatile dev
+		];
+
+		const result = rebuildWarmSections({
+			cachedSections: fullCachedSections,
+			storedMessages,
+			volatileCtx,
+		});
+
+		const history = result.find((s) => s.name === "history");
+		// Should equal exactly the user message tokens — cache markers ignored.
+		expect(history?.tokens).toBe(countContentTokens(userText));
 	});
 });

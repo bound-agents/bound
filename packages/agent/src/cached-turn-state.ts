@@ -1,4 +1,5 @@
 import type { LLMMessage, ToolDefinition } from "@bound/llm";
+import type { ContextSection } from "@bound/shared";
 
 export interface CachedTurnState {
 	/** The stored messages array from the previous turn */
@@ -13,6 +14,14 @@ export interface CachedTurnState {
 	lastMessageCreatedAt: string;
 	/** Hash of tool definitions — change triggers cold path */
 	toolFingerprint: string;
+	/**
+	 * Section breakdown captured from the cold-path build. Reused on warm hits
+	 * so context_debug.sections stays populated across the warm-path lifecycle.
+	 * Stable-prefix sections (system, skill-context, tools) are reused as-is;
+	 * dynamic ones (history, memory, task-digest, volatile-other) are recomputed
+	 * from the current turn's volatile context and stored messages.
+	 */
+	debugSections?: ContextSection[];
 }
 
 /**

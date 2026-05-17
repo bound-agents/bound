@@ -2096,3 +2096,82 @@ Original output was too large for the context window. If you need the full conte
 		},
 	};
 }
+
+/**
+ * Rebuild context_debug.sections for a warm-path turn. Reuses stable-prefix
+ * sections from the cold-path snapshot (system, skill-context, tools) and
+ * recomputes the dynamic ones (history, memory, task-digest, volatile-other)
+ * from the freshly-built volatile context and current stored messages.
+ *
+ * Mirrors the per-section computation in assembleContext so warm hits report
+ * the same shape as cold builds, just with current-turn token counts.
+ */
+export function rebuildWarmSections(params: {
+	cachedSections: ContextSection[];
+	storedMessages: LLMMessage[];
+	volatileCtx: VolatileContext;
+}): ContextSection[] {
+	const sections: ContextSection[] = [];
+
+	// Stable-prefix sections from the cold-path snapshot. These are baked
+	// into systemPrompt and never change between turns while warm.
+	for (const s of params.cachedSections) {
+		if (s.name === "system" || s.name === "skill-context") {
+			sections.push(s);
+		}
+	}
+
+	// History: recompute from storedMessages, excluding the trailing volatile
+	// dev message at length-1 and any cache-role markers (zero-token splice
+	// markers placed by maybePlaceCacheMarker).
+	const historyChildren: ContextSection[] = [];
+	let userTokens = 0;
+	let assistantTokens = 0;
+	let toolResultTokens = 0;
+	const historyEnd = params.storedMessages.length - 1; // exclude trailing volatile dev
+	for (let i = 0; i < historyEnd; i++) {
+		const msg = params.storedMessages[i];
+		if (msg.role === "cache") continue;
+		const tokens = countContentTokens(msg.content);
+		if (msg.role === "user") userTokens += tokens;
+		else if (msg.role === "assistant" || msg.role === "tool_call") assistantTokens += tokens;
+		else if (msg.role === "tool_result") toolResultTokens += tokens;
+	}
+	if (userTokens > 0) historyChildren.push({ name: "user", tokens: userTokens });
+	if (assistantTokens > 0) historyChildren.push({ name: "assistant", tokens: assistantTokens });
+	if (toolResultTokens > 0) historyChildren.push({ name: "tool_result", tokens: toolResultTokens });
+
+	sections.push({
+		name: "history",
+		tokens: userTokens + assistantTokens + toolResultTokens,
+		children: historyChildren.length > 0 ? historyChildren : undefined,
+	});
+
+	// Volatile sections: recompute from the freshly-built volatile context.
+	// Mirrors the cold-path computation in assembleContext.
+	const memoryLines = params.volatileCtx.allVolatileLines.slice(
+		params.volatileCtx.enrichmentStartIdx,
+		params.volatileCtx.enrichmentEndIdx,
+	);
+	const memoryTokens = memoryLines.length > 0 ? countTokens(memoryLines.join("\n")) : 0;
+	const taskDigestTokens =
+		params.volatileCtx.taskDigestLines.length > 0
+			? countTokens(params.volatileCtx.taskDigestLines.join("\n"))
+			: 0;
+	const volatileOtherTokens = params.volatileCtx.tokenEstimate - memoryTokens - taskDigestTokens;
+
+	if (memoryTokens > 0) sections.push({ name: "memory", tokens: memoryTokens });
+	if (taskDigestTokens > 0) sections.push({ name: "task-digest", tokens: taskDigestTokens });
+	if (volatileOtherTokens > 0)
+		sections.push({ name: "volatile-other", tokens: volatileOtherTokens });
+
+	// Tools: copy from cached snapshot — toolFingerprint match in the warm
+	// gate guarantees the tool set is unchanged from the cold build.
+	for (const s of params.cachedSections) {
+		if (s.name === "tools") {
+			sections.push(s);
+		}
+	}
+
+	return sections;
+}

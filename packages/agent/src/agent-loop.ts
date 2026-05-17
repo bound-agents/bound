@@ -36,7 +36,12 @@ import {
 import { maybePlaceCacheMarker } from "./cache-marker";
 import { CACHE_TTL_MS, predictCacheState, selectCacheTtl } from "./cache-prediction";
 import { type CachedTurnState, computeToolFingerprint } from "./cached-turn-state";
-import { assembleContext, buildVolatileContext, computeSafetyMargin } from "./context-assembly";
+import {
+	assembleContext,
+	buildVolatileContext,
+	computeSafetyMargin,
+	rebuildWarmSections,
+} from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
 import { type ModelResolution, resolveModel, resolveSameTierFallback } from "./model-resolution";
@@ -619,12 +624,26 @@ export class AgentLoop {
 						// 9. Use stored messages directly (no system messages in the array)
 						llmMessages = storedMessages;
 
-						// Use cached debug
+						// Rebuild section breakdown for debug. Reuses stable-prefix
+						// sections (system, skill-context, tools) from the cold-path
+						// snapshot stored in cached state, and recomputes the dynamic
+						// ones (history, memory, task-digest, volatile-other) from the
+						// fresh volatileContext and current storedMessages. Falls back
+						// to an empty array if the cache pre-dates this fix and has no
+						// stored debugSections — next cold rebuild will repopulate it.
+						const warmSections = cached.debugSections
+							? rebuildWarmSections({
+									cachedSections: cached.debugSections,
+									storedMessages,
+									volatileCtx: volatileContext,
+								})
+							: [];
+
 						contextDebug = {
 							contextWindow: contextWindow,
 							totalEstimated: estimatedTotal,
 							model: resolvedModelForDebug ?? "unknown",
-							sections: [],
+							sections: warmSections,
 							budgetPressure: false,
 							truncated: 0,
 						};
@@ -716,6 +735,7 @@ export class AgentLoop {
 					fixedCacheIdx,
 					lastMessageCreatedAt,
 					toolFingerprint: currentFingerprint,
+					debugSections: contextDebug.sections,
 				});
 
 				llmMessages = contextMessages;
