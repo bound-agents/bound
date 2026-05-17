@@ -37,6 +37,7 @@ import { maybePlaceCacheMarker } from "./cache-marker";
 import { CACHE_TTL_MS, predictCacheState, selectCacheTtl } from "./cache-prediction";
 import { type CachedTurnState, computeToolFingerprint } from "./cached-turn-state";
 import {
+	applyActualUsageToContextDebug,
 	assembleContext,
 	buildVolatileContext,
 	computeSafetyMargin,
@@ -1245,24 +1246,18 @@ export class AgentLoop {
 				}
 
 				// Update context debug with actual LLM-reported token counts
-				// (inputTokens may exclude cached tokens on Bedrock)
+				// (inputTokens may exclude cached tokens on Bedrock).
+				// applyActualUsageToContextDebug deep-clones sections so per-turn
+				// snapshots remain independent across loop iterations.
 				if (this.lastContextDebug && parsed.usage.inputTokens > 0) {
 					const actualTokens =
 						parsed.usage.inputTokens +
 						(parsed.usage.cacheReadTokens ?? 0) +
 						(parsed.usage.cacheWriteTokens ?? 0);
-					const previousEstimated = this.lastContextDebug.totalEstimated;
-					const delta = actualTokens - previousEstimated;
-					this.lastContextDebug = {
-						...this.lastContextDebug,
-						totalEstimated: actualTokens,
-					};
-					if (delta > 0) {
-						const historySec = this.lastContextDebug.sections.find((s) => s.name === "history");
-						if (historySec) {
-							historySec.tokens += delta;
-						}
-					}
+					this.lastContextDebug = applyActualUsageToContextDebug(
+						this.lastContextDebug,
+						actualTokens,
+					);
 				}
 
 				if (currentTurnId !== null && this.lastContextDebug) {

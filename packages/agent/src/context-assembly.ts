@@ -2175,3 +2175,43 @@ export function rebuildWarmSections(params: {
 
 	return sections;
 }
+
+/**
+ * Apply actual LLM-reported token counts to a previously-built ContextDebugInfo,
+ * returning a fully deep-cloned new snapshot.
+ *
+ * The agent loop builds contextDebug once per user submission (cold or warm
+ * assembly), then iterates calling the LLM multiple times for extended-tool-use.
+ * After each LLM response, the actual input-token count is known and may differ
+ * from the pre-call estimate; this helper updates `totalEstimated` and bumps
+ * `history.tokens` by the positive delta so the recorded per-turn debug
+ * reflects what actually went on the wire.
+ *
+ * The deep-clone (via structuredClone) is essential: the agent loop holds a
+ * reference to lastContextDebug across iterations, and recordContextDebug
+ * synchronously serializes it via JSON.stringify. Without the clone, mutating
+ * sections in place would leave a window where a later iteration's delta
+ * could retroactively alter an earlier iteration's section breakdown if the
+ * synchronous-serialization invariant ever broke (e.g. async DB writes,
+ * future refactors holding the reference longer, callers reading
+ * lastContextDebug directly). The clone removes that latent dependency.
+ */
+export function applyActualUsageToContextDebug(
+	debug: ContextDebugInfo,
+	actualTokens: number,
+): ContextDebugInfo {
+	const previousEstimated = debug.totalEstimated;
+	const delta = actualTokens - previousEstimated;
+	const updated: ContextDebugInfo = {
+		...debug,
+		totalEstimated: actualTokens,
+		sections: structuredClone(debug.sections),
+	};
+	if (delta > 0) {
+		const historySec = updated.sections.find((s) => s.name === "history");
+		if (historySec) {
+			historySec.tokens += delta;
+		}
+	}
+	return updated;
+}
