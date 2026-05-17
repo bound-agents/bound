@@ -450,7 +450,6 @@ describe("Connector Handle Lifecycle", () => {
 			// Yield once for the transport message pump.
 			await new Promise((resolve) => setTimeout(resolve, 10));
 
-			// biome-ignore lint/suspicious/noExplicitAny: peeking at internal subscription state is the point of this test
 			const subscription = (registry as any).activeSubscriptions.get(handleId);
 			expect(subscription).toBeDefined();
 			expect(subscription.buffer.length).toBe(1);
@@ -464,7 +463,6 @@ describe("Connector Handle Lifecycle", () => {
 
 			const messages = db
 				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
-				// biome-ignore lint/suspicious/noExplicitAny: bun:sqlite row type
 				.all(threadId) as any[];
 			expect(messages.length).toBe(1);
 			expect(messages[0].content).toContain("delivered via notification path");
