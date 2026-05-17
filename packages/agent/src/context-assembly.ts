@@ -818,7 +818,7 @@ Original output was too large for the context window. If you need the full conte
 			if (msg.role === "tool_result" && msg.content.length > COLD_COMPACTION_THRESHOLD) {
 				const originalLength = msg.content.length;
 				const preview = safeSlice(msg.content, 0, 200).trimEnd();
-				msg.content = `[Result truncated from context — ${originalLength} chars. Retrieve with: query SELECT content FROM messages WHERE id='${msg.id}']\n${preview}`;
+				msg.content = `[Tool result truncated for inline display — ${originalLength} chars stored. Full content: query SELECT content FROM messages WHERE id='${msg.id}']\n${preview}`;
 			} else if (msg.role === "tool_call") {
 				// tool_call content is stored as a JSON-serialised ContentBlock[].
 				// Strip any `thinking` / `redacted_thinking` blocks, keep `tool_use`.

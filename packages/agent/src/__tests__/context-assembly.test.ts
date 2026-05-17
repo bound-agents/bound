@@ -5343,7 +5343,7 @@ This skill reviews pull requests.`;
 				(m) =>
 					m.role === "tool_result" &&
 					typeof m.content === "string" &&
-					m.content.includes("[Result truncated"),
+					m.content.includes("[Tool result truncated"),
 			);
 			expect(toolResult).toBeDefined();
 			expect((toolResult?.content as string).length).toBeLessThan(1000);
@@ -5517,7 +5517,7 @@ This skill reviews pull requests.`;
 				(m) =>
 					m.role === "tool_result" &&
 					typeof m.content === "string" &&
-					m.content.includes("[Result truncated"),
+					m.content.includes("[Tool result truncated"),
 			);
 			expect(toolResult).toBeDefined();
 
@@ -6038,7 +6038,7 @@ This skill reviews pull requests.`;
 					(m) =>
 						m.role === "tool_result" &&
 						typeof m.content === "string" &&
-						!m.content.startsWith("[Result truncated"),
+						!m.content.startsWith("[Tool result truncated"),
 				).length;
 
 			// Small window: at most 3 uncompacted tool_results.
