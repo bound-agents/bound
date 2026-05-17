@@ -74,15 +74,28 @@ describe("toModelMessages — basic role mapping", () => {
 		]);
 	});
 
-	it("appends developer content to the last user message when none follows", () => {
+	it("emits a trailing user message when developer content follows an assistant turn (was: merged into earlier user, ended with assistant)", () => {
+		// Regression: 2026-05-17, thread f096a101 / 98926e2d. The introspect
+		// tool injects a developer-role message into the target thread AFTER
+		// the trailing assistant turn. The bridge used to walk back to the
+		// most recent user message and merge dev content into it, leaving
+		// the conversation ending with the assistant — which Anthropic
+		// strict mode rejects as "This model does not support assistant
+		// message prefill. The conversation must end with a user message."
+		//
+		// New contract: dev content that arrives after an assistant turn
+		// becomes a fresh trailing user message. This places it positionally
+		// correct (after the assistant turn it followed in history) AND
+		// satisfies the "must end with user" provider rule.
 		const out = toModelMessages([
 			{ role: "user", content: "hi" },
 			{ role: "assistant", content: "there" },
 			{ role: "developer", content: "enrichment tail" },
 		]);
 		expect(out).toEqual([
-			{ role: "user", content: "hi\n\n<system-context>\nenrichment tail\n</system-context>" },
+			{ role: "user", content: "hi" },
 			{ role: "assistant", content: "there" },
+			{ role: "user", content: "<system-context>\nenrichment tail\n</system-context>" },
 		]);
 	});
 
@@ -223,6 +236,114 @@ describe("toModelMessages — conversation-start invariant", () => {
 		expect(out.length).toBe(1);
 		expect(out[0].role).toBe("user");
 		expect(out[0].content).toEqual("<system-context>\norphan dev\n</system-context>");
+	});
+});
+
+// Companion invariant to the conversation-start guard above: many providers
+// (Anthropic strict, some GLM endpoints) ALSO require the conversation to
+// END with a user-role message. A trailing assistant message gets rejected
+// with "This model does not support assistant message prefill. The
+// conversation must end with a user message."
+//
+// The introspect-into-claude-opus incident (2026-05-17, thread f096a101 /
+// 98926e2d) was a direct hit on this constraint: the introspect tool injects
+// a developer-role message AFTER the existing trailing assistant, and the
+// bridge's old behavior buried the dev content into an earlier user message,
+// leaving `assistant` as the last message. Both introspect attempts hit the
+// adapter rejection with the prefill error.
+describe("toModelMessages — conversation-end invariant (developer injection after assistant)", () => {
+	it("introspect-shape: [user, assistant, developer] becomes a conversation ending with user", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "original question" },
+			{ role: "assistant", content: "original reply" },
+			{
+				role: "developer",
+				content: "[introspect request from thread X] please review Y",
+			},
+		]);
+		// Conversation must END with a user-role message.
+		expect(out[out.length - 1].role).toBe("user");
+		// The dev content is positionally AFTER the assistant turn it followed
+		// in history (not buried into the earlier user).
+		expect(out).toEqual([
+			{ role: "user", content: "original question" },
+			{ role: "assistant", content: "original reply" },
+			{
+				role: "user",
+				content:
+					"<system-context>\n[introspect request from thread X] please review Y\n</system-context>",
+			},
+		]);
+	});
+
+	it("notify-shape: [user, assistant, tool_call, tool_result, developer] also ends with user", () => {
+		// Notification injection can land after a tool round-trip too. The
+		// last assistant-side activity is the tool_result (which maps to a
+		// `tool`-role message in result), so the dev still needs to become a
+		// trailing user.
+		const out = toModelMessages([
+			{ role: "user", content: "kick off" },
+			{
+				role: "tool_call",
+				content: [{ type: "tool_use", id: "tc1", name: "x", input: {} }],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: "tc1",
+				content: [{ type: "text", text: "result" }],
+			},
+			{
+				role: "developer",
+				content: "[notification from background task] heads up",
+			},
+		]);
+		expect(out[out.length - 1].role).toBe("user");
+		expect(out[out.length - 1].content).toEqual(
+			"<system-context>\n[notification from background task] heads up\n</system-context>",
+		);
+	});
+
+	it("multiple developer messages after an assistant collapse into ONE trailing user message", () => {
+		// E.g., two notifications claimed in the same dispatch tick (introspect
+		// + notify, or two separate notifies). Both should end up wrapped in a
+		// single <system-context> block on a single trailing user message —
+		// not split into two consecutive user messages, which can confuse
+		// some adapters that disallow consecutive same-role turns.
+		const out = toModelMessages([
+			{ role: "user", content: "u" },
+			{ role: "assistant", content: "a" },
+			{ role: "developer", content: "first dev" },
+			{ role: "developer", content: "second dev" },
+		]);
+		expect(out.length).toBe(3);
+		expect(out[out.length - 1]).toEqual({
+			role: "user",
+			content: "<system-context>\nfirst dev\n\nsecond dev\n</system-context>",
+		});
+	});
+
+	it("when last message is already user, dev content appends rather than creating a new user (no consecutive-user emission)", () => {
+		// Regression guard: don't accidentally start emitting two consecutive
+		// user-role messages — that's the failure case the original merge
+		// behavior was protecting against. The new rule only emits a new
+		// trailing user when the existing last message is non-user.
+		const out = toModelMessages([
+			{ role: "assistant", content: "a" },
+			{ role: "user", content: "u" },
+			{ role: "developer", content: "tail" },
+		]);
+		// The system-notification placeholder is prepended (start invariant),
+		// then the assistant + user, then dev appended onto that user.
+		const userMsgs = out.filter((m) => m.role === "user");
+		expect(userMsgs.length).toBe(2); // placeholder + the real user with dev appended
+		// The last message is still the SAME user message (not a new one).
+		expect(out[out.length - 1].role).toBe("user");
+		const lastContent = out[out.length - 1].content;
+		// Dev got appended onto the existing user content.
+		expect(typeof lastContent === "string" ? lastContent : "").toContain("u");
+		expect(typeof lastContent === "string" ? lastContent : "").toContain(
+			"<system-context>\ntail\n</system-context>",
+		);
 	});
 });
 
