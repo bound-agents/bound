@@ -383,7 +383,11 @@ export function createDiscordServer(
 				"Each entry maps an allowed user ID to its DM channel ID, opening the DM if not already open " +
 				"(idempotent on Discord's side; does not notify the user). " +
 				"Returns an empty array when `allowed_users` is empty — the tool has no enumeration source in that case " +
-				"because Discord does not expose a 'list my DM channels' API to bots.",
+				"because Discord does not expose a 'list my DM channels' API to bots. " +
+				"Per-user `createDM` failures are surfaced inline as `{user_id, error}` entries (string error message) " +
+				"alongside successful `{user_id, channel_id}` entries; callers should discriminate by the presence " +
+				"of `channel_id` vs `error` on each entry. An array of all-`error` entries is distinct from `[]` " +
+				"(empty allowlist) and means every allowed user's DM resolution failed.",
 			inputSchema: {},
 			annotations: {
 				readOnlyHint: true,
@@ -403,21 +407,30 @@ export function createDiscordServer(
 				}),
 			);
 
-			const channels: Array<{ user_id: string; channel_id: string }> = [];
+			type ChannelEntry =
+				| { user_id: string; channel_id: string }
+				| { user_id: string; error: string };
+			const entries: ChannelEntry[] = [];
 			for (let i = 0; i < results.length; i++) {
 				const result = results[i];
+				const userId = config.allowed_users[i];
 				if (result.status === "fulfilled") {
-					channels.push(result.value);
+					entries.push(result.value);
 				} else {
+					const errorMessage =
+						result.reason instanceof Error ? result.reason.message : String(result.reason);
+					// Keep the warn log for operators reading the daemon log; the
+					// inline error-shape entry is the additive caller-facing channel.
 					logger.warn("[discord-server] Failed to resolve DM for allowed user", {
-						userId: config.allowed_users[i],
-						error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+						userId,
+						error: errorMessage,
 					});
+					entries.push({ user_id: userId, error: errorMessage });
 				}
 			}
 
 			return {
-				content: [{ type: "text", text: JSON.stringify(channels) }],
+				content: [{ type: "text", text: JSON.stringify(entries) }],
 			};
 		},
 	);
