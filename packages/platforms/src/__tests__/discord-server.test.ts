@@ -938,7 +938,7 @@ describe("Discord MCP Server", () => {
 			expect(mockDiscordClient._getCreateDMCalls()).toEqual(["user-a", "user-b"]);
 		});
 
-		it("returns successful entries when one user's createDM rejects (per-user isolation)", async () => {
+		it("surfaces per-user errors alongside successful entries", async () => {
 			const config: PlatformConnectorConfig = {
 				allowed_users: ["user-ok", "user-bad", "user-also-ok"],
 			};
@@ -962,9 +962,67 @@ describe("Discord MCP Server", () => {
 
 			expect(callResult.isError).toBeFalsy();
 			const text = (callResult.content[0] as { text: string }).text;
+			// Mixed shape: failed entry appears inline as {user_id, error}, in
+			// the same position as the input allowed_users order. Without this
+			// surfacing, a config with all-failing DMs returns [] indistinguishable
+			// from an empty allowlist (the bug that motivated this fix).
 			expect(JSON.parse(text)).toEqual([
 				{ user_id: "user-ok", channel_id: "dm-ok" },
+				{
+					user_id: "user-bad",
+					error: "Discord API: cannot send messages to this user",
+				},
 				{ user_id: "user-also-ok", channel_id: "dm-also-ok" },
+			]);
+		});
+
+		it("returns all-error entries (distinct from empty-allowlist []) when every createDM rejects", async () => {
+			// This is the actual case-distinction the fix addresses: prior
+			// behavior returned [] here, indistinguishable from allowed_users:[].
+			// Now the caller can see *why* the list is empty-of-channels.
+			const config: PlatformConnectorConfig = {
+				allowed_users: ["user-1", "user-2", "user-3"],
+			};
+			mockDiscordClient._setDMOverride("user-1", {
+				error: new Error("Cannot send messages to this user"),
+			});
+			mockDiscordClient._setDMOverride("user-2", {
+				error: new Error("Unknown User"),
+			});
+			mockDiscordClient._setDMOverride("user-3", {
+				error: new Error("Missing Access"),
+			});
+
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			const callResult = await mcpClient.request(
+				{
+					method: "tools/call",
+					params: { name: "discord_list_channels", arguments: {} },
+				},
+				CallToolResultSchema,
+			);
+
+			expect(callResult.isError).toBeFalsy();
+			const text = (callResult.content[0] as { text: string }).text;
+			const parsed = JSON.parse(text) as Array<Record<string, unknown>>;
+
+			// Result is non-empty (case distinction from empty-allowlist []).
+			expect(parsed).toHaveLength(3);
+
+			// Every entry has {user_id, error}, no channel_id.
+			for (const entry of parsed) {
+				expect(typeof entry.user_id).toBe("string");
+				expect(typeof entry.error).toBe("string");
+				expect(entry).not.toHaveProperty("channel_id");
+			}
+
+			expect(parsed).toEqual([
+				{ user_id: "user-1", error: "Cannot send messages to this user" },
+				{ user_id: "user-2", error: "Unknown User" },
+				{ user_id: "user-3", error: "Missing Access" },
 			]);
 		});
 
