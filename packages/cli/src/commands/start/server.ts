@@ -181,7 +181,8 @@ export function resolveDelegationMessageId(
  */
 export function isUserFacingInterface(threadInterface: string | null | undefined): boolean {
 	if (!threadInterface) return false;
-	if (threadInterface === "scheduler" || threadInterface === "mcp") return false;
+	if (threadInterface === "scheduler" || threadInterface === "mcp" || threadInterface === "webhook")
+		return false;
 	return true;
 }
 
