@@ -150,6 +150,7 @@ export async function importSkillFromFiles(
 						description,
 						allowed_tools: data.allowed_tools ?? null,
 						compatibility: data.compatibility ?? null,
+						metadata_json: JSON.stringify(data),
 						retired_by: null,
 						retired_reason: null,
 					},
