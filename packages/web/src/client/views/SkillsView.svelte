@@ -5,6 +5,7 @@ import Btn from "../components/Btn.svelte";
 import DataTable from "../components/DataTable.svelte";
 import Page from "../components/Page.svelte";
 import SectionHeader from "../components/SectionHeader.svelte";
+import SkillCreateModal from "../components/SkillCreateModal.svelte";
 import StatusChip from "../components/StatusChip.svelte";
 import { client } from "../lib/bound";
 import { renderMarkdown } from "../lib/markdown";
@@ -14,6 +15,7 @@ let loading = $state(true);
 let statusFilter = $state<"all" | "active" | "retired">("all");
 let expandedId = $state<string | null>(null);
 let pollInterval: ReturnType<typeof setInterval> | null = null;
+let showCreateModal = $state(false);
 
 let skillDetail = $state<
 	Record<string, { content: string; files: { path: string; size: number }[] } | null>
@@ -121,7 +123,13 @@ $effect.pre(() => {
 
 <Page>
 	{#snippet children()}
-		<SectionHeader number={6} title="Skills" />
+		<SectionHeader number={6} title="Skills">
+			{#snippet actions()}
+				<Btn variant="primary" size="sm" onclick={() => { showCreateModal = true; }}>
+					{#snippet children()}Create Skill{/snippet}
+				</Btn>
+			{/snippet}
+		</SectionHeader>
 
 		{#if loading}
 			<div class="state">
@@ -179,6 +187,13 @@ $effect.pre(() => {
 		{/if}
 	{/snippet}
 </Page>
+
+{#if showCreateModal}
+	<SkillCreateModal
+		onClose={() => { showCreateModal = false; }}
+		onCreated={() => { showCreateModal = false; loadSkills(); }}
+	/>
+{/if}
 
 {#snippet snippet_content(skill)}
 	{@const detail = skillDetail[skill.id as string]}
