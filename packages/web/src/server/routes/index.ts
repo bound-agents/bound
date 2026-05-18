@@ -8,6 +8,7 @@ import { createMessagesRoutes } from "./messages";
 import { type ModelsConfig, createStatusRoutes } from "./status";
 import { createTasksRoutes } from "./tasks";
 import { createThreadsRoutes } from "./threads";
+import { createWebhooksRoutes } from "./webhooks";
 
 export type { ModelsConfig };
 
@@ -65,5 +66,6 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		tasks: createTasksRoutes(db),
 		advisories: createAdvisoriesRoutes(db),
 		mcp: createMcpRoutes(db),
+		webhooks: createWebhooksRoutes(db),
 	};
 }
