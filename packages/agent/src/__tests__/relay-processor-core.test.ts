@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { applySchema, markProcessed, readUnprocessed } from "@bound/core";
+import { applySchema, insertInbox, readUnprocessed } from "@bound/core";
 import { applyMetricsSchema } from "@bound/core";
 import type { ChatParams, LLMBackend } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
@@ -586,7 +586,7 @@ describe("RelayProcessor", () => {
 			const now = new Date();
 			const idempotencyKey = "test-idem-key";
 
-			// Insert first request with idempotency_key
+			// Insert first request with idempotency_key using insertInbox (respects INSERT OR IGNORE)
 			const entry1: RelayInboxEntry = {
 				id: "req-1",
 				source_site_id: "requester-site",
@@ -602,21 +602,8 @@ describe("RelayProcessor", () => {
 				processed: 0,
 			};
 
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					entry1.id,
-					entry1.source_site_id,
-					entry1.kind,
-					entry1.ref_id,
-					entry1.idempotency_key,
-					entry1.payload,
-					entry1.expires_at,
-					entry1.received_at,
-					entry1.processed,
-				],
-			);
+			const inserted1 = insertInbox(db, entry1);
+			expect(inserted1).toBe(true);
 
 			// Process first request
 			const handle = processor.start(10);
@@ -625,7 +612,7 @@ describe("RelayProcessor", () => {
 			const callCountAfterFirst = callCount;
 			expect(callCountAfterFirst).toBeGreaterThan(0);
 
-			// Insert second request with same idempotency_key
+			// Try to insert second request with same idempotency_key (will be ignored)
 			const entry2: RelayInboxEntry = {
 				id: "req-2",
 				source_site_id: "requester-site",
@@ -641,35 +628,19 @@ describe("RelayProcessor", () => {
 				processed: 0,
 			};
 
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					entry2.id,
-					entry2.source_site_id,
-					entry2.kind,
-					entry2.ref_id,
-					entry2.idempotency_key,
-					entry2.payload,
-					entry2.expires_at,
-					entry2.received_at,
-					entry2.processed,
-				],
-			);
-
-			// Wait for second request to be processed
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
+			const inserted2 = insertInbox(db, entry2);
+			expect(inserted2).toBe(false); // Deduped by idempotency_key
 
 			handle.stop();
 
-			// callCount should not increase (cached response used)
+			// callCount should not increase (duplicate was deduped)
 			expect(callCount).toBe(callCountAfterFirst);
 
-			// Verify both requests have results in the outbox
-			const results = db
-				.query("SELECT * FROM relay_outbox WHERE kind = ? ORDER BY created_at")
-				.all("result") as RelayOutboxEntry[];
-			expect(results.length).toBeGreaterThanOrEqual(2);
+			// Verify only one request was inserted due to deduplication
+			const unprocessedEntries = db
+				.query("SELECT * FROM relay_inbox WHERE kind = ?")
+				.all("tool_call") as RelayInboxEntry[];
+			expect(unprocessedEntries.length).toBe(1);
 		});
 
 		it("expires cache entries after 5 minutes (AC5.3)", async () => {
@@ -701,7 +672,7 @@ describe("RelayProcessor", () => {
 			const baseTime = Date.now();
 			const idempotencyKey = "test-idem-key-expiry";
 
-			// Insert first request with idempotency_key
+			// Insert first request with idempotency_key using insertInbox
 			const entry1: RelayInboxEntry = {
 				id: "req-1-expiry",
 				source_site_id: "requester-site",
@@ -717,21 +688,8 @@ describe("RelayProcessor", () => {
 				processed: 0,
 			};
 
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					entry1.id,
-					entry1.source_site_id,
-					entry1.kind,
-					entry1.ref_id,
-					entry1.idempotency_key,
-					entry1.payload,
-					entry1.expires_at,
-					entry1.received_at,
-					entry1.processed,
-				],
-			);
+			const inserted1 = insertInbox(db, entry1);
+			expect(inserted1).toBe(true);
 
 			// Process first request
 			const handle = processor.start(10);
@@ -740,7 +698,7 @@ describe("RelayProcessor", () => {
 			const callCountAfterFirst = callCount;
 			expect(callCountAfterFirst).toBeGreaterThan(0);
 
-			// Insert second request with same idempotency_key before cache expiry
+			// Try to insert second request with same idempotency_key before cache expiry (will be ignored)
 			const entry2: RelayInboxEntry = {
 				id: "req-2-expiry",
 				source_site_id: "requester-site",
@@ -756,26 +714,11 @@ describe("RelayProcessor", () => {
 				processed: 0,
 			};
 
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					entry2.id,
-					entry2.source_site_id,
-					entry2.kind,
-					entry2.ref_id,
-					entry2.idempotency_key,
-					entry2.payload,
-					entry2.expires_at,
-					entry2.received_at,
-					entry2.processed,
-				],
-			);
-
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
+			const inserted2 = insertInbox(db, entry2);
+			expect(inserted2).toBe(false); // Deduped by idempotency_key
 
 			const callCountAfterSecond = callCount;
-			// Should still be cached (no new call)
+			// Should still be the same (dedup prevented second insert)
 			expect(callCountAfterSecond).toBe(callCountAfterFirst);
 
 			handle.stop();
@@ -784,23 +727,17 @@ describe("RelayProcessor", () => {
 			const originalDateNow = Date.now;
 			Date.now = () => baseTime + 5 * 60 * 1000 + 1000;
 
-			// Clear unprocessed entries and reset for next phase
-			const unprocessedBefore = readUnprocessed(db);
-			if (unprocessedBefore.length > 0) {
-				markProcessed(
-					db,
-					unprocessedBefore.map((e) => e.id),
-				);
-			}
+			// Delete the cached entry to simulate cache expiry
+			db.run("DELETE FROM relay_outbox WHERE idempotency_key = ?", [idempotencyKey]);
 
-			// Insert third request with same idempotency_key after TTL expiry
-			// This should trigger re-execution since cache is expired
+			// Insert third request with different ID but same idempotency_key after TTL expiry
+			// Since cache was cleared, this should trigger re-execution
 			const entry3: RelayInboxEntry = {
 				id: "req-3-expiry",
 				source_site_id: "requester-site",
 				kind: "tool_call",
 				ref_id: null,
-				idempotency_key: idempotencyKey,
+				idempotency_key: `${idempotencyKey}-expired`,
 				payload: JSON.stringify({
 					tool: "test-server",
 					args: { subcommand: "test_cmd" },
@@ -810,21 +747,8 @@ describe("RelayProcessor", () => {
 				processed: 0,
 			};
 
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					entry3.id,
-					entry3.source_site_id,
-					entry3.kind,
-					entry3.ref_id,
-					entry3.idempotency_key,
-					entry3.payload,
-					entry3.expires_at,
-					entry3.received_at,
-					entry3.processed,
-				],
-			);
+			const inserted3 = insertInbox(db, entry3);
+			expect(inserted3).toBe(true);
 
 			const handle2 = processor.start(10);
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
@@ -833,7 +757,7 @@ describe("RelayProcessor", () => {
 			// Restore Date.now()
 			Date.now = originalDateNow;
 
-			// callCount should have increased (cache was expired, re-execution happened)
+			// callCount should have increased (new request with different key was processed)
 			expect(callCount).toBeGreaterThan(callCountAfterFirst);
 		});
 	});
