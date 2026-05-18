@@ -3,7 +3,7 @@ import { insertRow, updateRow } from "@bound/core";
 import type { SkillFileEntry } from "@bound/shared";
 import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
-import { importSkillFromFiles } from "./skill-utils.js";
+import { MAX_SKILL_NAME_LENGTH, SKILL_NAME_REGEX, importSkillFromFiles } from "./skill-utils.js";
 import { parseToolInput, zodToToolParams } from "./tool-schema";
 
 const skillSchema = z.object({
@@ -81,8 +81,6 @@ async function handleActivate(
 
 	// Early name validation — to maintain consistent error message order with tests
 	// (The shared service will re-validate, but tests expect this check first)
-	const SKILL_NAME_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-	const MAX_SKILL_NAME_LENGTH = 64;
 	if (!SKILL_NAME_REGEX.test(input.name)) {
 		return `Error: Invalid skill name '${input.name}': must match ^[a-z0-9]+(-[a-z0-9]+)*$ (lowercase alphanumeric, hyphens allowed between segments)`;
 	}
