@@ -77,6 +77,7 @@ export {
 	pruneRelayTables,
 	readInboxByRefId,
 	readInboxByStreamId,
+	readUnprocessedInboxByRefId,
 	PayloadTooLargeError,
 	setRelayOutboxEventBus,
 } from "./relay";

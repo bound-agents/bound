@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
-import { createChangeLogEntry, insertRow, updateRow } from "@bound/core";
+import { createChangeLogEntry, insertRow, markProcessed, updateRow } from "@bound/core";
 import type { PlatformRegisteredTool } from "@bound/platforms";
 import { BOUND_NAMESPACE, deterministicUUID, formatError, parseJsonUntyped } from "@bound/shared";
 import type { Task } from "@bound/shared";
 import { createAdvisory } from "./advisories";
 import type { AgentLoop } from "./agent-loop";
+import { buildEventWakeupContent } from "./event-payload";
 import { buildHeartbeatContext } from "./heartbeat-context";
 import { canRunHere, computeNextRunAt } from "./task-resolution";
 import type { AgentLoopConfig } from "./types";
@@ -772,13 +773,29 @@ export class Scheduler {
 				// carrying the wakeup content, constructed in the ai-sdk-bridge's
 				// toModelMessages() conversation-start invariant.
 				const toolCallId = `tooluse_${randomUUID().replace(/-/g, "").slice(0, 22)}`;
-				const taskContent =
-					task.type === "heartbeat"
-						? buildHeartbeatContext(this.ctx.db, task.last_run_at, {
-								siteId: this.ctx.siteId,
-								logger: this.ctx.logger,
-							})
-						: (task.payload ?? "Execute scheduled task.");
+				let taskContent: string;
+				let inboxIdsToMarkProcessed: string[] = [];
+				if (task.type === "heartbeat") {
+					taskContent = buildHeartbeatContext(this.ctx.db, task.last_run_at, {
+						siteId: this.ctx.siteId,
+						logger: this.ctx.logger,
+					});
+				} else if (task.type === "event") {
+					// Event tasks (e.g. webhook-triggered) carry their dynamic
+					// payload in relay_inbox keyed by thread_id, written at
+					// intake time by webhook-handler.ts. Without this branch
+					// the agent would just see "Execute scheduled task." with
+					// no clue what fired the trigger — see the 2026-05-18
+					// d0372be6 incident where a GitHub-issue webhook woke a
+					// task and the agent had to do MCP archaeology to figure
+					// out what happened. Helper returns processedIds for
+					// post-insert draining (below).
+					const eventResult = buildEventWakeupContent(this.ctx.db, task);
+					taskContent = eventResult.content;
+					inboxIdsToMarkProcessed = eventResult.processedIds;
+				} else {
+					taskContent = task.payload ?? "Execute scheduled task.";
+				}
 
 				// 1. System notification establishing the wakeup context.
 				// Formerly a user message with "." — changed to system to avoid
@@ -863,6 +880,15 @@ export class Scheduler {
 					},
 					this.ctx.siteId,
 				);
+
+				// Drain the inbox entries we folded into the wakeup so the same
+				// envelopes don't surface again on the next event-task wakeup.
+				// Marked AFTER the tool_result message is durably persisted, so
+				// a mid-write failure leaves the inbox unprocessed (redundant
+				// event on a later run is strictly better than silent loss).
+				if (inboxIdsToMarkProcessed.length > 0) {
+					markProcessed(this.ctx.db, inboxIdsToMarkProcessed);
+				}
 
 				// Inject quiescence note for scheduled tasks when system is idle
 				if (task.type === "heartbeat" || task.type === "cron") {

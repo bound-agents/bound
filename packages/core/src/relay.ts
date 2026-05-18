@@ -163,6 +163,19 @@ export function readInboxByRefId(db: Database, refId: string): RelayInboxEntry |
 		.get(refId) as RelayInboxEntry | null;
 }
 
+/**
+ * Returns ALL unprocessed inbox entries for a given ref_id (e.g. a thread_id),
+ * oldest first. Used by the event-task wakeup path to drain pending webhook
+ * envelopes (or other intake payloads) into the agent context — `readInboxByRefId`
+ * only returns the earliest single entry, which is the wrong shape when multiple
+ * events have queued up between scheduler runs.
+ */
+export function readUnprocessedInboxByRefId(db: Database, refId: string): RelayInboxEntry[] {
+	return db
+		.query("SELECT * FROM relay_inbox WHERE ref_id = ? AND processed = 0 ORDER BY received_at ASC")
+		.all(refId) as RelayInboxEntry[];
+}
+
 export function readInboxByStreamId(db: Database, streamId: string): RelayInboxEntry[] {
 	return db
 		.query(
