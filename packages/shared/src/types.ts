@@ -119,6 +119,7 @@ export interface Task {
 	consecutive_failures: number;
 	event_depth: number;
 	no_quiescence: number;
+	system_prompt_addition: string | null;
 	heartbeat_at: string | null;
 	result: string | null;
 	error: string | null;

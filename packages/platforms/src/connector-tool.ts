@@ -263,6 +263,7 @@ async function handleAttach(
 			consecutive_failures: 0,
 			event_depth: 0,
 			no_quiescence: 0,
+			system_prompt_addition: null,
 			heartbeat_at: null,
 			result: null,
 			error: null,
