@@ -55,8 +55,8 @@ COMMANDS:
   webhook list               List all webhooks
   webhook create             Create a new webhook
   webhook delete <name>      Delete a webhook
-  webhook update <name>      Update a webhook (--prompt, --description, --format)
-  webhook rotate-secret      Rotate webhook secret
+  webhook update             Update a webhook (--name, --prompt, --description, --format)
+  webhook rotate-secret <name>  Rotate webhook secret
   db vacuum                  Run VACUUM to reclaim disk space
   --help                     Show this help message
 
