@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { importSkillFromFiles } from "@bound/agent";
+import { updateRow } from "@bound/core";
 import type { Skill, SkillFileEntry } from "@bound/shared";
 import { unzipSync } from "fflate";
 import { Hono } from "hono";
@@ -224,6 +225,134 @@ export function createSkillsRoutes(db: Database): Hono {
 			return c.json(
 				{
 					error: "Failed to create skill",
+					details: message,
+				},
+				500,
+			);
+		}
+	});
+
+	// POST /:id/retire - Retire a skill
+	app.post("/:id/retire", async (c) => {
+		try {
+			const { id } = c.req.param();
+			const siteId = getSiteId();
+
+			// Query skill
+			const skill = db
+				.query("SELECT * FROM skills WHERE id = ? AND deleted = 0")
+				.get(id) as Skill | null;
+
+			if (!skill) {
+				return c.json({ error: "Skill not found" }, 404);
+			}
+
+			// Parse optional body
+			let body: { reason?: string } = {};
+			try {
+				body = (await c.req.json()) as { reason?: string };
+			} catch {
+				// No body or invalid JSON
+			}
+
+			// Update skill
+			updateRow(
+				db,
+				"skills",
+				id,
+				{
+					status: "retired",
+					retired_reason: body.reason ?? null,
+					retired_by: "web",
+					modified_at: new Date().toISOString(),
+				},
+				siteId,
+			);
+
+			// Query updated skill
+			const updated = db.query("SELECT * FROM skills WHERE id = ?").get(id) as Skill;
+
+			return c.json({ skill: updated }, 200);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json(
+				{
+					error: "Failed to retire skill",
+					details: message,
+				},
+				500,
+			);
+		}
+	});
+
+	// POST /:id/activate - Re-activate a retired skill
+	app.post("/:id/activate", async (c) => {
+		try {
+			const { id } = c.req.param();
+			const siteId = getSiteId();
+
+			// Query skill
+			const skill = db
+				.query("SELECT * FROM skills WHERE id = ? AND deleted = 0")
+				.get(id) as Skill | null;
+
+			if (!skill) {
+				return c.json({ error: "Skill not found" }, 404);
+			}
+
+			// Query skill files
+			const pattern = `skills/${skill.name}/%`;
+			const files = db
+				.query("SELECT path, content FROM files WHERE path LIKE ? AND deleted = 0")
+				.all(pattern) as Array<{ path: string; content: string }>;
+
+			if (files.length === 0) {
+				return c.json(
+					{
+						error: "Skill files not found. Re-import the skill.",
+					},
+					500,
+				);
+			}
+
+			// Convert to SkillFileEntry[], stripping prefix
+			const skillFiles: SkillFileEntry[] = files.map((f) => ({
+				path: f.path.replace(`skills/${skill.name}/`, ""),
+				content: f.content,
+			}));
+
+			// Re-import the skill via importSkillFromFiles
+			// If it's a new import or update, this handles both
+			const result = await importSkillFromFiles(db, siteId, skillFiles, {});
+
+			if (!result.ok) {
+				// If import fails due to name conflict, just update status instead
+				// Mark skill as active and clear retired fields, increment activation_count
+				updateRow(
+					db,
+					"skills",
+					id,
+					{
+						status: "active",
+						retired_by: null,
+						retired_reason: null,
+						activation_count: (skill.activation_count || 0) + 1,
+						activated_at: new Date().toISOString(),
+						modified_at: new Date().toISOString(),
+					},
+					siteId,
+				);
+			}
+
+			// Query updated skill
+			const updated = db.query("SELECT * FROM skills WHERE id = ?").get(id) as Skill;
+
+			return c.json({ skill: updated }, 200);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json(
+				{
+					error: "Failed to activate skill",
 					details: message,
 				},
 				500,
