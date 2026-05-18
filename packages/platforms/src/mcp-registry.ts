@@ -553,16 +553,24 @@ export class PlatformMcpRegistry {
 	/**
 	 * Compares two cursor values.
 	 * Returns: negative if a < b, 0 if a == b, positive if a > b
-	 * Attempts numeric comparison first, falls back to lexicographic.
+	 *
+	 * Uses BigInt for numeric comparison so Discord snowflakes (~1.4e18 by 2026)
+	 * compare correctly without Number-precision loss above 2^53. Falls back to
+	 * lexicographic ordering when either side isn't a parseable BigInt — this
+	 * preserves correct ordering for legacy small-integer cursors and any
+	 * future MCP server that emits non-numeric opaque cursors.
 	 */
 	private compareCursors(a: string, b: string): number {
-		const aNum = Number(a);
-		const bNum = Number(b);
-		if (!Number.isNaN(aNum) && !Number.isNaN(bNum)) {
-			return aNum - bNum;
+		try {
+			const aBig = BigInt(a);
+			const bBig = BigInt(b);
+			if (aBig < bBig) return -1;
+			if (aBig > bBig) return 1;
+			return 0;
+		} catch {
+			// Lexicographic fallback for non-numeric cursors
+			return a.localeCompare(b);
 		}
-		// Lexicographic fallback for non-numeric cursors
-		return a.localeCompare(b);
 	}
 
 	/**

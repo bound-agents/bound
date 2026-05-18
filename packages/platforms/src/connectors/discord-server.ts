@@ -18,6 +18,25 @@ type EventAttachment =
 /** Attachment threshold: >= 1 MB is file_ref, < 1 MB is base64 */
 const ATTACHMENT_FILE_REF_THRESHOLD = 1024 * 1024;
 
+/**
+ * Compare two snowflake-string cursors. Returns negative if a < b, 0 if equal,
+ * positive if a > b. Uses BigInt to avoid Number precision loss above 2^53;
+ * Discord snowflakes routinely exceed that range (~1.4e18 by 2026). Falls back
+ * to lexicographic comparison if either input isn't parseable as a BigInt, so
+ * legacy non-numeric cursors keep working.
+ */
+function compareSnowflakeCursors(a: string, b: string): number {
+	try {
+		const aBig = BigInt(a);
+		const bBig = BigInt(b);
+		if (aBig < bBig) return -1;
+		if (aBig > bBig) return 1;
+		return 0;
+	} catch {
+		return a.localeCompare(b);
+	}
+}
+
 /** Event subscription storage */
 interface Subscription {
 	subscriptionId: string;
@@ -31,7 +50,18 @@ interface BufferedEvent {
 	name: string;
 	timestamp: string;
 	data: Record<string, unknown>;
-	cursor: number;
+	/**
+	 * Cursor is the Discord-issued snowflake (msg.id / interaction.id), which
+	 * is monotonic per channel, globally unique, and survives daemon restarts.
+	 * Using an in-process counter here previously caused a cursor collision
+	 * after restart: a fresh `nextCursor = 1` would re-emit cursor "1" while
+	 * the persisted handle.cursor in DB still held "1" from the prior delivery,
+	 * so deliverBatch's `compareCursors > 0` filter dropped every "first
+	 * message after restart" as a stale replay. Snowflakes monotonically
+	 * advance (~ms-precision timestamp + worker + sequence), so collisions
+	 * across restarts are not a thing.
+	 */
+	cursor: string;
 }
 
 /** Interaction store entry */
@@ -61,8 +91,9 @@ export function createDiscordServer(
 	});
 	const server = mcpServer.server;
 
-	// Internal state
-	let nextCursor = 1;
+	// Internal state. NOTE: no in-process cursor counter — we use the
+	// Discord-issued snowflake (msg.id / interaction.id) directly as cursor.
+	// See BufferedEvent.cursor docstring for the restart-collision rationale.
 	const eventBuffer: BufferedEvent[] = [];
 	const subscriptions = new Map<string, Subscription>();
 	const interactionStore = new Map<string, StoredInteraction>();
@@ -111,14 +142,16 @@ export function createDiscordServer(
 	// Helper to add event to buffer and emit to subscriptions
 	function emitEvent(eventId: string, eventName: string, eventData: Record<string, unknown>): void {
 		const now = new Date().toISOString();
-		const cursor = nextCursor++;
 
 		const bufferedEvent: BufferedEvent = {
 			eventId,
 			name: eventName,
 			timestamp: now,
 			data: eventData,
-			cursor,
+			// eventId === cursor for Discord (both are the snowflake). Kept as
+			// distinct fields because the wire shape allows other connectors to
+			// decouple them if their identity scheme differs from their ordering.
+			cursor: eventId,
 		};
 
 		eventBuffer.push(bufferedEvent);
@@ -144,7 +177,7 @@ export function createDiscordServer(
 						name: bufferedEvent.name,
 						timestamp: bufferedEvent.timestamp,
 						data: bufferedEvent.data,
-						cursor: String(bufferedEvent.cursor),
+						cursor: bufferedEvent.cursor,
 					});
 				}
 			}
@@ -207,13 +240,13 @@ export function createDiscordServer(
 			params: eventParams,
 		});
 
-		// If cursor provided, replay buffered events
+		// If cursor provided, replay buffered events. Cursors are snowflake
+		// strings — compare via BigInt to avoid Number precision loss above 2^53.
 		const cursor = params.cursor as string | undefined;
 		if (cursor) {
-			const cursorNum = Number.parseInt(cursor, 10);
 			const matchingEvents = eventBuffer.filter(
 				(e) =>
-					e.cursor > cursorNum &&
+					compareSnowflakeCursors(e.cursor, cursor) > 0 &&
 					e.name === eventName &&
 					Object.entries(eventParams).every(([key, value]) => e.data[key] === value),
 			);
@@ -225,7 +258,7 @@ export function createDiscordServer(
 					name: bufferedEvent.name,
 					timestamp: bufferedEvent.timestamp,
 					data: bufferedEvent.data,
-					cursor: String(bufferedEvent.cursor),
+					cursor: bufferedEvent.cursor,
 				});
 			}
 		}
@@ -252,10 +285,11 @@ export function createDiscordServer(
 			}
 		}
 
-		const cursor = cursorStr ? Number.parseInt(cursorStr, 10) : 0;
+		// Cursors are snowflake strings — only filter when caller supplied one;
+		// when absent we treat as "from the beginning of the buffer."
 		const matchingEvents = eventBuffer.filter(
 			(e) =>
-				e.cursor > cursor &&
+				(cursorStr === undefined || compareSnowflakeCursors(e.cursor, cursorStr) > 0) &&
 				e.name === eventName &&
 				Object.entries(eventParams).every(([key, value]) => e.data[key] === value),
 		);
@@ -266,11 +300,11 @@ export function createDiscordServer(
 				name: e.name,
 				timestamp: e.timestamp,
 				data: e.data,
-				cursor: String(e.cursor),
+				cursor: e.cursor,
 			})),
 			cursor:
 				matchingEvents.length > 0
-					? String(matchingEvents[matchingEvents.length - 1].cursor)
+					? matchingEvents[matchingEvents.length - 1].cursor
 					: cursorStr || "0",
 			nextPollSeconds: 2,
 		};
