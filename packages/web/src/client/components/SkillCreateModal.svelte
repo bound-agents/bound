@@ -48,6 +48,22 @@ const formValid = $derived(
 	name.length > 0 && !nameError && description.length > 0 && !descriptionError && body.length > 0,
 );
 
+// Upload state
+let selectedFile = $state<File | null>(null);
+let fileInputEl: HTMLInputElement;
+
+// Upload validation
+const uploadValid = $derived(
+	selectedFile !== null &&
+		(selectedFile.name.endsWith(".md") || selectedFile.name.endsWith(".zip")),
+);
+
+const uploadError = $derived(
+	selectedFile && !selectedFile.name.endsWith(".md") && !selectedFile.name.endsWith(".zip")
+		? "Only .md and .zip files are accepted"
+		: null,
+);
+
 function handleKeydown(e: KeyboardEvent): void {
 	if (e.key === "Escape") {
 		onClose();
@@ -69,6 +85,21 @@ async function submitForm(): Promise<void> {
 		onCreated();
 	} catch (error) {
 		serverError = error instanceof Error ? error.message : "Failed to create skill";
+	}
+	submitting = false;
+}
+
+async function submitUpload(): Promise<void> {
+	if (!uploadValid || submitting || !selectedFile) return;
+	submitting = true;
+	serverError = null;
+	try {
+		const formData = new FormData();
+		formData.append("skillfile", selectedFile);
+		await client.createSkill(formData);
+		onCreated();
+	} catch (error) {
+		serverError = error instanceof Error ? error.message : "Failed to upload skill";
 	}
 	submitting = false;
 }
@@ -129,7 +160,39 @@ async function submitForm(): Promise<void> {
 					<div class="server-error">{serverError}</div>
 				{/if}
 			{:else}
-				<p>Upload mode coming next</p>
+				<div class="upload-area">
+					<label class="file-label">
+						<span class="file-label-text">
+							{selectedFile ? selectedFile.name : "Choose a .md or .zip file"}
+						</span>
+						<input
+							type="file"
+							accept=".md,.zip"
+							class="file-input"
+							bind:this={fileInputEl}
+							onchange={(e) => {
+								const input = e.currentTarget as HTMLInputElement;
+								selectedFile = input.files?.[0] ?? null;
+							}}
+						/>
+						<Btn variant="default" size="sm" onclick={() => fileInputEl?.click()}>
+							{#snippet children()}Browse{/snippet}
+						</Btn>
+					</label>
+					{#if uploadError}
+						<span class="field-error">{uploadError}</span>
+					{/if}
+					{#if selectedFile}
+						<div class="file-info">
+							<span class="mono">{selectedFile.name}</span>
+							<span class="file-size">({(selectedFile.size / 1024).toFixed(1)} KB)</span>
+						</div>
+					{/if}
+				</div>
+
+				{#if serverError}
+					<div class="server-error">{serverError}</div>
+				{/if}
 			{/if}
 		</div>
 
@@ -139,8 +202,8 @@ async function submitForm(): Promise<void> {
 			</Btn>
 			<Btn
 				variant="primary"
-				disabled={(mode === "form" ? !formValid : false) || submitting}
-				onclick={mode === "form" ? submitForm : () => {}}
+				disabled={(mode === "form" ? !formValid : !uploadValid) || submitting}
+				onclick={mode === "form" ? submitForm : submitUpload}
 			>
 				{#snippet children()}{submitting ? "Creating..." : "Create"}{/snippet}
 			</Btn>
@@ -295,5 +358,42 @@ async function submitForm(): Promise<void> {
 		font-size: var(--text-sm);
 		padding: 4px 0;
 		margin-bottom: 8px;
+	}
+
+	.upload-area {
+		padding: 20px;
+		border: 2px dashed var(--rule-soft);
+		border-radius: 0;
+		text-align: center;
+	}
+
+	.file-label {
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 12px;
+	}
+
+	.file-label-text {
+		color: var(--ink-3);
+		font-size: var(--text-sm);
+	}
+
+	.file-input {
+		display: none;
+	}
+
+	.file-info {
+		margin-top: 12px;
+		font-size: var(--text-sm);
+	}
+
+	.file-size {
+		color: var(--ink-4);
+	}
+
+	.mono {
+		font-family: var(--font-mono);
 	}
 </style>
