@@ -263,7 +263,7 @@ This is a test skill.`;
 	});
 
 	describe("AC4.5: skillImport writes files and creates skill row", () => {
-		it("imports a skill from a local directory", () => {
+		it("imports a skill from a local directory", async () => {
 			// Create a temporary skill directory
 			const skillDir = mkdtempSync(join(tempDir, "skill-source-"));
 			const skillMdPath = join(skillDir, "SKILL.md");
@@ -286,12 +286,12 @@ This skill was imported.`;
 			spyOn(console, "log").mockImplementation(() => {});
 
 			// Call skillImport
-			skillImport(db, siteId, skillDir);
+			await skillImport(db, siteId, skillDir);
 
 			// Verify files table has entries
 			const files = db
 				.query("SELECT path FROM files WHERE path LIKE ? AND deleted = 0 ORDER BY path")
-				.all("/home/user/skills/imported-skill/%") as Array<{ path: string }>;
+				.all("skills/imported-skill/%") as Array<{ path: string }>;
 
 			expect(files.length).toBeGreaterThan(0);
 			const skillMdFile = files.find((f) => f.path.endsWith("SKILL.md"));
@@ -313,7 +313,7 @@ This skill was imported.`;
 	});
 
 	describe("AC4.6: skillImport rejects invalid SKILL.md", () => {
-		it("throws a descriptive error when SKILL.md has no frontmatter", () => {
+		it("throws a descriptive error when SKILL.md has no frontmatter", async () => {
 			// Create a directory with invalid SKILL.md
 			const skillDir = mkdtempSync(join(tempDir, "invalid-skill-"));
 			const skillMdPath = join(skillDir, "SKILL.md");
@@ -325,8 +325,8 @@ This skill was imported.`;
 			// (`packages/cli/src/bound.ts`) catches the throw and exits with code 1,
 			// keeping the same user-visible behavior as the old inline `process.exit(1)`
 			// path while remaining testable (process.exit would kill the test worker).
-			expect(() => {
-				skillImport(db, siteId, skillDir);
+			await expect(async () => {
+				await skillImport(db, siteId, skillDir);
 			}).toThrow(/frontmatter/i);
 		});
 	});
