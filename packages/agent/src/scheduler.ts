@@ -1014,6 +1014,7 @@ export class Scheduler {
 					modelId,
 					modelTier,
 					noHistory: task.no_history === 1,
+					systemPromptAddition: task.system_prompt_addition ?? undefined,
 				};
 
 				// Inject platform tools if resolver is available
