@@ -1,17 +1,10 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { insertRow, updateRow } from "@bound/core";
-import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import type { SkillFileEntry } from "@bound/shared";
 import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
-import { parseFrontmatter } from "./skill-utils";
+import { MAX_SKILL_NAME_LENGTH, SKILL_NAME_REGEX, importSkillFromFiles } from "./skill-utils.js";
 import { parseToolInput, zodToToolParams } from "./tool-schema";
-
-const MAX_ACTIVE_SKILLS = 20;
-const MAX_SKILL_BODY_LINES = 500;
-const MAX_FILE_SIZE_BYTES = 64 * 1024; // 64 KB
-const MAX_DESCRIPTION_LENGTH = 1024;
-const SKILL_NAME_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-const MAX_SKILL_NAME_LENGTH = 64;
 
 const skillSchema = z.object({
 	action: z.enum(["activate", "list", "read", "retire"]).describe("Skill operation to perform"),
@@ -86,10 +79,8 @@ async function handleActivate(
 		return "Error: 'name' is required for activate action";
 	}
 
-	const skillRoot = `/home/user/skills/${input.name}`;
-	const skillMdPath = `${skillRoot}/SKILL.md`;
-
-	// Validate skill name format
+	// Early name validation — to maintain consistent error message order with tests
+	// (The shared service will re-validate, but tests expect this check first)
 	if (!SKILL_NAME_REGEX.test(input.name)) {
 		return `Error: Invalid skill name '${input.name}': must match ^[a-z0-9]+(-[a-z0-9]+)*$ (lowercase alphanumeric, hyphens allowed between segments)`;
 	}
@@ -97,167 +88,32 @@ async function handleActivate(
 		return `Error: Skill name '${input.name}' exceeds maximum length of ${MAX_SKILL_NAME_LENGTH} characters`;
 	}
 
-	// Read SKILL.md
-	let content: string;
-	try {
-		content = await ctx.fs.readFile(skillMdPath);
-	} catch {
-		return `Error: Skill '${input.name}' not found: missing ${skillMdPath}`;
-	}
+	const skillRoot = `/home/user/skills/${input.name}`;
 
-	// Validate file size
-	const sizeBytes = Buffer.byteLength(content, "utf8");
-	if (sizeBytes > MAX_FILE_SIZE_BYTES) {
-		return `Error: SKILL.md exceeds 64 KB size limit (${sizeBytes} bytes)`;
-	}
-
-	// Parse frontmatter
-	const parsed = parseFrontmatter(content);
-	if (!parsed) {
-		return "Error: SKILL.md is missing required YAML frontmatter (---...---)";
-	}
-
-	const { data, body } = parsed;
-
-	// Validate name matches directory
-	if (data.name && data.name !== input.name) {
-		return `Error: Frontmatter 'name' field ('${data.name}') does not match directory name ('${input.name}')`;
-	}
-
-	// Validate description is present and within length limit
-	if (!data.description) {
-		return "Error: SKILL.md is missing required 'description' field in frontmatter";
-	}
-	if (data.description.length > MAX_DESCRIPTION_LENGTH) {
-		return `Error: Description exceeds ${MAX_DESCRIPTION_LENGTH} character limit (${data.description.length} chars)`;
-	}
-
-	// Validate body line count
-	const bodyLines = body.split("\n").length;
-	if (bodyLines > MAX_SKILL_BODY_LINES) {
-		return `Error: SKILL.md body exceeds ${MAX_SKILL_BODY_LINES} lines (${bodyLines} lines)`;
-	}
-
-	// Check active skill cap — do not count the skill being (re-)activated itself
-	const skillId = deterministicUUID(BOUND_NAMESPACE, input.name);
-	const capRow = ctx.db
-		.prepare(
-			"SELECT COUNT(*) as count FROM skills WHERE status = 'active' AND deleted = 0 AND id != ?",
-		)
-		.get(skillId) as { count: number };
-	if (capRow.count >= MAX_ACTIVE_SKILLS) {
-		return `Error: Active skill cap reached (${MAX_ACTIVE_SKILLS} maximum). Retire a skill before activating another.`;
-	}
-
-	const now = new Date().toISOString();
-
-	// Early file persistence — write all skill files to files table BEFORE upserting skills row
+	// Collect all files from VFS under skillRoot
 	const allPaths = ctx.fs.getAllPaths().filter((p) => p.startsWith(`${skillRoot}/`));
+	const files: SkillFileEntry[] = [];
+
 	for (const filePath of allPaths) {
-		let fileContent: string;
+		let content: string;
 		try {
-			fileContent = await ctx.fs.readFile(filePath);
+			content = await ctx.fs.readFile(filePath);
 		} catch {
 			continue; // skip unreadable entries (e.g., directories)
 		}
-		const fileSize = Buffer.byteLength(fileContent, "utf8");
-		const fileHash = createHash("sha256").update(fileContent).digest("hex");
-
-		const existingFile = ctx.db
-			.prepare("SELECT id, content FROM files WHERE path = ? AND deleted = 0")
-			.get(filePath) as { id: string; content: string } | null;
-
-		if (existingFile) {
-			const existingHash = createHash("sha256")
-				.update(existingFile.content ?? "")
-				.digest("hex");
-			if (existingHash !== fileHash) {
-				updateRow(
-					ctx.db,
-					"files",
-					existingFile.id,
-					{ content: fileContent, size_bytes: fileSize, modified_at: now },
-					ctx.siteId,
-				);
-			}
-		} else {
-			insertRow(
-				ctx.db,
-				"files",
-				{
-					id: filePath,
-					path: filePath,
-					content: fileContent,
-					is_binary: 0,
-					size_bytes: fileSize,
-					created_at: now,
-					modified_at: now,
-					deleted: 0,
-					created_by: null,
-					host_origin: null,
-				},
-				ctx.siteId,
-			);
-		}
+		const relativePath = filePath.slice(skillRoot.length + 1); // strip "skills/name/" prefix
+		files.push({ path: relativePath, content });
 	}
 
-	// Upsert skills row — after files are persisted
-	const contentHash = createHash("sha256").update(content).digest("hex");
-	const existing = ctx.db
-		.prepare("SELECT id, activation_count FROM skills WHERE id = ?")
-		.get(skillId) as { id: string; activation_count: number } | null;
+	// Call shared import service
+	const result = await importSkillFromFiles(ctx.db, ctx.siteId, files, {
+		threadId: ctx.threadId,
+	});
 
-	if (existing) {
-		updateRow(
-			ctx.db,
-			"skills",
-			skillId,
-			{
-				description: data.description,
-				status: "active",
-				skill_root: skillRoot,
-				content_hash: contentHash,
-				allowed_tools: data.allowed_tools ?? null,
-				compatibility: data.compatibility ?? null,
-				metadata_json: JSON.stringify(data),
-				activated_at: now,
-				activation_count: (existing.activation_count ?? 0) + 1,
-				last_activated_at: now,
-				retired_by: null,
-				retired_reason: null,
-				modified_at: now,
-				deleted: 0,
-			},
-			ctx.siteId,
-		);
-	} else {
-		insertRow(
-			ctx.db,
-			"skills",
-			{
-				id: skillId,
-				name: input.name,
-				description: data.description,
-				status: "active",
-				skill_root: skillRoot,
-				content_hash: contentHash,
-				allowed_tools: data.allowed_tools ?? null,
-				compatibility: data.compatibility ?? null,
-				metadata_json: JSON.stringify(data),
-				activated_at: now,
-				created_by_thread: ctx.threadId ?? null,
-				activation_count: 1,
-				last_activated_at: now,
-				retired_by: null,
-				retired_reason: null,
-				modified_at: now,
-				deleted: 0,
-			},
-			ctx.siteId,
-		);
+	if (result.ok) {
+		return `Skill '${result.name}' activated successfully.`;
 	}
-
-	return `Skill '${input.name}' activated successfully.`;
+	return `Error: ${result.error}`;
 }
 
 async function handleList(ctx: ToolContext, input: z.infer<typeof skillSchema>): Promise<string> {
@@ -330,12 +186,10 @@ async function handleRead(ctx: ToolContext, input: z.infer<typeof skillSchema>):
 		return "Error: 'name' is required for read action";
 	}
 
-	const skillMdPath = `/home/user/skills/${input.name}/SKILL.md`;
-
-	// Get skill metadata
+	// Get skill metadata including skill_root
 	const skill = ctx.db
 		.prepare(
-			"SELECT id, name, status, activation_count, last_activated_at, description, content_hash FROM skills WHERE name = ? AND deleted = 0",
+			"SELECT id, name, status, activation_count, last_activated_at, description, content_hash, skill_root FROM skills WHERE name = ? AND deleted = 0",
 		)
 		.get(input.name) as {
 		id: string;
@@ -345,11 +199,17 @@ async function handleRead(ctx: ToolContext, input: z.infer<typeof skillSchema>):
 		last_activated_at: string | null;
 		description: string;
 		content_hash: string | null;
+		skill_root: string | null;
 	} | null;
 
 	if (!skill) {
 		return `Error: Skill '${input.name}' not found.`;
 	}
+
+	// Construct path from skill_root
+	const skillMdPath = skill.skill_root
+		? `${skill.skill_root}/SKILL.md`
+		: `skills/${input.name}/SKILL.md`;
 
 	// Read SKILL.md content from files table
 	const fileRow = ctx.db

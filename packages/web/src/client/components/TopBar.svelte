@@ -21,6 +21,7 @@ const NAV = [
 	{ hash: "#/advisories", route: "04", label: "Advisories" },
 	{ hash: "#/files", route: "05", label: "Files" },
 	{ hash: "#/webhooks", route: "06", label: "Webhooks" },
+	{ hash: "#/skills", route: "07", label: "Skills" },
 ];
 
 let advisoryCount = $state(0);

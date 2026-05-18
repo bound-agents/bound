@@ -272,6 +272,19 @@ export interface Skill {
 	deleted: number;
 }
 
+export interface SkillFileEntry {
+	path: string;
+	content: string;
+}
+
+export interface ImportSkillOptions {
+	threadId?: string;
+}
+
+export type ImportSkillResult =
+	| { ok: true; skillId: string; name: string }
+	| { ok: false; error: string };
+
 export interface MemoryEdge {
 	id: string;
 	source_key: string;
