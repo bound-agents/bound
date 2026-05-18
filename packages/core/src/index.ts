@@ -11,6 +11,7 @@ export {
 	withChangeLog,
 	insertRow,
 	updateRow,
+	updateRowIf,
 	softDelete,
 	insertMessage,
 	readMessageMetadata,
