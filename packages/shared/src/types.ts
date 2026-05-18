@@ -36,6 +36,7 @@ export type SyncedTableName =
 	| "skills"
 	| "memory_edges"
 	| "connector_handles"
+	| "webhooks"
 	| "turns";
 
 export type ReducerType = "lww" | "append-only";
@@ -128,6 +129,21 @@ export interface Task {
 	modified_at: string;
 	deleted: number;
 }
+
+export interface Webhook {
+	id: string;
+	name: string;
+	secret: string;
+	signature_format: SignatureFormat;
+	description: string | null;
+	task_id: string;
+	thread_id: string;
+	created_at: string;
+	deleted: number;
+	modified_at: string;
+}
+
+export type SignatureFormat = "github" | "stripe" | "slack" | "raw";
 
 export interface AgentFile {
 	id: string;
@@ -314,6 +330,7 @@ export interface SyncedTableRowMap {
 	skills: Skill;
 	memory_edges: MemoryEdge;
 	connector_handles: ConnectorHandleRow;
+	webhooks: Webhook;
 	turns: Turn;
 }
 
@@ -334,6 +351,7 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	skills: "lww",
 	memory_edges: "lww",
 	connector_handles: "lww",
+	webhooks: "lww",
 	// turns are append-only facts about what the model did on a given host.
 	// Recorded once when the turn completes; never mutated after insert except
 	// for local-only columns (context_debug, relay_target, relay_latency_ms)
