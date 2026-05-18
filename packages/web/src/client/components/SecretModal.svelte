@@ -29,6 +29,7 @@ async function copyToClipboard(): Promise<void> {
 function handleKeydown(e: KeyboardEvent): void {
 	if (e.key === "Escape") {
 		e.preventDefault();
+		previouslyFocused?.focus();
 		onClose();
 	}
 }

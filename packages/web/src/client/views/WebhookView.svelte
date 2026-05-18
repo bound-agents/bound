@@ -1,6 +1,6 @@
 <script lang="ts">
 import type { WebhookListEntry } from "@bound/client";
-import { onDestroy, onMount } from "svelte";
+import { onMount } from "svelte";
 import Btn from "../components/Btn.svelte";
 import DataTable from "../components/DataTable.svelte";
 import Page from "../components/Page.svelte";
@@ -207,10 +207,6 @@ function formatDate(iso: string): string {
 		return iso;
 	}
 }
-
-onDestroy(() => {
-	// Cleanup if needed
-});
 </script>
 
 <Page>
