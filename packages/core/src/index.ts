@@ -21,10 +21,15 @@ export {
 export {
 	getLocalPksSorted,
 	getBackfillablePksSorted,
+	getBackfillableEntriesSorted,
 	mergeDiffPks,
+	mergeDiffEntries,
+	hashRow,
 	compareAllTables,
 	countUnsyncableLocalOnly,
 	type TableDiff,
+	type ConsistencyEntry,
+	type ConsistencyDiff,
 } from "./consistency";
 export {
 	loadConfigFile,

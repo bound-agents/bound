@@ -135,6 +135,17 @@ export type ConsistencyRequestPayload = {
 export type ConsistencyResponsePayload = {
 	table: string;
 	pks: string[];
+	/**
+	 * Per-row state entries parallel to `pks` (same length, same order). Each
+	 * entry pairs a primary key with a content hash and `modified_at` for
+	 * bidirectional last-writer-wins resolution on mismatched hashes.
+	 *
+	 * Optional for backward compatibility: older hubs return only `pks`, in
+	 * which case the receiver falls back to PK-presence diff (legacy behavior,
+	 * does not detect tier flips, soft-deletes, or value mutations on rows
+	 * whose PK exists on both sides — see bound_issue:hub-backfill-pk-set-skips-state-updates).
+	 */
+	entries?: Array<{ pk: string; hash: string; modified_at: string | null }>;
 	count: number;
 	has_more: boolean;
 	table_index: number;

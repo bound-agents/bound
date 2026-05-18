@@ -1,10 +1,14 @@
 import type { Database, Statement } from "bun:sqlite";
 import {
+	type ConsistencyEntry,
 	createChangeLogEntry,
+	getBackfillableEntriesSorted,
 	getBackfillablePksSorted,
 	getPkColumn as getPkColumnTyped,
+	hashRow,
 	insertInbox,
 	markDelivered,
+	mergeDiffEntries,
 	mergeDiffPks,
 	readUndelivered,
 	writeOutbox,
@@ -1627,12 +1631,23 @@ export class WsTransport {
 			c: number;
 		};
 
+		// A1 state-aware backfill: select full rows so we can compute per-row
+		// content hashes for divergence detection. PK-only diff is insufficient
+		// because tier flips, soft-delete tombstones, and value mutations on
+		// rows present on both sides are silently skipped (see
+		// bound_issue:hub-backfill-pk-set-skips-state-updates).
 		const rows = this.config.db
-			.query(`SELECT ${pkCol} AS pk FROM ${table} ORDER BY ${pkCol} ASC LIMIT ? OFFSET ?`)
-			.all(pageSize + 1, offset) as Array<{ pk: string }>;
+			.query(`SELECT * FROM ${table} ORDER BY ${pkCol} ASC LIMIT ? OFFSET ?`)
+			.all(pageSize + 1, offset) as Array<Record<string, unknown>>;
 
 		const hasMore = rows.length > pageSize;
-		const pks = rows.slice(0, pageSize).map((r) => r.pk);
+		const pageRows = rows.slice(0, pageSize);
+		const pks = pageRows.map((r) => String(r[pkCol]));
+		const entries = pageRows.map((r) => ({
+			pk: String(r[pkCol]),
+			hash: hashRow(r),
+			modified_at: typeof r.modified_at === "string" ? r.modified_at : null,
+		}));
 		const isLastTable = tableIndex === tables.length - 1;
 		const allDone = isLastTable && !hasMore;
 		const nextTableIndex = hasMore ? tableIndex : tableIndex + 1;
@@ -1643,6 +1658,7 @@ export class WsTransport {
 			{
 				table,
 				pks,
+				entries,
 				count: countRow.c,
 				has_more: hasMore,
 				table_index: tableIndex,
@@ -1708,14 +1724,18 @@ export class WsTransport {
 	private pendingConsistencyRequests = new Map<
 		string,
 		{
-			resolve: (data: Map<string, { count: number; pks: string[] }>) => void;
+			resolve: (
+				data: Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>,
+			) => void;
 			reject: (err: Error) => void;
-			data: Map<string, { count: number; pks: string[] }>;
+			data: Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>;
 			timer: Timer;
 		}
 	>();
 
-	requestConsistency(tables: string[]): Promise<Map<string, { count: number; pks: string[] }>> {
+	requestConsistency(
+		tables: string[],
+	): Promise<Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>> {
 		const hubPeer = this.peerConnections.values().next().value as PeerConnection | undefined;
 		if (!hubPeer) {
 			return Promise.reject(new Error("Not connected to hub"));
@@ -1750,6 +1770,7 @@ export class WsTransport {
 	handleConsistencyResponse(payload: {
 		table: string;
 		pks: string[];
+		entries?: ConsistencyEntry[];
 		count: number;
 		has_more?: boolean;
 		table_index?: number;
@@ -1765,11 +1786,15 @@ export class WsTransport {
 		const existing = req.data.get(payload.table);
 		if (existing) {
 			existing.pks.push(...payload.pks);
+			if (payload.entries) {
+				existing.entries = (existing.entries ?? []).concat(payload.entries);
+			}
 			existing.count = payload.count;
 		} else {
 			req.data.set(payload.table, {
 				count: payload.count,
 				pks: [...payload.pks],
+				entries: payload.entries ? [...payload.entries] : undefined,
 			});
 		}
 
@@ -1799,7 +1824,7 @@ export class WsTransport {
 	}
 
 	private async requestConsistencyWithTimeout(): Promise<
-		Map<string, { count: number; pks: string[] }>
+		Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>
 	> {
 		return this.requestConsistency([]);
 	}
@@ -1884,26 +1909,62 @@ export class WsTransport {
 			if (!remote) continue;
 
 			const pkCol = getPkColumnTyped(table);
-			const localPks = getBackfillablePksSorted(this.config.db, table);
-			const remotePksSorted = remote.pks.slice().sort();
-			const diff = mergeDiffPks(localPks, remotePksSorted);
 
-			if (diff.remoteOnly.length > 0) {
-				remoteOnlyByTable.push({ table, pks: diff.remoteOnly });
+			// A1 state-aware backfill: if the peer sent per-row entries (hash +
+			// modified_at), detect divergence on rows present on both sides and
+			// route by modified_at direction. Otherwise fall back to PK-only diff
+			// (legacy peers; will miss tier flips, soft-deletes, value mutations).
+			let pushPks: string[];
+			let pullPks: string[];
+			let localOnlyCount: number;
+			let remoteOnlyCount: number;
+			let localNewerMismatchCount = 0;
+			let remoteNewerMismatchCount = 0;
+
+			if (remote.entries) {
+				const localEntries = getBackfillableEntriesSorted(this.config.db, table);
+				const remoteEntriesSorted = remote.entries
+					.slice()
+					.sort((a, b) => (a.pk < b.pk ? -1 : a.pk > b.pk ? 1 : 0));
+				const diff = mergeDiffEntries(localEntries, remoteEntriesSorted);
+				pushPks = diff.localOnly.concat(diff.localNewerMismatch);
+				pullPks = diff.remoteOnly.concat(diff.remoteNewerMismatch);
+				localOnlyCount = diff.localOnly.length;
+				remoteOnlyCount = diff.remoteOnly.length;
+				localNewerMismatchCount = diff.localNewerMismatch.length;
+				remoteNewerMismatchCount = diff.remoteNewerMismatch.length;
+			} else {
+				this.config.logger?.warn(
+					"[backfill] Peer omitted state hashes; falling back to PK-only diff",
+					{ table },
+				);
+				const localPks = getBackfillablePksSorted(this.config.db, table);
+				const remotePksSorted = remote.pks.slice().sort();
+				const diff = mergeDiffPks(localPks, remotePksSorted);
+				pushPks = diff.localOnly;
+				pullPks = diff.remoteOnly;
+				localOnlyCount = diff.localOnly.length;
+				remoteOnlyCount = diff.remoteOnly.length;
 			}
 
-			if (diff.localOnly.length === 0) continue;
+			if (pullPks.length > 0) {
+				remoteOnlyByTable.push({ table, pks: pullPks });
+			}
+
+			if (pushPks.length === 0) continue;
 			tablesWithDrift++;
 
 			this.config.logger?.info("[backfill] Table needs backfill", {
 				table,
-				localOnly: diff.localOnly.length,
-				remoteOnly: diff.remoteOnly.length,
+				localOnly: localOnlyCount,
+				remoteOnly: remoteOnlyCount,
+				localNewerMismatch: localNewerMismatchCount,
+				remoteNewerMismatch: remoteNewerMismatchCount,
 			});
 
 			const batchSize = WsTransport.BACKFILL_BATCH_SIZE;
-			for (let i = 0; i < diff.localOnly.length; i += batchSize) {
-				const batch = diff.localOnly.slice(i, i + batchSize);
+			for (let i = 0; i < pushPks.length; i += batchSize) {
+				const batch = pushPks.slice(i, i + batchSize);
 				const hlcs: string[] = [];
 
 				this.config.db.exec("BEGIN IMMEDIATE");
@@ -1943,7 +2004,7 @@ export class WsTransport {
 		let pulled = 0;
 		if (remoteOnlyByTable.length > 0) {
 			const totalRemoteOnly = remoteOnlyByTable.reduce((sum, t) => sum + t.pks.length, 0);
-			this.config.logger?.info("[backfill] Pulling remote-only rows", {
+			this.config.logger?.info("[backfill] Pulling remote rows", {
 				tables: remoteOnlyByTable.length,
 				rows: totalRemoteOnly,
 			});
