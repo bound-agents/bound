@@ -471,4 +471,153 @@ This is from a zip.`;
 			expect(data.error).toContain("64KB");
 		});
 	});
+
+	describe("POST /:id/retire - Retire skill", () => {
+		it("AC2.7: Retires an active skill", async () => {
+			const app = createSkillsRoutes(db);
+
+			const skillId = randomUUID();
+
+			// Insert active skill
+			db.run(
+				`INSERT INTO skills (
+					id, name, description, status, skill_root, content_hash,
+					allowed_tools, compatibility, metadata_json, activated_at,
+					created_by_thread, activation_count, last_activated_at,
+					retired_by, retired_reason, modified_at, deleted
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					skillId,
+					"to-retire",
+					"A skill to retire",
+					"active",
+					"skills/to-retire",
+					"hash123",
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					null,
+					1,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const res = await app.request(`/${skillId}/retire`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ reason: "No longer needed" }),
+			});
+
+			expect(res.status).toBe(200);
+
+			const data = (await res.json()) as { skill: Skill };
+			expect(data.skill.status).toBe("retired");
+			expect(data.skill.retired_by).toBe("web");
+			expect(data.skill.retired_reason).toBe("No longer needed");
+		});
+
+		it("AC2.9: Returns 404 for non-existent skill", async () => {
+			const app = createSkillsRoutes(db);
+			const fakeId = randomUUID();
+
+			const res = await app.request(`/${fakeId}/retire`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({}),
+			});
+
+			expect(res.status).toBe(404);
+
+			const data = (await res.json()) as { error: string };
+			expect(data.error).toBe("Skill not found");
+		});
+	});
+
+	describe("POST /:id/activate - Activate skill", () => {
+		it("AC2.8: Re-activates a retired skill", async () => {
+			const app = createSkillsRoutes(db);
+
+			const skillId = randomUUID();
+
+			// Insert retired skill
+			db.run(
+				`INSERT INTO skills (
+					id, name, description, status, skill_root, content_hash,
+					allowed_tools, compatibility, metadata_json, activated_at,
+					created_by_thread, activation_count, last_activated_at,
+					retired_by, retired_reason, modified_at, deleted
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					skillId,
+					"to-activate",
+					"A skill to activate",
+					"retired",
+					"skills/to-activate",
+					"hash123",
+					null,
+					null,
+					null,
+					null,
+					null,
+					0,
+					null,
+					"web",
+					"testing",
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// Insert skill files
+			const skillMdContent = `---
+name: to-activate
+description: A skill to activate
+---
+# Test`;
+
+			const fileId1 = randomUUID();
+			db.run(
+				`INSERT INTO files (id, path, size_bytes, content, created_at, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[
+					fileId1,
+					"skills/to-activate/SKILL.md",
+					skillMdContent.length,
+					skillMdContent,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const res = await app.request(`/${skillId}/activate`, {
+				method: "POST",
+			});
+
+			expect(res.status).toBe(200);
+
+			const data = (await res.json()) as { skill: Skill };
+			expect(data.skill.status).toBe("active");
+			expect(data.skill.activation_count).toBeGreaterThan(0);
+		});
+
+		it("AC2.10: Returns 404 for non-existent skill", async () => {
+			const app = createSkillsRoutes(db);
+			const fakeId = randomUUID();
+
+			const res = await app.request(`/${fakeId}/activate`, {
+				method: "POST",
+			});
+
+			expect(res.status).toBe(404);
+
+			const data = (await res.json()) as { error: string };
+			expect(data.error).toBe("Skill not found");
+		});
+	});
 });
