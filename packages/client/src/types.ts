@@ -171,6 +171,40 @@ export interface CreateMcpThreadResult {
 	thread_id: string;
 }
 
+// ---- Webhooks ----
+
+export interface WebhookListEntry {
+	id: string;
+	name: string;
+	signature_format: string;
+	description: string | null;
+	task_id: string;
+	thread_id: string;
+	created_at: string;
+	modified_at: string;
+}
+
+export interface WebhookCreateResponse extends WebhookListEntry {
+	secret: string; // Only present on create
+}
+
+export interface WebhookRotateResponse {
+	secret: string;
+}
+
+export interface CreateWebhookOptions {
+	name: string;
+	format?: string;
+	description?: string;
+	prompt?: string;
+}
+
+export interface UpdateWebhookOptions {
+	description?: string;
+	prompt?: string;
+	format?: string;
+}
+
 // ---- Errors ----
 
 export interface ApiErrorBody {

@@ -31,4 +31,9 @@ export type {
 	ToolCallRequest,
 	ToolCallResult,
 	ToolCancelEvent,
+	WebhookListEntry,
+	WebhookCreateResponse,
+	WebhookRotateResponse,
+	CreateWebhookOptions,
+	UpdateWebhookOptions,
 } from "./types.js";
