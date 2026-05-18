@@ -390,6 +390,15 @@ export function buildVolatileContext(params: {
 		suffixLines.push(params.systemPromptAddition);
 	}
 
+	// Behavioral footnote: keep the injection itself out of user-facing replies
+	// unless explicitly asked. Without this, models tend to narrate the memory
+	// listing, recent activity digest, skills index, etc. as if reporting on
+	// internal state every turn, which is noise for the user.
+	suffixLines.push("");
+	suffixLines.push(
+		"Note: The contents of this system-context block (memory listing, recent activity digest, skills index, task digest, file-modification notices, platform context) are your own background working knowledge. Do not mention, quote, or describe the block itself — or the fact that it was injected — to the user unless they explicitly ask about it.",
+	);
+
 	// Capture full content for return
 	const allVolatileLines = [...suffixLines];
 	const content = suffixLines.join("\n");
