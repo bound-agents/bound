@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import type { Skill } from "@bound/shared";
+import { zipSync } from "fflate";
 import { createSkillsRoutes } from "../server/routes/skills";
 
 describe("Skills Route", () => {
@@ -281,6 +282,193 @@ This is a test skill.`;
 
 			const data = (await res.json()) as { error: string };
 			expect(data.error).toBe("Skill not found");
+		});
+	});
+
+	describe("POST / - Create skill", () => {
+		it("AC2.4: Creates skill from JSON body", async () => {
+			const app = createSkillsRoutes(db);
+
+			const body = {
+				name: "test-skill",
+				description: "A test skill",
+				body: "# Test Skill\n\nThis is a test skill.",
+			};
+
+			const res = await app.request("/", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			});
+
+			expect(res.status).toBe(201);
+
+			const data = (await res.json()) as { skill: Skill };
+			expect(data.skill.name).toBe("test-skill");
+			expect(data.skill.description).toBe("A test skill");
+
+			// Verify in DB
+			const dbSkill = db.query("SELECT * FROM skills WHERE name = ?").get("test-skill");
+			expect(dbSkill).toBeDefined();
+		});
+
+		it("AC2.5: Creates skill from multipart .md file", async () => {
+			const app = createSkillsRoutes(db);
+
+			const skillMdContent = `---
+name: md-skill
+description: From MD file
+---
+# MD Skill
+
+This is from a file.`;
+
+			const file = new File([skillMdContent], "skill.md", { type: "text/markdown" });
+			const formData = new FormData();
+			formData.append("skillfile", file);
+
+			const res = await app.request("/", {
+				method: "POST",
+				body: formData,
+			});
+
+			expect(res.status).toBe(201);
+
+			const data = (await res.json()) as { skill: Skill };
+			expect(data.skill.name).toBe("md-skill");
+
+			// Verify in DB
+			const dbSkill = db.query("SELECT * FROM skills WHERE name = ?").get("md-skill");
+			expect(dbSkill).toBeDefined();
+		});
+
+		it("AC2.6: Creates skill from multipart .zip file", async () => {
+			const app = createSkillsRoutes(db);
+
+			const skillMdContent = `---
+name: zip-skill
+description: From zip
+---
+# Zip Skill
+
+This is from a zip.`;
+
+			const zipData = zipSync({
+				"SKILL.md": new TextEncoder().encode(skillMdContent),
+				"helper.js": new TextEncoder().encode("console.log('test');"),
+			});
+
+			const file = new File([zipData], "skill.zip", { type: "application/zip" });
+			const formData = new FormData();
+			formData.append("skillfile", file);
+
+			const res = await app.request("/", {
+				method: "POST",
+				body: formData,
+			});
+
+			expect(res.status).toBe(201);
+
+			const data = (await res.json()) as { skill: Skill };
+			expect(data.skill.name).toBe("zip-skill");
+
+			// Verify in DB
+			const dbSkill = db.query("SELECT * FROM skills WHERE name = ?").get("zip-skill");
+			expect(dbSkill).toBeDefined();
+		});
+	});
+
+	describe("POST / - Security tests", () => {
+		it("AC4.1: Rejects zip with ../ in path", async () => {
+			const app = createSkillsRoutes(db);
+
+			const zipData = zipSync({
+				"../etc/passwd": new TextEncoder().encode("malicious"),
+				"SKILL.md": new TextEncoder().encode("---\nname: test\n---\nbody"),
+			});
+
+			const file = new File([zipData], "skill.zip", { type: "application/zip" });
+			const formData = new FormData();
+			formData.append("skillfile", file);
+
+			const res = await app.request("/", {
+				method: "POST",
+				body: formData,
+			});
+
+			expect(res.status).toBe(400);
+
+			const data = (await res.json()) as { error: string };
+			expect(data.error).toContain("Invalid zip");
+		});
+
+		it("AC4.2: Rejects zip with absolute path", async () => {
+			const app = createSkillsRoutes(db);
+
+			const zipData = zipSync({
+				"/absolute/path.md": new TextEncoder().encode("malicious"),
+				"SKILL.md": new TextEncoder().encode("---\nname: test\n---\nbody"),
+			});
+
+			const file = new File([zipData], "skill.zip", { type: "application/zip" });
+			const formData = new FormData();
+			formData.append("skillfile", file);
+
+			const res = await app.request("/", {
+				method: "POST",
+				body: formData,
+			});
+
+			expect(res.status).toBe(400);
+
+			const data = (await res.json()) as { error: string };
+			expect(data.error).toContain("Invalid zip");
+		});
+
+		it("AC4.3: Rejects zip without SKILL.md", async () => {
+			const app = createSkillsRoutes(db);
+
+			const zipData = zipSync({
+				"helper.js": new TextEncoder().encode("console.log('test');"),
+			});
+
+			const file = new File([zipData], "skill.zip", { type: "application/zip" });
+			const formData = new FormData();
+			formData.append("skillfile", file);
+
+			const res = await app.request("/", {
+				method: "POST",
+				body: formData,
+			});
+
+			expect(res.status).toBe(400);
+
+			const data = (await res.json()) as { error: string };
+			expect(data.error).toContain("SKILL.md");
+		});
+
+		it("AC4.4: Rejects zip exceeding 64KB", async () => {
+			const app = createSkillsRoutes(db);
+
+			const largeContent = "x".repeat(70 * 1024); // 70KB
+			const zipData = zipSync({
+				"large.txt": new TextEncoder().encode(largeContent),
+				"SKILL.md": new TextEncoder().encode("---\nname: test\n---\nbody"),
+			});
+
+			const file = new File([zipData], "skill.zip", { type: "application/zip" });
+			const formData = new FormData();
+			formData.append("skillfile", file);
+
+			const res = await app.request("/", {
+				method: "POST",
+				body: formData,
+			});
+
+			expect(res.status).toBe(400);
+
+			const data = (await res.json()) as { error: string };
+			expect(data.error).toContain("64KB");
 		});
 	});
 });
