@@ -1,17 +1,41 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertInbox } from "@bound/core";
-import type { Webhook } from "@bound/shared";
+import type { TypedEventEmitter, Webhook } from "@bound/shared";
 import { validateWebhookSignature } from "./webhook-hmac.js";
 
 export interface WebhookHandlerDeps {
 	db: Database;
 	siteId: string;
+	eventBus?: TypedEventEmitter;
+}
+
+/**
+ * Extract delivery ID from platform-specific headers for deduplication.
+ * Checks for known delivery headers (GitHub, Stripe, generic).
+ * Returns null if no delivery header is found.
+ */
+function extractDeliveryId(headers: Headers): string | null {
+	// Check GitHub delivery header
+	const githubDelivery = headers.get("x-github-delivery");
+	if (githubDelivery) return `github-${githubDelivery}`;
+
+	// Check Stripe idempotency key
+	const stripeIdempotency = headers.get("stripe-idempotency-key");
+	if (stripeIdempotency) return `stripe-${stripeIdempotency}`;
+
+	// Check generic idempotency key header
+	const genericId = headers.get("x-idempotency-key");
+	if (genericId) return `generic-${genericId}`;
+
+	// No delivery header found
+	return null;
 }
 
 /**
  * Handles incoming webhook POST requests.
- * Validates signature, writes relay_inbox entry, and returns appropriate HTTP response.
+ * Validates signature, writes relay_inbox entry, emits events for scheduler triggering,
+ * and returns appropriate HTTP response.
  */
 export async function handleWebhookRequest(
 	request: Request,
@@ -67,13 +91,17 @@ export async function handleWebhookRequest(
 		body: rawBody.toString("utf-8"),
 	});
 
+	// Extract delivery ID for deduplication, or generate unique ID
+	const deliveryId = extractDeliveryId(request.headers);
+	const idempotencyKey = deliveryId ?? `${name}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+
 	// Write relay_inbox entry
 	const inboxEntry = {
 		id: randomUUID(),
 		source_site_id: deps.siteId,
 		kind: "intake" as const,
 		ref_id: webhook.thread_id,
-		idempotency_key: null,
+		idempotency_key: idempotencyKey,
 		stream_id: null,
 		payload: envelope,
 		expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 days
@@ -82,6 +110,16 @@ export async function handleWebhookRequest(
 	};
 
 	insertInbox(deps.db, inboxEntry);
+
+	// Emit connector:event to trigger scheduler
+	if (deps.eventBus) {
+		deps.eventBus.emit("connector:event", {
+			trigger_key: `webhook:${name}`,
+			handle_id: webhook.id,
+			task_id: webhook.task_id,
+			batch_size: 1,
+		});
+	}
 
 	return new Response("", { status: 202 });
 }

@@ -515,6 +515,12 @@ export function applySchema(db: Database): void {
 		WHERE processed = 0
 	`);
 
+	db.run(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_inbox_idempotency
+		ON relay_inbox(idempotency_key)
+		WHERE idempotency_key IS NOT NULL
+	`);
+
 	// 20. relay_cycles (non-replicated, local-only)
 	db.run(`
 		CREATE TABLE IF NOT EXISTS relay_cycles (
