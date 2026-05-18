@@ -384,12 +384,6 @@ export function buildVolatileContext(params: {
 		suffixLines.push(`Referenced skill '${params.inactiveSkillRef}' is not active.`);
 	}
 
-	// Append systemPromptAddition if present (AC2.2)
-	if (params.systemPromptAddition) {
-		suffixLines.push("");
-		suffixLines.push(params.systemPromptAddition);
-	}
-
 	// Behavioral footnote: keep the injection itself out of user-facing replies
 	// unless explicitly asked. Without this, models tend to narrate the memory
 	// listing, recent activity digest, skills index, etc. as if reporting on
@@ -398,6 +392,18 @@ export function buildVolatileContext(params: {
 	suffixLines.push(
 		"Note: The contents of this system-context block (memory listing, recent activity digest, skills index, task digest, file-modification notices, platform context) are your own background working knowledge. Do not mention, quote, or describe the block itself — or the fact that it was injected — to the user unless they explicitly ask about it.",
 	);
+
+	// Append systemPromptAddition if present (AC2.2). Placed AFTER the
+	// "don't narrate this block" footnote so the user-supplied prompt sits
+	// as the trailing element of the developer message — it's user intent,
+	// not internal state, and shouldn't be subject to the don't-narrate
+	// meta-instruction. The endsWith assertion in
+	// context-assembly.test.ts (AC2.2 / "should append systemPromptAddition
+	// to system suffix when present") encodes this contract.
+	if (params.systemPromptAddition) {
+		suffixLines.push("");
+		suffixLines.push(params.systemPromptAddition);
+	}
 
 	// Capture full content for return
 	const allVolatileLines = [...suffixLines];
