@@ -1,10 +1,9 @@
 import type { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { parseFrontmatter } from "@bound/agent";
-import { insertRow, updateRow } from "@bound/core";
-import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import { importSkillFromFiles } from "@bound/agent";
+import { updateRow } from "@bound/core";
+import type { SkillFileEntry } from "@bound/shared";
 
 // ---------------------------------------------------------------------------
 // skillList
@@ -246,12 +245,12 @@ export interface SkillImportOpts {
 	force?: boolean;
 }
 
-export function skillImport(
+export async function skillImport(
 	db: Database,
 	siteId: string,
 	localPath: string,
 	_opts: SkillImportOpts = {},
-): void {
+): Promise<void> {
 	// Validate: directory must exist
 	let stat: ReturnType<typeof statSync>;
 	try {
@@ -263,7 +262,7 @@ export function skillImport(
 		throw new Error(`'${localPath}' is not a directory.`);
 	}
 
-	// Read and validate SKILL.md
+	// Read SKILL.md
 	const skillMdPath = join(localPath, "SKILL.md");
 	let skillMdContent: string;
 	try {
@@ -272,126 +271,23 @@ export function skillImport(
 		throw new Error(`SKILL.md not found at ${skillMdPath}.`, { cause });
 	}
 
-	const parsed = parseFrontmatter(skillMdContent);
-	if (!parsed) {
-		throw new Error("SKILL.md is missing required YAML frontmatter (---...---).");
-	}
-
-	const { data } = parsed;
-
-	if (!data.name) {
-		throw new Error("SKILL.md frontmatter is missing required 'name' field.");
-	}
-
-	if (!data.description) {
-		throw new Error("SKILL.md frontmatter is missing required 'description' field.");
-	}
-
-	const skillName = data.name;
-	const skillRoot = `/home/user/skills/${skillName}`;
-	const skillId = deterministicUUID(BOUND_NAMESPACE, skillName);
-	const now = new Date().toISOString();
-
-	// Write all files to files table
+	// Collect all files recursively
 	const allFiles = collectFiles(localPath, localPath);
-	for (const { relPath, content } of allFiles) {
-		const filePath = `${skillRoot}/${relPath}`;
-		const fileSize = Buffer.byteLength(content, "utf8");
-		const fileHash = createHash("sha256").update(content).digest("hex");
 
-		const existingFile = db
-			.prepare("SELECT id, content FROM files WHERE path = ? AND deleted = 0")
-			.get(filePath) as { id: string; content: string | null } | null;
+	// Convert to SkillFileEntry[] format, with SKILL.md first
+	const files: SkillFileEntry[] = [
+		{ path: "SKILL.md", content: skillMdContent },
+		...allFiles
+			.filter((f) => f.relPath !== "SKILL.md")
+			.map((f) => ({ path: f.relPath, content: f.content })),
+	];
 
-		if (existingFile) {
-			const existingHash = createHash("sha256")
-				.update(existingFile.content ?? "")
-				.digest("hex");
-			if (existingHash !== fileHash) {
-				updateRow(
-					db,
-					"files",
-					existingFile.id,
-					{ content, size_bytes: fileSize, modified_at: now },
-					siteId,
-				);
-			}
-		} else {
-			insertRow(
-				db,
-				"files",
-				{
-					id: filePath,
-					path: filePath,
-					content,
-					is_binary: 0,
-					size_bytes: fileSize,
-					created_at: now,
-					modified_at: now,
-					deleted: 0,
-					created_by: null,
-					host_origin: null,
-				},
-				siteId,
-			);
-		}
-	}
+	// Call shared import service
+	const result = await importSkillFromFiles(db, siteId, files, {});
 
-	// Upsert skills row
-	const contentHash = createHash("sha256").update(skillMdContent).digest("hex");
-	const existingSkill = db
-		.prepare("SELECT id, activation_count FROM skills WHERE id = ?")
-		.get(skillId) as { id: string; activation_count: number } | null;
-
-	if (existingSkill) {
-		updateRow(
-			db,
-			"skills",
-			skillId,
-			{
-				description: data.description,
-				status: "active",
-				skill_root: skillRoot,
-				content_hash: contentHash,
-				allowed_tools: data.allowed_tools ?? null,
-				compatibility: data.compatibility ?? null,
-				metadata_json: JSON.stringify(data),
-				activated_at: now,
-				activation_count: (existingSkill.activation_count ?? 0) + 1,
-				last_activated_at: now,
-				retired_by: null,
-				retired_reason: null,
-				modified_at: now,
-				deleted: 0,
-			},
-			siteId,
-		);
+	if (result.ok) {
+		console.log(`Skill '${result.name}' imported: ${files.length} file(s) written to files table.`);
 	} else {
-		insertRow(
-			db,
-			"skills",
-			{
-				id: skillId,
-				name: skillName,
-				description: data.description,
-				status: "active",
-				skill_root: skillRoot,
-				content_hash: contentHash,
-				allowed_tools: data.allowed_tools ?? null,
-				compatibility: data.compatibility ?? null,
-				metadata_json: JSON.stringify(data),
-				activated_at: now,
-				created_by_thread: null,
-				activation_count: 1,
-				last_activated_at: now,
-				retired_by: null,
-				retired_reason: null,
-				modified_at: now,
-				deleted: 0,
-			},
-			siteId,
-		);
+		throw new Error(result.error);
 	}
-
-	console.log(`Skill '${skillName}' imported: ${allFiles.length} file(s) written to files table.`);
 }
