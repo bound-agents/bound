@@ -40,7 +40,7 @@ export async function handleWebhookRequest(
 	// Look up webhook in database
 	const webhook = deps.db
 		.prepare("SELECT * FROM webhooks WHERE name = ? AND deleted = 0")
-		.get(name) as Webhook | undefined;
+		.get(name) as Webhook | null;
 
 	if (!webhook) {
 		return new Response("", { status: 404 });
