@@ -132,7 +132,7 @@ export async function createWebServer(
  */
 export async function createSyncServer(
 	db: Database,
-	_eventBus: TypedEventEmitter,
+	eventBus: TypedEventEmitter,
 	config: SyncServerConfig,
 ): Promise<WebServer | null> {
 	const port = config.port ?? 3000;
@@ -181,7 +181,11 @@ export async function createSyncServer(
 						if (request.method !== "POST") {
 							return new Response("Not found", { status: 404 });
 						}
-						return handleWebhookRequest(request, webhookMatch[1], { db, siteId: config.siteId });
+						return handleWebhookRequest(request, webhookMatch[1], {
+							db,
+							siteId: config.siteId,
+							eventBus,
+						});
 					}
 
 					return new Response("Not found", { status: 404 });
