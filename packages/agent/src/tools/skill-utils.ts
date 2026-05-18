@@ -167,6 +167,9 @@ export async function importSkillFromFiles(
 						description,
 						allowed_tools: data.allowed_tools ?? null,
 						compatibility: data.compatibility ?? null,
+						metadata_json: JSON.stringify(data),
+						activation_count: existingAsSkill.activation_count + 1,
+						last_activated_at: now,
 					},
 					siteId,
 				);
@@ -185,7 +188,7 @@ export async function importSkillFromFiles(
 					content_hash: contentHash,
 					allowed_tools: data.allowed_tools ?? null,
 					compatibility: data.compatibility ?? null,
-					metadata_json: null,
+					metadata_json: JSON.stringify(data),
 					activated_at: now,
 					created_by_thread: options.threadId ?? null,
 					activation_count: 1,

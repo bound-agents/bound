@@ -186,12 +186,10 @@ async function handleRead(ctx: ToolContext, input: z.infer<typeof skillSchema>):
 		return "Error: 'name' is required for read action";
 	}
 
-	const skillMdPath = `/home/user/skills/${input.name}/SKILL.md`;
-
-	// Get skill metadata
+	// Get skill metadata including skill_root
 	const skill = ctx.db
 		.prepare(
-			"SELECT id, name, status, activation_count, last_activated_at, description, content_hash FROM skills WHERE name = ? AND deleted = 0",
+			"SELECT id, name, status, activation_count, last_activated_at, description, content_hash, skill_root FROM skills WHERE name = ? AND deleted = 0",
 		)
 		.get(input.name) as {
 		id: string;
@@ -201,11 +199,17 @@ async function handleRead(ctx: ToolContext, input: z.infer<typeof skillSchema>):
 		last_activated_at: string | null;
 		description: string;
 		content_hash: string | null;
+		skill_root: string | null;
 	} | null;
 
 	if (!skill) {
 		return `Error: Skill '${input.name}' not found.`;
 	}
+
+	// Construct path from skill_root
+	const skillMdPath = skill.skill_root
+		? `${skill.skill_root}/SKILL.md`
+		: `skills/${input.name}/SKILL.md`;
 
 	// Read SKILL.md content from files table
 	const fileRow = ctx.db
