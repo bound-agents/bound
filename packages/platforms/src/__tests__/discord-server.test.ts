@@ -882,6 +882,176 @@ describe("Discord MCP Server", () => {
 		expect(result.nextPollSeconds).toBeGreaterThan(0);
 	});
 
+	// Regression: cursors must be derived from the Discord-issued snowflake
+	// (msg.id), not an in-process counter. Previously the server initialized
+	// `let nextCursor = 1` on every createDiscordServer() call, so after a
+	// daemon restart the first new event re-emitted cursor "1" — colliding
+	// with the persisted handle.cursor in the DB and getting filtered as a
+	// stale replay by deliverBatch's `compareCursors > 0`. Tasks bound to the
+	// handle stopped waking after their first successful delivery.
+	//
+	// Fix: cursor === eventId === msg.id (snowflake). Snowflakes are globally
+	// monotonic per channel and survive restarts trivially.
+	it("emitted cursor equals the message snowflake (no in-process counter)", async () => {
+		const config: PlatformConnectorConfig = { allowed_users: [] };
+		const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+		server = discordServer;
+		client = mcpClient;
+
+		const snowflake = "1486500000000000001";
+
+		const msg: MockDiscordMessage = {
+			id: snowflake,
+			author: { id: "user-1", username: "kara", displayName: null, bot: false },
+			content: "hello",
+			channelId: "ch-1",
+			channel: {
+				type: ChannelType.DM,
+				isDMBased: () => true,
+				sendTyping: async () => {},
+				send: async () => ({}),
+			},
+			attachments: new Map(),
+		};
+
+		await mockDiscordClient._triggerMessageCreate(msg);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		const pollSchema = z.object({
+			events: z.array(
+				z.object({
+					eventId: z.string(),
+					cursor: z.string(),
+					data: z.unknown(),
+				}),
+			),
+			cursor: z.string(),
+			nextPollSeconds: z.number(),
+		});
+
+		const pollResult = await mcpClient.request(
+			{
+				method: "events/poll",
+				params: {
+					event: "message.received",
+					params: { channel_id: "ch-1" },
+				},
+			},
+			pollSchema,
+		);
+
+		expect(pollResult.events.length).toBe(1);
+		expect(pollResult.events[0].eventId).toBe(snowflake);
+		expect(pollResult.events[0].cursor).toBe(snowflake);
+		expect(pollResult.cursor).toBe(snowflake);
+	});
+
+	// Regression: simulates the production failure mode. Two distinct
+	// createDiscordServer() lifecycles (i.e. a daemon restart). The second
+	// server's first emit must produce a cursor STRICTLY GREATER than the
+	// first server's last emit, so that downstream `compareCursors > 0`
+	// passes the new event through instead of filtering it as a stale
+	// replay against the persisted watermark.
+	it("cursors are monotonic across server recreations (restart-collision regression)", async () => {
+		const config: PlatformConnectorConfig = { allowed_users: [] };
+
+		// First lifecycle: emit a message, capture its cursor.
+		const first = await setupMCPConnection(config);
+
+		const firstSnowflake = "1486500000000000001";
+		const firstMsg: MockDiscordMessage = {
+			id: firstSnowflake,
+			author: { id: "user-1", username: "kara", displayName: null, bot: false },
+			content: "first",
+			channelId: "ch-1",
+			channel: {
+				type: ChannelType.DM,
+				isDMBased: () => true,
+				sendTyping: async () => {},
+				send: async () => ({}),
+			},
+			attachments: new Map(),
+		};
+		await mockDiscordClient._triggerMessageCreate(firstMsg);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		const pollSchema = z.object({
+			events: z.array(z.object({ eventId: z.string(), cursor: z.string() })),
+			cursor: z.string(),
+			nextPollSeconds: z.number(),
+		});
+
+		const firstPoll = await first.client.request(
+			{
+				method: "events/poll",
+				params: { event: "message.received", params: { channel_id: "ch-1" } },
+			},
+			pollSchema,
+		);
+		expect(firstPoll.cursor).toBe(firstSnowflake);
+
+		// Tear down first lifecycle (mirrors a daemon restart: discord MCP
+		// server is re-created, in-memory state including any cursor counter
+		// is gone).
+		await first.client.close();
+		await first.server.close();
+
+		// Reset mock client handlers so the new server is the only one
+		// receiving messageCreate. Without this, the prior server's listener
+		// would still be registered and double-emit.
+		mockDiscordClient = createMockDiscordClient() as unknown as ReturnType<
+			typeof createMockDiscordClient
+		>;
+
+		// Second lifecycle: simulate a later message (later snowflake).
+		const second = await setupMCPConnection(config);
+		server = second.server;
+		client = second.client;
+
+		const secondSnowflake = "1486500000000000999";
+		const secondMsg: MockDiscordMessage = {
+			id: secondSnowflake,
+			author: { id: "user-1", username: "kara", displayName: null, bot: false },
+			content: "second",
+			channelId: "ch-1",
+			channel: {
+				type: ChannelType.DM,
+				isDMBased: () => true,
+				sendTyping: async () => {},
+				send: async () => ({}),
+			},
+			attachments: new Map(),
+		};
+		await mockDiscordClient._triggerMessageCreate(secondMsg);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		// Poll WITH the prior cursor (mirrors registry resuming from
+		// handle.cursor after restart). Pre-fix this would have returned []
+		// because the new server's nextCursor would have reset to 1 and
+		// emitted cursor "1", which is not > "1486500000000000001".
+		const secondPoll = await second.client.request(
+			{
+				method: "events/poll",
+				params: {
+					event: "message.received",
+					params: { channel_id: "ch-1" },
+					cursor: firstSnowflake,
+				},
+			},
+			pollSchema,
+		);
+
+		expect(secondPoll.events.length).toBe(1);
+		expect(secondPoll.events[0].eventId).toBe(secondSnowflake);
+		expect(secondPoll.events[0].cursor).toBe(secondSnowflake);
+		expect(secondPoll.cursor).toBe(secondSnowflake);
+
+		// And the new cursor compares strictly greater than the first when
+		// treated as BigInt (i.e. matches what mcp-registry's compareCursors
+		// will do downstream).
+		expect(BigInt(secondPoll.cursor) > BigInt(firstPoll.cursor)).toBe(true);
+	});
+
 	it("createDiscordServer exported from @bound/platforms", async () => {
 		const { createDiscordServer: exported } = await import("../index.js");
 		expect(exported).toBeDefined();
