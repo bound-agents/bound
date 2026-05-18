@@ -4,6 +4,7 @@ import { createLogger } from "@bound/shared";
 import { WsConnectionManager, createWsHandlers } from "@bound/sync";
 import type { ModelsConfig, SyncAppConfig, WebAppConfig } from "./index";
 import { createWebApp } from "./index";
+import { handleWebhookRequest } from "./webhook-handler.js";
 import { createWebSocketHandler } from "./websocket";
 import type { ConnectionRegistry } from "./websocket";
 
@@ -130,7 +131,7 @@ export async function createWebServer(
  * Returns null if sync prerequisites are missing.
  */
 export async function createSyncServer(
-	_db: Database,
+	db: Database,
 	_eventBus: TypedEventEmitter,
 	config: SyncServerConfig,
 ): Promise<WebServer | null> {
@@ -173,7 +174,16 @@ export async function createSyncServer(
 							bunServer as Parameters<typeof wsHandlers.handleUpgrade>[1],
 						);
 					}
-					// No other HTTP routes — all sync traffic is WebSocket
+
+					// Webhook route: POST /webhook/:name
+					const webhookMatch = url.pathname.match(/^\/webhook\/([a-z0-9][a-z0-9_-]{0,63})$/);
+					if (webhookMatch) {
+						if (request.method !== "POST") {
+							return new Response("Not found", { status: 404 });
+						}
+						return handleWebhookRequest(request, webhookMatch[1], { db, siteId: config.siteId });
+					}
+
 					return new Response("Not found", { status: 404 });
 				},
 				websocket: wsHandlers.websocket,
