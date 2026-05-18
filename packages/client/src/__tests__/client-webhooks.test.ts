@@ -22,6 +22,7 @@ describe("BoundClient webhook methods", () => {
 			thread_id: "thread-456",
 			created_at: "2026-05-17T00:00:00Z",
 			modified_at: "2026-05-17T00:00:00Z",
+			prompt: null,
 		};
 		expect(listEntry.id).toBe("test-id");
 	});

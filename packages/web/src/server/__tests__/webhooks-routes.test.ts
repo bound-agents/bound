@@ -100,6 +100,34 @@ describe("webhooks routes", () => {
 				expect(w.name).toBeDefined();
 			}
 		});
+
+		it("includes prompt (task.system_prompt_addition) in list entries", async () => {
+			const app = createWebhooksRoutes(db);
+
+			// Create one webhook with a prompt and one without
+			const withPrompt = JSON.stringify({
+				name: "with-prompt-webhook",
+				prompt: "Handle GitHub events carefully",
+			});
+			const withoutPrompt = JSON.stringify({ name: "without-prompt-webhook" });
+
+			await app.fetch(new Request("http://localhost/", { method: "POST", body: withPrompt }));
+			await app.fetch(new Request("http://localhost/", { method: "POST", body: withoutPrompt }));
+
+			const listResponse = await app.fetch(new Request("http://localhost/", { method: "GET" }));
+			expect(listResponse.status).toBe(200);
+			const json = (await listResponse.json()) as Array<Record<string, unknown>>;
+
+			const withPromptEntry = json.find((w) => w.name === "with-prompt-webhook");
+			const withoutPromptEntry = json.find((w) => w.name === "without-prompt-webhook");
+
+			expect(withPromptEntry).toBeDefined();
+			expect(withPromptEntry?.prompt).toBe("Handle GitHub events carefully");
+
+			expect(withoutPromptEntry).toBeDefined();
+			expect(withoutPromptEntry).toHaveProperty("prompt");
+			expect(withoutPromptEntry?.prompt).toBeNull();
+		});
 	});
 
 	describe("AC5.6: GET /api/webhooks/:id does not include secret", () => {
@@ -134,6 +162,27 @@ describe("webhooks routes", () => {
 			);
 
 			expect(response.status).toBe(404);
+		});
+
+		it("includes prompt (task.system_prompt_addition) in detail response", async () => {
+			const app = createWebhooksRoutes(db);
+
+			// Create a webhook with a custom prompt
+			const createBody = JSON.stringify({
+				name: "detail-prompt-webhook",
+				prompt: "Detail-view prompt content",
+			});
+			const createResponse = await app.fetch(
+				new Request("http://localhost/", { method: "POST", body: createBody }),
+			);
+			const created = (await createResponse.json()) as Record<string, unknown>;
+			const id = created.id as string;
+
+			const getResponse = await app.fetch(new Request(`http://localhost/${id}`, { method: "GET" }));
+			expect(getResponse.status).toBe(200);
+			const json = (await getResponse.json()) as Record<string, unknown>;
+
+			expect(json.prompt).toBe("Detail-view prompt content");
 		});
 	});
 
@@ -178,6 +227,10 @@ describe("webhooks routes", () => {
 			);
 
 			expect(patchResponse.status).toBe(200);
+
+			// Response should include the updated prompt so the UI can refresh
+			const patched = (await patchResponse.json()) as Record<string, unknown>;
+			expect(patched.prompt).toBe("New prompt");
 
 			// Verify task was updated
 			const webhook = db.prepare("SELECT task_id FROM webhooks WHERE id = ?").get(id) as {
