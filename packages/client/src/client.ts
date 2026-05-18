@@ -1,4 +1,12 @@
-import type { Advisory, AdvisoryStatus, AgentFile, Message, Task, Thread } from "@bound/shared";
+import type {
+	Advisory,
+	AdvisoryStatus,
+	AgentFile,
+	Message,
+	Skill,
+	Task,
+	Thread,
+} from "@bound/shared";
 import { z } from "zod";
 import type {
 	AdvisoryCount,
@@ -497,5 +505,58 @@ export class BoundClient {
 
 	async getMemoryGraph(): Promise<MemoryGraphResponse> {
 		return this.fetchJson("/api/memory/graph");
+	}
+
+	// ---- Skills ----
+
+	async listSkills(options?: { status?: string }): Promise<Skill[]> {
+		const params = new URLSearchParams();
+		if (options?.status) params.set("status", options.status);
+		const qs = params.toString();
+		return this.fetchJson(`/api/skills${qs ? `?${qs}` : ""}`);
+	}
+
+	async getSkill(
+		id: string,
+	): Promise<{ skill: Skill; content: string; files: { path: string; size: number }[] }> {
+		return this.fetchJson(`/api/skills/${id}`);
+	}
+
+	async createSkill(
+		data:
+			| FormData
+			| {
+					name: string;
+					description: string;
+					body: string;
+					allowed_tools?: string;
+					compatibility?: string;
+			  },
+	): Promise<{ skill: Skill }> {
+		if (data instanceof FormData) {
+			return this.fetchJson("/api/skills", {
+				method: "POST",
+				body: data,
+			});
+		}
+		return this.fetchJson("/api/skills", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(data),
+		});
+	}
+
+	async retireSkill(id: string, reason?: string): Promise<{ skill: Skill }> {
+		return this.fetchJson(`/api/skills/${id}/retire`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ reason }),
+		});
+	}
+
+	async activateSkill(id: string): Promise<{ skill: Skill }> {
+		return this.fetchJson(`/api/skills/${id}/activate`, {
+			method: "POST",
+		});
 	}
 }
