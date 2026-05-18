@@ -38,6 +38,7 @@ describe("BoundClient webhook methods", () => {
 	it("listWebhooks returns WebhookListEntry[]", () => {
 		// Type check: this should compile if the return type is correct
 		const promise: Promise<WebhookListEntry[]> = client.listWebhooks();
+		promise.catch(() => {});
 		expect(promise).toBeDefined();
 	});
 
@@ -49,6 +50,7 @@ describe("BoundClient webhook methods", () => {
 			prompt: "Handle GitHub events",
 		};
 		const promise: Promise<WebhookCreateResponse> = client.createWebhook(options);
+		promise.catch(() => {});
 		expect(promise).toBeDefined();
 	});
 
@@ -59,16 +61,19 @@ describe("BoundClient webhook methods", () => {
 			format: "generic",
 		};
 		const promise: Promise<WebhookListEntry> = client.updateWebhook("id", options);
+		promise.catch(() => {});
 		expect(promise).toBeDefined();
 	});
 
 	it("rotateWebhookSecret returns secret", () => {
 		const promise: Promise<WebhookRotateResponse> = client.rotateWebhookSecret("id");
+		promise.catch(() => {});
 		expect(promise).toBeDefined();
 	});
 
 	it("deleteWebhook returns void", () => {
 		const promise: Promise<void> = client.deleteWebhook("id");
+		promise.catch(() => {});
 		expect(promise).toBeDefined();
 	});
 });
