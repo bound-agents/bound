@@ -97,7 +97,7 @@ export async function importSkillFromFiles(
 		}
 
 		// Step 6: Validate total size
-		const totalSize = files.reduce((sum, f) => sum + f.content.length, 0);
+		const totalSize = files.reduce((sum, f) => sum + Buffer.byteLength(f.content, "utf8"), 0);
 		if (totalSize > MAX_FILE_SIZE_BYTES) {
 			return {
 				ok: false,
@@ -113,7 +113,7 @@ export async function importSkillFromFiles(
 		const skillId = deterministicUUID(BOUND_NAMESPACE, name);
 		const existingSkill = db
 			.prepare("SELECT * FROM skills WHERE id = ? AND deleted = 0")
-			.get(skillId) as Record<string, unknown> | undefined;
+			.get(skillId) as Record<string, unknown> | null;
 
 		if (activeCount.count >= MAX_ACTIVE_SKILLS && !existingSkill) {
 			return {
@@ -203,11 +203,11 @@ export async function importSkillFromFiles(
 		for (const entry of files) {
 			const filePath = `skills/${name}/${entry.path}`;
 			const fileId = filePath;
-			const sizeBytes = entry.content.length;
+			const sizeBytes = Buffer.byteLength(entry.content, "utf8");
 
 			const existingFile = db
 				.prepare("SELECT id FROM files WHERE id = ? AND deleted = 0")
-				.get(fileId) as Record<string, unknown> | undefined;
+				.get(fileId) as Record<string, unknown> | null;
 
 			if (existingFile) {
 				updateRow(
