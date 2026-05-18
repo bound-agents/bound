@@ -70,6 +70,20 @@ function handleKeydown(e: KeyboardEvent): void {
 	}
 }
 
+function switchMode(newMode: "form" | "upload"): void {
+	mode = newMode;
+	serverError = null;
+	if (newMode === "form") {
+		selectedFile = null;
+	} else {
+		name = "";
+		description = "";
+		body = "";
+		allowedTools = "";
+		compatibility = "";
+	}
+}
+
 async function submitForm(): Promise<void> {
 	if (!formValid || submitting) return;
 	submitting = true;
@@ -110,8 +124,8 @@ async function submitUpload(): Promise<void> {
 		<header class="modal-header">
 			<h2>Create Skill</h2>
 			<div class="mode-tabs">
-				<button class:active={mode === "form"} onclick={() => { mode = "form"; }}>Form</button>
-				<button class:active={mode === "upload"} onclick={() => { mode = "upload"; }}>Upload</button>
+				<button class:active={mode === "form"} onclick={() => { switchMode("form"); }}>Form</button>
+				<button class:active={mode === "upload"} onclick={() => { switchMode("upload"); }}>Upload</button>
 			</div>
 		</header>
 
