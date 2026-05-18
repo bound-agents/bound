@@ -17,7 +17,7 @@ describe("RelayProcessor webhook delegation", () => {
 		db.run(
 			`INSERT INTO hosts (site_id, host_name, version, modified_at, deleted)
 			 VALUES (?, ?, ?, ?, ?)`,
-			[siteId, hostName, "1.0.0", new Date().toISOString(), 0],
+			[siteId, "test-host", "1.0.0", new Date().toISOString(), 0],
 		);
 	});
 
