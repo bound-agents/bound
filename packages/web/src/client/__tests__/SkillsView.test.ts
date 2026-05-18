@@ -52,11 +52,10 @@ describe("SkillsView Component", () => {
 			status: "active",
 			skill_root: "/skills/test1",
 			content_hash: "hash1",
-			allowed_tools: ["tool1", "tool2"],
+			allowed_tools: "tool1, tool2",
 			compatibility: "1.0.0",
 			metadata_json: "{}",
 			activated_at: new Date().toISOString(),
-			creation_time: new Date().toISOString(),
 			created_by_thread: "thread-1",
 			activation_count: 5,
 			last_activated_at: new Date().toISOString(),
@@ -73,11 +72,10 @@ describe("SkillsView Component", () => {
 			status: "retired",
 			skill_root: "/skills/test2",
 			content_hash: "hash2",
-			allowed_tools: ["tool3"],
+			allowed_tools: "tool3",
 			compatibility: "1.0.0",
 			metadata_json: "{}",
 			activated_at: new Date().toISOString(),
-			creation_time: new Date().toISOString(),
 			created_by_thread: "thread-2",
 			activation_count: 3,
 			last_activated_at: new Date(Date.now() - 86400000).toISOString(),
@@ -134,7 +132,7 @@ describe("SkillsView Component", () => {
 		it("AC3.4: Loads skill detail with metadata fields", async () => {
 			const result = await client.getSkill(client.skills[0].id);
 
-			expect(result.skill.allowed_tools).toEqual(["tool1", "tool2"]);
+			expect(result.skill.allowed_tools).toBe("tool1, tool2");
 			expect(result.skill.compatibility).toBe("1.0.0");
 			expect(result.skill.activation_count).toBe(5);
 			expect(result.skill.content_hash).toBe("hash1");

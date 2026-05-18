@@ -187,9 +187,9 @@ $effect.pre(() => {
 	<div class="skill-detail">
 		<div class="skill-meta">
 			<dt>Status</dt>
-			<dd><StatusChip status={skill.status as never} /></dd>
+			<dd><StatusChip status={skill.status} /></dd>
 			<dt>Tools</dt>
-			<dd>{skill.allowed_tools?.join(", ") || "—"}</dd>
+			<dd>{skill.allowed_tools || "—"}</dd>
 			<dt>Compatibility</dt>
 			<dd>{skill.compatibility || "—"}</dd>
 			<dt>Activation Count</dt>
@@ -331,7 +331,7 @@ $effect.pre(() => {
 	.skill-content {
 		margin-top: 12px;
 		padding: 12px;
-		background: var(--bg-inset);
+		background: var(--paper-2);
 		border-radius: 4px;
 	}
 
