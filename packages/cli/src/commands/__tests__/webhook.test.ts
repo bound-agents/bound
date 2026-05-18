@@ -17,8 +17,10 @@ const SITE_ID = "test-site";
 describe("webhook commands", () => {
 	let tempDir: string;
 	let db: Database;
+	let originalLog: typeof console.log;
 
 	function setup() {
+		originalLog = console.log;
 		tempDir = mkdtempSync(join(tmpdir(), "bound-webhook-test-"));
 		const dbPath = join(tempDir, "test.db");
 		db = new Database(dbPath);
@@ -26,6 +28,7 @@ describe("webhook commands", () => {
 	}
 
 	afterEach(() => {
+		console.log = originalLog;
 		if (db) db.close();
 		if (tempDir && existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true });
@@ -38,12 +41,9 @@ describe("webhook commands", () => {
 			setup();
 
 			const output: string[] = [];
-			const originalLog = console.log;
 			console.log = (msg: string) => output.push(msg);
 
 			webhookCreate(db, SITE_ID, ["--name", "my-webhook", "--format", "github"]);
-
-			console.log = originalLog;
 
 			// Verify webhook row exists
 			const webhook = db
@@ -129,7 +129,6 @@ describe("webhook commands", () => {
 			setup();
 
 			const output: string[] = [];
-			const originalLog = console.log;
 			console.log = (msg: string) => output.push(msg);
 
 			webhookCreate(db, SITE_ID, [
@@ -140,8 +139,6 @@ describe("webhook commands", () => {
 				"--prompt",
 				"Custom system prompt",
 			]);
-
-			console.log = originalLog;
 
 			const webhook = db
 				.prepare("SELECT description FROM webhooks WHERE name = ?")
@@ -167,12 +164,9 @@ describe("webhook commands", () => {
 		it("should reject duplicate webhook name", () => {
 			setup();
 
-			const originalLog = console.log;
 			console.log = () => {};
 
 			webhookCreate(db, SITE_ID, ["--name", "duplicate"]);
-
-			console.log = originalLog;
 
 			expect(() => {
 				webhookCreate(db, SITE_ID, ["--name", "duplicate"]);
@@ -233,8 +227,6 @@ describe("webhook commands", () => {
 
 			webhookDelete(db, SITE_ID, "to-delete");
 
-			console.log = () => {};
-
 			// Verify soft delete (deleted = 1)
 			const deletedWebhook = db
 				.prepare("SELECT deleted FROM webhooks WHERE id = ?")
@@ -279,8 +271,6 @@ describe("webhook commands", () => {
 
 			webhookUpdate(db, SITE_ID, ["--name", "update-test", "--prompt", "New prompt"]);
 
-			console.log = () => {};
-
 			const task = db
 				.prepare("SELECT system_prompt_addition FROM tasks WHERE id = ?")
 				.get(webhook.task_id) as { system_prompt_addition: string } | null;
@@ -295,8 +285,6 @@ describe("webhook commands", () => {
 			console.log = () => {};
 
 			webhookCreate(db, SITE_ID, ["--name", "desc-test"]);
-
-			console.log = () => {};
 
 			webhookUpdate(db, SITE_ID, ["--name", "desc-test", "--description", "New description"]);
 
@@ -313,8 +301,6 @@ describe("webhook commands", () => {
 			console.log = () => {};
 
 			webhookCreate(db, SITE_ID, ["--name", "format-test", "--format", "github"]);
-
-			console.log = () => {};
 
 			webhookUpdate(db, SITE_ID, ["--name", "format-test", "--format", "stripe"]);
 
@@ -345,8 +331,6 @@ describe("webhook commands", () => {
 			console.log = (msg: string) => output.push(msg);
 
 			webhookRotateSecret(db, SITE_ID, "rotate-test");
-
-			console.log = () => {};
 
 			const newWebhook = db
 				.prepare("SELECT secret FROM webhooks WHERE name = ?")

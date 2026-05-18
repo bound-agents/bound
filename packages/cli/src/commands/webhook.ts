@@ -183,8 +183,6 @@ export function webhookDelete(db: Database, siteId: string, name: string): void 
 		throw new Error(`Webhook '${name}' not found.`);
 	}
 
-	const now = new Date().toISOString();
-
 	// Soft-delete webhook
 	softDelete(db, "webhooks", webhook.id, siteId);
 
@@ -195,7 +193,6 @@ export function webhookDelete(db: Database, siteId: string, name: string): void 
 		webhook.task_id,
 		{
 			status: "cancelled",
-			modified_at: now,
 		},
 		siteId,
 	);
@@ -225,8 +222,6 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 		throw new Error(`Webhook '${name}' not found.`);
 	}
 
-	const now = new Date().toISOString();
-
 	if (prompt) {
 		updateRow(
 			db,
@@ -234,7 +229,6 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 			webhook.task_id,
 			{
 				system_prompt_addition: prompt,
-				modified_at: now,
 			},
 			siteId,
 		);
@@ -247,7 +241,6 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 			webhook.id,
 			{
 				description: description || null,
-				modified_at: now,
 			},
 			siteId,
 		);
@@ -260,7 +253,6 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 			webhook.id,
 			{
 				signature_format: format as SignatureFormat,
-				modified_at: now,
 			},
 			siteId,
 		);
@@ -283,7 +275,6 @@ export function webhookRotateSecret(db: Database, siteId: string, name: string):
 	}
 
 	const newSecret = randomBytes(32).toString("hex");
-	const now = new Date().toISOString();
 
 	updateRow(
 		db,
@@ -291,7 +282,6 @@ export function webhookRotateSecret(db: Database, siteId: string, name: string):
 		webhook.id,
 		{
 			secret: newSecret,
-			modified_at: now,
 		},
 		siteId,
 	);
