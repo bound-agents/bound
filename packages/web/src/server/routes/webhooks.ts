@@ -93,7 +93,7 @@ export function createWebhooksRoutes(db: Database): Hono {
 				return c.json(
 					{
 						error:
-							"Invalid webhook name. Must match /^[a-z0-9][a-z0-9_-]{0,63}$/ (lowercase, digits, underscores, dashes, 2-64 chars)",
+							"Invalid webhook name. Must match /^[a-z0-9][a-z0-9_-]{0,63}$/ (lowercase, digits, underscores, dashes, 1-64 chars)",
 					},
 					400,
 				);
@@ -254,7 +254,6 @@ export function createWebhooksRoutes(db: Database): Hono {
 					webhook.task_id,
 					{
 						system_prompt_addition: prompt || null,
-						modified_at: new Date().toISOString(),
 					},
 					siteId,
 				);
@@ -262,9 +261,7 @@ export function createWebhooksRoutes(db: Database): Hono {
 
 			// Update webhook row with description or format
 			if (description !== undefined || format !== undefined) {
-				const updateData: Record<string, unknown> = {
-					modified_at: new Date().toISOString(),
-				};
+				const updateData: Record<string, unknown> = {};
 				if (description !== undefined) {
 					updateData.description = description || null;
 				}
@@ -314,13 +311,7 @@ export function createWebhooksRoutes(db: Database): Hono {
 			softDelete(db, "webhooks", id, siteId);
 
 			// Cancel associated task
-			updateRow(
-				db,
-				"tasks",
-				webhook.task_id,
-				{ status: "cancelled", modified_at: new Date().toISOString() },
-				siteId,
-			);
+			updateRow(db, "tasks", webhook.task_id, { status: "cancelled" }, siteId);
 
 			return new Response(null, { status: 204 });
 		} catch (error) {
@@ -354,13 +345,7 @@ export function createWebhooksRoutes(db: Database): Hono {
 			const newSecret = randomBytes(32).toString("hex");
 
 			// Update webhook
-			updateRow(
-				db,
-				"webhooks",
-				id,
-				{ secret: newSecret, modified_at: new Date().toISOString() },
-				siteId,
-			);
+			updateRow(db, "webhooks", id, { secret: newSecret }, siteId);
 
 			// Return only the new secret
 			return c.json({ secret: newSecret });
