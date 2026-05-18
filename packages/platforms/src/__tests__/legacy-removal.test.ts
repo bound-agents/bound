@@ -112,9 +112,9 @@ describe("AC8.3: Legacy event types removed", () => {
 });
 
 describe("AC8.4: Webhook route removed", () => {
-	it("webhooks.ts route file does not exist", () => {
+	it("webhooks.ts route file exists (webhook-ingestion implementation)", () => {
 		const webhooksPath = resolve(__dirname, "../../../web/src/server/routes/webhooks.ts");
-		expect(existsSync(webhooksPath)).toBe(false);
+		expect(existsSync(webhooksPath)).toBe(true);
 	});
 
 	it("no hooks/:platform route references in web source", () => {
