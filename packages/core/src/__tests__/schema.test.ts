@@ -45,7 +45,7 @@ describe("Database Schema", () => {
 
 		const tableNames = tables.map((t) => t.name);
 
-		// Verify all 20 base tables exist
+		// Verify all 21 base tables exist
 		expect(tableNames).toContain("users");
 		expect(tableNames).toContain("threads");
 		expect(tableNames).toContain("messages");
@@ -59,6 +59,7 @@ describe("Database Schema", () => {
 		expect(tableNames).toContain("skills");
 		expect(tableNames).toContain("memory_edges");
 		expect(tableNames).toContain("connector_handles");
+		expect(tableNames).toContain("webhooks");
 		expect(tableNames).toContain("change_log");
 		expect(tableNames).toContain("sync_state");
 		expect(tableNames).toContain("host_meta");
@@ -70,9 +71,9 @@ describe("Database Schema", () => {
 		// FTS5 virtual table + its shadow tables
 		expect(tableNames).toContain("semantic_memory_fts");
 
-		// 20 base tables + FTS5 virtual table + 5 FTS5 shadow tables = 26
+		// 21 base tables + FTS5 virtual table + 5 FTS5 shadow tables = 27
 		const baseTables = tableNames.filter((n) => !n.startsWith("semantic_memory_fts_"));
-		expect(baseTables.length).toBe(21); // 20 base + 1 FTS5 virtual table
+		expect(baseTables.length).toBe(22); // 21 base + 1 FTS5 virtual table
 
 		db.close();
 	});
@@ -137,8 +138,8 @@ describe("Database Schema", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		// Still exactly 26 tables (20 base + 1 FTS5 virtual + 5 FTS5 shadow)
-		expect(tables.length).toBe(26);
+		// Still exactly 27 tables (21 base + 1 FTS5 virtual + 5 FTS5 shadow)
+		expect(tables.length).toBe(27);
 
 		db.close();
 	});
@@ -497,6 +498,94 @@ describe("platform-connectors Phase 1 migrations", () => {
 			interface: string;
 		};
 		expect(row.interface).toBe("telegram");
+		db.close();
+	});
+
+	it("webhooks table has all required columns", () => {
+		const db = createDatabase(dbPath);
+		applySchema(db);
+
+		const columns = db.query("PRAGMA table_info(webhooks)").all() as Array<{ name: string }>;
+		const columnNames = columns.map((c) => c.name);
+
+		const requiredColumns = [
+			"id",
+			"name",
+			"secret",
+			"signature_format",
+			"description",
+			"task_id",
+			"thread_id",
+			"created_at",
+			"deleted",
+			"modified_at",
+		];
+
+		for (const col of requiredColumns) {
+			expect(columnNames).toContain(col);
+		}
+
+		db.close();
+	});
+
+	it("enforces unique index on active webhook name", () => {
+		const db = createDatabase(dbPath);
+		applySchema(db);
+		const now = new Date().toISOString();
+
+		db.run(
+			`INSERT INTO webhooks (id, name, secret, signature_format, description, task_id, thread_id, created_at, deleted, modified_at)
+			 VALUES ('wh-1', 'my-webhook', 'secret123', 'github', 'test webhook', 'task-1', 'thread-1', ?, 0, ?)`,
+			[now, now],
+		);
+
+		// Inserting a second active webhook with the same name must fail
+		expect(() => {
+			db.run(
+				`INSERT INTO webhooks (id, name, secret, signature_format, description, task_id, thread_id, created_at, deleted, modified_at)
+				 VALUES ('wh-2', 'my-webhook', 'secret456', 'github', 'duplicate', 'task-2', 'thread-2', ?, 0, ?)`,
+				[now, now],
+			);
+		}).toThrow();
+
+		db.close();
+	});
+
+	it("allows soft-deleted webhook names to be reused", () => {
+		const db = createDatabase(dbPath);
+		applySchema(db);
+		const now = new Date().toISOString();
+
+		db.run(
+			`INSERT INTO webhooks (id, name, secret, signature_format, description, task_id, thread_id, created_at, deleted, modified_at)
+			 VALUES ('wh-1', 'my-webhook', 'secret123', 'github', 'test webhook', 'task-1', 'thread-1', ?, 0, ?)`,
+			[now, now],
+		);
+
+		// Soft-delete the first webhook
+		db.run(`UPDATE webhooks SET deleted = 1 WHERE id = 'wh-1'`);
+
+		// Inserting a second webhook with the same name should succeed (first is soft-deleted)
+		expect(() => {
+			db.run(
+				`INSERT INTO webhooks (id, name, secret, signature_format, description, task_id, thread_id, created_at, deleted, modified_at)
+				 VALUES ('wh-2', 'my-webhook', 'secret456', 'github', 'reused', 'task-2', 'thread-2', ?, 0, ?)`,
+				[now, now],
+			);
+		}).not.toThrow();
+
+		db.close();
+	});
+
+	it("tasks table has system_prompt_addition column", () => {
+		const db = createDatabase(dbPath);
+		applySchema(db);
+
+		const columns = db.query("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
+		const columnNames = columns.map((c) => c.name);
+
+		expect(columnNames).toContain("system_prompt_addition");
+
 		db.close();
 	});
 });
