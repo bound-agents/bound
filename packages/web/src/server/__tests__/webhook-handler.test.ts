@@ -34,6 +34,7 @@ describe("handleWebhookRequest", () => {
 		const webhookId = randomUUID();
 		const webhookSecret = "test_secret_123";
 		const webhookName = "test_webhook";
+		const webhookThreadId = randomUUID();
 
 		insertRow(
 			db,
@@ -45,7 +46,7 @@ describe("handleWebhookRequest", () => {
 				signature_format: "github",
 				description: "Test webhook",
 				task_id: randomUUID(),
-				thread_id: randomUUID(),
+				thread_id: webhookThreadId,
 				created_at: new Date().toISOString(),
 				modified_at: new Date().toISOString(),
 				deleted: 0,
@@ -84,6 +85,8 @@ describe("handleWebhookRequest", () => {
 
 		const entry = inboxEntries[0] as any;
 		expect(entry.source_site_id).toBe(siteId);
+		// AC3.1: ref_id must equal the webhook's thread_id
+		expect(entry.ref_id).toBe(webhookThreadId);
 		const payload = JSON.parse(entry.payload);
 		expect(payload.method).toBe("POST");
 		expect(payload.path).toBe("/webhook/test_webhook");
@@ -479,6 +482,10 @@ describe("handleWebhookRequest", () => {
 
 		// Should include content-type
 		expect(envelope.content_type).toBe("application/json");
+
+		// AC3.2: Signature headers must be EXCLUDED from the envelope
+		expect(envelope.headers["x-hub-signature-256"]).toBeUndefined();
+		expect(envelope.headers["x-hub-signature"]).toBeUndefined();
 	});
 
 	// ──────────────────────────────────────────────────────────────────
@@ -680,5 +687,171 @@ describe("handleWebhookRequest", () => {
 
 		const entry = inboxEntries[0] as any;
 		expect(entry.idempotency_key).toBe(`stripe-${idempotencyKey}`);
+	});
+
+	// ──────────────────────────────────────────────────────────────────
+	// AC3.2 (expanded): Signature headers are excluded from envelope
+	// ──────────────────────────────────────────────────────────────────
+	test("AC3.2: GitHub signature header is excluded from envelope", async () => {
+		const webhookId = randomUUID();
+		const webhookSecret = "test_secret_123";
+		const webhookName = "test_webhook";
+
+		insertRow(
+			db,
+			"webhooks",
+			{
+				id: webhookId,
+				name: webhookName,
+				secret: webhookSecret,
+				signature_format: "github",
+				description: "Test webhook",
+				task_id: randomUUID(),
+				thread_id: randomUUID(),
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		const body = Buffer.from('{"action":"opened"}');
+		const expectedHmac = createHmac("sha256", webhookSecret).update(body).digest("hex");
+
+		const request = new Request("http://localhost:3000/webhook/test_webhook", {
+			method: "POST",
+			headers: {
+				"X-Hub-Signature-256": `sha256=${expectedHmac}`,
+				"X-GitHub-Event": "pull_request",
+				"Content-Type": "application/json",
+			},
+			body,
+		});
+
+		const response = await handleWebhookRequest(request, webhookName, {
+			db,
+			siteId,
+			eventBus,
+		});
+
+		expect(response.status).toBe(202);
+
+		const inboxEntries = db.prepare("SELECT * FROM relay_inbox WHERE kind = 'intake'").all();
+		const entry = inboxEntries[0] as any;
+		const envelope = JSON.parse(entry.payload);
+
+		// AC3.2: Signature header must NOT be in envelope.headers
+		expect(envelope.headers["x-hub-signature-256"]).toBeUndefined();
+	});
+
+	test("AC3.2: Stripe signature headers are excluded from envelope", async () => {
+		const webhookId = randomUUID();
+		const webhookSecret = "test_secret_123";
+		const webhookName = "stripe_webhook";
+
+		insertRow(
+			db,
+			"webhooks",
+			{
+				id: webhookId,
+				name: webhookName,
+				secret: webhookSecret,
+				signature_format: "stripe",
+				description: "Stripe webhook",
+				task_id: randomUUID(),
+				thread_id: randomUUID(),
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		const body = Buffer.from('{"type":"charge.completed"}');
+		const timestamp = Math.floor(Date.now() / 1000).toString();
+		const payload = `${timestamp}.${body.toString("utf-8")}`;
+		const expectedHmac = createHmac("sha256", webhookSecret).update(payload).digest("hex");
+
+		const request = new Request("http://localhost:3000/webhook/stripe_webhook", {
+			method: "POST",
+			headers: {
+				"Stripe-Signature": `t=${timestamp},v1=${expectedHmac}`,
+				"Stripe-Idempotency-Key": "key-123",
+				"Content-Type": "application/json",
+			},
+			body,
+		});
+
+		const response = await handleWebhookRequest(request, webhookName, {
+			db,
+			siteId,
+			eventBus,
+		});
+
+		expect(response.status).toBe(202);
+
+		const inboxEntries = db.prepare("SELECT * FROM relay_inbox WHERE kind = 'intake'").all();
+		const entry = inboxEntries[0] as any;
+		const envelope = JSON.parse(entry.payload);
+
+		// AC3.2: Stripe signature headers must NOT be in envelope.headers
+		expect(envelope.headers["stripe-signature"]).toBeUndefined();
+	});
+
+	test("AC3.2: Slack signature headers are excluded from envelope", async () => {
+		const webhookId = randomUUID();
+		const webhookSecret = "test_secret_123";
+		const webhookName = "slack_webhook";
+
+		insertRow(
+			db,
+			"webhooks",
+			{
+				id: webhookId,
+				name: webhookName,
+				secret: webhookSecret,
+				signature_format: "slack",
+				description: "Slack webhook",
+				task_id: randomUUID(),
+				thread_id: randomUUID(),
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		const body = Buffer.from('{"type":"url_verification"}');
+		const timestamp = Math.floor(Date.now() / 1000).toString();
+		const payload = `v0:${timestamp}:${body.toString("utf-8")}`;
+		const expectedHmac = createHmac("sha256", webhookSecret).update(payload).digest("hex");
+
+		const request = new Request("http://localhost:3000/webhook/slack_webhook", {
+			method: "POST",
+			headers: {
+				"X-Slack-Signature": `v0=${expectedHmac}`,
+				"X-Slack-Request-Timestamp": timestamp,
+				"Content-Type": "application/json",
+			},
+			body,
+		});
+
+		const response = await handleWebhookRequest(request, webhookName, {
+			db,
+			siteId,
+			eventBus,
+		});
+
+		expect(response.status).toBe(202);
+
+		const inboxEntries = db.prepare("SELECT * FROM relay_inbox WHERE kind = 'intake'").all();
+		const entry = inboxEntries[0] as any;
+		const envelope = JSON.parse(entry.payload);
+
+		// AC3.2: Slack signature header must NOT be in envelope.headers
+		// (x-slack-request-timestamp is included because it's needed for replay verification)
+		expect(envelope.headers["x-slack-signature"]).toBeUndefined();
+		// Timestamp is an event-type header and is needed for replay, so it's included
+		expect(envelope.headers["x-slack-request-timestamp"]).toBe(timestamp);
 	});
 });
