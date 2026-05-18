@@ -13,13 +13,27 @@ export function createWebhooksRoutes(db: Database): Hono {
 		return getSiteId(db);
 	}
 
+	// SELECT projection used by list/detail/patch responses. The webhook's
+	// custom prompt lives on the linked event task as `system_prompt_addition`,
+	// so we LEFT JOIN tasks and surface it as `prompt` for the UI/client.
+	const WEBHOOK_SELECT = `SELECT
+			w.id,
+			w.name,
+			w.signature_format,
+			w.description,
+			w.task_id,
+			w.thread_id,
+			w.created_at,
+			w.modified_at,
+			t.system_prompt_addition AS prompt
+		FROM webhooks w
+		LEFT JOIN tasks t ON t.id = w.task_id AND t.deleted = 0`;
+
 	// GET / — List webhooks (AC5.2)
 	app.get("/", (c) => {
 		try {
 			const webhooks = db
-				.prepare(
-					"SELECT id, name, signature_format, description, task_id, thread_id, created_at, modified_at FROM webhooks WHERE deleted = 0 ORDER BY created_at DESC",
-				)
+				.prepare(`${WEBHOOK_SELECT} WHERE w.deleted = 0 ORDER BY w.created_at DESC`)
 				.all() as Array<{
 				id: string;
 				name: string;
@@ -29,6 +43,7 @@ export function createWebhooksRoutes(db: Database): Hono {
 				thread_id: string;
 				created_at: string;
 				modified_at: string;
+				prompt: string | null;
 			}>;
 
 			return c.json(webhooks);
@@ -50,9 +65,7 @@ export function createWebhooksRoutes(db: Database): Hono {
 			const id = c.req.param("id");
 
 			const webhook = db
-				.prepare(
-					"SELECT id, name, signature_format, description, task_id, thread_id, created_at, modified_at FROM webhooks WHERE id = ? AND deleted = 0",
-				)
+				.prepare(`${WEBHOOK_SELECT} WHERE w.id = ? AND w.deleted = 0`)
 				.get(id) as Record<string, unknown> | null;
 
 			if (!webhook) {
@@ -272,12 +285,11 @@ export function createWebhooksRoutes(db: Database): Hono {
 				updateRow(db, "webhooks", id, updateData, siteId);
 			}
 
-			// Fetch and return updated webhook (without secret)
-			const updated = db
-				.prepare(
-					"SELECT id, name, signature_format, description, task_id, thread_id, created_at, modified_at FROM webhooks WHERE id = ?",
-				)
-				.get(id) as Record<string, unknown>;
+			// Fetch and return updated webhook (without secret, with prompt)
+			const updated = db.prepare(`${WEBHOOK_SELECT} WHERE w.id = ?`).get(id) as Record<
+				string,
+				unknown
+			>;
 
 			return c.json(updated);
 		} catch (error) {

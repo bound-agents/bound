@@ -173,7 +173,7 @@ function handleSelectWebhook(webhook: WebhookListEntry): void {
 	selectedWebhook = webhook;
 	editDescription = webhook.description ?? "";
 	editFormat = webhook.signature_format;
-	editPrompt = ""; // Don't pre-populate prompt from list view
+	editPrompt = webhook.prompt ?? "";
 	editError = null;
 	view = "detail";
 }
@@ -457,7 +457,7 @@ function formatDate(iso: string): string {
 								onclick={() => {
 									editDescription = selectedWebhook?.description ?? "";
 									editFormat = selectedWebhook?.signature_format ?? "";
-									editPrompt = "";
+									editPrompt = selectedWebhook?.prompt ?? "";
 									editError = null;
 								}}
 							>

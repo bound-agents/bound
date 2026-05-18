@@ -182,6 +182,13 @@ export interface WebhookListEntry {
 	thread_id: string;
 	created_at: string;
 	modified_at: string;
+	/**
+	 * Custom system prompt addition for the webhook's event handler.
+	 * Stored on the linked event task (`tasks.system_prompt_addition`) and
+	 * surfaced here by the server so the UI can pre-populate edit forms.
+	 * Null when no custom prompt has been configured.
+	 */
+	prompt: string | null;
 }
 
 export interface WebhookCreateResponse extends WebhookListEntry {
