@@ -8,6 +8,7 @@ import type {
 	ContextDebugTurn,
 	CreateMcpThreadResult,
 	CreateThreadOptions,
+	CreateWebhookOptions,
 	FileListEntry,
 	HostStatus,
 	MemoryGraphResponse,
@@ -22,6 +23,10 @@ import type {
 	ToolCallRequest,
 	ToolCallResult,
 	ToolDefinition,
+	UpdateWebhookOptions,
+	WebhookCreateResponse,
+	WebhookListEntry,
+	WebhookRotateResponse,
 } from "./types.js";
 
 export class BoundNotRunningError extends Error {
@@ -473,6 +478,40 @@ export class BoundClient {
 
 	async applyAdvisory(id: string): Promise<Advisory> {
 		return this.fetchJson(`/api/advisories/${id}/apply`, { method: "POST" });
+	}
+
+	// ---- Webhooks ----
+
+	async listWebhooks(): Promise<WebhookListEntry[]> {
+		return this.fetchJson("/api/webhooks");
+	}
+
+	async getWebhook(id: string): Promise<WebhookListEntry> {
+		return this.fetchJson(`/api/webhooks/${id}`);
+	}
+
+	async createWebhook(options: CreateWebhookOptions): Promise<WebhookCreateResponse> {
+		return this.fetchJson("/api/webhooks", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(options),
+		});
+	}
+
+	async updateWebhook(id: string, options: UpdateWebhookOptions): Promise<WebhookListEntry> {
+		return this.fetchJson(`/api/webhooks/${id}`, {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(options),
+		});
+	}
+
+	async deleteWebhook(id: string): Promise<void> {
+		await this.fetchVoid(`/api/webhooks/${id}`, { method: "DELETE" });
+	}
+
+	async rotateWebhookSecret(id: string): Promise<WebhookRotateResponse> {
+		return this.fetchJson(`/api/webhooks/${id}/rotate`, { method: "POST" });
 	}
 
 	// ---- Status ----
