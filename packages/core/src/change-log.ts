@@ -8,6 +8,8 @@ import {
 	mergeHlc,
 } from "@bound/shared";
 
+type SqlBinding = string | number | bigint | boolean | null | Uint8Array;
+
 // Validate column names to prevent SQL injection
 // Only allow lowercase letters, numbers, and underscores
 const VALID_COLUMN_NAME = /^[a-z_]+$/;
@@ -193,6 +195,74 @@ export function updateRow<T extends SyncedTableName>(
 	if (changelogEventBus) {
 		changelogEventBus.emit("changelog:written", { hlc, tableName: table, siteId });
 	}
+}
+
+/**
+ * Compare-and-swap variant of {@link updateRow}. Only writes if every column in
+ * `where` currently matches the given value. Returns true on a successful update,
+ * false when the precondition didn't match (no row updated, no change-log entry,
+ * no event).
+ *
+ * Use this when a state transition must be sticky against a concurrent writer
+ * (e.g. agent-loop completion racing scheduler heartbeat eviction): pin the
+ * expected pre-state in `where`, and the loser of the race no-ops cleanly.
+ */
+export function updateRowIf<T extends SyncedTableName>(
+	db: Database,
+	table: T,
+	id: string,
+	where: Partial<SyncedTableRowMap[T]>,
+	updates: Partial<SyncedTableRowMap[T]>,
+	siteId: string,
+): boolean {
+	const txFn = db.transaction(() => {
+		const now = new Date().toISOString();
+		const updatesWithModified = { ...updates, modified_at: now };
+
+		const updateKeys = Object.keys(updatesWithModified);
+		const whereKeys = Object.keys(where);
+		// Validate all column names to prevent SQL injection
+		updateKeys.forEach(validateColumnName);
+		whereKeys.forEach(validateColumnName);
+
+		const setClause = updateKeys.map((k) => `${k} = ?`).join(", ");
+		const pkColumn = getPkColumn(table);
+		const whereExtra = whereKeys.map((k) => `${k} = ?`).join(" AND ");
+		const sql = `UPDATE ${table} SET ${setClause} WHERE ${pkColumn} = ?${
+			whereExtra ? ` AND ${whereExtra}` : ""
+		}`;
+
+		const values: SqlBinding[] = [
+			...(Object.values(updatesWithModified) as SqlBinding[]),
+			id,
+			...(Object.values(where) as SqlBinding[]),
+		];
+
+		const result = db.run(sql, values);
+		if (result.changes === 0) {
+			return null;
+		}
+
+		// Fetch the updated row to get the full snapshot
+		const updatedRow = db.query(`SELECT * FROM ${table} WHERE ${pkColumn} = ?`).get(id) as Record<
+			string,
+			unknown
+		> | null;
+		if (!updatedRow) {
+			throw new Error(`updateRowIf: Row ${id} disappeared from ${table} after update`);
+		}
+
+		return createChangeLogEntry(db, table, id, siteId, updatedRow);
+	});
+
+	const hlc = txFn();
+
+	// Emit event after transaction commits (only if we actually wrote)
+	if (hlc !== null && changelogEventBus) {
+		changelogEventBus.emit("changelog:written", { hlc, tableName: table, siteId });
+	}
+
+	return hlc !== null;
 }
 
 export function softDelete(db: Database, table: SyncedTableName, id: string, siteId: string): void {

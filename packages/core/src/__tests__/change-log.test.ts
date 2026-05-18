@@ -8,6 +8,7 @@ import {
 	insertRow,
 	softDelete,
 	updateRow,
+	updateRowIf,
 	withChangeLog,
 } from "../change-log";
 import { createDatabase } from "../database";
@@ -515,5 +516,156 @@ describe("Change Log Producer", () => {
 		};
 		expect(row.role).toBe("developer");
 		expect(row.content).toBe("injected context");
+	});
+
+	describe("updateRowIf (CAS)", () => {
+		it("updates and writes change_log when precondition matches", () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+
+			insertRow(
+				db,
+				"tasks",
+				{
+					id: taskId,
+					type: "deferred",
+					status: "running",
+					trigger_spec: "{}",
+					payload: null,
+					created_at: now,
+					modified_at: now,
+					deleted: 0,
+					run_count: 0,
+					error: "evicted due to heartbeat timeout",
+				},
+				siteId,
+			);
+
+			const wrote = updateRowIf(
+				db,
+				"tasks",
+				taskId,
+				{ status: "running" },
+				{ status: "completed", error: "", run_count: 1 },
+				siteId,
+			);
+
+			expect(wrote).toBe(true);
+
+			const row = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as Record<
+				string,
+				unknown
+			>;
+			expect(row.status).toBe("completed");
+			expect(row.error).toBe("");
+			expect(row.run_count).toBe(1);
+
+			const entries = db
+				.query("SELECT * FROM change_log WHERE row_id = ? ORDER BY hlc")
+				.all(taskId) as Array<Record<string, unknown>>;
+			expect(entries.length).toBe(2); // insert + update
+		});
+
+		it("returns false and does not write when precondition fails", () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+
+			// Task already evicted to status='failed' — completion racing must lose.
+			insertRow(
+				db,
+				"tasks",
+				{
+					id: taskId,
+					type: "deferred",
+					status: "failed",
+					trigger_spec: "{}",
+					payload: null,
+					created_at: now,
+					modified_at: now,
+					deleted: 0,
+					run_count: 0,
+					error: "evicted due to heartbeat timeout",
+				},
+				siteId,
+			);
+
+			const insertModifiedAt = (
+				db.query("SELECT modified_at FROM tasks WHERE id = ?").get(taskId) as {
+					modified_at: string;
+				}
+			).modified_at;
+
+			const wrote = updateRowIf(
+				db,
+				"tasks",
+				taskId,
+				{ status: "running" },
+				{ status: "completed", error: "", run_count: 1 },
+				siteId,
+			);
+
+			expect(wrote).toBe(false);
+
+			const row = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as Record<
+				string,
+				unknown
+			>;
+			// State preserved — eviction wins the race.
+			expect(row.status).toBe("failed");
+			expect(row.error).toBe("evicted due to heartbeat timeout");
+			expect(row.run_count).toBe(0);
+			// modified_at must NOT be bumped on a failed CAS.
+			expect(row.modified_at).toBe(insertModifiedAt);
+
+			// Only the insert change_log entry — no update written.
+			const entries = db.query("SELECT * FROM change_log WHERE row_id = ?").all(taskId) as Array<
+				Record<string, unknown>
+			>;
+			expect(entries.length).toBe(1);
+		});
+
+		it("validates column names in both updates and where clauses", () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+
+			insertRow(
+				db,
+				"tasks",
+				{
+					id: taskId,
+					type: "deferred",
+					status: "running",
+					trigger_spec: "{}",
+					payload: null,
+					created_at: now,
+					modified_at: now,
+					deleted: 0,
+					run_count: 0,
+				},
+				siteId,
+			);
+
+			expect(() =>
+				updateRowIf(
+					db,
+					"tasks",
+					taskId,
+					{ "status; DROP TABLE tasks --": "running" } as never,
+					{ status: "completed" },
+					siteId,
+				),
+			).toThrow(/Invalid column name/);
+
+			expect(() =>
+				updateRowIf(
+					db,
+					"tasks",
+					taskId,
+					{ status: "running" },
+					{ "status; DROP TABLE tasks --": "completed" } as never,
+					siteId,
+				),
+			).toThrow(/Invalid column name/);
+		});
 	});
 });

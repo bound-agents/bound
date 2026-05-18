@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
-import { createChangeLogEntry, insertRow, markProcessed, updateRow } from "@bound/core";
+import {
+	createChangeLogEntry,
+	insertRow,
+	markProcessed,
+	updateRow,
+	updateRowIf,
+} from "@bound/core";
 import type { PlatformRegisteredTool } from "@bound/platforms";
 import { BOUND_NAMESPACE, deterministicUUID, formatError, parseJsonUntyped } from "@bound/shared";
 import type { Task } from "@bound/shared";
@@ -1136,20 +1142,39 @@ export class Scheduler {
 							filesChanged: result.filesChanged,
 						});
 
-						// Mark as completed and reset consecutive failure counter
-						updateRow(
+						// Mark as completed and reset consecutive failure counter.
+						// CAS on status='running' so a prior heartbeat-timeout eviction
+						// (which sets status='failed') stays sticky — the agent loop runs
+						// independently of scheduler tick, so a long-stalled conversation
+						// could otherwise overwrite eviction state on completion. Clearing
+						// `error` pairs with the CAS: if we win the race the task is
+						// genuinely complete and any prior error is stale.
+						const wrote = updateRowIf(
 							this.ctx.db,
 							"tasks",
 							task.id,
+							{ status: "running" },
 							{
 								status: "completed",
 								result: resultStr,
+								error: "",
 								run_count: (task.run_count ?? 0) + 1,
 								last_run_at: completedAt,
 								consecutive_failures: 0,
 							},
 							this.ctx.siteId,
 						);
+
+						if (!wrote) {
+							this.ctx.logger.warn(
+								"[scheduler] Completion update skipped — task no longer running (likely evicted)",
+								{
+									taskId: task.id,
+									triggerSpec: task.trigger_spec,
+									type: task.type,
+								},
+							);
+						}
 
 						// If cron task, compute next run time
 						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "completion", this.ctx.siteId);
@@ -1419,18 +1444,33 @@ export class Scheduler {
 						outputs,
 					});
 
-					updateRow(
+					// CAS on status='running' so a prior heartbeat-timeout eviction
+					// stays sticky. Clearing `error` pairs with the CAS.
+					const wrote = updateRowIf(
 						this.ctx.db,
 						"tasks",
 						task.id,
+						{ status: "running" },
 						{
 							status: "completed",
 							result,
+							error: "",
 							run_count: (task.run_count ?? 0) + 1,
 							last_run_at: new Date().toISOString(),
 						},
 						this.ctx.siteId,
 					);
+
+					if (!wrote) {
+						this.ctx.logger.warn(
+							"[scheduler] Template completion skipped — task no longer running (likely evicted)",
+							{
+								taskId: task.id,
+								triggerSpec: task.trigger_spec,
+								type: task.type,
+							},
+						);
+					}
 
 					// If cron task, compute next run time
 					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "completion", this.ctx.siteId);
