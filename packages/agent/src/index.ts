@@ -109,7 +109,16 @@ export {
 export { seedSkillAuthoring } from "./seed-skills";
 
 // Export skill utilities
-export { parseFrontmatter } from "./tools/skill-utils";
+export {
+	parseFrontmatter,
+	importSkillFromFiles,
+	MAX_ACTIVE_SKILLS,
+	MAX_SKILL_BODY_LINES,
+	MAX_FILE_SIZE_BYTES,
+	MAX_DESCRIPTION_LENGTH,
+	SKILL_NAME_REGEX,
+	MAX_SKILL_NAME_LENGTH,
+} from "./tools/skill-utils";
 
 // Export built-in tools
 export { createBuiltInTools } from "./built-in-tools";

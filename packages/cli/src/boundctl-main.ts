@@ -338,7 +338,7 @@ EXAMPLES:
 					process.exit(1);
 				}
 				const siteId = getSiteId(db);
-				skillImport(db, siteId, localPath);
+				await skillImport(db, siteId, localPath);
 				db.close();
 				process.exit(0);
 			}

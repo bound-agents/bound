@@ -19,7 +19,8 @@ type StatusType =
 	| "degraded"
 	| "unreachable"
 	| "online"
-	| "offline";
+	| "offline"
+	| "retired";
 
 interface Props {
 	status: StatusType;
@@ -51,6 +52,7 @@ const STATUS_MAP: Record<StatusType, { label: string; color: string; pulse: bool
 	unreachable: { label: "Unreachable", color: "var(--err)", pulse: false },
 	online: { label: "Online", color: "var(--ok)", pulse: true },
 	offline: { label: "Offline", color: "var(--err)", pulse: false },
+	retired: { label: "Retired", color: "var(--text-dim)", pulse: false },
 };
 
 const cfg = $derived(STATUS_MAP[status] ?? { label: status, color: "var(--idle)", pulse: false });

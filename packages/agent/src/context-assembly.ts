@@ -1565,13 +1565,18 @@ Original output was too large for the context window. If you need the full conte
 					const skillName = (taskPayload as Record<string, unknown>).skill as string;
 
 					const skillRow = db
-						.query("SELECT id FROM skills WHERE name = ? AND status = 'active' AND deleted = 0")
-						.get(skillName) as { id: string } | null;
+						.query(
+							"SELECT id, skill_root FROM skills WHERE name = ? AND status = 'active' AND deleted = 0",
+						)
+						.get(skillName) as { id: string; skill_root: string | null } | null;
 
 					if (skillRow) {
+						const skillMdPath = skillRow.skill_root
+							? `${skillRow.skill_root}/SKILL.md`
+							: `skills/${skillName}/SKILL.md`;
 						const skillMdRow = db
 							.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
-							.get(`/home/user/skills/${skillName}/SKILL.md`) as {
+							.get(skillMdPath) as {
 							content: string;
 						} | null;
 
