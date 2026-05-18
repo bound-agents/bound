@@ -1,4 +1,5 @@
 <script lang="ts">
+import { client } from "../lib/bound";
 import Btn from "./Btn.svelte";
 
 interface Props {
@@ -11,10 +12,65 @@ let mode = $state<"form" | "upload">("form");
 let submitting = $state(false);
 let serverError = $state<string | null>(null);
 
+// Form state
+let name = $state("");
+let description = $state("");
+let body = $state("");
+let allowedTools = $state("");
+let compatibility = $state("");
+let showAdvanced = $state(false);
+
+// Validation constants
+const SKILL_NAME_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+const MAX_NAME_LENGTH = 64;
+const MAX_DESCRIPTION_LENGTH = 1024;
+
+// Form validation
+const nameError = $derived(
+	name.length === 0
+		? null
+		: name.length > MAX_NAME_LENGTH
+			? "Name must be 64 characters or fewer"
+			: !SKILL_NAME_REGEX.test(name)
+				? "Name must be lowercase alphanumeric with hyphens only (e.g., my-skill-name)"
+				: null,
+);
+
+const descriptionError = $derived(
+	description.length === 0
+		? null
+		: description.length > MAX_DESCRIPTION_LENGTH
+			? `Description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer`
+			: null,
+);
+
+const formValid = $derived(
+	name.length > 0 && !nameError && description.length > 0 && !descriptionError && body.length > 0,
+);
+
 function handleKeydown(e: KeyboardEvent): void {
 	if (e.key === "Escape") {
 		onClose();
 	}
+}
+
+async function submitForm(): Promise<void> {
+	if (!formValid || submitting) return;
+	submitting = true;
+	serverError = null;
+	try {
+		await client.createSkill({
+			name,
+			description,
+			body,
+			allowed_tools: allowedTools || undefined,
+			compatibility: compatibility || undefined,
+		});
+		onCreated();
+	} catch (error) {
+		serverError = error instanceof Error ? error.message : "Failed to create skill";
+	}
+	submitting = false;
 }
 </script>
 
@@ -29,9 +85,49 @@ function handleKeydown(e: KeyboardEvent): void {
 		</header>
 
 		<div class="modal-body">
-			<!-- Placeholder content for modes -->
 			{#if mode === "form"}
-				<p>Form mode coming next</p>
+				<div class="form-group">
+					<label for="skill-name">Name</label>
+					<input id="skill-name" type="text" bind:value={name} placeholder="my-skill-name" />
+					{#if nameError}
+						<span class="field-error">{nameError}</span>
+					{/if}
+				</div>
+
+				<div class="form-group">
+					<label for="skill-desc">Description</label>
+					<input id="skill-desc" type="text" bind:value={description} placeholder="What this skill does" />
+					<span class="char-count" class:over={description.length > MAX_DESCRIPTION_LENGTH}>
+						{description.length}/{MAX_DESCRIPTION_LENGTH}
+					</span>
+					{#if descriptionError}
+						<span class="field-error">{descriptionError}</span>
+					{/if}
+				</div>
+
+				<div class="form-group">
+					<label for="skill-body">Body (Markdown)</label>
+					<textarea id="skill-body" bind:value={body} rows={10} placeholder="Skill instructions..."></textarea>
+				</div>
+
+				<button class="advanced-toggle" onclick={() => { showAdvanced = !showAdvanced; }}>
+					{showAdvanced ? "▼" : "▶"} Advanced
+				</button>
+
+				{#if showAdvanced}
+					<div class="form-group">
+						<label for="skill-tools">Allowed Tools (comma-separated)</label>
+						<input id="skill-tools" type="text" bind:value={allowedTools} placeholder="tool1, tool2" />
+					</div>
+					<div class="form-group">
+						<label for="skill-compat">Compatibility</label>
+						<input id="skill-compat" type="text" bind:value={compatibility} placeholder="e.g., model >= opus-4" />
+					</div>
+				{/if}
+
+				{#if serverError}
+					<div class="server-error">{serverError}</div>
+				{/if}
 			{:else}
 				<p>Upload mode coming next</p>
 			{/if}
@@ -41,7 +137,11 @@ function handleKeydown(e: KeyboardEvent): void {
 			<Btn variant="default" onclick={onClose}>
 				{#snippet children()}Cancel{/snippet}
 			</Btn>
-			<Btn variant="primary" disabled={submitting} onclick={() => {}}>
+			<Btn
+				variant="primary"
+				disabled={(mode === "form" ? !formValid : false) || submitting}
+				onclick={mode === "form" ? submitForm : () => {}}
+			>
 				{#snippet children()}{submitting ? "Creating..." : "Create"}{/snippet}
 			</Btn>
 		</div>
@@ -131,5 +231,69 @@ function handleKeydown(e: KeyboardEvent): void {
 		justify-content: flex-end;
 		gap: 8px;
 		flex-shrink: 0;
+	}
+
+	.form-group {
+		margin-bottom: 16px;
+	}
+
+	.form-group label {
+		display: block;
+		font-size: var(--text-sm);
+		color: var(--ink-3);
+		margin-bottom: 4px;
+	}
+
+	.form-group input,
+	.form-group textarea {
+		width: 100%;
+		padding: 8px 10px;
+		border: 1px solid var(--rule-soft);
+		background: var(--paper);
+		color: var(--ink);
+		font-family: var(--font-body);
+		border-radius: 0;
+		font-size: var(--text-base);
+	}
+
+	.form-group textarea {
+		font-family: var(--font-mono);
+		resize: vertical;
+	}
+
+	.field-error {
+		display: block;
+		color: var(--err);
+		font-size: var(--text-xs);
+		margin-top: 2px;
+	}
+
+	.char-count {
+		font-size: var(--text-xs);
+		color: var(--ink-4);
+		float: right;
+	}
+
+	.char-count.over {
+		color: var(--err);
+	}
+
+	.server-error {
+		padding: 8px 12px;
+		background: rgba(184, 40, 23, 0.1);
+		color: var(--err);
+		border-radius: 0;
+		margin-top: 12px;
+		font-size: var(--text-sm);
+	}
+
+	.advanced-toggle {
+		background: none;
+		border: none;
+		color: var(--ink-3);
+		cursor: pointer;
+		font-size: var(--text-sm);
+		padding: 4px 0;
+		margin-bottom: 8px;
 	}
 </style>
