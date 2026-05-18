@@ -414,6 +414,27 @@ export function applySchema(db: Database): void {
 		) STRICT
 	`);
 
+	// 14. webhooks (synced) — HMAC-authenticated HTTP endpoints that trigger agent tasks
+	db.run(`
+		CREATE TABLE IF NOT EXISTS webhooks (
+			id               TEXT PRIMARY KEY,
+			name             TEXT NOT NULL,
+			secret           TEXT NOT NULL,
+			signature_format TEXT NOT NULL DEFAULT 'github',
+			description      TEXT,
+			task_id          TEXT NOT NULL,
+			thread_id        TEXT NOT NULL,
+			created_at       TEXT NOT NULL,
+			deleted          INTEGER NOT NULL DEFAULT 0,
+			modified_at      TEXT NOT NULL
+		) STRICT
+	`);
+
+	db.run(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_webhooks_name
+		ON webhooks(name) WHERE deleted = 0
+	`);
+
 	// 15. change_log (non-replicated, local-only)
 	// Migration: if old seq-based table exists, migrate to HLC-based table
 	migrateChangeLogToHlc(db);
@@ -599,6 +620,15 @@ export function applySchema(db: Database): void {
 	// separate from thread_id which is the execution thread)
 	try {
 		db.run("ALTER TABLE tasks ADD COLUMN origin_thread_id TEXT");
+	} catch {
+		/* already exists */
+	}
+
+	// system_prompt_addition column on tasks — persistent prompt injection for
+	// event tasks (webhooks, scheduled), replacing ephemeral WS-only mechanism.
+	// Read by scheduler and relay processor when building AgentLoopConfig.
+	try {
+		db.run("ALTER TABLE tasks ADD COLUMN system_prompt_addition TEXT");
 	} catch {
 		/* already exists */
 	}
