@@ -5,6 +5,7 @@ import { createFilesRoutes } from "./files";
 import { createMcpRoutes } from "./mcp";
 import { createMemoryRoutes } from "./memory";
 import { createMessagesRoutes } from "./messages";
+import { createSkillsRoutes } from "./skills";
 import { type ModelsConfig, createStatusRoutes } from "./status";
 import { createTasksRoutes } from "./tasks";
 import { createThreadsRoutes } from "./threads";
@@ -65,5 +66,6 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		tasks: createTasksRoutes(db),
 		advisories: createAdvisoriesRoutes(db),
 		mcp: createMcpRoutes(db),
+		skills: createSkillsRoutes(db),
 	};
 }
