@@ -14,6 +14,13 @@ import { runSetHub } from "./commands/set-hub.js";
 import { skillImport, skillList, skillRetire, skillView } from "./commands/skill.js";
 import { runResume, runStop } from "./commands/stop-resume.js";
 import { runSyncStatus } from "./commands/sync-status.js";
+import {
+	webhookCreate,
+	webhookDelete,
+	webhookList,
+	webhookRotateSecret,
+	webhookUpdate,
+} from "./commands/webhook.js";
 import { openBoundDB } from "./lib/db.js";
 
 function getArgValue(args: string[], flag: string): string | undefined {
@@ -45,6 +52,11 @@ COMMANDS:
   skill view <name>          View SKILL.md and file listing for a skill
   skill retire <name>        Retire a skill (operator); use --reason "..." to explain
   skill import <path>        Import a skill from a local directory
+  webhook list               List all webhooks
+  webhook create             Create a new webhook
+  webhook delete <name>      Delete a webhook
+  webhook update <name>      Update a webhook (--prompt, --description, --format)
+  webhook rotate-secret      Rotate webhook secret
   db vacuum                  Run VACUUM to reclaim disk space
   --help                     Show this help message
 
@@ -338,6 +350,65 @@ EXAMPLES:
 			process.exit(1);
 		} catch (error) {
 			console.error("skill command failed:", error);
+			db.close();
+			process.exit(1);
+		}
+	}
+
+	if (command === "webhook") {
+		const subcommand = args[1];
+		const dataDir = getArgValue(args, "--data-dir") || "data";
+		const db = openBoundDB(dataDir);
+		const siteId = getSiteId(db);
+
+		try {
+			if (subcommand === "create") {
+				webhookCreate(db, siteId, args.slice(2));
+				db.close();
+				process.exit(0);
+			}
+
+			if (subcommand === "list") {
+				webhookList(db);
+				db.close();
+				process.exit(0);
+			}
+
+			if (subcommand === "delete") {
+				const name = args[2];
+				if (!name) {
+					console.error("Usage: boundctl webhook delete <name>");
+					db.close();
+					process.exit(1);
+				}
+				webhookDelete(db, siteId, name);
+				db.close();
+				process.exit(0);
+			}
+
+			if (subcommand === "update") {
+				webhookUpdate(db, siteId, args.slice(2));
+				db.close();
+				process.exit(0);
+			}
+
+			if (subcommand === "rotate-secret") {
+				const name = args[2];
+				if (!name) {
+					console.error("Usage: boundctl webhook rotate-secret <name>");
+					db.close();
+					process.exit(1);
+				}
+				webhookRotateSecret(db, siteId, name);
+				db.close();
+				process.exit(0);
+			}
+
+			console.error("Usage: boundctl webhook {create|list|delete|update|rotate-secret}");
+			db.close();
+			process.exit(1);
+		} catch (error) {
+			console.error("webhook command failed:", error);
 			db.close();
 			process.exit(1);
 		}
