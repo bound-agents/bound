@@ -135,9 +135,23 @@ function retryDeferredTask(
  * list_changed", per docs/test-plans/2026-05-08-mcp-platform-connectors-
  * test-requirements.md), not to per-event handler tasks. The two were conflated.
  *
- * Failure path: keep a 60s retry to recover from transient issues, but cap at
- * MAX_FAILURE_BACKOFFS to avoid permanent self-spin on a permanently-broken
- * handler. After the cap, the task waits in pending for a real event.
+ * Failure path: 60s retry IF AND ONLY IF the relay_inbox still has unprocessed
+ * envelopes for this task's thread. Capped at MAX_FAILURE_BACKOFFS to avoid
+ * permanent self-spin on a broken handler. After the cap (or with no pending
+ * envelopes), the task waits in pending for a real event.
+ *
+ * The unprocessed-inbox precondition is load-bearing: scheduler.ts:895 calls
+ * markProcessed BEFORE the agent loop runs (after the wakeup developer/
+ * tool_call/tool_result triple is durably persisted), so by the time we reach
+ * resetEventTask the common-case inbox is already drained. An unconditional
+ * retry would re-fire the agent loop on an empty buildEventWakeupContent
+ * payload — the "Execute scheduled task." fallback — giving the agent context-
+ * free phantom wakeups. Observed 2026-05-18 in thread d0372be6 (task
+ * 4b1d85f9, webhook:bound): a single soft-fail produced a 5-wakeup cluster at
+ * 21:33→21:41 with no new event content on any retry. The narrow case the
+ * retry still serves: persistence failed BEFORE markProcessed (DB error
+ * during message inserts), so the inbox is genuinely unprocessed and the
+ * retry replays the actual event payload.
  *
  * Re-reads current DB state before resetting to avoid resurrecting tasks that
  * were cancelled or soft-deleted externally during execution, and to read the
@@ -174,10 +188,22 @@ function resetEventTask(
 
 	const isCompletion = context === "completion" || context === "template completion";
 	let nextRunAt: string | null = null;
-	if (!isCompletion) {
-		const failures = current.consecutive_failures ?? 0;
-		if (failures < MAX_EVENT_TASK_FAILURE_BACKOFFS) {
-			nextRunAt = new Date(Date.now() + 60_000).toISOString();
+	if (!isCompletion && task.thread_id) {
+		// Only retry if the inbox has unprocessed envelopes for this thread.
+		// markProcessed (scheduler.ts:895) drains the inbox BEFORE the agent
+		// loop runs, so the common-case retry would replay an empty wakeup
+		// (the "Execute scheduled task." fallback in buildEventWakeupContent)
+		// and produce phantom wakeups. The retry remains useful only when
+		// persistence failed BEFORE markProcessed, leaving the inbox genuinely
+		// pending and the retry replaying the actual event payload.
+		const unprocessed = db
+			.query("SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0")
+			.get(task.thread_id) as { c: number } | null;
+		if (unprocessed && unprocessed.c > 0) {
+			const failures = current.consecutive_failures ?? 0;
+			if (failures < MAX_EVENT_TASK_FAILURE_BACKOFFS) {
+				nextRunAt = new Date(Date.now() + 60_000).toISOString();
+			}
 		}
 	}
 
