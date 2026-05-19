@@ -26,6 +26,8 @@ const totalTokens = $derived(
 );
 
 async function loadMetrics(): Promise<void> {
+	loading = true;
+	error = null;
 	try {
 		const params = new URLSearchParams();
 		params.append("from", from);
@@ -33,18 +35,20 @@ async function loadMetrics(): Promise<void> {
 
 		const response = await fetch(`/api/metrics?${params}`);
 		if (!response.ok) {
-			error = `Failed to load metrics: ${response.statusText}`;
+			const body = await response.json().catch(() => ({}));
+			error = body.error || `Request failed (${response.status})`;
 			data = null;
-		} else {
-			data = (await response.json()) as MetricsResponse;
-			error = null;
+			return;
 		}
+		data = (await response.json()) as MetricsResponse;
+		error = null;
 	} catch (err) {
 		console.error("Failed to load metrics:", err);
-		error = "Network request failed";
+		error = "Failed to load metrics. Check network connection.";
 		data = null;
+	} finally {
+		loading = false;
 	}
-	loading = false;
 }
 
 function handleRangeChange(newFrom: string, newTo: string): void {
@@ -172,157 +176,169 @@ function getContextUtilizationSparkline(
 				<p>{error}</p>
 			</div>
 		{:else if data}
-			<SectionHeader number={1} subtitle="Performance Analytics" title="Tokens" />
-
-			<div class="metrics-cards">
-				<MetroCard accentColor="var(--line-3)">
-					{#snippet children()}
-						<span class="metric-label">Total Tokens</span>
-						<span class="metric-value">{totalTokens.toLocaleString()}</span>
-					{/snippet}
-				</MetroCard>
-
-				<MetroCard accentColor="var(--line-0)">
-					{#snippet children()}
-						<span class="metric-label">Total Cost</span>
-						<span class="metric-value">${data.tokens.totals.cost_usd.toFixed(4)}</span>
-					{/snippet}
-				</MetroCard>
-
-				<MetroCard accentColor="var(--line-5)">
-					{#snippet children()}
-						<span class="metric-label">Turn Count</span>
-						<span class="metric-value">{data.tokens.totals.turn_count.toLocaleString()}</span>
-					{/snippet}
-				</MetroCard>
-			</div>
-
-			<TokenBarChart data={data.tokens.byModel} />
-			<CostTimeline data={data.tokens.timeline} />
-
-			<SectionHeader number={2} subtitle="Local-only — reflects this node's observations" title="Relay Performance" />
-
-			{#if data.relay.totals.total_cycles === 0}
-				<div class="empty-state">
-					<p>No relay cycles recorded in the selected range.</p>
+			{#if data.tokens.totals.turn_count === 0 && data.relay.totals.total_cycles === 0}
+				<div class="state">
+					<p>No data recorded in the selected range. Try expanding the date range.</p>
 				</div>
 			{:else}
-				<div class="metrics-cards">
-					<MetroCard accentColor={data.relay.totals.success_rate >= 0.95 ? "var(--ok)" : data.relay.totals.success_rate >= 0.8 ? "var(--warn)" : "var(--err)"}>
-						{#snippet children()}
-							<span class="metric-label">Success Rate</span>
-							<span class="metric-value">{(data.relay.totals.success_rate * 100).toFixed(1)}%</span>
-						{/snippet}
-					</MetroCard>
+				<SectionHeader number={1} subtitle="Performance Analytics" title="Tokens" />
 
-					<MetroCard accentColor="var(--line-3)">
-						{#snippet children()}
-							<span class="metric-label">Avg Latency</span>
-							<span class="metric-value">{Math.round(data.relay.totals.avg_latency_ms)}ms</span>
-						{/snippet}
-					</MetroCard>
+				{#if data.tokens.totals.turn_count === 0}
+					<div class="state">
+						<p>No turns recorded in the selected range.</p>
+					</div>
+				{:else}
+					<div class="metrics-cards">
+						<MetroCard accentColor="var(--line-3)">
+							{#snippet children()}
+								<span class="metric-label">Total Tokens</span>
+								<span class="metric-value">{totalTokens.toLocaleString()}</span>
+							{/snippet}
+						</MetroCard>
 
-					<MetroCard accentColor={data.relay.totals.expired_count > 0 ? "var(--warn)" : "var(--ok)"}>
-						{#snippet children()}
-							<span class="metric-label">Expired Count</span>
-							<span class="metric-value">{data.relay.totals.expired_count}</span>
-						{/snippet}
-					</MetroCard>
-				</div>
+						<MetroCard accentColor="var(--line-0)">
+							{#snippet children()}
+								<span class="metric-label">Total Cost</span>
+								<span class="metric-value">${data.tokens.totals.cost_usd.toFixed(4)}</span>
+							{/snippet}
+						</MetroCard>
 
-				<LatencyBarChart data={data.relay.byHost} />
-
-				<DataTable
-					columns={relayCycleColumns}
-					rows={relayCycleRows}
-					sortable={true}
-					rowAccent={relayRowAccent}
-				/>
-			{/if}
-
-			<SectionHeader number={3} subtitle="Context Pipeline Performance" title="Context Assembly" />
-
-			{#if data.context.totals.total_turns_with_debug === 0}
-				<div class="empty-state">
-					<p>No context data recorded in the selected range.</p>
-				</div>
-			{:else}
-				<div class="metrics-cards">
-					<MetroCard
-						accentColor={data.context.totals.avg_cache_hit_rate >= 0.8
-							? "var(--ok)"
-							: data.context.totals.avg_cache_hit_rate >= 0.5
-								? "var(--warn)"
-								: "var(--err)"}
-					>
-						{#snippet children()}
-							<span class="metric-label">Cache Hit Rate</span>
-							<span class="metric-value">{(data.context.totals.avg_cache_hit_rate * 100).toFixed(1)}%</span>
-						{/snippet}
-					</MetroCard>
-
-					<MetroCard accentColor={data.context.totals.budget_pressure_count === 0 ? "var(--ok)" : "var(--warn)"}>
-						{#snippet children()}
-							<span class="metric-label">Budget Pressure</span>
-							<span class="metric-value">{data.context.totals.budget_pressure_count}</span>
-							<span class="metric-unit">turns</span>
-						{/snippet}
-					</MetroCard>
-
-					<MetroCard accentColor="var(--line-3)">
-						{#snippet children()}
-							<span class="metric-label">Avg Truncation</span>
-							<span class="metric-value">{data.context.totals.avg_truncated_tokens.toFixed(1)}</span>
-							<span class="metric-unit">msgs</span>
-						{/snippet}
-					</MetroCard>
-				</div>
-
-				<CacheHitTimeline data={data.context.timeline} />
-
-				<div class="sparkline-row">
-					<div class="sparkline-item">
-						<span class="sparkline-label">Budget Pressure Frequency</span>
-						{#if data.context.timeline.length > 0}
-							{@const sparkline = getBudgetPressureSparkline(data.context.timeline)}
-							<svg
-								viewBox="0 0 {SPARKLINE_WIDTH} {SPARKLINE_HEIGHT}"
-								width="100%"
-								height={SPARKLINE_HEIGHT}
-								preserveAspectRatio="none"
-								class="sparkline-svg"
-							>
-								{#if sparkline.areaD}
-									<path d={sparkline.areaD} fill="var(--warn)" opacity="0.15" />
-								{/if}
-								{#if sparkline.pathD}
-									<polyline points={sparkline.points.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke="var(--warn)" stroke-width="1.5" />
-								{/if}
-							</svg>
-						{/if}
+						<MetroCard accentColor="var(--line-5)">
+							{#snippet children()}
+								<span class="metric-label">Turn Count</span>
+								<span class="metric-value">{data.tokens.totals.turn_count.toLocaleString()}</span>
+							{/snippet}
+						</MetroCard>
 					</div>
 
-					<div class="sparkline-item">
-						<span class="sparkline-label">Context Utilization</span>
-						{#if data.context.timeline.length > 0}
-							{@const sparkline = getContextUtilizationSparkline(data.context.timeline)}
-							<svg
-								viewBox="0 0 {SPARKLINE_WIDTH} {SPARKLINE_HEIGHT}"
-								width="100%"
-								height={SPARKLINE_HEIGHT}
-								preserveAspectRatio="none"
-								class="sparkline-svg"
-							>
-								{#if sparkline.areaD}
-									<path d={sparkline.areaD} fill="var(--line-3)" opacity="0.15" />
-								{/if}
-								{#if sparkline.pathD}
-									<polyline points={sparkline.points.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke="var(--line-3)" stroke-width="1.5" />
-								{/if}
-							</svg>
-						{/if}
+					<TokenBarChart data={data.tokens.byModel} />
+					<CostTimeline data={data.tokens.timeline} />
+				{/if}
+
+				<SectionHeader number={2} subtitle="Local-only — reflects this node's observations" title="Relay Performance" />
+
+				{#if data.relay.totals.total_cycles === 0}
+					<div class="state">
+						<p>No relay cycles recorded in the selected range.</p>
 					</div>
-				</div>
+				{:else}
+					<div class="metrics-cards">
+						<MetroCard accentColor={data.relay.totals.success_rate >= 0.95 ? "var(--ok)" : data.relay.totals.success_rate >= 0.8 ? "var(--warn)" : "var(--err)"}>
+							{#snippet children()}
+								<span class="metric-label">Success Rate</span>
+								<span class="metric-value">{(data.relay.totals.success_rate * 100).toFixed(1)}%</span>
+							{/snippet}
+						</MetroCard>
+
+						<MetroCard accentColor="var(--line-3)">
+							{#snippet children()}
+								<span class="metric-label">Avg Latency</span>
+								<span class="metric-value">{Math.round(data.relay.totals.avg_latency_ms)}ms</span>
+							{/snippet}
+						</MetroCard>
+
+						<MetroCard accentColor={data.relay.totals.expired_count > 0 ? "var(--warn)" : "var(--ok)"}>
+							{#snippet children()}
+								<span class="metric-label">Expired Count</span>
+								<span class="metric-value">{data.relay.totals.expired_count}</span>
+							{/snippet}
+						</MetroCard>
+					</div>
+
+					<LatencyBarChart data={data.relay.byHost} />
+
+					<DataTable
+						columns={relayCycleColumns}
+						rows={relayCycleRows}
+						sortable={true}
+						rowAccent={relayRowAccent}
+					/>
+				{/if}
+
+				<SectionHeader number={3} subtitle="Context Pipeline Performance" title="Context Assembly" />
+
+				{#if data.context.totals.total_turns_with_debug === 0}
+					<div class="state">
+						<p>No context debug data in the selected range.</p>
+					</div>
+				{:else}
+					<div class="metrics-cards">
+						<MetroCard
+							accentColor={data.context.totals.avg_cache_hit_rate >= 0.8
+								? "var(--ok)"
+								: data.context.totals.avg_cache_hit_rate >= 0.5
+									? "var(--warn)"
+									: "var(--err)"}
+						>
+							{#snippet children()}
+								<span class="metric-label">Cache Hit Rate</span>
+								<span class="metric-value">{(data.context.totals.avg_cache_hit_rate * 100).toFixed(1)}%</span>
+							{/snippet}
+						</MetroCard>
+
+						<MetroCard accentColor={data.context.totals.budget_pressure_count === 0 ? "var(--ok)" : "var(--warn)"}>
+							{#snippet children()}
+								<span class="metric-label">Budget Pressure</span>
+								<span class="metric-value">{data.context.totals.budget_pressure_count}</span>
+								<span class="metric-unit">turns</span>
+							{/snippet}
+						</MetroCard>
+
+						<MetroCard accentColor="var(--line-3)">
+							{#snippet children()}
+								<span class="metric-label">Avg Truncation</span>
+								<span class="metric-value">{data.context.totals.avg_truncated_tokens.toFixed(1)}</span>
+								<span class="metric-unit">msgs</span>
+							{/snippet}
+						</MetroCard>
+					</div>
+
+					<CacheHitTimeline data={data.context.timeline} />
+
+					<div class="sparkline-row">
+						<div class="sparkline-item">
+							<span class="sparkline-label">Budget Pressure Frequency</span>
+							{#if data.context.timeline.length > 0}
+								{@const sparkline = getBudgetPressureSparkline(data.context.timeline)}
+								<svg
+									viewBox="0 0 {SPARKLINE_WIDTH} {SPARKLINE_HEIGHT}"
+									width="100%"
+									height={SPARKLINE_HEIGHT}
+									preserveAspectRatio="none"
+									class="sparkline-svg"
+								>
+									{#if sparkline.areaD}
+										<path d={sparkline.areaD} fill="var(--warn)" opacity="0.15" />
+									{/if}
+									{#if sparkline.pathD}
+										<polyline points={sparkline.points.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke="var(--warn)" stroke-width="1.5" />
+									{/if}
+								</svg>
+							{/if}
+						</div>
+
+						<div class="sparkline-item">
+							<span class="sparkline-label">Context Utilization</span>
+							{#if data.context.timeline.length > 0}
+								{@const sparkline = getContextUtilizationSparkline(data.context.timeline)}
+								<svg
+									viewBox="0 0 {SPARKLINE_WIDTH} {SPARKLINE_HEIGHT}"
+									width="100%"
+									height={SPARKLINE_HEIGHT}
+									preserveAspectRatio="none"
+									class="sparkline-svg"
+								>
+									{#if sparkline.areaD}
+										<path d={sparkline.areaD} fill="var(--line-3)" opacity="0.15" />
+									{/if}
+									{#if sparkline.pathD}
+										<polyline points={sparkline.points.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke="var(--line-3)" stroke-width="1.5" />
+									{/if}
+								</svg>
+							{/if}
+						</div>
+					</div>
+				{/if}
 			{/if}
 		{/if}
 	{/snippet}
@@ -363,12 +379,6 @@ function getContextUtilizationSparkline(
 		color: var(--ink);
 	}
 
-	.empty-state {
-		padding: 40px 16px;
-		text-align: center;
-		color: var(--ink-3);
-		font-style: italic;
-	}
 
 	.metric-unit {
 		display: block;
@@ -406,5 +416,19 @@ function getContextUtilizationSparkline(
 	.sparkline-svg {
 		display: block;
 		height: auto;
+	}
+
+	@media (max-width: 960px) {
+		.metrics-cards {
+			grid-template-columns: 1fr;
+		}
+
+		.sparkline-row {
+			flex-direction: column;
+		}
+
+		.chart-container {
+			min-height: 150px;
+		}
 	}
 </style>
