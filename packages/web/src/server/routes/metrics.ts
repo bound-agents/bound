@@ -151,7 +151,7 @@ export function createMetricsRoutes(_db: Database): Hono {
 					SUM(COALESCE(cost_usd, 0)) as cost_usd,
 					COUNT(*) as turn_count
 				FROM turns
-				WHERE created_at BETWEEN ? AND ?
+				WHERE created_at BETWEEN ? AND ? AND deleted = 0
 				GROUP BY model_id
 				ORDER BY (tokens_in + tokens_out) DESC`,
 				)
@@ -176,7 +176,7 @@ export function createMetricsRoutes(_db: Database): Hono {
 					SUM(tokens_out) as tokens_out,
 					SUM(COALESCE(cost_usd, 0)) as cost_usd
 				FROM turns
-				WHERE created_at BETWEEN ? AND ?
+				WHERE created_at BETWEEN ? AND ? AND deleted = 0
 				GROUP BY date
 				ORDER BY date ASC`,
 				)
@@ -196,7 +196,7 @@ export function createMetricsRoutes(_db: Database): Hono {
 					COUNT(*) as turn_count,
 					SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
 				FROM turns
-				WHERE created_at BETWEEN ? AND ?`,
+				WHERE created_at BETWEEN ? AND ? AND deleted = 0`,
 				)
 				.get(fromISO, toISO) as {
 				tokens_in: number | null;
@@ -336,13 +336,10 @@ export function createMetricsRoutes(_db: Database): Hono {
 			};
 
 			// Query context timeline
-			const contextTimelineBucketFormat = useHourly
-				? "strftime('%Y-%m-%dT%H:00', created_at)"
-				: "date(created_at)";
 			const contextTimelineRows = _db
 				.prepare(
 					`SELECT
-					${contextTimelineBucketFormat} as date,
+					${timelineBucketFormat} as date,
 					AVG(
 						CAST(COALESCE(tokens_cache_read, 0) AS REAL) /
 						NULLIF(COALESCE(tokens_cache_read, 0) + tokens_in, 0)
