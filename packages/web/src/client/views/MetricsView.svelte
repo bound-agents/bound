@@ -11,14 +11,27 @@ import Page from "../components/Page.svelte";
 import SectionHeader from "../components/SectionHeader.svelte";
 import TokenBarChart from "../components/TokenBarChart.svelte";
 import { formatRelativeTime } from "../lib/format-time";
+import { MetricsStore } from "../lib/metrics-store";
 
-let data: MetricsResponse | null = $state(null);
-let loading = $state(true);
-let error: string | null = $state(null);
+const store = new MetricsStore();
+
 let from = $state(new Date(Date.now() - 24 * 3600_000).toISOString());
 let to = $state(new Date().toISOString());
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+// Svelte $state bindings synced after each load()
+let data: MetricsResponse | null = $state(null);
+let initialLoading = $state(false);
+let refreshing = $state(false);
+let error: string | null = $state(null);
+
+function syncState(): void {
+	data = store.state.data;
+	initialLoading = store.state.initialLoading;
+	refreshing = store.state.refreshing;
+	error = store.state.error;
+}
 
 // Computed properties
 const totalTokens = $derived(
@@ -26,29 +39,12 @@ const totalTokens = $derived(
 );
 
 async function loadMetrics(): Promise<void> {
-	loading = true;
-	error = null;
-	try {
-		const params = new URLSearchParams();
-		params.append("from", from);
-		params.append("to", to);
-
-		const response = await fetch(`/api/metrics?${params}`);
-		if (!response.ok) {
-			const body = await response.json().catch(() => ({}));
-			error = body.error || `Request failed (${response.status})`;
-			data = null;
-			return;
-		}
-		data = (await response.json()) as MetricsResponse;
-		error = null;
-	} catch (err) {
-		console.error("Failed to load metrics:", err);
-		error = "Failed to load metrics. Check network connection.";
-		data = null;
-	} finally {
-		loading = false;
-	}
+	// store.load() synchronously sets refreshing/initialLoading before awaiting fetch.
+	// We start it, sync the in-flight flags, then await completion and sync the result.
+	const promise = store.load(from, to);
+	syncState();
+	await promise;
+	syncState();
 }
 
 function handleRangeChange(newFrom: string, newTo: string): void {
@@ -165,17 +161,27 @@ function getContextUtilizationSparkline(
 	{#snippet children()}
 		<SectionHeader number={1} subtitle="Performance Analytics" title="Metrics" />
 
-		<DateRangeBar {from} {to} onRangeChange={handleRangeChange} disabled={loading} />
+		<DateRangeBar {from} {to} onRangeChange={handleRangeChange} disabled={initialLoading} />
 
-		{#if loading}
+		{#if initialLoading}
 			<div class="state">
 				<p>Loading metrics…</p>
 			</div>
-		{:else if error}
+		{:else if error && !data}
 			<div class="state err">
 				<p>{error}</p>
 			</div>
 		{:else if data}
+			{#if error}
+				<div class="refresh-error">
+					<p>{error}</p>
+				</div>
+			{/if}
+			{#if refreshing}
+				<div class="refresh-indicator" aria-live="polite">
+					<span class="refresh-dot"></span> Refreshing…
+				</div>
+			{/if}
 			{#if data.tokens.totals.turn_count === 0 && data.relay.totals.total_cycles === 0}
 				<div class="state">
 					<p>No data recorded in the selected range. Try expanding the date range.</p>
@@ -416,6 +422,39 @@ function getContextUtilizationSparkline(
 	.sparkline-svg {
 		display: block;
 		height: auto;
+	}
+
+	.refresh-indicator {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 12px;
+		color: var(--ink-3);
+		padding: 4px 12px;
+		margin-bottom: 8px;
+	}
+
+	.refresh-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--line-3);
+		animation: pulse 1.2s ease-in-out infinite;
+	}
+
+	@keyframes pulse {
+		0%, 100% { opacity: 0.4; }
+		50% { opacity: 1; }
+	}
+
+	.refresh-error {
+		padding: 8px 12px;
+		margin-bottom: 8px;
+		font-size: 12px;
+		color: var(--err);
+		background: color-mix(in srgb, var(--err) 8%, transparent);
+		border: 1px solid color-mix(in srgb, var(--err) 20%, transparent);
+		border-radius: 4px;
 	}
 
 	@media (max-width: 960px) {
