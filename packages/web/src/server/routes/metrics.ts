@@ -134,19 +134,89 @@ export function createMetricsRoutes(_db: Database): Hono {
 			// Determine bucketing mode
 			const rangeMs = to.getTime() - from.getTime();
 			const rangeDays = rangeMs / (24 * 3600 * 1000);
-			const _useHourly = rangeDays <= 2; // 48 hours = 2 days (used by queries in later tasks)
+			const useHourly = rangeDays <= 2; // 48 hours = 2 days
 
-			// Build response with placeholder empty arrays/zeros
+			const fromISO = from.toISOString();
+			const toISO = to.toISOString();
+
+			// Query token metrics
+			const byModelRows = _db
+				.prepare(
+					`SELECT
+					model_id,
+					SUM(tokens_in) as tokens_in,
+					SUM(tokens_out) as tokens_out,
+					SUM(COALESCE(tokens_cache_read, 0)) as cache_read,
+					SUM(COALESCE(tokens_cache_write, 0)) as cache_write,
+					SUM(COALESCE(cost_usd, 0)) as cost_usd,
+					COUNT(*) as turn_count
+				FROM turns
+				WHERE created_at BETWEEN ? AND ?
+				GROUP BY model_id
+				ORDER BY (tokens_in + tokens_out) DESC`,
+				)
+				.all(fromISO, toISO) as Array<{
+				model_id: string;
+				tokens_in: number;
+				tokens_out: number;
+				cache_read: number;
+				cache_write: number;
+				cost_usd: number;
+				turn_count: number;
+			}>;
+
+			const timelineBucketFormat = useHourly
+				? "strftime('%Y-%m-%dT%H:00', created_at)"
+				: "date(created_at)";
+			const timelineRows = _db
+				.prepare(
+					`SELECT
+					${timelineBucketFormat} as date,
+					SUM(tokens_in) as tokens_in,
+					SUM(tokens_out) as tokens_out,
+					SUM(COALESCE(cost_usd, 0)) as cost_usd
+				FROM turns
+				WHERE created_at BETWEEN ? AND ?
+				GROUP BY date
+				ORDER BY date ASC`,
+				)
+				.all(fromISO, toISO) as Array<{
+				date: string;
+				tokens_in: number;
+				tokens_out: number;
+				cost_usd: number;
+			}>;
+
+			const totalsRow = _db
+				.prepare(
+					`SELECT
+					SUM(tokens_in) as tokens_in,
+					SUM(tokens_out) as tokens_out,
+					SUM(COALESCE(cost_usd, 0)) as cost_usd,
+					COUNT(*) as turn_count,
+					SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
+				FROM turns
+				WHERE created_at BETWEEN ? AND ?`,
+				)
+				.get(fromISO, toISO) as {
+				tokens_in: number | null;
+				tokens_out: number | null;
+				cost_usd: number | null;
+				turn_count: number | null;
+				error_count: number | null;
+			};
+
+			// Build response with token queries populated
 			const response: MetricsResponse = {
 				tokens: {
-					byModel: [],
-					timeline: [],
+					byModel: byModelRows || [],
+					timeline: timelineRows || [],
 					totals: {
-						tokens_in: 0,
-						tokens_out: 0,
-						cost_usd: 0,
-						turn_count: 0,
-						error_count: 0,
+						tokens_in: totalsRow?.tokens_in ?? 0,
+						tokens_out: totalsRow?.tokens_out ?? 0,
+						cost_usd: Number((totalsRow?.cost_usd ?? 0).toFixed(2)),
+						turn_count: totalsRow?.turn_count ?? 0,
+						error_count: totalsRow?.error_count ?? 0,
 					},
 				},
 				relay: {
