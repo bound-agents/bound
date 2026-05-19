@@ -282,7 +282,7 @@ The 15 native tools replace the previous 20 bash-dispatched commands:
 | `await_event` | task_ids, timeout | Standalone |
 | `purge` | message_ids, last_n, thread_id | Standalone |
 | `advisory` | title, detail, action, impact, list, approve, apply, dismiss, defer | Standalone |
-| `notify` | action, thread_id, user, platform, message | Standalone |
+| `notify` | thread_id, message | Standalone |
 | `introspect` | thread_id, message, timeout | Standalone |
 | `archive` | thread_id, older_than | Standalone |
 | `model_hint` | model, reset | Standalone |
@@ -668,35 +668,20 @@ Example invocations:
 
 ### `notify`
 
-Send a proactive notification to a thread or user on a configured platform.
+Send a proactive notification to another thread. Enqueues a message and triggers inference on the target thread.
 
 | Parameter | Required | Type | Description |
 |---|---|---|---|
-| `action` | yes | enum | `"thread"` or `"user"` |
-| `thread_id` | conditional | string | Target thread ID (required for `action: "thread"`) |
-| `user` | conditional | string | Target bound username (required for `action: "user"`) |
-| `platform` | conditional | string | Platform name, e.g. `"discord"` (required for `action: "user"`) |
+| `thread_id` | yes | string | Target thread ID |
 | `message` | yes | string | Notification message content |
 
-Enqueues a proactive notification. The `thread` action sends directly to a specific thread; the `user` action resolves a username to their DM thread on the specified platform. The agent will run inference to deliver the message via the platform connector.
+Enqueues a proactive notification to the specified thread. The target thread runs inference upon delivery, allowing it to act on the notification using whatever tools are available in its context (e.g., platform tools on event-task threads).
 
-Example invocations:
+Example invocation:
 
-**Thread action:**
 ```json
 {
-  "action": "thread",
   "thread_id": "thread-abc123",
-  "message": "Your deployment completed successfully"
-}
-```
-
-**User action:**
-```json
-{
-  "action": "user",
-  "user": "alice",
-  "platform": "discord",
   "message": "Your deployment completed successfully"
 }
 ```

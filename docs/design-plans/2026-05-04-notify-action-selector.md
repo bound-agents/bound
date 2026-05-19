@@ -1,5 +1,7 @@
 # Notify Action-Selector Redesign
 
+> **Superseded (2026-05-18):** The `action: "user"` branch and the action-selector pattern itself have been removed. The MCP connector migration decoupled platform delivery from user-owned threads — the `findDmThread` query could no longer locate the correct thread (event-task threads use `interface: "platform"`, `user_id: "system"`). The tool now accepts only `(thread_id, message)` with no action dispatch. This document is retained as historical context.
+
 ## Summary
 
 This refactor simplifies the `notify` agent tool by replacing its current parameter model with an action-selector pattern. Today, the tool uses mutual exclusivity between `user` and `all` parameters to control routing, which has become error-prone as the tool evolved. The redesign introduces two explicit actions: `thread` (notify a known thread ID directly) and `user` (resolve a thread via username + platform lookup, then notify). Both actions share the same underlying dispatch path and validation guards (non-empty message, self-notify prevention), but provide clearer semantics at the LLM interface layer.

@@ -1,10 +1,11 @@
 # Notify Action-Selector Test Plan
 
+> **Superseded (2026-05-18):** The `action: "user"` branch has been removed and the tool flattened to `(thread_id, message)`. Phase 2 (User Notification Delivery) is no longer applicable. Phase 1 remains valid with the simplified schema.
+
 ## Prerequisites
 - Working `bound` instance with at least one configured platform (Discord or web)
-- `bun test packages/agent/src/tools/__tests__/notify.test.ts` passing (15 tests, 0 failures)
-- At least two threads in the database (one web, one Discord/platform)
-- At least one user in the `users` table with a known username and platform thread
+- `bun test packages/agent/src/tools/__tests__/notify.test.ts` passing (7 tests, 0 failures)
+- At least two threads in the database
 
 ## Phase 1: Thread Notification Delivery
 
