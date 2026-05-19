@@ -1,11 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { trace, context } from "@opentelemetry/api";
-import { BasicTracerProvider, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
-import { InMemorySpanExporter } from "@opentelemetry/sdk-trace-base";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { trace } from "@opentelemetry/api";
 import { Resource } from "@opentelemetry/resources";
+import {
+	BasicTracerProvider,
+	InMemorySpanExporter,
+	SimpleSpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 import { createLogger, resetLogger } from "../logger.js";
-import pino from "pino";
 
 describe("logger-trace-mixin", () => {
 	beforeEach(() => {
@@ -17,8 +19,8 @@ describe("logger-trace-mixin", () => {
 
 	afterEach(() => {
 		resetLogger();
-		delete process.env.LOG_LEVEL;
-		delete process.env.BOUND_LOG_STDERR;
+		process.env.LOG_LEVEL = undefined;
+		process.env.BOUND_LOG_STDERR = undefined;
 	});
 
 	it("AC7.1: includes trace_id and span_id when active span exists", async () => {
@@ -34,33 +36,8 @@ describe("logger-trace-mixin", () => {
 		provider.register();
 
 		const tracer = trace.getTracer("test-tracer");
-		const logger = createLogger("test", "trace-mixin");
 
-		// Create a custom Pino logger that captures output for testing
-		let capturedLogs: unknown[] = [];
-		const testLogger = pino(
-			{
-				level: "info",
-				mixin() {
-					const span = trace.getActiveSpan();
-					if (!span) return {};
-					const ctx = span.spanContext();
-					return {
-						trace_id: ctx.traceId,
-						span_id: ctx.spanId,
-						trace_flags: ctx.traceFlags,
-					};
-				},
-			},
-			pino.transport({
-				target: "pino/file",
-				options: {
-					destination: 1, // stdout
-				},
-			}),
-		);
-
-		// Instead, use direct pino API test
+		// Use direct tracer API to verify span context fields
 		await new Promise<void>((resolve) => {
 			tracer.startActiveSpan("test-span", (span) => {
 				// Get the mixin fields directly

@@ -1,8 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { trace } from "@opentelemetry/api";
 import pino from "pino";
 import pinoPretty from "pino-pretty";
-import { trace } from "@opentelemetry/api";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
