@@ -141,6 +141,7 @@ describe("Agent Loop OTEL Spans", () => {
 			await cleanupTmpDir(tmpDir);
 		}
 		await provider.shutdown();
+		trace.disable();
 	});
 
 	function makeCtx(): AppContext {
