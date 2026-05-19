@@ -489,5 +489,489 @@ describe("metrics routes", () => {
 				expect(firstDate).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:00/);
 			}
 		});
+
+		describe("AC5.1 & AC5.3: Relay aggregation", () => {
+			it("aggregates relay performance by host", async () => {
+				const app = createMetricsRoutes(db);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				// Seed relay_cycles data
+				db.prepare(
+					`INSERT INTO relay_cycles (direction, peer_site_id, kind, delivery_method, latency_ms, success, expired, created_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run("outbound", "site-b", "stream_chunk", "push", 50, 1, 0, "2026-05-18T12:00:00Z");
+
+				db.prepare(
+					`INSERT INTO relay_cycles (direction, peer_site_id, kind, delivery_method, latency_ms, success, expired, created_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run("outbound", "site-b", "stream_chunk", "push", 75, 1, 0, "2026-05-18T13:00:00Z");
+
+				db.prepare(
+					`INSERT INTO relay_cycles (direction, peer_site_id, kind, delivery_method, latency_ms, success, expired, created_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run("outbound", "site-b", "stream_chunk", "push", 100, 0, 0, "2026-05-18T14:00:00Z");
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const relay = json.relay as Record<string, unknown>;
+				const byHost = relay.byHost as Array<Record<string, unknown>>;
+
+				expect(byHost.length).toBeGreaterThan(0);
+				const hostEntry = byHost.find((h) => h.peer_site_id === "site-b");
+				expect(hostEntry).toBeDefined();
+				expect(hostEntry?.avg_latency_ms).toBe(75); // (50 + 75 + 100) / 3
+				expect(hostEntry?.success_count).toBe(2);
+				expect(hostEntry?.failure_count).toBe(1);
+			});
+
+			it("computes P95 latency correctly", async () => {
+				const app = createMetricsRoutes(db);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				// Seed relay_cycles with known latencies: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+				const latencies = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+				for (let i = 0; i < latencies.length; i++) {
+					db.prepare(
+						`INSERT INTO relay_cycles (direction, peer_site_id, kind, delivery_method, latency_ms, success, expired, created_at)
+						VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+					).run(
+						"outbound",
+						"site-c",
+						"stream_chunk",
+						"push",
+						latencies[i],
+						1,
+						0,
+						`2026-05-18T12:${String(i).padStart(2, "0")}:00Z`,
+					);
+				}
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const relay = json.relay as Record<string, unknown>;
+				const byHost = relay.byHost as Array<Record<string, unknown>>;
+
+				const hostEntry = byHost.find((h) => h.peer_site_id === "site-c");
+				expect(hostEntry).toBeDefined();
+				// P95 of [10..100] should be around 90
+				expect(hostEntry?.p95_latency_ms).toBeGreaterThanOrEqual(85);
+				expect(hostEntry?.p95_latency_ms).toBeLessThanOrEqual(95);
+			});
+
+			it("maps success/expired INTEGER to boolean", async () => {
+				const app = createMetricsRoutes(db);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				db.prepare(
+					`INSERT INTO relay_cycles (direction, peer_site_id, kind, delivery_method, latency_ms, success, expired, created_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run("outbound", "site-d", "stream_chunk", "push", 50, 1, 0, "2026-05-18T12:00:00Z");
+
+				db.prepare(
+					`INSERT INTO relay_cycles (direction, peer_site_id, kind, delivery_method, latency_ms, success, expired, created_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run("outbound", "site-d", "stream_chunk", "push", null, 0, 1, "2026-05-18T13:00:00Z");
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const relay = json.relay as Record<string, unknown>;
+				const recentCycles = relay.recentCycles as Array<Record<string, unknown>>;
+
+				expect(recentCycles.length).toBeGreaterThanOrEqual(1);
+				const successCycle = recentCycles.find((c) => c.success === true);
+				const expiredCycle = recentCycles.find((c) => c.expired === true);
+
+				expect(successCycle).toBeDefined();
+				expect(typeof successCycle?.success).toBe("boolean");
+				expect(expiredCycle).toBeDefined();
+				expect(typeof expiredCycle?.expired).toBe("boolean");
+			});
+
+			it("computes relay totals correctly", async () => {
+				const app = createMetricsRoutes(db);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				db.prepare(
+					`INSERT INTO relay_cycles (direction, peer_site_id, kind, delivery_method, latency_ms, success, expired, created_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run("outbound", "site-e", "stream_chunk", "push", 100, 1, 0, "2026-05-18T12:00:00Z");
+
+				db.prepare(
+					`INSERT INTO relay_cycles (direction, peer_site_id, kind, delivery_method, latency_ms, success, expired, created_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run("outbound", "site-e", "stream_chunk", "push", 200, 1, 0, "2026-05-18T13:00:00Z");
+
+				db.prepare(
+					`INSERT INTO relay_cycles (direction, peer_site_id, kind, delivery_method, latency_ms, success, expired, created_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run("outbound", "site-e", "stream_chunk", "push", null, 0, 1, "2026-05-18T14:00:00Z");
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const relay = json.relay as Record<string, unknown>;
+				const totals = relay.totals as Record<string, unknown>;
+
+				expect(totals.total_cycles).toBe(3);
+				expect(totals.success_rate).toBeCloseTo(2 / 3, 2);
+				expect(totals.avg_latency_ms).toBeCloseTo(150, 0); // (100 + 200) / 2
+				expect(totals.expired_count).toBe(1);
+			});
+		});
+
+		describe("AC5.1 & AC5.3: Context assembly metrics", () => {
+			it("computes cache hit rate from table columns", async () => {
+				const app = createMetricsRoutes(db);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				// Seed turns with context_debug
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-1",
+					"thread-1",
+					"2026-05-18T12:00:00Z",
+					"claude-opus",
+					1000,
+					500,
+					200,
+					300,
+					0.05,
+					"ok",
+					JSON.stringify({
+						budgetPressure: false,
+						truncated: 0,
+						totalEstimated: 1500,
+						contextWindow: 8000,
+					}),
+					0,
+				);
+
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-2",
+					"thread-2",
+					"2026-05-18T13:00:00Z",
+					"claude-opus",
+					500,
+					250,
+					100,
+					150,
+					0.02,
+					"ok",
+					JSON.stringify({
+						budgetPressure: false,
+						truncated: 0,
+						totalEstimated: 750,
+						contextWindow: 8000,
+					}),
+					0,
+				);
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const context = json.context as Record<string, unknown>;
+				const totals = context.totals as Record<string, unknown>;
+
+				expect(totals.total_turns_with_debug).toBe(2);
+				// Cache hit rate: (200 + 100) / (200 + 100 + 1000 + 500) = 300 / 1800 ≈ 0.167
+				expect(totals.avg_cache_hit_rate).toBeGreaterThan(0);
+				expect(totals.avg_cache_hit_rate).toBeLessThan(1);
+			});
+
+			it("counts budget pressure events from JSON", async () => {
+				const app = createMetricsRoutes(db);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				// Seed turns with context_debug, some with budget pressure
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-1",
+					"thread-1",
+					"2026-05-18T12:00:00Z",
+					"claude-opus",
+					1000,
+					500,
+					0,
+					0,
+					0.05,
+					"ok",
+					JSON.stringify({
+						budgetPressure: true,
+						truncated: 5,
+						totalEstimated: 7500,
+						contextWindow: 8000,
+					}),
+					0,
+				);
+
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-2",
+					"thread-2",
+					"2026-05-18T13:00:00Z",
+					"claude-opus",
+					500,
+					250,
+					0,
+					0,
+					0.02,
+					"ok",
+					JSON.stringify({
+						budgetPressure: false,
+						truncated: 0,
+						totalEstimated: 2000,
+						contextWindow: 8000,
+					}),
+					0,
+				);
+
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-3",
+					"thread-3",
+					"2026-05-18T14:00:00Z",
+					"claude-opus",
+					800,
+					400,
+					0,
+					0,
+					0.03,
+					"ok",
+					JSON.stringify({
+						budgetPressure: true,
+						truncated: 10,
+						totalEstimated: 7800,
+						contextWindow: 8000,
+					}),
+					0,
+				);
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const context = json.context as Record<string, unknown>;
+				const totals = context.totals as Record<string, unknown>;
+
+				expect(totals.budget_pressure_count).toBe(2);
+				expect(totals.total_turns_with_debug).toBe(3);
+			});
+
+			it("handles NULL context_debug (excluded from stats)", async () => {
+				const app = createMetricsRoutes(db);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				// Seed a mix of turns with and without context_debug
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-1",
+					"thread-1",
+					"2026-05-18T12:00:00Z",
+					"claude-opus",
+					1000,
+					500,
+					0,
+					0,
+					0.05,
+					"ok",
+					JSON.stringify({
+						budgetPressure: false,
+						truncated: 0,
+						totalEstimated: 1000,
+						contextWindow: 8000,
+					}),
+					0,
+				);
+
+				// This turn has NULL context_debug
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-2",
+					"thread-2",
+					"2026-05-18T13:00:00Z",
+					"claude-opus",
+					500,
+					250,
+					0,
+					0,
+					0.02,
+					"ok",
+					null,
+					0,
+				);
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const context = json.context as Record<string, unknown>;
+				const totals = context.totals as Record<string, unknown>;
+
+				// Only turn-1 should be counted (turn-2 has NULL context_debug)
+				expect(totals.total_turns_with_debug).toBe(1);
+			});
+
+			it("computes context utilization percentage", async () => {
+				const app = createMetricsRoutes(db);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-1",
+					"thread-1",
+					"2026-05-18T12:00:00Z",
+					"claude-opus",
+					1000,
+					500,
+					0,
+					0,
+					0.05,
+					"ok",
+					JSON.stringify({
+						budgetPressure: false,
+						truncated: 0,
+						totalEstimated: 4000,
+						contextWindow: 8000,
+					}),
+					0,
+				);
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const context = json.context as Record<string, unknown>;
+				const timeline = context.timeline as Array<Record<string, unknown>>;
+
+				if (timeline.length > 0) {
+					const entry = timeline[0];
+					// 4000 / 8000 = 0.5
+					expect(entry?.avg_context_utilization).toBeCloseTo(0.5, 1);
+				}
+			});
+
+			it("excludes soft-deleted turns from context metrics", async () => {
+				const app = createMetricsRoutes(db);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				// Insert turns, one of which is soft-deleted
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-1",
+					"thread-1",
+					"2026-05-18T12:00:00Z",
+					"claude-opus",
+					1000,
+					500,
+					0,
+					0,
+					0.05,
+					"ok",
+					JSON.stringify({
+						budgetPressure: false,
+						truncated: 0,
+						totalEstimated: 1000,
+						contextWindow: 8000,
+					}),
+					0,
+				);
+
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-2",
+					"thread-2",
+					"2026-05-18T13:00:00Z",
+					"claude-opus",
+					500,
+					250,
+					0,
+					0,
+					0.02,
+					"ok",
+					JSON.stringify({
+						budgetPressure: false,
+						truncated: 0,
+						totalEstimated: 500,
+						contextWindow: 8000,
+					}),
+					1, // soft-deleted
+				);
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const context = json.context as Record<string, unknown>;
+				const totals = context.totals as Record<string, unknown>;
+
+				expect(totals.total_turns_with_debug).toBe(1);
+			});
+		});
 	});
 });
