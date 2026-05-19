@@ -2,11 +2,14 @@
 import { onDestroy, onMount } from "svelte";
 import type { MetricsResponse } from "../../server/routes/metrics";
 import CostTimeline from "../components/CostTimeline.svelte";
+import DataTable from "../components/DataTable.svelte";
 import DateRangeBar from "../components/DateRangeBar.svelte";
+import LatencyBarChart from "../components/LatencyBarChart.svelte";
 import MetroCard from "../components/MetroCard.svelte";
 import Page from "../components/Page.svelte";
 import SectionHeader from "../components/SectionHeader.svelte";
 import TokenBarChart from "../components/TokenBarChart.svelte";
+import { formatRelativeTime } from "../lib/format-time";
 
 let data: MetricsResponse | null = $state(null);
 let loading = $state(true);
@@ -72,6 +75,33 @@ onMount(() => {
 onDestroy(() => {
 	if (pollInterval !== null) clearInterval(pollInterval);
 });
+
+// Column definitions for relay cycles table
+const relayCycleColumns = [
+	{ key: "peer_site_id", label: "Peer", width: "1fr", mono: true, sortable: true },
+	{ key: "direction", label: "Direction", width: "100px", sortable: true },
+	{ key: "kind", label: "Kind", width: "100px", sortable: true },
+	{ key: "latency_ms", label: "Latency", width: "100px", mono: true, sortable: true },
+	{ key: "success", label: "Status", width: "80px", sortable: true },
+	{ key: "created_at", label: "Time", width: "140px", sortable: true },
+];
+
+// Transform recent cycles for display
+const relayCycleRows = $derived(
+	data?.relay.recentCycles.map((cycle) => ({
+		...cycle,
+		latency_ms: cycle.latency_ms !== null ? `${cycle.latency_ms}ms` : "—",
+		success: cycle.success ? "OK" : "FAIL",
+		created_at: formatRelativeTime(cycle.created_at),
+	})) ?? [],
+);
+
+// Row accent function for relay cycles
+function relayRowAccent(row: Record<string, unknown>): string | null {
+	if (row.success === "FAIL") return "var(--err)";
+	if (row.expired === true) return "var(--warn)";
+	return null;
+}
 </script>
 
 <Page>
@@ -117,9 +147,45 @@ onDestroy(() => {
 			<TokenBarChart data={data.tokens.byModel} />
 			<CostTimeline data={data.tokens.timeline} />
 
-			<SectionHeader number={2} subtitle="Placeholder" title="Relay">
-				<p>Actual relay charts will appear in Phase 4+</p>
-			</SectionHeader>
+			<SectionHeader number={2} subtitle="Local-only — reflects this node's observations" title="Relay Performance" />
+
+			{#if data.relay.totals.total_cycles === 0}
+				<div class="empty-state">
+					<p>No relay cycles recorded in the selected range.</p>
+				</div>
+			{:else}
+				<div class="metrics-cards">
+					<MetroCard accentColor={data.relay.totals.success_rate >= 0.95 ? "var(--ok)" : data.relay.totals.success_rate >= 0.8 ? "var(--warn)" : "var(--err)"}>
+						{#snippet children()}
+							<span class="metric-label">Success Rate</span>
+							<span class="metric-value">{(data.relay.totals.success_rate * 100).toFixed(1)}%</span>
+						{/snippet}
+					</MetroCard>
+
+					<MetroCard accentColor="var(--line-3)">
+						{#snippet children()}
+							<span class="metric-label">Avg Latency</span>
+							<span class="metric-value">{Math.round(data.relay.totals.avg_latency_ms)}ms</span>
+						{/snippet}
+					</MetroCard>
+
+					<MetroCard accentColor={data.relay.totals.expired_count > 0 ? "var(--warn)" : "var(--ok)"}>
+						{#snippet children()}
+							<span class="metric-label">Expired Count</span>
+							<span class="metric-value">{data.relay.totals.expired_count}</span>
+						{/snippet}
+					</MetroCard>
+				</div>
+
+				<LatencyBarChart data={data.relay.byHost} />
+
+				<DataTable
+					columns={relayCycleColumns}
+					rows={relayCycleRows}
+					sortable={true}
+					rowAccent={relayRowAccent}
+				/>
+			{/if}
 
 			<SectionHeader number={3} subtitle="Placeholder" title="Context">
 				<p>Actual context charts will appear in Phase 5+</p>
@@ -161,5 +227,12 @@ onDestroy(() => {
 		font-size: 24px;
 		font-weight: 600;
 		color: var(--ink);
+	}
+
+	.empty-state {
+		padding: 40px 16px;
+		text-align: center;
+		color: var(--ink-3);
+		font-style: italic;
 	}
 </style>
