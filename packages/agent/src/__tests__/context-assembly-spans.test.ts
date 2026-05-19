@@ -137,7 +137,10 @@ describe("Context Assembly OTEL Spans", () => {
 		}
 	});
 
-	it.skip("should record message_count attribute on stage 1 span", async () => {
+	it("should record message_count attribute on stage 1 span", async () => {
+		// Clear previous spans to prevent isolation issues
+		exporter.reset();
+
 		// Create test data
 		const threadId = randomUUID();
 
@@ -198,6 +201,7 @@ describe("Context Assembly OTEL Spans", () => {
 
 		expect(stage1Span).toBeDefined();
 		expect(stage1Span?.attributes?.message_count).toBe(3);
+		expect(typeof stage1Span?.attributes?.message_count).toBe("number");
 	});
 
 	it("should record total_tokens and headroom attributes on stage 7 span", async () => {
