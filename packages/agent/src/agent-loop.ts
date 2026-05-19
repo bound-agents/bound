@@ -864,6 +864,7 @@ export class AgentLoop {
 				});
 
 				const llmCallSpan = getTracer().startSpan("agent-loop.llm-call", {}, turnCtx);
+				const llmCallCtx = trace.setSpan(turnCtx, llmCallSpan);
 				try {
 					// System prompt comes from assembleContext (cold path) or cached state (warm path).
 					// No filtering needed — llmMessages contains no system-role messages.
@@ -1003,7 +1004,7 @@ export class AgentLoop {
 												"llm.provider": "local",
 											},
 										},
-										turnCtx,
+										llmCallCtx,
 									);
 
 									let ttftRecorded = false;
@@ -2108,8 +2109,8 @@ export class AgentLoop {
 						}
 						const sandboxResult = await this.sandbox.exec(command);
 						if (isRelayRequest(sandboxResult)) {
-							toolSpan.end();
-							return sandboxResult;
+							toolSpan.setStatus({ code: SpanStatusCode.OK });
+							return sandboxResult; // finally block ends span
 						}
 						result = {
 							content: buildCommandOutput(
