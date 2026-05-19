@@ -991,42 +991,87 @@ export class AgentLoop {
 								// large contexts with extended thinking enabled.
 								this.config.onActivity?.();
 								try {
-									const chatStream = resolution.backend.chat({
-										messages: llmMessages,
-										system: systemPrompt || undefined,
-										tools: mergedTools,
-										max_tokens: clampMaxOutputTokens(
-											DEFAULT_MAX_OUTPUT_TOKENS,
-											resolution.maxOutputTokens,
-										),
-										thinking: resolution.thinkingConfig,
-										effort: resolution.effort,
-										resolveFileRef: createFileRefResolver(this.ctx.db),
-										signal: this.config.abortSignal,
-									});
-									for await (const chunk of this.withSilenceTimeout(
-										chatStream,
-										effectiveSilenceTimeout,
-										() => this.config.onActivity?.(),
-									)) {
-										if (this.aborted) break;
-										// Cooperative yield: check on every chunk during streaming
-										if (this.config.shouldYield?.()) {
-											this.yielded = true;
-											this.aborted = true;
-											break;
+									// Create a child span for the driver chat call with TTFT/completion tracking
+									const driverSpan = getTracer().startSpan(
+										"llm-driver.chat",
+										{
+											attributes: {
+												"llm.model": getResolvedModelId(
+													this.lastModelResolution,
+													this.config.modelId || "unknown",
+												),
+												"llm.provider": "local",
+											},
+										},
+										turnCtx,
+									);
+
+									let ttftRecorded = false;
+
+									try {
+										const chatStream = resolution.backend.chat({
+											messages: llmMessages,
+											system: systemPrompt || undefined,
+											tools: mergedTools,
+											max_tokens: clampMaxOutputTokens(
+												DEFAULT_MAX_OUTPUT_TOKENS,
+												resolution.maxOutputTokens,
+											),
+											thinking: resolution.thinkingConfig,
+											effort: resolution.effort,
+											resolveFileRef: createFileRefResolver(this.ctx.db),
+											signal: this.config.abortSignal,
+										});
+										for await (const chunk of this.withSilenceTimeout(
+											chatStream,
+											effectiveSilenceTimeout,
+											() => this.config.onActivity?.(),
+										)) {
+											if (this.aborted) break;
+											// Cooperative yield: check on every chunk during streaming
+											if (this.config.shouldYield?.()) {
+												this.yielded = true;
+												this.aborted = true;
+												break;
+											}
+											// Reset the inactivity timeout — any chunk (including
+											// heartbeats) proves the LLM is still working. Heartbeats
+											// from Bedrock extended-thinking warm-up can take >5min
+											// before the first content chunk; without resetting here
+											// the outer timer in message-handler.ts aborts mid-session.
+											this.config.onActivity?.();
+											// Heartbeats reset the timeout but carry no data
+											if (chunk.type === "heartbeat") continue;
+
+											// Record TTFT on first non-heartbeat chunk
+											if (!ttftRecorded) {
+												driverSpan.addEvent("time-to-first-token");
+												ttftRecorded = true;
+											}
+
+											chunks.push(chunk);
 										}
-										// Reset the inactivity timeout — any chunk (including
-										// heartbeats) proves the LLM is still working. Heartbeats
-										// from Bedrock extended-thinking warm-up can take >5min
-										// before the first content chunk; without resetting here
-										// the outer timer in message-handler.ts aborts mid-session.
-										this.config.onActivity?.();
-										// Heartbeats reset the timeout but carry no data
-										if (chunk.type === "heartbeat") continue;
-										chunks.push(chunk);
+
+										// Record completion event with token counts from the done chunk
+										const doneChunk = chunks.find((c) => c.type === "done");
+										if (doneChunk && doneChunk.type === "done") {
+											driverSpan.addEvent("completion", {
+												"llm.input_tokens": doneChunk.usage.input_tokens,
+												"llm.output_tokens": doneChunk.usage.output_tokens,
+											});
+										}
+
+										driverSpan.setStatus({ code: SpanStatusCode.OK });
+										driverSpan.end();
+										break; // Stream completed — exit retry loop
+									} catch (streamErr) {
+										driverSpan.setStatus({
+											code: SpanStatusCode.ERROR,
+											message: streamErr instanceof Error ? streamErr.message : String(streamErr),
+										});
+										driverSpan.end();
+										throw streamErr;
 									}
-									break; // Stream completed — exit retry loop
 								} catch (silenceErr) {
 									const isSilenceTimeout =
 										silenceErr instanceof Error && silenceErr.message.includes("silence timeout");
@@ -1047,6 +1092,7 @@ export class AgentLoop {
 							break;
 						}
 					}
+					llmCallSpan.setStatus({ code: SpanStatusCode.OK });
 					llmCallSpan.end();
 				} catch (error) {
 					llmCallSpan.setStatus({
@@ -1999,81 +2045,128 @@ export class AgentLoop {
 				};
 			}
 
-			switch (tool.kind) {
-				case "client":
-					return {
-						clientToolCall: true,
-						toolName: toolCall.name,
-						callId: toolCall.id,
-						arguments: toolCall.input,
-					} satisfies ClientToolCallRequest;
+			// Client tools are deferred — no execution span here
+			if (tool.kind === "client") {
+				return {
+					clientToolCall: true,
+					toolName: toolCall.name,
+					callId: toolCall.id,
+					arguments: toolCall.input,
+				} satisfies ClientToolCallRequest;
+			}
 
-				case "platform": {
-					// Platform tools call MCP client.callTool directly via execute closure.
-					// This preserves full MCP result structures and bypasses bash command parsing.
-					if (!tool.execute) {
-						return {
-							content: `Error: platform tool "${toolCall.name}" has no execute handler`,
-							exitCode: 1,
-						};
-					}
-					try {
+			// Create span for all other tool kinds
+			const toolSpan = getTracer().startSpan("tool.execute", {
+				attributes: {
+					"tool.name": toolCall.name,
+					"tool.kind": tool.kind,
+					"tool.call_id": toolCall.id,
+				},
+			});
+
+			try {
+				let result: { content: string; exitCode: number };
+
+				switch (tool.kind) {
+					case "platform": {
+						// Platform tools call MCP client.callTool directly via execute closure.
+						// This preserves full MCP result structures and bypasses bash command parsing.
+						if (!tool.execute) {
+							result = {
+								content: `Error: platform tool "${toolCall.name}" has no execute handler`,
+								exitCode: 1,
+							};
+							break;
+						}
 						// biome-ignore lint/suspicious/noExplicitAny: tool.execute result type is either string or BuiltInToolResult
-						const result = await (tool.execute as any)(toolCall.input);
+						const platformResult = await (tool.execute as any)(toolCall.input);
 						// Platform tools return strings, but handle both just like builtin does
-						if (Array.isArray(result)) {
-							const hasError = result.some(
+						if (Array.isArray(platformResult)) {
+							const hasError = platformResult.some(
 								(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
 							);
-							return { content: JSON.stringify(result), exitCode: hasError ? 1 : 0 };
+							result = { content: JSON.stringify(platformResult), exitCode: hasError ? 1 : 0 };
+						} else {
+							const exitCode = platformResult.startsWith("Error:") ? 1 : 0;
+							result = { content: platformResult, exitCode };
 						}
-						const exitCode = result.startsWith("Error:") ? 1 : 0;
-						return { content: result, exitCode };
-					} catch (err) {
-						const errorMsg = err instanceof Error ? err.message : String(err);
-						return { content: `Error: ${errorMsg}`, exitCode: 1 };
+						break;
+					}
+
+					case "sandbox": {
+						if (!this.sandbox.exec) {
+							result = { content: "Error: sandbox execution not available", exitCode: 1 };
+							break;
+						}
+						const command = toolCall.input.command;
+						if (typeof command !== "string") {
+							result = {
+								content: `Error: bash tool requires a "command" string parameter`,
+								exitCode: 1,
+							};
+							break;
+						}
+						const sandboxResult = await this.sandbox.exec(command);
+						if (isRelayRequest(sandboxResult)) {
+							toolSpan.end();
+							return sandboxResult;
+						}
+						result = {
+							content: buildCommandOutput(
+								sandboxResult.stdout,
+								sandboxResult.stderr,
+								sandboxResult.exitCode,
+							),
+							exitCode: sandboxResult.exitCode,
+						};
+						break;
+					}
+
+					default: {
+						// "builtin" has execute handler
+						if (!tool.execute) {
+							result = {
+								content: `Error: tool "${toolCall.name}" has no execute handler`,
+								exitCode: 1,
+							};
+							break;
+						}
+						const builtinResult = await tool.execute(toolCall.input);
+						if (Array.isArray(builtinResult)) {
+							const hasError = builtinResult.some(
+								(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
+							);
+							result = { content: JSON.stringify(builtinResult), exitCode: hasError ? 1 : 0 };
+						} else {
+							const exitCode = builtinResult.startsWith("Error:") ? 1 : 0;
+							result = { content: builtinResult, exitCode };
+						}
+						break;
 					}
 				}
 
-				case "sandbox": {
-					if (!this.sandbox.exec) {
-						return { content: "Error: sandbox execution not available", exitCode: 1 };
-					}
-					const command = toolCall.input.command;
-					if (typeof command !== "string") {
-						return {
-							content: `Error: bash tool requires a "command" string parameter`,
-							exitCode: 1,
-						};
-					}
-					const result = await this.sandbox.exec(command);
-					if (isRelayRequest(result)) {
-						return result;
-					}
-					return {
-						content: buildCommandOutput(result.stdout, result.stderr, result.exitCode),
-						exitCode: result.exitCode,
-					};
+				// Set span status based on execution result
+				if (result.exitCode !== 0) {
+					toolSpan.setStatus({
+						code: SpanStatusCode.ERROR,
+						message: result.content.slice(0, 256),
+					});
+				} else {
+					toolSpan.setStatus({ code: SpanStatusCode.OK });
 				}
 
-				default: {
-					// "builtin" has execute handler
-					if (!tool.execute) {
-						return {
-							content: `Error: tool "${toolCall.name}" has no execute handler`,
-							exitCode: 1,
-						};
-					}
-					const result = await tool.execute(toolCall.input);
-					if (Array.isArray(result)) {
-						const hasError = result.some(
-							(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
-						);
-						return { content: JSON.stringify(result), exitCode: hasError ? 1 : 0 };
-					}
-					const exitCode = result.startsWith("Error:") ? 1 : 0;
-					return { content: result, exitCode };
-				}
+				return result;
+			} catch (err) {
+				toolSpan.setStatus({
+					code: SpanStatusCode.ERROR,
+					message: err instanceof Error ? err.message : String(err),
+				});
+				return {
+					content: `Error: ${err instanceof Error ? err.message : String(err)}`,
+					exitCode: 1,
+				};
+			} finally {
+				toolSpan.end();
 			}
 		}
 
