@@ -1,5 +1,6 @@
 <script lang="ts">
 import { scaleLinear } from "d3-scale";
+import ChartTooltip from "./ChartTooltip.svelte";
 
 interface Props {
 	data: Array<{
@@ -10,6 +11,13 @@ interface Props {
 }
 
 let { data }: Props = $props();
+
+// Tooltip state
+let tooltipVisible = $state(false);
+let tooltipX = $state(0);
+let tooltipY = $state(0);
+let tooltipLines = $state<string[]>([]);
+let containerEl: HTMLDivElement | undefined = $state(undefined);
 
 // Filter out models with zero total tokens (AC2.5)
 const filteredData = $derived.by(() => {
@@ -40,9 +48,33 @@ const xScale = $derived.by(() => {
 		.domain([0, maxTokens])
 		.range([0, contentWidth - padding.left - padding.right]);
 });
+
+function showTooltip(
+	event: MouseEvent,
+	d: { model_id: string; tokens_in: number; tokens_out: number },
+	series: "input" | "output",
+): void {
+	if (!containerEl) return;
+	const rect = containerEl.getBoundingClientRect();
+	tooltipX = event.clientX - rect.left;
+	tooltipY = event.clientY - rect.top;
+	const total = d.tokens_in + d.tokens_out;
+	tooltipLines = [
+		d.model_id,
+		series === "input"
+			? `Input: ${d.tokens_in.toLocaleString()} tokens`
+			: `Output: ${d.tokens_out.toLocaleString()} tokens`,
+		`Total: ${total.toLocaleString()} tokens`,
+	];
+	tooltipVisible = true;
+}
+
+function hideTooltip(): void {
+	tooltipVisible = false;
+}
 </script>
 
-<div class="token-bar-chart">
+<div class="token-bar-chart" bind:this={containerEl}>
 	<svg
 		width={contentWidth}
 		height={containerHeight}
@@ -69,9 +101,11 @@ const xScale = $derived.by(() => {
 				height={rowHeight - 16}
 				fill="var(--line-3)"
 				opacity="0.8"
-			>
-				<title>{d.model_id}: {d.tokens_in.toLocaleString()} tokens (input)</title>
-			</rect>
+				class="bar"
+				onmouseenter={(e) => showTooltip(e, d, "input")}
+				onmousemove={(e) => showTooltip(e, d, "input")}
+				onmouseleave={hideTooltip}
+			/>
 
 			<!-- Output tokens (tokens_out) - amber, positioned after input -->
 			<rect
@@ -81,9 +115,11 @@ const xScale = $derived.by(() => {
 				height={rowHeight - 16}
 				fill="var(--line-0)"
 				opacity="0.8"
-			>
-				<title>{d.model_id}: {d.tokens_out.toLocaleString()} tokens (output)</title>
-			</rect>
+				class="bar"
+				onmouseenter={(e) => showTooltip(e, d, "output")}
+				onmousemove={(e) => showTooltip(e, d, "output")}
+				onmouseleave={hideTooltip}
+			/>
 		{/each}
 	</svg>
 
@@ -98,10 +134,13 @@ const xScale = $derived.by(() => {
 			<span>Output</span>
 		</div>
 	</div>
+
+	<ChartTooltip visible={tooltipVisible} x={tooltipX} y={tooltipY} lines={tooltipLines} />
 </div>
 
 <style>
 	.token-bar-chart {
+		position: relative;
 		display: flex;
 		flex-direction: column;
 		gap: 16px;
@@ -125,12 +164,12 @@ const xScale = $derived.by(() => {
 		font-weight: 500;
 	}
 
-	rect {
+	.bar {
 		cursor: pointer;
 		transition: opacity 0.15s ease;
 	}
 
-	rect:hover {
+	.bar:hover {
 		opacity: 1 !important;
 	}
 
