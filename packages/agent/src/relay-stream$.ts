@@ -4,7 +4,12 @@ import type { Database } from "bun:sqlite";
 import { markProcessed, readInboxByStreamId, writeOutbox } from "@bound/core";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
 import type { TypedEventEmitter } from "@bound/shared";
-import { errorPayloadSchema, parseJsonSafe, parseJsonUntyped } from "@bound/shared";
+import {
+	errorPayloadSchema,
+	injectTraceContext,
+	parseJsonSafe,
+	parseJsonUntyped,
+} from "@bound/shared";
 import type { Logger } from "@bound/shared";
 import {
 	EMPTY,
@@ -176,6 +181,7 @@ export function createRelayStream$(
 		concatMap((host, hostIndex) => {
 			const streamId = randomUUID();
 			const serializedPayload = JSON.stringify(payload);
+			const traceContext = injectTraceContext();
 			const outboxEntry = createRelayOutboxEntry(
 				host.site_id,
 				deps.siteId,
@@ -185,6 +191,7 @@ export function createRelayStream$(
 				undefined,
 				undefined,
 				streamId,
+				traceContext ? JSON.stringify(traceContext) : undefined,
 			);
 			writeOutbox(deps.db, outboxEntry);
 
@@ -248,6 +255,9 @@ export function createRelayStream$(
 							JSON.stringify({}),
 							30_000,
 							outboxEntry.id,
+							undefined,
+							undefined,
+							traceContext ? JSON.stringify(traceContext) : undefined,
 						);
 						try {
 							writeOutbox(deps.db, cancelEntry);
