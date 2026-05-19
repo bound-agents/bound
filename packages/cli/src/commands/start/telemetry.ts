@@ -1,3 +1,4 @@
+import { setTraceExporter } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { Resource } from "@opentelemetry/resources";
@@ -10,6 +11,7 @@ import {
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 
 let provider: BasicTracerProvider | null = null;
+let exporter: SpanExporter | null = null;
 
 /**
  * Initialize OpenTelemetry tracing when OTEL_ENABLED is set.
@@ -35,14 +37,18 @@ export function initTelemetry(serviceName: string, testExporter?: SpanExporter):
 
 	if (testExporter) {
 		// For testing: use SimpleSpanProcessor for immediate export
-		provider.addSpanProcessor(new SimpleSpanProcessor(testExporter));
+		exporter = testExporter;
+		provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
 	} else {
 		// For production: use BatchSpanProcessor with OTLP HTTP exporter
-		const exporter = new OTLPTraceExporter({
+		exporter = new OTLPTraceExporter({
 			url: `${endpoint}/v1/traces`,
 		});
 		provider.addSpanProcessor(new BatchSpanProcessor(exporter));
 	}
+
+	// Register exporter globally for spoke-side re-export of hub traces (AC5.4)
+	setTraceExporter(exporter);
 
 	provider.register();
 }
@@ -56,7 +62,9 @@ export async function shutdownTelemetry(): Promise<void> {
 	await provider.forceFlush();
 	await provider.shutdown();
 	provider = null;
+	exporter = null;
 
 	// Clear the global tracer provider so subsequent spans are non-recording
 	trace.disable();
+	setTraceExporter(null);
 }
