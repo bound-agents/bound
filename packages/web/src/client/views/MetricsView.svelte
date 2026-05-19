@@ -1,5 +1,4 @@
 <script lang="ts">
-import { scaleLinear, scaleTime } from "d3-scale";
 import { onDestroy, onMount } from "svelte";
 import type { MetricsResponse } from "../../server/routes/metrics";
 import CacheHitTimeline from "../components/CacheHitTimeline.svelte";

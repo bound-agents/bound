@@ -130,7 +130,7 @@ const hasData = $derived(parsedData.length > 0 && parsedData.some((d) => d.cache
 		{/each}
 
 		<!-- Area fill and line -->
-		{#if parsedData.length > 0}
+		{#if hasData}
 			<!-- Area fill -->
 			<path d={areaData} fill="var(--line-5)" opacity="0.15" />
 
@@ -168,7 +168,17 @@ const hasData = $derived(parsedData.length > 0 && parsedData.some((d) => d.cache
 				</text>
 			{/each}
 		{:else}
-			<!-- No data message -->
+			<!-- No data or all zeros — flat line at 0% with message -->
+			<line
+				x1={padding.left}
+				y1={padding.top + innerHeight}
+				x2={width - padding.right}
+				y2={padding.top + innerHeight}
+				stroke="var(--line-5)"
+				stroke-width="1"
+				stroke-dasharray="4,4"
+				opacity="0.5"
+			/>
 			<text x={width / 2} y={height / 2} text-anchor="middle" class="no-data-label">
 				No cache data
 			</text>
