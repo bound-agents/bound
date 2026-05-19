@@ -154,6 +154,23 @@ describe("trace-collector", () => {
 			const ctx = extractTraceContext({});
 			expect(ctx).toBeDefined();
 		});
+
+		it("extracts correct traceId from traceparent via manual parsing", () => {
+			// W3C traceparent format: version-traceId-spanId-traceFlags
+			const parentTraceId = "0af7651916cd43dd8448eb211c80319c";
+			const parentSpanId = "b7ad6b7169203331";
+			const carrier = {
+				traceparent: `00-${parentTraceId}-${parentSpanId}-01`,
+			};
+
+			const extracted = extractTraceContext(carrier);
+			const spanCtx = trace.getSpanContext(extracted);
+
+			expect(spanCtx).toBeDefined();
+			expect(spanCtx?.traceId).toBe(parentTraceId);
+			expect(spanCtx?.spanId).toBe(parentSpanId);
+			expect(spanCtx?.traceFlags).toBe(1);
+		});
 	});
 
 	describe("span status codes", () => {
