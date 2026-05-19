@@ -1,9 +1,12 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
 import type { MetricsResponse } from "../../server/routes/metrics";
+import CostTimeline from "../components/CostTimeline.svelte";
 import DateRangeBar from "../components/DateRangeBar.svelte";
+import MetroCard from "../components/MetroCard.svelte";
 import Page from "../components/Page.svelte";
 import SectionHeader from "../components/SectionHeader.svelte";
+import TokenBarChart from "../components/TokenBarChart.svelte";
 
 let data: MetricsResponse | null = $state(null);
 let loading = $state(true);
@@ -12,6 +15,11 @@ let from = $state(new Date(Date.now() - 24 * 3600_000).toISOString());
 let to = $state(new Date().toISOString());
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+// Computed properties
+const totalTokens = $derived(
+	data ? data.tokens.totals.tokens_in + data.tokens.totals.tokens_out : 0,
+);
 
 async function loadMetrics(): Promise<void> {
 	try {
@@ -81,9 +89,33 @@ onDestroy(() => {
 				<p>{error}</p>
 			</div>
 		{:else if data}
-			<SectionHeader number={1} subtitle="Placeholder" title="Tokens">
-				<p>Actual token charts will appear in Phase 3+</p>
-			</SectionHeader>
+			<SectionHeader number={1} subtitle="Performance Analytics" title="Tokens" />
+
+			<div class="metrics-cards">
+				<MetroCard accentColor="var(--line-3)">
+					{#snippet children()}
+						<span class="metric-label">Total Tokens</span>
+						<span class="metric-value">{totalTokens.toLocaleString()}</span>
+					{/snippet}
+				</MetroCard>
+
+				<MetroCard accentColor="var(--line-0)">
+					{#snippet children()}
+						<span class="metric-label">Total Cost</span>
+						<span class="metric-value">${data.tokens.totals.cost_usd.toFixed(4)}</span>
+					{/snippet}
+				</MetroCard>
+
+				<MetroCard accentColor="var(--line-5)">
+					{#snippet children()}
+						<span class="metric-label">Turn Count</span>
+						<span class="metric-value">{data.tokens.totals.turn_count.toLocaleString()}</span>
+					{/snippet}
+				</MetroCard>
+			</div>
+
+			<TokenBarChart data={data.tokens.byModel} />
+			<CostTimeline data={data.tokens.timeline} />
 
 			<SectionHeader number={2} subtitle="Placeholder" title="Relay">
 				<p>Actual relay charts will appear in Phase 4+</p>
@@ -106,5 +138,28 @@ onDestroy(() => {
 
 	.state.err {
 		color: var(--err);
+	}
+
+	.metrics-cards {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+		gap: 16px;
+		margin: 16px 0;
+	}
+
+	.metric-label {
+		display: block;
+		font-size: 12px;
+		color: var(--ink-3);
+		margin-bottom: 8px;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+	}
+
+	.metric-value {
+		display: block;
+		font-size: 24px;
+		font-weight: 600;
+		color: var(--ink);
 	}
 </style>
