@@ -72,14 +72,43 @@ export function createScopedTraceCollector() {
 }
 
 /**
- * Extract trace context from a carrier object (W3C traceparent/tracestate format).
- * Returns the extracted context, or the current context if carrier is null.
+ * Extract trace context from a carrier object (W3C traceparent format).
+ * Parses the traceparent header directly to construct a SpanContext,
+ * avoiding dependency on a globally-registered propagator.
+ * Returns a context with the extracted span, or the current context if carrier is null.
  */
 export function extractTraceContext(
 	carrier: Record<string, string> | null,
 ): ReturnType<typeof context.active> {
 	if (!carrier) return context.active();
-	return propagation.extract(context.active(), carrier);
+
+	// Try the propagation API first (works when a global propagator is registered)
+	const extracted = propagation.extract(context.active(), carrier);
+	if (trace.getSpan(extracted)?.spanContext().traceId !== "00000000000000000000000000000000") {
+		return extracted;
+	}
+
+	// Fallback: manually parse W3C traceparent header
+	// Format: version-traceId-spanId-traceFlags (e.g., 00-0af7...-b7ad...-01)
+	const traceparent = carrier.traceparent;
+	if (!traceparent) return context.active();
+
+	const parts = traceparent.split("-");
+	if (parts.length < 4) return context.active();
+
+	const [, traceId, spanId, flags] = parts;
+	if (!traceId || !spanId || traceId.length !== 32 || spanId.length !== 16) {
+		return context.active();
+	}
+
+	const spanContext = {
+		traceId,
+		spanId,
+		traceFlags: Number.parseInt(flags, 16) || 0,
+		isRemote: true,
+	};
+
+	return trace.setSpanContext(context.active(), spanContext);
 }
 
 /**
