@@ -27,7 +27,7 @@ const sortedData = $derived.by(() => {
 const rowHeight = 40;
 const padding = { top: 16, right: 16, bottom: 16, left: 120 };
 const contentWidth = 600;
-const containerHeight = sortedData.length * rowHeight + padding.top + padding.bottom;
+const containerHeight = $derived(sortedData.length * rowHeight + padding.top + padding.bottom);
 
 // Compute max total tokens for x scale domain
 const maxTokens = $derived.by(() => {

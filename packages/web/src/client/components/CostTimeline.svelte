@@ -62,8 +62,8 @@ const formatDate = (date: Date): string => {
 const pathData = $derived.by(() => {
 	return parsedData
 		.map((d, i) => {
-			const x = xScale(d.dateObj);
-			const y = yScale(d.cost_usd);
+			const x = padding.left + xScale(d.dateObj);
+			const y = padding.top + yScale(d.cost_usd);
 			return `${i === 0 ? "M" : "L"}${x},${y}`;
 		})
 		.join(" ");
@@ -77,14 +77,14 @@ const areaData = $derived.by(() => {
 	// Close the path: draw down to baseline at the last x position
 	const lastData = parsedData[parsedData.length - 1];
 	if (lastData) {
-		const lastX = xScale(lastData.dateObj);
-		path += ` L${lastX},${innerHeight}`;
+		const lastX = padding.left + xScale(lastData.dateObj);
+		path += ` L${lastX},${padding.top + innerHeight}`;
 	}
 	// Draw back to start baseline
 	const firstData = parsedData[0];
 	if (firstData) {
-		const firstX = xScale(firstData.dateObj);
-		path += ` L${firstX},${innerHeight} Z`;
+		const firstX = padding.left + xScale(firstData.dateObj);
+		path += ` L${firstX},${padding.top + innerHeight} Z`;
 	}
 	return path;
 });
@@ -164,7 +164,7 @@ const xTicks = $derived.by(() => {
 			<!-- X-axis labels -->
 			{#each xTicks as d}
 				<text
-					x={xScale(d.dateObj)}
+					x={padding.left + xScale(d.dateObj)}
 					y={height - padding.bottom + 16}
 					text-anchor="middle"
 					class="x-label"
