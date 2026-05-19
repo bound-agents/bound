@@ -10,12 +10,15 @@ import {
 import type { PlatformRegisteredTool } from "@bound/platforms";
 import { BOUND_NAMESPACE, deterministicUUID, formatError, parseJsonUntyped } from "@bound/shared";
 import type { Task } from "@bound/shared";
+import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { createAdvisory } from "./advisories";
 import type { AgentLoop } from "./agent-loop";
 import { buildEventWakeupContent } from "./event-payload";
 import { buildHeartbeatContext } from "./heartbeat-context";
 import { canRunHere, computeNextRunAt } from "./task-resolution";
 import type { AgentLoopConfig } from "./types";
+
+const getTracer = () => trace.getTracer("bound.scheduler");
 
 const LEASE_DURATION = 300000; // 5 minutes
 
@@ -1099,7 +1102,31 @@ export class Scheduler {
 
 				const agentLoop = this.agentLoopFactory(loopConfig);
 
-				const result = await agentLoop.run();
+				const tracer = getTracer();
+				const rootSpan = tracer.startSpan("scheduler.execute-task", {
+					attributes: {
+						"task.id": task.id,
+						"task.type": task.type,
+						"task.trigger_spec": task.trigger_spec ?? "",
+						"thread.id": loopConfig.threadId,
+					},
+				});
+
+				let result: Awaited<ReturnType<typeof agentLoop.run>>;
+				try {
+					result = await context.with(trace.setSpan(context.active(), rootSpan), () =>
+						agentLoop.run(),
+					);
+					rootSpan.setStatus({ code: SpanStatusCode.OK });
+				} catch (err) {
+					rootSpan.setStatus({
+						code: SpanStatusCode.ERROR,
+						message: err instanceof Error ? err.message : String(err),
+					});
+					throw err;
+				} finally {
+					rootSpan.end();
+				}
 
 				// Verify lease_id still matches
 				const currentTask = this.ctx.db
