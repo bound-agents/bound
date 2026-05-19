@@ -5,10 +5,13 @@ import { markProcessed, readInboxByStreamId, writeOutbox } from "@bound/core";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
 import type { TypedEventEmitter } from "@bound/shared";
 import {
+	type SerializedSpan,
 	errorPayloadSchema,
+	getTraceExporter,
 	injectTraceContext,
 	parseJsonSafe,
 	parseJsonUntyped,
+	reExportSpans,
 } from "@bound/shared";
 import type { Logger } from "@bound/shared";
 import {
@@ -89,6 +92,18 @@ function createStreamReducer(
 				? `Remote inference error: ${errorEntry.payload}`
 				: (errResult.value.error ?? "Remote inference error");
 			return next;
+		}
+
+		// Handle trace_data responses (AC5.4)
+		const traceDataEntry = inboxEntries.find((e) => e.kind === "trace_data");
+		if (traceDataEntry) {
+			const spanResult = parseJsonUntyped(traceDataEntry.payload, traceDataEntry.kind);
+			markProcessed(deps.db, [traceDataEntry.id]);
+			if (spanResult.ok) {
+				const spans = spanResult.value as SerializedSpan[];
+				reExportSpans(spans, getTraceExporter());
+			}
+			// trace_data is fire-and-forget; continue processing other entries
 		}
 
 		const streamEndEntry = inboxEntries.find((e) => e.kind === "stream_end");
