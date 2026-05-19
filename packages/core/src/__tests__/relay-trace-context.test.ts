@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { randomBytes } from "crypto";
 import Database from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomBytes } from "node:crypto";
+import type { RelayInboxEntry, RelayOutboxEntry } from "@bound/shared";
+import { insertInbox, readUndelivered, readUnprocessed, writeOutbox } from "../relay";
 import { applySchema } from "../schema";
-import { writeOutbox, insertInbox, readUndelivered, readUnprocessed } from "../relay";
-import type { RelayOutboxEntry, RelayInboxEntry } from "@bound/shared";
 
 describe("relay trace_context column", () => {
 	let db: Database;
@@ -18,7 +18,7 @@ describe("relay trace_context column", () => {
 	afterEach(() => {
 		db.close();
 		try {
-			import("fs").promises.unlink(testDbPath);
+			import("node:fs").then((fs) => fs.promises.unlink(testDbPath));
 		} catch {
 			// ignore
 		}
@@ -26,9 +26,7 @@ describe("relay trace_context column", () => {
 
 	it("relay_outbox table includes trace_context column as nullable TEXT", () => {
 		// Verify column exists
-		const columns = db
-			.query("PRAGMA table_info(relay_outbox)")
-			.all() as Array<{
+		const columns = db.query("PRAGMA table_info(relay_outbox)").all() as Array<{
 			cid: number;
 			name: string;
 			type: string;
@@ -45,9 +43,7 @@ describe("relay trace_context column", () => {
 
 	it("relay_inbox table includes trace_context column as nullable TEXT", () => {
 		// Verify column exists
-		const columns = db
-			.query("PRAGMA table_info(relay_inbox)")
-			.all() as Array<{
+		const columns = db.query("PRAGMA table_info(relay_inbox)").all() as Array<{
 			cid: number;
 			name: string;
 			type: string;
