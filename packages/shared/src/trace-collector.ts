@@ -84,7 +84,8 @@ export function extractTraceContext(
 
 	// Try the propagation API first (works when a global propagator is registered)
 	const extracted = propagation.extract(context.active(), carrier);
-	if (trace.getSpan(extracted)?.spanContext().traceId !== "00000000000000000000000000000000") {
+	const extractedSpan = trace.getSpan(extracted);
+	if (extractedSpan && extractedSpan.spanContext().traceId !== "00000000000000000000000000000000") {
 		return extracted;
 	}
 
