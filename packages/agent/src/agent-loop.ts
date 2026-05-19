@@ -288,9 +288,11 @@ export class AgentLoop {
 
 		try {
 			this.transition("HYDRATE_FS");
+			const hydrateSpan = getTracer().startSpan("agent-loop.hydrate-fs");
 			if (this.sandbox.capturePreSnapshot) {
 				await this.sandbox.capturePreSnapshot();
 			}
+			hydrateSpan.end();
 
 			this.transition("ASSEMBLE_CONTEXT");
 
@@ -843,6 +845,10 @@ export class AgentLoop {
 						"task.id": this.config.taskId ?? "",
 					},
 				});
+				// Establish turn context for child span nesting.
+				// We can't use context.with() around the loop body (break/continue),
+				// so we pass turnCtx explicitly to child span creation.
+				const turnCtx = trace.setSpan(context.active(), turnSpan);
 
 				this.transition("LLM_CALL");
 				const chunks: StreamChunk[] = [];
@@ -857,6 +863,7 @@ export class AgentLoop {
 					kind: this.lastModelResolution?.kind ?? "unknown",
 				});
 
+				const llmCallSpan = getTracer().startSpan("agent-loop.llm-call", {}, turnCtx);
 				try {
 					// System prompt comes from assembleContext (cold path) or cached state (warm path).
 					// No filtering needed — llmMessages contains no system-role messages.
@@ -1040,7 +1047,13 @@ export class AgentLoop {
 							break;
 						}
 					}
+					llmCallSpan.end();
 				} catch (error) {
+					llmCallSpan.setStatus({
+						code: SpanStatusCode.ERROR,
+						message: error instanceof Error ? error.message : String(error),
+					});
+					llmCallSpan.end();
 					// Transient transport errors (HTTP/2 drops, socket resets): retry
 					// Non-transient errors (4xx client errors like invalid JSON) are NOT retried.
 					const errMsg = error instanceof Error ? error.message : String(error);
@@ -1396,6 +1409,7 @@ export class AgentLoop {
 					}
 
 					this.transition("TOOL_EXECUTE");
+					const toolExecuteSpan = getTracer().startSpan("agent-loop.tool-execute", {}, turnCtx);
 					const toolResults: Array<{
 						toolCall: ParsedToolCall;
 						content: string;
@@ -1616,6 +1630,8 @@ export class AgentLoop {
 						}
 					}
 
+					toolExecuteSpan.end();
+
 					// Persist tool messages before next LLM call (pairing invariant)
 					this.transition("TOOL_PERSIST");
 
@@ -1797,6 +1813,11 @@ export class AgentLoop {
 
 				// No tool calls — persist final response and exit
 				this.transition("RESPONSE_PERSIST");
+				const responsePersistSpan = getTracer().startSpan(
+					"agent-loop.response-persist",
+					{},
+					turnCtx,
+				);
 				const assistantContent = parsed.textContent || "";
 
 				if (assistantContent) {
@@ -1814,12 +1835,14 @@ export class AgentLoop {
 					this.broadcastMessage(assistantMsgId);
 					this.messagesCreated++;
 				}
+				responsePersistSpan.end();
 
 				continueLoop = false;
 				turnSpan.end();
 			}
 
 			this.transition("FS_PERSIST");
+			const fsPersistSpan = getTracer().startSpan("agent-loop.fs-persist");
 			if (this.sandbox.persistFs) {
 				const persistResult = await this.sandbox.persistFs();
 				if (persistResult && typeof persistResult.changes === "number") {
@@ -1847,6 +1870,7 @@ export class AgentLoop {
 					}
 				}
 			}
+			fsPersistSpan.end();
 
 			this.transition("QUEUE_CHECK");
 			try {
