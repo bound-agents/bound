@@ -424,11 +424,7 @@ function getContextUtilizationSparkline(
 		}
 
 		.sparkline-row {
-			flex-direction: column;
-		}
-
-		.chart-container {
-			min-height: 150px;
+			grid-template-columns: 1fr;
 		}
 	}
 </style>
