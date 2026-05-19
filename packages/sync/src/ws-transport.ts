@@ -618,6 +618,7 @@ export class WsTransport {
 							stream_id: entry.stream_id,
 							expires_at: entry.expires_at,
 							payload: JSON.parse(entry.payload),
+							trace_context: entry.trace_context ?? null,
 						},
 					],
 				};
@@ -648,6 +649,7 @@ export class WsTransport {
 						stream_id: entry.stream_id,
 						expires_at: entry.expires_at,
 						payload: JSON.parse(entry.payload),
+						trace_context: entry.trace_context ?? null,
 					},
 				],
 			};
@@ -954,6 +956,7 @@ export class WsTransport {
 					stream_id: entry.stream_id,
 					expires_at: entry.expires_at,
 					payload: JSON.parse(entry.payload),
+					trace_context: entry.trace_context ?? null,
 				})),
 			};
 
@@ -1049,6 +1052,7 @@ export class WsTransport {
 				stream_id: entry.stream_id,
 				expires_at: entry.expires_at,
 				payload: JSON.parse(entry.payload),
+				trace_context: entry.trace_context ?? null,
 			})),
 		};
 

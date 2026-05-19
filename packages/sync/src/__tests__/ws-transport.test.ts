@@ -595,7 +595,8 @@ describe("WsTransport", () => {
 					kind TEXT NOT NULL,
 					payload TEXT NOT NULL,
 					delivered INTEGER DEFAULT 0,
-					created_at TEXT NOT NULL
+					created_at TEXT NOT NULL,
+					trace_context TEXT
 				)
 			`);
 
@@ -606,7 +607,8 @@ describe("WsTransport", () => {
 					kind TEXT NOT NULL,
 					payload TEXT NOT NULL,
 					processed INTEGER DEFAULT 0,
-					created_at TEXT NOT NULL
+					created_at TEXT NOT NULL,
+					trace_context TEXT
 				)
 			`);
 
@@ -661,7 +663,8 @@ describe("WsTransport", () => {
 					payload TEXT NOT NULL,
 					created_at TEXT NOT NULL,
 					expires_at TEXT NOT NULL,
-					delivered INTEGER DEFAULT 0
+					delivered INTEGER DEFAULT 0,
+					trace_context TEXT
 				)
 			`);
 
@@ -676,7 +679,8 @@ describe("WsTransport", () => {
 					payload TEXT NOT NULL,
 					expires_at TEXT NOT NULL,
 					received_at TEXT NOT NULL,
-					processed INTEGER DEFAULT 0
+					processed INTEGER DEFAULT 0,
+					trace_context TEXT
 				)
 			`);
 		});
@@ -1137,7 +1141,8 @@ describe("WsTransport hub-mode relay-routing spin-loop regression", () => {
 				payload TEXT NOT NULL,
 				created_at TEXT NOT NULL,
 				expires_at TEXT NOT NULL,
-				delivered INTEGER DEFAULT 0
+				delivered INTEGER DEFAULT 0,
+				trace_context TEXT
 			)
 		`);
 		db.run(`
@@ -1156,7 +1161,8 @@ describe("WsTransport hub-mode relay-routing spin-loop regression", () => {
 				payload TEXT NOT NULL,
 				expires_at TEXT NOT NULL,
 				received_at TEXT NOT NULL,
-				processed INTEGER DEFAULT 0
+				processed INTEGER DEFAULT 0,
+				trace_context TEXT
 			)
 		`);
 		// Minimal change_log table to keep the WsTransport changelog listener

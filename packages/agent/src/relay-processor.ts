@@ -1138,9 +1138,16 @@ export class RelayProcessor {
 
 		// Extract trace context from relay entry if present (AC5.2)
 		const traceContextStr = entry.trace_context;
-		const traceCarrier = traceContextStr
-			? (JSON.parse(traceContextStr) as Record<string, string>)
-			: null;
+		let traceCarrier: Record<string, string> | null = null;
+		if (traceContextStr) {
+			try {
+				traceCarrier = JSON.parse(traceContextStr) as Record<string, string>;
+			} catch {
+				this.logger?.warn("relay-processor: malformed trace_context, skipping tracing", {
+					entryId: entry.id,
+				});
+			}
+		}
 		const parentContext = extractTraceContext(traceCarrier);
 		let collectedSpans: SerializedSpan[] = [];
 
