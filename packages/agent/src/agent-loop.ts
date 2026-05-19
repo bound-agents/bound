@@ -15,7 +15,7 @@ import type { InferenceRequestPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
 import type { ContextDebugInfo, EventMap, SyncConfig } from "@bound/shared";
 import { countContentTokens, countTokens, formatError } from "@bound/shared";
-import { trace } from "@opentelemetry/api";
+import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 
 import { Observable, Subject, firstValueFrom, lastValueFrom } from "rxjs";
 import { tap } from "rxjs/operators";
@@ -699,28 +699,41 @@ export class AgentLoop {
 				});
 
 				// Deterministic compaction keeps cached prefixes stable while reducing context size
-				const result = assembleContext({
-					db: this.ctx.db,
-					threadId: this.config.threadId,
-					taskId: this.config.taskId,
-					userId: this.config.userId,
-					currentModel: resolvedModelForDebug,
-					contextWindow: contextWindow,
-					hostName: this.ctx.hostName,
-					siteId: this.ctx.siteId,
-					relayInfo,
-					platformContext: this.config.platform
-						? {
-								platform: this.config.platform,
-							}
-						: undefined,
-					targetCapabilities: resolvedCaps ?? undefined,
-					toolTokenEstimate,
-					compactToolResults: true,
-					noHistory: this.config.noHistory,
-					systemPromptAddition: this.config.systemPromptAddition,
-					commandRegistry: this.ctx.commandRegistry,
+				const assembleContextSpan = tracer.startSpan("agent-loop.assemble-context", {
+					attributes: {
+						"context.cache_path": "cold",
+					},
 				});
+
+				const result = await context.with(
+					trace.setSpan(context.active(), assembleContextSpan),
+					async () => {
+						return assembleContext({
+							db: this.ctx.db,
+							threadId: this.config.threadId,
+							taskId: this.config.taskId,
+							userId: this.config.userId,
+							currentModel: resolvedModelForDebug,
+							contextWindow: contextWindow,
+							hostName: this.ctx.hostName,
+							siteId: this.ctx.siteId,
+							relayInfo,
+							platformContext: this.config.platform
+								? {
+										platform: this.config.platform,
+									}
+								: undefined,
+							targetCapabilities: resolvedCaps ?? undefined,
+							toolTokenEstimate,
+							compactToolResults: true,
+							noHistory: this.config.noHistory,
+							systemPromptAddition: this.config.systemPromptAddition,
+							commandRegistry: this.ctx.commandRegistry,
+						});
+					},
+				);
+
+				assembleContextSpan.end();
 
 				// assembleContext now returns systemPrompt separately — no system-role
 				// messages in the array, no filtering needed.
@@ -1025,6 +1038,7 @@ export class AgentLoop {
 							max: MAX_SILENCE_RETRIES,
 							error: errMsg,
 						});
+						turnSpan.end();
 						continue; // Re-enter the while loop → LLM_CALL
 					}
 
@@ -1078,6 +1092,7 @@ export class AgentLoop {
 									},
 								);
 								transportRetries = 0;
+								turnSpan.end();
 								continue;
 							}
 
@@ -1131,6 +1146,12 @@ export class AgentLoop {
 					}
 
 					this.emitAlert(`Error: ${errorMsg}`);
+
+					turnSpan.setStatus({
+						code: SpanStatusCode.ERROR,
+						message: errorMsg,
+					});
+					turnSpan.end();
 
 					return {
 						messagesCreated: this.messagesCreated,
@@ -1210,6 +1231,7 @@ export class AgentLoop {
 						this.broadcastMessage(cancelId);
 						this.messagesCreated++;
 					}
+					turnSpan.end();
 					break;
 				}
 
@@ -1742,6 +1764,7 @@ export class AgentLoop {
 							count: pendingClientCalls.length,
 						});
 						continueLoop = false;
+						turnSpan.end();
 						break;
 					}
 
@@ -1751,9 +1774,11 @@ export class AgentLoop {
 							"[agent-loop] Yielding after tool persistence (cooperative cancel)",
 						);
 						this.yielded = true;
+						turnSpan.end();
 						break;
 					}
 
+					turnSpan.end();
 					continue;
 				}
 
