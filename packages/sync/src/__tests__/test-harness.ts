@@ -278,7 +278,8 @@ const FULL_SCHEMA = `
 		payload TEXT NOT NULL,
 		created_at TEXT NOT NULL,
 		expires_at TEXT NOT NULL,
-		delivered INTEGER DEFAULT 0
+		delivered INTEGER DEFAULT 0,
+		trace_context TEXT
 	);
 
 	CREATE TABLE relay_inbox (
@@ -291,7 +292,8 @@ const FULL_SCHEMA = `
 		payload TEXT NOT NULL,
 		expires_at TEXT NOT NULL,
 		received_at TEXT NOT NULL,
-		processed INTEGER DEFAULT 0
+		processed INTEGER DEFAULT 0,
+		trace_context TEXT
 	);
 
 	CREATE TABLE relay_cycles (
