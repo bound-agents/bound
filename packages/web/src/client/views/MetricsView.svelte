@@ -1,14 +1,15 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
 import type { MetricsResponse } from "../../server/routes/metrics";
+import DateRangeBar from "../components/DateRangeBar.svelte";
 import Page from "../components/Page.svelte";
 import SectionHeader from "../components/SectionHeader.svelte";
 
 let data: MetricsResponse | null = $state(null);
 let loading = $state(true);
 let error: string | null = $state(null);
-let from = $state("");
-let to = $state("");
+let from = $state(new Date(Date.now() - 24 * 3600_000).toISOString());
+let to = $state(new Date().toISOString());
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -34,6 +35,12 @@ async function loadMetrics(): Promise<void> {
 	loading = false;
 }
 
+function handleRangeChange(newFrom: string, newTo: string): void {
+	from = newFrom;
+	to = newTo;
+	loadMetrics();
+}
+
 function dateRangeIncludesNow(): boolean {
 	const now = new Date();
 	const toTime = new Date(to).getTime();
@@ -42,18 +49,13 @@ function dateRangeIncludesNow(): boolean {
 }
 
 onMount(() => {
-	// Initialize to 24h preset
-	const now = new Date();
-	const oneDayAgo = new Date(now.getTime() - 24 * 3600 * 1000);
-
-	to = now.toISOString();
-	from = oneDayAgo.toISOString();
-
 	loadMetrics();
 
 	// Only poll when range includes "now"
 	pollInterval = setInterval(() => {
 		if (dateRangeIncludesNow()) {
+			// Refresh 'to' to current time before fetching
+			to = new Date().toISOString();
 			loadMetrics();
 		}
 	}, 30000);
@@ -67,6 +69,8 @@ onDestroy(() => {
 <Page>
 	{#snippet children()}
 		<SectionHeader number={1} subtitle="Performance Analytics" title="Metrics" />
+
+		<DateRangeBar {from} {to} onRangeChange={handleRangeChange} disabled={loading} />
 
 		{#if loading}
 			<div class="state">
