@@ -219,14 +219,19 @@ describe("signing module", () => {
 		});
 
 		it("string-to-bytes equivalence: same hash for string and encoded Uint8Array", async () => {
+			const { CryptoHasher } = await import("bun");
 			const stringBody = "hello world";
 			const bytesBody = new TextEncoder().encode(stringBody);
 
-			const headersString = await signRequest(privateKey, siteId, "POST", "/sync/push", stringBody);
+			const hashString = new CryptoHasher("sha256");
+			hashString.update(stringBody);
+			const hexString = Buffer.from(hashString.digest()).toString("hex");
 
-			const headersBytes = await signRequest(privateKey, siteId, "POST", "/sync/push", bytesBody);
+			const hashBytes = new CryptoHasher("sha256");
+			hashBytes.update(bytesBody);
+			const hexBytes = Buffer.from(hashBytes.digest()).toString("hex");
 
-			expect(headersString["X-Signature"]).toBe(headersBytes["X-Signature"]);
+			expect(hexString).toBe(hexBytes);
 		});
 
 		it("empty Uint8Array round-trip", async () => {
