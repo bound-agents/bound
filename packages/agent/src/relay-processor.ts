@@ -47,6 +47,7 @@ import {
 	parseJsonUntyped,
 	processPayloadSchema,
 } from "@bound/shared";
+import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import {
 	EMPTY,
 	type SchedulerLike,
@@ -67,6 +68,8 @@ import type { AgentLoopConfig } from "./types.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+const getTracer = () => trace.getTracer("bound.relay");
 
 /**
  * Handler for a relay request kind. Returns a response string (written as a
@@ -1582,7 +1585,29 @@ export class RelayProcessor {
 					loopConfig,
 				);
 
-		const result = await agentLoop.run();
+		const tracer = getTracer();
+		const rootSpan = tracer.startSpan("relay.execute-process", {
+			attributes: {
+				"thread.id": payload.thread_id,
+				"user.id": payload.user_id ?? "",
+				"source.site_id": entry.source_site_id,
+				platform: payload.platform ?? "",
+			},
+		});
+
+		let result: Awaited<ReturnType<typeof agentLoop.run>>;
+		try {
+			result = await context.with(trace.setSpan(context.active(), rootSpan), () => agentLoop.run());
+			rootSpan.setStatus({ code: SpanStatusCode.OK });
+		} catch (err) {
+			rootSpan.setStatus({
+				code: SpanStatusCode.ERROR,
+				message: err instanceof Error ? err.message : String(err),
+			});
+			throw err;
+		} finally {
+			rootSpan.end();
+		}
 
 		return {
 			yielded: result.yielded,
