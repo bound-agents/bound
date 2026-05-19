@@ -228,6 +228,22 @@ Routes under `/api/memory` back the memory-graph view (e.g. `GET /api/memory/gra
 
 Routes under `/api/advisories` back the advisory view and the TopBar advisory-count badge (`GET /api/advisories/count`).
 
+#### Metrics — `/api/metrics`
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/metrics?from=&to=` | Aggregated observability metrics for the dashboard. |
+
+**GET /api/metrics** — Required query params: `from` and `to` (ISO 8601 date strings). Returns a `MetricsResponse` with three sections:
+
+- **tokens**: per-model token/cost breakdown, timeline (hourly buckets for ranges ≤2 days, daily otherwise), and totals (including error count).
+- **relay**: per-host latency aggregates (avg + P95), success/failure/expired counts, recent cycles (last 50), and totals with success rate.
+- **context**: cache hit rate, budget pressure count, average truncated tokens, and a timeline of cache hit rate / budget pressure / context utilization.
+
+All queries filter on `turns.deleted = 0`. Relay metrics come from the local-only `relay_cycles` table. The `to` parameter is clamped to the current time if it's in the future. Timeline bucketing switches from daily to hourly when the requested range is ≤48 hours.
+
+The `MetricsResponse` type is exported from `packages/web/src/server/routes/metrics.ts`.
+
 #### Webhook Ingress — `/hooks`
 
 | Method | Path | Description |
