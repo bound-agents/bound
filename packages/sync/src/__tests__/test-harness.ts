@@ -236,7 +236,8 @@ const FULL_SCHEMA = `
 		status TEXT,
 		host_origin TEXT,
 		modified_at TEXT,
-		created_at TEXT NOT NULL
+		created_at TEXT NOT NULL,
+		deleted INTEGER NOT NULL DEFAULT 0
 	) STRICT;
 
 	CREATE TABLE daily_summary (
