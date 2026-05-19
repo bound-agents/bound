@@ -40,7 +40,7 @@ export async function withClientToolTracing<T>(
 	let result: T | undefined;
 
 	await runInTraceContext(parentContext, async () => {
-		const span = tracer.startSpan("client-tool.execute");
+		const span = tracer.startSpan("client-tool.execute", {}, parentContext);
 		try {
 			result = await fn();
 			span.setStatus({ code: SpanStatusCode.OK });

@@ -64,8 +64,9 @@ describe("withClientToolTracing", () => {
 		const clientSpan = spans.find((s) => s.name === "client-tool.execute");
 		expect(clientSpan).toBeDefined();
 		expect(clientSpan?.status.code).toBe(1); // OK
-		// Verify the span has a valid trace ID (format: 32 hex chars)
-		expect(clientSpan?.traceId).toMatch(/^[a-f0-9]{32}$/);
+		// Verify the span inherits the parent trace ID (trace continuity)
+		expect(clientSpan?.traceId).toBe("0af7651916cd43dd8448eb211c80319c");
+		expect(clientSpan?.parentSpanId).toBe("b7ad6b7169203331");
 	});
 
 	it("should propagate errors and set error status", async () => {
