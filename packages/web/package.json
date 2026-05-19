@@ -19,6 +19,7 @@
 		"dompurify": "^3.3.3",
 		"fflate": "^0.8.3",
 		"hono": "^4.0.0",
+		"layercake": "^10.0.2",
 		"lucide-svelte": "^0.371.0",
 		"marked": "^17.0.5",
 		"marked-highlight": "^2.2.3",
