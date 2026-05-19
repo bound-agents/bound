@@ -1672,7 +1672,7 @@ describe("Context Assembly Pipeline", () => {
 				);
 			}
 
-			const { messages, volatileTokenEstimate, debug } = assembleContext({
+			const { messages, debug } = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
@@ -1682,14 +1682,14 @@ describe("Context Assembly Pipeline", () => {
 			expect(debug.truncated).toBeGreaterThan(0);
 			expect(debug.effectiveBudget).toBeDefined();
 			// Truncation target is min(contextWindow * 0.85, effectiveBudget); post-truncation
-			// wire tokens (messages + suffix) must land at or under that.
+			// message tokens must land at or under that. volatileTokenEstimate is NOT
+			// added here because the volatile developer message is already included in
+			// the messages array (it's a subset, not an additional cost).
 			const target = Math.min(
 				Math.floor(4000 * TRUNCATION_TARGET_RATIO),
 				debug.effectiveBudget ?? 0,
 			);
-			const wireTokens =
-				messages.reduce((sum, m) => sum + countContentTokens(m.content), 0) +
-				(volatileTokenEstimate ?? 0);
+			const wireTokens = messages.reduce((sum, m) => sum + countContentTokens(m.content), 0);
 			expect(wireTokens).toBeLessThanOrEqual(target);
 
 			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
