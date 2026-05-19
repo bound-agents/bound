@@ -261,6 +261,8 @@ describe("LLM Driver Spans (OTEL)", () => {
 
 		expect(llmCallSpan).toBeDefined();
 		expect(driverSpan).toBeDefined();
+		// Verify parent-child nesting: driverSpan is child of llmCallSpan
+		expect(driverSpan?.parentSpanId).toBe(llmCallSpan?.spanContext().spanId);
 	});
 
 	it("should record llm-driver.chat attributes (model, provider)", async () => {
