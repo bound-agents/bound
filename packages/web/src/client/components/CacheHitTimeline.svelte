@@ -144,6 +144,19 @@ const hasData = $derived(parsedData.length > 0 && parsedData.some((d) => d.cache
 				stroke-linejoin="round"
 			/>
 
+			<!-- Invisible hit-area rectangles for tooltips -->
+			{#each parsedData as d}
+				<rect
+					x={padding.left + xScale(d.dateObj) - 8}
+					y={0}
+					width={16}
+					height={height}
+					fill="transparent"
+				>
+					<title>{formatDate(d.dateObj)}: {formatPercentage(d.cache_hit_rate)} cache hit</title>
+				</rect>
+			{/each}
+
 			<!-- Data point circles -->
 			{#each parsedData as d}
 				<circle
@@ -152,7 +165,6 @@ const hasData = $derived(parsedData.length > 0 && parsedData.some((d) => d.cache
 					r="2.5"
 					fill="var(--line-5)"
 					class="data-point"
-					title={`${formatDate(d.dateObj)}: ${formatPercentage(d.cache_hit_rate)}`}
 				/>
 			{/each}
 

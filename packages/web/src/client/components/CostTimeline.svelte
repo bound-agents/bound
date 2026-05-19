@@ -149,6 +149,19 @@ const xTicks = $derived.by(() => {
 				stroke-linejoin="round"
 			/>
 
+			<!-- Invisible hit-area rectangles for tooltips -->
+			{#each parsedData as d}
+				<rect
+					x={padding.left + xScale(d.dateObj) - 8}
+					y={0}
+					width={16}
+					height={height}
+					fill="transparent"
+				>
+					<title>{formatDate(d.dateObj)}: {formatUSD(d.cost_usd)}</title>
+				</rect>
+			{/each}
+
 			<!-- Data point circles -->
 			{#each parsedData as d}
 				<circle
@@ -157,7 +170,6 @@ const xTicks = $derived.by(() => {
 					r="2.5"
 					fill="var(--line-0)"
 					class="data-point"
-					title={`${formatDate(d.dateObj)}: ${formatUSD(d.cost_usd)}`}
 				/>
 			{/each}
 

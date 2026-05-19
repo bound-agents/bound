@@ -69,8 +69,9 @@ const xScale = $derived.by(() => {
 				height={rowHeight - 16}
 				fill="var(--line-3)"
 				opacity="0.8"
-				title={`Input: ${d.tokens_in.toLocaleString()}`}
-			/>
+			>
+				<title>{d.model_id}: {d.tokens_in.toLocaleString()} tokens (input)</title>
+			</rect>
 
 			<!-- Output tokens (tokens_out) - amber, positioned after input -->
 			<rect
@@ -80,8 +81,9 @@ const xScale = $derived.by(() => {
 				height={rowHeight - 16}
 				fill="var(--line-0)"
 				opacity="0.8"
-				title={`Output: ${d.tokens_out.toLocaleString()}`}
-			/>
+			>
+				<title>{d.model_id}: {d.tokens_out.toLocaleString()} tokens (output)</title>
+			</rect>
 		{/each}
 	</svg>
 
