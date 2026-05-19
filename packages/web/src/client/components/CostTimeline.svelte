@@ -1,5 +1,6 @@
 <script lang="ts">
 import { scaleLinear, scaleTime } from "d3-scale";
+import ChartTooltip from "./ChartTooltip.svelte";
 
 interface Props {
 	data: Array<{
@@ -9,6 +10,13 @@ interface Props {
 }
 
 let { data }: Props = $props();
+
+// Tooltip state
+let tooltipVisible = $state(false);
+let tooltipX = $state(0);
+let tooltipY = $state(0);
+let tooltipLines = $state<string[]>([]);
+let containerEl: HTMLDivElement | undefined = $state(undefined);
 
 // Parse dates and sort by time
 const parsedData = $derived.by(() => {
@@ -43,7 +51,7 @@ const yScale = $derived.by(() => {
 
 // Format USD currency
 const formatUSD = (value: number): string => {
-	return `$${value.toFixed(2)}`;
+	return `$${value.toFixed(4)}`;
 };
 
 // Format date/time for labels (depends on data granularity)
@@ -56,6 +64,18 @@ const formatDate = (date: Date): string => {
 		return `${month}/${day}`;
 	}
 	return `${hour}:00`;
+};
+
+// Format date for tooltip (more detailed)
+const formatDateFull = (date: Date): string => {
+	const month = (date.getMonth() + 1).toString().padStart(2, "0");
+	const day = date.getDate().toString().padStart(2, "0");
+	const hour = date.getHours().toString().padStart(2, "0");
+	const minute = date.getMinutes().toString().padStart(2, "0");
+	if (hour === "00" && minute === "00") {
+		return `${date.getFullYear()}-${month}-${day}`;
+	}
+	return `${date.getFullYear()}-${month}-${day} ${hour}:${minute}`;
 };
 
 // Generate path data for the line and area
@@ -108,9 +128,22 @@ const xTicks = $derived.by(() => {
 	const step = Math.ceil(parsedData.length / 6);
 	return parsedData.filter((_, i) => i % step === 0);
 });
+
+function showTooltip(event: MouseEvent, d: { dateObj: Date; cost_usd: number }): void {
+	if (!containerEl) return;
+	const rect = containerEl.getBoundingClientRect();
+	tooltipX = event.clientX - rect.left;
+	tooltipY = event.clientY - rect.top;
+	tooltipLines = [formatDateFull(d.dateObj), `Cost: ${formatUSD(d.cost_usd)}`];
+	tooltipVisible = true;
+}
+
+function hideTooltip(): void {
+	tooltipVisible = false;
+}
 </script>
 
-<div class="cost-timeline">
+<div class="cost-timeline" bind:this={containerEl}>
 	<svg {width} {height} viewBox="0 0 {width} {height}" class="chart-svg">
 		<!-- Y-axis gridlines and labels -->
 		{#each yTicks as tick}
@@ -149,20 +182,7 @@ const xTicks = $derived.by(() => {
 				stroke-linejoin="round"
 			/>
 
-			<!-- Invisible hit-area rectangles for tooltips -->
-			{#each parsedData as d}
-				<rect
-					x={padding.left + xScale(d.dateObj) - 8}
-					y={0}
-					width={16}
-					height={height}
-					fill="transparent"
-				>
-					<title>{formatDate(d.dateObj)}: {formatUSD(d.cost_usd)}</title>
-				</rect>
-			{/each}
-
-			<!-- Data point circles -->
+			<!-- Interactive hit-area circles -->
 			{#each parsedData as d}
 				<circle
 					cx={padding.left + xScale(d.dateObj)}
@@ -170,6 +190,9 @@ const xTicks = $derived.by(() => {
 					r="2.5"
 					fill="var(--line-0)"
 					class="data-point"
+					onmouseenter={(e) => showTooltip(e, d)}
+					onmousemove={(e) => showTooltip(e, d)}
+					onmouseleave={hideTooltip}
 				/>
 			{/each}
 
@@ -190,10 +213,13 @@ const xTicks = $derived.by(() => {
 		<line x1={padding.left} y1={padding.top} x2={padding.left} y2={height - padding.bottom} stroke="var(--ink)" stroke-width="1" />
 		<line x1={padding.left} y1={height - padding.bottom} x2={width - padding.right} y2={height - padding.bottom} stroke="var(--ink)" stroke-width="1" />
 	</svg>
+
+	<ChartTooltip visible={tooltipVisible} x={tooltipX} y={tooltipY} lines={tooltipLines} />
 </div>
 
 <style>
 	.cost-timeline {
+		position: relative;
 		padding: 16px;
 		background: var(--paper);
 		border: 1px solid var(--rule-soft);
@@ -224,6 +250,6 @@ const xTicks = $derived.by(() => {
 	}
 
 	.data-point:hover {
-		r: 3.5;
+		r: 4.5;
 	}
 </style>
