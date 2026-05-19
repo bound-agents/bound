@@ -704,6 +704,7 @@ export class WsTransport {
 						expires_at: entry.expires_at,
 						received_at: new Date().toISOString(),
 						processed: 0,
+						trace_context: entry.trace_context ?? null,
 					};
 
 					this.sendRelayDeliver(peerSiteId, [inboxEntry]);
@@ -721,6 +722,7 @@ export class WsTransport {
 					expires_at: entry.expires_at,
 					received_at: new Date().toISOString(),
 					processed: 0,
+					trace_context: entry.trace_context ?? null,
 				};
 
 				if (insertInbox(this.config.db, hubInboxEntry)) {
@@ -748,6 +750,7 @@ export class WsTransport {
 					expires_at: entry.expires_at,
 					received_at: new Date().toISOString(),
 					processed: 0,
+					trace_context: entry.trace_context ?? null,
 				};
 
 				const inserted = insertInbox(this.config.db, inboxEntry);
@@ -781,6 +784,7 @@ export class WsTransport {
 					expires_at: entry.expires_at,
 					received_at: new Date().toISOString(),
 					processed: 0,
+					trace_context: entry.trace_context ?? null,
 				};
 
 				this.sendRelayDeliver(entry.target_site_id, [inboxEntry]);
@@ -818,6 +822,7 @@ export class WsTransport {
 						expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
 						received_at: new Date().toISOString(),
 						processed: 0,
+						trace_context: null,
 					};
 					this.sendRelayDeliver(sourceSiteId, [errorInboxEntry]);
 					this.config.logger?.debug("WsTransport sync-dispatch fast-fail: target offline", {
@@ -838,6 +843,7 @@ export class WsTransport {
 						payload: JSON.stringify(entry.payload),
 						created_at: new Date().toISOString(),
 						expires_at: entry.expires_at,
+						trace_context: entry.trace_context ?? null,
 					});
 				}
 			}
@@ -872,6 +878,7 @@ export class WsTransport {
 				expires_at: entry.expires_at,
 				received_at: new Date().toISOString(),
 				processed: 0,
+				trace_context: entry.trace_context ?? null,
 			};
 
 			const inserted = insertInbox(this.config.db, inboxEntry);
@@ -1007,6 +1014,7 @@ export class WsTransport {
 				expires_at: entry.expires_at,
 				received_at: new Date().toISOString(),
 				processed: 0,
+				trace_context: entry.trace_context ?? null,
 			}));
 
 			this.sendRelayDeliver(spokesSiteId, inboxEntries);

@@ -55,6 +55,7 @@ export type RelaySendPayload = {
 		stream_id: string | null;
 		expires_at: string;
 		payload: unknown;
+		trace_context?: string | null;
 	}>;
 };
 
@@ -68,6 +69,7 @@ export type RelayDeliverPayload = {
 		stream_id: string | null;
 		expires_at: string;
 		payload: unknown;
+		trace_context?: string | null;
 	}>;
 };
 
