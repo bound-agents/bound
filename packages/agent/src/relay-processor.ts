@@ -31,6 +31,7 @@ import type {
 	RelayOutboxEntry,
 	ResourceReadPayload,
 	ResultPayload,
+	SerializedSpan,
 	StatusForwardPayload,
 	ToolCallPayload,
 	TypedEventEmitter,
@@ -39,6 +40,8 @@ import {
 	RELAY_REQUEST_KINDS,
 	RELAY_RESPONSE_KINDS,
 	type RelayRequestKind,
+	createScopedTraceCollector,
+	extractTraceContext,
 	hostMcpToolsSchema,
 	hostModelsSchema,
 	inferenceRequestPayloadSchema,
@@ -1133,6 +1136,14 @@ export class RelayProcessor {
 		const FLUSH_INTERVAL_MS = 200;
 		const FLUSH_BUFFER_BYTES = 4096;
 
+		// Extract trace context from relay entry if present (AC5.2)
+		const traceContextStr = entry.trace_context;
+		const traceCarrier = traceContextStr
+			? (JSON.parse(traceContextStr) as Record<string, string>)
+			: null;
+		const parentContext = extractTraceContext(traceCarrier);
+		let collectedSpans: SerializedSpan[] = [];
+
 		// stream_id comes from the inbox entry (set by the requester in RELAY_STREAM)
 		const streamId = entry.stream_id;
 		if (!streamId) {
@@ -1270,7 +1281,8 @@ export class RelayProcessor {
 			lastFlushTime = Date.now();
 		};
 
-		try {
+		// Set up scoped trace collector if trace context is present (AC5.2, AC5.3)
+		const runInferenceWithTracing = async (): Promise<void> => {
 			// Do not pass payload.model to chat() — it's a logical ID (e.g., "opus")
 			// that the model router already resolved to this backend. The backend has
 			// its own configured model identifier (e.g., the full Bedrock ARN).
@@ -1278,6 +1290,9 @@ export class RelayProcessor {
 			// Fall back to the local model router's thinking / effort config when
 			// the requester doesn't include them in the payload — the remote host
 			// knows its own backend capabilities better than a distant caller.
+			if (!this.modelRouter) {
+				throw new Error("Model router is not available");
+			}
 			const effectiveThinking =
 				payload.thinking ?? this.modelRouter.getThinkingConfig(payload.model);
 			const effectiveEffort = payload.effort ?? this.modelRouter.getEffort(payload.model);
@@ -1328,6 +1343,36 @@ export class RelayProcessor {
 				// Normal completion — final flush as stream_end (AC3.3)
 				flush(true);
 			}
+		};
+
+		try {
+			if (traceCarrier) {
+				// Create scoped collector for hub-side tracing (AC5.2, AC5.3)
+				const collector = createScopedTraceCollector();
+				const tracer = collector.getTracer("bound.relay-hub");
+
+				// Run inference within extracted parent context
+				await context.with(parentContext, async () => {
+					const span = tracer.startSpan("relay.hub-inference");
+					try {
+						await runInferenceWithTracing();
+						span.setStatus({ code: SpanStatusCode.OK });
+					} catch (inferenceErr) {
+						span.setStatus({
+							code: SpanStatusCode.ERROR,
+							message: inferenceErr instanceof Error ? inferenceErr.message : String(inferenceErr),
+						});
+						throw inferenceErr;
+					} finally {
+						span.end();
+					}
+				});
+
+				collectedSpans = await collector.flush();
+			} else {
+				// No trace context — run without tracing
+				await runInferenceWithTracing();
+			}
 		} catch (err) {
 			// Surface the failure locally before bouncing it back to the requester.
 			// Without this, relayed inference errors only appear on the requester's
@@ -1361,6 +1406,25 @@ export class RelayProcessor {
 			}
 		} finally {
 			this.activeInferenceStreams.delete(entry.id);
+			// Write trace_data response if spans were collected (AC5.3)
+			if (collectedSpans.length > 0) {
+				if (entry.source_site_id) {
+					const now = new Date();
+					writeOutbox(this.db, {
+						id: randomUUID(),
+						source_site_id: this.siteId,
+						target_site_id: entry.source_site_id,
+						kind: "trace_data",
+						ref_id: entry.id,
+						idempotency_key: null,
+						stream_id: entry.stream_id ?? null,
+						payload: JSON.stringify(collectedSpans),
+						created_at: now.toISOString(),
+						expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
+						trace_context: null,
+					});
+				}
+			}
 		}
 	}
 
