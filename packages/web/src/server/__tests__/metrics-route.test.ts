@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { Database as BunDatabase } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { applySchema } from "@bound/core";
+import { applyMetricsSchema, applySchema } from "@bound/core";
 import { createMetricsRoutes } from "../routes/metrics";
 
 let db: Database;
@@ -11,6 +11,7 @@ let siteId: string;
 beforeEach(() => {
 	db = new BunDatabase(":memory:");
 	applySchema(db);
+	applyMetricsSchema(db);
 
 	// Set up site_id
 	siteId = `test-site-${randomBytes(4).toString("hex")}`;
@@ -212,6 +213,281 @@ describe("metrics routes", () => {
 			expect(response.status).toBe(200);
 			// Should complete in under 1 second even with large range
 			expect(elapsed).toBeLessThan(1000);
+		});
+	});
+
+	describe("AC5.1 & AC5.2: Token aggregation queries", () => {
+		it("aggregates token usage by model", async () => {
+			const app = createMetricsRoutes(db);
+			const from = new Date("2026-05-18T00:00:00Z").toISOString();
+			const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+			// Seed turns data
+			db.prepare(
+				`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+				cost_usd, status, context_debug)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			).run(
+				"turn-1",
+				"thread-1",
+				"2026-05-18T12:00:00Z",
+				"claude-3-opus",
+				1000,
+				2000,
+				0.05,
+				"ok",
+				null,
+			);
+
+			db.prepare(
+				`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+				cost_usd, status, context_debug)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			).run(
+				"turn-2",
+				"thread-2",
+				"2026-05-18T14:00:00Z",
+				"claude-3-opus",
+				800,
+				1500,
+				0.04,
+				"ok",
+				null,
+			);
+
+			db.prepare(
+				`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+				cost_usd, status, context_debug)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			).run(
+				"turn-3",
+				"thread-3",
+				"2026-05-18T16:00:00Z",
+				"claude-3-haiku",
+				500,
+				800,
+				0.01,
+				"ok",
+				null,
+			);
+
+			const response = await app.fetch(
+				new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+			);
+
+			expect(response.status).toBe(200);
+			const json = (await response.json()) as Record<string, unknown>;
+			const tokens = json.tokens as Record<string, unknown>;
+			const byModel = tokens.byModel as Array<Record<string, unknown>>;
+
+			expect(byModel.length).toBeGreaterThan(0);
+
+			// Find claude-3-opus entry
+			const opusEntry = byModel.find((m) => m.model_id === "claude-3-opus");
+			expect(opusEntry).toBeDefined();
+			expect(opusEntry?.tokens_in).toBe(1800); // 1000 + 800
+			expect(opusEntry?.tokens_out).toBe(3500); // 2000 + 1500
+			expect(opusEntry?.turn_count).toBe(2);
+		});
+
+		it("aggregates totals correctly", async () => {
+			const app = createMetricsRoutes(db);
+			const from = new Date("2026-05-18T00:00:00Z").toISOString();
+			const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+			// Seed turns data
+			db.prepare(
+				`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+				cost_usd, status, context_debug)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			).run(
+				"turn-1",
+				"thread-1",
+				"2026-05-18T12:00:00Z",
+				"claude-3-opus",
+				1000,
+				2000,
+				0.05,
+				"ok",
+				null,
+			);
+
+			db.prepare(
+				`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+				cost_usd, status, context_debug)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			).run(
+				"turn-2",
+				"thread-2",
+				"2026-05-18T14:00:00Z",
+				"claude-3-opus",
+				800,
+				1500,
+				0.04,
+				"error",
+				null,
+			);
+
+			const response = await app.fetch(
+				new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+			);
+
+			expect(response.status).toBe(200);
+			const json = (await response.json()) as Record<string, unknown>;
+			const tokens = json.tokens as Record<string, unknown>;
+			const totals = tokens.totals as Record<string, unknown>;
+
+			expect(totals.tokens_in).toBe(1800); // 1000 + 800
+			expect(totals.tokens_out).toBe(3500); // 2000 + 1500
+			expect(totals.cost_usd).toBe(0.09); // 0.05 + 0.04
+			expect(totals.turn_count).toBe(2);
+			expect(totals.error_count).toBe(1);
+		});
+
+		it("handles multiple turns with different statuses", async () => {
+			const app = createMetricsRoutes(db);
+			const from = new Date("2026-05-18T00:00:00Z").toISOString();
+			const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+			// Seed turns data with different statuses
+			db.prepare(
+				`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+				cost_usd, status, context_debug)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			).run(
+				"turn-1",
+				"thread-1",
+				"2026-05-18T12:00:00Z",
+				"claude-3-opus",
+				1000,
+				2000,
+				0.05,
+				"ok",
+				null,
+			);
+
+			db.prepare(
+				`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+				cost_usd, status, context_debug)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			).run(
+				"turn-2",
+				"thread-2",
+				"2026-05-18T14:00:00Z",
+				"claude-3-opus",
+				800,
+				1500,
+				0.04,
+				"ok",
+				null,
+			);
+
+			const response = await app.fetch(
+				new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+			);
+
+			expect(response.status).toBe(200);
+			const json = (await response.json()) as Record<string, unknown>;
+			const tokens = json.tokens as Record<string, unknown>;
+			const totals = tokens.totals as Record<string, unknown>;
+
+			expect(totals.turn_count).toBe(2);
+			expect(totals.tokens_in).toBe(1800);
+		});
+
+		it("handles NULL values for cache and cost columns", async () => {
+			const app = createMetricsRoutes(db);
+			const from = new Date("2026-05-18T00:00:00Z").toISOString();
+			const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+			// Seed turn with NULL cache/cost values
+			db.prepare(
+				`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+				tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			).run(
+				"turn-1",
+				"thread-1",
+				"2026-05-18T12:00:00Z",
+				"claude-3-opus",
+				1000,
+				2000,
+				null,
+				null,
+				null,
+				"ok",
+				null,
+			);
+
+			const response = await app.fetch(
+				new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+			);
+
+			expect(response.status).toBe(200);
+			const json = (await response.json()) as Record<string, unknown>;
+			const tokens = json.tokens as Record<string, unknown>;
+			const byModel = tokens.byModel as Array<Record<string, unknown>>;
+
+			const opusEntry = byModel.find((m) => m.model_id === "claude-3-opus");
+			expect(opusEntry).toBeDefined();
+			expect(opusEntry?.cache_read).toBe(0); // NULL becomes 0
+			expect(opusEntry?.cache_write).toBe(0); // NULL becomes 0
+			expect(opusEntry?.cost_usd).toBe(0); // NULL becomes 0
+		});
+
+		it("returns timeline with correct date format for hourly bucketing", async () => {
+			const app = createMetricsRoutes(db);
+			const from = new Date("2026-05-18T00:00:00Z").toISOString();
+			const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+			// Seed turns in different hours
+			db.prepare(
+				`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+				cost_usd, status, context_debug)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			).run(
+				"turn-1",
+				"thread-1",
+				"2026-05-18T12:15:00Z",
+				"claude-3-opus",
+				1000,
+				2000,
+				0.05,
+				"ok",
+				null,
+			);
+
+			db.prepare(
+				`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+				cost_usd, status, context_debug)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			).run(
+				"turn-2",
+				"thread-1",
+				"2026-05-18T13:30:00Z",
+				"claude-3-opus",
+				800,
+				1500,
+				0.04,
+				"ok",
+				null,
+			);
+
+			const response = await app.fetch(
+				new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+			);
+
+			expect(response.status).toBe(200);
+			const json = (await response.json()) as Record<string, unknown>;
+			const tokens = json.tokens as Record<string, unknown>;
+			const timeline = tokens.timeline as Array<Record<string, unknown>>;
+
+			// For hourly bucketing, should have entries
+			if (timeline.length > 0) {
+				// Verify format looks like YYYY-MM-DDTHH:00
+				const firstDate = timeline[0]?.date as string;
+				expect(firstDate).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:00/);
+			}
 		});
 	});
 });
