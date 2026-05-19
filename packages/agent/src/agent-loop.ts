@@ -15,6 +15,7 @@ import type { InferenceRequestPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
 import type { ContextDebugInfo, EventMap, SyncConfig } from "@bound/shared";
 import { countContentTokens, countTokens, formatError } from "@bound/shared";
+import { trace } from "@opentelemetry/api";
 
 import { Observable, Subject, firstValueFrom, lastValueFrom } from "rxjs";
 import { tap } from "rxjs/operators";
@@ -98,6 +99,8 @@ export function scaledMaxRetries(_estimatedTokens: number): number {
 }
 
 const textEncoder = new TextEncoder();
+
+const tracer = trace.getTracer("bound.agent-loop");
 
 interface BashLike {
 	exec?: (
@@ -808,7 +811,13 @@ export class AgentLoop {
 				}
 
 				turnCount++;
-				const turnStartTime = Date.now();
+				const turnSpan = tracer.startSpan("agent-loop.turn", {
+					attributes: {
+						"thread.id": this.config.threadId,
+						"task.id": this.config.taskId ?? "",
+					},
+				});
+
 				this.transition("LLM_CALL");
 				const chunks: StreamChunk[] = [];
 				let currentTurnId: string | null = null;
@@ -1086,7 +1095,6 @@ export class AgentLoop {
 						error: errorMsg,
 						statusCode: error instanceof LLMError ? error.statusCode : null,
 						model: getResolvedModelId(this.lastModelResolution, this.config.modelId || "unknown"),
-						durationMs: Date.now() - turnStartTime,
 					});
 
 					// Record the failed attempt so cross-host cost/usage queries
@@ -1134,11 +1142,9 @@ export class AgentLoop {
 
 				this.transition("PARSE_RESPONSE");
 				const parsed = this.parseResponseChunks(chunks);
-				const llmDurationMs = Date.now() - turnStartTime;
 
 				this.ctx.logger.info("[agent-loop] LLM response received", {
 					turn: turnCount,
-					durationMs: llmDurationMs,
 					inputTokens: parsed.usage.inputTokens,
 					outputTokens: parsed.usage.outputTokens,
 					cacheRead: parsed.usage.cacheReadTokens,
@@ -1232,6 +1238,16 @@ export class AgentLoop {
 						},
 						this.ctx.siteId,
 					);
+
+					// Set turn span attributes after LLM response
+					turnSpan.setAttributes({
+						"model.id": resolvedModelId,
+						"model.kind": this.lastModelResolution?.kind ?? "unknown",
+						"llm.input_tokens": parsed.usage.inputTokens,
+						"llm.output_tokens": parsed.usage.outputTokens,
+						"llm.cache_read_tokens": parsed.usage.cacheReadTokens ?? 0,
+						"llm.cache_write_tokens": parsed.usage.cacheWriteTokens ?? 0,
+					});
 				} catch (error) {
 					this.ctx.logger.warn("Failed to record turn metrics", {
 						threadId: this.config.threadId,
@@ -1762,6 +1778,7 @@ export class AgentLoop {
 				}
 
 				continueLoop = false;
+				turnSpan.end();
 			}
 
 			this.transition("FS_PERSIST");
