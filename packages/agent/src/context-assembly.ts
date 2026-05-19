@@ -1309,6 +1309,9 @@ Original output was too large for the context window. If you need the full conte
 
 	// Stage 4: MESSAGE_QUEUEING
 	// Already handled by filtering - skip messages that were persisted during active tool-use
+	const stage4Span = getTracer().startSpan("context.stage-4-message-queueing");
+	stage4Span.setAttribute("stage.implicit", true);
+	stage4Span.end();
 
 	// Stage 5: ANNOTATION
 	// Convert Message to LLMMessage format with annotations
@@ -1730,6 +1733,11 @@ Original output was too large for the context window. If you need the full conte
 			sections.push({ name: "volatile-other", tokens: volatileOtherTokens });
 	}
 
+	// Track tools section (from ContextParams)
+	const toolTokens = params.toolTokenEstimate ?? 0;
+	if (toolTokens > 0) sections.push({ name: "tools", tokens: toolTokens });
+	stage6Span.end();
+
 	// Stage 5.5: VOLATILE_ENRICHMENT
 	const stage5_5Span = getTracer().startSpan("context.stage-5.5-volatile-enrichment");
 
@@ -1785,11 +1793,6 @@ Original output was too large for the context window. If you need the full conte
 		}
 	}
 	stage5_5Span.end();
-
-	// Track tools section (from ContextParams)
-	const toolTokens = params.toolTokenEstimate ?? 0;
-	if (toolTokens > 0) sections.push({ name: "tools", tokens: toolTokens });
-	stage6Span.end();
 
 	// Stage 7: BUDGET_VALIDATION
 	// Budget pressure check: reduce enrichment caps if headroom < 2,000 tokens.
