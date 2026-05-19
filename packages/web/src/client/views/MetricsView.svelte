@@ -253,12 +253,14 @@ function getContextUtilizationSparkline(
 
 					<LatencyBarChart data={data.relay.byHost} />
 
-					<DataTable
-						columns={relayCycleColumns}
-						rows={relayCycleRows}
-						sortable={true}
-						rowAccent={relayRowAccent}
-					/>
+					<div class="relay-table-scroll">
+						<DataTable
+							columns={relayCycleColumns}
+							rows={relayCycleRows}
+							sortable={true}
+							rowAccent={relayRowAccent}
+						/>
+					</div>
 				{/if}
 
 				<SectionHeader number={3} subtitle="Context Pipeline Performance" title="Context Assembly" />
@@ -422,6 +424,13 @@ function getContextUtilizationSparkline(
 	.sparkline-svg {
 		display: block;
 		height: auto;
+	}
+
+	.relay-table-scroll {
+		max-height: 400px;
+		overflow-y: auto;
+		border: 1px solid var(--rule-soft);
+		border-radius: 8px;
 	}
 
 	.refresh-indicator {
