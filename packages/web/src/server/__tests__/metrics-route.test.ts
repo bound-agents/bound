@@ -974,4 +974,671 @@ describe("metrics routes", () => {
 			expect(totals.total_turns_with_debug).toBe(1);
 		});
 	});
+
+	describe("Missing coverage tests", () => {
+		describe("AC1.4 (empty range)", () => {
+			it("returns all zeros and empty arrays when no data in range", async () => {
+				const app = createMetricsRoutes(db);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+
+				// Check tokens section
+				const tokens = json.tokens as Record<string, unknown>;
+				expect((tokens.totals as Record<string, unknown>).turn_count).toBe(0);
+				expect(Array.isArray(tokens.byModel)).toBe(true);
+				expect((tokens.byModel as unknown[]).length).toBe(0);
+				expect(Array.isArray(tokens.timeline)).toBe(true);
+				expect((tokens.timeline as unknown[]).length).toBe(0);
+
+				// Check relay section
+				const relay = json.relay as Record<string, unknown>;
+				expect((relay.totals as Record<string, unknown>).total_cycles).toBe(0);
+				expect(Array.isArray(relay.byHost)).toBe(true);
+				expect((relay.byHost as unknown[]).length).toBe(0);
+				expect(Array.isArray(relay.recentCycles)).toBe(true);
+				expect((relay.recentCycles as unknown[]).length).toBe(0);
+
+				// Check context section
+				const context = json.context as Record<string, unknown>;
+				expect((context.totals as Record<string, unknown>).total_turns_with_debug).toBe(0);
+				expect(Array.isArray(context.timeline)).toBe(true);
+				expect((context.timeline as unknown[]).length).toBe(0);
+			});
+		});
+
+		describe("AC2.2 (date filtering)", () => {
+			it("only counts turns within the specified date range", async () => {
+				const app = createMetricsRoutes(db);
+
+				// Seed turn from 36 hours ago
+				const turnTime36hAgo = new Date(Date.now() - 36 * 3600_000).toISOString();
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-old",
+					"thread-old",
+					turnTime36hAgo,
+					"claude-3-opus",
+					1000,
+					2000,
+					0.05,
+					"ok",
+					null,
+				);
+
+				// Seed turn from 2 hours ago (recent)
+				const turnTime2hAgo = new Date(Date.now() - 2 * 3600_000).toISOString();
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-recent",
+					"thread-recent",
+					turnTime2hAgo,
+					"claude-3-opus",
+					500,
+					1000,
+					0.03,
+					"ok",
+					null,
+				);
+
+				// Request with from=24h ago, to=now
+				const from = new Date(Date.now() - 24 * 3600_000).toISOString();
+				const to = new Date().toISOString();
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const tokens = json.tokens as Record<string, unknown>;
+				const totals = tokens.totals as Record<string, unknown>;
+
+				// Only recent turn should be counted
+				expect(totals.turn_count).toBe(1);
+				expect(totals.tokens_in).toBe(500);
+				expect(totals.tokens_out).toBe(1000);
+			});
+		});
+
+		describe("AC2.3 (sort order)", () => {
+			it("sorts byModel by total tokens (tokens_in + tokens_out) descending", async () => {
+				const app = createMetricsRoutes(db);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				// Seed turns for model A (100 + 200 = 300 total)
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run("turn-a1", "thread-a", "2026-05-18T12:00:00Z", "model-a", 100, 200, 0.05, "ok", null);
+
+				// Seed turns for model B (500 + 1000 = 1500 total)
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run("turn-b1", "thread-b", "2026-05-18T13:00:00Z", "model-b", 500, 1000, 0.1, "ok", null);
+
+				// Seed turns for model C (50 + 100 = 150 total)
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run("turn-c1", "thread-c", "2026-05-18T14:00:00Z", "model-c", 50, 100, 0.02, "ok", null);
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const tokens = json.tokens as Record<string, unknown>;
+				const byModel = tokens.byModel as Array<Record<string, unknown>>;
+
+				expect(byModel.length).toBe(3);
+				// Should be sorted by total tokens descending: B (1500), A (300), C (150)
+				expect(byModel[0]?.model_id).toBe("model-b");
+				expect(byModel[1]?.model_id).toBe("model-a");
+				expect(byModel[2]?.model_id).toBe("model-c");
+			});
+		});
+
+		describe("AC2.4 (daily bucketing with data)", () => {
+			it("uses daily format across 5 days and sums costs correctly", async () => {
+				const app = createMetricsRoutes(db);
+
+				// Seed turns across 5 distinct days
+				for (let i = 0; i < 5; i++) {
+					const date = new Date("2026-05-15T00:00:00Z");
+					date.setDate(date.getDate() + i);
+					const isoDate = date.toISOString();
+
+					db.prepare(
+						`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+						cost_usd, status, context_debug)
+						VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					).run(
+						`turn-day${i}`,
+						`thread-day${i}`,
+						isoDate,
+						"claude-3-opus",
+						100,
+						200,
+						0.05,
+						"ok",
+						null,
+					);
+				}
+
+				// Request with range > 48h (10 days to cover all seeded data)
+				const from = new Date("2026-05-10T00:00:00Z").toISOString();
+				const to = new Date("2026-05-25T00:00:00Z").toISOString();
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const tokens = json.tokens as Record<string, unknown>;
+				const timeline = tokens.timeline as Array<Record<string, unknown>>;
+
+				// Should have entries for each day
+				expect(timeline.length).toBeGreaterThan(0);
+
+				// Verify daily format (YYYY-MM-DD, not hourly)
+				for (const entry of timeline) {
+					const dateStr = entry.date as string;
+					expect(dateStr).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+				}
+
+				// Verify cost sums correctly
+				let totalCost = 0;
+				for (const entry of timeline) {
+					totalCost += (entry.cost_usd as number) || 0;
+				}
+				// Should be 5 days × 0.05 per day = 0.25
+				expect(totalCost).toBeCloseTo(0.25, 2);
+			});
+		});
+
+		describe("AC2.5 (model exclusion)", () => {
+			it("excludes turns from outside the date range in byModel", async () => {
+				const app = createMetricsRoutes(db);
+
+				// Seed turn for model "alpha" within range (2026-05-18)
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-alpha-in",
+					"thread-alpha",
+					"2026-05-18T12:00:00Z",
+					"alpha",
+					1000,
+					2000,
+					0.05,
+					"ok",
+					null,
+				);
+
+				// Seed turn for model "beta" outside range (2026-05-20, outside to window)
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-beta-out",
+					"thread-beta",
+					"2026-05-20T12:00:00Z",
+					"beta",
+					500,
+					1000,
+					0.03,
+					"ok",
+					null,
+				);
+
+				// Seed another turn for model "alpha" outside range (2026-05-17, before from)
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-alpha-out",
+					"thread-alpha2",
+					"2026-05-17T12:00:00Z",
+					"alpha",
+					100,
+					200,
+					0.01,
+					"ok",
+					null,
+				);
+
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const tokens = json.tokens as Record<string, unknown>;
+				const byModel = tokens.byModel as Array<Record<string, unknown>>;
+
+				// Only model "alpha" from within range should be present
+				expect(byModel.length).toBe(1);
+				expect(byModel[0]?.model_id).toBe("alpha");
+				// Should only count the in-range turn
+				expect(byModel[0]?.turn_count).toBe(1);
+				expect(byModel[0]?.tokens_in).toBe(1000);
+			});
+		});
+
+		describe("AC3.2 (relay filtering)", () => {
+			it("only counts relay_cycles within the date range", async () => {
+				const app = createMetricsRoutes(db);
+
+				// Seed relay cycle outside range (2026-05-16, before from)
+				db.prepare(
+					`INSERT INTO relay_cycles (direction, peer_site_id, kind, delivery_method, latency_ms, success, expired, created_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run("outbound", "site-old", "stream_chunk", "push", 50, 1, 0, "2026-05-16T12:00:00Z");
+
+				// Seed relay cycle within range
+				db.prepare(
+					`INSERT INTO relay_cycles (direction, peer_site_id, kind, delivery_method, latency_ms, success, expired, created_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run("outbound", "site-new", "stream_chunk", "push", 75, 1, 0, "2026-05-18T12:00:00Z");
+
+				// Seed relay cycle outside range (2026-05-20, after to)
+				db.prepare(
+					`INSERT INTO relay_cycles (direction, peer_site_id, kind, delivery_method, latency_ms, success, expired, created_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run("outbound", "site-future", "stream_chunk", "push", 100, 1, 0, "2026-05-20T12:00:00Z");
+
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const relay = json.relay as Record<string, unknown>;
+				const totals = relay.totals as Record<string, unknown>;
+
+				// Only the in-range cycle should be counted
+				expect(totals.total_cycles).toBe(1);
+			});
+		});
+
+		describe("AC3.4 (limit + ordering)", () => {
+			it("limits recentCycles to 50 and orders by created_at DESC", async () => {
+				const app = createMetricsRoutes(db);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				// Seed 60 relay cycles within range
+				for (let i = 0; i < 60; i++) {
+					const minutes = i % 60;
+					const hours = Math.floor(i / 60);
+					const time = new Date("2026-05-18T12:00:00Z");
+					time.setHours(time.getHours() + hours);
+					time.setMinutes(minutes);
+					const isoTime = time.toISOString();
+
+					db.prepare(
+						`INSERT INTO relay_cycles (direction, peer_site_id, kind, delivery_method, latency_ms, success, expired, created_at)
+						VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+					).run("outbound", `site-${i}`, "stream_chunk", "push", 50 + i, 1, 0, isoTime);
+				}
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const relay = json.relay as Record<string, unknown>;
+				const recentCycles = relay.recentCycles as Array<Record<string, unknown>>;
+
+				// Should be limited to 50
+				expect(recentCycles.length).toBe(50);
+
+				// Verify DESC ordering (first entry should be newest, last should be oldest of the 50)
+				for (let i = 1; i < recentCycles.length; i++) {
+					const prevTime = new Date(recentCycles[i - 1]?.created_at as string).getTime();
+					const currTime = new Date(recentCycles[i]?.created_at as string).getTime();
+					expect(prevTime).toBeGreaterThanOrEqual(currTime);
+				}
+			});
+		});
+
+		describe("AC3.5 (empty relay)", () => {
+			it("returns zeros and empty arrays when no relay data in range", async () => {
+				const app = createMetricsRoutes(db);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const relay = json.relay as Record<string, unknown>;
+				const totals = relay.totals as Record<string, unknown>;
+				const byHost = relay.byHost as Array<Record<string, unknown>>;
+				const recentCycles = relay.recentCycles as Array<Record<string, unknown>>;
+
+				expect(totals.total_cycles).toBe(0);
+				expect(byHost.length).toBe(0);
+				expect(recentCycles.length).toBe(0);
+			});
+		});
+
+		describe("AC4.2 (context filtering)", () => {
+			it("only counts turns with context_debug within the date range", async () => {
+				const app = createMetricsRoutes(db);
+
+				// Seed turn with context_debug outside range (before from)
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-old",
+					"thread-old",
+					"2026-05-17T12:00:00Z",
+					"claude-opus",
+					1000,
+					500,
+					100,
+					50,
+					0.05,
+					"ok",
+					JSON.stringify({
+						budgetPressure: false,
+						truncated: 0,
+						totalEstimated: 1000,
+						contextWindow: 8000,
+					}),
+					0,
+				);
+
+				// Seed turn with context_debug within range
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-new",
+					"thread-new",
+					"2026-05-18T12:00:00Z",
+					"claude-opus",
+					500,
+					250,
+					50,
+					25,
+					0.02,
+					"ok",
+					JSON.stringify({
+						budgetPressure: false,
+						truncated: 0,
+						totalEstimated: 500,
+						contextWindow: 8000,
+					}),
+					0,
+				);
+
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const context = json.context as Record<string, unknown>;
+				const totals = context.totals as Record<string, unknown>;
+
+				// Only in-range turn should be counted
+				expect(totals.total_turns_with_debug).toBe(1);
+			});
+		});
+
+		describe("AC4.3 + AC4.4 (timeline fields)", () => {
+			it("timeline entries contain cache_hit_rate and budget_pressure_pct fields", async () => {
+				const app = createMetricsRoutes(db);
+
+				// Seed turns with varying cache metrics across different hours
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-1",
+					"thread-1",
+					"2026-05-18T12:00:00Z",
+					"claude-opus",
+					1000,
+					500,
+					200,
+					100,
+					0.05,
+					"ok",
+					JSON.stringify({
+						budgetPressure: true,
+						truncated: 10,
+						totalEstimated: 4000,
+						contextWindow: 8000,
+					}),
+					0,
+				);
+
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-2",
+					"thread-2",
+					"2026-05-18T13:00:00Z",
+					"claude-opus",
+					500,
+					250,
+					100,
+					50,
+					0.02,
+					"ok",
+					JSON.stringify({
+						budgetPressure: false,
+						truncated: 0,
+						totalEstimated: 1000,
+						contextWindow: 8000,
+					}),
+					0,
+				);
+
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const context = json.context as Record<string, unknown>;
+				const timeline = context.timeline as Array<Record<string, unknown>>;
+
+				expect(timeline.length).toBeGreaterThan(0);
+
+				// Verify each entry has the required fields
+				for (const entry of timeline) {
+					expect(entry).toHaveProperty("cache_hit_rate");
+					expect(entry).toHaveProperty("budget_pressure_pct");
+					expect(typeof entry.cache_hit_rate).toBe("number");
+					expect(typeof entry.budget_pressure_pct).toBe("number");
+					// Verify ranges
+					expect(entry.cache_hit_rate as number).toBeGreaterThanOrEqual(0);
+					expect(entry.cache_hit_rate as number).toBeLessThanOrEqual(1);
+					expect(entry.budget_pressure_pct as number).toBeGreaterThanOrEqual(0);
+					expect(entry.budget_pressure_pct as number).toBeLessThanOrEqual(1);
+				}
+			});
+		});
+
+		describe("AC4.6 (zero cache edge case)", () => {
+			it("returns avg_cache_hit_rate of 0 exactly when tokens_cache_read is 0", async () => {
+				const app = createMetricsRoutes(db);
+
+				// Seed turn with zero cache read and valid tokens_in
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-1",
+					"thread-1",
+					"2026-05-18T12:00:00Z",
+					"claude-opus",
+					1000,
+					500,
+					0,
+					null,
+					0.05,
+					"ok",
+					JSON.stringify({
+						budgetPressure: false,
+						truncated: 0,
+						totalEstimated: 1000,
+						contextWindow: 8000,
+					}),
+					0,
+				);
+
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const context = json.context as Record<string, unknown>;
+				const totals = context.totals as Record<string, unknown>;
+
+				// avg_cache_hit_rate should be exactly 0 (not NaN, not null, not undefined)
+				expect(totals.avg_cache_hit_rate).toBe(0);
+				expect(Number.isNaN(totals.avg_cache_hit_rate as number)).toBe(false);
+			});
+		});
+
+		describe("AC5.5 (performance smoke)", () => {
+			it("completes within timeout with 200 turns and 100 relay cycles", async () => {
+				const app = createMetricsRoutes(db);
+
+				// Seed 200 turns
+				for (let i = 0; i < 200; i++) {
+					const mins = i % 60;
+					const hours = Math.floor(i / 60);
+					const time = new Date("2026-05-18T00:00:00Z");
+					time.setHours(time.getHours() + hours);
+					time.setMinutes(mins);
+					const isoTime = time.toISOString();
+
+					db.prepare(
+						`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+						tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+						VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					).run(
+						`turn-${i}`,
+						`thread-${i}`,
+						isoTime,
+						`model-${i % 5}`,
+						Math.floor(Math.random() * 1000),
+						Math.floor(Math.random() * 1000),
+						Math.floor(Math.random() * 500),
+						Math.floor(Math.random() * 500),
+						Math.random() * 0.1,
+						"ok",
+						JSON.stringify({
+							budgetPressure: Math.random() > 0.7,
+							truncated: Math.floor(Math.random() * 100),
+							totalEstimated: Math.floor(Math.random() * 8000),
+							contextWindow: 8000,
+						}),
+						0,
+					);
+				}
+
+				// Seed 100 relay cycles
+				for (let i = 0; i < 100; i++) {
+					const mins = i % 60;
+					const hours = Math.floor(i / 60);
+					const time = new Date("2026-05-18T00:00:00Z");
+					time.setHours(time.getHours() + hours);
+					time.setMinutes(mins);
+					const isoTime = time.toISOString();
+
+					db.prepare(
+						`INSERT INTO relay_cycles (direction, peer_site_id, kind, delivery_method, latency_ms, success, expired, created_at)
+						VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+					).run(
+						"outbound",
+						`site-${i % 10}`,
+						"stream_chunk",
+						"push",
+						Math.floor(Math.random() * 300),
+						Math.random() > 0.1 ? 1 : 0,
+						Math.random() > 0.95 ? 1 : 0,
+						isoTime,
+					);
+				}
+
+				// Request with "all time" range
+				const from = new Date("2026-01-01T00:00:00Z").toISOString();
+				const to = new Date().toISOString();
+
+				const start = Date.now();
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+				const elapsed = Date.now() - start;
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+
+				// Verify response is valid
+				expect(json).toHaveProperty("tokens");
+				expect(json).toHaveProperty("relay");
+				expect(json).toHaveProperty("context");
+
+				// Should complete within reasonable time (2 seconds)
+				expect(elapsed).toBeLessThan(2000);
+			});
+		});
+	});
 });
