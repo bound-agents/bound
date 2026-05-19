@@ -1,6 +1,12 @@
+import { trace } from "@opentelemetry/api";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { Resource } from "@opentelemetry/resources";
-import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import {
+	BasicTracerProvider,
+	BatchSpanProcessor,
+	SimpleSpanProcessor,
+	type SpanExporter,
+} from "@opentelemetry/sdk-trace-base";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 
 let provider: BasicTracerProvider | null = null;
@@ -10,8 +16,11 @@ let provider: BasicTracerProvider | null = null;
  * Registers a BasicTracerProvider with BatchSpanProcessor exporting to OTLP HTTP.
  * When OTEL_ENABLED is not set, this is a no-op — the @opentelemetry/api returns
  * no-op spans by design, guaranteeing zero overhead.
+ *
+ * @param serviceName The service name to use for the trace resource
+ * @param testExporter Optional exporter for testing (uses SimpleSpanProcessor instead of BatchSpanProcessor)
  */
-export function initTelemetry(serviceName: string): void {
+export function initTelemetry(serviceName: string, testExporter?: SpanExporter): void {
 	if (!process.env.OTEL_ENABLED) return;
 
 	const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "http://localhost:4318";
@@ -22,12 +31,19 @@ export function initTelemetry(serviceName: string): void {
 		}),
 	);
 
-	const exporter = new OTLPTraceExporter({
-		url: `${endpoint}/v1/traces`,
-	});
-
 	provider = new BasicTracerProvider({ resource });
-	provider.addSpanProcessor(new BatchSpanProcessor(exporter));
+
+	if (testExporter) {
+		// For testing: use SimpleSpanProcessor for immediate export
+		provider.addSpanProcessor(new SimpleSpanProcessor(testExporter));
+	} else {
+		// For production: use BatchSpanProcessor with OTLP HTTP exporter
+		const exporter = new OTLPTraceExporter({
+			url: `${endpoint}/v1/traces`,
+		});
+		provider.addSpanProcessor(new BatchSpanProcessor(exporter));
+	}
+
 	provider.register();
 }
 
@@ -40,4 +56,7 @@ export async function shutdownTelemetry(): Promise<void> {
 	await provider.forceFlush();
 	await provider.shutdown();
 	provider = null;
+
+	// Clear the global tracer provider so subsequent spans are non-recording
+	trace.disable();
 }
