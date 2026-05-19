@@ -1,6 +1,8 @@
 <script lang="ts">
+import { scaleLinear, scaleTime } from "d3-scale";
 import { onDestroy, onMount } from "svelte";
 import type { MetricsResponse } from "../../server/routes/metrics";
+import CacheHitTimeline from "../components/CacheHitTimeline.svelte";
 import CostTimeline from "../components/CostTimeline.svelte";
 import DataTable from "../components/DataTable.svelte";
 import DateRangeBar from "../components/DateRangeBar.svelte";
@@ -102,6 +104,58 @@ function relayRowAccent(row: Record<string, unknown>): string | null {
 	if (row.expired === true) return "var(--warn)";
 	return null;
 }
+
+// Sparkline helper - generates normalized points and paths for inline SVGs
+const SPARKLINE_WIDTH = 288;
+const SPARKLINE_HEIGHT = 48;
+
+interface SparklineData {
+	points: Array<{ x: number; y: number }>;
+	pathD: string;
+	areaD: string;
+}
+
+function generateSparklineData(values: number[]): SparklineData {
+	if (values.length === 0) {
+		return { points: [], pathD: "", areaD: "" };
+	}
+
+	// Normalize values to [0, 1]
+	const maxVal = Math.max(...values, 1); // Avoid division by zero
+	const normalizedValues = values.map((v) => Math.max(0, Math.min(1, v / maxVal)));
+
+	// Generate points
+	const points = normalizedValues.map((v, i) => ({
+		x: values.length === 1 ? SPARKLINE_WIDTH / 2 : (i / (values.length - 1)) * SPARKLINE_WIDTH,
+		y: SPARKLINE_HEIGHT - v * (SPARKLINE_HEIGHT - 4),
+	}));
+
+	// Generate polyline path
+	const pathD = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
+
+	// Generate area path (polyline + close)
+	const areaD =
+		points.length > 0
+			? `${pathD} L ${points[points.length - 1].x} ${SPARKLINE_HEIGHT} L ${points[0].x} ${SPARKLINE_HEIGHT} Z`
+			: "";
+
+	return { points, pathD, areaD };
+}
+
+// Extract sparkline data from context timeline
+function getBudgetPressureSparkline(
+	timeline: Array<{ budget_pressure_pct: number }>,
+): SparklineData {
+	const values = timeline.map((d) => d.budget_pressure_pct);
+	return generateSparklineData(values);
+}
+
+function getContextUtilizationSparkline(
+	timeline: Array<{ avg_context_utilization: number }>,
+): SparklineData {
+	const values = timeline.map((d) => d.avg_context_utilization);
+	return generateSparklineData(values);
+}
 </script>
 
 <Page>
@@ -187,9 +241,90 @@ function relayRowAccent(row: Record<string, unknown>): string | null {
 				/>
 			{/if}
 
-			<SectionHeader number={3} subtitle="Placeholder" title="Context">
-				<p>Actual context charts will appear in Phase 5+</p>
-			</SectionHeader>
+			<SectionHeader number={3} subtitle="Context Pipeline Performance" title="Context Assembly" />
+
+			{#if data.context.totals.total_turns_with_debug === 0}
+				<div class="empty-state">
+					<p>No context data recorded in the selected range.</p>
+				</div>
+			{:else}
+				<div class="metrics-cards">
+					<MetroCard
+						accentColor={data.context.totals.avg_cache_hit_rate >= 0.8
+							? "var(--ok)"
+							: data.context.totals.avg_cache_hit_rate >= 0.5
+								? "var(--warn)"
+								: "var(--err)"}
+					>
+						{#snippet children()}
+							<span class="metric-label">Cache Hit Rate</span>
+							<span class="metric-value">{(data.context.totals.avg_cache_hit_rate * 100).toFixed(1)}%</span>
+						{/snippet}
+					</MetroCard>
+
+					<MetroCard accentColor={data.context.totals.budget_pressure_count === 0 ? "var(--ok)" : "var(--warn)"}>
+						{#snippet children()}
+							<span class="metric-label">Budget Pressure</span>
+							<span class="metric-value">{data.context.totals.budget_pressure_count}</span>
+							<span class="metric-unit">turns</span>
+						{/snippet}
+					</MetroCard>
+
+					<MetroCard accentColor="var(--line-3)">
+						{#snippet children()}
+							<span class="metric-label">Avg Truncation</span>
+							<span class="metric-value">{data.context.totals.avg_truncated_tokens.toFixed(1)}</span>
+							<span class="metric-unit">msgs</span>
+						{/snippet}
+					</MetroCard>
+				</div>
+
+				<CacheHitTimeline data={data.context.timeline} />
+
+				<div class="sparkline-row">
+					<div class="sparkline-item">
+						<span class="sparkline-label">Budget Pressure Frequency</span>
+						{#if data.context.timeline.length > 0}
+							{@const sparkline = getBudgetPressureSparkline(data.context.timeline)}
+							<svg
+								viewBox="0 0 {SPARKLINE_WIDTH} {SPARKLINE_HEIGHT}"
+								width="100%"
+								height={SPARKLINE_HEIGHT}
+								preserveAspectRatio="none"
+								class="sparkline-svg"
+							>
+								{#if sparkline.areaD}
+									<path d={sparkline.areaD} fill="var(--warn)" opacity="0.15" />
+								{/if}
+								{#if sparkline.pathD}
+									<polyline points={sparkline.points.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke="var(--warn)" stroke-width="1.5" />
+								{/if}
+							</svg>
+						{/if}
+					</div>
+
+					<div class="sparkline-item">
+						<span class="sparkline-label">Context Utilization</span>
+						{#if data.context.timeline.length > 0}
+							{@const sparkline = getContextUtilizationSparkline(data.context.timeline)}
+							<svg
+								viewBox="0 0 {SPARKLINE_WIDTH} {SPARKLINE_HEIGHT}"
+								width="100%"
+								height={SPARKLINE_HEIGHT}
+								preserveAspectRatio="none"
+								class="sparkline-svg"
+							>
+								{#if sparkline.areaD}
+									<path d={sparkline.areaD} fill="var(--line-3)" opacity="0.15" />
+								{/if}
+								{#if sparkline.pathD}
+									<polyline points={sparkline.points.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke="var(--line-3)" stroke-width="1.5" />
+								{/if}
+							</svg>
+						{/if}
+					</div>
+				</div>
+			{/if}
 		{/if}
 	{/snippet}
 </Page>
@@ -234,5 +369,43 @@ function relayRowAccent(row: Record<string, unknown>): string | null {
 		text-align: center;
 		color: var(--ink-3);
 		font-style: italic;
+	}
+
+	.metric-unit {
+		display: block;
+		font-size: 11px;
+		color: var(--ink-3);
+		margin-top: 4px;
+		text-transform: capitalize;
+	}
+
+	.sparkline-row {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 16px;
+		margin: 16px 0;
+		padding: 16px;
+		background: var(--paper);
+		border: 1px solid var(--rule-soft);
+		border-radius: 8px;
+	}
+
+	.sparkline-item {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.sparkline-label {
+		font-size: 12px;
+		color: var(--ink-3);
+		margin-bottom: 8px;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		text-align: center;
+	}
+
+	.sparkline-svg {
+		display: block;
+		height: auto;
 	}
 </style>
