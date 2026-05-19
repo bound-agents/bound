@@ -10,6 +10,7 @@
 		"./test-utils": "./src/test-utils.ts"
 	},
 	"dependencies": {
+		"@opentelemetry/api": "^1.9.0",
 		"js-tiktoken": "^1.0.21",
 		"pino": "^10.3.1",
 		"pino-pretty": "^13.1.3",
