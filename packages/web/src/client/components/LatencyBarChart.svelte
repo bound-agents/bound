@@ -86,8 +86,9 @@ const truncateSiteId = (id: string): string => {
 				width={xScale(d.avg_latency_ms)}
 				height={rowHeight / 2 - 12}
 				fill={getColorForLatency(d.avg_latency_ms, 1)}
-				title={`Avg: ${formatLatency(d.avg_latency_ms)}`}
-			/>
+			>
+				<title>{d.peer_site_id}: avg {formatLatency(d.avg_latency_ms)}</title>
+			</rect>
 
 			<!-- Average latency label -->
 			<text
@@ -107,8 +108,9 @@ const truncateSiteId = (id: string): string => {
 				width={xScale(d.p95_latency_ms)}
 				height={rowHeight / 2 - 12}
 				fill={getColorForLatency(d.p95_latency_ms, 0.5)}
-				title={`P95: ${formatLatency(d.p95_latency_ms)}`}
-			/>
+			>
+				<title>{d.peer_site_id}: p95 {formatLatency(d.p95_latency_ms)}</title>
+			</rect>
 
 			<!-- P95 latency label -->
 			<text
