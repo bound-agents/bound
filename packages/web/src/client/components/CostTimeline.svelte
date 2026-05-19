@@ -11,14 +11,14 @@ interface Props {
 let { data }: Props = $props();
 
 // Parse dates and sort by time
-const parsedData = $derived(() => {
+const parsedData = $derived.by(() => {
 	return data
 		.map((d) => ({
 			...d,
 			dateObj: new Date(d.date),
 		}))
 		.sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
-})();
+});
 
 // Dimensions
 const width = 600;

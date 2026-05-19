@@ -16,6 +16,7 @@
 		"@bound/core": "workspace:*",
 		"@bound/shared": "workspace:*",
 		"@bound/sync": "workspace:*",
+		"d3-scale": "^4.0.2",
 		"dompurify": "^3.3.3",
 		"fflate": "^0.8.3",
 		"hono": "^4.0.0",
