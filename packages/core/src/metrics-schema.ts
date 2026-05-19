@@ -92,6 +92,8 @@ export function applyMetricsSchema(db: Database): void {
 		// bump it in updateRow() when recordContextDebug / recordTurnRelayMetrics
 		// run, so post-insert column writes replicate correctly.
 		["modified_at", "TEXT"],
+		// Soft delete flag (0 = not deleted, 1 = deleted) for synced table semantics
+		["deleted", "INTEGER NOT NULL DEFAULT 0"],
 	] as const) {
 		try {
 			db.run(`ALTER TABLE turns ADD COLUMN ${colName} ${decl}`);
