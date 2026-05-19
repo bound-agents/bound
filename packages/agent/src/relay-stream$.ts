@@ -4,7 +4,15 @@ import type { Database } from "bun:sqlite";
 import { markProcessed, readInboxByStreamId, writeOutbox } from "@bound/core";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
 import type { TypedEventEmitter } from "@bound/shared";
-import { errorPayloadSchema, parseJsonSafe, parseJsonUntyped } from "@bound/shared";
+import {
+	type SerializedSpan,
+	errorPayloadSchema,
+	getTraceExporter,
+	injectTraceContext,
+	parseJsonSafe,
+	parseJsonUntyped,
+	reExportSpans,
+} from "@bound/shared";
 import type { Logger } from "@bound/shared";
 import {
 	EMPTY,
@@ -84,6 +92,18 @@ function createStreamReducer(
 				? `Remote inference error: ${errorEntry.payload}`
 				: (errResult.value.error ?? "Remote inference error");
 			return next;
+		}
+
+		// Handle trace_data responses (AC5.4)
+		const traceDataEntry = inboxEntries.find((e) => e.kind === "trace_data");
+		if (traceDataEntry) {
+			const spanResult = parseJsonUntyped(traceDataEntry.payload, traceDataEntry.kind);
+			markProcessed(deps.db, [traceDataEntry.id]);
+			if (spanResult.ok) {
+				const spans = spanResult.value as SerializedSpan[];
+				reExportSpans(spans, getTraceExporter());
+			}
+			// trace_data is fire-and-forget; continue processing other entries
 		}
 
 		const streamEndEntry = inboxEntries.find((e) => e.kind === "stream_end");
@@ -176,6 +196,7 @@ export function createRelayStream$(
 		concatMap((host, hostIndex) => {
 			const streamId = randomUUID();
 			const serializedPayload = JSON.stringify(payload);
+			const traceContext = injectTraceContext();
 			const outboxEntry = createRelayOutboxEntry(
 				host.site_id,
 				deps.siteId,
@@ -185,6 +206,7 @@ export function createRelayStream$(
 				undefined,
 				undefined,
 				streamId,
+				traceContext ? JSON.stringify(traceContext) : undefined,
 			);
 			writeOutbox(deps.db, outboxEntry);
 
@@ -248,6 +270,9 @@ export function createRelayStream$(
 							JSON.stringify({}),
 							30_000,
 							outboxEntry.id,
+							undefined,
+							undefined,
+							traceContext ? JSON.stringify(traceContext) : undefined,
 						);
 						try {
 							writeOutbox(deps.db, cancelEntry);

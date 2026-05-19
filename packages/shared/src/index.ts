@@ -30,3 +30,8 @@ export * from "./assert.js";
 export * from "./branded-types.js";
 export * from "./parse-json.js";
 export * from "./relay-schemas.js";
+
+// OpenTelemetry trace collection
+export * from "./trace-collector.js";
+export * from "./trace-exporter-context.js";
+export * from "./trace-reexport.js";

@@ -570,6 +570,18 @@ export function applySchema(db: Database): void {
 		WHERE stream_id IS NOT NULL AND processed = 0
 	`);
 
+	// trace_context column migrations for OpenTelemetry trace propagation (idempotent)
+	try {
+		db.run("ALTER TABLE relay_outbox ADD COLUMN trace_context TEXT");
+	} catch {
+		/* already exists */
+	}
+	try {
+		db.run("ALTER TABLE relay_inbox ADD COLUMN trace_context TEXT");
+	} catch {
+		/* already exists */
+	}
+
 	// ── Platform connector migrations (Phase 1) ──────────────────────────────
 
 	// Add platform_ids column to users (replaces discord_id)

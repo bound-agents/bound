@@ -43,8 +43,8 @@ export function writeOutbox(
 	// Entries with NULL idempotency_key are never deduplicated by idempotency
 	// (partial index excludes NULLs), but PK conflicts on `id` still ignore.
 	const result = db.run(
-		`INSERT OR IGNORE INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, created_at, expires_at, delivered)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+		`INSERT OR IGNORE INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, created_at, expires_at, delivered, trace_context)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
 		[
 			entry.id,
 			entry.source_site_id,
@@ -56,6 +56,7 @@ export function writeOutbox(
 			entry.payload,
 			entry.created_at,
 			entry.expires_at,
+			entry.trace_context ?? null,
 		],
 	);
 
@@ -115,8 +116,8 @@ export function insertInbox(
 ): boolean {
 	enforcePayloadLimit(entry.payload, maxPayloadBytes);
 	const result = db.run(
-		`INSERT OR IGNORE INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+		`INSERT OR IGNORE INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed, trace_context)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
 		[
 			entry.id,
 			entry.source_site_id,
@@ -127,6 +128,7 @@ export function insertInbox(
 			entry.payload,
 			entry.expires_at,
 			entry.received_at,
+			entry.trace_context ?? null,
 		],
 	);
 	return result.changes > 0;

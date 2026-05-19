@@ -31,6 +31,7 @@ import type {
 	RelayOutboxEntry,
 	ResourceReadPayload,
 	ResultPayload,
+	SerializedSpan,
 	StatusForwardPayload,
 	ToolCallPayload,
 	TypedEventEmitter,
@@ -39,6 +40,8 @@ import {
 	RELAY_REQUEST_KINDS,
 	RELAY_RESPONSE_KINDS,
 	type RelayRequestKind,
+	createScopedTraceCollector,
+	extractTraceContext,
 	hostMcpToolsSchema,
 	hostModelsSchema,
 	inferenceRequestPayloadSchema,
@@ -47,6 +50,7 @@ import {
 	parseJsonUntyped,
 	processPayloadSchema,
 } from "@bound/shared";
+import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import {
 	EMPTY,
 	type SchedulerLike,
@@ -67,6 +71,8 @@ import type { AgentLoopConfig } from "./types.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+const getTracer = () => trace.getTracer("bound.relay");
 
 /**
  * Handler for a relay request kind. Returns a response string (written as a
@@ -251,6 +257,7 @@ export class RelayProcessor {
 						expires_at: entry.expires_at,
 						received_at: now,
 						processed: 0,
+						trace_context: null,
 					});
 				}
 				// Response kinds are silently marked delivered — they are acknowledged by
@@ -571,6 +578,7 @@ export class RelayProcessor {
 			} satisfies ProcessPayload),
 			created_at: new Date().toISOString(),
 			expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+			trace_context: null,
 		});
 
 		return null;
@@ -760,6 +768,7 @@ export class RelayProcessor {
 			payload,
 			created_at: now.toISOString(),
 			expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
+			trace_context: null,
 		});
 	}
 
@@ -784,6 +793,7 @@ export class RelayProcessor {
 			payload: JSON.stringify(chunkPayload),
 			created_at: now.toISOString(),
 			expires_at: new Date(now.getTime() + 10 * 60 * 1000).toISOString(), // 10 min expiry for chunks
+			trace_context: null,
 		};
 		writeOutbox(this.db, outboxEntry);
 	}
@@ -1126,6 +1136,21 @@ export class RelayProcessor {
 		const FLUSH_INTERVAL_MS = 200;
 		const FLUSH_BUFFER_BYTES = 4096;
 
+		// Extract trace context from relay entry if present (AC5.2)
+		const traceContextStr = entry.trace_context;
+		let traceCarrier: Record<string, string> | null = null;
+		if (traceContextStr) {
+			try {
+				traceCarrier = JSON.parse(traceContextStr) as Record<string, string>;
+			} catch {
+				this.logger?.warn("relay-processor: malformed trace_context, skipping tracing", {
+					entryId: entry.id,
+				});
+			}
+		}
+		const parentContext = extractTraceContext(traceCarrier);
+		let collectedSpans: SerializedSpan[] = [];
+
 		// stream_id comes from the inbox entry (set by the requester in RELAY_STREAM)
 		const streamId = entry.stream_id;
 		if (!streamId) {
@@ -1263,7 +1288,8 @@ export class RelayProcessor {
 			lastFlushTime = Date.now();
 		};
 
-		try {
+		// Set up scoped trace collector if trace context is present (AC5.2, AC5.3)
+		const runInferenceWithTracing = async (): Promise<void> => {
 			// Do not pass payload.model to chat() — it's a logical ID (e.g., "opus")
 			// that the model router already resolved to this backend. The backend has
 			// its own configured model identifier (e.g., the full Bedrock ARN).
@@ -1271,6 +1297,9 @@ export class RelayProcessor {
 			// Fall back to the local model router's thinking / effort config when
 			// the requester doesn't include them in the payload — the remote host
 			// knows its own backend capabilities better than a distant caller.
+			if (!this.modelRouter) {
+				throw new Error("Model router is not available");
+			}
 			const effectiveThinking =
 				payload.thinking ?? this.modelRouter.getThinkingConfig(payload.model);
 			const effectiveEffort = payload.effort ?? this.modelRouter.getEffort(payload.model);
@@ -1321,6 +1350,36 @@ export class RelayProcessor {
 				// Normal completion — final flush as stream_end (AC3.3)
 				flush(true);
 			}
+		};
+
+		try {
+			if (traceCarrier) {
+				// Create scoped collector for hub-side tracing (AC5.2, AC5.3)
+				const collector = createScopedTraceCollector();
+				const tracer = collector.getTracer("bound.relay-hub");
+
+				// Run inference within extracted parent context
+				await context.with(parentContext, async () => {
+					const span = tracer.startSpan("relay.hub-inference");
+					try {
+						await runInferenceWithTracing();
+						span.setStatus({ code: SpanStatusCode.OK });
+					} catch (inferenceErr) {
+						span.setStatus({
+							code: SpanStatusCode.ERROR,
+							message: inferenceErr instanceof Error ? inferenceErr.message : String(inferenceErr),
+						});
+						throw inferenceErr;
+					} finally {
+						span.end();
+					}
+				});
+
+				collectedSpans = await collector.flush();
+			} else {
+				// No trace context — run without tracing
+				await runInferenceWithTracing();
+			}
 		} catch (err) {
 			// Surface the failure locally before bouncing it back to the requester.
 			// Without this, relayed inference errors only appear on the requester's
@@ -1354,6 +1413,25 @@ export class RelayProcessor {
 			}
 		} finally {
 			this.activeInferenceStreams.delete(entry.id);
+			// Write trace_data response if spans were collected (AC5.3)
+			if (collectedSpans.length > 0) {
+				if (entry.source_site_id) {
+					const now = new Date();
+					writeOutbox(this.db, {
+						id: randomUUID(),
+						source_site_id: this.siteId,
+						target_site_id: entry.source_site_id,
+						kind: "trace_data",
+						ref_id: entry.id,
+						idempotency_key: null,
+						stream_id: entry.stream_id ?? null,
+						payload: JSON.stringify(collectedSpans),
+						created_at: now.toISOString(),
+						expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
+						trace_context: null,
+					});
+				}
+			}
 		}
 	}
 
@@ -1448,6 +1526,7 @@ export class RelayProcessor {
 				payload: JSON.stringify(fwdPayload),
 				created_at: new Date().toISOString(),
 				expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+				trace_context: null,
 			};
 			try {
 				writeOutbox(this.db, outboxEntry);
@@ -1582,7 +1661,29 @@ export class RelayProcessor {
 					loopConfig,
 				);
 
-		const result = await agentLoop.run();
+		const tracer = getTracer();
+		const rootSpan = tracer.startSpan("relay.execute-process", {
+			attributes: {
+				"thread.id": payload.thread_id,
+				"user.id": payload.user_id ?? "",
+				"source.site_id": entry.source_site_id,
+				platform: payload.platform ?? "",
+			},
+		});
+
+		let result: Awaited<ReturnType<typeof agentLoop.run>>;
+		try {
+			result = await context.with(trace.setSpan(context.active(), rootSpan), () => agentLoop.run());
+			rootSpan.setStatus({ code: SpanStatusCode.OK });
+		} catch (err) {
+			rootSpan.setStatus({
+				code: SpanStatusCode.ERROR,
+				message: err instanceof Error ? err.message : String(err),
+			});
+			throw err;
+		} finally {
+			rootSpan.end();
+		}
 
 		return {
 			yielded: result.yielded,
@@ -1623,6 +1724,7 @@ export class RelayProcessor {
 			expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
 			received_at: new Date().toISOString(),
 			processed: 0,
+			trace_context: null,
 		};
 	}
 }

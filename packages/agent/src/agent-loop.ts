@@ -15,6 +15,7 @@ import type { InferenceRequestPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
 import type { ContextDebugInfo, EventMap, SyncConfig } from "@bound/shared";
 import { countContentTokens, countTokens, formatError } from "@bound/shared";
+import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 
 import { Observable, Subject, firstValueFrom, lastValueFrom } from "rxjs";
 import { tap } from "rxjs/operators";
@@ -67,6 +68,11 @@ export const SILENCE_TIMEOUT_MS = 600_000;
 export const MAX_SILENCE_RETRIES = 3;
 /** Default max output tokens. Bedrock defaults to 4096 if unset, which truncates large tool calls. */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
+
+/** Lazily get the tracer to ensure tests can register their provider first */
+function getTracer() {
+	return trace.getTracer("bound.agent-loop");
+}
 
 /**
  * Circuit breaker for consecutive truncated tool calls on the same tool name.
@@ -282,9 +288,11 @@ export class AgentLoop {
 
 		try {
 			this.transition("HYDRATE_FS");
+			const hydrateSpan = getTracer().startSpan("agent-loop.hydrate-fs");
 			if (this.sandbox.capturePreSnapshot) {
 				await this.sandbox.capturePreSnapshot();
 			}
+			hydrateSpan.end();
 
 			this.transition("ASSEMBLE_CONTEXT");
 
@@ -443,229 +451,239 @@ export class AgentLoop {
 			const cachedForWarm = this.getCachedTurnState();
 			if (isWarmPathEligible && cachedForWarm) {
 				// WARM PATH: Try to reuse stored messages and append delta
-				const cached = cachedForWarm;
-
-				// 1. Fetch delta messages from DB (created after lastMessageCreatedAt)
-				const deltaRows = this.ctx.db
-					.query(
-						"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted FROM messages WHERE thread_id = ? AND deleted = 0 AND created_at > ? ORDER BY created_at ASC, rowid ASC",
-					)
-					.all(this.config.threadId, cached.lastMessageCreatedAt) as Array<{
-					id: string;
-					thread_id: string;
-					role: string;
-					content: string;
-					model_id: string | null;
-					tool_name: string | null;
-					created_at: string;
-					modified_at: string | null;
-					host_origin: string;
-					deleted: number;
-				}>;
-
-				// 2. Convert and sanitize delta messages
-				const deltaMessages = convertDeltaMessages(deltaRows);
-				deltaMessageCount = deltaMessages.length;
-
-				this.ctx.logger.debug("[agent-loop] Warm path: delta messages fetched", {
-					storedMessageCount: cached.messages.length,
-					deltaMessageCount: deltaMessages.length,
+				const assembleContextSpan = getTracer().startSpan("agent-loop.assemble-context", {
+					attributes: {
+						"context.cache_path": "warm",
+					},
 				});
 
-				// 3. Rebuild message array: stored (without old developer tail) + delta.
-				//
-				// Evict any prior rolling cache-role markers. Anthropic caps each
-				// request at 4 cache_control blocks across system + tools + messages.
-				// The cold path places a FIXED cache marker at `cached.fixedCacheIdx`;
-				// the warm path then appends a ROLLING marker at the tail on every
-				// turn. Without eviction, each successive warm turn adds a new
-				// rolling marker on top of the previous one — after a few turns
-				// the accumulated message-level cache_control count alone can hit
-				// or exceed 4, yielding "Found 5" 400s from the Claude API.
-				// We keep the fixed marker (it anchors the stable prefix) and
-				// strip every other cache-role entry before placing the new one.
-				const storedMessages: import("@bound/llm").LLMMessage[] = [];
-				for (let i = 0; i < cached.messages.length; i++) {
-					const m = cached.messages[i];
-					if (m.role === "cache" && i !== cached.fixedCacheIdx) {
-						// Drop stale rolling cache markers from earlier warm turns.
-						continue;
-					}
-					storedMessages.push(m);
-				}
-				const lastIdx = storedMessages.length - 1;
-				if (storedMessages[lastIdx]?.role === "developer") {
-					storedMessages.pop();
-				}
+				await context.with(trace.setSpan(context.active(), assembleContextSpan), async () => {
+					const cached = cachedForWarm;
 
-				storedMessages.push(...deltaMessages);
+					// 1. Fetch delta messages from DB (created after lastMessageCreatedAt)
+					const deltaRows = this.ctx.db
+						.query(
+							"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted FROM messages WHERE thread_id = ? AND deleted = 0 AND created_at > ? ORDER BY created_at ASC, rowid ASC",
+						)
+						.all(this.config.threadId, cached.lastMessageCreatedAt) as Array<{
+						id: string;
+						thread_id: string;
+						role: string;
+						content: string;
+						model_id: string | null;
+						tool_name: string | null;
+						created_at: string;
+						modified_at: string | null;
+						host_origin: string;
+						deleted: number;
+					}>;
 
-				// 3a. INCREMENTAL THINKING COMPACTION
-				// Strip thinking blocks from tool_call messages that have aged past
-				// the recent window. Mirrors the cold path's Stage 1.7 behavior so
-				// context degrades gradually rather than cliff-falling on cold
-				// reassembly. Idempotent: already-stripped messages are skipped via
-				// a cheap substring check before JSON.parse.
-				const recentWindow = Math.max(4, Math.min(20, Math.floor(contextWindow / 2500)));
-				const compactionBoundary = Math.max(0, storedMessages.length - recentWindow);
-				for (let i = 0; i < compactionBoundary; i++) {
-					const msg = storedMessages[i];
-					if (msg.role === "tool_call" && typeof msg.content === "string") {
-						msg.content = stripThinkingFromToolCall(msg.content);
-					}
-				}
+					// 2. Convert and sanitize delta messages
+					const deltaMessages = convertDeltaMessages(deltaRows);
+					deltaMessageCount = deltaMessages.length;
 
-				// 3b. If the merged stored+delta array contains a tool_call with no
-				//    matching tool_result before a non-tool turn (common when a
-				//    client tool was in flight and the user typed a follow-up, or
-				//    when the loop yielded mid-batch), the warm path cannot safely
-				//    ship this payload — the AI SDK prompt validator raises
-				//    `MissingToolResultsError` and the whole turn fails. Fall
-				//    through to the cold path so Stage 3 sanitization can
-				//    synthesize the missing result. Clearing the cached state
-				//    forces a full re-assembly on the next iteration as well.
-				const warmOrphanedToolCall = hasOrphanedToolCall(storedMessages);
-				if (warmOrphanedToolCall) {
-					this.ctx.logger.info(
-						"[agent-loop] Warm path detected orphaned tool_call, falling back to cold reassembly",
-						{
-							threadId: this.config.threadId,
-							storedMessageCount: cached.messages.length,
-							deltaMessageCount: deltaMessages.length,
-						},
-					);
-					this.clearCachedTurnState();
-					// Fall through to the cold path by leaving usedWarmPath=false.
-				}
-
-				if (!warmOrphanedToolCall) {
-					// 4. Place rolling cache message at messages[length-2] (before last delta
-					//    message). Gated on effective backend capabilities — skipped when
-					//    prompt_caching is explicitly disabled (e.g. MiniMax on Bedrock)
-					//    to avoid the 403 "unsupported model / prompt caching not allowed".
-					maybePlaceCacheMarker(storedMessages, "rolling", cacheMarkerCaps ?? undefined);
-
-					// 5. Inject fresh volatile developer message at tail
-					const volatileContext = buildVolatileContext({
-						db: this.ctx.db,
-						threadId: this.config.threadId,
-						taskId: this.config.taskId,
-						userId: this.config.userId,
-						siteId: this.ctx.siteId,
-						hostName: this.ctx.hostName,
-						currentModel: resolvedModelForDebug,
-						relayInfo,
-						platformContext: this.config.platform
-							? {
-									platform: this.config.platform,
-								}
-							: undefined,
-						systemPromptAddition: this.config.systemPromptAddition,
+					this.ctx.logger.debug("[agent-loop] Warm path: delta messages fetched", {
+						storedMessageCount: cached.messages.length,
+						deltaMessageCount: deltaMessages.length,
 					});
 
-					storedMessages.push({
-						role: "developer",
-						content: volatileContext.content,
-					});
+					// 3. Rebuild message array: stored (without old developer tail) + delta.
+					//
+					// Evict any prior rolling cache-role markers. Anthropic caps each
+					// request at 4 cache_control blocks across system + tools + messages.
+					// The cold path places a FIXED cache marker at `cached.fixedCacheIdx`;
+					// the warm path then appends a ROLLING marker at the tail on every
+					// turn. Without eviction, each successive warm turn adds a new
+					// rolling marker on top of the previous one — after a few turns
+					// the accumulated message-level cache_control count alone can hit
+					// or exceed 4, yielding "Found 5" 400s from the Claude API.
+					// We keep the fixed marker (it anchors the stable prefix) and
+					// strip every other cache-role entry before placing the new one.
+					const storedMessages: import("@bound/llm").LLMMessage[] = [];
+					for (let i = 0; i < cached.messages.length; i++) {
+						const m = cached.messages[i];
+						if (m.role === "cache" && i !== cached.fixedCacheIdx) {
+							// Drop stale rolling cache markers from earlier warm turns.
+							continue;
+						}
+						storedMessages.push(m);
+					}
+					const lastIdx = storedMessages.length - 1;
+					if (storedMessages[lastIdx]?.role === "developer") {
+						storedMessages.pop();
+					}
 
-					// 6. Check high-water mark: estimate total token count and compare against
-					//    the safety-margined effective budget. Using raw contextWindow here would
-					//    allow the warm path to ship a payload that overflows on the wire when the
-					//    estimator undercounts vs the backend's real tokenizer — same failure mode
-					//    as the cold-path gate in context-assembly.ts.
-					const storedTokens = storedMessages.reduce(
-						(sum, msg) => sum + countContentTokens(msg.content),
-						0,
-					);
-					const systemTokens = cached.systemPrompt ? countContentTokens(cached.systemPrompt) : 0;
-					const estimatedTotal = storedTokens + systemTokens + toolTokenEstimate;
-					const warmSafetyMargin = computeSafetyMargin(contextWindow);
-					const warmEffectiveBudget = Math.max(0, contextWindow - warmSafetyMargin);
+					storedMessages.push(...deltaMessages);
 
-					if (estimatedTotal > warmEffectiveBudget) {
-						// High-water mark exceeded — fall through to cold path
+					// 3a. INCREMENTAL THINKING COMPACTION
+					// Strip thinking blocks from tool_call messages that have aged past
+					// the recent window. Mirrors the cold path's Stage 1.7 behavior so
+					// context degrades gradually rather than cliff-falling on cold
+					// reassembly. Idempotent: already-stripped messages are skipped via
+					// a cheap substring check before JSON.parse.
+					const recentWindow = Math.max(4, Math.min(20, Math.floor(contextWindow / 2500)));
+					const compactionBoundary = Math.max(0, storedMessages.length - recentWindow);
+					for (let i = 0; i < compactionBoundary; i++) {
+						const msg = storedMessages[i];
+						if (msg.role === "tool_call" && typeof msg.content === "string") {
+							msg.content = stripThinkingFromToolCall(msg.content);
+						}
+					}
+
+					// 3b. If the merged stored+delta array contains a tool_call with no
+					//    matching tool_result before a non-tool turn (common when a
+					//    client tool was in flight and the user typed a follow-up, or
+					//    when the loop yielded mid-batch), the warm path cannot safely
+					//    ship this payload — the AI SDK prompt validator raises
+					//    `MissingToolResultsError` and the whole turn fails. Fall
+					//    through to the cold path so Stage 3 sanitization can
+					//    synthesize the missing result. Clearing the cached state
+					//    forces a full re-assembly on the next iteration as well.
+					const warmOrphanedToolCall = hasOrphanedToolCall(storedMessages);
+					if (warmOrphanedToolCall) {
 						this.ctx.logger.info(
-							"[agent-loop] Warm path exceeded context budget, triggering cold reassembly",
+							"[agent-loop] Warm path detected orphaned tool_call, falling back to cold reassembly",
 							{
-								estimatedTotal,
-								contextWindow,
-								effectiveBudget: warmEffectiveBudget,
-								safetyMargin: warmSafetyMargin,
-								storedTokens,
-								systemTokens,
-								toolTokenEstimate,
+								threadId: this.config.threadId,
+								storedMessageCount: cached.messages.length,
+								deltaMessageCount: deltaMessages.length,
 							},
 						);
-						// Clear cached state to force cold path on next iteration
 						this.clearCachedTurnState();
-						// Fall through to cold path by not setting usedWarmPath or llmMessages
-					} else {
-						// Warm path succeeded within budget
-						usedWarmPath = true;
+						// Fall through to the cold path by leaving usedWarmPath=false.
+					}
 
-						// 7. Query latest message created_at for next turn
-						const newLastRow = this.ctx.db
-							.query(
-								"SELECT created_at FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
-							)
-							.get(this.config.threadId) as { created_at: string } | null;
+					if (!warmOrphanedToolCall) {
+						// 4. Place rolling cache message at messages[length-2] (before last delta
+						//    message). Gated on effective backend capabilities — skipped when
+						//    prompt_caching is explicitly disabled (e.g. MiniMax on Bedrock)
+						//    to avoid the 403 "unsupported model / prompt caching not allowed".
+						maybePlaceCacheMarker(storedMessages, "rolling", cacheMarkerCaps ?? undefined);
 
-						// 8. Update stored state.
-						// Spread-copy so later mutations of `llmMessages` (e.g. the
-						// loop appending tool_call blocks after the LLM response) do
-						// NOT leak into the cached state. Aliasing here previously
-						// caused the next warm iteration to re-append the delta on
-						// top of an already-appended tool_call, producing duplicated
-						// tool_use blocks and a Bedrock tool_use_id_mismatch.
-						//
-						// Recompute cacheMessagePositions from the freshly rebuilt
-						// array since stale rolling markers were evicted in step 3.
-						// The fixed cache (cold-path anchor) survived at its original
-						// index; the new rolling cache sits at length-2.
-						const fixedIdx = cached.fixedCacheIdx;
-						const rollingIdx = storedMessages.length - 2;
-						const newCachePositions: number[] = [];
-						if (fixedIdx >= 0 && fixedIdx < storedMessages.length) {
-							newCachePositions.push(fixedIdx);
-						}
-						if (rollingIdx !== fixedIdx && rollingIdx >= 0) {
-							newCachePositions.push(rollingIdx);
-						}
-						this.setCachedTurnState({
-							...cached,
-							messages: [...storedMessages],
-							cacheMessagePositions: newCachePositions,
-							lastMessageCreatedAt: newLastRow?.created_at ?? new Date().toISOString(),
+						// 5. Inject fresh volatile developer message at tail
+						const volatileContext = buildVolatileContext({
+							db: this.ctx.db,
+							threadId: this.config.threadId,
+							taskId: this.config.taskId,
+							userId: this.config.userId,
+							siteId: this.ctx.siteId,
+							hostName: this.ctx.hostName,
+							currentModel: resolvedModelForDebug,
+							relayInfo,
+							platformContext: this.config.platform
+								? {
+										platform: this.config.platform,
+									}
+								: undefined,
+							systemPromptAddition: this.config.systemPromptAddition,
 						});
 
-						// 9. Use stored messages directly (no system messages in the array)
-						llmMessages = storedMessages;
+						storedMessages.push({
+							role: "developer",
+							content: volatileContext.content,
+						});
 
-						// Rebuild section breakdown for debug. Reuses stable-prefix
-						// sections (system, skill-context, tools) from the cold-path
-						// snapshot stored in cached state, and recomputes the dynamic
-						// ones (history, memory, task-digest, volatile-other) from the
-						// fresh volatileContext and current storedMessages. Falls back
-						// to an empty array if the cache pre-dates this fix and has no
-						// stored debugSections — next cold rebuild will repopulate it.
-						const warmSections = cached.debugSections
-							? rebuildWarmSections({
-									cachedSections: cached.debugSections,
-									storedMessages,
-									volatileCtx: volatileContext,
-								})
-							: [];
+						// 6. Check high-water mark: estimate total token count and compare against
+						//    the safety-margined effective budget. Using raw contextWindow here would
+						//    allow the warm path to ship a payload that overflows on the wire when the
+						//    estimator undercounts vs the backend's real tokenizer — same failure mode
+						//    as the cold-path gate in context-assembly.ts.
+						const storedTokens = storedMessages.reduce(
+							(sum, msg) => sum + countContentTokens(msg.content),
+							0,
+						);
+						const systemTokens = cached.systemPrompt ? countContentTokens(cached.systemPrompt) : 0;
+						const estimatedTotal = storedTokens + systemTokens + toolTokenEstimate;
+						const warmSafetyMargin = computeSafetyMargin(contextWindow);
+						const warmEffectiveBudget = Math.max(0, contextWindow - warmSafetyMargin);
 
-						contextDebug = {
-							contextWindow: contextWindow,
-							totalEstimated: estimatedTotal,
-							model: resolvedModelForDebug ?? "unknown",
-							sections: warmSections,
-							budgetPressure: false,
-							truncated: 0,
-						};
+						if (estimatedTotal > warmEffectiveBudget) {
+							// High-water mark exceeded — fall through to cold path
+							this.ctx.logger.info(
+								"[agent-loop] Warm path exceeded context budget, triggering cold reassembly",
+								{
+									estimatedTotal,
+									contextWindow,
+									effectiveBudget: warmEffectiveBudget,
+									safetyMargin: warmSafetyMargin,
+									storedTokens,
+									systemTokens,
+									toolTokenEstimate,
+								},
+							);
+							// Clear cached state to force cold path on next iteration
+							this.clearCachedTurnState();
+							// Fall through to cold path by not setting usedWarmPath or llmMessages
+						} else {
+							// Warm path succeeded within budget
+							usedWarmPath = true;
+
+							// 7. Query latest message created_at for next turn
+							const newLastRow = this.ctx.db
+								.query(
+									"SELECT created_at FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+								)
+								.get(this.config.threadId) as { created_at: string } | null;
+
+							// 8. Update stored state.
+							// Spread-copy so later mutations of `llmMessages` (e.g. the
+							// loop appending tool_call blocks after the LLM response) do
+							// NOT leak into the cached state. Aliasing here previously
+							// caused the next warm iteration to re-append the delta on
+							// top of an already-appended tool_call, producing duplicated
+							// tool_use blocks and a Bedrock tool_use_id_mismatch.
+							//
+							// Recompute cacheMessagePositions from the freshly rebuilt
+							// array since stale rolling markers were evicted in step 3.
+							// The fixed cache (cold-path anchor) survived at its original
+							// index; the new rolling cache sits at length-2.
+							const fixedIdx = cached.fixedCacheIdx;
+							const rollingIdx = storedMessages.length - 2;
+							const newCachePositions: number[] = [];
+							if (fixedIdx >= 0 && fixedIdx < storedMessages.length) {
+								newCachePositions.push(fixedIdx);
+							}
+							if (rollingIdx !== fixedIdx && rollingIdx >= 0) {
+								newCachePositions.push(rollingIdx);
+							}
+							this.setCachedTurnState({
+								...cached,
+								messages: [...storedMessages],
+								cacheMessagePositions: newCachePositions,
+								lastMessageCreatedAt: newLastRow?.created_at ?? new Date().toISOString(),
+							});
+
+							// 9. Use stored messages directly (no system messages in the array)
+							llmMessages = storedMessages;
+
+							// Rebuild section breakdown for debug. Reuses stable-prefix
+							// sections (system, skill-context, tools) from the cold-path
+							// snapshot stored in cached state, and recomputes the dynamic
+							// ones (history, memory, task-digest, volatile-other) from the
+							// fresh volatileContext and current storedMessages. Falls back
+							// to an empty array if the cache pre-dates this fix and has no
+							// stored debugSections — next cold rebuild will repopulate it.
+							const warmSections = cached.debugSections
+								? rebuildWarmSections({
+										cachedSections: cached.debugSections,
+										storedMessages,
+										volatileCtx: volatileContext,
+									})
+								: [];
+
+							contextDebug = {
+								contextWindow: contextWindow,
+								totalEstimated: estimatedTotal,
+								model: resolvedModelForDebug ?? "unknown",
+								sections: warmSections,
+								budgetPressure: false,
+								truncated: 0,
+							};
+						}
 					}
-				}
+				});
+
+				assembleContextSpan.end();
 			}
 
 			// Log warm/cold path decision with reason and counts
@@ -696,28 +714,41 @@ export class AgentLoop {
 				});
 
 				// Deterministic compaction keeps cached prefixes stable while reducing context size
-				const result = assembleContext({
-					db: this.ctx.db,
-					threadId: this.config.threadId,
-					taskId: this.config.taskId,
-					userId: this.config.userId,
-					currentModel: resolvedModelForDebug,
-					contextWindow: contextWindow,
-					hostName: this.ctx.hostName,
-					siteId: this.ctx.siteId,
-					relayInfo,
-					platformContext: this.config.platform
-						? {
-								platform: this.config.platform,
-							}
-						: undefined,
-					targetCapabilities: resolvedCaps ?? undefined,
-					toolTokenEstimate,
-					compactToolResults: true,
-					noHistory: this.config.noHistory,
-					systemPromptAddition: this.config.systemPromptAddition,
-					commandRegistry: this.ctx.commandRegistry,
+				const assembleContextSpan = getTracer().startSpan("agent-loop.assemble-context", {
+					attributes: {
+						"context.cache_path": "cold",
+					},
 				});
+
+				const result = await context.with(
+					trace.setSpan(context.active(), assembleContextSpan),
+					async () => {
+						return assembleContext({
+							db: this.ctx.db,
+							threadId: this.config.threadId,
+							taskId: this.config.taskId,
+							userId: this.config.userId,
+							currentModel: resolvedModelForDebug,
+							contextWindow: contextWindow,
+							hostName: this.ctx.hostName,
+							siteId: this.ctx.siteId,
+							relayInfo,
+							platformContext: this.config.platform
+								? {
+										platform: this.config.platform,
+									}
+								: undefined,
+							targetCapabilities: resolvedCaps ?? undefined,
+							toolTokenEstimate,
+							compactToolResults: true,
+							noHistory: this.config.noHistory,
+							systemPromptAddition: this.config.systemPromptAddition,
+							commandRegistry: this.ctx.commandRegistry,
+						});
+					},
+				);
+
+				assembleContextSpan.end();
 
 				// assembleContext now returns systemPrompt separately — no system-role
 				// messages in the array, no filtering needed.
@@ -808,7 +839,17 @@ export class AgentLoop {
 				}
 
 				turnCount++;
-				const turnStartTime = Date.now();
+				const turnSpan = getTracer().startSpan("agent-loop.turn", {
+					attributes: {
+						"thread.id": this.config.threadId,
+						"task.id": this.config.taskId ?? "",
+					},
+				});
+				// Establish turn context for child span nesting.
+				// We can't use context.with() around the loop body (break/continue),
+				// so we pass turnCtx explicitly to child span creation.
+				const turnCtx = trace.setSpan(context.active(), turnSpan);
+
 				this.transition("LLM_CALL");
 				const chunks: StreamChunk[] = [];
 				let currentTurnId: string | null = null;
@@ -822,6 +863,8 @@ export class AgentLoop {
 					kind: this.lastModelResolution?.kind ?? "unknown",
 				});
 
+				const llmCallSpan = getTracer().startSpan("agent-loop.llm-call", {}, turnCtx);
+				const llmCallCtx = trace.setSpan(turnCtx, llmCallSpan);
 				try {
 					// System prompt comes from assembleContext (cold path) or cached state (warm path).
 					// No filtering needed — llmMessages contains no system-role messages.
@@ -949,42 +992,87 @@ export class AgentLoop {
 								// large contexts with extended thinking enabled.
 								this.config.onActivity?.();
 								try {
-									const chatStream = resolution.backend.chat({
-										messages: llmMessages,
-										system: systemPrompt || undefined,
-										tools: mergedTools,
-										max_tokens: clampMaxOutputTokens(
-											DEFAULT_MAX_OUTPUT_TOKENS,
-											resolution.maxOutputTokens,
-										),
-										thinking: resolution.thinkingConfig,
-										effort: resolution.effort,
-										resolveFileRef: createFileRefResolver(this.ctx.db),
-										signal: this.config.abortSignal,
-									});
-									for await (const chunk of this.withSilenceTimeout(
-										chatStream,
-										effectiveSilenceTimeout,
-										() => this.config.onActivity?.(),
-									)) {
-										if (this.aborted) break;
-										// Cooperative yield: check on every chunk during streaming
-										if (this.config.shouldYield?.()) {
-											this.yielded = true;
-											this.aborted = true;
-											break;
+									// Create a child span for the driver chat call with TTFT/completion tracking
+									const driverSpan = getTracer().startSpan(
+										"llm-driver.chat",
+										{
+											attributes: {
+												"llm.model": getResolvedModelId(
+													this.lastModelResolution,
+													this.config.modelId || "unknown",
+												),
+												"llm.provider": "local",
+											},
+										},
+										llmCallCtx,
+									);
+
+									let ttftRecorded = false;
+
+									try {
+										const chatStream = resolution.backend.chat({
+											messages: llmMessages,
+											system: systemPrompt || undefined,
+											tools: mergedTools,
+											max_tokens: clampMaxOutputTokens(
+												DEFAULT_MAX_OUTPUT_TOKENS,
+												resolution.maxOutputTokens,
+											),
+											thinking: resolution.thinkingConfig,
+											effort: resolution.effort,
+											resolveFileRef: createFileRefResolver(this.ctx.db),
+											signal: this.config.abortSignal,
+										});
+										for await (const chunk of this.withSilenceTimeout(
+											chatStream,
+											effectiveSilenceTimeout,
+											() => this.config.onActivity?.(),
+										)) {
+											if (this.aborted) break;
+											// Cooperative yield: check on every chunk during streaming
+											if (this.config.shouldYield?.()) {
+												this.yielded = true;
+												this.aborted = true;
+												break;
+											}
+											// Reset the inactivity timeout — any chunk (including
+											// heartbeats) proves the LLM is still working. Heartbeats
+											// from Bedrock extended-thinking warm-up can take >5min
+											// before the first content chunk; without resetting here
+											// the outer timer in message-handler.ts aborts mid-session.
+											this.config.onActivity?.();
+											// Heartbeats reset the timeout but carry no data
+											if (chunk.type === "heartbeat") continue;
+
+											// Record TTFT on first non-heartbeat chunk
+											if (!ttftRecorded) {
+												driverSpan.addEvent("time-to-first-token");
+												ttftRecorded = true;
+											}
+
+											chunks.push(chunk);
 										}
-										// Reset the inactivity timeout — any chunk (including
-										// heartbeats) proves the LLM is still working. Heartbeats
-										// from Bedrock extended-thinking warm-up can take >5min
-										// before the first content chunk; without resetting here
-										// the outer timer in message-handler.ts aborts mid-session.
-										this.config.onActivity?.();
-										// Heartbeats reset the timeout but carry no data
-										if (chunk.type === "heartbeat") continue;
-										chunks.push(chunk);
+
+										// Record completion event with token counts from the done chunk
+										const doneChunk = chunks.find((c) => c.type === "done");
+										if (doneChunk && doneChunk.type === "done") {
+											driverSpan.addEvent("completion", {
+												"llm.input_tokens": doneChunk.usage.input_tokens,
+												"llm.output_tokens": doneChunk.usage.output_tokens,
+											});
+										}
+
+										driverSpan.setStatus({ code: SpanStatusCode.OK });
+										driverSpan.end();
+										break; // Stream completed — exit retry loop
+									} catch (streamErr) {
+										driverSpan.setStatus({
+											code: SpanStatusCode.ERROR,
+											message: streamErr instanceof Error ? streamErr.message : String(streamErr),
+										});
+										driverSpan.end();
+										throw streamErr;
 									}
-									break; // Stream completed — exit retry loop
 								} catch (silenceErr) {
 									const isSilenceTimeout =
 										silenceErr instanceof Error && silenceErr.message.includes("silence timeout");
@@ -1005,7 +1093,14 @@ export class AgentLoop {
 							break;
 						}
 					}
+					llmCallSpan.setStatus({ code: SpanStatusCode.OK });
+					llmCallSpan.end();
 				} catch (error) {
+					llmCallSpan.setStatus({
+						code: SpanStatusCode.ERROR,
+						message: error instanceof Error ? error.message : String(error),
+					});
+					llmCallSpan.end();
 					// Transient transport errors (HTTP/2 drops, socket resets): retry
 					// Non-transient errors (4xx client errors like invalid JSON) are NOT retried.
 					const errMsg = error instanceof Error ? error.message : String(error);
@@ -1016,6 +1111,7 @@ export class AgentLoop {
 							max: MAX_SILENCE_RETRIES,
 							error: errMsg,
 						});
+						turnSpan.end();
 						continue; // Re-enter the while loop → LLM_CALL
 					}
 
@@ -1069,6 +1165,7 @@ export class AgentLoop {
 									},
 								);
 								transportRetries = 0;
+								turnSpan.end();
 								continue;
 							}
 
@@ -1086,7 +1183,6 @@ export class AgentLoop {
 						error: errorMsg,
 						statusCode: error instanceof LLMError ? error.statusCode : null,
 						model: getResolvedModelId(this.lastModelResolution, this.config.modelId || "unknown"),
-						durationMs: Date.now() - turnStartTime,
 					});
 
 					// Record the failed attempt so cross-host cost/usage queries
@@ -1124,6 +1220,12 @@ export class AgentLoop {
 
 					this.emitAlert(`Error: ${errorMsg}`);
 
+					turnSpan.setStatus({
+						code: SpanStatusCode.ERROR,
+						message: errorMsg,
+					});
+					turnSpan.end();
+
 					return {
 						messagesCreated: this.messagesCreated,
 						toolCallsMade: this.toolCallsMade,
@@ -1134,11 +1236,9 @@ export class AgentLoop {
 
 				this.transition("PARSE_RESPONSE");
 				const parsed = this.parseResponseChunks(chunks);
-				const llmDurationMs = Date.now() - turnStartTime;
 
 				this.ctx.logger.info("[agent-loop] LLM response received", {
 					turn: turnCount,
-					durationMs: llmDurationMs,
 					inputTokens: parsed.usage.inputTokens,
 					outputTokens: parsed.usage.outputTokens,
 					cacheRead: parsed.usage.cacheReadTokens,
@@ -1204,6 +1304,7 @@ export class AgentLoop {
 						this.broadcastMessage(cancelId);
 						this.messagesCreated++;
 					}
+					turnSpan.end();
 					break;
 				}
 
@@ -1232,6 +1333,16 @@ export class AgentLoop {
 						},
 						this.ctx.siteId,
 					);
+
+					// Set turn span attributes after LLM response
+					turnSpan.setAttributes({
+						"model.id": resolvedModelId,
+						"model.kind": this.lastModelResolution?.kind ?? "unknown",
+						"llm.input_tokens": parsed.usage.inputTokens,
+						"llm.output_tokens": parsed.usage.outputTokens,
+						"llm.cache_read_tokens": parsed.usage.cacheReadTokens ?? 0,
+						"llm.cache_write_tokens": parsed.usage.cacheWriteTokens ?? 0,
+					});
 				} catch (error) {
 					this.ctx.logger.warn("Failed to record turn metrics", {
 						threadId: this.config.threadId,
@@ -1345,6 +1456,7 @@ export class AgentLoop {
 					}
 
 					this.transition("TOOL_EXECUTE");
+					const toolExecuteSpan = getTracer().startSpan("agent-loop.tool-execute", {}, turnCtx);
 					const toolResults: Array<{
 						toolCall: ParsedToolCall;
 						content: string;
@@ -1565,6 +1677,8 @@ export class AgentLoop {
 						}
 					}
 
+					toolExecuteSpan.end();
+
 					// Persist tool messages before next LLM call (pairing invariant)
 					this.transition("TOOL_PERSIST");
 
@@ -1726,6 +1840,7 @@ export class AgentLoop {
 							count: pendingClientCalls.length,
 						});
 						continueLoop = false;
+						turnSpan.end();
 						break;
 					}
 
@@ -1735,14 +1850,21 @@ export class AgentLoop {
 							"[agent-loop] Yielding after tool persistence (cooperative cancel)",
 						);
 						this.yielded = true;
+						turnSpan.end();
 						break;
 					}
 
+					turnSpan.end();
 					continue;
 				}
 
 				// No tool calls — persist final response and exit
 				this.transition("RESPONSE_PERSIST");
+				const responsePersistSpan = getTracer().startSpan(
+					"agent-loop.response-persist",
+					{},
+					turnCtx,
+				);
 				const assistantContent = parsed.textContent || "";
 
 				if (assistantContent) {
@@ -1760,11 +1882,14 @@ export class AgentLoop {
 					this.broadcastMessage(assistantMsgId);
 					this.messagesCreated++;
 				}
+				responsePersistSpan.end();
 
 				continueLoop = false;
+				turnSpan.end();
 			}
 
 			this.transition("FS_PERSIST");
+			const fsPersistSpan = getTracer().startSpan("agent-loop.fs-persist");
 			if (this.sandbox.persistFs) {
 				const persistResult = await this.sandbox.persistFs();
 				if (persistResult && typeof persistResult.changes === "number") {
@@ -1792,6 +1917,7 @@ export class AgentLoop {
 					}
 				}
 			}
+			fsPersistSpan.end();
 
 			this.transition("QUEUE_CHECK");
 			try {
@@ -1920,81 +2046,128 @@ export class AgentLoop {
 				};
 			}
 
-			switch (tool.kind) {
-				case "client":
-					return {
-						clientToolCall: true,
-						toolName: toolCall.name,
-						callId: toolCall.id,
-						arguments: toolCall.input,
-					} satisfies ClientToolCallRequest;
+			// Client tools are deferred — no execution span here
+			if (tool.kind === "client") {
+				return {
+					clientToolCall: true,
+					toolName: toolCall.name,
+					callId: toolCall.id,
+					arguments: toolCall.input,
+				} satisfies ClientToolCallRequest;
+			}
 
-				case "platform": {
-					// Platform tools call MCP client.callTool directly via execute closure.
-					// This preserves full MCP result structures and bypasses bash command parsing.
-					if (!tool.execute) {
-						return {
-							content: `Error: platform tool "${toolCall.name}" has no execute handler`,
-							exitCode: 1,
-						};
-					}
-					try {
+			// Create span for all other tool kinds
+			const toolSpan = getTracer().startSpan("tool.execute", {
+				attributes: {
+					"tool.name": toolCall.name,
+					"tool.kind": tool.kind,
+					"tool.call_id": toolCall.id,
+				},
+			});
+
+			try {
+				let result: { content: string; exitCode: number };
+
+				switch (tool.kind) {
+					case "platform": {
+						// Platform tools call MCP client.callTool directly via execute closure.
+						// This preserves full MCP result structures and bypasses bash command parsing.
+						if (!tool.execute) {
+							result = {
+								content: `Error: platform tool "${toolCall.name}" has no execute handler`,
+								exitCode: 1,
+							};
+							break;
+						}
 						// biome-ignore lint/suspicious/noExplicitAny: tool.execute result type is either string or BuiltInToolResult
-						const result = await (tool.execute as any)(toolCall.input);
+						const platformResult = await (tool.execute as any)(toolCall.input);
 						// Platform tools return strings, but handle both just like builtin does
-						if (Array.isArray(result)) {
-							const hasError = result.some(
+						if (Array.isArray(platformResult)) {
+							const hasError = platformResult.some(
 								(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
 							);
-							return { content: JSON.stringify(result), exitCode: hasError ? 1 : 0 };
+							result = { content: JSON.stringify(platformResult), exitCode: hasError ? 1 : 0 };
+						} else {
+							const exitCode = platformResult.startsWith("Error:") ? 1 : 0;
+							result = { content: platformResult, exitCode };
 						}
-						const exitCode = result.startsWith("Error:") ? 1 : 0;
-						return { content: result, exitCode };
-					} catch (err) {
-						const errorMsg = err instanceof Error ? err.message : String(err);
-						return { content: `Error: ${errorMsg}`, exitCode: 1 };
+						break;
+					}
+
+					case "sandbox": {
+						if (!this.sandbox.exec) {
+							result = { content: "Error: sandbox execution not available", exitCode: 1 };
+							break;
+						}
+						const command = toolCall.input.command;
+						if (typeof command !== "string") {
+							result = {
+								content: `Error: bash tool requires a "command" string parameter`,
+								exitCode: 1,
+							};
+							break;
+						}
+						const sandboxResult = await this.sandbox.exec(command);
+						if (isRelayRequest(sandboxResult)) {
+							toolSpan.setStatus({ code: SpanStatusCode.OK });
+							return sandboxResult; // finally block ends span
+						}
+						result = {
+							content: buildCommandOutput(
+								sandboxResult.stdout,
+								sandboxResult.stderr,
+								sandboxResult.exitCode,
+							),
+							exitCode: sandboxResult.exitCode,
+						};
+						break;
+					}
+
+					default: {
+						// "builtin" has execute handler
+						if (!tool.execute) {
+							result = {
+								content: `Error: tool "${toolCall.name}" has no execute handler`,
+								exitCode: 1,
+							};
+							break;
+						}
+						const builtinResult = await tool.execute(toolCall.input);
+						if (Array.isArray(builtinResult)) {
+							const hasError = builtinResult.some(
+								(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
+							);
+							result = { content: JSON.stringify(builtinResult), exitCode: hasError ? 1 : 0 };
+						} else {
+							const exitCode = builtinResult.startsWith("Error:") ? 1 : 0;
+							result = { content: builtinResult, exitCode };
+						}
+						break;
 					}
 				}
 
-				case "sandbox": {
-					if (!this.sandbox.exec) {
-						return { content: "Error: sandbox execution not available", exitCode: 1 };
-					}
-					const command = toolCall.input.command;
-					if (typeof command !== "string") {
-						return {
-							content: `Error: bash tool requires a "command" string parameter`,
-							exitCode: 1,
-						};
-					}
-					const result = await this.sandbox.exec(command);
-					if (isRelayRequest(result)) {
-						return result;
-					}
-					return {
-						content: buildCommandOutput(result.stdout, result.stderr, result.exitCode),
-						exitCode: result.exitCode,
-					};
+				// Set span status based on execution result
+				if (result.exitCode !== 0) {
+					toolSpan.setStatus({
+						code: SpanStatusCode.ERROR,
+						message: result.content.slice(0, 256),
+					});
+				} else {
+					toolSpan.setStatus({ code: SpanStatusCode.OK });
 				}
 
-				default: {
-					// "builtin" has execute handler
-					if (!tool.execute) {
-						return {
-							content: `Error: tool "${toolCall.name}" has no execute handler`,
-							exitCode: 1,
-						};
-					}
-					const result = await tool.execute(toolCall.input);
-					if (Array.isArray(result)) {
-						const hasError = result.some(
-							(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
-						);
-						return { content: JSON.stringify(result), exitCode: hasError ? 1 : 0 };
-					}
-					const exitCode = result.startsWith("Error:") ? 1 : 0;
-					return { content: result, exitCode };
-				}
+				return result;
+			} catch (err) {
+				toolSpan.setStatus({
+					code: SpanStatusCode.ERROR,
+					message: err instanceof Error ? err.message : String(err),
+				});
+				return {
+					content: `Error: ${err instanceof Error ? err.message : String(err)}`,
+					exitCode: 1,
+				};
+			} finally {
+				toolSpan.end();
 			}
 		}
 

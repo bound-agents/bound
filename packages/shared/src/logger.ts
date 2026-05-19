@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { trace } from "@opentelemetry/api";
 import pino from "pino";
 import pinoPretty from "pino-pretty";
 
@@ -26,7 +27,19 @@ function getRootLogger(): pino.Logger {
 	const level = (process.env.LOG_LEVEL || "info") as pino.LevelWithSilent;
 
 	if (level === "silent") {
-		rootLogger = pino({ level });
+		rootLogger = pino({
+			level,
+			mixin() {
+				const span = trace.getActiveSpan();
+				if (!span) return {};
+				const ctx = span.spanContext();
+				return {
+					trace_id: ctx.traceId,
+					span_id: ctx.spanId,
+					trace_flags: ctx.traceFlags,
+				};
+			},
+		});
 		return rootLogger;
 	}
 
@@ -53,7 +66,22 @@ function getRootLogger(): pino.Logger {
 		});
 	}
 
-	rootLogger = pino({ level }, pino.multistream(streams));
+	rootLogger = pino(
+		{
+			level,
+			mixin() {
+				const span = trace.getActiveSpan();
+				if (!span) return {};
+				const ctx = span.spanContext();
+				return {
+					trace_id: ctx.traceId,
+					span_id: ctx.spanId,
+					trace_flags: ctx.traceFlags,
+				};
+			},
+		},
+		pino.multistream(streams),
+	);
 
 	return rootLogger;
 }

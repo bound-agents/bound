@@ -425,6 +425,7 @@ export const RELAY_KIND_REGISTRY = {
 	stream_chunk: { dispatch: "response" },
 	stream_end: { dispatch: "response" },
 	status_forward: { dispatch: "response" },
+	trace_data: { dispatch: "response" },
 } as const satisfies Record<string, RelayKindMeta>;
 
 export type RelayKind = keyof typeof RELAY_KIND_REGISTRY;
@@ -463,6 +464,7 @@ export interface RelayOutboxEntry {
 	created_at: string;
 	expires_at: string;
 	delivered: number;
+	trace_context: string | null;
 }
 
 export interface RelayInboxEntry {
@@ -476,6 +478,7 @@ export interface RelayInboxEntry {
 	expires_at: string;
 	received_at: string;
 	processed: number;
+	trace_context: string | null;
 }
 
 export interface RelayMessage {
