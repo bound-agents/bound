@@ -95,6 +95,18 @@ export function injectTraceContext(): Record<string, string> | null {
 	return carrier;
 }
 
+/**
+ * Run a function within a specific trace context.
+ * This is used by clients to execute code within the parent trace context
+ * extracted from a server's injected trace_context.
+ */
+export async function runInTraceContext<T>(
+	ctx: ReturnType<typeof context.active>,
+	fn: () => Promise<T>,
+): Promise<T> {
+	return context.with(ctx, fn);
+}
+
 function hrTimeToNano(hrTime: [number, number]): string {
 	return String(hrTime[0] * 1_000_000_000 + hrTime[1]);
 }

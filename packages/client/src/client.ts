@@ -8,6 +8,7 @@ import type {
 	Thread,
 } from "@bound/shared";
 import { z } from "zod";
+import { withClientToolTracing } from "./tracing.js";
 import type {
 	AdvisoryCount,
 	ApiErrorBody,
@@ -256,9 +257,14 @@ export class BoundClient {
 			// Handle tool:call specially - auto-respond if handler is registered
 			if (msg.type === "tool:call" && this.toolCallHandler) {
 				const toolCall = msg as unknown as ToolCallRequest;
-				this.toolCallHandler(toolCall)
-					.then((result) => {
-						this.sendWsMessage({ type: "tool:result", ...result });
+				const handler = this.toolCallHandler;
+				withClientToolTracing(toolCall.trace_context, () => handler(toolCall))
+					.then(({ result, traceData }) => {
+						this.sendWsMessage({
+							type: "tool:result",
+							...result,
+							...(traceData ? { trace_data: traceData } : {}),
+						});
 					})
 					.catch((err) => {
 						this.emit("error", {
