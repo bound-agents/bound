@@ -31,6 +31,7 @@ import {
 } from "@bound/platforms";
 import type { CronSchedulesConfig } from "@bound/shared";
 import { formatError, parseJsonSafe, resultPayloadSchema } from "@bound/shared";
+import { shutdownTelemetry } from "./telemetry.js";
 
 export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
 
@@ -287,6 +288,7 @@ export function setupGracefulShutdown(
 			}
 			if (handles.webServer) await handles.webServer.stop();
 			if (handles.syncServer) await handles.syncServer.stop();
+			await shutdownTelemetry();
 			resolve();
 		};
 
