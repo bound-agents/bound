@@ -1,5 +1,6 @@
 import { setTraceExporter } from "@bound/shared";
-import { trace } from "@opentelemetry/api";
+import { context, trace } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { Resource } from "@opentelemetry/resources";
 import {
@@ -50,6 +51,13 @@ export function initTelemetry(serviceName: string, testExporter?: SpanExporter):
 	// Register exporter globally for spoke-side re-export of hub traces (AC5.4)
 	setTraceExporter(exporter);
 
+	// Register an AsyncLocalStorage-based context manager so that
+	// context.active() propagates parent spans across async boundaries.
+	// Without this, every span becomes an independent root trace.
+	const contextManager = new AsyncLocalStorageContextManager();
+	contextManager.enable();
+	context.setGlobalContextManager(contextManager);
+
 	provider.register();
 }
 
@@ -64,7 +72,8 @@ export async function shutdownTelemetry(): Promise<void> {
 	provider = null;
 	exporter = null;
 
-	// Clear the global tracer provider so subsequent spans are non-recording
+	// Clear global OTel registrations so subsequent spans are non-recording
 	trace.disable();
+	context.disable();
 	setTraceExporter(null);
 }
