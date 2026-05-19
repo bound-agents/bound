@@ -535,6 +535,7 @@ export class PlatformMcpRegistry {
 				}),
 				created_at: now,
 				expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+				trace_context: null,
 			});
 		}
 

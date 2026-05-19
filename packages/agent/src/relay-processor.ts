@@ -254,6 +254,7 @@ export class RelayProcessor {
 						expires_at: entry.expires_at,
 						received_at: now,
 						processed: 0,
+						trace_context: null,
 					});
 				}
 				// Response kinds are silently marked delivered — they are acknowledged by
@@ -574,6 +575,7 @@ export class RelayProcessor {
 			} satisfies ProcessPayload),
 			created_at: new Date().toISOString(),
 			expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+			trace_context: null,
 		});
 
 		return null;
@@ -763,6 +765,7 @@ export class RelayProcessor {
 			payload,
 			created_at: now.toISOString(),
 			expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
+			trace_context: null,
 		});
 	}
 
@@ -787,6 +790,7 @@ export class RelayProcessor {
 			payload: JSON.stringify(chunkPayload),
 			created_at: now.toISOString(),
 			expires_at: new Date(now.getTime() + 10 * 60 * 1000).toISOString(), // 10 min expiry for chunks
+			trace_context: null,
 		};
 		writeOutbox(this.db, outboxEntry);
 	}
@@ -1451,6 +1455,7 @@ export class RelayProcessor {
 				payload: JSON.stringify(fwdPayload),
 				created_at: new Date().toISOString(),
 				expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+				trace_context: null,
 			};
 			try {
 				writeOutbox(this.db, outboxEntry);
@@ -1648,6 +1653,7 @@ export class RelayProcessor {
 			expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
 			received_at: new Date().toISOString(),
 			processed: 0,
+			trace_context: null,
 		};
 	}
 }
