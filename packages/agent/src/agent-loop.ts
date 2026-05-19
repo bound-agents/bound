@@ -69,6 +69,11 @@ export const MAX_SILENCE_RETRIES = 3;
 /** Default max output tokens. Bedrock defaults to 4096 if unset, which truncates large tool calls. */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 
+/** Lazily get the tracer to ensure tests can register their provider first */
+function getTracer() {
+	return trace.getTracer("bound.agent-loop");
+}
+
 /**
  * Circuit breaker for consecutive truncated tool calls on the same tool name.
  * If the parser flags N turns in a row as truncated for the same tool, we abort
@@ -99,8 +104,6 @@ export function scaledMaxRetries(_estimatedTokens: number): number {
 }
 
 const textEncoder = new TextEncoder();
-
-const tracer = trace.getTracer("bound.agent-loop");
 
 interface BashLike {
 	exec?: (
@@ -446,229 +449,239 @@ export class AgentLoop {
 			const cachedForWarm = this.getCachedTurnState();
 			if (isWarmPathEligible && cachedForWarm) {
 				// WARM PATH: Try to reuse stored messages and append delta
-				const cached = cachedForWarm;
-
-				// 1. Fetch delta messages from DB (created after lastMessageCreatedAt)
-				const deltaRows = this.ctx.db
-					.query(
-						"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted FROM messages WHERE thread_id = ? AND deleted = 0 AND created_at > ? ORDER BY created_at ASC, rowid ASC",
-					)
-					.all(this.config.threadId, cached.lastMessageCreatedAt) as Array<{
-					id: string;
-					thread_id: string;
-					role: string;
-					content: string;
-					model_id: string | null;
-					tool_name: string | null;
-					created_at: string;
-					modified_at: string | null;
-					host_origin: string;
-					deleted: number;
-				}>;
-
-				// 2. Convert and sanitize delta messages
-				const deltaMessages = convertDeltaMessages(deltaRows);
-				deltaMessageCount = deltaMessages.length;
-
-				this.ctx.logger.debug("[agent-loop] Warm path: delta messages fetched", {
-					storedMessageCount: cached.messages.length,
-					deltaMessageCount: deltaMessages.length,
+				const assembleContextSpan = getTracer().startSpan("agent-loop.assemble-context", {
+					attributes: {
+						"context.cache_path": "warm",
+					},
 				});
 
-				// 3. Rebuild message array: stored (without old developer tail) + delta.
-				//
-				// Evict any prior rolling cache-role markers. Anthropic caps each
-				// request at 4 cache_control blocks across system + tools + messages.
-				// The cold path places a FIXED cache marker at `cached.fixedCacheIdx`;
-				// the warm path then appends a ROLLING marker at the tail on every
-				// turn. Without eviction, each successive warm turn adds a new
-				// rolling marker on top of the previous one — after a few turns
-				// the accumulated message-level cache_control count alone can hit
-				// or exceed 4, yielding "Found 5" 400s from the Claude API.
-				// We keep the fixed marker (it anchors the stable prefix) and
-				// strip every other cache-role entry before placing the new one.
-				const storedMessages: import("@bound/llm").LLMMessage[] = [];
-				for (let i = 0; i < cached.messages.length; i++) {
-					const m = cached.messages[i];
-					if (m.role === "cache" && i !== cached.fixedCacheIdx) {
-						// Drop stale rolling cache markers from earlier warm turns.
-						continue;
-					}
-					storedMessages.push(m);
-				}
-				const lastIdx = storedMessages.length - 1;
-				if (storedMessages[lastIdx]?.role === "developer") {
-					storedMessages.pop();
-				}
+				await context.with(trace.setSpan(context.active(), assembleContextSpan), async () => {
+					const cached = cachedForWarm;
 
-				storedMessages.push(...deltaMessages);
+					// 1. Fetch delta messages from DB (created after lastMessageCreatedAt)
+					const deltaRows = this.ctx.db
+						.query(
+							"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted FROM messages WHERE thread_id = ? AND deleted = 0 AND created_at > ? ORDER BY created_at ASC, rowid ASC",
+						)
+						.all(this.config.threadId, cached.lastMessageCreatedAt) as Array<{
+						id: string;
+						thread_id: string;
+						role: string;
+						content: string;
+						model_id: string | null;
+						tool_name: string | null;
+						created_at: string;
+						modified_at: string | null;
+						host_origin: string;
+						deleted: number;
+					}>;
 
-				// 3a. INCREMENTAL THINKING COMPACTION
-				// Strip thinking blocks from tool_call messages that have aged past
-				// the recent window. Mirrors the cold path's Stage 1.7 behavior so
-				// context degrades gradually rather than cliff-falling on cold
-				// reassembly. Idempotent: already-stripped messages are skipped via
-				// a cheap substring check before JSON.parse.
-				const recentWindow = Math.max(4, Math.min(20, Math.floor(contextWindow / 2500)));
-				const compactionBoundary = Math.max(0, storedMessages.length - recentWindow);
-				for (let i = 0; i < compactionBoundary; i++) {
-					const msg = storedMessages[i];
-					if (msg.role === "tool_call" && typeof msg.content === "string") {
-						msg.content = stripThinkingFromToolCall(msg.content);
-					}
-				}
+					// 2. Convert and sanitize delta messages
+					const deltaMessages = convertDeltaMessages(deltaRows);
+					deltaMessageCount = deltaMessages.length;
 
-				// 3b. If the merged stored+delta array contains a tool_call with no
-				//    matching tool_result before a non-tool turn (common when a
-				//    client tool was in flight and the user typed a follow-up, or
-				//    when the loop yielded mid-batch), the warm path cannot safely
-				//    ship this payload — the AI SDK prompt validator raises
-				//    `MissingToolResultsError` and the whole turn fails. Fall
-				//    through to the cold path so Stage 3 sanitization can
-				//    synthesize the missing result. Clearing the cached state
-				//    forces a full re-assembly on the next iteration as well.
-				const warmOrphanedToolCall = hasOrphanedToolCall(storedMessages);
-				if (warmOrphanedToolCall) {
-					this.ctx.logger.info(
-						"[agent-loop] Warm path detected orphaned tool_call, falling back to cold reassembly",
-						{
-							threadId: this.config.threadId,
-							storedMessageCount: cached.messages.length,
-							deltaMessageCount: deltaMessages.length,
-						},
-					);
-					this.clearCachedTurnState();
-					// Fall through to the cold path by leaving usedWarmPath=false.
-				}
-
-				if (!warmOrphanedToolCall) {
-					// 4. Place rolling cache message at messages[length-2] (before last delta
-					//    message). Gated on effective backend capabilities — skipped when
-					//    prompt_caching is explicitly disabled (e.g. MiniMax on Bedrock)
-					//    to avoid the 403 "unsupported model / prompt caching not allowed".
-					maybePlaceCacheMarker(storedMessages, "rolling", cacheMarkerCaps ?? undefined);
-
-					// 5. Inject fresh volatile developer message at tail
-					const volatileContext = buildVolatileContext({
-						db: this.ctx.db,
-						threadId: this.config.threadId,
-						taskId: this.config.taskId,
-						userId: this.config.userId,
-						siteId: this.ctx.siteId,
-						hostName: this.ctx.hostName,
-						currentModel: resolvedModelForDebug,
-						relayInfo,
-						platformContext: this.config.platform
-							? {
-									platform: this.config.platform,
-								}
-							: undefined,
-						systemPromptAddition: this.config.systemPromptAddition,
+					this.ctx.logger.debug("[agent-loop] Warm path: delta messages fetched", {
+						storedMessageCount: cached.messages.length,
+						deltaMessageCount: deltaMessages.length,
 					});
 
-					storedMessages.push({
-						role: "developer",
-						content: volatileContext.content,
-					});
+					// 3. Rebuild message array: stored (without old developer tail) + delta.
+					//
+					// Evict any prior rolling cache-role markers. Anthropic caps each
+					// request at 4 cache_control blocks across system + tools + messages.
+					// The cold path places a FIXED cache marker at `cached.fixedCacheIdx`;
+					// the warm path then appends a ROLLING marker at the tail on every
+					// turn. Without eviction, each successive warm turn adds a new
+					// rolling marker on top of the previous one — after a few turns
+					// the accumulated message-level cache_control count alone can hit
+					// or exceed 4, yielding "Found 5" 400s from the Claude API.
+					// We keep the fixed marker (it anchors the stable prefix) and
+					// strip every other cache-role entry before placing the new one.
+					const storedMessages: import("@bound/llm").LLMMessage[] = [];
+					for (let i = 0; i < cached.messages.length; i++) {
+						const m = cached.messages[i];
+						if (m.role === "cache" && i !== cached.fixedCacheIdx) {
+							// Drop stale rolling cache markers from earlier warm turns.
+							continue;
+						}
+						storedMessages.push(m);
+					}
+					const lastIdx = storedMessages.length - 1;
+					if (storedMessages[lastIdx]?.role === "developer") {
+						storedMessages.pop();
+					}
 
-					// 6. Check high-water mark: estimate total token count and compare against
-					//    the safety-margined effective budget. Using raw contextWindow here would
-					//    allow the warm path to ship a payload that overflows on the wire when the
-					//    estimator undercounts vs the backend's real tokenizer — same failure mode
-					//    as the cold-path gate in context-assembly.ts.
-					const storedTokens = storedMessages.reduce(
-						(sum, msg) => sum + countContentTokens(msg.content),
-						0,
-					);
-					const systemTokens = cached.systemPrompt ? countContentTokens(cached.systemPrompt) : 0;
-					const estimatedTotal = storedTokens + systemTokens + toolTokenEstimate;
-					const warmSafetyMargin = computeSafetyMargin(contextWindow);
-					const warmEffectiveBudget = Math.max(0, contextWindow - warmSafetyMargin);
+					storedMessages.push(...deltaMessages);
 
-					if (estimatedTotal > warmEffectiveBudget) {
-						// High-water mark exceeded — fall through to cold path
+					// 3a. INCREMENTAL THINKING COMPACTION
+					// Strip thinking blocks from tool_call messages that have aged past
+					// the recent window. Mirrors the cold path's Stage 1.7 behavior so
+					// context degrades gradually rather than cliff-falling on cold
+					// reassembly. Idempotent: already-stripped messages are skipped via
+					// a cheap substring check before JSON.parse.
+					const recentWindow = Math.max(4, Math.min(20, Math.floor(contextWindow / 2500)));
+					const compactionBoundary = Math.max(0, storedMessages.length - recentWindow);
+					for (let i = 0; i < compactionBoundary; i++) {
+						const msg = storedMessages[i];
+						if (msg.role === "tool_call" && typeof msg.content === "string") {
+							msg.content = stripThinkingFromToolCall(msg.content);
+						}
+					}
+
+					// 3b. If the merged stored+delta array contains a tool_call with no
+					//    matching tool_result before a non-tool turn (common when a
+					//    client tool was in flight and the user typed a follow-up, or
+					//    when the loop yielded mid-batch), the warm path cannot safely
+					//    ship this payload — the AI SDK prompt validator raises
+					//    `MissingToolResultsError` and the whole turn fails. Fall
+					//    through to the cold path so Stage 3 sanitization can
+					//    synthesize the missing result. Clearing the cached state
+					//    forces a full re-assembly on the next iteration as well.
+					const warmOrphanedToolCall = hasOrphanedToolCall(storedMessages);
+					if (warmOrphanedToolCall) {
 						this.ctx.logger.info(
-							"[agent-loop] Warm path exceeded context budget, triggering cold reassembly",
+							"[agent-loop] Warm path detected orphaned tool_call, falling back to cold reassembly",
 							{
-								estimatedTotal,
-								contextWindow,
-								effectiveBudget: warmEffectiveBudget,
-								safetyMargin: warmSafetyMargin,
-								storedTokens,
-								systemTokens,
-								toolTokenEstimate,
+								threadId: this.config.threadId,
+								storedMessageCount: cached.messages.length,
+								deltaMessageCount: deltaMessages.length,
 							},
 						);
-						// Clear cached state to force cold path on next iteration
 						this.clearCachedTurnState();
-						// Fall through to cold path by not setting usedWarmPath or llmMessages
-					} else {
-						// Warm path succeeded within budget
-						usedWarmPath = true;
+						// Fall through to the cold path by leaving usedWarmPath=false.
+					}
 
-						// 7. Query latest message created_at for next turn
-						const newLastRow = this.ctx.db
-							.query(
-								"SELECT created_at FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
-							)
-							.get(this.config.threadId) as { created_at: string } | null;
+					if (!warmOrphanedToolCall) {
+						// 4. Place rolling cache message at messages[length-2] (before last delta
+						//    message). Gated on effective backend capabilities — skipped when
+						//    prompt_caching is explicitly disabled (e.g. MiniMax on Bedrock)
+						//    to avoid the 403 "unsupported model / prompt caching not allowed".
+						maybePlaceCacheMarker(storedMessages, "rolling", cacheMarkerCaps ?? undefined);
 
-						// 8. Update stored state.
-						// Spread-copy so later mutations of `llmMessages` (e.g. the
-						// loop appending tool_call blocks after the LLM response) do
-						// NOT leak into the cached state. Aliasing here previously
-						// caused the next warm iteration to re-append the delta on
-						// top of an already-appended tool_call, producing duplicated
-						// tool_use blocks and a Bedrock tool_use_id_mismatch.
-						//
-						// Recompute cacheMessagePositions from the freshly rebuilt
-						// array since stale rolling markers were evicted in step 3.
-						// The fixed cache (cold-path anchor) survived at its original
-						// index; the new rolling cache sits at length-2.
-						const fixedIdx = cached.fixedCacheIdx;
-						const rollingIdx = storedMessages.length - 2;
-						const newCachePositions: number[] = [];
-						if (fixedIdx >= 0 && fixedIdx < storedMessages.length) {
-							newCachePositions.push(fixedIdx);
-						}
-						if (rollingIdx !== fixedIdx && rollingIdx >= 0) {
-							newCachePositions.push(rollingIdx);
-						}
-						this.setCachedTurnState({
-							...cached,
-							messages: [...storedMessages],
-							cacheMessagePositions: newCachePositions,
-							lastMessageCreatedAt: newLastRow?.created_at ?? new Date().toISOString(),
+						// 5. Inject fresh volatile developer message at tail
+						const volatileContext = buildVolatileContext({
+							db: this.ctx.db,
+							threadId: this.config.threadId,
+							taskId: this.config.taskId,
+							userId: this.config.userId,
+							siteId: this.ctx.siteId,
+							hostName: this.ctx.hostName,
+							currentModel: resolvedModelForDebug,
+							relayInfo,
+							platformContext: this.config.platform
+								? {
+										platform: this.config.platform,
+									}
+								: undefined,
+							systemPromptAddition: this.config.systemPromptAddition,
 						});
 
-						// 9. Use stored messages directly (no system messages in the array)
-						llmMessages = storedMessages;
+						storedMessages.push({
+							role: "developer",
+							content: volatileContext.content,
+						});
 
-						// Rebuild section breakdown for debug. Reuses stable-prefix
-						// sections (system, skill-context, tools) from the cold-path
-						// snapshot stored in cached state, and recomputes the dynamic
-						// ones (history, memory, task-digest, volatile-other) from the
-						// fresh volatileContext and current storedMessages. Falls back
-						// to an empty array if the cache pre-dates this fix and has no
-						// stored debugSections — next cold rebuild will repopulate it.
-						const warmSections = cached.debugSections
-							? rebuildWarmSections({
-									cachedSections: cached.debugSections,
-									storedMessages,
-									volatileCtx: volatileContext,
-								})
-							: [];
+						// 6. Check high-water mark: estimate total token count and compare against
+						//    the safety-margined effective budget. Using raw contextWindow here would
+						//    allow the warm path to ship a payload that overflows on the wire when the
+						//    estimator undercounts vs the backend's real tokenizer — same failure mode
+						//    as the cold-path gate in context-assembly.ts.
+						const storedTokens = storedMessages.reduce(
+							(sum, msg) => sum + countContentTokens(msg.content),
+							0,
+						);
+						const systemTokens = cached.systemPrompt ? countContentTokens(cached.systemPrompt) : 0;
+						const estimatedTotal = storedTokens + systemTokens + toolTokenEstimate;
+						const warmSafetyMargin = computeSafetyMargin(contextWindow);
+						const warmEffectiveBudget = Math.max(0, contextWindow - warmSafetyMargin);
 
-						contextDebug = {
-							contextWindow: contextWindow,
-							totalEstimated: estimatedTotal,
-							model: resolvedModelForDebug ?? "unknown",
-							sections: warmSections,
-							budgetPressure: false,
-							truncated: 0,
-						};
+						if (estimatedTotal > warmEffectiveBudget) {
+							// High-water mark exceeded — fall through to cold path
+							this.ctx.logger.info(
+								"[agent-loop] Warm path exceeded context budget, triggering cold reassembly",
+								{
+									estimatedTotal,
+									contextWindow,
+									effectiveBudget: warmEffectiveBudget,
+									safetyMargin: warmSafetyMargin,
+									storedTokens,
+									systemTokens,
+									toolTokenEstimate,
+								},
+							);
+							// Clear cached state to force cold path on next iteration
+							this.clearCachedTurnState();
+							// Fall through to cold path by not setting usedWarmPath or llmMessages
+						} else {
+							// Warm path succeeded within budget
+							usedWarmPath = true;
+
+							// 7. Query latest message created_at for next turn
+							const newLastRow = this.ctx.db
+								.query(
+									"SELECT created_at FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+								)
+								.get(this.config.threadId) as { created_at: string } | null;
+
+							// 8. Update stored state.
+							// Spread-copy so later mutations of `llmMessages` (e.g. the
+							// loop appending tool_call blocks after the LLM response) do
+							// NOT leak into the cached state. Aliasing here previously
+							// caused the next warm iteration to re-append the delta on
+							// top of an already-appended tool_call, producing duplicated
+							// tool_use blocks and a Bedrock tool_use_id_mismatch.
+							//
+							// Recompute cacheMessagePositions from the freshly rebuilt
+							// array since stale rolling markers were evicted in step 3.
+							// The fixed cache (cold-path anchor) survived at its original
+							// index; the new rolling cache sits at length-2.
+							const fixedIdx = cached.fixedCacheIdx;
+							const rollingIdx = storedMessages.length - 2;
+							const newCachePositions: number[] = [];
+							if (fixedIdx >= 0 && fixedIdx < storedMessages.length) {
+								newCachePositions.push(fixedIdx);
+							}
+							if (rollingIdx !== fixedIdx && rollingIdx >= 0) {
+								newCachePositions.push(rollingIdx);
+							}
+							this.setCachedTurnState({
+								...cached,
+								messages: [...storedMessages],
+								cacheMessagePositions: newCachePositions,
+								lastMessageCreatedAt: newLastRow?.created_at ?? new Date().toISOString(),
+							});
+
+							// 9. Use stored messages directly (no system messages in the array)
+							llmMessages = storedMessages;
+
+							// Rebuild section breakdown for debug. Reuses stable-prefix
+							// sections (system, skill-context, tools) from the cold-path
+							// snapshot stored in cached state, and recomputes the dynamic
+							// ones (history, memory, task-digest, volatile-other) from the
+							// fresh volatileContext and current storedMessages. Falls back
+							// to an empty array if the cache pre-dates this fix and has no
+							// stored debugSections — next cold rebuild will repopulate it.
+							const warmSections = cached.debugSections
+								? rebuildWarmSections({
+										cachedSections: cached.debugSections,
+										storedMessages,
+										volatileCtx: volatileContext,
+									})
+								: [];
+
+							contextDebug = {
+								contextWindow: contextWindow,
+								totalEstimated: estimatedTotal,
+								model: resolvedModelForDebug ?? "unknown",
+								sections: warmSections,
+								budgetPressure: false,
+								truncated: 0,
+							};
+						}
 					}
-				}
+				});
+
+				assembleContextSpan.end();
 			}
 
 			// Log warm/cold path decision with reason and counts
@@ -699,7 +712,7 @@ export class AgentLoop {
 				});
 
 				// Deterministic compaction keeps cached prefixes stable while reducing context size
-				const assembleContextSpan = tracer.startSpan("agent-loop.assemble-context", {
+				const assembleContextSpan = getTracer().startSpan("agent-loop.assemble-context", {
 					attributes: {
 						"context.cache_path": "cold",
 					},
@@ -824,7 +837,7 @@ export class AgentLoop {
 				}
 
 				turnCount++;
-				const turnSpan = tracer.startSpan("agent-loop.turn", {
+				const turnSpan = getTracer().startSpan("agent-loop.turn", {
 					attributes: {
 						"thread.id": this.config.threadId,
 						"task.id": this.config.taskId ?? "",

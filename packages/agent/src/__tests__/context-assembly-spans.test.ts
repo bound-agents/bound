@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -44,6 +44,10 @@ describe("Context Assembly OTEL Spans", () => {
 		trace.setGlobalTracerProvider(provider);
 	});
 
+	beforeEach(() => {
+		exporter.reset();
+	});
+
 	afterAll(async () => {
 		if (db) {
 			db.close();
@@ -52,6 +56,7 @@ describe("Context Assembly OTEL Spans", () => {
 			await cleanupTmpDir(tmpDir);
 		}
 		await provider.shutdown();
+		trace.disable();
 	});
 
 	it("should create spans for all context assembly stages", async () => {
