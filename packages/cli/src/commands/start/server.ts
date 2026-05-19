@@ -49,9 +49,12 @@ import {
 } from "@bound/shared";
 import type { KeyManager, RelayExecutor } from "@bound/sync";
 import { createSyncServer, createWebServer } from "@bound/web";
+import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { resolveThreadModel, runLocalAgentLoop } from "../../lib/message-handler";
 
 export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
+
+const getTracer = () => trace.getTracer("bound.web");
 
 /** Format a notification payload as a human-readable message for the agent. */
 export function formatNotification(payload: Record<string, unknown>): string {
@@ -556,20 +559,47 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							// Capture turn boundary for metrics recording and context tracking.
 							const turnStartAt = new Date().toISOString();
 
-							const { agentResult: result } = await runLocalAgentLoop({
-								eventBus: appContext.eventBus,
-								threadId: thread_id,
-								userId,
-								modelId: activeModelId,
-								activeLoopAbortControllers,
-								agentLoopFactory,
-								shouldYield,
-								platform,
-								clientTools: resolvedClientTools,
-								connectionId: resolvedConnectionId,
-								systemPromptAddition,
-								platformTools,
+							const tracer = getTracer();
+							const rootSpan = tracer.startSpan("web.handle-message", {
+								attributes: {
+									"thread.id": thread_id,
+									"user.id": userId,
+									"message.id": claimedIds[0] ?? "",
+									platform: platform ?? "web",
+								},
 							});
+
+							let agentLoopResult: Awaited<ReturnType<typeof runLocalAgentLoop>>;
+							try {
+								const result = await context.with(trace.setSpan(context.active(), rootSpan), () =>
+									runLocalAgentLoop({
+										eventBus: appContext.eventBus,
+										threadId: thread_id,
+										userId,
+										modelId: activeModelId,
+										activeLoopAbortControllers,
+										agentLoopFactory,
+										shouldYield,
+										platform,
+										clientTools: resolvedClientTools,
+										connectionId: resolvedConnectionId,
+										systemPromptAddition,
+										platformTools,
+									}),
+								);
+								agentLoopResult = result;
+								rootSpan.setStatus({ code: SpanStatusCode.OK });
+							} catch (err) {
+								rootSpan.setStatus({
+									code: SpanStatusCode.ERROR,
+									message: err instanceof Error ? err.message : String(err),
+								});
+								throw err;
+							} finally {
+								rootSpan.end();
+							}
+
+							const { agentResult: result } = agentLoopResult;
 
 							if (result.yielded) {
 								appContext.logger.info(
