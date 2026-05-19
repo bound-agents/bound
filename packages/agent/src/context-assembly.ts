@@ -20,6 +20,7 @@ import {
 	computeBaseline,
 } from "./summary-extraction.js";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
+import { stripThinkingFromToolCall } from "./warm-compaction";
 
 /**
  * The cold path targets this fraction of contextWindow, leaving headroom for warm-path growth.
@@ -835,25 +836,10 @@ Original output was too large for the context window. If you need the full conte
 				const preview = safeSlice(msg.content, 0, 200).trimEnd();
 				msg.content = `[Tool result truncated for inline display — ${originalLength} chars stored. Full content: query SELECT content FROM messages WHERE id='${msg.id}']\n${preview}`;
 			} else if (msg.role === "tool_call") {
-				// tool_call content is stored as a JSON-serialised ContentBlock[].
-				// Strip any `thinking` / `redacted_thinking` blocks, keep `tool_use`.
-				// Only rewrite if the parse succeeds AND we actually dropped something;
-				// otherwise leave the raw string alone (preserves non-JSON or
-				// already-compact representations).
-				try {
-					const parsed = JSON.parse(msg.content);
-					if (Array.isArray(parsed) && parsed.length > 0) {
-						const kept = parsed.filter(
-							(b: { type?: string }) =>
-								b && b.type !== "thinking" && b.type !== "redacted_thinking",
-						);
-						if (kept.length > 0 && kept.length < parsed.length) {
-							msg.content = JSON.stringify(kept);
-						}
-					}
-				} catch {
-					// Not JSON — leave as-is. Old rows may store plain strings.
-				}
+				// Strip thinking/redacted_thinking blocks from tool_call content,
+				// keeping tool_use blocks intact. Shared utility ensures warm and
+				// cold paths produce identical compacted content.
+				msg.content = stripThinkingFromToolCall(msg.content);
 			}
 		}
 	}
