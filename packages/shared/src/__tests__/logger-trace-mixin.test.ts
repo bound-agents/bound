@@ -7,7 +7,7 @@ import {
 	SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
-import { createLogger, resetLogger } from "../logger.js";
+import { resetLogger } from "../logger.js";
 
 describe("logger-trace-mixin", () => {
 	beforeEach(() => {
