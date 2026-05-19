@@ -8,8 +8,18 @@ import {
 	updateClaimedBy,
 	updateRow,
 } from "@bound/core";
-import { formatFileAttachment, injectTraceContext } from "@bound/shared";
-import type { Message, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
+import {
+	formatFileAttachment,
+	getTraceExporter,
+	injectTraceContext,
+	reExportSpans,
+} from "@bound/shared";
+import type {
+	Message,
+	SerializedSpan,
+	StatusForwardPayload,
+	TypedEventEmitter,
+} from "@bound/shared";
 import type { ServerWebSocket } from "bun";
 import { z } from "zod";
 
@@ -613,6 +623,17 @@ export function createWebSocketHandler(
 
 			// Enqueue tool result trigger to resume agent loop
 			enqueueToolResult(db, msg.thread_id, msg.call_id);
+
+			// Re-export client trace_data spans if present (AC6.3)
+			if (msg.trace_data) {
+				try {
+					const spans = JSON.parse(msg.trace_data) as SerializedSpan[];
+					const exporter = getTraceExporter();
+					reExportSpans(spans, exporter);
+				} catch {
+					// Invalid trace_data — silently ignore, don't break tool result flow
+				}
+			}
 
 			// Emit an event to trigger handleThread (re-emit the message so subscribed clients see it)
 			const message = db.query("SELECT * FROM messages WHERE id = ?").get(messageId) as Message;
