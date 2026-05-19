@@ -11,6 +11,7 @@ import type {
 	Message,
 } from "@bound/shared";
 import { countContentTokens, countTokens, safeSlice } from "@bound/shared";
+import { trace } from "@opentelemetry/api";
 import { getFileThreadNotificationMessage, getLastThreadForFile } from "./file-thread-tracker";
 import { shedMemoryTiers } from "./memory-shedding.js";
 import {
@@ -21,6 +22,11 @@ import {
 } from "./summary-extraction.js";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
 import { stripThinkingFromToolCall } from "./warm-compaction";
+
+/** Lazily get the tracer to ensure tests can register their provider first */
+function getTracer() {
+	return trace.getTracer("bound.context-assembly");
+}
 
 /**
  * The cold path targets this fraction of contextWindow, leaving headroom for warm-path growth.
@@ -727,6 +733,7 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 	// Compacted messages are ~80 chars each, so 100 messages is plenty of
 	// conversational structure even after compaction. Backward-fill truncation
 	// (Stage 7) remains as a safety net if the loaded set still exceeds budget.
+	const stage1Span = getTracer().startSpan("context.stage-1-message-retrieval");
 	const MESSAGE_LOAD_LIMIT = 100;
 	const messages: Message[] = [];
 	if (!noHistory) {
@@ -752,11 +759,14 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 			messages.push(...rows);
 		}
 	}
+	stage1Span.setAttribute("message_count", messages.length);
+	stage1Span.end();
 
 	// Stage 1.5: RETROACTIVE_RESULT_TRUNCATION
 	// Truncate oversized tool_result content in-memory (does not modify DB).
 	// This is a second guard behind the agent-loop offloading: historical results
 	// persisted before offloading was introduced still get capped here.
+	const stage1_5Span = getTracer().startSpan("context.stage-1.5-retroactive-result-truncation");
 	for (const msg of messages) {
 		if (msg.role === "tool_result" && msg.content.length > TOOL_RESULT_OFFLOAD_THRESHOLD) {
 			const originalLength = msg.content.length;
@@ -764,6 +774,7 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 Original output was too large for the context window. If you need the full content, use: query "SELECT substr(content, 1, 2000) FROM messages WHERE id = '${msg.id}'"`;
 		}
 	}
+	stage1_5Span.end();
 
 	// Stage 1.7: HISTORY_COMPACTION
 	// Replace old message content (outside the recent window) with DB retrieval
@@ -789,6 +800,7 @@ Original output was too large for the context window. If you need the full conte
 	// window, clamped to [4, 20]. So 49K → 19, 32K → 12, 16K → 6, 200K → 20
 	// (still capped at the historical default — larger windows don't need
 	// more recent working memory, they just tolerate it).
+	const stage1_7Span = getTracer().startSpan("context.stage-1.7-history-compaction");
 	if (params.compactToolResults && messages.length > 0) {
 		const defaultRecentWindow = Math.max(4, Math.min(20, Math.floor(contextWindow / 2500)));
 		const recentWindow = params.compactRecentWindow ?? defaultRecentWindow;
@@ -843,9 +855,11 @@ Original output was too large for the context window. If you need the full conte
 			}
 		}
 	}
+	stage1_7Span.end();
 
 	// Stage 2: PURGE_SUBSTITUTION
 	// Find any purge messages and replace targeted IDs with summaries
+	const stage2Span = getTracer().startSpan("context.stage-2-purge-substitution");
 	const purgeMessages = messages.filter((m) => m.role === "purge");
 	const purgeIdToSummary = new Map<string, string>();
 	const purgeGroups: Array<{ ids: Set<string>; summary: string }> = [];
@@ -956,6 +970,7 @@ Original output was too large for the context window. If you need the full conte
 		// Not purged - include it
 		messagesAfterPurge.push(msg);
 	}
+	stage2Span.end();
 
 	// Stage 2.5: NON-LLM ROLE FILTERING
 	// Drop non-LLM-compatible roles before Stage 3 sanitizer runs. Per
@@ -965,8 +980,10 @@ Original output was too large for the context window. If you need the full conte
 	// The prior prefix allowlist for "purge-summary-" / "__compaction_" was
 	// dead code — those synthetic messages (inserted earlier in this function
 	// at lines 783 and 930) are role='developer', not 'system'.
+	const stage2_5Span = getTracer().startSpan("context.stage-2.5-role-filtering");
 	const NON_LLM_ROLES = new Set(["alert", "purge", "system"]);
 	const messagesFiltered = messagesAfterPurge.filter((m) => !NON_LLM_ROLES.has(m.role));
+	stage2_5Span.end();
 
 	// Stage 3: TOOL_PAIR_SANITIZATION
 	// Ensure tool_call/tool_result pairs are adjacent (no messages between them).
@@ -974,6 +991,7 @@ Original output was too large for the context window. If you need the full conte
 	// Pass 1: For each tool_call, look ahead for its matching tool_result.
 	// If there are non-tool messages between them, move those messages before the tool_call.
 	// This preserves the real tool_call -> tool_result adjacency that Bedrock requires.
+	const stage3Span = getTracer().startSpan("context.stage-3-tool-pair-sanitization");
 	const reordered: Message[] = [];
 	const consumed = new Set<number>();
 
@@ -1287,6 +1305,7 @@ Original output was too large for the context window. If you need the full conte
 	} else {
 		flushPendingIds("synthetic-close", "Tool execution completed");
 	}
+	stage3Span.end();
 
 	// Stage 4: MESSAGE_QUEUEING
 	// Already handled by filtering - skip messages that were persisted during active tool-use
@@ -1295,6 +1314,7 @@ Original output was too large for the context window. If you need the full conte
 	// Convert Message to LLMMessage format with annotations
 	// Also detect model switches between consecutive assistant messages per spec R-U11
 	// Defense-in-depth: filter non-LLM roles in case any survived Stage 2.5
+	const stage5Span = getTracer().startSpan("context.stage-5-annotation");
 	const LLM_COMPATIBLE_ROLES = new Set([
 		"user",
 		"assistant",
@@ -1422,15 +1442,19 @@ Original output was too large for the context window. If you need the full conte
 
 		annotated.push(msg);
 	}
+	stage5Span.end();
 
 	// Stage 5b: CONTENT_SUBSTITUTION
 	// Replace image/document blocks in assembled messages when the target backend lacks vision support.
 	// This modifies the LLMMessage[] only — the persisted messages.content is never changed.
+	const stage5bSpan = getTracer().startSpan("context.stage-5b-content-substitution");
 	const finalAnnotated = targetCapabilities
 		? annotated.map((msg) => substituteUnsupportedBlocks(msg, targetCapabilities, db, threadId))
 		: annotated;
+	stage5bSpan.end();
 
 	// Stage 6: ASSEMBLY
+	const stage6Span = getTracer().startSpan("context.stage-6-assembly");
 	// Build stable system prompt as a string (returned separately, not in messages array).
 	// Drivers receive this via the `system` param, keeping it out of the message prefix.
 	const systemParts: string[] = [];
@@ -1706,6 +1730,9 @@ Original output was too large for the context window. If you need the full conte
 			sections.push({ name: "volatile-other", tokens: volatileOtherTokens });
 	}
 
+	// Stage 5.5: VOLATILE_ENRICHMENT
+	const stage5_5Span = getTracer().startSpan("context.stage-5.5-volatile-enrichment");
+
 	// Stage 5.5 (noHistory path): Inject enrichment as standalone system message for autonomous tasks
 	if (noHistory) {
 		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, true);
@@ -1757,10 +1784,12 @@ Original output was too large for the context window. If you need the full conte
 			if (noHistTaskTokens > 0) sections.push({ name: "task-digest", tokens: noHistTaskTokens });
 		}
 	}
+	stage5_5Span.end();
 
 	// Track tools section (from ContextParams)
 	const toolTokens = params.toolTokenEstimate ?? 0;
 	if (toolTokens > 0) sections.push({ name: "tools", tokens: toolTokens });
+	stage6Span.end();
 
 	// Stage 7: BUDGET_VALIDATION
 	// Budget pressure check: reduce enrichment caps if headroom < 2,000 tokens.
@@ -1769,6 +1798,7 @@ Original output was too large for the context window. If you need the full conte
 	// is handled by truncation — budget pressure should only fire when the
 	// fixed-size context (system prompt, volatile enrichment, tools) genuinely
 	// crowds the window.
+	const stage7Span = getTracer().startSpan("context.stage-7-budget-validation");
 
 	// Helper to apply reduced enrichment to the assembled context or developer message
 	const applyReducedEnrichment = (shortDelta: string[], shortDigest: string[]): void => {
@@ -2082,8 +2112,16 @@ Original output was too large for the context window. If you need the full conte
 
 	// Stage 8: METRIC_RECORDING
 	// Deferred to Phase 8 when metrics.db is created
+	const stage8Span = getTracer().startSpan("context.stage-8-metric-recording");
 
 	const totalEstimated = sections.reduce((sum, s) => sum + s.tokens, 0);
+
+	// Add attributes to stage 7 before ending it
+	stage7Span.setAttribute("context.total_tokens", totalEstimated);
+	stage7Span.setAttribute("context.headroom", effectiveBudget - totalEstimated);
+	stage7Span.setAttribute("context.truncated_messages", truncatedCount);
+	stage7Span.end();
+	stage8Span.end();
 
 	return {
 		messages: assembled,

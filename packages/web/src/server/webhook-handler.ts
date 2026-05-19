@@ -107,6 +107,7 @@ export async function handleWebhookRequest(
 		expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 days
 		received_at: new Date().toISOString(),
 		processed: 0,
+		trace_context: null,
 	};
 
 	insertInbox(deps.db, inboxEntry);

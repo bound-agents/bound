@@ -8,8 +8,18 @@ import {
 	updateClaimedBy,
 	updateRow,
 } from "@bound/core";
-import { formatFileAttachment } from "@bound/shared";
-import type { Message, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
+import {
+	formatFileAttachment,
+	getTraceExporter,
+	injectTraceContext,
+	reExportSpans,
+} from "@bound/shared";
+import type {
+	Message,
+	SerializedSpan,
+	StatusForwardPayload,
+	TypedEventEmitter,
+} from "@bound/shared";
 import type { ServerWebSocket } from "bun";
 import { z } from "zod";
 
@@ -79,6 +89,7 @@ const toolResultSchema = z.object({
 	thread_id: z.string(),
 	content: z.union([z.string(), z.array(toolResultContentBlockSchema)]),
 	is_error: z.boolean().optional(),
+	trace_data: z.string().optional(), // serialized span array JSON (optional)
 });
 
 // Discriminated union for all message types
@@ -613,6 +624,17 @@ export function createWebSocketHandler(
 			// Enqueue tool result trigger to resume agent loop
 			enqueueToolResult(db, msg.thread_id, msg.call_id);
 
+			// Re-export client trace_data spans if present (AC6.3)
+			if (msg.trace_data) {
+				try {
+					const spans = JSON.parse(msg.trace_data) as SerializedSpan[];
+					const exporter = getTraceExporter();
+					reExportSpans(spans, exporter);
+				} catch {
+					// Invalid trace_data — silently ignore, don't break tool result flow
+				}
+			}
+
 			// Emit an event to trigger handleThread (re-emit the message so subscribed clients see it)
 			const message = db.query("SELECT * FROM messages WHERE id = ?").get(messageId) as Message;
 			eventBus.emit("message:created", {
@@ -641,12 +663,14 @@ export function createWebSocketHandler(
 		// Find the first connection subscribed to this thread that has the matching tool
 		for (const [, conn] of clients) {
 			if (conn.subscriptions.has(data.threadId) && conn.clientTools.has(data.toolName)) {
+				const traceContext = injectTraceContext();
 				const toolCallMessage = JSON.stringify({
 					type: "tool:call",
 					call_id: data.callId,
 					thread_id: data.threadId,
 					tool_name: data.toolName,
 					arguments: data.arguments,
+					...(traceContext ? { trace_context: JSON.stringify(traceContext) } : {}),
 				});
 				if (conn.ws.readyState === 1) {
 					conn.ws.send(toolCallMessage);

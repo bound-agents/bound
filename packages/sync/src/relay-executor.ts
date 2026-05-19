@@ -32,6 +32,7 @@ export const noopRelayExecutor: RelayExecutor = async (request, hubSiteId) => {
 			expires_at: request.expires_at,
 			received_at: now,
 			processed: 0,
+			trace_context: null,
 		},
 	];
 };

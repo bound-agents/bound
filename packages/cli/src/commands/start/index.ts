@@ -18,8 +18,12 @@ import { initSandbox } from "./sandbox.js";
 import { initScheduler, setupGracefulShutdown } from "./scheduler.js";
 import { initServer } from "./server.js";
 import { initSync } from "./sync.js";
+import { initTelemetry } from "./telemetry.js";
 
 export async function runStart(args: StartArgs): Promise<void> {
+	// Phase 0: Telemetry (must be first so all subsequent operations are traced)
+	initTelemetry("bound");
+
 	// Phase 1: Bootstrap (config, DB, keypair, users, host, crash recovery)
 	const { appContext, keypair, configDir } = await initBootstrap(args);
 

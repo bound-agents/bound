@@ -358,6 +358,7 @@ export function createRelayOutboxEntry(
 	refId?: string,
 	idempotencyKey?: string,
 	streamId?: string,
+	traceContext?: string,
 ): Omit<RelayOutboxEntry, "delivered"> {
 	const now = new Date();
 	return {
@@ -371,5 +372,6 @@ export function createRelayOutboxEntry(
 		payload,
 		created_at: now.toISOString(),
 		expires_at: new Date(now.getTime() + timeoutMs).toISOString(),
+		trace_context: traceContext ?? null,
 	};
 }
