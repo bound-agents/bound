@@ -152,7 +152,7 @@ const xTicks = $derived.by(() => {
 			<!-- Data point circles -->
 			{#each parsedData as d}
 				<circle
-					cx={xScale(d.dateObj)}
+					cx={padding.left + xScale(d.dateObj)}
 					cy={padding.top + yScale(d.cost_usd)}
 					r="2.5"
 					fill="var(--line-0)"
