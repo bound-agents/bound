@@ -12,16 +12,16 @@ interface Props {
 let { data }: Props = $props();
 
 // Filter out models with zero total tokens (AC2.5)
-const filteredData = $derived(() => {
+const filteredData = $derived.by(() => {
 	return data.filter((d) => d.tokens_in + d.tokens_out > 0);
-})();
+});
 
 // Sort defensively by total tokens descending
-const sortedData = $derived(() => {
+const sortedData = $derived.by(() => {
 	return [...filteredData].sort(
 		(a, b) => b.tokens_in + b.tokens_out - (a.tokens_in + a.tokens_out),
 	);
-})();
+});
 
 // Calculate dimensions
 const rowHeight = 40;
@@ -30,9 +30,9 @@ const contentWidth = 600;
 const containerHeight = sortedData.length * rowHeight + padding.top + padding.bottom;
 
 // Compute max total tokens for x scale domain
-const maxTokens = $derived(() => {
+const maxTokens = $derived.by(() => {
 	return Math.max(...sortedData.map((d) => d.tokens_in + d.tokens_out), 1);
-})();
+});
 
 // Create x scale
 const xScale = $derived.by(() => {
