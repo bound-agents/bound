@@ -50,7 +50,7 @@ export interface MetricsResponse {
 		totals: {
 			avg_cache_hit_rate: number;
 			budget_pressure_count: number;
-			avg_truncated_messages: number;
+			avg_truncated_tokens: number;
 			total_turns_with_debug: number;
 		};
 		timeline: Array<{
@@ -324,7 +324,7 @@ export function createMetricsRoutes(_db: Database): Hono {
 						NULLIF(COALESCE(tokens_cache_read, 0) + tokens_in, 0)
 					) as cache_hit_rate,
 					SUM(CASE WHEN json_extract(context_debug, '$.budgetPressure') = 1 THEN 1 ELSE 0 END) as budget_pressure_count,
-					AVG(COALESCE(CAST(json_extract(context_debug, '$.truncated') AS INTEGER), 0)) as avg_truncated_messages
+					AVG(COALESCE(CAST(json_extract(context_debug, '$.truncated') AS INTEGER), 0)) as avg_truncated_tokens
 				FROM turns
 				WHERE created_at BETWEEN ? AND ? AND context_debug IS NOT NULL AND deleted = 0`,
 				)
@@ -332,7 +332,7 @@ export function createMetricsRoutes(_db: Database): Hono {
 				total_turns_with_debug: number | null;
 				cache_hit_rate: number | null;
 				budget_pressure_count: number | null;
-				avg_truncated_messages: number | null;
+				avg_truncated_tokens: number | null;
 			};
 
 			// Query context timeline
@@ -389,7 +389,7 @@ export function createMetricsRoutes(_db: Database): Hono {
 					totals: {
 						avg_cache_hit_rate: contextTotalsRow?.cache_hit_rate ?? 0,
 						budget_pressure_count: contextTotalsRow?.budget_pressure_count ?? 0,
-						avg_truncated_messages: contextTotalsRow?.avg_truncated_messages ?? 0,
+						avg_truncated_tokens: contextTotalsRow?.avg_truncated_tokens ?? 0,
 						total_turns_with_debug: contextTotalsRow?.total_turns_with_debug ?? 0,
 					},
 					timeline: contextTimelineRows.map((row) => ({
