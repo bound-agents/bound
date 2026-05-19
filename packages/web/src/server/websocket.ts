@@ -8,7 +8,7 @@ import {
 	updateClaimedBy,
 	updateRow,
 } from "@bound/core";
-import { formatFileAttachment } from "@bound/shared";
+import { formatFileAttachment, injectTraceContext } from "@bound/shared";
 import type { Message, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { ServerWebSocket } from "bun";
 import { z } from "zod";
@@ -79,6 +79,7 @@ const toolResultSchema = z.object({
 	thread_id: z.string(),
 	content: z.union([z.string(), z.array(toolResultContentBlockSchema)]),
 	is_error: z.boolean().optional(),
+	trace_data: z.string().optional(), // serialized span array JSON (optional)
 });
 
 // Discriminated union for all message types
@@ -641,12 +642,14 @@ export function createWebSocketHandler(
 		// Find the first connection subscribed to this thread that has the matching tool
 		for (const [, conn] of clients) {
 			if (conn.subscriptions.has(data.threadId) && conn.clientTools.has(data.toolName)) {
+				const traceContext = injectTraceContext();
 				const toolCallMessage = JSON.stringify({
 					type: "tool:call",
 					call_id: data.callId,
 					thread_id: data.threadId,
 					tool_name: data.toolName,
 					arguments: data.arguments,
+					...(traceContext ? { trace_context: JSON.stringify(traceContext) } : {}),
 				});
 				if (conn.ws.readyState === 1) {
 					conn.ws.send(toolCallMessage);
