@@ -61,6 +61,7 @@ import type {
 	ClientToolCallRequest,
 } from "./types";
 import { VALID_TRANSITIONS, isClientToolCallRequest } from "./types";
+import { stripThinkingFromToolCall } from "./warm-compaction";
 
 export const SILENCE_TIMEOUT_MS = 600_000;
 export const MAX_SILENCE_RETRIES = 3;
@@ -498,6 +499,21 @@ export class AgentLoop {
 				}
 
 				storedMessages.push(...deltaMessages);
+
+				// 3a. INCREMENTAL THINKING COMPACTION
+				// Strip thinking blocks from tool_call messages that have aged past
+				// the recent window. Mirrors the cold path's Stage 1.7 behavior so
+				// context degrades gradually rather than cliff-falling on cold
+				// reassembly. Idempotent: already-stripped messages are skipped via
+				// a cheap substring check before JSON.parse.
+				const recentWindow = Math.max(4, Math.min(20, Math.floor(contextWindow / 2500)));
+				const compactionBoundary = Math.max(0, storedMessages.length - recentWindow);
+				for (let i = 0; i < compactionBoundary; i++) {
+					const msg = storedMessages[i];
+					if (msg.role === "tool_call" && typeof msg.content === "string") {
+						msg.content = stripThinkingFromToolCall(msg.content);
+					}
+				}
 
 				// 3b. If the merged stored+delta array contains a tool_call with no
 				//    matching tool_result before a non-tool turn (common when a
