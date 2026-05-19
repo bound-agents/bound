@@ -1047,6 +1047,20 @@ export class Scheduler {
 					modelTier,
 					noHistory: task.no_history === 1,
 					systemPromptAddition: task.system_prompt_addition ?? undefined,
+					// Progress-driven heartbeat. The setInterval-driven heartbeat at
+					// scheduler.ts:357 covers the common case but can stall when the
+					// in-memory runningTasks Map is lost (process restart, host
+					// transition, or a long sync block on the main event loop).
+					// onActivity fires from the agent loop itself at meaningful
+					// progress points (turn boundaries, post-tool, periodic during
+					// long tool execution — see agent-loop.ts call sites), so as long
+					// as work is happening, heartbeat refreshes regardless of the
+					// timer's health. Outbox-exempt: heartbeat_at is local-only.
+					onActivity: () => {
+						this.ctx.db
+							.query("UPDATE tasks SET heartbeat_at = ? WHERE id = ? AND lease_id = ?") // outbox-exempt: heartbeat_at is local-only state, not synced
+							.run(new Date().toISOString(), task.id, leaseId);
+					},
 				};
 
 				// Inject platform tools if resolver is available
