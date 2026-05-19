@@ -131,6 +131,7 @@ export async function createWebApp(
 	app.route("/api/mcp", routes.mcp);
 	app.route("/api/webhooks", routes.webhooks);
 	app.route("/api/skills", routes.skills);
+	app.route("/api/metrics", routes.metrics);
 
 	// Serve static Svelte SPA assets
 	const assets = await loadEmbeddedAssets();
