@@ -235,6 +235,7 @@ export interface ToolCallRequest {
 	thread_id: string;
 	tool_name: string;
 	arguments: Record<string, unknown>;
+	trace_context?: string; // W3C trace context JSON (optional)
 }
 
 export interface ToolCallResult {
@@ -242,6 +243,7 @@ export interface ToolCallResult {
 	thread_id: string;
 	content: string | ContentBlock[];
 	is_error?: boolean;
+	trace_data?: string; // serialized span array JSON (optional)
 }
 
 export interface ToolCancelEvent {
