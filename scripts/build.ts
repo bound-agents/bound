@@ -38,7 +38,35 @@ async function compileBound(outfile: string): Promise<void> {
 			target: `bun-${process.platform}-${process.arch}` as `bun-${string}-${string}`,
 			outfile,
 		},
+		// Force @opentelemetry packages to resolve their "esnext" exports condition.
+		// This handles packages that have an `exports` map with an "esnext" entry
+		// (e.g., @opentelemetry/otlp-exporter-base).
+		conditions: ["esnext"],
 		plugins: [
+			{
+				name: "otel-esnext-resolver",
+				setup(build) {
+					// Many @opentelemetry packages lack an `exports` field and only
+					// declare top-level `main`/`module`/`esnext` fields. Bun picks
+					// `module` (build/esm/) which is ES5-downcompiled and uses
+					// __extends + _super.call(this). When the parent class comes from
+					// a package that DOES have exports (resolved to native ES class via
+					// conditions above), calling it without `new` throws:
+					//   "Cannot call a class constructor without |new|"
+					// Fix: when loading any file from an otel build/esm/ directory,
+					// substitute the content from the equivalent build/esnext/ file
+					// which uses native class syntax throughout.
+					build.onLoad({ filter: /@opentelemetry\/[^/]+\/build\/esm\// }, (args) => {
+						const esnextPath = args.path.replace("/build/esm/", "/build/esnext/");
+						if (existsSync(esnextPath)) {
+							return {
+								contents: readFileSync(esnextPath, "utf8"),
+								loader: "js",
+							};
+						}
+					});
+				},
+			},
 			{
 				name: "rewrite-just-bash-worker-paths",
 				setup(build) {
