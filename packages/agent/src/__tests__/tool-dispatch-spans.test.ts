@@ -614,4 +614,236 @@ describe("Tool Dispatch Spans (OTEL)", () => {
 		expect(toolSpan?.status?.code).toBe(2); // ERROR
 		expect(toolSpan?.status?.message).toContain("Unexpected exception");
 	});
+
+	it("should parent tool.execute span under agent-loop.tool-execute", async () => {
+		insertRow(
+			db,
+			"threads",
+			{
+				id: threadId,
+				user_id: userId,
+				interface: "web",
+				host_origin: "local",
+				color: 0,
+				title: "Test Thread Parenting",
+				summary: null,
+				summary_through: null,
+				summary_model_id: null,
+				extracted_through: null,
+				created_at: new Date().toISOString(),
+				last_message_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+			},
+			userId,
+		);
+
+		insertRow(
+			db,
+			"messages",
+			{
+				id: randomUUID(),
+				thread_id: threadId,
+				role: "user",
+				content: "Query for parenting test",
+				model_id: null,
+				tool_name: null,
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				host_origin: "local",
+				deleted: 0,
+			},
+			userId,
+		);
+
+		const toolRegistry = new Map<string, RegisteredTool>();
+		toolRegistry.set("query", {
+			name: "query",
+			kind: "builtin",
+			schema: { type: "object", properties: { query: { type: "string" } } },
+			execute: async () => "Result",
+		});
+
+		const backend = new MockLLMBackend();
+		backend.setToolThenTextResponse("query-parent", "query", { query: "SELECT 1" }, "Done");
+
+		const router = new ModelRouter(new Map([["test-model", backend]]), "test-model");
+		const ctx = makeCtx();
+		const sandbox = createMockSandbox();
+
+		const loop = new AgentLoop(ctx, sandbox as any, router, {
+			threadId,
+			userId,
+			modelId: "test-model",
+			toolRegistry,
+		});
+
+		await loop.run();
+
+		const spans = exporter.getFinishedSpans();
+		const toolExecuteSpan = spans.find((s) => s.name === "agent-loop.tool-execute");
+		const toolSpan = spans.find((s) => s.name === "tool.execute");
+
+		expect(toolExecuteSpan).toBeDefined();
+		expect(toolSpan).toBeDefined();
+		// tool.execute should be a child of agent-loop.tool-execute
+		expect(toolSpan?.parentSpanId).toBe(toolExecuteSpan?.spanContext().spanId);
+	});
+
+	it("should record tool.input_size and tool.output_size attributes", async () => {
+		insertRow(
+			db,
+			"threads",
+			{
+				id: threadId,
+				user_id: userId,
+				interface: "web",
+				host_origin: "local",
+				color: 0,
+				title: "Test Thread Size",
+				summary: null,
+				summary_through: null,
+				summary_model_id: null,
+				extracted_through: null,
+				created_at: new Date().toISOString(),
+				last_message_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+			},
+			userId,
+		);
+
+		insertRow(
+			db,
+			"messages",
+			{
+				id: randomUUID(),
+				thread_id: threadId,
+				role: "user",
+				content: "Query for size test",
+				model_id: null,
+				tool_name: null,
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				host_origin: "local",
+				deleted: 0,
+			},
+			userId,
+		);
+
+		const toolRegistry = new Map<string, RegisteredTool>();
+		toolRegistry.set("query", {
+			name: "query",
+			kind: "builtin",
+			schema: { type: "object", properties: { query: { type: "string" } } },
+			execute: async () => "Query result data here",
+		});
+
+		const backend = new MockLLMBackend();
+		backend.setToolThenTextResponse(
+			"query-size",
+			"query",
+			{ query: "SELECT * FROM users" },
+			"Done",
+		);
+
+		const router = new ModelRouter(new Map([["test-model", backend]]), "test-model");
+		const ctx = makeCtx();
+		const sandbox = createMockSandbox();
+
+		const loop = new AgentLoop(ctx, sandbox as any, router, {
+			threadId,
+			userId,
+			modelId: "test-model",
+			toolRegistry,
+		});
+
+		await loop.run();
+
+		const spans = exporter.getFinishedSpans();
+		const toolSpan = spans.find((s) => s.name === "tool.execute");
+
+		expect(toolSpan).toBeDefined();
+		expect(toolSpan?.attributes?.["tool.input_size"]).toBeDefined();
+		expect(typeof toolSpan?.attributes?.["tool.input_size"]).toBe("number");
+		expect(toolSpan?.attributes?.["tool.input_size"] as number).toBeGreaterThan(0);
+		expect(toolSpan?.attributes?.["tool.output_size"]).toBeDefined();
+		expect(typeof toolSpan?.attributes?.["tool.output_size"]).toBe("number");
+		expect(toolSpan?.attributes?.["tool.output_size"] as number).toBeGreaterThan(0);
+	});
+
+	it("should create agent-loop.tool-persist span after tool execution", async () => {
+		insertRow(
+			db,
+			"threads",
+			{
+				id: threadId,
+				user_id: userId,
+				interface: "web",
+				host_origin: "local",
+				color: 0,
+				title: "Test Thread Persist",
+				summary: null,
+				summary_through: null,
+				summary_model_id: null,
+				extracted_through: null,
+				created_at: new Date().toISOString(),
+				last_message_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+			},
+			userId,
+		);
+
+		insertRow(
+			db,
+			"messages",
+			{
+				id: randomUUID(),
+				thread_id: threadId,
+				role: "user",
+				content: "Query for persist test",
+				model_id: null,
+				tool_name: null,
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				host_origin: "local",
+				deleted: 0,
+			},
+			userId,
+		);
+
+		const toolRegistry = new Map<string, RegisteredTool>();
+		toolRegistry.set("query", {
+			name: "query",
+			kind: "builtin",
+			schema: { type: "object", properties: { query: { type: "string" } } },
+			execute: async () => "Persist result",
+		});
+
+		const backend = new MockLLMBackend();
+		backend.setToolThenTextResponse("query-persist", "query", { query: "SELECT 1" }, "Done");
+
+		const router = new ModelRouter(new Map([["test-model", backend]]), "test-model");
+		const ctx = makeCtx();
+		const sandbox = createMockSandbox();
+
+		const loop = new AgentLoop(ctx, sandbox as any, router, {
+			threadId,
+			userId,
+			modelId: "test-model",
+			toolRegistry,
+		});
+
+		await loop.run();
+
+		const spans = exporter.getFinishedSpans();
+		const toolPersistSpan = spans.find((s) => s.name === "agent-loop.tool-persist");
+		const turnSpan = spans.find((s) => s.name === "agent-loop.turn");
+
+		expect(toolPersistSpan).toBeDefined();
+		expect(turnSpan).toBeDefined();
+		// tool-persist should be a child of the turn
+		expect(toolPersistSpan?.parentSpanId).toBe(turnSpan?.spanContext().spanId);
+	});
 });

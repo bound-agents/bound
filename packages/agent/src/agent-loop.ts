@@ -15,6 +15,7 @@ import type { InferenceRequestPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
 import type { ContextDebugInfo, EventMap, SyncConfig } from "@bound/shared";
 import { countContentTokens, countTokens, formatError } from "@bound/shared";
+import type { Context } from "@opentelemetry/api";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 
 import { Observable, Subject, firstValueFrom, lastValueFrom } from "rxjs";
@@ -461,6 +462,7 @@ export class AgentLoop {
 					const cached = cachedForWarm;
 
 					// 1. Fetch delta messages from DB (created after lastMessageCreatedAt)
+					const deltaFetchSpan = getTracer().startSpan("context.warm.delta-fetch");
 					const deltaRows = this.ctx.db
 						.query(
 							"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted FROM messages WHERE thread_id = ? AND deleted = 0 AND created_at > ? ORDER BY created_at ASC, rowid ASC",
@@ -481,6 +483,11 @@ export class AgentLoop {
 					// 2. Convert and sanitize delta messages
 					const deltaMessages = convertDeltaMessages(deltaRows);
 					deltaMessageCount = deltaMessages.length;
+					deltaFetchSpan.setAttribute("context.delta_messages", deltaMessageCount);
+					deltaFetchSpan.end();
+
+					assembleContextSpan.setAttribute("context.delta_messages", deltaMessageCount);
+					assembleContextSpan.setAttribute("context.stored_messages", cached.messages.length);
 
 					this.ctx.logger.debug("[agent-loop] Warm path: delta messages fetched", {
 						storedMessageCount: cached.messages.length,
@@ -539,7 +546,11 @@ export class AgentLoop {
 					//    through to the cold path so Stage 3 sanitization can
 					//    synthesize the missing result. Clearing the cached state
 					//    forces a full re-assembly on the next iteration as well.
+					const orphanCheckSpan = getTracer().startSpan("context.warm.orphan-check");
 					const warmOrphanedToolCall = hasOrphanedToolCall(storedMessages);
+					orphanCheckSpan.setAttribute("context.orphan_detected", warmOrphanedToolCall);
+					orphanCheckSpan.end();
+
 					if (warmOrphanedToolCall) {
 						this.ctx.logger.info(
 							"[agent-loop] Warm path detected orphaned tool_call, falling back to cold reassembly",
@@ -549,6 +560,7 @@ export class AgentLoop {
 								deltaMessageCount: deltaMessages.length,
 							},
 						);
+						assembleContextSpan.setAttribute("context.warm_bail_reason", "orphaned-tool-call");
 						this.clearCachedTurnState();
 						// Fall through to the cold path by leaving usedWarmPath=false.
 					}
@@ -588,6 +600,7 @@ export class AgentLoop {
 						//    allow the warm path to ship a payload that overflows on the wire when the
 						//    estimator undercounts vs the backend's real tokenizer — same failure mode
 						//    as the cold-path gate in context-assembly.ts.
+						const budgetCheckSpan = getTracer().startSpan("context.warm.budget-check");
 						const storedTokens = storedMessages.reduce(
 							(sum, msg) => sum + countContentTokens(msg.content),
 							0,
@@ -596,9 +609,14 @@ export class AgentLoop {
 						const estimatedTotal = storedTokens + systemTokens + toolTokenEstimate;
 						const warmSafetyMargin = computeSafetyMargin(contextWindow);
 						const warmEffectiveBudget = Math.max(0, contextWindow - warmSafetyMargin);
+						budgetCheckSpan.setAttribute("context.estimated_tokens", estimatedTotal);
+						budgetCheckSpan.setAttribute("context.effective_budget", warmEffectiveBudget);
 
 						if (estimatedTotal > warmEffectiveBudget) {
 							// High-water mark exceeded — fall through to cold path
+							budgetCheckSpan.setAttribute("context.budget_exceeded", true);
+							budgetCheckSpan.end();
+							assembleContextSpan.setAttribute("context.warm_bail_reason", "budget-exceeded");
 							this.ctx.logger.info(
 								"[agent-loop] Warm path exceeded context budget, triggering cold reassembly",
 								{
@@ -616,6 +634,8 @@ export class AgentLoop {
 							// Fall through to cold path by not setting usedWarmPath or llmMessages
 						} else {
 							// Warm path succeeded within budget
+							budgetCheckSpan.setAttribute("context.budget_exceeded", false);
+							budgetCheckSpan.end();
 							usedWarmPath = true;
 
 							// 7. Query latest message created_at for next turn
@@ -686,19 +706,21 @@ export class AgentLoop {
 				assembleContextSpan.end();
 			}
 
+			// Compute path decision reason (used in log and cold-path span attribute)
+			const cachePathReason: string = !this.getCachedTurnState()
+				? "no-stored-state"
+				: cacheState === "cold"
+					? "cache-expired"
+					: !isWarmPathEligible && this.getCachedTurnState()?.toolFingerprint !== currentFingerprint
+						? "tool-change"
+						: usedWarmPath === false
+							? "budget-exceeded"
+							: "warm-eligible";
+
 			// Log warm/cold path decision with reason and counts
 			this.ctx.logger.info("[agent-loop] Cache path selected", {
 				path: usedWarmPath ? "warm" : "cold",
-				reason: !this.getCachedTurnState()
-					? "no-stored-state"
-					: cacheState === "cold"
-						? "cache-expired"
-						: !isWarmPathEligible &&
-								this.getCachedTurnState()?.toolFingerprint !== currentFingerprint
-							? "tool-change"
-							: usedWarmPath === false
-								? "budget-exceeded"
-								: "warm-eligible",
+				reason: cachePathReason,
 				storedMessageCount: this.getCachedTurnState()?.messages.length,
 				deltaMessageCount,
 				cacheMessagePositions: this.getCachedTurnState()?.cacheMessagePositions,
@@ -717,6 +739,7 @@ export class AgentLoop {
 				const assembleContextSpan = getTracer().startSpan("agent-loop.assemble-context", {
 					attributes: {
 						"context.cache_path": "cold",
+						"context.cold_reason": cachePathReason,
 					},
 				});
 
@@ -1457,6 +1480,7 @@ export class AgentLoop {
 
 					this.transition("TOOL_EXECUTE");
 					const toolExecuteSpan = getTracer().startSpan("agent-loop.tool-execute", {}, turnCtx);
+					const toolExecuteCtx = trace.setSpan(turnCtx, toolExecuteSpan);
 					const toolResults: Array<{
 						toolCall: ParsedToolCall;
 						content: string;
@@ -1522,7 +1546,7 @@ export class AgentLoop {
 								// retried here — they fall through unchanged.
 								const MAX_RELAY_RETRIES = 1;
 								let retryAttempt = 0;
-								let dispatchResult = await this.executeToolCall(toolCall);
+								let dispatchResult = await this.executeToolCall(toolCall, toolExecuteCtx);
 								let dispatchHandled = false;
 								while (!dispatchHandled) {
 									if ("outboxEntryId" in dispatchResult) {
@@ -1598,7 +1622,7 @@ export class AgentLoop {
 											);
 											await new Promise((resolve) => setTimeout(resolve, backoffMs));
 											this.config.onActivity?.();
-											dispatchResult = await this.executeToolCall(toolCall);
+											dispatchResult = await this.executeToolCall(toolCall, toolExecuteCtx);
 											continue;
 										}
 
@@ -1681,6 +1705,7 @@ export class AgentLoop {
 
 					// Persist tool messages before next LLM call (pairing invariant)
 					this.transition("TOOL_PERSIST");
+					const toolPersistSpan = getTracer().startSpan("agent-loop.tool-persist", {}, turnCtx);
 
 					const toolCallBlocks: ContentBlock[] = [];
 
@@ -1778,6 +1803,8 @@ export class AgentLoop {
 					// tool_call and tool_result on replay, which caused providers like
 					// qwen3 (enable_thinking=true) to reject the next request as a
 					// malformed prefill continuation.
+
+					toolPersistSpan.end();
 
 					if (this.sandbox.checkMemoryThreshold) {
 						const memCheck = this.sandbox.checkMemoryThreshold();
@@ -2035,6 +2062,7 @@ export class AgentLoop {
 	/** Execute a tool call via platform tools or sandbox. Returns relay request for remote MCP tools or client tool call request. */
 	private async executeToolCall(
 		toolCall: ParsedToolCall,
+		parentCtx?: Context,
 	): Promise<{ content: string; exitCode: number } | RelayToolCallRequest | ClientToolCallRequest> {
 		// Registry-based dispatch (new path)
 		if (this.config.toolRegistry) {
@@ -2056,14 +2084,18 @@ export class AgentLoop {
 				} satisfies ClientToolCallRequest;
 			}
 
-			// Create span for all other tool kinds
-			const toolSpan = getTracer().startSpan("tool.execute", {
-				attributes: {
-					"tool.name": toolCall.name,
-					"tool.kind": tool.kind,
-					"tool.call_id": toolCall.id,
+			// Create span for all other tool kinds, parented to tool-execute span
+			const toolSpan = getTracer().startSpan(
+				"tool.execute",
+				{
+					attributes: {
+						"tool.name": toolCall.name,
+						"tool.kind": tool.kind,
+						"tool.call_id": toolCall.id,
+					},
 				},
-			});
+				parentCtx,
+			);
 
 			try {
 				let result: { content: string; exitCode: number };
@@ -2146,6 +2178,10 @@ export class AgentLoop {
 					}
 				}
 
+				// Record I/O sizes for trace analysis
+				toolSpan.setAttribute("tool.input_size", JSON.stringify(toolCall.input).length);
+				toolSpan.setAttribute("tool.output_size", result.content.length);
+
 				// Set span status based on execution result
 				if (result.exitCode !== 0) {
 					toolSpan.setStatus({
@@ -2158,6 +2194,7 @@ export class AgentLoop {
 
 				return result;
 			} catch (err) {
+				toolSpan.setAttribute("tool.input_size", JSON.stringify(toolCall.input).length);
 				toolSpan.setStatus({
 					code: SpanStatusCode.ERROR,
 					message: err instanceof Error ? err.message : String(err),

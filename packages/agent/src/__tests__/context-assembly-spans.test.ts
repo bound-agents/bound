@@ -126,6 +126,7 @@ describe("Context Assembly OTEL Spans", () => {
 			"context.stage-2-purge-substitution",
 			"context.stage-2.5-role-filtering",
 			"context.stage-3-tool-pair-sanitization",
+			"context.stage-4-message-queueing",
 			"context.stage-5-annotation",
 			"context.stage-5b-content-substitution",
 			"context.stage-5.5-volatile-enrichment",
@@ -407,5 +408,121 @@ describe("Context Assembly OTEL Spans", () => {
 
 		// Verify both spans were created
 		expect(spans.length).toBeGreaterThanOrEqual(2);
+	});
+
+	it("should mark stage 4 span as implicit", async () => {
+		const threadId = randomUUID();
+
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				threadId,
+				userId,
+				"web",
+				"local",
+				0,
+				"Test Thread",
+				null,
+				null,
+				null,
+				null,
+				new Date().toISOString(),
+				new Date().toISOString(),
+				new Date().toISOString(),
+				0,
+			],
+		);
+
+		db.run(
+			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				"msg-stage4-test",
+				threadId,
+				"user",
+				"Testing stage 4 marker",
+				null,
+				null,
+				new Date().toISOString(),
+				new Date().toISOString(),
+				"local",
+				0,
+			],
+		);
+
+		const parentSpan = trace.getTracer("test").startSpan("test-parent-stage4");
+		exporter.reset();
+
+		await context.with(trace.setSpan(context.active(), parentSpan), async () => {
+			await assembleContext({ db, threadId, userId });
+		});
+
+		parentSpan.end();
+
+		const spans = exporter.getFinishedSpans();
+		const stage4Span = spans.find((s) => s.name === "context.stage-4-message-queueing");
+
+		expect(stage4Span).toBeDefined();
+		expect(stage4Span?.attributes?.["stage.implicit"]).toBe(true);
+	});
+
+	it("should not nest stage 5.5 inside stage 6", async () => {
+		const threadId = randomUUID();
+
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				threadId,
+				userId,
+				"web",
+				"local",
+				0,
+				"Test Thread",
+				null,
+				null,
+				null,
+				null,
+				new Date().toISOString(),
+				new Date().toISOString(),
+				new Date().toISOString(),
+				0,
+			],
+		);
+
+		db.run(
+			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				"msg-nesting-test",
+				threadId,
+				"user",
+				"Testing stage nesting",
+				null,
+				null,
+				new Date().toISOString(),
+				new Date().toISOString(),
+				"local",
+				0,
+			],
+		);
+
+		const parentSpan = trace.getTracer("test").startSpan("test-parent-nesting");
+		exporter.reset();
+
+		await context.with(trace.setSpan(context.active(), parentSpan), async () => {
+			await assembleContext({ db, threadId, userId });
+		});
+
+		parentSpan.end();
+
+		const spans = exporter.getFinishedSpans();
+		const stage6 = spans.find((s) => s.name === "context.stage-6-assembly");
+		const stage5_5 = spans.find((s) => s.name === "context.stage-5.5-volatile-enrichment");
+
+		expect(stage6).toBeDefined();
+		expect(stage5_5).toBeDefined();
+
+		// Stage 5.5 should NOT be a child of Stage 6 — they should share the same parent
+		expect(stage5_5?.parentSpanId).not.toBe(stage6?.spanContext().spanId);
+		// Both should have the same parent (the assembly-parent span)
+		expect(stage5_5?.parentSpanId).toBe(stage6?.parentSpanId);
 	});
 });
