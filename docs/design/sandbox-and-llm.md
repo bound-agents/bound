@@ -404,13 +404,13 @@ interface ChatParams {
   system?: string;
   system_suffix?: string;
   cache_breakpoints?: number[];
-  cache_ttl?: "5m" | "1h";  // currently unimplemented
+  cache_ttl?: "5m" | "1h";
   thinking?: { type: "enabled"; budget_tokens: number };
   signal?: AbortSignal;
 }
 ```
 
-`model` is optional; if omitted, the driver uses the model from its constructor config. `system_suffix` carries varying system context placed AFTER the cached system prefix — when `cache_breakpoints` is set, it is sent as a separate uncached system block so it does not bust the prompt cache; otherwise it is appended to `system`. `cache_breakpoints` is an array of message indices at which to insert Anthropic prompt caching markers — ignored by drivers that do not support prompt caching. `thinking` enables extended thinking (Anthropic / Bedrock produce reasoning content blocks; other backends silently ignore it). `signal` is an optional `AbortSignal`; all four drivers accept it and will abort the in-progress stream when it fires.
+`model` is optional; if omitted, the driver uses the model from its constructor config. `system_suffix` carries varying system context placed AFTER the cached system prefix — when `cache_breakpoints` is set, it is sent as a separate uncached system block so it does not bust the prompt cache; otherwise it is appended to `system`. `cache_breakpoints` is an array of message indices at which to insert Anthropic prompt caching markers — ignored by drivers that do not support prompt caching. `cache_ttl` selects the cache-tier requested at the breakpoint; it is forwarded by `ai-sdk-bridge.toModelMessages` as `ttl` on the `cachePoint` (Bedrock) or `cache_control` (Anthropic) attribute. Bedrock `"1h"` is supported only on Claude Opus 4.5+, Sonnet 4.5+, and Haiku 4.5+; setting `"1h"` on an unsupported model falls back to default. `thinking` enables extended thinking (Anthropic / Bedrock produce reasoning content blocks; other backends silently ignore it). `signal` is an optional `AbortSignal`; all four drivers accept it and will abort the in-progress stream when it fires.
 
 #### LLMMessage
 
