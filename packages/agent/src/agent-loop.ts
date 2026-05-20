@@ -274,6 +274,7 @@ export class AgentLoop {
 	async run(): Promise<AgentLoopResult> {
 		const loopStartTime = Date.now();
 		let turnCount = 0;
+		let prevCacheReadTokens = 0;
 		// Circuit breaker state for MAX_CONSECUTIVE_TRUNCATED_TURNS guardrail.
 		let consecutiveTruncatedTurns = 0;
 		let lastTruncatedToolName: string | null = null;
@@ -1079,9 +1080,14 @@ export class AgentLoop {
 										// Record completion event with token counts from the done chunk
 										const doneChunk = chunks.find((c) => c.type === "done");
 										if (doneChunk && doneChunk.type === "done") {
+											const thinkingChars = chunks.reduce(
+												(sum, c) => sum + (c.type === "thinking" ? c.content.length : 0),
+												0,
+											);
 											driverSpan.addEvent("completion", {
 												"llm.input_tokens": doneChunk.usage.input_tokens,
 												"llm.output_tokens": doneChunk.usage.output_tokens,
+												"llm.thinking_chars": thinkingChars,
 											});
 										}
 
@@ -1365,7 +1371,19 @@ export class AgentLoop {
 						"llm.output_tokens": parsed.usage.outputTokens,
 						"llm.cache_read_tokens": parsed.usage.cacheReadTokens ?? 0,
 						"llm.cache_write_tokens": parsed.usage.cacheWriteTokens ?? 0,
+						"llm.thinking_chars": parsed.thinking?.length ?? 0,
+						"context.messages_in_flight": llmMessages.length,
 					});
+
+					// Detect provider-side cache eviction (TTL expiry mid-loop)
+					const cacheRead = parsed.usage.cacheReadTokens ?? 0;
+					const cacheWrite = parsed.usage.cacheWriteTokens ?? 0;
+					if (prevCacheReadTokens > 0 && cacheRead === 0 && cacheWrite > 0) {
+						turnSpan.setAttribute("llm.cache_evicted", true);
+						turnSpan.setAttribute("llm.cache_prefix_delta", cacheWrite - prevCacheReadTokens);
+					}
+					prevCacheReadTokens =
+						cacheRead > 0 ? cacheRead : cacheWrite > 0 ? cacheWrite : prevCacheReadTokens;
 				} catch (error) {
 					this.ctx.logger.warn("Failed to record turn metrics", {
 						threadId: this.config.threadId,
