@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { WebhookListEntry } from "@bound/client";
+import type { ClusterModelInfo, WebhookListEntry } from "@bound/client";
 import { onMount } from "svelte";
 import Btn from "../components/Btn.svelte";
 import DataTable from "../components/DataTable.svelte";
@@ -16,17 +16,23 @@ let selectedWebhook = $state<WebhookListEntry | null>(null);
 let secretModal = $state<{ secret: string; name: string } | null>(null);
 let error = $state<string | null>(null);
 
+// Cluster model catalogue (for dropdowns). Empty = use cluster default.
+let availableModels: ClusterModelInfo[] = $state([]);
+let defaultModel = $state("");
+
 // Create form state
 let createName = $state("");
 let createFormat = $state("github");
 let createDescription = $state("");
 let createPrompt = $state("");
+let createModel = $state(""); // "" = use cluster default
 let createError = $state<string | null>(null);
 
 // Edit form state
 let editDescription = $state("");
 let editFormat = $state("");
 let editPrompt = $state("");
+let editModel = $state(""); // "" = use cluster default
 let editError = $state<string | null>(null);
 
 // Loading states
@@ -41,6 +47,7 @@ const columns = [
 
 onMount(() => {
 	loadWebhooks();
+	loadModels();
 });
 
 async function loadWebhooks(): Promise<void> {
@@ -53,6 +60,17 @@ async function loadWebhooks(): Promise<void> {
 		error = err instanceof Error ? err.message : "Failed to load webhooks. Please try again.";
 	} finally {
 		loading = false;
+	}
+}
+
+async function loadModels(): Promise<void> {
+	// Best-effort: dropdown still falls back to a free-text default if /models fails.
+	try {
+		const resp = await client.listModels();
+		availableModels = resp.models;
+		defaultModel = resp.default;
+	} catch (err: unknown) {
+		console.error("Failed to load models for webhook dropdown:", err);
 	}
 }
 
@@ -71,6 +89,7 @@ async function handleCreate(): Promise<void> {
 			format: createFormat,
 			description: createDescription || undefined,
 			prompt: createPrompt || undefined,
+			model_hint: createModel || null,
 		});
 
 		// Show secret modal
@@ -84,6 +103,7 @@ async function handleCreate(): Promise<void> {
 		createFormat = "github";
 		createDescription = "";
 		createPrompt = "";
+		createModel = "";
 
 		// Reload webhooks
 		await loadWebhooks();
@@ -130,6 +150,7 @@ async function handleUpdate(id: string): Promise<void> {
 			description: editDescription || undefined,
 			format: editFormat,
 			prompt: editPrompt || undefined,
+			model_hint: editModel || null,
 		});
 
 		await loadWebhooks();
@@ -174,6 +195,7 @@ function handleSelectWebhook(webhook: WebhookListEntry): void {
 	editDescription = webhook.description ?? "";
 	editFormat = webhook.signature_format;
 	editPrompt = webhook.prompt ?? "";
+	editModel = webhook.model_hint ?? "";
 	editError = null;
 	view = "detail";
 }
@@ -184,6 +206,7 @@ function handleBackToList(): void {
 	editDescription = "";
 	editFormat = "";
 	editPrompt = "";
+	editModel = "";
 	editError = null;
 }
 
@@ -193,6 +216,7 @@ function handleCreateNew(): void {
 	createFormat = "github";
 	createDescription = "";
 	createPrompt = "";
+	createModel = "";
 	createError = null;
 }
 
@@ -326,6 +350,27 @@ function formatDate(iso: string): string {
 					</div>
 
 					<div class="form-group">
+						<label for="create-model">Model</label>
+						<select
+							id="create-model"
+							bind:value={createModel}
+							disabled={actionInProgress === "create"}
+						>
+							<option value=""
+								>Cluster default{defaultModel ? ` (${defaultModel})` : ""}</option
+							>
+							{#each availableModels as m (`${m.host}/${m.id}`)}
+								<option value={m.id}
+									>{m.id}{m.via === "relay" ? ` — ${m.host}` : ""}{m.status ===
+									"offline?"
+										? " (offline?)"
+										: ""}</option
+								>
+							{/each}
+						</select>
+					</div>
+
+					<div class="form-group">
 						<label for="prompt">Custom Prompt</label>
 						<textarea
 							id="prompt"
@@ -424,6 +469,29 @@ function formatDate(iso: string): string {
 							>
 								<option value="github">GitHub</option>
 								<option value="generic">Generic JSON</option>
+							</select>
+						</div>
+
+						<div class="form-group">
+							<label for="edit-model">Model</label>
+							<select
+								id="edit-model"
+								bind:value={editModel}
+								disabled={actionInProgress !== null}
+							>
+								<option value=""
+									>Cluster default{defaultModel
+										? ` (${defaultModel})`
+										: ""}</option
+								>
+								{#each availableModels as m (`${m.host}/${m.id}`)}
+									<option value={m.id}
+										>{m.id}{m.via === "relay" ? ` — ${m.host}` : ""}{m.status ===
+										"offline?"
+											? " (offline?)"
+											: ""}</option
+									>
+								{/each}
 							</select>
 						</div>
 

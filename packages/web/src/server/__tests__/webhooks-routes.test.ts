@@ -348,6 +348,160 @@ describe("webhooks routes", () => {
 		});
 	});
 
+	describe("model_hint round-trip on tasks.model_hint", () => {
+		const taskModelFor = (db: Database, webhookId: string): string | null => {
+			const wh = db
+				.prepare("SELECT task_id, thread_id FROM webhooks WHERE id = ?")
+				.get(webhookId) as { task_id: string; thread_id: string };
+			const task = db.prepare("SELECT model_hint FROM tasks WHERE id = ?").get(wh.task_id) as {
+				model_hint: string | null;
+			};
+			return task.model_hint;
+		};
+
+		it("POST without model_hint stores null on the task (uses cluster default)", async () => {
+			const app = createWebhooksRoutes(db);
+			const createResponse = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "no-model-webhook" }),
+				}),
+			);
+			expect(createResponse.status).toBe(201);
+			const created = (await createResponse.json()) as Record<string, unknown>;
+
+			expect(created.model_hint).toBeNull();
+			expect(taskModelFor(db, created.id as string)).toBeNull();
+		});
+
+		it("POST with model_hint stores it on the linked task and thread", async () => {
+			const app = createWebhooksRoutes(db);
+			const createResponse = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "kimi-webhook", model_hint: "kimi-k2" }),
+				}),
+			);
+			expect(createResponse.status).toBe(201);
+			const created = (await createResponse.json()) as Record<string, unknown>;
+
+			expect(created.model_hint).toBe("kimi-k2");
+			expect(taskModelFor(db, created.id as string)).toBe("kimi-k2");
+
+			// Thread should be mirrored too (matches CLI behaviour)
+			const wh = db
+				.prepare("SELECT thread_id FROM webhooks WHERE id = ?")
+				.get(created.id as string) as { thread_id: string };
+			const thread = db
+				.prepare("SELECT model_hint FROM threads WHERE id = ?")
+				.get(wh.thread_id) as { model_hint: string | null };
+			expect(thread.model_hint).toBe("kimi-k2");
+		});
+
+		it("POST with empty-string model_hint stores null", async () => {
+			const app = createWebhooksRoutes(db);
+			const createResponse = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "empty-model-webhook", model_hint: "" }),
+				}),
+			);
+			expect(createResponse.status).toBe(201);
+			const created = (await createResponse.json()) as Record<string, unknown>;
+			expect(created.model_hint).toBeNull();
+			expect(taskModelFor(db, created.id as string)).toBeNull();
+		});
+
+		it("GET list and detail include model_hint", async () => {
+			const app = createWebhooksRoutes(db);
+			await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "list-model-webhook", model_hint: "kimi-k2" }),
+				}),
+			);
+
+			const listResp = await app.fetch(new Request("http://localhost/", { method: "GET" }));
+			const listed = (await listResp.json()) as Array<Record<string, unknown>>;
+			expect(listed[0]?.model_hint).toBe("kimi-k2");
+
+			const id = listed[0]?.id as string;
+			const detailResp = await app.fetch(new Request(`http://localhost/${id}`, { method: "GET" }));
+			const detail = (await detailResp.json()) as Record<string, unknown>;
+			expect(detail.model_hint).toBe("kimi-k2");
+		});
+
+		it("PATCH with model_hint sets it on the task", async () => {
+			const app = createWebhooksRoutes(db);
+			const createResp = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "patch-model-webhook" }),
+				}),
+			);
+			const created = (await createResp.json()) as Record<string, unknown>;
+			const id = created.id as string;
+
+			const patchResp = await app.fetch(
+				new Request(`http://localhost/${id}`, {
+					method: "PATCH",
+					body: JSON.stringify({ model_hint: "kimi-k2" }),
+				}),
+			);
+			expect(patchResp.status).toBe(200);
+			const patched = (await patchResp.json()) as Record<string, unknown>;
+			expect(patched.model_hint).toBe("kimi-k2");
+			expect(taskModelFor(db, id)).toBe("kimi-k2");
+		});
+
+		it("PATCH with model_hint=null clears it back to default", async () => {
+			const app = createWebhooksRoutes(db);
+			const createResp = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "clear-model-webhook", model_hint: "kimi-k2" }),
+				}),
+			);
+			const created = (await createResp.json()) as Record<string, unknown>;
+			const id = created.id as string;
+			expect(taskModelFor(db, id)).toBe("kimi-k2");
+
+			const patchResp = await app.fetch(
+				new Request(`http://localhost/${id}`, {
+					method: "PATCH",
+					body: JSON.stringify({ model_hint: null }),
+				}),
+			);
+			expect(patchResp.status).toBe(200);
+			const patched = (await patchResp.json()) as Record<string, unknown>;
+			expect(patched.model_hint).toBeNull();
+			expect(taskModelFor(db, id)).toBeNull();
+		});
+
+		it("PATCH without model_hint key leaves existing model_hint alone", async () => {
+			const app = createWebhooksRoutes(db);
+			const createResp = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "leave-model-webhook", model_hint: "kimi-k2" }),
+				}),
+			);
+			const created = (await createResp.json()) as Record<string, unknown>;
+			const id = created.id as string;
+
+			const patchResp = await app.fetch(
+				new Request(`http://localhost/${id}`, {
+					method: "PATCH",
+					body: JSON.stringify({ description: "unrelated change" }),
+				}),
+			);
+			expect(patchResp.status).toBe(200);
+			const patched = (await patchResp.json()) as Record<string, unknown>;
+			expect(patched.model_hint).toBe("kimi-k2");
+			expect(taskModelFor(db, id)).toBe("kimi-k2");
+		});
+	});
+
 	describe("AC5.4: DELETE /api/webhooks/:id soft-deletes and cancels task", () => {
 		it("soft-deletes webhook and cancels task", async () => {
 			const app = createWebhooksRoutes(db);

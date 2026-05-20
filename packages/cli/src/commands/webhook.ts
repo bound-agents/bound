@@ -9,11 +9,14 @@ import type { SignatureFormat } from "@bound/shared";
 // ---------------------------------------------------------------------------
 
 export function webhookCreate(db: Database, siteId: string, args: string[]): void {
-	// Parse args: --name, --format, --description, --prompt
+	// Parse args: --name, --format, --description, --prompt, --model
 	const name = getArgValue(args, "--name");
 	const format = (getArgValue(args, "--format") || "github") as SignatureFormat;
 	const description = getArgValue(args, "--description");
 	const prompt = getArgValue(args, "--prompt");
+	const modelHint = getArgValue(args, "--model");
+	// Normalise: undefined or empty string both mean "use system default"
+	const modelHintValue = modelHint && modelHint.length > 0 ? modelHint : null;
 
 	// Validate name: /^[a-z0-9][a-z0-9_-]{0,63}$/
 	if (!name) {
@@ -57,7 +60,7 @@ export function webhookCreate(db: Database, siteId: string, args: string[]): voi
 			summary_through: null,
 			summary_model_id: null,
 			extracted_through: null,
-			model_hint: null,
+			model_hint: modelHintValue,
 			created_at: now,
 			last_message_at: now,
 			modified_at: now,
@@ -89,7 +92,7 @@ export function webhookCreate(db: Database, siteId: string, args: string[]): voi
 			run_count: 0,
 			max_runs: null,
 			requires: null,
-			model_hint: null,
+			model_hint: modelHintValue,
 			no_history: 0,
 			inject_mode: "results",
 			depends_on: null,
@@ -133,6 +136,7 @@ export function webhookCreate(db: Database, siteId: string, args: string[]): voi
 	console.log(`URL: /webhook/${name}`);
 	console.log(`Secret: ${secret}`);
 	console.log(`Format: ${format}`);
+	console.log(`Model: ${modelHintValue ?? "(default)"}`);
 	console.log("");
 	console.log("⚠ Save the secret now — it will not be shown again.");
 }
@@ -144,13 +148,22 @@ export function webhookCreate(db: Database, siteId: string, args: string[]): voi
 export function webhookList(db: Database): void {
 	const rows = db
 		.prepare(
-			"SELECT name, signature_format, description, created_at FROM webhooks WHERE deleted = 0 ORDER BY created_at DESC",
+			`SELECT w.name AS name,
+			        w.signature_format AS signature_format,
+			        w.description AS description,
+			        w.created_at AS created_at,
+			        t.model_hint AS model_hint
+			 FROM webhooks w
+			 LEFT JOIN tasks t ON t.id = w.task_id AND t.deleted = 0
+			 WHERE w.deleted = 0
+			 ORDER BY w.created_at DESC`,
 		)
 		.all() as Array<{
 		name: string;
 		signature_format: string;
 		description: string | null;
 		created_at: string;
+		model_hint: string | null;
 	}>;
 
 	if (rows.length === 0) {
@@ -158,15 +171,16 @@ export function webhookList(db: Database): void {
 		return;
 	}
 
-	console.log("NAME              FORMAT    DESCRIPTION          CREATED");
-	console.log("-".repeat(75));
+	console.log("NAME              FORMAT    MODEL              DESCRIPTION          CREATED");
+	console.log("-".repeat(95));
 
 	for (const row of rows) {
 		const name = row.name.padEnd(16);
 		const format = row.signature_format.padEnd(9);
+		const model = (row.model_hint ?? "(default)").slice(0, 18).padEnd(18);
 		const desc = (row.description || "").slice(0, 20).padEnd(20);
 		const created = row.created_at.slice(0, 19);
-		console.log(`${name} ${format} ${desc} ${created}`);
+		console.log(`${name} ${format} ${model} ${desc} ${created}`);
 	}
 }
 
@@ -209,14 +223,21 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 	const prompt = getArgValue(args, "--prompt");
 	const description = getArgValue(args, "--description");
 	const format = getArgValue(args, "--format");
+	// Three-state semantics for --model:
+	//   flag absent           → leave existing model_hint alone
+	//   --model ""            → clear back to system default (null)
+	//   --model <id>          → set to <id>
+	const modelIdx = args.indexOf("--model");
+	const modelProvided = modelIdx !== -1;
+	const modelValue = modelProvided ? (args[modelIdx + 1] ?? "") : undefined;
 
 	if (!name) {
 		throw new Error("--name is required");
 	}
 
 	const webhook = db
-		.prepare("SELECT id, task_id FROM webhooks WHERE name = ? AND deleted = 0")
-		.get(name) as { id: string; task_id: string } | null;
+		.prepare("SELECT id, task_id, thread_id FROM webhooks WHERE name = ? AND deleted = 0")
+		.get(name) as { id: string; task_id: string; thread_id: string } | null;
 
 	if (!webhook) {
 		throw new Error(`Webhook '${name}' not found.`);
@@ -256,6 +277,13 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 			},
 			siteId,
 		);
+	}
+
+	if (modelProvided) {
+		const newHint = modelValue && modelValue.length > 0 ? modelValue : null;
+		// Mirror create: set on both the task (which fires) and the thread (which hosts it).
+		updateRow(db, "tasks", webhook.task_id, { model_hint: newHint }, siteId);
+		updateRow(db, "threads", webhook.thread_id, { model_hint: newHint }, siteId);
 	}
 
 	console.log(`Webhook '${name}' updated.`);
