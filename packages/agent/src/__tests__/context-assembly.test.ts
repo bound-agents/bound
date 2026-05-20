@@ -1452,6 +1452,131 @@ describe("Context Assembly Pipeline", () => {
 			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
+
+		// Regression for thread 141042bb (2026-05-20). The loaded message
+		// window contained no user-role rows (a long burst of tool_call /
+		// tool_result pairs with the most recent user message older than the
+		// MESSAGE_LOAD_LIMIT cutoff). The forward-advance "skip past
+		// non-user roles" boundary cleanup walked past the entire array,
+		// the backward-search for the last user found nothing, and the
+		// fallback restored sliceStart=preAdvanceStart — leaving a leading
+		// orphan tool_result whose tool_call had been sliced off. Bedrock
+		// rejected the request with "Expected toolResult blocks at
+		// messages.0.content for the following Ids: <id>".
+		it("does not leave an orphaned tool_result at the start when no user message exists in the loaded window", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-01-01T00:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Burst User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Burst Test",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			// Build 6 tool_call/tool_result pairs back-to-back. No user
+			// message anywhere in the window. We force truncation with a
+			// tiny contextWindow so the leading pair gets sliced off.
+			let offset = 1;
+			for (let pair = 0; pair < 6; pair++) {
+				const toolUseId = `tu_${pair}`;
+				const tcTs = new Date(nowBase.getTime() + offset++ * 1000).toISOString();
+				const tcId = randomUUID();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						tcId,
+						localThreadId,
+						"tool_call",
+						JSON.stringify([{ type: "tool_use", id: toolUseId, name: "bash", input: {} }]),
+						null,
+						null,
+						tcTs,
+						tcTs,
+						"local",
+					],
+				);
+				const trTs = new Date(nowBase.getTime() + offset++ * 1000).toISOString();
+				const trId = randomUUID();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						trId,
+						localThreadId,
+						"tool_result",
+						`result for pair ${pair}`,
+						null,
+						toolUseId,
+						trTs,
+						trTs,
+						"local",
+					],
+				);
+			}
+
+			const { messages } = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 50,
+			});
+
+			// Take only the LLM-conversational roles (skip system /
+			// developer prefix-suffix wrappers): the first such message
+			// must NOT be a tool_result, since a leading tool_result with
+			// no preceding tool_call would fail Bedrock's pair validator.
+			const conversational = messages.filter(
+				(m) => m.role === "user" || m.role === "tool_call" || m.role === "tool_result",
+			);
+			if (conversational.length > 0) {
+				expect(conversational[0].role).not.toBe("tool_result");
+			}
+
+			// Walk the kept slice and verify every tool_result has a
+			// preceding tool_call still in the window.
+			const seenToolUseIds = new Set<string>();
+			for (const m of messages) {
+				if (m.role === "tool_call") {
+					try {
+						const blocks = JSON.parse(m.content as string);
+						if (Array.isArray(blocks)) {
+							for (const b of blocks) {
+								if (b?.type === "tool_use" && b.id) seenToolUseIds.add(b.id);
+							}
+						}
+					} catch {
+						// non-parseable tool_call content (e.g. legacy rows) is fine
+					}
+				} else if (m.role === "tool_result") {
+					const toolUseId = m.tool_use_id;
+					if (toolUseId) {
+						expect(seenToolUseIds.has(toolUseId)).toBe(true);
+					}
+				}
+			}
+
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
 	});
 
 	// bound_issue:context-assembly:missing-safety-margin
