@@ -258,7 +258,9 @@ export class BoundClient {
 			if (msg.type === "tool:call" && this.toolCallHandler) {
 				const toolCall = msg as unknown as ToolCallRequest;
 				const handler = this.toolCallHandler;
-				withClientToolTracing(toolCall.trace_context, () => handler(toolCall))
+				withClientToolTracing(toolCall.trace_context, () => handler(toolCall), {
+					toolName: toolCall.tool_name,
+				})
 					.then(({ result, traceData }) => {
 						this.sendWsMessage({
 							type: "tool:result",

@@ -1,6 +1,7 @@
 import type { SpanKind, SpanStatusCode } from "@opentelemetry/api";
 import { Resource } from "@opentelemetry/resources";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
+import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 import type { SerializedSpan } from "./trace-collector.js";
 
 /**
@@ -36,7 +37,7 @@ export function reExportSpans(spans: SerializedSpan[], exporter: SpanExporter | 
 		})),
 		duration: nanoToHrTime(String(BigInt(s.endTimeUnixNano) - BigInt(s.startTimeUnixNano))),
 		ended: true,
-		resource: Resource.empty(),
+		resource: new Resource({ [ATTR_SERVICE_NAME]: "bound-client" }),
 		instrumentationLibrary: { name: "bound.remote-reexport" },
 		droppedAttributesCount: 0,
 		droppedEventsCount: 0,
