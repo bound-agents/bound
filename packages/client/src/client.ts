@@ -8,6 +8,7 @@ import type {
 	Thread,
 } from "@bound/shared";
 import { injectTraceContext } from "@bound/shared";
+import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { z } from "zod";
 import { withClientToolTracing } from "./tracing.js";
 import type {
@@ -418,16 +419,45 @@ export class BoundClient {
 	}
 
 	sendMessage(threadId: string, content: string, options?: SendMessageOptions): void {
-		const traceContext = injectTraceContext();
-		const msg: Record<string, unknown> = {
-			type: "message:send",
-			thread_id: threadId,
-			content,
-			...(traceContext ? { trace_context: JSON.stringify(traceContext) } : {}),
-		};
-		if (options?.modelId) msg.model_id = options.modelId;
-		if (options?.fileId) msg.file_ids = [options.fileId];
-		this.sendWsMessage(msg);
+		// Open a span for the user-facing send so the server-side
+		// `web.handle-message` becomes a child of this client root. When OTEL
+		// is not initialized the API returns no-op spans and `injectTraceContext`
+		// returns null, so the wire shape is unchanged. The span is closed
+		// synchronously after writing to the WS — we don't have a useful end
+		// signal on the WS protocol, so this span only covers the local
+		// preparation and the wire write. Server-side spans inherit the
+		// parent context via the injected trace_context carrier.
+		const tracer = trace.getTracer("bound.client");
+		const span = tracer.startSpan("client.send-message", {
+			attributes: {
+				"thread.id": threadId,
+				"message.content_length": content.length,
+				"model.id": options?.modelId ?? "",
+			},
+		});
+		try {
+			context.with(trace.setSpan(context.active(), span), () => {
+				const traceContext = injectTraceContext();
+				const msg: Record<string, unknown> = {
+					type: "message:send",
+					thread_id: threadId,
+					content,
+					...(traceContext ? { trace_context: JSON.stringify(traceContext) } : {}),
+				};
+				if (options?.modelId) msg.model_id = options.modelId;
+				if (options?.fileId) msg.file_ids = [options.fileId];
+				this.sendWsMessage(msg);
+			});
+			span.setStatus({ code: SpanStatusCode.OK });
+		} catch (err) {
+			span.setStatus({
+				code: SpanStatusCode.ERROR,
+				message: err instanceof Error ? err.message : String(err),
+			});
+			throw err;
+		} finally {
+			span.end();
+		}
 	}
 
 	async redactMessage(threadId: string, messageId: string): Promise<RedactMessageResult> {
