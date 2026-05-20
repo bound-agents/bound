@@ -99,21 +99,23 @@ export function createClientTracingSession(): ClientTracingSession {
 			}
 
 			const linkedCtx = extractTraceContext(carrier);
-			const linkedSpanContext = trace.getSpan(linkedCtx)?.spanContext();
 
 			// Parent client-tool.execute directly under the server's SpanContext
 			// (typically agent-loop.tool-execute). Sibling client tool calls under
-			// the same server traceparent share that same parent automatically. The
-			// Link is retained for the rare case where extractTraceContext could not
-			// build a context (no traceparent was present, already handled above) —
-			// it is harmless when the parent context already points at the same
-			// SpanContext.
+			// the same server traceparent share that same parent automatically.
+			//
+			// We deliberately do NOT emit an OTel Link to the same SpanContext.
+			// The carrier's traceparent is the only path into this branch (we
+			// early-return above when missing), so the parent reference already
+			// covers cross-trace nav. A redundant Link causes the OTLP receiver
+			// in Jaeger to surface the relationship as FOLLOWS_FROM rather than
+			// CHILD_OF — the Link wins over the parentSpanId and the span shows
+			// up as an orphan root in the Jaeger trace tree.
 			const span = tracer.startSpan(
 				"client-tool.execute",
 				{
 					kind: SpanKind.INTERNAL,
 					attributes: options?.toolName ? { "tool.name": options.toolName } : {},
-					links: linkedSpanContext ? [{ context: linkedSpanContext }] : [],
 				},
 				linkedCtx,
 			);
