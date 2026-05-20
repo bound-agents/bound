@@ -2021,9 +2021,21 @@ Original output was too large for the context window. If you need the full conte
 			}
 
 			// Fallback: if no user found in forward scan (e.g. scheduled task threads
-			// with only system wakeup + tool_call/tool_result/assistant cycles), try
-			// the last user message, or fall back to the original budget-based start.
-			// The Bedrock driver handles the user-message-first requirement itself.
+			// with only system wakeup + tool_call/tool_result/assistant cycles, or
+			// long bursts of tool_call/tool_result pairs that pushed every user
+			// message older than MESSAGE_LOAD_LIMIT), try the last user message, or
+			// fall back to the original budget-based start. The Bedrock driver
+			// prepends a `<system-notification />` placeholder user message when
+			// the conversation doesn't start with `user`, but that placeholder
+			// does NOT satisfy a leading orphan tool_result whose tool_call was
+			// sliced off — Bedrock's pair validator rejects with "Expected
+			// toolResult blocks at messages.0.content for the following Ids: …".
+			// So even on the budget-based fallback, advance past leading
+			// `tool_result` rows whose `tool_call` partner is no longer in the
+			// kept slice. We deliberately do NOT skip leading `tool_call` rows:
+			// a tool_call followed by its tool_result is a well-formed pair, and
+			// the placeholder user satisfies Bedrock's "first message must be
+			// user" constraint.
 			if (sliceStart >= historyMessages.length) {
 				let foundUser = false;
 				for (let i = historyMessages.length - 1; i >= 0; i--) {
@@ -2033,10 +2045,14 @@ Original output was too large for the context window. If you need the full conte
 						break;
 					}
 				}
-				// No user messages at all — restore budget-based start so we don't
-				// discard all history. Bedrock driver prepends a placeholder user msg.
 				if (!foundUser) {
 					sliceStart = preAdvanceStart;
+					while (
+						sliceStart < historyMessages.length &&
+						historyMessages[sliceStart].role === "tool_result"
+					) {
+						sliceStart++;
+					}
 				}
 			}
 
