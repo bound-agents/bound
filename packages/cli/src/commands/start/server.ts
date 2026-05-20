@@ -43,6 +43,7 @@ import type { KeyringConfig, Logger, ProcessPayload, StatusForwardPayload } from
 import {
 	BOUND_NAMESPACE,
 	deterministicUUID,
+	extractTraceContext,
 	formatError,
 	parseJsonSafe,
 	resultPayloadSchema,
@@ -444,7 +445,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 		// handleThread delegates to the shared ThreadExecutor.
 		// The executor owns the thread-exclusive lock and drain loop.
-		const handleThread = async (thread_id: string) => {
+		const handleThread = async (thread_id: string, traceContext?: string) => {
 			if (!modelRouter) {
 				appContext.logger.warn("[agent] No model router configured, cannot process message");
 				return;
@@ -560,14 +561,29 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							const turnStartAt = new Date().toISOString();
 
 							const tracer = getTracer();
-							const rootSpan = tracer.startSpan("web.handle-message", {
-								attributes: {
-									"thread.id": thread_id,
-									"user.id": userId,
-									"message.id": claimedIds[0] ?? "",
-									platform: platform ?? "web",
+							const parentCtx = traceContext
+								? extractTraceContext(
+										(() => {
+											try {
+												return JSON.parse(traceContext) as Record<string, string>;
+											} catch {
+												return {};
+											}
+										})(),
+									)
+								: undefined;
+							const rootSpan = tracer.startSpan(
+								"web.handle-message",
+								{
+									attributes: {
+										"thread.id": thread_id,
+										"user.id": userId,
+										"message.id": claimedIds[0] ?? "",
+										platform: platform ?? "web",
+									},
 								},
-							});
+								parentCtx,
+							);
 
 							let agentLoopResult: Awaited<ReturnType<typeof runLocalAgentLoop>>;
 							try {
@@ -699,7 +715,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		};
 
 		// message:created handler — enqueue and dispatch
-		appContext.eventBus.on("message:created", ({ message, thread_id }) => {
+		appContext.eventBus.on("message:created", ({ message, thread_id, trace_context }) => {
 			// Only enqueue user messages (tool_result dispatch entries are
 			// created by handleToolResult in the WS handler via enqueueToolResult)
 			if (message.role === "user") {
@@ -723,7 +739,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 					// turn; defer resume until the last one acks.
 					return;
 				}
-				handleThread(thread_id).catch((err) =>
+				handleThread(thread_id, trace_context).catch((err) =>
 					appContext.logger.error("[agent] Unhandled dispatch error", {
 						error: formatError(err),
 					}),
