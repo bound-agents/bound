@@ -72,10 +72,10 @@ describe("createClientTracingSession", () => {
 			expect(child?.traceId).toBe(PARENT_TRACE_ID);
 			expect(child?.parentSpanId).toBe(PARENT_SPAN_ID);
 
-			// The Link is retained for parity with the no-traceparent fallback path.
-			expect(child?.links?.length).toBe(1);
-			expect(child?.links?.[0]?.traceId).toBe(PARENT_TRACE_ID);
-			expect(child?.links?.[0]?.spanId).toBe(PARENT_SPAN_ID);
+			// No Link to the parent SpanContext — the parent reference is the
+			// only ref we want Jaeger to see, otherwise the redundant Link
+			// causes the parent relationship to render as FOLLOWS_FROM.
+			expect(child?.links?.length ?? 0).toBe(0);
 		} finally {
 			session.end();
 		}
