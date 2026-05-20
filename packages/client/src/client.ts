@@ -7,6 +7,7 @@ import type {
 	Task,
 	Thread,
 } from "@bound/shared";
+import { injectTraceContext } from "@bound/shared";
 import { z } from "zod";
 import { withClientToolTracing } from "./tracing.js";
 import type {
@@ -397,10 +398,12 @@ export class BoundClient {
 	}
 
 	sendMessage(threadId: string, content: string, options?: SendMessageOptions): void {
+		const traceContext = injectTraceContext();
 		const msg: Record<string, unknown> = {
 			type: "message:send",
 			thread_id: threadId,
 			content,
+			...(traceContext ? { trace_context: JSON.stringify(traceContext) } : {}),
 		};
 		if (options?.modelId) msg.model_id = options.modelId;
 		if (options?.fileId) msg.file_ids = [options.fileId];

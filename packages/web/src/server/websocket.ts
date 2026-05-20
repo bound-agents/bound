@@ -45,6 +45,7 @@ const messageSendSchema = z.object({
 	content: z.string(),
 	file_ids: z.array(z.string()).optional(),
 	model_id: z.string().optional(),
+	trace_context: z.string().optional(),
 });
 
 const threadSubscribeSchema = z.object({
@@ -491,6 +492,7 @@ export function createWebSocketHandler(
 			eventBus.emit("message:created", {
 				message,
 				thread_id: msg.thread_id,
+				trace_context: msg.trace_context,
 			});
 		} catch (error) {
 			const errorMsg = error instanceof Error ? error.message : "Unknown error";

@@ -1,7 +1,7 @@
 import type { ContextDebugInfo, Message, RelayKind, StatusForwardPayload } from "./types.js";
 
 export interface EventMap {
-	"message:created": { message: Message; thread_id: string };
+	"message:created": { message: Message; thread_id: string; trace_context?: string };
 	/** Emitted after a local agent loop run to push the new assistant message to
 	 *  WebSocket clients without re-triggering the agent loop handler. */
 	"message:broadcast": { message: Message; thread_id: string };
