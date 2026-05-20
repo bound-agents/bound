@@ -134,28 +134,13 @@ describe("Cache Prediction", () => {
 	});
 
 	describe("selectCacheTtl", () => {
-		it("returns '1h' for discord interface", () => {
+		it("returns '1h' for all interfaces", () => {
 			expect(selectCacheTtl("discord")).toBe("1h");
-		});
-
-		it("returns '1h' for scheduler interface", () => {
 			expect(selectCacheTtl("scheduler")).toBe("1h");
-		});
-
-		it("returns '5m' for web interface", () => {
-			expect(selectCacheTtl("web")).toBe("5m");
-		});
-
-		it("returns '5m' for mcp interface", () => {
-			expect(selectCacheTtl("mcp")).toBe("5m");
-		});
-
-		it("returns '1h' for discord-interaction interface", () => {
+			expect(selectCacheTtl("web")).toBe("1h");
+			expect(selectCacheTtl("mcp")).toBe("1h");
 			expect(selectCacheTtl("discord-interaction")).toBe("1h");
-		});
-
-		it("returns '5m' for unknown interface", () => {
-			expect(selectCacheTtl("unknown")).toBe("5m");
+			expect(selectCacheTtl("unknown")).toBe("1h");
 		});
 	});
 });
