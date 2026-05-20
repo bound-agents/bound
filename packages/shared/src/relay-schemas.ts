@@ -58,6 +58,7 @@ export const inferenceRequestPayloadSchema = z.object({
 		])
 		.optional(),
 	effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+	cache_ttl: z.enum(["5m", "1h"]).optional(),
 	messages_file_ref: z.string().optional(),
 });
 

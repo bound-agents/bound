@@ -27,6 +27,9 @@ export type ModelResolution =
 			// backends with tight limits (e.g. Nova Pro = 10_000) don't 400
 			// with "max_tokens exceeds model limit of N".
 			maxOutputTokens?: number;
+			// Cache TTL hint for the provider's cachePoint. "5m" or "1h".
+			// See ChatParams.cache_ttl for provider support details.
+			cacheTtl?: ChatParams["cache_ttl"];
 	  }
 	| { kind: "remote"; hosts: EligibleHost[]; modelId: string; reResolved?: boolean }
 	| {
@@ -124,6 +127,8 @@ export function resolveSameTierFallback(
 				reResolved: true,
 				thinkingConfig: modelRouter.getThinkingConfig(localAlt.id),
 				effort: modelRouter.getEffort(localAlt.id),
+				maxOutputTokens: modelRouter.getMaxOutputTokens(localAlt.id),
+				cacheTtl: modelRouter.getCacheTtl(localAlt.id),
 			};
 		}
 	}
@@ -255,6 +260,7 @@ export function resolveModel(
 							thinkingConfig: modelRouter.getThinkingConfig(altId),
 							effort: modelRouter.getEffort(altId),
 							maxOutputTokens: modelRouter.getMaxOutputTokens(altId),
+							cacheTtl: modelRouter.getCacheTtl(altId),
 						};
 					}
 				}
@@ -291,6 +297,7 @@ export function resolveModel(
 			thinkingConfig: modelRouter.getThinkingConfig(effectiveModelId),
 			effort: modelRouter.getEffort(effectiveModelId),
 			maxOutputTokens: modelRouter.getMaxOutputTokens(effectiveModelId),
+			cacheTtl: modelRouter.getCacheTtl(effectiveModelId),
 		};
 	}
 

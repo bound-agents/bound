@@ -111,6 +111,13 @@ const modelBackendSchema = z
 		// The agent-loop takes `min(max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS)`
 		// at call time so lowering it is always safe.
 		max_output_tokens: z.number().int().positive().optional(),
+		// Prompt cache TTL hint forwarded to the provider's cache breakpoint.
+		// Bedrock supports "5m" (default) and "1h" (extended, only for Claude
+		// Opus 4.5+, Sonnet 4.5+, Haiku 4.5+). Anthropic native API supports
+		// both via `cache_control: { ttl }`. Setting "1h" on a model that
+		// doesn't support extended TTL is silently ignored by the provider
+		// and falls back to the default 5m behavior.
+		cache_ttl: z.enum(["5m", "1h"]).optional(),
 	})
 	.strict();
 

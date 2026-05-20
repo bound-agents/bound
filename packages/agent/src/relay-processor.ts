@@ -1321,6 +1321,7 @@ export class RelayProcessor {
 				temperature: payload.temperature,
 				thinking: effectiveThinking,
 				effort: effectiveEffort,
+				cache_ttl: payload.cache_ttl ?? this.modelRouter.getCacheTtl(payload.model),
 				resolveFileRef: createFileRefResolver(this.db),
 				signal: abortController.signal,
 			});

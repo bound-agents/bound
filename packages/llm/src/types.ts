@@ -67,6 +67,20 @@ export interface ChatParams {
 	 * this to their database; tests can pass a synchronous map lookup.
 	 */
 	resolveFileRef?: (fileId: string) => string | null;
+	/**
+	 * Prompt cache TTL hint forwarded to the provider's cache breakpoint.
+	 * - "5m" (default): standard 5-minute Bedrock cache, supported by all
+	 *   cache-capable Claude models on Bedrock.
+	 * - "1h": extended 1-hour cache. Bedrock only supports this on certain
+	 *   newer Claude models (Opus 4.5+, Sonnet 4.5+, Haiku 4.5+). Setting
+	 *   this on a model that doesn't support extended TTL may be silently
+	 *   ignored or rejected — verify per model.
+	 *
+	 * Forwarded to providerOptions.bedrock.cachePoint.ttl (Bedrock) or
+	 * cache_control.ttl (Anthropic). Drivers that don't support cache TTL
+	 * configuration ignore this field.
+	 */
+	cache_ttl?: "5m" | "1h";
 }
 
 export type LLMMessage = {
@@ -211,6 +225,14 @@ export interface BackendConfig {
 	 * Nova Pro = 10_000) don't trigger "max_tokens exceeds model limit of N".
 	 */
 	maxOutputTokens?: number;
+	/**
+	 * Prompt cache TTL hint forwarded to the provider's cache breakpoint.
+	 * Bedrock supports "5m" (default) and "1h" (extended, only for newer
+	 * Claude models). Anthropic native API supports both via cache_control.
+	 * Setting "1h" on a model that doesn't support extended TTL is silently
+	 * ignored by the provider and falls back to default 5m behavior.
+	 */
+	cacheTtl?: "5m" | "1h";
 	[key: string]: unknown;
 }
 
@@ -248,6 +270,7 @@ export interface InferenceRequestPayload {
 		| { type: "enabled"; budget_tokens: number }
 		| { type: "adaptive"; display?: "omitted" | "summarized" };
 	effort?: "low" | "medium" | "high" | "xhigh" | "max";
+	cache_ttl?: "5m" | "1h";
 	timeout_ms: number;
 	messages_file_ref?: string; // Set when messages are written to synced file (large prompt path)
 }
