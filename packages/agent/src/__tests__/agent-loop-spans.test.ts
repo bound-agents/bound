@@ -381,4 +381,74 @@ describe("Agent Loop OTEL Spans", () => {
 			expect(stageSpan).toBeDefined(`Stage span "${stageName}" should exist in finished spans`);
 		}
 	});
+
+	it("should record thinking_chars and messages_in_flight on turn span", async () => {
+		insertRow(
+			db,
+			"threads",
+			{
+				id: threadId,
+				user_id: userId,
+				interface: "web",
+				host_origin: "local",
+				color: 0,
+				title: "Test Thread Thinking",
+				summary: null,
+				summary_through: null,
+				summary_model_id: null,
+				extracted_through: null,
+				created_at: new Date().toISOString(),
+				last_message_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+			},
+			userId,
+		);
+
+		insertRow(
+			db,
+			"messages",
+			{
+				id: randomUUID(),
+				thread_id: threadId,
+				role: "user",
+				content: "Test thinking visibility",
+				model_id: null,
+				tool_name: null,
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				host_origin: "local",
+				deleted: 0,
+			},
+			userId,
+		);
+
+		const backend = new MockLLMBackend();
+		backend.setTextResponse("Response text");
+
+		const router = new ModelRouter(new Map([["test-model", backend]]), "test-model");
+		const ctx = makeCtx();
+		const sandbox = createMockSandbox();
+
+		const loop = new AgentLoop(ctx, sandbox as any, router, {
+			threadId,
+			userId,
+			modelId: "test-model",
+		});
+
+		await loop.run();
+
+		const spans = exporter.getFinishedSpans();
+		const turnSpan = spans.find((s) => s.name === "agent-loop.turn");
+
+		expect(turnSpan).toBeDefined();
+		// Non-thinking response should have thinking_chars = 0
+		expect(turnSpan?.attributes?.["llm.thinking_chars"]).toBe(0);
+		// Should always have messages_in_flight
+		expect(turnSpan?.attributes?.["context.messages_in_flight"]).toBeDefined();
+		expect(typeof turnSpan?.attributes?.["context.messages_in_flight"]).toBe("number");
+		expect(turnSpan?.attributes?.["context.messages_in_flight"] as number).toBeGreaterThanOrEqual(
+			1,
+		);
+	});
 });
