@@ -93,6 +93,13 @@ const toolResultSchema = z.object({
 	trace_data: z.string().optional(), // serialized span array JSON (optional)
 });
 
+// Trailing client-side spans (e.g. boundless.session parent) shipped by BoundClient
+// on disconnect, after all per-call trace_data have been sent on tool:result.
+const traceFlushSchema = z.object({
+	type: z.literal("trace:flush"),
+	trace_data: z.string(), // serialized SerializedSpan[] JSON
+});
+
 // Discriminated union for all message types
 const wsClientMessageSchema = z.discriminatedUnion("type", [
 	sessionConfigureSchema,
@@ -100,6 +107,7 @@ const wsClientMessageSchema = z.discriminatedUnion("type", [
 	threadSubscribeSchema,
 	threadUnsubscribeSchema,
 	toolResultSchema,
+	traceFlushSchema,
 ]);
 
 interface ClientConnection {
@@ -506,6 +514,22 @@ export function createWebSocketHandler(
 		}
 	}
 
+	function reExportClientTraceData(traceData: string): void {
+		try {
+			const spans = JSON.parse(traceData) as SerializedSpan[];
+			const exporter = getTraceExporter();
+			reExportSpans(spans, exporter);
+		} catch {
+			// Invalid trace_data — silently ignore, observability never blocks tool flow
+		}
+	}
+
+	function handleTraceFlush(msg: z.infer<typeof traceFlushSchema>): void {
+		// Trailing trace data shipped by BoundClient on clean disconnect (typically the
+		// open `boundless.session` parent span and any final children). Re-export silently.
+		reExportClientTraceData(msg.trace_data);
+	}
+
 	function handleToolResult(conn: ClientConnection, msg: z.infer<typeof toolResultSchema>): void {
 		if (!db || !siteId || !defaultUserId) {
 			conn.ws.send(
@@ -628,13 +652,7 @@ export function createWebSocketHandler(
 
 			// Re-export client trace_data spans if present (AC6.3)
 			if (msg.trace_data) {
-				try {
-					const spans = JSON.parse(msg.trace_data) as SerializedSpan[];
-					const exporter = getTraceExporter();
-					reExportSpans(spans, exporter);
-				} catch {
-					// Invalid trace_data — silently ignore, don't break tool result flow
-				}
+				reExportClientTraceData(msg.trace_data);
 			}
 
 			// Emit an event to trigger handleThread (re-emit the message so subscribed clients see it)
@@ -933,6 +951,10 @@ export function createWebSocketHandler(
 					}
 					case "tool:result": {
 						handleToolResult(conn, message);
+						break;
+					}
+					case "trace:flush": {
+						handleTraceFlush(message);
 						break;
 					}
 				}

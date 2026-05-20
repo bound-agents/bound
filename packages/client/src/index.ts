@@ -3,9 +3,10 @@ export { BoundClient, BoundNotRunningError, BoundApiError } from "./client.js";
 
 // Tracing utilities
 export {
-	withClientToolTracing,
+	createClientTracingSession,
+	type ClientTracingSession,
 	type ClientToolTracingResult,
-	type ClientToolTracingOptions,
+	type WrapToolCallOptions,
 } from "./tracing.js";
 
 // API-specific types

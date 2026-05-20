@@ -2,8 +2,16 @@ import { context, propagation, trace } from "@opentelemetry/api";
 import {
 	BasicTracerProvider,
 	InMemorySpanExporter,
+	type ReadableSpan,
 	SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
+
+export interface SerializedLink {
+	traceId: string;
+	spanId: string;
+	traceFlags?: number;
+	attributes?: Record<string, unknown>;
+}
 
 export interface SerializedSpan {
 	traceId: string;
@@ -20,6 +28,38 @@ export interface SerializedSpan {
 		attributes?: Record<string, unknown>;
 		timeUnixNano: string;
 	}>;
+	/** Optional cross-trace links (e.g. client-side spans linking back to the server SpanContext). */
+	links?: SerializedLink[];
+}
+
+/**
+ * Convert an OTel ReadableSpan into the wire `SerializedSpan` shape.
+ * Shared between in-process collectors and per-call wrappers.
+ */
+export function serializeReadableSpan(span: ReadableSpan): SerializedSpan {
+	const ctx = span.spanContext();
+	return {
+		traceId: ctx.traceId,
+		spanId: ctx.spanId,
+		parentSpanId: span.parentSpanId,
+		name: span.name,
+		kind: span.kind,
+		startTimeUnixNano: hrTimeToNano(span.startTime),
+		endTimeUnixNano: hrTimeToNano(span.endTime),
+		attributes: span.attributes as Record<string, unknown>,
+		status: span.status,
+		events: span.events.map((e) => ({
+			name: e.name,
+			attributes: e.attributes as Record<string, unknown> | undefined,
+			timeUnixNano: hrTimeToNano(e.time),
+		})),
+		links: (span.links ?? []).map((l) => ({
+			traceId: l.context.traceId,
+			spanId: l.context.spanId,
+			traceFlags: l.context.traceFlags,
+			attributes: l.attributes as Record<string, unknown> | undefined,
+		})),
+	};
 }
 
 /**
@@ -45,26 +85,7 @@ export function createScopedTraceCollector() {
 		 */
 		async flush(): Promise<SerializedSpan[]> {
 			await provider.forceFlush();
-			const spans = exporter.getFinishedSpans();
-			const serialized = spans.map((span): SerializedSpan => {
-				const ctx = span.spanContext();
-				return {
-					traceId: ctx.traceId,
-					spanId: ctx.spanId,
-					parentSpanId: span.parentSpanId,
-					name: span.name,
-					kind: span.kind,
-					startTimeUnixNano: hrTimeToNano(span.startTime),
-					endTimeUnixNano: hrTimeToNano(span.endTime),
-					attributes: span.attributes as Record<string, unknown>,
-					status: span.status,
-					events: span.events.map((e) => ({
-						name: e.name,
-						attributes: e.attributes as Record<string, unknown> | undefined,
-						timeUnixNano: hrTimeToNano(e.time),
-					})),
-				};
-			});
+			const serialized = exporter.getFinishedSpans().map(serializeReadableSpan);
 			await provider.shutdown();
 			return serialized;
 		},

@@ -10,7 +10,7 @@ import type {
 import { injectTraceContext } from "@bound/shared";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { z } from "zod";
-import { withClientToolTracing } from "./tracing.js";
+import { type ClientTracingSession, createClientTracingSession } from "./tracing.js";
 import type {
 	AdvisoryCount,
 	ApiErrorBody,
@@ -84,6 +84,14 @@ export class BoundClient {
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private reconnectAttempt = 0;
 	private configureOptions?: { systemPromptAddition?: string };
+	/**
+	 * Long-lived tracing session for the current WS connection. Lazy-initialized
+	 * on the first `tool:call` that carries a trace_context, ended on disconnect /
+	 * ws.onclose. Holds one `BasicTracerProvider` for the connection's lifetime
+	 * so parallel client tool calls under one agent turn share a `boundless.session`
+	 * parent (and don't dangle under `web.handle-message` on the server trace).
+	 */
+	private tracingSession: ClientTracingSession | null = null;
 
 	/**
 	 * @param baseUrl Base URL for the Bound API. Defaults to "" (empty string)
@@ -166,6 +174,21 @@ export class BoundClient {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = null;
 		}
+		// Ship any trailing trace data before closing the WS.
+		// `end()` is sync (SimpleSpanProcessor exports on span.end()), so we can
+		// drain and send before close. Children have already been shipped per-call;
+		// what's left here is typically the open `boundless.session` span.
+		const session = this.tracingSession;
+		this.tracingSession = null;
+		if (session) {
+			const trailing = session.end();
+			if (trailing.length > 0 && this.ws?.readyState === WebSocket.OPEN) {
+				this.sendWsMessage({
+					type: "trace:flush",
+					trace_data: JSON.stringify(trailing),
+				});
+			}
+		}
 		if (this.ws) {
 			this.ws.close();
 			this.ws = null;
@@ -238,6 +261,13 @@ export class BoundClient {
 
 		ws.onclose = () => {
 			this.ws = null;
+			// End any active tracing session — children have already been shipped per-call.
+			// Trailing `boundless.session` span is lost on unclean close (we can't send
+			// over a closing socket); the children still group on the session traceID.
+			if (this.tracingSession) {
+				this.tracingSession.end();
+				this.tracingSession = null;
+			}
 			this.emit("close");
 			if (this.shouldReconnect) {
 				this.scheduleReconnect();
@@ -260,9 +290,13 @@ export class BoundClient {
 			if (msg.type === "tool:call" && this.toolCallHandler) {
 				const toolCall = msg as unknown as ToolCallRequest;
 				const handler = this.toolCallHandler;
-				withClientToolTracing(toolCall.trace_context, () => handler(toolCall), {
-					toolName: toolCall.tool_name,
-				})
+				if (!this.tracingSession) {
+					this.tracingSession = createClientTracingSession();
+				}
+				this.tracingSession
+					.wrapToolCall(toolCall.trace_context, () => handler(toolCall), {
+						toolName: toolCall.tool_name,
+					})
 					.then(({ result, traceData }) => {
 						this.sendWsMessage({
 							type: "tool:result",

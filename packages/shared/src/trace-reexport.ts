@@ -1,4 +1,4 @@
-import type { SpanKind, SpanStatusCode } from "@opentelemetry/api";
+import type { SpanContext, SpanKind, SpanStatusCode } from "@opentelemetry/api";
 import { Resource } from "@opentelemetry/resources";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
@@ -28,7 +28,15 @@ export function reExportSpans(spans: SerializedSpan[], exporter: SpanExporter | 
 		endTime: nanoToHrTime(s.endTimeUnixNano),
 		status: { code: s.status.code as SpanStatusCode, message: s.status.message },
 		attributes: s.attributes,
-		links: [],
+		links: (s.links ?? []).map((l) => ({
+			context: {
+				traceId: l.traceId,
+				spanId: l.spanId,
+				traceFlags: l.traceFlags ?? 1,
+				traceState: undefined,
+			} as SpanContext,
+			attributes: l.attributes ?? {},
+		})),
 		events: s.events.map((e) => ({
 			name: e.name,
 			attributes: e.attributes ?? {},
