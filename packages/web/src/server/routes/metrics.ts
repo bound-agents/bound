@@ -367,7 +367,7 @@ export function createMetricsRoutes(_db: Database): Hono {
 					totals: {
 						tokens_in: totalsRow?.tokens_in ?? 0,
 						tokens_out: totalsRow?.tokens_out ?? 0,
-						cost_usd: Number((totalsRow?.cost_usd ?? 0).toFixed(2)),
+						cost_usd: totalsRow?.cost_usd ?? 0,
 						turn_count: totalsRow?.turn_count ?? 0,
 						error_count: totalsRow?.error_count ?? 0,
 					},
