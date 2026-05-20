@@ -82,6 +82,7 @@ export class BedrockDriver implements LLMBackend {
 		const modelId = params.model || this.model;
 		const messages = toModelMessages(params.messages, {
 			cacheProvider: "bedrock",
+			cacheTtl: params.cache_ttl,
 			resolveFileRef: params.resolveFileRef,
 		});
 		const tools = toToolSet(params.tools);

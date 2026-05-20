@@ -379,6 +379,18 @@ export class ModelRouter {
 	}
 
 	/**
+	 * Returns the per-backend prompt-cache TTL hint, if configured.
+	 * "5m" (Bedrock default), "1h" (extended TTL on supported models), or
+	 * undefined (omit the field entirely so the provider uses its default).
+	 */
+	getCacheTtl(backendId: string): "5m" | "1h" | undefined {
+		const config = this.backendConfigs.get(backendId);
+		if (!config) return undefined;
+		const ttl = config.cacheTtl;
+		return ttl === "5m" || ttl === "1h" ? ttl : undefined;
+	}
+
+	/**
 	 * Returns all backends matching the given tier that are not rate-limited and
 	 * satisfy the given capability requirements.
 	 */

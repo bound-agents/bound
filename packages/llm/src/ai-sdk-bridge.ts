@@ -37,6 +37,12 @@ export interface ToModelMessagesOptions {
 	 */
 	cacheProvider?: "bedrock" | "anthropic" | null;
 	/**
+	 * Cache TTL hint forwarded to the cache breakpoint. "5m" or "1h".
+	 * Omit (or undefined) to use the provider's default (5m). 1h is only
+	 * supported on certain newer Claude models — see ChatParams.cache_ttl.
+	 */
+	cacheTtl?: "5m" | "1h";
+	/**
 	 * Resolves a `file_ref` source to inline base64 data. See
 	 * ChatParams.resolveFileRef for the full contract — this is the same
 	 * callback, threaded through driver → bridge.
@@ -107,9 +113,13 @@ export function toModelMessages(
 			if (!provOpts[opts.cacheProvider]) provOpts[opts.cacheProvider] = {};
 			const bucket = provOpts[opts.cacheProvider];
 			if (opts.cacheProvider === "bedrock") {
-				bucket.cachePoint = { type: "default" };
+				const cachePoint: Record<string, unknown> = { type: "default" };
+				if (opts.cacheTtl) cachePoint.ttl = opts.cacheTtl;
+				bucket.cachePoint = cachePoint;
 			} else if (opts.cacheProvider === "anthropic") {
-				bucket.cacheControl = { type: "ephemeral" };
+				const cacheControl: Record<string, unknown> = { type: "ephemeral" };
+				if (opts.cacheTtl) cacheControl.ttl = opts.cacheTtl;
+				bucket.cacheControl = cacheControl;
 			}
 			continue;
 		}
