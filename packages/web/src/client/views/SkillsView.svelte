@@ -179,9 +179,7 @@ $effect.pre(() => {
 							expandedId = id;
 						}
 					}}
-					expandedContent={(skill) => {
-						return snippet_content(skill);
-					}}
+					expandedContent={snippet_content}
 				/>
 			{/if}
 		{/if}
