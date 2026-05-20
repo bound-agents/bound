@@ -348,9 +348,29 @@ export class BoundClient {
 
 	// ---- Threads ----
 
-	async listThreads(opts?: { includeEmpty?: boolean }): Promise<ThreadListEntry[]> {
-		const qs = opts?.includeEmpty ? "?include_empty=true" : "";
-		return this.fetchJson(`/api/threads${qs}`);
+	async listThreads(opts?: {
+		includeEmpty?: boolean;
+		/**
+		 * Maximum number of threads to return. Server caps at 200. Omit to
+		 * receive the full set (back-compat default).
+		 */
+		limit?: number;
+		/**
+		 * Cursor for the next page. Pass `(last_message_at, id)` of the last
+		 * thread from the previous page; the server returns rows strictly
+		 * before that cursor in `(last_message_at DESC, id DESC)` order.
+		 */
+		before?: { last_message_at: string; id: string };
+	}): Promise<ThreadListEntry[]> {
+		const params = new URLSearchParams();
+		if (opts?.includeEmpty) params.set("include_empty", "true");
+		if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+		if (opts?.before) {
+			params.set("before_ts", opts.before.last_message_at);
+			params.set("before_id", opts.before.id);
+		}
+		const qs = params.toString();
+		return this.fetchJson(`/api/threads${qs ? `?${qs}` : ""}`);
 	}
 
 	/**

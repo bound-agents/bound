@@ -25,9 +25,46 @@ export function createThreadsRoutes(
 			// clutter from task-only / system-only threads. Opt in to the full
 			// list with ?include_empty=true.
 			const includeEmpty = c.req.query("include_empty") === "true";
-			const threads = db
-				.query(
-					`
+
+			// Optional cursor-based pagination on (last_message_at, id). Both
+			// `before_ts` and `before_id` must be present together; an
+			// incomplete cursor is treated as "no cursor" rather than rejected
+			// so that hand-edited URLs degrade gracefully. Pagination is
+			// opt-in: with no `limit` given the route returns the full set,
+			// preserving the original contract for callers that don't yet
+			// page.
+			const beforeTsRaw = c.req.query("before_ts");
+			const beforeIdRaw = c.req.query("before_id");
+			const hasCursor = !!beforeTsRaw && !!beforeIdRaw;
+			const beforeTs = hasCursor ? beforeTsRaw : null;
+			const beforeId = hasCursor ? beforeIdRaw : null;
+
+			let limit: number | null = null;
+			const limitRaw = c.req.query("limit");
+			if (limitRaw !== undefined) {
+				const parsed = Number.parseInt(limitRaw, 10);
+				// Cap at 200 to keep a single page bounded — well above the
+				// typical UI page size of 50, large enough for ad-hoc tools
+				// to fetch a chunk without paging.
+				if (!Number.isFinite(parsed) || parsed < 1 || parsed > 200) {
+					return c.json(
+						{
+							error: "Invalid limit",
+							details: "limit must be a positive integer between 1 and 200",
+						},
+						400,
+					);
+				}
+				limit = parsed;
+			}
+
+			// Build SQL conditionally so we don't pay for the LIMIT/cursor
+			// branches when callers pass neither.
+			const cursorClause = hasCursor
+				? "AND (t.last_message_at < ? OR (t.last_message_at = ? AND t.id < ?))"
+				: "";
+			const limitClause = limit !== null ? "LIMIT ?" : "";
+			const sql = `
 				SELECT t.*,
 					(SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id AND m.deleted = 0) as messageCount,
 					(SELECT tu.model_id FROM turns tu WHERE tu.thread_id = t.id ORDER BY tu.created_at DESC LIMIT 1) as lastModel,
@@ -44,10 +81,20 @@ export function createThreadsRoutes(
 							WHERE m.thread_id = t.id AND m.role = 'user' AND m.deleted = 0
 						)
 					)
-				ORDER BY t.last_message_at DESC
-			`,
-				)
-				.all(webUserId, includeEmpty ? 1 : 0) as Array<
+					${cursorClause}
+				ORDER BY t.last_message_at DESC, t.id DESC
+				${limitClause}
+			`;
+			const params: Array<string | number> = [webUserId, includeEmpty ? 1 : 0];
+			if (hasCursor) {
+				// SAFETY: hasCursor implies both beforeTs and beforeId are non-null strings.
+				params.push(beforeTs as string, beforeTs as string, beforeId as string);
+			}
+			if (limit !== null) {
+				params.push(limit);
+			}
+
+			const threads = db.query(sql).all(...params) as Array<
 				Thread & { messageCount: number; lastModel: string | null; hasRunningTask: number }
 			>;
 

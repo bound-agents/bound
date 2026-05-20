@@ -102,9 +102,22 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
-	async listThreads(opts?: { includeEmpty?: boolean }): Promise<Thread[]> {
-		const qs = opts?.includeEmpty ? "?include_empty=true" : "";
-		return fetchJson(`/api/threads${qs}`);
+	async listThreads(opts?: {
+		includeEmpty?: boolean;
+		/** Maximum threads to return (server caps at 200). Omit for full set. */
+		limit?: number;
+		/** Cursor: pass `(last_message_at, id)` of the last item from the previous page. */
+		before?: { last_message_at: string; id: string };
+	}): Promise<Thread[]> {
+		const params = new URLSearchParams();
+		if (opts?.includeEmpty) params.set("include_empty", "true");
+		if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+		if (opts?.before) {
+			params.set("before_ts", opts.before.last_message_at);
+			params.set("before_id", opts.before.id);
+		}
+		const qs = params.toString();
+		return fetchJson(`/api/threads${qs ? `?${qs}` : ""}`);
 	},
 
 	async createThread(): Promise<Thread> {
