@@ -174,20 +174,13 @@ export class BoundClient {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = null;
 		}
-		// Ship any trailing trace data before closing the WS.
-		// `end()` is sync (SimpleSpanProcessor exports on span.end()), so we can
-		// drain and send before close. Children have already been shipped per-call;
-		// what's left here is typically the open `boundless.session` span.
+		// Each `client-tool.execute` ships its serialized span on tool:result via
+		// SimpleSpanProcessor at span.end(); there is no trailing parent span to
+		// flush. Just shut down the provider so we don't leak it.
 		const session = this.tracingSession;
 		this.tracingSession = null;
 		if (session) {
-			const trailing = session.end();
-			if (trailing.length > 0 && this.ws?.readyState === WebSocket.OPEN) {
-				this.sendWsMessage({
-					type: "trace:flush",
-					trace_data: JSON.stringify(trailing),
-				});
-			}
+			session.end();
 		}
 		if (this.ws) {
 			this.ws.close();

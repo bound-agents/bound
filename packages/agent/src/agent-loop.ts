@@ -14,7 +14,7 @@ import type { ContentBlock, ModelRouter, StreamChunk, ToolDefinition } from "@bo
 import type { InferenceRequestPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
 import type { ContextDebugInfo, EventMap, SyncConfig } from "@bound/shared";
-import { countContentTokens, countTokens, formatError } from "@bound/shared";
+import { countContentTokens, countTokens, formatError, injectTraceContext } from "@bound/shared";
 import type { Context } from "@opentelemetry/api";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 
@@ -1874,6 +1874,12 @@ export class AgentLoop {
 								connectionId,
 							);
 
+							// Capture the W3C trace context with toolExecuteCtx active so the
+							// carrier identifies agent-loop.tool-execute as the parent span.
+							// Event-bus listeners run outside this context, so the WS handler
+							// can't recover the right active span on its own.
+							const traceContext = context.with(toolExecuteCtx, () => injectTraceContext());
+
 							// Emit event for WS handler to deliver tool:call to client
 							this.ctx.eventBus.emit("client_tool_call:created", {
 								threadId: this.config.threadId,
@@ -1881,6 +1887,7 @@ export class AgentLoop {
 								entryId,
 								toolName: toolCall.name,
 								arguments: toolCall.input,
+								traceContext,
 							});
 
 							this.ctx.logger.debug("[agent-loop] Client tool call enqueued and event emitted", {
