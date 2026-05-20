@@ -1,6 +1,6 @@
 # Contributing to Bound
 
-Last verified: 2026-05-18
+Last verified: 2026-05-20
 
 Thanks for your interest in contributing! This document is the developer-facing companion to [README.md](README.md) — if you're running `bun test` and touching SQL, this is the file you want.
 
@@ -159,7 +159,7 @@ The source-of-truth type is `SyncedTableName` in `packages/shared/src/types.ts`.
 
 ### Shared-config → router hand-off
 
-**17.** `toRouterConfig()` in `packages/cli/src/commands/start/inference.ts` is the single place that translates snake_case `ModelBackendsConfig` into the camelCase `BackendConfig` consumed by `createModelRouter`. Any new per-backend field (e.g., `thinking`, `effort`, `max_output_tokens`) MUST be copied here or it silently never reaches the router. `ModelResolution.local` must also carry the field, and both agent-loop and relay-processor must propagate it.
+**17.** `toRouterConfig()` in `packages/cli/src/commands/start/inference.ts` is the single place that translates snake_case `ModelBackendsConfig` into the camelCase `BackendConfig` consumed by `createModelRouter`. Any new per-backend field (e.g., `thinking`, `effort`, `max_output_tokens`, `cache_ttl`) MUST be copied here or it silently never reaches the router. `ModelResolution.local` must also carry the field, and both agent-loop and relay-processor must propagate it. For `cache_ttl` specifically, `relay-processor.executeInference` deliberately reads from the local backend (`modelRouter.getCacheTtl(payload.model)`) rather than the payload, so spokes apply their own TTL preference rather than honoring a hub-set TTL for a model the spoke does not support.
 
 ## Common Gotchas
 
