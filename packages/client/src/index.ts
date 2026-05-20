@@ -2,7 +2,11 @@
 export { BoundClient, BoundNotRunningError, BoundApiError } from "./client.js";
 
 // Tracing utilities
-export { withClientToolTracing, type ClientToolTracingResult } from "./tracing.js";
+export {
+	withClientToolTracing,
+	type ClientToolTracingResult,
+	type ClientToolTracingOptions,
+} from "./tracing.js";
 
 // API-specific types
 export type {

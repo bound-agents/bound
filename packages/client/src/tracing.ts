@@ -6,6 +6,11 @@ export interface ClientToolTracingResult<T> {
 	traceData: string | undefined;
 }
 
+export interface ClientToolTracingOptions {
+	/** Tool name for span attributes (e.g., "boundless_bash") */
+	toolName?: string;
+}
+
 /**
  * Wrap a client tool execution with trace context propagation.
  * Extracts parent context from the server's trace_context, creates child spans,
@@ -17,6 +22,7 @@ export interface ClientToolTracingResult<T> {
 export async function withClientToolTracing<T>(
 	traceContextStr: string | undefined,
 	fn: () => Promise<T>,
+	options?: ClientToolTracingOptions,
 ): Promise<ClientToolTracingResult<T>> {
 	if (!traceContextStr) {
 		const result = await fn();
@@ -41,6 +47,9 @@ export async function withClientToolTracing<T>(
 
 	await runInTraceContext(parentContext, async () => {
 		const span = tracer.startSpan("client-tool.execute", {}, parentContext);
+		if (options?.toolName) {
+			span.setAttribute("tool.name", options.toolName);
+		}
 		try {
 			result = await fn();
 			span.setStatus({ code: SpanStatusCode.OK });
